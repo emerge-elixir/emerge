@@ -42,6 +42,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 use crate::actors::TreeMsg;
 use crate::clipboard::ClipboardTarget;
@@ -75,7 +76,135 @@ use super::{
 const RUNTIME_DRAG_DEADZONE: f32 = 10.0;
 const GESTURE_AXIS_DOMINANCE_RATIO: f32 = 1.25;
 const GESTURE_AXIS_MIN_LEAD: f32 = 6.0;
-const REGISTRY_SUBTREE_CACHE_BUDGET: usize = 4;
+const REGISTRY_SUBTREE_CACHE_BUDGET: usize = 48;
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+thread_local! {
+    static REGISTRY_BUILD_DIAGNOSTICS_ENABLED: Cell<bool> = const { Cell::new(false) };
+    static REGISTRY_BUILD_DIAGNOSTICS: Cell<RegistryBuildDiagnostics> = const {
+        Cell::new(RegistryBuildDiagnostics::empty())
+    };
+}
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RegistryBuildDiagnostics {
+    pub visits: u64,
+    pub cache_hits: u64,
+    pub cache_stores: u64,
+    pub cache_ineligible: u64,
+    pub cache_damaged: u64,
+    pub cache_misses: u64,
+}
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+impl RegistryBuildDiagnostics {
+    const fn empty() -> Self {
+        Self {
+            visits: 0,
+            cache_hits: 0,
+            cache_stores: 0,
+            cache_ineligible: 0,
+            cache_damaged: 0,
+            cache_misses: 0,
+        }
+    }
+}
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+#[doc(hidden)]
+pub fn reset_registry_build_diagnostics_for_benchmark() {
+    REGISTRY_BUILD_DIAGNOSTICS.with(|diagnostics| {
+        diagnostics.set(RegistryBuildDiagnostics::empty());
+    });
+    REGISTRY_BUILD_DIAGNOSTICS_ENABLED.with(|enabled| enabled.set(true));
+}
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+#[doc(hidden)]
+pub fn take_registry_build_diagnostics_for_benchmark() -> RegistryBuildDiagnostics {
+    REGISTRY_BUILD_DIAGNOSTICS_ENABLED.with(|enabled| enabled.set(false));
+    REGISTRY_BUILD_DIAGNOSTICS.with(Cell::get)
+}
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+fn update_registry_build_diagnostics(
+    update: impl FnOnce(RegistryBuildDiagnostics) -> RegistryBuildDiagnostics,
+) {
+    REGISTRY_BUILD_DIAGNOSTICS_ENABLED.with(|enabled| {
+        if enabled.get() {
+            REGISTRY_BUILD_DIAGNOSTICS.with(|diagnostics| {
+                diagnostics.set(update(diagnostics.get()));
+            });
+        }
+    });
+}
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+fn record_registry_visit() {
+    update_registry_build_diagnostics(|mut diagnostics| {
+        diagnostics.visits = diagnostics.visits.saturating_add(1);
+        diagnostics
+    });
+}
+
+#[cfg(not(any(test, feature = "bench-diagnostics")))]
+fn record_registry_visit() {}
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+fn record_registry_cache_hit() {
+    update_registry_build_diagnostics(|mut diagnostics| {
+        diagnostics.cache_hits = diagnostics.cache_hits.saturating_add(1);
+        diagnostics
+    });
+}
+
+#[cfg(not(any(test, feature = "bench-diagnostics")))]
+fn record_registry_cache_hit() {}
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+fn record_registry_cache_store() {
+    update_registry_build_diagnostics(|mut diagnostics| {
+        diagnostics.cache_stores = diagnostics.cache_stores.saturating_add(1);
+        diagnostics
+    });
+}
+
+#[cfg(not(any(test, feature = "bench-diagnostics")))]
+fn record_registry_cache_store() {}
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+fn record_registry_cache_ineligible() {
+    update_registry_build_diagnostics(|mut diagnostics| {
+        diagnostics.cache_ineligible = diagnostics.cache_ineligible.saturating_add(1);
+        diagnostics
+    });
+}
+
+#[cfg(not(any(test, feature = "bench-diagnostics")))]
+fn record_registry_cache_ineligible() {}
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+fn record_registry_cache_damaged() {
+    update_registry_build_diagnostics(|mut diagnostics| {
+        diagnostics.cache_damaged = diagnostics.cache_damaged.saturating_add(1);
+        diagnostics
+    });
+}
+
+#[cfg(not(any(test, feature = "bench-diagnostics")))]
+fn record_registry_cache_damaged() {}
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+fn record_registry_cache_miss() {
+    update_registry_build_diagnostics(|mut diagnostics| {
+        diagnostics.cache_misses = diagnostics.cache_misses.saturating_add(1);
+        diagnostics
+    });
+}
+
+#[cfg(not(any(test, feature = "bench-diagnostics")))]
+fn record_registry_cache_miss() {}
 
 /// Listener registry consumed by the event actor.
 ///
@@ -91,7 +220,7 @@ const REGISTRY_SUBTREE_CACHE_BUDGET: usize = 4;
 /// - `Registry::view()` when reading them in dispatch order
 #[derive(Clone, Debug, Default)]
 pub struct Registry {
-    listeners: Vec<Listener>,
+    listeners: Arc<Vec<Listener>>,
 }
 
 impl Registry {
@@ -104,23 +233,22 @@ impl Registry {
         &mut self,
         build: impl FnOnce(&mut PrecedenceEmitter<'_>) -> R,
     ) -> R {
-        let start = self.listeners.len();
-        let result = build(&mut PrecedenceEmitter {
-            listeners: &mut self.listeners,
-        });
-        self.listeners[start..].reverse();
+        let listeners = Arc::make_mut(&mut self.listeners);
+        let start = listeners.len();
+        let result = build(&mut PrecedenceEmitter { listeners });
+        listeners[start..].reverse();
         result
     }
 
     /// Returns a precedence-ordered read view over the registry.
     pub(crate) fn view(&self) -> RegistryView<'_> {
         RegistryView {
-            listeners: &self.listeners,
+            listeners: self.listeners.as_slice(),
         }
     }
 
     fn extend_storage_from(&mut self, other: &Registry) {
-        self.listeners.extend(other.listeners.iter().cloned());
+        Arc::make_mut(&mut self.listeners).extend(other.listeners.iter().cloned());
     }
 
     #[cfg(test)]
@@ -309,6 +437,7 @@ pub struct ClickPressTracker {
     pub matcher_kind: ListenerMatcherKind,
     pub emit_click: bool,
     pub emit_press_pointer: bool,
+    pub clear_mouse_down: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -768,12 +897,12 @@ fn emit_runtime_overlay_listeners(
         base,
         &runtime.drag,
     ));
-    out.emit_opt(
-        runtime
-            .virtual_key
-            .as_ref()
-            .map(runtime_virtual_key_release_listener),
-    );
+    out.emit_opt(runtime.virtual_key.as_ref().map(|tracker| {
+        runtime_virtual_key_release_listener(
+            tracker,
+            click_press_tracker_for_element(&runtime.click_press, tracker.element_id),
+        )
+    }));
     out.emit_all(runtime_key_press_release_listeners(
         base,
         &runtime.key_presses,
@@ -794,24 +923,24 @@ fn emit_runtime_overlay_listeners(
         base,
         &runtime.drag,
     ));
-    out.emit_opt(
-        runtime
-            .virtual_key
-            .as_ref()
-            .map(runtime_virtual_key_release_anywhere_clear_listener),
-    );
+    out.emit_opt(runtime.virtual_key.as_ref().map(|tracker| {
+        runtime_virtual_key_release_anywhere_clear_listener(
+            tracker,
+            click_press_tracker_for_element(&runtime.click_press, tracker.element_id),
+        )
+    }));
     out.emit_opt(
         runtime
             .click_press
             .as_ref()
             .and_then(|tracker| runtime_click_press_release_anywhere_clear_listener(base, tracker)),
     );
-    out.emit_opt(
-        runtime
-            .virtual_key
-            .as_ref()
-            .and_then(runtime_virtual_key_leave_cancel_listener),
-    );
+    out.emit_opt(runtime.virtual_key.as_ref().and_then(|tracker| {
+        runtime_virtual_key_leave_cancel_listener(
+            tracker,
+            click_press_tracker_for_element(&runtime.click_press, tracker.element_id),
+        )
+    }));
     out.emit_opt(runtime_drag_active_scroll_move_listener(
         base,
         &runtime.drag,
@@ -821,12 +950,12 @@ fn emit_runtime_overlay_listeners(
         &runtime.drag,
     ));
     out.emit_opt(runtime_drag_window_blur_clear_listener(base, &runtime.drag));
-    out.emit_opt(
-        runtime
-            .virtual_key
-            .as_ref()
-            .map(runtime_virtual_key_window_blur_clear_listener),
-    );
+    out.emit_opt(runtime.virtual_key.as_ref().map(|tracker| {
+        runtime_virtual_key_window_blur_clear_listener(
+            tracker,
+            click_press_tracker_for_element(&runtime.click_press, tracker.element_id),
+        )
+    }));
     out.emit_opt(runtime_key_press_window_blur_clear_listener(
         &runtime.key_presses,
     ));
@@ -884,12 +1013,12 @@ fn emit_runtime_overlay_listeners(
         base,
         &runtime.drag,
     ));
-    out.emit_opt(
-        runtime
-            .virtual_key
-            .as_ref()
-            .map(runtime_virtual_key_window_leave_clear_listener),
-    );
+    out.emit_opt(runtime.virtual_key.as_ref().map(|tracker| {
+        runtime_virtual_key_window_leave_clear_listener(
+            tracker,
+            click_press_tracker_for_element(&runtime.click_press, tracker.element_id),
+        )
+    }));
     out.emit_opt(
         runtime
             .swipe
@@ -1260,6 +1389,7 @@ fn runtime_click_press_release_listener(
             element_id: tracker.element_id,
             emit_click: tracker.emit_click,
             emit_press_pointer: tracker.emit_press_pointer,
+            clear_mouse_down: tracker.clear_mouse_down,
         },
     })
 }
@@ -1320,10 +1450,7 @@ fn runtime_click_press_release_anywhere_clear_listener(
         element_id: Some(tracker.element_id),
         matcher: ListenerMatcher::CursorButtonLeftReleaseAnywhere,
         compute: ListenerCompute::Static {
-            actions: vec![
-                ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
-                ListenerAction::RuntimeChange(RuntimeChange::ClearDragTracker),
-            ],
+            actions: click_press_clear_actions(tracker),
         },
     })
 }
@@ -1338,10 +1465,7 @@ fn runtime_click_press_window_blur_clear_listener(
         element_id: Some(tracker.element_id),
         matcher: ListenerMatcher::WindowBlurred,
         compute: ListenerCompute::Static {
-            actions: vec![
-                ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
-                ListenerAction::RuntimeChange(RuntimeChange::ClearDragTracker),
-            ],
+            actions: click_press_clear_actions(tracker),
         },
     })
 }
@@ -1356,12 +1480,24 @@ fn runtime_click_press_window_leave_clear_listener(
         element_id: Some(tracker.element_id),
         matcher: ListenerMatcher::WindowCursorLeft,
         compute: ListenerCompute::Static {
-            actions: vec![
-                ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
-                ListenerAction::RuntimeChange(RuntimeChange::ClearDragTracker),
-            ],
+            actions: click_press_clear_actions(tracker),
         },
     })
+}
+
+fn click_press_clear_actions(tracker: &ClickPressTracker) -> Vec<ListenerAction> {
+    tracker
+        .clear_mouse_down
+        .then_some(ListenerAction::TreeMsg(TreeMsg::SetMouseDownActive {
+            element_id: tracker.element_id,
+            active: false,
+        }))
+        .into_iter()
+        .chain([
+            ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
+            ListenerAction::RuntimeChange(RuntimeChange::ClearDragTracker),
+        ])
+        .collect()
 }
 
 pub(crate) fn synthetic_input_sequence_for_virtual_key_tap(
@@ -1403,7 +1539,27 @@ pub(crate) fn synthetic_input_sequence_for_virtual_key_tap(
     }
 }
 
-fn runtime_virtual_key_release_listener(tracker: &VirtualKeyTracker) -> Listener {
+fn click_press_tracker_for_element(
+    click_press: &Option<ClickPressTracker>,
+    element_id: NodeId,
+) -> Option<&ClickPressTracker> {
+    click_press
+        .as_ref()
+        .filter(|tracker| tracker.element_id == element_id)
+}
+
+fn click_press_clear_actions_for_element(
+    click_press: Option<&ClickPressTracker>,
+) -> Vec<ListenerAction> {
+    click_press
+        .map(click_press_clear_actions)
+        .unwrap_or_default()
+}
+
+fn runtime_virtual_key_release_listener(
+    tracker: &VirtualKeyTracker,
+    click_press: Option<&ClickPressTracker>,
+) -> Listener {
     let mut actions = Vec::new();
 
     if tracker.phase == VirtualKeyPhase::Armed {
@@ -1415,6 +1571,7 @@ fn runtime_virtual_key_release_listener(tracker: &VirtualKeyTracker) -> Listener
     actions.push(ListenerAction::RuntimeChange(
         RuntimeChange::ClearVirtualKeyTracker,
     ));
+    actions.extend(click_press_clear_actions_for_element(click_press));
 
     Listener {
         element_id: Some(tracker.element_id),
@@ -1425,58 +1582,86 @@ fn runtime_virtual_key_release_listener(tracker: &VirtualKeyTracker) -> Listener
     }
 }
 
-fn runtime_virtual_key_release_anywhere_clear_listener(tracker: &VirtualKeyTracker) -> Listener {
+fn runtime_virtual_key_release_anywhere_clear_listener(
+    tracker: &VirtualKeyTracker,
+    click_press: Option<&ClickPressTracker>,
+) -> Listener {
+    let actions = [ListenerAction::RuntimeChange(
+        RuntimeChange::ClearVirtualKeyTracker,
+    )]
+    .into_iter()
+    .chain(click_press_clear_actions_for_element(click_press))
+    .collect();
+
     Listener {
         element_id: Some(tracker.element_id),
         matcher: ListenerMatcher::CursorButtonLeftReleaseAnywhere,
-        compute: ListenerCompute::Static {
-            actions: vec![ListenerAction::RuntimeChange(
-                RuntimeChange::ClearVirtualKeyTracker,
-            )],
-        },
+        compute: ListenerCompute::Static { actions },
     }
 }
 
-fn runtime_virtual_key_leave_cancel_listener(tracker: &VirtualKeyTracker) -> Option<Listener> {
+fn runtime_virtual_key_leave_cancel_listener(
+    tracker: &VirtualKeyTracker,
+    click_press: Option<&ClickPressTracker>,
+) -> Option<Listener> {
     matches!(
         tracker.phase,
         VirtualKeyPhase::Armed | VirtualKeyPhase::Repeating
     )
-    .then(|| Listener {
-        element_id: Some(tracker.element_id),
-        matcher: ListenerMatcher::CursorLocationLeaveBoundary {
-            region: tracker.region.clone(),
-        },
-        compute: ListenerCompute::DispatchBaseSkipThenStatic {
-            skip_matchers: vec![ListenerMatcherKind::HoverLeaveCurrentOwner],
-            actions: vec![ListenerAction::RuntimeChange(
-                RuntimeChange::CancelVirtualKeyTracker,
-            )],
-        },
+    .then(|| {
+        let actions = [ListenerAction::RuntimeChange(
+            RuntimeChange::CancelVirtualKeyTracker,
+        )]
+        .into_iter()
+        .chain(click_press_clear_actions_for_element(click_press))
+        .collect();
+
+        Listener {
+            element_id: Some(tracker.element_id),
+            matcher: ListenerMatcher::CursorLocationLeaveBoundary {
+                region: tracker.region.clone(),
+            },
+            compute: ListenerCompute::DispatchBaseSkipThenStatic {
+                skip_matchers: vec![ListenerMatcherKind::HoverLeaveCurrentOwner],
+                actions,
+            },
+        }
     })
 }
 
-fn runtime_virtual_key_window_blur_clear_listener(tracker: &VirtualKeyTracker) -> Listener {
+fn runtime_virtual_key_window_blur_clear_listener(
+    tracker: &VirtualKeyTracker,
+    click_press: Option<&ClickPressTracker>,
+) -> Listener {
+    let actions = [ListenerAction::RuntimeChange(
+        RuntimeChange::ClearVirtualKeyTracker,
+    )]
+    .into_iter()
+    .chain(click_press_clear_actions_for_element(click_press))
+    .collect();
+
     Listener {
         element_id: Some(tracker.element_id),
         matcher: ListenerMatcher::WindowBlurred,
-        compute: ListenerCompute::DispatchBaseThenStatic {
-            actions: vec![ListenerAction::RuntimeChange(
-                RuntimeChange::ClearVirtualKeyTracker,
-            )],
-        },
+        compute: ListenerCompute::DispatchBaseThenStatic { actions },
     }
 }
 
-fn runtime_virtual_key_window_leave_clear_listener(tracker: &VirtualKeyTracker) -> Listener {
+fn runtime_virtual_key_window_leave_clear_listener(
+    tracker: &VirtualKeyTracker,
+    click_press: Option<&ClickPressTracker>,
+) -> Listener {
+    let actions = [ListenerAction::RuntimeChange(
+        RuntimeChange::ClearVirtualKeyTracker,
+    )]
+    .into_iter()
+    .chain(click_press_clear_actions_for_element(click_press))
+    .collect();
+
     Listener {
         element_id: Some(tracker.element_id),
         matcher: ListenerMatcher::WindowCursorLeft,
-        compute: ListenerCompute::DispatchBaseThenStatic {
-            actions: vec![ListenerAction::RuntimeChange(
-                RuntimeChange::ClearVirtualKeyTracker,
-            )],
-        },
+        compute: ListenerCompute::DispatchBaseThenStatic { actions },
     }
 }
 
@@ -2427,6 +2612,7 @@ pub(crate) enum RuntimeChange {
         matcher_kind: ListenerMatcherKind,
         emit_click: bool,
         emit_press_pointer: bool,
+        clear_mouse_down: bool,
     },
     /// Begin virtual-key press tracking.
     StartVirtualKeyTracker { tracker: VirtualKeyTracker },
@@ -2598,6 +2784,7 @@ pub(crate) enum ListenerCompute {
         element_id: NodeId,
         emit_click: bool,
         emit_press_pointer: bool,
+        clear_mouse_down: bool,
     },
     /// Redispatch base release listeners, then emit a completed swipe gesture.
     SwipeReleaseFollowupToBase { tracker: SwipeTracker },
@@ -2788,11 +2975,23 @@ impl ListenerCompute {
                 element_id,
                 emit_click,
                 emit_press_pointer,
+                clear_mouse_down,
             } => match input.raw() {
                 Some(InputEvent::CursorButton { button, action, .. })
                     if button == "left" && *action == ACTION_RELEASE =>
                 {
-                    ctx.dispatch_base(input)
+                    let base_actions = ctx.dispatch_base(input);
+                    let base_clears_mouse_down = base_actions.iter().any(|action| {
+                        matches!(
+                            action,
+                            ListenerAction::TreeMsg(TreeMsg::SetMouseDownActive {
+                                element_id: clear_id,
+                                active: false,
+                            }) if clear_id == element_id
+                        )
+                    });
+
+                    base_actions
                         .into_iter()
                         .chain((*emit_click).then_some({
                             ListenerAction::ElixirEvent(ElixirEvent {
@@ -2808,6 +3007,12 @@ impl ListenerCompute {
                                 payload: None,
                             })
                         }))
+                        .chain((*clear_mouse_down && !base_clears_mouse_down).then_some(
+                            ListenerAction::TreeMsg(TreeMsg::SetMouseDownActive {
+                                element_id: *element_id,
+                                active: false,
+                            }),
+                        ))
                         .chain([
                             ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
                             ListenerAction::RuntimeChange(RuntimeChange::ClearDragTracker),
@@ -5389,8 +5594,8 @@ fn hover_tracker_for_element(
         HoverTracker {
             element_id: element.id,
             region,
-            enter_actions: hover::inside_actions(element),
-            leave_actions: hover::leave_actions(element),
+            enter_actions: hover::tracker_enter_actions(element),
+            leave_actions: hover::tracker_leave_actions(element),
             cache_hash,
         }
     })
@@ -5905,6 +6110,7 @@ fn accumulate_subtree_rebuild_local(
     hover_stack: &[HoverTracker],
     scene_ctx: crate::tree::scene::SceneContext,
 ) -> Vec<DeferredSubtree> {
+    record_registry_visit();
     let Some(element) = tree.get(element_id) else {
         return Vec::new();
     };
@@ -6034,6 +6240,7 @@ fn accumulate_subtree_rebuild_local_cached(
     scene_ctx: crate::tree::scene::SceneContext,
     cache_budget: &Cell<usize>,
 ) -> Vec<DeferredSubtree> {
+    record_registry_visit();
     let Some(ix) = tree.ix_of(element_id) else {
         return Vec::new();
     };
@@ -6045,6 +6252,11 @@ fn accumulate_subtree_rebuild_local_cached(
     let has_existing_cache = tree
         .get_ix(ix)
         .is_some_and(|element| element.refresh.registry_cache.is_some());
+    if registry_damage {
+        record_registry_cache_damaged();
+    } else if !cache_eligible {
+        record_registry_cache_ineligible();
+    }
     if !registry_damage
         && cache_eligible
         && has_existing_cache
@@ -6067,10 +6279,12 @@ fn accumulate_subtree_rebuild_local_cached(
             });
 
         if let Some(chunk) = cache_hit {
+            record_registry_cache_hit();
             let deferred = chunk.deferred.clone();
             acc.merge_chunk(chunk);
             return deferred;
         }
+        record_registry_cache_miss();
     }
 
     if !registry_damage && cache_eligible && try_take_registry_cache_budget(cache_budget) {
@@ -6097,6 +6311,7 @@ fn accumulate_subtree_rebuild_local_cached(
         if let Some(element) = tree.get_ix_mut(ix) {
             element.refresh.registry_cache = Some(RegistrySubtreeCache { key, chunk });
         }
+        record_registry_cache_store();
         return deferred;
     }
 
@@ -6223,7 +6438,32 @@ fn should_skip_registry_child_subtree(
     child_ix: NodeIx,
     scene_ctx: &crate::tree::scene::SceneContext,
 ) -> bool {
-    should_skip_registry_viewport_subtree(tree, child_ix, scene_ctx)
+    if should_skip_registry_viewport_subtree(tree, child_ix, scene_ctx) {
+        return true;
+    }
+
+    if scene_ctx.front_nearby_root {
+        return false;
+    }
+
+    !registry_child_subtree_affects_rebuild(tree, child_ix)
+}
+
+fn registry_child_subtree_affects_rebuild(tree: &ElementTree, child_ix: NodeIx) -> bool {
+    let Some(element) = tree.get_ix(child_ix) else {
+        return false;
+    };
+
+    if element.refresh.registry_dirty || element.refresh.registry_descendant_dirty {
+        return true;
+    }
+
+    if tree.root_cached_subtree_affects_registry() {
+        return element.refresh.registry_subtree_affects;
+    }
+
+    tree.id_of(child_ix)
+        .is_some_and(|id| tree.subtree_affects_registry(&id))
 }
 
 fn registry_subtree_cache_eligible(tree: &ElementTree, ix: NodeIx) -> bool {
@@ -6260,7 +6500,6 @@ fn hover_tracker_cache_hash(element: &Element, region: &PointerRegion) -> u64 {
     let mut hasher = DefaultHasher::new();
     element.id.hash(&mut hasher);
     element.spec.attrs_raw.hash(&mut hasher);
-    element.runtime.mouse_over_active.hash(&mut hasher);
     hash_pointer_region(&mut hasher, region);
     hasher.finish()
 }
@@ -6568,9 +6807,7 @@ pub(crate) fn assert_registry_rebuild_payloads_equivalent(
 }
 
 pub(crate) fn build_registry_rebuild_cached(tree: &mut ElementTree) -> RegistryRebuildPayload {
-    if tree.has_escape_nearby_mounts()
-        || (tree.has_registry_refresh_damage() && !tree.has_registry_subtree_cache())
-    {
+    if tree.has_scroll_refresh_damage() {
         return build_registry_rebuild(tree);
     }
 
@@ -6589,6 +6826,61 @@ pub(crate) fn build_registry_rebuild_cached(tree: &mut ElementTree) -> RegistryR
     }
 
     finalize_registry_rebuild(acc)
+}
+
+pub(crate) fn refresh_runtime_state_in_cached_rebuild(
+    tree: &ElementTree,
+    cached: &RegistryRebuildPayload,
+) -> Option<RegistryRebuildPayload> {
+    let mut updated: Option<RegistryRebuildPayload> = None;
+
+    for (id, previous) in &cached.text_inputs {
+        let Some(element) = tree.get(id) else {
+            return Some(build_registry_rebuild(tree));
+        };
+        if !element.spec.kind.is_text_input_family() {
+            return Some(build_registry_rebuild(tree));
+        }
+
+        let rect = Rect {
+            x: previous.frame_x,
+            y: previous.frame_y,
+            width: previous.frame_width,
+            height: previous.frame_height,
+        };
+        let next = super::text_input_state(element, rect, previous.screen_to_local);
+        if &next != previous {
+            updated
+                .get_or_insert_with(|| cached.clone())
+                .text_inputs
+                .insert(*id, next);
+        }
+    }
+
+    for (id, previous) in &cached.sliders {
+        let Some(element) = tree.get(id) else {
+            return Some(build_registry_rebuild(tree));
+        };
+        if element.spec.kind != ElementKind::Slider {
+            return Some(build_registry_rebuild(tree));
+        }
+
+        let rect = Rect {
+            x: previous.frame_x,
+            y: previous.frame_y,
+            width: previous.frame_width,
+            height: previous.frame_height,
+        };
+        let next = super::slider_state(element, rect, previous.screen_to_local);
+        if &next != previous {
+            updated
+                .get_or_insert_with(|| cached.clone())
+                .sliders
+                .insert(*id, next);
+        }
+    }
+
+    updated
 }
 
 pub(crate) fn build_registry_rebuild(tree: &ElementTree) -> RegistryRebuildPayload {
@@ -7811,18 +8103,13 @@ mod mouse_events {
 mod hover {
     use super::*;
 
-    pub(super) fn inside_actions(element: &Element) -> Vec<ListenerAction> {
+    pub(super) fn tracker_enter_actions(element: &Element) -> Vec<ListenerAction> {
         let attrs = &element.layout.effective;
         let element_id = element.id;
         let has_hover_style = attrs.mouse_over.is_some();
-        let hover_active = element.runtime.mouse_over_active;
         let on_mouse_enter = attrs.on_mouse_enter.unwrap_or(false);
         let on_mouse_leave = attrs.on_mouse_leave.unwrap_or(false);
         let track_hover_active = has_hover_style || on_mouse_enter || on_mouse_leave;
-
-        if hover_active {
-            return Vec::new();
-        }
 
         [
             on_mouse_enter.then_some({
@@ -7844,18 +8131,13 @@ mod hover {
         .collect()
     }
 
-    pub(super) fn leave_actions(element: &Element) -> Vec<ListenerAction> {
+    pub(super) fn tracker_leave_actions(element: &Element) -> Vec<ListenerAction> {
         let attrs = &element.layout.effective;
         let element_id = element.id;
         let has_hover_style = attrs.mouse_over.is_some();
-        let hover_active = element.runtime.mouse_over_active;
         let on_mouse_leave = attrs.on_mouse_leave.unwrap_or(false);
         let on_mouse_enter = attrs.on_mouse_enter.unwrap_or(false);
         let track_hover_active = has_hover_style || on_mouse_enter || on_mouse_leave;
-
-        if !hover_active {
-            return Vec::new();
-        }
 
         [
             on_mouse_leave.then_some({
@@ -7875,6 +8157,16 @@ mod hover {
         .into_iter()
         .flatten()
         .collect()
+    }
+
+    pub(super) fn leave_actions(element: &Element) -> Vec<ListenerAction> {
+        element
+            .runtime
+            .mouse_over_active
+            .then(|| tracker_leave_actions(element))
+            .into_iter()
+            .flatten()
+            .collect()
     }
 }
 
@@ -7997,9 +8289,10 @@ mod click_press_tracker {
         let attrs = &element.layout.effective;
         let emit_click = attrs.on_click.unwrap_or(false);
         let emit_press_pointer = attrs.on_press.unwrap_or(false);
+        let clear_mouse_down = attrs.mouse_down.is_some();
         let element_id = element.id;
 
-        (emit_click || emit_press_pointer)
+        (emit_click || emit_press_pointer || clear_mouse_down)
             .then(|| {
                 vec![ListenerAction::RuntimeChange(
                     RuntimeChange::StartClickPressTracker {
@@ -8007,6 +8300,7 @@ mod click_press_tracker {
                         matcher_kind,
                         emit_click,
                         emit_press_pointer,
+                        clear_mouse_down,
                     },
                 )]
             })
@@ -8371,6 +8665,317 @@ mod tests {
         );
 
         super::finalize_registry_rebuild(acc)
+    }
+
+    #[test]
+    fn cached_deep_child_registry_rebuild_skips_descendant_walk() {
+        let root_id = NodeId::from_u64(72_000);
+        let depth = 32_u64;
+        let leaf_id = NodeId::from_u64(72_000 + depth);
+        let mut tree = ElementTree::new();
+
+        tree.set_root_id(root_id);
+        tree.insert(with_frame(
+            Element::with_attrs(
+                root_id,
+                ElementKind::Column,
+                Vec::new(),
+                fixed_box_attrs(320.0, 80.0),
+            ),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 320.0,
+                height: 80.0,
+                content_width: 320.0,
+                content_height: 80.0,
+            },
+        ));
+
+        for index in 1..depth {
+            let id = NodeId::from_u64(72_000 + index);
+            tree.insert(with_frame(
+                Element::with_attrs(
+                    id,
+                    ElementKind::Column,
+                    Vec::new(),
+                    fixed_box_attrs(300.0, 60.0),
+                ),
+                Frame {
+                    x: index as f32,
+                    y: index as f32,
+                    width: 300.0,
+                    height: 60.0,
+                    content_width: 300.0,
+                    content_height: 60.0,
+                },
+            ));
+        }
+
+        tree.insert(with_frame(
+            Element::with_attrs(leaf_id, ElementKind::El, Vec::new(), on_mouse_down_attrs()),
+            Frame {
+                x: depth as f32,
+                y: depth as f32,
+                width: 80.0,
+                height: 40.0,
+                content_width: 80.0,
+                content_height: 40.0,
+            },
+        ));
+
+        tree.set_children(&root_id, vec![NodeId::from_u64(72_001)])
+            .unwrap();
+        for index in 1..depth {
+            tree.set_children(
+                &NodeId::from_u64(72_000 + index),
+                vec![NodeId::from_u64(72_000 + index + 1)],
+            )
+            .unwrap();
+        }
+
+        tree.clear_refresh_dirty();
+        let cold_cached = super::build_registry_rebuild_cached(&mut tree);
+        let full = rebuild_payload_for_tree(&tree);
+        super::assert_registry_rebuild_payloads_equivalent(&cold_cached, &full);
+
+        tree.mark_registry_refresh_dirty(&root_id);
+        super::reset_registry_build_diagnostics_for_benchmark();
+        let warm_cached = super::build_registry_rebuild_cached(&mut tree);
+        let diagnostics = super::take_registry_build_diagnostics_for_benchmark();
+
+        super::assert_registry_rebuild_payloads_equivalent(&warm_cached, &full);
+        assert_eq!(
+            diagnostics.visits, 2,
+            "dirty parent registry rebuild should visit only the parent and \
+             the retained clean child subtree root"
+        );
+        assert_eq!(diagnostics.cache_hits, 1);
+    }
+
+    #[test]
+    fn cached_registry_rebuild_dirty_child_ignores_stale_affects_flag() {
+        let root_id = NodeId::from_u64(72_100);
+        let stable_id = NodeId::from_u64(72_101);
+        let target_id = NodeId::from_u64(72_102);
+        let neutral_id = NodeId::from_u64(72_103);
+        let mut tree = ElementTree::new();
+
+        tree.set_root_id(root_id);
+        tree.insert(with_frame(
+            Element::with_attrs(
+                root_id,
+                ElementKind::Column,
+                Vec::new(),
+                fixed_box_attrs(320.0, 160.0),
+            ),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 320.0,
+                height: 160.0,
+                content_width: 320.0,
+                content_height: 160.0,
+            },
+        ));
+        tree.insert(with_frame(
+            Element::with_attrs(stable_id, ElementKind::El, Vec::new(), on_click_attrs()),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 120.0,
+                height: 40.0,
+                content_width: 120.0,
+                content_height: 40.0,
+            },
+        ));
+        tree.insert(with_frame(
+            Element::with_attrs(
+                target_id,
+                ElementKind::El,
+                Vec::new(),
+                on_mouse_down_attrs(),
+            ),
+            Frame {
+                x: 0.0,
+                y: 50.0,
+                width: 120.0,
+                height: 40.0,
+                content_width: 120.0,
+                content_height: 40.0,
+            },
+        ));
+        tree.insert(with_frame(
+            Element::with_attrs(
+                neutral_id,
+                ElementKind::Column,
+                Vec::new(),
+                fixed_box_attrs(120.0, 40.0),
+            ),
+            Frame {
+                x: 0.0,
+                y: 100.0,
+                width: 120.0,
+                height: 40.0,
+                content_width: 120.0,
+                content_height: 40.0,
+            },
+        ));
+        tree.set_children(&root_id, vec![stable_id, target_id, neutral_id])
+            .unwrap();
+
+        tree.clear_refresh_dirty();
+        tree.refresh_registry_subtree_affects_cache();
+        assert!(tree.root_cached_subtree_affects_registry());
+        assert!(tree.cached_subtree_affects_registry(&target_id));
+
+        let cold_cached = super::build_registry_rebuild_cached(&mut tree);
+        let full = rebuild_payload_for_tree(&tree);
+        super::assert_registry_rebuild_payloads_equivalent(&cold_cached, &full);
+
+        tree.get_mut(&target_id)
+            .unwrap()
+            .refresh
+            .registry_subtree_affects = false;
+        tree.mark_registry_refresh_dirty(&target_id);
+
+        super::reset_registry_build_diagnostics_for_benchmark();
+        let warm_cached = super::build_registry_rebuild_cached(&mut tree);
+        let diagnostics = super::take_registry_build_diagnostics_for_benchmark();
+        let full_after = rebuild_payload_for_tree(&tree);
+
+        super::assert_registry_rebuild_payloads_equivalent(&warm_cached, &full_after);
+        assert!(
+            diagnostics.visits >= 2,
+            "dirty registry child must be traversed even when its retained \
+             registry_subtree_affects flag is stale"
+        );
+        assert!(
+            diagnostics.cache_hits > 0,
+            "clean siblings should still reuse registry cache entries"
+        );
+    }
+
+    #[test]
+    fn cached_registry_rebuild_handles_escape_nearby_mounts_without_global_fallback() {
+        let root_id = NodeId::from_u64(73_000);
+        let stable_id = NodeId::from_u64(73_001);
+        let host_id = NodeId::from_u64(73_002);
+        let overlay_id = NodeId::from_u64(73_003);
+        let hover_id = NodeId::from_u64(73_004);
+        let mut tree = ElementTree::new();
+
+        tree.set_root_id(root_id);
+        tree.insert(with_frame(
+            Element::with_attrs(
+                root_id,
+                ElementKind::Column,
+                Vec::new(),
+                fixed_box_attrs(320.0, 220.0),
+            ),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 320.0,
+                height: 220.0,
+                content_width: 320.0,
+                content_height: 220.0,
+            },
+        ));
+        tree.insert(with_frame(
+            Element::with_attrs(
+                stable_id,
+                ElementKind::El,
+                Vec::new(),
+                on_mouse_down_attrs(),
+            ),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 120.0,
+                height: 40.0,
+                content_width: 120.0,
+                content_height: 40.0,
+            },
+        ));
+
+        let mut host = Element::with_attrs(
+            host_id,
+            ElementKind::El,
+            Vec::new(),
+            fixed_box_attrs(120.0, 40.0),
+        );
+        host.nearby.set(NearbySlot::InFront, Some(overlay_id));
+        tree.insert(with_frame(
+            host,
+            Frame {
+                x: 0.0,
+                y: 50.0,
+                width: 120.0,
+                height: 40.0,
+                content_width: 120.0,
+                content_height: 40.0,
+            },
+        ));
+        tree.insert(with_frame(
+            Element::with_attrs(
+                overlay_id,
+                ElementKind::El,
+                Vec::new(),
+                on_mouse_down_attrs(),
+            ),
+            Frame {
+                x: 0.0,
+                y: 50.0,
+                width: 120.0,
+                height: 40.0,
+                content_width: 120.0,
+                content_height: 40.0,
+            },
+        ));
+        tree.insert(with_frame(
+            Element::with_attrs(
+                hover_id,
+                ElementKind::El,
+                Vec::new(),
+                Attrs {
+                    mouse_over: Some(MouseOverAttrs::default()),
+                    ..fixed_box_attrs(120.0, 40.0)
+                },
+            ),
+            Frame {
+                x: 0.0,
+                y: 100.0,
+                width: 120.0,
+                height: 40.0,
+                content_width: 120.0,
+                content_height: 40.0,
+            },
+        ));
+        tree.set_children(&root_id, vec![stable_id, host_id, hover_id])
+            .unwrap();
+
+        assert!(tree.has_escape_nearby_mounts());
+        tree.clear_refresh_dirty();
+        let cold_cached = super::build_registry_rebuild_cached(&mut tree);
+        let full = rebuild_payload_for_tree(&tree);
+        super::assert_registry_rebuild_payloads_equivalent(&cold_cached, &full);
+
+        tree.mark_registry_refresh_dirty(&hover_id);
+        super::reset_registry_build_diagnostics_for_benchmark();
+        let warm_cached = super::build_registry_rebuild_cached(&mut tree);
+        let diagnostics = super::take_registry_build_diagnostics_for_benchmark();
+        let full_after = rebuild_payload_for_tree(&tree);
+
+        super::assert_registry_rebuild_payloads_equivalent(&warm_cached, &full_after);
+        assert!(
+            diagnostics.visits > 0,
+            "escape nearby mounts should stay on the cached registry path"
+        );
+        assert!(
+            diagnostics.cache_hits > 0,
+            "clean sibling subtrees should still be reused when another branch is dirty"
+        );
     }
 
     fn animated_width_move_registry_at(sample_ms: u64) -> super::Registry {
@@ -9431,8 +10036,15 @@ mod tests {
         });
         assert!(matches!(
             actions.as_slice(),
-            [ListenerAction::TreeMsg(TreeMsg::SetMouseDownActive { element_id, active })]
-                if element_id == &NodeId::from_term_bytes(vec![5]) && *active
+            [
+                ListenerAction::TreeMsg(TreeMsg::SetMouseDownActive { element_id, active }),
+                ListenerAction::RuntimeChange(RuntimeChange::StartClickPressTracker {
+                    clear_mouse_down,
+                    ..
+                }),
+            ] if element_id == &NodeId::from_term_bytes(vec![5])
+                && *active
+                && *clear_mouse_down
         ));
     }
 
@@ -9463,7 +10075,7 @@ mod tests {
             y: 10.0,
         });
 
-        assert_eq!(actions.len(), 2);
+        assert_eq!(actions.len(), 3);
         assert!(matches!(
             actions[0],
             ListenerAction::ElixirEvent(ElixirEvent {
@@ -9477,6 +10089,13 @@ mod tests {
                 ref element_id,
                 active,
             }) if *element_id == NodeId::from_term_bytes(vec![10]) && active
+        ));
+        assert!(matches!(
+            actions[2],
+            ListenerAction::RuntimeChange(RuntimeChange::StartClickPressTracker {
+                clear_mouse_down: true,
+                ..
+            })
         ));
     }
 
@@ -9559,7 +10178,7 @@ mod tests {
         let element = with_interaction(make_element(6, attrs), true);
 
         let listeners = listeners_for_element(&element);
-        assert_eq!(listeners.len(), 5);
+        assert_eq!(listeners.len(), 6);
 
         let release_listener = listener_matching(&listeners, |listener| {
             matches!(
@@ -10531,6 +11150,7 @@ mod tests {
                 matcher_kind: kind,
                 emit_click,
                 emit_press_pointer,
+                ..
             }) if *element_id == NodeId::from_term_bytes(vec![7])
                 && kind == matcher_kind
                 && emit_click
@@ -10614,6 +11234,7 @@ mod tests {
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 emit_click: true,
                 emit_press_pointer: false,
+                clear_mouse_down: false,
             }),
             virtual_key: None,
             key_presses: Vec::new(),
@@ -10672,6 +11293,7 @@ mod tests {
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 emit_click: true,
                 emit_press_pointer: false,
+                clear_mouse_down: false,
             }),
             virtual_key: None,
             key_presses: Vec::new(),
@@ -10726,6 +11348,7 @@ mod tests {
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 emit_click: true,
                 emit_press_pointer: false,
+                clear_mouse_down: false,
             }),
             virtual_key: None,
             key_presses: Vec::new(),
@@ -10774,6 +11397,7 @@ mod tests {
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 emit_click: false,
                 emit_press_pointer: true,
+                clear_mouse_down: true,
             }),
             virtual_key: None,
             key_presses: Vec::new(),
@@ -10827,6 +11451,7 @@ mod tests {
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 emit_click: true,
                 emit_press_pointer: false,
+                clear_mouse_down: false,
             }),
             virtual_key: None,
             key_presses: Vec::new(),
@@ -10883,6 +11508,7 @@ mod tests {
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 emit_click: true,
                 emit_press_pointer: false,
+                clear_mouse_down: false,
             }),
             virtual_key: None,
             key_presses: Vec::new(),
@@ -10937,6 +11563,7 @@ mod tests {
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 emit_click: true,
                 emit_press_pointer: false,
+                clear_mouse_down: false,
             }),
             virtual_key: None,
             key_presses: Vec::new(),
@@ -11664,6 +12291,7 @@ mod tests {
                 matcher_kind: kind,
                 emit_click,
                 emit_press_pointer,
+                ..
             }) if *element_id == NodeId::from_term_bytes(vec![8])
                 && kind == matcher_kind
                 && !emit_click
@@ -13618,6 +14246,58 @@ mod tests {
             "screen-space hover should miss the target at its pre-scroll position"
         );
         assert_eq!(cursor_actions(&miss_actions), vec![CursorIcon::Default]);
+    }
+
+    #[test]
+    fn registry_for_elements_culls_offscreen_virtual_key_subtree() {
+        let key_id = NodeId::from_term_bytes(vec![95]);
+        let parent_attrs = Attrs {
+            scrollbar_y: Some(true),
+            scroll_y: Some(0.0),
+            scroll_y_max: Some(120.0),
+            ..Attrs::default()
+        };
+        let mut parent = with_frame(
+            make_element(94, parent_attrs),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 120.0,
+                height: 60.0,
+                content_width: 120.0,
+                content_height: 180.0,
+            },
+        );
+        parent.children = vec![key_id];
+
+        let key_attrs = Attrs {
+            virtual_key: Some(VirtualKeySpec {
+                tap: VirtualKeyTapAction::Text("a".to_string()),
+                hold: VirtualKeyHoldMode::None,
+                hold_ms: 350,
+                repeat_ms: 40,
+            }),
+            ..Attrs::default()
+        };
+        let key = with_frame(
+            make_element(95, key_attrs),
+            Frame {
+                x: 0.0,
+                y: 100.0,
+                width: 120.0,
+                height: 40.0,
+                content_width: 120.0,
+                content_height: 40.0,
+            },
+        );
+
+        let registry = registry_for_elements(&[parent, key]);
+        assert!(
+            registry
+                .view()
+                .iter_precedence()
+                .all(|listener| { !matches!(listener.element_id, Some(id) if id == key_id) })
+        );
     }
 
     #[test]

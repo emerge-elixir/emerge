@@ -60,6 +60,69 @@ fn test_leaf_text_measurement_cache_reuses_repeated_layout() {
 }
 
 #[test]
+fn clean_deep_child_subtree_measure_cache_skips_descendant_layout() {
+    let root_id = NodeId::from_u64(71_000);
+    let depth = 64_u64;
+    let text_id = NodeId::from_u64(71_000 + depth);
+    let mut tree = ElementTree::new();
+
+    tree.set_root_id(root_id);
+    tree.insert(Element::with_attrs(
+        root_id,
+        ElementKind::Column,
+        Vec::new(),
+        fixed_box_attrs(320.0, 120.0),
+    ));
+
+    for index in 1..depth {
+        let id = NodeId::from_u64(71_000 + index);
+        let mut attrs = fixed_box_attrs(300.0, 80.0);
+        attrs.padding = Some(Padding::Uniform(1.0));
+        tree.insert(Element::with_attrs(id, ElementKind::Column, vec![], attrs));
+    }
+
+    tree.insert(Element::with_attrs(
+        text_id,
+        ElementKind::Text,
+        Vec::new(),
+        text_attrs("deep retained text"),
+    ));
+    tree.set_children(&root_id, vec![NodeId::from_u64(71_001)])
+        .unwrap();
+    for index in 1..depth {
+        tree.set_children(
+            &NodeId::from_u64(71_000 + index),
+            vec![NodeId::from_u64(71_000 + index + 1)],
+        )
+        .unwrap();
+    }
+
+    let measurer = CountingTextMeasurer::default();
+    layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &measurer);
+    let cold_calls = measurer.total_calls();
+    assert!(cold_calls > 0);
+
+    tree.set_layout_cache_stats_enabled(true);
+    tree.reset_layout_cache_stats();
+    tree.mark_measure_dirty(&root_id);
+
+    layout_tree(&mut tree, Constraint::new(800.0, 600.0), 1.0, &measurer);
+    let stats = tree.layout_cache_stats();
+
+    assert_eq!(
+        measurer.total_calls(),
+        cold_calls,
+        "dirty parent layout should restore the clean child subtree cache \
+         without walking down to the text leaf"
+    );
+    assert_eq!(
+        stats.subtree_measure_hits, 1,
+        "the top clean child subtree should be the retained measurement boundary"
+    );
+    assert_eq!(stats.intrinsic_measure_hits, 0);
+}
+
+#[test]
 fn animation_refresh_reusing_registry_keeps_dynamic_layer_inside_scrolled_paint_layer() {
     let scroll_id = NodeId::from_u64(91_000);
     let content_id = NodeId::from_u64(91_001);
@@ -1343,6 +1406,89 @@ fn test_scrolled_clean_child_emits_reusable_moving_paint_layer() {
 }
 
 #[test]
+fn test_registry_only_patch_keeps_stable_scroll_child_payload_generation() {
+    let root_attrs = Attrs {
+        width: Some(Length::Px(160.0)),
+        height: Some(Length::Px(90.0)),
+        spacing: Some(8.0),
+        scrollbar_y: Some(true),
+        ..Attrs::default()
+    };
+
+    let mut tree = ElementTree::new();
+    let root = make_element(
+        "registry_stable_scroll_root",
+        ElementKind::Column,
+        root_attrs,
+    );
+    let root_id = root.id;
+    let mut target_attrs = fixed_box_attrs(140.0, 48.0);
+    target_attrs.background = Some(Background::Color(Color::Rgba {
+        r: 248,
+        g: 250,
+        b: 252,
+        a: 255,
+    }));
+    let target = make_element(
+        "registry_stable_scroll_target",
+        ElementKind::El,
+        target_attrs,
+    );
+    let target_id = target.id;
+    let event_text = make_element(
+        "registry_stable_scroll_event_text",
+        ElementKind::Text,
+        text_attrs("Hover target"),
+    );
+    let event_text_id = event_text.id;
+    let bottom = make_element(
+        "registry_stable_scroll_bottom",
+        ElementKind::El,
+        fixed_box_attrs(140.0, 120.0),
+    );
+    let bottom_id = bottom.id;
+
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(target);
+    tree.insert(event_text);
+    tree.insert(bottom);
+    tree.set_children(&root_id, vec![target_id, event_text_id, bottom_id])
+        .unwrap();
+
+    let initial_output = layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
+    let cached_rebuild = initial_output.event_rebuild;
+    let warmed_output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
+    let (_, warmed_layer) = moving_paint_layer_with_placement_for_stable_id(
+        &warmed_output.scene.nodes,
+        target_id.to_wire_u64(),
+    )
+    .expect("stable scroll child should emit a reusable moving paint layer");
+
+    let invalidation = apply_patches(
+        &mut tree,
+        vec![Patch::SetAttrs {
+            id: event_text_id,
+            attrs_raw: raw_text_event_attrs("Hover target"),
+        }],
+    )
+    .unwrap();
+    assert_eq!(invalidation, TreeInvalidation::Registry);
+
+    let refreshed_output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
+    let (_, refreshed_layer) = moving_paint_layer_with_placement_for_stable_id(
+        &refreshed_output.scene.nodes,
+        target_id.to_wire_u64(),
+    )
+    .expect("registry-only sibling patch should not remove the stable child layer");
+
+    assert_eq!(
+        refreshed_layer.content_generation,
+        warmed_layer.content_generation
+    );
+}
+
+#[test]
 fn test_fractional_scrolled_clean_child_keeps_fractional_placement_out_of_content_key() {
     let root_attrs = Attrs {
         width: Some(Length::Px(120.0)),
@@ -1626,9 +1772,11 @@ fn test_scrolled_clean_container_prefers_ancestor_layer_over_child_layers() {
     let first_generation = first_scrolled_layer.content_generation;
     let first_bounds = first_scrolled_layer.bounds;
 
-    assert!(render_nodes_have_moving_paint_layers(
-        &first_scrolled_layer.children
-    ));
+    assert!(
+        !render_nodes_have_moving_paint_layers(&first_scrolled_layer.children),
+        "clean static descendants should be owned by the ancestor payload instead of \
+         split into depth-based child layers"
+    );
 
     assert_eq!(
         tree.apply_scroll_y(&root_id, -16.0),
@@ -1743,12 +1891,13 @@ fn test_scrolled_clean_section_with_shadow_prefers_section_layer() {
             &scrolled_output.scene.nodes,
             card_id.to_wire_u64(),
         )
-        .is_some(),
-        "child layer references should survive inside the section layer"
+        .is_none(),
+        "clean static card content should be owned by the section layer"
     );
-    assert!(render_nodes_have_moving_paint_layers(
-        &section_layer.children
-    ));
+    assert!(
+        !render_nodes_have_moving_paint_layers(&section_layer.children),
+        "clean static descendants should not be split into nested paint layers"
+    );
 
     assert_eq!(
         tree.apply_scroll_y(&root_id, -16.0),
@@ -2414,8 +2563,9 @@ fn test_large_moving_paint_layer_keeps_smaller_child_layer() {
             &scrolled_scene.nodes,
             card_id.to_wire_u64(),
         )
-        .is_some(),
-        "large ancestor boundaries must leave smaller child payloads available"
+        .is_none(),
+        "clean static descendants should stay inside the ancestor payload; cache \
+         admission decides whether that semantic layer stores"
     );
 }
 
@@ -2992,10 +3142,84 @@ fn test_align_patch_dirties_resolve_not_measure() {
 }
 
 #[test]
-fn test_text_patch_dirties_measure_and_resolve() {
+fn test_slider_value_change_is_resolve_only_and_keeps_measure_cache_hot() {
+    let slider_id = NodeId::from_u64(81_000);
+    let track_id = NodeId::from_u64(81_001);
+    let filled_id = NodeId::from_u64(81_002);
+    let thumb_id = NodeId::from_u64(81_003);
+
+    let mut tree = ElementTree::new();
+    tree.set_root_id(slider_id);
+
+    let mut slider_attrs = fixed_box_attrs(200.0, 40.0);
+    slider_attrs.slider_min = Some(0.0);
+    slider_attrs.slider_max = Some(100.0);
+    slider_attrs.slider_value = Some(25.0);
+    slider_attrs.slider_step = Some(1.0);
+    tree.insert(Element::with_attrs(
+        slider_id,
+        ElementKind::Slider,
+        Vec::new(),
+        slider_attrs,
+    ));
+    tree.insert(Element::with_attrs(
+        track_id,
+        ElementKind::El,
+        Vec::new(),
+        fixed_height_attrs(8.0),
+    ));
+    tree.insert(Element::with_attrs(
+        filled_id,
+        ElementKind::El,
+        Vec::new(),
+        fixed_height_attrs(8.0),
+    ));
+    tree.insert(Element::with_attrs(
+        thumb_id,
+        ElementKind::El,
+        Vec::new(),
+        fixed_box_attrs(20.0, 20.0),
+    ));
+    tree.set_children(&slider_id, vec![track_id, filled_id, thumb_id])
+        .unwrap();
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    let initial_thumb_x = tree.get(&thumb_id).unwrap().layout.frame.unwrap().x;
+
+    tree.set_layout_cache_stats_enabled(true);
+    let invalidation = tree.set_slider_value(&slider_id, 75.0);
+
+    assert_eq!(invalidation, TreeInvalidation::Resolve);
+    assert!(!tree.get(&slider_id).unwrap().layout.measure_dirty);
+    assert!(tree.get(&slider_id).unwrap().layout.resolve_dirty);
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    let stats = tree.layout_cache_stats();
+    let changed_thumb_x = tree.get(&thumb_id).unwrap().layout.frame.unwrap().x;
+    let filled_width = tree.get(&filled_id).unwrap().layout.frame.unwrap().width;
+
+    assert_eq!(stats.subtree_measure_misses, 0);
+    assert!(stats.resolve_misses > 0);
+    assert!(changed_thumb_x > initial_thumb_x);
+    assert_eq!(filled_width, 135.0);
+}
+
+#[test]
+fn test_row_text_patch_dirties_measure_and_resolve() {
     let mut tree = text_child_tree("Hello");
     let root_id = tree.root_id().unwrap();
     let text_id = tree.child_ids(&root_id)[0];
+    tree.get_mut(&root_id).unwrap().spec.kind = ElementKind::Row;
 
     layout_tree(
         &mut tree,
@@ -3061,6 +3285,72 @@ fn test_text_patch_inside_fixed_size_el_stops_parent_measure_dirty_but_keeps_tra
 }
 
 #[test]
+fn test_text_patch_inside_nested_fixed_el_keeps_outer_resolve_cache_hot() {
+    let mut tree = ElementTree::new();
+    let outer = make_element(
+        "nested_fixed_outer",
+        ElementKind::El,
+        fixed_box_attrs(200.0, 200.0),
+    );
+    let outer_id = outer.id;
+    let inner_attrs = Attrs {
+        align_x: Some(AlignX::Right),
+        align_y: Some(AlignY::Bottom),
+        ..fixed_box_attrs(100.0, 100.0)
+    };
+    let inner = make_element("nested_fixed_inner", ElementKind::El, inner_attrs);
+    let inner_id = inner.id;
+    let text = make_element("nested_fixed_text", ElementKind::Text, text_attrs("Hi"));
+    let text_id = text.id;
+
+    tree.set_root_id(outer_id);
+    tree.insert(outer);
+    tree.insert(inner);
+    tree.insert(text);
+    tree.set_children(&outer_id, vec![inner_id]).unwrap();
+    tree.set_children(&inner_id, vec![text_id]).unwrap();
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    tree.set_layout_cache_stats_enabled(true);
+    let invalidation = apply_patches(
+        &mut tree,
+        vec![Patch::SetAttrs {
+            id: text_id,
+            attrs_raw: raw_text_attrs("Hello!"),
+        }],
+    )
+    .unwrap();
+
+    assert_eq!(invalidation, TreeInvalidation::Measure);
+    assert!(tree.get(&text_id).unwrap().layout.measure_dirty);
+    assert!(tree.get(&inner_id).unwrap().layout.resolve_dirty);
+    assert!(!tree.get(&outer_id).unwrap().layout.resolve_dirty);
+    assert!(tree.get(&outer_id).unwrap().layout.resolve_descendant_dirty);
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    let stats = tree.layout_cache_stats();
+
+    assert!(stats.resolve_hits > 0);
+    assert_eq!(stats.subtree_measure_misses, 1);
+    assert!(!tree.get(&outer_id).unwrap().layout.resolve_descendant_dirty);
+
+    let text_frame = tree.get(&text_id).unwrap().layout.frame.unwrap();
+    assert_eq!(text_frame.x, 152.0);
+    assert_eq!(text_frame.y, 184.0);
+}
+
+#[test]
 fn test_nearby_slot_change_reuses_host_measure_cache() {
     let mut tree = fixed_host_with_nearby_tree(true);
     let root_id = tree.root_id().unwrap();
@@ -3088,31 +3378,23 @@ fn test_nearby_slot_change_reuses_host_measure_cache() {
     )
     .unwrap();
 
-    assert_eq!(invalidation, TreeInvalidation::Resolve);
+    assert_eq!(invalidation, TreeInvalidation::Paint);
     assert!(!tree.get(&host_id).unwrap().layout.measure_dirty);
-    assert!(tree.get(&host_id).unwrap().layout.measure_descendant_dirty);
+    assert!(!tree.get(&host_id).unwrap().layout.measure_descendant_dirty);
     assert!(!tree.get(&root_id).unwrap().layout.measure_dirty);
-    assert!(tree.get(&root_id).unwrap().layout.measure_descendant_dirty);
-
-    layout_tree(
-        &mut tree,
-        Constraint::new(800.0, 600.0),
-        1.0,
-        &MockTextMeasurer,
-    );
+    assert!(!tree.get(&root_id).unwrap().layout.measure_descendant_dirty);
     let stats = tree.layout_cache_stats();
 
     assert_eq!(
         tree.get(&host_id).unwrap().layout.measured_frame,
         host_measured
     );
-    assert_eq!(stats.intrinsic_measure_misses, 0);
-    assert_eq!(stats.subtree_measure_misses, 0);
-    assert!(stats.subtree_measure_hits >= 2);
-    assert_eq!(stats.resolve_misses, 0);
+    assert!(stats.subtree_measure_hits >= 1);
     assert!(stats.resolve_hits >= 1);
     assert!(!tree.get(&host_id).unwrap().layout.measure_descendant_dirty);
     assert!(!tree.get(&root_id).unwrap().layout.measure_descendant_dirty);
+    assert!(!tree.get(&host_id).unwrap().layout.resolve_descendant_dirty);
+    assert!(!tree.get(&root_id).unwrap().layout.resolve_descendant_dirty);
 }
 
 #[test]
@@ -3140,14 +3422,7 @@ fn test_nearby_slot_change_cached_resolve_matches_uncached_layout() {
         }],
     )
     .unwrap();
-    assert_eq!(invalidation, TreeInvalidation::Resolve);
-
-    layout_tree(
-        &mut cached,
-        Constraint::new(800.0, 600.0),
-        1.0,
-        &MockTextMeasurer,
-    );
+    assert_eq!(invalidation, TreeInvalidation::Paint);
 
     let mut uncached = fixed_host_with_nearby_tree(true);
     let uncached_root_id = uncached.root_id().unwrap();
@@ -3218,19 +3493,13 @@ fn test_insert_nearby_subtree_keeps_host_measurement_clean() {
     )
     .unwrap();
 
-    assert_eq!(invalidation, TreeInvalidation::Resolve);
+    assert_eq!(invalidation, TreeInvalidation::Paint);
     assert!(!tree.get(&host_id).unwrap().layout.measure_dirty);
-    assert!(tree.get(&host_id).unwrap().layout.measure_descendant_dirty);
+    assert!(!tree.get(&host_id).unwrap().layout.measure_descendant_dirty);
     assert!(!tree.get(&root_id).unwrap().layout.measure_dirty);
-    assert!(tree.get(&root_id).unwrap().layout.measure_descendant_dirty);
-    assert!(tree.get(&nearby_id).unwrap().layout.measure_dirty);
-
-    layout_tree(
-        &mut tree,
-        Constraint::new(800.0, 600.0),
-        1.0,
-        &MockTextMeasurer,
-    );
+    assert!(!tree.get(&root_id).unwrap().layout.measure_descendant_dirty);
+    assert!(!tree.get(&nearby_id).unwrap().layout.measure_dirty);
+    assert!(tree.get(&nearby_id).unwrap().layout.frame.is_some());
     let stats = tree.layout_cache_stats();
 
     assert_eq!(
@@ -3238,12 +3507,12 @@ fn test_insert_nearby_subtree_keeps_host_measurement_clean() {
         host_measured
     );
     assert_eq!(tree.get(&sibling_id).unwrap().layout.frame, sibling_frame);
-    assert!(stats.subtree_measure_hits >= 2);
     assert!(stats.subtree_measure_misses <= 2);
-    assert!(stats.resolve_hits >= 1);
     assert!(stats.resolve_misses <= 2);
     assert!(!tree.get(&host_id).unwrap().layout.measure_descendant_dirty);
     assert!(!tree.get(&root_id).unwrap().layout.measure_descendant_dirty);
+    assert!(!tree.get(&host_id).unwrap().layout.resolve_descendant_dirty);
+    assert!(!tree.get(&root_id).unwrap().layout.resolve_descendant_dirty);
 }
 
 #[test]
@@ -3323,7 +3592,7 @@ fn test_reinserted_nearby_subtree_reuses_detached_layout_cache() {
             host_id,
             nearby_code_subtree("first", &["Code", "Border.width(2)", "Border.dashed()"]),
         ),
-        TreeInvalidation::Resolve
+        TreeInvalidation::Paint
     );
     layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
 
@@ -3375,7 +3644,7 @@ fn test_reinserted_nearby_subtree_changed_slot_misses_detached_layout_cache() {
             NearbySlot::Above,
             nearby_fill_width_subtree("slot_context_first"),
         ),
-        TreeInvalidation::Resolve
+        TreeInvalidation::Paint
     );
     layout_and_refresh_default(&mut cached, Constraint::new(800.0, 600.0), 1.0);
 
@@ -3387,13 +3656,7 @@ fn test_reinserted_nearby_subtree_changed_slot_misses_detached_layout_cache() {
             NearbySlot::OnRight,
             nearby_fill_width_subtree("slot_context_second"),
         ),
-        TreeInvalidation::Resolve
-    );
-    layout_tree(
-        &mut cached,
-        Constraint::new(800.0, 600.0),
-        1.0,
-        &MockTextMeasurer,
+        TreeInvalidation::Paint
     );
 
     let mut uncached = nearby_placeholder_tree("detached_slot_context");
@@ -3408,12 +3671,7 @@ fn test_reinserted_nearby_subtree_changed_slot_misses_detached_layout_cache() {
         ),
         TreeInvalidation::Resolve
     );
-    layout_tree(
-        &mut uncached,
-        Constraint::new(800.0, 600.0),
-        1.0,
-        &MockTextMeasurer,
-    );
+    layout_tree_default(&mut uncached, Constraint::new(800.0, 600.0), 1.0);
 
     assert_layout_matches(&cached, &uncached);
 }
@@ -3434,7 +3692,7 @@ fn test_reinserted_nearby_subtree_changed_host_misses_detached_layout_cache() {
             NearbySlot::Above,
             nearby_fill_width_subtree("host_context_first"),
         ),
-        TreeInvalidation::Resolve
+        TreeInvalidation::Paint
     );
     layout_and_refresh_default(&mut cached, Constraint::new(800.0, 600.0), 1.0);
 
@@ -3454,13 +3712,7 @@ fn test_reinserted_nearby_subtree_changed_host_misses_detached_layout_cache() {
             ],
         )
         .unwrap(),
-        TreeInvalidation::Resolve
-    );
-    layout_tree(
-        &mut cached,
-        Constraint::new(800.0, 600.0),
-        1.0,
-        &MockTextMeasurer,
+        TreeInvalidation::Paint
     );
 
     let mut uncached = nearby_two_host_placeholder_tree("detached_host_context");
@@ -3485,12 +3737,7 @@ fn test_reinserted_nearby_subtree_changed_host_misses_detached_layout_cache() {
         .unwrap(),
         TreeInvalidation::Resolve
     );
-    layout_tree(
-        &mut uncached,
-        Constraint::new(800.0, 600.0),
-        1.0,
-        &MockTextMeasurer,
-    );
+    layout_tree_default(&mut uncached, Constraint::new(800.0, 600.0), 1.0);
 
     assert_layout_matches(&cached, &uncached);
 }
@@ -3504,7 +3751,7 @@ fn test_nearby_registry_subtree_removal_keeps_registry_invalidation() {
     layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
     assert_eq!(
         replace_nearby_root(&mut tree, host_id, nearby_event_subtree("event_first")),
-        TreeInvalidation::Resolve
+        TreeInvalidation::Paint
     );
     layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
 

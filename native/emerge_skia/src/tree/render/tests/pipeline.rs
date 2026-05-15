@@ -1,5 +1,6 @@
 use super::common::*;
 use super::*;
+use crate::render_scene::PaintLayerReason;
 use crate::renderer::{RenderFrame, RenderState, RendererCacheConfig, SceneRenderer};
 use crate::tree::geometry::{ClipShape, CornerRadii, Rect};
 use crate::tree::layout::{Constraint, layout_tree_default, refresh_render_scene_for_benchmark};
@@ -2450,6 +2451,206 @@ fn test_render_rotated_slider_paints_track_and_thumb_near_range_edges() {
 }
 
 #[test]
+fn test_svg_slider_thumb_paints_above_scroll_moving_track_layers() {
+    let image_id = "svg_slider_thumb_paints_above_track";
+    let root_id = NodeId::from_u64(912_000);
+    let slider_id = NodeId::from_u64(912_001);
+    let track_id = NodeId::from_u64(912_002);
+    let filled_id = NodeId::from_u64(912_003);
+    let thumb_id = NodeId::from_u64(912_004);
+
+    let mut root_attrs = solid_fill_attrs((4, 8, 12));
+    root_attrs.scrollbar_y = Some(true);
+    let mut root = Element::with_attrs(root_id, ElementKind::El, Vec::new(), root_attrs);
+    root.children = vec![slider_id];
+    root.layout.frame = Some(Frame {
+        x: 0.0,
+        y: 0.0,
+        width: 220.0,
+        height: 100.0,
+        content_width: 220.0,
+        content_height: 180.0,
+    });
+    root.layout.scroll_y_max = 80.0;
+
+    let mut slider =
+        Element::with_attrs(slider_id, ElementKind::Slider, Vec::new(), Attrs::default());
+    slider.children = vec![track_id, filled_id, thumb_id];
+    slider.layout.frame = Some(Frame {
+        x: 20.0,
+        y: 20.0,
+        width: 180.0,
+        height: 48.0,
+        content_width: 180.0,
+        content_height: 48.0,
+    });
+
+    let mut track = Element::with_attrs(
+        track_id,
+        ElementKind::El,
+        Vec::new(),
+        solid_fill_attrs((20, 24, 32)),
+    );
+    track.layout.frame = Some(Frame {
+        x: 30.0,
+        y: 38.0,
+        width: 160.0,
+        height: 10.0,
+        content_width: 160.0,
+        content_height: 10.0,
+    });
+
+    let mut filled = Element::with_attrs(
+        filled_id,
+        ElementKind::El,
+        Vec::new(),
+        solid_fill_attrs((20, 24, 32)),
+    );
+    filled.layout.frame = Some(Frame {
+        x: 30.0,
+        y: 38.0,
+        width: 100.0,
+        height: 10.0,
+        content_width: 100.0,
+        content_height: 10.0,
+    });
+
+    let thumb_attrs = Attrs {
+        image_src: Some(ImageSource::Id(image_id.to_string())),
+        image_fit: Some(ImageFit::Contain),
+        svg_expected: Some(true),
+        ..Attrs::default()
+    };
+    let mut thumb = Element::with_attrs(thumb_id, ElementKind::Image, Vec::new(), thumb_attrs);
+    thumb.layout.frame = Some(Frame {
+        x: 90.0,
+        y: 28.0,
+        width: 30.0,
+        height: 30.0,
+        content_width: 30.0,
+        content_height: 30.0,
+    });
+
+    let mut tree = ElementTree::new();
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(slider);
+    tree.insert(track);
+    tree.insert(filled);
+    tree.insert(thumb);
+    tree.clear_refresh_dirty();
+
+    let output = super::super::render_tree_scene_with_paint_layer_policy(&tree, true, true);
+    let scroll_layer =
+        first_paint_layer_with_reason(&output.scene.nodes, PaintLayerReason::ScrollContainer)
+            .expect("scroll container should produce the compositing layer");
+
+    assert!(
+        !render_nodes_contain_image_asset(&scroll_layer.own_nodes, image_id),
+        "SVG thumb must not be parent-owned payload that can be painted below child track layers"
+    );
+    let child_layer_ids = paint_layer_ids_in_nodes(
+        &scroll_layer
+            .child_refs
+            .iter()
+            .flat_map(|child| child.nodes.iter().cloned())
+            .collect::<Vec<_>>(),
+    );
+    let track_pos = child_layer_ids
+        .iter()
+        .position(|id| *id == track_id.to_wire_u64())
+        .expect("track should be a child paint layer");
+    let filled_pos = child_layer_ids
+        .iter()
+        .position(|id| *id == filled_id.to_wire_u64())
+        .expect("filled track should be a child paint layer");
+    let thumb_pos = child_layer_ids
+        .iter()
+        .position(|id| *id == thumb_id.to_wire_u64())
+        .expect("SVG thumb should be a child paint layer");
+
+    assert!(
+        track_pos < thumb_pos && filled_pos < thumb_pos,
+        "SVG thumb child layer must stay after track layers: {child_layer_ids:?}"
+    );
+}
+
+fn first_paint_layer_with_reason(
+    nodes: &[crate::render_scene::RenderNode],
+    reason: PaintLayerReason,
+) -> Option<&crate::render_scene::RenderPaintLayer> {
+    nodes.iter().find_map(|node| match node {
+        crate::render_scene::RenderNode::ShadowPass { children }
+        | crate::render_scene::RenderNode::Clip { children, .. }
+        | crate::render_scene::RenderNode::RelaxedClip { children, .. }
+        | crate::render_scene::RenderNode::Transform { children, .. }
+        | crate::render_scene::RenderNode::Alpha { children, .. } => {
+            first_paint_layer_with_reason(children, reason)
+        }
+        crate::render_scene::RenderNode::PaintLayer(layer) if layer.reason == reason => Some(layer),
+        crate::render_scene::RenderNode::PaintLayer(layer) => layer
+            .child_refs
+            .iter()
+            .find_map(|child| first_paint_layer_with_reason(&child.nodes, reason)),
+        crate::render_scene::RenderNode::Primitive(_) => None,
+    })
+}
+
+fn paint_layer_ids_in_nodes(nodes: &[crate::render_scene::RenderNode]) -> Vec<u64> {
+    nodes.iter().fold(Vec::new(), |mut ids, node| {
+        match node {
+            crate::render_scene::RenderNode::ShadowPass { children }
+            | crate::render_scene::RenderNode::Clip { children, .. }
+            | crate::render_scene::RenderNode::RelaxedClip { children, .. }
+            | crate::render_scene::RenderNode::Transform { children, .. }
+            | crate::render_scene::RenderNode::Alpha { children, .. } => {
+                ids.extend(paint_layer_ids_in_nodes(children));
+            }
+            crate::render_scene::RenderNode::PaintLayer(layer) => {
+                ids.push(layer.stable_id);
+                layer.child_refs.iter().for_each(|child| {
+                    ids.extend(paint_layer_ids_in_nodes(&child.nodes));
+                });
+            }
+            crate::render_scene::RenderNode::Primitive(_) => {}
+        }
+        ids
+    })
+}
+
+fn render_nodes_contain_image_asset(
+    nodes: &[crate::render_scene::RenderNode],
+    image_id: &str,
+) -> bool {
+    nodes.iter().any(|node| match node {
+        crate::render_scene::RenderNode::ShadowPass { children }
+        | crate::render_scene::RenderNode::Clip { children, .. }
+        | crate::render_scene::RenderNode::RelaxedClip { children, .. }
+        | crate::render_scene::RenderNode::Transform { children, .. }
+        | crate::render_scene::RenderNode::Alpha { children, .. } => {
+            render_nodes_contain_image_asset(children, image_id)
+        }
+        crate::render_scene::RenderNode::PaintLayer(layer) => {
+            render_nodes_contain_image_asset(&layer.own_nodes, image_id)
+                || layer
+                    .child_refs
+                    .iter()
+                    .any(|child| render_nodes_contain_image_asset(&child.nodes, image_id))
+        }
+        crate::render_scene::RenderNode::Primitive(DrawPrimitive::Image(
+            _,
+            _,
+            _,
+            _,
+            asset_id,
+            _,
+            _,
+        )) => asset_id == image_id,
+        crate::render_scene::RenderNode::Primitive(_) => false,
+    })
+}
+
+#[test]
 fn test_render_earlier_child_escape_paints_after_later_normal_sibling() {
     let mut tree = build_two_child_tree(
         solid_fill_attrs((0, 0, 0)),
@@ -3298,6 +3499,132 @@ fn test_outer_shadow_bleeds_into_parent_top_and_right_padding() {
     assert!(
         right_padding_shadow.3 > 0,
         "outer shadow should remain visible in the parent's right padding"
+    );
+}
+
+#[test]
+fn test_cached_focused_slider_glow_escapes_non_scroll_ancestor_clip() {
+    let root_id = NodeId::from_u64(820_000);
+    let panel_id = NodeId::from_u64(820_001);
+    let slot_id = NodeId::from_u64(820_002);
+    let slider_id = NodeId::from_u64(820_003);
+    let track_id = NodeId::from_u64(820_004);
+
+    let mut root = Element::with_attrs(root_id, ElementKind::El, Vec::new(), Attrs::default());
+    root.children = vec![panel_id];
+    root.layout.frame = Some(Frame {
+        x: 0.0,
+        y: 0.0,
+        width: 260.0,
+        height: 120.0,
+        content_width: 260.0,
+        content_height: 120.0,
+    });
+
+    let mut panel = Element::with_attrs(panel_id, ElementKind::El, Vec::new(), Attrs::default());
+    panel.children = vec![slot_id];
+    panel.layout.frame = Some(Frame {
+        x: 40.0,
+        y: 40.0,
+        width: 180.0,
+        height: 44.0,
+        content_width: 180.0,
+        content_height: 44.0,
+    });
+
+    let mut slot = Element::with_attrs(slot_id, ElementKind::El, Vec::new(), Attrs::default());
+    slot.children = vec![slider_id];
+    slot.layout.frame = Some(Frame {
+        x: 40.0,
+        y: 40.0,
+        width: 180.0,
+        height: 44.0,
+        content_width: 180.0,
+        content_height: 44.0,
+    });
+
+    let mut slider = Element::with_attrs(
+        slider_id,
+        ElementKind::Slider,
+        Vec::new(),
+        Attrs {
+            border_radius: Some(BorderRadius::Uniform(999.0)),
+            box_shadows: Some(vec![BoxShadow {
+                offset_x: 0.0,
+                offset_y: 0.0,
+                blur: 6.0,
+                size: 3.0,
+                color: Color::Rgba {
+                    r: 255,
+                    g: 220,
+                    b: 120,
+                    a: 180,
+                },
+                inset: false,
+            }]),
+            ..Attrs::default()
+        },
+    );
+    slider.children = vec![track_id];
+    slider.runtime.focused_active = true;
+    slider.layout.frame = Some(Frame {
+        x: 40.0,
+        y: 40.0,
+        width: 180.0,
+        height: 44.0,
+        content_width: 180.0,
+        content_height: 44.0,
+    });
+
+    let mut track = Element::with_attrs(
+        track_id,
+        ElementKind::El,
+        Vec::new(),
+        solid_fill_attrs((80, 80, 80)),
+    );
+    track.layout.frame = Some(Frame {
+        x: 55.0,
+        y: 56.0,
+        width: 150.0,
+        height: 12.0,
+        content_width: 150.0,
+        content_height: 12.0,
+    });
+
+    let mut tree = ElementTree::new();
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(panel);
+    tree.insert(slot);
+    tree.insert(slider);
+    tree.insert(track);
+
+    let direct_pixels =
+        render_scene_to_pixels(260, 120, super::super::render_tree_scene(&tree).scene);
+    let cached_scene = super::super::render_tree_scene_with_scroll_layers(&tree).scene;
+    let mut cached_renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+        enabled: true,
+        ..RendererCacheConfig::default()
+    });
+    let _ =
+        render_scene_with_renderer_to_pixels(&mut cached_renderer, cached_scene.clone(), 260, 120);
+    let cached_pixels =
+        render_scene_with_renderer_to_pixels(&mut cached_renderer, cached_scene, 260, 120);
+
+    let top_direct = rgba_at(&direct_pixels, 260, 130, 34).3;
+    let top_cached = rgba_at(&cached_pixels, 260, 130, 34).3;
+    let right_direct = rgba_at(&direct_pixels, 260, 226, 62).3;
+    let right_cached = rgba_at(&cached_pixels, 260, 226, 62).3;
+
+    assert!(top_direct > 0, "direct top glow should be visible");
+    assert!(right_direct > 0, "direct right glow should be visible");
+    assert!(
+        top_cached > 0,
+        "cached focused slider top glow should not be clipped"
+    );
+    assert!(
+        right_cached > 0,
+        "cached focused slider right glow should not be clipped"
     );
 }
 

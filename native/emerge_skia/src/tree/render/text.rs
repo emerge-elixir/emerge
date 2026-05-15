@@ -126,12 +126,17 @@ pub(super) fn render_text_items(
     let inset_top = insets.top;
     let inset_right = insets.right;
     let (ascent, _) = text_metrics_with_font(font_size, &family, weight, italic);
-    let (text_left_overhang, text_width) = text_alignment_metrics(content, style);
-    let content_width = frame.width - inset_left - inset_right;
     let text_align = attrs
         .text_align
         .or(inherited.text_align)
         .unwrap_or_default();
+    if text_align == TextAlign::Left && !underline && !strike && !italic {
+        let text_x = frame.x + inset_left;
+        let baseline_y = frame.y + inset_top + ascent;
+        return text_run_items(text_x, baseline_y, content, style);
+    }
+    let (text_left_overhang, text_width) = text_alignment_metrics(content, style);
+    let content_width = frame.width - inset_left - inset_right;
     let text_x = match text_align {
         TextAlign::Left => frame.x + inset_left + text_left_overhang,
         TextAlign::Center => {
