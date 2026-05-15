@@ -1,24 +1,24 @@
 # Plans
 
-Last updated: 2026-05-13.
+Last updated: 2026-05-15.
 
 This directory tracks active implementation notes and durable background
 research for native layout, renderer, and input/runtime work.
 
-Active implementation plan:
-
-- `active-layout-refresh-optimization.md`
-  - current layout/refresh slice started on 2026-05-13 after composited
-    paint-layer rendering stabilized. It locks the accepted Borders hover,
-    layout-page visible-animation, and exact Borders screenshot numbers as
-    gates, then targets hover invalidation, dirty-child resolve splicing, and
-    refresh scene-construction simplification.
+Active implementation plan: `active-render-cache-audit-fixes.md`.
 
 Files with an `active-` prefix are reserved for open implementation slices;
 completed active plans are folded into this index or the durable reference notes
 below.
 
 ## Files
+
+### `active-render-cache-audit-fixes.md`
+
+Active plan for fixing the renderer/cache review findings from the
+`parent-render-cache` branch audit. It requires one behavior change at a time
+with matching before/after Criterion benchmark rows before moving to the next
+change.
 
 ### `offscreen-paint-layer-cache-hits.md`
 
@@ -37,6 +37,15 @@ Completed plan for the deterministic composited paint-layer cache work. It
 records the final correctness fixes for layout-transform AABB propagation,
 scroll-container payload generation, todo/list stale extents, the exact Borders
 benchmark gates, and the `store_payloads` stats interpretation.
+
+### `layout-refresh-optimization.md`
+
+Completed plan for the follow-up layout and refresh optimization slice after
+composited paint-layer rendering stabilized. It records the locked Borders,
+Layout, and Interaction showcase benchmarks, the retained-registry and
+retained-fragment cleanup, the virtual-key and Scaled Press lifecycle fixes,
+the slider glow/thumb regressions, and the final `./ci-tests.sh all` pass on
+2026-05-15.
 
 ### `layout-caching-roadmap.md`
 
@@ -113,6 +122,12 @@ documents below. Recently folded slices:
   offscreen dynamic redraw skipping, scroll-away/scroll-back moving payload
   retention, and Criterion proof for the layout-animation scroll viewport case;
   full `./ci-tests.sh` passed on 2026-05-13
+- layout/refresh optimization after composited paint-layer rendering,
+  including exact emerge_demo showcase fixtures, retained nearby render
+  fragments, shared registry listener storage, offscreen virtual-key culling,
+  Scaled Press registry rebuild fixes, slider glow/thumb regression tests, and
+  the final benchmark gate recheck; full `./ci-tests.sh all` passed on
+  2026-05-15
 
 ## Current repo state
 
