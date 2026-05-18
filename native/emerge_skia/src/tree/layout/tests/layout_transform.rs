@@ -50,12 +50,14 @@ fn nodes_without_dynamic_paint_boundaries(
                     children: nodes_without_dynamic_paint_boundaries(children),
                 }]
             }
-            crate::render_scene::RenderNode::PaintLayer(mut layer) => {
+            crate::render_scene::RenderNode::PaintLayer(layer) => {
                 if layer.policy == crate::render_scene::PaintLayerPolicy::DynamicRedraw {
-                    nodes_without_dynamic_paint_boundaries(layer.children)
+                    nodes_without_dynamic_paint_boundaries(layer.content_nodes())
                 } else {
-                    layer.children = nodes_without_dynamic_paint_boundaries(layer.children);
-                    vec![crate::render_scene::RenderNode::PaintLayer(layer)]
+                    let children = nodes_without_dynamic_paint_boundaries(layer.content_nodes());
+                    vec![crate::render_scene::RenderNode::PaintLayer(
+                        layer.with_children(children),
+                    )]
                 }
             }
             crate::render_scene::RenderNode::Primitive(_) => vec![node],
@@ -511,7 +513,7 @@ fn layout_transform_animation_resizes_parent_row_after_cached_initial_layout() {
         &cached_runtime,
         start,
     );
-    layout_or_refresh_default_with_animation_uncached_for_benchmark(
+    layout_or_refresh_default_with_animation(
         &mut uncached,
         Constraint::new(600.0, 400.0),
         1.0,
@@ -527,7 +529,7 @@ fn layout_transform_animation_resizes_parent_row_after_cached_initial_layout() {
         &cached_runtime,
         update_at,
     );
-    let uncached_update = layout_or_refresh_default_with_animation_uncached_for_benchmark(
+    let uncached_update = layout_or_refresh_default_with_animation(
         &mut uncached,
         Constraint::new(600.0, 400.0),
         1.0,

@@ -5997,13 +5997,6 @@ pub fn refresh_default_with_frame_attrs(
 
 #[cfg(any(test, feature = "bench-diagnostics"))]
 #[doc(hidden)]
-pub fn refresh_uncached_for_benchmark(tree: &mut ElementTree) -> LayoutOutput {
-    let render_output = render_tree_scene_with_scroll_layers(tree);
-    refresh_from_render_output(tree, render_output)
-}
-
-#[cfg(any(test, feature = "bench-diagnostics"))]
-#[doc(hidden)]
 pub fn refresh_render_scene_for_benchmark(tree: &mut ElementTree) -> RenderScene {
     let render_output = render_tree_scene_with_scroll_layers(tree);
     tree.clear_render_refresh_dirty();
@@ -6037,22 +6030,6 @@ pub fn refresh_reusing_clean_registry_for_benchmark(
     cached_rebuild: Option<&RegistryRebuildPayload>,
 ) -> LayoutOutput {
     refresh_reusing_clean_registry(tree, cached_rebuild)
-}
-
-#[cfg(any(test, feature = "bench-diagnostics"))]
-#[doc(hidden)]
-pub fn refresh_uncached_reusing_clean_registry_for_benchmark(
-    tree: &mut ElementTree,
-    cached_rebuild: Option<&RegistryRebuildPayload>,
-) -> LayoutOutput {
-    let can_reuse_registry = cached_rebuild.is_some() && !tree.has_registry_refresh_damage();
-
-    if !can_reuse_registry {
-        return refresh_uncached_for_benchmark(tree);
-    }
-
-    let render_output = render_tree_scene_with_scroll_layers(tree);
-    reuse_clean_registry_from_render_output(tree, render_output, cached_rebuild.unwrap())
 }
 
 pub(crate) fn refresh_reusing_clean_registry(
@@ -6121,25 +6098,6 @@ pub fn layout_and_refresh_default(
     output
 }
 
-#[cfg(any(test, feature = "bench-diagnostics"))]
-#[doc(hidden)]
-pub fn layout_and_refresh_default_uncached_for_benchmark(
-    tree: &mut ElementTree,
-    constraint: Constraint,
-    scale: f32,
-) -> LayoutOutput {
-    let animations_active = layout_tree_default_with_animation(
-        tree,
-        constraint,
-        scale,
-        &AnimationRuntime::default(),
-        Instant::now(),
-    );
-    let mut output = refresh_uncached_for_benchmark(tree);
-    output.animations_active = animations_active;
-    output
-}
-
 pub fn layout_and_refresh_default_with_animation(
     tree: &mut ElementTree,
     constraint: Constraint,
@@ -6158,54 +6116,70 @@ pub fn layout_or_refresh_default_with_animation(
     runtime: &AnimationRuntime,
     sample_time: Instant,
 ) -> LayoutUpdateOutput {
-    let can_prepare_incrementally = !runtime.is_empty()
-        && !runtime.has_transient_entries()
-        && tree
-            .root_id()
-            .and_then(|root_id| tree.get(&root_id).and_then(|element| element.layout.frame))
-            .is_some();
-    let preparation = if can_prepare_incrementally {
-        prepare_animation_frame_attrs_for_update(tree, scale, runtime, Some(sample_time))
-    } else {
-        prepare_frame_attrs_for_update(tree, scale, Some(runtime), Some(sample_time))
-    };
-    let can_refresh_without_layout = preparation.animation_result.invalidation.can_refresh_only()
-        && prepared_root_has_frame(tree, &preparation);
-
-    if can_refresh_without_layout {
-        refresh_prepared_default(tree, preparation)
-    } else {
-        layout_and_refresh_prepared_default(tree, constraint, preparation)
-    }
+    let mut invalidation = TreeInvalidation::None;
+    let preparation = prepare_layout_or_refresh_default_frame_attrs(
+        tree,
+        scale,
+        runtime,
+        sample_time,
+        &mut invalidation,
+        None,
+    );
+    finish_layout_or_refresh_prepared_default(tree, constraint, preparation, invalidation, None)
 }
 
-#[cfg(any(test, feature = "bench-diagnostics"))]
-#[doc(hidden)]
-pub fn layout_or_refresh_default_with_animation_uncached_for_benchmark(
+fn prepare_layout_or_refresh_default_frame_attrs(
     tree: &mut ElementTree,
-    constraint: Constraint,
     scale: f32,
     runtime: &AnimationRuntime,
     sample_time: Instant,
-) -> LayoutUpdateOutput {
-    let can_prepare_incrementally = !runtime.is_empty()
+    invalidation: &mut TreeInvalidation,
+    dirty_ids: Option<&[NodeId]>,
+) -> FrameAttrsPreparation {
+    let preparation = if let Some(dirty_ids) = dirty_ids {
+        if invalidation.can_refresh_only() && !runtime.has_transient_entries() {
+            prepare_dirty_frame_attrs_for_update(
+                tree,
+                scale,
+                (!runtime.is_empty()).then_some(runtime),
+                Some(sample_time),
+                dirty_ids,
+            )
+        } else {
+            prepare_frame_attrs_for_update(tree, scale, Some(runtime), Some(sample_time))
+        }
+    } else if invalidation.is_none()
+        && !runtime.is_empty()
         && !runtime.has_transient_entries()
         && tree
             .root_id()
             .and_then(|root_id| tree.get(&root_id).and_then(|element| element.layout.frame))
-            .is_some();
-    let preparation = if can_prepare_incrementally {
+            .is_some()
+    {
         prepare_animation_frame_attrs_for_update(tree, scale, runtime, Some(sample_time))
     } else {
         prepare_frame_attrs_for_update(tree, scale, Some(runtime), Some(sample_time))
     };
-    let can_refresh_without_layout = preparation.animation_result.invalidation.can_refresh_only()
-        && prepared_root_has_frame(tree, &preparation);
+    invalidation.add(preparation.animation_result.invalidation);
+    preparation
+}
 
-    if can_refresh_without_layout {
-        refresh_prepared_default_uncached_for_benchmark(tree, preparation)
+fn finish_layout_or_refresh_prepared_default(
+    tree: &mut ElementTree,
+    constraint: Constraint,
+    preparation: FrameAttrsPreparation,
+    invalidation: TreeInvalidation,
+    cached_rebuild: Option<&RegistryRebuildPayload>,
+) -> LayoutUpdateOutput {
+    if invalidation.can_refresh_only() && prepared_root_has_frame(tree, &preparation) {
+        refresh_prepared_default_reusing_clean_registry(tree, preparation, cached_rebuild)
     } else {
-        layout_and_refresh_prepared_default_uncached_for_benchmark(tree, constraint, preparation)
+        layout_and_refresh_prepared_default_reusing_clean_registry(
+            tree,
+            constraint,
+            preparation,
+            cached_rebuild,
+        )
     }
 }
 
@@ -6219,30 +6193,22 @@ pub fn layout_or_refresh_default_with_animation_reusing_clean_registry_for_bench
     sample_time: Instant,
     cached_rebuild: Option<&RegistryRebuildPayload>,
 ) -> LayoutUpdateOutput {
-    let can_prepare_incrementally = !runtime.is_empty()
-        && !runtime.has_transient_entries()
-        && tree
-            .root_id()
-            .and_then(|root_id| tree.get(&root_id).and_then(|element| element.layout.frame))
-            .is_some();
-    let preparation = if can_prepare_incrementally {
-        prepare_animation_frame_attrs_for_update(tree, scale, runtime, Some(sample_time))
-    } else {
-        prepare_frame_attrs_for_update(tree, scale, Some(runtime), Some(sample_time))
-    };
-    let can_refresh_without_layout = preparation.animation_result.invalidation.can_refresh_only()
-        && prepared_root_has_frame(tree, &preparation);
-
-    if can_refresh_without_layout {
-        refresh_prepared_default_reusing_clean_registry(tree, preparation, cached_rebuild)
-    } else {
-        layout_and_refresh_prepared_default_reusing_clean_registry(
-            tree,
-            constraint,
-            preparation,
-            cached_rebuild,
-        )
-    }
+    let mut invalidation = TreeInvalidation::None;
+    let preparation = prepare_layout_or_refresh_default_frame_attrs(
+        tree,
+        scale,
+        runtime,
+        sample_time,
+        &mut invalidation,
+        None,
+    );
+    finish_layout_or_refresh_prepared_default(
+        tree,
+        constraint,
+        preparation,
+        invalidation,
+        cached_rebuild,
+    )
 }
 
 #[cfg(any(test, feature = "bench-diagnostics"))]
@@ -6256,33 +6222,21 @@ pub fn layout_or_refresh_default_with_animation_and_invalidation_reusing_clean_r
     mut invalidation: TreeInvalidation,
     cached_rebuild: Option<&RegistryRebuildPayload>,
 ) -> LayoutUpdateOutput {
-    let can_prepare_incrementally = invalidation.is_none()
-        && !runtime.is_empty()
-        && !runtime.has_transient_entries()
-        && tree
-            .root_id()
-            .and_then(|root_id| tree.get(&root_id).and_then(|element| element.layout.frame))
-            .is_some();
-    let preparation = if can_prepare_incrementally {
-        prepare_animation_frame_attrs_for_update(tree, scale, runtime, Some(sample_time))
-    } else {
-        prepare_frame_attrs_for_update(tree, scale, Some(runtime), Some(sample_time))
-    };
-    invalidation.add(preparation.animation_result.invalidation);
-
-    let can_refresh_without_layout =
-        invalidation.can_refresh_only() && prepared_root_has_frame(tree, &preparation);
-
-    if can_refresh_without_layout {
-        refresh_prepared_default_reusing_clean_registry(tree, preparation, cached_rebuild)
-    } else {
-        layout_and_refresh_prepared_default_reusing_clean_registry(
-            tree,
-            constraint,
-            preparation,
-            cached_rebuild,
-        )
-    }
+    let preparation = prepare_layout_or_refresh_default_frame_attrs(
+        tree,
+        scale,
+        runtime,
+        sample_time,
+        &mut invalidation,
+        None,
+    );
+    finish_layout_or_refresh_prepared_default(
+        tree,
+        constraint,
+        preparation,
+        invalidation,
+        cached_rebuild,
+    )
 }
 
 #[cfg(any(test, feature = "bench-diagnostics"))]
@@ -6297,34 +6251,21 @@ pub fn layout_or_refresh_default_with_animation_and_dirty_ids_reusing_clean_regi
     dirty_ids: &[NodeId],
     cached_rebuild: Option<&RegistryRebuildPayload>,
 ) -> LayoutUpdateOutput {
-    let can_prepare_incrementally =
-        invalidation.can_refresh_only() && !runtime.has_transient_entries();
-    let preparation = if can_prepare_incrementally {
-        prepare_dirty_frame_attrs_for_update(
-            tree,
-            scale,
-            (!runtime.is_empty()).then_some(runtime),
-            Some(sample_time),
-            dirty_ids,
-        )
-    } else {
-        prepare_frame_attrs_for_update(tree, scale, Some(runtime), Some(sample_time))
-    };
-    invalidation.add(preparation.animation_result.invalidation);
-
-    let can_refresh_without_layout =
-        invalidation.can_refresh_only() && prepared_root_has_frame(tree, &preparation);
-
-    if can_refresh_without_layout {
-        refresh_prepared_default_reusing_clean_registry(tree, preparation, cached_rebuild)
-    } else {
-        layout_and_refresh_prepared_default_reusing_clean_registry(
-            tree,
-            constraint,
-            preparation,
-            cached_rebuild,
-        )
-    }
+    let preparation = prepare_layout_or_refresh_default_frame_attrs(
+        tree,
+        scale,
+        runtime,
+        sample_time,
+        &mut invalidation,
+        Some(dirty_ids),
+    );
+    finish_layout_or_refresh_prepared_default(
+        tree,
+        constraint,
+        preparation,
+        invalidation,
+        cached_rebuild,
+    )
 }
 
 #[cfg(any(test, feature = "bench-diagnostics"))]
@@ -6363,20 +6304,15 @@ pub fn layout_or_refresh_default_with_animation_and_invalidation_profile_for_ben
     cached_rebuild: Option<&RegistryRebuildPayload>,
 ) -> (LayoutUpdateOutput, LayoutBenchmarkProfile) {
     let prepare_started_at = Instant::now();
-    let can_prepare_incrementally = invalidation.is_none()
-        && !runtime.is_empty()
-        && !runtime.has_transient_entries()
-        && tree
-            .root_id()
-            .and_then(|root_id| tree.get(&root_id).and_then(|element| element.layout.frame))
-            .is_some();
-    let preparation = if can_prepare_incrementally {
-        prepare_animation_frame_attrs_for_update(tree, scale, runtime, Some(sample_time))
-    } else {
-        prepare_frame_attrs_for_update(tree, scale, Some(runtime), Some(sample_time))
-    };
+    let preparation = prepare_layout_or_refresh_default_frame_attrs(
+        tree,
+        scale,
+        runtime,
+        sample_time,
+        &mut invalidation,
+        None,
+    );
     let prepare = prepare_started_at.elapsed();
-    invalidation.add(preparation.animation_result.invalidation);
     let pre_layout_registry_damage = tree.has_registry_refresh_damage();
 
     let can_refresh_without_layout =
@@ -6433,19 +6369,7 @@ pub fn layout_or_refresh_default_with_animation_and_invalidation_profile_for_ben
     }
 
     let layout_started_at = Instant::now();
-    let layout_performed = if let Some(root_id) = preparation.root_id {
-        run_layout_passes(
-            tree,
-            &root_id,
-            constraint,
-            &SkiaTextMeasurer,
-            &FontContext::default(),
-            &preparation.animation_result,
-        );
-        true
-    } else {
-        false
-    };
+    let layout_performed = run_prepared_default_layout(tree, constraint, &preparation);
     let layout = layout_started_at.elapsed();
 
     let refresh_started_at = Instant::now();
@@ -6496,33 +6420,24 @@ pub fn layout_or_refresh_default_with_animation_and_invalidation_profile_for_ben
     (update, profile)
 }
 
-#[cfg(any(test, feature = "bench-diagnostics"))]
-fn layout_and_refresh_prepared_default_uncached_for_benchmark(
+fn run_prepared_default_layout(
     tree: &mut ElementTree,
     constraint: Constraint,
-    preparation: FrameAttrsPreparation,
-) -> LayoutUpdateOutput {
-    let layout_performed = if let Some(root_id) = preparation.root_id {
-        run_layout_passes(
-            tree,
-            &root_id,
-            constraint,
-            &SkiaTextMeasurer,
-            &FontContext::default(),
-            &preparation.animation_result,
-        );
-        true
-    } else {
-        false
+    preparation: &FrameAttrsPreparation,
+) -> bool {
+    let Some(root_id) = preparation.root_id else {
+        return false;
     };
 
-    let mut output = refresh_uncached_for_benchmark(tree);
-    output.animations_active = preparation.animation_result.active;
-
-    LayoutUpdateOutput {
-        output,
-        layout_performed,
-    }
+    run_layout_passes(
+        tree,
+        &root_id,
+        constraint,
+        &SkiaTextMeasurer,
+        &FontContext::default(),
+        &preparation.animation_result,
+    );
+    true
 }
 
 pub(crate) fn layout_and_refresh_prepared_default(
@@ -6530,19 +6445,7 @@ pub(crate) fn layout_and_refresh_prepared_default(
     constraint: Constraint,
     preparation: FrameAttrsPreparation,
 ) -> LayoutUpdateOutput {
-    let layout_performed = if let Some(root_id) = preparation.root_id {
-        run_layout_passes(
-            tree,
-            &root_id,
-            constraint,
-            &SkiaTextMeasurer,
-            &FontContext::default(),
-            &preparation.animation_result,
-        );
-        true
-    } else {
-        false
-    };
+    let layout_performed = run_prepared_default_layout(tree, constraint, &preparation);
 
     let mut output = refresh(tree);
     output.animations_active = preparation.animation_result.active;
@@ -6559,19 +6462,7 @@ pub(crate) fn layout_and_refresh_prepared_default_reusing_clean_registry(
     preparation: FrameAttrsPreparation,
     cached_rebuild: Option<&RegistryRebuildPayload>,
 ) -> LayoutUpdateOutput {
-    let layout_performed = if let Some(root_id) = preparation.root_id {
-        run_layout_passes(
-            tree,
-            &root_id,
-            constraint,
-            &SkiaTextMeasurer,
-            &FontContext::default(),
-            &preparation.animation_result,
-        );
-        true
-    } else {
-        false
-    };
+    let layout_performed = run_prepared_default_layout(tree, constraint, &preparation);
 
     let mut output = refresh_reusing_clean_registry(tree, cached_rebuild);
     output.animations_active = preparation.animation_result.active;
@@ -6589,19 +6480,7 @@ pub(crate) fn layout_and_refresh_prepared_default_reusing_clean_registry_timed(
     cached_rebuild: Option<&RegistryRebuildPayload>,
 ) -> (LayoutUpdateOutput, LayoutUpdateTiming) {
     let layout_started_at = Instant::now();
-    let layout_performed = if let Some(root_id) = preparation.root_id {
-        run_layout_passes(
-            tree,
-            &root_id,
-            constraint,
-            &SkiaTextMeasurer,
-            &FontContext::default(),
-            &preparation.animation_result,
-        );
-        true
-    } else {
-        false
-    };
+    let layout_performed = run_prepared_default_layout(tree, constraint, &preparation);
     let layout = layout_started_at.elapsed();
 
     let refresh_started_at = Instant::now();
@@ -6616,20 +6495,6 @@ pub(crate) fn layout_and_refresh_prepared_default_reusing_clean_registry_timed(
         },
         LayoutUpdateTiming { layout, refresh },
     )
-}
-
-#[cfg(any(test, feature = "bench-diagnostics"))]
-fn refresh_prepared_default_uncached_for_benchmark(
-    tree: &mut ElementTree,
-    preparation: FrameAttrsPreparation,
-) -> LayoutUpdateOutput {
-    let mut output = refresh_uncached_for_benchmark(tree);
-    output.animations_active = preparation.animation_result.active;
-
-    LayoutUpdateOutput {
-        output,
-        layout_performed: false,
-    }
 }
 
 pub(crate) fn refresh_prepared_default(

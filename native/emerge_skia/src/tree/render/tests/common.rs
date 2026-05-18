@@ -350,7 +350,7 @@ fn trace_nodes(
                 trace_nodes(children, &next_context, state, scopes, draws);
             }
             RenderNode::PaintLayer(layer) => {
-                trace_nodes(&layer.children, context, state, scopes, draws);
+                trace_nodes(&layer.content_nodes(), context, state, scopes, draws);
             }
             RenderNode::Primitive(primitive) => {
                 draws.push(ResolvedDraw {

@@ -247,9 +247,6 @@ pub struct RenderPaintLayer {
     pub own_nodes: Arc<Vec<RenderNode>>,
     pub child_refs: Arc<Vec<RenderPaintLayerChildRef>>,
     pub metrics: RenderPaintLayerMetrics,
-    /// Compatibility view for tests that still inspect raw layer contents.
-    #[cfg(test)]
-    pub children: Vec<RenderNode>,
 }
 
 impl RenderPaintLayer {
@@ -262,10 +259,6 @@ impl RenderPaintLayer {
         content_generation: u64,
         children: Vec<RenderNode>,
     ) -> Self {
-        #[cfg(test)]
-        let raw_children = children.clone();
-        #[cfg(not(test))]
-        let raw_children = Vec::new();
         let content = split_paint_layer_content_owned(children);
         Self::from_prepared_children(
             RenderPaintLayerBuildParts {
@@ -279,18 +272,13 @@ impl RenderPaintLayer {
                 visual_bounds: None,
             },
             content,
-            raw_children,
         )
     }
 
     pub(crate) fn from_prepared_children(
         parts: RenderPaintLayerBuildParts,
         content: RenderPaintLayerContent,
-        children: Vec<RenderNode>,
     ) -> Self {
-        #[cfg(not(test))]
-        let _ = children;
-
         let metrics = RenderPaintLayerMetrics::from_own_nodes(
             &content.own_nodes,
             parts.bounds,
@@ -308,8 +296,6 @@ impl RenderPaintLayer {
             own_nodes: Arc::new(content.own_nodes),
             child_refs: Arc::new(content.child_refs),
             metrics,
-            #[cfg(test)]
-            children,
         }
     }
 
@@ -326,22 +312,10 @@ impl RenderPaintLayer {
     }
 
     pub(crate) fn with_children(&self, children: Vec<RenderNode>) -> Self {
-        Self::from_children(
-            self.stable_id,
-            self.bounds,
-            self.placement,
-            self.policy,
-            self.reason,
-            self.content_generation,
-            children,
-        )
+        self.with_bounds_and_children(self.bounds, children)
     }
 
     pub(crate) fn with_bounds_and_children(&self, bounds: Rect, children: Vec<RenderNode>) -> Self {
-        #[cfg(test)]
-        let raw_children = children.clone();
-        #[cfg(not(test))]
-        let raw_children = Vec::new();
         let content = split_paint_layer_content_owned(children);
         Self::from_prepared_children(
             RenderPaintLayerBuildParts {
@@ -355,7 +329,6 @@ impl RenderPaintLayer {
                 visual_bounds: None,
             },
             content,
-            raw_children,
         )
     }
 }
@@ -434,12 +407,22 @@ pub(crate) fn split_paint_layer_content(nodes: &[RenderNode]) -> RenderPaintLaye
 }
 
 pub(crate) fn split_paint_layer_content_owned(nodes: Vec<RenderNode>) -> RenderPaintLayerContent {
+    // Renderers draw `own_nodes` before `child_refs`, so only the contiguous
+    // prefix before the first nested paint layer can stay in `own_nodes`.
+    // Everything after that boundary remains in ordered child refs to avoid
+    // repainting dirty child layers over later clean siblings.
     nodes
         .into_iter()
         .fold(RenderPaintLayerContent::default(), |mut content, node| {
-            let mut split = split_paint_layer_node(node);
-            content.own_nodes.append(&mut split.own_nodes);
-            content.child_refs.append(&mut split.child_refs);
+            if content.child_refs.is_empty() {
+                let mut split = split_paint_layer_node(node);
+                content.own_nodes.append(&mut split.own_nodes);
+                content.child_refs.append(&mut split.child_refs);
+            } else {
+                content
+                    .child_refs
+                    .push(RenderPaintLayerChildRef::from_nodes(vec![node]));
+            }
             content
         })
 }
@@ -702,20 +685,13 @@ fn split_scoped_paint_layer_content(
     } else {
         vec![wrap(content.own_nodes)]
     };
-    let child_ref_nodes = content
+    let child_refs = content
         .child_refs
         .into_iter()
-        .fold(Vec::new(), |mut nodes, child| {
-            nodes.extend(child.nodes.iter().cloned());
-            nodes
-        });
-    let child_refs = if child_ref_nodes.is_empty() {
-        Vec::new()
-    } else {
-        vec![RenderPaintLayerChildRef::from_nodes(vec![wrap(
-            child_ref_nodes,
-        )])]
-    };
+        .map(|child| {
+            RenderPaintLayerChildRef::from_nodes(vec![wrap(child.nodes.iter().cloned().collect())])
+        })
+        .collect();
 
     RenderPaintLayerContent {
         own_nodes,
@@ -788,11 +764,8 @@ pub enum DrawPrimitive {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum PaintLayerHashFloat {
-    #[allow(dead_code)]
     Exact,
-    Quantized {
-        scale: f64,
-    },
+    Quantized { scale: f64 },
 }
 
 impl PaintLayerHashFloat {

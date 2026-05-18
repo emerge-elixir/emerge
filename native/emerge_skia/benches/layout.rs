@@ -20,14 +20,12 @@ use emerge_skia::tree::invalidation::TreeInvalidation;
 #[cfg(feature = "bench-diagnostics")]
 use emerge_skia::tree::layout::layout_or_refresh_default_with_animation_and_invalidation_profile_for_benchmark;
 use emerge_skia::tree::layout::{
-    Constraint, layout_and_refresh_default, layout_and_refresh_default_uncached_for_benchmark,
-    layout_and_refresh_default_with_animation, layout_or_refresh_default_with_animation,
+    Constraint, layout_and_refresh_default, layout_and_refresh_default_with_animation,
+    layout_or_refresh_default_with_animation,
     layout_or_refresh_default_with_animation_and_dirty_ids_reusing_clean_registry_for_benchmark,
     layout_or_refresh_default_with_animation_and_invalidation_reusing_clean_registry_for_benchmark,
-    layout_or_refresh_default_with_animation_uncached_for_benchmark, layout_tree,
-    layout_tree_default, refresh, refresh_render_scene_for_benchmark,
+    layout_tree, layout_tree_default, refresh, refresh_render_scene_for_benchmark,
     refresh_reusing_clean_registry_for_benchmark,
-    refresh_uncached_reusing_clean_registry_for_benchmark,
 };
 use emerge_skia::tree::patch::{Patch, apply_patches, decode_patches};
 #[cfg(feature = "bench-diagnostics")]
@@ -2600,18 +2598,6 @@ fn bench_scroll_viewport_case(
         });
     });
 
-    let (mut uncached_middle_tree, uncached_middle_rebuild, _) =
-        prepare_scroll_viewport_tree(case.make_tree, constraint, ScrollViewportPosition::Middle);
-    group.bench_function(format!("{}/middle_uncached_refresh", case.name), move |b| {
-        b.iter(|| {
-            let output = refresh_uncached_reusing_clean_registry_for_benchmark(
-                &mut uncached_middle_tree,
-                Some(&uncached_middle_rebuild),
-            );
-            consume_layout_output(output)
-        });
-    });
-
     let (mut render_only_middle_tree, _, _) =
         prepare_scroll_viewport_tree(case.make_tree, constraint, ScrollViewportPosition::Middle);
     group.bench_function(format!("{}/middle_render_only", case.name), move |b| {
@@ -2663,32 +2649,6 @@ fn bench_scroll_viewport_case(
             consume_render_scene(scene)
         });
     });
-
-    let (mut uncached_step_tree, mut uncached_step_rebuild, uncached_step_root_id) =
-        prepare_scroll_viewport_tree(case.make_tree, constraint, ScrollViewportPosition::Middle);
-    let mut uncached_step_tick = 0_u64;
-    group.bench_function(
-        format!("{}/scroll_step_uncached_refresh", case.name),
-        move |b| {
-            b.iter(|| {
-                uncached_step_tick = uncached_step_tick.saturating_add(1);
-                let delta = if uncached_step_tick.is_multiple_of(2) {
-                    -24.0
-                } else {
-                    24.0
-                };
-                black_box(uncached_step_tree.apply_scroll_y(&uncached_step_root_id, delta));
-                let output = refresh_uncached_reusing_clean_registry_for_benchmark(
-                    &mut uncached_step_tree,
-                    Some(&uncached_step_rebuild),
-                );
-                if output.event_rebuild_changed {
-                    uncached_step_rebuild = output.event_rebuild.clone();
-                }
-                consume_layout_output(output)
-            });
-        },
-    );
 }
 
 fn prepare_scroll_viewport_tree(
@@ -2894,14 +2854,14 @@ fn bench_render_refresh_cache_regression(c: &mut Criterion) {
         let case = format!("{fixture_id}/{mutation}");
 
         group.throughput(Throughput::Elements(node_count));
-        bench_cold_layout_refresh_pair(&mut group, &case, &fixture.full_emrg, constraint);
-        bench_warm_refresh_pair(
+        bench_cold_layout_refresh(&mut group, &case, &fixture.full_emrg, constraint);
+        bench_warm_refresh(
             &mut group,
             &case,
             warmed_base.clone(),
             cached_rebuild.clone(),
         );
-        bench_after_patch_refresh_pair(
+        bench_after_patch_refresh(
             &mut group,
             &case,
             warmed_base.clone(),
@@ -2909,7 +2869,7 @@ fn bench_render_refresh_cache_regression(c: &mut Criterion) {
             decoded_patches,
             constraint,
         );
-        bench_patch_refresh_pair(
+        bench_patch_refresh(
             &mut group,
             &case,
             warmed_base,
@@ -2919,14 +2879,14 @@ fn bench_render_refresh_cache_regression(c: &mut Criterion) {
         );
     }
 
-    bench_animation_refresh_regression_pair(
+    bench_animation_refresh_regression(
         &mut group,
         "animated_shadow_showcase/paint_only_refresh_each_frame",
         Constraint::new(960.0, 4_000.0),
         animated_shadow_showcase,
         false,
     );
-    bench_animation_refresh_regression_pair(
+    bench_animation_refresh_regression(
         &mut group,
         "scroll_shadow_showcase/paint_only_refresh_scroll_frame",
         Constraint::new(960.0, 640.0),
@@ -2937,14 +2897,14 @@ fn bench_render_refresh_cache_regression(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_cold_layout_refresh_pair(
+fn bench_cold_layout_refresh(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
     case: &str,
     full_emrg: &[u8],
     constraint: Constraint,
 ) {
     let full_bytes = full_emrg.to_vec();
-    group.bench_function(format!("{case}/cold_cached_layout_refresh"), move |b| {
+    group.bench_function(format!("{case}/cold_layout_refresh"), move |b| {
         b.iter_batched(
             || decode_tree(&full_bytes).expect("fixture tree should decode"),
             |mut tree| {
@@ -2954,22 +2914,9 @@ fn bench_cold_layout_refresh_pair(
             BatchSize::SmallInput,
         );
     });
-
-    let full_bytes = full_emrg.to_vec();
-    group.bench_function(format!("{case}/cold_uncached_layout_refresh"), move |b| {
-        b.iter_batched(
-            || decode_tree(&full_bytes).expect("fixture tree should decode"),
-            |mut tree| {
-                let output =
-                    layout_and_refresh_default_uncached_for_benchmark(&mut tree, constraint, 1.0);
-                consume_layout_output(output)
-            },
-            BatchSize::SmallInput,
-        );
-    });
 }
 
-fn bench_warm_refresh_pair(
+fn bench_warm_refresh(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
     case: &str,
     warmed_base: ElementTree,
@@ -2986,20 +2933,9 @@ fn bench_warm_refresh_pair(
             consume_layout_output(output)
         });
     });
-
-    let mut uncached_tree = warmed_base;
-    group.bench_function(format!("{case}/uncached_refresh"), move |b| {
-        b.iter(|| {
-            let output = refresh_uncached_reusing_clean_registry_for_benchmark(
-                &mut uncached_tree,
-                Some(&cached_rebuild),
-            );
-            consume_layout_output(output)
-        });
-    });
 }
 
-fn bench_after_patch_refresh_pair(
+fn bench_after_patch_refresh(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
     case: &str,
     warmed_base: ElementTree,
@@ -3021,23 +2957,9 @@ fn bench_after_patch_refresh_pair(
             BatchSize::SmallInput,
         );
     });
-
-    group.bench_function(format!("{case}/after_patch_uncached_refresh"), move |b| {
-        b.iter_batched(
-            || prepare_after_patch_refresh_tree(&warmed_base, &decoded_patches, constraint),
-            |mut tree| {
-                let output = refresh_uncached_reusing_clean_registry_for_benchmark(
-                    &mut tree,
-                    Some(&cached_rebuild),
-                );
-                consume_layout_output(output)
-            },
-            BatchSize::SmallInput,
-        );
-    });
 }
 
-fn bench_patch_refresh_pair(
+fn bench_patch_refresh(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
     case: &str,
     warmed_base: ElementTree,
@@ -3055,21 +2977,6 @@ fn bench_patch_refresh_pair(
                 apply_patch_and_relayout_if_needed(&mut tree, &bytes, constraint);
                 let output =
                     refresh_reusing_clean_registry_for_benchmark(&mut tree, Some(&cached_registry));
-                consume_layout_output(output)
-            },
-            BatchSize::SmallInput,
-        );
-    });
-
-    group.bench_function(format!("{case}/patch_uncached_refresh"), move |b| {
-        b.iter_batched(
-            || (warmed_base.clone(), patch_bytes.clone()),
-            |(mut tree, bytes)| {
-                apply_patch_and_relayout_if_needed(&mut tree, &bytes, constraint);
-                let output = refresh_uncached_reusing_clean_registry_for_benchmark(
-                    &mut tree,
-                    Some(&cached_rebuild),
-                );
                 consume_layout_output(output)
             },
             BatchSize::SmallInput,
@@ -3102,7 +3009,7 @@ fn apply_patch_and_relayout_if_needed(
     }
 }
 
-fn bench_animation_refresh_regression_pair(
+fn bench_animation_refresh_regression(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
     case: &str,
     constraint: Constraint,
@@ -3144,42 +3051,6 @@ fn bench_animation_refresh_regression_pair(
                 1.0,
                 &cached_runtime,
                 start + Duration::from_millis(cached_tick),
-            );
-            consume_layout_update_output(update)
-        });
-    });
-
-    let mut uncached_tree = make_tree();
-    let uncached_root_id = uncached_tree.root_id();
-    let mut uncached_runtime = AnimationRuntime::default();
-    uncached_runtime.sync_with_tree(&uncached_tree, start);
-    layout_and_refresh_default_with_animation(
-        &mut uncached_tree,
-        constraint,
-        1.0,
-        &uncached_runtime,
-        start,
-    );
-    let mut uncached_tick = 0_u64;
-    group.bench_function(format!("{case}/uncached_refresh"), move |b| {
-        b.iter(|| {
-            uncached_tick += 16;
-            if scroll_each_frame {
-                let delta = if uncached_tick.is_multiple_of(32) {
-                    8.0
-                } else {
-                    -8.0
-                };
-                if let Some(root_id) = uncached_root_id {
-                    black_box(uncached_tree.apply_scroll_y(&root_id, delta));
-                }
-            }
-            let update = layout_or_refresh_default_with_animation_uncached_for_benchmark(
-                &mut uncached_tree,
-                constraint,
-                1.0,
-                &uncached_runtime,
-                start + Duration::from_millis(uncached_tick),
             );
             consume_layout_update_output(update)
         });

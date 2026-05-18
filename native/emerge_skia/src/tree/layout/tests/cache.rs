@@ -316,13 +316,9 @@ fn paint_layer_debug_summaries(
                                 || layer.reason
                                     == crate::render_scene::PaintLayerReason::ScrollContainer) =>
                     {
-                        let (child_static, child_dynamic) = visit(&layer.children, out);
-                        out.push((
-                            layer.stable_id,
-                            child_static,
-                            child_dynamic,
-                            layer.children.len(),
-                        ));
+                        let children = layer.content_nodes();
+                        let (child_static, child_dynamic) = visit(&children, out);
+                        out.push((layer.stable_id, child_static, child_dynamic, children.len()));
                         (static_count, dynamic_count + 1)
                     }
                     RenderNode::PaintLayer(_) => (static_count, dynamic_count + 1),
@@ -2730,9 +2726,9 @@ fn test_dirty_integer_move_transform_bypasses_moving_paint_layer() {
         .is_none(),
         "dirty transform refresh should draw the dirty element directly instead of rebuilding a scroll-moving paint layer"
     );
-    assert_eq!(
+    assert_render_scenes_equivalent(
         scene_without_moving_paint_layers(moved_output.scene),
-        render_tree_scene(&tree).scene
+        render_tree_scene(&tree).scene,
     );
 }
 
@@ -2793,9 +2789,9 @@ fn test_child_paint_change_bypasses_dirty_parent_moving_paint_layer() {
         .is_none(),
         "paint-dirty descendant should make the parent draw directly instead of hashing a new parent layer during refresh"
     );
-    assert_eq!(
+    assert_render_scenes_equivalent(
         scene_without_moving_paint_layers(content_output.scene),
-        render_tree_scene(&tree).scene
+        render_tree_scene(&tree).scene,
     );
 }
 
@@ -2844,9 +2840,9 @@ fn test_dirty_root_alpha_change_bypasses_moving_paint_layer() {
         .is_none(),
         "dirty alpha refresh should draw the alpha subtree directly instead of rebuilding a scroll-moving paint layer"
     );
-    assert_eq!(
+    assert_render_scenes_equivalent(
         scene_without_moving_paint_layers(faded_output.scene),
-        render_tree_scene(&tree).scene
+        render_tree_scene(&tree).scene,
     );
 }
 
@@ -4276,7 +4272,7 @@ fn assert_paint_only_inherited_text_animation_matches_uncached(use_nearby: bool)
         &cached_runtime,
         start,
     );
-    let initial_uncached = layout_or_refresh_default_with_animation_uncached_for_benchmark(
+    let initial_uncached = layout_or_refresh_default_with_animation(
         &mut uncached,
         Constraint::new(800.0, 600.0),
         1.0,
@@ -4294,7 +4290,7 @@ fn assert_paint_only_inherited_text_animation_matches_uncached(use_nearby: bool)
         &cached_runtime,
         start + Duration::from_millis(25),
     );
-    let uncached_update = layout_or_refresh_default_with_animation_uncached_for_benchmark(
+    let uncached_update = layout_or_refresh_default_with_animation(
         &mut uncached,
         Constraint::new(800.0, 600.0),
         1.0,
@@ -4306,9 +4302,9 @@ fn assert_paint_only_inherited_text_animation_matches_uncached(use_nearby: bool)
     assert!(uncached_update.output.animations_active);
     assert!(!cached_update.layout_performed);
     assert!(!uncached_update.layout_performed);
-    assert_eq!(
+    assert_render_scenes_equivalent(
         scene_without_moving_paint_layers(cached_update.output.scene),
-        scene_without_moving_paint_layers(uncached_update.output.scene)
+        scene_without_moving_paint_layers(uncached_update.output.scene),
     );
     assert_layout_matches(&cached, &uncached);
 }
@@ -5143,11 +5139,11 @@ fn first_moving_paint_layer(
             Some(MovingPaintLayerView {
                 content_generation: layer.content_generation,
                 bounds: layer.bounds,
-                children: layer.children.clone(),
+                children: layer.content_nodes(),
             })
         }
         crate::render_scene::RenderNode::PaintLayer(layer) => {
-            first_moving_paint_layer(&layer.children)
+            first_moving_paint_layer(&layer.content_nodes())
         }
         crate::render_scene::RenderNode::Primitive(_) => None,
     })
@@ -5168,7 +5164,7 @@ fn render_nodes_have_moving_paint_layers(nodes: &[crate::render_scene::RenderNod
             true
         }
         crate::render_scene::RenderNode::PaintLayer(layer) => {
-            render_nodes_have_moving_paint_layers(&layer.children)
+            render_nodes_have_moving_paint_layers(&layer.content_nodes())
         }
         crate::render_scene::RenderNode::Primitive(_) => false,
     })
@@ -5196,7 +5192,11 @@ fn paint_layers(
             | crate::render_scene::RenderNode::Alpha { children, .. } => paint_layers(children),
             crate::render_scene::RenderNode::PaintLayer(layer) => {
                 let mut layers = vec![layer];
-                layers.extend(paint_layers(&layer.children));
+                layers.extend(paint_layers(&layer.own_nodes));
+                layer
+                    .child_refs
+                    .iter()
+                    .for_each(|child| layers.extend(paint_layers(&child.nodes)));
                 layers
             }
             crate::render_scene::RenderNode::Primitive(_) => Vec::new(),
@@ -5233,12 +5233,12 @@ fn moving_paint_layer_with_placement_for_stable_id(
                     MovingPaintLayerView {
                         content_generation: layer.content_generation,
                         bounds: layer.bounds,
-                        children: layer.children.clone(),
+                        children: layer.content_nodes(),
                     },
                 ))
             }
             crate::render_scene::RenderNode::PaintLayer(layer) => {
-                visit(&layer.children, stable_id, placement)
+                visit(&layer.content_nodes(), stable_id, placement)
             }
             crate::render_scene::RenderNode::Primitive(_) => None,
         })
@@ -5387,6 +5387,52 @@ fn todo_filter_like_tree(seed: &str, row_count: usize) -> ElementTree {
     tree
 }
 
+fn assert_render_scenes_equivalent(
+    left: crate::render_scene::RenderScene,
+    right: crate::render_scene::RenderScene,
+) {
+    if left == right {
+        return;
+    }
+
+    let left_pixels = render_scene_to_pixels(800, 600, left.clone());
+    let right_pixels = render_scene_to_pixels(800, 600, right.clone());
+    if left_pixels != right_pixels {
+        let first_diff = left_pixels
+            .iter()
+            .zip(right_pixels.iter())
+            .position(|(left, right)| left != right);
+        panic!(
+            "render scenes differ at pixel byte {:?}\nleft: {left:#?}\nright: {right:#?}",
+            first_diff
+        );
+    }
+}
+
+fn render_scene_to_pixels(
+    width: u32,
+    height: u32,
+    scene: crate::render_scene::RenderScene,
+) -> Vec<u8> {
+    let info = skia_safe::ImageInfo::new(
+        (width as i32, height as i32),
+        skia_safe::ColorType::RGBA8888,
+        skia_safe::AlphaType::Premul,
+        None,
+    );
+    let mut surface = skia_safe::surfaces::raster(&info, None, None)
+        .expect("raster surface should be created for render equivalence test");
+    let state = RenderState::new(scene, skia_safe::Color::TRANSPARENT, 1, false);
+    {
+        let mut frame = RenderFrame::new(&mut surface, None);
+        SceneRenderer::new().render(&mut frame, &state);
+    }
+
+    let mut pixels = vec![0u8; (width * height * 4) as usize];
+    surface.read_pixels(&info, pixels.as_mut_slice(), (width * 4) as usize, (0, 0));
+    pixels
+}
+
 fn render_cache_stats_for_scene(
     renderer: &mut SceneRenderer,
     scene: crate::render_scene::RenderScene,
@@ -5494,23 +5540,28 @@ fn node_without_moving_paint_layers(
         crate::render_scene::RenderNode::PaintLayer(layer)
             if layer.policy == crate::render_scene::PaintLayerPolicy::DynamicRedraw =>
         {
-            nodes_without_moving_paint_layers_with_flag(layer.children)
+            nodes_without_moving_paint_layers_with_flag(layer.content_nodes())
         }
         crate::render_scene::RenderNode::PaintLayer(layer)
             if layer.reason == crate::render_scene::PaintLayerReason::Root =>
         {
-            nodes_without_moving_paint_layers_with_flag(layer.children)
+            nodes_without_moving_paint_layers_with_flag(layer.content_nodes())
         }
         crate::render_scene::RenderNode::PaintLayer(layer)
             if layer.placement == crate::render_scene::PaintLayerPlacement::ScrollMoving =>
         {
-            (nodes_without_moving_paint_layers(layer.children), true)
-        }
-        crate::render_scene::RenderNode::PaintLayer(mut layer) => {
-            let (children, had_layer) = nodes_without_moving_paint_layers_with_flag(layer.children);
-            layer.children = children;
             (
-                vec![crate::render_scene::RenderNode::PaintLayer(layer)],
+                nodes_without_moving_paint_layers(layer.content_nodes()),
+                true,
+            )
+        }
+        crate::render_scene::RenderNode::PaintLayer(layer) => {
+            let (children, had_layer) =
+                nodes_without_moving_paint_layers_with_flag(layer.content_nodes());
+            (
+                vec![crate::render_scene::RenderNode::PaintLayer(
+                    layer.with_children(children),
+                )],
                 had_layer,
             )
         }
@@ -5569,11 +5620,16 @@ fn translate_render_node(
                 children: translate_render_nodes(children, dx, dy),
             }
         }
-        crate::render_scene::RenderNode::PaintLayer(mut layer) => {
-            layer.bounds.x += dx;
-            layer.bounds.y += dy;
-            layer.children = translate_render_nodes(layer.children, dx, dy);
-            crate::render_scene::RenderNode::PaintLayer(layer)
+        crate::render_scene::RenderNode::PaintLayer(layer) => {
+            let bounds = crate::tree::geometry::Rect {
+                x: layer.bounds.x + dx,
+                y: layer.bounds.y + dy,
+                ..layer.bounds
+            };
+            crate::render_scene::RenderNode::PaintLayer(layer.with_bounds_and_children(
+                bounds,
+                translate_render_nodes(layer.content_nodes(), dx, dy),
+            ))
         }
         crate::render_scene::RenderNode::Primitive(primitive) => {
             crate::render_scene::RenderNode::Primitive(translate_primitive(primitive, dx, dy))

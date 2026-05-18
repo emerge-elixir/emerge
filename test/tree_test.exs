@@ -282,6 +282,11 @@ defmodule EmergeSkia.TreeTest do
 
       {:ok, disabled_stats} = Native.stats(tree, :peek)
       refute disabled_stats.enabled
+      assert disabled_stats.version == 15
+      renderer_cache_stats = disabled_stats.counters.renderer_cache.paint_layer
+      assert Map.has_key?(renderer_cache_stats, :draw_hit)
+      refute Map.has_key?(renderer_cache_stats, :moved_hits)
+      refute Map.has_key?(renderer_cache_stats, :payload_copy)
 
       {:ok, _frames} = Native.tree_layout(tree, 800.0, 600.0, 1.0)
       {:ok, disabled_after_layout} = Native.stats(tree, :peek)

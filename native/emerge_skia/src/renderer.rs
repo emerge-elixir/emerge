@@ -33,8 +33,9 @@ use crate::paint_layer_payload_cache::{
     PaintLayerPayloadStorage, PaintLayerPayloadStoreRejection,
 };
 use crate::render_scene::{
-    DrawPrimitive, PaintLayerPolicy, PaintLayerReason, RenderNode, RenderPaintLayer, RenderScene,
-    draw_primitive_visual_bounds,
+    DrawPrimitive, PaintLayerHashFloat, PaintLayerPolicy, PaintLayerReason, RenderNode,
+    RenderPaintLayer, RenderScene, draw_primitive_visual_bounds, hash_paint_layer_affine2,
+    hash_paint_layer_draw_primitive, hash_paint_layer_rect,
 };
 use crate::tree::attrs::{BorderStyle, ImageFit};
 use crate::tree::geometry::{ClipShape, CornerRadii, Rect as GeometryRect, clamp_radii};
@@ -91,8 +92,6 @@ pub struct RendererCachePaintLayerFrameStats {
     pub admitted: u64,
     pub hits: u64,
     pub misses: u64,
-    pub moved_hits: u64,
-    pub moved_misses: u64,
     pub stores: u64,
     pub evictions: u64,
     pub stale_evictions: u64,
@@ -123,10 +122,6 @@ pub struct RendererCachePaintLayerFrameStats {
     pub rejected_unsupported_transform: u64,
     pub prepare_time: Duration,
     pub draw_hit_time: Duration,
-    pub payload_copy_time: Duration,
-    pub dirty_draw_time: Duration,
-    pub child_layer_time: Duration,
-    pub direct_fallback_time: Duration,
 }
 
 impl RendererCachePaintLayerFrameStats {
@@ -138,8 +133,6 @@ impl RendererCachePaintLayerFrameStats {
             && self.admitted == 0
             && self.hits == 0
             && self.misses == 0
-            && self.moved_hits == 0
-            && self.moved_misses == 0
             && self.stores == 0
             && self.evictions == 0
             && self.stale_evictions == 0
@@ -170,10 +163,6 @@ impl RendererCachePaintLayerFrameStats {
             && self.rejected_unsupported_transform == 0
             && self.prepare_time.is_zero()
             && self.draw_hit_time.is_zero()
-            && self.payload_copy_time.is_zero()
-            && self.dirty_draw_time.is_zero()
-            && self.child_layer_time.is_zero()
-            && self.direct_fallback_time.is_zero()
     }
 }
 
@@ -1896,12 +1885,6 @@ impl RendererCacheManager {
         )
     }
 
-    fn moving_payload_bytes(&self) -> u64 {
-        self.payloads
-            .entries()
-            .fold(0u64, |bytes, entry| bytes.saturating_add(entry.bytes))
-    }
-
     pub fn touch_moving_layer_suppressed_by_parent(
         &mut self,
         frame: &mut RendererCacheFrame,
@@ -1932,32 +1915,6 @@ impl RendererCacheManager {
         {
             PaintLayerPayload::Image(image) => image.clone(),
         }
-    }
-
-    pub fn try_store_moving_layer_metadata(
-        &mut self,
-        frame: &mut RendererCacheFrame,
-        key: PaintLayerMovingPayloadKey,
-        bytes: u64,
-        prepare_time: Duration,
-    ) -> Result<(), PaintLayerPayloadAdmissionRejection> {
-        self.try_admit_moving_layer_payload_store(frame, key, bytes)?;
-
-        let evicted = self
-            .payloads
-            .store_reserved(
-                Self::payload_key_for_moving_layer(key),
-                PaintLayerPayload::Image(None),
-                bytes,
-                PaintLayerPayloadStorage::Cpu,
-            )
-            .map_err(Self::moving_layer_admission_rejection_from_payload_rejection)?;
-        self.forget_visible_admission(key);
-        frame.record_store(bytes, RendererCachePayloadKind::CpuRaster, prepare_time);
-        frame.record_store_pixels(key.pixel_len(), 0);
-        frame.record_evictions(evicted);
-
-        Ok(())
     }
 
     pub fn reserve_moving_layer_payload_store(
@@ -2031,14 +1988,6 @@ impl RendererCacheManager {
                 frame.record_rejection(rejection.into());
             }
         }
-    }
-
-    pub fn moving_layer_entry_count(&self) -> u64 {
-        self.payloads.stats().entries
-    }
-
-    pub fn moving_layer_total_bytes(&self) -> u64 {
-        self.moving_payload_bytes()
     }
 }
 
@@ -2494,10 +2443,14 @@ fn hash_visible_render_node(
             if let Some(visible) = visible_primitive_device_rect(primitive, eligibility) {
                 "primitive".hash(hasher);
                 visible.hash(hasher);
-                hash_affine2(hasher, eligibility.current_transform);
+                hash_paint_layer_affine2(
+                    hasher,
+                    eligibility.current_transform,
+                    PaintLayerHashFloat::Exact,
+                );
                 eligibility.current_clip.hash(hasher);
-                hash_f32(hasher, alpha);
-                format!("{primitive:?}").hash(hasher);
+                PaintLayerHashFloat::Exact.hash_f32(hasher, alpha);
+                hash_paint_layer_draw_primitive(hasher, primitive, PaintLayerHashFloat::Exact);
             }
             true
         }
@@ -2521,10 +2474,14 @@ fn hash_visible_paint_layer(
         layer.stable_id.hash(hasher);
         layer.policy.hash(hasher);
         layer.reason.hash(hasher);
-        hash_rect(hasher, layer.bounds);
-        hash_affine2(hasher, eligibility.current_transform);
+        hash_paint_layer_rect(hasher, layer.bounds, PaintLayerHashFloat::Exact);
+        hash_paint_layer_affine2(
+            hasher,
+            eligibility.current_transform,
+            PaintLayerHashFloat::Exact,
+        );
         eligibility.current_clip.hash(hasher);
-        hash_f32(hasher, alpha);
+        PaintLayerHashFloat::Exact.hash_f32(hasher, alpha);
 
         if layer.policy == PaintLayerPolicy::Cacheable {
             let resource_generation =
@@ -2597,27 +2554,6 @@ fn hash_skia_color(hasher: &mut DefaultHasher, color: Color) {
     color.r().hash(hasher);
     color.g().hash(hasher);
     color.b().hash(hasher);
-}
-
-fn hash_affine2(hasher: &mut DefaultHasher, transform: Affine2) {
-    hash_f32(hasher, transform.xx);
-    hash_f32(hasher, transform.yx);
-    hash_f32(hasher, transform.xy);
-    hash_f32(hasher, transform.yy);
-    hash_f32(hasher, transform.tx);
-    hash_f32(hasher, transform.ty);
-}
-
-fn hash_rect(hasher: &mut DefaultHasher, rect: GeometryRect) {
-    hash_f32(hasher, rect.x);
-    hash_f32(hasher, rect.y);
-    hash_f32(hasher, rect.width);
-    hash_f32(hasher, rect.height);
-}
-
-fn hash_f32(hasher: &mut DefaultHasher, value: f32) {
-    let value = if value == 0.0 { 0.0 } else { value };
-    value.to_bits().hash(hasher);
 }
 
 fn renderer_cache_diagnostics_enabled() -> bool {
@@ -2968,7 +2904,7 @@ impl SceneRenderer {
     ) {
         let has_own_nodes = layer.metrics.own_primitive_count > 0;
         if !has_own_nodes {
-            Self::render_paint_layer_child_refs(
+            Self::render_paint_layer_direct_with_cache_tracking(
                 canvas,
                 layer,
                 options,
@@ -2982,8 +2918,7 @@ impl SceneRenderer {
         if layer.policy == PaintLayerPolicy::DynamicRedraw
             && layer.reason == PaintLayerReason::Animation
         {
-            Self::render_paint_layer_own_nodes(canvas, &layer.own_nodes, options, instrumentation);
-            Self::render_paint_layer_child_refs(
+            Self::render_paint_layer_direct_with_cache_tracking(
                 canvas,
                 layer,
                 options,
@@ -3014,7 +2949,7 @@ impl SceneRenderer {
                     .renderer_cache
                     .touch_moving_layer_clipped(key);
             }
-            Self::render_paint_layer_child_refs(
+            Self::render_paint_layer_direct_with_cache_tracking(
                 canvas,
                 layer,
                 options,
@@ -3031,8 +2966,7 @@ impl SceneRenderer {
         ) {
             cache_tracking.frame.mark_candidate(true);
             cache_tracking.frame.record_rejection(rejection);
-            Self::render_paint_layer_own_nodes(canvas, &layer.own_nodes, options, instrumentation);
-            Self::render_paint_layer_child_refs(
+            Self::render_paint_layer_direct_with_cache_tracking(
                 canvas,
                 layer,
                 options,
@@ -3049,8 +2983,7 @@ impl SceneRenderer {
             cache_tracking
                 .frame
                 .record_rejection(RendererCacheRejectionReason::Ineligible);
-            Self::render_paint_layer_own_nodes(canvas, &layer.own_nodes, options, instrumentation);
-            Self::render_paint_layer_child_refs(
+            Self::render_paint_layer_direct_with_cache_tracking(
                 canvas,
                 layer,
                 options,
@@ -3093,8 +3026,7 @@ impl SceneRenderer {
             cache_tracking
                 .frame
                 .record_rejection(RendererCacheRejectionReason::OversizedEntry);
-            Self::render_paint_layer_own_nodes(canvas, &layer.own_nodes, options, instrumentation);
-            Self::render_paint_layer_child_refs(
+            Self::render_paint_layer_direct_with_cache_tracking(
                 canvas,
                 layer,
                 options,
@@ -3129,8 +3061,7 @@ impl SceneRenderer {
                     key,
                 );
             }
-            Self::render_paint_layer_own_nodes(canvas, &layer.own_nodes, options, instrumentation);
-            Self::render_paint_layer_child_refs(
+            Self::render_paint_layer_direct_with_cache_tracking(
                 canvas,
                 layer,
                 options,
@@ -3148,8 +3079,7 @@ impl SceneRenderer {
             cache_tracking
                 .frame
                 .record_rejection(RendererCacheRejectionReason::AdmissionThreshold);
-            Self::render_paint_layer_own_nodes(canvas, &layer.own_nodes, options, instrumentation);
-            Self::render_paint_layer_child_refs(
+            Self::render_paint_layer_direct_with_cache_tracking(
                 canvas,
                 layer,
                 options,
@@ -3240,8 +3170,7 @@ impl SceneRenderer {
             Err(_) => {}
         }
 
-        Self::render_paint_layer_own_nodes(canvas, &layer.own_nodes, options, instrumentation);
-        Self::render_paint_layer_child_refs(
+        Self::render_paint_layer_direct_with_cache_tracking(
             canvas,
             layer,
             options,
@@ -3338,7 +3267,7 @@ impl SceneRenderer {
         }
     }
 
-    fn render_non_cacheable_paint_layer_with_cache_tracking<I: DrawInstrumentation>(
+    fn render_paint_layer_direct_with_cache_tracking<I: DrawInstrumentation>(
         canvas: &skia_safe::Canvas,
         layer: &RenderPaintLayer,
         options: RenderTraversalOptions<'_>,
@@ -4364,7 +4293,7 @@ impl<'video> RenderTraversalMode<'video> for CacheTrackingRenderMode<'_, '_> {
                 instrumentation,
             );
         } else {
-            SceneRenderer::render_non_cacheable_paint_layer_with_cache_tracking(
+            SceneRenderer::render_paint_layer_direct_with_cache_tracking(
                 canvas,
                 layer,
                 options,
@@ -4398,7 +4327,7 @@ impl<'video> RenderTraversalMode<'video> for ChildPaintLayerRenderMode<'_, '_> {
                 instrumentation,
             );
         } else {
-            SceneRenderer::render_non_cacheable_paint_layer_with_cache_tracking(
+            SceneRenderer::render_paint_layer_direct_with_cache_tracking(
                 canvas,
                 layer,
                 options,

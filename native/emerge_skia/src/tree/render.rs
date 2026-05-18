@@ -830,18 +830,6 @@ fn wrap_with_explicit_moving_own_payload_layer(
     } else {
         vec![RenderPaintLayerChildRef::from_nodes(child_nodes)]
     };
-    #[cfg(test)]
-    let raw_children = own_nodes
-        .iter()
-        .cloned()
-        .chain(
-            child_refs
-                .iter()
-                .flat_map(|child| child.nodes.iter().cloned()),
-        )
-        .collect();
-    #[cfg(not(test))]
-    let raw_children = Vec::new();
     let content_generation = moving_paint_layer_own_content_generation(&own_nodes, bounds);
     let layer = RenderPaintLayer::from_prepared_children(
         RenderPaintLayerBuildParts {
@@ -858,7 +846,6 @@ fn wrap_with_explicit_moving_own_payload_layer(
             own_nodes,
             child_refs,
         },
-        raw_children,
     );
 
     if let Some(key) = cache_key {
@@ -911,10 +898,6 @@ fn wrap_with_explicit_moving_paint_layer_payload(
         placement.local_origin_x,
         placement.local_origin_y,
     );
-    #[cfg(test)]
-    let raw_children = local_children.clone();
-    #[cfg(not(test))]
-    let raw_children = Vec::new();
     let content = split_paint_layer_content_owned(local_children);
     if content.own_nodes.is_empty() {
         let child_nodes = content
@@ -958,7 +941,6 @@ fn wrap_with_explicit_moving_paint_layer_payload(
             visual_bounds,
         },
         content,
-        raw_children,
     );
 
     if policy == PaintLayerPolicy::Cacheable
@@ -1339,7 +1321,7 @@ fn moving_paint_layer_own_content_generation(
     own_nodes: &[RenderNode],
     payload_bounds: Rect,
 ) -> u64 {
-    let mut hasher = MovingPaintLayerPayloadContentHasher::default();
+    let mut hasher = DefaultHasher::new();
     hash_paint_layer_render_nodes(
         &mut hasher,
         own_nodes,
@@ -1349,56 +1331,6 @@ fn moving_paint_layer_own_content_generation(
         Some(payload_bounds),
     );
     hasher.finish()
-}
-
-#[derive(Clone, Copy, Debug)]
-struct MovingPaintLayerPayloadContentHasher {
-    value: u64,
-}
-
-impl Default for MovingPaintLayerPayloadContentHasher {
-    fn default() -> Self {
-        Self {
-            value: 0xcbf2_9ce4_8422_2325,
-        }
-    }
-}
-
-impl Hasher for MovingPaintLayerPayloadContentHasher {
-    fn finish(&self) -> u64 {
-        self.value
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        bytes.iter().for_each(|byte| {
-            self.value ^= u64::from(*byte);
-            self.value = self.value.wrapping_mul(0x0000_0100_0000_01b3);
-        });
-    }
-
-    fn write_u8(&mut self, i: u8) {
-        self.write(&[i]);
-    }
-
-    fn write_u16(&mut self, i: u16) {
-        self.write(&i.to_le_bytes());
-    }
-
-    fn write_u32(&mut self, i: u32) {
-        self.write(&i.to_le_bytes());
-    }
-
-    fn write_u64(&mut self, i: u64) {
-        self.write(&i.to_le_bytes());
-    }
-
-    fn write_usize(&mut self, i: usize) {
-        self.write_u64(i as u64);
-    }
-
-    fn write_i64(&mut self, i: i64) {
-        self.write_u64(i as u64);
-    }
 }
 
 fn strip_moving_paint_layer_payload_ancestor_clips(
@@ -2558,7 +2490,6 @@ fn wrap_with_focused_own_payload_layer(
             own_nodes,
             child_refs,
         },
-        Vec::new(),
     );
 
     wrap_with_shadow_pass(vec![RenderNode::PaintLayer(layer)])
@@ -2587,10 +2518,6 @@ fn wrap_with_paint_layer(
         width: render_frame.width,
         height: render_frame.height,
     };
-    #[cfg(test)]
-    let raw_children = nodes.clone();
-    #[cfg(not(test))]
-    let raw_children = Vec::new();
     let content = split_paint_layer_content_owned(nodes);
     let visual_bounds = paint_layer_own_content_visual_bounds(&content.own_nodes);
     let bounds = if reason != PaintLayerReason::ScrollContainer {
@@ -2622,7 +2549,6 @@ fn wrap_with_paint_layer(
                 visual_bounds,
             },
             content,
-            raw_children,
         ),
     )]
 }
