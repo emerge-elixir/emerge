@@ -1451,7 +1451,6 @@ fn assert_emerge_demo_showcase_layout_page_steady_hits(
     assert_eq!(steady_stats.evictions, 0, "{steady_stats:?}");
     assert_eq!(steady_stats.stale_evictions, 0, "{steady_stats:?}");
     assert!(steady_stats.gpu_payload_stores <= 1, "{steady_stats:?}");
-    assert_eq!(steady_stats.dirty_draw_time, Duration::ZERO);
 
     let mut draw_total = Duration::ZERO;
     let mut draw_count = 0u32;
@@ -1474,8 +1473,6 @@ fn assert_emerge_demo_showcase_layout_page_steady_hits(
         assert_eq!(stats.evictions, 0, "{stats:?}");
         assert_eq!(stats.stale_evictions, 0, "{stats:?}");
         assert!(stats.gpu_payload_stores <= 1, "{stats:?}");
-        assert_eq!(stats.dirty_draw_time, Duration::ZERO);
-        assert_eq!(stats.child_layer_time, Duration::ZERO);
         draw_total += timings.draw;
         draw_count += 1;
     }
@@ -2739,7 +2736,6 @@ fn assert_offscreen_layout_animation_steady_hits(
     assert_eq!(steady_stats.evictions, 0, "{steady_stats:?}");
     assert_eq!(steady_stats.stale_evictions, 0, "{steady_stats:?}");
     assert_eq!(steady_stats.gpu_payload_stores, 0, "{steady_stats:?}");
-    assert_eq!(steady_stats.dirty_draw_time, std::time::Duration::ZERO);
 }
 
 #[cfg(target_os = "linux")]
@@ -2830,8 +2826,6 @@ fn assert_stable_descendant_layout_animation_hits(
     assert_eq!(steady_stats.evictions, 0, "{steady_stats:?}");
     assert_eq!(steady_stats.stale_evictions, 0, "{steady_stats:?}");
     assert_eq!(steady_stats.gpu_payload_stores, 0, "{steady_stats:?}");
-    assert_eq!(steady_stats.child_layer_time, std::time::Duration::ZERO);
-    assert_eq!(steady_stats.dirty_draw_time, std::time::Duration::ZERO);
 }
 
 #[cfg(target_os = "linux")]

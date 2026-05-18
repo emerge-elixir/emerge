@@ -126,7 +126,6 @@ defmodule Emerge.MixProject do
     [
       "lib",
       "guides/tutorials",
-      "native/emerge_skia/src",
       "native/emerge_skia/Cargo.toml",
       "native/emerge_skia/Cargo.lock",
       "native/emerge_skia/Cross.toml",
@@ -138,7 +137,19 @@ defmodule Emerge.MixProject do
       "CHANGELOG.md",
       "mix.exs",
       "mix.lock"
-    ] ++ package_assets() ++ Path.wildcard("checksum-*.exs")
+    ] ++ package_native_sources() ++ package_assets() ++ Path.wildcard("checksum-*.exs")
+  end
+
+  defp package_native_sources do
+    "native/emerge_skia/src/**/*"
+    |> Path.wildcard()
+    |> Enum.reject(&(File.dir?(&1) or native_test_source?(&1)))
+  end
+
+  defp native_test_source?(path) do
+    path
+    |> Path.split()
+    |> Enum.member?("tests")
   end
 
   defp package_assets do

@@ -237,8 +237,6 @@ pub struct RendererCachePaintLayerStatsSnapshot {
     pub admitted: u64,
     pub hits: u64,
     pub misses: u64,
-    pub moved_hits: u64,
-    pub moved_misses: u64,
     pub stores: u64,
     pub evictions: u64,
     pub stale_evictions: u64,
@@ -269,10 +267,6 @@ pub struct RendererCachePaintLayerStatsSnapshot {
     pub rejected_unsupported_transform: u64,
     pub prepare: DurationStatsSnapshot,
     pub draw_hit: DurationStatsSnapshot,
-    pub payload_copy: DurationStatsSnapshot,
-    pub dirty_draw: DurationStatsSnapshot,
-    pub child_layer: DurationStatsSnapshot,
-    pub direct_fallback: DurationStatsSnapshot,
 }
 
 impl RendererCachePaintLayerStatsSnapshot {
@@ -284,8 +278,6 @@ impl RendererCachePaintLayerStatsSnapshot {
             && self.admitted == 0
             && self.hits == 0
             && self.misses == 0
-            && self.moved_hits == 0
-            && self.moved_misses == 0
             && self.stores == 0
             && self.evictions == 0
             && self.stale_evictions == 0
@@ -316,10 +308,6 @@ impl RendererCachePaintLayerStatsSnapshot {
             && self.rejected_unsupported_transform == 0
             && self.prepare.count == 0
             && self.draw_hit.count == 0
-            && self.payload_copy.count == 0
-            && self.dirty_draw.count == 0
-            && self.child_layer.count == 0
-            && self.direct_fallback.count == 0
     }
 }
 
@@ -489,8 +477,6 @@ struct RendererCachePaintLayerStatsWindow {
     admitted: u64,
     hits: u64,
     misses: u64,
-    moved_hits: u64,
-    moved_misses: u64,
     stores: u64,
     evictions: u64,
     stale_evictions: u64,
@@ -521,10 +507,6 @@ struct RendererCachePaintLayerStatsWindow {
     rejected_unsupported_transform: u64,
     prepare: DurationStatsWindow,
     draw_hit: DurationStatsWindow,
-    payload_copy: DurationStatsWindow,
-    dirty_draw: DurationStatsWindow,
-    child_layer: DurationStatsWindow,
-    direct_fallback: DurationStatsWindow,
 }
 
 impl RendererCachePaintLayerStatsWindow {
@@ -542,8 +524,6 @@ impl RendererCachePaintLayerStatsWindow {
         self.admitted = self.admitted.saturating_add(stats.admitted);
         self.hits = self.hits.saturating_add(stats.hits);
         self.misses = self.misses.saturating_add(stats.misses);
-        self.moved_hits = self.moved_hits.saturating_add(stats.moved_hits);
-        self.moved_misses = self.moved_misses.saturating_add(stats.moved_misses);
         self.stores = self.stores.saturating_add(stats.stores);
         self.evictions = self.evictions.saturating_add(stats.evictions);
         self.stale_evictions = self.stale_evictions.saturating_add(stats.stale_evictions);
@@ -617,19 +597,6 @@ impl RendererCachePaintLayerStatsWindow {
         if stats.hits > 0 {
             self.draw_hit.record_many(stats.draw_hit_time, stats.hits);
         }
-
-        if !stats.payload_copy_time.is_zero() {
-            self.payload_copy.record(stats.payload_copy_time);
-        }
-        if !stats.dirty_draw_time.is_zero() {
-            self.dirty_draw.record(stats.dirty_draw_time);
-        }
-        if !stats.child_layer_time.is_zero() {
-            self.child_layer.record(stats.child_layer_time);
-        }
-        if !stats.direct_fallback_time.is_zero() {
-            self.direct_fallback.record(stats.direct_fallback_time);
-        }
     }
 
     fn snapshot(&self) -> RendererCachePaintLayerStatsSnapshot {
@@ -641,8 +608,6 @@ impl RendererCachePaintLayerStatsWindow {
             admitted: self.admitted,
             hits: self.hits,
             misses: self.misses,
-            moved_hits: self.moved_hits,
-            moved_misses: self.moved_misses,
             stores: self.stores,
             evictions: self.evictions,
             stale_evictions: self.stale_evictions,
@@ -673,10 +638,6 @@ impl RendererCachePaintLayerStatsWindow {
             rejected_unsupported_transform: self.rejected_unsupported_transform,
             prepare: self.prepare.snapshot(),
             draw_hit: self.draw_hit.snapshot(),
-            payload_copy: self.payload_copy.snapshot(),
-            dirty_draw: self.dirty_draw.snapshot(),
-            child_layer: self.child_layer.snapshot(),
-            direct_fallback: self.direct_fallback.snapshot(),
         }
     }
 }
@@ -1091,12 +1052,6 @@ fn format_renderer_cache_kind_line(
         stats.stale_evictions,
         stats.rejected,
     );
-    if stats.moved_hits > 0 || stats.moved_misses > 0 {
-        message.push_str(&format!(
-            "      placement: moved_hits={} moved_misses={}\n",
-            stats.moved_hits, stats.moved_misses,
-        ));
-    }
     message.push_str(&format!(
         concat!(
             "      per_frame: candidates={:.2} visible={:.2} hits={:.2} misses={:.2} stores={:.2} rejected={:.2}\n",
@@ -1146,23 +1101,6 @@ fn format_renderer_cache_kind_line(
         stats.draw_hit.avg_ms,
         stats.draw_hit.count,
     ));
-    if stats.payload_copy.count > 0
-        || stats.dirty_draw.count > 0
-        || stats.child_layer.count > 0
-        || stats.direct_fallback.count > 0
-    {
-        message.push_str(&format!(
-            "      draw_split: payload_copy avg={:.3} ms count={} dynamic_draw avg={:.3} ms count={} child_layer avg={:.3} ms count={} direct_fallback avg={:.3} ms count={}\n",
-            stats.payload_copy.avg_ms,
-            stats.payload_copy.count,
-            stats.dirty_draw.avg_ms,
-            stats.dirty_draw.count,
-            stats.child_layer.avg_ms,
-            stats.child_layer.count,
-            stats.direct_fallback.avg_ms,
-            stats.direct_fallback.count,
-        ));
-    }
     message
 }
 
@@ -1247,12 +1185,6 @@ fn format_renderer_cache_kind_frame_line(
         stats.stale_evictions,
         stats.rejected,
     );
-    if stats.moved_hits > 0 || stats.moved_misses > 0 {
-        message.push_str(&format!(
-            "      placement: moved_hits={} moved_misses={}\n",
-            stats.moved_hits, stats.moved_misses,
-        ));
-    }
     message.push_str(&format!(
         concat!(
             "      resident: entries={} bytes={} payloads={{gpu={} cpu={} unknown={}}}\n",
@@ -1293,19 +1225,6 @@ fn format_renderer_cache_kind_frame_line(
         stats.rejected_unsupported_transform,
         duration_ms(stats.draw_hit_time),
     ));
-    if !stats.payload_copy_time.is_zero()
-        || !stats.dirty_draw_time.is_zero()
-        || !stats.child_layer_time.is_zero()
-        || !stats.direct_fallback_time.is_zero()
-    {
-        message.push_str(&format!(
-            "      draw_split: payload_copy={:.3} ms dynamic_draw={:.3} ms child_layer={:.3} ms direct_fallback={:.3} ms\n",
-            duration_ms(stats.payload_copy_time),
-            duration_ms(stats.dirty_draw_time),
-            duration_ms(stats.child_layer_time),
-            duration_ms(stats.direct_fallback_time),
-        ));
-    }
     message
 }
 
@@ -1613,10 +1532,6 @@ mod tests {
                 rejected_ineligible: 1,
                 prepare_time: Duration::from_micros(50),
                 draw_hit_time: Duration::from_micros(10),
-                payload_copy_time: Duration::from_micros(4),
-                dirty_draw_time: Duration::from_micros(5),
-                child_layer_time: Duration::from_micros(6),
-                direct_fallback_time: Duration::from_micros(7),
                 ..RendererCachePaintLayerFrameStats::default()
             },
         });
@@ -1752,23 +1667,6 @@ mod tests {
         assert_eq!(snapshot.renderer_cache.paint_layer.prepare.avg_ms, 0.025);
         assert_eq!(snapshot.renderer_cache.paint_layer.draw_hit.count, 1);
         assert_eq!(snapshot.renderer_cache.paint_layer.draw_hit.avg_ms, 0.01);
-        assert_eq!(snapshot.renderer_cache.paint_layer.payload_copy.count, 1);
-        assert_eq!(
-            snapshot.renderer_cache.paint_layer.payload_copy.avg_ms,
-            0.004
-        );
-        assert_eq!(snapshot.renderer_cache.paint_layer.dirty_draw.count, 1);
-        assert_eq!(snapshot.renderer_cache.paint_layer.dirty_draw.avg_ms, 0.005);
-        assert_eq!(snapshot.renderer_cache.paint_layer.child_layer.count, 1);
-        assert_eq!(
-            snapshot.renderer_cache.paint_layer.child_layer.avg_ms,
-            0.006
-        );
-        assert_eq!(snapshot.renderer_cache.paint_layer.direct_fallback.count, 1);
-        assert_eq!(
-            snapshot.renderer_cache.paint_layer.direct_fallback.avg_ms,
-            0.007
-        );
         let reset_snapshot = stats.snapshot();
         assert_eq!(reset_snapshot.frame_count, 0);
         assert_eq!(reset_snapshot.display_frame_ms, 16.0);
@@ -1979,10 +1877,6 @@ mod tests {
                 rejected_payload_budget: 1,
                 prepare_time: Duration::from_micros(90),
                 draw_hit_time: Duration::from_micros(12),
-                payload_copy_time: Duration::from_micros(3),
-                dirty_draw_time: Duration::from_micros(4),
-                child_layer_time: Duration::from_micros(5),
-                direct_fallback_time: Duration::from_micros(6),
                 ..RendererCachePaintLayerFrameStats::default()
             },
         });
@@ -2037,9 +1931,6 @@ mod tests {
         assert!(message.contains("prepare: success=2 failure=0 avg=0.045 ms count=2"));
         assert!(message.contains("fallback_after_admit=1 rejections="));
         assert!(message.contains("hit_draw: avg=0.012 ms count=1"));
-        assert!(message.contains(
-            "draw_split: payload_copy avg=0.003 ms count=1 dynamic_draw avg=0.004 ms count=1 child_layer avg=0.005 ms count=1 direct_fallback avg=0.006 ms count=1"
-        ));
         assert!(!message.contains("    shell\n"));
         assert!(!message.contains("    moving_paint_layer\n"));
     }

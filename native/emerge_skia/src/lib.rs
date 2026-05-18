@@ -78,6 +78,9 @@ use video::{VideoMode, VideoRegistry, VideoTargetResource, VideoWake};
 type LayoutFrame<'a> = (Binary<'a>, f32, f32, f32, f32);
 type LayoutFrames<'a> = Vec<LayoutFrame<'a>>;
 
+/// Bump whenever the public `EmergeSkia.stats/2` payload shape changes.
+const STATS_SCHEMA_VERSION: u64 = 15;
+
 #[derive(Clone, Copy, Debug, rustler::NifMap)]
 struct StatsConfigureNif {
     enabled: bool,
@@ -176,8 +179,6 @@ struct RendererCachePaintLayerStatsNif {
     admitted: u64,
     hits: u64,
     misses: u64,
-    moved_hits: u64,
-    moved_misses: u64,
     stores: u64,
     evictions: u64,
     stale_evictions: u64,
@@ -201,10 +202,6 @@ struct RendererCachePaintLayerStatsNif {
     rejected_unsupported_transform: u64,
     prepare: DurationStatsNif,
     draw_hit: DurationStatsNif,
-    payload_copy: DurationStatsNif,
-    dirty_draw: DurationStatsNif,
-    child_layer: DurationStatsNif,
-    direct_fallback: DurationStatsNif,
 }
 
 impl StatsSnapshotNif {
@@ -221,7 +218,7 @@ impl StatsSnapshotNif {
         let timing = |metric| DurationStatsNif::from(*snapshot.timing(metric));
 
         Self {
-            version: 14,
+            version: STATS_SCHEMA_VERSION,
             kind: kind.to_string(),
             enabled,
             window: StatsWindowNif {
@@ -308,8 +305,6 @@ impl From<stats::RendererCachePaintLayerStatsSnapshot> for RendererCachePaintLay
             admitted: stats.admitted,
             hits: stats.hits,
             misses: stats.misses,
-            moved_hits: stats.moved_hits,
-            moved_misses: stats.moved_misses,
             stores: stats.stores,
             evictions: stats.evictions,
             stale_evictions: stats.stale_evictions,
@@ -333,10 +328,6 @@ impl From<stats::RendererCachePaintLayerStatsSnapshot> for RendererCachePaintLay
             rejected_unsupported_transform: stats.rejected_unsupported_transform,
             prepare: DurationStatsNif::from(stats.prepare),
             draw_hit: DurationStatsNif::from(stats.draw_hit),
-            payload_copy: DurationStatsNif::from(stats.payload_copy),
-            dirty_draw: DurationStatsNif::from(stats.dirty_draw),
-            child_layer: DurationStatsNif::from(stats.child_layer),
-            direct_fallback: DurationStatsNif::from(stats.direct_fallback),
         }
     }
 }

@@ -1293,10 +1293,10 @@ fn nested_animated_shadow_inside_scroll_container_layer_emits_dirty_slot() {
     let scroll_layer =
         paint_layer_by_reason(&output.scene.nodes, PaintLayerReason::ScrollContainer)
             .expect("scroll container should emit a paint layer");
-    let dirty_ids = dynamic_paint_layer_ids(&scroll_layer.children);
+    let dirty_ids = dynamic_paint_layer_ids(&scroll_layer.content_nodes());
 
     assert!(dirty_ids.contains(&card_id.to_wire_u64()));
-    assert!(dynamic_slot_count(&scroll_layer.children) > 0);
+    assert!(dynamic_slot_count(&scroll_layer.content_nodes()) > 0);
 }
 
 #[test]
@@ -1523,10 +1523,10 @@ fn dynamic_paint_layer_ids(nodes: &[RenderNode]) -> Vec<u64> {
             | RenderNode::Alpha { children, .. } => dynamic_paint_layer_ids(children),
             RenderNode::PaintLayer(layer) if layer.policy == PaintLayerPolicy::DynamicRedraw => {
                 let mut ids = vec![layer.stable_id];
-                ids.extend(dynamic_paint_layer_ids(&layer.children));
+                ids.extend(dynamic_paint_layer_ids(&layer.content_nodes()));
                 ids
             }
-            RenderNode::PaintLayer(layer) => dynamic_paint_layer_ids(&layer.children),
+            RenderNode::PaintLayer(layer) => dynamic_paint_layer_ids(&layer.content_nodes()),
             RenderNode::Primitive(_) => Vec::new(),
         })
         .collect()
@@ -1552,7 +1552,11 @@ fn paint_layers(nodes: &[RenderNode]) -> Vec<&RenderPaintLayer> {
             | RenderNode::Alpha { children, .. } => paint_layers(children),
             RenderNode::PaintLayer(layer) => {
                 let mut layers = vec![layer];
-                layers.extend(paint_layers(&layer.children));
+                layers.extend(paint_layers(&layer.own_nodes));
+                layer
+                    .child_refs
+                    .iter()
+                    .for_each(|child| layers.extend(paint_layers(&child.nodes)));
                 layers
             }
             RenderNode::Primitive(_) => Vec::new(),

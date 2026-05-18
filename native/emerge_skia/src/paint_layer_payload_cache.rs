@@ -131,6 +131,7 @@ impl<P> PaintLayerPayloadCache<P> {
         self.new_payloads_remaining = self.config.max_new_payloads_per_frame;
     }
 
+    #[cfg(test)]
     pub fn config(&self) -> PaintLayerPayloadCacheConfig {
         self.config
     }
@@ -150,10 +151,12 @@ impl<P> PaintLayerPayloadCache<P> {
         false
     }
 
+    #[cfg(test)]
     pub fn contains_key(&self, key: &PaintLayerPayloadKey) -> bool {
         self.entries.contains_key(key)
     }
 
+    #[cfg(test)]
     pub fn try_store(
         &mut self,
         key: PaintLayerPayloadKey,

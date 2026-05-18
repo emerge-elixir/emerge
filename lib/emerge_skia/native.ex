@@ -310,8 +310,6 @@ defmodule EmergeSkia.Native do
           required(:admitted) => non_neg_integer(),
           required(:hits) => non_neg_integer(),
           required(:misses) => non_neg_integer(),
-          required(:moved_hits) => non_neg_integer(),
-          required(:moved_misses) => non_neg_integer(),
           required(:stores) => non_neg_integer(),
           required(:evictions) => non_neg_integer(),
           required(:stale_evictions) => non_neg_integer(),
@@ -334,17 +332,16 @@ defmodule EmergeSkia.Native do
           required(:rejected_fractional_placement) => non_neg_integer(),
           required(:rejected_unsupported_transform) => non_neg_integer(),
           required(:prepare) => duration_stats(),
-          required(:draw_hit) => duration_stats(),
-          required(:payload_copy) => duration_stats(),
-          required(:dirty_draw) => duration_stats(),
-          required(:child_layer) => duration_stats(),
-          required(:direct_fallback) => duration_stats()
+          required(:draw_hit) => duration_stats()
         }
 
   @type renderer_cache_stats :: %{
           required(:paint_layer) => renderer_cache_kind_stats()
         }
 
+  @typedoc """
+  Native stats payload. Current schema version: 15.
+  """
   @type stats_snapshot :: %{
           required(:version) => pos_integer(),
           required(:kind) => String.t(),

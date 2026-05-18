@@ -1,11 +1,11 @@
 # Plans
 
-Last updated: 2026-05-15.
+Last updated: 2026-05-18.
 
 This directory tracks active implementation notes and durable background
 research for native layout, renderer, and input/runtime work.
 
-Active implementation plan: `active-render-cache-audit-fixes.md`.
+Active implementation plan: none.
 
 Files with an `active-` prefix are reserved for open implementation slices;
 completed active plans are folded into this index or the durable reference notes
@@ -13,9 +13,27 @@ below.
 
 ## Files
 
+### `active-review-finding-fixes.md`
+
+Completed plan for fixing the local-diff review findings after code-bloat
+reduction. It bumped the stats schema to version 15, restored pixel-level
+render-output test coverage for dirty descendant paint refresh, fixed the
+paint-layer content split order bug exposed by that stronger test, and removed
+stale duplicate `uncached` layout benchmark labels after uncached wrapper
+removal.
+
+### `active-code-bloat-reduction.md`
+
+Completed plan for reducing code bloat and overcomplicated implementation paths
+after the retained layout/refresh and paint-layer cache work. It records the
+source/artifact measurements for deleted renderer cache stats/API plumbing,
+Hex package test-source exclusion, stale benchmark wrapper consolidation,
+canonical `RenderPaintLayer` content cleanup, shared paint-layer/fingerprint
+hash helpers, and the cache-layer overlap audit.
+
 ### `active-render-cache-audit-fixes.md`
 
-Active plan for fixing the renderer/cache review findings from the
+Completed plan for fixing the renderer/cache review findings from the
 `parent-render-cache` branch audit. It requires one behavior change at a time
 with matching before/after Criterion benchmark rows before moving to the next
 change.
@@ -128,6 +146,12 @@ documents below. Recently folded slices:
   Scaled Press registry rebuild fixes, slider glow/thumb regression tests, and
   the final benchmark gate recheck; full `./ci-tests.sh all` passed on
   2026-05-15
+- code-bloat reduction after retained layout/refresh and paint-layer cache work,
+  including removal of dead renderer cache stats/API plumbing, Hex package
+  native-test exclusion, stale layout benchmark wrapper consolidation,
+  canonical `RenderPaintLayer` content cleanup, shared paint-layer/fingerprint
+  hash helpers, retained cache-layer overlap audit, and final validation; full
+  `./ci-tests.sh all` passed on 2026-05-18
 
 ## Current repo state
 
@@ -257,8 +281,8 @@ The native layout-caching foundation is in place:
 - `RenderState::set_scene(...)` updates a scene and its derived paint-layer
   presence flag together, so Wayland, DRM, and macOS cannot silently bypass
   paint-layer cache traversal after installing a cacheable scene
-- render-cache regression benchmarks compare cached and uncached refresh paths,
-  including cold full layout+refresh after upload/switch, paint-only animation,
+- render-cache regression benchmarks cover retained refresh paths, including
+  cold full layout+refresh after upload/switch, paint-only animation,
   scroll-moving paint-layer reuse, and CPU neutral/no-benefit paths
 - event registry rebuilds have a conservative chunk-cache path with full-rebuild
   fallback for damaged/no-retained-cache and escape-nearby cases
