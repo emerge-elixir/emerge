@@ -56,10 +56,10 @@ Already implemented:
 - refresh-specific render/registry damage tracking with cached full-registry
   reuse when registry damage is clean
 - retained render subtree caching/skipping for clean render subtrees
-- render-cache regression guards comparing cached and uncached refresh paths,
-  including cold upload/switch paths, with dirty/full rebuild cache-store
-  deferral, damaged-no-cache fallback to the uncached renderer, and scroll-offset
-  cache bypass to avoid immediately stale retained scenes
+- render-cache regression guards for retained refresh paths, including cold
+  upload/switch paths, with dirty/full rebuild cache-store deferral,
+  damaged-no-cache direct rendering fallback, and scroll-offset cache bypass to
+  avoid immediately stale retained scenes
 
 Still open:
 

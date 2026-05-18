@@ -1,8 +1,8 @@
-# Active Review Finding Fixes
+# Review Finding Fixes
 
-## Status
+Last updated: 2026-05-18.
 
-Completed: 2026-05-18.
+Status: completed.
 
 ## Context
 

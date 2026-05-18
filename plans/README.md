@@ -7,13 +7,13 @@ research for native layout, renderer, and input/runtime work.
 
 Active implementation plan: none.
 
-Files with an `active-` prefix are reserved for open implementation slices;
-completed active plans are folded into this index or the durable reference notes
-below.
+Files with an `active-` prefix are reserved for open implementation slices.
+When a slice completes, either fold the useful details into this index or rename
+it to a durable non-active note before starting new work.
 
 ## Files
 
-### `active-review-finding-fixes.md`
+### `review-finding-fixes.md`
 
 Completed plan for fixing the local-diff review findings after code-bloat
 reduction. It bumped the stats schema to version 15, restored pixel-level
@@ -22,7 +22,7 @@ paint-layer content split order bug exposed by that stronger test, and removed
 stale duplicate `uncached` layout benchmark labels after uncached wrapper
 removal.
 
-### `active-code-bloat-reduction.md`
+### `code-bloat-reduction.md`
 
 Completed plan for reducing code bloat and overcomplicated implementation paths
 after the retained layout/refresh and paint-layer cache work. It records the
@@ -31,12 +31,11 @@ Hex package test-source exclusion, stale benchmark wrapper consolidation,
 canonical `RenderPaintLayer` content cleanup, shared paint-layer/fingerprint
 hash helpers, and the cache-layer overlap audit.
 
-### `active-render-cache-audit-fixes.md`
+### `render-cache-audit-fixes.md`
 
 Completed plan for fixing the renderer/cache review findings from the
-`parent-render-cache` branch audit. It requires one behavior change at a time
-with matching before/after Criterion benchmark rows before moving to the next
-change.
+`parent-render-cache` branch audit. It records the correctness fixes and
+matching before/after Criterion benchmark rows.
 
 ### `offscreen-paint-layer-cache-hits.md`
 
@@ -152,6 +151,11 @@ documents below. Recently folded slices:
   canonical `RenderPaintLayer` content cleanup, shared paint-layer/fingerprint
   hash helpers, retained cache-layer overlap audit, and final validation; full
   `./ci-tests.sh all` passed on 2026-05-18
+- review-finding cleanup after code-bloat reduction, including stats schema
+  version 15, pixel-level dirty-descendant paint refresh coverage, ordered
+  paint-layer content splitting after child paint-layer boundaries, and removal
+  of stale duplicate `uncached` layout benchmark labels; full
+  `./ci-tests.sh all` passed on 2026-05-18
 
 ## Current repo state
 
@@ -198,6 +202,10 @@ The native layout-caching foundation is in place:
   - `renderer_animation_log: true` enables separate Wayland animation cadence
     trace logs without coupling them to renderer stats logs
   - `Native.stats/2` and `EmergeSkia.stats/2` expose peek/take/reset snapshots
+  - current public stats payload schema is version 15; renderer paint-layer
+    stats keep aggregate admission/cache counters and `prepare`/`draw_hit`
+    timings, but no longer expose removed moved-hit/miss or stale timing
+    breakdown fields
 - macOS and Linux now share retained-tree update semantics through the
   `TreeUpdateEngine`: `TreeMsg` application, animation sample timing,
   frame-attrs preparation, refresh/recompute decisions, cached-registry reuse,
@@ -274,6 +282,10 @@ The native layout-caching foundation is in place:
   damage is clean
 - refresh scene rendering emits explicit paint layers from tree facts rather
   than renderer-side diffing or retained-subtree discovery
+- `RenderPaintLayer` content is canonicalized as `own_nodes` plus ordered
+  `child_refs`; content after the first nested paint-layer boundary is kept in
+  child refs so dirty child layers preserve paint order relative to later clean
+  siblings
 - paint-layer cache proof benchmarks are wired into Criterion for scrolling and
   animation; each case asserts cache store/hit behavior before measurement. The
   demo-like rich Borders showcase is also wired into Criterion layout animation
@@ -320,6 +332,8 @@ The native layout-caching foundation is in place:
 - slider layout reserves endpoint thumb space, supports custom SVG/image slots,
   and lets focus/shadow effects bleed outside non-scroll ancestor clips while
   preserving scroll-axis clipping
+- Hex package inputs include required native sources and assets while excluding
+  native Rust tests, benchmark-only fixtures, and external fixture payloads
 
 ## Next recommended implementation order
 
