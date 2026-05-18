@@ -8,61 +8,10 @@ research for native layout, renderer, and input/runtime work.
 Active implementation plan: none.
 
 Files with an `active-` prefix are reserved for open implementation slices.
-When a slice completes, either fold the useful details into this index or rename
-it to a durable non-active note before starting new work.
+When a slice completes, fold the useful details into this index or one of the
+durable reference notes below, then remove the completed implementation log.
 
 ## Files
-
-### `review-finding-fixes.md`
-
-Completed plan for fixing the local-diff review findings after code-bloat
-reduction. It bumped the stats schema to version 15, restored pixel-level
-render-output test coverage for dirty descendant paint refresh, fixed the
-paint-layer content split order bug exposed by that stronger test, and removed
-stale duplicate `uncached` layout benchmark labels after uncached wrapper
-removal.
-
-### `code-bloat-reduction.md`
-
-Completed plan for reducing code bloat and overcomplicated implementation paths
-after the retained layout/refresh and paint-layer cache work. It records the
-source/artifact measurements for deleted renderer cache stats/API plumbing,
-Hex package test-source exclusion, stale benchmark wrapper consolidation,
-canonical `RenderPaintLayer` content cleanup, shared paint-layer/fingerprint
-hash helpers, and the cache-layer overlap audit.
-
-### `render-cache-audit-fixes.md`
-
-Completed plan for fixing the renderer/cache review findings from the
-`parent-render-cache` branch audit. It records the correctness fixes and
-matching before/after Criterion benchmark rows.
-
-### `offscreen-paint-layer-cache-hits.md`
-
-Completed plan for paint-layer cache behavior when layout-affecting animation
-is outside the visible scroll viewport. It records the benchmark proof for
-steady cache hits without per-frame fixed-layer stores/evictions or offscreen
-dynamic redraw, plus scroll-away/scroll-back cache retention.
-
-The follow-up active plan supersedes the fixed-scroll-container direction for
-the real layout page topology: stable descendants inside the scroll container
-are the reusable cache units, not the scroll-container parent payload.
-
-### `composited-paint-layer-cache.md`
-
-Completed plan for the deterministic composited paint-layer cache work. It
-records the final correctness fixes for layout-transform AABB propagation,
-scroll-container payload generation, todo/list stale extents, the exact Borders
-benchmark gates, and the `store_payloads` stats interpretation.
-
-### `layout-refresh-optimization.md`
-
-Completed plan for the follow-up layout and refresh optimization slice after
-composited paint-layer rendering stabilized. It records the locked Borders,
-Layout, and Interaction showcase benchmarks, the retained-registry and
-retained-fragment cleanup, the virtual-key and Scaled Press lifecycle fixes,
-the slider glow/thumb regressions, and the final `./ci-tests.sh all` pass on
-2026-05-15.
 
 ### `layout-caching-roadmap.md`
 
@@ -134,6 +83,11 @@ documents below. Recently folded slices:
   focused paint-layer cache proof benchmarks for scrolling and animation, and
   rich Borders showcase Criterion coverage; full `./ci-tests.sh` passed on
   2026-05-13
+- renderer-cache audit fixes, including clipped non-cacheable parent layers
+  still rendering child paint layers, `max_stale_frames` honoring stale eviction
+  policy/stats, `min_visible_before_store` avoiding one-frame admission churn,
+  and cleanup of pending screenshot/debug artifacts; validation passed on
+  2026-05-15
 - offscreen paint-layer cache-hit fixes, including payload-clip-aware fixed
   static hashing/resource generation, visible fixed-segment preparation,
   offscreen dynamic redraw skipping, scroll-away/scroll-back moving payload
