@@ -1969,16 +1969,16 @@ impl ElementTree {
         let child_affects = self
             .child_ixs(ix)
             .into_iter()
-            .fold(false, |affects, child_ix| {
-                self.refresh_registry_subtree_affects_cache_ix(child_ix) || affects
-            });
+            .map(|child_ix| self.refresh_registry_subtree_affects_cache_ix(child_ix))
+            .fold(false, |affects, child_affects| affects | child_affects);
         let nearby_affects = self
             .nearby_ixs(ix)
             .into_iter()
-            .fold(false, |affects, mount| {
+            .map(|mount| {
                 let subtree_affects = self.refresh_registry_subtree_affects_cache_ix(mount.ix);
-                affects || mount.slot == NearbySlot::InFront || subtree_affects
-            });
+                (mount.slot == NearbySlot::InFront) | subtree_affects
+            })
+            .fold(false, |affects, mount_affects| affects | mount_affects);
         let affects = own_affects || child_affects || nearby_affects;
         if let Some(element) = self.get_ix_mut(ix) {
             element.refresh.registry_subtree_affects = affects;

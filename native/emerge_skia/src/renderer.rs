@@ -2396,7 +2396,7 @@ fn hash_visible_render_nodes(
     }
 
     nodes.iter().fold(true, |ready, node| {
-        hash_visible_render_node(node, renderer_cache, eligibility, alpha, hasher) && ready
+        hash_visible_render_node(node, renderer_cache, eligibility, alpha, hasher) & ready
     })
 }
 
