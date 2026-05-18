@@ -6,6 +6,23 @@
     "height": 4.0e3,
     "scale": 1.0
   },
+  "scenario": "scroll_rich",
+  "item_count": 100,
+  "node_count": 1814,
+  "text_node_count": 806,
+  "full_emrg_bytes": 127572,
+  "element_types": {
+    "text": 806,
+    "column": 68,
+    "el": 906,
+    "row": 34
+  },
+  "attr_families": {
+    "layout": 2658,
+    "nearby": 1,
+    "paint": 1529,
+    "measure": 806
+  },
   "patches": {
     "noop": {
       "byte_size": 0,
@@ -104,7 +121,7 @@
     },
     "nearby_slot_change": {
       "byte_size": 20,
-      "expected_invalidation": "structure",
+      "expected_invalidation": "resolve",
       "op_count": 1,
       "operation_counts": {
         "set_nearby_mounts": 1
@@ -120,22 +137,5 @@
       "operation_counts": {},
       "operations": []
     }
-  },
-  "node_count": 1814,
-  "scenario": "scroll_rich",
-  "item_count": 100,
-  "text_node_count": 806,
-  "full_emrg_bytes": 127572,
-  "element_types": {
-    "text": 806,
-    "column": 68,
-    "row": 34,
-    "el": 906
-  },
-  "attr_families": {
-    "nearby": 1,
-    "layout": 2658,
-    "paint": 1529,
-    "measure": 806
   }
 }

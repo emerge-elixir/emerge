@@ -6,6 +6,23 @@
     "height": 4.0e3,
     "scale": 1.0
   },
+  "scenario": "paint_rich",
+  "item_count": 100,
+  "node_count": 506,
+  "text_node_count": 202,
+  "full_emrg_bytes": 35211,
+  "element_types": {
+    "text": 202,
+    "column": 101,
+    "el": 202,
+    "wrapped_row": 1
+  },
+  "attr_families": {
+    "layout": 509,
+    "nearby": 1,
+    "paint": 1005,
+    "measure": 202
+  },
   "patches": {
     "noop": {
       "byte_size": 0,
@@ -104,7 +121,7 @@
     },
     "nearby_slot_change": {
       "byte_size": 20,
-      "expected_invalidation": "structure",
+      "expected_invalidation": "resolve",
       "op_count": 1,
       "operation_counts": {
         "set_nearby_mounts": 1
@@ -120,22 +137,5 @@
       "operation_counts": {},
       "operations": []
     }
-  },
-  "node_count": 506,
-  "scenario": "paint_rich",
-  "item_count": 100,
-  "text_node_count": 202,
-  "full_emrg_bytes": 35211,
-  "element_types": {
-    "text": 202,
-    "column": 101,
-    "el": 202,
-    "wrapped_row": 1
-  },
-  "attr_families": {
-    "nearby": 1,
-    "layout": 509,
-    "paint": 1005,
-    "measure": 202
   }
 }
