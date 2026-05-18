@@ -1,28 +1,27 @@
 {
-  "id": "nearby_rich_500",
+  "id": "nearby_code_hide_500",
   "size": 500,
   "constraint": {
     "width": 960.0,
     "height": 4.0e3,
     "scale": 1.0
   },
-  "scenario": "nearby_rich",
+  "scenario": "nearby_code_hide",
   "item_count": 100,
-  "node_count": 1406,
-  "text_node_count": 602,
-  "full_emrg_bytes": 87101,
+  "node_count": 608,
+  "text_node_count": 204,
+  "full_emrg_bytes": 36013,
   "element_types": {
-    "none": 100,
-    "text": 602,
-    "column": 1,
-    "el": 702,
-    "wrapped_row": 1
+    "text": 204,
+    "column": 3,
+    "el": 301,
+    "row": 100
   },
   "attr_families": {
-    "layout": 2309,
-    "nearby": 601,
-    "paint": 2005,
-    "measure": 702
+    "layout": 711,
+    "nearby": 1,
+    "paint": 507,
+    "measure": 405
   },
   "patches": {
     "noop": {
@@ -55,7 +54,7 @@
       ]
     },
     "text_content": {
-      "byte_size": 53,
+      "byte_size": 58,
       "expected_invalidation": "measure",
       "op_count": 1,
       "operation_counts": {
@@ -99,7 +98,7 @@
       ]
     },
     "insert_tail": {
-      "byte_size": 884,
+      "byte_size": 372,
       "expected_invalidation": "structure",
       "op_count": 1,
       "operation_counts": {
@@ -121,26 +120,22 @@
       ]
     },
     "nearby_slot_change": {
-      "byte_size": 20,
-      "expected_invalidation": "resolve",
+      "byte_size": 9,
+      "expected_invalidation": "paint",
       "op_count": 1,
       "operation_counts": {
-        "set_nearby_mounts": 1
+        "remove": 1
       },
       "operations": [
-        "set_nearby_mounts"
+        "remove"
       ]
     },
     "nearby_reorder": {
-      "byte_size": 6500,
-      "expected_invalidation": "resolve",
-      "op_count": 100,
-      "operation_counts": {
-        "set_nearby_mounts": 100
-      },
-      "operations": [
-        "set_nearby_mounts"
-      ]
+      "byte_size": 0,
+      "expected_invalidation": "none",
+      "op_count": 0,
+      "operation_counts": {},
+      "operations": []
     }
   }
 }

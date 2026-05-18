@@ -6,6 +6,23 @@
     "height": 4.0e3,
     "scale": 1.0
   },
+  "scenario": "list_text",
+  "item_count": 500,
+  "node_count": 1006,
+  "text_node_count": 502,
+  "full_emrg_bytes": 81194,
+  "element_types": {
+    "text": 502,
+    "column": 2,
+    "el": 2,
+    "row": 500
+  },
+  "attr_families": {
+    "layout": 1009,
+    "nearby": 1,
+    "paint": 505,
+    "measure": 502
+  },
   "patches": {
     "noop": {
       "byte_size": 0,
@@ -104,7 +121,7 @@
     },
     "nearby_slot_change": {
       "byte_size": 20,
-      "expected_invalidation": "structure",
+      "expected_invalidation": "resolve",
       "op_count": 1,
       "operation_counts": {
         "set_nearby_mounts": 1
@@ -120,22 +137,5 @@
       "operation_counts": {},
       "operations": []
     }
-  },
-  "node_count": 1006,
-  "scenario": "list_text",
-  "item_count": 500,
-  "text_node_count": 502,
-  "full_emrg_bytes": 81194,
-  "element_types": {
-    "text": 502,
-    "column": 2,
-    "row": 500,
-    "el": 2
-  },
-  "attr_families": {
-    "nearby": 1,
-    "layout": 1009,
-    "paint": 505,
-    "measure": 502
   }
 }

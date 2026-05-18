@@ -6,6 +6,24 @@
     "height": 4.0e3,
     "scale": 1.0
   },
+  "scenario": "animation_rich",
+  "item_count": 100,
+  "node_count": 206,
+  "text_node_count": 102,
+  "full_emrg_bytes": 33715,
+  "element_types": {
+    "text": 102,
+    "column": 1,
+    "el": 102,
+    "wrapped_row": 1
+  },
+  "attr_families": {
+    "layout": 409,
+    "nearby": 1,
+    "paint": 305,
+    "measure": 102,
+    "animation": 300
+  },
   "patches": {
     "noop": {
       "byte_size": 0,
@@ -104,7 +122,7 @@
     },
     "nearby_slot_change": {
       "byte_size": 20,
-      "expected_invalidation": "structure",
+      "expected_invalidation": "resolve",
       "op_count": 1,
       "operation_counts": {
         "set_nearby_mounts": 1
@@ -120,23 +138,5 @@
       "operation_counts": {},
       "operations": []
     }
-  },
-  "node_count": 206,
-  "scenario": "animation_rich",
-  "item_count": 100,
-  "text_node_count": 102,
-  "full_emrg_bytes": 33715,
-  "element_types": {
-    "text": 102,
-    "column": 1,
-    "el": 102,
-    "wrapped_row": 1
-  },
-  "attr_families": {
-    "nearby": 1,
-    "layout": 409,
-    "paint": 305,
-    "measure": 102,
-    "animation": 300
   }
 }
