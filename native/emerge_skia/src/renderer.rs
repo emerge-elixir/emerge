@@ -2384,6 +2384,7 @@ fn moving_layer_root_eligibility_for_surface(surface: &Surface) -> MovingLayerEl
     }
 }
 
+#[allow(clippy::unnecessary_fold)]
 fn hash_visible_render_nodes(
     nodes: &[RenderNode],
     renderer_cache: &RendererCacheManager,
@@ -2396,7 +2397,7 @@ fn hash_visible_render_nodes(
     }
 
     nodes.iter().fold(true, |ready, node| {
-        hash_visible_render_node(node, renderer_cache, eligibility, alpha, hasher) & ready
+        hash_visible_render_node(node, renderer_cache, eligibility, alpha, hasher) && ready
     })
 }
 
@@ -4307,7 +4308,6 @@ impl<'video> RenderTraversalMode<'video> for CacheTrackingRenderMode<'_, '_> {
 
 impl<'video> RenderTraversalMode<'video> for ChildPaintLayerRenderMode<'_, '_> {
     const TRACK_ELIGIBILITY: bool = true;
-    const RENDER_PRIMITIVES: bool = false;
 
     fn render_paint_layer<I: DrawInstrumentation>(
         &mut self,
@@ -6207,6 +6207,70 @@ mod tests {
         let mut pixels = vec![0u8; (width * height * 4) as usize];
         surface.read_pixels(&info, pixels.as_mut_slice(), (width * 4) as usize, (0, 0));
         (pixels, timings)
+    }
+
+    #[test]
+    fn cache_tracking_renders_ordered_child_ref_primitives_after_nested_paint_layer() {
+        let nested_layer = RenderPaintLayer::from_children(
+            2,
+            GeometryRect {
+                x: 0.0,
+                y: 20.0,
+                width: 80.0,
+                height: 20.0,
+            },
+            PaintLayerPlacement::Fixed,
+            PaintLayerPolicy::Cacheable,
+            PaintLayerReason::StableSubtree,
+            1,
+            vec![RenderNode::Primitive(DrawPrimitive::Rect(
+                0.0, 20.0, 80.0, 20.0, 0x00FF00FF,
+            ))],
+        );
+        let parent_layer = RenderPaintLayer::from_children(
+            1,
+            GeometryRect {
+                x: 0.0,
+                y: 0.0,
+                width: 80.0,
+                height: 60.0,
+            },
+            PaintLayerPlacement::Fixed,
+            PaintLayerPolicy::Cacheable,
+            PaintLayerReason::StableSubtree,
+            1,
+            vec![
+                RenderNode::Primitive(DrawPrimitive::Rect(0.0, 0.0, 80.0, 20.0, 0xFF0000FF)),
+                RenderNode::PaintLayer(nested_layer),
+                RenderNode::Primitive(DrawPrimitive::Rect(0.0, 40.0, 80.0, 20.0, 0x0000FFFF)),
+            ],
+        );
+        assert_eq!(parent_layer.own_nodes.len(), 1);
+        assert_eq!(parent_layer.child_refs.len(), 2);
+
+        let candidate_scene = RenderScene {
+            nodes: vec![RenderNode::PaintLayer(parent_layer)],
+        };
+        let expected_scene = RenderScene {
+            nodes: vec![
+                RenderNode::Primitive(DrawPrimitive::Rect(0.0, 0.0, 80.0, 20.0, 0xFF0000FF)),
+                RenderNode::Primitive(DrawPrimitive::Rect(0.0, 20.0, 80.0, 20.0, 0x00FF00FF)),
+                RenderNode::Primitive(DrawPrimitive::Rect(0.0, 40.0, 80.0, 20.0, 0x0000FFFF)),
+            ],
+        };
+        let expected = render_scene_graph_to_pixels(80, 60, expected_scene);
+        let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+            enabled: true,
+            ..RendererCacheConfig::default()
+        });
+        let (actual, _timings) = render_scene_graph_to_pixels_and_timings_with_renderer(
+            &mut renderer,
+            80,
+            60,
+            candidate_scene,
+        );
+
+        assert_eq!(actual, expected);
     }
 
     fn render_scene_graph_profiled(width: u32, height: u32, scene: RenderScene) -> RenderTimings {
