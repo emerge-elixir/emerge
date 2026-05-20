@@ -136,6 +136,8 @@ impl TreeUpdateEngine {
         let mut animation_sample_requested = false;
 
         for message in flat {
+            registry_requested |= message.requires_listener_registry_response();
+
             match message {
                 TreeMsg::Stop => return Ok(TreeUpdateEffect::Stop),
                 TreeMsg::Batch(_) => {
@@ -806,4 +808,66 @@ fn trace_element_snapshots(
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tree::{
+        attrs::{Attrs, Length},
+        element::{Element, ElementKind, Frame},
+    };
+
+    fn scrollable_tree_at_start() -> ElementTree {
+        let id = NodeId::from_term_bytes(vec![1]);
+        let attrs = Attrs {
+            width: Some(Length::Px(100.0)),
+            height: Some(Length::Px(100.0)),
+            scrollbar_y: Some(true),
+            scroll_y: Some(0.0),
+            scroll_y_max: Some(100.0),
+            ..Attrs::default()
+        };
+        let mut element = Element::with_attrs(id, ElementKind::El, Vec::new(), attrs);
+        element.layout.frame = Some(Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 100.0,
+            content_width: 100.0,
+            content_height: 200.0,
+        });
+
+        let mut tree = ElementTree::new();
+        tree.insert(element);
+        tree.set_root_id(id);
+        tree
+    }
+
+    #[test]
+    fn blocked_scroll_request_publishes_cached_registry_response() {
+        let id = NodeId::from_term_bytes(vec![1]);
+        let mut engine = TreeUpdateEngine::new(scrollable_tree_at_start(), 100, 100);
+        let options = TreeUpdateOptions::new(None, TreeUpdateDecodePolicy::ReturnErr);
+
+        assert!(matches!(
+            engine.process_messages(vec![TreeMsg::RebuildRegistry], options),
+            Ok(TreeUpdateEffect::Layout { .. })
+        ));
+
+        let options = TreeUpdateOptions::new(None, TreeUpdateDecodePolicy::ReturnErr);
+        let effect = engine.process_messages(
+            vec![TreeMsg::ScrollRequest {
+                element_id: id,
+                dx: 0.0,
+                dy: 10.0,
+            }],
+            options,
+        );
+
+        assert!(matches!(
+            effect,
+            Ok(TreeUpdateEffect::RegistryUpdate { .. })
+        ));
+    }
 }

@@ -2449,7 +2449,7 @@ mod tests {
     }
 
     #[test]
-    fn send_registry_update_does_not_block_when_event_channel_is_full() {
+    fn send_registry_update_waits_for_channel_capacity_instead_of_dropping() {
         let (event_tx, event_rx) = bounded(1);
         event_tx.send(EventMsg::Stop).unwrap();
 
@@ -2463,19 +2463,21 @@ mod tests {
             let _ = done_tx.send(());
         });
 
-        let completed = done_rx.recv_timeout(Duration::from_millis(100)).is_ok();
-
-        if completed {
-            assert!(matches!(event_rx.try_recv(), Ok(EventMsg::Stop)));
-        }
-
-        drop(event_rx);
-        let _ = handle.join();
-
         assert!(
-            completed,
-            "registry update send should not block when event channel is full"
+            done_rx.recv_timeout(Duration::from_millis(20)).is_err(),
+            "registry update send should wait while the event channel is full"
         );
+        assert!(matches!(event_rx.try_recv(), Ok(EventMsg::Stop)));
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(100)).is_ok(),
+            "registry update send should complete once capacity is available"
+        );
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::RegistryUpdate { .. })
+        ));
+
+        let _ = handle.join();
     }
 
     #[test]
