@@ -1869,9 +1869,8 @@ fn tree_upload_roundtrip<'a>(
 #[rustler::nif(schedule = "DirtyCpu")]
 fn tree_patch(tree_res: ResourceArc<TreeResource>, data: Binary) -> Result<bool, String> {
     let patches = tree::patch::decode_patches(data.as_slice()).map_err(|e| e.to_string())?;
-    let mut tree = clone_tree_resource(&tree_res)?;
+    let mut tree = tree_res.tree.lock().map_err(|_| tree_lock_error())?;
     tree::patch::apply_patches(&mut tree, patches)?;
-    replace_tree_resource(&tree_res, tree)?;
     Ok(true)
 }
 
