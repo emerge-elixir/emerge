@@ -190,10 +190,49 @@ mix format --check-formatted
 git diff --check
 ```
 
+## Overlay nearby registry invalidation follow-up
+
+Linux Wayland validation after the reliable-delivery change still reproduced a
+stuck-scroll case when dragging from the oversized canvas into nested scroll
+content and back. The remaining suspect was stale front-nearby interaction
+blockers from hover/code-preview overlays: every overlay nearby slot emits a
+registry blocker, but invalidation only treated `in_front` mounts as
+registry-relevant when the nearby subtree had no explicit listeners.
+
+Completed on 2026-05-20 after Linux Wayland validation confirmed this fixed
+both drag-scroll and wheel recovery for the oversized canvas / nested scroll
+retargeting case.
+
+Changes made:
+
+- Added a `NearbySlot::is_overlay()` helper for all slots painted above normal
+  content (`above`, `below`, `on_left`, `on_right`, `in_front`).
+- Nearby mount insertion/removal/reordering and registry-affects caches now
+  treat all overlay slots as registry-relevant, even for listener-free code
+  preview subtrees.
+- Added layout-cache regression tests for listener-free overlay nearby insert
+  and remove across all overlay slots, plus a behind-content guard that remains
+  registry-clean.
+- Updated layout-cache tests to preserve refresh-only layout behavior while
+  expecting registry invalidation for overlay nearby mount changes.
+
+Follow-up validation on 2026-05-20:
+
+```bash
+cargo test --manifest-path native/emerge_skia/Cargo.toml --lib listener_free_overlay -- --nocapture
+cargo test --manifest-path native/emerge_skia/Cargo.toml --lib listener_free_behind -- --nocapture
+cargo test --manifest-path native/emerge_skia/Cargo.toml --lib tree::layout::tests::cache -- --nocapture
+cargo test --manifest-path native/emerge_skia/Cargo.toml --lib
+cargo clippy --manifest-path native/emerge_skia/Cargo.toml -- -D warnings
+cargo fmt --manifest-path native/emerge_skia/Cargo.toml -- --check
+mix test
+mix format --check-formatted
+git diff --check
+```
+
 ## Open questions
 
 - For a biaxial drag release, should inertia remain primary-axis only for now,
   or should future work add two-axis inertial scroll state?
-- If one axis is blocked on the child but open on an ancestor, should biaxial
-  mode continue to allow per-axis propagation independently? The proposed split
-  dispatch does.
+- If one axis is blocked on the child but open on an ancestor, biaxial mode now
+  allows per-axis propagation independently through the split dispatch path.

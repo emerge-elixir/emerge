@@ -339,6 +339,13 @@ pub enum NearbySlot {
 }
 
 impl NearbySlot {
+    /// True for nearby slots painted above normal content. Overlay roots emit
+    /// pointer blockers even when their subtree has no explicit listeners, so
+    /// mounting/unmounting them is event-registry relevant.
+    pub fn is_overlay(self) -> bool {
+        !matches!(self, Self::BehindContent)
+    }
+
     pub fn from_tag(tag: u8) -> Option<Self> {
         match tag {
             1 => Some(Self::BehindContent),
@@ -1845,9 +1852,7 @@ impl ElementTree {
         self.nearby_mounts_for(host_id)
             .iter()
             .chain(new_mounts.iter())
-            .any(|mount| {
-                mount.slot == NearbySlot::InFront || self.subtree_affects_registry(&mount.id)
-            })
+            .any(|mount| mount.slot.is_overlay() || self.subtree_affects_registry(&mount.id))
     }
 
     pub(crate) fn nearby_subtree_can_skip_layout(&self, id: &NodeId) -> bool {
@@ -1957,9 +1962,10 @@ impl ElementTree {
                 .child_ixs(ix)
                 .into_iter()
                 .any(|child_ix| self.subtree_affects_registry_ix(child_ix))
-            || self.nearby_ixs(ix).into_iter().any(|mount| {
-                mount.slot == NearbySlot::InFront || self.subtree_affects_registry_ix(mount.ix)
-            })
+            || self
+                .nearby_ixs(ix)
+                .into_iter()
+                .any(|mount| mount.slot.is_overlay() || self.subtree_affects_registry_ix(mount.ix))
     }
 
     #[allow(clippy::unnecessary_fold)]
@@ -1978,7 +1984,7 @@ impl ElementTree {
             .into_iter()
             .fold(false, |affects, mount| {
                 let subtree_affects = self.refresh_registry_subtree_affects_cache_ix(mount.ix);
-                affects || mount.slot == NearbySlot::InFront || subtree_affects
+                affects || mount.slot.is_overlay() || subtree_affects
             });
         let affects = own_affects || child_affects || nearby_affects;
         if let Some(element) = self.get_ix_mut(ix) {
@@ -1992,9 +1998,10 @@ impl ElementTree {
         old_mounts: &[NearbyMountIx],
         new_mounts: &[NearbyMountIx],
     ) -> bool {
-        old_mounts.iter().chain(new_mounts.iter()).any(|mount| {
-            mount.slot == NearbySlot::InFront || self.subtree_affects_registry_ix(mount.ix)
-        })
+        old_mounts
+            .iter()
+            .chain(new_mounts.iter())
+            .any(|mount| mount.slot.is_overlay() || self.subtree_affects_registry_ix(mount.ix))
     }
 
     pub fn iter_nodes(&self) -> impl Iterator<Item = &Element> {

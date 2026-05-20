@@ -711,7 +711,7 @@ fn apply_patch(
             }
 
             let registry_relevant =
-                slot == NearbySlot::InFront || tree.subtree_affects_registry(&subtree_root_id);
+                slot.is_overlay() || tree.subtree_affects_registry(&subtree_root_id);
             let merged_mounts = tree.merge_live_nearby_with_ghosts(&host_id, live_mounts);
             tree.set_nearby_mounts(&host_id, merged_mounts)?;
             let restored_layout = tree.restore_detached_layout_subtree_cache(&subtree_root_id);
@@ -749,7 +749,7 @@ fn apply_patch(
             let parent_link = tree.ix_of(&id).and_then(|ix| tree.parent_link_of(ix));
             let nearby_registry_relevant = match parent_link {
                 Some(ParentLink::Nearby { slot, .. }) => {
-                    slot == NearbySlot::InFront || tree.subtree_affects_registry(&id)
+                    slot.is_overlay() || tree.subtree_affects_registry(&id)
                 }
                 _ => false,
             };

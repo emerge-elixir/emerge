@@ -3374,7 +3374,7 @@ fn test_nearby_slot_change_reuses_host_measure_cache() {
     )
     .unwrap();
 
-    assert_eq!(invalidation, TreeInvalidation::Paint);
+    assert_eq!(invalidation, TreeInvalidation::Registry);
     assert!(!tree.get(&host_id).unwrap().layout.measure_dirty);
     assert!(!tree.get(&host_id).unwrap().layout.measure_descendant_dirty);
     assert!(!tree.get(&root_id).unwrap().layout.measure_dirty);
@@ -3418,7 +3418,7 @@ fn test_nearby_slot_change_cached_resolve_matches_uncached_layout() {
         }],
     )
     .unwrap();
-    assert_eq!(invalidation, TreeInvalidation::Paint);
+    assert_eq!(invalidation, TreeInvalidation::Registry);
 
     let mut uncached = fixed_host_with_nearby_tree(true);
     let uncached_root_id = uncached.root_id().unwrap();
@@ -3489,7 +3489,7 @@ fn test_insert_nearby_subtree_keeps_host_measurement_clean() {
     )
     .unwrap();
 
-    assert_eq!(invalidation, TreeInvalidation::Paint);
+    assert_eq!(invalidation, TreeInvalidation::Registry);
     assert!(!tree.get(&host_id).unwrap().layout.measure_dirty);
     assert!(!tree.get(&host_id).unwrap().layout.measure_descendant_dirty);
     assert!(!tree.get(&root_id).unwrap().layout.measure_dirty);
@@ -3588,16 +3588,16 @@ fn test_reinserted_nearby_subtree_reuses_detached_layout_cache() {
             host_id,
             nearby_code_subtree("first", &["Code", "Border.width(2)", "Border.dashed()"]),
         ),
-        TreeInvalidation::Paint
+        TreeInvalidation::Registry
     );
     layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
 
     assert_eq!(
         replace_nearby_root(&mut tree, host_id, nearby_none_subtree("detached_hidden")),
-        TreeInvalidation::Paint
+        TreeInvalidation::Registry
     );
     assert!(tree.has_render_refresh_damage());
-    assert!(!tree.has_registry_refresh_damage());
+    assert!(tree.has_registry_refresh_damage());
     refresh(&mut tree);
 
     tree.set_layout_cache_stats_enabled(true);
@@ -3607,10 +3607,10 @@ fn test_reinserted_nearby_subtree_reuses_detached_layout_cache() {
             host_id,
             nearby_code_subtree("second", &["Code", "Border.width(2)", "Border.dashed()"]),
         ),
-        TreeInvalidation::Paint
+        TreeInvalidation::Registry
     );
     assert!(tree.has_render_refresh_damage());
-    assert!(!tree.has_registry_refresh_damage());
+    assert!(tree.has_registry_refresh_damage());
     layout_tree(
         &mut tree,
         Constraint::new(800.0, 600.0),
@@ -3640,7 +3640,7 @@ fn test_reinserted_nearby_subtree_changed_slot_misses_detached_layout_cache() {
             NearbySlot::Above,
             nearby_fill_width_subtree("slot_context_first"),
         ),
-        TreeInvalidation::Paint
+        TreeInvalidation::Registry
     );
     layout_and_refresh_default(&mut cached, Constraint::new(800.0, 600.0), 1.0);
 
@@ -3652,7 +3652,7 @@ fn test_reinserted_nearby_subtree_changed_slot_misses_detached_layout_cache() {
             NearbySlot::OnRight,
             nearby_fill_width_subtree("slot_context_second"),
         ),
-        TreeInvalidation::Paint
+        TreeInvalidation::Registry
     );
 
     let mut uncached = nearby_placeholder_tree("detached_slot_context");
@@ -3688,7 +3688,7 @@ fn test_reinserted_nearby_subtree_changed_host_misses_detached_layout_cache() {
             NearbySlot::Above,
             nearby_fill_width_subtree("host_context_first"),
         ),
-        TreeInvalidation::Paint
+        TreeInvalidation::Registry
     );
     layout_and_refresh_default(&mut cached, Constraint::new(800.0, 600.0), 1.0);
 
@@ -3708,7 +3708,7 @@ fn test_reinserted_nearby_subtree_changed_host_misses_detached_layout_cache() {
             ],
         )
         .unwrap(),
-        TreeInvalidation::Paint
+        TreeInvalidation::Registry
     );
 
     let mut uncached = nearby_two_host_placeholder_tree("detached_host_context");
@@ -3747,16 +3747,101 @@ fn test_nearby_registry_subtree_removal_keeps_registry_invalidation() {
     layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
     assert_eq!(
         replace_nearby_root(&mut tree, host_id, nearby_event_subtree("event_first")),
-        TreeInvalidation::Paint
+        TreeInvalidation::Registry
     );
     layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
 
     assert_eq!(
         replace_nearby_root(&mut tree, host_id, nearby_none_subtree("event_hidden")),
-        TreeInvalidation::Paint
+        TreeInvalidation::Registry
     );
     assert!(tree.has_render_refresh_damage());
     assert!(tree.has_registry_refresh_damage());
+}
+
+#[test]
+fn test_listener_free_overlay_nearby_insert_invalidates_registry_for_blockers() {
+    overlay_nearby_slots().into_iter().for_each(|slot| {
+        let mut tree = fixed_host_with_nearby_tree(false);
+        let root_id = tree.root_id().unwrap();
+        let host_id = tree.child_ids(&root_id)[0];
+
+        layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
+
+        let invalidation = apply_patches(
+            &mut tree,
+            vec![Patch::InsertNearbySubtree {
+                host_id,
+                index: 0,
+                slot,
+                subtree: nearby_code_subtree(
+                    &format!("listener_free_overlay_insert_{}", nearby_slot_seed(slot)),
+                    &["Code", "Border.width(2)", "Border.dashed()"],
+                ),
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(invalidation, TreeInvalidation::Registry, "slot {slot:?}");
+        assert!(
+            tree.has_registry_refresh_damage(),
+            "slot {slot:?} should dirty registry for overlay blockers"
+        );
+        assert!(
+            tree.has_render_refresh_damage(),
+            "slot {slot:?} should still repaint the overlay"
+        );
+        assert!(
+            !tree.get(&host_id).unwrap().layout.measure_dirty,
+            "slot {slot:?} should stay refresh-only for host layout"
+        );
+    });
+}
+
+#[test]
+fn test_listener_free_overlay_nearby_remove_invalidates_registry_for_blockers() {
+    overlay_nearby_slots().into_iter().for_each(|slot| {
+        let mut tree = nearby_placeholder_tree_in_slot(
+            &format!("listener_free_overlay_remove_{}", nearby_slot_seed(slot)),
+            slot,
+        );
+        let root_id = tree.root_id().unwrap();
+        let host_id = tree.child_ids(&root_id)[0];
+
+        layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
+        let nearby_id = tree.nearby_mounts_for(&host_id)[0].id;
+
+        let invalidation = apply_patches(&mut tree, vec![Patch::Remove { id: nearby_id }]).unwrap();
+
+        assert_eq!(invalidation, TreeInvalidation::Registry, "slot {slot:?}");
+        assert!(
+            tree.has_registry_refresh_damage(),
+            "slot {slot:?} should dirty registry for removed overlay blockers"
+        );
+        assert!(
+            tree.has_render_refresh_damage(),
+            "slot {slot:?} should still repaint after removal"
+        );
+    });
+}
+
+#[test]
+fn test_listener_free_behind_content_nearby_remove_keeps_registry_clean() {
+    let mut tree = nearby_placeholder_tree_in_slot(
+        "listener_free_behind_content_registry_guard",
+        NearbySlot::BehindContent,
+    );
+    let root_id = tree.root_id().unwrap();
+    let host_id = tree.child_ids(&root_id)[0];
+
+    layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
+    let nearby_id = tree.nearby_mounts_for(&host_id)[0].id;
+
+    let invalidation = apply_patches(&mut tree, vec![Patch::Remove { id: nearby_id }]).unwrap();
+
+    assert_eq!(invalidation, TreeInvalidation::Paint);
+    assert!(tree.has_render_refresh_damage());
+    assert!(!tree.has_registry_refresh_damage());
 }
 
 #[test]
@@ -4454,7 +4539,32 @@ fn fixed_host_with_nearby_tree(include_nearby: bool) -> ElementTree {
     tree
 }
 
+fn overlay_nearby_slots() -> [NearbySlot; 5] {
+    [
+        NearbySlot::Above,
+        NearbySlot::OnRight,
+        NearbySlot::Below,
+        NearbySlot::OnLeft,
+        NearbySlot::InFront,
+    ]
+}
+
+fn nearby_slot_seed(slot: NearbySlot) -> &'static str {
+    match slot {
+        NearbySlot::BehindContent => "behind_content",
+        NearbySlot::Above => "above",
+        NearbySlot::OnRight => "on_right",
+        NearbySlot::Below => "below",
+        NearbySlot::OnLeft => "on_left",
+        NearbySlot::InFront => "in_front",
+    }
+}
+
 fn nearby_placeholder_tree(seed: &str) -> ElementTree {
+    nearby_placeholder_tree_in_slot(seed, NearbySlot::Above)
+}
+
+fn nearby_placeholder_tree_in_slot(seed: &str, slot: NearbySlot) -> ElementTree {
     let mut tree = ElementTree::new();
     let root = make_element(
         &format!("{seed}_root"),
@@ -4483,7 +4593,7 @@ fn nearby_placeholder_tree(seed: &str) -> ElementTree {
     tree.set_nearby_mounts(
         &host_id,
         vec![NearbyMount {
-            slot: NearbySlot::Above,
+            slot,
             id: hidden_id,
         }],
     )

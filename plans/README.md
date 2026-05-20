@@ -135,7 +135,9 @@ documents below. Recently folded slices:
   validation passed on 2026-05-20
 - biaxial drag scrolling for oversized two-axis scroll containers, preserving a
   primary gesture axis for inertia while active drag movement dispatches X and Y
-  scroll components independently; validation passed on 2026-05-20
+  scroll components independently, plus Wayland stale-registry fixes for no-op
+  scroll responses, reliable registry delivery, and listener-free overlay nearby
+  blockers; validation passed on 2026-05-20
 
 ## Current repo state
 
@@ -169,9 +171,12 @@ The native layout-caching foundation is in place:
 - detached nearby layout cache restore is scoped by host id, slot, host frame,
   subtree signature, and scale so changed-host or changed-slot reinserts
   relayout instead of reusing stale absolute frames
-- non-registry nearby remove/restored-show changes classify as paint/render
-  damage so warmed code-preview hover toggles can use refresh-only scheduling
-  and cached registry reuse
+- behind-content non-registry nearby remove/restored-show changes classify as
+  paint/render damage so warmed decorative toggles can use refresh-only
+  scheduling and cached registry reuse; overlay nearby slots (`above`,
+  `below`, `on_left`, `on_right`, `in_front`) classify as registry-relevant
+  because their roots emit front-nearby interaction blockers even without
+  explicit listeners
 - subtree-measure cache keys use compact child topology dependency versions and
   intentionally ignore nearby topology; resolve/cache-render keys still include
   nearby topology where output can depend on ordering/placement

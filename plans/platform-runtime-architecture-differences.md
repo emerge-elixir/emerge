@@ -130,9 +130,9 @@ Consequences:
 | Render publication | `RenderMsg` to render thread | direct session render state update / dirty flag |
 | Backpressure risk | event/tree/render channels | local queue + host loop; no tree->event registry channel |
 
-## Why this matters for the current scroll bug
+## Why this mattered for the scroll-stuck bug
 
-The Linux Wayland report says:
+The Linux Wayland report said:
 
 - drag-scroll canvas
 - move into nested vertical scroll
@@ -176,7 +176,11 @@ boundary:
 
 ## Immediate implication
 
-For Linux Wayland stuck-scroll debugging, prioritize actor-channel registry
-reliability first. Still add shared tests at the `DirectEventRuntime` /
-`TreeUpdateEngine` boundary when possible so macOS remains covered for the
-shared parts of the behavior.
+The Linux Wayland stuck-scroll fix needed both sides of registry freshness:
+actor-channel registry updates must be reliable, and refreshed registries must
+be requested for every interaction layer change. Overlay nearby roots (`above`,
+`below`, `on_left`, `on_right`, `in_front`) emit blockers even without explicit
+listeners and therefore need registry invalidation when mounted, unmounted, or
+moved. Still add shared tests at the `DirectEventRuntime` / `TreeUpdateEngine`
+boundary when possible so macOS remains covered for the shared parts of the
+behavior.
