@@ -17,6 +17,20 @@ defmodule Emerge.Bench.ExternalFixtures do
     initial_tree = Showcase.View.layout()
     {full_bin, diff_state, _assigned} = Engine.encode_full(Engine.diff_state_new(), initial_tree)
 
+    dispatch_showcase_event!(app, :code_hover, :show, {:interaction, :key_listener})
+
+    wait_until!(fn ->
+      Solve.Lookup.solve(app, :code_hover).active == {:interaction, :key_listener}
+    end)
+
+    code_hover_key_listener_tree = Showcase.View.layout()
+
+    {code_hover_key_listener_full_bin, _code_hover_state, _assigned} =
+      Engine.encode_full(Engine.diff_state_new(), code_hover_key_listener_tree)
+
+    dispatch_showcase_event!(app, :code_hover, :hide, {:interaction, :key_listener})
+    wait_until!(fn -> Solve.Lookup.solve(app, :code_hover).active == nil end)
+
     dispatch_showcase_event!(app, :text_input, :changed, "quick brown foxa")
     wait_until!(fn -> Solve.Lookup.solve(app, :text_input).value == "quick brown foxa" end)
 
@@ -30,13 +44,20 @@ defmodule Emerge.Bench.ExternalFixtures do
     File.rm_rf!(fixture_dir)
     File.mkdir_p!(fixture_dir)
     File.write!(Path.join(fixture_dir, "full.emrg"), full_bin)
+
+    File.write!(
+      Path.join(fixture_dir, "code_hover_key_listener.full.emrg"),
+      code_hover_key_listener_full_bin
+    )
+
     File.write!(Path.join(fixture_dir, "virtual_key_text_echo.patch"), patch_bin)
     File.write!(Path.join(fixture_dir, "virtual_key_text_echo_reverse.patch"), reverse_patch_bin)
 
     IO.puts(
       "wrote #{Path.relative_to_cwd(fixture_dir)} " <>
         "full=#{byte_size(full_bin)}B patch=#{byte_size(patch_bin)}B " <>
-        "reverse=#{byte_size(reverse_patch_bin)}B"
+        "reverse=#{byte_size(reverse_patch_bin)}B " <>
+        "code_hover_key_listener=#{byte_size(code_hover_key_listener_full_bin)}B"
     )
   end
 

@@ -2045,7 +2045,10 @@ fn send_runtime_update(
         },
         log_render,
     );
-    true
+    // Runtime-only text state is paint/IME state and does not need a listener
+    // registry round trip. Returning false keeps registry reconciliation from
+    // leaving the listener lane stale when this is the only preservation update.
+    false
 }
 
 fn send_content_update(
@@ -5019,6 +5022,105 @@ mod tests {
             msg,
             TreeMsg::SetTextInputRuntime { element_id, cursor, selection_anchor, .. }
                 if *element_id == input_id && *cursor == Some(4) && *selection_anchor == Some(0)
+        )));
+    }
+
+    #[test]
+    fn direct_runtime_text_drag_cursor_updates_do_not_stale_listener_lane() {
+        let input_id = NodeId::from_term_bytes(vec![158]);
+        let attrs = Attrs {
+            content: Some("abcd".to_string()),
+            text_input_focused: Some(true),
+            text_input_cursor: Some(0),
+            focused_active: Some(true),
+            ..Attrs::default()
+        };
+        let element = with_interaction(make_element(158, ElementKind::TextInput, attrs));
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[element]),
+            text_inputs: HashMap::from([(input_id, make_text_input_state("abcd", 0, None, true))]),
+            sliders: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: Some(input_id),
+            focus_on_mount: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+        let _ = drain_msgs(&tree_rx);
+        assert!(!runtime.listener_lane.is_stale());
+
+        runtime.handle_input_event(
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: ACTION_PRESS,
+                mods: 0,
+                x: 0.0,
+                y: 10.0,
+            },
+            &tree_tx,
+            false,
+        );
+        assert!(runtime.runtime_overlay.text_drag.is_some());
+        assert!(!runtime.listener_lane.is_stale());
+        let _ = drain_msgs(&tree_rx);
+
+        runtime.handle_input_event(InputEvent::CursorPos { x: 96.0, y: 10.0 }, &tree_tx, false);
+
+        assert!(runtime.runtime_overlay.text_drag.is_some());
+        assert!(!runtime.listener_lane.is_stale());
+        let msgs = drain_msgs(&tree_rx);
+        assert!(msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetTextInputRuntime { element_id, selection_anchor, .. }
+                if *element_id == input_id && *selection_anchor == Some(0)
+        )));
+
+        runtime.handle_input_event(
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: ACTION_RELEASE,
+                mods: 0,
+                x: 96.0,
+                y: 10.0,
+            },
+            &tree_tx,
+            false,
+        );
+
+        assert!(runtime.runtime_overlay.text_drag.is_none());
+        assert!(!runtime.listener_lane.is_stale());
+    }
+
+    #[test]
+    fn direct_runtime_reconciled_text_runtime_update_does_not_stale_listener_lane() {
+        let input_id = NodeId::from_term_bytes(vec![159]);
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.listener_lane.stale = false;
+        runtime.focused_id = Some(input_id);
+        runtime
+            .text_states
+            .insert(input_id, make_text_input_state("abcd", 3, Some(0), true));
+
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::Registry::default(),
+            text_inputs: HashMap::from([(input_id, make_text_input_state("abcd", 1, None, true))]),
+            sliders: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: Some(input_id),
+            focus_on_mount: None,
+        };
+
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+
+        assert!(!runtime.listener_lane.is_stale());
+        let msgs = drain_msgs(&tree_rx);
+        assert!(msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetTextInputRuntime { element_id, cursor, selection_anchor, .. }
+                if *element_id == input_id && *cursor == Some(3) && *selection_anchor == Some(0)
         )));
     }
 

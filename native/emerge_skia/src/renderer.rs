@@ -1536,6 +1536,37 @@ fn render_nodes_have_shadow_pass(nodes: &[RenderNode]) -> bool {
     })
 }
 
+fn render_nodes_have_text(nodes: &[RenderNode]) -> bool {
+    nodes.iter().any(|node| match node {
+        RenderNode::ShadowPass { children }
+        | RenderNode::Clip { children, .. }
+        | RenderNode::RelaxedClip { children, .. }
+        | RenderNode::Transform { children, .. }
+        | RenderNode::Alpha { children, .. } => render_nodes_have_text(children),
+        RenderNode::PaintLayer(layer) => {
+            render_nodes_have_text(&layer.own_nodes)
+                || layer
+                    .child_refs
+                    .iter()
+                    .any(|child| render_nodes_have_text(&child.nodes))
+        }
+        RenderNode::Primitive(DrawPrimitive::TextWithFont(..)) => true,
+        RenderNode::Primitive(_) => false,
+    })
+}
+
+fn text_payload_gpu_composition_rejection(
+    layer: &RenderPaintLayer,
+    eligibility: MovingLayerEligibility,
+    gpu_composition: bool,
+) -> Option<RendererCacheRejectionReason> {
+    if !gpu_composition || !render_nodes_have_text(&layer.own_nodes) {
+        return None;
+    }
+
+    paint_layer_payload_composition_supported(eligibility.current_transform, false).err()
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct PaintLayerCacheAdmissionEstimate {
     primitive_cost: u64,
@@ -2202,6 +2233,7 @@ struct RenderTraversalOptions<'a> {
     video_state: &'a RendererVideoState,
     image_bleed_device_outset: f32,
     solid_border_fast_paths: bool,
+    active_clip: Option<ClipShape>,
 }
 
 impl<'a> RenderTraversalOptions<'a> {
@@ -2210,6 +2242,7 @@ impl<'a> RenderTraversalOptions<'a> {
             video_state,
             image_bleed_device_outset: 0.0,
             solid_border_fast_paths: true,
+            active_clip: None,
         }
     }
 
@@ -2223,6 +2256,13 @@ impl<'a> RenderTraversalOptions<'a> {
     fn with_solid_border_fast_paths(self, solid_border_fast_paths: bool) -> Self {
         Self {
             solid_border_fast_paths,
+            ..self
+        }
+    }
+
+    fn with_active_clip(self, active_clip: Option<ClipShape>) -> Self {
+        Self {
+            active_clip,
             ..self
         }
     }
@@ -2978,6 +3018,24 @@ impl SceneRenderer {
             return;
         }
 
+        if let Some(rejection) = text_payload_gpu_composition_rejection(
+            layer,
+            eligibility,
+            cache_tracking.gpu_context.is_some(),
+        ) {
+            cache_tracking.frame.mark_candidate(true);
+            cache_tracking.frame.record_rejection(rejection);
+            Self::render_paint_layer_direct_with_cache_tracking(
+                canvas,
+                layer,
+                options,
+                cache_tracking,
+                eligibility,
+                instrumentation,
+            );
+            return;
+        }
+
         if !eligibility.paint_attributes_eligible || resource_generation.is_none() || key.is_none()
         {
             cache_tracking.frame.mark_candidate(true);
@@ -3243,12 +3301,13 @@ impl SceneRenderer {
             }
             canvas.save();
             apply_clip_shape(canvas, &clip);
+            let child_options = options.with_active_clip(Some(clip));
             layer.child_refs.iter().for_each(|child| {
                 Self::render_nodes_in_mode(
                     canvas,
                     &child.nodes,
                     mode,
-                    options,
+                    child_options,
                     child_eligibility,
                     instrumentation,
                 );
@@ -3344,7 +3403,12 @@ impl SceneRenderer {
             -(payload_bounds.origin_y as f32),
         ));
         let mut instrumentation = NoDrawInstrumentation;
-        Self::render_paint_layer_own_nodes(canvas, own_nodes, options, &mut instrumentation);
+        Self::render_paint_layer_own_nodes(
+            canvas,
+            own_nodes,
+            options.with_active_clip(None),
+            &mut instrumentation,
+        );
         canvas.restore();
         let image = surface.image_snapshot();
 
@@ -3380,7 +3444,12 @@ impl SceneRenderer {
             -(payload_bounds.origin_y as f32),
         ));
         let mut instrumentation = NoDrawInstrumentation;
-        Self::render_paint_layer_own_nodes(canvas, own_nodes, options, &mut instrumentation);
+        Self::render_paint_layer_own_nodes(
+            canvas,
+            own_nodes,
+            options.with_active_clip(None),
+            &mut instrumentation,
+        );
         canvas.restore();
         let image = surface.image_snapshot();
 
@@ -3631,18 +3700,29 @@ impl SceneRenderer {
         } else {
             DrawDurationKind::Clips
         };
+        let skip_redundant_clip =
+            !relaxed && clips.len() == 1 && options.active_clip == Some(clips[0]);
         measure_draw(instrumentation, duration_kind, || {
             canvas.save();
-            for clip in clips {
-                if relaxed {
-                    apply_relaxed_clip_shape(canvas, clip);
-                } else {
-                    apply_clip_shape(canvas, clip);
+            if !skip_redundant_clip {
+                for clip in clips {
+                    if relaxed {
+                        apply_relaxed_clip_shape(canvas, clip);
+                    } else {
+                        apply_clip_shape(canvas, clip);
+                    }
                 }
             }
         });
 
-        let clipped_options = options.with_solid_border_fast_paths(false);
+        let active_clip = if skip_redundant_clip || (!relaxed && clips.len() == 1) {
+            Some(clips[0])
+        } else {
+            None
+        };
+        let clipped_options = options
+            .with_solid_border_fast_paths(false)
+            .with_active_clip(active_clip);
         for child in children {
             match child {
                 RenderNode::ShadowPass { children } => {
@@ -3660,11 +3740,13 @@ impl SceneRenderer {
                     );
                     measure_draw(instrumentation, duration_kind, || {
                         canvas.save();
-                        for clip in clips {
-                            if relaxed {
-                                apply_relaxed_clip_shape(canvas, clip);
-                            } else {
-                                apply_clip_shape(canvas, clip);
+                        if !skip_redundant_clip {
+                            for clip in clips {
+                                if relaxed {
+                                    apply_relaxed_clip_shape(canvas, clip);
+                                } else {
+                                    apply_clip_shape(canvas, clip);
+                                }
                             }
                         }
                     });
@@ -3728,7 +3810,7 @@ impl SceneRenderer {
             canvas,
             children,
             mode,
-            options,
+            options.with_active_clip(None),
             next_eligibility,
             instrumentation,
         );
@@ -4422,7 +4504,7 @@ fn apply_clip_shape(canvas: &skia_safe::Canvas, clip: &ClipShape) {
     let rect = Rect::from_xywh(clip.rect.x, clip.rect.y, clip.rect.width, clip.rect.height);
     match clip.radii {
         None => {
-            canvas.clip_rect(rect, skia_safe::ClipOp::Intersect, true);
+            canvas.clip_rect(rect, skia_safe::ClipOp::Intersect, false);
         }
         Some(CornerRadii { tl, tr, br, bl }) => {
             let radii = [
@@ -6210,6 +6292,81 @@ mod tests {
     }
 
     #[test]
+    fn rectangular_clip_is_idempotent_at_fractional_edges() {
+        let clip = ClipShape {
+            rect: GeometryRect {
+                x: 2.0,
+                y: 2.5,
+                width: 18.0,
+                height: 9.0,
+            },
+            radii: None,
+        };
+        let fill = RenderNode::Primitive(DrawPrimitive::Rect(0.0, 0.0, 24.0, 16.0, 0x3366CCFF));
+
+        let single_clip_scene = RenderScene {
+            nodes: vec![RenderNode::Clip {
+                clips: vec![clip],
+                children: vec![fill.clone()],
+            }],
+        };
+        let repeated_clip_scene = RenderScene {
+            nodes: vec![RenderNode::Clip {
+                clips: vec![clip],
+                children: vec![RenderNode::Clip {
+                    clips: vec![clip],
+                    children: vec![fill],
+                }],
+            }],
+        };
+
+        let single = render_scene_graph_to_pixels(24, 16, single_clip_scene);
+        let repeated = render_scene_graph_to_pixels(24, 16, repeated_clip_scene);
+
+        assert_eq!(repeated, single);
+    }
+
+    #[test]
+    fn rounded_clip_is_idempotent_at_fractional_edges() {
+        let clip = ClipShape {
+            rect: GeometryRect {
+                x: 2.0,
+                y: 2.5,
+                width: 18.0,
+                height: 9.0,
+            },
+            radii: Some(CornerRadii {
+                tl: 4.0,
+                tr: 4.0,
+                br: 4.0,
+                bl: 4.0,
+            }),
+        };
+        let fill = RenderNode::Primitive(DrawPrimitive::Rect(0.0, 0.0, 24.0, 16.0, 0x3366CCFF));
+
+        let single_clip_scene = RenderScene {
+            nodes: vec![RenderNode::Clip {
+                clips: vec![clip],
+                children: vec![fill.clone()],
+            }],
+        };
+        let repeated_clip_scene = RenderScene {
+            nodes: vec![RenderNode::Clip {
+                clips: vec![clip],
+                children: vec![RenderNode::Clip {
+                    clips: vec![clip],
+                    children: vec![fill],
+                }],
+            }],
+        };
+
+        let single = render_scene_graph_to_pixels(24, 16, single_clip_scene);
+        let repeated = render_scene_graph_to_pixels(24, 16, repeated_clip_scene);
+
+        assert_eq!(repeated, single);
+    }
+
+    #[test]
     fn cache_tracking_renders_ordered_child_ref_primitives_after_nested_paint_layer() {
         let nested_layer = RenderPaintLayer::from_children(
             2,
@@ -6271,6 +6428,50 @@ mod tests {
         );
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn text_payload_rejects_fractional_gpu_composition() {
+        let layer = RenderPaintLayer::from_children(
+            12,
+            GeometryRect {
+                x: 0.0,
+                y: 0.0,
+                width: 120.0,
+                height: 40.0,
+            },
+            PaintLayerPlacement::ScrollMoving,
+            PaintLayerPolicy::Cacheable,
+            PaintLayerReason::StableSubtree,
+            1,
+            vec![RenderNode::Primitive(DrawPrimitive::TextWithFont(
+                8.0,
+                20.0,
+                "Up: 0".to_string(),
+                14.0,
+                0xFFFFFFFF,
+                "default".to_string(),
+                400,
+                false,
+            ))],
+        );
+        let fractional_scroll =
+            MovingLayerEligibility::root().with_transform(Affine2::translation(0.0, -5335.513));
+        let integer_scroll =
+            MovingLayerEligibility::root().with_transform(Affine2::translation(0.0, -5336.0));
+
+        assert_eq!(
+            text_payload_gpu_composition_rejection(&layer, fractional_scroll, true),
+            Some(RendererCacheRejectionReason::FractionalPlacement)
+        );
+        assert_eq!(
+            text_payload_gpu_composition_rejection(&layer, integer_scroll, true),
+            None
+        );
+        assert_eq!(
+            text_payload_gpu_composition_rejection(&layer, fractional_scroll, false),
+            None
+        );
     }
 
     fn render_scene_graph_profiled(width: u32, height: u32, scene: RenderScene) -> RenderTimings {

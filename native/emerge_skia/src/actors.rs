@@ -143,6 +143,10 @@ impl TreeMsg {
     pub(crate) fn requires_listener_registry_response(&self) -> bool {
         match self {
             Self::SetMouseOverActive { .. } | Self::SetMouseDownActive { .. } => false,
+            // Cursor/selection/preedit changes are paint-only and are mirrored
+            // immediately by the event runtime, so text dragging must not wait
+            // for a registry round trip on every pointer move.
+            Self::SetTextInputRuntime { .. } => false,
             Self::AnimationPulse { .. } | Self::Stop => false,
             Self::Batch(messages) => messages
                 .iter()
@@ -157,7 +161,6 @@ impl TreeMsg {
             | Self::SetScrollbarYHover { .. }
             | Self::SetFocusedActive { .. }
             | Self::SetTextInputContent { .. }
-            | Self::SetTextInputRuntime { .. }
             | Self::SetSliderValue { .. }
             | Self::RebuildRegistry
             | Self::AssetStateChanged => true,
