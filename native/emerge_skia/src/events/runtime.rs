@@ -1635,6 +1635,7 @@ impl DirectEventRuntime {
                 origin_x,
                 origin_y,
                 swipe_handlers,
+                scroll_candidate,
             } => {
                 self.suppress_drag_release_inertia = false;
                 self.runtime_overlay.drag = registry_builder::DragTrackerState::Candidate {
@@ -1643,6 +1644,7 @@ impl DirectEventRuntime {
                     origin_x,
                     origin_y,
                     swipe_handlers,
+                    scroll_candidate,
                 };
             }
             RuntimeChange::PromoteDragTracker {
@@ -1651,6 +1653,7 @@ impl DirectEventRuntime {
                 last_x,
                 last_y,
                 locked_axis,
+                scroll_mode,
             } => {
                 self.suppress_drag_release_inertia = false;
                 self.cancel_inertial_scroll();
@@ -1660,6 +1663,7 @@ impl DirectEventRuntime {
                     last_x,
                     last_y,
                     locked_axis,
+                    scroll_mode,
                 };
                 self.sync_drag_motion_start(element_id, locked_axis, last_x, last_y, now);
             }
@@ -4071,6 +4075,128 @@ mod tests {
     }
 
     #[test]
+    fn direct_runtime_two_axis_element_drag_scrolls_both_axes_after_threshold() {
+        let attrs = Attrs {
+            scrollbar_x: Some(true),
+            scrollbar_y: Some(true),
+            scroll_x: Some(10.0),
+            scroll_y: Some(20.0),
+            scroll_x_max: Some(100.0),
+            scroll_y_max: Some(100.0),
+            ..Attrs::default()
+        };
+        let element = with_interaction(make_element(89, ElementKind::El, attrs));
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[element]),
+            text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+            focus_on_mount: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(32);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+        assert!(!runtime.listener_lane.is_stale());
+
+        runtime.handle_input_event(
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: crate::input::ACTION_PRESS,
+                mods: 0,
+                x: 10.0,
+                y: 10.0,
+            },
+            &tree_tx,
+            false,
+        );
+        assert!(drain_msgs(&tree_rx).is_empty());
+
+        runtime.handle_input_event(InputEvent::CursorPos { x: 30.0, y: 28.0 }, &tree_tx, false);
+        assert!(drain_msgs(&tree_rx).is_empty());
+
+        runtime.handle_input_event(InputEvent::CursorPos { x: 38.0, y: 35.0 }, &tree_tx, false);
+
+        let msgs = drain_msgs(&tree_rx);
+        assert!(msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::ScrollRequest { element_id, dx, dy }
+                if *element_id == NodeId::from_term_bytes(vec![89])
+                    && (*dx - 8.0).abs() < f32::EPSILON
+                    && dy.abs() < f32::EPSILON
+        )));
+        assert!(msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::ScrollRequest { element_id, dx, dy }
+                if *element_id == NodeId::from_term_bytes(vec![89])
+                    && dx.abs() < f32::EPSILON
+                    && (*dy - 7.0).abs() < f32::EPSILON
+        )));
+    }
+
+    #[test]
+    fn direct_runtime_two_axis_drag_at_blocked_edge_scrolls_after_reversing() {
+        let attrs = Attrs {
+            scrollbar_x: Some(true),
+            scrollbar_y: Some(true),
+            scroll_x: Some(0.0),
+            scroll_y: Some(0.0),
+            scroll_x_max: Some(100.0),
+            scroll_y_max: Some(100.0),
+            ..Attrs::default()
+        };
+        let element = with_interaction(make_element(90, ElementKind::El, attrs));
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[element]),
+            text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+            focus_on_mount: None,
+        };
+
+        let (tree_tx, tree_rx) = bounded(32);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+        assert!(!runtime.listener_lane.is_stale());
+
+        runtime.handle_input_event(
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: crate::input::ACTION_PRESS,
+                mods: 0,
+                x: 10.0,
+                y: 10.0,
+            },
+            &tree_tx,
+            false,
+        );
+        assert!(drain_msgs(&tree_rx).is_empty());
+
+        runtime.handle_input_event(InputEvent::CursorPos { x: 30.0, y: 28.0 }, &tree_tx, false);
+        assert!(drain_msgs(&tree_rx).is_empty());
+
+        runtime.handle_input_event(InputEvent::CursorPos { x: 22.0, y: 20.0 }, &tree_tx, false);
+
+        let msgs = drain_msgs(&tree_rx);
+        assert!(msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::ScrollRequest { element_id, dx, dy }
+                if *element_id == NodeId::from_term_bytes(vec![90])
+                    && (*dx + 8.0).abs() < f32::EPSILON
+                    && dy.abs() < f32::EPSILON
+        )));
+        assert!(msgs.iter().any(|msg| matches!(
+            msg,
+            TreeMsg::ScrollRequest { element_id, dx, dy }
+                if *element_id == NodeId::from_term_bytes(vec![90])
+                    && dx.abs() < f32::EPSILON
+                    && (*dy + 8.0).abs() < f32::EPSILON
+        )));
+    }
+
+    #[test]
     fn direct_runtime_rotated_drag_scroll_uses_local_scroll_axis() {
         let attrs = Attrs {
             scrollbar_y: Some(true),
@@ -4145,6 +4271,7 @@ mod tests {
             last_x: 10.0,
             last_y: 10.0,
             locked_axis: GestureAxis::Horizontal,
+            scroll_mode: registry_builder::DragScrollMode::Locked,
         };
         runtime.sync_drag_motion_start(element_id, GestureAxis::Horizontal, 10.0, 10.0, now);
         runtime.update_drag_motion(40.0, 10.0, now + Duration::from_millis(20));
