@@ -31,7 +31,7 @@ impl ClipboardManager {
     pub fn set_text(&mut self, target: ClipboardTarget, text: &str) {
         self.set_fallback(target, text);
 
-        if self.system_enabled {
+        if self.system_enabled_for_target(target) {
             #[cfg(all(feature = "wayland", target_os = "linux"))]
             if let Some(system) = self.system_mut() {
                 let _ = set_system_text(system, target, text);
@@ -46,7 +46,7 @@ impl ClipboardManager {
 
     pub fn get_text(&mut self, target: ClipboardTarget) -> Option<String> {
         #[cfg(all(feature = "wayland", target_os = "linux"))]
-        if self.system_enabled
+        if self.system_enabled_for_target(target)
             && let Some(system) = self.system_mut()
             && let Ok(text) = get_system_text(system, target)
         {
@@ -63,6 +63,15 @@ impl ClipboardManager {
         }
 
         self.get_fallback(target)
+    }
+
+    fn system_enabled_for_target(&self, target: ClipboardTarget) -> bool {
+        // Primary selection changes while dragging text, often once per pointer
+        // move. On Wayland, arboard primary-selection ownership can block long
+        // enough to stall the event runtime. Keep primary selection in the
+        // in-process fallback store; regular clipboard copy/paste may still use
+        // the system clipboard.
+        self.system_enabled && target != ClipboardTarget::Primary
     }
 
     #[cfg(all(feature = "wayland", target_os = "linux"))]
@@ -194,6 +203,14 @@ mod tests {
 
         let pasted = manager.get_text(ClipboardTarget::Primary);
         assert_eq!(pasted.as_deref(), Some("primary value"));
+    }
+
+    #[test]
+    fn system_clipboard_does_not_handle_primary_selection() {
+        let manager = ClipboardManager::new(true);
+
+        assert!(manager.system_enabled_for_target(ClipboardTarget::Clipboard));
+        assert!(!manager.system_enabled_for_target(ClipboardTarget::Primary));
     }
 
     #[test]
