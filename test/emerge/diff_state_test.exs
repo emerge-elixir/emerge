@@ -20,6 +20,132 @@ defmodule Emerge.Engine.DiffStateTest do
     assert assigned.id == next_state.tree.id
   end
 
+  test "diff_state_update_binary matches public patch output without assigned tree" do
+    state = Emerge.Engine.diff_state_new()
+
+    layout1 =
+      column([key(:root)], [
+        el([key(:a), Event.on_click({self(), :clicked})], text("one")),
+        el([key(:b)], text("two"))
+      ])
+
+    {_bin1, state, _assigned1} = Emerge.Engine.encode_full(state, layout1)
+
+    layout2 =
+      column([key(:root)], [
+        el([key(:b)], text("two")),
+        el([key(:a), Event.on_click({self(), :clicked})], text("changed")),
+        el([key(:c)], text("three"))
+      ])
+
+    {public_bin, public_state, _assigned2} = Emerge.Engine.diff_state_update(state, layout2)
+    {runtime_bin, runtime_state} = Emerge.Engine.diff_state_update_binary(state, layout2)
+
+    assert runtime_bin == public_bin
+    assert runtime_state.tree == nil
+    assert runtime_state.vdom == public_state.vdom
+    assert runtime_state.next_id == public_state.next_id
+    assert runtime_state.event_registry == public_state.event_registry
+  end
+
+  test "diff_state_update_binary keeps event registry in sync across event-heavy mutations" do
+    initial =
+      column([key(:root)], [
+        el(
+          [
+            key(:a),
+            Event.on_click({self(), :a_clicked}),
+            Event.on_key_down(:enter, {self(), :a_enter})
+          ],
+          text("a")
+        ),
+        el(
+          [
+            key(:b),
+            Event.virtual_key(tap: {:text, "b"}, hold: {:event, {self(), :b_hold}})
+          ],
+          text("b")
+        ),
+        el(
+          [
+            key(:host),
+            Nearby.above(el([key(:tip), Event.on_mouse_enter({self(), :tip_enter})], text("tip")))
+          ],
+          text("host")
+        )
+      ])
+
+    {_bin, public_state, _assigned} =
+      Emerge.Engine.encode_full(Emerge.Engine.diff_state_new(), initial)
+
+    runtime_state = public_state
+
+    variants = [
+      initial,
+      column([key(:root)], [
+        el([key(:a), Event.on_click({self(), :a_clicked_next})], text("a changed")),
+        el([key(:b)], text("b")),
+        el(
+          [
+            key(:host),
+            Nearby.below(el([key(:tip), Event.on_mouse_leave({self(), :tip_left})], text("tip")))
+          ],
+          text("host")
+        )
+      ]),
+      column([key(:root)], [
+        el(
+          [
+            key(:host),
+            Nearby.below(el([key(:tip), Event.on_mouse_leave({self(), :tip_left})], text("tip")))
+          ],
+          text("host")
+        ),
+        el([key(:a), Event.on_click({self(), :a_clicked_next})], text("a changed")),
+        el([key(:c), Event.on_focus({self(), :c_focus})], text("c"))
+      ]),
+      column([key(:root)], [
+        el([key(:a)], text("a changed")),
+        el([key(:c), Event.on_focus({self(), :c_focus})], text("c"))
+      ])
+    ]
+
+    Enum.reduce(variants, {public_state, runtime_state}, fn layout,
+                                                            {public_state, runtime_state} ->
+      {public_bin, public_state, _assigned} =
+        Emerge.Engine.diff_state_update(public_state, layout)
+
+      {runtime_bin, runtime_state} = Emerge.Engine.diff_state_update_binary(runtime_state, layout)
+
+      assert runtime_bin == public_bin
+      assert runtime_state.tree == nil
+      assert runtime_state.vdom == public_state.vdom
+      assert runtime_state.next_id == public_state.next_id
+      assert runtime_state.event_registry == public_state.event_registry
+
+      {public_state, runtime_state}
+    end)
+  end
+
+  test "reconcile_patches_and_event_registry/3 builds a complete registry" do
+    layout =
+      column([key(:root)], [
+        el([key(:a), Event.on_click({self(), :a_clicked})], text("a")),
+        el([key(:b), Event.on_focus({self(), :b_focused})], text("b"))
+      ])
+
+    {_bin, state, assigned} = Emerge.Engine.encode_full(Emerge.Engine.diff_state_new(), layout)
+
+    {_vdom, _patches, registry, _next_id} =
+      Emerge.Engine.Reconcile.reconcile_patches_and_event_registry(
+        state.vdom,
+        layout,
+        state.next_id
+      )
+
+    assert registry == Emerge.Engine.DiffState.build_event_registry(assigned)
+  end
+
   test "encode_full returns a full-tree binary and updates state" do
     state = Emerge.Engine.diff_state_new()
 

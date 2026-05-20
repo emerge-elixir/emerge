@@ -77,6 +77,8 @@ defmodule Emerge.MixProject do
       bench: ["bench.fixtures", "bench.engine", "bench.native"],
       "bench.engine": ["bench.engine.diff", "bench.engine.serialization"],
       "bench.engine.diff": ["run bench/engine_diff_bench.exs"],
+      "bench.engine.update_breakdown": ["run bench/engine_update_breakdown_bench.exs"],
+      "bench.engine.update_compare": ["run bench/engine_update_compare_bench.exs"],
       "bench.engine.serialization": ["run bench/serialization_bench.exs"],
       "bench.fixtures": ["run bench/generate_fixtures.exs"],
       "bench.native": [
@@ -98,6 +100,8 @@ defmodule Emerge.MixProject do
       bench: :dev,
       "bench.engine": :dev,
       "bench.engine.diff": :dev,
+      "bench.engine.update_breakdown": :dev,
+      "bench.engine.update_compare": :dev,
       "bench.engine.serialization": :dev,
       "bench.fixtures": :dev,
       "bench.native": :dev,

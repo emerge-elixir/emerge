@@ -3,9 +3,8 @@ defmodule Emerge.Engine.DiffState do
   Stateful diff helper that keeps numeric id assignments stable.
   """
 
-  alias Emerge.Engine.NodeId
+  alias Emerge.Engine.EventRegistry
   alias Emerge.Engine.Reconcile
-  alias Emerge.Engine.Tree.Nearby
   alias Emerge.Engine.VNode
 
   @type t :: %__MODULE__{
@@ -53,6 +52,34 @@ defmodule Emerge.Engine.DiffState do
         next_id: next_id
       },
       assigned
+    }
+  end
+
+  @doc """
+  Compute patches for a new tree without constructing a full assigned tree.
+
+  This is intended for runtime renderer updates that only need the patch binary
+  and next diff state. Insert patches still encode assigned inserted subtrees.
+  """
+  @spec diff_and_encode_binary(t(), Emerge.Engine.Element.t()) :: {binary(), t()}
+  def diff_and_encode_binary(%__MODULE__{} = state, tree) do
+    {vdom, patches, event_registry, next_id} =
+      Reconcile.reconcile_patches_and_event_registry(
+        state.vdom,
+        tree,
+        state.next_id,
+        state.event_registry
+      )
+
+    {
+      Emerge.Engine.Patch.encode(patches),
+      %__MODULE__{
+        state
+        | tree: nil,
+          vdom: vdom,
+          event_registry: event_registry,
+          next_id: next_id
+      }
     }
   end
 
@@ -105,92 +132,5 @@ defmodule Emerge.Engine.DiffState do
     end
   end
 
-  def build_event_registry(tree) do
-    tree
-    |> collect_event_handlers(%{})
-  end
-
-  defp collect_event_handlers(%Emerge.Engine.Element{} = element, acc) do
-    acc
-    |> register_event(element, :on_click, :click)
-    |> register_event(element, :on_press, :press)
-    |> register_event(element, :on_swipe_up, :swipe_up)
-    |> register_event(element, :on_swipe_down, :swipe_down)
-    |> register_event(element, :on_swipe_left, :swipe_left)
-    |> register_event(element, :on_swipe_right, :swipe_right)
-    |> register_event(element, :on_mouse_down, :mouse_down)
-    |> register_event(element, :on_mouse_up, :mouse_up)
-    |> register_event(element, :on_mouse_enter, :mouse_enter)
-    |> register_event(element, :on_mouse_leave, :mouse_leave)
-    |> register_event(element, :on_mouse_move, :mouse_move)
-    |> register_event(element, :on_change, :change)
-    |> register_event(element, :on_focus, :focus)
-    |> register_event(element, :on_blur, :blur)
-    |> register_virtual_key_hold_event(element)
-    |> register_key_events(element, :on_key_down, :key_down)
-    |> register_key_events(element, :on_key_up, :key_up)
-    |> register_key_events(element, :on_key_press, :key_press)
-    |> then(fn registry ->
-      registry =
-        Enum.reduce(element.children, registry, fn child, next_registry ->
-          collect_event_handlers(child, next_registry)
-        end)
-
-      Enum.reduce(Nearby.nearby_children(element), registry, fn {_slot, child}, next_registry ->
-        collect_event_handlers(child, next_registry)
-      end)
-    end)
-  end
-
-  defp register_event(acc, element, attr, event) do
-    case Map.get(element.attrs, attr) do
-      {pid, msg} when is_pid(pid) ->
-        id_bin = NodeId.encode(element.id)
-
-        Map.update(acc, id_bin, %{event => {pid, msg}}, fn events ->
-          Map.put(events, event, {pid, msg})
-        end)
-
-      _ ->
-        acc
-    end
-  end
-
-  defp register_key_events(acc, element, attr, event_type) do
-    case Map.get(element.attrs, attr) do
-      bindings when is_list(bindings) ->
-        Enum.reduce(bindings, acc, fn binding, next_acc ->
-          register_key_event(next_acc, element, event_type, binding)
-        end)
-
-      _ ->
-        acc
-    end
-  end
-
-  defp register_key_event(acc, element, event_type, %{route: route, payload: {pid, msg}})
-       when is_binary(route) and is_pid(pid) do
-    id_bin = NodeId.encode(element.id)
-    event = {event_type, route}
-
-    Map.update(acc, id_bin, %{event => {pid, msg}}, fn events ->
-      Map.put(events, event, {pid, msg})
-    end)
-  end
-
-  defp register_key_event(acc, _element, _event_type, _binding), do: acc
-
-  defp register_virtual_key_hold_event(acc, element) do
-    case Map.get(element.attrs, :virtual_key) do
-      %{hold: {:event, {pid, msg}}} when is_pid(pid) ->
-        id_bin = NodeId.encode(element.id)
-
-        Map.update(acc, id_bin, %{virtual_key_hold: {pid, msg}}, fn events ->
-          Map.put(events, :virtual_key_hold, {pid, msg})
-        end)
-
-      _ ->
-        acc
-    end
-  end
+  def build_event_registry(tree), do: EventRegistry.build(tree)
 end

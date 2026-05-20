@@ -4,6 +4,7 @@ defmodule Emerge.Engine.Reconcile do
   """
 
   alias Emerge.Engine.Element
+  alias Emerge.Engine.EventRegistry
   alias Emerge.Engine.Patch
   alias Emerge.Engine.Tree.Attrs, as: TreeAttrs
   alias Emerge.Engine.VNode
@@ -78,6 +79,93 @@ defmodule Emerge.Engine.Reconcile do
     end
   end
 
+  @doc """
+  Reconcile a new tree against the previous vdom without constructing a full
+  assigned `%Element{}` tree.
+
+  This is the runtime hot path: it returns the next vdom, patch list, and next
+  id counter. Insert patches still carry assigned inserted subtrees because the
+  patch wire format needs ids for new nodes.
+  """
+  @spec reconcile_patches(VNode.t() | nil, Element.t(), non_neg_integer()) ::
+          {VNode.t(), [Patch.patch()], non_neg_integer()}
+  def reconcile_patches(old_vnode, %Element{} = element, next_id)
+      when is_integer(next_id) and next_id > 0 do
+    {vnode, patches, _event_registry, next_id} =
+      reconcile_patches_optional_event_registry(old_vnode, element, next_id, nil)
+
+    {vnode, patches, next_id}
+  end
+
+  @doc false
+  @spec reconcile_patches_and_event_registry(VNode.t() | nil, Element.t(), non_neg_integer()) ::
+          {VNode.t(), [Patch.patch()], EventRegistry.t(), non_neg_integer()}
+  def reconcile_patches_and_event_registry(old_vnode, %Element{} = element, next_id)
+      when is_integer(next_id) and next_id > 0 do
+    {vnode, patches, next_id} = reconcile_patches(old_vnode, element, next_id)
+    {vnode, patches, EventRegistry.build(vnode), next_id}
+  end
+
+  @doc false
+  @spec reconcile_patches_and_event_registry(
+          VNode.t() | nil,
+          Element.t(),
+          non_neg_integer(),
+          EventRegistry.t()
+        ) :: {VNode.t(), [Patch.patch()], EventRegistry.t(), non_neg_integer()}
+  def reconcile_patches_and_event_registry(
+        old_vnode,
+        %Element{} = element,
+        next_id,
+        event_registry
+      )
+      when is_integer(next_id) and next_id > 0 and is_map(event_registry) do
+    reconcile_patches_optional_event_registry(old_vnode, element, next_id, event_registry)
+  end
+
+  defp reconcile_patches_optional_event_registry(old_vnode, element, next_id, event_registry) do
+    validate_viewport_root!(element)
+
+    ctx =
+      %{
+        next_id: next_id,
+        seen: MapSet.new(),
+        assign_tree?: false,
+        old_key_index: if(is_nil(old_vnode), do: %{}, else: build_old_key_index(old_vnode))
+      }
+      |> maybe_init_event_registry(event_registry)
+
+    case old_vnode do
+      nil ->
+        ctx = reset_event_registry(ctx)
+        {vnode, _assigned, ctx} = build_fresh_subtree_for_patches(element, ctx)
+        {vnode, [], event_registry(ctx), ctx.next_id}
+
+      %VNode{} = old ->
+        if reusable_root?(old, element) do
+          {vnode, patches, _assigned, ctx} = reconcile_matched_node(old, element, ctx)
+          {vnode, patches, event_registry(ctx), ctx.next_id}
+        else
+          ctx = reset_event_registry(ctx)
+          {vnode, assigned, ctx} = build_fresh_subtree_for_patches(element, ctx)
+
+          {vnode, [{:remove, old.id}, {:insert_subtree, nil, 0, assigned}], event_registry(ctx),
+           ctx.next_id}
+        end
+    end
+  end
+
+  defp maybe_init_event_registry(ctx, nil), do: ctx
+
+  defp maybe_init_event_registry(ctx, event_registry) when is_map(event_registry),
+    do: Map.put(ctx, :event_registry, event_registry)
+
+  defp reset_event_registry(%{event_registry: _registry} = ctx), do: %{ctx | event_registry: %{}}
+  defp reset_event_registry(ctx), do: ctx
+
+  defp event_registry(%{event_registry: registry}), do: registry
+  defp event_registry(_ctx), do: %{}
+
   defp reconcile_matched_node(%VNode{} = old, %Element{} = element, ctx) do
     key = element_key(element)
     ctx = ensure_unique_key!(ctx, key)
@@ -89,6 +177,7 @@ defmodule Emerge.Engine.Reconcile do
       reconcile_nearby(old.nearby, element.nearby, old.id, ctx)
 
     new_attrs = element.attrs
+    events = vnode_events(old, new_attrs)
 
     parent_patches =
       []
@@ -109,19 +198,15 @@ defmodule Emerge.Engine.Reconcile do
       kind: element.type,
       key: key,
       attrs: new_attrs,
+      events: events,
       children: child_vnodes,
       nearby: nearby_vnodes
     }
 
-    assigned = %{
-      element
-      | id: old.id,
-        attrs: new_attrs,
-        children: child_elements,
-        nearby: nearby_elements
-    }
+    assigned =
+      maybe_assign_element(ctx, element, old.id, new_attrs, child_elements, nearby_elements)
 
-    {vnode, patches, assigned, ctx}
+    {vnode, patches, assigned, maybe_update_event_node(ctx, old.id, old.events, events)}
   end
 
   defp reconcile_children(old_children, new_children, parent_node_id, ctx) do
@@ -147,7 +232,7 @@ defmodule Emerge.Engine.Reconcile do
         %{}
       )
 
-    patches_rev = prepend_removed_children(old_children, used_old_ids, patches_rev)
+    {patches_rev, ctx} = prepend_removed_children(old_children, used_old_ids, patches_rev, ctx)
 
     {Enum.reverse(vnodes_rev), Enum.reverse(elements_rev), Enum.reverse(patches_rev), ctx}
   end
@@ -190,13 +275,13 @@ defmodule Emerge.Engine.Reconcile do
           parent_node_id,
           ctx,
           [vnode | vnodes_rev],
-          [assigned | elements_rev],
+          prepend_assigned(ctx, assigned, elements_rev),
           prepend_many(patches_rev, child_patches),
           Map.put(used_old_ids, old_child.id, true)
         )
 
       _ ->
-        {vnode, assigned, ctx} = build_fresh_subtree(child, ctx)
+        {vnode, assigned, ctx} = build_fresh_subtree_for_patches(child, ctx)
 
         do_reconcile_children_keyed(
           rest,
@@ -205,7 +290,7 @@ defmodule Emerge.Engine.Reconcile do
           parent_node_id,
           ctx,
           [vnode | vnodes_rev],
-          [assigned | elements_rev],
+          prepend_assigned(ctx, assigned, elements_rev),
           [{:insert_subtree, parent_node_id, index, assigned} | patches_rev],
           used_old_ids
         )
@@ -261,11 +346,12 @@ defmodule Emerge.Engine.Reconcile do
         parent_node_id,
         ctx,
         [vnode | vnodes_rev],
-        [assigned | elements_rev],
+        prepend_assigned(ctx, assigned, elements_rev),
         prepend_many(patches_rev, child_patches)
       )
     else
-      {vnode, assigned, ctx} = build_fresh_subtree(child, ctx)
+      {vnode, assigned, ctx} = build_fresh_subtree_for_patches(child, ctx)
+      ctx = maybe_delete_event_tree(ctx, old_child)
 
       do_reconcile_children_unkeyed(
         old_rest,
@@ -274,7 +360,7 @@ defmodule Emerge.Engine.Reconcile do
         parent_node_id,
         ctx,
         [vnode | vnodes_rev],
-        [assigned | elements_rev],
+        prepend_assigned(ctx, assigned, elements_rev),
         [
           {:insert_subtree, parent_node_id, index, assigned},
           {:remove, old_child.id} | patches_rev
@@ -293,7 +379,7 @@ defmodule Emerge.Engine.Reconcile do
          elements_rev,
          patches_rev
        ) do
-    {vnode, assigned, ctx} = build_fresh_subtree(child, ctx)
+    {vnode, assigned, ctx} = build_fresh_subtree_for_patches(child, ctx)
 
     do_reconcile_children_unkeyed(
       [],
@@ -302,7 +388,7 @@ defmodule Emerge.Engine.Reconcile do
       parent_node_id,
       ctx,
       [vnode | vnodes_rev],
-      [assigned | elements_rev],
+      prepend_assigned(ctx, assigned, elements_rev),
       [{:insert_subtree, parent_node_id, index, assigned} | patches_rev]
     )
   end
@@ -317,6 +403,8 @@ defmodule Emerge.Engine.Reconcile do
          elements_rev,
          patches_rev
        ) do
+    ctx = maybe_delete_event_tree(ctx, old_child)
+
     do_reconcile_children_unkeyed(
       old_rest,
       [],
@@ -352,7 +440,7 @@ defmodule Emerge.Engine.Reconcile do
         %{}
       )
 
-    patches_rev = prepend_removed_nearby(old_nearby, used_old_ids, patches_rev)
+    {patches_rev, ctx} = prepend_removed_nearby(old_nearby, used_old_ids, patches_rev, ctx)
 
     {Enum.reverse(vnodes_rev), Enum.reverse(elements_rev), Enum.reverse(patches_rev), ctx}
   end
@@ -395,13 +483,13 @@ defmodule Emerge.Engine.Reconcile do
           host_node_id,
           ctx,
           [{slot, vnode} | vnodes_rev],
-          [{slot, assigned} | elements_rev],
+          prepend_nearby_assigned(ctx, slot, assigned, elements_rev),
           prepend_many(patches_rev, mount_patches),
           Map.put(used_old_ids, old_vnode.id, true)
         )
 
       _ ->
-        {vnode, assigned, ctx} = build_fresh_subtree(element, ctx)
+        {vnode, assigned, ctx} = build_fresh_subtree_for_patches(element, ctx)
 
         do_reconcile_nearby_keyed(
           rest,
@@ -410,7 +498,7 @@ defmodule Emerge.Engine.Reconcile do
           host_node_id,
           ctx,
           [{slot, vnode} | vnodes_rev],
-          [{slot, assigned} | elements_rev],
+          prepend_nearby_assigned(ctx, slot, assigned, elements_rev),
           [{:insert_nearby_subtree, host_node_id, index, slot, assigned} | patches_rev],
           used_old_ids
         )
@@ -457,11 +545,12 @@ defmodule Emerge.Engine.Reconcile do
         host_node_id,
         ctx,
         [{slot, vnode} | vnodes_rev],
-        [{slot, assigned} | elements_rev],
+        prepend_nearby_assigned(ctx, slot, assigned, elements_rev),
         prepend_many(patches_rev, mount_patches)
       )
     else
-      {vnode, assigned, ctx} = build_fresh_subtree(element, ctx)
+      {vnode, assigned, ctx} = build_fresh_subtree_for_patches(element, ctx)
+      ctx = maybe_delete_event_tree(ctx, old_vnode)
 
       do_reconcile_nearby_unkeyed(
         old_rest,
@@ -470,7 +559,7 @@ defmodule Emerge.Engine.Reconcile do
         host_node_id,
         ctx,
         [{slot, vnode} | vnodes_rev],
-        [{slot, assigned} | elements_rev],
+        prepend_nearby_assigned(ctx, slot, assigned, elements_rev),
         [
           {:insert_nearby_subtree, host_node_id, index, slot, assigned},
           {:remove, old_vnode.id}
@@ -490,7 +579,7 @@ defmodule Emerge.Engine.Reconcile do
          elements_rev,
          patches_rev
        ) do
-    {vnode, assigned, ctx} = build_fresh_subtree(element, ctx)
+    {vnode, assigned, ctx} = build_fresh_subtree_for_patches(element, ctx)
 
     do_reconcile_nearby_unkeyed(
       [],
@@ -499,7 +588,7 @@ defmodule Emerge.Engine.Reconcile do
       host_node_id,
       ctx,
       [{slot, vnode} | vnodes_rev],
-      [{slot, assigned} | elements_rev],
+      prepend_nearby_assigned(ctx, slot, assigned, elements_rev),
       [{:insert_nearby_subtree, host_node_id, index, slot, assigned} | patches_rev]
     )
   end
@@ -514,6 +603,8 @@ defmodule Emerge.Engine.Reconcile do
          elements_rev,
          patches_rev
        ) do
+    ctx = maybe_delete_event_tree(ctx, old_vnode)
+
     do_reconcile_nearby_unkeyed(
       old_rest,
       [],
@@ -525,6 +616,58 @@ defmodule Emerge.Engine.Reconcile do
       [{:remove, old_vnode.id} | patches_rev]
     )
   end
+
+  defp maybe_assign_element(
+         %{assign_tree?: false},
+         _element,
+         _id,
+         _attrs,
+         _child_elements,
+         _nearby_elements
+       ),
+       do: nil
+
+  defp maybe_assign_element(_ctx, element, id, attrs, child_elements, nearby_elements) do
+    %{element | id: id, attrs: attrs, children: child_elements, nearby: nearby_elements}
+  end
+
+  defp prepend_assigned(%{assign_tree?: false}, _assigned, elements_rev), do: elements_rev
+  defp prepend_assigned(_ctx, assigned, elements_rev), do: [assigned | elements_rev]
+
+  defp prepend_nearby_assigned(%{assign_tree?: false}, _slot, _assigned, elements_rev),
+    do: elements_rev
+
+  defp prepend_nearby_assigned(_ctx, slot, assigned, elements_rev),
+    do: [{slot, assigned} | elements_rev]
+
+  defp build_fresh_subtree_for_patches(%Element{} = element, ctx) do
+    {vnode, assigned, ctx} = build_fresh_subtree(element, ctx)
+    {vnode, assigned, maybe_register_event_tree(ctx, vnode)}
+  end
+
+  defp maybe_register_event_tree(%{event_registry: registry} = ctx, %VNode{} = vnode) do
+    %{ctx | event_registry: EventRegistry.merge_tree(registry, vnode)}
+  end
+
+  defp maybe_register_event_tree(ctx, _vnode), do: ctx
+
+  defp maybe_update_event_node(%{event_registry: _registry} = ctx, _id, events, events), do: ctx
+
+  defp maybe_update_event_node(%{event_registry: registry} = ctx, id, _old_events, events) do
+    %{ctx | event_registry: EventRegistry.put_events(registry, id, events)}
+  end
+
+  defp maybe_update_event_node(ctx, _id, _old_events, _events), do: ctx
+
+  defp maybe_delete_event_tree(%{event_registry: registry} = ctx, %VNode{} = vnode) do
+    %{ctx | event_registry: EventRegistry.delete_vnode_subtree(registry, vnode)}
+  end
+
+  defp maybe_delete_event_tree(ctx, _vnode), do: ctx
+
+  defp vnode_events(%VNode{attrs: attrs, events: events}, attrs) when is_map(events), do: events
+  defp vnode_events(%VNode{attrs: attrs}, attrs), do: EventRegistry.node_events(attrs)
+  defp vnode_events(_old, attrs), do: EventRegistry.node_events(attrs)
 
   defp build_fresh_subtree(%Element{} = element, ctx) do
     key = element_key(element)
@@ -562,6 +705,7 @@ defmodule Emerge.Engine.Reconcile do
       kind: element.type,
       key: key,
       attrs: element.attrs,
+      events: EventRegistry.node_events(element.attrs),
       children: child_vnodes,
       nearby: nearby_vnodes
     }
@@ -627,34 +771,38 @@ defmodule Emerge.Engine.Reconcile do
     end
   end
 
-  defp prepend_removed_children(old_children, used_old_ids, patches_rev) do
-    Enum.reduce(old_children, patches_rev, fn child, acc ->
+  defp prepend_removed_children(old_children, used_old_ids, patches_rev, ctx) do
+    Enum.reduce(old_children, {patches_rev, ctx}, fn child, {acc, ctx} ->
       if Map.has_key?(used_old_ids, child.id) do
-        acc
+        {acc, ctx}
       else
-        [{:remove, child.id} | acc]
+        {[{:remove, child.id} | acc], maybe_delete_event_tree(ctx, child)}
       end
     end)
   end
 
-  defp prepend_removed_nearby(old_nearby, used_old_ids, patches_rev) do
-    Enum.reduce(old_nearby, patches_rev, fn {_slot, vnode}, acc ->
+  defp prepend_removed_nearby(old_nearby, used_old_ids, patches_rev, ctx) do
+    Enum.reduce(old_nearby, {patches_rev, ctx}, fn {_slot, vnode}, {acc, ctx} ->
       if Map.has_key?(used_old_ids, vnode.id) do
-        acc
+        {acc, ctx}
       else
-        [{:remove, vnode.id} | acc]
+        {[{:remove, vnode.id} | acc], maybe_delete_event_tree(ctx, vnode)}
       end
     end)
   end
 
   defp maybe_set_attrs(patches, %VNode{attrs: old_attrs}, new_attrs, id) do
-    old_filtered = TreeAttrs.strip_runtime_attrs(old_attrs)
-    new_filtered = TreeAttrs.strip_runtime_attrs(new_attrs)
-
-    if old_filtered != new_filtered do
-      [{:set_attrs, id, new_filtered} | patches]
-    else
+    if old_attrs == new_attrs do
       patches
+    else
+      old_filtered = TreeAttrs.strip_runtime_attrs(old_attrs)
+      new_filtered = TreeAttrs.strip_runtime_attrs(new_attrs)
+
+      if old_filtered != new_filtered do
+        [{:set_attrs, id, new_filtered} | patches]
+      else
+        patches
+      end
     end
   end
 
@@ -662,22 +810,10 @@ defmodule Emerge.Engine.Reconcile do
     old_ids = Enum.map(old_children, & &1.id)
     new_ids = Enum.map(new_children, & &1.id)
 
-    inserted_ids = new_ids -- old_ids
-    removed_ids = old_ids -- new_ids
-
-    old_remaining = old_ids -- removed_ids
-    new_remaining = new_ids -- inserted_ids
-    has_mixed_edits? = inserted_ids != [] and removed_ids != []
-
-    cond do
-      old_ids == new_ids ->
-        patches
-
-      has_mixed_edits? or old_remaining != new_remaining ->
-        [{:set_children, id, new_ids} | patches]
-
-      true ->
-        patches
+    if ordered_refs_need_set?(old_ids, new_ids, & &1) do
+      [{:set_children, id, new_ids} | patches]
+    else
+      patches
     end
   end
 
@@ -689,22 +825,48 @@ defmodule Emerge.Engine.Reconcile do
     old_refs = mount_refs(old_nearby)
     new_refs = mount_refs(new_nearby)
 
-    inserted_ids = mount_ids_from_refs(new_refs) -- mount_ids_from_refs(old_refs)
-    removed_ids = mount_ids_from_refs(old_refs) -- mount_ids_from_refs(new_refs)
+    if ordered_refs_need_set?(old_refs, new_refs, fn {_slot, mount_id} -> mount_id end) do
+      [{:set_nearby_mounts, id, new_refs} | patches]
+    else
+      patches
+    end
+  end
 
-    old_remaining = Enum.reject(old_refs, fn {_slot, mount_id} -> mount_id in removed_ids end)
-    new_remaining = Enum.reject(new_refs, fn {_slot, mount_id} -> mount_id in inserted_ids end)
-    has_mixed_edits? = inserted_ids != [] and removed_ids != []
+  defp ordered_refs_need_set?(old_refs, new_refs, key_fun) do
+    old_refs != new_refs and do_ordered_refs_need_set?(old_refs, new_refs, key_fun)
+  end
 
-    cond do
-      old_refs == new_refs ->
-        patches
+  defp do_ordered_refs_need_set?(old_refs, new_refs, key_fun)
+       when length(old_refs) + length(new_refs) >= 32 do
+    old_keys = MapSet.new(old_refs, key_fun)
+    new_keys = MapSet.new(new_refs, key_fun)
+    inserted_keys = MapSet.difference(new_keys, old_keys)
+    removed_keys = MapSet.difference(old_keys, new_keys)
 
-      has_mixed_edits? or old_remaining != new_remaining ->
-        [{:set_nearby_mounts, id, new_refs} | patches]
+    if MapSet.size(inserted_keys) > 0 and MapSet.size(removed_keys) > 0 do
+      true
+    else
+      old_remaining = Enum.reject(old_refs, &MapSet.member?(removed_keys, key_fun.(&1)))
+      new_remaining = Enum.reject(new_refs, &MapSet.member?(inserted_keys, key_fun.(&1)))
 
-      true ->
-        patches
+      old_remaining != new_remaining
+    end
+  end
+
+  defp do_ordered_refs_need_set?(old_refs, new_refs, key_fun) do
+    old_keys = Enum.map(old_refs, key_fun)
+    new_keys = Enum.map(new_refs, key_fun)
+
+    inserted_keys = new_keys -- old_keys
+    removed_keys = old_keys -- new_keys
+
+    if inserted_keys != [] and removed_keys != [] do
+      true
+    else
+      old_remaining = Enum.reject(old_refs, &(key_fun.(&1) in removed_keys))
+      new_remaining = Enum.reject(new_refs, &(key_fun.(&1) in inserted_keys))
+
+      old_remaining != new_remaining
     end
   end
 
@@ -718,10 +880,6 @@ defmodule Emerge.Engine.Reconcile do
 
   defp mount_refs(nearby) do
     Enum.map(nearby, fn {slot, vnode} -> {slot, vnode.id} end)
-  end
-
-  defp mount_ids_from_refs(refs) do
-    Enum.map(refs, fn {_slot, id} -> id end)
   end
 
   defp element_key(%Element{key: key}) when not is_nil(key), do: key

@@ -459,8 +459,15 @@ defmodule Emerge.Runtime.Viewport do
   end
 
   defp patch_existing_renderer(state, runtime, tree) do
+    patch_fun =
+      if function_exported?(runtime.renderer_module, :patch_tree_runtime, 3) do
+        :patch_tree_runtime
+      else
+        :patch_tree
+      end
+
     case safe_invoke(fn ->
-           runtime.renderer_module.patch_tree(runtime.renderer, runtime.diff_state, tree)
+           apply(runtime.renderer_module, patch_fun, [runtime.renderer, runtime.diff_state, tree])
          end) do
       {:ok, {diff_state, _assigned}} ->
         {:ok, update_runtime(state, &%{&1 | diff_state: diff_state})}

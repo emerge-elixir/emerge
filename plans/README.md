@@ -1,6 +1,6 @@
 # Plans
 
-Last updated: 2026-05-18.
+Last updated: 2026-05-20.
 
 This directory tracks active implementation notes and durable background
 research for native layout, renderer, and input/runtime work.
@@ -31,6 +31,12 @@ Cross-engine research notes.
 This preserves the useful findings from Taffy, Yoga, Flutter, Slint, Iced, and
 Servo. It is intentionally more detailed than the roadmap because it records why
 certain design directions fit Emerge.
+
+### `elixir-reconciliation-optimization.md`
+
+Completed Elixir runtime update optimization notes, including the assigned-tree
+free viewport patch path, incremental event-registry reconciliation, benchmark
+methodology, and measured speedups against the previous public update path.
 
 ### `skia-ddl-paint-layer-note.md`
 
@@ -110,6 +116,11 @@ documents below. Recently folded slices:
   paint-layer content splitting after child paint-layer boundaries, and removal
   of stale duplicate `uncached` layout benchmark labels; full
   `./ci-tests.sh all` passed on 2026-05-18
+- Elixir reconciliation/runtime update optimization, including the runtime
+  binary patch path that skips assigned-tree construction, reusable
+  event-registry extraction, incremental per-vnode event registry updates,
+  update-path benchmarks, and parity coverage for event-heavy mutations;
+  validation passed on 2026-05-20
 
 ## Current repo state
 

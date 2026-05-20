@@ -14,6 +14,8 @@ Run focused suites:
 
 ```bash
 mix bench.engine.diff
+mix bench.engine.update_breakdown
+mix bench.engine.update_compare
 mix bench.engine.serialization
 mix bench.native.layout
 mix bench.native.patch
@@ -50,6 +52,8 @@ Useful environment overrides:
 ```bash
 EMERGE_BENCH_SIZES=100,500 EMERGE_BENCH_TIME=5 mix bench.engine.diff
 EMERGE_BENCH_SCENARIOS=list_text,paint_rich mix bench.engine.serialization
+EMERGE_BENCH_SCENARIOS=list_text,scroll_rich EMERGE_BENCH_SIZES=500 mix bench.engine.update_breakdown
+EMERGE_BENCH_SCENARIOS=list_text,scroll_rich EMERGE_BENCH_SIZES=500 BENCH_LABEL=current REPS=300 WARMUP=30 mix bench.engine.update_compare
 EMERGE_BENCH_WARMUP=2 EMERGE_BENCH_MEMORY_TIME=1 mix bench.native.patch
 ```
 
