@@ -32,6 +32,19 @@ defmodule EmergeSkia.TreeRenderer do
     {state, assigned}
   end
 
+  @spec patch_tree_runtime(reference(), Emerge.Engine.diff_state(), Emerge.Engine.Element.t()) ::
+          {Emerge.Engine.diff_state(), nil}
+  def patch_tree_runtime(renderer, state, tree) do
+    {patch_bin, state} = Emerge.Engine.diff_state_update_binary(state, tree)
+
+    case Transport.for_renderer(renderer).patch_tree(renderer, patch_bin) do
+      :ok -> :ok
+      {:error, reason} -> raise "renderer_patch failed: #{reason}"
+    end
+
+    {state, nil}
+  end
+
   @spec render_to_pixels(Emerge.Engine.Element.t(), keyword(), pos_integer()) :: binary()
   def render_to_pixels(tree, opts, default_asset_timeout_ms) when is_list(opts) do
     opts = Options.normalize_render_to_pixels_keyword_opts!(opts)

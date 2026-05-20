@@ -24,4 +24,9 @@ defmodule Emerge.Runtime.Viewport.Renderer do
 
   @callback patch_tree(term(), Emerge.Engine.diff_state(), Emerge.Engine.Element.t()) ::
               {Emerge.Engine.diff_state(), Emerge.Engine.Element.t()}
+
+  @callback patch_tree_runtime(term(), Emerge.Engine.diff_state(), Emerge.Engine.Element.t()) ::
+              {Emerge.Engine.diff_state(), nil}
+
+  @optional_callbacks patch_tree_runtime: 3
 end

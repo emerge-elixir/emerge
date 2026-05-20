@@ -26,6 +26,12 @@ defmodule Emerge.Engine do
     DiffState.diff_and_encode(state, tree)
   end
 
+  @doc false
+  @spec diff_state_update_binary(diff_state(), Emerge.tree()) :: {binary(), diff_state()}
+  def diff_state_update_binary(state, tree) do
+    DiffState.diff_and_encode_binary(state, tree)
+  end
+
   @doc """
   Encode a full tree with ids and return {binary, next_state, assigned_tree}.
   """

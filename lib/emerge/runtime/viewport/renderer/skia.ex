@@ -27,4 +27,8 @@ defmodule Emerge.Runtime.Viewport.Renderer.Skia do
   @impl true
   def patch_tree(renderer, diff_state, tree),
     do: EmergeSkia.patch_tree(renderer, diff_state, tree)
+
+  @impl true
+  def patch_tree_runtime(renderer, diff_state, tree),
+    do: EmergeSkia.TreeRenderer.patch_tree_runtime(renderer, diff_state, tree)
 end
