@@ -1240,6 +1240,47 @@ impl PaintLayerPayloadBounds {
     }
 }
 
+const PAINT_LAYER_TEXT_SUBPIXEL_PHASE_STEPS: u16 = 256;
+
+// GPU paint-layer payloads that contain text must preserve the device-space
+// subpixel phase used by direct text rasterization. Rendering the payload with
+// that phase and composing it at the complementary offset keeps text sharp
+// without forcing large scroll-moving text sections down the direct path.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+struct PaintLayerSubpixelPhase {
+    x: u16,
+    y: u16,
+}
+
+impl PaintLayerSubpixelPhase {
+    fn is_zero(self) -> bool {
+        self.x == 0 && self.y == 0
+    }
+
+    fn offsets(self) -> (f32, f32) {
+        let steps = f32::from(PAINT_LAYER_TEXT_SUBPIXEL_PHASE_STEPS);
+        (f32::from(self.x) / steps, f32::from(self.y) / steps)
+    }
+
+    fn from_translation(tx: f32, ty: f32) -> Option<Self> {
+        Some(Self {
+            x: quantized_subpixel_phase(tx)?,
+            y: quantized_subpixel_phase(ty)?,
+        })
+    }
+}
+
+fn quantized_subpixel_phase(value: f32) -> Option<u16> {
+    if !value.is_finite() {
+        return None;
+    }
+
+    let steps = f32::from(PAINT_LAYER_TEXT_SUBPIXEL_PHASE_STEPS);
+    let phase = value.rem_euclid(1.0);
+    let quantized = (phase * steps).round() as u16;
+    Some(quantized % PAINT_LAYER_TEXT_SUBPIXEL_PHASE_STEPS)
+}
+
 #[derive(Clone, Debug)]
 enum PaintLayerPayload {
     Image(Option<Image>),
@@ -1258,6 +1299,8 @@ pub struct PaintLayerMovingPayloadKey {
     pub width_px: u32,
     pub height_px: u32,
     pub scale_bits: u32,
+    subpixel_phase_x: u16,
+    subpixel_phase_y: u16,
     pub resource_generation: u64,
 }
 
@@ -1267,17 +1310,36 @@ impl PaintLayerMovingPayloadKey {
         scale: f32,
         resource_generation: u64,
     ) -> Option<Self> {
+        Self::from_layer_with_subpixel_phase(
+            layer,
+            scale,
+            resource_generation,
+            PaintLayerSubpixelPhase::default(),
+        )
+    }
+
+    fn from_layer_with_subpixel_phase(
+        layer: &RenderPaintLayer,
+        scale: f32,
+        resource_generation: u64,
+        subpixel_phase: PaintLayerSubpixelPhase,
+    ) -> Option<Self> {
         if !scale.is_finite() || scale <= 0.0 {
             return None;
         }
 
-        let (width_px, height_px, _) = moving_paint_layer_payload_bounds_size(layer.bounds)?;
+        let (width_px, height_px, _) = moving_paint_layer_payload_bounds_size_with_subpixel_phase(
+            layer.bounds,
+            subpixel_phase,
+        )?;
         Some(Self {
             stable_id: layer.stable_id,
             content_generation: layer.content_generation,
             width_px,
             height_px,
             scale_bits: scale.to_bits(),
+            subpixel_phase_x: subpixel_phase.x,
+            subpixel_phase_y: subpixel_phase.y,
             resource_generation,
         })
     }
@@ -1340,12 +1402,18 @@ impl From<PaintLayerPayloadStoreRejection> for RendererCacheRejectionReason {
     }
 }
 
-fn moving_paint_layer_payload_bounds_size(bounds: GeometryRect) -> Option<(u32, u32, u64)> {
-    let bounds = paint_layer_payload_bounds(bounds)?;
+fn moving_paint_layer_payload_bounds_size_with_subpixel_phase(
+    bounds: GeometryRect,
+    subpixel_phase: PaintLayerSubpixelPhase,
+) -> Option<(u32, u32, u64)> {
+    let bounds = paint_layer_payload_bounds_with_subpixel_phase(bounds, subpixel_phase)?;
     Some((bounds.width_px, bounds.height_px, bounds.bytes))
 }
 
-fn paint_layer_payload_bounds(bounds: GeometryRect) -> Option<PaintLayerPayloadBounds> {
+fn paint_layer_payload_bounds_with_subpixel_phase(
+    bounds: GeometryRect,
+    subpixel_phase: PaintLayerSubpixelPhase,
+) -> Option<PaintLayerPayloadBounds> {
     if !bounds.x.is_finite()
         || !bounds.y.is_finite()
         || !bounds.width.is_finite()
@@ -1358,8 +1426,8 @@ fn paint_layer_payload_bounds(bounds: GeometryRect) -> Option<PaintLayerPayloadB
 
     let left = bounds.x.floor();
     let top = bounds.y.floor();
-    let right = (bounds.x + bounds.width).ceil();
-    let bottom = (bounds.y + bounds.height).ceil();
+    let right = (bounds.x + bounds.width).ceil() + f32::from((subpixel_phase.x != 0) as u8);
+    let bottom = (bounds.y + bounds.height).ceil() + f32::from((subpixel_phase.y != 0) as u8);
     if left < i32::MIN as f32
         || top < i32::MIN as f32
         || right > i32::MAX as f32
@@ -1555,16 +1623,26 @@ fn render_nodes_have_text(nodes: &[RenderNode]) -> bool {
     })
 }
 
-fn text_payload_gpu_composition_rejection(
+fn text_payload_gpu_subpixel_phase(
     layer: &RenderPaintLayer,
     eligibility: MovingLayerEligibility,
     gpu_composition: bool,
-) -> Option<RendererCacheRejectionReason> {
+) -> Result<PaintLayerSubpixelPhase, RendererCacheRejectionReason> {
     if !gpu_composition || !render_nodes_have_text(&layer.own_nodes) {
-        return None;
+        return Ok(PaintLayerSubpixelPhase::default());
     }
 
-    paint_layer_payload_composition_supported(eligibility.current_transform, false).err()
+    let transform = eligibility.current_transform;
+    if !approx_eq(transform.xx, 1.0)
+        || !approx_eq(transform.yx, 0.0)
+        || !approx_eq(transform.xy, 0.0)
+        || !approx_eq(transform.yy, 1.0)
+    {
+        return Err(RendererCacheRejectionReason::UnsupportedTransform);
+    }
+
+    PaintLayerSubpixelPhase::from_translation(transform.tx, transform.ty)
+        .ok_or(RendererCacheRejectionReason::UnsupportedTransform)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1828,13 +1906,22 @@ impl RendererCacheManager {
     }
 
     fn payload_key_for_moving_layer(key: PaintLayerMovingPayloadKey) -> PaintLayerPayloadKey {
+        let resource_generation = if key.subpixel_phase_x == 0 && key.subpixel_phase_y == 0 {
+            key.resource_generation
+        } else {
+            key.resource_generation
+                .wrapping_mul(1_099_511_628_211)
+                .wrapping_add(u64::from(key.subpixel_phase_x))
+                .wrapping_mul(1_099_511_628_211)
+                .wrapping_add(u64::from(key.subpixel_phase_y))
+        };
         PaintLayerPayloadKey::new(
             key.stable_id,
             key.content_generation,
             key.width_px,
             key.height_px,
             key.scale_bits,
-            key.resource_generation,
+            resource_generation,
         )
     }
 
@@ -2971,20 +3058,44 @@ impl SceneRenderer {
         }
 
         let resource_generation = moving_paint_layer_payload_resource_generation(&layer.own_nodes);
-        let key = PaintLayerMovingPayloadKey::from_layer(
-            layer,
-            1.0,
-            resource_generation.unwrap_or_default(),
-        );
         let visible_pixels =
             paint_layer_payload_visible_device_rect_for_eligibility(layer, eligibility)
                 .map(PaintLayerDeviceRect::area)
                 .unwrap_or(0);
+        let gpu_backed = cache_tracking.gpu_context.is_some();
+
+        let subpixel_phase = match text_payload_gpu_subpixel_phase(layer, eligibility, gpu_backed) {
+            Ok(phase) => phase,
+            Err(rejection) if visible_pixels > 0 => {
+                cache_tracking.frame.mark_candidate(true);
+                cache_tracking.frame.record_rejection(rejection);
+                Self::render_paint_layer_direct_with_cache_tracking(
+                    canvas,
+                    layer,
+                    options,
+                    cache_tracking,
+                    eligibility,
+                    instrumentation,
+                );
+                return;
+            }
+            Err(_) => PaintLayerSubpixelPhase::default(),
+        };
+        let key = PaintLayerMovingPayloadKey::from_layer_with_subpixel_phase(
+            layer,
+            1.0,
+            resource_generation.unwrap_or_default(),
+            subpixel_phase,
+        );
         if visible_pixels == 0 {
             cache_tracking.frame.mark_candidate(false);
             if let Some(resource_generation) = resource_generation
-                && let Some(key) =
-                    PaintLayerMovingPayloadKey::from_layer(layer, 1.0, resource_generation)
+                && let Some(key) = PaintLayerMovingPayloadKey::from_layer_with_subpixel_phase(
+                    layer,
+                    1.0,
+                    resource_generation,
+                    subpixel_phase,
+                )
             {
                 cache_tracking
                     .renderer_cache
@@ -3001,28 +3112,9 @@ impl SceneRenderer {
             return;
         }
 
-        if let Err(rejection) = paint_layer_payload_composition_supported(
-            eligibility.current_transform,
-            cache_tracking.gpu_context.is_some(),
-        ) {
-            cache_tracking.frame.mark_candidate(true);
-            cache_tracking.frame.record_rejection(rejection);
-            Self::render_paint_layer_direct_with_cache_tracking(
-                canvas,
-                layer,
-                options,
-                cache_tracking,
-                eligibility,
-                instrumentation,
-            );
-            return;
-        }
-
-        if let Some(rejection) = text_payload_gpu_composition_rejection(
-            layer,
-            eligibility,
-            cache_tracking.gpu_context.is_some(),
-        ) {
+        if let Err(rejection) =
+            paint_layer_payload_composition_supported(eligibility.current_transform, gpu_backed)
+        {
             cache_tracking.frame.mark_candidate(true);
             cache_tracking.frame.record_rejection(rejection);
             Self::render_paint_layer_direct_with_cache_tracking(
@@ -3061,8 +3153,13 @@ impl SceneRenderer {
             .moving_layer_payload(cache_tracking.frame, key)
         {
             let hit_started_at = Instant::now();
-            let composited_pixels =
-                Self::draw_paint_layer_payload_image(canvas, layer, &image, eligibility);
+            let composited_pixels = Self::draw_paint_layer_payload_image(
+                canvas,
+                layer,
+                &image,
+                eligibility,
+                subpixel_phase,
+            );
             cache_tracking.frame.record_hit(hit_started_at.elapsed());
             cache_tracking
                 .frame
@@ -3179,10 +3276,17 @@ impl SceneRenderer {
                         layer,
                         &layer.own_nodes,
                         options,
+                        subpixel_phase,
                         Some(&mut **gr_context),
                     )
                 } else {
-                    Self::prepare_moving_layer_payload(layer, &layer.own_nodes, options, None)
+                    Self::prepare_moving_layer_payload(
+                        layer,
+                        &layer.own_nodes,
+                        options,
+                        subpixel_phase,
+                        None,
+                    )
                 };
 
                 if let Some(prepared) = prepared {
@@ -3191,6 +3295,7 @@ impl SceneRenderer {
                         layer,
                         &prepared.image,
                         eligibility,
+                        subpixel_phase,
                     );
                     cache_tracking
                         .frame
@@ -3357,24 +3462,31 @@ impl SceneRenderer {
         layer: &RenderPaintLayer,
         own_nodes: &[RenderNode],
         options: RenderTraversalOptions<'_>,
+        subpixel_phase: PaintLayerSubpixelPhase,
         gpu_context: Option<&mut gpu::DirectContext>,
     ) -> Option<PreparedMovingLayerPayload> {
         if let Some(gr_context) = gpu_context {
             return Self::prepare_moving_paint_layer_gpu_payload(
-                layer, own_nodes, options, gr_context,
+                layer,
+                own_nodes,
+                options,
+                subpixel_phase,
+                gr_context,
             );
         }
 
-        Self::rasterize_moving_layer_payload(layer, own_nodes, options)
+        Self::rasterize_moving_layer_payload(layer, own_nodes, options, subpixel_phase)
     }
 
     fn prepare_moving_paint_layer_gpu_payload(
         layer: &RenderPaintLayer,
         own_nodes: &[RenderNode],
         options: RenderTraversalOptions<'_>,
+        subpixel_phase: PaintLayerSubpixelPhase,
         gr_context: &mut gpu::DirectContext,
     ) -> Option<PreparedMovingLayerPayload> {
-        let payload_bounds = paint_layer_payload_bounds(layer.bounds)?;
+        let payload_bounds =
+            paint_layer_payload_bounds_with_subpixel_phase(layer.bounds, subpixel_phase)?;
         let info = skia_safe::ImageInfo::new(
             (
                 payload_bounds.width_px as i32,
@@ -3398,9 +3510,10 @@ impl SceneRenderer {
         let canvas = surface.canvas();
         canvas.clear(Color::TRANSPARENT);
         canvas.save();
+        let (subpixel_x, subpixel_y) = subpixel_phase.offsets();
         canvas.translate((
-            -(payload_bounds.origin_x as f32),
-            -(payload_bounds.origin_y as f32),
+            subpixel_x - payload_bounds.origin_x as f32,
+            subpixel_y - payload_bounds.origin_y as f32,
         ));
         let mut instrumentation = NoDrawInstrumentation;
         Self::render_paint_layer_own_nodes(
@@ -3423,8 +3536,10 @@ impl SceneRenderer {
         layer: &RenderPaintLayer,
         own_nodes: &[RenderNode],
         options: RenderTraversalOptions<'_>,
+        subpixel_phase: PaintLayerSubpixelPhase,
     ) -> Option<PreparedMovingLayerPayload> {
-        let payload_bounds = paint_layer_payload_bounds(layer.bounds)?;
+        let payload_bounds =
+            paint_layer_payload_bounds_with_subpixel_phase(layer.bounds, subpixel_phase)?;
         let info = skia_safe::ImageInfo::new(
             (
                 payload_bounds.width_px as i32,
@@ -3439,9 +3554,10 @@ impl SceneRenderer {
         let canvas = surface.canvas();
         canvas.clear(Color::TRANSPARENT);
         canvas.save();
+        let (subpixel_x, subpixel_y) = subpixel_phase.offsets();
         canvas.translate((
-            -(payload_bounds.origin_x as f32),
-            -(payload_bounds.origin_y as f32),
+            subpixel_x - payload_bounds.origin_x as f32,
+            subpixel_y - payload_bounds.origin_y as f32,
         ));
         let mut instrumentation = NoDrawInstrumentation;
         Self::render_paint_layer_own_nodes(
@@ -3465,10 +3581,14 @@ impl SceneRenderer {
         layer: &RenderPaintLayer,
         image: &Image,
         eligibility: MovingLayerEligibility,
+        subpixel_phase: PaintLayerSubpixelPhase,
     ) -> u64 {
-        if let Some(payload_bounds) = paint_layer_payload_bounds(layer.bounds) {
-            if let Some((src, dst, pixels)) =
-                paint_layer_visible_payload_image_rect(layer, payload_bounds, eligibility)
+        if let Some(payload_bounds) =
+            paint_layer_payload_bounds_with_subpixel_phase(layer.bounds, subpixel_phase)
+        {
+            if subpixel_phase.is_zero()
+                && let Some((src, dst, pixels)) =
+                    paint_layer_visible_payload_image_rect(layer, payload_bounds, eligibility)
             {
                 let paint = Paint::default();
                 canvas.draw_image_rect_with_sampling_options(
@@ -3481,11 +3601,12 @@ impl SceneRenderer {
                 return pixels;
             }
 
+            let (subpixel_x, subpixel_y) = subpixel_phase.offsets();
             canvas.draw_image(
                 image,
                 (
-                    payload_bounds.origin_x as f32,
-                    payload_bounds.origin_y as f32,
+                    payload_bounds.origin_x as f32 - subpixel_x,
+                    payload_bounds.origin_y as f32 - subpixel_y,
                 ),
                 None,
             );
@@ -6431,7 +6552,7 @@ mod tests {
     }
 
     #[test]
-    fn text_payload_rejects_fractional_gpu_composition() {
+    fn text_payload_uses_subpixel_phase_for_fractional_gpu_composition() {
         let layer = RenderPaintLayer::from_children(
             12,
             GeometryRect {
@@ -6459,18 +6580,44 @@ mod tests {
             MovingLayerEligibility::root().with_transform(Affine2::translation(0.0, -5335.513));
         let integer_scroll =
             MovingLayerEligibility::root().with_transform(Affine2::translation(0.0, -5336.0));
+        let scaled = MovingLayerEligibility::root().with_transform(Affine2 {
+            xx: 1.25,
+            yx: 0.0,
+            xy: 0.0,
+            yy: 1.25,
+            tx: 0.0,
+            ty: 0.0,
+        });
 
         assert_eq!(
-            text_payload_gpu_composition_rejection(&layer, fractional_scroll, true),
-            Some(RendererCacheRejectionReason::FractionalPlacement)
+            text_payload_gpu_subpixel_phase(&layer, fractional_scroll, true),
+            Ok(PaintLayerSubpixelPhase::from_translation(0.0, -5335.513).unwrap())
         );
         assert_eq!(
-            text_payload_gpu_composition_rejection(&layer, integer_scroll, true),
-            None
+            text_payload_gpu_subpixel_phase(&layer, integer_scroll, true),
+            Ok(PaintLayerSubpixelPhase::default())
         );
         assert_eq!(
-            text_payload_gpu_composition_rejection(&layer, fractional_scroll, false),
-            None
+            text_payload_gpu_subpixel_phase(&layer, fractional_scroll, false),
+            Ok(PaintLayerSubpixelPhase::default())
+        );
+        assert_eq!(
+            text_payload_gpu_subpixel_phase(&layer, scaled, true),
+            Err(RendererCacheRejectionReason::UnsupportedTransform)
+        );
+
+        let phase = PaintLayerSubpixelPhase::from_translation(0.0, -5335.513).unwrap();
+        let phase_key =
+            PaintLayerMovingPayloadKey::from_layer_with_subpixel_phase(&layer, 1.0, 7, phase)
+                .expect("phase key should be valid");
+        let integer_key = PaintLayerMovingPayloadKey::from_layer(&layer, 1.0, 7)
+            .expect("integer key should be valid");
+        assert_ne!(phase_key, integer_key);
+        assert_eq!(phase_key.width_px, 120);
+        assert_eq!(phase_key.height_px, 41);
+        assert_ne!(
+            RendererCacheManager::payload_key_for_moving_layer(phase_key),
+            RendererCacheManager::payload_key_for_moving_layer(integer_key)
         );
     }
 
@@ -6532,6 +6679,8 @@ mod tests {
                     width_px: 8,
                     height_px: 4,
                     scale_bits: 1.0f32.to_bits(),
+                    subpixel_phase_x: 0,
+                    subpixel_phase_y: 0,
                     resource_generation: 0,
                 }),
                 128
@@ -6567,6 +6716,8 @@ mod tests {
             width_px: 8,
             height_px: 4,
             scale_bits: 1.0f32.to_bits(),
+            subpixel_phase_x: 0,
+            subpixel_phase_y: 0,
             resource_generation: 0,
         };
 
@@ -6658,6 +6809,8 @@ mod tests {
                             width_px: 8,
                             height_px: 4,
                             scale_bits: 1.0f32.to_bits(),
+                            subpixel_phase_x: 0,
+                            subpixel_phase_y: 0,
                             resource_generation: 0,
                         }
                     ),
@@ -6673,6 +6826,8 @@ mod tests {
                     width_px: 8,
                     height_px: 4,
                     scale_bits: 1.0f32.to_bits(),
+                    subpixel_phase_x: 0,
+                    subpixel_phase_y: 0,
                     resource_generation: 0,
                 }),
                 128
@@ -6770,8 +6925,11 @@ mod tests {
             },
             moving_paint_layer_payload_test_children(),
         );
-        let payload_bounds =
-            paint_layer_payload_bounds(layer.bounds).expect("test layer should have bounds");
+        let payload_bounds = paint_layer_payload_bounds_with_subpixel_phase(
+            layer.bounds,
+            PaintLayerSubpixelPhase::default(),
+        )
+        .expect("test layer should have bounds");
 
         let small_savings = MovingLayerEligibility {
             current_clip: Some(PaintLayerDeviceRect {

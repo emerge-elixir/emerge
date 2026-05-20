@@ -11,6 +11,7 @@ defmodule Emerge.Bench.NativeHelpers do
 
   def ok!(:ok), do: :ok
   def ok!({:ok, :ok}), do: :ok
+  def ok!({:ok, true}), do: :ok
   def ok!({:error, reason}), do: raise("native benchmark failed: #{reason}")
   def ok!(other), do: raise("unexpected native ok result: #{inspect(other)}")
 
