@@ -38,6 +38,12 @@ Completed Elixir runtime update optimization notes, including the assigned-tree
 free viewport patch path, incremental event-registry reconciliation, benchmark
 methodology, and measured speedups against the previous public update path.
 
+### `biaxial-drag-scroll.md`
+
+Completed input-runtime note for two-axis drag scrolling after threshold
+activation, including the retained primary axis for inertia and split active
+scroll dispatch for scroll containers that can move in both axes.
+
 ### `skia-ddl-paint-layer-note.md`
 
 Durable renderer note about future Skia Deferred Display List / picture
@@ -121,6 +127,9 @@ documents below. Recently folded slices:
   event-registry extraction, incremental per-vnode event registry updates,
   update-path benchmarks, and parity coverage for event-heavy mutations;
   validation passed on 2026-05-20
+- biaxial drag scrolling for oversized two-axis scroll containers, preserving a
+  primary gesture axis for inertia while active drag movement dispatches X and Y
+  scroll components independently; validation passed on 2026-05-20
 
 ## Current repo state
 

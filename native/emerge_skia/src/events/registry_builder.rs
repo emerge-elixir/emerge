@@ -795,6 +795,18 @@ pub enum GestureAxis {
     Vertical,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DragScrollMode {
+    Locked,
+    Biaxial,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DragScrollActivation {
+    primary_axis: GestureAxis,
+    scroll_mode: DragScrollMode,
+}
+
 /// Drag tracker lifecycle state.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum DragTrackerState {
@@ -806,6 +818,7 @@ pub enum DragTrackerState {
         origin_x: f32,
         origin_y: f32,
         swipe_handlers: SwipeHandlers,
+        scroll_candidate: bool,
     },
     Active {
         element_id: NodeId,
@@ -813,6 +826,7 @@ pub enum DragTrackerState {
         last_x: f32,
         last_y: f32,
         locked_axis: GestureAxis,
+        scroll_mode: DragScrollMode,
     },
 }
 
@@ -1194,14 +1208,22 @@ fn runtime_drag_active_scroll_move_listener(
     base: &Registry,
     drag: &DragTrackerState,
 ) -> Option<Listener> {
-    let (element_id, matcher_kind, last_x, last_y, locked_axis) = match drag {
+    let (element_id, matcher_kind, last_x, last_y, locked_axis, scroll_mode) = match drag {
         DragTrackerState::Active {
             element_id,
             matcher_kind,
             last_x,
             last_y,
             locked_axis,
-        } => (element_id, *matcher_kind, *last_x, *last_y, *locked_axis),
+            scroll_mode,
+        } => (
+            element_id,
+            *matcher_kind,
+            *last_x,
+            *last_y,
+            *locked_axis,
+            *scroll_mode,
+        ),
         DragTrackerState::Inactive | DragTrackerState::Candidate { .. } => return None,
     };
 
@@ -1213,6 +1235,7 @@ fn runtime_drag_active_scroll_move_listener(
             last_x,
             last_y,
             locked_axis,
+            scroll_mode,
         },
     })
 }
@@ -1246,22 +1269,25 @@ fn runtime_drag_candidate_threshold_listener(
     base: &Registry,
     drag: &DragTrackerState,
 ) -> Option<Listener> {
-    let (element_id, matcher_kind, origin_x, origin_y, swipe_handlers) = match drag {
-        DragTrackerState::Candidate {
-            element_id,
-            matcher_kind,
-            origin_x,
-            origin_y,
-            swipe_handlers,
-        } => (
-            element_id,
-            *matcher_kind,
-            *origin_x,
-            *origin_y,
-            *swipe_handlers,
-        ),
-        DragTrackerState::Inactive | DragTrackerState::Active { .. } => return None,
-    };
+    let (element_id, matcher_kind, origin_x, origin_y, swipe_handlers, scroll_candidate) =
+        match drag {
+            DragTrackerState::Candidate {
+                element_id,
+                matcher_kind,
+                origin_x,
+                origin_y,
+                swipe_handlers,
+                scroll_candidate,
+            } => (
+                element_id,
+                *matcher_kind,
+                *origin_x,
+                *origin_y,
+                *swipe_handlers,
+                *scroll_candidate,
+            ),
+            DragTrackerState::Inactive | DragTrackerState::Active { .. } => return None,
+        };
 
     runtime_source_listener(base, element_id, matcher_kind)?;
 
@@ -1278,6 +1304,7 @@ fn runtime_drag_candidate_threshold_listener(
             origin_x,
             origin_y,
             swipe_handlers,
+            scroll_candidate,
         },
     })
 }
@@ -1782,6 +1809,7 @@ pub(crate) struct PointerDragBootstrap {
     element_id: NodeId,
     matcher_kind: ListenerMatcherKind,
     swipe_handlers: SwipeHandlers,
+    scroll_candidate: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2625,6 +2653,7 @@ pub(crate) enum RuntimeChange {
         origin_x: f32,
         origin_y: f32,
         swipe_handlers: SwipeHandlers,
+        scroll_candidate: bool,
     },
     /// Promote drag threshold tracking to an active drag followup.
     PromoteDragTracker {
@@ -2633,6 +2662,7 @@ pub(crate) enum RuntimeChange {
         last_x: f32,
         last_y: f32,
         locked_axis: GestureAxis,
+        scroll_mode: DragScrollMode,
     },
     /// Begin text-selection drag tracking.
     StartTextDragTracker {
@@ -2800,6 +2830,7 @@ pub(crate) enum ListenerCompute {
         origin_x: f32,
         origin_y: f32,
         swipe_handlers: SwipeHandlers,
+        scroll_candidate: bool,
     },
     /// Split one physical scroll input into directional redispatches.
     RedispatchScrollInput,
@@ -2826,6 +2857,7 @@ pub(crate) enum ListenerCompute {
         last_x: f32,
         last_y: f32,
         locked_axis: GestureAxis,
+        scroll_mode: DragScrollMode,
     },
     /// Start scrollbar drag tracking from a thumb or track press.
     ScrollbarPressToRuntime {
@@ -2922,6 +2954,7 @@ impl ListenerCompute {
                             origin_x: *x,
                             origin_y: *y,
                             swipe_handlers: pointer_drag.swipe_handlers,
+                            scroll_candidate: pointer_drag.scroll_candidate,
                         })
                     }))
                     .chain(text_cursor_element_id.as_ref().map(|element_id| {
@@ -3071,21 +3104,28 @@ impl ListenerCompute {
                 origin_x,
                 origin_y,
                 swipe_handlers,
+                scroll_candidate,
             } => match input {
                 ListenerInput::Raw(InputEvent::CursorPos { x, y }) => {
                     let dx = *x - *origin_x;
                     let dy = *y - *origin_y;
 
-                    if let Some(locked_axis) =
-                        drag_scroll_activation_axis(*origin_x, *origin_y, *x, *y, ctx)
-                    {
+                    if let Some(activation) = drag_scroll_activation(
+                        *origin_x,
+                        *origin_y,
+                        *x,
+                        *y,
+                        !swipe_handlers.any(),
+                        ctx,
+                    ) {
                         vec![
                             ListenerAction::RuntimeChange(RuntimeChange::PromoteDragTracker {
                                 element_id: *element_id,
                                 matcher_kind: *matcher_kind,
                                 last_x: *x,
                                 last_y: *y,
-                                locked_axis,
+                                locked_axis: activation.primary_axis,
+                                scroll_mode: activation.scroll_mode,
                             }),
                             ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
                         ]
@@ -3107,9 +3147,15 @@ impl ListenerCompute {
                             }),
                         ]
                     } else if gesture_axis_intent_from_delta(dx, dy).is_some() {
-                        vec![ListenerAction::RuntimeChange(
-                            RuntimeChange::ClearDragTracker,
-                        )]
+                        if *scroll_candidate && !swipe_handlers.any() {
+                            vec![ListenerAction::RuntimeChange(
+                                RuntimeChange::ClearClickPressTracker,
+                            )]
+                        } else {
+                            vec![ListenerAction::RuntimeChange(
+                                RuntimeChange::ClearDragTracker,
+                            )]
+                        }
                     } else {
                         Vec::new()
                     }
@@ -3153,10 +3199,16 @@ impl ListenerCompute {
                 last_x,
                 last_y,
                 locked_axis,
+                scroll_mode,
             } => match input.raw() {
-                Some(input) => {
-                    drag_scroll_actions_from_input(input, *last_x, *last_y, *locked_axis, ctx)
-                }
+                Some(input) => drag_scroll_actions_from_input(
+                    input,
+                    *last_x,
+                    *last_y,
+                    *locked_axis,
+                    *scroll_mode,
+                    ctx,
+                ),
                 None => Vec::new(),
             },
             ListenerCompute::ScrollbarPressToRuntime { element_id, spec } => match input.raw() {
@@ -3581,7 +3633,7 @@ fn drag_scroll_component_for_region(
     x: f32,
     y: f32,
 ) -> Option<ScrollComponentDelta> {
-    if !region.contains(x, y) {
+    if !(region.contains(x, y) || locked_axis.is_some() && region.contains(from_x, from_y)) {
         return None;
     }
 
@@ -3614,6 +3666,127 @@ fn cursor_scroll_direction_matches(
     }
 }
 
+fn drag_scroll_axis_delta_from_action(action: &ListenerAction, axis: GestureAxis) -> Option<f32> {
+    match action {
+        ListenerAction::TreeMsg(TreeMsg::ScrollRequest { dx, dy, .. }) => match axis {
+            GestureAxis::Horizontal if dx.abs() > f32::EPSILON => Some(*dx),
+            GestureAxis::Vertical if dy.abs() > f32::EPSILON => Some(*dy),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn drag_scroll_axis_request<C: ListenerComputeCtx>(
+    axis: GestureAxis,
+    from_x: f32,
+    from_y: f32,
+    x: f32,
+    y: f32,
+    ctx: &mut C,
+) -> Option<f32> {
+    let input = ListenerInput::DragScroll {
+        locked_axis: Some(axis),
+        from_x,
+        from_y,
+        x,
+        y,
+    };
+
+    ctx.dispatch_base(&input)
+        .iter()
+        .find_map(|action| drag_scroll_axis_delta_from_action(action, axis))
+}
+
+fn drag_scroll_axis_potential<C: ListenerComputeCtx>(
+    axis: GestureAxis,
+    from_x: f32,
+    from_y: f32,
+    x: f32,
+    y: f32,
+    allow_opposite_probe: bool,
+    ctx: &mut C,
+) -> Option<f32> {
+    drag_scroll_axis_request(axis, from_x, from_y, x, y, ctx).or_else(|| {
+        let (opposite_x, opposite_y) =
+            allow_opposite_probe.then(|| opposite_probe_point(from_x, from_y, x, y))??;
+
+        drag_scroll_axis_request(axis, from_x, from_y, opposite_x, opposite_y, ctx)
+    })
+}
+
+fn opposite_probe_point(from_x: f32, from_y: f32, x: f32, y: f32) -> Option<(f32, f32)> {
+    let dx = x - from_x;
+    let dy = y - from_y;
+    let max_delta = dx.abs().max(dy.abs());
+
+    (max_delta > f32::EPSILON).then(|| {
+        let scale = 1.0 / max_delta;
+        (from_x - dx * scale, from_y - dy * scale)
+    })
+}
+
+fn primary_drag_axis(horizontal_delta: f32, vertical_delta: f32) -> GestureAxis {
+    if horizontal_delta.abs() >= vertical_delta.abs() {
+        GestureAxis::Horizontal
+    } else {
+        GestureAxis::Vertical
+    }
+}
+
+fn drag_scroll_activation<C: ListenerComputeCtx>(
+    from_x: f32,
+    from_y: f32,
+    x: f32,
+    y: f32,
+    allow_opposite_probe: bool,
+    ctx: &mut C,
+) -> Option<DragScrollActivation> {
+    if !allow_opposite_probe {
+        return drag_scroll_activation_axis(from_x, from_y, x, y, ctx).map(|primary_axis| {
+            DragScrollActivation {
+                primary_axis,
+                scroll_mode: DragScrollMode::Locked,
+            }
+        });
+    }
+
+    let horizontal_delta = drag_scroll_axis_potential(
+        GestureAxis::Horizontal,
+        from_x,
+        from_y,
+        x,
+        y,
+        allow_opposite_probe,
+        ctx,
+    );
+    let vertical_delta = drag_scroll_axis_potential(
+        GestureAxis::Vertical,
+        from_x,
+        from_y,
+        x,
+        y,
+        allow_opposite_probe,
+        ctx,
+    );
+
+    match (horizontal_delta, vertical_delta) {
+        (Some(dx), Some(dy)) => Some(DragScrollActivation {
+            primary_axis: primary_drag_axis(dx, dy),
+            scroll_mode: DragScrollMode::Biaxial,
+        }),
+        (Some(_), None) => Some(DragScrollActivation {
+            primary_axis: GestureAxis::Horizontal,
+            scroll_mode: DragScrollMode::Locked,
+        }),
+        (None, Some(_)) => Some(DragScrollActivation {
+            primary_axis: GestureAxis::Vertical,
+            scroll_mode: DragScrollMode::Locked,
+        }),
+        (None, None) => None,
+    }
+}
+
 fn drag_scroll_activation_axis<C: ListenerComputeCtx>(
     from_x: f32,
     from_y: f32,
@@ -3630,17 +3803,12 @@ fn drag_scroll_activation_axis<C: ListenerComputeCtx>(
     };
 
     ctx.dispatch_base(&input).into_iter().find_map(|action| {
-        let ListenerAction::TreeMsg(TreeMsg::ScrollRequest { dx, dy, .. }) = action else {
-            return None;
-        };
-
-        if dx.abs() > f32::EPSILON {
-            Some(GestureAxis::Horizontal)
-        } else if dy.abs() > f32::EPSILON {
-            Some(GestureAxis::Vertical)
-        } else {
-            None
-        }
+        drag_scroll_axis_delta_from_action(&action, GestureAxis::Horizontal)
+            .map(|_| GestureAxis::Horizontal)
+            .or_else(|| {
+                drag_scroll_axis_delta_from_action(&action, GestureAxis::Vertical)
+                    .map(|_| GestureAxis::Vertical)
+            })
     })
 }
 
@@ -3908,6 +4076,7 @@ fn drag_scroll_actions_from_input<C: ListenerComputeCtx>(
     last_x: f32,
     last_y: f32,
     locked_axis: GestureAxis,
+    scroll_mode: DragScrollMode,
     ctx: &mut C,
 ) -> Vec<ListenerAction> {
     let InputEvent::CursorPos { x, y } = input else {
@@ -3919,24 +4088,13 @@ fn drag_scroll_actions_from_input<C: ListenerComputeCtx>(
 
     let moved = dx != 0.0 || dy != 0.0;
     let actions = if moved {
-        ctx.dispatch_base(&ListenerInput::DragScroll {
-            locked_axis: Some(locked_axis),
-            from_x: last_x,
-            from_y: last_y,
-            x: *x,
-            y: *y,
-        })
+        drag_scroll_actions_for_mode(ctx, scroll_mode, locked_axis, last_x, last_y, *x, *y)
     } else {
         Vec::new()
     };
-    let axis_delta = actions.iter().find_map(|action| match action {
-        ListenerAction::TreeMsg(TreeMsg::ScrollRequest { dx, dy, .. }) => match locked_axis {
-            GestureAxis::Horizontal if dx.abs() > f32::EPSILON => Some(*dx),
-            GestureAxis::Vertical if dy.abs() > f32::EPSILON => Some(*dy),
-            _ => None,
-        },
-        _ => None,
-    });
+    let axis_delta = actions
+        .iter()
+        .find_map(|action| drag_scroll_axis_delta_from_action(action, locked_axis));
 
     actions
         .into_iter()
@@ -3948,6 +4106,38 @@ fn drag_scroll_actions_from_input<C: ListenerComputeCtx>(
             },
         )))
         .collect()
+}
+
+fn drag_scroll_actions_for_mode<C: ListenerComputeCtx>(
+    ctx: &mut C,
+    scroll_mode: DragScrollMode,
+    locked_axis: GestureAxis,
+    from_x: f32,
+    from_y: f32,
+    x: f32,
+    y: f32,
+) -> Vec<ListenerAction> {
+    match scroll_mode {
+        DragScrollMode::Locked => ctx.dispatch_base(&ListenerInput::DragScroll {
+            locked_axis: Some(locked_axis),
+            from_x,
+            from_y,
+            x,
+            y,
+        }),
+        DragScrollMode::Biaxial => [GestureAxis::Horizontal, GestureAxis::Vertical]
+            .into_iter()
+            .flat_map(|axis| {
+                ctx.dispatch_base(&ListenerInput::DragScroll {
+                    locked_axis: Some(axis),
+                    from_x,
+                    from_y,
+                    x,
+                    y,
+                })
+            })
+            .collect(),
+    }
 }
 
 fn gesture_axis_intent_from_delta(dx: f32, dy: f32) -> Option<GestureAxis> {
@@ -8315,15 +8505,17 @@ mod click_press_tracker {
     ) -> Option<PointerDragBootstrap> {
         let attrs = &element.layout.effective;
         let swipe_handlers = swipe_handlers_for_element(element);
+        let scroll_candidate = !scroll_wheel::scroll_directions_for_element(element).is_empty();
         (attrs.on_click.unwrap_or(false)
             || attrs.on_press.unwrap_or(false)
             || swipe_handlers.any()
-            || !scroll_wheel::scroll_directions_for_element(element).is_empty())
-        .then_some(PointerDragBootstrap {
-            element_id: element.id,
-            matcher_kind,
-            swipe_handlers,
-        })
+            || scroll_candidate)
+            .then_some(PointerDragBootstrap {
+                element_id: element.id,
+                matcher_kind,
+                swipe_handlers,
+                scroll_candidate,
+            })
     }
 }
 
@@ -8425,8 +8617,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        ClickPressTracker, DragTrackerState, ElixirEvent, GestureAxis, HitGeometry, HoverTracker,
-        KeyPressFollowup, KeyPressTracker, Listener, ListenerAction, ListenerCompute,
+        ClickPressTracker, DragScrollMode, DragTrackerState, ElixirEvent, GestureAxis, HitGeometry,
+        HoverTracker, KeyPressFollowup, KeyPressTracker, Listener, ListenerAction, ListenerCompute,
         ListenerComputeCtx, ListenerInput, ListenerMatcher, ListenerMatcherKind,
         NoopListenerComputeCtx, PointerRegion, RuntimeChange, RuntimeOverlayState, ScrollDirection,
         ScrollbarDragTracker, ScrollbarHitArea, ScrollbarPressSpec, SwipeHandlers, SwipeTracker,
@@ -11214,11 +11406,13 @@ mod tests {
                 matcher_kind: kind,
                 origin_x,
                 origin_y,
+                scroll_candidate,
                 ..
             })] if element_id == &NodeId::from_term_bytes(vec![70])
                 && *kind == matcher_kind
                 && *origin_x == 10.0
                 && *origin_y == 10.0
+                && *scroll_candidate
         ));
     }
 
@@ -11244,6 +11438,7 @@ mod tests {
                 origin_x: 10.0,
                 origin_y: 10.0,
                 swipe_handlers: SwipeHandlers::default(),
+                scroll_candidate: false,
             },
             swipe: None,
             scrollbar: None,
@@ -11461,6 +11656,7 @@ mod tests {
                 last_x: 10.0,
                 last_y: 10.0,
                 locked_axis: GestureAxis::Horizontal,
+                scroll_mode: DragScrollMode::Locked,
             },
             swipe: None,
             scrollbar: None,
@@ -11518,6 +11714,7 @@ mod tests {
                 origin_x: 10.0,
                 origin_y: 10.0,
                 swipe_handlers: SwipeHandlers::default(),
+                scroll_candidate: false,
             },
             swipe: None,
             scrollbar: None,
@@ -11573,6 +11770,7 @@ mod tests {
                 origin_x: 10.0,
                 origin_y: 10.0,
                 swipe_handlers: SwipeHandlers::default(),
+                scroll_candidate: true,
             },
             swipe: None,
             scrollbar: None,
@@ -11640,6 +11838,7 @@ mod tests {
                 origin_x: 50.0,
                 origin_y: 50.0,
                 swipe_handlers: SwipeHandlers::default(),
+                scroll_candidate: true,
             },
             swipe: None,
             scrollbar: None,
@@ -11679,6 +11878,7 @@ mod tests {
                 last_x: 35.0,
                 last_y: 50.0,
                 locked_axis: GestureAxis::Vertical,
+                scroll_mode: DragScrollMode::Locked,
             },
             ..candidate_runtime
         };
@@ -11750,6 +11950,7 @@ mod tests {
                 origin_x,
                 origin_y,
                 swipe_handlers,
+                scroll_candidate,
             })] if element_id == &NodeId::from_term_bytes(vec![71])
                 && *kind == matcher_kind
                 && *origin_x == 10.0
@@ -11758,6 +11959,7 @@ mod tests {
                 && !swipe_handlers.down
                 && !swipe_handlers.left
                 && swipe_handlers.right
+                && !scroll_candidate
         ));
         assert_eq!(
             cursor_actions(
@@ -11792,6 +11994,7 @@ mod tests {
                     right: true,
                     ..SwipeHandlers::default()
                 },
+                scroll_candidate: false,
             },
             swipe: None,
             scrollbar: None,
@@ -11848,6 +12051,7 @@ mod tests {
                     right: true,
                     ..SwipeHandlers::default()
                 },
+                scroll_candidate: false,
             },
             swipe: None,
             scrollbar: None,
@@ -11941,6 +12145,7 @@ mod tests {
                     right: true,
                     ..SwipeHandlers::default()
                 },
+                scroll_candidate: false,
             },
             swipe: None,
             scrollbar: None,
@@ -12027,6 +12232,7 @@ mod tests {
                     right: true,
                     ..SwipeHandlers::default()
                 },
+                scroll_candidate: false,
             },
             swipe: None,
             scrollbar: None,
@@ -14653,6 +14859,7 @@ mod tests {
                 last_x: 10.0,
                 last_y: 10.0,
                 locked_axis: GestureAxis::Horizontal,
+                scroll_mode: DragScrollMode::Locked,
             },
             swipe: None,
             scrollbar: None,
@@ -14688,6 +14895,283 @@ mod tests {
     }
 
     #[test]
+    fn compose_combined_registry_drag_active_biaxial_scroll_move_emits_both_axes() {
+        let attrs = Attrs {
+            on_click: Some(true),
+            scrollbar_x: Some(true),
+            scrollbar_y: Some(true),
+            scroll_x: Some(10.0),
+            scroll_y: Some(20.0),
+            scroll_x_max: Some(100.0),
+            scroll_y_max: Some(100.0),
+            ..Attrs::default()
+        };
+        let element = with_frame(
+            with_interaction(make_element(82, attrs), true),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 40.0,
+                content_width: 220.0,
+                content_height: 180.0,
+            },
+        );
+        let base = registry_for_elements(&[element]);
+        let runtime = RuntimeOverlayState {
+            click_press: None,
+            virtual_key: None,
+            key_presses: Vec::new(),
+            drag: DragTrackerState::Active {
+                element_id: NodeId::from_term_bytes(vec![82]),
+                matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
+                last_x: 10.0,
+                last_y: 10.0,
+                locked_axis: GestureAxis::Horizontal,
+                scroll_mode: DragScrollMode::Biaxial,
+            },
+            swipe: None,
+            scrollbar: None,
+            text_drag: None,
+            slider_drag: None,
+        };
+        let combined = compose_combined_registry(&base, &runtime);
+        let mut ctx = TestComputeCtx {
+            base_registry: Some(base.clone()),
+            ..Default::default()
+        };
+        let actions = first_matching_actions_with_ctx(
+            &combined,
+            &InputEvent::CursorPos { x: 24.0, y: 22.0 },
+            &mut ctx,
+        );
+
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                ListenerAction::TreeMsg(TreeMsg::ScrollRequest {
+                    element_id,
+                    dx,
+                    dy,
+                }),
+                ListenerAction::TreeMsg(TreeMsg::ScrollRequest {
+                    element_id: second_id,
+                    dx: dx2,
+                    dy: dy2,
+                }),
+                ListenerAction::RuntimeChange(RuntimeChange::UpdateDragTrackerPointer {
+                    last_x,
+                    last_y,
+                    axis_delta,
+                }),
+            ] if *element_id == NodeId::from_term_bytes(vec![82])
+                && *second_id == NodeId::from_term_bytes(vec![82])
+                && (*dx - 14.0).abs() < f32::EPSILON
+                && dy.abs() < f32::EPSILON
+                && dx2.abs() < f32::EPSILON
+                && (*dy2 - 12.0).abs() < f32::EPSILON
+                && (*last_x - 24.0).abs() < f32::EPSILON
+                && (*last_y - 22.0).abs() < f32::EPSILON
+                && matches!(axis_delta, Some(delta) if (*delta - 14.0).abs() < f32::EPSILON)
+        ));
+    }
+
+    #[test]
+    fn compose_combined_registry_drag_candidate_threshold_promotes_biaxial_scroll() {
+        let attrs = Attrs {
+            on_click: Some(true),
+            scrollbar_x: Some(true),
+            scrollbar_y: Some(true),
+            scroll_x: Some(10.0),
+            scroll_y: Some(20.0),
+            scroll_x_max: Some(100.0),
+            scroll_y_max: Some(100.0),
+            ..Attrs::default()
+        };
+        let element = with_interaction(make_element(83, attrs), true);
+        let base = registry_for_elements(&[element]);
+
+        let runtime = RuntimeOverlayState {
+            click_press: Some(ClickPressTracker {
+                element_id: NodeId::from_term_bytes(vec![83]),
+                matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
+                emit_click: true,
+                emit_press_pointer: false,
+                clear_mouse_down: false,
+            }),
+            virtual_key: None,
+            key_presses: Vec::new(),
+            drag: DragTrackerState::Candidate {
+                element_id: NodeId::from_term_bytes(vec![83]),
+                matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
+                origin_x: 10.0,
+                origin_y: 10.0,
+                swipe_handlers: SwipeHandlers::default(),
+                scroll_candidate: true,
+            },
+            swipe: None,
+            scrollbar: None,
+            text_drag: None,
+            slider_drag: None,
+        };
+        let combined = compose_combined_registry(&base, &runtime);
+        let mut ctx = TestComputeCtx {
+            base_registry: Some(base.clone()),
+            combined_registry: Some(combined.clone()),
+            ..Default::default()
+        };
+
+        let actions = first_matching_actions_with_ctx(
+            &combined,
+            &InputEvent::CursorPos { x: 25.0, y: 24.0 },
+            &mut ctx,
+        );
+
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                ListenerAction::RuntimeChange(RuntimeChange::PromoteDragTracker {
+                    element_id,
+                    matcher_kind,
+                    locked_axis,
+                    scroll_mode,
+                    ..
+                }),
+                ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
+            ] if *element_id == NodeId::from_term_bytes(vec![83])
+                && *matcher_kind == ListenerMatcherKind::CursorButtonLeftPressInside
+                && *locked_axis == GestureAxis::Horizontal
+                && *scroll_mode == DragScrollMode::Biaxial
+        ));
+    }
+
+    #[test]
+    fn compose_combined_registry_drag_candidate_threshold_promotes_biaxial_at_blocked_edge() {
+        let attrs = Attrs {
+            on_click: Some(true),
+            scrollbar_x: Some(true),
+            scrollbar_y: Some(true),
+            scroll_x: Some(0.0),
+            scroll_y: Some(0.0),
+            scroll_x_max: Some(100.0),
+            scroll_y_max: Some(100.0),
+            ..Attrs::default()
+        };
+        let element = with_interaction(make_element(84, attrs), true);
+        let base = registry_for_elements(&[element]);
+
+        let runtime = RuntimeOverlayState {
+            click_press: Some(ClickPressTracker {
+                element_id: NodeId::from_term_bytes(vec![84]),
+                matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
+                emit_click: true,
+                emit_press_pointer: false,
+                clear_mouse_down: false,
+            }),
+            virtual_key: None,
+            key_presses: Vec::new(),
+            drag: DragTrackerState::Candidate {
+                element_id: NodeId::from_term_bytes(vec![84]),
+                matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
+                origin_x: 0.0,
+                origin_y: 0.0,
+                swipe_handlers: SwipeHandlers::default(),
+                scroll_candidate: true,
+            },
+            swipe: None,
+            scrollbar: None,
+            text_drag: None,
+            slider_drag: None,
+        };
+        let combined = compose_combined_registry(&base, &runtime);
+        let mut ctx = TestComputeCtx {
+            base_registry: Some(base.clone()),
+            combined_registry: Some(combined.clone()),
+            ..Default::default()
+        };
+
+        let actions = first_matching_actions_with_ctx(
+            &combined,
+            &InputEvent::CursorPos { x: 15.0, y: 14.0 },
+            &mut ctx,
+        );
+
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                ListenerAction::RuntimeChange(RuntimeChange::PromoteDragTracker {
+                    element_id,
+                    matcher_kind,
+                    locked_axis,
+                    scroll_mode,
+                    ..
+                }),
+                ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
+            ] if *element_id == NodeId::from_term_bytes(vec![84])
+                && *matcher_kind == ListenerMatcherKind::CursorButtonLeftPressInside
+                && *locked_axis == GestureAxis::Horizontal
+                && *scroll_mode == DragScrollMode::Biaxial
+        ));
+    }
+
+    #[test]
+    fn compose_combined_registry_drag_candidate_threshold_keeps_swipe_edge_behavior() {
+        let attrs = Attrs {
+            on_swipe_right: Some(true),
+            scrollbar_x: Some(true),
+            scroll_x: Some(0.0),
+            scroll_x_max: Some(100.0),
+            ..Attrs::default()
+        };
+        let element = with_interaction(make_element(85, attrs), true);
+        let base = registry_for_elements(&[element]);
+
+        let runtime = RuntimeOverlayState {
+            click_press: None,
+            virtual_key: None,
+            key_presses: Vec::new(),
+            drag: DragTrackerState::Candidate {
+                element_id: NodeId::from_term_bytes(vec![85]),
+                matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
+                origin_x: 10.0,
+                origin_y: 10.0,
+                swipe_handlers: SwipeHandlers {
+                    right: true,
+                    ..SwipeHandlers::default()
+                },
+                scroll_candidate: true,
+            },
+            swipe: None,
+            scrollbar: None,
+            text_drag: None,
+            slider_drag: None,
+        };
+        let combined = compose_combined_registry(&base, &runtime);
+        let mut ctx = TestComputeCtx {
+            base_registry: Some(base.clone()),
+            combined_registry: Some(combined.clone()),
+            ..Default::default()
+        };
+
+        let actions = first_matching_actions_with_ctx(
+            &combined,
+            &InputEvent::CursorPos { x: 25.0, y: 10.0 },
+            &mut ctx,
+        );
+
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
+                ListenerAction::RuntimeChange(RuntimeChange::ClearDragTracker),
+                ListenerAction::RuntimeChange(RuntimeChange::StartSwipeTracker { tracker }),
+            ] if tracker.element_id == NodeId::from_term_bytes(vec![85])
+                && tracker.locked_axis == GestureAxis::Horizontal
+                && tracker.handlers.right
+        ));
+    }
+
+    #[test]
     fn compose_combined_registry_drag_active_scroll_move_ignores_off_axis_delta_after_lock() {
         let attrs = Attrs {
             on_click: Some(true),
@@ -14718,6 +15202,7 @@ mod tests {
                 last_x: 10.0,
                 last_y: 10.0,
                 locked_axis: GestureAxis::Horizontal,
+                scroll_mode: DragScrollMode::Locked,
             },
             swipe: None,
             scrollbar: None,
