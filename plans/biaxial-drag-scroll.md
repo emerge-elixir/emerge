@@ -111,6 +111,85 @@ mix format --check-formatted
 git diff --check
 ```
 
+## Stale-lane no-op scroll follow-up
+
+Completed on 2026-05-20 after a report that drag-scrolling the oversized
+canvas, moving into a nested vertical scroll target, and then retrying the
+canvas could leave the canvas unable to start drag-scroll again until another
+overflow scroll occurred.
+
+The root cause was stale listener-lane cleanup when a scroll-like tree message
+no-oped in the tree actor. Event dispatch marks the listener lane stale after
+messages such as `ScrollRequest` because scroll can move hit regions and the
+event runtime must wait for fresh registry data. If the tree was already at an
+edge, the scroll request could clamp to the current offset, produce no tree
+invalidation, and therefore publish no registry update; subsequent press/drag
+input stayed buffered behind the stale lane.
+
+Changes made:
+
+- `TreeMsg` now exposes the shared notion of whether a message requires a
+  listener registry response.
+- The event runtime uses that shared helper to decide when to mark listener
+  input stale.
+- The tree update engine treats those same messages as implicit registry
+  requests, so even a no-op/clamped scroll request publishes the cached registry
+  and unblocks buffered release/next-press input.
+- Added coverage that a blocked scroll request returns a cached
+  `RegistryUpdate` instead of `Skip` after an initial registry is cached.
+
+Follow-up validation on 2026-05-20:
+
+```bash
+cargo test --manifest-path native/emerge_skia/Cargo.toml --lib runtime::tree_update::tests::blocked_scroll_request_publishes_cached_registry_response
+cargo test --manifest-path native/emerge_skia/Cargo.toml --lib events::registry_builder
+cargo test --manifest-path native/emerge_skia/Cargo.toml --lib events::runtime
+cargo test --manifest-path native/emerge_skia/Cargo.toml --lib
+cargo clippy --manifest-path native/emerge_skia/Cargo.toml -- -D warnings
+cargo fmt --manifest-path native/emerge_skia/Cargo.toml -- --check
+mix test
+mix format --check-formatted
+git diff --check
+```
+
+## Wayland registry update reliability follow-up
+
+Completed on 2026-05-20 after confirming the stuck-scroll issue reproduced on
+Linux Wayland and still affected both drag and wheel scrolling until another
+container produced a scroll/registry refresh.
+
+The remaining actor-backed failure mode was that tree-to-event registry updates
+were best-effort. `runtime/tree_actor.rs::send_registry_update/3` used
+`try_send` and dropped the `EventMsg::RegistryUpdate` when the bounded event
+channel was full. During drag-scroll bursts the event channel can be saturated
+with pointer input exactly when a scroll-induced registry update is needed to
+refresh scroll directions and unstick the listener lane. A later unrelated
+scroll could publish a newer registry update and make the previously stuck
+canvas/nested scroll work again.
+
+Changes made:
+
+- Tree actor registry publication now blocks when the event channel is full,
+  matching ordinary input/tree send behavior for correctness-critical
+  synchronization messages.
+- The previous "does not block when full" test was replaced with coverage that
+  the registry update waits for capacity and is delivered instead of dropped.
+
+Follow-up validation on 2026-05-20:
+
+```bash
+cargo test --manifest-path native/emerge_skia/Cargo.toml --lib send_registry_update_waits_for_channel_capacity_instead_of_dropping
+cargo test --manifest-path native/emerge_skia/Cargo.toml --lib runtime::tree_actor
+cargo test --manifest-path native/emerge_skia/Cargo.toml --lib events::runtime
+cargo test --manifest-path native/emerge_skia/Cargo.toml --lib runtime::tree_update
+cargo test --manifest-path native/emerge_skia/Cargo.toml --lib
+cargo clippy --manifest-path native/emerge_skia/Cargo.toml -- -D warnings
+cargo fmt --manifest-path native/emerge_skia/Cargo.toml -- --check
+mix test
+mix format --check-formatted
+git diff --check
+```
+
 ## Open questions
 
 - For a biaxial drag release, should inertia remain primary-axis only for now,

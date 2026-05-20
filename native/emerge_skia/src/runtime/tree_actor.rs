@@ -125,14 +125,15 @@ pub(crate) fn send_registry_update(
 ) {
     match event_tx.try_send(EventMsg::RegistryUpdate { rebuild }) {
         Ok(()) => {}
-        Err(TrySendError::Full(_)) => {
+        Err(TrySendError::Full(msg)) => {
             if log_input {
-                eprintln!("event channel full, dropping registry update");
+                eprintln!("event channel full, blocking registry update send");
             }
             crate::debug_trace::hover_trace!(
                 "event_channel",
-                "event channel full, dropping registry update"
+                "event channel full, blocking registry update send"
             );
+            let _ = event_tx.send(msg);
         }
         Err(TrySendError::Disconnected(_)) => {}
     }

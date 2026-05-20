@@ -546,11 +546,7 @@ impl PendingDispatchEffects {
 }
 
 fn tree_msg_requires_listener_stale(msg: &TreeMsg) -> bool {
-    match msg {
-        TreeMsg::SetMouseOverActive { .. } | TreeMsg::SetMouseDownActive { .. } => false,
-        TreeMsg::Batch(messages) => messages.iter().any(tree_msg_requires_listener_stale),
-        _ => true,
-    }
+    msg.requires_listener_registry_response()
 }
 
 /// Runtime dispatch context passed into listener computation.

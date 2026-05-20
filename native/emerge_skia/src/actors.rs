@@ -132,6 +132,39 @@ pub enum TreeMsg {
     Stop,
 }
 
+impl TreeMsg {
+    /// Whether an event-runtime dispatch that emits this message must wait for
+    /// a registry response before it can safely process more hit-test input.
+    ///
+    /// Some messages can no-op at the tree layer (for example a scroll request
+    /// that is already at an edge). Returning true here means the tree update
+    /// path should still publish the cached registry in that no-op case so the
+    /// event runtime does not remain permanently stale.
+    pub(crate) fn requires_listener_registry_response(&self) -> bool {
+        match self {
+            Self::SetMouseOverActive { .. } | Self::SetMouseDownActive { .. } => false,
+            Self::AnimationPulse { .. } | Self::Stop => false,
+            Self::Batch(messages) => messages
+                .iter()
+                .any(Self::requires_listener_registry_response),
+            Self::UploadTree { .. }
+            | Self::PatchTree { .. }
+            | Self::Resize { .. }
+            | Self::ScrollRequest { .. }
+            | Self::ScrollbarThumbDragX { .. }
+            | Self::ScrollbarThumbDragY { .. }
+            | Self::SetScrollbarXHover { .. }
+            | Self::SetScrollbarYHover { .. }
+            | Self::SetFocusedActive { .. }
+            | Self::SetTextInputContent { .. }
+            | Self::SetTextInputRuntime { .. }
+            | Self::SetSliderValue { .. }
+            | Self::RebuildRegistry
+            | Self::AssetStateChanged => true,
+        }
+    }
+}
+
 pub enum EventMsg {
     InputEvent(InputEvent),
     PresentTiming {

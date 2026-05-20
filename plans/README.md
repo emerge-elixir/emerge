@@ -51,6 +51,12 @@ recording options for paint-layer preparation. It records that paint layers
 could eventually be recorded in parallel, while GPU raster/upload/composition
 must stay serialized through the Skia GPU context.
 
+### `platform-runtime-architecture-differences.md`
+
+Explanatory note comparing Linux/Wayland actor-backed runtime orchestration with
+macOS host-session orchestration. Use it when investigating platform parity,
+event/tree registry synchronization, or convergence work.
+
 ## Folded Work
 
 The old `completed/` directory and implementation-tied investigations were
