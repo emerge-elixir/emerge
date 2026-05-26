@@ -65,6 +65,16 @@ defmodule Emerge.Runtime.Viewport do
   end
 
   @impl true
+  def handle_info({:EXIT, _pid, :normal}, state) do
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:EXIT, _pid, reason}, state) do
+    {:stop, reason, state}
+  end
+
+  @impl true
   def handle_info({:emerge_viewport, :source_reloaded, meta}, state) do
     handle_source_reloaded(meta, state)
   end
@@ -108,6 +118,7 @@ defmodule Emerge.Runtime.Viewport do
       id: Keyword.get(opts, :name, module),
       start: {module, :start_link, [opts]},
       restart: :transient,
+      shutdown: :infinity,
       type: :worker
     }
   end
@@ -116,6 +127,7 @@ defmodule Emerge.Runtime.Viewport do
   @spec init_state(module(), keyword()) ::
           {:ok, t(), {:continue, {:emerge_viewport_mount, keyword()}}}
   def init_state(module, opts) when is_atom(module) and is_list(opts) do
+    Process.flag(:trap_exit, true)
     {:ok, put_runtime(%{}, %State{module: module}), {:continue, {:emerge_viewport_mount, opts}}}
   end
 
@@ -187,6 +199,9 @@ defmodule Emerge.Runtime.Viewport do
 
       renderer_heartbeat_recent?(runtime) ->
         {:noreply, maybe_schedule_renderer_check(state)}
+
+      renderer_running?(runtime) ->
+        {:noreply, state |> note_renderer_heartbeat() |> maybe_schedule_renderer_check()}
 
       true ->
         {:stop, :normal, state}
@@ -410,6 +425,13 @@ defmodule Emerge.Runtime.Viewport do
 
       _ ->
         false
+    end
+  end
+
+  defp renderer_running?(%State{renderer_module: renderer_module, renderer: renderer}) do
+    case safe_invoke(fn -> renderer_module.running?(renderer) end) do
+      {:ok, true} -> true
+      _ -> false
     end
   end
 

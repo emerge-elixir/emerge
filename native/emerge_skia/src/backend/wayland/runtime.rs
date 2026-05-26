@@ -1,10 +1,13 @@
 use std::{
+    fs::OpenOptions,
+    io::Write,
     sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::Sender,
     },
-    time::Duration,
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use crossbeam_channel::{Receiver, Sender as CrossbeamSender, TrySendError};
@@ -15,7 +18,10 @@ use smithay_client_toolkit::{
     delegate_seat, delegate_shm, delegate_xdg_shell, delegate_xdg_window,
     output::{OutputHandler, OutputState},
     reexports::{
-        calloop::{self, EventLoop},
+        calloop::{
+            self, EventLoop,
+            timer::{TimeoutAction, Timer},
+        },
         calloop_wayland_source::WaylandSource,
     },
     registry::{ProvidesRegistryState, RegistryState},
@@ -68,7 +74,7 @@ use super::{
     geometry::SurfaceGeometry,
     input::{PointerInputState, pointer_button_event, pointer_scroll_event},
     keyboard::{KeyboardInputState, key_from_keysym, mods_from_sctk},
-    present::{DrawDecision, DrawKind, PresentState},
+    present::{DrawDecision, DrawKind, FrameCallbackState, PresentSnapshot, PresentState},
     protocols::ProtocolHandles,
     text_input::TextInputProtocolState,
 };
@@ -79,6 +85,8 @@ enum WakeAction {
     Redraw,
     VideoFrameAvailable,
 }
+
+const WAYLAND_DISPATCH_STOP_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Clone)]
 struct WaylandWake {
@@ -91,6 +99,7 @@ struct WaylandAppRuntime {
     event_tx: crossbeam_channel::Sender<EventMsg>,
     input_target: Arc<InputTargetRelay>,
     close_signal_log: bool,
+    render_log: bool,
     stats: Option<Arc<RendererStatsCollector>>,
     renderer_stats_log: bool,
     renderer_animation_log: bool,
@@ -100,6 +109,8 @@ struct WaylandAppRuntime {
     cursor_icon_rx: Receiver<CursorIcon>,
     video_registry: Arc<VideoRegistry>,
     loop_handle: calloop::LoopHandle<'static, WaylandApp>,
+    watchdog: Arc<WaylandThreadWatchdogState>,
+    direct_watchdog_log: Option<Arc<WaylandDirectWatchdogLog>>,
 }
 
 pub(crate) struct WaylandRunArgs {
@@ -109,6 +120,7 @@ pub(crate) struct WaylandRunArgs {
     pub event_tx: crossbeam_channel::Sender<EventMsg>,
     pub input_target: Arc<InputTargetRelay>,
     pub close_signal_log: bool,
+    pub render_log: bool,
     pub stats: Option<Arc<RendererStatsCollector>>,
     pub renderer_stats_log: bool,
     pub renderer_animation_log: bool,
@@ -131,6 +143,192 @@ enum WaylandVideoSyncAction {
     Hold,
     Import,
     Drop,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PresentSkipReason {
+    Exit,
+    EnvMissing,
+    NotConfigured,
+    NoRedrawRequested,
+    WaitingForFrameCallback,
+    WaitingForLateReplacementCallback,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PresentSkipLogKey {
+    reason: PresentSkipReason,
+    requested_frame_callback_sequence: Option<u64>,
+    age_bucket: Option<u64>,
+    latest_received_render_version: Option<u64>,
+    last_submitted_render_version: Option<u64>,
+}
+
+#[derive(Default)]
+struct WaylandRenderDiagnostics {
+    draw_sequence: u64,
+    last_wake_at: Option<Instant>,
+    last_render_scene_received_at: Option<Instant>,
+    last_render_scene_version: Option<u64>,
+    last_draw_started_at: Option<Instant>,
+    last_draw_finished_at: Option<Instant>,
+    last_swap_started_at: Option<Instant>,
+    last_swap_done_at: Option<Instant>,
+    last_frame_callback_received_at: Option<Instant>,
+    last_present_skip_log_key: Option<PresentSkipLogKey>,
+}
+
+struct WaylandDirectWatchdogLog {
+    path: String,
+    file: Mutex<Option<std::fs::File>>,
+}
+
+impl WaylandDirectWatchdogLog {
+    fn open_for_current_process() -> Self {
+        let path = format!("/tmp/emerge-wayland-watchdog-{}.log", std::process::id());
+        let file = match OpenOptions::new().create(true).append(true).open(&path) {
+            Ok(file) => Some(file),
+            Err(err) => {
+                eprintln!(
+                    "EmergeSkia native[wayland_watchdog] failed to open direct watchdog log {path}: {err}"
+                );
+                None
+            }
+        };
+
+        Self {
+            path,
+            file: Mutex::new(file),
+        }
+    }
+
+    fn path(&self) -> &str {
+        &self.path
+    }
+
+    fn write(&self, message: impl AsRef<str>) {
+        let mut guard = self
+            .file
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(file) = guard.as_mut() else {
+            return;
+        };
+
+        let _ = writeln!(
+            file,
+            "\n{} EmergeSkia native[wayland_watchdog]\n{}",
+            current_wall_ms(),
+            message.as_ref()
+        );
+        let _ = file.flush();
+    }
+}
+
+#[derive(Default)]
+struct WaylandThreadWatchdogState {
+    dispatch_active: AtomicBool,
+    dispatch_generation: AtomicU64,
+    last_dispatch_enter_wall_ms: AtomicU64,
+    last_dispatch_exit_wall_ms: AtomicU64,
+    last_loop_tick_wall_ms: AtomicU64,
+    last_wake_wall_ms: AtomicU64,
+    last_render_scene_wall_ms: AtomicU64,
+    last_draw_start_wall_ms: AtomicU64,
+    last_swap_start_wall_ms: AtomicU64,
+    last_swap_done_wall_ms: AtomicU64,
+    last_frame_callback_wall_ms: AtomicU64,
+}
+
+impl WaylandThreadWatchdogState {
+    fn mark_dispatch_enter(&self) {
+        self.dispatch_active.store(true, Ordering::Relaxed);
+        self.dispatch_generation.fetch_add(1, Ordering::Relaxed);
+        self.last_dispatch_enter_wall_ms
+            .store(current_wall_ms(), Ordering::Relaxed);
+    }
+
+    fn mark_dispatch_exit(&self) {
+        self.dispatch_active.store(false, Ordering::Relaxed);
+        self.last_dispatch_exit_wall_ms
+            .store(current_wall_ms(), Ordering::Relaxed);
+    }
+
+    fn mark_loop_tick(&self) {
+        self.last_loop_tick_wall_ms
+            .store(current_wall_ms(), Ordering::Relaxed);
+    }
+
+    fn mark_wake(&self) {
+        self.last_wake_wall_ms
+            .store(current_wall_ms(), Ordering::Relaxed);
+    }
+
+    fn mark_render_scene(&self) {
+        self.last_render_scene_wall_ms
+            .store(current_wall_ms(), Ordering::Relaxed);
+    }
+
+    fn mark_draw_start(&self) {
+        self.last_draw_start_wall_ms
+            .store(current_wall_ms(), Ordering::Relaxed);
+    }
+
+    fn mark_swap_start(&self) {
+        self.last_swap_start_wall_ms
+            .store(current_wall_ms(), Ordering::Relaxed);
+    }
+
+    fn mark_swap_done(&self) {
+        self.last_swap_done_wall_ms
+            .store(current_wall_ms(), Ordering::Relaxed);
+    }
+
+    fn mark_frame_callback(&self) {
+        self.last_frame_callback_wall_ms
+            .store(current_wall_ms(), Ordering::Relaxed);
+    }
+
+    fn snapshot(&self) -> WaylandThreadWatchdogSnapshot {
+        WaylandThreadWatchdogSnapshot {
+            dispatch_active: self.dispatch_active.load(Ordering::Relaxed),
+            dispatch_generation: self.dispatch_generation.load(Ordering::Relaxed),
+            last_dispatch_enter_wall_ms: self.last_dispatch_enter_wall_ms.load(Ordering::Relaxed),
+            last_dispatch_exit_wall_ms: self.last_dispatch_exit_wall_ms.load(Ordering::Relaxed),
+            last_loop_tick_wall_ms: self.last_loop_tick_wall_ms.load(Ordering::Relaxed),
+            last_wake_wall_ms: self.last_wake_wall_ms.load(Ordering::Relaxed),
+            last_render_scene_wall_ms: self.last_render_scene_wall_ms.load(Ordering::Relaxed),
+            last_draw_start_wall_ms: self.last_draw_start_wall_ms.load(Ordering::Relaxed),
+            last_swap_start_wall_ms: self.last_swap_start_wall_ms.load(Ordering::Relaxed),
+            last_swap_done_wall_ms: self.last_swap_done_wall_ms.load(Ordering::Relaxed),
+            last_frame_callback_wall_ms: self.last_frame_callback_wall_ms.load(Ordering::Relaxed),
+        }
+    }
+}
+
+struct WaylandThreadWatchdogSnapshot {
+    dispatch_active: bool,
+    dispatch_generation: u64,
+    last_dispatch_enter_wall_ms: u64,
+    last_dispatch_exit_wall_ms: u64,
+    last_loop_tick_wall_ms: u64,
+    last_wake_wall_ms: u64,
+    last_render_scene_wall_ms: u64,
+    last_draw_start_wall_ms: u64,
+    last_swap_start_wall_ms: u64,
+    last_swap_done_wall_ms: u64,
+    last_frame_callback_wall_ms: u64,
+}
+
+struct DrawStartLogInput<'a> {
+    draw_sequence: u64,
+    draw_kind: DrawKind,
+    version: u64,
+    animate: bool,
+    sync_action: WaylandVideoSyncAction,
+    summary: crate::render_scene::RenderSceneSummary,
+    snapshot: &'a PresentSnapshot,
+    geometry: &'a SurfaceGeometry,
 }
 
 impl WaylandVideoImportState {
@@ -240,6 +438,7 @@ pub(super) struct WaylandApp {
     event_tx: crossbeam_channel::Sender<EventMsg>,
     input_target: Arc<InputTargetRelay>,
     close_signal_log: bool,
+    render_log: bool,
     stats: Option<Arc<RendererStatsCollector>>,
     renderer_stats_log: bool,
     renderer_animation_log: bool,
@@ -247,9 +446,12 @@ pub(super) struct WaylandApp {
     native_log: Arc<NativeLogRelay>,
     video_registry: Arc<VideoRegistry>,
     loop_handle: calloop::LoopHandle<'static, WaylandApp>,
+    watchdog: Arc<WaylandThreadWatchdogState>,
+    direct_watchdog_log: Option<Arc<WaylandDirectWatchdogLog>>,
     render_state: RenderState,
     render_animation_trace: Option<AnimationFrameTrace>,
     animation_pulse_sequence: u64,
+    diagnostics: WaylandRenderDiagnostics,
     pending_pipeline_submitted_at: Option<std::time::Instant>,
     pending_pipeline_swap_done_at: Option<std::time::Instant>,
 }
@@ -283,6 +485,7 @@ impl WaylandApp {
             event_tx,
             input_target,
             close_signal_log,
+            render_log,
             stats,
             renderer_stats_log,
             renderer_animation_log,
@@ -292,6 +495,8 @@ impl WaylandApp {
             cursor_icon_rx,
             video_registry,
             loop_handle,
+            watchdog,
+            direct_watchdog_log,
         } = runtime;
 
         let mut app = Self {
@@ -317,6 +522,7 @@ impl WaylandApp {
             event_tx,
             input_target,
             close_signal_log,
+            render_log,
             stats,
             renderer_stats_log,
             renderer_animation_log,
@@ -324,9 +530,12 @@ impl WaylandApp {
             native_log,
             video_registry,
             loop_handle,
+            watchdog,
+            direct_watchdog_log,
             render_state: RenderState::default(),
             render_animation_trace: None,
             animation_pulse_sequence: 0,
+            diagnostics: WaylandRenderDiagnostics::default(),
             pending_pipeline_submitted_at: None,
             pending_pipeline_swap_done_at: None,
         };
@@ -340,9 +549,89 @@ impl WaylandApp {
         Ok(app)
     }
 
+    pub(super) fn log_render_diagnostic(&self, message: impl Into<String>) {
+        if self.render_log {
+            self.native_log.info("wayland_render", message);
+        }
+    }
+
+    fn log_direct_watchdog(&self, message: impl AsRef<str>) {
+        if let Some(log) = self.direct_watchdog_log.as_ref() {
+            log.write(message);
+        }
+    }
+
+    fn present_snapshot(&self) -> PresentSnapshot {
+        self.present.snapshot(Instant::now(), SystemTime::now())
+    }
+
+    fn log_present_skip_if_needed(&mut self, env_ready: bool, allow_late_replacement: bool) {
+        if !self.render_log {
+            return;
+        }
+
+        let snapshot = self.present_snapshot();
+        let Some(reason) =
+            present_skip_reason(&snapshot, env_ready, self.exit, allow_late_replacement)
+        else {
+            return;
+        };
+
+        if reason == PresentSkipReason::NoRedrawRequested {
+            return;
+        }
+
+        let key = PresentSkipLogKey {
+            reason,
+            requested_frame_callback_sequence: snapshot.requested_frame_callback_sequence,
+            age_bucket: frame_callback_wait_log_bucket(&snapshot),
+            latest_received_render_version: snapshot.latest_received_render_version,
+            last_submitted_render_version: snapshot.last_submitted_render_version,
+        };
+
+        if self.diagnostics.last_present_skip_log_key == Some(key) {
+            return;
+        }
+
+        self.diagnostics.last_present_skip_log_key = Some(key);
+        self.log_render_diagnostic(format_present_skip_log(
+            reason,
+            env_ready,
+            allow_late_replacement,
+            &snapshot,
+            &self.geometry,
+            &self.diagnostics,
+        ));
+    }
+
+    fn log_render_watchdog(&mut self) {
+        if !self.render_log {
+            return;
+        }
+
+        let snapshot = self.present_snapshot();
+        self.log_render_diagnostic(format_wayland_watchdog_log(
+            &snapshot,
+            &self.geometry,
+            self.env.is_some(),
+            &self.diagnostics,
+        ));
+    }
+
     fn handle_wake_action(&mut self, conn: &Connection, action: WakeAction) {
+        self.watchdog.mark_wake();
+        self.diagnostics.last_wake_at = Some(Instant::now());
+        if self.render_log {
+            self.log_render_diagnostic(format!(
+                "wake action\n  action: {action:?}\n  {}",
+                format_present_snapshot(&self.present_snapshot())
+            ));
+        }
+
         match action {
             WakeAction::Stop => {
+                self.log_direct_watchdog("wake stop action received; exiting wayland loop");
+                self.unmap_for_shutdown(conn, "wake stop action");
                 self.running_flag.store(false, Ordering::Relaxed);
                 self.exit = true;
             }
@@ -399,6 +688,21 @@ impl WaylandApp {
         }
     }
 
+    fn unmap_for_shutdown(&self, conn: &Connection, reason: &str) {
+        self.log_direct_watchdog(format!("wayland shutdown unmap begin\n  reason: {reason}"));
+        self.window.attach(None, 0, 0);
+        self.window.wl_surface().commit();
+
+        match conn.flush() {
+            Ok(()) => self.log_direct_watchdog(format!(
+                "wayland shutdown unmap flushed\n  reason: {reason}"
+            )),
+            Err(err) => self.log_direct_watchdog(format!(
+                "wayland shutdown unmap flush failed\n  reason: {reason}\n  error: {err}"
+            )),
+        }
+    }
+
     fn flush_backend_updates(&mut self, conn: &Connection) {
         if self.exit {
             return;
@@ -411,6 +715,11 @@ impl WaylandApp {
 
     fn drain_backend_messages(&mut self, conn: &Connection) -> bool {
         let mut updated = false;
+        let mut scene_count = 0_u32;
+        let mut latest_scene_version = None;
+        let mut latest_scene_animate = false;
+        let mut latest_scene_from_patch = false;
+        let mut cursor_count = 0_u32;
 
         while let Ok(msg) = self.render_rx.try_recv() {
             match msg {
@@ -426,6 +735,7 @@ impl WaylandApp {
                     ime_text_state,
                     ..
                 } => {
+                    let received_at = Instant::now();
                     let animation_trace = animation_trace.map(|trace| *trace);
                     let scene = *scene;
                     self.render_state.set_scene(scene);
@@ -434,6 +744,13 @@ impl WaylandApp {
                     self.render_state.pipeline_render_queued_at = pipeline_render_queued_at;
                     self.render_state.animate = animate;
                     self.render_animation_trace = animation_trace;
+                    self.diagnostics.last_render_scene_received_at = Some(received_at);
+                    self.diagnostics.last_render_scene_version = Some(version);
+                    self.watchdog.mark_render_scene();
+                    scene_count = scene_count.saturating_add(1);
+                    latest_scene_version = Some(version);
+                    latest_scene_animate = animate;
+                    latest_scene_from_patch = pipeline_submitted_at.is_some();
                     self.present.note_scene_received(
                         version,
                         pipeline_submitted_at.is_some(),
@@ -447,7 +764,7 @@ impl WaylandApp {
                                 version,
                                 animate,
                                 animation_trace,
-                                std::time::Instant::now(),
+                                received_at,
                             ),
                         );
                     }
@@ -469,6 +786,11 @@ impl WaylandApp {
                     updated = true;
                 }
                 RenderMsg::Stop => {
+                    self.log_render_diagnostic("render queue stop message received");
+                    self.log_direct_watchdog(
+                        "render queue stop message received; exiting wayland loop",
+                    );
+                    self.unmap_for_shutdown(conn, "render stop message");
                     self.running_flag.store(false, Ordering::Relaxed);
                     self.exit = true;
                     return false;
@@ -477,9 +799,29 @@ impl WaylandApp {
         }
 
         while let Ok(icon) = self.cursor_icon_rx.try_recv() {
+            cursor_count = cursor_count.saturating_add(1);
             if let Some(cursor) = self.cursor_icon_state.request(icon, self.input.entered) {
                 self.apply_cursor_icon(conn, cursor);
             }
+        }
+
+        if self.render_log && (scene_count > 0 || cursor_count > 0) {
+            self.log_render_diagnostic(format!(
+                concat!(
+                    "backend updates drained\n",
+                    "  scenes: count={} latest_version={:?} animate={} from_patch={}\n",
+                    "  cursors: count={}\n",
+                    "  updated: {}\n",
+                    "  {}"
+                ),
+                scene_count,
+                latest_scene_version,
+                latest_scene_animate,
+                latest_scene_from_patch,
+                cursor_count,
+                updated,
+                format_present_snapshot(&self.present_snapshot())
+            ));
         }
 
         updated
@@ -513,9 +855,31 @@ impl WaylandApp {
     }
 
     fn update_logical_size(&mut self, conn: &Connection, width: u32, height: u32) {
+        let previous = self.geometry;
         let size_changed = self.geometry.set_logical_size(width, height);
+        if self.render_log {
+            self.log_render_diagnostic(format!(
+                concat!(
+                    "configure logical size\n",
+                    "  requested: {}x{}\n",
+                    "  previous: {}\n",
+                    "  after_logical: {}\n",
+                    "  size_changed: {}\n",
+                    "  env_ready: {}"
+                ),
+                width,
+                height,
+                format_surface_geometry(&previous),
+                format_surface_geometry(&self.geometry),
+                size_changed,
+                self.env.is_some(),
+            ));
+        }
 
         if !should_reconfigure_surface(size_changed, self.env.is_none()) {
+            if self.render_log {
+                self.log_render_diagnostic("configure did not require surface reconfigure");
+            }
             return;
         }
 
@@ -527,17 +891,17 @@ impl WaylandApp {
             .env
             .as_ref()
             .is_some_and(|env| env.swap_buffers_nonblocking);
-        let decision = frame_draw_decision(
-            &self.present,
-            self.env.is_some(),
-            self.exit,
-            allow_late_replacement,
-        );
+        let env_ready = self.env.is_some();
+        let decision =
+            frame_draw_decision(&self.present, env_ready, self.exit, allow_late_replacement);
 
         let DrawDecision::Draw(draw_kind) = decision else {
+            self.log_present_skip_if_needed(env_ready, allow_late_replacement);
             self.present.clear_ready_frame_callback_timing_if_idle();
             return;
         };
+
+        self.diagnostics.last_present_skip_log_key = None;
 
         self.draw(draw_kind);
     }
@@ -547,7 +911,29 @@ impl WaylandApp {
         let sync_action = video_import.sync_action();
         let video_import_ctx = video_import.context();
         let animation_trace = self.render_animation_trace;
-        let draw_started_at = std::time::Instant::now();
+        let draw_started_at = Instant::now();
+        let draw_sequence = self.diagnostics.draw_sequence;
+        self.diagnostics.draw_sequence = self.diagnostics.draw_sequence.wrapping_add(1);
+        self.diagnostics.last_draw_started_at = Some(draw_started_at);
+        self.watchdog.mark_draw_start();
+        let render_log = self.render_log;
+        let native_log = Arc::clone(&self.native_log);
+
+        if render_log {
+            native_log.info(
+                "wayland_render",
+                format_draw_start_log(DrawStartLogInput {
+                    draw_sequence,
+                    draw_kind,
+                    version: self.render_state.render_version,
+                    animate: self.render_state.animate,
+                    sync_action,
+                    summary: self.render_state.scene.summary(),
+                    snapshot: &self.present_snapshot(),
+                    geometry: &self.geometry,
+                }),
+            );
+        }
 
         let Some(env) = self.env.as_mut() else {
             return;
@@ -563,10 +949,29 @@ impl WaylandApp {
             self.render_state.pipeline_submitted_at = None;
             self.render_state.pipeline_render_queued_at = None;
             self.render_animation_trace = None;
+            self.diagnostics.last_draw_finished_at = Some(Instant::now());
+            if render_log {
+                native_log.info(
+                    "wayland_render",
+                    format!(
+                        "draw noop\n  sequence: {draw_sequence}\n  version: {}\n  reason: unchanged visible frame while video import pending",
+                        self.render_state.render_version,
+                    ),
+                );
+            }
             return;
         }
 
-        self.present.prepare_draw(draw_kind, &self.window, &self.qh);
+        let frame_request = self.present.prepare_draw(draw_kind, &self.window, &self.qh);
+        if render_log && let Some(request) = frame_request {
+            native_log.info(
+                "wayland_render",
+                format!(
+                    "frame callback requested\n  sequence: {}\n  draw_sequence: {draw_sequence}\n  render_version: {}",
+                    request.sequence, self.render_state.render_version
+                ),
+            );
+        }
 
         let mut video_needs_cleanup = false;
 
@@ -612,19 +1017,64 @@ impl WaylandApp {
                     ),
                 );
             }
+
+            if render_log {
+                native_log.info(
+                    "wayland_render",
+                    format!(
+                        "render done\n  sequence: {draw_sequence}\n  version: {}\n  render_total: {:.3} ms",
+                        self.render_state.render_version,
+                        duration_ms(render_timings.total),
+                    ),
+                );
+            }
         }
 
-        let present_submit_started_at = std::time::Instant::now();
+        let present_submit_started_at = Instant::now();
+        self.diagnostics.last_swap_started_at = Some(present_submit_started_at);
+        self.watchdog.mark_swap_start();
+        if render_log {
+            native_log.info(
+                "wayland_render",
+                format!(
+                    "swap start\n  sequence: {draw_sequence}\n  version: {}\n  kind: {draw_kind:?}",
+                    self.render_state.render_version,
+                ),
+            );
+        }
 
         if let Err(err) = env.gl_surface.swap_buffers(&env.gl_context) {
             eprintln!("wayland egl swap_buffers failed: {err}");
+            if render_log {
+                native_log.info(
+                    "wayland_render",
+                    format!(
+                        "swap error\n  sequence: {draw_sequence}\n  version: {}\n  error: {err}\n  {}",
+                        self.render_state.render_version,
+                        format_present_snapshot(&self.present_snapshot()),
+                    ),
+                );
+            }
             self.running_flag.store(false, Ordering::Relaxed);
             self.exit = true;
             return;
         }
 
         let present_submit = present_submit_started_at.elapsed();
-        let swap_done_at = std::time::Instant::now();
+        let swap_done_at = Instant::now();
+        self.diagnostics.last_swap_done_at = Some(swap_done_at);
+        self.diagnostics.last_draw_finished_at = Some(swap_done_at);
+        self.watchdog.mark_swap_done();
+        if render_log {
+            native_log.info(
+                "wayland_render",
+                format!(
+                    "swap done\n  sequence: {draw_sequence}\n  version: {}\n  present_submit: {:.3} ms",
+                    self.render_state.render_version,
+                    duration_ms(present_submit),
+                ),
+            );
+        }
         if self.renderer_animation_log && (self.render_state.animate || animation_trace.is_some()) {
             self.native_log.info(
                 "renderer_animation",
@@ -697,6 +1147,16 @@ impl WaylandApp {
             draw_kind,
             video_needs_cleanup,
         );
+        if render_log {
+            native_log.info(
+                "wayland_render",
+                format!(
+                    "present finished\n  sequence: {draw_sequence}\n  version: {}\n  video_needs_cleanup: {video_needs_cleanup}\n  {}",
+                    self.render_state.render_version,
+                    format_present_snapshot(&self.present_snapshot()),
+                ),
+            );
+        }
         self.render_animation_trace = None;
     }
 
@@ -721,14 +1181,27 @@ impl WaylandApp {
 
     pub(super) fn reconfigure_surface_geometry(&mut self, conn: &Connection) {
         let previous = self.geometry;
+        let env_was_ready = self.env.is_some();
 
         self.apply_surface_scale_state();
 
         if !self.present.configured && self.env.is_none() {
+            if self.render_log {
+                self.log_render_diagnostic(format!(
+                    "surface reconfigure deferred\n  reason: waiting for first configure\n  geometry: {}",
+                    format_surface_geometry(&self.geometry),
+                ));
+            }
             return;
         }
 
         if self.geometry.buffer_size.0 == 0 || self.geometry.buffer_size.1 == 0 {
+            if self.render_log {
+                self.log_render_diagnostic(format!(
+                    "surface reconfigure skipped\n  reason: zero buffer size\n  geometry: {}",
+                    format_surface_geometry(&self.geometry),
+                ));
+            }
             return;
         }
 
@@ -747,9 +1220,24 @@ impl WaylandApp {
                 Ok(env) => {
                     self.env = Some(env);
                     self.initialize_video_import();
+                    if self.render_log {
+                        self.log_render_diagnostic(format!(
+                            "egl env created\n  geometry: {}\n  swap_nonblocking: {}",
+                            format_surface_geometry(&self.geometry),
+                            self.env
+                                .as_ref()
+                                .is_some_and(|env| env.swap_buffers_nonblocking),
+                        ));
+                    }
                 }
                 Err(err) => {
                     eprintln!("wayland egl setup failed: {err}");
+                    if self.render_log {
+                        self.log_render_diagnostic(format!(
+                            "egl env create failed\n  geometry: {}\n  error: {err}",
+                            format_surface_geometry(&self.geometry),
+                        ));
+                    }
                     self.running_flag.store(false, Ordering::Relaxed);
                     self.exit = true;
                     return;
@@ -758,6 +1246,13 @@ impl WaylandApp {
         } else if buffer_changed && let Some(env) = self.env.as_mut() {
             resize_gl_env(env, self.geometry.buffer_size);
             env.renderer.invalidate_visible_frame_fingerprint();
+            if self.render_log {
+                self.log_render_diagnostic(format!(
+                    "egl env resized\n  previous: {}\n  current: {}",
+                    format_surface_geometry(&previous),
+                    format_surface_geometry(&self.geometry),
+                ));
+            }
         }
 
         if geometry_changed {
@@ -768,6 +1263,28 @@ impl WaylandApp {
                 scale_factor: self.geometry.scale_factor(),
             });
             self.text_input.sync(&self.window, &self.geometry);
+        }
+
+        if self.render_log {
+            self.log_render_diagnostic(format!(
+                concat!(
+                    "surface reconfigured\n",
+                    "  env_was_ready: {}\n",
+                    "  env_ready: {}\n",
+                    "  geometry_changed: {}\n",
+                    "  buffer_changed: {}\n",
+                    "  previous: {}\n",
+                    "  current: {}\n",
+                    "  {}"
+                ),
+                env_was_ready,
+                self.env.is_some(),
+                geometry_changed,
+                buffer_changed,
+                format_surface_geometry(&previous),
+                format_surface_geometry(&self.geometry),
+                format_present_snapshot(&self.present_snapshot()),
+            ));
         }
     }
 
@@ -820,6 +1337,301 @@ impl WaylandApp {
 
 fn duration_ms(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1_000.0
+}
+
+fn current_wall_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64
+}
+
+fn format_watchdog_wall_age(now_ms: u64, timestamp_ms: u64) -> String {
+    if timestamp_ms == 0 {
+        "n/a".to_string()
+    } else {
+        format!("{:.3} ms", now_ms.saturating_sub(timestamp_ms) as f64)
+    }
+}
+
+fn format_thread_watchdog_snapshot(snapshot: &WaylandThreadWatchdogSnapshot) -> String {
+    let now_ms = current_wall_ms();
+    format!(
+        concat!(
+            "wayland thread watchdog\n",
+            "  dispatch_active: {}\n",
+            "  dispatch_generation: {}\n",
+            "  ages: dispatch_enter={} dispatch_exit={} loop_tick={} wake={} render_scene={} draw_start={} swap_start={} swap_done={} frame_callback={}"
+        ),
+        snapshot.dispatch_active,
+        snapshot.dispatch_generation,
+        format_watchdog_wall_age(now_ms, snapshot.last_dispatch_enter_wall_ms),
+        format_watchdog_wall_age(now_ms, snapshot.last_dispatch_exit_wall_ms),
+        format_watchdog_wall_age(now_ms, snapshot.last_loop_tick_wall_ms),
+        format_watchdog_wall_age(now_ms, snapshot.last_wake_wall_ms),
+        format_watchdog_wall_age(now_ms, snapshot.last_render_scene_wall_ms),
+        format_watchdog_wall_age(now_ms, snapshot.last_draw_start_wall_ms),
+        format_watchdog_wall_age(now_ms, snapshot.last_swap_start_wall_ms),
+        format_watchdog_wall_age(now_ms, snapshot.last_swap_done_wall_ms),
+        format_watchdog_wall_age(now_ms, snapshot.last_frame_callback_wall_ms),
+    )
+}
+
+fn spawn_wayland_thread_watchdog(
+    state: Arc<WaylandThreadWatchdogState>,
+    native_log: Arc<NativeLogRelay>,
+    direct_log: Arc<WaylandDirectWatchdogLog>,
+    stop: Arc<AtomicBool>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        while !stop.load(Ordering::Relaxed) {
+            thread::sleep(Duration::from_secs(2));
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+
+            let snapshot = format_thread_watchdog_snapshot(&state.snapshot());
+            direct_log.write(&snapshot);
+            native_log.info("wayland_watchdog", snapshot.clone());
+        }
+
+        direct_log.write(format!(
+            "wayland watchdog thread exiting\n  stop_flag: {}",
+            stop.load(Ordering::Relaxed)
+        ));
+    })
+}
+
+fn format_surface_geometry(geometry: &SurfaceGeometry) -> String {
+    format!(
+        "logical={}x{} buffer={}x{} scale={:.3}",
+        geometry.logical_size.0,
+        geometry.logical_size.1,
+        geometry.buffer_size.0,
+        geometry.buffer_size.1,
+        geometry.scale_factor(),
+    )
+}
+
+fn format_optional_duration_ms(duration: Option<Duration>) -> String {
+    duration.map_or_else(
+        || "n/a".to_string(),
+        |duration| format!("{:.3} ms", duration_ms(duration)),
+    )
+}
+
+fn format_optional_elapsed_ms(now: Instant, instant: Option<Instant>) -> String {
+    format_optional_duration_ms(instant.map(|instant| now.saturating_duration_since(instant)))
+}
+
+fn frame_callback_wait_age(snapshot: &PresentSnapshot) -> Option<Duration> {
+    snapshot
+        .requested_frame_callback_wall_age
+        .or(snapshot.requested_frame_callback_age)
+}
+
+fn frame_callback_wait_log_bucket(snapshot: &PresentSnapshot) -> Option<u64> {
+    let age = frame_callback_wait_age(snapshot)?;
+
+    if age < Duration::from_millis(250) {
+        Some(0)
+    } else if age < Duration::from_secs(1) {
+        Some(1)
+    } else if age < Duration::from_secs(5) {
+        Some(2)
+    } else {
+        Some(3 + age.as_secs() / 5)
+    }
+}
+
+fn present_skip_reason(
+    snapshot: &PresentSnapshot,
+    env_ready: bool,
+    exit: bool,
+    allow_late_replacement: bool,
+) -> Option<PresentSkipReason> {
+    if exit {
+        return Some(PresentSkipReason::Exit);
+    }
+    if !env_ready {
+        return Some(PresentSkipReason::EnvMissing);
+    }
+    if !snapshot.configured {
+        return Some(PresentSkipReason::NotConfigured);
+    }
+    if !snapshot.redraw_requested {
+        return Some(PresentSkipReason::NoRedrawRequested);
+    }
+    if snapshot.frame_callback_state == FrameCallbackState::Requested {
+        return Some(if allow_late_replacement {
+            PresentSkipReason::WaitingForLateReplacementCallback
+        } else {
+            PresentSkipReason::WaitingForFrameCallback
+        });
+    }
+
+    None
+}
+
+fn format_present_snapshot(snapshot: &PresentSnapshot) -> String {
+    format!(
+        concat!(
+            "present: configured={} redraw={} frame_callback={:?} request_seq={:?} request_age={} request_wall_age={} ",
+            "latest_received={:?} from_patch={} animation_active={} last_submitted={:?} newer_scene={} can_late_replace={} late_used={} ready_timing={} estimated_interval={:.3} ms"
+        ),
+        snapshot.configured,
+        snapshot.redraw_requested,
+        snapshot.frame_callback_state,
+        snapshot.requested_frame_callback_sequence,
+        format_optional_duration_ms(snapshot.requested_frame_callback_age),
+        format_optional_duration_ms(snapshot.requested_frame_callback_wall_age),
+        snapshot.latest_received_render_version,
+        snapshot.latest_received_from_patch,
+        snapshot.latest_received_animation_active,
+        snapshot.last_submitted_render_version,
+        snapshot.has_newer_received_scene,
+        snapshot.can_late_replace,
+        snapshot.late_replacement_used,
+        snapshot.ready_frame_callback_buffered,
+        duration_ms(snapshot.estimated_frame_interval),
+    )
+}
+
+fn format_diagnostics_snapshot(diagnostics: &WaylandRenderDiagnostics) -> String {
+    let now = Instant::now();
+    format!(
+        concat!(
+            "diagnostics: last_wake={} last_scene={} last_scene_version={:?} ",
+            "last_draw_start={} last_draw_finish={} last_swap_start={} last_swap_done={} last_frame_callback={}"
+        ),
+        format_optional_elapsed_ms(now, diagnostics.last_wake_at),
+        format_optional_elapsed_ms(now, diagnostics.last_render_scene_received_at),
+        diagnostics.last_render_scene_version,
+        format_optional_elapsed_ms(now, diagnostics.last_draw_started_at),
+        format_optional_elapsed_ms(now, diagnostics.last_draw_finished_at),
+        format_optional_elapsed_ms(now, diagnostics.last_swap_started_at),
+        format_optional_elapsed_ms(now, diagnostics.last_swap_done_at),
+        format_optional_elapsed_ms(now, diagnostics.last_frame_callback_received_at),
+    )
+}
+
+fn format_present_skip_log(
+    reason: PresentSkipReason,
+    env_ready: bool,
+    allow_late_replacement: bool,
+    snapshot: &PresentSnapshot,
+    geometry: &SurfaceGeometry,
+    diagnostics: &WaylandRenderDiagnostics,
+) -> String {
+    format!(
+        concat!(
+            "present skip\n",
+            "  reason: {:?}\n",
+            "  env_ready: {}\n",
+            "  allow_late_replacement: {}\n",
+            "  geometry: {}\n",
+            "  {}\n",
+            "  {}"
+        ),
+        reason,
+        env_ready,
+        allow_late_replacement,
+        format_surface_geometry(geometry),
+        format_present_snapshot(snapshot),
+        format_diagnostics_snapshot(diagnostics),
+    )
+}
+
+fn format_wayland_watchdog_log(
+    snapshot: &PresentSnapshot,
+    geometry: &SurfaceGeometry,
+    env_ready: bool,
+    diagnostics: &WaylandRenderDiagnostics,
+) -> String {
+    format!(
+        concat!(
+            "render watchdog\n",
+            "  env_ready: {}\n",
+            "  geometry: {}\n",
+            "  {}\n",
+            "  {}"
+        ),
+        env_ready,
+        format_surface_geometry(geometry),
+        format_present_snapshot(snapshot),
+        format_diagnostics_snapshot(diagnostics),
+    )
+}
+
+fn format_draw_start_log(input: DrawStartLogInput<'_>) -> String {
+    let DrawStartLogInput {
+        draw_sequence,
+        draw_kind,
+        version,
+        animate,
+        sync_action,
+        summary,
+        snapshot,
+        geometry,
+    } = input;
+
+    format!(
+        concat!(
+            "draw start\n",
+            "  sequence: {}\n",
+            "  version: {}\n",
+            "  kind: {:?}\n",
+            "  animate: {}\n",
+            "  video_sync: {:?}\n",
+            "  geometry: {}\n",
+            "  scene: nodes={} primitives={} clips={} clip_shapes={} texts={} images={} videos={} paint_layers={} cacheable_layers={} moving_layers={}\n",
+            "  {}"
+        ),
+        draw_sequence,
+        version,
+        draw_kind,
+        animate,
+        sync_action,
+        format_surface_geometry(geometry),
+        summary.nodes,
+        summary.primitives,
+        summary.clips,
+        summary.clip_shapes,
+        summary.texts,
+        summary.images,
+        summary.videos,
+        summary.paint_layers,
+        summary.cacheable_layers,
+        summary.moving_layers,
+        format_present_snapshot(snapshot),
+    )
+}
+
+fn format_frame_callback_log(
+    version: u64,
+    callback_time_ms: u32,
+    previous_estimated_interval: Duration,
+    estimated_interval: Duration,
+    snapshot_before: &PresentSnapshot,
+    snapshot_after: &PresentSnapshot,
+) -> String {
+    format!(
+        concat!(
+            "frame callback received\n",
+            "  submitted_version: {}\n",
+            "  callback_time_ms: {}\n",
+            "  interval: previous_estimate={:.3} ms estimate={:.3} ms\n",
+            "  before: {}\n",
+            "  after: {}"
+        ),
+        version,
+        callback_time_ms,
+        duration_ms(previous_estimated_interval),
+        duration_ms(estimated_interval),
+        format_present_snapshot(snapshot_before),
+        format_present_snapshot(snapshot_after),
+    )
 }
 
 fn signed_instant_delta_ms(later: std::time::Instant, earlier: std::time::Instant) -> f64 {
@@ -1046,6 +1858,12 @@ impl CompositorHandler for WaylandApp {
         _surface: &wl_surface::WlSurface,
         new_factor: i32,
     ) {
+        if self.render_log {
+            self.log_render_diagnostic(format!(
+                "integer scale factor changed\n  new_factor: {new_factor}\n  before: {}",
+                format_surface_geometry(&self.geometry),
+            ));
+        }
         self.geometry.set_integer_scale_factor(new_factor);
         self.reconfigure_surface_geometry(conn);
     }
@@ -1066,7 +1884,8 @@ impl CompositorHandler for WaylandApp {
         _surface: &wl_surface::WlSurface,
         time: u32,
     ) {
-        let received_at = std::time::Instant::now();
+        let received_at = Instant::now();
+        let snapshot_before = self.present_snapshot();
         if let Some(submitted_at) = self.pending_pipeline_submitted_at.take()
             && let Some(stats) = self.stats.as_ref()
         {
@@ -1079,6 +1898,19 @@ impl CompositorHandler for WaylandApp {
         }
         let previous_estimated_interval = self.present.estimated_frame_interval();
         self.present.frame_callback_received(received_at, time);
+        self.diagnostics.last_frame_callback_received_at = Some(received_at);
+        self.diagnostics.last_present_skip_log_key = None;
+        self.watchdog.mark_frame_callback();
+        if self.render_log {
+            self.log_render_diagnostic(format_frame_callback_log(
+                self.render_state.render_version,
+                time,
+                previous_estimated_interval,
+                self.present.estimated_frame_interval(),
+                &snapshot_before,
+                &self.present_snapshot(),
+            ));
+        }
         if self.renderer_animation_log && self.render_state.animate {
             self.native_log.info(
                 "renderer_animation",
@@ -1100,6 +1932,11 @@ impl CompositorHandler for WaylandApp {
         _surface: &wl_surface::WlSurface,
         _output: &wl_output::WlOutput,
     ) {
+        self.log_render_diagnostic(format!(
+            "surface enter\n  geometry: {}\n  {}",
+            format_surface_geometry(&self.geometry),
+            format_present_snapshot(&self.present_snapshot()),
+        ));
     }
 
     fn surface_leave(
@@ -1109,12 +1946,18 @@ impl CompositorHandler for WaylandApp {
         _surface: &wl_surface::WlSurface,
         _output: &wl_output::WlOutput,
     ) {
+        self.log_render_diagnostic(format!(
+            "surface leave\n  geometry: {}\n  {}",
+            format_surface_geometry(&self.geometry),
+            format_present_snapshot(&self.present_snapshot()),
+        ));
     }
 }
 
 impl WindowHandler for WaylandApp {
     fn request_close(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _window: &Window) {
         log_close_signal(self.close_signal_log, "request_close begin");
+        self.log_direct_watchdog("wayland window close requested; exiting wayland loop");
         self.unmap_for_close(_conn);
         self.running_flag.store(false, Ordering::Relaxed);
         self.exit = true;
@@ -1145,6 +1988,24 @@ impl WindowHandler for WaylandApp {
             .map(|value| value.get())
             .unwrap_or(self.geometry.logical_size.1);
 
+        if self.render_log {
+            self.log_render_diagnostic(format!(
+                concat!(
+                    "xdg configure\n",
+                    "  size: {}x{}\n",
+                    "  previous_configured: {}\n",
+                    "  geometry: {}\n",
+                    "  env_ready: {}\n",
+                    "  {}"
+                ),
+                width,
+                height,
+                self.present.configured,
+                format_surface_geometry(&self.geometry),
+                self.env.is_some(),
+                format_present_snapshot(&self.present_snapshot()),
+            ));
+        }
         self.present.configured = true;
         self.update_logical_size(conn, width, height);
     }
@@ -1453,6 +2314,7 @@ pub(crate) fn run(args: WaylandRunArgs) {
         event_tx,
         input_target,
         close_signal_log,
+        render_log,
         stats,
         renderer_stats_log,
         renderer_animation_log,
@@ -1463,6 +2325,26 @@ pub(crate) fn run(args: WaylandRunArgs) {
         video_registry,
         proxy_tx,
     } = args;
+
+    let direct_watchdog_log =
+        render_log.then(|| Arc::new(WaylandDirectWatchdogLog::open_for_current_process()));
+
+    if render_log {
+        if let Some(log) = direct_watchdog_log.as_ref() {
+            log.write("direct watchdog log started");
+            native_log.info(
+                "wayland_watchdog",
+                format!("direct watchdog log\n  path: {}", log.path()),
+            );
+        }
+        native_log.info(
+            "wayland_render",
+            format!(
+                "startup begin\n  title: {:?}\n  requested_size: {}x{}",
+                config.title, config.width, config.height
+            ),
+        );
+    }
 
     let conn = match Connection::connect_to_env() {
         Ok(conn) => conn,
@@ -1515,6 +2397,10 @@ pub(crate) fn run(args: WaylandRunArgs) {
         return;
     }
 
+    if render_log {
+        native_log.info("wayland_render", "wayland source inserted");
+    }
+
     let (wake_tx, wake_rx) = calloop::channel::channel();
     if let Err(err) = loop_handle.insert_source(wake_rx, {
         let conn = conn.clone();
@@ -1522,6 +2408,7 @@ pub(crate) fn run(args: WaylandRunArgs) {
         move |event, _, state| match event {
             calloop::channel::Event::Msg(action) => state.handle_wake_action(&conn, action),
             calloop::channel::Event::Closed => {
+                state.log_direct_watchdog("wayland wake source closed; exiting wayland loop");
                 state.running_flag.store(false, Ordering::Relaxed);
                 state.exit = true;
             }
@@ -1536,9 +2423,29 @@ pub(crate) fn run(args: WaylandRunArgs) {
         return;
     }
 
+    if render_log {
+        native_log.info("wayland_render", "wake source inserted");
+        if let Err(err) = loop_handle.insert_source(Timer::from_duration(Duration::from_secs(1)), {
+            move |_, _, state| {
+                state.log_render_watchdog();
+                TimeoutAction::ToDuration(Duration::from_secs(1))
+            }
+        }) {
+            fail_startup(
+                &proxy_tx,
+                &running_flag,
+                &event_tx,
+                format!("failed to insert wayland render diagnostics timer: {err}"),
+            );
+            return;
+        }
+        native_log.info("wayland_render", "render diagnostics watchdog inserted");
+    }
+
     let wake = BackendWakeHandle::new(WaylandWake {
         tx: wake_tx.clone(),
     });
+    let watchdog = Arc::new(WaylandThreadWatchdogState::default());
 
     let mut app = match WaylandApp::new(
         &conn,
@@ -1550,6 +2457,7 @@ pub(crate) fn run(args: WaylandRunArgs) {
             event_tx: event_tx.clone(),
             input_target,
             close_signal_log,
+            render_log,
             stats,
             renderer_stats_log,
             renderer_animation_log,
@@ -1559,6 +2467,8 @@ pub(crate) fn run(args: WaylandRunArgs) {
             cursor_icon_rx,
             video_registry,
             loop_handle: event_loop.handle(),
+            watchdog: Arc::clone(&watchdog),
+            direct_watchdog_log: direct_watchdog_log.clone(),
         },
         &config,
     ) {
@@ -1568,22 +2478,86 @@ pub(crate) fn run(args: WaylandRunArgs) {
             return;
         }
     };
+    let watchdog_stop = Arc::new(AtomicBool::new(false));
+    let watchdog_handle = render_log.then(|| {
+        spawn_wayland_thread_watchdog(
+            Arc::clone(&watchdog),
+            Arc::clone(&app.native_log),
+            direct_watchdog_log
+                .clone()
+                .expect("render_log creates a direct watchdog log"),
+            Arc::clone(&watchdog_stop),
+        )
+    });
 
     let _ = proxy_tx.send(Ok(WindowBackendStartupInfo {
         wake,
         prime_video_supported: true,
     }));
+    app.log_render_diagnostic(format!(
+        "startup complete\n  geometry: {}\n  env_ready: {}\n  {}",
+        format_surface_geometry(&app.geometry),
+        app.env.is_some(),
+        format_present_snapshot(&app.present_snapshot()),
+    ));
+    app.log_direct_watchdog("wayland event loop starting");
 
+    app.watchdog.mark_loop_tick();
+    let mut loop_exit_reason = "exit flag set".to_string();
     while !app.exit {
-        if let Err(err) = event_loop.dispatch(None::<Duration>, &mut app) {
+        let dispatch_enter_wall_ms = current_wall_ms();
+        app.watchdog.mark_dispatch_enter();
+        let dispatch_result =
+            event_loop.dispatch(Some(WAYLAND_DISPATCH_STOP_POLL_INTERVAL), &mut app);
+        let dispatch_exit_wall_ms = current_wall_ms();
+        app.watchdog.mark_dispatch_exit();
+
+        let dispatch_duration_ms = dispatch_exit_wall_ms.saturating_sub(dispatch_enter_wall_ms);
+        if dispatch_duration_ms >= 5_000 {
+            app.log_direct_watchdog(format!(
+                "wayland dispatch returned after slow wall-clock wait\n  duration: {dispatch_duration_ms} ms\n  exit: {}",
+                app.exit
+            ));
+        }
+
+        if let Err(err) = dispatch_result {
+            loop_exit_reason = format!("dispatch error: {err}");
+            app.log_direct_watchdog(format!(
+                "wayland event loop dispatch failed\n  error: {err}"
+            ));
+            app.unmap_for_shutdown(&conn, "dispatch error");
             eprintln!("wayland event loop dispatch failed: {err}");
             app.running_flag.store(false, Ordering::Relaxed);
             app.exit = true;
             break;
         }
 
+        if !app.running_flag.load(Ordering::Relaxed) && !app.exit {
+            loop_exit_reason = "running flag cleared".to_string();
+            app.log_direct_watchdog("wayland running flag cleared; exiting event loop");
+            app.unmap_for_shutdown(&conn, "running flag cleared");
+            app.exit = true;
+        }
+
+        if app.exit {
+            break;
+        }
+
         app.flush_backend_updates(&conn);
         app.maybe_draw();
+        app.watchdog.mark_loop_tick();
+    }
+
+    app.log_direct_watchdog(format!(
+        "wayland event loop exiting\n  reason: {loop_exit_reason}\n  exit: {}",
+        app.exit
+    ));
+
+    watchdog_stop.store(true, Ordering::Relaxed);
+    if let Some(handle) = watchdog_handle {
+        app.log_direct_watchdog("joining wayland watchdog thread");
+        let _ = handle.join();
+        app.log_direct_watchdog("wayland watchdog thread joined");
     }
 
     let env = app.env.take();

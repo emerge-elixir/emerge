@@ -63,6 +63,13 @@ The old `completed/` directory and implementation-tied investigations were
 removed after their useful state was folded into this index and the reference
 documents below. Recently folded slices:
 
+- Wayland suspend/resume and shutdown hardening, including render-log-gated
+  Wayland/event-runtime diagnostics, direct watchdog evidence that suspend
+  freezes were caused by the viewport heartbeat watchdog issuing a false stop,
+  liveness checks that poll `renderer.running?/1` before stopping, synchronous
+  `EmergeSkia.stop/1` native thread teardown, supervisor shutdown waiting for
+  viewport renderer cleanup, immediate Wayland surface unmap on shutdown, and
+  macOS stop-session timeout alignment
 - first-class `Emerge.UI.Input.slider/2`, including `Slider.config/1`, standard
   Emerge element slots for track, filled track, and thumb, typed float change
   events, text-input-style controlled reconciliation, rotated hit testing,

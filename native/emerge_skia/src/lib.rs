@@ -533,7 +533,7 @@ impl rustler::Resource for TestHarnessResource {}
 
 impl Drop for RendererResource {
     fn drop(&mut self) {
-        self.stop_inner();
+        self.stop_inner(false);
     }
 }
 
@@ -570,10 +570,10 @@ impl TestHarnessResource {
 
 impl RendererResource {
     fn stop(&self) {
-        self.stop_inner();
+        self.stop_inner(true);
     }
 
-    fn stop_inner(&self) {
+    fn stop_inner(&self, block_until_joined: bool) {
         let mut handles_guard = match self.handles.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
@@ -597,7 +597,7 @@ impl RendererResource {
             log_input: self.log_input,
         };
 
-        if self.running_flag.load(Ordering::Relaxed) {
+        if block_until_joined || self.running_flag.load(Ordering::Relaxed) {
             shutdown_renderer_runtime(ctx, handles);
         } else {
             thread::spawn(move || shutdown_renderer_runtime(ctx, handles));
@@ -1063,6 +1063,7 @@ fn start_native_renderer_with_config(
                     event_tx: event_tx_clone,
                     input_target: input_target_clone,
                     close_signal_log,
+                    render_log: log_render,
                     stats: renderer_stats_clone,
                     renderer_stats_log,
                     renderer_animation_log,
@@ -1289,6 +1290,7 @@ fn start_native_renderer_with_config(
         backend_wake: backend_wake.clone(),
         scroll_line_pixels: config.scroll_line_pixels,
         log_render,
+        native_log: Arc::clone(&native_log),
         system_clipboard,
         stats: renderer_stats.clone(),
     }));
@@ -1994,6 +1996,7 @@ fn test_harness_new(width: u32, height: u32) -> Result<ResourceArc<TestHarnessRe
         backend_wake: BackendWakeHandle::noop(),
         scroll_line_pixels: input::SCROLL_LINE_PIXELS,
         log_render: false,
+        native_log: Arc::new(NativeLogRelay::default()),
         system_clipboard: false,
         stats: None,
     });
@@ -2217,6 +2220,7 @@ mod tests {
                 backend_wake: BackendWakeHandle::noop(),
                 scroll_line_pixels: input::SCROLL_LINE_PIXELS,
                 log_render: false,
+                native_log: Arc::new(NativeLogRelay::default()),
                 system_clipboard: false,
                 stats: None,
             });
@@ -2314,6 +2318,7 @@ mod tests {
                 backend_wake: BackendWakeHandle::noop(),
                 scroll_line_pixels: input::SCROLL_LINE_PIXELS,
                 log_render: false,
+                native_log: Arc::new(NativeLogRelay::default()),
                 system_clipboard: false,
                 stats: None,
             });
@@ -2446,6 +2451,122 @@ mod tests {
         assert!(event_stopped.load(Ordering::Relaxed));
         assert!(backend_stopped.load(Ordering::Relaxed));
         assert!(input_stopped.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn renderer_resource_stop_blocks_until_threads_join_even_after_running_flag_cleared() {
+        let running_flag = Arc::new(AtomicBool::new(false));
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let backend_wake = BackendWakeHandle::noop();
+
+        let (tree_tx, tree_rx) = bounded(1);
+        let (event_tx, event_rx) = bounded(1);
+        let (render_tx, render_rx) = bounded(1);
+        let render_sender = RenderSender {
+            tx: render_tx,
+            drop_rx: render_rx.clone(),
+            log_render: false,
+        };
+        let (release_tx, _release_rx) = bounded(1);
+
+        let tree_stopped = Arc::new(AtomicBool::new(false));
+        let event_stopped = Arc::new(AtomicBool::new(false));
+        let backend_stopped = Arc::new(AtomicBool::new(false));
+
+        let tree_handle = {
+            let tree_stopped = Arc::clone(&tree_stopped);
+
+            thread::spawn(move || {
+                if matches!(tree_rx.recv(), Ok(TreeMsg::Stop)) {
+                    tree_stopped.store(true, Ordering::Relaxed);
+                }
+            })
+        };
+
+        let event_handle = {
+            let event_stopped = Arc::clone(&event_stopped);
+
+            thread::spawn(move || {
+                if matches!(event_rx.recv(), Ok(EventMsg::Stop)) {
+                    event_stopped.store(true, Ordering::Relaxed);
+                }
+            })
+        };
+
+        let (backend_release_tx, backend_release_rx) = bounded::<()>(1);
+        let (backend_stop_seen_tx, backend_stop_seen_rx) = bounded::<()>(1);
+        let backend_handle = {
+            let backend_stopped = Arc::clone(&backend_stopped);
+
+            thread::spawn(move || {
+                if matches!(render_rx.recv(), Ok(RenderMsg::Stop)) {
+                    let _ = backend_stop_seen_tx.send(());
+                    let _ = backend_release_rx.recv();
+                    backend_stopped.store(true, Ordering::Relaxed);
+                }
+            })
+        };
+
+        let resource = Arc::new(RendererResource {
+            running_flag: Arc::clone(&running_flag),
+            backend_wake: backend_wake.clone(),
+            stop_flag: Arc::clone(&stop_flag),
+            tree_tx,
+            event_tx,
+            input_target: Arc::new(InputTargetRelay::default()),
+            render_tx: render_sender,
+            video_registry: Arc::new(VideoRegistry::new(release_tx)),
+            video_wake: VideoWake::noop(),
+            prime_video_supported: false,
+            native_log: Arc::new(NativeLogRelay::default()),
+            stats: None,
+            close_signal_log: false,
+            log_render: false,
+            log_input: false,
+            handles: Mutex::new(Some(RendererHandles {
+                backend_handle: Some(backend_handle),
+                input_handle: None,
+                tree_handle: Some(tree_handle),
+                event_handle: Some(event_handle),
+                heartbeat_handle: None,
+            })),
+        });
+
+        let (stop_done_tx, stop_done_rx) = bounded::<()>(1);
+        let stop_handle = {
+            let resource = Arc::clone(&resource);
+
+            thread::spawn(move || {
+                resource.stop();
+                let _ = stop_done_tx.send(());
+            })
+        };
+
+        assert_eq!(
+            backend_stop_seen_rx.recv_timeout(Duration::from_secs(1)),
+            Ok(())
+        );
+        assert!(matches!(
+            stop_done_rx.recv_timeout(Duration::from_millis(50)),
+            Err(RecvTimeoutError::Timeout)
+        ));
+
+        let _ = backend_release_tx.send(());
+        assert_eq!(stop_done_rx.recv_timeout(Duration::from_secs(1)), Ok(()));
+        let _ = stop_handle.join();
+
+        assert!(!running_flag.load(Ordering::Relaxed));
+        assert!(stop_flag.load(Ordering::Relaxed));
+        assert!(tree_stopped.load(Ordering::Relaxed));
+        assert!(event_stopped.load(Ordering::Relaxed));
+        assert!(backend_stopped.load(Ordering::Relaxed));
+        assert!(
+            resource
+                .handles
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_none()
+        );
     }
 
     #[test]

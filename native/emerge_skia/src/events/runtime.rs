@@ -33,6 +33,7 @@ use crate::{
     clipboard::{ClipboardManager, ClipboardTarget},
     input::{ACTION_PRESS, InputEvent, InputHandler, SCROLL_LINE_PIXELS},
     keys::CanonicalKey,
+    native_log::NativeLogRelay,
     stats::RendererStatsCollector,
     tree::{
         element::{NodeId, SliderValueOrigin, TextInputContentOrigin},
@@ -69,6 +70,7 @@ struct EventRuntimeDriver {
     runtime: DirectEventRuntime,
     tree_tx: Sender<TreeMsg>,
     log_render: bool,
+    native_log: Arc<NativeLogRelay>,
 }
 
 impl EventRuntimeDriver {
@@ -78,6 +80,7 @@ impl EventRuntimeDriver {
         backend_wake: BackendWakeHandle,
         tree_tx: Sender<TreeMsg>,
         log_render: bool,
+        native_log: Arc<NativeLogRelay>,
         stats: Option<Arc<RendererStatsCollector>>,
     ) -> Self {
         Self {
@@ -85,32 +88,18 @@ impl EventRuntimeDriver {
                 system_clipboard,
                 backend_cursor_tx,
                 backend_wake,
+                Arc::clone(&native_log),
                 stats,
             ),
             tree_tx,
             log_render,
+            native_log,
         }
     }
 
-    fn new_with_host_sink(
-        system_clipboard: bool,
-        backend_cursor_tx: Option<Sender<CursorIcon>>,
-        backend_wake: BackendWakeHandle,
-        host_event_sink: Arc<dyn HostEventSink>,
-        tree_tx: Sender<TreeMsg>,
-        log_render: bool,
-        stats: Option<Arc<RendererStatsCollector>>,
-    ) -> Self {
-        Self {
-            runtime: DirectEventRuntime::new_with_host_sink(
-                system_clipboard,
-                backend_cursor_tx,
-                backend_wake,
-                host_event_sink,
-                stats,
-            ),
-            tree_tx,
-            log_render,
+    fn log_event_diagnostic(&self, build: impl FnOnce() -> String) {
+        if self.log_render {
+            self.native_log.info("event_runtime", build());
         }
     }
 
@@ -181,20 +170,56 @@ impl EventRuntimeDriver {
         event_rx: &Receiver<EventMsg>,
         pending_message: &mut Option<EventMsg>,
     ) -> bool {
+        let message_label = event_msg_label(&message);
+        self.log_event_diagnostic(|| {
+            format!(
+                "actor message received\n  message: {message_label}\n  {}",
+                self.runtime.diagnostic_summary(),
+            )
+        });
+
         match message {
             EventMsg::InputEvent(event) => {
                 let events = drain_fresh_input_events(event, event_rx, pending_message);
+                self.log_event_diagnostic(|| {
+                    format!(
+                        "input batch drained\n  initial: {message_label}\n  count: {}\n  pending_message: {}\n  labels: {}\n  {}",
+                        events.len(),
+                        pending_message
+                            .as_ref()
+                            .map(event_msg_label)
+                            .unwrap_or("none"),
+                        events
+                            .iter()
+                            .map(input_event_label)
+                            .collect::<Vec<_>>()
+                            .join(","),
+                        self.runtime.diagnostic_summary(),
+                    )
+                });
                 events
                     .into_iter()
                     .for_each(|event| self.handle_input(event));
                 true
             }
             EventMsg::RegistryUpdate { rebuild } => {
-                let rebuild = if self.runtime.should_preserve_registry_transitions() {
-                    rebuild
-                } else {
-                    coalesce_registry_updates(rebuild, event_rx, pending_message).0
-                };
+                let (rebuild, coalesced_count) =
+                    if self.runtime.should_preserve_registry_transitions() {
+                        (rebuild, 0)
+                    } else {
+                        coalesce_registry_updates(rebuild, event_rx, pending_message)
+                    };
+                self.log_event_diagnostic(|| {
+                    format!(
+                        "registry update drained\n  coalesced_count: {coalesced_count}\n  pending_message: {}\n  preserve_transitions: {}\n  {}",
+                        pending_message
+                            .as_ref()
+                            .map(event_msg_label)
+                            .unwrap_or("none"),
+                        self.runtime.should_preserve_registry_transitions(),
+                        self.runtime.diagnostic_summary(),
+                    )
+                });
                 self.install_rebuild(rebuild);
                 true
             }
@@ -202,18 +227,35 @@ impl EventRuntimeDriver {
                 presented_at,
                 predicted_next_present_at,
             } => {
+                self.log_event_diagnostic(|| {
+                    format!(
+                        "present timing received\n  predicted_delta: {:.3} ms\n  {}",
+                        predicted_next_present_at
+                            .saturating_duration_since(presented_at)
+                            .as_secs_f64()
+                            * 1_000.0,
+                        self.runtime.diagnostic_summary(),
+                    )
+                });
                 self.handle_present_timing(presented_at, predicted_next_present_at);
                 true
             }
             EventMsg::SetInputMask(mask) => {
+                self.log_event_diagnostic(|| format!("set input mask\n  mask: {mask}"));
                 self.set_input_mask(mask);
                 true
             }
             EventMsg::SetInputTarget(target) => {
+                self.log_event_diagnostic(|| {
+                    format!("set input target\n  present: {}", target.is_some())
+                });
                 self.set_input_target(target);
                 true
             }
-            EventMsg::Stop => false,
+            EventMsg::Stop => {
+                self.log_event_diagnostic(|| "stop received".to_string());
+                false
+            }
         }
     }
 }
@@ -250,15 +292,20 @@ impl HostEventRuntime {
         backend_cursor_tx: Option<Sender<CursorIcon>>,
     ) -> Self {
         let (tree_tx, tree_rx) = crossbeam_channel::bounded(512);
-        let mut driver = EventRuntimeDriver::new_with_host_sink(
-            system_clipboard,
-            backend_cursor_tx,
-            BackendWakeHandle::noop(),
-            sink,
-            tree_tx.clone(),
+        let native_log = Arc::new(NativeLogRelay::default());
+        let mut driver = EventRuntimeDriver {
+            runtime: DirectEventRuntime::new_with_host_sink(
+                system_clipboard,
+                backend_cursor_tx,
+                BackendWakeHandle::noop(),
+                sink,
+                Arc::clone(&native_log),
+                stats,
+            ),
+            tree_tx: tree_tx.clone(),
             log_render,
-            stats,
-        );
+            native_log,
+        };
         driver.set_scroll_line_pixels(scroll_line_pixels);
 
         Self { driver, tree_rx }
@@ -505,6 +552,8 @@ impl PendingDispatchEffects {
         log_render: bool,
         dispatch_mode: DispatchMode,
     ) {
+        let runtime_change_count = self.runtime_changes.len();
+        let synthetic_input_batch_count = self.synthetic_inputs.len();
         runtime.apply_runtime_changes_and_recompose_if_needed(self.runtime_changes);
         if let Some(icon) = self.requested_cursor {
             runtime.apply_cursor_request(icon);
@@ -521,6 +570,31 @@ impl PendingDispatchEffects {
         if self.elixir_event_requires_rebuild && !tree_msg_requires_stale {
             self.tree_msgs.push(TreeMsg::RebuildRegistry);
         }
+
+        runtime.log_event_diagnostic(log_render, || {
+            format!(
+                concat!(
+                    "dispatch effects flush\n",
+                    "  mode: {:?}\n",
+                    "  runtime_changes: {}\n",
+                    "  synthetic_batches: {}\n",
+                    "  tree_msgs: {} [{}]\n",
+                    "  elixir_event_requires_rebuild: {}\n",
+                    "  tree_msg_requires_stale: {}\n",
+                    "  mark_stale: {}\n",
+                    "  {}"
+                ),
+                dispatch_mode,
+                runtime_change_count,
+                synthetic_input_batch_count,
+                self.tree_msgs.len(),
+                format_tree_msg_labels(&self.tree_msgs),
+                self.elixir_event_requires_rebuild,
+                tree_msg_requires_stale,
+                self.elixir_event_requires_rebuild || tree_msg_requires_stale,
+                runtime.diagnostic_summary(),
+            )
+        });
 
         crate::debug_trace::hover_trace!(
             "event_dispatch",
@@ -541,12 +615,78 @@ impl PendingDispatchEffects {
         }
         if self.elixir_event_requires_rebuild || tree_msg_requires_stale {
             runtime.listener_lane.mark_stale();
+            runtime.log_event_diagnostic(log_render, || {
+                format!(
+                    "listener lane marked stale\n  mode: {:?}\n  {}",
+                    dispatch_mode,
+                    runtime.diagnostic_summary(),
+                )
+            });
         }
     }
 }
 
 fn tree_msg_requires_listener_stale(msg: &TreeMsg) -> bool {
     msg.requires_listener_registry_response()
+}
+
+fn input_event_label(event: &InputEvent) -> &'static str {
+    match event {
+        InputEvent::CursorPos { .. } => "cursor_pos",
+        InputEvent::CursorButton { .. } => "cursor_button",
+        InputEvent::CursorScroll { .. } => "cursor_scroll",
+        InputEvent::CursorScrollLines { .. } => "cursor_scroll_lines",
+        InputEvent::Key { .. } => "key",
+        InputEvent::TextCommit { .. } => "text_commit",
+        InputEvent::TextPreedit { .. } => "text_preedit",
+        InputEvent::TextPreeditClear => "text_preedit_clear",
+        InputEvent::DeleteSurrounding { .. } => "delete_surrounding",
+        InputEvent::CursorEntered { .. } => "cursor_entered",
+        InputEvent::Resized { .. } => "resized",
+        InputEvent::Focused { .. } => "focused",
+    }
+}
+
+fn tree_msg_label(msg: &TreeMsg) -> &'static str {
+    match msg {
+        TreeMsg::UploadTree { .. } => "upload_tree",
+        TreeMsg::PatchTree { .. } => "patch_tree",
+        TreeMsg::Resize { .. } => "resize",
+        TreeMsg::ScrollRequest { .. } => "scroll_request",
+        TreeMsg::ScrollbarThumbDragX { .. } => "scrollbar_thumb_drag_x",
+        TreeMsg::ScrollbarThumbDragY { .. } => "scrollbar_thumb_drag_y",
+        TreeMsg::SetScrollbarXHover { .. } => "set_scrollbar_x_hover",
+        TreeMsg::SetScrollbarYHover { .. } => "set_scrollbar_y_hover",
+        TreeMsg::SetMouseOverActive { .. } => "set_mouse_over_active",
+        TreeMsg::SetMouseDownActive { .. } => "set_mouse_down_active",
+        TreeMsg::SetFocusedActive { .. } => "set_focused_active",
+        TreeMsg::SetTextInputContent { .. } => "set_text_input_content",
+        TreeMsg::SetTextInputRuntime { .. } => "set_text_input_runtime",
+        TreeMsg::SetSliderValue { .. } => "set_slider_value",
+        TreeMsg::AnimationPulse { .. } => "animation_pulse",
+        TreeMsg::Batch(_) => "batch",
+        TreeMsg::RebuildRegistry => "rebuild_registry",
+        TreeMsg::AssetStateChanged => "asset_state_changed",
+        TreeMsg::Stop => "stop",
+    }
+}
+
+fn event_msg_label(msg: &EventMsg) -> &'static str {
+    match msg {
+        EventMsg::InputEvent(event) => input_event_label(event),
+        EventMsg::PresentTiming { .. } => "present_timing",
+        EventMsg::RegistryUpdate { .. } => "registry_update",
+        EventMsg::SetInputMask(_) => "set_input_mask",
+        EventMsg::SetInputTarget(_) => "set_input_target",
+        EventMsg::Stop => "stop",
+    }
+}
+
+fn format_tree_msg_labels(msgs: &[TreeMsg]) -> String {
+    msgs.iter()
+        .map(tree_msg_label)
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// Runtime dispatch context passed into listener computation.
@@ -699,19 +839,27 @@ struct DirectEventRuntime {
     inertial_scroll: Option<InertialScrollState>,
     suppress_drag_release_inertia: bool,
     scroll_line_pixels: f32,
+    native_log: Arc<NativeLogRelay>,
     stats: Option<Arc<RendererStatsCollector>>,
 }
 
 impl DirectEventRuntime {
     #[cfg(test)]
     fn new(system_clipboard: bool) -> Self {
-        Self::new_with_backend_cursor(system_clipboard, None, BackendWakeHandle::noop(), None)
+        Self::new_with_backend_cursor(
+            system_clipboard,
+            None,
+            BackendWakeHandle::noop(),
+            Arc::new(NativeLogRelay::default()),
+            None,
+        )
     }
 
     fn new_with_backend_cursor(
         system_clipboard: bool,
         backend_cursor_tx: Option<Sender<CursorIcon>>,
         backend_wake: BackendWakeHandle,
+        native_log: Arc<NativeLogRelay>,
         stats: Option<Arc<RendererStatsCollector>>,
     ) -> Self {
         let base_registry = registry_builder::Registry::default();
@@ -748,6 +896,7 @@ impl DirectEventRuntime {
             inertial_scroll: None,
             suppress_drag_release_inertia: false,
             scroll_line_pixels: SCROLL_LINE_PIXELS,
+            native_log,
             stats,
         }
     }
@@ -764,12 +913,47 @@ impl DirectEventRuntime {
         backend_cursor_tx: Option<Sender<CursorIcon>>,
         backend_wake: BackendWakeHandle,
         host_event_sink: Arc<dyn HostEventSink>,
+        native_log: Arc<NativeLogRelay>,
         stats: Option<Arc<RendererStatsCollector>>,
     ) -> Self {
-        let mut runtime =
-            Self::new_with_backend_cursor(system_clipboard, backend_cursor_tx, backend_wake, stats);
+        let mut runtime = Self::new_with_backend_cursor(
+            system_clipboard,
+            backend_cursor_tx,
+            backend_wake,
+            native_log,
+            stats,
+        );
         runtime.host_event_sink = Some(host_event_sink);
         runtime
+    }
+
+    fn log_event_diagnostic(&self, log_render: bool, build: impl FnOnce() -> String) {
+        if log_render {
+            self.native_log.info("event_runtime", build());
+        }
+    }
+
+    fn diagnostic_summary(&self) -> String {
+        format!(
+            concat!(
+                "lane: stale={} buffered={} hover_stack={} cursor_in_window={} last_cursor={} focused={:?} ",
+                "overlays: pointer_active={} virtual_key={} inertial_scroll={} text_patches={} slider_patches={} next_timeout={}"
+            ),
+            self.listener_lane.is_stale(),
+            self.listener_lane.buffered_inputs.len(),
+            self.hover_stack.len(),
+            self.cursor_in_window,
+            self.last_cursor_pos.is_some(),
+            self.focused_id,
+            self.has_active_pointer_overlay(),
+            self.runtime_overlay.virtual_key.is_some(),
+            self.inertial_scroll.is_some(),
+            self.pending_text_patches.len(),
+            self.pending_slider_patches.len(),
+            self.next_event_timeout()
+                .map(|duration| format!("{:.3} ms", duration.as_secs_f64() * 1_000.0))
+                .unwrap_or_else(|| "none".to_string()),
+        )
     }
 
     fn set_scroll_line_pixels(&mut self, scroll_line_pixels: f32) {
@@ -1080,6 +1264,13 @@ impl DirectEventRuntime {
         log_render: bool,
     ) {
         let event = event.normalize_scroll_with_line_pixels(self.scroll_line_pixels);
+        let label = input_event_label(&event);
+        self.log_event_diagnostic(log_render, || {
+            format!(
+                "input begin\n  event: {label}\n  {}",
+                self.diagnostic_summary(),
+            )
+        });
         self.record_pointer_snapshot(&event);
         self.cancel_inertial_scroll_for_input(&event);
         crate::debug_trace::hover_trace!(
@@ -1098,11 +1289,25 @@ impl DirectEventRuntime {
         self.clear_text_commit_suppressions_for_event(&event);
 
         if self.listener_lane.is_stale() {
+            let buffered_before = self.listener_lane.buffered_inputs.len();
             self.listener_lane.buffer_input(event);
+            self.log_event_diagnostic(log_render, || {
+                format!(
+                    "input buffered while listener lane stale\n  event: {label}\n  buffered_before: {buffered_before}\n  buffered_after: {}\n  {}",
+                    self.listener_lane.buffered_inputs.len(),
+                    self.diagnostic_summary(),
+                )
+            });
             return;
         }
 
         self.dispatch_event(event, tree_tx, log_render, DispatchMode::Normal);
+        self.log_event_diagnostic(log_render, || {
+            format!(
+                "input end\n  event: {label}\n  {}",
+                self.diagnostic_summary(),
+            )
+        });
     }
 
     fn handle_text_input_command(
@@ -1220,18 +1425,43 @@ impl DirectEventRuntime {
         tree_tx: &Sender<TreeMsg>,
         log_render: bool,
     ) {
-        let _stale_before_install = self.listener_lane.is_stale();
+        let stale_before_install = self.listener_lane.is_stale();
+        let buffered_before_install = self.listener_lane.buffered_inputs.len();
+        self.log_event_diagnostic(log_render, || {
+            format!(
+                "registry update begin\n  stale_before: {stale_before_install}\n  buffered_before: {buffered_before_install}\n  {}",
+                self.diagnostic_summary(),
+            )
+        });
         self.listener_lane.stale = false;
         self.install_rebuild(rebuild, tree_tx, log_render);
-        let _stale_after_install = self.listener_lane.is_stale();
+        let stale_after_install = self.listener_lane.is_stale();
+        self.log_event_diagnostic(log_render, || {
+            format!(
+                "registry update installed\n  stale_after_install: {stale_after_install}\n  {}",
+                self.diagnostic_summary(),
+            )
+        });
         if self.listener_lane.is_stale() {
             return;
         }
 
         let buffered = self.listener_lane.mark_fresh_and_take_buffered();
-        let _buffered_count = buffered.len();
+        let buffered_count = buffered.len();
+        self.log_event_diagnostic(log_render, || {
+            format!(
+                "registry update replay buffered\n  buffered_count: {buffered_count}\n  {}",
+                self.diagnostic_summary(),
+            )
+        });
         self.replay_buffered(buffered, tree_tx, log_render);
-        let _stale_after_replay = self.listener_lane.is_stale();
+        let stale_after_replay = self.listener_lane.is_stale();
+        self.log_event_diagnostic(log_render, || {
+            format!(
+                "registry update replay done\n  stale_after_replay: {stale_after_replay}\n  {}",
+                self.diagnostic_summary(),
+            )
+        });
 
         if !self.listener_lane.is_stale() && !self.has_active_pointer_overlay() {
             self.redispatch_last_cursor_pos(tree_tx, log_render);
@@ -1252,6 +1482,10 @@ impl DirectEventRuntime {
             focused_id,
             focus_on_mount,
         } = rebuild;
+
+        let text_input_count = text_inputs.len();
+        let slider_count = sliders.len();
+        let scrollbar_count = scrollbars.len();
 
         self.prune_expired_pending_text_patches();
         self.prune_expired_pending_slider_patches();
@@ -1306,6 +1540,26 @@ impl DirectEventRuntime {
         if changed_tree {
             self.listener_lane.mark_stale();
         }
+
+        self.log_event_diagnostic(log_render, || {
+            format!(
+                concat!(
+                    "registry rebuild applied\n",
+                    "  text_inputs: {}\n",
+                    "  sliders: {}\n",
+                    "  scrollbars: {}\n",
+                    "  focused: {:?}\n",
+                    "  changed_tree: {}\n",
+                    "  {}"
+                ),
+                text_input_count,
+                slider_count,
+                scrollbar_count,
+                self.focused_id,
+                changed_tree,
+                self.diagnostic_summary(),
+            )
+        });
     }
 
     fn replay_buffered(
@@ -1314,8 +1568,27 @@ impl DirectEventRuntime {
         tree_tx: &Sender<TreeMsg>,
         log_render: bool,
     ) {
+        let event_count = events.len();
+        self.log_event_diagnostic(log_render, || {
+            format!(
+                "buffered replay begin\n  count: {event_count}\n  labels: {}\n  {}",
+                events
+                    .iter()
+                    .map(input_event_label)
+                    .collect::<Vec<_>>()
+                    .join(","),
+                self.diagnostic_summary(),
+            )
+        });
         for event in events {
             if self.listener_lane.is_stale() {
+                self.log_event_diagnostic(log_render, || {
+                    format!(
+                        "buffered replay paused because lane became stale\n  event: {}\n  {}",
+                        input_event_label(&event),
+                        self.diagnostic_summary(),
+                    )
+                });
                 self.listener_lane.buffer_input(event);
                 continue;
             }
@@ -1325,6 +1598,9 @@ impl DirectEventRuntime {
             };
             self.dispatch_event(event, tree_tx, log_render, dispatch_mode);
         }
+        self.log_event_diagnostic(log_render, || {
+            format!("buffered replay end\n  {}", self.diagnostic_summary(),)
+        });
     }
 
     fn recompose_overlay_registry(&mut self) {
@@ -1344,11 +1620,15 @@ impl DirectEventRuntime {
 
     fn handle_timers(&mut self, tree_tx: &Sender<TreeMsg>, log_render: bool) {
         let now = Instant::now();
+        self.log_event_diagnostic(log_render, || {
+            format!("timers begin\n  {}", self.diagnostic_summary())
+        });
 
         if self
             .virtual_key_deadline
             .is_some_and(|deadline| deadline <= now)
         {
+            self.log_event_diagnostic(log_render, || "virtual key timer due".to_string());
             self.handle_virtual_key_timer(tree_tx, log_render);
         }
 
@@ -1357,8 +1637,12 @@ impl DirectEventRuntime {
             .as_ref()
             .is_some_and(|inertia| inertia.watchdog_deadline <= now)
         {
+            self.log_event_diagnostic(log_render, || "inertial scroll watchdog due".to_string());
             self.step_inertial_scroll(now, tree_tx, log_render);
         }
+        self.log_event_diagnostic(log_render, || {
+            format!("timers end\n  {}", self.diagnostic_summary())
+        });
     }
 
     fn handle_present_timing(
@@ -1510,6 +1794,7 @@ impl DirectEventRuntime {
         dispatch_mode: DispatchMode,
     ) {
         let started_at = Instant::now();
+        let event_label = input_event_label(&event);
         let input = ListenerInput::Raw(event);
         let actions = {
             let mut ctx = RuntimeListenerComputeCtx {
@@ -1525,6 +1810,16 @@ impl DirectEventRuntime {
             registry_builder::LayeredRegistryView::new(&self.overlay_registry, &self.base_registry)
                 .first_match(&input, &[], &mut ctx)
         };
+        let action_count = actions.len();
+
+        self.log_event_diagnostic(log_render, || {
+            format!(
+                "dispatch resolved\n  event: {event_label}\n  mode: {:?}\n  actions: {action_count}\n  resolve_time: {:.3} ms\n  {}",
+                dispatch_mode,
+                started_at.elapsed().as_secs_f64() * 1_000.0,
+                self.diagnostic_summary(),
+            )
+        });
 
         if !actions.is_empty() {
             self.apply_listener_actions(actions, tree_tx, log_render, dispatch_mode);
@@ -2622,6 +2917,7 @@ pub(crate) struct SpawnEventActorConfig {
     pub backend_wake: BackendWakeHandle,
     pub scroll_line_pixels: f32,
     pub log_render: bool,
+    pub native_log: Arc<NativeLogRelay>,
     pub system_clipboard: bool,
     pub stats: Option<Arc<RendererStatsCollector>>,
 }
@@ -2634,6 +2930,7 @@ pub(crate) fn spawn_event_actor(config: SpawnEventActorConfig) -> thread::JoinHa
         backend_wake,
         scroll_line_pixels,
         log_render,
+        native_log,
         system_clipboard,
         stats,
     } = config;
@@ -2645,9 +2942,16 @@ pub(crate) fn spawn_event_actor(config: SpawnEventActorConfig) -> thread::JoinHa
             backend_wake,
             tree_tx,
             log_render,
+            native_log,
             stats,
         );
         driver.set_scroll_line_pixels(scroll_line_pixels);
+        driver.log_event_diagnostic(|| {
+            format!(
+                "event actor started\n  scroll_line_pixels: {scroll_line_pixels:.3}\n  system_clipboard: {system_clipboard}\n  {}",
+                driver.runtime.diagnostic_summary(),
+            )
+        });
         let mut pending_message: Option<EventMsg> = None;
 
         loop {
@@ -2667,6 +2971,12 @@ pub(crate) fn spawn_event_actor(config: SpawnEventActorConfig) -> thread::JoinHa
             };
 
             let Some(message) = message else {
+                driver.log_event_diagnostic(|| {
+                    format!(
+                        "event actor timer wake\n  {}",
+                        driver.runtime.diagnostic_summary(),
+                    )
+                });
                 driver.handle_timers();
                 continue;
             };
@@ -3263,8 +3573,15 @@ mod tests {
             }))
             .unwrap();
 
-        let mut driver =
-            EventRuntimeDriver::new(false, None, BackendWakeHandle::noop(), tree_tx, false, None);
+        let mut driver = EventRuntimeDriver::new(
+            false,
+            None,
+            BackendWakeHandle::noop(),
+            tree_tx,
+            false,
+            Arc::new(NativeLogRelay::default()),
+            None,
+        );
         let mut pending = None;
 
         assert!(driver.handle_actor_message(
@@ -3286,8 +3603,15 @@ mod tests {
     fn event_runtime_driver_handles_timers_present_timing_and_stop() {
         let (tree_tx, _tree_rx) = bounded(32);
         let (_event_tx, event_rx) = bounded(8);
-        let mut driver =
-            EventRuntimeDriver::new(false, None, BackendWakeHandle::noop(), tree_tx, false, None);
+        let mut driver = EventRuntimeDriver::new(
+            false,
+            None,
+            BackendWakeHandle::noop(),
+            tree_tx,
+            false,
+            Arc::new(NativeLogRelay::default()),
+            None,
+        );
         let mut pending = None;
         let presented_at = Instant::now();
         let predicted_next_present_at = presented_at + Duration::from_millis(16);
@@ -6879,6 +7203,7 @@ mod tests {
             false,
             Some(cursor_tx),
             BackendWakeHandle::noop(),
+            Arc::new(NativeLogRelay::default()),
             None,
         );
         runtime.handle_registry_update(rebuild, &tree_tx, false);
