@@ -843,6 +843,16 @@ fn should_defer_cursor_only_commit(
             .unwrap_or(false)
 }
 
+fn should_consider_unchanged_primary_skip(
+    commit_in_flight: bool,
+    primary_dirty: bool,
+    hw_cursor_enabled: bool,
+    cursor_visible: bool,
+    animate: bool,
+) -> bool {
+    !commit_in_flight && primary_dirty && !animate && (hw_cursor_enabled || !cursor_visible)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -895,6 +905,28 @@ mod tests {
             now,
         ));
         assert!(!should_defer_cursor_only_commit(false, true, None, now));
+    }
+
+    #[test]
+    fn unchanged_primary_skip_requires_idle_dirty_primary_with_cursor_coverage() {
+        assert!(should_consider_unchanged_primary_skip(
+            false, true, true, true, false,
+        ));
+        assert!(!should_consider_unchanged_primary_skip(
+            false, true, true, true, true,
+        ));
+        assert!(!should_consider_unchanged_primary_skip(
+            true, true, true, true, false,
+        ));
+        assert!(!should_consider_unchanged_primary_skip(
+            false, false, true, true, false,
+        ));
+        assert!(!should_consider_unchanged_primary_skip(
+            false, true, false, true, false,
+        ));
+        assert!(should_consider_unchanged_primary_skip(
+            false, true, false, false, false,
+        ));
     }
 
     #[test]
@@ -2134,10 +2166,17 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             last_cursor_icon = current_cursor_icon;
 
             let primary_dirty = desired_primary_generation != committed_primary_generation;
-            if in_flight.is_none()
-                && primary_dirty
-                && (hw_cursor_enabled || !cursor_visible)
-                && renderer.can_skip_unchanged_visible_frame(&render_state, dimensions)
+            // Animation pulses are driven by primary page-flip completions. Even
+            // when an enter frame is initially visually unchanged (for example
+            // translated outside a clip), it still needs a committed primary so
+            // the next pulse advances the animation clock.
+            if should_consider_unchanged_primary_skip(
+                in_flight.is_some(),
+                primary_dirty,
+                hw_cursor_enabled,
+                cursor_visible,
+                render_state.animate,
+            ) && renderer.can_skip_unchanged_visible_frame(&render_state, dimensions)
             {
                 committed_primary_generation = desired_primary_generation;
                 render_state.pipeline_submitted_at = None;
