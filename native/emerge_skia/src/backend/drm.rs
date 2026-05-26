@@ -50,13 +50,13 @@ use self::cursor_theme::{CURSOR_PLANE_SIZE, CursorVisual, DrmCursorTheme};
 const EGL_PLATFORM_GBM_KHR: EGLenum = 0x31D7;
 
 #[derive(Clone)]
-pub struct DrmBackendWake {
+pub(crate) struct DrmBackendWake {
     presenter_wake: EventFd,
     input_wake: EventFd,
 }
 
 impl DrmBackendWake {
-    pub fn new(presenter_wake: EventFd, input_wake: EventFd) -> Self {
+    pub(crate) fn new(presenter_wake: EventFd, input_wake: EventFd) -> Self {
         Self {
             presenter_wake,
             input_wake,
@@ -1275,37 +1275,37 @@ fn draw_software_cursor(
 }
 
 #[derive(Clone)]
-pub struct DrmRunConfig {
-    pub requested_size: Option<(u32, u32)>,
-    pub card_path: Option<String>,
-    pub asset_config: AssetConfig,
-    pub startup_retries: u32,
-    pub cursor_overrides: Vec<DrmCursorOverrideConfig>,
-    pub retry_interval_ms: u32,
-    pub hw_cursor: bool,
-    pub render_log: bool,
-    pub renderer_cache_config: RendererCacheConfig,
+pub(crate) struct DrmRunConfig {
+    pub(crate) requested_size: Option<(u32, u32)>,
+    pub(crate) card_path: Option<String>,
+    pub(crate) asset_config: AssetConfig,
+    pub(crate) startup_retries: u32,
+    pub(crate) cursor_overrides: Vec<DrmCursorOverrideConfig>,
+    pub(crate) retry_interval_ms: u32,
+    pub(crate) hw_cursor: bool,
+    pub(crate) render_log: bool,
+    pub(crate) renderer_cache_config: RendererCacheConfig,
 }
 
-pub struct DrmRunContext {
-    pub startup_tx: StartupSender<Result<(), String>>,
-    pub stop: Arc<AtomicBool>,
-    pub running_flag: Arc<AtomicBool>,
-    pub presenter_wake: EventFd,
-    pub input_wake: EventFd,
-    pub tree_tx: Sender<TreeMsg>,
-    pub render_rx: Receiver<RenderMsg>,
-    pub cursor_icon_rx: Receiver<CursorIcon>,
-    pub cursor_state: Arc<SharedCursorState>,
-    pub event_tx: Sender<EventMsg>,
-    pub screen_tx: Sender<(u32, u32)>,
-    pub render_counter: Arc<AtomicU64>,
-    pub native_log: Arc<NativeLogRelay>,
-    pub stats: Option<Arc<RendererStatsCollector>>,
-    pub video_registry: Arc<VideoRegistry>,
+pub(crate) struct DrmRunContext {
+    pub(crate) startup_tx: StartupSender<Result<(), String>>,
+    pub(crate) stop: Arc<AtomicBool>,
+    pub(crate) running_flag: Arc<AtomicBool>,
+    pub(crate) presenter_wake: EventFd,
+    pub(crate) input_wake: EventFd,
+    pub(crate) tree_tx: Sender<TreeMsg>,
+    pub(crate) render_rx: Receiver<RenderMsg>,
+    pub(crate) cursor_icon_rx: Receiver<CursorIcon>,
+    pub(crate) cursor_state: Arc<SharedCursorState>,
+    pub(crate) event_tx: Sender<EventMsg>,
+    pub(crate) screen_tx: Sender<(u32, u32)>,
+    pub(crate) render_counter: Arc<AtomicU64>,
+    pub(crate) native_log: Arc<NativeLogRelay>,
+    pub(crate) stats: Option<Arc<RendererStatsCollector>>,
+    pub(crate) video_registry: Arc<VideoRegistry>,
 }
 
-pub fn run(context: DrmRunContext, config: DrmRunConfig) {
+pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
     let DrmRunContext {
         startup_tx,
         stop,

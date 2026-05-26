@@ -50,6 +50,13 @@ defmodule Emerge.ViewportTest do
       end)
     end
 
+    def pause_heartbeat(renderer) do
+      Agent.update(renderer, fn state ->
+        stop_heartbeat(state.heartbeat_pid)
+        %{state | heartbeat_pid: nil}
+      end)
+    end
+
     @impl true
     def set_input_target(renderer, pid) do
       Agent.update(renderer, fn state ->
@@ -499,6 +506,10 @@ defmodule Emerge.ViewportTest do
     GenServer.stop(pid)
   end
 
+  test "viewport child spec waits for renderer teardown during supervisor shutdown" do
+    assert %{shutdown: :infinity} = CounterViewport.child_spec([])
+  end
+
   test "mount accepts bare skia opts and infers otp_app" do
     {:ok, pid} = BareSkiaViewport.start_link()
 
@@ -878,6 +889,30 @@ defmodule Emerge.ViewportTest do
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}
   end
 
+  test "renderer heartbeat watchdog tolerates a stale heartbeat when renderer is still running" do
+    {:ok, pid} = LivenessViewport.start_link()
+    renderer = Emerge.renderer(pid)
+
+    FakeRenderer.pause_heartbeat(renderer)
+
+    :sys.replace_state(pid, fn state ->
+      update_in(
+        state.__emerge__.last_renderer_heartbeat_at_ms,
+        fn _last_seen -> System.monotonic_time(:millisecond) - 1_500 end
+      )
+    end)
+
+    ref = Process.monitor(pid)
+    send(pid, {:emerge_viewport, :check_renderer})
+
+    assert :sys.get_state(pid).__emerge__.last_renderer_heartbeat_at_ms >
+             System.monotonic_time(:millisecond) - 1_000
+
+    refute_receive {:DOWN, ^ref, :process, ^pid, :normal}, 100
+
+    GenServer.stop(pid)
+  end
+
   test "default handle_close stops viewport when close is received" do
     {:ok, pid} = LivenessViewport.start_link()
 
@@ -907,6 +942,54 @@ defmodule Emerge.ViewportTest do
     GenServer.stop(pid)
 
     assert_receive {:DOWN, ^ref, :process, ^renderer, :normal}
+  end
+
+  test "supervisor shutdown stops renderer even when a renderer reference is still held" do
+    {:ok, sup} = Supervisor.start_link([{LivenessViewport, []}], strategy: :one_for_one)
+    [{_, pid, _, _}] = Supervisor.which_children(sup)
+    renderer = Emerge.renderer(pid)
+
+    ref = Process.monitor(renderer)
+    :ok = Supervisor.stop(sup)
+
+    assert_receive {:DOWN, ^ref, :process, ^renderer, :normal}
+  end
+
+  test "trapping exits preserves normal linked-process exit behavior" do
+    {:ok, pid} = LivenessViewport.start_link()
+
+    spawn(fn ->
+      Process.link(pid)
+      exit(:normal)
+    end)
+
+    assert_eventually(fn -> Process.alive?(pid) end)
+
+    GenServer.stop(pid)
+  end
+
+  test "trapping exits preserves abnormal linked-process exit behavior and stops renderer" do
+    previous_trap_exit = Process.flag(:trap_exit, true)
+
+    try do
+      capture_log(fn ->
+        {:ok, pid} = LivenessViewport.start_link()
+        renderer = Emerge.renderer(pid)
+        viewport_ref = Process.monitor(pid)
+        renderer_ref = Process.monitor(renderer)
+
+        spawn(fn ->
+          Process.link(pid)
+          exit(:boom)
+        end)
+
+        assert_receive {:DOWN, ^viewport_ref, :process, ^pid, :boom}
+        assert_receive {:DOWN, ^renderer_ref, :process, ^renderer, :normal}
+        assert_receive {:EXIT, ^pid, :boom}
+      end)
+    after
+      Process.flag(:trap_exit, previous_trap_exit)
+    end
   end
 
   defp assert_eventually(fun, attempts \\ 40)

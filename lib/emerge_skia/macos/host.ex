@@ -81,7 +81,7 @@ defmodule EmergeSkia.Macos.Host do
   @spec stop_session(Renderer.t()) :: :ok
   def stop_session(%Renderer{} = renderer) do
     case ensure_started() do
-      :ok -> GenServer.call(@name, {:stop_session, renderer.session_id}, 5_000)
+      :ok -> GenServer.call(@name, {:stop_session, renderer.session_id}, :infinity)
       {:error, _reason} -> :ok
     end
   end

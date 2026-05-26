@@ -89,7 +89,9 @@ defmodule EmergeSkia do
   - `hw_cursor` - Enable hardware cursor when available (default: true)
   - `drm_cursor` - Optional DRM-only cursor overrides for `default`, `text`, and `pointer`
   - `input_log` - Log DRM input devices on startup (default: false)
-  - `render_log` - Log DRM render/present diagnostics (default: false)
+  - `render_log` - Log native backend render/present diagnostics, including Wayland present
+    and event-runtime traces. On Wayland, also writes an out-of-band watchdog file to
+    `/tmp/emerge-wayland-watchdog-<pid>.log` (default: false)
   - `close_signal_log` - Log detailed Wayland window-close diagnostics to stderr (default: false)
   - `stats` - Enable renderer stats collection without periodic logging (default: false)
   - `renderer_stats_log` - Enable renderer stats collection and log all current stat families every 5 seconds, including frame rate, split render timings, split patch-to-present pipeline timing, layout-cache counters, and renderer-cache counters. Slow Wayland render frames also include a scene primitive summary and per-frame renderer-cache counters. (default: false)

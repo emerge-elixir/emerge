@@ -120,6 +120,10 @@ impl Dispatch<WpFractionalScaleV1, FractionalScaleData> for WaylandApp {
             return;
         };
 
+        state.log_render_diagnostic(format!(
+            "fractional scale preferred\n  scale: {:.3}",
+            scale as f32 / 120.0,
+        ));
         state
             .geometry
             .set_preferred_fractional_scale(Some(scale as f32 / 120.0));
