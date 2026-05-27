@@ -113,6 +113,7 @@ struct PreparedPrimaryFrame {
     generation: u64,
     render_version: u64,
     pipeline_submitted_at: Option<Instant>,
+    pipeline_swap_done_at: Option<Instant>,
     bo: BufferObject<()>,
     fb: framebuffer::Handle,
     video_needs_cleanup: bool,
@@ -830,6 +831,45 @@ fn send_present_timing(
     }
 }
 
+fn record_drm_pipeline_scene_received(
+    stats: Option<&RendererStatsCollector>,
+    pipeline_render_queued_at: Option<Instant>,
+    received_at: Instant,
+) {
+    if let Some(stats) = stats {
+        stats.record_pipeline_draw_started(pipeline_render_queued_at, received_at);
+    }
+}
+
+fn record_drm_pipeline_swap_done(
+    stats: Option<&RendererStatsCollector>,
+    pipeline_submitted_at: Option<Instant>,
+    swap_done_at: Instant,
+) {
+    if let (Some(stats), Some(submitted_at)) = (stats, pipeline_submitted_at) {
+        stats.record_pipeline_submit_to_swap(submitted_at, swap_done_at);
+    }
+}
+
+fn record_drm_pipeline_presented(
+    stats: Option<&RendererStatsCollector>,
+    pipeline_submitted_at: Option<Instant>,
+    pipeline_swap_done_at: Option<Instant>,
+    presented_at: Instant,
+) {
+    let Some(stats) = stats else {
+        return;
+    };
+
+    if let Some(submitted_at) = pipeline_submitted_at {
+        stats.record_pipeline(submitted_at, presented_at);
+    }
+
+    if let Some(swap_done_at) = pipeline_swap_done_at {
+        stats.record_pipeline_swap_to_frame_callback(swap_done_at, presented_at);
+    }
+}
+
 fn should_defer_cursor_only_commit(
     submit_primary: bool,
     submit_cursor: bool,
@@ -856,6 +896,17 @@ fn should_consider_unchanged_primary_skip(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stats::{RendererStatsSnapshot, RendererTimingMetric};
+
+    fn assert_timing(
+        snapshot: &RendererStatsSnapshot,
+        metric: RendererTimingMetric,
+        expected_avg_ms: f64,
+    ) {
+        let timing = snapshot.timing(metric);
+        assert_eq!(timing.count, 1);
+        assert!((timing.avg_ms - expected_avg_ms).abs() < 0.001);
+    }
 
     #[test]
     fn drm_present_state_updates_estimated_interval_from_observed_presents() {
@@ -905,6 +956,39 @@ mod tests {
             now,
         ));
         assert!(!should_defer_cursor_only_commit(false, true, None, now));
+    }
+
+    #[test]
+    fn drm_pipeline_helpers_record_render_queue_swap_and_present_spans() {
+        let stats = RendererStatsCollector::new();
+        let submitted_at = Instant::now();
+        let render_queued_at = submitted_at + Duration::from_millis(8);
+        let render_received_at = submitted_at + Duration::from_millis(10);
+        let swap_done_at = submitted_at + Duration::from_millis(11);
+        let presented_at = submitted_at + Duration::from_millis(18);
+
+        record_drm_pipeline_scene_received(
+            Some(&stats),
+            Some(render_queued_at),
+            render_received_at,
+        );
+        record_drm_pipeline_swap_done(Some(&stats), Some(submitted_at), swap_done_at);
+        record_drm_pipeline_presented(
+            Some(&stats),
+            Some(submitted_at),
+            Some(swap_done_at),
+            presented_at,
+        );
+
+        let snapshot = stats.snapshot();
+        assert_timing(&snapshot, RendererTimingMetric::PipelineRenderQueue, 2.0);
+        assert_timing(&snapshot, RendererTimingMetric::PipelineSubmitToSwap, 11.0);
+        assert_timing(&snapshot, RendererTimingMetric::Pipeline, 18.0);
+        assert_timing(
+            &snapshot,
+            RendererTimingMetric::PipelineSwapToFrameCallback,
+            7.0,
+        );
     }
 
     #[test]
@@ -1279,6 +1363,7 @@ fn prepare_primary_frame(
         generation,
         render_version: render_state.render_version,
         pipeline_submitted_at: render_state.pipeline_submitted_at,
+        pipeline_swap_done_at: None,
         bo,
         fb,
         video_needs_cleanup,
@@ -2007,10 +2092,12 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                                         let presented_at = Instant::now();
                                         if let Some(stats) = stats.as_ref() {
                                             stats.record_frame_present();
-                                            if let Some(submitted_at) = frame.pipeline_submitted_at
-                                            {
-                                                stats.record_pipeline(submitted_at, presented_at);
-                                            }
+                                            record_drm_pipeline_presented(
+                                                Some(stats),
+                                                frame.pipeline_submitted_at,
+                                                frame.pipeline_swap_done_at,
+                                                presented_at,
+                                            );
                                         }
 
                                         let predicted_next_present_at =
@@ -2097,14 +2184,22 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                         scene,
                         version,
                         pipeline_submitted_at,
+                        pipeline_render_queued_at,
                         animate,
                         ..
                     } => {
+                        let received_at = Instant::now();
                         let scene = *scene;
                         render_state.set_scene(scene);
                         render_state.render_version = version;
                         render_state.pipeline_submitted_at = pipeline_submitted_at;
+                        render_state.pipeline_render_queued_at = pipeline_render_queued_at;
                         render_state.animate = animate;
+                        record_drm_pipeline_scene_received(
+                            stats.as_deref(),
+                            pipeline_render_queued_at,
+                            received_at,
+                        );
                         desired_primary_generation = desired_primary_generation.wrapping_add(1);
                         follow_up_primary_until = None;
                         if log_render {
@@ -2316,6 +2411,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                     commit_req,
                 ) {
                     Ok(()) => {
+                        let swap_done_at = Instant::now();
                         if let Some(stats) = stats.as_ref()
                             && let (Some(present_submit_started_at), Some(frame)) = (
                                 present_submit_started_at,
@@ -2323,19 +2419,26 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                             )
                         {
                             stats.record_present_submit(
-                                frame.present_submit_duration + present_submit_started_at.elapsed(),
+                                frame.present_submit_duration
+                                    + swap_done_at
+                                        .saturating_duration_since(present_submit_started_at),
                             );
                         }
 
                         retry_commit_at = None;
                         let submitted_primary = if submit_primary {
-                            let frame = prepared_primary.take();
-                            if frame
-                                .as_ref()
-                                .and_then(|frame| frame.pipeline_submitted_at)
-                                .is_some()
+                            let mut frame = prepared_primary.take();
+                            if let Some(frame) = frame.as_mut()
+                                && frame.pipeline_submitted_at.is_some()
                             {
+                                record_drm_pipeline_swap_done(
+                                    stats.as_deref(),
+                                    frame.pipeline_submitted_at,
+                                    swap_done_at,
+                                );
+                                frame.pipeline_swap_done_at = Some(swap_done_at);
                                 render_state.pipeline_submitted_at = None;
+                                render_state.pipeline_render_queued_at = None;
                             }
                             frame
                         } else {
