@@ -1,21 +1,30 @@
 # Plans
 
-Last updated: 2026-05-20.
+Last updated: 2026-05-27.
 
 This directory tracks active implementation notes and durable background
 research for native layout, renderer, and input/runtime work.
 
 Active implementation plans:
 
+- `active-backend-renderer-unification.md`
 - `active-low-resource-animation-smoothness.md`
 - `active-combined-refresh-traversal.md`
 - `active-combined-tree-walk-cleanup.md`
+- `active-enter-animation-completion.md`
+- `active-drm-framerate-animation.md`
 
 Files with an `active-` prefix are reserved for open implementation slices.
 When a slice completes, fold the useful details into this index or one of the
 durable reference notes below, then remove the completed implementation log.
 
 ## Files
+
+### `active-backend-renderer-unification.md`
+
+Active plan for splitting platform selection from rendering API selection across
+Wayland, DRM, macOS, and headless output, while preparing the same model for
+future rendering APIs such as Vulkan.
 
 ### `active-low-resource-animation-smoothness.md`
 
@@ -63,18 +72,6 @@ Cross-engine research notes.
 This preserves the useful findings from Taffy, Yoga, Flutter, Slint, Iced, and
 Servo. It is intentionally more detailed than the roadmap because it records why
 certain design directions fit Emerge.
-
-### `elixir-reconciliation-optimization.md`
-
-Completed Elixir runtime update optimization notes, including the assigned-tree
-free viewport patch path, incremental event-registry reconciliation, benchmark
-methodology, and measured speedups against the previous public update path.
-
-### `biaxial-drag-scroll.md`
-
-Completed input-runtime note for two-axis drag scrolling after threshold
-activation, including the retained primary axis for inertia and split active
-scroll dispatch for scroll containers that can move in both axes.
 
 ### `skia-ddl-paint-layer-note.md`
 
