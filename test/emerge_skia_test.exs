@@ -197,10 +197,19 @@ defmodule EmergeSkiaTest do
              EmergeSkia.start(otp_app: :emerge, backend: :bogus)
   end
 
-  test "start/1 rejects macos_backend on non-macOS backends" do
-    assert_raise ArgumentError, ~r/macos_backend is only supported with backend: :macos/, fn ->
+  test "start/1 rejects removed macos_backend option" do
+    assert_raise ArgumentError, ~r/macos_backend has been removed.*backend_renderer/, fn ->
       EmergeSkia.start(otp_app: :emerge, backend: :drm, macos_backend: :raster)
     end
+  end
+
+  test "start/1 rejects backend renderers that are not implemented yet" do
+    assert {:error,
+            {:error, "backend_renderer :raster is not implemented yet for backend :wayland"}} =
+             EmergeSkia.start(otp_app: :emerge, backend: :wayland, backend_renderer: :raster)
+
+    assert {:error, {:error, "headless backend is not implemented yet"}} =
+             EmergeSkia.start(otp_app: :emerge, backend: :headless)
   end
 
   test "start/1 rejects backends that were not compiled in" do

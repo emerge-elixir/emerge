@@ -79,8 +79,8 @@ defmodule EmergeSkia do
   ## Options
 
   - `otp_app` - OTP application used to resolve logical assets from its `priv` dir (**required**)
-   - `backend` - Backend selection (`:wayland`, `:drm`, or `:macos`). Defaults to `:wayland` for Linux desktop builds, `:macos` on Darwin, and `:drm` for Nerves-style builds. The requested backend must also be present in `config :emerge, compiled_backends: [...]`.
-   - `macos_backend` - macOS surface backend selection (`:auto`, `:metal`, or `:raster`). Defaults to `:auto` and is only supported with `backend: :macos`.
+  - `backend` - Backend selection (`:wayland`, `:drm`, `:macos`, or future `:headless`). Defaults to `:wayland` for Linux desktop builds, `:macos` on Darwin, and `:drm` for Nerves-style builds. The requested backend must also be present in `config :emerge, compiled_backends: [...]`.
+  - `backend_renderer` - Renderer selection (`:auto`, `:gl`, `:raster`, `:metal`, or configured raster/auto forms). Defaults to `:auto`. `:raster` is equivalent to `[raster: [present: :auto]]`; Wayland/DRM can force raster presentation with `[raster: [present: :gpu_upload | :cpu]]` or configure auto fallback with `[auto: [raster: [present: ...]]]`.
   - `title` - Window title (default: "Emerge")
   - `width` - Window width in pixels (default: 800)
   - `height` - Window height in pixels (default: 600)
@@ -154,13 +154,15 @@ defmodule EmergeSkia do
       raise ArgumentError, "drm_cursor is only supported with backend: :drm"
     end
 
-    if Keyword.has_key?(opts, :macos_backend) and String.downcase(native_opts.backend) != "macos" do
-      raise ArgumentError, "macos_backend is only supported with backend: :macos"
-    end
+    case Options.backend_renderer_start_error(native_opts) do
+      nil ->
+        native_opts.backend
+        |> Transport.for_backend()
+        |> apply(:start_session, [native_opts, asset_config])
 
-    native_opts.backend
-    |> Transport.for_backend()
-    |> apply(:start_session, [native_opts, asset_config])
+      reason ->
+        {:error, {:error, reason}}
+    end
   end
 
   @spec start(String.t()) :: no_return()

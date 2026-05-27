@@ -248,7 +248,7 @@ defmodule EmergeSkia.Macos.Host do
     scroll_line_pixels = Map.fetch!(native_opts, :scroll_line_pixels)
     renderer_stats_log = Map.fetch!(native_opts, :renderer_stats_log)
     renderer_cache = Map.fetch!(native_opts, :renderer_cache)
-    macos_backend = Map.fetch!(native_opts, :macos_backend)
+    backend_renderer = Map.fetch!(native_opts, :backend_renderer)
 
     case queue_request(
            state,
@@ -263,7 +263,7 @@ defmodule EmergeSkia.Macos.Host do
              scroll_line_pixels,
              renderer_stats_log,
              renderer_cache,
-             macos_backend,
+             Map.fetch!(backend_renderer, :kind),
              asset_config
            )
          ) do
@@ -605,7 +605,7 @@ defmodule EmergeSkia.Macos.Host do
           session_id: session_id,
           host_id: state.host_id,
           host_pid: state.host_pid,
-          macos_backend: selected_backend
+          backend_renderer: selected_backend
         }
 
         sessions =

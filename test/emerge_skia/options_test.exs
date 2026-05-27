@@ -22,13 +22,84 @@ defmodule EmergeSkia.OptionsTest do
     assert %{backend: "wayland"} = Options.build_start_native_opts!(backend: "wayland")
   end
 
-  test "build_start_native_opts! normalizes macos_backend" do
-    assert %{macos_backend: "auto"} = Options.build_start_native_opts!([])
-    assert %{macos_backend: "metal"} = Options.build_start_native_opts!(macos_backend: :metal)
-    assert %{macos_backend: "raster"} = Options.build_start_native_opts!(macos_backend: "raster")
+  test "build_start_native_opts! normalizes backend_renderer" do
+    assert %{backend_renderer: %{kind: "auto", raster_present: "auto"}} =
+             Options.build_start_native_opts!([])
 
-    assert_raise ArgumentError, ~r/:macos_backend must be :auto, :metal, or :raster/, fn ->
-      Options.build_start_native_opts!(macos_backend: :bogus)
+    assert %{backend_renderer: %{kind: "gl", raster_present: "auto"}} =
+             Options.build_start_native_opts!(backend_renderer: :gl)
+
+    assert %{
+             backend_renderer: %{
+               kind: "raster",
+               raster_present: "auto",
+               raster_present_configured: false
+             }
+           } = Options.build_start_native_opts!(backend_renderer: :raster)
+
+    assert %{
+             backend_renderer: %{
+               kind: "raster",
+               raster_present: "cpu",
+               raster_present_configured: true
+             }
+           } =
+             Options.build_start_native_opts!(
+               backend: :wayland,
+               backend_renderer: [raster: [present: :cpu]]
+             )
+
+    assert %{
+             backend_renderer: %{
+               kind: "auto",
+               raster_present: "gpu_upload",
+               raster_present_configured: true
+             }
+           } =
+             Options.build_start_native_opts!(
+               backend: :drm,
+               backend_renderer: [auto: [raster: [present: "gpu_upload"]]]
+             )
+  end
+
+  test "build_start_native_opts! rejects invalid backend_renderer" do
+    assert_raise ArgumentError, ~r/:backend_renderer must be/, fn ->
+      Options.build_start_native_opts!(backend_renderer: :bogus)
+    end
+
+    assert_raise ArgumentError, ~r/raster present must be :auto, :gpu_upload, or :cpu/, fn ->
+      Options.build_start_native_opts!(backend_renderer: [raster: [present: :bogus]])
+    end
+
+    assert_raise ArgumentError, ~r/:backend_renderer.auto has unsupported option/, fn ->
+      Options.build_start_native_opts!(backend_renderer: [auto: [present: :cpu]])
+    end
+  end
+
+  test "build_start_native_opts! rejects removed macos_backend" do
+    assert_raise ArgumentError, ~r/macos_backend has been removed.*backend_renderer/, fn ->
+      Options.build_start_native_opts!(macos_backend: :raster)
+    end
+  end
+
+  test "build_start_native_opts! validates backend_renderer against backend" do
+    assert_raise ArgumentError,
+                 ~r/backend_renderer: :gl is not supported with backend: :macos/,
+                 fn ->
+                   Options.build_start_native_opts!(backend: :macos, backend_renderer: :gl)
+                 end
+
+    assert_raise ArgumentError,
+                 ~r/backend_renderer: :metal is only supported with backend: :macos/,
+                 fn ->
+                   Options.build_start_native_opts!(backend: :wayland, backend_renderer: :metal)
+                 end
+
+    assert_raise ArgumentError, ~r/raster present options are only supported/, fn ->
+      Options.build_start_native_opts!(
+        backend: :macos,
+        backend_renderer: [raster: [present: :cpu]]
+      )
     end
   end
 

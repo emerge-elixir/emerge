@@ -16,17 +16,26 @@ defmodule EmergeSkia.Options do
             "dispatch_mode option has been removed; EmergeSkia now runs a single dispatch engine"
     end
 
+    if Keyword.has_key?(opts, :macos_backend) do
+      raise ArgumentError,
+            "macos_backend has been removed; use backend_renderer: :auto | :metal | :raster instead"
+    end
+
     backend =
       opts
       |> Keyword.get(:backend, EmergeSkia.BuildConfig.default_runtime_backend())
       |> normalize_backend!()
 
+    backend_renderer =
+      opts
+      |> Keyword.get(:backend_renderer, :auto)
+      |> normalize_backend_renderer!()
+
+    validate_backend_renderer_for_backend!(backend, backend_renderer)
+
     %{
       backend: backend,
-      macos_backend:
-        opts
-        |> Keyword.get(:macos_backend, :auto)
-        |> normalize_macos_backend!(),
+      backend_renderer: backend_renderer,
       title: Keyword.get(opts, :title, "Emerge"),
       width: Keyword.get(opts, :width, 800),
       height: Keyword.get(opts, :height, 600),
@@ -59,6 +68,23 @@ defmodule EmergeSkia.Options do
         |> Keyword.get(:renderer_cache, [])
         |> normalize_renderer_cache_opts!()
     }
+  end
+
+  @doc false
+  def backend_renderer_start_error(%{backend: backend, backend_renderer: backend_renderer}) do
+    case {String.downcase(backend), backend_renderer.kind} do
+      {"headless", _kind} ->
+        "headless backend is not implemented yet"
+
+      {backend, "raster"} when backend in ["wayland", "drm"] ->
+        "backend_renderer :raster is not implemented yet for backend :#{backend}"
+
+      {backend, "vulkan"} when backend in ["wayland", "drm", "headless"] ->
+        "backend_renderer :vulkan is not implemented yet"
+
+      _other ->
+        nil
+    end
   end
 
   @doc false
@@ -231,18 +257,130 @@ defmodule EmergeSkia.Options do
           ":asset_mode must be :await or :snapshot, got: #{inspect(value)}"
   end
 
-  @doc false
-  def normalize_macos_backend!(:auto), do: "auto"
-  def normalize_macos_backend!(:metal), do: "metal"
-  def normalize_macos_backend!(:raster), do: "raster"
-  def normalize_macos_backend!("auto"), do: "auto"
-  def normalize_macos_backend!("metal"), do: "metal"
-  def normalize_macos_backend!("raster"), do: "raster"
-
-  def normalize_macos_backend!(value) do
-    raise ArgumentError,
-          ":macos_backend must be :auto, :metal, or :raster, got: #{inspect(value)}"
+  defp normalize_backend_renderer!(value) when value in [:auto, "auto"] do
+    backend_renderer_config("auto", "auto", false)
   end
+
+  defp normalize_backend_renderer!(value) when value in [:gl, "gl"] do
+    backend_renderer_config("gl", "auto", false)
+  end
+
+  defp normalize_backend_renderer!(value) when value in [:raster, "raster"] do
+    backend_renderer_config("raster", "auto", false)
+  end
+
+  defp normalize_backend_renderer!(value) when value in [:metal, "metal"] do
+    backend_renderer_config("metal", "auto", false)
+  end
+
+  defp normalize_backend_renderer!(value) when value in [:vulkan, "vulkan"] do
+    backend_renderer_config("vulkan", "auto", false)
+  end
+
+  defp normalize_backend_renderer!(value) when is_list(value) or is_map(value) do
+    opts = normalize_keyword_or_map!(value, ":backend_renderer")
+
+    case opts do
+      [raster: raster_opts] ->
+        raster_opts = normalize_keyword_or_map!(raster_opts, ":backend_renderer.raster")
+        ensure_only_keys!(raster_opts, [:present], ":backend_renderer.raster")
+
+        present =
+          raster_opts
+          |> Keyword.get(:present, :auto)
+          |> normalize_raster_present!()
+
+        backend_renderer_config("raster", present, Keyword.has_key?(raster_opts, :present))
+
+      [auto: auto_opts] ->
+        auto_opts = normalize_keyword_or_map!(auto_opts, ":backend_renderer.auto")
+        ensure_only_keys!(auto_opts, [:raster], ":backend_renderer.auto")
+        raster_opts = Keyword.get(auto_opts, :raster, [])
+        raster_opts = normalize_keyword_or_map!(raster_opts, ":backend_renderer.auto.raster")
+        ensure_only_keys!(raster_opts, [:present], ":backend_renderer.auto.raster")
+
+        present =
+          raster_opts
+          |> Keyword.get(:present, :auto)
+          |> normalize_raster_present!()
+
+        backend_renderer_config("auto", present, Keyword.has_key?(raster_opts, :present))
+
+      _other ->
+        raise ArgumentError,
+              ":backend_renderer must be :auto, :gl, :raster, :metal, :vulkan, [raster: [present: ...]], or [auto: [raster: [present: ...]]]"
+    end
+  end
+
+  defp normalize_backend_renderer!(value) do
+    raise ArgumentError,
+          ":backend_renderer must be :auto, :gl, :raster, :metal, :vulkan, [raster: [present: ...]], or [auto: [raster: [present: ...]]], got: #{inspect(value)}"
+  end
+
+  defp backend_renderer_config(kind, raster_present, raster_present_configured?) do
+    %{
+      kind: kind,
+      raster_present: raster_present,
+      raster_present_configured: raster_present_configured?
+    }
+  end
+
+  defp ensure_only_keys!(opts, allowed_keys, field_name) do
+    case Enum.reject(Keyword.keys(opts), &(&1 in allowed_keys)) do
+      [] ->
+        :ok
+
+      unknown ->
+        raise ArgumentError,
+              "#{field_name} has unsupported option(s): #{inspect(unknown)}"
+    end
+  end
+
+  defp normalize_raster_present!(value) when value in [:auto, "auto"], do: "auto"
+
+  defp normalize_raster_present!(value) when value in [:gpu_upload, "gpu_upload"],
+    do: "gpu_upload"
+
+  defp normalize_raster_present!(value) when value in [:cpu, "cpu"], do: "cpu"
+
+  defp normalize_raster_present!(value) do
+    raise ArgumentError,
+          ":backend_renderer raster present must be :auto, :gpu_upload, or :cpu, got: #{inspect(value)}"
+  end
+
+  defp validate_backend_renderer_for_backend!(backend, backend_renderer) do
+    case String.downcase(backend) do
+      "macos" ->
+        validate_macos_backend_renderer!(backend_renderer)
+
+      backend when backend in ["wayland", "drm"] ->
+        validate_linux_backend_renderer!(backend, backend_renderer)
+
+      _other ->
+        :ok
+    end
+  end
+
+  defp validate_macos_backend_renderer!(%{kind: "gl"}) do
+    raise ArgumentError, "backend_renderer: :gl is not supported with backend: :macos"
+  end
+
+  defp validate_macos_backend_renderer!(%{kind: "vulkan"}) do
+    raise ArgumentError, "backend_renderer: :vulkan is not supported with backend: :macos"
+  end
+
+  defp validate_macos_backend_renderer!(%{raster_present_configured: true}) do
+    raise ArgumentError,
+          "backend_renderer raster present options are only supported with backend: :wayland or :drm"
+  end
+
+  defp validate_macos_backend_renderer!(_backend_renderer), do: :ok
+
+  defp validate_linux_backend_renderer!(_backend, %{kind: "metal"}) do
+    raise ArgumentError, "backend_renderer: :metal is only supported with backend: :macos"
+  end
+
+  defp validate_linux_backend_renderer!(_backend, _backend_renderer), do: :ok
 
   defp normalize_keyword_list!(opts, error_message) when is_list(opts) do
     if Keyword.keyword?(opts) do

@@ -155,7 +155,7 @@ defmodule EmergeSkia.Macos.Protocol do
         scroll_line_pixels,
         renderer_stats_log,
         renderer_cache,
-        macos_backend,
+        backend_renderer,
         asset_config
       ) do
     title = IO.iodata_to_binary(title)
@@ -167,7 +167,7 @@ defmodule EmergeSkia.Macos.Protocol do
     <<byte_size(title)::unsigned-big-32, title::binary, width::unsigned-big-32,
       height::unsigned-big-32, scroll_line_pixels::float-big-32, renderer_stats_log,
       encode_renderer_cache_config(renderer_cache)::binary,
-      encode_macos_backend_tag(macos_backend), asset_payload::binary,
+      encode_macos_backend_tag(backend_renderer), asset_payload::binary,
       encode_fonts(fonts, priv_dir)::binary>>
   end
 

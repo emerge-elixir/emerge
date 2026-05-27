@@ -8,7 +8,9 @@ defmodule EmergeSkia.Transport.Native do
 
   @impl true
   def start_session(native_opts, asset_config) do
-    case Native.start_opts(Map.delete(native_opts, :macos_backend)) do
+    native_opts = Map.delete(native_opts, :backend_renderer)
+
+    case Native.start_opts(native_opts) do
       ref when is_reference(ref) ->
         case Assets.initialize_renderer_assets(ref, asset_config) do
           :ok ->
