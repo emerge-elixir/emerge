@@ -411,7 +411,7 @@ enum BackendKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RendererBackendKind {
+pub(crate) enum RendererBackendKind {
     Auto,
     Gl,
     Raster,
@@ -1410,6 +1410,7 @@ fn start_native_renderer_with_config(
                     stats: renderer_stats_clone,
                     renderer_stats_log,
                     renderer_animation_log,
+                    renderer_backend: selected_renderer,
                     renderer_cache_config,
                     latest_frame: latest_frame_clone,
                     native_log: native_log_clone,
@@ -1542,6 +1543,7 @@ fn start_native_renderer_with_config(
                 hw_cursor: config.drm_hw_cursor,
                 render_log: log_render,
                 renderer_stats_log: config.renderer_stats_log,
+                renderer_backend: selected_renderer,
                 renderer_cache_config: config.renderer_cache_config,
             };
 

@@ -50,7 +50,7 @@ use wayland_client::{
 };
 
 use crate::{
-    InputTargetRelay, LatestFrameStore,
+    InputTargetRelay, LatestFrameStore, RendererBackendKind,
     actors::{AnimationFrameTrace, AnimationPulseTrace, EventMsg, RenderMsg, TreeMsg},
     backend::{
         wake::{
@@ -103,6 +103,7 @@ struct WaylandAppRuntime {
     stats: Option<Arc<RendererStatsCollector>>,
     renderer_stats_log: bool,
     renderer_animation_log: bool,
+    renderer_backend: RendererBackendKind,
     renderer_cache_config: RendererCacheConfig,
     latest_frame: Arc<LatestFrameStore>,
     native_log: Arc<NativeLogRelay>,
@@ -125,6 +126,7 @@ pub(crate) struct WaylandRunArgs {
     pub stats: Option<Arc<RendererStatsCollector>>,
     pub renderer_stats_log: bool,
     pub renderer_animation_log: bool,
+    pub renderer_backend: RendererBackendKind,
     pub renderer_cache_config: RendererCacheConfig,
     pub latest_frame: Arc<LatestFrameStore>,
     pub native_log: Arc<NativeLogRelay>,
@@ -444,6 +446,7 @@ pub(super) struct WaylandApp {
     stats: Option<Arc<RendererStatsCollector>>,
     renderer_stats_log: bool,
     renderer_animation_log: bool,
+    renderer_backend: RendererBackendKind,
     renderer_cache_config: RendererCacheConfig,
     latest_frame: Arc<LatestFrameStore>,
     native_log: Arc<NativeLogRelay>,
@@ -492,6 +495,7 @@ impl WaylandApp {
             stats,
             renderer_stats_log,
             renderer_animation_log,
+            renderer_backend,
             renderer_cache_config,
             latest_frame,
             native_log,
@@ -530,6 +534,7 @@ impl WaylandApp {
             stats,
             renderer_stats_log,
             renderer_animation_log,
+            renderer_backend,
             renderer_cache_config,
             latest_frame,
             native_log,
@@ -1223,7 +1228,8 @@ impl WaylandApp {
         if self.env.is_none() {
             self.video_import = WaylandVideoImportState::PendingGlInit;
 
-            match create_gl_env(
+            match create_renderer_env(
+                self.renderer_backend,
                 conn,
                 self.window.wl_surface(),
                 self.geometry.buffer_size,
@@ -2323,6 +2329,26 @@ impl ProvidesRegistryState for WaylandApp {
     registry_handlers![OutputState, SeatState];
 }
 
+fn create_renderer_env(
+    renderer_backend: RendererBackendKind,
+    conn: &Connection,
+    surface: &wl_surface::WlSurface,
+    dimensions: (u32, u32),
+    renderer_cache_config: RendererCacheConfig,
+) -> Result<GlEnv, String> {
+    match renderer_backend {
+        RendererBackendKind::Gl => create_gl_env(conn, surface, dimensions, renderer_cache_config),
+        RendererBackendKind::Auto => unreachable!("auto is resolved before Wayland startup"),
+        RendererBackendKind::Raster => {
+            Err("Wayland raster renderer is not implemented yet".to_string())
+        }
+        RendererBackendKind::Metal => Err("Wayland does not support Metal renderer".to_string()),
+        RendererBackendKind::Vulkan => {
+            Err("Wayland Vulkan renderer is not implemented yet".to_string())
+        }
+    }
+}
+
 fn fail_startup(
     proxy_tx: &Sender<WindowBackendStartupResult>,
     running_flag: &Arc<AtomicBool>,
@@ -2347,6 +2373,7 @@ pub(crate) fn run(args: WaylandRunArgs) {
         stats,
         renderer_stats_log,
         renderer_animation_log,
+        renderer_backend,
         renderer_cache_config,
         latest_frame,
         native_log,
@@ -2491,6 +2518,7 @@ pub(crate) fn run(args: WaylandRunArgs) {
             stats,
             renderer_stats_log,
             renderer_animation_log,
+            renderer_backend,
             renderer_cache_config,
             latest_frame,
             native_log,

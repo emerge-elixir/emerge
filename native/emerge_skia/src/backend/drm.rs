@@ -31,7 +31,7 @@ use skia_safe::{Paint, Rect, gpu::gl::FramebufferInfo};
 
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 
-use crate::{DrmCursorOverrideConfig, LatestFrameStore};
+use crate::{DrmCursorOverrideConfig, LatestFrameStore, RendererBackendKind};
 use crate::actors::{EventMsg, RenderMsg, TreeMsg};
 use crate::assets::AssetConfig;
 use crate::backend::skia_gpu::GlFrameSurface;
@@ -2038,6 +2038,24 @@ fn gbm_bo_diagnostics(bo: &BufferObject<()>) -> String {
     )
 }
 
+fn create_renderer_frame_surface(
+    renderer_backend: RendererBackendKind,
+    egl: &egl::Egl,
+    dimensions: (u32, u32),
+) -> Result<GlFrameSurface, String> {
+    match renderer_backend {
+        RendererBackendKind::Gl => create_frame_surface(egl, dimensions),
+        RendererBackendKind::Auto => unreachable!("auto is resolved before DRM startup"),
+        RendererBackendKind::Raster => {
+            Err("DRM raster renderer is not implemented yet".to_string())
+        }
+        RendererBackendKind::Metal => Err("DRM does not support Metal renderer".to_string()),
+        RendererBackendKind::Vulkan => {
+            Err("DRM Vulkan renderer is not implemented yet".to_string())
+        }
+    }
+}
+
 fn framebuffer_for_bo(
     card: &Card,
     cache: &mut HashMap<u32, framebuffer::Handle>,
@@ -2288,6 +2306,7 @@ pub(crate) struct DrmRunConfig {
     pub(crate) hw_cursor: bool,
     pub(crate) render_log: bool,
     pub(crate) renderer_stats_log: bool,
+    pub(crate) renderer_backend: RendererBackendKind,
     pub(crate) renderer_cache_config: RendererCacheConfig,
 }
 
@@ -2794,7 +2813,11 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             );
         }
 
-        let mut frame_surface = match create_frame_surface(&egl_state.egl, dimensions) {
+        let mut frame_surface = match create_renderer_frame_surface(
+            config.renderer_backend,
+            &egl_state.egl,
+            dimensions,
+        ) {
             Ok(frame_surface) => frame_surface,
             Err(err) => {
                 if handle_startup_failure_with_card(

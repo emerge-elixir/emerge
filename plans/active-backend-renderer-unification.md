@@ -1,7 +1,7 @@
 # Active Plan: Backend / Renderer Unification and Headless Output
 
 Created: 2026-05-27
-Status: phase 5 complete
+Status: phase 6 complete
 
 ## Confirmed decisions
 
@@ -604,14 +604,19 @@ Status: implemented in this slice.
 
 ### Phase 6: Current Linux GL backend split
 
-- Refactor Wayland and DRM startup around two decisions:
+Status: implemented in this slice.
+
+- [x] Refactor Wayland and DRM startup around two decisions:
   1. platform backend creates/owns window/device, input, wake, present timing,
      and lifecycle
   2. renderer backend creates/owns the drawing surface/render target
-- Extract GL/EGL surface setup into helpers that are selected by
-  `backend_renderer: :gl` instead of being implicit in the platform backend.
-- Keep actor-backed runtime semantics and existing input behavior unchanged.
-- Keep the public behavior unchanged for default `:auto` runs.
+- [x] Extract GL/EGL surface setup into helpers that are selected by the
+  normalized renderer backend instead of being implicit in the platform backend.
+  - `:auto` is resolved before backend startup.
+  - Wayland/DRM currently select the GL helper; raster/Vulkan helper arms return
+    precise not-implemented errors for the future slices.
+- [x] Keep actor-backed runtime semantics and existing input behavior unchanged.
+- [x] Keep the public behavior unchanged for default `:auto` runs.
 
 ### Phase 7: Wayland raster renderer support
 
