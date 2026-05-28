@@ -8,6 +8,7 @@ research for native layout, renderer, and input/runtime work.
 Active implementation plans:
 
 - `active-backend-renderer-unification.md`
+- `active-headless-gl.md`
 - `active-low-resource-animation-smoothness.md`
 - `active-combined-refresh-traversal.md`
 - `active-combined-tree-walk-cleanup.md`
@@ -25,6 +26,11 @@ durable reference notes below, then remove the completed implementation log.
 Active plan for splitting platform selection from rendering API selection across
 Wayland, DRM, macOS, and headless output, while preparing the same model for
 future rendering APIs such as Vulkan.
+
+### `active-headless-gl.md`
+
+Active plan for explicit headless OpenGL support on Linux using offscreen EGL/GL
+rendering plus binary readback through the existing headless frame-delivery path.
 
 ### `active-low-resource-animation-smoothness.md`
 
