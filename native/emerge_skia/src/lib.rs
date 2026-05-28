@@ -933,7 +933,7 @@ fn raster_present_capabilities(backend: BackendKind) -> Vec<&'static str> {
         #[cfg(all(feature = "wayland", target_os = "linux"))]
         BackendKind::Wayland => vec!["gpu_upload", "cpu"],
         #[cfg(all(feature = "drm", target_os = "linux"))]
-        BackendKind::Drm => Vec::new(),
+        BackendKind::Drm => vec!["gpu_upload"],
     }
 }
 
@@ -1545,6 +1545,7 @@ fn start_native_renderer_with_config(
                 render_log: log_render,
                 renderer_stats_log: config.renderer_stats_log,
                 renderer_backend: selected_renderer,
+                raster_present: config.backend_renderer.raster_present,
                 renderer_cache_config: config.renderer_cache_config,
             };
 
@@ -1628,7 +1629,10 @@ fn start_native_renderer_with_config(
                 },
             ));
 
-            (BackendKind::Drm, true)
+            (
+                BackendKind::Drm,
+                matches!(selected_renderer, RendererBackendKind::Gl),
+            )
         }
         #[cfg(feature = "macos")]
         BackendKind::Macos => unreachable!("macOS backend should return before runtime startup"),
@@ -3543,10 +3547,7 @@ fn ensure_wayland_backend_renderer_supported(config: BackendRendererConfig) -> R
 #[cfg(all(feature = "drm", target_os = "linux"))]
 fn ensure_drm_backend_renderer_supported(config: BackendRendererConfig) -> Result<(), String> {
     match config.kind {
-        RendererBackendKind::Auto | RendererBackendKind::Gl => Ok(()),
-        RendererBackendKind::Raster => {
-            Err("backend_renderer :raster is not implemented yet for backend :drm".to_string())
-        }
+        RendererBackendKind::Auto | RendererBackendKind::Gl | RendererBackendKind::Raster => Ok(()),
         RendererBackendKind::Metal => {
             Err("backend_renderer :metal is only supported with backend :macos".to_string())
         }

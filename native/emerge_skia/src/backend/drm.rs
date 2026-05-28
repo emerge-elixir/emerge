@@ -34,6 +34,7 @@ use crossbeam_channel::{Receiver, Sender, TrySendError};
 use crate::{DrmCursorOverrideConfig, LatestFrameStore, RendererBackendKind};
 use crate::actors::{EventMsg, RenderMsg, TreeMsg};
 use crate::assets::AssetConfig;
+use crate::backend::raster::{RasterBackend, RasterConfig};
 use crate::backend::skia_gpu::GlFrameSurface;
 use crate::backend::wake::BackendWake;
 use crate::cursor::{CursorState, SharedCursorState};
@@ -46,6 +47,7 @@ use crate::stats::{
     RendererStatsCollector, format_slow_render_frame_log, render_frame_has_slow_stage,
 };
 use crate::video::{VideoImportContext, VideoRegistry};
+use crate::RasterPresentKind;
 
 use self::cursor_theme::{CURSOR_PLANE_SIZE, CursorVisual, DrmCursorTheme};
 
@@ -2044,11 +2046,10 @@ fn create_renderer_frame_surface(
     dimensions: (u32, u32),
 ) -> Result<GlFrameSurface, String> {
     match renderer_backend {
-        RendererBackendKind::Gl => create_frame_surface(egl, dimensions),
-        RendererBackendKind::Auto => unreachable!("auto is resolved before DRM startup"),
-        RendererBackendKind::Raster => {
-            Err("DRM raster renderer is not implemented yet".to_string())
+        RendererBackendKind::Gl | RendererBackendKind::Raster => {
+            create_frame_surface(egl, dimensions)
         }
+        RendererBackendKind::Auto => unreachable!("auto is resolved before DRM startup"),
         RendererBackendKind::Metal => Err("DRM does not support Metal renderer".to_string()),
         RendererBackendKind::Vulkan => {
             Err("DRM Vulkan renderer is not implemented yet".to_string())
@@ -2102,8 +2103,11 @@ fn framebuffer_for_bo(
 
 fn prepare_primary_frame(
     generation: u64,
+    renderer_backend: RendererBackendKind,
     renderer: &mut SceneRenderer,
+    raster_renderer: Option<&mut RasterBackend>,
     frame_surface: &mut GlFrameSurface,
+    dimensions: (u32, u32),
     render_state: &RenderState,
     cursor_pos: (f32, f32),
     cursor_visible: bool,
@@ -2126,73 +2130,116 @@ fn prepare_primary_frame(
     logged_video_import: &mut bool,
     latest_frame: &LatestFrameStore,
 ) -> Result<PreparedPrimaryFrame, String> {
-    let mut frame = frame_surface.frame();
+    gpu_queue_timer.poll(stats, native_log);
+    let render_started_at = Instant::now();
     let (
+        render_timings,
+        captured_frame,
         video_sync_succeeded,
         video_needs_cleanup,
         imported_video_frames,
         newest_video_submitted_at,
-    ) = match renderer.sync_video_frames(&mut frame, video_registry, video_import) {
-        Ok(result) => {
-            if last_video_sync_error.take().is_some() {
-                native_log.info("video", "Prime video import recovered");
-            }
-            if result.imported_frames > 0 && !*logged_video_import {
-                native_log.info("video", "Imported first DMA-BUF frame successfully");
-                *logged_video_import = true;
-            }
-            if let Some(diagnostics) = result.first_frame_diagnostics {
-                native_log.info("video", format!("First frame samples: {diagnostics}"));
-            }
-            (
-                true,
-                result.needs_cleanup,
-                result.imported_frames,
-                result.newest_import_submitted_at,
-            )
-        }
-        Err(err) => {
-            // Keep cleanup sticky across a failed import/sync. This prepared frame may still
-            // be presented using the last good video image, then its page flip retries sync.
-            if last_video_sync_error.as_deref() != Some(err.as_str()) {
-                native_log.error("video", format!("video sync failed: {err}"));
-                *last_video_sync_error = Some(err);
-            }
-            (false, true, 0, None)
-        }
-    };
+    ) = match renderer_backend {
+        RendererBackendKind::Gl => {
+            let mut frame = frame_surface.frame();
+            let (
+                video_sync_succeeded,
+                video_needs_cleanup,
+                imported_video_frames,
+                newest_video_submitted_at,
+            ) = match renderer.sync_video_frames(&mut frame, video_registry, video_import) {
+                Ok(result) => {
+                    if last_video_sync_error.take().is_some() {
+                        native_log.info("video", "Prime video import recovered");
+                    }
+                    if result.imported_frames > 0 && !*logged_video_import {
+                        native_log.info("video", "Imported first DMA-BUF frame successfully");
+                        *logged_video_import = true;
+                    }
+                    if let Some(diagnostics) = result.first_frame_diagnostics {
+                        native_log.info("video", format!("First frame samples: {diagnostics}"));
+                    }
+                    (
+                        true,
+                        result.needs_cleanup,
+                        result.imported_frames,
+                        result.newest_import_submitted_at,
+                    )
+                }
+                Err(err) => {
+                    // Keep cleanup sticky across a failed import/sync. This prepared frame may
+                    // still be presented using the last good video image, then its page flip
+                    // retries sync.
+                    if last_video_sync_error.as_deref() != Some(err.as_str()) {
+                        native_log.error("video", format!("video sync failed: {err}"));
+                        *last_video_sync_error = Some(err);
+                    }
+                    (false, true, 0, None)
+                }
+            };
 
-    gpu_queue_timer.poll(stats, native_log);
-    let render_started_at = Instant::now();
-    let render_timings = if sample_gpu_queue {
-        let mut begin_gpu_queue_sample = || gpu_queue_timer.begin_sample(native_log);
-        if profile_render {
-            renderer.render_profiled_with_before_flush(
-                &mut frame,
-                render_state,
-                &mut begin_gpu_queue_sample,
+            let render_timings = if sample_gpu_queue {
+                let mut begin_gpu_queue_sample = || gpu_queue_timer.begin_sample(native_log);
+                if profile_render {
+                    renderer.render_profiled_with_before_flush(
+                        &mut frame,
+                        render_state,
+                        &mut begin_gpu_queue_sample,
+                    )
+                } else {
+                    renderer.render_with_before_flush(
+                        &mut frame,
+                        render_state,
+                        &mut begin_gpu_queue_sample,
+                    )
+                }
+            } else if profile_render {
+                renderer.render_profiled(&mut frame, render_state)
+            } else {
+                renderer.render(&mut frame, render_state)
+            };
+            if !hw_cursor_enabled && cursor_visible {
+                draw_software_cursor(
+                    renderer,
+                    &mut frame,
+                    cursor_theme.cursor(cursor_icon),
+                    cursor_pos,
+                );
+            }
+            if sample_gpu_queue {
+                gpu_queue_timer.end_sample(render_state.render_version, &render_timings);
+            }
+            drop(frame);
+
+            (
+                render_timings,
+                frame_surface.capture_rgba_pixels(),
+                video_sync_succeeded,
+                video_needs_cleanup,
+                imported_video_frames,
+                newest_video_submitted_at,
             )
-        } else {
-            renderer.render_with_before_flush(&mut frame, render_state, &mut begin_gpu_queue_sample)
         }
-    } else if profile_render {
-        renderer.render_profiled(&mut frame, render_state)
-    } else {
-        renderer.render(&mut frame, render_state)
+        RendererBackendKind::Raster => {
+            let raster_renderer = raster_renderer
+                .ok_or_else(|| "DRM raster renderer was not initialized".to_string())?;
+            let (raster_frame, render_timings) = raster_renderer.render_with_timings(render_state);
+            frame_surface.present_rgba_pixels(dimensions.0, dimensions.1, &raster_frame.data)?;
+            (
+                render_timings,
+                Some((dimensions.0, dimensions.1, raster_frame.data)),
+                true,
+                false,
+                0,
+                None,
+            )
+        }
+        RendererBackendKind::Auto => unreachable!("auto is resolved before DRM startup"),
+        RendererBackendKind::Metal => return Err("DRM does not support Metal renderer".to_string()),
+        RendererBackendKind::Vulkan => {
+            return Err("DRM Vulkan renderer is not implemented yet".to_string());
+        }
     };
-    if !hw_cursor_enabled && cursor_visible {
-        draw_software_cursor(
-            renderer,
-            &mut frame,
-            cursor_theme.cursor(cursor_icon),
-            cursor_pos,
-        );
-    }
-    if sample_gpu_queue {
-        gpu_queue_timer.end_sample(render_state.render_version, &render_timings);
-    }
-    drop(frame);
-    let captured_frame = frame_surface.capture_rgba_pixels();
 
     if let Some(stats) = stats {
         stats.record_render_timings(render_started_at.elapsed(), &render_timings);
@@ -2307,6 +2354,7 @@ pub(crate) struct DrmRunConfig {
     pub(crate) render_log: bool,
     pub(crate) renderer_stats_log: bool,
     pub(crate) renderer_backend: RendererBackendKind,
+    pub(crate) raster_present: RasterPresentKind,
     pub(crate) renderer_cache_config: RendererCacheConfig,
 }
 
@@ -2362,6 +2410,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             "sampled slow-frame profiling enabled (at most one frame per second)",
         );
     }
+    let _requested_raster_present = config.raster_present;
     let mut startup_tx = Some(startup_tx);
     let retry_interval = Duration::from_millis(config.retry_interval_ms as u64);
     let mut startup_retries_remaining = config.startup_retries;
@@ -2852,18 +2901,51 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             &native_log,
         );
         let mut renderer = SceneRenderer::with_cache_config(config.renderer_cache_config);
-        let video_import = match VideoImportContext::new_current_direct() {
-            Ok(ctx) => {
-                native_log.info(
-                    "video",
-                    "Prime video import context initialized (direct external composition)",
-                );
-                Some(ctx)
+        let mut raster_renderer = if matches!(config.renderer_backend, RendererBackendKind::Raster)
+        {
+            match RasterBackend::with_cache_config(
+                &RasterConfig {
+                    width: dimensions.0,
+                    height: dimensions.1,
+                },
+                config.renderer_cache_config,
+            ) {
+                Ok(renderer) => Some(renderer),
+                Err(err) => {
+                    if handle_startup_failure_with_card(
+                        &card,
+                        &mut startup_tx,
+                        &running_flag,
+                        &stop,
+                        &mut startup_retries_remaining,
+                        retry_interval,
+                        format!("creating raster renderer failed: {err}"),
+                    ) {
+                        break;
+                    }
+
+                    continue;
+                }
             }
-            Err(err) => {
-                native_log.error("video", format!("prime video import unavailable: {err}"));
-                None
+        } else {
+            None
+        };
+        let video_import = if matches!(config.renderer_backend, RendererBackendKind::Gl) {
+            match VideoImportContext::new_current_direct() {
+                Ok(ctx) => {
+                    native_log.info(
+                        "video",
+                        "Prime video import context initialized (direct external composition)",
+                    );
+                    Some(ctx)
+                }
+                Err(err) => {
+                    native_log.error("video", format!("prime video import unavailable: {err}"));
+                    None
+                }
             }
+        } else {
+            None
         };
         let mut last_video_sync_error = None;
         let mut logged_video_import = false;
@@ -3425,8 +3507,11 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                     let profile_render = config.renderer_stats_log && sampled_diagnostics_due;
                     match prepare_primary_frame(
                         desired_primary_generation,
+                        config.renderer_backend,
                         &mut renderer,
+                        raster_renderer.as_mut(),
                         &mut frame_surface,
+                        dimensions,
                         &render_state,
                         cursor_pos,
                         cursor_visible,

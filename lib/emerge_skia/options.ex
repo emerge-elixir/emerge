@@ -82,9 +82,6 @@ defmodule EmergeSkia.Options do
       {"headless", _kind} ->
         "headless backend is not implemented yet"
 
-      {"drm", "raster"} ->
-        "backend_renderer :raster is not implemented yet for backend :drm"
-
       {backend, "vulkan"} when backend in ["wayland", "drm", "headless"] ->
         "backend_renderer :vulkan is not implemented yet"
 

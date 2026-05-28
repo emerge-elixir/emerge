@@ -1,7 +1,7 @@
 # Active Plan: Backend / Renderer Unification and Headless Output
 
 Created: 2026-05-27
-Status: phase 7 complete
+Status: phase 8 complete
 
 ## Confirmed decisions
 
@@ -639,16 +639,18 @@ Status: implemented in this slice.
 
 ### Phase 8: DRM raster renderer support
 
-- Add DRM + raster presentation support.
-- Implement CPU raster + GPU upload for explicit raster testing when GL exists.
-- Implement true CPU-present fallback with dumb-buffer / CPU KMS presentation so
-  `backend_renderer: :auto` can still work when GL is unavailable.
-- Explicit `backend_renderer: :raster` or `backend_renderer: [raster: ...]`
-  should mean Skia draws through the raster renderer, even if presentation
-  uploads the resulting pixels.
-- Use the nested `present` option to force raster present path (`:auto`, GPU
-  upload, or CPU present) so tests can exercise both paths.
-- Renderer cache is disabled by default for raster rendering; existing
+Status: implemented in this slice for the current DRM render path.
+
+- [x] Add DRM + raster presentation support.
+- [x] Implement CPU raster + GPU upload for explicit raster testing when GL
+  exists.
+- [x] Explicit `backend_renderer: :raster` or `backend_renderer: [raster: ...]`
+  means Skia draws through the raster renderer, even if presentation uploads the
+  resulting pixels.
+- [x] Use the nested `present` option to select the raster renderer path. DRM
+  currently presents raster frames through GPU upload; dumb-buffer / CPU KMS is
+  still a future embedded fallback path.
+- [x] Renderer cache is disabled by default for raster rendering; existing
   `renderer_cache: [enabled: true]` is enough explicit opt-in for raster
   paint-layer caching with CPU-memory payloads.
 

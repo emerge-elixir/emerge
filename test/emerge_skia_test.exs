@@ -225,8 +225,8 @@ defmodule EmergeSkiaTest do
   end
 
   test "start/1 rejects backend renderers that are not implemented yet" do
-    assert {:error, {:error, "backend_renderer :raster is not implemented yet for backend :drm"}} =
-             EmergeSkia.start(otp_app: :emerge, backend: :drm, backend_renderer: :raster)
+    assert {:error, {:error, "backend_renderer :vulkan is not implemented yet"}} =
+             EmergeSkia.start(otp_app: :emerge, backend: :drm, backend_renderer: :vulkan)
 
     assert {:error, {:error, "headless backend is not implemented yet"}} =
              EmergeSkia.start(otp_app: :emerge, backend: :headless)

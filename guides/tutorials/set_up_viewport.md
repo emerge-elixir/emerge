@@ -141,7 +141,7 @@ Runtime backend options:
 
 - `backend: :macos` starts the macOS backend explicitly
 - `backend_renderer: :auto | :gl | :raster | :metal` selects the renderer. `:auto` prefers the platform default (`:metal` then `:raster` on macOS; `:gl` on current Linux backends).
-- `backend_renderer: :raster` is equivalent to `backend_renderer: [raster: [present: :auto]]`; Wayland supports raster presentation overrides such as `[raster: [present: :cpu | :gpu_upload]]` while DRM raster remains future work.
+- `backend_renderer: :raster` is equivalent to `backend_renderer: [raster: [present: :auto]]`; Wayland supports `:cpu` and `:gpu_upload` raster presentation, while DRM currently supports raster GPU upload.
 
 macOS notes:
 
