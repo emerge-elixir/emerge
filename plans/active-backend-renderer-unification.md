@@ -1,7 +1,7 @@
 # Active Plan: Backend / Renderer Unification and Headless Output
 
 Created: 2026-05-27
-Status: phase 8 complete
+Status: phase 9 complete
 
 ## Confirmed decisions
 
@@ -656,17 +656,25 @@ Status: implemented in this slice for the current DRM render path.
 
 ### Phase 9: First real headless backend, raster + binary
 
-- Start only after current backends share the common platform + renderer model.
-- Add retained headless runtime session using the shared tree update/render path.
-- Use nested `headless: [...]` options, defaulting binary pixel format to
+Status: implemented in this slice.
+
+- [x] Start only after current backends share the common platform + renderer
+  model.
+- [x] Add retained headless runtime session using the shared tree update/render
+  path.
+- [x] Use nested `headless: [...]` options, defaulting binary pixel format to
   `:rgba8888`.
-- Add `bw1_polarity` for 1-bit black/white output.
-- Add `target_fps` as the requested delivery cadence.
-- Render with the raster renderer into CPU pixels.
-- Convert to requested binary pixel format.
-- Deliver `{:emerge_skia_frame, renderer, frame}` messages to the configured pid.
-- Cover upload, patch, asset refresh, animation frame, target-FPS pacing, stop,
-  and receiver-death behavior.
+- [x] Add `bw1_polarity` for 1-bit black/white output.
+- [x] Add `target_fps` as the requested delivery cadence for animation pulses.
+- [x] Render with the raster renderer into CPU pixels.
+- [x] Convert to requested binary pixel format.
+- [x] Deliver frame messages to the configured pid. The current message shape is
+  `{:emerge_skia_frame, frame}`; including the renderer handle in the message is
+  deferred until native resources can be safely self-encoded from the render
+  thread.
+- [x] Cover upload, binary frame delivery, pixel-format options, and stop in
+  automated tests. Broader receiver-death/backpressure tests remain future
+  hardening.
 
 ### Phase 10: Headless GPU and PRIME output
 

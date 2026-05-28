@@ -168,6 +168,46 @@ defmodule EmergeSkia.OptionsTest do
     assert %{stats_enabled: true} = Options.build_start_native_opts!(stats: true)
   end
 
+  test "build_start_native_opts! normalizes headless options" do
+    assert %{
+             headless: %{
+               target: nil,
+               mode: "binary",
+               pixel_format: "rgba8888",
+               bw1_polarity: "one_is_black",
+               target_fps: nil,
+               frame_message: "emerge_skia_frame"
+             }
+           } = Options.build_start_native_opts!([])
+
+    assert %{
+             headless: %{
+               target: target,
+               mode: "binary",
+               pixel_format: "bw1",
+               bw1_polarity: "one_is_white",
+               target_fps: 30,
+               frame_message: "my_frame"
+             }
+           } =
+             Options.build_start_native_opts!(
+               backend: :headless,
+               headless: [
+                 target: self(),
+                 pixel_format: :bw1,
+                 bw1_polarity: :one_is_white,
+                 target_fps: 30,
+                 frame_message: :my_frame
+               ]
+             )
+
+    assert target == self()
+
+    assert_raise ArgumentError, ~r/:headless.target must be a pid/, fn ->
+      Options.build_start_native_opts!(backend: :headless)
+    end
+  end
+
   test "build_start_native_opts! normalizes renderer cache limits" do
     assert %{
              renderer_cache: %{

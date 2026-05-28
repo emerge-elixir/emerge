@@ -228,8 +228,35 @@ defmodule EmergeSkiaTest do
     assert {:error, {:error, "backend_renderer :vulkan is not implemented yet"}} =
              EmergeSkia.start(otp_app: :emerge, backend: :drm, backend_renderer: :vulkan)
 
-    assert {:error, {:error, "headless backend is not implemented yet"}} =
-             EmergeSkia.start(otp_app: :emerge, backend: :headless)
+    assert_raise ArgumentError, ~r/:headless.target must be a pid/, fn ->
+      EmergeSkia.start(otp_app: :emerge, backend: :headless)
+    end
+  end
+
+  test "headless backend delivers binary frames" do
+    {:ok, renderer} =
+      EmergeSkia.start(
+        otp_app: :emerge,
+        backend: :headless,
+        backend_renderer: :raster,
+        width: 4,
+        height: 4,
+        headless: [target: self(), pixel_format: :rgb888]
+      )
+
+    tree = el([width(px(4)), height(px(4)), Emerge.UI.Background.color(:red)], none())
+    {_state, _assigned} = EmergeSkia.upload_tree(renderer, tree)
+
+    assert_receive {:emerge_skia_frame, frame}, 1_000
+    frame = Map.new(frame)
+    assert frame["mode"] == "binary"
+    assert frame["width"] == 4
+    assert frame["height"] == 4
+    assert frame["pixel_format"] == "rgb888"
+    assert frame["stride_bytes"] == 12
+    assert byte_size(frame["data"]) == 4 * 4 * 3
+
+    assert :ok = EmergeSkia.stop(renderer)
   end
 
   test "renderer_info reports macOS renderer selection without stats" do

@@ -42,6 +42,11 @@ defmodule EmergeSkia.Options do
         Keyword.has_key?(opts, :renderer_cache)
       )
 
+    headless =
+      opts
+      |> Keyword.get(:headless, [])
+      |> normalize_headless_opts!(backend)
+
     %{
       backend: backend,
       backend_renderer: backend_renderer,
@@ -72,16 +77,14 @@ defmodule EmergeSkia.Options do
       stats_enabled: Keyword.get(opts, :stats, false) == true,
       renderer_stats_log: Keyword.get(opts, :renderer_stats_log, false),
       renderer_animation_log: Keyword.get(opts, :renderer_animation_log, false),
-      renderer_cache: renderer_cache
+      renderer_cache: renderer_cache,
+      headless: headless
     }
   end
 
   @doc false
   def backend_renderer_start_error(%{backend: backend, backend_renderer: backend_renderer}) do
     case {String.downcase(backend), backend_renderer.kind} do
-      {"headless", _kind} ->
-        "headless backend is not implemented yet"
-
       {backend, "vulkan"} when backend in ["wayland", "drm", "headless"] ->
         "backend_renderer :vulkan is not implemented yet"
 
@@ -312,6 +315,91 @@ defmodule EmergeSkia.Options do
          _configured?
        ),
        do: renderer_cache
+
+  defp normalize_headless_opts!(value, backend) do
+    opts = normalize_keyword_or_map!(value, ":headless")
+
+    target = Keyword.get(opts, :target)
+
+    if backend == "headless" and not is_pid(target) do
+      raise ArgumentError, ":headless.target must be a pid when backend: :headless"
+    end
+
+    %{
+      target: target,
+      mode:
+        opts
+        |> Keyword.get(:mode, :binary)
+        |> normalize_headless_mode!(),
+      pixel_format:
+        opts
+        |> Keyword.get(:pixel_format, :rgba8888)
+        |> normalize_headless_pixel_format!(),
+      bw1_polarity:
+        opts
+        |> Keyword.get(:bw1_polarity, :one_is_black)
+        |> normalize_bw1_polarity!(),
+      target_fps:
+        opts
+        |> Keyword.get(:target_fps)
+        |> normalize_optional_positive_integer!(":headless.target_fps"),
+      frame_message:
+        opts
+        |> Keyword.get(:frame_message, :emerge_skia_frame)
+        |> normalize_frame_message!()
+    }
+  end
+
+  defp normalize_headless_mode!(value) when value in [:binary, "binary"], do: "binary"
+
+  defp normalize_headless_mode!(:prime),
+    do: raise(ArgumentError, ":headless.mode :prime is not implemented yet")
+
+  defp normalize_headless_mode!(value),
+    do: raise(ArgumentError, ":headless.mode must be :binary, got: #{inspect(value)}")
+
+  defp normalize_headless_pixel_format!(value)
+       when value in [:rgba8888, "rgba8888"],
+       do: "rgba8888"
+
+  defp normalize_headless_pixel_format!(value) when value in [:rgb888, "rgb888"], do: "rgb888"
+  defp normalize_headless_pixel_format!(value) when value in [:gray8, "gray8"], do: "gray8"
+  defp normalize_headless_pixel_format!(value) when value in [:gray4, "gray4"], do: "gray4"
+  defp normalize_headless_pixel_format!(value) when value in [:gray2, "gray2"], do: "gray2"
+  defp normalize_headless_pixel_format!(value) when value in [:bw1, "bw1"], do: "bw1"
+
+  defp normalize_headless_pixel_format!(value) do
+    raise ArgumentError,
+          ":headless.pixel_format must be :rgba8888, :rgb888, :gray8, :gray4, :gray2, or :bw1, got: #{inspect(value)}"
+  end
+
+  defp normalize_bw1_polarity!(value) when value in [:one_is_black, "one_is_black"],
+    do: "one_is_black"
+
+  defp normalize_bw1_polarity!(value) when value in [:one_is_white, "one_is_white"],
+    do: "one_is_white"
+
+  defp normalize_bw1_polarity!(value),
+    do:
+      raise(
+        ArgumentError,
+        ":headless.bw1_polarity must be :one_is_black or :one_is_white, got: #{inspect(value)}"
+      )
+
+  defp normalize_optional_positive_integer!(nil, _field_name), do: nil
+
+  defp normalize_optional_positive_integer!(value, field_name),
+    do: normalize_positive_integer!(value, field_name)
+
+  defp normalize_frame_message!(value) when is_atom(value), do: Atom.to_string(value)
+  defp normalize_frame_message!(value) when is_binary(value), do: value
+
+  defp normalize_frame_message!(value),
+    do:
+      raise(
+        ArgumentError,
+        ":headless.frame_message must be an atom or string, got: #{inspect(value)}"
+      )
 
   defp normalize_screenshot_region!(opts) do
     case Keyword.get(opts, :region) do

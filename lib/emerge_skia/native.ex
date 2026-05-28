@@ -125,6 +125,14 @@ defmodule EmergeSkia.Native do
               required(:min_visible_before_store) => non_neg_integer(),
               required(:max_stale_frames) => non_neg_integer()
             }
+          },
+          required(:headless) => %{
+            required(:target) => pid() | nil,
+            required(:mode) => String.t(),
+            required(:pixel_format) => String.t(),
+            required(:bw1_polarity) => String.t(),
+            required(:target_fps) => pos_integer() | nil,
+            required(:frame_message) => String.t()
           }
         }) :: reference() | {:ok, reference()} | {:error, term()}
   def start_opts(_opts), do: :erlang.nif_error(:nif_not_loaded)
