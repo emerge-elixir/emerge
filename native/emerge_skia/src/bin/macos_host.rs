@@ -18,7 +18,7 @@ mod app {
 
     use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
     use emerge_skia::{
-        actors::TreeMsg,
+        actors::{RenderMsg, TreeMsg},
         assets::{self, AssetConfig},
         backend::{
             macos::protocol::{
@@ -80,7 +80,6 @@ mod app {
 
     const REQUEST_START_SESSION: u16 = 0x0010;
     const REQUEST_STOP_SESSION: u16 = 0x0011;
-    const REQUEST_SESSION_RUNNING: u16 = 0x0012;
     const REQUEST_UPLOAD_TREE: u16 = 0x0013;
     const REQUEST_PATCH_TREE: u16 = 0x0014;
     const REQUEST_SHUTDOWN_HOST: u16 = 0x0015;
@@ -369,10 +368,6 @@ mod app {
             session_id: u64,
             reply_tx: std::sync::mpsc::Sender<HostReply>,
         },
-        SessionRunning {
-            session_id: u64,
-            reply_tx: std::sync::mpsc::Sender<HostReply>,
-        },
         UploadTree {
             session_id: u64,
             bytes: Vec<u8>,
@@ -424,9 +419,6 @@ mod app {
             macos_backend: SelectedMacosBackend,
         },
         StopSession,
-        SessionRunning {
-            running: bool,
-        },
         UploadTree,
         PatchTree,
         SetInputMask,
@@ -465,6 +457,17 @@ mod app {
         runtime_max_file_size: u64,
         runtime_extensions: Vec<String>,
         fonts: Vec<HostFontSpec>,
+    }
+
+    struct DecodedStartSession {
+        title: String,
+        width: u32,
+        height: u32,
+        scroll_line_pixels: f32,
+        renderer_stats_log: bool,
+        renderer_cache_config: RendererCacheConfig,
+        backend: RequestedMacosBackend,
+        asset_config: StartSessionAssetConfig,
     }
 
     struct HostInputViewIvars {
@@ -679,6 +682,155 @@ mod app {
         }
     }
 
+    struct HostSessionRuntime {
+        event_runtime: HostEventRuntime,
+        tree_engine: TreeUpdateEngine,
+        render_state: RenderState,
+        stats: Option<Arc<RendererStatsCollector>>,
+        dirty: bool,
+    }
+
+    impl HostSessionRuntime {
+        fn new(
+            event_runtime: HostEventRuntime,
+            initial_width: u32,
+            initial_height: u32,
+            stats: Option<Arc<RendererStatsCollector>>,
+        ) -> Self {
+            let tree_engine =
+                TreeUpdateEngine::new(Default::default(), initial_width, initial_height);
+            Self {
+                event_runtime,
+                tree_engine,
+                render_state: RenderState::default(),
+                stats,
+                dirty: true,
+            }
+        }
+
+        fn upload_tree(&mut self, bytes: &[u8]) -> Result<(), String> {
+            self.process_tree_messages(vec![TreeMsg::UploadTree {
+                bytes: bytes.to_vec(),
+                submitted_at: Some(Instant::now()),
+            }])
+        }
+
+        fn patch_tree(&mut self, bytes: &[u8]) -> Result<(), String> {
+            self.process_tree_messages(vec![TreeMsg::PatchTree {
+                bytes: bytes.to_vec(),
+                submitted_at: Some(Instant::now()),
+            }])
+        }
+
+        fn process_tree_messages(&mut self, mut messages: Vec<TreeMsg>) -> Result<(), String> {
+            let mut iterations = 0;
+
+            loop {
+                let effect = self.tree_engine.process_messages(
+                    messages,
+                    TreeUpdateOptions::new(self.stats.as_ref(), TreeUpdateDecodePolicy::ReturnErr),
+                )?;
+
+                if !self.apply_tree_update_effect(effect) {
+                    return Ok(());
+                }
+
+                let runtime_messages = self.event_runtime.drain_tree_messages();
+                if runtime_messages.is_empty() {
+                    return Ok(());
+                }
+
+                messages = runtime_messages;
+                iterations += 1;
+                if iterations >= 8 {
+                    return Ok(());
+                }
+            }
+        }
+
+        fn apply_tree_update_effect(&mut self, effect: TreeUpdateEffect) -> bool {
+            match effect {
+                TreeUpdateEffect::Stop => return false,
+                TreeUpdateEffect::Skip => {}
+                TreeUpdateEffect::RegistryUpdate { rebuild } => {
+                    self.event_runtime.install_rebuild(rebuild);
+                }
+                TreeUpdateEffect::Layout {
+                    output,
+                    pipeline_submitted_at,
+                    tree_batch_started_at,
+                    animation_trace,
+                } => {
+                    if output.event_rebuild_changed {
+                        self.event_runtime
+                            .install_rebuild(output.event_rebuild.clone());
+                    }
+
+                    let render_msg = self.layout_output_to_render_msg(
+                        *output,
+                        pipeline_submitted_at,
+                        tree_batch_started_at,
+                        animation_trace,
+                    );
+                    self.install_render_msg(render_msg);
+                }
+            }
+            true
+        }
+
+        fn layout_output_to_render_msg(
+            &self,
+            output: LayoutOutput,
+            pipeline_submitted_at: Option<Instant>,
+            tree_batch_started_at: Instant,
+            animation_trace: Option<emerge_skia::actors::AnimationFrameTraceSeed>,
+        ) -> RenderMsg {
+            let render_queued_at = Instant::now();
+            let pipeline = record_pipeline_layout_queued(
+                self.stats.as_deref(),
+                self.render_state.pipeline_submitted_at,
+                self.render_state.pipeline_render_queued_at,
+                pipeline_submitted_at,
+                Some(tree_batch_started_at),
+                render_queued_at,
+            );
+
+            RenderMsg::Scene {
+                scene: Box::new(output.scene),
+                version: self.render_state.render_version.wrapping_add(1),
+                pipeline_submitted_at: pipeline.pipeline_submitted_at,
+                pipeline_render_queued_at: pipeline.pipeline_render_queued_at,
+                animation_trace: animation_trace
+                    .map(|trace| Box::new(trace.queued_at(pipeline.render_queued_at))),
+                animate: output.animations_active,
+                ime_enabled: output.ime_enabled,
+                ime_cursor_area: output.ime_cursor_area,
+                ime_text_state: Box::new(output.ime_text_state),
+            }
+        }
+
+        fn install_render_msg(&mut self, msg: RenderMsg) {
+            let RenderMsg::Scene {
+                scene,
+                version,
+                pipeline_submitted_at,
+                pipeline_render_queued_at,
+                animate,
+                ..
+            } = msg
+            else {
+                return;
+            };
+
+            self.render_state.set_scene(*scene);
+            self.render_state.pipeline_submitted_at = pipeline_submitted_at;
+            self.render_state.pipeline_render_queued_at = pipeline_render_queued_at;
+            self.render_state.render_version = version;
+            self.render_state.animate = animate;
+            self.dirty = true;
+        }
+    }
+
     struct HostSession {
         window: Retained<NSWindow>,
         content_view: Retained<NSView>,
@@ -686,20 +838,16 @@ mod app {
         _window_delegate: Retained<HostWindowDelegate>,
         surface: SessionSurface,
         renderer: SceneRenderer,
-        tree_engine: TreeUpdateEngine,
-        render_state: RenderState,
+        runtime: HostSessionRuntime,
         logical_size: (u32, u32),
         scale_factor: f32,
         scroll_line_pixels: f32,
-        dirty: bool,
         focused: bool,
         initial_notifications_sent: bool,
         initial_log_sent: bool,
         selected_backend: SelectedMacosBackend,
         _tracking_area: Retained<NSTrackingArea>,
         cursor_inside: bool,
-        stats: Option<Arc<RendererStatsCollector>>,
-        event_runtime: HostEventRuntime,
         cursor_icon_rx: Receiver<CursorIcon>,
         cursor_icon_state: CursorIconState,
         present: SessionPresentState,
@@ -876,7 +1024,7 @@ mod app {
             let ui_state = self.ivars().ui_state.borrow().upgrade()?;
             let ui_state = ui_state.borrow();
             let session = ui_state.sessions.get(&session_id)?;
-            session.event_runtime.focused_text_state()
+            session.runtime.event_runtime.focused_text_state()
         }
     }
 
@@ -976,6 +1124,7 @@ mod app {
 
         let _ = view.with_session_mut(|session| {
             session
+                .runtime
                 .event_runtime
                 .prepare_text_input_replacement_range(replacement_range);
             let _ = handle_runtime_input(session, InputEvent::TextCommit { text, mods: 0 });
@@ -1196,6 +1345,7 @@ mod app {
 
         let _ = view.with_session_mut(|session| {
             session
+                .runtime
                 .event_runtime
                 .prepare_text_input_replacement_range(replacement_range);
             let event = if text.is_empty() {
@@ -1507,7 +1657,7 @@ mod app {
                         ui_state,
                     }) {
                         Ok((session, selected_backend)) => {
-                            let stats = session.stats.clone();
+                            let stats = session.runtime.stats.clone();
                             ui_state.borrow_mut().sessions.insert(session_id, session);
                             state.register_session(
                                 session_id,
@@ -1518,7 +1668,7 @@ mod app {
                             if assets_changed {
                                 ui_state.borrow_mut().sessions.values_mut().for_each(|session| {
                                     if let Err(err) =
-                                        process_tree_messages(session, vec![TreeMsg::AssetStateChanged])
+                                        session.runtime.process_tree_messages(vec![TreeMsg::AssetStateChanged])
                                     {
                                         eprintln!("macOS session rerender after asset update failed: {err}");
                                     }
@@ -1546,17 +1696,10 @@ mod app {
 
                     let _ = reply_tx.send(HostReply::StopSession);
                 }
-                Ok(HostCommand::SessionRunning {
-                    session_id,
-                    reply_tx,
-                }) => {
-                    let running = ui_state.borrow().sessions.contains_key(&session_id);
-                    let _ = reply_tx.send(HostReply::SessionRunning { running });
-                }
                 Ok(HostCommand::UploadTree { session_id, bytes }) => {
                     match ui_state.borrow_mut().sessions.get_mut(&session_id) {
                         Some(session) => {
-                            if let Err(err) = upload_tree(session, &bytes) {
+                            if let Err(err) = session.runtime.upload_tree(&bytes) {
                                 eprintln!(
                                     "macOS upload_tree failed for session {session_id}: {err}"
                                 );
@@ -1578,7 +1721,7 @@ mod app {
                 Ok(HostCommand::PatchTree { session_id, bytes }) => {
                     match ui_state.borrow_mut().sessions.get_mut(&session_id) {
                         Some(session) => {
-                            let result = patch_tree(session, &bytes);
+                            let result = session.runtime.patch_tree(&bytes);
 
                             if let Err(err) = result {
                                 eprintln!(
@@ -1606,7 +1749,7 @@ mod app {
                 }) => {
                     let reply = match ui_state.borrow_mut().sessions.get_mut(&session_id) {
                         Some(session) => {
-                            session.event_runtime.set_input_mask(mask);
+                            session.runtime.event_runtime.set_input_mask(mask);
                             HostReply::SetInputMask
                         }
                         None => HostReply::Error(format!("unknown session_id {session_id}")),
@@ -1656,7 +1799,7 @@ mod app {
                         if assets_changed {
                             ui_state.borrow_mut().sessions.values_mut().for_each(|session| {
                                 if let Err(err) =
-                                    process_tree_messages(session, vec![TreeMsg::AssetStateChanged])
+                                    session.runtime.process_tree_messages(vec![TreeMsg::AssetStateChanged])
                                 {
                                     eprintln!("macOS session rerender after asset update failed: {err}");
                                 }
@@ -1739,14 +1882,13 @@ mod app {
         session.logical_size = metrics.render_size;
         session.scale_factor = metrics.scale_factor;
         resize_surface(session, &metrics);
-        process_tree_messages(
-            session,
-            vec![TreeMsg::Resize {
+        session
+            .runtime
+            .process_tree_messages(vec![TreeMsg::Resize {
                 width: session.logical_size.0 as f32,
                 height: session.logical_size.1 as f32,
                 scale: session.scale_factor,
-            }],
-        )?;
+            }])?;
         let _ = handle_runtime_input(
             session,
             InputEvent::Resized {
@@ -1820,7 +1962,7 @@ mod app {
             .sessions
             .values_mut()
             .for_each(|session| {
-                if session.dirty
+                if session.runtime.dirty
                     && let Err(err) = draw_session(session)
                 {
                     eprintln!("macOS session draw failed: {err}");
@@ -1849,7 +1991,10 @@ mod app {
             .sessions
             .values_mut()
             .for_each(|session| {
-                if let Err(err) = process_tree_messages(session, vec![TreeMsg::AssetStateChanged]) {
+                if let Err(err) = session
+                    .runtime
+                    .process_tree_messages(vec![TreeMsg::AssetStateChanged])
+                {
                     eprintln!("macOS asset rerender failed: {err}");
                 }
             });
@@ -1861,14 +2006,9 @@ mod app {
             .sessions
             .values_mut()
             .for_each(|session| {
-                session.event_runtime.handle_timers();
+                session.runtime.event_runtime.handle_timers();
 
-                let runtime_messages = session.event_runtime.drain_tree_messages();
-                if runtime_messages.is_empty() {
-                    return;
-                }
-
-                if let Err(err) = process_tree_messages(session, runtime_messages) {
+                if let Err(err) = process_runtime_messages(session) {
                     eprintln!("macOS runtime tick render failed: {err}");
                 }
             });
@@ -1894,14 +2034,15 @@ mod app {
                     return;
                 };
 
-                if let Err(err) = process_tree_messages(
-                    session,
-                    vec![TreeMsg::AnimationPulse {
-                        presented_at,
-                        predicted_next_present_at,
-                        trace: None,
-                    }],
-                ) {
+                if let Err(err) =
+                    session
+                        .runtime
+                        .process_tree_messages(vec![TreeMsg::AnimationPulse {
+                            presented_at,
+                            predicted_next_present_at,
+                            trace: None,
+                        }])
+                {
                     eprintln!("macOS animation tick render failed: {err}");
                 }
             });
@@ -1979,24 +2120,21 @@ mod app {
                 _window_delegate: window_delegate,
                 surface,
                 renderer: SceneRenderer::with_cache_config(renderer_cache_config),
-                tree_engine: TreeUpdateEngine::new(
-                    Default::default(),
+                runtime: HostSessionRuntime::new(
+                    event_runtime,
                     metrics.render_size.0,
                     metrics.render_size.1,
+                    stats.clone(),
                 ),
-                render_state: RenderState::default(),
                 logical_size: metrics.render_size,
                 scale_factor: metrics.scale_factor,
                 scroll_line_pixels,
-                dirty: true,
                 focused,
                 initial_notifications_sent: false,
                 initial_log_sent: false,
                 selected_backend,
                 _tracking_area: tracking_area,
                 cursor_inside: false,
-                stats,
-                event_runtime,
                 cursor_icon_rx,
                 cursor_icon_state: CursorIconState::default(),
                 present: SessionPresentState::new(Duration::from_millis(16)),
@@ -2309,11 +2447,11 @@ mod app {
             let dimensions = (size.width.max(1.0) as u32, size.height.max(1.0) as u32);
             if session
                 .renderer
-                .can_skip_unchanged_visible_frame(&session.render_state, dimensions)
+                .can_skip_unchanged_visible_frame(&session.runtime.render_state, dimensions)
             {
-                session.render_state.pipeline_submitted_at = None;
-                session.render_state.pipeline_render_queued_at = None;
-                session.dirty = false;
+                session.runtime.render_state.pipeline_submitted_at = None;
+                session.runtime.render_state.pipeline_render_queued_at = None;
+                session.runtime.dirty = false;
                 return Ok(());
             }
         }
@@ -2322,14 +2460,14 @@ mod app {
             SessionSurface::Metal(surface) => draw_metal_surface(
                 surface,
                 &mut session.renderer,
-                &session.render_state,
-                session.stats.as_deref(),
+                &session.runtime.render_state,
+                session.runtime.stats.as_deref(),
             )?,
             SessionSurface::Raster(surface) => draw_raster_surface(
                 surface,
                 &mut session.renderer,
-                &session.render_state,
-                session.stats.as_deref(),
+                &session.runtime.render_state,
+                session.runtime.stats.as_deref(),
             )?,
         };
 
@@ -2337,38 +2475,45 @@ mod app {
             return Ok(());
         };
 
-        let pipeline_submitted_at = session.render_state.pipeline_submitted_at.take();
-        if let Some(stats) = session.stats.as_ref() {
+        let pipeline_submitted_at = session.runtime.render_state.pipeline_submitted_at.take();
+        if let Some(stats) = session.runtime.stats.as_ref() {
             stats.record_pipeline_draw_started(
-                session.render_state.pipeline_render_queued_at.take(),
+                session
+                    .runtime
+                    .render_state
+                    .pipeline_render_queued_at
+                    .take(),
                 draw_started_at,
             );
         }
 
-        if let Some(stats) = session.stats.as_ref() {
+        if let Some(stats) = session.runtime.stats.as_ref() {
             stats.record_frame_present();
         }
 
         let presented_at = std::time::Instant::now();
-        if let Some(stats) = session.stats.as_ref() {
+        if let Some(stats) = session.runtime.stats.as_ref() {
             stats.record_pipeline_presented(pipeline_submitted_at, swap_done_at, presented_at);
         }
         let predicted_next_present_at = session.present.observe_present(presented_at);
 
-        if let Some(stats) = session.stats.as_ref() {
+        if let Some(stats) = session.runtime.stats.as_ref() {
             stats.record_display_interval(
                 predicted_next_present_at.saturating_duration_since(presented_at),
             );
         }
 
-        session.dirty = false;
+        session.runtime.dirty = false;
         session
+            .runtime
             .event_runtime
             .handle_present_timing(presented_at, predicted_next_present_at);
         process_runtime_messages(session)?;
         drain_cursor_icon_changes(session);
 
-        if !(session.render_state.animate || !session.tree_engine.animation_runtime_is_empty()) {
+        if !session.runtime.render_state.animate
+            && session.runtime.tree_engine.animation_runtime_is_empty()
+        {
             session.present.clear();
         }
 
@@ -2402,125 +2547,20 @@ mod app {
         cursor.set();
     }
 
-    fn install_layout_output(
-        session: &mut HostSession,
-        output: LayoutOutput,
-        pipeline_submitted_at: Option<Instant>,
-        tree_batch_started_at: Option<Instant>,
-    ) {
-        let event_rebuild = output
-            .event_rebuild_changed
-            .then(|| output.event_rebuild.clone());
-        let pipeline = record_pipeline_layout_queued(
-            session.stats.as_deref(),
-            session.render_state.pipeline_submitted_at,
-            session.render_state.pipeline_render_queued_at,
-            pipeline_submitted_at,
-            tree_batch_started_at,
-            Instant::now(),
-        );
-        session.render_state.set_scene(output.scene);
-        session.render_state.pipeline_submitted_at = pipeline.pipeline_submitted_at;
-        session.render_state.pipeline_render_queued_at = pipeline.pipeline_render_queued_at;
-        session.render_state.render_version = session.render_state.render_version.wrapping_add(1);
-        session.render_state.animate = output.animations_active;
-        session.dirty = true;
-        if let Some(rebuild) = event_rebuild {
-            session.event_runtime.install_rebuild(rebuild);
-        }
-    }
-
-    fn upload_tree(session: &mut HostSession, bytes: &[u8]) -> Result<(), String> {
-        process_tree_messages_with_policy(
-            session,
-            vec![TreeMsg::UploadTree {
-                bytes: bytes.to_vec(),
-                submitted_at: Some(Instant::now()),
-            }],
-            TreeUpdateDecodePolicy::ReturnErr,
-        )
-    }
-
-    fn patch_tree(session: &mut HostSession, bytes: &[u8]) -> Result<(), String> {
-        process_tree_messages_with_policy(
-            session,
-            vec![TreeMsg::PatchTree {
-                bytes: bytes.to_vec(),
-                submitted_at: Some(Instant::now()),
-            }],
-            TreeUpdateDecodePolicy::ReturnErr,
-        )
-    }
-
-    fn process_tree_messages(
-        session: &mut HostSession,
-        messages: Vec<TreeMsg>,
-    ) -> Result<(), String> {
-        process_tree_messages_with_policy(session, messages, TreeUpdateDecodePolicy::ReturnErr)
-    }
-
-    fn process_tree_messages_with_policy(
-        session: &mut HostSession,
-        mut messages: Vec<TreeMsg>,
-        decode_policy: TreeUpdateDecodePolicy,
-    ) -> Result<(), String> {
-        let mut iterations = 0;
-
-        loop {
-            let effect = session.tree_engine.process_messages(
-                messages,
-                TreeUpdateOptions::new(session.stats.as_ref(), decode_policy),
-            )?;
-
-            match effect {
-                TreeUpdateEffect::Stop => return Ok(()),
-                TreeUpdateEffect::Skip => {}
-                TreeUpdateEffect::RegistryUpdate { rebuild } => {
-                    session.event_runtime.install_rebuild(rebuild);
-                }
-                TreeUpdateEffect::Layout {
-                    output,
-                    pipeline_submitted_at,
-                    tree_batch_started_at,
-                    ..
-                } => {
-                    install_layout_output(
-                        session,
-                        *output,
-                        pipeline_submitted_at,
-                        Some(tree_batch_started_at),
-                    );
-                }
-            }
-
-            let runtime_messages = session.event_runtime.drain_tree_messages();
-
-            if runtime_messages.is_empty() {
-                return Ok(());
-            }
-
-            messages = runtime_messages;
-            iterations += 1;
-            if iterations >= 8 {
-                return Ok(());
-            }
-        }
-    }
-
     fn process_runtime_messages(session: &mut HostSession) -> Result<(), String> {
         drain_cursor_icon_changes(session);
-        let runtime_messages = session.event_runtime.drain_tree_messages();
-        if runtime_messages.is_empty() {
+        let messages = session.runtime.event_runtime.drain_tree_messages();
+        let result = if messages.is_empty() {
             Ok(())
         } else {
-            let result = process_tree_messages(session, runtime_messages);
-            drain_cursor_icon_changes(session);
-            result
-        }
+            session.runtime.process_tree_messages(messages)
+        };
+        drain_cursor_icon_changes(session);
+        result
     }
 
     fn handle_runtime_input(session: &mut HostSession, event: InputEvent) -> Result<(), String> {
-        session.event_runtime.handle_input(event);
+        session.runtime.event_runtime.handle_input(event);
         process_runtime_messages(session)
     }
 
@@ -2528,7 +2568,11 @@ mod app {
         session: &mut HostSession,
         request: TextInputCommandRequest,
     ) -> Result<(), String> {
-        if !session.event_runtime.handle_text_input_command(request) {
+        if !session
+            .runtime
+            .event_runtime
+            .handle_text_input_command(request)
+        {
             return Ok(());
         }
 
@@ -2539,7 +2583,11 @@ mod app {
         session: &mut HostSession,
         request: TextInputEditRequest,
     ) -> Result<(), String> {
-        if !session.event_runtime.handle_text_input_edit(request) {
+        if !session
+            .runtime
+            .event_runtime
+            .handle_text_input_edit(request)
+        {
             return Ok(());
         }
 
@@ -3383,7 +3431,7 @@ mod app {
 
             ticks = ticks.wrapping_add(1);
 
-            if ticks % 10 == 0 {
+            if ticks.is_multiple_of(10) {
                 state
                     .renderer_stats_logs()
                     .into_iter()
@@ -3439,17 +3487,7 @@ mod app {
 
         let reply = match frame.tag {
             REQUEST_START_SESSION => {
-                let Some((
-                    title,
-                    width,
-                    height,
-                    scroll_line_pixels,
-                    renderer_stats_log,
-                    renderer_cache_config,
-                    macos_backend,
-                    asset_config,
-                )) = decode_start_session(&frame.payload)
-                else {
+                let Some(decoded) = decode_start_session(&frame.payload) else {
                     return encode_frame(
                         FRAME_ERROR,
                         frame.request_id,
@@ -3460,14 +3498,14 @@ mod app {
                 };
 
                 roundtrip(command_tx, |reply_tx| HostCommand::StartSession {
-                    title,
-                    width,
-                    height,
-                    scroll_line_pixels,
-                    renderer_stats_log,
-                    renderer_cache_config,
-                    macos_backend,
-                    asset_config,
+                    title: decoded.title,
+                    width: decoded.width,
+                    height: decoded.height,
+                    scroll_line_pixels: decoded.scroll_line_pixels,
+                    renderer_stats_log: decoded.renderer_stats_log,
+                    renderer_cache_config: decoded.renderer_cache_config,
+                    macos_backend: decoded.backend,
+                    asset_config: decoded.asset_config,
                     reply_tx,
                 })
             }
@@ -3475,12 +3513,6 @@ mod app {
                 session_id: frame.session_id,
                 reply_tx,
             }),
-            REQUEST_SESSION_RUNNING => {
-                roundtrip(command_tx, |reply_tx| HostCommand::SessionRunning {
-                    session_id: frame.session_id,
-                    reply_tx,
-                })
-            }
             REQUEST_UPLOAD_TREE => enqueue_immediate(
                 command_tx,
                 HostCommand::UploadTree {
@@ -3683,13 +3715,6 @@ mod app {
                 &[encode_macos_backend(macos_backend)],
             ),
             HostReply::StopSession => encode_frame(FRAME_REPLY, request_id, session_id, tag, &[]),
-            HostReply::SessionRunning { running } => encode_frame(
-                FRAME_REPLY,
-                request_id,
-                session_id,
-                tag,
-                &[if running { 1 } else { 0 }],
-            ),
             HostReply::UploadTree => encode_frame(FRAME_REPLY, request_id, session_id, tag, &[]),
             HostReply::PatchTree => encode_frame(FRAME_REPLY, request_id, session_id, tag, &[]),
             HostReply::SetInputMask => encode_frame(FRAME_REPLY, request_id, session_id, tag, &[]),
@@ -3730,18 +3755,7 @@ mod app {
         }
     }
 
-    fn decode_start_session(
-        payload: &[u8],
-    ) -> Option<(
-        String,
-        u32,
-        u32,
-        f32,
-        bool,
-        RendererCacheConfig,
-        RequestedMacosBackend,
-        StartSessionAssetConfig,
-    )> {
+    fn decode_start_session(payload: &[u8]) -> Option<DecodedStartSession> {
         let mut cursor = 0;
         let title = decode_string(payload, &mut cursor)?;
         let width = decode_u32(payload, &mut cursor)?;
@@ -3757,7 +3771,7 @@ mod app {
             return None;
         }
 
-        Some((
+        Some(DecodedStartSession {
             title,
             width,
             height,
@@ -3765,7 +3779,7 @@ mod app {
             renderer_stats_log,
             renderer_cache_config,
             backend,
-            StartSessionAssetConfig {
+            asset_config: StartSessionAssetConfig {
                 sources: asset_config.sources,
                 runtime_enabled: asset_config.runtime_enabled,
                 runtime_allowlist: asset_config.runtime_allowlist,
@@ -3774,7 +3788,7 @@ mod app {
                 runtime_extensions: asset_config.runtime_extensions,
                 fonts,
             },
-        ))
+        })
     }
 
     fn decode_renderer_cache_config(

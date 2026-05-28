@@ -22,7 +22,6 @@ defmodule EmergeSkia.Macos.Host do
 
   @request_start_session 0x0010
   @request_stop_session 0x0011
-  @request_session_running 0x0012
   @request_upload_tree 0x0013
   @request_patch_tree 0x0014
   @request_shutdown_host 0x0015
@@ -638,20 +637,6 @@ defmodule EmergeSkia.Macos.Host do
        ) do
     GenServer.reply(from, :ok)
     Session.mark_stopped(state, session_id, @input_mask_all)
-  end
-
-  defp handle_reply_request(
-         {:running, session_id},
-         from,
-         _reply_session_id,
-         @request_session_running,
-         <<running_flag>>,
-         state
-       )
-       when running_flag in 0..1 do
-    running? = running_flag == 1
-    GenServer.reply(from, running?)
-    Session.update_metadata(state, session_id, :running, running?, @input_mask_all)
   end
 
   defp handle_reply_request(

@@ -27,7 +27,7 @@ defmodule EmergeSkia.OptionsTest do
              Options.build_start_native_opts!([])
 
     assert %{backend_renderer: %{kind: "gl", raster_present: "auto"}} =
-             Options.build_start_native_opts!(backend_renderer: :gl)
+             Options.build_start_native_opts!(backend: :wayland, backend_renderer: :gl)
 
     assert %{
              backend_renderer: %{

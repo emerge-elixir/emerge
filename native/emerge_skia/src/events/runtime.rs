@@ -3130,6 +3130,9 @@ mod tests {
     use crate::events::{CursorIcon, FocusOnMountTarget, RegistryRebuildPayload};
     use crate::input::{ACTION_PRESS, ACTION_RELEASE};
     use crate::keys::CanonicalKey;
+    use crate::runtime::tree_update::{
+        TreeUpdateDecodePolicy, TreeUpdateEffect, TreeUpdateEngine, TreeUpdateOptions,
+    };
     use crate::tree::animation::{
         AnimationCurve, AnimationRepeat, AnimationRuntime, AnimationSpec,
     };
@@ -3371,6 +3374,40 @@ mod tests {
         }
     }
 
+    fn process_host_runtime_boundary(
+        runtime: &mut HostEventRuntime,
+        engine: &mut TreeUpdateEngine,
+        messages: Vec<TreeMsg>,
+    ) {
+        let mut messages = messages;
+
+        for _ in 0..8 {
+            let effect = engine
+                .process_messages(
+                    messages,
+                    TreeUpdateOptions::new(None, TreeUpdateDecodePolicy::ReturnErr),
+                )
+                .expect("tree update should succeed");
+
+            match effect {
+                TreeUpdateEffect::Stop | TreeUpdateEffect::Skip => {}
+                TreeUpdateEffect::RegistryUpdate { rebuild } => runtime.install_rebuild(rebuild),
+                TreeUpdateEffect::Layout { output, .. } => {
+                    if output.event_rebuild_changed {
+                        runtime.install_rebuild(output.event_rebuild.clone());
+                    }
+                }
+            }
+
+            messages = runtime.drain_tree_messages();
+            if messages.is_empty() {
+                return;
+            }
+        }
+
+        panic!("host runtime boundary did not settle after registry replay");
+    }
+
     fn rebuild_with_focus(id: u8) -> RegistryRebuildPayload {
         RegistryRebuildPayload {
             focused_id: Some(NodeId::from_term_bytes(vec![id])),
@@ -3556,6 +3593,21 @@ mod tests {
         element
     }
 
+    fn host_runtime_mouse_listener_tree(element_id: NodeId) -> ElementTree {
+        let attrs = Attrs {
+            width: Some(Length::Px(100.0)),
+            height: Some(Length::Px(40.0)),
+            on_mouse_down: Some(true),
+            on_mouse_move: Some(true),
+            ..Attrs::default()
+        };
+        let element = Element::with_attrs(element_id, ElementKind::El, Vec::new(), attrs);
+        let mut tree = ElementTree::new();
+        tree.insert(element);
+        tree.set_root_id(element_id);
+        tree
+    }
+
     fn animated_width_move_rebuild_at(
         sample_ms: u64,
         hover_active: bool,
@@ -3672,6 +3724,62 @@ mod tests {
             InputEvent::CursorPos { x, y }
                 if (x - 10.0).abs() < f32::EPSILON && (y - 20.0).abs() < f32::EPSILON
         ));
+    }
+
+    #[test]
+    fn host_runtime_tree_update_boundary_replays_buffered_input_after_cached_registry() {
+        let element_id = NodeId::from_term_bytes(vec![86]);
+        let mut runtime =
+            HostEventRuntime::new(false, SCROLL_LINE_PIXELS, false, noop_host_sink(), None);
+        let mut engine =
+            TreeUpdateEngine::new(host_runtime_mouse_listener_tree(element_id), 100, 40);
+
+        process_host_runtime_boundary(&mut runtime, &mut engine, vec![TreeMsg::RebuildRegistry]);
+        assert!(!runtime.driver.runtime.listener_lane.is_stale());
+
+        runtime.handle_input(InputEvent::CursorEntered { entered: true });
+        runtime.handle_input(InputEvent::CursorPos { x: 10.0, y: 10.0 });
+
+        runtime.handle_input(InputEvent::CursorButton {
+            button: "left".to_string(),
+            action: ACTION_PRESS,
+            mods: 0,
+            x: 10.0,
+            y: 10.0,
+        });
+
+        assert!(runtime.driver.runtime.listener_lane.is_stale());
+
+        let tree_messages = runtime.drain_tree_messages();
+        assert!(
+            tree_messages
+                .iter()
+                .any(|message| matches!(message, TreeMsg::RebuildRegistry))
+        );
+
+        runtime.handle_input(InputEvent::CursorPos { x: 20.0, y: 10.0 });
+        assert!(
+            !runtime
+                .driver
+                .runtime
+                .listener_lane
+                .buffered_inputs
+                .is_empty(),
+            "listener input should buffer while the host lane is stale"
+        );
+
+        process_host_runtime_boundary(&mut runtime, &mut engine, tree_messages);
+
+        assert!(!runtime.driver.runtime.listener_lane.is_stale());
+        assert!(
+            runtime
+                .driver
+                .runtime
+                .listener_lane
+                .buffered_inputs
+                .is_empty()
+        );
+        assert_eq!(runtime.driver.runtime.last_cursor_pos, Some((20.0, 10.0)));
     }
 
     #[test]

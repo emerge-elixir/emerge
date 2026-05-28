@@ -1,7 +1,7 @@
 # Active Plan: Backend / Renderer Unification and Headless Output
 
 Created: 2026-05-27
-Status: active planning, no implementation yet
+Status: phase 2 complete
 
 ## Confirmed decisions
 
@@ -46,12 +46,12 @@ Status: active planning, no implementation yet
   `backend_renderer: :auto (:gl)`.
 - Stats should expose meaningful renderer-specific data. If a renderer has no
   GPU, stats should not expose a GPU section.
-- macOS runtime topology convergence should happen early, ideally in the first
-  or second implementation slice.
-- macOS should use the same actor topology as Linux inside the external host:
-  each viewport/session gets its own event/tree/render actors, while host-level
-  AppKit/main-thread resources are shared only where macOS constraints require
-  it.
+- macOS runtime convergence should happen early, ideally in the first or second
+  implementation slice.
+- macOS may keep its AppKit-driven host topology. The convergence requirement is
+  reuse of shared runtime semantics, shared `TreeMsg` / `RenderMsg` boundaries,
+  and shared tests; matching Linux's multi-thread actor topology is not required
+  unless profiling or correctness gaps justify it.
 - Current one-shot tree-render APIs should become hard errors. Keep the
   `render_to_pixels`/`render_to_png` names, but change their signatures to
   accept a renderer handle and return output from that renderer's latest frame.
@@ -458,6 +458,9 @@ Rustler/NIF safety rules explicitly:
 
 Keep phases inspectable and independently reviewable. Prefer small slices with
 clear config/state/stat assertions over large backend rewrites.
+Convergence should remove platform-specific orchestration where shared runtime
+code can own the behavior; avoid adding permanent wrapper layers that leave the
+macOS host with duplicate event/tree/render control flow.
 
 ### Phase 1: Public config and migration errors
 
@@ -486,14 +489,16 @@ Status: implemented in this slice.
 - [x] Add tests for valid/invalid combinations and migration-error handling.
 - [x] Update docs to describe the platform/render split.
 
-### Phase 2: macOS runtime topology convergence
+### Phase 2: macOS runtime convergence
 
+- Status: implemented in this slice.
 - Converge macOS runtime orchestration early, before or alongside broader
   renderer-selection refactors.
 - Keep the external macOS host process for AppKit/main-thread ownership.
-- Run the same actor topology inside the macOS host as Linux uses: event actor,
-  tree actor, and render actor/pump per viewport/session.
-- Multiple macOS viewports should each get their own actor topology. Only
+- Keep the AppKit-driven host topology on macOS. Each viewport/session owns its
+  own event runtime, tree update pump, and render pump, while AppKit text-input
+  hooks stay synchronous on the main thread.
+- Multiple macOS viewports should each get their own runtime pump. Only
   host-level AppKit/main-thread resources and other unavoidable macOS state
   should be shared.
 - Keep the backend/window structure platform-specific, but make event/tree/render
@@ -508,6 +513,24 @@ Status: implemented in this slice.
   making the shared topology overly complex.
 - Add shared tests at the `DirectEventRuntime` / `TreeUpdateEngine` boundary and
   macOS host-path tests for registry synchronization behavior.
+- [x] Added a shared `HostEventRuntime` / `TreeUpdateEngine` boundary guard for
+  the macOS-style direct host path: stale listener input buffers, a tree update
+  publishes the registry response, and replay leaves the host runtime fresh with
+  no buffered input left.
+- [x] Removed the dead macOS host `session_running` request/reply path; the
+  Elixir host process already answers `running?/1` from cached session state.
+- [x] Cleaned up macOS-host-only clippy findings while inspecting the host path,
+  including replacing the tuple-heavy start-session decoder with a named
+  `DecodedStartSession`.
+- [x] Removed the unused macOS tree-update policy wrapper; host tree messages
+  now use the single `process_tree_messages` path with `ReturnErr`.
+- [x] Moved the macOS session handoff into a per-session runtime pump that owns
+  `HostEventRuntime`, `TreeUpdateEngine`, render state, dirty state, and stats.
+- [x] Publish macOS layout output through `RenderMsg::Scene` before installing
+  render state, matching the shared tree-to-render message boundary.
+- [x] Deleted the duplicate macOS helper layer for layout installation,
+  upload/patch wrappers, and direct event/tree/render state ownership from
+  `HostSession`.
 
 ### Phase 3: Capability matrix for current backends
 
