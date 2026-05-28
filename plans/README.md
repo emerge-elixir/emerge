@@ -8,6 +8,7 @@ research for native layout, renderer, and input/runtime work.
 Active implementation plans:
 
 - `active-backend-renderer-unification.md`
+- `active-headless-prime-output.md`
 - `active-low-resource-animation-smoothness.md`
 - `active-combined-refresh-traversal.md`
 - `active-combined-tree-walk-cleanup.md`
@@ -53,6 +54,13 @@ DRM before animation pulses stop.
 Open plan for correcting DRM display framerate reporting and animation pulse
 prediction so fixed-mode displays report their physical refresh cadence while
 animation remains page-flip backpressured.
+
+### `active-headless-prime-output.md`
+
+Active plan for Linux headless PRIME/dma-buf output, including headless auto
+selection changes (`:auto` tries GL before raster for binary output),
+Membrane-compatible `%Membrane.PrimeDesc{}` delivery, and keepalive-based
+resource release based on `../membrane_video_linux/`.
 
 ### `layout-caching-roadmap.md`
 

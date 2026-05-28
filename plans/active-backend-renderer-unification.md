@@ -1,7 +1,7 @@
 # Active Plan: Backend / Renderer Unification and Headless Output
 
 Created: 2026-05-27
-Status: current implementation complete through explicit headless GL binary readback; PRIME export and Vulkan deferred future work
+Status: current implementation complete through explicit headless GL binary readback; PRIME export planned in `active-headless-prime-output.md`; Vulkan deferred future work
 
 ## Confirmed decisions
 
@@ -689,10 +689,11 @@ Status: partially implemented. Explicit Linux headless GL with binary readback i
 - Reuse descriptor validation concepts from `video_target`, but keep the public
   headless output API separate.
 
-The remaining Phase 10 PRIME work intentionally stays deferred because fd
-ownership/backpressure and GPU export support require a separate hardware-backed
-design/validation slice. Current code rejects `headless: [mode: :prime]` with
-an explicit not-implemented error.
+The remaining Phase 10 PRIME work is planned in
+`active-headless-prime-output.md`, using `../membrane_video_linux/` as the
+interoperability reference for `%Membrane.PrimeDesc{}` and keepalive release
+semantics. Current code rejects `headless: [mode: :prime]` with an explicit
+not-implemented error until that slice lands.
 
 ### Phase 11: Future renderer backends
 
