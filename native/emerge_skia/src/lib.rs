@@ -510,6 +510,7 @@ struct RendererResource {
     prime_video_supported: bool,
     native_log: Arc<NativeLogRelay>,
     stats: Option<Arc<RendererStatsCollector>>,
+    latest_frame: Arc<LatestFrameStore>,
     info: RendererRuntimeInfo,
     close_signal_log: bool,
     log_render: bool,
@@ -602,6 +603,48 @@ impl RenderSender {
             }
             Err(TrySendError::Disconnected(_)) => {}
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct LatestFrameSnapshot {
+    pub width: u32,
+    pub height: u32,
+    pub scale: f32,
+    pub sequence: u64,
+    pub pixels: Vec<u8>,
+}
+
+#[derive(Default)]
+pub(crate) struct LatestFrameStore {
+    sequence: AtomicU64,
+    frame: Mutex<Option<LatestFrameSnapshot>>,
+}
+
+impl LatestFrameStore {
+    pub(crate) fn publish_rgba(&self, width: u32, height: u32, scale: f32, pixels: Vec<u8>) {
+        let sequence = self
+            .sequence
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
+        let mut guard = self
+            .frame
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard = Some(LatestFrameSnapshot {
+            width,
+            height,
+            scale,
+            sequence,
+            pixels,
+        });
+    }
+
+    fn latest(&self) -> Option<LatestFrameSnapshot> {
+        self.frame
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 }
 
@@ -872,7 +915,7 @@ impl RendererRuntimeInfo {
             capabilities: RendererCapabilitiesNif {
                 gpu: self.selected_renderer.has_gpu(),
                 renderer_cache: self.renderer_cache.enabled,
-                screenshot: false,
+                screenshot: true,
                 raster_present: raster_present_capabilities(self.backend)
                     .into_iter()
                     .map(ToString::to_string)
@@ -1190,6 +1233,19 @@ struct RenderTreeOffscreenOptsNif {
     asset_timeout_ms: u64,
 }
 
+#[derive(Clone, Debug, rustler::NifMap)]
+struct ScreenshotOptsNif {
+    pixel_format: String,
+    scale: f32,
+    region_x: Option<u32>,
+    region_y: Option<u32>,
+    region_width: Option<u32>,
+    region_height: Option<u32>,
+    timeout_ms: u64,
+    background: String,
+    png_compression: String,
+}
+
 fn start_with_config(
     config: StartConfig,
     initial_log_target: Option<LocalPid>,
@@ -1241,6 +1297,7 @@ fn start_native_renderer_with_config(
     let render_counter = Arc::new(AtomicU64::new(0));
     let input_target = Arc::new(InputTargetRelay::new(None));
     let native_log = Arc::new(NativeLogRelay::new(initial_log_target));
+    let latest_frame = Arc::new(LatestFrameStore::default());
 
     #[cfg(all(feature = "drm", target_os = "linux"))]
     let log_input = matches!(config.backend, BackendKind::Drm) && config.drm_input_log;
@@ -1333,6 +1390,7 @@ fn start_native_renderer_with_config(
             let renderer_stats_log = config.renderer_stats_log;
             let renderer_animation_log = config.renderer_animation_log;
             let renderer_cache_config = config.renderer_cache_config;
+            let latest_frame_clone = Arc::clone(&latest_frame);
             let video_registry_clone = Arc::clone(&video_registry);
             let wayland_config = WaylandConfig {
                 title: config.title,
@@ -1353,6 +1411,7 @@ fn start_native_renderer_with_config(
                     renderer_stats_log,
                     renderer_animation_log,
                     renderer_cache_config,
+                    latest_frame: latest_frame_clone,
                     native_log: native_log_clone,
                     render_rx,
                     cursor_icon_rx: backend_cursor_rx,
@@ -1445,6 +1504,7 @@ fn start_native_renderer_with_config(
             let drm_input_size = (initial_width, initial_height);
             let backend_wake_for_input = backend_wake.clone();
             let input_wake_for_input = input_wake.clone();
+            let latest_frame_for_backend = Arc::clone(&latest_frame);
             let video_registry_clone = Arc::clone(&video_registry);
 
             handles.input_handle = Some(thread::spawn(move || {
@@ -1502,6 +1562,7 @@ fn start_native_renderer_with_config(
                         render_counter: render_counter_clone,
                         native_log: native_log_for_backend,
                         stats: renderer_stats_for_backend,
+                        latest_frame: latest_frame_for_backend,
                         video_registry: video_registry_clone,
                     },
                     drm_config,
@@ -1613,6 +1674,7 @@ fn start_native_renderer_with_config(
         prime_video_supported,
         native_log,
         stats: renderer_stats,
+        latest_frame,
         info: RendererRuntimeInfo {
             backend,
             requested_renderer: config.backend_renderer.kind,
@@ -1929,6 +1991,32 @@ fn renderer_info(renderer: ResourceArc<RendererResource>) -> Result<RendererInfo
     Ok(renderer.info.to_nif())
 }
 
+#[rustler::nif(schedule = "DirtyCpu")]
+fn renderer_capture_pixels<'a>(
+    env: Env<'a>,
+    renderer: ResourceArc<RendererResource>,
+    opts: ScreenshotOptsNif,
+) -> Result<Binary<'a>, String> {
+    let capture = capture_latest_frame(renderer.latest_frame.latest(), &opts)?;
+    let pixels = convert_screenshot_pixels(&capture, &opts.pixel_format)?;
+    let mut binary = NewBinary::new(env, pixels.len());
+    binary.as_mut_slice().copy_from_slice(&pixels);
+    Ok(binary.into())
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn renderer_capture_png<'a>(
+    env: Env<'a>,
+    renderer: ResourceArc<RendererResource>,
+    opts: ScreenshotOptsNif,
+) -> Result<Binary<'a>, String> {
+    let capture = capture_latest_frame(renderer.latest_frame.latest(), &opts)?;
+    let encoded = services::encode_rgba_png(capture.width, capture.height, &capture.pixels)?;
+    let mut binary = NewBinary::new(env, encoded.len());
+    binary.as_mut_slice().copy_from_slice(&encoded);
+    Ok(binary.into())
+}
+
 #[rustler::nif(name = "stats", schedule = "DirtyCpu")]
 fn stats_nif<'a>(
     env: Env<'a>,
@@ -1979,6 +2067,103 @@ fn renderer_stats_snapshot<'a>(
             Ok(snapshot(true, false, stats.peek()))
         }
         StatsCommandNif::Configure(_) => unreachable!(),
+    }
+}
+
+fn capture_latest_frame(
+    frame: Option<LatestFrameSnapshot>,
+    opts: &ScreenshotOptsNif,
+) -> Result<LatestFrameSnapshot, String> {
+    let _timeout_ms = opts.timeout_ms;
+    let _png_compression = opts.png_compression.as_str();
+
+    if opts.scale != 1.0 {
+        return Err("screenshot scale values other than 1.0 are not implemented yet".to_string());
+    }
+
+    if opts.background != "transparent" {
+        return Err("screenshot background currently only supports :transparent".to_string());
+    }
+
+    let frame = frame.ok_or_else(|| "no presented frame is available yet".to_string())?;
+    let _sequence = frame.sequence;
+    let _frame_scale = frame.scale;
+
+    crop_screenshot_frame(frame, opts)
+}
+
+fn crop_screenshot_frame(
+    frame: LatestFrameSnapshot,
+    opts: &ScreenshotOptsNif,
+) -> Result<LatestFrameSnapshot, String> {
+    let region = match (
+        opts.region_x,
+        opts.region_y,
+        opts.region_width,
+        opts.region_height,
+    ) {
+        (None, None, None, None) => return Ok(frame),
+        (Some(x), Some(y), Some(width), Some(height)) => (x, y, width, height),
+        _ => return Err("screenshot region must include x, y, width, and height".to_string()),
+    };
+
+    let (x, y, width, height) = region;
+    if width == 0 || height == 0 {
+        return Err("screenshot region width and height must be positive".to_string());
+    }
+    if x.checked_add(width).is_none_or(|right| right > frame.width)
+        || y.checked_add(height)
+            .is_none_or(|bottom| bottom > frame.height)
+    {
+        return Err("screenshot region is outside the latest frame".to_string());
+    }
+
+    let source_stride = usize::try_from(frame.width)
+        .ok()
+        .and_then(|width| width.checked_mul(4))
+        .ok_or_else(|| "latest frame dimensions are too large".to_string())?;
+    let dest_stride = usize::try_from(width)
+        .ok()
+        .and_then(|width| width.checked_mul(4))
+        .ok_or_else(|| "screenshot region dimensions are too large".to_string())?;
+    let x_offset = usize::try_from(x)
+        .ok()
+        .and_then(|x| x.checked_mul(4))
+        .ok_or_else(|| "screenshot region is too large".to_string())?;
+    let start_row = usize::try_from(y).map_err(|_| "screenshot region is too large".to_string())?;
+    let row_count =
+        usize::try_from(height).map_err(|_| "screenshot region is too large".to_string())?;
+
+    let pixels = (0..row_count)
+        .flat_map(|row| {
+            let start = (start_row + row) * source_stride + x_offset;
+            let end = start + dest_stride;
+            frame.pixels[start..end].iter().copied().collect::<Vec<_>>()
+        })
+        .collect();
+
+    Ok(LatestFrameSnapshot {
+        width,
+        height,
+        pixels,
+        ..frame
+    })
+}
+
+fn convert_screenshot_pixels(
+    capture: &LatestFrameSnapshot,
+    pixel_format: &str,
+) -> Result<Vec<u8>, String> {
+    match pixel_format {
+        "rgba8888" => Ok(capture.pixels.clone()),
+        "rgb888" => Ok(capture
+            .pixels
+            .chunks_exact(4)
+            .flat_map(|rgba| [rgba[0], rgba[1], rgba[2]])
+            .collect()),
+        other => Err(format!(
+            "screenshot pixel_format {other} is not implemented yet; supported formats are :rgba8888 and :rgb888"
+        )),
     }
 }
 
@@ -2841,6 +3026,7 @@ mod tests {
             prime_video_supported: false,
             native_log: Arc::new(NativeLogRelay::default()),
             stats: None,
+            latest_frame: Arc::new(LatestFrameStore::default()),
             info: RendererRuntimeInfo {
                 backend: BackendKind::Wayland,
                 requested_renderer: RendererBackendKind::Auto,

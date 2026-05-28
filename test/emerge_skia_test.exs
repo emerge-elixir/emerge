@@ -20,11 +20,19 @@ defmodule EmergeSkiaTest do
     {width, height}
   end
 
+  defp render_tree_to_pixels(tree, opts) do
+    EmergeSkia.TreeRenderer.render_to_pixels(tree, opts, 30_000)
+  end
+
+  defp render_tree_to_png(tree, opts) do
+    EmergeSkia.TreeRenderer.render_to_png(tree, opts, 30_000)
+  end
+
   test "render_to_pixels returns RGBA binary" do
     tree = el([width(px(10)), height(px(10)), Emerge.UI.Background.color(:red)], none())
 
     pixels =
-      EmergeSkia.render_to_pixels(tree, otp_app: :emerge, width: 10, height: 10)
+      render_tree_to_pixels(tree, otp_app: :emerge, width: 10, height: 10)
 
     # 10x10 pixels, 4 bytes each = 400 bytes
     assert byte_size(pixels) == 400
@@ -34,7 +42,7 @@ defmodule EmergeSkiaTest do
     tree = el([width(px(4)), height(px(4)), Emerge.UI.Background.color(:red)], none())
 
     pixels =
-      EmergeSkia.render_to_pixels(tree, otp_app: :emerge, width: 10, height: 10)
+      render_tree_to_pixels(tree, otp_app: :emerge, width: 10, height: 10)
 
     assert rgba_at(pixels, 10, 1, 1) == {255, 0, 0, 255}
     assert rgba_at(pixels, 10, 9, 9) == {0, 0, 0, 0}
@@ -44,18 +52,30 @@ defmodule EmergeSkiaTest do
     tree = el([width(px(10)), height(px(10)), Emerge.UI.Background.color(:red)], none())
 
     png =
-      EmergeSkia.render_to_png(tree, otp_app: :emerge, width: 10, height: 10)
+      render_tree_to_png(tree, otp_app: :emerge, width: 10, height: 10)
 
     assert <<137, 80, 78, 71, 13, 10, 26, 10, _::binary>> = png
     assert png_dimensions(png) == {10, 10}
     assert byte_size(png) > 50
   end
 
+  test "public screenshot APIs reject old tree-render signatures" do
+    tree = el([width(px(10)), height(px(10))], none())
+
+    assert_raise ArgumentError, ~r/now expects a renderer handle/, fn ->
+      EmergeSkia.render_to_pixels(tree, otp_app: :emerge, width: 10, height: 10)
+    end
+
+    assert_raise ArgumentError, ~r/now expects a renderer handle/, fn ->
+      EmergeSkia.render_to_png(tree, otp_app: :emerge, width: 10, height: 10)
+    end
+  end
+
   test "render_to_pixels supports snapshot placeholders" do
     tree = image([width(px(32)), height(px(24))], "sample_assets/missing.jpg")
 
     snapshot =
-      EmergeSkia.render_to_pixels(
+      render_tree_to_pixels(
         tree,
         otp_app: :emerge,
         width: 32,
@@ -64,7 +84,7 @@ defmodule EmergeSkiaTest do
       )
 
     awaited =
-      EmergeSkia.render_to_pixels(tree, otp_app: :emerge, width: 32, height: 24)
+      render_tree_to_pixels(tree, otp_app: :emerge, width: 32, height: 24)
 
     assert byte_size(snapshot) == 32 * 24 * 4
     assert byte_size(awaited) == 32 * 24 * 4
@@ -76,10 +96,10 @@ defmodule EmergeSkiaTest do
     bad_tree = image([width(px(32)), height(px(24))], "sample_assets/missing.jpg")
 
     good =
-      EmergeSkia.render_to_pixels(good_tree, otp_app: :emerge, width: 32, height: 24)
+      render_tree_to_pixels(good_tree, otp_app: :emerge, width: 32, height: 24)
 
     bad =
-      EmergeSkia.render_to_pixels(bad_tree, otp_app: :emerge, width: 32, height: 24)
+      render_tree_to_pixels(bad_tree, otp_app: :emerge, width: 32, height: 24)
 
     assert byte_size(good) == 32 * 24 * 4
     assert byte_size(bad) == 32 * 24 * 4
@@ -89,7 +109,7 @@ defmodule EmergeSkiaTest do
   test "render_to_pixels resolves logical SVG image assets" do
     tree = image([width(px(8)), height(px(8)), image_fit(:cover)], "sample_assets/tile_quad.svg")
 
-    pixels = EmergeSkia.render_to_pixels(tree, otp_app: :emerge, width: 8, height: 8)
+    pixels = render_tree_to_pixels(tree, otp_app: :emerge, width: 8, height: 8)
 
     assert byte_size(pixels) == 8 * 8 * 4
     assert rgba_at(pixels, 8, 1, 1) == {255, 0, 0, 255}
@@ -101,7 +121,7 @@ defmodule EmergeSkiaTest do
   test "render_to_pixels svg/2 preserves original multicolor SVGs by default" do
     tree = svg([width(px(8)), height(px(8)), image_fit(:cover)], "sample_assets/tile_quad.svg")
 
-    pixels = EmergeSkia.render_to_pixels(tree, otp_app: :emerge, width: 8, height: 8)
+    pixels = render_tree_to_pixels(tree, otp_app: :emerge, width: 8, height: 8)
 
     assert byte_size(pixels) == 8 * 8 * 4
     assert rgba_at(pixels, 8, 1, 1) == {255, 0, 0, 255}
@@ -122,7 +142,7 @@ defmodule EmergeSkiaTest do
         "sample_assets/tile_quad.svg"
       )
 
-    pixels = EmergeSkia.render_to_pixels(tree, otp_app: :emerge, width: 8, height: 8)
+    pixels = render_tree_to_pixels(tree, otp_app: :emerge, width: 8, height: 8)
 
     assert byte_size(pixels) == 8 * 8 * 4
     assert rgba_at(pixels, 8, 1, 1) == {255, 255, 255, 255}
@@ -135,8 +155,8 @@ defmodule EmergeSkiaTest do
     bad_tree = svg([width(px(32)), height(px(24))], "sample_assets/static.jpg")
     failed_tree = image([width(px(32)), height(px(24))], "sample_assets/missing.jpg")
 
-    bad = EmergeSkia.render_to_pixels(bad_tree, otp_app: :emerge, width: 32, height: 24)
-    failed = EmergeSkia.render_to_pixels(failed_tree, otp_app: :emerge, width: 32, height: 24)
+    bad = render_tree_to_pixels(bad_tree, otp_app: :emerge, width: 32, height: 24)
+    failed = render_tree_to_pixels(failed_tree, otp_app: :emerge, width: 32, height: 24)
 
     assert byte_size(bad) == 32 * 24 * 4
     assert bad == failed
@@ -153,7 +173,7 @@ defmodule EmergeSkiaTest do
         none()
       )
 
-    pixels = EmergeSkia.render_to_pixels(tree, otp_app: :emerge, width: 8, height: 8)
+    pixels = render_tree_to_pixels(tree, otp_app: :emerge, width: 8, height: 8)
 
     assert byte_size(pixels) == 8 * 8 * 4
     assert rgba_at(pixels, 8, 0, 0) == {255, 0, 0, 255}

@@ -71,8 +71,6 @@ defmodule EmergeSkia do
   @type color :: non_neg_integer()
   @type video_target :: VideoTarget.t()
 
-  @default_asset_timeout_ms 30_000
-
   @doc """
   Start a new renderer window.
 
@@ -336,94 +334,67 @@ defmodule EmergeSkia do
   end
 
   # ===========================================================================
-  # Raster Backend (Offscreen Rendering)
+  # Screenshot capture
   # ===========================================================================
 
   @doc """
-  Render a tree to an RGBA pixel buffer (synchronous, no window).
+  Return pixels from the renderer's latest already-presented frame.
 
-  This is useful for testing, headless rendering, and image generation.
-  Each call creates a fresh CPU surface, runs layout, renders the tree, and
-  returns the pixels.
-
-  ## Options
-
-  - `otp_app` - OTP application used to resolve logical assets from its `priv` dir (**required**)
-  - `width` - Output width in pixels (**required**)
-  - `height` - Output height in pixels (**required**)
-  - `scale` - Layout scale factor (default: `1.0`)
-  - `assets` - Asset runtime policy options (same shape as `start/1`)
-  - `asset_mode` - `:await` to block for asset resolution, or `:snapshot` to capture the current placeholder state (default: `:await`)
-  - `asset_timeout_ms` - Maximum wait time for `asset_mode: :await` (default: `#{@default_asset_timeout_ms}`)
-
-  Returns a binary containing RGBA pixel data (4 bytes per pixel, row-major order).
-  The binary size is `width * height * 4` bytes.
-
-  ## Example
-
-      import Emerge.UI
-      import Emerge.UI.Color
-      import Emerge.UI.Size
-
-      pixels =
-        EmergeSkia.render_to_pixels(
-          el(
-            [width(px(100)), height(px(100)), Emerge.UI.Background.color(color(:red, 500))],
-            none()
-          ),
-          otp_app: :my_app,
-          width: 100,
-          height: 100
-        )
-
-      # pixels is 100 * 100 * 4 = 40000 bytes
+  This API captures retained renderer state. It no longer accepts an Emerge tree;
+  pass a renderer handle returned by `start/1`.
   """
-  @spec render_to_pixels(Emerge.tree(), keyword()) :: binary()
-  def render_to_pixels(tree, opts) when is_list(opts) do
-    TreeRenderer.render_to_pixels(tree, opts, @default_asset_timeout_ms)
+  @spec render_to_pixels(renderer(), keyword()) :: {:ok, binary()} | {:error, term()}
+  def render_to_pixels(renderer, opts \\ [])
+
+  def render_to_pixels(%Renderer{} = renderer, opts) when is_list(opts) do
+    capture_pixels(renderer, opts)
+  end
+
+  def render_to_pixels(renderer, opts) when is_reference(renderer) and is_list(opts) do
+    capture_pixels(renderer, opts)
+  end
+
+  def render_to_pixels(_tree, opts) when is_list(opts) do
+    raise ArgumentError,
+          "EmergeSkia.render_to_pixels/2 now expects a renderer handle; one-shot tree rendering was removed. Start a renderer, upload the tree, then call EmergeSkia.render_to_pixels(renderer, opts)."
   end
 
   @doc """
-  Render a tree to an encoded PNG binary (synchronous, no window).
+  Return an encoded PNG from the renderer's latest already-presented frame.
 
-  This is useful for generating screenshots and documentation assets.
-  Each call creates a fresh CPU surface, runs layout, renders the tree, and
-  returns PNG file bytes.
-
-  ## Options
-
-  - `otp_app` - OTP application used to resolve logical assets from its `priv` dir (**required**)
-  - `width` - Output width in pixels (**required**)
-  - `height` - Output height in pixels (**required**)
-  - `scale` - Layout scale factor (default: `1.0`)
-  - `assets` - Asset runtime policy options (same shape as `start/1`)
-  - `asset_mode` - `:await` to block for asset resolution, or `:snapshot` to capture the current placeholder state (default: `:await`)
-  - `asset_timeout_ms` - Maximum wait time for `asset_mode: :await` (default: `#{@default_asset_timeout_ms}`)
-
-  Returns a binary containing the full encoded PNG file.
-
-  ## Example
-
-      import Emerge.UI
-      import Emerge.UI.Color
-      import Emerge.UI.Size
-
-      png =
-        EmergeSkia.render_to_png(
-          el(
-            [width(px(100)), height(px(100)), Emerge.UI.Background.color(color(:red, 500))],
-            none()
-          ),
-          otp_app: :my_app,
-          width: 100,
-          height: 100
-        )
-
-      File.write!("preview.png", png)
+  This API captures retained renderer state. It no longer accepts an Emerge tree;
+  pass a renderer handle returned by `start/1`.
   """
-  @spec render_to_png(Emerge.tree(), keyword()) :: binary()
-  def render_to_png(tree, opts) when is_list(opts) do
-    TreeRenderer.render_to_png(tree, opts, @default_asset_timeout_ms)
+  @spec render_to_png(renderer(), keyword()) :: {:ok, binary()} | {:error, term()}
+  def render_to_png(renderer, opts \\ [])
+
+  def render_to_png(%Renderer{} = renderer, opts) when is_list(opts) do
+    capture_png(renderer, opts)
+  end
+
+  def render_to_png(renderer, opts) when is_reference(renderer) and is_list(opts) do
+    capture_png(renderer, opts)
+  end
+
+  def render_to_png(_tree, opts) when is_list(opts) do
+    raise ArgumentError,
+          "EmergeSkia.render_to_png/2 now expects a renderer handle; one-shot tree rendering was removed. Start a renderer, upload the tree, then call EmergeSkia.render_to_png(renderer, opts)."
+  end
+
+  defp capture_pixels(renderer, opts) do
+    opts = Options.normalize_screenshot_opts!(opts)
+
+    renderer
+    |> Transport.for_renderer()
+    |> apply(:capture_pixels, [renderer, opts])
+  end
+
+  defp capture_png(renderer, opts) do
+    opts = Options.normalize_screenshot_opts!(opts)
+
+    renderer
+    |> Transport.for_renderer()
+    |> apply(:capture_png, [renderer, opts])
   end
 
   @doc """

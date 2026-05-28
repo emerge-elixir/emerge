@@ -31,7 +31,7 @@ use skia_safe::{Paint, Rect, gpu::gl::FramebufferInfo};
 
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 
-use crate::DrmCursorOverrideConfig;
+use crate::{DrmCursorOverrideConfig, LatestFrameStore};
 use crate::actors::{EventMsg, RenderMsg, TreeMsg};
 use crate::assets::AssetConfig;
 use crate::backend::skia_gpu::GlFrameSurface;
@@ -2106,6 +2106,7 @@ fn prepare_primary_frame(
     native_log: &NativeLogRelay,
     last_video_sync_error: &mut Option<String>,
     logged_video_import: &mut bool,
+    latest_frame: &LatestFrameStore,
 ) -> Result<PreparedPrimaryFrame, String> {
     let mut frame = frame_surface.frame();
     let (
@@ -2173,6 +2174,7 @@ fn prepare_primary_frame(
         gpu_queue_timer.end_sample(render_state.render_version, &render_timings);
     }
     drop(frame);
+    let captured_frame = frame_surface.capture_rgba_pixels();
 
     if let Some(stats) = stats {
         stats.record_render_timings(render_started_at.elapsed(), &render_timings);
@@ -2217,6 +2219,10 @@ fn prepare_primary_frame(
         if let Some(stats) = stats {
             stats.record_drm_forced_gpu_finish_after_swap(finish_started_at.elapsed());
         }
+    }
+
+    if let Some((width, height, pixels)) = captured_frame {
+        latest_frame.publish_rgba(width, height, 1.0, pixels);
     }
 
     let lock_started_at = Instant::now();
@@ -2300,6 +2306,7 @@ pub(crate) struct DrmRunContext {
     pub(crate) render_counter: Arc<AtomicU64>,
     pub(crate) native_log: Arc<NativeLogRelay>,
     pub(crate) stats: Option<Arc<RendererStatsCollector>>,
+    pub(crate) latest_frame: Arc<LatestFrameStore>,
     pub(crate) video_registry: Arc<VideoRegistry>,
 }
 
@@ -2319,6 +2326,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
         render_counter,
         native_log,
         stats,
+        latest_frame,
         video_registry,
     } = context;
 
@@ -3416,6 +3424,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                         &native_log,
                         &mut last_video_sync_error,
                         &mut logged_video_import,
+                        &latest_frame,
                     ) {
                         Ok(frame) => {
                             // Failed syncs and pending retired-import fences must survive stale

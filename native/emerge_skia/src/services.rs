@@ -70,6 +70,14 @@ pub fn render_tree_to_png(data: &[u8], opts: OffscreenRenderOptions) -> Result<V
     encode_png(&output)
 }
 
+pub fn encode_rgba_png(width: u32, height: u32, pixels: &[u8]) -> Result<Vec<u8>, String> {
+    encode_png(&OffscreenRasterOutput {
+        width,
+        height,
+        pixels: pixels.to_vec(),
+    })
+}
+
 fn render_tree_offscreen(
     data: &[u8],
     opts: OffscreenRenderOptions,

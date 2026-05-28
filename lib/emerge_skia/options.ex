@@ -110,6 +110,44 @@ defmodule EmergeSkia.Options do
   end
 
   @doc false
+  def normalize_screenshot_opts!(opts) do
+    opts =
+      normalize_keyword_list!(
+        opts,
+        "screenshot options must be a keyword list"
+      )
+
+    {region_x, region_y, region_width, region_height} = normalize_screenshot_region!(opts)
+
+    %{
+      pixel_format:
+        opts
+        |> Keyword.get(:pixel_format, :rgba8888)
+        |> normalize_screenshot_pixel_format!(),
+      scale:
+        opts
+        |> Keyword.get(:scale, 1.0)
+        |> normalize_positive_number!(":scale"),
+      region_x: region_x,
+      region_y: region_y,
+      region_width: region_width,
+      region_height: region_height,
+      timeout_ms:
+        opts
+        |> Keyword.get(:timeout, 5_000)
+        |> normalize_non_negative_integer!(":timeout"),
+      background:
+        opts
+        |> Keyword.get(:background, :transparent)
+        |> normalize_screenshot_background!(),
+      png_compression:
+        opts
+        |> Keyword.get(:png, [])
+        |> normalize_png_compression!()
+    }
+  end
+
+  @doc false
   def normalize_raster_opts!(opts, default_asset_timeout_ms) do
     %{
       width: opts |> Keyword.fetch!(:width) |> normalize_positive_integer!(":width"),
@@ -277,6 +315,55 @@ defmodule EmergeSkia.Options do
          _configured?
        ),
        do: renderer_cache
+
+  defp normalize_screenshot_region!(opts) do
+    case Keyword.get(opts, :region) do
+      nil ->
+        {nil, nil, nil, nil}
+
+      {x, y, width, height} ->
+        {
+          normalize_non_negative_integer!(x, ":region x"),
+          normalize_non_negative_integer!(y, ":region y"),
+          normalize_positive_integer!(width, ":region width"),
+          normalize_positive_integer!(height, ":region height")
+        }
+
+      value ->
+        raise ArgumentError,
+              ":region must be {x, y, width, height}, got: #{inspect(value)}"
+    end
+  end
+
+  defp normalize_screenshot_pixel_format!(value) when value in [:rgba8888, "rgba8888"],
+    do: "rgba8888"
+
+  defp normalize_screenshot_pixel_format!(value) when value in [:rgb888, "rgb888"],
+    do: "rgb888"
+
+  defp normalize_screenshot_pixel_format!(value) do
+    raise ArgumentError,
+          ":pixel_format must be :rgba8888 or :rgb888 for screenshots, got: #{inspect(value)}"
+  end
+
+  defp normalize_screenshot_background!(value) when value in [:transparent, "transparent"],
+    do: "transparent"
+
+  defp normalize_screenshot_background!(value) do
+    raise ArgumentError,
+          ":background currently only supports :transparent, got: #{inspect(value)}"
+  end
+
+  defp normalize_png_compression!(opts) do
+    opts = normalize_keyword_or_map!(opts, ":png")
+
+    opts
+    |> Keyword.get(:compression, :default)
+    |> case do
+      value when value in [:default, "default"] -> "default"
+      value -> raise ArgumentError, ":png.compression must be :default, got: #{inspect(value)}"
+    end
+  end
 
   defp normalize_backend_renderer!(value) when value in [:auto, "auto"] do
     backend_renderer_config("auto", "auto", false)

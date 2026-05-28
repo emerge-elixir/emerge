@@ -50,7 +50,7 @@ use wayland_client::{
 };
 
 use crate::{
-    InputTargetRelay,
+    InputTargetRelay, LatestFrameStore,
     actors::{AnimationFrameTrace, AnimationPulseTrace, EventMsg, RenderMsg, TreeMsg},
     backend::{
         wake::{
@@ -104,6 +104,7 @@ struct WaylandAppRuntime {
     renderer_stats_log: bool,
     renderer_animation_log: bool,
     renderer_cache_config: RendererCacheConfig,
+    latest_frame: Arc<LatestFrameStore>,
     native_log: Arc<NativeLogRelay>,
     render_rx: Receiver<RenderMsg>,
     cursor_icon_rx: Receiver<CursorIcon>,
@@ -125,6 +126,7 @@ pub(crate) struct WaylandRunArgs {
     pub renderer_stats_log: bool,
     pub renderer_animation_log: bool,
     pub renderer_cache_config: RendererCacheConfig,
+    pub latest_frame: Arc<LatestFrameStore>,
     pub native_log: Arc<NativeLogRelay>,
     pub render_rx: Receiver<RenderMsg>,
     pub cursor_icon_rx: Receiver<CursorIcon>,
@@ -443,6 +445,7 @@ pub(super) struct WaylandApp {
     renderer_stats_log: bool,
     renderer_animation_log: bool,
     renderer_cache_config: RendererCacheConfig,
+    latest_frame: Arc<LatestFrameStore>,
     native_log: Arc<NativeLogRelay>,
     video_registry: Arc<VideoRegistry>,
     loop_handle: calloop::LoopHandle<'static, WaylandApp>,
@@ -490,6 +493,7 @@ impl WaylandApp {
             renderer_stats_log,
             renderer_animation_log,
             renderer_cache_config,
+            latest_frame,
             native_log,
             render_rx,
             cursor_icon_rx,
@@ -527,6 +531,7 @@ impl WaylandApp {
             renderer_stats_log,
             renderer_animation_log,
             renderer_cache_config,
+            latest_frame,
             native_log,
             video_registry,
             loop_handle,
@@ -975,7 +980,7 @@ impl WaylandApp {
 
         let mut video_needs_cleanup = false;
 
-        {
+        let captured_frame = {
             let mut frame = env.frame_surface.frame();
 
             match sync_action {
@@ -1028,7 +1033,10 @@ impl WaylandApp {
                     ),
                 );
             }
-        }
+
+            drop(frame);
+            env.frame_surface.capture_rgba_pixels()
+        };
 
         let present_submit_started_at = Instant::now();
         self.diagnostics.last_swap_started_at = Some(present_submit_started_at);
@@ -1062,6 +1070,10 @@ impl WaylandApp {
 
         let present_submit = present_submit_started_at.elapsed();
         let swap_done_at = Instant::now();
+        if let Some((width, height, pixels)) = captured_frame {
+            self.latest_frame
+                .publish_rgba(width, height, self.geometry.scale_factor(), pixels);
+        }
         self.diagnostics.last_swap_done_at = Some(swap_done_at);
         self.diagnostics.last_draw_finished_at = Some(swap_done_at);
         self.watchdog.mark_swap_done();
@@ -2336,6 +2348,7 @@ pub(crate) fn run(args: WaylandRunArgs) {
         renderer_stats_log,
         renderer_animation_log,
         renderer_cache_config,
+        latest_frame,
         native_log,
         render_rx,
         cursor_icon_rx,
@@ -2479,6 +2492,7 @@ pub(crate) fn run(args: WaylandRunArgs) {
             renderer_stats_log,
             renderer_animation_log,
             renderer_cache_config,
+            latest_frame,
             native_log,
             render_rx,
             cursor_icon_rx,

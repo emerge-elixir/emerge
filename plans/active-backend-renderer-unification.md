@@ -1,7 +1,7 @@
 # Active Plan: Backend / Renderer Unification and Headless Output
 
 Created: 2026-05-27
-Status: phase 4 complete
+Status: phase 5 complete
 
 ## Confirmed decisions
 
@@ -583,19 +583,24 @@ Status: implemented in this slice.
 
 ### Phase 5: Screenshot API migration
 
-- Keep the `render_to_pixels` and `render_to_png` names, but change their public
-  signatures to accept a renderer handle and request the latest frame from that
-  renderer actor/session instead of accepting a tree.
-- Make old tree-render signatures hard errors with migration guidance.
-- Return `{:ok, binary} | {:error, term}`.
-- Return the latest already-presented frame; do not force pending dirty work to
-  render synchronously.
-- Support options for pixel format, scale, region, background, timeout, and PNG
-  compression where applicable.
-- Ensure screenshot capture uses the selected platform/backend renderer where
+Status: implemented in this slice.
+
+- [x] Keep the `render_to_pixels` and `render_to_png` names, but change their
+  public signatures to accept a renderer handle and request the latest frame
+  from that renderer actor/session instead of accepting a tree.
+- [x] Make old tree-render signatures hard errors with migration guidance.
+- [x] Return `{:ok, binary} | {:error, term}`.
+- [x] Return the latest already-presented/submitted native frame; screenshot
+  requests do not force pending dirty work to render synchronously.
+- [x] Support the normalized screenshot option surface for pixel format, scale,
+  region, background, timeout, and PNG compression. Current native capture
+  supports full-size/cropped `:rgba8888` and `:rgb888`, transparent background,
+  scale `1.0`, and PNG default compression.
+- [x] Ensure screenshot capture uses the selected native backend renderer where
   possible instead of a separate raster-only tree-render path.
-- Ensure both native and macOS transports implement the same renderer-handle
-  screenshot contract.
+- [x] Ensure both native and macOS transports implement the same renderer-handle
+  screenshot contract. Native GL backends capture frames; macOS reports
+  `{:error, :not_supported}` until host-side readback is implemented.
 
 ### Phase 6: Current Linux GL backend split
 

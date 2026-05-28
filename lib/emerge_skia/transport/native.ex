@@ -58,6 +58,16 @@ defmodule EmergeSkia.Transport.Native do
   end
 
   @impl true
+  def capture_pixels(renderer, opts) do
+    Native.renderer_capture_pixels(renderer, opts)
+  end
+
+  @impl true
+  def capture_png(renderer, opts) do
+    Native.renderer_capture_png(renderer, opts)
+  end
+
+  @impl true
   def set_input_mask(renderer, mask) do
     Native.set_input_mask(renderer, mask)
   end

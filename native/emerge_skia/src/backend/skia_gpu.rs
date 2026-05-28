@@ -1,5 +1,5 @@
 use skia_safe::{
-    Surface,
+    AlphaType, ColorType, ImageInfo, Surface,
     gpu::{self, SurfaceOrigin, backend_render_targets, gl::FramebufferInfo},
 };
 
@@ -51,6 +51,26 @@ impl GlFrameSurface {
 
     pub fn frame(&mut self) -> RenderFrame<'_> {
         RenderFrame::new(&mut self.surface, Some(&mut self.direct_context))
+    }
+
+    pub fn capture_rgba_pixels(&mut self) -> Option<(u32, u32, Vec<u8>)> {
+        let size = self.surface.image_info().dimensions();
+        let width = u32::try_from(size.width).ok()?;
+        let height = u32::try_from(size.height).ok()?;
+        let row_bytes = usize::try_from(width).ok()?.checked_mul(4)?;
+        let mut pixels = vec![0_u8; row_bytes.checked_mul(usize::try_from(height).ok()?)?];
+        let info = ImageInfo::new(
+            (size.width, size.height),
+            ColorType::RGBA8888,
+            AlphaType::Premul,
+            None,
+        );
+
+        self.direct_context.flush_and_submit();
+        self.surface
+            .read_pixels(&info, pixels.as_mut_slice(), row_bytes, (0, 0));
+
+        Some((width, height, pixels))
     }
 }
 

@@ -16,6 +16,8 @@ defmodule EmergeSkia.Transport do
   @callback stats(renderer_handle(), EmergeSkia.Native.stats_command()) ::
               {:ok, EmergeSkia.Native.stats_snapshot()} | {:error, term()}
   @callback renderer_info(renderer_handle()) :: {:ok, map()} | {:error, term()}
+  @callback capture_pixels(renderer_handle(), map()) :: {:ok, binary()} | {:error, term()}
+  @callback capture_png(renderer_handle(), map()) :: {:ok, binary()} | {:error, term()}
   @callback set_input_mask(renderer_handle(), non_neg_integer()) :: :ok
   @callback upload_tree(renderer_handle(), binary()) :: :ok | {:error, term()}
   @callback patch_tree(renderer_handle(), binary()) :: :ok | {:error, term()}

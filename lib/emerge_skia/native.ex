@@ -432,6 +432,14 @@ defmodule EmergeSkia.Native do
   @spec renderer_info(reference()) :: {:ok, renderer_info()} | {:error, String.t()}
   def renderer_info(_renderer), do: :erlang.nif_error(:nif_not_loaded)
 
+  @doc false
+  @spec renderer_capture_pixels(reference(), map()) :: {:ok, binary()} | {:error, String.t()}
+  def renderer_capture_pixels(_renderer, _opts), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec renderer_capture_png(reference(), map()) :: {:ok, binary()} | {:error, String.t()}
+  def renderer_capture_png(_renderer, _opts), do: :erlang.nif_error(:nif_not_loaded)
+
   # ===========================================================================
   # Tree Functions (Emerge Integration)
   # ===========================================================================
