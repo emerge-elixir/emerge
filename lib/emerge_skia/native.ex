@@ -81,6 +81,11 @@ defmodule EmergeSkia.Native do
   """
   @spec start_opts(%{
           required(:backend) => String.t(),
+          required(:backend_renderer) => %{
+            required(:kind) => String.t(),
+            required(:raster_present) => String.t(),
+            required(:raster_present_configured) => boolean()
+          },
           required(:title) => String.t(),
           required(:width) => non_neg_integer(),
           required(:height) => non_neg_integer(),

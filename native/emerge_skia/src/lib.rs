@@ -400,6 +400,39 @@ enum BackendKind {
     Drm,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RendererBackendKind {
+    Auto,
+    Gl,
+    Raster,
+    Metal,
+    Vulkan,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RasterPresentKind {
+    Auto,
+    GpuUpload,
+    Cpu,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BackendRendererConfig {
+    kind: RendererBackendKind,
+    raster_present: RasterPresentKind,
+    raster_present_configured: bool,
+}
+
+impl BackendRendererConfig {
+    fn auto() -> Self {
+        Self {
+            kind: RendererBackendKind::Auto,
+            raster_present: RasterPresentKind::Auto,
+            raster_present_configured: false,
+        }
+    }
+}
+
 struct RendererResource {
     running_flag: Arc<AtomicBool>,
     backend_wake: BackendWakeHandle,
@@ -804,6 +837,15 @@ struct StartConfig {
         allow(dead_code)
     )]
     backend: BackendKind,
+    #[cfg_attr(
+        not(any(
+            all(feature = "wayland", target_os = "linux"),
+            all(feature = "drm", target_os = "linux"),
+            feature = "macos"
+        )),
+        allow(dead_code)
+    )]
+    backend_renderer: BackendRendererConfig,
     #[cfg_attr(not(all(feature = "wayland", target_os = "linux")), allow(dead_code))]
     title: String,
     #[cfg_attr(
@@ -904,6 +946,7 @@ pub(crate) struct DrmCursorOverrideConfig {
 #[derive(rustler::NifMap)]
 struct StartOptsNif {
     backend: String,
+    backend_renderer: BackendRendererConfigNif,
     title: String,
     width: u32,
     height: u32,
@@ -927,6 +970,13 @@ struct StartOptsNif {
     renderer_stats_log: bool,
     renderer_animation_log: bool,
     renderer_cache: RendererCacheConfigNif,
+}
+
+#[derive(Clone, Debug, rustler::NifMap)]
+struct BackendRendererConfigNif {
+    kind: String,
+    raster_present: String,
+    raster_present_configured: bool,
 }
 
 #[derive(Clone, Copy, Debug, rustler::NifMap)]
@@ -972,6 +1022,9 @@ fn start_with_config(
     config: StartConfig,
     initial_log_target: Option<LocalPid>,
 ) -> NifResult<ResourceArc<RendererResource>> {
+    ensure_backend_renderer_supported(config.backend, config.backend_renderer)
+        .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
+
     #[cfg(feature = "macos")]
     if matches!(config.backend, BackendKind::Macos) {
         return Err(rustler::Error::Term(Box::new(
@@ -1412,6 +1465,7 @@ fn start(
         start_with_config(
             StartConfig {
                 backend: BackendKind::Wayland,
+                backend_renderer: BackendRendererConfig::auto(),
                 title,
                 width,
                 height,
@@ -1449,6 +1503,8 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
     let backend = opts.backend.to_lowercase();
     let backend =
         parse_backend_name(&backend).map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
+    let backend_renderer = parse_backend_renderer_config(opts.backend_renderer)
+        .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
     let asset_config = AssetConfig {
         sources: opts.asset_sources,
         runtime_enabled: opts.asset_runtime_enabled,
@@ -1465,6 +1521,7 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
     start_with_config(
         StartConfig {
             backend,
+            backend_renderer,
             title: opts.title,
             width: opts.width,
             height: opts.height,
@@ -2670,6 +2727,122 @@ mod tests {
     }
 
     #[test]
+    fn parse_backend_renderer_config_accepts_nested_raster_present() {
+        let config = parse_backend_renderer_config(BackendRendererConfigNif {
+            kind: "raster".to_string(),
+            raster_present: "cpu".to_string(),
+            raster_present_configured: true,
+        })
+        .expect("valid backend renderer config");
+
+        assert_eq!(config.kind, RendererBackendKind::Raster);
+        assert_eq!(config.raster_present, RasterPresentKind::Cpu);
+        assert!(config.raster_present_configured);
+    }
+
+    #[test]
+    fn parse_backend_renderer_config_rejects_unknown_present_mode() {
+        let err = parse_backend_renderer_config(BackendRendererConfigNif {
+            kind: "raster".to_string(),
+            raster_present: "bogus".to_string(),
+            raster_present_configured: true,
+        })
+        .expect_err("unknown present mode should be rejected");
+
+        assert!(err.contains("unsupported backend_renderer raster present mode"));
+    }
+
+    #[cfg(all(feature = "wayland", target_os = "linux"))]
+    #[test]
+    fn backend_renderer_matrix_allows_wayland_auto_and_gl() {
+        assert!(
+            ensure_backend_renderer_supported(BackendKind::Wayland, BackendRendererConfig::auto())
+                .is_ok()
+        );
+        assert!(
+            ensure_backend_renderer_supported(
+                BackendKind::Wayland,
+                BackendRendererConfig {
+                    kind: RendererBackendKind::Gl,
+                    raster_present: RasterPresentKind::Auto,
+                    raster_present_configured: false,
+                }
+            )
+            .is_ok()
+        );
+    }
+
+    #[cfg(all(feature = "wayland", target_os = "linux"))]
+    #[test]
+    fn backend_renderer_matrix_rejects_unimplemented_wayland_raster() {
+        let err = ensure_backend_renderer_supported(
+            BackendKind::Wayland,
+            BackendRendererConfig {
+                kind: RendererBackendKind::Raster,
+                raster_present: RasterPresentKind::Cpu,
+                raster_present_configured: true,
+            },
+        )
+        .expect_err("wayland raster is not implemented yet");
+
+        assert_eq!(
+            err,
+            "backend_renderer :raster is not implemented yet for backend :wayland"
+        );
+    }
+
+    #[cfg(all(feature = "drm", target_os = "linux"))]
+    #[test]
+    fn backend_renderer_matrix_rejects_metal_on_drm() {
+        let err = ensure_backend_renderer_supported(
+            BackendKind::Drm,
+            BackendRendererConfig {
+                kind: RendererBackendKind::Metal,
+                raster_present: RasterPresentKind::Auto,
+                raster_present_configured: false,
+            },
+        )
+        .expect_err("metal should be rejected on drm");
+
+        assert_eq!(
+            err,
+            "backend_renderer :metal is only supported with backend :macos"
+        );
+    }
+
+    #[cfg(feature = "macos")]
+    #[test]
+    fn backend_renderer_matrix_rejects_gl_and_raster_present_on_macos() {
+        let gl_err = ensure_backend_renderer_supported(
+            BackendKind::Macos,
+            BackendRendererConfig {
+                kind: RendererBackendKind::Gl,
+                raster_present: RasterPresentKind::Auto,
+                raster_present_configured: false,
+            },
+        )
+        .expect_err("gl should be rejected on macOS");
+        assert_eq!(
+            gl_err,
+            "backend_renderer :gl is not supported with backend :macos"
+        );
+
+        let raster_present_err = ensure_backend_renderer_supported(
+            BackendKind::Macos,
+            BackendRendererConfig {
+                kind: RendererBackendKind::Raster,
+                raster_present: RasterPresentKind::Cpu,
+                raster_present_configured: true,
+            },
+        )
+        .expect_err("raster present options should be rejected on macOS");
+        assert_eq!(
+            raster_present_err,
+            "backend_renderer raster present options are only supported with backend :wayland or :drm"
+        );
+    }
+
+    #[test]
     fn parse_backend_name_rejects_removed_legacy_backend() {
         assert_eq!(
             parse_backend_name("wayland_legacy"),
@@ -2871,6 +3044,102 @@ fn parse_cursor_icon_name(value: &str) -> Result<CursorIcon, String> {
         "text" => Ok(CursorIcon::Text),
         "pointer" => Ok(CursorIcon::Pointer),
         other => Err(format!("unsupported DRM cursor icon: {other}")),
+    }
+}
+
+fn parse_backend_renderer_config(
+    config: BackendRendererConfigNif,
+) -> Result<BackendRendererConfig, String> {
+    let kind = parse_renderer_backend_kind(&config.kind)?;
+    let raster_present = parse_raster_present_kind(&config.raster_present)?;
+
+    Ok(BackendRendererConfig {
+        kind,
+        raster_present,
+        raster_present_configured: config.raster_present_configured,
+    })
+}
+
+fn parse_renderer_backend_kind(value: &str) -> Result<RendererBackendKind, String> {
+    match value.to_ascii_lowercase().as_str() {
+        "auto" => Ok(RendererBackendKind::Auto),
+        "gl" => Ok(RendererBackendKind::Gl),
+        "raster" => Ok(RendererBackendKind::Raster),
+        "metal" => Ok(RendererBackendKind::Metal),
+        "vulkan" => Ok(RendererBackendKind::Vulkan),
+        other => Err(format!(
+            "unsupported backend_renderer kind: {other}; expected auto, gl, raster, metal, or vulkan"
+        )),
+    }
+}
+
+fn parse_raster_present_kind(value: &str) -> Result<RasterPresentKind, String> {
+    match value.to_ascii_lowercase().as_str() {
+        "auto" => Ok(RasterPresentKind::Auto),
+        "gpu_upload" => Ok(RasterPresentKind::GpuUpload),
+        "cpu" => Ok(RasterPresentKind::Cpu),
+        other => Err(format!(
+            "unsupported backend_renderer raster present mode: {other}; expected auto, gpu_upload, or cpu"
+        )),
+    }
+}
+
+fn ensure_backend_renderer_supported(
+    backend: BackendKind,
+    config: BackendRendererConfig,
+) -> Result<(), String> {
+    let _raster_present = config.raster_present;
+
+    match backend {
+        #[cfg(feature = "macos")]
+        BackendKind::Macos => ensure_macos_backend_renderer_supported(config),
+        #[cfg(all(feature = "wayland", target_os = "linux"))]
+        BackendKind::Wayland => ensure_linux_backend_renderer_supported("wayland", config),
+        #[cfg(all(feature = "drm", target_os = "linux"))]
+        BackendKind::Drm => ensure_linux_backend_renderer_supported("drm", config),
+    }
+}
+
+#[cfg(feature = "macos")]
+fn ensure_macos_backend_renderer_supported(config: BackendRendererConfig) -> Result<(), String> {
+    match config.kind {
+        RendererBackendKind::Auto | RendererBackendKind::Metal | RendererBackendKind::Raster
+            if !config.raster_present_configured =>
+        {
+            Ok(())
+        }
+        RendererBackendKind::Gl => {
+            Err("backend_renderer :gl is not supported with backend :macos".to_string())
+        }
+        RendererBackendKind::Vulkan => {
+            Err("backend_renderer :vulkan is not supported with backend :macos".to_string())
+        }
+        RendererBackendKind::Auto | RendererBackendKind::Metal | RendererBackendKind::Raster => Err(
+            "backend_renderer raster present options are only supported with backend :wayland or :drm"
+                .to_string(),
+        ),
+    }
+}
+
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
+fn ensure_linux_backend_renderer_supported(
+    backend_label: &str,
+    config: BackendRendererConfig,
+) -> Result<(), String> {
+    match config.kind {
+        RendererBackendKind::Auto | RendererBackendKind::Gl => Ok(()),
+        RendererBackendKind::Raster => Err(format!(
+            "backend_renderer :raster is not implemented yet for backend :{backend_label}"
+        )),
+        RendererBackendKind::Metal => {
+            Err("backend_renderer :metal is only supported with backend :macos".to_string())
+        }
+        RendererBackendKind::Vulkan => {
+            Err("backend_renderer :vulkan is not implemented yet".to_string())
+        }
     }
 }
 

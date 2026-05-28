@@ -1,7 +1,7 @@
 # Active Plan: Backend / Renderer Unification and Headless Output
 
 Created: 2026-05-27
-Status: phase 2 complete
+Status: phase 3 complete
 
 ## Confirmed decisions
 
@@ -534,18 +534,29 @@ Status: implemented in this slice.
 
 ### Phase 3: Capability matrix for current backends
 
-- Add shared normalized config types for platform backend and renderer backend
-  on the Elixir/native/host boundary.
-- Add explicit compatibility checks for current backends before startup work.
-- Explicit renderer choices should fail when unsupported; only `:auto` may
+Status: implemented in this slice.
+
+- [x] Add shared normalized config types for platform backend and renderer
+  backend on the Elixir/native/host boundary.
+  - Elixir normalizes `backend_renderer` into a map with `kind`,
+    `raster_present`, and `raster_present_configured`.
+  - Linux native startup now decodes the same map through Rust NIF structs and
+    validates it before backend startup work.
+  - macOS host startup consumes the same normalized Elixir map and passes the
+    selected renderer kind through the existing host protocol.
+- [x] Add explicit compatibility checks for current backends before startup
+  work.
+- [x] Explicit renderer choices fail when unsupported; only `:auto` may
   fallback.
-- Keep current working paths unchanged while adding the matrix:
+- [x] Keep current working paths unchanged while adding the matrix:
   - Wayland + GL
   - DRM + GL
   - macOS + Metal/raster through the host
   - synchronous raster offscreen APIs
-- Include the future Linux CPU-present raster fallback rows in the matrix even
-  before those paths are implemented.
+- [x] Include future Linux CPU-present raster fallback rows in the matrix before
+  those paths are implemented.
+- [x] Add Rust matrix/decode coverage for backend renderer config and Elixir
+  option coverage for the public normalization path.
 
 ### Phase 4: Renderer-aware stats, diagnostics, and info
 
