@@ -259,6 +259,38 @@ defmodule EmergeSkiaTest do
     assert :ok = EmergeSkia.stop(renderer)
   end
 
+  test "headless GL backend delivers binary frames when explicitly enabled" do
+    if System.get_env("EMERGE_SKIA_HEADLESS_GL_TEST") == "1" do
+      {:ok, renderer} =
+        EmergeSkia.start(
+          otp_app: :emerge,
+          backend: :headless,
+          backend_renderer: :gl,
+          width: 4,
+          height: 4,
+          headless: [target: self(), pixel_format: :rgba8888]
+        )
+
+      assert {:ok, %{backend_renderer: %{selected: :gl}, capabilities: %{gpu: true}}} =
+               EmergeSkia.renderer_info(renderer)
+
+      tree = el([width(px(4)), height(px(4)), Emerge.UI.Background.color(:red)], none())
+      {_state, _assigned} = EmergeSkia.upload_tree(renderer, tree)
+
+      assert_receive {:emerge_skia_frame, frame}, 1_000
+      frame = Map.new(frame)
+      assert frame["pixel_format"] == "rgba8888"
+      assert byte_size(frame["data"]) == 4 * 4 * 4
+
+      assert {:ok, pixels} = EmergeSkia.render_to_pixels(renderer)
+      assert byte_size(pixels) == 4 * 4 * 4
+      assert {:ok, png} = EmergeSkia.render_to_png(renderer)
+      assert <<0x89, "PNG", _rest::binary>> = png
+
+      assert :ok = EmergeSkia.stop(renderer)
+    end
+  end
+
   test "renderer_info reports macOS renderer selection without stats" do
     renderer = %Renderer{
       session_id: 1,

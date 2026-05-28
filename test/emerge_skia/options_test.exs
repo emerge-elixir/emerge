@@ -203,6 +203,19 @@ defmodule EmergeSkia.OptionsTest do
 
     assert target == self()
 
+    assert %{
+             backend: "headless",
+             backend_renderer: %{kind: "gl"},
+             headless: %{target: target}
+           } =
+             Options.build_start_native_opts!(
+               backend: :headless,
+               backend_renderer: :gl,
+               headless: [target: self()]
+             )
+
+    assert target == self()
+
     assert_raise ArgumentError, ~r/:headless.target must be a pid/, fn ->
       Options.build_start_native_opts!(backend: :headless)
     end

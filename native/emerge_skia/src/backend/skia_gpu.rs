@@ -22,22 +22,39 @@ impl GlFrameSurface {
         num_samples: usize,
         stencil_size: usize,
     ) -> Self {
+        Self::try_new(
+            dimensions,
+            fb_info,
+            direct_context,
+            num_samples,
+            stencil_size,
+        )
+        .expect("Could not create Skia surface")
+    }
+
+    pub fn try_new(
+        dimensions: (u32, u32),
+        fb_info: FramebufferInfo,
+        direct_context: gpu::DirectContext,
+        num_samples: usize,
+        stencil_size: usize,
+    ) -> Result<Self, String> {
         let mut direct_context = direct_context;
-        let surface = create_gl_surface(
+        let surface = try_create_gl_surface(
             (dimensions.0 as i32, dimensions.1 as i32),
             fb_info,
             &mut direct_context,
             num_samples,
             stencil_size,
-        );
+        )?;
 
-        Self {
+        Ok(Self {
             surface,
             direct_context,
             fb_info,
             num_samples,
             stencil_size,
-        }
+        })
     }
 
     pub fn resize(&mut self, dimensions: (u32, u32)) {
@@ -117,6 +134,23 @@ fn create_gl_surface(
     num_samples: usize,
     stencil_size: usize,
 ) -> Surface {
+    try_create_gl_surface(
+        dimensions,
+        fb_info,
+        direct_context,
+        num_samples,
+        stencil_size,
+    )
+    .expect("Could not create Skia surface")
+}
+
+fn try_create_gl_surface(
+    dimensions: (i32, i32),
+    fb_info: FramebufferInfo,
+    direct_context: &mut gpu::DirectContext,
+    num_samples: usize,
+    stencil_size: usize,
+) -> Result<Surface, String> {
     let backend_render_target =
         backend_render_targets::make_gl(dimensions, num_samples, stencil_size, fb_info);
 
@@ -130,5 +164,5 @@ fn create_gl_surface(
         None,
         Some(&surface_props),
     )
-    .expect("Could not create Skia surface")
+    .ok_or_else(|| "could not create Skia GL surface".to_string())
 }

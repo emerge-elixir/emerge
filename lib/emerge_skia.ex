@@ -72,13 +72,13 @@ defmodule EmergeSkia do
   @type video_target :: VideoTarget.t()
 
   @doc """
-  Start a new renderer window.
+  Start a new renderer session.
 
   ## Options
 
   - `otp_app` - OTP application used to resolve logical assets from its `priv` dir (**required**)
-  - `backend` - Backend selection (`:wayland`, `:drm`, `:macos`, or future `:headless`). Defaults to `:wayland` for Linux desktop builds, `:macos` on Darwin, and `:drm` for Nerves-style builds. The requested backend must also be present in `config :emerge, compiled_backends: [...]`.
-  - `backend_renderer` - Renderer selection (`:auto`, `:gl`, `:raster`, `:metal`, or configured raster/auto forms). Defaults to `:auto`. `:raster` is equivalent to `[raster: [present: :auto]]`; Wayland/DRM can force raster presentation with `[raster: [present: :gpu_upload | :cpu]]` or configure auto fallback with `[auto: [raster: [present: ...]]]`.
+  - `backend` - Backend selection (`:wayland`, `:drm`, `:macos`, or `:headless`). Defaults to `:wayland` for Linux desktop builds, `:macos` on Darwin, and `:drm` for Nerves-style builds. Window/device backends must be present in `config :emerge, compiled_backends: [...]`.
+  - `backend_renderer` - Renderer selection (`:auto`, `:gl`, `:raster`, `:metal`, or configured raster/auto forms). Defaults to `:auto`. `:raster` is equivalent to `[raster: [present: :auto]]`; Wayland/DRM can force raster presentation with `[raster: [present: :gpu_upload | :cpu]]` or configure auto fallback with `[auto: [raster: [present: ...]]]`. Headless binary output uses raster for `:auto`; explicit headless `:gl` uses offscreen EGL/GL on Linux and fails instead of falling back if EGL/GL cannot start.
   - `title` - Window title (default: "Emerge")
   - `width` - Window width in pixels (default: 800)
   - `height` - Window height in pixels (default: 600)
@@ -108,6 +108,19 @@ defmodule EmergeSkia do
   - `runtime_paths.max_file_size` (default: `25_000_000`)
   - `runtime_paths.extensions` (default image/SVG extension allowlist)
   - `fonts` (default: `[]`)
+
+  `headless` options, used with `backend: :headless`:
+  - `target` - Process pid that receives frame messages (**required** for headless)
+  - `mode` - `:binary` (default); `:prime` is not implemented yet
+  - `pixel_format` - `:rgba8888` (default), `:rgb888`, `:gray8`, `:gray4`, `:gray2`, or `:bw1`
+  - `bw1_polarity` - `:one_is_black` (default) or `:one_is_white`
+  - `target_fps` - Requested animation cadence for retained headless output (optional)
+  - `frame_message` - Message tag atom/string (default: `:emerge_skia_frame`)
+
+  Headless frames are delivered as `{message_tag, frame}` where `frame` is a
+  key/value list containing `"mode"`, `"sequence"`, `"width"`, `"height"`,
+  `"scale"`, `"pixel_format"`, `"stride_bytes"`, `"data"`, and
+  `"timestamp_native"`.
 
   `renderer_cache` options:
   - `enabled` (default: `true`, GPU backends only)

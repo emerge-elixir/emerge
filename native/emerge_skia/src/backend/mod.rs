@@ -4,6 +4,7 @@
 
 #[cfg(all(feature = "drm", target_os = "linux"))]
 pub mod drm;
+pub mod headless;
 #[cfg(feature = "macos")]
 pub mod macos;
 pub mod present;

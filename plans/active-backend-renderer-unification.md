@@ -1,7 +1,7 @@
 # Active Plan: Backend / Renderer Unification and Headless Output
 
 Created: 2026-05-27
-Status: current implementation complete through phase 9; phases 10-11 deferred future work
+Status: current implementation complete through explicit headless GL binary readback; PRIME export and Vulkan deferred future work
 
 ## Confirmed decisions
 
@@ -218,9 +218,9 @@ Compatibility/migration:
 
 ## Headless backend semantics
 
-Headless is deferred until the current window/device backends share the same
-platform + renderer selection model. This section records the intended target
-shape for the later headless phase.
+Headless now follows the shared platform + renderer selection model for binary
+output. Raster and explicit Linux GL readback are implemented; PRIME/dma-buf
+output remains future work.
 
 A headless runtime backend is a retained session, not just a synchronous
 `render_to_pixels/2` call.
@@ -246,29 +246,29 @@ headless: [
 ]
 ```
 
-`target_fps` controls the requested delivery cadence for retained headless
-output. Exact pacing/drop behavior should be decided when the headless backend
-is implemented.
+`target_fps` controls the requested animation-pulse cadence for retained
+headless output. Full pacing/drop behavior remains future hardening.
 
-Frame delivery should be message based:
+Frame delivery is message based:
 
 ```elixir
-{:emerge_skia_frame, renderer, frame}
+{:emerge_skia_frame, frame}
 ```
 
-For binary mode, `frame` should include at least:
+For binary mode, `frame` is currently delivered as a key/value list with string
+keys equivalent to:
 
 ```elixir
 %{
-  mode: :binary,
-  sequence: non_neg_integer(),
-  width: pos_integer(),
-  height: pos_integer(),
-  scale: float(),
-  pixel_format: atom(),
-  stride_bytes: pos_integer(),
-  data: binary(),
-  timestamp_native: integer()
+  "mode" => "binary",
+  "sequence" => non_neg_integer(),
+  "width" => pos_integer(),
+  "height" => pos_integer(),
+  "scale" => float(),
+  "pixel_format" => String.t(),
+  "stride_bytes" => pos_integer(),
+  "data" => binary(),
+  "timestamp_native" => integer()
 }
 ```
 
@@ -337,8 +337,8 @@ Draft target matrix:
 | `:drm` | `:raster` | KMS | Needs raster draw plus both GPU-upload present for testing and dumb-buffer / CPU KMS present for true GL-free fallback. |
 | `:macos` | `:metal` | window | Current host path. |
 | `:macos` | `:raster` | window | Current host fallback path. |
-| `:headless` | `:raster` | binary | First headless path to implement. |
-| `:headless` | `:gl` | binary | Optional; may require readback. |
+| `:headless` | `:raster` | binary | Implemented first headless path. |
+| `:headless` | `:gl` | binary | Implemented on Linux via offscreen EGL/GL readback. |
 | `:headless` | `:metal` | binary | Future macOS headless path. |
 | `:headless` | `:gl` | prime | Requires dma-buf/PRIME export support. |
 | any | `:vulkan` | varies | Future only. |
@@ -678,10 +678,10 @@ Status: implemented in this slice.
 
 ### Phase 10: Headless GPU and PRIME output
 
-Status: deferred future work.
+Status: partially implemented. Explicit Linux headless GL with binary readback is implemented; PRIME/dma-buf export remains deferred future work.
 
-- Add headless GL surface/device setup where supported.
-- Add binary readback for GPU headless if useful.
+- [x] Add headless GL surface/device setup where supported.
+- [x] Add binary readback for GPU headless if useful.
 - Add macOS headless Metal support if a Metal offscreen path is needed.
 - Add headless input/synthetic-input support through the shared event runtime in
   a later phase.
@@ -689,10 +689,10 @@ Status: deferred future work.
 - Reuse descriptor validation concepts from `video_target`, but keep the public
   headless output API separate.
 
-Phase 10 intentionally remains out of this implementation run because PRIME fd
+The remaining Phase 10 PRIME work intentionally stays deferred because fd
 ownership/backpressure and GPU export support require a separate hardware-backed
-design/validation slice. Current code rejects `headless: [mode: :prime]` and
-headless `backend_renderer: :gl` with explicit not-implemented errors.
+design/validation slice. Current code rejects `headless: [mode: :prime]` with
+an explicit not-implemented error.
 
 ### Phase 11: Future renderer backends
 

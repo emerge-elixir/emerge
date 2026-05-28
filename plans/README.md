@@ -1,6 +1,6 @@
 # Plans
 
-Last updated: 2026-05-27.
+Last updated: 2026-05-28.
 
 This directory tracks active implementation notes and durable background
 research for native layout, renderer, and input/runtime work.
@@ -8,7 +8,6 @@ research for native layout, renderer, and input/runtime work.
 Active implementation plans:
 
 - `active-backend-renderer-unification.md`
-- `active-headless-gl.md`
 - `active-low-resource-animation-smoothness.md`
 - `active-combined-refresh-traversal.md`
 - `active-combined-tree-walk-cleanup.md`
@@ -26,11 +25,6 @@ durable reference notes below, then remove the completed implementation log.
 Active plan for splitting platform selection from rendering API selection across
 Wayland, DRM, macOS, and headless output, while preparing the same model for
 future rendering APIs such as Vulkan.
-
-### `active-headless-gl.md`
-
-Active plan for explicit headless OpenGL support on Linux using offscreen EGL/GL
-rendering plus binary readback through the existing headless frame-delivery path.
 
 ### `active-low-resource-animation-smoothness.md`
 
@@ -175,6 +169,11 @@ documents below. Recently folded slices:
   event-registry extraction, incremental per-vnode event registry updates,
   update-path benchmarks, and parity coverage for event-heavy mutations;
   validation passed on 2026-05-20
+- explicit Linux headless GL support for `backend: :headless,
+  backend_renderer: :gl`, including a refactored headless runtime module, EGL
+  device/surfaceless/default-display pbuffer startup, Skia GPU rendering,
+  synchronous RGBA readback into existing binary frame delivery, renderer-info
+  reporting, and hardware-gated frame/screenshot tests
 - biaxial drag scrolling for oversized two-axis scroll containers, preserving a
   primary gesture axis for inertia while active drag movement dispatches X and Y
   scroll components independently, plus Wayland stale-registry fixes for no-op
