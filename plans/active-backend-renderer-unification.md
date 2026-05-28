@@ -1,7 +1,7 @@
 # Active Plan: Backend / Renderer Unification and Headless Output
 
 Created: 2026-05-27
-Status: phase 9 complete
+Status: current implementation complete through phase 9; phases 10-11 deferred future work
 
 ## Confirmed decisions
 
@@ -678,6 +678,8 @@ Status: implemented in this slice.
 
 ### Phase 10: Headless GPU and PRIME output
 
+Status: deferred future work.
+
 - Add headless GL surface/device setup where supported.
 - Add binary readback for GPU headless if useful.
 - Add macOS headless Metal support if a Metal offscreen path is needed.
@@ -687,11 +689,20 @@ Status: implemented in this slice.
 - Reuse descriptor validation concepts from `video_target`, but keep the public
   headless output API separate.
 
+Phase 10 intentionally remains out of this implementation run because PRIME fd
+ownership/backpressure and GPU export support require a separate hardware-backed
+design/validation slice. Current code rejects `headless: [mode: :prime]` and
+headless `backend_renderer: :gl` with explicit not-implemented errors.
+
 ### Phase 11: Future renderer backends
+
+Status: deferred future work.
 
 - Add `:vulkan` only after the split is stable.
 - Treat Vulkan like another renderer backend selected through the same config and
   compatibility matrix.
+
+This stays deferred by the plan's non-goal: do not implement Vulkan yet.
 
 ## Tests and validation expected for future implementation
 
