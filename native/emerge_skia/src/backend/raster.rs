@@ -5,7 +5,10 @@
 
 use skia_safe::{ColorType, ImageInfo, surfaces};
 
-use crate::renderer::{RenderFrame, RenderState, SceneRenderer, text_surface_props};
+use crate::renderer::{
+    RenderFrame, RenderState, RenderTimings, RendererCacheConfig, SceneRenderer,
+    text_surface_props,
+};
 
 // ============================================================================
 // Configuration
@@ -50,31 +53,44 @@ pub struct RasterBackend {
 impl RasterBackend {
     /// Create a new raster backend with the given dimensions.
     pub fn new(config: &RasterConfig) -> Result<Self, String> {
-        let info = ImageInfo::new(
-            (config.width as i32, config.height as i32),
-            ColorType::RGBA8888,
-            skia_safe::AlphaType::Premul,
-            None,
-        );
+        Self::with_cache_config(config, RendererCacheConfig::default())
+    }
 
-        let surface_props = text_surface_props();
-        let surface = surfaces::raster(&info, None, Some(&surface_props))
-            .ok_or_else(|| "Failed to create raster surface".to_string())?;
+    pub fn with_cache_config(
+        config: &RasterConfig,
+        cache_config: RendererCacheConfig,
+    ) -> Result<Self, String> {
+        let surface = create_surface(config.width, config.height)?;
 
         Ok(Self {
-            renderer: SceneRenderer::new(),
+            renderer: SceneRenderer::with_cache_config(cache_config),
             surface,
             width: config.width,
             height: config.height,
         })
     }
 
+    pub fn resize(&mut self, width: u32, height: u32) -> Result<(), String> {
+        if self.width == width && self.height == height {
+            return Ok(());
+        }
+
+        self.surface = create_surface(width, height)?;
+        self.renderer.invalidate_visible_frame_fingerprint();
+        self.width = width;
+        self.height = height;
+        Ok(())
+    }
+
     /// Render the current state and return the frame.
     pub fn render(&mut self, state: &RenderState) -> RasterFrame {
-        let mut frame = RenderFrame::new(&mut self.surface, None);
-        self.renderer.render(&mut frame, state);
+        self.render_with_timings(state).0
+    }
 
-        // Read pixels from the surface
+    pub fn render_with_timings(&mut self, state: &RenderState) -> (RasterFrame, RenderTimings) {
+        let mut frame = RenderFrame::new(&mut self.surface, None);
+        let timings = self.renderer.render(&mut frame, state);
+
         let mut data = vec![0u8; (self.width * self.height * 4) as usize];
 
         let info = ImageInfo::new(
@@ -87,6 +103,19 @@ impl RasterBackend {
         self.surface
             .read_pixels(&info, &mut data, (self.width * 4) as usize, (0, 0));
 
-        RasterFrame { data }
+        (RasterFrame { data }, timings)
     }
+}
+
+fn create_surface(width: u32, height: u32) -> Result<skia_safe::Surface, String> {
+    let info = ImageInfo::new(
+        (width as i32, height as i32),
+        ColorType::RGBA8888,
+        skia_safe::AlphaType::Premul,
+        None,
+    );
+
+    let surface_props = text_surface_props();
+    surfaces::raster(&info, None, Some(&surface_props))
+        .ok_or_else(|| "Failed to create raster surface".to_string())
 }

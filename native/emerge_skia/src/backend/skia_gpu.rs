@@ -1,6 +1,7 @@
 use skia_safe::{
-    AlphaType, ColorType, ImageInfo, Surface,
+    AlphaType, Color, ColorType, Data, ImageInfo, Surface,
     gpu::{self, SurfaceOrigin, backend_render_targets, gl::FramebufferInfo},
+    images,
 };
 
 use crate::renderer::{RenderFrame, text_surface_props};
@@ -51,6 +52,28 @@ impl GlFrameSurface {
 
     pub fn frame(&mut self) -> RenderFrame<'_> {
         RenderFrame::new(&mut self.surface, Some(&mut self.direct_context))
+    }
+
+    pub fn present_rgba_pixels(
+        &mut self,
+        width: u32,
+        height: u32,
+        pixels: &[u8],
+    ) -> Result<(), String> {
+        let info = ImageInfo::new(
+            (width as i32, height as i32),
+            ColorType::RGBA8888,
+            AlphaType::Premul,
+            None,
+        );
+        let data = Data::new_copy(pixels);
+        let image = images::raster_from_data(&info, data, (width * 4) as usize)
+            .ok_or_else(|| "failed to create raster upload image".to_string())?;
+        let mut frame = self.frame();
+        frame.surface_mut().canvas().clear(Color::TRANSPARENT);
+        frame.surface_mut().canvas().draw_image(image, (0, 0), None);
+        frame.flush();
+        Ok(())
     }
 
     pub fn capture_rgba_pixels(&mut self) -> Option<(u32, u32, Vec<u8>)> {

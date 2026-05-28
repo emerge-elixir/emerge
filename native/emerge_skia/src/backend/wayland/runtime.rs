@@ -41,18 +41,19 @@ use smithay_client_toolkit::{
             window::{Window, WindowConfigure, WindowDecorations, WindowHandler},
         },
     },
-    shm::{Shm, ShmHandler},
+    shm::{Shm, ShmHandler, slot::SlotPool},
 };
 use wayland_client::{
     Connection, QueueHandle,
     globals::registry_queue_init,
-    protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface},
+    protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
 };
 
 use crate::{
-    InputTargetRelay, LatestFrameStore, RendererBackendKind,
+    InputTargetRelay, LatestFrameStore, RasterPresentKind, RendererBackendKind,
     actors::{AnimationFrameTrace, AnimationPulseTrace, EventMsg, RenderMsg, TreeMsg},
     backend::{
+        raster::{RasterBackend, RasterConfig},
         wake::{
             BackendWake, BackendWakeHandle, WindowBackendStartupInfo, WindowBackendStartupResult,
         },
@@ -104,6 +105,7 @@ struct WaylandAppRuntime {
     renderer_stats_log: bool,
     renderer_animation_log: bool,
     renderer_backend: RendererBackendKind,
+    raster_present: RasterPresentKind,
     renderer_cache_config: RendererCacheConfig,
     latest_frame: Arc<LatestFrameStore>,
     native_log: Arc<NativeLogRelay>,
@@ -127,6 +129,7 @@ pub(crate) struct WaylandRunArgs {
     pub renderer_stats_log: bool,
     pub renderer_animation_log: bool,
     pub renderer_backend: RendererBackendKind,
+    pub raster_present: RasterPresentKind,
     pub renderer_cache_config: RendererCacheConfig,
     pub latest_frame: Arc<LatestFrameStore>,
     pub native_log: Arc<NativeLogRelay>,
@@ -140,6 +143,88 @@ enum WaylandVideoImportState {
     PendingGlInit,
     Ready(Box<VideoImportContext>),
     Unavailable,
+}
+
+enum RasterWaylandPresentEnv {
+    Cpu { pool: SlotPool },
+    GpuUpload { gl_env: GlEnv },
+}
+
+struct RasterWaylandEnv {
+    renderer: RasterBackend,
+    present: RasterWaylandPresentEnv,
+    size: (u32, u32),
+}
+
+impl RasterWaylandEnv {
+    fn new(
+        shm: &Shm,
+        conn: &Connection,
+        surface: &wl_surface::WlSurface,
+        size: (u32, u32),
+        raster_present: RasterPresentKind,
+        renderer_cache_config: RendererCacheConfig,
+    ) -> Result<Self, String> {
+        let size = (size.0.max(1), size.1.max(1));
+        let present = match raster_present {
+            RasterPresentKind::Auto | RasterPresentKind::Cpu => RasterWaylandPresentEnv::Cpu {
+                pool: SlotPool::new(raster_pool_size(size)?, shm)
+                    .map_err(|err| format!("failed to create Wayland shm pool: {err}"))?,
+            },
+            RasterPresentKind::GpuUpload => RasterWaylandPresentEnv::GpuUpload {
+                gl_env: create_gl_env(conn, surface, size, renderer_cache_config)?,
+            },
+        };
+        let renderer = RasterBackend::with_cache_config(
+            &RasterConfig {
+                width: size.0,
+                height: size.1,
+            },
+            renderer_cache_config,
+        )?;
+
+        Ok(Self {
+            renderer,
+            present,
+            size,
+        })
+    }
+
+    fn resize(&mut self, size: (u32, u32)) -> Result<(), String> {
+        let size = (size.0.max(1), size.1.max(1));
+        match &mut self.present {
+            RasterWaylandPresentEnv::Cpu { pool } => pool
+                .resize(raster_pool_size(size)?)
+                .map_err(|err| format!("failed to resize Wayland shm pool: {err}"))?,
+            RasterWaylandPresentEnv::GpuUpload { gl_env } => resize_gl_env(gl_env, size),
+        }
+        self.renderer.resize(size.0, size.1)?;
+        self.size = size;
+        Ok(())
+    }
+}
+
+fn rgba_to_wayland_argb(rgba: &[u8], argb: &mut [u8]) {
+    rgba.chunks_exact(4)
+        .zip(argb.chunks_exact_mut(4))
+        .for_each(|(source, dest)| {
+            dest[0] = source[2];
+            dest[1] = source[1];
+            dest[2] = source[0];
+            dest[3] = source[3];
+        });
+}
+
+fn raster_pool_size(size: (u32, u32)) -> Result<usize, String> {
+    usize::try_from(size.0)
+        .ok()
+        .and_then(|width| {
+            usize::try_from(size.1)
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
+        .and_then(|pixels| pixels.checked_mul(4).and_then(|bytes| bytes.checked_mul(2)))
+        .ok_or_else(|| "Wayland raster surface is too large".to_string())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -426,6 +511,7 @@ pub(super) struct WaylandApp {
     pub(super) window: Window,
     shm: Shm,
     env: Option<GlEnv>,
+    raster_env: Option<RasterWaylandEnv>,
     protocols: ProtocolHandles,
     pub(super) geometry: SurfaceGeometry,
     present: PresentState,
@@ -447,6 +533,7 @@ pub(super) struct WaylandApp {
     renderer_stats_log: bool,
     renderer_animation_log: bool,
     renderer_backend: RendererBackendKind,
+    raster_present: RasterPresentKind,
     renderer_cache_config: RendererCacheConfig,
     latest_frame: Arc<LatestFrameStore>,
     native_log: Arc<NativeLogRelay>,
@@ -496,6 +583,7 @@ impl WaylandApp {
             renderer_stats_log,
             renderer_animation_log,
             renderer_backend,
+            raster_present,
             renderer_cache_config,
             latest_frame,
             native_log,
@@ -514,6 +602,7 @@ impl WaylandApp {
             window,
             shm,
             env: None,
+            raster_env: None,
             protocols,
             geometry: SurfaceGeometry::new(config),
             present: PresentState::default(),
@@ -535,6 +624,7 @@ impl WaylandApp {
             renderer_stats_log,
             renderer_animation_log,
             renderer_backend,
+            raster_present,
             renderer_cache_config,
             latest_frame,
             native_log,
@@ -897,11 +987,18 @@ impl WaylandApp {
     }
 
     fn maybe_draw(&mut self) {
-        let allow_late_replacement = self
-            .env
-            .as_ref()
-            .is_some_and(|env| env.swap_buffers_nonblocking);
-        let env_ready = self.env.is_some();
+        let allow_late_replacement = matches!(self.renderer_backend, RendererBackendKind::Gl)
+            && self
+                .env
+                .as_ref()
+                .is_some_and(|env| env.swap_buffers_nonblocking);
+        let env_ready = match self.renderer_backend {
+            RendererBackendKind::Gl => self.env.is_some(),
+            RendererBackendKind::Raster => self.raster_env.is_some(),
+            RendererBackendKind::Auto
+            | RendererBackendKind::Metal
+            | RendererBackendKind::Vulkan => false,
+        };
         let decision =
             frame_draw_decision(&self.present, env_ready, self.exit, allow_late_replacement);
 
@@ -917,6 +1014,11 @@ impl WaylandApp {
     }
 
     fn draw(&mut self, draw_kind: DrawKind) {
+        if matches!(self.renderer_backend, RendererBackendKind::Raster) {
+            self.draw_raster(draw_kind);
+            return;
+        }
+
         let (video_import, video_registry) = (&self.video_import, &self.video_registry);
         let sync_action = video_import.sync_action();
         let video_import_ctx = video_import.context();
@@ -1177,6 +1279,175 @@ impl WaylandApp {
         self.render_animation_trace = None;
     }
 
+    fn draw_raster(&mut self, draw_kind: DrawKind) {
+        let animation_trace = self.render_animation_trace;
+        let draw_started_at = Instant::now();
+        let draw_sequence = self.diagnostics.draw_sequence;
+        self.diagnostics.draw_sequence = self.diagnostics.draw_sequence.wrapping_add(1);
+        self.diagnostics.last_draw_started_at = Some(draw_started_at);
+        self.watchdog.mark_draw_start();
+
+        if self.render_log {
+            self.native_log.info(
+                "wayland_render",
+                format_draw_start_log(DrawStartLogInput {
+                    draw_sequence,
+                    draw_kind,
+                    version: self.render_state.render_version,
+                    animate: self.render_state.animate,
+                    sync_action: WaylandVideoSyncAction::Drop,
+                    summary: self.render_state.scene.summary(),
+                    snapshot: &self.present_snapshot(),
+                    geometry: &self.geometry,
+                }),
+            );
+        }
+
+        let Some(env) = self.raster_env.as_mut() else {
+            return;
+        };
+
+        let frame_request = self.present.prepare_draw(draw_kind, &self.window, &self.qh);
+        if self.render_log
+            && let Some(request) = frame_request
+        {
+            self.native_log.info(
+                "wayland_render",
+                format!(
+                    "frame callback requested\n  sequence: {}\n  draw_sequence: {draw_sequence}\n  render_version: {}",
+                    request.sequence, self.render_state.render_version
+                ),
+            );
+        }
+
+        let render_started_at = Instant::now();
+        let (frame, render_timings) = env.renderer.render_with_timings(&self.render_state);
+        if let Some(stats) = self.stats.as_ref() {
+            stats.record_render_timings(render_started_at.elapsed(), &render_timings);
+        }
+
+        let present_submit_started_at = Instant::now();
+        self.diagnostics.last_swap_started_at = Some(present_submit_started_at);
+        self.watchdog.mark_swap_start();
+
+        let present_result = match &mut env.present {
+            RasterWaylandPresentEnv::Cpu { pool } => {
+                let stride = (self.geometry.buffer_size.0 * 4) as i32;
+                pool.create_buffer(
+                    self.geometry.buffer_size.0 as i32,
+                    self.geometry.buffer_size.1 as i32,
+                    stride,
+                    wl_shm::Format::Argb8888,
+                )
+                .map_err(|err| format!("failed to create Wayland raster buffer: {err}"))
+                .and_then(|(buffer, canvas)| {
+                    rgba_to_wayland_argb(&frame.data, canvas);
+                    self.window.wl_surface().damage_buffer(
+                        0,
+                        0,
+                        self.geometry.buffer_size.0 as i32,
+                        self.geometry.buffer_size.1 as i32,
+                    );
+                    buffer
+                        .attach_to(self.window.wl_surface())
+                        .map_err(|err| format!("failed to attach Wayland raster buffer: {err}"))?;
+                    self.window.commit();
+                    Ok(())
+                })
+            }
+            RasterWaylandPresentEnv::GpuUpload { gl_env } => gl_env
+                .frame_surface
+                .present_rgba_pixels(
+                    self.geometry.buffer_size.0,
+                    self.geometry.buffer_size.1,
+                    &frame.data,
+                )
+                .and_then(|()| {
+                    gl_env
+                        .gl_surface
+                        .swap_buffers(&gl_env.gl_context)
+                        .map_err(|err| format!("wayland raster gpu-upload swap failed: {err}"))
+                }),
+        };
+
+        if let Err(err) = present_result {
+            eprintln!("wayland raster present failed: {err}");
+            self.running_flag.store(false, Ordering::Relaxed);
+            self.exit = true;
+            return;
+        }
+
+        let present_submit = present_submit_started_at.elapsed();
+        let swap_done_at = Instant::now();
+        self.latest_frame.publish_rgba(
+            self.geometry.buffer_size.0,
+            self.geometry.buffer_size.1,
+            self.geometry.scale_factor(),
+            frame.data,
+        );
+        self.diagnostics.last_swap_done_at = Some(swap_done_at);
+        self.diagnostics.last_draw_finished_at = Some(swap_done_at);
+        self.watchdog.mark_swap_done();
+
+        if let (Some(stats), Some(submitted_at)) =
+            (self.stats.as_ref(), self.render_state.pipeline_submitted_at)
+        {
+            stats.record_pipeline_submit_to_swap(submitted_at, swap_done_at);
+        }
+        if self.render_state.pipeline_submitted_at.is_some() {
+            self.pending_pipeline_swap_done_at = Some(swap_done_at);
+        }
+        self.pending_pipeline_submitted_at = earliest_pipeline_instant(
+            self.pending_pipeline_submitted_at,
+            self.render_state.pipeline_submitted_at.take(),
+        );
+        self.render_state.pipeline_render_queued_at = None;
+
+        if let Some(stats) = self.stats.as_ref() {
+            stats.record_present_submit(present_submit);
+            stats.record_frame_present();
+        }
+
+        if self.renderer_animation_log && (self.render_state.animate || animation_trace.is_some()) {
+            self.native_log.info(
+                "renderer_animation",
+                format_animation_draw_log(AnimationDrawLogInput {
+                    backend_label: "wayland-raster",
+                    version: self.render_state.render_version,
+                    draw_kind,
+                    animate: self.render_state.animate,
+                    trace: animation_trace,
+                    draw_started_at,
+                    swap_done_at,
+                    present_submit,
+                }),
+            );
+        }
+
+        if draw_kind == DrawKind::Normal {
+            let fallback_presented_at = std::time::Instant::now();
+            let (presented_at, predicted_next_present_at) = self
+                .present
+                .present_timing_for_normal_draw(fallback_presented_at);
+
+            if let Some(stats) = self.stats.as_ref() {
+                stats.record_display_interval(
+                    predicted_next_present_at.saturating_duration_since(presented_at),
+                );
+            }
+
+            self.send_present_timing(presented_at, predicted_next_present_at);
+
+            if self.render_state.animate {
+                self.send_animation_pulse(presented_at, predicted_next_present_at);
+            }
+        }
+
+        self.present
+            .finish_present(self.render_state.render_version, draw_kind, false);
+        self.render_animation_trace = None;
+    }
+
     fn apply_surface_scale_state(&mut self) {
         self.geometry
             .apply_to_surface(&self.window, self.protocols.viewport.as_ref());
@@ -1225,7 +1496,55 @@ impl WaylandApp {
         let geometry_changed = previous != self.geometry;
         let buffer_changed = previous.buffer_size != self.geometry.buffer_size;
 
-        if self.env.is_none() {
+        if matches!(self.renderer_backend, RendererBackendKind::Raster) {
+            if self.raster_env.is_none() {
+                match RasterWaylandEnv::new(
+                    &self.shm,
+                    conn,
+                    self.window.wl_surface(),
+                    self.geometry.buffer_size,
+                    self.raster_present,
+                    self.renderer_cache_config,
+                ) {
+                    Ok(env) => {
+                        self.raster_env = Some(env);
+                        self.video_import = WaylandVideoImportState::Unavailable;
+                        if self.render_log {
+                            self.log_render_diagnostic(format!(
+                                "raster env created\n  geometry: {}",
+                                format_surface_geometry(&self.geometry),
+                            ));
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("wayland raster setup failed: {err}");
+                        if self.render_log {
+                            self.log_render_diagnostic(format!(
+                                "raster env create failed\n  geometry: {}\n  error: {err}",
+                                format_surface_geometry(&self.geometry),
+                            ));
+                        }
+                        self.running_flag.store(false, Ordering::Relaxed);
+                        self.exit = true;
+                        return;
+                    }
+                }
+            } else if buffer_changed && let Some(env) = self.raster_env.as_mut() {
+                if let Err(err) = env.resize(self.geometry.buffer_size) {
+                    eprintln!("wayland raster resize failed: {err}");
+                    self.running_flag.store(false, Ordering::Relaxed);
+                    self.exit = true;
+                    return;
+                }
+                if self.render_log {
+                    self.log_render_diagnostic(format!(
+                        "raster env resized\n  previous: {}\n  current: {}",
+                        format_surface_geometry(&previous),
+                        format_surface_geometry(&self.geometry),
+                    ));
+                }
+            }
+        } else if self.env.is_none() {
             self.video_import = WaylandVideoImportState::PendingGlInit;
 
             match create_renderer_env(
@@ -2374,6 +2693,7 @@ pub(crate) fn run(args: WaylandRunArgs) {
         renderer_stats_log,
         renderer_animation_log,
         renderer_backend,
+        raster_present,
         renderer_cache_config,
         latest_frame,
         native_log,
@@ -2519,6 +2839,7 @@ pub(crate) fn run(args: WaylandRunArgs) {
             renderer_stats_log,
             renderer_animation_log,
             renderer_backend,
+            raster_present,
             renderer_cache_config,
             latest_frame,
             native_log,
@@ -2551,7 +2872,7 @@ pub(crate) fn run(args: WaylandRunArgs) {
 
     let _ = proxy_tx.send(Ok(WindowBackendStartupInfo {
         wake,
-        prime_video_supported: true,
+        prime_video_supported: matches!(renderer_backend, RendererBackendKind::Gl),
     }));
     app.log_render_diagnostic(format!(
         "startup complete\n  geometry: {}\n  env_ready: {}\n  {}",

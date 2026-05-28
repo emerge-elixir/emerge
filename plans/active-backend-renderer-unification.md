@@ -1,7 +1,7 @@
 # Active Plan: Backend / Renderer Unification and Headless Output
 
 Created: 2026-05-27
-Status: phase 6 complete
+Status: phase 7 complete
 
 ## Confirmed decisions
 
@@ -620,16 +620,20 @@ Status: implemented in this slice.
 
 ### Phase 7: Wayland raster renderer support
 
-- Add Wayland + raster presentation support.
-- Implement CPU raster + GPU upload for explicit raster testing when GL exists.
-- Implement true CPU-present fallback with `wl_shm` so `backend_renderer: :auto`
-  can still work when GL is unavailable.
-- Explicit `backend_renderer: :raster` or `backend_renderer: [raster: ...]`
-  should mean Skia draws through the raster renderer, even if presentation
-  uploads the resulting pixels.
-- Use the nested `present` option to force raster present path (`:auto`, GPU
-  upload, or CPU present) so tests can exercise both paths.
-- Renderer cache is disabled by default for raster rendering; existing
+Status: implemented in this slice.
+
+- [x] Add Wayland + raster presentation support.
+- [x] Implement CPU raster + GPU upload for explicit raster testing when GL
+  exists.
+- [x] Implement true CPU-present path with `wl_shm`; this provides the fallback
+  presentation path needed for GL-unavailable Wayland sessions.
+- [x] Explicit `backend_renderer: :raster` or `backend_renderer: [raster: ...]`
+  means Skia draws through the raster renderer, even if presentation uploads the
+  resulting pixels.
+- [x] Use the nested `present` option to force raster present path (`:auto`, GPU
+  upload, or CPU present). `:auto` currently chooses CPU present for the raster
+  renderer so it is GL-free by default.
+- [x] Renderer cache is disabled by default for raster rendering; existing
   `renderer_cache: [enabled: true]` is enough explicit opt-in for raster
   paint-layer caching with CPU-memory payloads.
 

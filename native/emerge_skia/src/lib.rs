@@ -420,7 +420,7 @@ pub(crate) enum RendererBackendKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RasterPresentKind {
+pub(crate) enum RasterPresentKind {
     Auto,
     GpuUpload,
     Cpu,
@@ -931,7 +931,7 @@ fn raster_present_capabilities(backend: BackendKind) -> Vec<&'static str> {
         #[cfg(feature = "macos")]
         BackendKind::Macos => Vec::new(),
         #[cfg(all(feature = "wayland", target_os = "linux"))]
-        BackendKind::Wayland => Vec::new(),
+        BackendKind::Wayland => vec!["gpu_upload", "cpu"],
         #[cfg(all(feature = "drm", target_os = "linux"))]
         BackendKind::Drm => Vec::new(),
     }
@@ -1411,6 +1411,7 @@ fn start_native_renderer_with_config(
                     renderer_stats_log,
                     renderer_animation_log,
                     renderer_backend: selected_renderer,
+                    raster_present: config.backend_renderer.raster_present,
                     renderer_cache_config,
                     latest_frame: latest_frame_clone,
                     native_log: native_log_clone,
@@ -3182,20 +3183,17 @@ mod tests {
 
     #[cfg(all(feature = "wayland", target_os = "linux"))]
     #[test]
-    fn backend_renderer_matrix_rejects_unimplemented_wayland_raster() {
-        let err = ensure_backend_renderer_supported(
-            BackendKind::Wayland,
-            BackendRendererConfig {
-                kind: RendererBackendKind::Raster,
-                raster_present: RasterPresentKind::Cpu,
-                raster_present_configured: true,
-            },
-        )
-        .expect_err("wayland raster is not implemented yet");
-
-        assert_eq!(
-            err,
-            "backend_renderer :raster is not implemented yet for backend :wayland"
+    fn backend_renderer_matrix_allows_wayland_raster() {
+        assert!(
+            ensure_backend_renderer_supported(
+                BackendKind::Wayland,
+                BackendRendererConfig {
+                    kind: RendererBackendKind::Raster,
+                    raster_present: RasterPresentKind::Cpu,
+                    raster_present_configured: true,
+                },
+            )
+            .is_ok()
         );
     }
 
@@ -3502,9 +3500,9 @@ fn ensure_backend_renderer_supported(
         #[cfg(feature = "macos")]
         BackendKind::Macos => ensure_macos_backend_renderer_supported(config),
         #[cfg(all(feature = "wayland", target_os = "linux"))]
-        BackendKind::Wayland => ensure_linux_backend_renderer_supported("wayland", config),
+        BackendKind::Wayland => ensure_wayland_backend_renderer_supported(config),
         #[cfg(all(feature = "drm", target_os = "linux"))]
-        BackendKind::Drm => ensure_linux_backend_renderer_supported("drm", config),
+        BackendKind::Drm => ensure_drm_backend_renderer_supported(config),
     }
 }
 
@@ -3529,19 +3527,26 @@ fn ensure_macos_backend_renderer_supported(config: BackendRendererConfig) -> Res
     }
 }
 
-#[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
-))]
-fn ensure_linux_backend_renderer_supported(
-    backend_label: &str,
-    config: BackendRendererConfig,
-) -> Result<(), String> {
+#[cfg(all(feature = "wayland", target_os = "linux"))]
+fn ensure_wayland_backend_renderer_supported(config: BackendRendererConfig) -> Result<(), String> {
+    match config.kind {
+        RendererBackendKind::Auto | RendererBackendKind::Gl | RendererBackendKind::Raster => Ok(()),
+        RendererBackendKind::Metal => {
+            Err("backend_renderer :metal is only supported with backend :macos".to_string())
+        }
+        RendererBackendKind::Vulkan => {
+            Err("backend_renderer :vulkan is not implemented yet".to_string())
+        }
+    }
+}
+
+#[cfg(all(feature = "drm", target_os = "linux"))]
+fn ensure_drm_backend_renderer_supported(config: BackendRendererConfig) -> Result<(), String> {
     match config.kind {
         RendererBackendKind::Auto | RendererBackendKind::Gl => Ok(()),
-        RendererBackendKind::Raster => Err(format!(
-            "backend_renderer :raster is not implemented yet for backend :{backend_label}"
-        )),
+        RendererBackendKind::Raster => {
+            Err("backend_renderer :raster is not implemented yet for backend :drm".to_string())
+        }
         RendererBackendKind::Metal => {
             Err("backend_renderer :metal is only supported with backend :macos".to_string())
         }
