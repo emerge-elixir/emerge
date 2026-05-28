@@ -50,6 +50,14 @@ defmodule EmergeSkia.Transport.Native do
   end
 
   @impl true
+  def renderer_info(renderer) do
+    case Native.renderer_info(renderer) do
+      {:ok, info} -> {:ok, normalize_renderer_info(info)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @impl true
   def set_input_mask(renderer, mask) do
     Native.set_input_mask(renderer, mask)
   end
@@ -95,6 +103,40 @@ defmodule EmergeSkia.Transport.Native do
   @impl true
   def render_tree_to_png(full_bin, raster_opts, asset_config) do
     Native.render_tree_to_png_nif(full_bin, offscreen_opts(raster_opts, asset_config))
+  end
+
+  defp normalize_renderer_info(info) do
+    %{
+      backend: info.backend |> string_to_renderer_atom(),
+      backend_renderer: %{
+        requested: info.backend_renderer.requested |> string_to_renderer_atom(),
+        selected: info.backend_renderer.selected |> string_to_renderer_atom()
+      },
+      capabilities: %{
+        gpu: info.capabilities.gpu,
+        renderer_cache: info.capabilities.renderer_cache,
+        screenshot: info.capabilities.screenshot,
+        raster_present: Enum.map(info.capabilities.raster_present, &string_to_renderer_atom/1),
+        prime_video: info.capabilities.prime_video
+      }
+    }
+  end
+
+  defp string_to_renderer_atom(value) when is_binary(value) do
+    case value do
+      "auto" -> :auto
+      "gl" -> :gl
+      "raster" -> :raster
+      "metal" -> :metal
+      "vulkan" -> :vulkan
+      "wayland" -> :wayland
+      "drm" -> :drm
+      "macos" -> :macos
+      "headless" -> :headless
+      "gpu_upload" -> :gpu_upload
+      "cpu" -> :cpu
+      other -> String.to_atom(other)
+    end
   end
 
   defp offscreen_opts(raster_opts, asset_config) do

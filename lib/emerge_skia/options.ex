@@ -33,6 +33,15 @@ defmodule EmergeSkia.Options do
 
     validate_backend_renderer_for_backend!(backend, backend_renderer)
 
+    renderer_cache =
+      opts
+      |> Keyword.get(:renderer_cache, [])
+      |> normalize_renderer_cache_opts!()
+      |> maybe_disable_renderer_cache_for_raster_default!(
+        backend_renderer,
+        Keyword.has_key?(opts, :renderer_cache)
+      )
+
     %{
       backend: backend,
       backend_renderer: backend_renderer,
@@ -63,10 +72,7 @@ defmodule EmergeSkia.Options do
       stats_enabled: Keyword.get(opts, :stats, false) == true,
       renderer_stats_log: Keyword.get(opts, :renderer_stats_log, false),
       renderer_animation_log: Keyword.get(opts, :renderer_animation_log, false),
-      renderer_cache:
-        opts
-        |> Keyword.get(:renderer_cache, [])
-        |> normalize_renderer_cache_opts!()
+      renderer_cache: renderer_cache
     }
   end
 
@@ -256,6 +262,21 @@ defmodule EmergeSkia.Options do
     raise ArgumentError,
           ":asset_mode must be :await or :snapshot, got: #{inspect(value)}"
   end
+
+  defp maybe_disable_renderer_cache_for_raster_default!(
+         renderer_cache,
+         %{kind: "raster"},
+         false
+       ) do
+    %{renderer_cache | enabled: false}
+  end
+
+  defp maybe_disable_renderer_cache_for_raster_default!(
+         renderer_cache,
+         _backend_renderer,
+         _configured?
+       ),
+       do: renderer_cache
 
   defp normalize_backend_renderer!(value) when value in [:auto, "auto"] do
     backend_renderer_config("auto", "auto", false)

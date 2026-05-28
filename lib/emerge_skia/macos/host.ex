@@ -164,6 +164,25 @@ defmodule EmergeSkia.Macos.Host do
     end
   end
 
+  @spec renderer_info(Renderer.t()) :: {:ok, map()} | {:error, term()}
+  def renderer_info(%Renderer{} = renderer) do
+    {:ok,
+     %{
+       backend: :macos,
+       backend_renderer: %{
+         requested: renderer.requested_backend_renderer,
+         selected: renderer.backend_renderer
+       },
+       capabilities: %{
+         gpu: renderer.backend_renderer == :metal,
+         renderer_cache: renderer.renderer_cache_enabled,
+         screenshot: false,
+         raster_present: [],
+         prime_video: false
+       }
+     }}
+  end
+
   @spec render_tree_to_pixels(binary(), map(), map()) :: binary() | {:error, term()}
   def render_tree_to_pixels(bytes, raster_opts, asset_config)
       when is_binary(bytes) and is_map(raster_opts) and is_map(asset_config) do
@@ -589,7 +608,7 @@ defmodule EmergeSkia.Macos.Host do
   end
 
   defp handle_reply_request(
-         {:start_session, _native_opts},
+         {:start_session, native_opts},
          from,
          session_id,
          @request_start_session,
@@ -600,11 +619,24 @@ defmodule EmergeSkia.Macos.Host do
       <<backend_tag>> ->
         selected_backend = Protocol.decode_macos_backend_tag(backend_tag)
 
+        requested_backend =
+          native_opts
+          |> Map.fetch!(:backend_renderer)
+          |> Map.fetch!(:kind)
+          |> decode_renderer_kind!()
+
+        renderer_cache_enabled =
+          native_opts
+          |> Map.fetch!(:renderer_cache)
+          |> Map.fetch!(:enabled)
+
         renderer = %Renderer{
           session_id: session_id,
           host_id: state.host_id,
           host_pid: state.host_pid,
-          backend_renderer: selected_backend
+          requested_backend_renderer: requested_backend,
+          backend_renderer: selected_backend,
+          renderer_cache_enabled: renderer_cache_enabled
         }
 
         sessions =
@@ -987,4 +1019,8 @@ defmodule EmergeSkia.Macos.Host do
       reply_pending_error(request, from, message)
     end)
   end
+
+  defp decode_renderer_kind!("auto"), do: :auto
+  defp decode_renderer_kind!("metal"), do: :metal
+  defp decode_renderer_kind!("raster"), do: :raster
 end

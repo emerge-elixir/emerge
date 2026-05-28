@@ -342,16 +342,24 @@ defmodule EmergeSkia.Native do
         }
 
   @type renderer_cache_stats :: %{
+          required(:enabled) => boolean(),
+          required(:disabled_reason) => String.t() | nil,
           required(:paint_layer) => renderer_cache_kind_stats()
         }
 
+  @type backend_renderer_info :: %{
+          required(:requested) => atom() | String.t(),
+          required(:selected) => atom() | String.t()
+        }
+
   @typedoc """
-  Native stats payload. Current schema version: 17.
+  Native stats payload. Current schema version: 18.
   """
   @type stats_snapshot :: %{
           required(:version) => pos_integer(),
           required(:kind) => String.t(),
           required(:enabled) => boolean(),
+          required(:backend_renderer) => backend_renderer_info() | nil,
           required(:window) => %{
             required(:elapsed_ms) => non_neg_integer(),
             required(:reset_on_read) => boolean()
@@ -407,6 +415,22 @@ defmodule EmergeSkia.Native do
   @doc false
   @spec stats(reference(), stats_command()) :: {:ok, stats_snapshot()} | {:error, String.t()}
   def stats(_resource, _command), do: :erlang.nif_error(:nif_not_loaded)
+
+  @type renderer_info :: %{
+          required(:backend) => atom() | String.t(),
+          required(:backend_renderer) => backend_renderer_info(),
+          required(:capabilities) => %{
+            required(:gpu) => boolean(),
+            required(:renderer_cache) => boolean(),
+            required(:screenshot) => boolean(),
+            required(:raster_present) => [atom() | String.t()],
+            required(:prime_video) => boolean()
+          }
+        }
+
+  @doc false
+  @spec renderer_info(reference()) :: {:ok, renderer_info()} | {:error, String.t()}
+  def renderer_info(_renderer), do: :erlang.nif_error(:nif_not_loaded)
 
   # ===========================================================================
   # Tree Functions (Emerge Integration)

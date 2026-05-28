@@ -5,6 +5,7 @@ defmodule EmergeSkiaTest do
 
   alias Emerge.UI.Svg
   alias EmergeSkia.BuildConfig
+  alias EmergeSkia.Macos.Renderer
 
   defp rgba_at(pixels, width, x, y) do
     offset = (y * width + x) * 4
@@ -210,6 +211,30 @@ defmodule EmergeSkiaTest do
 
     assert {:error, {:error, "headless backend is not implemented yet"}} =
              EmergeSkia.start(otp_app: :emerge, backend: :headless)
+  end
+
+  test "renderer_info reports macOS renderer selection without stats" do
+    renderer = %Renderer{
+      session_id: 1,
+      host_id: 1,
+      host_pid: 1,
+      requested_backend_renderer: :auto,
+      backend_renderer: :metal,
+      renderer_cache_enabled: true
+    }
+
+    assert {:ok,
+            %{
+              backend: :macos,
+              backend_renderer: %{requested: :auto, selected: :metal},
+              capabilities: %{
+                gpu: true,
+                renderer_cache: true,
+                screenshot: false,
+                raster_present: [],
+                prime_video: false
+              }
+            }} = EmergeSkia.renderer_info(renderer)
   end
 
   test "start/1 rejects backends that were not compiled in" do

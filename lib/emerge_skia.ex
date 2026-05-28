@@ -655,6 +655,16 @@ defmodule EmergeSkia do
     |> apply(:stats, [renderer, command])
   end
 
+  @doc """
+  Fetch normalized renderer/backend information for a running renderer.
+  """
+  @spec renderer_info(renderer()) :: {:ok, map()} | {:error, term()}
+  def renderer_info(renderer) do
+    renderer
+    |> Transport.for_renderer()
+    |> apply(:renderer_info, [renderer])
+  end
+
   defp normalize_native_ok({:ok, _}), do: :ok
   defp normalize_native_ok({:error, reason}), do: {:error, reason}
 end

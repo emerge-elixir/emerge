@@ -1376,7 +1376,11 @@ impl RendererStatsCollector {
     }
 }
 
-pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSnapshot) -> String {
+pub fn format_renderer_stats_log(
+    backend_label: &str,
+    backend_renderer_label: &str,
+    snapshot: &RendererStatsSnapshot,
+) -> String {
     let timing_lines = RendererTimingMetric::ALL
         .into_iter()
         .map(|metric| format_duration_stat_line(metric.log_label(), snapshot.timing(metric)))
@@ -1388,6 +1392,7 @@ pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSn
             "renderer stats\n",
             "  window\n",
             "    backend: {}\n",
+            "    backend_renderer: {}\n",
             "    duration: {} ms\n",
             "    frames: {}\n",
             "    fps: {:.1}\n",
@@ -1402,6 +1407,7 @@ pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSn
             "    resolve:           hits={} misses={} stores={}"
         ),
         backend_label,
+        backend_renderer_label,
         snapshot.window.as_millis(),
         snapshot.frame_count,
         snapshot.fps,
@@ -2396,11 +2402,12 @@ mod tests {
             ..LayoutCacheStats::default()
         });
 
-        let message = format_renderer_stats_log("wayland", &stats.snapshot());
+        let message = format_renderer_stats_log("wayland", "auto (gl)", &stats.snapshot());
 
         assert!(message.starts_with("renderer stats\n"));
         assert!(message.contains("  window\n"));
         assert!(message.contains("    backend: wayland\n"));
+        assert!(message.contains("    backend_renderer: auto (gl)\n"));
         assert!(message.contains("    frames: 1\n"));
         assert!(message.contains("    fps: "));
         assert!(message.contains("    display: "));
@@ -2475,7 +2482,7 @@ mod tests {
         let stats = RendererStatsCollector::new();
         stats.record_frame_present();
 
-        let message = format_renderer_stats_log("wayland", &stats.snapshot());
+        let message = format_renderer_stats_log("wayland", "auto (gl)", &stats.snapshot());
 
         assert!(message.contains("  renderer cache\n"));
         assert!(message.contains("    paint_layer\n"));

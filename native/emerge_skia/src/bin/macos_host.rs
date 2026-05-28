@@ -240,6 +240,7 @@ mod app {
 
     struct HostSessionStats {
         backend_label: &'static str,
+        backend_renderer_label: String,
         collector: Arc<RendererStatsCollector>,
     }
 
@@ -291,6 +292,7 @@ mod app {
             &self,
             session_id: u64,
             backend_label: &'static str,
+            backend_renderer_label: String,
             stats: Option<Arc<RendererStatsCollector>>,
         ) {
             if let Ok(mut sessions) = self.running_sessions.lock() {
@@ -304,6 +306,7 @@ mod app {
                     session_id,
                     HostSessionStats {
                         backend_label,
+                        backend_renderer_label,
                         collector,
                     },
                 );
@@ -341,6 +344,7 @@ mod app {
                                     session_id,
                                     format_renderer_stats_log(
                                         session_stats.backend_label,
+                                        &session_stats.backend_renderer_label,
                                         &session_stats.collector.snapshot(),
                                     )
                                 ),
@@ -1662,6 +1666,7 @@ mod app {
                             state.register_session(
                                 session_id,
                                 selected_backend_stats_label(selected_backend),
+                                backend_renderer_stats_label(macos_backend, selected_backend),
                                 stats,
                             );
 
@@ -2946,6 +2951,25 @@ mod app {
             SelectedMacosBackend::Metal => "macos-metal",
             SelectedMacosBackend::Raster => "macos-raster",
         }
+    }
+
+    fn requested_backend_name(backend: RequestedMacosBackend) -> &'static str {
+        match backend {
+            RequestedMacosBackend::Auto => "auto",
+            RequestedMacosBackend::Metal => "metal",
+            RequestedMacosBackend::Raster => "raster",
+        }
+    }
+
+    fn backend_renderer_stats_label(
+        requested: RequestedMacosBackend,
+        selected: SelectedMacosBackend,
+    ) -> String {
+        format!(
+            "{} ({})",
+            requested_backend_name(requested),
+            selected_backend_name(selected)
+        )
     }
 
     pub(super) fn encode_button(button: &str) -> u8 {

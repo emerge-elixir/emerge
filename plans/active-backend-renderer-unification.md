@@ -1,7 +1,7 @@
 # Active Plan: Backend / Renderer Unification and Headless Output
 
 Created: 2026-05-27
-Status: phase 3 complete
+Status: phase 4 complete
 
 ## Confirmed decisions
 
@@ -560,36 +560,26 @@ Status: implemented in this slice.
 
 ### Phase 4: Renderer-aware stats, diagnostics, and info
 
-- Report requested and selected renderer backend as structured data, e.g.
+Status: implemented in this slice.
+
+- [x] Report requested and selected renderer backend as structured data, e.g.
   `backend_renderer: %{requested: :auto, selected: :gl}`.
-- Logs may display the same data compactly as `backend_renderer: :auto (:gl)`.
-- Add a public renderer info query, e.g. `EmergeSkia.renderer_info(renderer)`,
+  - Native stats schema is now version 16 and includes `backend_renderer` for
+    renderer resources.
+  - Tree-resource stats keep `backend_renderer: nil`.
+- [x] Logs may display the same data compactly as `backend_renderer: :auto (:gl)`.
+  - Native and macOS-host periodic stats logs now include a compact requested /
+    selected renderer label.
+- [x] Add a public renderer info query, `EmergeSkia.renderer_info(renderer)`,
   that exposes selected platform backend, requested renderer backend, selected
   renderer backend, and relevant capabilities without requiring stats to be
-  enabled. Target shape:
-
-  ```elixir
-  %{
-    backend: :wayland,
-    backend_renderer: %{requested: :auto, selected: :gl},
-    capabilities: %{
-      gpu: true,
-      renderer_cache: true,
-      screenshot: true,
-      raster_present: [:gpu_upload, :cpu]
-    }
-  }
-  ```
-- Keep GPU-only timings/counters out of raster stats. If there is no GPU, there
-  should be no GPU stats section.
-- For raster mode, default renderer-cache stats should show an explicit disabled
-  reason such as `reason: :raster_renderer`.
-- If raster cache is explicitly enabled for experiments/tests, paint-layer cache
-  semantics should stay the same as GPU modes, but raster payloads should be
-  stored in normal CPU memory. Stats should show the actual enabled/disabled
-  state per supported family.
-- Keep present/pipeline timings platform-specific enough to distinguish GL swap,
-  raster upload/present, Metal present, and future headless frame delivery.
+  enabled.
+- [x] Keep GPU-only data out of renderer info for non-GPU selections.
+- [x] For raster mode, default renderer-cache config is disabled unless callers
+  explicitly pass `renderer_cache: [enabled: true]`; stats expose the actual
+  renderer-cache enabled state plus a disabled reason.
+- [x] Keep present/pipeline timings platform-specific enough to distinguish GL
+  swap, raster upload/present, Metal present, and future headless frame delivery.
 
 ### Phase 5: Screenshot API migration
 

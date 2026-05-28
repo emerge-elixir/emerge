@@ -219,6 +219,17 @@ defmodule EmergeSkia.OptionsTest do
                  end
   end
 
+  test "build_start_native_opts! disables renderer cache by default for raster renderer" do
+    assert %{renderer_cache: %{enabled: false}} =
+             Options.build_start_native_opts!(backend_renderer: :raster)
+
+    assert %{renderer_cache: %{enabled: true}} =
+             Options.build_start_native_opts!(
+               backend_renderer: :raster,
+               renderer_cache: [enabled: true]
+             )
+  end
+
   test "normalize_drm_cursor_overrides! normalizes logical and runtime sources" do
     runtime_path =
       Path.join(System.tmp_dir!(), "emerge_cursor_#{System.unique_integer([:positive])}.svg")

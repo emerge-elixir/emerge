@@ -79,7 +79,7 @@ type LayoutFrame<'a> = (Binary<'a>, f32, f32, f32, f32);
 type LayoutFrames<'a> = Vec<LayoutFrame<'a>>;
 
 /// Bump whenever the public `EmergeSkia.stats/2` payload shape changes.
-const STATS_SCHEMA_VERSION: u64 = 17;
+const STATS_SCHEMA_VERSION: u64 = 18;
 
 #[derive(Clone, Copy, Debug, rustler::NifMap)]
 struct StatsConfigureNif {
@@ -99,6 +99,7 @@ struct StatsSnapshotNif {
     version: u64,
     kind: String,
     enabled: bool,
+    backend_renderer: Option<BackendRendererInfoNif>,
     window: StatsWindowNif,
     frames: StatsFrameSnapshotNif,
     timings: StatsTimingSnapshotNif,
@@ -168,7 +169,7 @@ struct StatsDrmSnapshotNif {
     missed_vblanks: u64,
 }
 
-#[derive(Clone, Copy, Debug, rustler::NifMap)]
+#[derive(Clone, Debug, rustler::NifMap)]
 struct StatsCounterSnapshotNif {
     layout_cache: LayoutCacheStatsNif,
     renderer_cache: RendererCacheStatsNif,
@@ -187,8 +188,10 @@ struct LayoutCacheStatsNif {
     resolve_stores: u64,
 }
 
-#[derive(Clone, Copy, Debug, rustler::NifMap)]
+#[derive(Clone, Debug, rustler::NifMap)]
 struct RendererCacheStatsNif {
+    enabled: bool,
+    disabled_reason: Option<String>,
     paint_layer: RendererCachePaintLayerStatsNif,
 }
 
@@ -226,14 +229,12 @@ struct RendererCachePaintLayerStatsNif {
 }
 
 impl StatsSnapshotNif {
-    fn disabled(kind: &'static str) -> Self {
-        Self::from_snapshot(kind, false, false, &RendererStatsSnapshot::default())
-    }
-
     fn from_snapshot(
         kind: &'static str,
         enabled: bool,
         reset_on_read: bool,
+        backend_renderer: Option<BackendRendererInfoNif>,
+        renderer_cache_status: RendererCacheStatus,
         snapshot: &RendererStatsSnapshot,
     ) -> Self {
         let timing = |metric| DurationStatsNif::from(*snapshot.timing(metric));
@@ -242,6 +243,7 @@ impl StatsSnapshotNif {
             version: STATS_SCHEMA_VERSION,
             kind: kind.to_string(),
             enabled,
+            backend_renderer,
             window: StatsWindowNif {
                 elapsed_ms: snapshot.window.as_millis() as u64,
                 reset_on_read,
@@ -298,7 +300,10 @@ impl StatsSnapshotNif {
             },
             counters: StatsCounterSnapshotNif {
                 layout_cache: LayoutCacheStatsNif::from(snapshot.layout_cache),
-                renderer_cache: RendererCacheStatsNif::from(snapshot.renderer_cache.clone()),
+                renderer_cache: RendererCacheStatsNif::from_snapshot(
+                    snapshot.renderer_cache.clone(),
+                    renderer_cache_status,
+                ),
             },
         }
     }
@@ -331,9 +336,14 @@ impl From<LayoutCacheStats> for LayoutCacheStatsNif {
     }
 }
 
-impl From<stats::RendererCacheStatsSnapshot> for RendererCacheStatsNif {
-    fn from(stats: stats::RendererCacheStatsSnapshot) -> Self {
+impl RendererCacheStatsNif {
+    fn from_snapshot(
+        stats: stats::RendererCacheStatsSnapshot,
+        status: RendererCacheStatus,
+    ) -> Self {
         Self {
+            enabled: status.enabled,
+            disabled_reason: status.disabled_reason.map(ToString::to_string),
             paint_layer: RendererCachePaintLayerStatsNif::from(stats.paint_layer),
         }
     }
@@ -433,6 +443,60 @@ impl BackendRendererConfig {
     }
 }
 
+#[derive(Clone, Debug, rustler::NifMap)]
+struct BackendRendererInfoNif {
+    requested: String,
+    selected: String,
+}
+
+#[derive(Clone, Debug, rustler::NifMap)]
+struct RendererCapabilitiesNif {
+    gpu: bool,
+    renderer_cache: bool,
+    screenshot: bool,
+    raster_present: Vec<String>,
+    prime_video: bool,
+}
+
+#[derive(Clone, Debug, rustler::NifMap)]
+struct RendererInfoNif {
+    backend: String,
+    backend_renderer: BackendRendererInfoNif,
+    capabilities: RendererCapabilitiesNif,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RendererCacheStatus {
+    enabled: bool,
+    disabled_reason: Option<&'static str>,
+}
+
+impl RendererCacheStatus {
+    fn enabled() -> Self {
+        Self {
+            enabled: true,
+            disabled_reason: None,
+        }
+    }
+
+    fn disabled(reason: &'static str) -> Self {
+        Self {
+            enabled: false,
+            disabled_reason: Some(reason),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RendererRuntimeInfo {
+    backend: BackendKind,
+    requested_renderer: RendererBackendKind,
+    selected_renderer: RendererBackendKind,
+    raster_present: RasterPresentKind,
+    renderer_cache: RendererCacheStatus,
+    prime_video_supported: bool,
+}
+
 struct RendererResource {
     running_flag: Arc<AtomicBool>,
     backend_wake: BackendWakeHandle,
@@ -446,6 +510,7 @@ struct RendererResource {
     prime_video_supported: bool,
     native_log: Arc<NativeLogRelay>,
     stats: Option<Arc<RendererStatsCollector>>,
+    info: RendererRuntimeInfo,
     close_signal_log: bool,
     log_render: bool,
     log_input: bool,
@@ -737,13 +802,115 @@ fn shutdown_renderer_runtime(ctx: ShutdownRuntimeContext, mut handles: RendererH
     allow(dead_code)
 )]
 fn backend_stats_label(backend: BackendKind) -> &'static str {
+    backend.as_str()
+}
+
+impl BackendKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            #[cfg(feature = "macos")]
+            BackendKind::Macos => "macos",
+            #[cfg(all(feature = "wayland", target_os = "linux"))]
+            BackendKind::Wayland => "wayland",
+            #[cfg(all(feature = "drm", target_os = "linux"))]
+            BackendKind::Drm => "drm",
+        }
+    }
+}
+
+impl RendererBackendKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            RendererBackendKind::Auto => "auto",
+            RendererBackendKind::Gl => "gl",
+            RendererBackendKind::Raster => "raster",
+            RendererBackendKind::Metal => "metal",
+            RendererBackendKind::Vulkan => "vulkan",
+        }
+    }
+
+    fn has_gpu(self) -> bool {
+        matches!(
+            self,
+            RendererBackendKind::Gl | RendererBackendKind::Metal | RendererBackendKind::Vulkan
+        )
+    }
+}
+
+impl RasterPresentKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            RasterPresentKind::Auto => "auto",
+            RasterPresentKind::GpuUpload => "gpu_upload",
+            RasterPresentKind::Cpu => "cpu",
+        }
+    }
+}
+
+impl RendererRuntimeInfo {
+    fn backend_renderer_nif(self) -> BackendRendererInfoNif {
+        BackendRendererInfoNif {
+            requested: self.requested_renderer.as_str().to_string(),
+            selected: self.selected_renderer.as_str().to_string(),
+        }
+    }
+
+    fn renderer_label(self) -> String {
+        format!(
+            "{} ({})",
+            self.requested_renderer.as_str(),
+            self.selected_renderer.as_str()
+        )
+    }
+
+    fn to_nif(self) -> RendererInfoNif {
+        let _requested_raster_present = self.raster_present.as_str();
+
+        RendererInfoNif {
+            backend: self.backend.as_str().to_string(),
+            backend_renderer: self.backend_renderer_nif(),
+            capabilities: RendererCapabilitiesNif {
+                gpu: self.selected_renderer.has_gpu(),
+                renderer_cache: self.renderer_cache.enabled,
+                screenshot: false,
+                raster_present: raster_present_capabilities(self.backend)
+                    .into_iter()
+                    .map(ToString::to_string)
+                    .collect(),
+                prime_video: self.prime_video_supported,
+            },
+        }
+    }
+}
+
+fn raster_present_capabilities(backend: BackendKind) -> Vec<&'static str> {
     match backend {
         #[cfg(feature = "macos")]
-        BackendKind::Macos => "macos",
+        BackendKind::Macos => Vec::new(),
         #[cfg(all(feature = "wayland", target_os = "linux"))]
-        BackendKind::Wayland => "wayland",
+        BackendKind::Wayland => Vec::new(),
         #[cfg(all(feature = "drm", target_os = "linux"))]
-        BackendKind::Drm => "drm",
+        BackendKind::Drm => Vec::new(),
+    }
+}
+
+fn selected_renderer_for_config(config: BackendRendererConfig) -> RendererBackendKind {
+    match config.kind {
+        RendererBackendKind::Auto => RendererBackendKind::Gl,
+        explicit => explicit,
+    }
+}
+
+fn renderer_cache_status(
+    selected_renderer: RendererBackendKind,
+    config: RendererCacheConfig,
+) -> RendererCacheStatus {
+    if config.enabled {
+        RendererCacheStatus::enabled()
+    } else if matches!(selected_renderer, RendererBackendKind::Raster) {
+        RendererCacheStatus::disabled("raster_renderer")
+    } else {
+        RendererCacheStatus::disabled("configured_disabled")
     }
 }
 
@@ -760,6 +927,7 @@ fn spawn_running_heartbeat(
     native_log: Arc<NativeLogRelay>,
     stats: Option<Arc<RendererStatsCollector>>,
     backend_label: &'static str,
+    backend_renderer_label: String,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let mut ticks = 0_u64;
@@ -773,7 +941,11 @@ fn spawn_running_heartbeat(
                 if ticks.is_multiple_of(10) {
                     native_log.info(
                         "renderer_stats",
-                        stats::format_renderer_stats_log(backend_label, &stats.snapshot()),
+                        stats::format_renderer_stats_log(
+                            backend_label,
+                            &backend_renderer_label,
+                            &stats.snapshot(),
+                        ),
                     );
                 }
             }
@@ -1079,6 +1251,17 @@ fn start_native_renderer_with_config(
     let renderer_stats = (config.stats_enabled || config.renderer_stats_log)
         .then(|| Arc::new(RendererStatsCollector::new()));
     let backend_label = backend_stats_label(config.backend);
+    let selected_renderer = selected_renderer_for_config(config.backend_renderer);
+    let renderer_cache = renderer_cache_status(selected_renderer, config.renderer_cache_config);
+    let backend_renderer_label = RendererRuntimeInfo {
+        backend: config.backend,
+        requested_renderer: config.backend_renderer.kind,
+        selected_renderer,
+        raster_present: config.backend_renderer.raster_present,
+        renderer_cache,
+        prime_video_supported: false,
+    }
+    .renderer_label();
     set_render_log_enabled(log_render);
 
     let (tree_tx, tree_rx) = bounded(512);
@@ -1117,6 +1300,7 @@ fn start_native_renderer_with_config(
             Arc::clone(&native_log),
             heartbeat_stats,
             backend_label,
+            backend_renderer_label,
         )),
         ..RendererHandles::default()
     };
@@ -1429,6 +1613,14 @@ fn start_native_renderer_with_config(
         prime_video_supported,
         native_log,
         stats: renderer_stats,
+        info: RendererRuntimeInfo {
+            backend,
+            requested_renderer: config.backend_renderer.kind,
+            selected_renderer,
+            raster_present: config.backend_renderer.raster_present,
+            renderer_cache,
+            prime_video_supported,
+        },
         close_signal_log,
         log_render,
         log_input,
@@ -1732,6 +1924,11 @@ fn set_log_target(renderer: ResourceArc<RendererResource>, pid: Option<LocalPid>
     atoms::ok()
 }
 
+#[rustler::nif]
+fn renderer_info(renderer: ResourceArc<RendererResource>) -> Result<RendererInfoNif, String> {
+    Ok(renderer.info.to_nif())
+}
+
 #[rustler::nif(name = "stats", schedule = "DirtyCpu")]
 fn stats_nif<'a>(
     env: Env<'a>,
@@ -1758,20 +1955,28 @@ fn renderer_stats_snapshot<'a>(
         return Err("renderer stats are configured when the renderer starts".to_string());
     }
 
+    let snapshot = |enabled, reset_on_read, snapshot: RendererStatsSnapshot| {
+        StatsSnapshotNif::from_snapshot(
+            "renderer",
+            enabled,
+            reset_on_read,
+            Some(renderer.info.backend_renderer_nif()),
+            renderer.info.renderer_cache,
+            &snapshot,
+        )
+        .encode(env)
+    };
+
     let Some(stats) = renderer.stats.as_ref() else {
-        return Ok(StatsSnapshotNif::disabled("renderer").encode(env));
+        return Ok(snapshot(false, false, RendererStatsSnapshot::default()));
     };
 
     match command {
-        StatsCommandNif::Peek => {
-            Ok(StatsSnapshotNif::from_snapshot("renderer", true, false, &stats.peek()).encode(env))
-        }
-        StatsCommandNif::Take => {
-            Ok(StatsSnapshotNif::from_snapshot("renderer", true, true, &stats.take()).encode(env))
-        }
+        StatsCommandNif::Peek => Ok(snapshot(true, false, stats.peek())),
+        StatsCommandNif::Take => Ok(snapshot(true, true, stats.take())),
         StatsCommandNif::Reset => {
             stats.reset();
-            Ok(StatsSnapshotNif::from_snapshot("renderer", true, false, &stats.peek()).encode(env))
+            Ok(snapshot(true, false, stats.peek()))
         }
         StatsCommandNif::Configure(_) => unreachable!(),
     }
@@ -1782,6 +1987,18 @@ fn tree_stats_snapshot<'a>(
     tree_res: ResourceArc<TreeResource>,
     command: StatsCommandNif,
 ) -> Result<Term<'a>, String> {
+    let tree_snapshot = |enabled, reset_on_read, snapshot: RendererStatsSnapshot| {
+        StatsSnapshotNif::from_snapshot(
+            "tree",
+            enabled,
+            reset_on_read,
+            None,
+            RendererCacheStatus::disabled("tree_resource"),
+            &snapshot,
+        )
+        .encode(env)
+    };
+
     match command {
         StatsCommandNif::Configure(config) => {
             let next_stats = config
@@ -1805,9 +2022,13 @@ fn tree_stats_snapshot<'a>(
             }
 
             if let Some(stats) = next_stats {
-                Ok(StatsSnapshotNif::from_snapshot("tree", true, false, &stats.peek()).encode(env))
+                Ok(tree_snapshot(true, false, stats.peek()))
             } else {
-                Ok(StatsSnapshotNif::disabled("tree").encode(env))
+                Ok(tree_snapshot(
+                    false,
+                    false,
+                    RendererStatsSnapshot::default(),
+                ))
             }
         }
         StatsCommandNif::Peek | StatsCommandNif::Take | StatsCommandNif::Reset => {
@@ -1818,28 +2039,19 @@ fn tree_stats_snapshot<'a>(
                 .clone();
 
             let Some(stats) = stats else {
-                return Ok(StatsSnapshotNif::disabled("tree").encode(env));
+                return Ok(tree_snapshot(
+                    false,
+                    false,
+                    RendererStatsSnapshot::default(),
+                ));
             };
 
             match command {
-                StatsCommandNif::Peek => {
-                    Ok(
-                        StatsSnapshotNif::from_snapshot("tree", true, false, &stats.peek())
-                            .encode(env),
-                    )
-                }
-                StatsCommandNif::Take => {
-                    Ok(
-                        StatsSnapshotNif::from_snapshot("tree", true, true, &stats.take())
-                            .encode(env),
-                    )
-                }
+                StatsCommandNif::Peek => Ok(tree_snapshot(true, false, stats.peek())),
+                StatsCommandNif::Take => Ok(tree_snapshot(true, true, stats.take())),
                 StatsCommandNif::Reset => {
                     stats.reset();
-                    Ok(
-                        StatsSnapshotNif::from_snapshot("tree", true, false, &stats.peek())
-                            .encode(env),
-                    )
+                    Ok(tree_snapshot(true, false, stats.peek()))
                 }
                 StatsCommandNif::Configure(_) => unreachable!(),
             }
@@ -2629,6 +2841,14 @@ mod tests {
             prime_video_supported: false,
             native_log: Arc::new(NativeLogRelay::default()),
             stats: None,
+            info: RendererRuntimeInfo {
+                backend: BackendKind::Wayland,
+                requested_renderer: RendererBackendKind::Auto,
+                selected_renderer: RendererBackendKind::Gl,
+                raster_present: RasterPresentKind::Auto,
+                renderer_cache: RendererCacheStatus::enabled(),
+                prime_video_supported: false,
+            },
             close_signal_log: false,
             log_render: false,
             log_input: false,
