@@ -342,12 +342,37 @@ pub(crate) fn reconcile_hover_stack(
         return active;
     }
 
+    let active_reconciled = current
+        .iter()
+        .filter_map(|tracker| {
+            active
+                .iter()
+                .find(|active| active.element_id == tracker.element_id)
+                .cloned()
+        })
+        .collect::<Vec<_>>();
+
+    if active_reconciled.len() == current.len() {
+        return active_reconciled;
+    }
+
+    // Keep runtime-owned hover through rebuilds even when the retained tree has
+    // not yet applied the hover-active flag (for example, an app patch racing
+    // the SetMouseOverActive tree message). The next cursor revalidation will
+    // clear it if the updated region no longer contains the cursor.
+    let tracked = tracked_hover_trackers(base);
+
     current
         .iter()
         .filter_map(|tracker| {
             active
                 .iter()
                 .find(|active| active.element_id == tracker.element_id)
+                .or_else(|| {
+                    tracked
+                        .iter()
+                        .find(|tracked| tracked.element_id == tracker.element_id)
+                })
                 .cloned()
         })
         .collect()
@@ -358,6 +383,16 @@ fn active_hover_trackers(base: &Registry) -> Vec<HoverTracker> {
         .view()
         .iter_precedence()
         .filter_map(active_hover_tracker_from_listener)
+        .collect();
+    trackers.reverse();
+    trackers
+}
+
+fn tracked_hover_trackers(base: &Registry) -> Vec<HoverTracker> {
+    let mut trackers: Vec<_> = base
+        .view()
+        .iter_precedence()
+        .filter_map(tracked_hover_tracker_from_listener)
         .collect();
     trackers.reverse();
     trackers
@@ -383,6 +418,21 @@ fn active_hover_tracker_from_listener(listener: &Listener) -> Option<HoverTracke
         leave_actions: actions.clone(),
         cache_hash: hasher.finish(),
     })
+}
+
+fn tracked_hover_tracker_from_listener(listener: &Listener) -> Option<HoverTracker> {
+    let element_id = listener.element_id?;
+    let ListenerMatcher::PointerEnterInside { .. } = &listener.matcher else {
+        return None;
+    };
+    let ListenerCompute::HoverEnter { stack } = &listener.compute else {
+        return None;
+    };
+
+    stack
+        .iter()
+        .find(|tracker| tracker.element_id == element_id)
+        .cloned()
 }
 
 /// Precedence-ordered read view over a higher-priority registry layered above a
