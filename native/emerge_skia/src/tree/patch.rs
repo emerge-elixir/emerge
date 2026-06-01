@@ -12,19 +12,25 @@
 use super::animation::{
     AnimationSpec, retarget_exit_animation_spec_to_current_visual, scale_animation_spec,
 };
-use super::attrs::{AlignX, Attrs, decode_attrs, effective_scrollbar_x, effective_scrollbar_y};
+use super::attrs::{
+    AlignX, Attrs, BorderWidth, Length, Padding, decode_attrs, effective_scrollbar_x,
+    effective_scrollbar_y,
+};
 use super::deserialize::{DecodeError, decode_tree};
 #[cfg(test)]
 use super::element::NearbyMounts;
 use super::element::{
-    Element, ElementKind, ElementTree, GhostAttachment, NearbyMount, NearbySlot, NodeId, NodeIx,
-    NodeResidency, ParentLink, SliderValueOrigin, TextInputContentOrigin,
+    Element, ElementKind, ElementTree, Frame, GhostAttachment, NearbyMount, NearbySlot, NodeId,
+    NodeIx, NodeResidency, ParentLink, SliderValueOrigin, TextInputContentOrigin,
 };
 use super::invalidation::{
     TreeInvalidation, attrs_change_affects_registry_refresh, classify_attrs_change,
     downgrade_content_measure_when_layout_independent,
 };
-use super::layout::{effective_layout_scale_for_node, layout_nearby_mounts_for_refresh};
+use super::layout::{
+    FontContext, SkiaTextMeasurer, TextMeasurer, effective_layout_scale_for_node,
+    font_info_with_inheritance, layout_nearby_mounts_for_refresh,
+};
 use std::collections::{HashMap, HashSet};
 
 /// A single patch operation.
@@ -277,28 +283,43 @@ pub fn apply_patches(
     Ok(invalidation)
 }
 
-fn text_content_patch_can_skip_layout(tree: &ElementTree, id: &NodeId) -> bool {
-    let Some(mut current_ix) = tree.ix_of(id) else {
-        return false;
-    };
+#[derive(Clone, Debug)]
+struct TextContentPatchLayoutSkipPath {
+    text_ix: NodeIx,
+    wrapper_ixs: Vec<NodeIx>,
+    column_ix: NodeIx,
+}
+
+fn text_content_patch_layout_skip_path(
+    tree: &ElementTree,
+    id: &NodeId,
+) -> Option<TextContentPatchLayoutSkipPath> {
+    let text_ix = tree.ix_of(id)?;
+    let mut current_ix = text_ix;
+    let mut wrapper_ixs = Vec::new();
 
     loop {
-        let Some(parent_ix) = tree.parent_link_of(current_ix).and_then(|link| match link {
-            ParentLink::Child { parent } => Some(parent),
-            ParentLink::Nearby { .. } => None,
-        }) else {
-            return false;
-        };
-        let Some(parent) = tree.get_ix(parent_ix) else {
-            return false;
-        };
+        let parent_ix = tree
+            .parent_link_of(current_ix)
+            .and_then(|link| match link {
+                ParentLink::Child { parent } => Some(parent),
+                ParentLink::Nearby { .. } => None,
+            })?;
+        let parent = tree.get_ix(parent_ix)?;
         if plain_single_child_wrapper_contains(tree, parent_ix, current_ix, parent) {
+            wrapper_ixs.push(parent_ix);
             current_ix = parent_ix;
             continue;
         }
 
-        return parent.spec.kind == ElementKind::Column
-            && parent.layout.effective.align_x.unwrap_or(AlignX::Left) == AlignX::Left;
+        return (parent.spec.kind == ElementKind::Column
+            && parent.layout.effective.align_x.unwrap_or(AlignX::Left) == AlignX::Left
+            && !attrs_affect_interaction_or_registry(&parent.layout.effective))
+        .then_some(TextContentPatchLayoutSkipPath {
+            text_ix,
+            wrapper_ixs,
+            column_ix: parent_ix,
+        });
     }
 }
 
@@ -432,6 +453,313 @@ fn attrs_affect_interaction_or_registry(attrs: &Attrs) -> bool {
         || attrs.mouse_down.is_some()
 }
 
+fn refresh_text_content_layout_skip_frames(
+    tree: &mut ElementTree,
+    path: &TextContentPatchLayoutSkipPath,
+) -> bool {
+    if !path
+        .wrapper_ixs
+        .iter()
+        .copied()
+        .chain([path.text_ix, path.column_ix])
+        .all(|ix| {
+            tree.get_ix(ix)
+                .is_some_and(|element| element.layout.frame.is_some())
+        })
+    {
+        return false;
+    }
+
+    let Some(text_frame) = refreshed_text_content_frame(tree, path.text_ix) else {
+        return false;
+    };
+    resize_all_layout_frames_ix(tree, path.text_ix, text_frame.width, text_frame.height);
+
+    let mut child_width = text_frame.width;
+    let mut child_height = text_frame.height;
+    for wrapper_ix in path.wrapper_ixs.iter().copied() {
+        resize_all_layout_frames_ix(tree, wrapper_ix, child_width, child_height);
+        child_width = tree
+            .get_ix(wrapper_ix)
+            .and_then(|element| element.layout.frame)
+            .map(|frame| frame.width)
+            .unwrap_or(child_width);
+        child_height = tree
+            .get_ix(wrapper_ix)
+            .and_then(|element| element.layout.frame)
+            .map(|frame| frame.height)
+            .unwrap_or(child_height);
+    }
+
+    refresh_left_column_content_width(tree, path.column_ix);
+    true
+}
+
+fn refreshed_text_content_frame(tree: &ElementTree, text_ix: NodeIx) -> Option<Frame> {
+    let element = tree.get_ix(text_ix)?;
+    let frame = element.layout.frame?;
+    let attrs = &element.layout.effective;
+    let content = attrs.content.as_deref().unwrap_or("");
+    let inherited = inherited_font_context_for_ix(tree, text_ix);
+    let font_size = attrs
+        .font_size
+        .map(|size| size as f32)
+        .or(inherited.font_size)
+        .unwrap_or(16.0);
+    let (family, weight, italic) = font_info_with_inheritance(attrs, &inherited);
+    let letter_spacing = attrs
+        .font_letter_spacing
+        .map(|spacing| spacing as f32)
+        .or(inherited.font_letter_spacing)
+        .unwrap_or(0.0);
+    let word_spacing = attrs
+        .font_word_spacing
+        .map(|spacing| spacing as f32)
+        .or(inherited.font_word_spacing)
+        .unwrap_or(0.0);
+    let measurer = SkiaTextMeasurer;
+    let width = measure_text_width_with_spacing_for_patch(
+        &measurer,
+        content,
+        font_size,
+        &family,
+        weight,
+        italic,
+        (letter_spacing, word_spacing),
+    );
+    Some(Frame {
+        width,
+        height: frame.height,
+        content_width: width,
+        content_height: frame.height,
+        ..frame
+    })
+}
+
+fn inherited_font_context_for_ix(tree: &ElementTree, ix: NodeIx) -> FontContext {
+    let mut ancestors = Vec::new();
+    let mut current = Some(ix);
+    while let Some(current_ix) = current {
+        current = tree.parent_link_of(current_ix).and_then(|link| match link {
+            ParentLink::Child { parent } => Some(parent),
+            ParentLink::Nearby { .. } => None,
+        });
+        if let Some(parent_ix) = current {
+            ancestors.push(parent_ix);
+        }
+    }
+
+    ancestors
+        .into_iter()
+        .rev()
+        .filter_map(|ancestor_ix| tree.get_ix(ancestor_ix))
+        .fold(FontContext::default(), |context, ancestor| {
+            context.merge_with_attrs(&ancestor.layout.effective)
+        })
+}
+
+fn measure_text_width_with_spacing_for_patch<M: TextMeasurer>(
+    measurer: &M,
+    text: &str,
+    font_size: f32,
+    family: &str,
+    weight: u16,
+    italic: bool,
+    spacing: (f32, f32),
+) -> f32 {
+    let (letter_spacing, word_spacing) = spacing;
+
+    if text.is_empty() {
+        return 0.0;
+    }
+
+    if letter_spacing == 0.0 && word_spacing == 0.0 {
+        return measurer.measure_visual_width_with_font(text, font_size, family, weight, italic);
+    }
+
+    let mut total = 0.0;
+    let mut chars = text.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        total += measurer
+            .measure_with_font(&ch.to_string(), font_size, family, weight, italic)
+            .0;
+
+        if chars.peek().is_some() {
+            total += letter_spacing;
+            if ch.is_whitespace() {
+                total += word_spacing;
+            }
+        }
+    }
+
+    total
+}
+
+fn refresh_left_column_content_width(tree: &mut ElementTree, column_ix: NodeIx) {
+    let Some(column) = tree.get_ix(column_ix) else {
+        return;
+    };
+    let attrs = column.layout.effective.clone();
+    let Some(frame) = column.layout.frame else {
+        return;
+    };
+    let insets = patch_content_insets(&attrs);
+    let max_child_width = tree
+        .child_ixs(column_ix)
+        .into_iter()
+        .filter_map(|ix| tree.get_ix(ix).and_then(|child| child.layout.frame))
+        .map(|frame| frame.width)
+        .fold(0.0, f32::max);
+    let intrinsic_width = resolve_intrinsic_length_for_patch(
+        attrs.width.as_ref(),
+        max_child_width + insets.horizontal(),
+    );
+    let resolved_width =
+        resolve_frame_width_for_patch(attrs.width.as_ref(), intrinsic_width, frame.width);
+
+    resize_measured_layout_frames_ix(tree, column_ix, intrinsic_width, frame.height);
+    resize_resolved_layout_frames_ix(tree, column_ix, resolved_width, frame.height);
+}
+
+fn resize_all_layout_frames_ix(tree: &mut ElementTree, ix: NodeIx, width: f32, height: f32) {
+    resize_measured_layout_frames_ix(tree, ix, width, height);
+    resize_resolved_layout_frames_ix(tree, ix, width, height);
+}
+
+fn resize_measured_layout_frames_ix(tree: &mut ElementTree, ix: NodeIx, width: f32, height: f32) {
+    if let Some(element) = tree.get_ix_mut(ix) {
+        resize_frame_option(&mut element.layout.measured_frame, width, height);
+        resize_frame_option(&mut element.layout.measured_render_frame, width, height);
+        element.layout.intrinsic_measure_cache = None;
+        element.layout.subtree_measure_cache = None;
+    }
+}
+
+fn resize_resolved_layout_frames_ix(tree: &mut ElementTree, ix: NodeIx, width: f32, height: f32) {
+    if let Some(element) = tree.get_ix_mut(ix) {
+        resize_frame_option(&mut element.layout.frame, width, height);
+        resize_frame_option(&mut element.layout.render_frame, width, height);
+        element.layout.resolve_cache = None;
+    }
+}
+
+fn resize_frame_option(frame: &mut Option<Frame>, width: f32, height: f32) {
+    if let Some(frame) = frame {
+        frame.width = width;
+        frame.height = height;
+        frame.content_width = width;
+        frame.content_height = height;
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct PatchInsets {
+    top: f32,
+    right: f32,
+    bottom: f32,
+    left: f32,
+}
+
+impl PatchInsets {
+    fn horizontal(self) -> f32 {
+        self.left + self.right
+    }
+}
+
+fn patch_content_insets(attrs: &Attrs) -> PatchInsets {
+    let padding = patch_padding_insets(attrs.padding.as_ref());
+    let border = patch_border_width_insets(attrs.border_width.as_ref());
+    PatchInsets {
+        top: padding.top + border.top,
+        right: padding.right + border.right,
+        bottom: padding.bottom + border.bottom,
+        left: padding.left + border.left,
+    }
+}
+
+fn patch_padding_insets(padding: Option<&Padding>) -> PatchInsets {
+    match padding {
+        Some(Padding::Uniform(value)) => {
+            let value = *value as f32;
+            PatchInsets {
+                top: value,
+                right: value,
+                bottom: value,
+                left: value,
+            }
+        }
+        Some(Padding::Sides {
+            top,
+            right,
+            bottom,
+            left,
+        }) => PatchInsets {
+            top: *top as f32,
+            right: *right as f32,
+            bottom: *bottom as f32,
+            left: *left as f32,
+        },
+        None => PatchInsets::default(),
+    }
+}
+
+fn patch_border_width_insets(border_width: Option<&BorderWidth>) -> PatchInsets {
+    match border_width {
+        Some(BorderWidth::Uniform(value)) => {
+            let value = *value as f32;
+            PatchInsets {
+                top: value,
+                right: value,
+                bottom: value,
+                left: value,
+            }
+        }
+        Some(BorderWidth::Sides {
+            top,
+            right,
+            bottom,
+            left,
+        }) => PatchInsets {
+            top: *top as f32,
+            right: *right as f32,
+            bottom: *bottom as f32,
+            left: *left as f32,
+        },
+        None => PatchInsets::default(),
+    }
+}
+
+fn resolve_intrinsic_length_for_patch(length: Option<&Length>, intrinsic: f32) -> f32 {
+    match length {
+        Some(Length::Px(px)) => *px as f32,
+        Some(Length::Content) | None => intrinsic,
+        Some(Length::Fill) | Some(Length::FillWeighted(_)) => intrinsic,
+        Some(Length::Min(left, right)) => resolve_intrinsic_length_for_patch(Some(left), intrinsic)
+            .min(resolve_intrinsic_length_for_patch(Some(right), intrinsic)),
+        Some(Length::Max(left, right)) => resolve_intrinsic_length_for_patch(Some(left), intrinsic)
+            .max(resolve_intrinsic_length_for_patch(Some(right), intrinsic)),
+    }
+}
+
+fn resolve_frame_width_for_patch(length: Option<&Length>, intrinsic: f32, current: f32) -> f32 {
+    match length {
+        Some(Length::Px(px)) => *px as f32,
+        Some(Length::Content) | None => intrinsic,
+        Some(Length::Fill) | Some(Length::FillWeighted(_)) => current,
+        Some(Length::Min(left, right)) => {
+            resolve_frame_width_for_patch(Some(left), intrinsic, current).min(
+                resolve_frame_width_for_patch(Some(right), intrinsic, current),
+            )
+        }
+        Some(Length::Max(left, right)) => {
+            resolve_frame_width_for_patch(Some(left), intrinsic, current).max(
+                resolve_frame_width_for_patch(Some(right), intrinsic, current),
+            )
+        }
+    }
+}
+
 fn attrs_equal_except_content(before: &Attrs, after: &Attrs) -> bool {
     let mut before = before.clone();
     let mut after = after.clone();
@@ -484,7 +812,7 @@ fn apply_patch(
 ) -> Result<TreeInvalidation, String> {
     let invalidation = match patch {
         Patch::SetAttrs { id, attrs_raw } => {
-            let text_content_patch_can_skip_layout = text_content_patch_can_skip_layout(tree, &id);
+            let text_content_layout_skip_path = text_content_patch_layout_skip_path(tree, &id);
             let invalidation = {
                 let element = tree
                     .get_mut(&id)
@@ -539,7 +867,8 @@ fn apply_patch(
                     &element.spec.declared,
                     classify_attrs_change(&before_attrs, &element.spec.declared),
                 );
-                if text_content_patch_can_skip_layout
+                let mut skipped_text_content_layout = false;
+                if text_content_layout_skip_path.is_some()
                     && plain_text_content_change_can_paint_without_layout(
                         element,
                         &before_attrs,
@@ -547,6 +876,7 @@ fn apply_patch(
                     )
                 {
                     invalidation = TreeInvalidation::Paint;
+                    skipped_text_content_layout = true;
                 }
                 if text_input_content_change_can_paint_without_layout(
                     element,
@@ -568,17 +898,26 @@ fn apply_patch(
                     invalidation,
                     registry_refresh_dirty,
                     before_attrs.layout_scale != element.spec.declared.layout_scale,
+                    skipped_text_content_layout,
                 )
             };
+            let mut invalidation_kind = invalidation.0;
+            if invalidation.3
+                && !text_content_layout_skip_path
+                    .as_ref()
+                    .is_some_and(|path| refresh_text_content_layout_skip_frames(tree, path))
+            {
+                invalidation_kind = TreeInvalidation::Measure;
+            }
             if invalidation.2 {
                 tree.mark_layout_scale_dirty(&id);
             } else {
-                tree.mark_measure_dirty_for_invalidation(&id, invalidation.0);
+                tree.mark_measure_dirty_for_invalidation(&id, invalidation_kind);
             }
             if invalidation.1 {
                 tree.mark_registry_refresh_dirty(&id);
             }
-            invalidation.0
+            invalidation_kind
         }
 
         Patch::SetChildren { id, children } => {
@@ -1271,6 +1610,7 @@ mod tests {
         Element, ElementKind, Frame, NearbyMountIx, NearbySlot, NodeId, NodeIx, ParentLink,
         TextInputContentOrigin,
     };
+    use crate::tree::layout::{Constraint, layout_tree_default};
 
     fn exit_alpha_spec() -> AnimationSpec {
         let from = Attrs {
@@ -2508,6 +2848,22 @@ mod tests {
         ));
         tree.set_children(&root_id, vec![wrapper_id]).unwrap();
         tree.set_children(&wrapper_id, vec![text_id]).unwrap();
+        layout_tree_default(&mut tree, Constraint::new(200.0, 200.0), 1.0);
+        let before_text_width = tree
+            .get(&text_id)
+            .and_then(|element| element.layout.frame)
+            .map(|frame| frame.width)
+            .unwrap();
+        let before_wrapper_width = tree
+            .get(&wrapper_id)
+            .and_then(|element| element.layout.frame)
+            .map(|frame| frame.width)
+            .unwrap();
+        let before_column_width = tree
+            .get(&root_id)
+            .and_then(|element| element.layout.frame)
+            .map(|frame| frame.width)
+            .unwrap();
 
         let invalidation = apply_patches(
             &mut tree,
@@ -2518,7 +2874,25 @@ mod tests {
         )
         .unwrap();
 
+        let after_text_width = tree
+            .get(&text_id)
+            .and_then(|element| element.layout.frame)
+            .map(|frame| frame.width)
+            .unwrap();
+        let after_wrapper_width = tree
+            .get(&wrapper_id)
+            .and_then(|element| element.layout.frame)
+            .map(|frame| frame.width)
+            .unwrap();
+        let after_column_width = tree
+            .get(&root_id)
+            .and_then(|element| element.layout.frame)
+            .map(|frame| frame.width)
+            .unwrap();
         assert_eq!(invalidation, TreeInvalidation::Paint);
+        assert!(after_text_width > before_text_width);
+        assert!(after_wrapper_width > before_wrapper_width);
+        assert!(after_column_width > before_column_width);
     }
 
     #[test]

@@ -4,6 +4,7 @@ use super::super::text::{
 };
 use super::common::*;
 use super::*;
+use crate::renderer::{load_font, measure_text_visual_metrics};
 
 #[test]
 fn test_render_text_with_underline_and_strike_emits_decoration_rects() {
@@ -53,6 +54,66 @@ fn test_render_text_with_underline_and_strike_emits_decoration_rects() {
             .iter()
             .all(|(_, _, width, height)| *width > 0.0 && *height >= 1.0)
     );
+}
+
+#[test]
+fn test_render_left_aligned_text_offsets_left_overhang() {
+    let font_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../priv/test_assets/Lobster-Regular.ttf");
+    let data = std::fs::read(&font_path).expect("lobster font asset should exist");
+    load_font("left-overhang-test", 400, false, &data).expect("lobster font should load");
+
+    let candidates = [
+        "Nearby",
+        "Interaction",
+        "J",
+        "T",
+        "To",
+        "f",
+        "Asset Fonts 123",
+    ];
+    let (content, metrics) = candidates
+        .iter()
+        .map(|content| {
+            (
+                *content,
+                measure_text_visual_metrics("left-overhang-test", 400, false, 40.0, content),
+            )
+        })
+        .find(|(_content, metrics)| metrics.left_overhang > 0.0)
+        .expect("test font should exercise left overhang");
+
+    let attrs = Attrs {
+        content: Some(content.to_string()),
+        font: Some(Font::String("left-overhang-test".to_string())),
+        font_size: Some(40.0),
+        ..Attrs::default()
+    };
+
+    let tree = build_text_tree_with_frame(
+        attrs,
+        Frame {
+            x: 10.0,
+            y: 20.0,
+            width: metrics.visual_width,
+            height: 60.0,
+            content_width: metrics.visual_width,
+            content_height: 60.0,
+        },
+    );
+
+    let draws = observe_tree(&tree);
+    let text_cmd = only_draw(
+        &draws,
+        |draw| matches!(&draw.primitive, DrawPrimitive::TextWithFont(_, _, text, _, _, _, _, _) if text == content),
+    );
+
+    match &text_cmd.primitive {
+        DrawPrimitive::TextWithFont(x, _, _, _, _, _, _, _) => {
+            assert!((*x - (10.0 + metrics.left_overhang)).abs() < 0.001);
+        }
+        _ => unreachable!(),
+    }
 }
 
 #[test]
