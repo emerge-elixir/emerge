@@ -3121,6 +3121,7 @@ fn coalesce_registry_updates(
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, VecDeque};
+    use std::sync::Mutex;
 
     use super::*;
     use crate::clipboard::ClipboardTarget;
@@ -3336,6 +3337,38 @@ mod tests {
 
     fn noop_host_sink() -> Arc<dyn HostEventSink> {
         Arc::new(NoopHostEventSink)
+    }
+
+    #[derive(Default)]
+    struct RecordingHostEventSink {
+        events: Mutex<Vec<(NodeId, ElementEventKind)>>,
+    }
+
+    impl RecordingHostEventSink {
+        fn count(&self, kind: ElementEventKind, element_id: NodeId) -> usize {
+            self.events
+                .lock()
+                .expect("recording host event sink lock poisoned")
+                .iter()
+                .filter(|(id, event_kind)| *id == element_id && *event_kind == kind)
+                .count()
+        }
+    }
+
+    impl HostEventSink for RecordingHostEventSink {
+        fn send_raw_input(&self, _event: &InputEvent) {}
+
+        fn send_element_event(
+            &self,
+            element_id: &NodeId,
+            kind: ElementEventKind,
+            _payload: Option<&registry_builder::ElixirEventPayload>,
+        ) {
+            self.events
+                .lock()
+                .expect("recording host event sink lock poisoned")
+                .push((*element_id, kind));
+        }
     }
 
     fn rebuild_with_focus(id: u8) -> RegistryRebuildPayload {
@@ -7013,6 +7046,80 @@ mod tests {
             msg,
             TreeMsg::SetMouseOverActive { element_id, active }
                 if *element_id == NodeId::from_term_bytes(vec![52]) && !*active
+        )));
+    }
+
+    #[test]
+    fn direct_runtime_hover_rebuild_with_inactive_event_target_does_not_duplicate_enter() {
+        let element_id = NodeId::from_term_bytes(vec![53]);
+        let attrs = Attrs {
+            on_mouse_enter: Some(true),
+            on_mouse_leave: Some(true),
+            mouse_over_active: Some(false),
+            ..Attrs::default()
+        };
+        let element = with_interaction(make_element(53, ElementKind::El, attrs.clone()));
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[element]),
+            text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+            focus_on_mount: None,
+        };
+
+        let sink = Arc::new(RecordingHostEventSink::default());
+        let (tree_tx, tree_rx) = bounded(64);
+        let mut runtime = DirectEventRuntime::new_with_host_sink(
+            false,
+            None,
+            BackendWakeHandle::noop(),
+            sink.clone(),
+            Arc::new(NativeLogRelay::default()),
+            None,
+        );
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+        runtime.handle_input_event(InputEvent::CursorPos { x: 10.0, y: 10.0 }, &tree_tx, false);
+
+        assert_eq!(
+            sink.count(ElementEventKind::MouseEnter, element_id),
+            1,
+            "initial hover should emit one enter"
+        );
+        assert_eq!(hover_stack_ids(&runtime), vec![element_id]);
+        assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetMouseOverActive { element_id: id, active }
+                if *id == element_id && *active
+        )));
+
+        let patched_before_hover_state = with_interaction(make_element(53, ElementKind::El, attrs));
+        let patch_rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[patched_before_hover_state]),
+            text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+            focus_on_mount: None,
+        };
+        runtime.handle_registry_update(patch_rebuild, &tree_tx, false);
+
+        assert_eq!(hover_stack_ids(&runtime), vec![element_id]);
+        assert_eq!(
+            sink.count(ElementEventKind::MouseEnter, element_id),
+            1,
+            "registry rebuild while the cursor remains inside should not emit another enter"
+        );
+        assert!(drain_msgs(&tree_rx).is_empty());
+
+        runtime.handle_input_event(InputEvent::CursorPos { x: 150.0, y: 10.0 }, &tree_tx, false);
+
+        assert_eq!(hover_stack_ids(&runtime), Vec::<NodeId>::new());
+        assert_eq!(sink.count(ElementEventKind::MouseLeave, element_id), 1);
+        assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
+            msg,
+            TreeMsg::SetMouseOverActive { element_id: id, active }
+                if *id == element_id && !*active
         )));
     }
 
