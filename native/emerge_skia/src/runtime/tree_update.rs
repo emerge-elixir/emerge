@@ -15,9 +15,10 @@ use crate::{
             FrameAttrsPreparation, LayoutOutput, layout_and_refresh_default,
             layout_and_refresh_prepared_default_reusing_clean_registry,
             layout_and_refresh_prepared_default_reusing_clean_registry_timed,
-            prepare_animation_frame_attrs_for_update, prepare_dirty_frame_attrs_for_update,
-            prepare_frame_attrs_for_update, prepared_root_has_frame,
-            refresh_prepared_default_reusing_clean_registry, refresh_reusing_clean_registry,
+            mark_animation_effects_dirty_for_update, prepare_animation_frame_attrs_for_update,
+            prepare_dirty_frame_attrs_for_update, prepare_frame_attrs_for_update,
+            prepared_root_has_frame, refresh_prepared_default_reusing_clean_registry,
+            refresh_reusing_clean_registry,
         },
         patch::Patch,
     },
@@ -374,7 +375,6 @@ impl TreeUpdateEngine {
             || plan.invalidation.requires_recompute();
         let sample_time =
             should_sync_animations.then(|| animation_sample_time.unwrap_or_else(Instant::now));
-        let had_animation_runtime = !self.animation_runtime.is_empty();
         let had_transient_animations = self.animation_runtime.has_transient_entries();
 
         if let Some(sample_time) = sample_time {
@@ -391,8 +391,13 @@ impl TreeUpdateEngine {
                 plan.invalidation,
                 registry_requested
             );
-            self.animation_runtime
+            let animation_sync = self
+                .animation_runtime
                 .sync_with_tree(&self.tree, sample_time);
+            if animation_sync.completed.invalidation.is_dirty() {
+                mark_animation_effects_dirty_for_update(&mut self.tree, &animation_sync.completed);
+                plan.invalidation.add(animation_sync.completed.invalidation);
+            }
             if self
                 .animation_runtime
                 .prune_completed_exit_ghosts(&mut self.tree, Some(sample_time))
@@ -446,14 +451,6 @@ impl TreeUpdateEngine {
             let dynamic_invalidation = preparation.animation_result.invalidation;
             plan.animations_active = preparation.animation_result.active;
             plan.invalidation.add(dynamic_invalidation);
-
-            if animation_sample_requested
-                && had_animation_runtime
-                && !plan.animations_active
-                && dynamic_invalidation.is_none()
-            {
-                plan.invalidation.add(TreeInvalidation::Paint);
-            }
 
             plan.preparation = Some(preparation);
         }
@@ -813,10 +810,130 @@ fn trace_element_snapshots(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    use crate::render_scene::{RenderNode, RenderScene};
     use crate::tree::{
-        attrs::{Attrs, Length},
-        element::{Element, ElementKind, Frame},
+        animation::{AnimationCurve, AnimationRepeat, AnimationSpec},
+        attrs::{Attrs, Background, Color, Length},
+        element::{Element, ElementKind, Frame, NearbySlot},
     };
+
+    fn enter_move_x_spec(from_x: f64, to_x: f64, duration_ms: f64) -> AnimationSpec {
+        AnimationSpec {
+            keyframes: vec![
+                Attrs {
+                    move_x: Some(from_x),
+                    ..Attrs::default()
+                },
+                Attrs {
+                    move_x: Some(to_x),
+                    ..Attrs::default()
+                },
+            ],
+            duration_ms,
+            curve: AnimationCurve::EaseIn,
+            repeat: AnimationRepeat::Once,
+        }
+    }
+
+    fn sidepane_enter_tree_at_start() -> ElementTree {
+        let host_id = NodeId::from_term_bytes(vec![10]);
+        let sidepane_id = NodeId::from_term_bytes(vec![11]);
+
+        let mut host = Element::with_attrs(
+            host_id,
+            ElementKind::El,
+            Vec::new(),
+            Attrs {
+                width: Some(Length::Px(360.0)),
+                height: Some(Length::Px(240.0)),
+                ..Attrs::default()
+            },
+        );
+        host.nearby.set(NearbySlot::InFront, Some(sidepane_id));
+
+        let sidepane = Element::with_attrs(
+            sidepane_id,
+            ElementKind::El,
+            Vec::new(),
+            Attrs {
+                width: Some(Length::Px(120.0)),
+                height: Some(Length::Px(240.0)),
+                background: Some(Background::Color(Color::Rgba {
+                    r: 32,
+                    g: 64,
+                    b: 96,
+                    a: 255,
+                })),
+                animate_enter: Some(enter_move_x_spec(500.0, 0.0, 125.0)),
+                ..Attrs::default()
+            },
+        );
+
+        let mut tree = ElementTree::new();
+        tree.insert(host);
+        tree.insert(sidepane);
+        tree.set_root_id(host_id);
+        let revision = tree.bump_revision();
+        tree.stamp_all_mounted_at_revision(revision);
+        tree
+    }
+
+    fn layout_output(effect: TreeUpdateEffect) -> Box<LayoutOutput> {
+        match effect {
+            TreeUpdateEffect::Layout { output, .. } => output,
+            _ => panic!("expected layout effect"),
+        }
+    }
+
+    fn transform_txs(scene: &RenderScene) -> Vec<f32> {
+        fn collect(nodes: &[RenderNode], txs: &mut Vec<f32>) {
+            for node in nodes {
+                match node {
+                    RenderNode::ShadowPass { children }
+                    | RenderNode::Clip { children, .. }
+                    | RenderNode::RelaxedClip { children, .. }
+                    | RenderNode::Alpha { children, .. } => collect(children, txs),
+                    RenderNode::Transform {
+                        transform,
+                        children,
+                    } => {
+                        txs.push(transform.tx);
+                        collect(children, txs);
+                    }
+                    RenderNode::PaintLayer(layer) => {
+                        collect(&layer.own_nodes, txs);
+                        layer
+                            .child_refs
+                            .iter()
+                            .for_each(|child| collect(&child.nodes, txs));
+                    }
+                    RenderNode::Primitive(_) => {}
+                }
+            }
+        }
+
+        let mut txs = Vec::new();
+        collect(&scene.nodes, &mut txs);
+        txs
+    }
+
+    fn assert_scene_has_translate_x(scene: &RenderScene, min: f32, max: f32) {
+        let txs = transform_txs(scene);
+        assert!(
+            txs.iter().any(|tx| *tx >= min && *tx <= max),
+            "expected translate x in [{min}, {max}], got {txs:?}"
+        );
+    }
+
+    fn assert_scene_has_no_visible_translate_x(scene: &RenderScene) {
+        let txs = transform_txs(scene);
+        assert!(
+            txs.iter().all(|tx| tx.abs() <= 0.5),
+            "expected no visible translate x, got {txs:?}"
+        );
+    }
 
     fn scrollable_tree_at_start() -> ElementTree {
         let id = NodeId::from_term_bytes(vec![1]);
@@ -842,6 +959,66 @@ mod tests {
         tree.insert(element);
         tree.set_root_id(id);
         tree
+    }
+
+    #[test]
+    fn completed_enter_animation_refreshes_final_base_attrs_before_stopping() {
+        let mut engine = TreeUpdateEngine::new(sidepane_enter_tree_at_start(), 360, 240);
+
+        let initial = layout_output(
+            engine
+                .process_messages(
+                    vec![TreeMsg::Resize {
+                        width: 360.0,
+                        height: 240.0,
+                        scale: 1.0,
+                    }],
+                    TreeUpdateOptions::new(None, TreeUpdateDecodePolicy::ReturnErr),
+                )
+                .unwrap(),
+        );
+        assert!(initial.animations_active);
+        assert_scene_has_translate_x(&initial.scene, 499.0, 501.0);
+
+        let first_presented = Instant::now() + Duration::from_secs(1);
+        let mid = layout_output(
+            engine
+                .process_messages(
+                    vec![TreeMsg::AnimationPulse {
+                        presented_at: first_presented,
+                        predicted_next_present_at: first_presented + Duration::from_millis(64),
+                        trace: None,
+                    }],
+                    TreeUpdateOptions::new(None, TreeUpdateDecodePolicy::ReturnErr),
+                )
+                .unwrap(),
+        );
+        assert!(mid.animations_active);
+        assert_scene_has_translate_x(&mid.scene, 300.0, 500.0);
+
+        let final_output = layout_output(
+            engine
+                .process_messages(
+                    vec![TreeMsg::AnimationPulse {
+                        presented_at: first_presented + Duration::from_millis(64),
+                        predicted_next_present_at: first_presented + Duration::from_millis(150),
+                        trace: None,
+                    }],
+                    TreeUpdateOptions::new(None, TreeUpdateDecodePolicy::ReturnErr),
+                )
+                .unwrap(),
+        );
+
+        assert!(!final_output.animations_active);
+        assert!(engine.animation_runtime_is_empty());
+        assert_eq!(
+            engine
+                .tree()
+                .get(&NodeId::from_term_bytes(vec![11]))
+                .and_then(|element| element.layout.effective.move_x),
+            None
+        );
+        assert_scene_has_no_visible_translate_x(&final_output.scene);
     }
 
     #[test]
