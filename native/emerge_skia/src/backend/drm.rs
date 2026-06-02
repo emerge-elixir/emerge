@@ -138,7 +138,7 @@ struct InFlightCommit {
     emit_animation_pulse: bool,
 }
 
-const DRM_EVENT_TIMESTAMP_ACCEPT_WINDOW: Duration = Duration::from_secs(2);
+const FOLLOW_UP_PRIMARY_WINDOW: Duration = Duration::from_millis(4);
 
 struct DrmPresentState {
     mode_frame_interval: Duration,
@@ -151,80 +151,12 @@ impl DrmPresentState {
         }
     }
 
-    fn observe_present(
-        &mut self,
-        presented_at: Instant,
-        earliest_next_present_at: Instant,
-    ) -> Instant {
-        let mut predicted_next_present_at = presented_at + self.mode_frame_interval;
-        while predicted_next_present_at <= earliest_next_present_at {
-            predicted_next_present_at += self.mode_frame_interval;
-        }
-        predicted_next_present_at
+    fn observe_present(&mut self, presented_at: Instant) -> Instant {
+        presented_at + self.mode_frame_interval
     }
 
     fn mode_frame_interval(&self) -> Duration {
         self.mode_frame_interval
-    }
-}
-
-// DRM page-flip events carry kernel vblank timestamps. Mapping those to
-// `Instant` avoids injecting userspace event-delivery jitter into animation
-// sample times.
-#[derive(Clone, Copy, Debug)]
-struct DrmEventClock {
-    anchor_instant: Instant,
-    anchor_timestamp: Duration,
-}
-
-impl DrmEventClock {
-    fn new() -> Option<Self> {
-        monotonic_timestamp_now().map(|anchor_timestamp| Self {
-            anchor_instant: Instant::now(),
-            anchor_timestamp,
-        })
-    }
-
-    fn instant_for_event_timestamp(&self, timestamp: Duration, received_at: Instant) -> Instant {
-        if timestamp.is_zero() {
-            return received_at;
-        }
-
-        let candidate = if timestamp >= self.anchor_timestamp {
-            self.anchor_instant + (timestamp - self.anchor_timestamp)
-        } else {
-            let delta = self.anchor_timestamp - timestamp;
-            let Some(candidate) = self.anchor_instant.checked_sub(delta) else {
-                return received_at;
-            };
-            candidate
-        };
-
-        (instant_abs_delta(candidate, received_at) <= DRM_EVENT_TIMESTAMP_ACCEPT_WINDOW)
-            .then_some(candidate)
-            .unwrap_or(received_at)
-    }
-}
-
-fn monotonic_timestamp_now() -> Option<Duration> {
-    let mut now = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-
-    (unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut now) } == 0).then(|| {
-        Duration::new(
-            now.tv_sec.max(0) as u64,
-            u32::try_from(now.tv_nsec.max(0)).unwrap_or(0),
-        )
-    })
-}
-
-fn instant_abs_delta(a: Instant, b: Instant) -> Duration {
-    if a >= b {
-        a.duration_since(b)
-    } else {
-        b.duration_since(a)
     }
 }
 
@@ -967,6 +899,12 @@ fn record_drm_pipeline_swap_done(
     }
 }
 
+fn record_drm_display_interval(stats: Option<&RendererStatsCollector>, frame_interval: Duration) {
+    if let Some(stats) = stats {
+        stats.record_display_interval(frame_interval);
+    }
+}
+
 fn record_drm_pipeline_presented(
     stats: Option<&RendererStatsCollector>,
     pipeline_submitted_at: Option<Instant>,
@@ -989,9 +927,14 @@ fn record_drm_pipeline_presented(
 fn should_defer_cursor_only_commit(
     submit_primary: bool,
     submit_cursor: bool,
-    awaiting_animation_primary: bool,
+    follow_up_primary_until: Option<Instant>,
+    now: Instant,
 ) -> bool {
-    submit_cursor && !submit_primary && awaiting_animation_primary
+    submit_cursor
+        && !submit_primary
+        && follow_up_primary_until
+            .map(|deadline| now < deadline)
+            .unwrap_or(false)
 }
 
 fn drm_session_mode_changed(
@@ -1033,24 +976,15 @@ mod tests {
         let start = Instant::now();
         let mut present = DrmPresentState::new(Duration::from_millis(16));
 
-        let first_predicted = present.observe_present(start, start);
+        let first_predicted = present.observe_present(start);
         assert_eq!(first_predicted, start + Duration::from_millis(16));
 
         let second_presented = start + Duration::from_millis(33);
-        let second_predicted = present.observe_present(second_presented, second_presented);
+        let second_predicted = present.observe_present(second_presented);
         assert_eq!(
             second_predicted,
             second_presented + Duration::from_millis(16)
         );
-    }
-
-    #[test]
-    fn drm_present_state_skips_past_predictions_after_delayed_page_flip_delivery() {
-        let start = Instant::now();
-        let mut present = DrmPresentState::new(Duration::from_millis(16));
-
-        let predicted = present.observe_present(start, start + Duration::from_millis(40));
-        assert_eq!(predicted, start + Duration::from_millis(48));
     }
 
     #[test]
@@ -1061,11 +995,26 @@ mod tests {
         let stats = RendererStatsCollector::new();
 
         let sparse_presented = start + Duration::from_millis(33);
-        let predicted_next_present_at = present.observe_present(sparse_presented, sparse_presented);
+        let predicted_next_present_at = present.observe_present(sparse_presented);
         assert_eq!(predicted_next_present_at, sparse_presented + mode_interval);
-        stats.record_display_interval(present.mode_frame_interval());
+        record_drm_display_interval(Some(&stats), present.mode_frame_interval());
 
         let snapshot = stats.snapshot();
+        assert!((snapshot.display_frame_ms - mode_interval.as_secs_f64() * 1_000.0).abs() < 0.001);
+        assert!((snapshot.display_fps - 60.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn drm_display_stats_seed_mode_interval_without_presented_frames() {
+        let stats = RendererStatsCollector::new();
+        stats.record_display_interval(frame_interval_for_refresh_hz(30.0));
+        let _ = stats.snapshot();
+
+        let mode_interval = frame_interval_for_refresh_hz(60.0);
+        record_drm_display_interval(Some(&stats), mode_interval);
+
+        let snapshot = stats.snapshot();
+        assert_eq!(snapshot.frame_count, 0);
         assert!((snapshot.display_frame_ms - mode_interval.as_secs_f64() * 1_000.0).abs() < 0.001);
         assert!((snapshot.display_fps - 60.0).abs() < 0.001);
     }
@@ -1102,55 +1051,37 @@ mod tests {
     }
 
     #[test]
-    fn drm_event_clock_maps_kernel_timestamp_to_instant() {
-        let base = Instant::now();
-        let clock = DrmEventClock {
-            anchor_instant: base,
-            anchor_timestamp: Duration::from_secs(1_000),
-        };
-
-        let received_at = base + Duration::from_millis(20);
-        let event_timestamp = Duration::from_secs(1_000) + Duration::from_millis(16);
-
-        assert_eq!(
-            clock.instant_for_event_timestamp(event_timestamp, received_at),
-            base + Duration::from_millis(16)
-        );
-    }
-
-    #[test]
-    fn drm_event_clock_falls_back_for_invalid_timestamp() {
-        let base = Instant::now();
-        let clock = DrmEventClock {
-            anchor_instant: base,
-            anchor_timestamp: Duration::from_secs(1_000),
-        };
-        let received_at = base + Duration::from_millis(20);
-
-        assert_eq!(
-            clock.instant_for_event_timestamp(Duration::ZERO, received_at),
-            received_at
-        );
-        assert_eq!(
-            clock.instant_for_event_timestamp(Duration::from_secs(2_000), received_at),
-            received_at
-        );
-    }
-
-    #[test]
-    fn defer_cursor_only_commit_waits_for_animation_primary() {
-        assert!(should_defer_cursor_only_commit(false, true, true));
+    fn defer_cursor_only_commit_requires_active_follow_up_window() {
+        let now = Instant::now();
+        assert!(should_defer_cursor_only_commit(
+            false,
+            true,
+            Some(now + FOLLOW_UP_PRIMARY_WINDOW),
+            now,
+        ));
     }
 
     #[test]
     fn defer_cursor_only_commit_never_blocks_primary_work() {
-        assert!(!should_defer_cursor_only_commit(true, true, true));
+        let now = Instant::now();
+        assert!(!should_defer_cursor_only_commit(
+            true,
+            true,
+            Some(now + FOLLOW_UP_PRIMARY_WINDOW),
+            now,
+        ));
     }
 
     #[test]
-    fn defer_cursor_only_commit_allows_cursor_without_pending_animation_primary() {
-        assert!(!should_defer_cursor_only_commit(false, true, false));
-        assert!(!should_defer_cursor_only_commit(false, false, true));
+    fn defer_cursor_only_commit_expires_with_deadline() {
+        let now = Instant::now();
+        assert!(!should_defer_cursor_only_commit(
+            false,
+            true,
+            Some(now),
+            now,
+        ));
+        assert!(!should_defer_cursor_only_commit(false, true, None, now));
     }
 
     #[test]
@@ -1898,6 +1829,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
         let dimensions = (width as u32, height as u32);
         let refresh_hz = mode_refresh_hz(&mode);
         let frame_interval = mode_frame_interval(&mode);
+        record_drm_display_interval(stats.as_deref(), frame_interval);
         let _ = screen_tx.send(dimensions);
         let _ = input_wake.signal();
         if !logged_mode_info {
@@ -2259,12 +2191,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
         let mut committed_cursor_visible = false;
         let mut committed_cursor_icon: Option<CursorIcon> = None;
         let mut present_state = DrmPresentState::new(frame_interval);
-        let event_clock = DrmEventClock::new();
-        // Set after an animation pulse until the tree/render pipeline supplies
-        // the primary frame produced by that pulse. Cursor-only atomic commits
-        // are deferred during this window so they cannot occupy the single DRM
-        // in-flight slot and make the animation primary miss its next vblank.
-        let mut awaiting_animation_primary = false;
+        let mut follow_up_primary_until: Option<Instant> = None;
         let mut retry_commit_at: Option<Instant> = None;
         let mut drm_ready = false;
         let mut presenter_wake_ready = false;
@@ -2313,15 +2240,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                                             );
                                         }
 
-                                        let received_at = Instant::now();
-                                        let presented_at = event_clock
-                                            .map(|clock| {
-                                                clock.instant_for_event_timestamp(
-                                                    page_flip.duration,
-                                                    received_at,
-                                                )
-                                            })
-                                            .unwrap_or(received_at);
+                                        let presented_at = Instant::now();
                                         if let Some(stats) = stats.as_ref() {
                                             stats.record_frame_present();
                                             record_drm_pipeline_presented(
@@ -2332,14 +2251,13 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                                             );
                                         }
 
-                                        let predicted_next_present_at = present_state
-                                            .observe_present(presented_at, received_at);
+                                        let predicted_next_present_at =
+                                            present_state.observe_present(presented_at);
 
-                                        if let Some(stats) = stats.as_ref() {
-                                            stats.record_display_interval(
-                                                present_state.mode_frame_interval(),
-                                            );
-                                        }
+                                        record_drm_display_interval(
+                                            stats.as_deref(),
+                                            present_state.mode_frame_interval(),
+                                        );
 
                                         send_present_timing(
                                             &event_tx,
@@ -2357,7 +2275,8 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                                                 stop_requested = true;
                                                 break;
                                             }
-                                            awaiting_animation_primary = true;
+                                            follow_up_primary_until =
+                                                Some(presented_at + FOLLOW_UP_PRIMARY_WINDOW);
                                         }
                                     }
 
@@ -2437,7 +2356,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                             received_at,
                         );
                         desired_primary_generation = desired_primary_generation.wrapping_add(1);
-                        awaiting_animation_primary = false;
+                        follow_up_primary_until = None;
                         if log_render {
                             let latest = render_counter.load(Ordering::Relaxed);
                             let delta = latest.saturating_sub(version);
@@ -2459,6 +2378,11 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                 && Instant::now() >= retry_at
             {
                 retry_commit_at = None;
+            }
+            if let Some(deadline) = follow_up_primary_until
+                && Instant::now() >= deadline
+            {
+                follow_up_primary_until = None;
             }
             while let Ok(icon) = cursor_icon_rx.try_recv() {
                 current_cursor_icon = icon;
@@ -2553,13 +2477,15 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                     && (committed_cursor_version != Some(cursor_snapshot.version)
                         || committed_cursor_icon != Some(current_cursor_icon)))
                     || (!hw_cursor_enabled && committed_cursor_visible));
+            let now = Instant::now();
             let defer_cursor_only = should_defer_cursor_only_commit(
                 submit_primary,
                 submit_cursor,
-                awaiting_animation_primary,
+                follow_up_primary_until,
+                now,
             );
             if defer_cursor_only && log_render {
-                eprintln!("drm defer cursor-only commit waiting for animation primary");
+                eprintln!("drm defer cursor-only commit waiting for follow-up primary");
             }
 
             if submit_primary || (submit_cursor && !defer_cursor_only) {
@@ -2752,6 +2678,13 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                     next_deadline
                         .map(|deadline| deadline.min(retry_at))
                         .unwrap_or(retry_at),
+                );
+            }
+            if let Some(deadline) = follow_up_primary_until {
+                next_deadline = Some(
+                    next_deadline
+                        .map(|current_deadline| current_deadline.min(deadline))
+                        .unwrap_or(deadline),
                 );
             }
             if in_flight.is_none()

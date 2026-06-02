@@ -81,6 +81,11 @@ pub struct AnimationOverlayResult {
     pub effects: Vec<AnimationLayoutEffect>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AnimationSyncResult {
+    pub completed: AnimationOverlayResult,
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct AnimationFrameSamples {
     pub(crate) samples: HashMap<NodeId, AnimationSample>,
@@ -89,28 +94,40 @@ pub(crate) struct AnimationFrameSamples {
 
 impl AnimationOverlayResult {
     fn record_sample(&mut self, id: NodeId, sample: &AnimationSample) {
-        let invalidation = classify_animation_sample_attrs(&sample.attrs);
         self.active |= sample.active;
-        self.invalidation.add(invalidation);
+        if let Some(effect) = animation_attrs_layout_effect(id, &sample.attrs) {
+            self.record_effect(effect);
+        }
+    }
 
-        if invalidation.is_dirty() {
-            self.effects.push(AnimationLayoutEffect {
-                id,
-                invalidation,
-                registry_refresh: animation_attrs_affect_registry_refresh(&sample.attrs),
-                layout_scale_dirty: sample.attrs.layout_scale.is_some(),
-            });
+    pub(crate) fn record_effect(&mut self, effect: AnimationLayoutEffect) {
+        self.invalidation.add(effect.invalidation);
+
+        if effect.invalidation.is_dirty() {
+            self.effects.push(effect);
+        }
+    }
+}
+
+impl AnimationSyncResult {
+    fn record_completed_enter(&mut self, id: NodeId, spec: &AnimationSpec) {
+        if let Some(effect) = animation_spec_layout_effect(id, spec) {
+            self.completed.record_effect(effect);
         }
     }
 }
 
 impl AnimationRuntime {
-    pub fn sync_with_tree(&mut self, tree: &ElementTree, started_at: Instant) {
+    pub fn sync_with_tree(
+        &mut self,
+        tree: &ElementTree,
+        started_at: Instant,
+    ) -> AnimationSyncResult {
         if !self.animate_entries.is_empty()
             && self.last_seen_revision == tree.revision()
             && !self.has_transient_entries()
         {
-            return;
+            return AnimationSyncResult::default();
         }
 
         self.animate_entries.retain(|id, _| {
@@ -124,6 +141,8 @@ impl AnimationRuntime {
                 element.is_ghost_root() && element.lifecycle.ghost_exit_animation.is_some()
             })
         });
+
+        let mut sync_result = AnimationSyncResult::default();
 
         for (id, element) in tree.iter_node_pairs() {
             if element.is_ghost_root() {
@@ -168,6 +187,7 @@ impl AnimationRuntime {
                     true
                 } else {
                     self.enter_entries.remove(&id);
+                    sync_result.record_completed_enter(id, &entry.spec);
                     false
                 }
             });
@@ -197,6 +217,7 @@ impl AnimationRuntime {
         }
 
         self.last_seen_revision = tree.revision();
+        sync_result
     }
 
     pub fn is_empty(&self) -> bool {
@@ -501,6 +522,39 @@ fn apply_animation_overlay_to_element(
     );
     apply_sample_attrs(&mut element.layout.effective, &sample.attrs);
     result.record_sample(element.id, &sample);
+}
+
+fn animation_attrs_layout_effect(id: NodeId, attrs: &Attrs) -> Option<AnimationLayoutEffect> {
+    let invalidation = classify_animation_sample_attrs(attrs);
+    invalidation.is_dirty().then_some(AnimationLayoutEffect {
+        id,
+        invalidation,
+        registry_refresh: animation_attrs_affect_registry_refresh(attrs),
+        layout_scale_dirty: attrs.layout_scale.is_some(),
+    })
+}
+
+fn animation_spec_layout_effect(id: NodeId, spec: &AnimationSpec) -> Option<AnimationLayoutEffect> {
+    let invalidation =
+        spec.keyframes
+            .iter()
+            .fold(TreeInvalidation::None, |mut invalidation, attrs| {
+                invalidation.add(classify_animation_sample_attrs(attrs));
+                invalidation
+            });
+
+    invalidation.is_dirty().then(|| AnimationLayoutEffect {
+        id,
+        invalidation,
+        registry_refresh: spec
+            .keyframes
+            .iter()
+            .any(animation_attrs_affect_registry_refresh),
+        layout_scale_dirty: spec
+            .keyframes
+            .iter()
+            .any(|attrs| attrs.layout_scale.is_some()),
+    })
 }
 
 pub fn classify_animation_sample_attrs(attrs: &Attrs) -> TreeInvalidation {
@@ -1579,8 +1633,11 @@ mod tests {
         let mut runtime = AnimationRuntime::default();
 
         runtime.sync_with_tree(&tree, start);
-        runtime.sync_with_tree(&tree, start + std::time::Duration::from_millis(150));
+        let sync = runtime.sync_with_tree(&tree, start + std::time::Duration::from_millis(150));
 
+        assert_eq!(sync.completed.invalidation, TreeInvalidation::Paint);
+        assert_eq!(sync.completed.effects.len(), 1);
+        assert_eq!(sync.completed.effects[0].id, id);
         assert!(runtime.enter_entry(&id).is_none());
         assert!(runtime.animate_entry(&id).is_none());
 

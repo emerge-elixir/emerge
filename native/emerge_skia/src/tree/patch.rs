@@ -804,6 +804,14 @@ fn attrs_equivalent_for_plain_text_paint(before: &Attrs, after: &Attrs) -> bool 
         && before.svg_expected == after.svg_expected
 }
 
+fn subtree_has_animation_attrs(tree: &ElementTree) -> bool {
+    tree.iter_node_pairs().any(|(_, element)| {
+        element.spec.declared.animate.is_some()
+            || element.spec.declared.animate_enter.is_some()
+            || element.spec.declared.animate_exit.is_some()
+    })
+}
+
 /// Apply a single patch to the tree.
 fn apply_patch(
     tree: &mut ElementTree,
@@ -1024,6 +1032,7 @@ fn apply_patch(
                     )
                 })
                 .collect();
+            let has_animation_attrs = subtree_has_animation_attrs(&subtree);
 
             subtree.stamp_all_mounted_at_revision(batch_revision);
 
@@ -1053,34 +1062,40 @@ fn apply_patch(
                 slot.is_overlay() || tree.subtree_affects_registry(&subtree_root_id);
             let merged_mounts = tree.merge_live_nearby_with_ghosts(&host_id, live_mounts);
             tree.set_nearby_mounts(&host_id, merged_mounts)?;
-            let restored_layout = tree.restore_detached_layout_subtree_cache(&subtree_root_id);
-            let can_skip_layout =
-                restored_layout || tree.nearby_subtree_can_skip_layout(&subtree_root_id);
 
-            if can_skip_layout {
-                if !restored_layout {
-                    tree.mark_nearby_subtree_layout_clean_for_refresh_only(&subtree_root_id);
-                }
-                if !registry_relevant {
-                    tree.clear_registry_refresh_dirty_for_subtree(&subtree_root_id);
-                }
+            if has_animation_attrs {
                 tree.recompute_layout_descendant_dirty();
-                if registry_relevant {
-                    TreeInvalidation::Registry
-                } else {
-                    TreeInvalidation::Paint
-                }
-            } else if layout_nearby_mounts_for_refresh(tree, &host_id) {
-                if !registry_relevant {
-                    tree.clear_registry_refresh_dirty_for_subtree(&subtree_root_id);
-                }
-                if registry_relevant {
-                    TreeInvalidation::Registry
-                } else {
-                    TreeInvalidation::Paint
-                }
-            } else {
                 TreeInvalidation::Resolve
+            } else {
+                let restored_layout = tree.restore_detached_layout_subtree_cache(&subtree_root_id);
+                let can_skip_layout =
+                    restored_layout || tree.nearby_subtree_can_skip_layout(&subtree_root_id);
+
+                if can_skip_layout {
+                    if !restored_layout {
+                        tree.mark_nearby_subtree_layout_clean_for_refresh_only(&subtree_root_id);
+                    }
+                    if !registry_relevant {
+                        tree.clear_registry_refresh_dirty_for_subtree(&subtree_root_id);
+                    }
+                    tree.recompute_layout_descendant_dirty();
+                    if registry_relevant {
+                        TreeInvalidation::Registry
+                    } else {
+                        TreeInvalidation::Paint
+                    }
+                } else if layout_nearby_mounts_for_refresh(tree, &host_id) {
+                    if !registry_relevant {
+                        tree.clear_registry_refresh_dirty_for_subtree(&subtree_root_id);
+                    }
+                    if registry_relevant {
+                        TreeInvalidation::Registry
+                    } else {
+                        TreeInvalidation::Paint
+                    }
+                } else {
+                    TreeInvalidation::Resolve
+                }
             }
         }
 
@@ -1613,13 +1628,17 @@ mod tests {
     use crate::tree::layout::{Constraint, layout_tree_default};
 
     fn exit_alpha_spec() -> AnimationSpec {
+        alpha_spec(1.0, 0.0)
+    }
+
+    fn alpha_spec(from_alpha: f64, to_alpha: f64) -> AnimationSpec {
         let from = Attrs {
-            alpha: Some(1.0),
+            alpha: Some(from_alpha),
             ..Attrs::default()
         };
 
         let to = Attrs {
-            alpha: Some(0.0),
+            alpha: Some(to_alpha),
             ..Attrs::default()
         };
 
@@ -2072,6 +2091,46 @@ mod tests {
             vec![first_ix, new_root_ix, second_ix]
         );
         assert_eq!(tree.child_ixs(new_root_ix), vec![new_leaf_ix]);
+    }
+
+    #[test]
+    fn test_insert_nearby_subtree_with_animation_requires_resolve_instead_of_refresh_layout() {
+        let host_id = NodeId::from_term_bytes(vec![156]);
+        let nearby_id = NodeId::from_term_bytes(vec![157]);
+
+        let mut host = plain_element(156);
+        host.layout.frame = Some(Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 320.0,
+            height: 240.0,
+            content_width: 320.0,
+            content_height: 240.0,
+        });
+
+        let mut tree = ElementTree::new();
+        tree.set_root_id(host_id);
+        tree.insert(host);
+
+        let mut nearby = plain_element(157);
+        nearby.spec.declared.animate_enter = Some(alpha_spec(0.0, 1.0));
+        nearby.layout.effective.animate_enter = nearby.spec.declared.animate_enter.clone();
+        let mut subtree = ElementTree::new();
+        subtree.set_root_id(nearby_id);
+        subtree.insert(nearby);
+
+        let invalidation = apply_patches(
+            &mut tree,
+            vec![Patch::InsertNearbySubtree {
+                host_id,
+                index: 0,
+                slot: NearbySlot::InFront,
+                subtree,
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(invalidation, TreeInvalidation::Resolve);
     }
 
     #[test]

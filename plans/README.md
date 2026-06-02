@@ -5,13 +5,19 @@ Last updated: 2026-05-20.
 This directory tracks active implementation notes and durable background
 research for native layout, renderer, and input/runtime work.
 
-Active implementation plan: `active-drm-framerate-animation.md`.
+Active implementation plan: `active-enter-animation-completion.md`.
 
 Files with an `active-` prefix are reserved for open implementation slices.
 When a slice completes, fold the useful details into this index or one of the
 durable reference notes below, then remove the completed implementation log.
 
 ## Files
+
+### `active-enter-animation-completion.md`
+
+Open plan for auditing and fixing transient `animate_enter` completion so nearby
+sidepane enter animations reach their final settled frame on both Wayland and
+DRM before animation pulses stop.
 
 ### `active-drm-framerate-animation.md`
 

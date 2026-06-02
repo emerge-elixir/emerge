@@ -671,6 +671,14 @@ fn run_layout_passes<M: TextMeasurer>(
     }
 }
 
+pub(crate) fn mark_animation_effects_dirty_for_update(
+    tree: &mut ElementTree,
+    animation_result: &AnimationOverlayResult,
+) {
+    mark_animation_refresh_effects_dirty(tree, animation_result);
+    mark_animation_layout_effects_dirty(tree, animation_result);
+}
+
 fn mark_animation_refresh_effects_dirty(
     tree: &mut ElementTree,
     animation_result: &AnimationOverlayResult,
