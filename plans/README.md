@@ -5,13 +5,19 @@ Last updated: 2026-05-20.
 This directory tracks active implementation notes and durable background
 research for native layout, renderer, and input/runtime work.
 
-Active implementation plan: none.
+Active implementation plan: `active-drm-framerate-animation.md`.
 
 Files with an `active-` prefix are reserved for open implementation slices.
 When a slice completes, fold the useful details into this index or one of the
 durable reference notes below, then remove the completed implementation log.
 
 ## Files
+
+### `active-drm-framerate-animation.md`
+
+Open plan for correcting DRM display framerate reporting and animation pulse
+prediction so fixed-mode displays report their physical refresh cadence while
+animation remains page-flip backpressured.
 
 ### `layout-caching-roadmap.md`
 
