@@ -1256,11 +1256,23 @@ impl WaylandApp {
         }
 
         if geometry_changed {
+            let resize_width = self.geometry.buffer_size.0;
+            let resize_height = self.geometry.buffer_size.1;
+            let resize_scale = self.geometry.scale_factor();
+
+            // Keep layout/render dimensions in lockstep with the Wayland buffer.
+            // The input event below still notifies Elixir observers, but it can be
+            // buffered behind the registry lane during startup and scale changes.
+            let _ = self.tree_tx.send(TreeMsg::Resize {
+                width: resize_width as f32,
+                height: resize_height as f32,
+                scale: resize_scale,
+            });
             self.queue_redraw();
             self.send_input_event(InputEvent::Resized {
-                width: self.geometry.buffer_size.0,
-                height: self.geometry.buffer_size.1,
-                scale_factor: self.geometry.scale_factor(),
+                width: resize_width,
+                height: resize_height,
+                scale_factor: resize_scale,
             });
             self.text_input.sync(&self.window, &self.geometry);
         }
@@ -2172,7 +2184,12 @@ impl PointerHandler for WaylandApp {
                     vertical,
                     ..
                 } => {
-                    if let Some(scroll_event) = pointer_scroll_event(horizontal, vertical, (x, y)) {
+                    let absolute_delta = self
+                        .geometry
+                        .surface_to_buffer_delta((horizontal.absolute, vertical.absolute));
+                    if let Some(scroll_event) =
+                        pointer_scroll_event(horizontal, vertical, (x, y), absolute_delta)
+                    {
                         self.send_input_event(scroll_event);
                     }
                 }

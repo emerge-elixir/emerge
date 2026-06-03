@@ -62,6 +62,7 @@ pub(super) fn pointer_scroll_event(
     horizontal: AxisScroll,
     vertical: AxisScroll,
     position: (f32, f32),
+    absolute_delta: (f32, f32),
 ) -> Option<InputEvent> {
     let (x, y) = position;
 
@@ -76,8 +77,8 @@ pub(super) fn pointer_scroll_event(
 
     if horizontal.absolute != 0.0 || vertical.absolute != 0.0 {
         return Some(InputEvent::CursorScroll {
-            dx: -(horizontal.absolute as f32),
-            dy: -(vertical.absolute as f32),
+            dx: -absolute_delta.0,
+            dy: -absolute_delta.1,
             x,
             y,
         });
@@ -122,6 +123,7 @@ mod tests {
                 stop: false,
             },
             (12.0, 18.0),
+            (12.0, -18.0),
         )
         .unwrap();
 
@@ -153,14 +155,15 @@ mod tests {
                 stop: false,
             },
             (3.0, 5.0),
+            (6.75, -10.875),
         )
         .unwrap();
 
         assert!(matches!(
             event,
             InputEvent::CursorScroll { dx, dy, x, y }
-                if (dx + 4.5).abs() < f32::EPSILON
-                    && (dy - 7.25).abs() < f32::EPSILON
+                if (dx + 6.75).abs() < f32::EPSILON
+                    && (dy - 10.875).abs() < f32::EPSILON
                     && (x - 3.0).abs() < f32::EPSILON
                     && (y - 5.0).abs() < f32::EPSILON
         ));

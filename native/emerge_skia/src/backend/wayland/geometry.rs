@@ -49,15 +49,24 @@ impl SurfaceGeometry {
     }
 
     pub(super) fn surface_to_buffer_position(&self, position: (f64, f64)) -> (f32, f32) {
+        let (scale_x, scale_y) = self.surface_to_buffer_scale();
+
+        ((position.0 * scale_x) as f32, (position.1 * scale_y) as f32)
+    }
+
+    pub(super) fn surface_to_buffer_delta(&self, delta: (f64, f64)) -> (f32, f32) {
+        let (scale_x, scale_y) = self.surface_to_buffer_scale();
+
+        ((delta.0 * scale_x) as f32, (delta.1 * scale_y) as f32)
+    }
+
+    fn surface_to_buffer_scale(&self) -> (f64, f64) {
         let logical_width = self.logical_size.0.max(1) as f64;
         let logical_height = self.logical_size.1.max(1) as f64;
         let buffer_width = self.buffer_size.0.max(1) as f64;
         let buffer_height = self.buffer_size.1.max(1) as f64;
 
-        (
-            (position.0 * buffer_width / logical_width) as f32,
-            (position.1 * buffer_height / logical_height) as f32,
-        )
+        (buffer_width / logical_width, buffer_height / logical_height)
     }
 
     pub(super) fn buffer_to_surface_rect(
@@ -164,5 +173,21 @@ mod tests {
 
         assert!((x - (50.5_f32 * 152.0 / 101.0)).abs() < 0.0001);
         assert!((y - 37.5).abs() < 0.0001);
+    }
+
+    #[test]
+    fn surface_to_buffer_delta_uses_actual_buffer_ratio_for_fractional_size() {
+        let mut geometry = SurfaceGeometry::new(&WaylandConfig {
+            title: "test".to_string(),
+            width: 101,
+            height: 100,
+        });
+
+        geometry.buffer_size = (152, 150);
+
+        let (dx, dy) = geometry.surface_to_buffer_delta((4.0, -6.0));
+
+        assert!((dx - (4.0_f32 * 152.0 / 101.0)).abs() < 0.0001);
+        assert!((dy + 9.0).abs() < 0.0001);
     }
 }
