@@ -536,12 +536,7 @@ fn render_node_visual_bounds(node: &RenderNode, transform: Affine2) -> Option<Re
             render_nodes_visual_bounds(children, transform)
         }
         RenderNode::Clip { clips, children } | RenderNode::RelaxedClip { clips, children } => {
-            let child_bounds = render_nodes_visual_bounds(children, transform)?;
-            let clip_bounds = clips
-                .iter()
-                .map(|clip| transform.map_rect_aabb(clip.rect))
-                .reduce(union_rect)?;
-            child_bounds.intersect(clip_bounds)
+            render_clipped_nodes_visual_bounds(clips, children, transform)
         }
         RenderNode::Transform {
             transform: child_transform,
@@ -552,6 +547,30 @@ fn render_node_visual_bounds(node: &RenderNode, transform: Affine2) -> Option<Re
             Some(transform.map_rect_aabb(draw_primitive_visual_bounds(primitive)))
         }
     }
+}
+
+fn render_clipped_nodes_visual_bounds(
+    clips: &[ClipShape],
+    children: &[RenderNode],
+    transform: Affine2,
+) -> Option<Rect> {
+    if clips.is_empty() {
+        return render_nodes_visual_bounds(children, transform);
+    }
+
+    let clip_bounds = clips
+        .iter()
+        .map(|clip| transform.map_rect_aabb(clip.rect))
+        .reduce(union_rect)?;
+
+    children
+        .iter()
+        .filter_map(|child| match child {
+            RenderNode::ShadowPass { children } => render_nodes_visual_bounds(children, transform),
+            _ => render_node_visual_bounds(child, transform)
+                .and_then(|bounds| bounds.intersect(clip_bounds)),
+        })
+        .reduce(union_rect)
 }
 
 pub(crate) fn draw_primitive_visual_bounds(primitive: &DrawPrimitive) -> Rect {
@@ -830,7 +849,8 @@ pub(crate) fn hash_paint_layer_render_node<H: Hasher>(
             true
         }
         RenderNode::Clip { clips, children } => {
-            let (clips, child_payload_bounds) = paint_layer_hash_clip_scope(clips, payload_bounds);
+            let (clips, child_payload_bounds) =
+                paint_layer_hash_clip_scope(clips, children, payload_bounds);
             if payload_bounds.is_some() && child_payload_bounds.is_none() {
                 return false;
             }
@@ -843,7 +863,8 @@ pub(crate) fn hash_paint_layer_render_node<H: Hasher>(
             true
         }
         RenderNode::RelaxedClip { clips, children } => {
-            let (clips, child_payload_bounds) = paint_layer_hash_clip_scope(clips, payload_bounds);
+            let (clips, child_payload_bounds) =
+                paint_layer_hash_clip_scope(clips, children, payload_bounds);
             if payload_bounds.is_some() && child_payload_bounds.is_none() {
                 return false;
             }
@@ -923,15 +944,23 @@ fn paint_layer_render_nodes_intersect_payload(
 
 fn paint_layer_hash_clip_scope(
     clips: &[ClipShape],
+    children: &[RenderNode],
     payload_bounds: Option<Rect>,
 ) -> (Vec<ClipShape>, Option<Rect>) {
     let Some(payload_bounds) = payload_bounds else {
         return (clips.to_vec(), None);
     };
 
-    let child_payload_bounds = clips
+    let has_shadow_escape = children
         .iter()
-        .try_fold(payload_bounds, |bounds, clip| bounds.intersect(clip.rect));
+        .any(|child| matches!(child, RenderNode::ShadowPass { .. }));
+    let child_payload_bounds = if has_shadow_escape {
+        Some(payload_bounds)
+    } else {
+        clips
+            .iter()
+            .try_fold(payload_bounds, |bounds, clip| bounds.intersect(clip.rect))
+    };
     let clips = clips
         .iter()
         .filter_map(|clip| {

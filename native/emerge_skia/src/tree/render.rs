@@ -666,6 +666,7 @@ fn build_element_subtree<R: RegistryTraversalSink>(
         };
     let can_capture_current_moving_layer_content = preserve_moving_paint_layer_content
         && !moving_boundary_requirements.focused_text_input
+        && !moving_boundary_requirements.focused_slider_own_payload
         && !moving_boundary_requirements.uncacheable_media_leaf;
     let child_allow_moving_paint_layers = traversal.allow_moving_paint_layers
         && (!can_capture_current_moving_layer_content
@@ -752,6 +753,8 @@ fn build_element_subtree<R: RegistryTraversalSink>(
         let can_try_moving_layer = needs_same_scroll_moving_boundary
             && should_allow_moving_paint_layer_at_current_node(&traversal, element, attrs)
             && !moving_boundary_requirements.focused_text_input
+            && (focused_stable_own_payload
+                || !moving_boundary_requirements.focused_slider_own_payload)
             && !moving_boundary_requirements.uncacheable_media_leaf
             && host_content.escapes.is_empty();
         let fixed_focused_own_layer = !can_try_moving_layer
@@ -778,35 +781,41 @@ fn build_element_subtree<R: RegistryTraversalSink>(
             ));
             Vec::new()
         } else if can_try_moving_layer {
-            let moving_outer_shadow_nodes = wrap_outer_shadow_nodes(
-                outer_shadow_nodes.clone(),
-                Affine2::identity(),
-                traversal.render_ctx,
-            );
             if focused_stable_own_payload {
                 emitted_current_element_paint_layer = true;
-                let mut own_nodes = Vec::new();
-                own_nodes.extend(moving_outer_shadow_nodes);
-                own_nodes.extend(background_nodes);
-                own_nodes.extend(inset_shadow_nodes);
-                own_nodes.extend(border_nodes);
-                wrap_with_explicit_moving_own_payload_layer(MovingPaintLayerOwnPayloadWrapInput {
-                    own_nodes,
-                    child_nodes: host_content.local,
-                    element,
-                    cache_key: Some(moving_paint_layer_cache_key(
-                        tree,
-                        ix,
-                        element,
-                        render_frame,
-                    )),
-                    render_frame,
-                    transform,
-                    text_input_focused: host_content.text_input_focused,
-                    inside_local_transform: traversal.render_ctx.inside_local_transform(),
-                    ancestor_clip_context: traversal.render_ctx,
-                })
+                let moving_outer_shadow_nodes = wrap_outer_shadow_nodes(
+                    outer_shadow_nodes,
+                    Affine2::identity(),
+                    traversal.render_ctx,
+                );
+                local.extend(wrap_with_shadow_pass(
+                    wrap_with_explicit_moving_own_payload_layer(
+                        MovingPaintLayerOwnPayloadWrapInput {
+                            own_nodes: moving_outer_shadow_nodes,
+                            child_nodes: Vec::new(),
+                            element,
+                            cache_key: None,
+                            render_frame,
+                            transform,
+                            text_input_focused: false,
+                            inside_local_transform: traversal.render_ctx.inside_local_transform(),
+                            ancestor_clip_context: traversal.render_ctx,
+                        },
+                    ),
+                ));
+
+                let mut normal_nodes = Vec::new();
+                normal_nodes.extend(background_nodes);
+                normal_nodes.extend(inset_shadow_nodes);
+                normal_nodes.extend(host_content.local);
+                normal_nodes.extend(border_nodes);
+                wrap_with_transform(normal_nodes, transform)
             } else {
+                let moving_outer_shadow_nodes = wrap_outer_shadow_nodes(
+                    outer_shadow_nodes.clone(),
+                    Affine2::identity(),
+                    traversal.render_ctx,
+                );
                 let mut normal_nodes = Vec::new();
                 normal_nodes.extend(background_nodes);
                 normal_nodes.extend(inset_shadow_nodes);
