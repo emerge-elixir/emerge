@@ -831,8 +831,8 @@ fn apply_patch(
                 let before_slider_patch_value = element.runtime.slider_patch_value;
                 let before_slider_value_origin = element.runtime.slider_value_origin;
 
-                element.spec.attrs_raw = attrs_raw.clone();
                 let mut decoded = decode_attrs(&attrs_raw).map_err(|e| e.to_string())?;
+                element.spec.attrs_raw = attrs_raw;
                 let content_is_from_patch =
                     element.spec.kind.is_text_input_family() && decoded.content.is_some();
                 let text_input_is_focused =
@@ -985,9 +985,7 @@ fn apply_patch(
             }
 
             for (id, child_ids, paint_child_ids, nearby_mounts) in subtree_topology {
-                tree.set_children(&id, child_ids)?;
-                tree.set_paint_children(&id, paint_child_ids)?;
-                tree.set_nearby_mounts(&id, nearby_mounts)?;
+                tree.set_inserted_node_topology(&id, child_ids, paint_child_ids, nearby_mounts)?;
             }
 
             // Update parent's children or set as tree root
@@ -1041,9 +1039,7 @@ fn apply_patch(
             }
 
             for (id, child_ids, paint_child_ids, nearby_mounts) in subtree_topology {
-                tree.set_children(&id, child_ids)?;
-                tree.set_paint_children(&id, paint_child_ids)?;
-                tree.set_nearby_mounts(&id, nearby_mounts)?;
+                tree.set_inserted_node_topology(&id, child_ids, paint_child_ids, nearby_mounts)?;
             }
 
             let mut live_mounts = tree.live_nearby_mounts(&host_id);
@@ -1064,7 +1060,6 @@ fn apply_patch(
             tree.set_nearby_mounts(&host_id, merged_mounts)?;
 
             if has_animation_attrs {
-                tree.recompute_layout_descendant_dirty();
                 TreeInvalidation::Resolve
             } else {
                 let restored_layout = tree.restore_detached_layout_subtree_cache(&subtree_root_id);
@@ -1140,6 +1135,10 @@ fn filter_descendant_remove_patches(tree: &ElementTree, patches: Vec<Patch>) -> 
             _ => None,
         })
         .collect();
+
+    if remove_ids.is_empty() {
+        return patches;
+    }
 
     let remove_set: HashSet<NodeId> = remove_ids.iter().cloned().collect();
 
@@ -1305,9 +1304,12 @@ fn maybe_capture_exit_ghost(tree: &mut ElementTree, id: &NodeId) -> Result<Optio
     }
 
     for topology in ghost_topology {
-        tree.set_children(&topology.id, topology.children)?;
-        tree.set_paint_children(&topology.id, topology.paint_children)?;
-        tree.set_nearby_mounts(&topology.id, topology.nearby)?;
+        tree.set_inserted_node_topology(
+            &topology.id,
+            topology.children,
+            topology.paint_children,
+            topology.nearby,
+        )?;
     }
 
     Ok(Some(ghost_root_id))
@@ -1644,6 +1646,24 @@ mod tests {
 
         AnimationSpec {
             keyframes: vec![from, to],
+            duration_ms: 200.0,
+            curve: AnimationCurve::Linear,
+            repeat: AnimationRepeat::Once,
+        }
+    }
+
+    fn width_spec(from_width: f64, to_width: f64) -> AnimationSpec {
+        AnimationSpec {
+            keyframes: vec![
+                Attrs {
+                    width: Some(Length::Px(from_width)),
+                    ..Attrs::default()
+                },
+                Attrs {
+                    width: Some(Length::Px(to_width)),
+                    ..Attrs::default()
+                },
+            ],
             duration_ms: 200.0,
             curve: AnimationCurve::Linear,
             repeat: AnimationRepeat::Once,
@@ -2113,7 +2133,7 @@ mod tests {
         tree.insert(host);
 
         let mut nearby = plain_element(157);
-        nearby.spec.declared.animate_enter = Some(alpha_spec(0.0, 1.0));
+        nearby.spec.declared.animate_enter = Some(width_spec(120.0, 180.0));
         nearby.layout.effective.animate_enter = nearby.spec.declared.animate_enter.clone();
         let mut subtree = ElementTree::new();
         subtree.set_root_id(nearby_id);
