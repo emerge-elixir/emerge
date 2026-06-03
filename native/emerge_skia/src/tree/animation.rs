@@ -72,6 +72,7 @@ pub struct AnimationLayoutEffect {
     pub invalidation: TreeInvalidation,
     pub registry_refresh: bool,
     pub layout_scale_dirty: bool,
+    pub transform_only: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -531,6 +532,7 @@ fn animation_attrs_layout_effect(id: NodeId, attrs: &Attrs) -> Option<AnimationL
         invalidation,
         registry_refresh: animation_attrs_affect_registry_refresh(attrs),
         layout_scale_dirty: attrs.layout_scale.is_some(),
+        transform_only: animation_attrs_are_transform_only(attrs),
     })
 }
 
@@ -554,7 +556,25 @@ fn animation_spec_layout_effect(id: NodeId, spec: &AnimationSpec) -> Option<Anim
             .keyframes
             .iter()
             .any(|attrs| attrs.layout_scale.is_some()),
+        transform_only: spec
+            .keyframes
+            .iter()
+            .all(animation_attrs_are_transform_only),
     })
+}
+
+fn animation_attrs_are_transform_only(attrs: &Attrs) -> bool {
+    classify_animation_sample_attrs(attrs) == TreeInvalidation::Paint
+        && attrs.background.is_none()
+        && attrs.border_radius.is_none()
+        && attrs.border_style.is_none()
+        && attrs.border_color.is_none()
+        && attrs.box_shadows.is_none()
+        && attrs.font_color.is_none()
+        && attrs.svg_color.is_none()
+        && attrs.font_underline.is_none()
+        && attrs.font_strike.is_none()
+        && attrs.video_target.is_none()
 }
 
 pub fn classify_animation_sample_attrs(attrs: &Attrs) -> TreeInvalidation {

@@ -1,10 +1,183 @@
 use super::common::*;
 use super::*;
+use crate::events::registry_builder::{
+    assert_registry_rebuild_payloads_equivalent, build_registry_rebuild_for_benchmark,
+};
 use crate::render_scene::PaintLayerReason;
 use crate::renderer::{RenderFrame, RenderState, RendererCacheConfig, SceneRenderer};
 use crate::tree::geometry::{ClipShape, CornerRadii, Rect};
 use crate::tree::layout::{Constraint, layout_tree_default, refresh_render_scene_for_benchmark};
 use crate::tree::transform::{Affine2, Point, element_transform};
+
+#[test]
+fn combined_refresh_matches_separate_render_and_registry_for_interactive_tree() {
+    let root_id = NodeId::from_term_bytes(vec![190]);
+    let input_id = NodeId::from_term_bytes(vec![191]);
+    let button_id = NodeId::from_term_bytes(vec![192]);
+
+    let mut root_attrs = solid_fill_attrs((20, 20, 20));
+    root_attrs.on_click = Some(true);
+    let mut root = Element::with_attrs(root_id, ElementKind::Column, Vec::new(), root_attrs);
+    root.children = vec![input_id, button_id];
+    root.layout.frame = Some(Frame {
+        x: 0.0,
+        y: 0.0,
+        width: 200.0,
+        height: 120.0,
+        content_width: 200.0,
+        content_height: 120.0,
+    });
+
+    let mut input_attrs = Attrs {
+        content: Some("hello".to_string()),
+        width: Some(Length::Px(160.0)),
+        height: Some(Length::Px(30.0)),
+        ..Attrs::default()
+    };
+    input_attrs.on_focus = Some(true);
+    let mut input = Element::with_attrs(input_id, ElementKind::TextInput, Vec::new(), input_attrs);
+    input.runtime.text_input_focused = true;
+    input.runtime.focused_active = true;
+    input.layout.frame = Some(Frame {
+        x: 10.0,
+        y: 10.0,
+        width: 160.0,
+        height: 30.0,
+        content_width: 160.0,
+        content_height: 30.0,
+    });
+
+    let mut button_attrs = solid_fill_attrs((80, 80, 80));
+    button_attrs.on_mouse_enter = Some(true);
+    button_attrs.on_mouse_leave = Some(true);
+    let mut button = Element::with_attrs(button_id, ElementKind::El, Vec::new(), button_attrs);
+    button.layout.frame = Some(Frame {
+        x: 10.0,
+        y: 50.0,
+        width: 100.0,
+        height: 40.0,
+        content_width: 100.0,
+        content_height: 40.0,
+    });
+
+    let mut tree = ElementTree::new();
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(input);
+    tree.insert(button);
+
+    let separate_scene = super::super::render_tree_scene_with_scroll_layers(&tree);
+    let separate_registry = build_registry_rebuild_for_benchmark(&tree);
+    let combined = super::super::build_refresh_output_with_scroll_layers(
+        &tree,
+        super::super::RefreshRegistryMode::Rebuild,
+    );
+    let super::super::RefreshRegistryOutput::Rebuilt(combined_registry) = &combined.registry else {
+        panic!("rebuild refresh should produce registry payload");
+    };
+
+    assert_eq!(combined.scene, separate_scene.scene);
+    assert_eq!(
+        combined.text_input_focused,
+        separate_scene.text_input_focused
+    );
+    assert_eq!(
+        combined.text_input_cursor_area,
+        separate_scene.text_input_cursor_area
+    );
+    assert_registry_rebuild_payloads_equivalent(combined_registry, &separate_registry);
+}
+
+#[test]
+fn combined_refresh_matches_separate_registry_for_local_and_escape_nearby() {
+    let root_id = NodeId::from_term_bytes(vec![193]);
+    let child_id = NodeId::from_term_bytes(vec![194]);
+    let behind_id = NodeId::from_term_bytes(vec![195]);
+    let front_id = NodeId::from_term_bytes(vec![196]);
+
+    let mut root_attrs = solid_fill_attrs((10, 10, 10));
+    root_attrs.on_click = Some(true);
+    let mut root = Element::with_attrs(root_id, ElementKind::El, Vec::new(), root_attrs);
+    root.layout.frame = Some(Frame {
+        x: 0.0,
+        y: 0.0,
+        width: 200.0,
+        height: 120.0,
+        content_width: 200.0,
+        content_height: 120.0,
+    });
+
+    let mut child_attrs = solid_fill_attrs((50, 50, 50));
+    child_attrs.on_mouse_down = Some(true);
+    let mut child = Element::with_attrs(child_id, ElementKind::El, Vec::new(), child_attrs);
+    child.layout.frame = Some(Frame {
+        x: 20.0,
+        y: 20.0,
+        width: 40.0,
+        height: 40.0,
+        content_width: 40.0,
+        content_height: 40.0,
+    });
+
+    let mut behind_attrs = solid_fill_attrs((20, 60, 20));
+    behind_attrs.on_mouse_enter = Some(true);
+    let mut behind = Element::with_attrs(behind_id, ElementKind::El, Vec::new(), behind_attrs);
+    behind.layout.frame = Some(Frame {
+        x: 5.0,
+        y: 5.0,
+        width: 30.0,
+        height: 30.0,
+        content_width: 30.0,
+        content_height: 30.0,
+    });
+
+    let mut front_attrs = solid_fill_attrs((60, 20, 20));
+    front_attrs.on_mouse_leave = Some(true);
+    let mut front = Element::with_attrs(front_id, ElementKind::El, Vec::new(), front_attrs);
+    front.layout.frame = Some(Frame {
+        x: 0.0,
+        y: 0.0,
+        width: 200.0,
+        height: 120.0,
+        content_width: 200.0,
+        content_height: 120.0,
+    });
+
+    let mut tree = ElementTree::new();
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(child);
+    tree.insert(behind);
+    tree.insert(front);
+    tree.set_children(&root_id, vec![child_id]).unwrap();
+    tree.set_nearby_mounts(
+        &root_id,
+        vec![
+            NearbyMount {
+                slot: NearbySlot::BehindContent,
+                id: behind_id,
+            },
+            NearbyMount {
+                slot: NearbySlot::InFront,
+                id: front_id,
+            },
+        ],
+    )
+    .unwrap();
+
+    let separate_scene = super::super::render_tree_scene_with_scroll_layers(&tree);
+    let separate_registry = build_registry_rebuild_for_benchmark(&tree);
+    let combined = super::super::build_refresh_output_with_scroll_layers(
+        &tree,
+        super::super::RefreshRegistryMode::Rebuild,
+    );
+    let super::super::RefreshRegistryOutput::Rebuilt(combined_registry) = &combined.registry else {
+        panic!("rebuild refresh should produce registry payload");
+    };
+
+    assert_eq!(combined.scene, separate_scene.scene);
+    assert_registry_rebuild_payloads_equivalent(combined_registry, &separate_registry);
+}
 
 fn build_two_child_tree(
     root_attrs: Attrs,

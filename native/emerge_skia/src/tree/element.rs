@@ -896,6 +896,7 @@ impl Element {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn render_snapshot(&self) -> Self {
         Self {
             id: self.id,
@@ -1485,6 +1486,21 @@ impl ElementTree {
     pub fn mark_render_and_registry_refresh_dirty(&mut self, id: &NodeId) {
         if let Some(ix) = self.ix_of(id) {
             self.mark_render_and_registry_refresh_dirty_ix(ix);
+        }
+    }
+
+    pub(crate) fn mark_transform_animation_refresh_dirty(
+        &mut self,
+        id: &NodeId,
+        registry_dirty: bool,
+    ) {
+        let Some(ix) = self.ix_of(id) else {
+            return;
+        };
+
+        self.mark_transform_animation_render_dirty_ix(ix);
+        if registry_dirty {
+            self.mark_registry_refresh_dirty_ix(ix);
         }
     }
 
@@ -2275,6 +2291,24 @@ impl ElementTree {
         self.mark_refresh_dirty_ix(ix, true, true);
     }
 
+    fn mark_transform_animation_render_dirty_ix(&mut self, ix: NodeIx) {
+        if let Some(element) = self.get_ix_mut(ix) {
+            element.refresh.render_fragment_cache.borrow_mut().take();
+        }
+
+        let mut current_ix = parent_ix_from_link(self.parent_link_of(ix));
+        while let Some(current) = current_ix {
+            if let Some(element) = self.get_ix_mut(current) {
+                element.refresh.render_fragment_cache.borrow_mut().take();
+                if !element.refresh.render_dirty {
+                    element.refresh.render_descendant_dirty = true;
+                }
+            }
+
+            current_ix = parent_ix_from_link(self.parent_link_of(current));
+        }
+    }
+
     fn mark_refresh_dirty_ix(&mut self, ix: NodeIx, render: bool, registry: bool) {
         let mut current_ix = Some(ix);
         let mut origin = true;
@@ -2674,17 +2708,7 @@ impl ElementTree {
             .ix_of(host_id)
             .ok_or_else(|| format!("host not found: {:?}", host_id.0))?;
 
-        let nearby_ixs = mounts
-            .iter()
-            .map(|mount| {
-                self.ix_of(&mount.id)
-                    .map(|ix| NearbyMountIx {
-                        slot: mount.slot,
-                        ix,
-                    })
-                    .ok_or_else(|| format!("nearby mount not found: {:?}", mount.id.0))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let nearby_ixs = self.resolve_nearby_ixs(&mounts)?;
         self.ensure_topology();
 
         #[cfg(test)]
@@ -2920,6 +2944,104 @@ impl ElementTree {
                     .ok_or_else(|| format!("child not found: {:?}", child_id.0))
             })
             .collect()
+    }
+
+    fn resolve_nearby_ixs(&self, mounts: &[NearbyMount]) -> Result<Vec<NearbyMountIx>, String> {
+        mounts
+            .iter()
+            .map(|mount| {
+                self.ix_of(&mount.id)
+                    .map(|ix| NearbyMountIx {
+                        slot: mount.slot,
+                        ix,
+                    })
+                    .ok_or_else(|| format!("nearby mount not found: {:?}", mount.id.0))
+            })
+            .collect()
+    }
+
+    pub(crate) fn set_inserted_node_topology(
+        &mut self,
+        id: &NodeId,
+        child_ids: Vec<NodeId>,
+        paint_child_ids: Vec<NodeId>,
+        nearby_mounts: Vec<NearbyMount>,
+    ) -> Result<(), String> {
+        let ix = self
+            .ix_of(id)
+            .ok_or_else(|| format!("inserted node not found: {:?}", id.0))?;
+        let child_ixs = self.resolve_child_ixs(&child_ids)?;
+        let paint_child_ixs = self.resolve_child_ixs(&paint_child_ids)?;
+        let nearby_ixs = self.resolve_nearby_ixs(&nearby_mounts)?;
+        self.ensure_topology();
+
+        self.ensure_topology_capacity(ix);
+        child_ixs
+            .iter()
+            .chain(paint_child_ixs.iter())
+            .for_each(|&child_ix| self.ensure_topology_capacity(child_ix));
+        nearby_ixs
+            .iter()
+            .for_each(|mount| self.ensure_topology_capacity(mount.ix));
+
+        #[cfg(test)]
+        if let Some(element) = self.get_mut(id) {
+            element.children = child_ids;
+            element.paint_children = paint_child_ids;
+            element.nearby.set_mounts(nearby_mounts);
+        }
+
+        let (children_changed, paint_children_changed, nearby_changed) = {
+            #[cfg(test)]
+            let topology = self.topology.get_mut();
+            #[cfg(not(test))]
+            let topology = &mut self.topology;
+
+            let children_changed = topology.nodes[ix].children != child_ixs;
+            let paint_children_changed = topology.nodes[ix].paint_children != paint_child_ixs;
+            let nearby_changed = topology.nodes[ix].nearby != nearby_ixs;
+
+            for old_child_ix in std::mem::take(&mut topology.nodes[ix].children) {
+                if matches!(topology.nodes[old_child_ix].parent, Some(ParentLink::Child { parent }) if parent == ix)
+                {
+                    topology.nodes[old_child_ix].parent = None;
+                }
+            }
+            for old_mount in std::mem::take(&mut topology.nodes[ix].nearby) {
+                if matches!(topology.nodes[old_mount.ix].parent, Some(ParentLink::Nearby { host, .. }) if host == ix)
+                {
+                    topology.nodes[old_mount.ix].parent = None;
+                }
+            }
+
+            for &child_ix in &child_ixs {
+                topology.nodes[child_ix].parent = Some(ParentLink::Child { parent: ix });
+            }
+            for mount in &nearby_ixs {
+                topology.nodes[mount.ix].parent = Some(ParentLink::Nearby {
+                    host: ix,
+                    slot: mount.slot,
+                });
+            }
+
+            topology.nodes[ix].children = child_ixs;
+            topology.nodes[ix].paint_children = paint_child_ixs;
+            topology.nodes[ix].nearby = nearby_ixs;
+
+            (children_changed, paint_children_changed, nearby_changed)
+        };
+
+        if children_changed {
+            self.bump_children_version(ix);
+        }
+        if paint_children_changed {
+            self.bump_paint_children_version(ix);
+        }
+        if nearby_changed {
+            self.bump_nearby_version(ix);
+        }
+
+        Ok(())
     }
 
     fn set_children_ix(&mut self, parent_ix: NodeIx, child_ixs: Vec<NodeIx>) {
@@ -3771,6 +3893,41 @@ mod tests {
         let changed_key = tree.topology_dependency_key_for(&host_id);
         assert_eq!(changed_key.nearby_count, 1);
         assert!(changed_key.nearby_version > first_key.nearby_version);
+    }
+
+    #[test]
+    fn transform_animation_refresh_dirty_preserves_content_paint_generation() {
+        let parent_id = NodeId::from_term_bytes(vec![31]);
+        let child_id = NodeId::from_term_bytes(vec![32]);
+
+        let mut tree = ElementTree::new();
+        tree.insert(Element::with_attrs(
+            parent_id,
+            ElementKind::El,
+            Vec::new(),
+            Attrs::default(),
+        ));
+        tree.insert(Element::with_attrs(
+            child_id,
+            ElementKind::El,
+            Vec::new(),
+            Attrs::default(),
+        ));
+        tree.set_root_id(parent_id);
+        tree.set_children(&parent_id, vec![child_id]).unwrap();
+        tree.clear_refresh_dirty();
+
+        let before_generation = tree.get(&child_id).unwrap().refresh.paint_generation;
+        tree.mark_transform_animation_refresh_dirty(&child_id, false);
+
+        let child = tree.get(&child_id).unwrap();
+        assert_eq!(child.refresh.paint_generation, before_generation);
+        assert!(!child.refresh.render_dirty);
+        assert!(!child.refresh.render_descendant_dirty);
+        let parent = tree.get(&parent_id).unwrap();
+        assert!(parent.refresh.render_descendant_dirty);
+        assert!(tree.has_render_refresh_damage());
+        assert!(!tree.has_registry_refresh_damage());
     }
 
     #[test]

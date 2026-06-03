@@ -36,6 +36,7 @@
 //! example, `on_mouse_down` and `mouse_down` style activation both contribute to
 //! the same left-press listener slot.
 
+#[cfg(any(test, feature = "bench-diagnostics"))]
 use std::cell::Cell;
 use std::collections::HashMap;
 #[cfg(test)]
@@ -51,17 +52,21 @@ use crate::input::{
     SCROLL_LINE_PIXELS,
 };
 use crate::keys::CanonicalKey;
+#[cfg(any(test, feature = "bench-diagnostics"))]
+use crate::tree::attrs::{BorderRadius, Padding};
 use crate::tree::attrs::{
-    BorderRadius, KeyBindingMatch, KeyBindingSpec, Padding, VirtualKeyHoldMode, VirtualKeyTapAction,
+    KeyBindingMatch, KeyBindingSpec, VirtualKeyHoldMode, VirtualKeyTapAction,
 };
+#[cfg(any(test, feature = "bench-diagnostics"))]
+use crate::tree::element::Frame;
 use crate::tree::element::{
-    Element, ElementKind, ElementTree, Frame, NodeId, NodeIx, RetainedChildMode,
-    RetainedPaintPhase, TopologyDependencyKey,
+    Element, ElementKind, ElementTree, NodeId, NodeIx, RetainedChildMode, RetainedPaintPhase,
+    TopologyDependencyKey,
 };
 use crate::tree::geometry::{
     ClipShape, CornerRadii, Rect, ShapeBounds, clamp_radii, point_hits_shape,
 };
-use crate::tree::scene::ResolvedNodeState;
+use crate::tree::scene::{ResolvedNodeState, SceneContext};
 use crate::tree::scrollbar::ScrollbarAxis;
 use crate::tree::transform::{Affine2, InteractionClip, Point};
 use crate::tree::viewport_culling::should_skip_registry_viewport_subtree;
@@ -76,6 +81,7 @@ use super::{
 const RUNTIME_DRAG_DEADZONE: f32 = 10.0;
 const GESTURE_AXIS_DOMINANCE_RATIO: f32 = 1.25;
 const GESTURE_AXIS_MIN_LEAD: f32 = 6.0;
+#[cfg(any(test, feature = "bench-diagnostics"))]
 const REGISTRY_SUBTREE_CACHE_BUDGET: usize = 48;
 
 #[cfg(any(test, feature = "bench-diagnostics"))]
@@ -159,9 +165,6 @@ fn record_registry_cache_hit() {
     });
 }
 
-#[cfg(not(any(test, feature = "bench-diagnostics")))]
-fn record_registry_cache_hit() {}
-
 #[cfg(any(test, feature = "bench-diagnostics"))]
 fn record_registry_cache_store() {
     update_registry_build_diagnostics(|mut diagnostics| {
@@ -169,9 +172,6 @@ fn record_registry_cache_store() {
         diagnostics
     });
 }
-
-#[cfg(not(any(test, feature = "bench-diagnostics")))]
-fn record_registry_cache_store() {}
 
 #[cfg(any(test, feature = "bench-diagnostics"))]
 fn record_registry_cache_ineligible() {
@@ -181,9 +181,6 @@ fn record_registry_cache_ineligible() {
     });
 }
 
-#[cfg(not(any(test, feature = "bench-diagnostics")))]
-fn record_registry_cache_ineligible() {}
-
 #[cfg(any(test, feature = "bench-diagnostics"))]
 fn record_registry_cache_damaged() {
     update_registry_build_diagnostics(|mut diagnostics| {
@@ -191,9 +188,6 @@ fn record_registry_cache_damaged() {
         diagnostics
     });
 }
-
-#[cfg(not(any(test, feature = "bench-diagnostics")))]
-fn record_registry_cache_damaged() {}
 
 #[cfg(any(test, feature = "bench-diagnostics"))]
 fn record_registry_cache_miss() {
@@ -204,6 +198,23 @@ fn record_registry_cache_miss() {
 }
 
 #[cfg(not(any(test, feature = "bench-diagnostics")))]
+#[allow(dead_code)]
+fn record_registry_cache_hit() {}
+
+#[cfg(not(any(test, feature = "bench-diagnostics")))]
+#[allow(dead_code)]
+fn record_registry_cache_store() {}
+
+#[cfg(not(any(test, feature = "bench-diagnostics")))]
+#[allow(dead_code)]
+fn record_registry_cache_ineligible() {}
+
+#[cfg(not(any(test, feature = "bench-diagnostics")))]
+#[allow(dead_code)]
+fn record_registry_cache_damaged() {}
+
+#[cfg(not(any(test, feature = "bench-diagnostics")))]
+#[allow(dead_code)]
 fn record_registry_cache_miss() {}
 
 /// Listener registry consumed by the event actor.
@@ -533,7 +544,7 @@ pub(crate) struct PointerRegion {
     local_shape: ShapeBounds,
     screen_to_local: Option<Affine2>,
     screen_bounds: Rect,
-    clip_chain: Vec<InteractionClip>,
+    clip_chain: Arc<[InteractionClip]>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -716,12 +727,14 @@ struct RegistrySubtreeKey {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(not(any(test, feature = "bench-diagnostics")), allow(dead_code))]
 struct RegistrySubtreeChunk {
     acc: RegistryBuildAcc,
     deferred: Vec<DeferredSubtree>,
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(not(any(test, feature = "bench-diagnostics")), allow(dead_code))]
 pub struct RegistrySubtreeCache {
     key: RegistrySubtreeKey,
     chunk: RegistrySubtreeChunk,
@@ -739,6 +752,7 @@ pub(crate) struct RegistryBuildAcc {
     focus_on_mount: Option<FocusOnMountTarget>,
 }
 
+#[cfg_attr(not(any(test, feature = "bench-diagnostics")), allow(dead_code))]
 impl RegistryBuildAcc {
     pub(crate) fn for_tree(tree: &ElementTree) -> Self {
         Self {
@@ -815,7 +829,107 @@ struct DeferredSubtree {
     element_id: NodeId,
     scroll_contexts: Vec<ScrollContext>,
     hover_stack: Vec<HoverTracker>,
-    scene_ctx: crate::tree::scene::SceneContext,
+    scene_ctx: SceneContext,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct RegistryTraversalContext {
+    pub(crate) scroll_contexts: Vec<ScrollContext>,
+    pub(crate) hover_stack: Vec<HoverTracker>,
+    pub(crate) scene_ctx: SceneContext,
+}
+
+impl RegistryTraversalContext {
+    pub(crate) fn root() -> Self {
+        Self::default()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct RegistryVisitResult {
+    pub(crate) next_scroll_contexts: Vec<ScrollContext>,
+    pub(crate) next_hover_stack: Vec<HoverTracker>,
+}
+
+pub(crate) struct RegistryRefreshCollector {
+    acc: RegistryBuildAcc,
+    deferred: Vec<DeferredSubtree>,
+}
+
+impl RegistryRefreshCollector {
+    pub(crate) fn for_tree(tree: &ElementTree) -> Self {
+        Self {
+            acc: RegistryBuildAcc::for_tree(tree),
+            deferred: Vec::new(),
+        }
+    }
+
+    pub(crate) fn visit_element(
+        &mut self,
+        tree: &ElementTree,
+        element: &Element,
+        state: Option<&ResolvedNodeState>,
+        context: &RegistryTraversalContext,
+    ) -> RegistryVisitResult {
+        record_registry_visit();
+        let (next_scroll_contexts, next_hover_stack) = accumulate_element_rebuild(
+            &mut self.acc,
+            tree,
+            element,
+            state,
+            &context.scroll_contexts,
+            &context.hover_stack,
+        );
+
+        RegistryVisitResult {
+            next_scroll_contexts,
+            next_hover_stack,
+        }
+    }
+
+    pub(crate) fn should_skip_child(
+        &self,
+        tree: &ElementTree,
+        child_ix: NodeIx,
+        scene_ctx: &SceneContext,
+    ) -> bool {
+        should_skip_registry_child_subtree(tree, child_ix, scene_ctx)
+    }
+
+    pub(crate) fn collect_subtree(
+        &mut self,
+        tree: &ElementTree,
+        ix: NodeIx,
+        context: RegistryTraversalContext,
+    ) {
+        let Some(element_id) = tree.id_of(ix) else {
+            return;
+        };
+
+        let deferred = accumulate_subtree_rebuild_local(
+            tree,
+            &element_id,
+            &mut self.acc,
+            &context.scroll_contexts,
+            &context.hover_stack,
+            context.scene_ctx,
+        );
+        self.deferred.extend(deferred);
+    }
+
+    pub(crate) fn defer_subtree(&mut self, element_id: NodeId, context: RegistryTraversalContext) {
+        self.deferred.push(DeferredSubtree {
+            element_id,
+            scroll_contexts: context.scroll_contexts,
+            hover_stack: context.hover_stack,
+            scene_ctx: context.scene_ctx,
+        });
+    }
+
+    pub(crate) fn finish(mut self, tree: &ElementTree) -> RegistryRebuildPayload {
+        drain_deferred_subtrees(tree, &mut self.acc, self.deferred);
+        finalize_registry_rebuild(self.acc)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -6451,6 +6565,7 @@ fn drain_deferred_subtrees(
     }
 }
 
+#[cfg(any(test, feature = "bench-diagnostics"))]
 fn drain_deferred_subtrees_cached(
     tree: &mut ElementTree,
     acc: &mut RegistryBuildAcc,
@@ -6471,6 +6586,7 @@ fn drain_deferred_subtrees_cached(
     }
 }
 
+#[cfg(any(test, feature = "bench-diagnostics"))]
 fn accumulate_subtree_rebuild_local_cached(
     tree: &mut ElementTree,
     element_id: &NodeId,
@@ -6571,6 +6687,7 @@ fn accumulate_subtree_rebuild_local_cached(
 
 // Keep this traversal explicit with the uncached version. A shared visit walker
 // was measured in the registry rebuild benchmarks and regressed full rebuilds.
+#[cfg(any(test, feature = "bench-diagnostics"))]
 fn accumulate_subtree_rebuild_local_cached_uncached(
     tree: &mut ElementTree,
     element: &Element,
@@ -6664,6 +6781,7 @@ fn accumulate_subtree_rebuild_local_cached_uncached(
     deferred
 }
 
+#[cfg(any(test, feature = "bench-diagnostics"))]
 fn try_take_registry_cache_budget(cache_budget: &Cell<usize>) -> bool {
     let remaining = cache_budget.get();
     if remaining == 0 {
@@ -6706,10 +6824,12 @@ fn registry_child_subtree_affects_rebuild(tree: &ElementTree, child_ix: NodeIx) 
         .is_some_and(|id| tree.subtree_affects_registry(&id))
 }
 
+#[cfg(any(test, feature = "bench-diagnostics"))]
 fn registry_subtree_cache_eligible(tree: &ElementTree, ix: NodeIx) -> bool {
     tree.escape_nearby_mounts_ix(ix).is_empty()
 }
 
+#[cfg(any(test, feature = "bench-diagnostics"))]
 fn registry_subtree_key(
     tree: &ElementTree,
     ix: crate::tree::element::NodeIx,
@@ -6730,6 +6850,7 @@ fn registry_subtree_key(
     }
 }
 
+#[cfg(any(test, feature = "bench-diagnostics"))]
 fn hash_value(value: &impl Hash) -> u64 {
     let mut hasher = DefaultHasher::new();
     value.hash(&mut hasher);
@@ -6744,6 +6865,7 @@ fn hover_tracker_cache_hash(element: &Element, region: &PointerRegion) -> u64 {
     hasher.finish()
 }
 
+#[cfg(any(test, feature = "bench-diagnostics"))]
 fn hash_hover_stack(stack: &[HoverTracker]) -> u64 {
     let mut hasher = DefaultHasher::new();
     stack.iter().for_each(|tracker| {
@@ -6753,10 +6875,12 @@ fn hash_hover_stack(stack: &[HoverTracker]) -> u64 {
     hasher.finish()
 }
 
+#[cfg(any(test, feature = "bench-diagnostics"))]
 fn hash_f64(hasher: &mut DefaultHasher, value: f64) {
     value.to_bits().hash(hasher);
 }
 
+#[cfg(any(test, feature = "bench-diagnostics"))]
 fn hash_opt_f64(hasher: &mut DefaultHasher, value: Option<f64>) {
     match value {
         Some(value) => {
@@ -6767,6 +6891,7 @@ fn hash_opt_f64(hasher: &mut DefaultHasher, value: Option<f64>) {
     }
 }
 
+#[cfg(any(test, feature = "bench-diagnostics"))]
 fn hash_padding(hasher: &mut DefaultHasher, padding: &Option<Padding>) {
     match padding {
         Some(Padding::Uniform(value)) => {
@@ -6789,6 +6914,7 @@ fn hash_padding(hasher: &mut DefaultHasher, padding: &Option<Padding>) {
     }
 }
 
+#[cfg(any(test, feature = "bench-diagnostics"))]
 fn hash_border_radius(hasher: &mut DefaultHasher, radius: &Option<BorderRadius>) {
     match radius {
         Some(BorderRadius::Uniform(value)) => {
@@ -6806,6 +6932,7 @@ fn hash_border_radius(hasher: &mut DefaultHasher, radius: &Option<BorderRadius>)
     }
 }
 
+#[cfg(any(test, feature = "bench-diagnostics"))]
 fn registry_attrs_hash(element: &Element) -> u64 {
     let mut hasher = DefaultHasher::new();
     element.spec.attrs_raw.hash(&mut hasher);
@@ -6829,6 +6956,7 @@ fn hash_f32(hasher: &mut DefaultHasher, value: f32) {
     value.to_bits().hash(hasher);
 }
 
+#[cfg(any(test, feature = "bench-diagnostics"))]
 fn hash_frame(hasher: &mut DefaultHasher, frame: Frame) {
     hash_f32(hasher, frame.x);
     hash_f32(hasher, frame.y);
@@ -6912,6 +7040,7 @@ fn hash_shape_bounds(hasher: &mut DefaultHasher, shape: ShapeBounds) {
     }
 }
 
+#[cfg(any(test, feature = "bench-diagnostics"))]
 fn hash_scene_context(scene_ctx: &crate::tree::scene::SceneContext) -> u64 {
     let mut hasher = DefaultHasher::new();
     hash_f32(&mut hasher, scene_ctx.scroll_dx);
@@ -6934,16 +7063,17 @@ fn hash_scene_context(scene_ctx: &crate::tree::scene::SceneContext) -> u64 {
     scene_ctx.front_nearby_root.hash(&mut hasher);
     hash_affine(&mut hasher, scene_ctx.interaction_transform);
     scene_ctx.interaction_clips.len().hash(&mut hasher);
-    for clip in &scene_ctx.interaction_clips {
+    for clip in scene_ctx.interaction_clips.iter() {
         hash_interaction_clip(&mut hasher, clip);
     }
     scene_ctx.nearby_interaction_clips.len().hash(&mut hasher);
-    for clip in &scene_ctx.nearby_interaction_clips {
+    for clip in scene_ctx.nearby_interaction_clips.iter() {
         hash_interaction_clip(&mut hasher, clip);
     }
     hasher.finish()
 }
 
+#[cfg(any(test, feature = "bench-diagnostics"))]
 fn hash_scroll_contexts(scroll_contexts: &[ScrollContext]) -> u64 {
     let mut hasher = DefaultHasher::new();
     scroll_contexts.len().hash(&mut hasher);
@@ -6958,6 +7088,7 @@ fn hash_scroll_contexts(scroll_contexts: &[ScrollContext]) -> u64 {
     hasher.finish()
 }
 
+#[cfg(any(test, feature = "bench-diagnostics"))]
 fn registry_frame_hash(element: &Element) -> u64 {
     let mut hasher = DefaultHasher::new();
     element.layout.frame.is_some().hash(&mut hasher);
@@ -6983,6 +7114,7 @@ pub(crate) fn accumulate_subtree_rebuild(
     drain_deferred_subtrees(tree, acc, deferred);
 }
 
+#[cfg(any(test, feature = "bench-diagnostics"))]
 fn accumulate_subtree_rebuild_cached(
     tree: &mut ElementTree,
     element_id: &NodeId,
@@ -7046,6 +7178,7 @@ pub(crate) fn assert_registry_rebuild_payloads_equivalent(
     );
 }
 
+#[cfg(any(test, feature = "bench-diagnostics"))]
 pub(crate) fn build_registry_rebuild_cached(tree: &mut ElementTree) -> RegistryRebuildPayload {
     if tree.has_scroll_refresh_damage() {
         return build_registry_rebuild(tree);
@@ -8634,6 +8767,7 @@ mod scroll_wheel {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     use crate::actors::TreeMsg;
     use crate::clipboard::ClipboardTarget;
@@ -8785,7 +8919,7 @@ mod tests {
             local_shape: ShapeBounds { rect, radii: None },
             screen_to_local: Some(Affine2::identity()),
             screen_bounds: rect,
-            clip_chain: Vec::new(),
+            clip_chain: Arc::from([]),
         }
     }
 
@@ -8807,18 +8941,21 @@ mod tests {
             local_shape: ShapeBounds { rect, radii: None },
             screen_to_local: Some(Affine2::identity()),
             screen_bounds: rect,
-            clip_chain: vec![InteractionClip::new(
-                ClipShape {
-                    rect,
-                    radii: Some(CornerRadii {
-                        tl: 10.0,
-                        tr: 10.0,
-                        br: 10.0,
-                        bl: 10.0,
-                    }),
-                },
-                Affine2::identity(),
-            )],
+            clip_chain: Arc::from(
+                vec![InteractionClip::new(
+                    ClipShape {
+                        rect,
+                        radii: Some(CornerRadii {
+                            tl: 10.0,
+                            tr: 10.0,
+                            br: 10.0,
+                            bl: 10.0,
+                        }),
+                    },
+                    Affine2::identity(),
+                )]
+                .into_boxed_slice(),
+            ),
         }
     }
 
@@ -12712,7 +12849,7 @@ mod tests {
                         width: 100.0,
                         height: 40.0,
                     },
-                    clip_chain: Vec::new(),
+                    clip_chain: Arc::from([]),
                 },
                 tap: VirtualKeyTapAction::Text("a".to_string()),
                 hold: VirtualKeyHoldMode::None,

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::element::{Element, Frame, RetainedPaintPhase};
 use super::geometry::{ClipShape, Rect, ShapeBounds};
 use super::scrollbar as tree_scrollbar;
@@ -21,8 +23,8 @@ pub struct SceneContext {
     pub front_nearby_subtree: bool,
     pub front_nearby_root: bool,
     pub interaction_transform: Affine2,
-    pub interaction_clips: Vec<InteractionClip>,
-    pub nearby_interaction_clips: Vec<InteractionClip>,
+    pub interaction_clips: Arc<[InteractionClip]>,
+    pub nearby_interaction_clips: Arc<[InteractionClip]>,
 }
 
 #[derive(Clone, Debug)]
@@ -45,8 +47,8 @@ pub struct ResolvedNodeState {
     pub front_nearby_root: bool,
     pub interaction_transform: Affine2,
     pub interaction_inverse: Option<Affine2>,
-    pub interaction_clips: Vec<InteractionClip>,
-    pub nearby_interaction_clips: Vec<InteractionClip>,
+    pub interaction_clips: Arc<[InteractionClip]>,
+    pub nearby_interaction_clips: Arc<[InteractionClip]>,
 }
 
 impl ResolvedNodeState {
@@ -176,24 +178,34 @@ fn local_scene_geometry(
     }
 }
 
+fn interaction_clip_chain_with(
+    clips: &[InteractionClip],
+    clip: InteractionClip,
+) -> Arc<[InteractionClip]> {
+    let mut next = Vec::with_capacity(clips.len() + 1);
+    next.extend_from_slice(clips);
+    next.push(clip);
+    Arc::from(next.into_boxed_slice())
+}
+
 pub fn child_context(state: ResolvedNodeState, phase: RetainedPaintPhase) -> SceneContext {
     let (scroll_dx, scroll_dy) = state.accumulated_scroll();
-    let mut interaction_clips = state.interaction_clips.clone();
-    let mut nearby_interaction_clips = state.nearby_interaction_clips.clone();
-
-    if !matches!(phase, RetainedPaintPhase::Overlay(_)) {
-        interaction_clips.push(InteractionClip::new(
-            state.host_clip,
-            state.interaction_transform,
-        ));
-    }
-
-    if state.clip_nearby {
-        nearby_interaction_clips.push(InteractionClip::new(
-            state.host_clip,
-            state.interaction_transform,
-        ));
-    }
+    let interaction_clips = if matches!(phase, RetainedPaintPhase::Overlay(_)) {
+        state.interaction_clips.clone()
+    } else {
+        interaction_clip_chain_with(
+            &state.interaction_clips,
+            InteractionClip::new(state.host_clip, state.interaction_transform),
+        )
+    };
+    let nearby_interaction_clips = if state.clip_nearby {
+        interaction_clip_chain_with(
+            &state.nearby_interaction_clips,
+            InteractionClip::new(state.host_clip, state.interaction_transform),
+        )
+    } else {
+        state.nearby_interaction_clips.clone()
+    };
 
     match phase {
         RetainedPaintPhase::Children => SceneContext {

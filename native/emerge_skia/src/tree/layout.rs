@@ -210,7 +210,9 @@ impl TextMeasurer for SkiaTextMeasurer {
         use crate::renderer::make_font_with_style;
 
         let font = make_font_with_style(family, weight, italic, font_size);
-        let metrics = crate::renderer::measure_text_visual_metrics_with_font(&font, text);
+        let metrics = crate::renderer::measure_text_visual_metrics_cached_with_font(
+            &font, family, weight, italic, font_size, text,
+        );
         let (_, font_metrics) = font.metrics();
         let height = font_metrics.ascent.abs() + font_metrics.descent;
 
@@ -569,6 +571,24 @@ pub(crate) fn prepare_dirty_frame_attrs_for_update(
     sample_time: Option<Instant>,
     dirty_ids: &[NodeId],
 ) -> FrameAttrsPreparation {
+    prepare_dirty_frame_attrs_with_subtrees_for_update(
+        tree,
+        scale,
+        animation_runtime,
+        sample_time,
+        dirty_ids,
+        &[],
+    )
+}
+
+pub(crate) fn prepare_dirty_frame_attrs_with_subtrees_for_update(
+    tree: &mut ElementTree,
+    scale: f32,
+    animation_runtime: Option<&AnimationRuntime>,
+    sample_time: Option<Instant>,
+    dirty_ids: &[NodeId],
+    dirty_subtree_roots: &[NodeId],
+) -> FrameAttrsPreparation {
     tree.reset_layout_cache_stats();
     tree.ensure_topology();
     tree.set_current_scale(scale);
@@ -580,8 +600,18 @@ pub(crate) fn prepare_dirty_frame_attrs_for_update(
         .map(|runtime| sample_animation_overlays_for_ids(tree, runtime, &active_ids, sample_time))
         .unwrap_or_default();
     let prepared_ids = unique_frame_attr_prepare_ids(&active_ids, dirty_ids);
-    let layout_scale_roots =
+    let mut layout_scale_roots =
         prepare_active_attrs_for_frame(tree, scale, &prepared_ids, &frame_samples);
+
+    for id in dirty_subtree_roots {
+        if !layout_scale_roots.contains(id) {
+            let inherited_scale =
+                inherited_layout_scale_for_node(tree, id, scale, &frame_samples.samples);
+            prepare_attrs_for_subtree(tree, *id, inherited_scale, &frame_samples.samples);
+            layout_scale_roots.push(*id);
+        }
+    }
+
     let animation_result = frame_samples.result;
 
     mark_animation_refresh_effects_dirty(tree, &animation_result);
@@ -693,6 +723,11 @@ fn mark_animation_refresh_effects_dirty(
         } else {
             effect.invalidation
         };
+
+        if effect.transform_only && refresh_invalidation == TreeInvalidation::Paint {
+            tree.mark_transform_animation_refresh_dirty(&effect.id, registry_refresh);
+            continue;
+        }
 
         tree.mark_refresh_dirty_for_invalidation(&effect.id, refresh_invalidation);
 
@@ -5960,7 +5995,10 @@ fn registry_geometry_changed_since(
 // Layout Output (combined render + event registry)
 // =============================================================================
 
-use super::render::render_tree_scene_with_scroll_layers;
+use super::render::{
+    RefreshBuildOutput, RefreshRegistryMode, RefreshRegistryOutput,
+    build_refresh_output_with_scroll_layers,
+};
 use crate::events::{RegistryRebuildPayload, TextInputState};
 use crate::render_scene::RenderScene;
 
@@ -5984,13 +6022,39 @@ pub struct LayoutUpdateOutput {
 pub(crate) struct LayoutUpdateTiming {
     pub layout: Duration,
     pub refresh: Duration,
+    pub refresh_traversal: Duration,
+    pub refresh_registry_post: Duration,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct RefreshTiming {
+    pub traversal: Duration,
+    pub registry_post: Duration,
+}
+
+#[derive(Clone, Copy)]
+enum RegistryRefreshPlan<'a> {
+    Rebuild,
+    ReuseClean(&'a RegistryRebuildPayload),
+}
+
+fn registry_refresh_plan<'a>(
+    tree: &ElementTree,
+    cached_rebuild: Option<&'a RegistryRebuildPayload>,
+) -> RegistryRefreshPlan<'a> {
+    if let Some(cached_rebuild) = cached_rebuild
+        && !tree.has_registry_refresh_damage()
+    {
+        RegistryRefreshPlan::ReuseClean(cached_rebuild)
+    } else {
+        RegistryRefreshPlan::Rebuild
+    }
 }
 
 /// After DOM/scroll changes, produce new outputs without re-running layout.
 /// Use this when only scroll positions changed (not structure).
 pub fn refresh(tree: &mut ElementTree) -> LayoutOutput {
-    let render_output = render_tree_scene_with_scroll_layers(tree);
-    refresh_from_render_output(tree, render_output)
+    refresh_with_registry_plan(tree, RegistryRefreshPlan::Rebuild)
 }
 
 pub fn refresh_default_with_frame_attrs(
@@ -6006,29 +6070,10 @@ pub fn refresh_default_with_frame_attrs(
 #[cfg(any(test, feature = "bench-diagnostics"))]
 #[doc(hidden)]
 pub fn refresh_render_scene_for_benchmark(tree: &mut ElementTree) -> RenderScene {
-    let render_output = render_tree_scene_with_scroll_layers(tree);
+    let render_output =
+        build_refresh_output_with_scroll_layers(tree, RefreshRegistryMode::ReuseClean);
     tree.clear_render_refresh_dirty();
     render_output.scene
-}
-
-fn refresh_from_render_output(
-    tree: &mut ElementTree,
-    render_output: super::render::RenderSceneOutput,
-) -> LayoutOutput {
-    let event_rebuild = crate::events::registry_builder::build_registry_rebuild_cached(tree);
-    let ime_text_state = ime_text_state_from_rebuild(&event_rebuild);
-
-    tree.clear_refresh_dirty();
-
-    LayoutOutput {
-        scene: render_output.scene,
-        event_rebuild,
-        event_rebuild_changed: true,
-        ime_enabled: render_output.text_input_focused,
-        ime_cursor_area: render_output.text_input_cursor_area,
-        ime_text_state,
-        animations_active: false,
-    }
 }
 
 #[cfg(any(test, feature = "bench-diagnostics"))]
@@ -6044,14 +6089,113 @@ pub(crate) fn refresh_reusing_clean_registry(
     tree: &mut ElementTree,
     cached_rebuild: Option<&RegistryRebuildPayload>,
 ) -> LayoutOutput {
-    let can_reuse_registry = cached_rebuild.is_some() && !tree.has_registry_refresh_damage();
+    refresh_with_registry_plan(tree, registry_refresh_plan(tree, cached_rebuild))
+}
 
-    if !can_reuse_registry {
-        return refresh(tree);
+pub(crate) fn refresh_reusing_clean_registry_timed(
+    tree: &mut ElementTree,
+    cached_rebuild: Option<&RegistryRebuildPayload>,
+) -> (LayoutOutput, RefreshTiming) {
+    refresh_with_registry_plan_timed(tree, registry_refresh_plan(tree, cached_rebuild))
+}
+
+fn refresh_with_registry_plan(
+    tree: &mut ElementTree,
+    plan: RegistryRefreshPlan<'_>,
+) -> LayoutOutput {
+    let render_output = build_refresh_output_for_plan(tree, plan);
+    finish_refresh_build_output(tree, render_output, plan)
+}
+
+fn refresh_with_registry_plan_timed(
+    tree: &mut ElementTree,
+    plan: RegistryRefreshPlan<'_>,
+) -> (LayoutOutput, RefreshTiming) {
+    let traversal_started_at = Instant::now();
+    let render_output = build_refresh_output_for_plan(tree, plan);
+    let traversal = traversal_started_at.elapsed();
+
+    let registry_post_started_at = Instant::now();
+    let output = finish_refresh_build_output(tree, render_output, plan);
+    let registry_post = registry_post_started_at.elapsed();
+
+    (
+        output,
+        RefreshTiming {
+            traversal,
+            registry_post,
+        },
+    )
+}
+
+fn build_refresh_output_for_plan(
+    tree: &ElementTree,
+    plan: RegistryRefreshPlan<'_>,
+) -> RefreshBuildOutput {
+    match plan {
+        RegistryRefreshPlan::Rebuild => {
+            build_refresh_output_with_scroll_layers(tree, RefreshRegistryMode::Rebuild)
+        }
+        RegistryRefreshPlan::ReuseClean(_) => {
+            build_refresh_output_with_scroll_layers(tree, RefreshRegistryMode::ReuseClean)
+        }
     }
+}
 
-    let render_output = render_tree_scene_with_scroll_layers(tree);
-    reuse_clean_registry_from_render_output(tree, render_output, cached_rebuild.unwrap())
+fn finish_refresh_build_output(
+    tree: &mut ElementTree,
+    render_output: RefreshBuildOutput,
+    plan: RegistryRefreshPlan<'_>,
+) -> LayoutOutput {
+    match (render_output.registry, plan) {
+        (RefreshRegistryOutput::Rebuilt(event_rebuild), _) => {
+            let ime_text_state = ime_text_state_from_rebuild(&event_rebuild);
+            tree.clear_refresh_dirty();
+            LayoutOutput {
+                scene: render_output.scene,
+                event_rebuild,
+                event_rebuild_changed: true,
+                ime_enabled: render_output.text_input_focused,
+                ime_cursor_area: render_output.text_input_cursor_area,
+                ime_text_state,
+                animations_active: false,
+            }
+        }
+        (RefreshRegistryOutput::ReusedClean, RegistryRefreshPlan::ReuseClean(cached_rebuild)) => {
+            let refreshed_rebuild =
+                crate::events::registry_builder::refresh_runtime_state_in_cached_rebuild(
+                    tree,
+                    cached_rebuild,
+                );
+            let rebuild_for_ime = refreshed_rebuild.as_ref().unwrap_or(cached_rebuild);
+            let ime_text_state = ime_text_state_from_rebuild(rebuild_for_ime);
+            let event_rebuild_changed = refreshed_rebuild.is_some();
+            tree.clear_render_refresh_dirty();
+            LayoutOutput {
+                scene: render_output.scene,
+                event_rebuild: refreshed_rebuild.unwrap_or_default(),
+                event_rebuild_changed,
+                ime_enabled: render_output.text_input_focused,
+                ime_cursor_area: render_output.text_input_cursor_area,
+                ime_text_state,
+                animations_active: false,
+            }
+        }
+        (RefreshRegistryOutput::ReusedClean, RegistryRefreshPlan::Rebuild) => {
+            let event_rebuild = crate::events::registry_builder::build_registry_rebuild(tree);
+            let ime_text_state = ime_text_state_from_rebuild(&event_rebuild);
+            tree.clear_refresh_dirty();
+            LayoutOutput {
+                scene: render_output.scene,
+                event_rebuild,
+                event_rebuild_changed: true,
+                ime_enabled: render_output.text_input_focused,
+                ime_cursor_area: render_output.text_input_cursor_area,
+                ime_text_state,
+                animations_active: false,
+            }
+        }
+    }
 }
 
 fn ime_text_state_from_rebuild(rebuild: &RegistryRebuildPayload) -> Option<TextInputState> {
@@ -6059,33 +6203,6 @@ fn ime_text_state_from_rebuild(rebuild: &RegistryRebuildPayload) -> Option<TextI
         .focused_id
         .as_ref()
         .and_then(|focused_id| rebuild.text_inputs.get(focused_id).cloned())
-}
-
-fn reuse_clean_registry_from_render_output(
-    tree: &mut ElementTree,
-    render_output: super::render::RenderSceneOutput,
-    cached_rebuild: &RegistryRebuildPayload,
-) -> LayoutOutput {
-    let refreshed_rebuild =
-        crate::events::registry_builder::refresh_runtime_state_in_cached_rebuild(
-            tree,
-            cached_rebuild,
-        );
-    let rebuild_for_ime = refreshed_rebuild.as_ref().unwrap_or(cached_rebuild);
-    let ime_text_state = ime_text_state_from_rebuild(rebuild_for_ime);
-    let event_rebuild_changed = refreshed_rebuild.is_some();
-
-    tree.clear_render_refresh_dirty();
-
-    LayoutOutput {
-        scene: render_output.scene,
-        event_rebuild: refreshed_rebuild.unwrap_or_default(),
-        event_rebuild_changed,
-        ime_enabled: render_output.text_input_focused,
-        ime_cursor_area: render_output.text_input_cursor_area,
-        ime_text_state,
-        animations_active: false,
-    }
 }
 
 /// Full layout with default Skia text measurer, followed by refresh.
@@ -6158,7 +6275,6 @@ fn prepare_layout_or_refresh_default_frame_attrs(
         }
     } else if invalidation.is_none()
         && !runtime.is_empty()
-        && !runtime.has_transient_entries()
         && tree
             .root_id()
             .and_then(|root_id| tree.get(&root_id).and_then(|element| element.layout.frame))
@@ -6249,6 +6365,7 @@ pub fn layout_or_refresh_default_with_animation_and_invalidation_reusing_clean_r
 
 #[cfg(any(test, feature = "bench-diagnostics"))]
 #[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
 pub fn layout_or_refresh_default_with_animation_and_dirty_ids_reusing_clean_registry_for_benchmark(
     tree: &mut ElementTree,
     constraint: Constraint,
@@ -6283,8 +6400,8 @@ pub struct LayoutBenchmarkProfile {
     pub prepare: Duration,
     pub layout: Duration,
     pub refresh: Duration,
-    pub render_scene: Duration,
-    pub registry: Duration,
+    pub refresh_traversal: Duration,
+    pub refresh_registry_post: Duration,
     pub pre_layout_registry_damage: bool,
     pub registry_damage_nodes: usize,
     pub layout_performed: bool,
@@ -6302,6 +6419,7 @@ pub struct LayoutBenchmarkProfile {
 
 #[cfg(any(test, feature = "bench-diagnostics"))]
 #[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
 pub fn layout_or_refresh_default_with_animation_and_invalidation_profile_for_benchmark(
     tree: &mut ElementTree,
     constraint: Constraint,
@@ -6328,27 +6446,20 @@ pub fn layout_or_refresh_default_with_animation_and_invalidation_profile_for_ben
 
     if can_refresh_without_layout {
         let refresh_started_at = Instant::now();
-        let render_started_at = Instant::now();
-        reset_render_traversal_diagnostics_for_benchmark();
-        let render_output = render_tree_scene_with_scroll_layers(tree);
-        let render_diagnostics = take_render_traversal_diagnostics_for_benchmark();
-        let render_scene = render_started_at.elapsed();
-        let registry_started_at = Instant::now();
         let registry_damage = tree.has_registry_refresh_damage();
         let registry_damage_nodes = tree.registry_refresh_damage_count();
+        let plan = registry_refresh_plan(tree, cached_rebuild);
+        reset_render_traversal_diagnostics_for_benchmark();
         reset_registry_build_diagnostics_for_benchmark();
-        let output = if let Some(cached_rebuild) = cached_rebuild.filter(|_| !registry_damage) {
-            let mut output =
-                reuse_clean_registry_from_render_output(tree, render_output, cached_rebuild);
-            output.animations_active = preparation.animation_result.active;
-            output
-        } else {
-            let mut output = refresh_from_render_output(tree, render_output);
-            output.animations_active = preparation.animation_result.active;
-            output
-        };
+        let traversal_started_at = Instant::now();
+        let render_output = build_refresh_output_for_plan(tree, plan);
+        let render_diagnostics = take_render_traversal_diagnostics_for_benchmark();
+        let traversal = traversal_started_at.elapsed();
+        let registry_post_started_at = Instant::now();
+        let mut output = finish_refresh_build_output(tree, render_output, plan);
+        output.animations_active = preparation.animation_result.active;
         let registry_diagnostics = take_registry_build_diagnostics_for_benchmark();
-        let registry = registry_started_at.elapsed();
+        let registry_post = registry_post_started_at.elapsed();
         let update = LayoutUpdateOutput {
             output,
             layout_performed: false,
@@ -6356,8 +6467,8 @@ pub fn layout_or_refresh_default_with_animation_and_invalidation_profile_for_ben
         let profile = LayoutBenchmarkProfile {
             prepare,
             refresh: refresh_started_at.elapsed(),
-            render_scene,
-            registry,
+            refresh_traversal: traversal,
+            refresh_registry_post: registry_post,
             pre_layout_registry_damage,
             registry_damage_nodes,
             layout_performed: false,
@@ -6381,23 +6492,20 @@ pub fn layout_or_refresh_default_with_animation_and_invalidation_profile_for_ben
     let layout = layout_started_at.elapsed();
 
     let refresh_started_at = Instant::now();
-    let render_started_at = Instant::now();
-    reset_render_traversal_diagnostics_for_benchmark();
-    let render_output = render_tree_scene_with_scroll_layers(tree);
-    let render_diagnostics = take_render_traversal_diagnostics_for_benchmark();
-    let render_scene = render_started_at.elapsed();
-    let registry_started_at = Instant::now();
     let registry_damage = tree.has_registry_refresh_damage();
     let registry_damage_nodes = tree.registry_refresh_damage_count();
+    let plan = registry_refresh_plan(tree, cached_rebuild);
+    reset_render_traversal_diagnostics_for_benchmark();
     reset_registry_build_diagnostics_for_benchmark();
-    let mut output = if let Some(cached_rebuild) = cached_rebuild.filter(|_| !registry_damage) {
-        reuse_clean_registry_from_render_output(tree, render_output, cached_rebuild)
-    } else {
-        refresh_from_render_output(tree, render_output)
-    };
+    let traversal_started_at = Instant::now();
+    let render_output = build_refresh_output_for_plan(tree, plan);
+    let render_diagnostics = take_render_traversal_diagnostics_for_benchmark();
+    let traversal = traversal_started_at.elapsed();
+    let registry_post_started_at = Instant::now();
+    let mut output = finish_refresh_build_output(tree, render_output, plan);
     let registry_diagnostics = take_registry_build_diagnostics_for_benchmark();
+    let registry_post = registry_post_started_at.elapsed();
     output.animations_active = preparation.animation_result.active;
-    let registry = registry_started_at.elapsed();
     let refresh = refresh_started_at.elapsed();
 
     let update = LayoutUpdateOutput {
@@ -6408,8 +6516,8 @@ pub fn layout_or_refresh_default_with_animation_and_invalidation_profile_for_ben
         prepare,
         layout,
         refresh,
-        render_scene,
-        registry,
+        refresh_traversal: traversal,
+        refresh_registry_post: registry_post,
         pre_layout_registry_damage,
         registry_damage_nodes,
         layout_performed,
@@ -6492,7 +6600,7 @@ pub(crate) fn layout_and_refresh_prepared_default_reusing_clean_registry_timed(
     let layout = layout_started_at.elapsed();
 
     let refresh_started_at = Instant::now();
-    let mut output = refresh_reusing_clean_registry(tree, cached_rebuild);
+    let (mut output, refresh_timing) = refresh_reusing_clean_registry_timed(tree, cached_rebuild);
     output.animations_active = preparation.animation_result.active;
     let refresh = refresh_started_at.elapsed();
 
@@ -6501,7 +6609,12 @@ pub(crate) fn layout_and_refresh_prepared_default_reusing_clean_registry_timed(
             output,
             layout_performed,
         },
-        LayoutUpdateTiming { layout, refresh },
+        LayoutUpdateTiming {
+            layout,
+            refresh,
+            refresh_traversal: refresh_timing.traversal,
+            refresh_registry_post: refresh_timing.registry_post,
+        },
     )
 }
 
