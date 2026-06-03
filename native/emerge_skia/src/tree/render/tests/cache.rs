@@ -304,7 +304,7 @@ fn clean_deep_scroll_subtree_reuses_single_retained_paint_layer_without_descendi
 }
 
 #[test]
-fn dirty_scroll_moving_focused_slider_layer_owns_glow_and_child_layers() {
+fn dirty_scroll_moving_focused_slider_layer_keeps_child_layers_independent() {
     let scroll_id = NodeId::from_term_bytes(vec![40]);
     let slider_id = NodeId::from_term_bytes(vec![41]);
     let track_id = NodeId::from_term_bytes(vec![42]);
@@ -417,12 +417,14 @@ fn dirty_scroll_moving_focused_slider_layer_owns_glow_and_child_layers() {
         "focused slider paint layer should own its glow during drag"
     );
     assert!(
-        slider_layer
-            .child_refs
-            .iter()
-            .flat_map(|child| paint_layers(&child.nodes))
+        slider_layer.child_refs.is_empty(),
+        "scroll-moving focused slider glow layer should not carry clipped child refs"
+    );
+    assert!(
+        paint_layers(&output.scene.nodes)
+            .into_iter()
             .any(|layer| layer.stable_id == track_id.to_wire_u64()),
-        "slider child rendering should stay behind a child paint-layer ref"
+        "slider child rendering should stay independently cacheable"
     );
     assert!(slider_layer.bounds.x < 0.0, "{:?}", slider_layer.bounds);
     assert!(slider_layer.bounds.y < 0.0, "{:?}", slider_layer.bounds);

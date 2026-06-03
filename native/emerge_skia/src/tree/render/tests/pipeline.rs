@@ -1471,6 +1471,157 @@ fn test_slider_thumb_outer_glow_bleeds_past_slider_frame() {
 }
 
 #[test]
+fn test_cached_slider_thumb_glow_bleeds_past_slider_frame() {
+    let root_id = NodeId::from_u64(915_200);
+    let slider_id = NodeId::from_u64(915_201);
+    let track_id = NodeId::from_u64(915_202);
+    let filled_id = NodeId::from_u64(915_203);
+    let thumb_id = NodeId::from_u64(915_204);
+
+    let mut root = Element::with_attrs(
+        root_id,
+        ElementKind::El,
+        Vec::new(),
+        Attrs {
+            scrollbar_y: Some(true),
+            ..Attrs::default()
+        },
+    );
+    root.children = vec![slider_id];
+    root.layout.frame = Some(Frame {
+        x: 0.0,
+        y: 0.0,
+        width: 360.0,
+        height: 140.0,
+        content_width: 360.0,
+        content_height: 240.0,
+    });
+    root.layout.scroll_y_max = 100.0;
+
+    let mut slider =
+        Element::with_attrs(slider_id, ElementKind::Slider, Vec::new(), Attrs::default());
+    slider.children = vec![track_id, filled_id, thumb_id];
+    slider.layout.frame = Some(Frame {
+        x: 40.0,
+        y: 52.0,
+        width: 220.0,
+        height: 38.0,
+        content_width: 220.0,
+        content_height: 38.0,
+    });
+
+    let mut track = Element::with_attrs(
+        track_id,
+        ElementKind::El,
+        Vec::new(),
+        solid_fill_attrs((70, 76, 108)),
+    );
+    track.layout.frame = Some(Frame {
+        x: 52.0,
+        y: 67.0,
+        width: 196.0,
+        height: 8.0,
+        content_width: 196.0,
+        content_height: 8.0,
+    });
+
+    let mut filled = Element::with_attrs(
+        filled_id,
+        ElementKind::El,
+        Vec::new(),
+        solid_fill_attrs((132, 170, 238)),
+    );
+    filled.layout.frame = Some(Frame {
+        x: 52.0,
+        y: 67.0,
+        width: 196.0,
+        height: 8.0,
+        content_width: 196.0,
+        content_height: 8.0,
+    });
+
+    let mut thumb_attrs = solid_fill_attrs((242, 246, 255));
+    thumb_attrs.border_radius = Some(BorderRadius::Uniform(999.0));
+    thumb_attrs.border_width = Some(BorderWidth::Uniform(2.0));
+    thumb_attrs.border_color = Some(Color::Rgb {
+        r: 132,
+        g: 170,
+        b: 238,
+    });
+    thumb_attrs.box_shadows = Some(vec![BoxShadow {
+        offset_x: 0.0,
+        offset_y: 0.0,
+        blur: 12.0,
+        size: 4.0,
+        color: Color::Rgba {
+            r: 132,
+            g: 170,
+            b: 238,
+            a: 255,
+        },
+        inset: false,
+    }]);
+    let mut thumb = Element::with_attrs(thumb_id, ElementKind::El, Vec::new(), thumb_attrs);
+    thumb.layout.frame = Some(Frame {
+        x: 236.0,
+        y: 59.0,
+        width: 24.0,
+        height: 24.0,
+        content_width: 24.0,
+        content_height: 24.0,
+    });
+
+    let mut tree = ElementTree::new();
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(slider);
+    tree.insert(track);
+    tree.insert(filled);
+    tree.insert(thumb);
+    tree.clear_refresh_dirty();
+
+    let output = super::super::render_tree_scene_with_scroll_layers(&tree);
+    let scene = output.scene;
+    let info = skia_safe::ImageInfo::new(
+        (360, 140),
+        skia_safe::ColorType::RGBA8888,
+        skia_safe::AlphaType::Premul,
+        None,
+    );
+    let mut surface = skia_safe::surfaces::raster(&info, None, None).unwrap();
+    let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+        enabled: true,
+        ..RendererCacheConfig::default()
+    });
+    for version in 1..=3 {
+        let state = RenderState::new(scene.clone(), skia_safe::Color::TRANSPARENT, version, true);
+        let mut frame = RenderFrame::new(&mut surface, None);
+        renderer.render(&mut frame, &state);
+    }
+    let mut pixels = vec![0; 360 * 140 * 4];
+    surface.read_pixels(&info, pixels.as_mut_slice(), 360 * 4, (0, 0));
+
+    let max_top = (40..52)
+        .flat_map(|y| (216..260).map(move |x| (x, y)))
+        .map(|(x, y)| rgba_at(&pixels, 360, x, y).3)
+        .max()
+        .unwrap_or(0);
+    let max_right = (52..90)
+        .flat_map(|y| (260..282).map(move |x| (x, y)))
+        .map(|(x, y)| rgba_at(&pixels, 360, x, y).3)
+        .max()
+        .unwrap_or(0);
+    assert!(
+        max_top > 0,
+        "cached thumb glow should paint above the slider frame"
+    );
+    assert!(
+        max_right > 0,
+        "cached thumb glow should paint to the right of the slider frame"
+    );
+}
+
+#[test]
 fn test_tree_clip_scope_does_not_clip_following_sibling_pixels() {
     let tree = build_two_child_tree(
         Attrs::default(),
@@ -3672,6 +3823,150 @@ fn test_outer_shadow_bleeds_into_parent_top_and_right_padding() {
     assert!(
         right_padding_shadow.3 > 0,
         "outer shadow should remain visible in the parent's right padding"
+    );
+}
+
+#[test]
+fn test_scroll_moving_focused_slider_glow_escapes_non_scroll_ancestor_clip() {
+    let scroll_id = NodeId::from_u64(821_000);
+    let panel_id = NodeId::from_u64(821_001);
+    let slot_id = NodeId::from_u64(821_002);
+    let slider_id = NodeId::from_u64(821_003);
+    let track_id = NodeId::from_u64(821_004);
+
+    let mut scroll = Element::with_attrs(
+        scroll_id,
+        ElementKind::El,
+        Vec::new(),
+        Attrs {
+            scrollbar_y: Some(true),
+            ..Attrs::default()
+        },
+    );
+    scroll.children = vec![panel_id];
+    scroll.layout.frame = Some(Frame {
+        x: 0.0,
+        y: 0.0,
+        width: 280.0,
+        height: 140.0,
+        content_width: 280.0,
+        content_height: 260.0,
+    });
+    scroll.layout.scroll_y_max = 120.0;
+
+    let mut panel = Element::with_attrs(
+        panel_id,
+        ElementKind::El,
+        Vec::new(),
+        Attrs {
+            border_radius: Some(BorderRadius::Uniform(12.0)),
+            ..Attrs::default()
+        },
+    );
+    panel.children = vec![slot_id];
+    panel.layout.frame = Some(Frame {
+        x: 40.0,
+        y: 40.0,
+        width: 180.0,
+        height: 44.0,
+        content_width: 180.0,
+        content_height: 44.0,
+    });
+
+    let mut slot = Element::with_attrs(slot_id, ElementKind::El, Vec::new(), Attrs::default());
+    slot.children = vec![slider_id];
+    slot.layout.frame = Some(Frame {
+        x: 40.0,
+        y: 40.0,
+        width: 180.0,
+        height: 44.0,
+        content_width: 180.0,
+        content_height: 44.0,
+    });
+
+    let mut slider = Element::with_attrs(
+        slider_id,
+        ElementKind::Slider,
+        Vec::new(),
+        Attrs {
+            border_radius: Some(BorderRadius::Uniform(999.0)),
+            box_shadows: Some(vec![BoxShadow {
+                offset_x: 0.0,
+                offset_y: 0.0,
+                blur: 6.0,
+                size: 3.0,
+                color: Color::Rgba {
+                    r: 255,
+                    g: 220,
+                    b: 120,
+                    a: 180,
+                },
+                inset: false,
+            }]),
+            ..Attrs::default()
+        },
+    );
+    slider.children = vec![track_id];
+    slider.runtime.focused_active = true;
+    slider.layout.frame = Some(Frame {
+        x: 40.0,
+        y: 40.0,
+        width: 180.0,
+        height: 44.0,
+        content_width: 180.0,
+        content_height: 44.0,
+    });
+
+    let mut track = Element::with_attrs(
+        track_id,
+        ElementKind::El,
+        Vec::new(),
+        solid_fill_attrs((80, 80, 80)),
+    );
+    track.layout.frame = Some(Frame {
+        x: 55.0,
+        y: 56.0,
+        width: 150.0,
+        height: 12.0,
+        content_width: 150.0,
+        content_height: 12.0,
+    });
+
+    let mut tree = ElementTree::new();
+    tree.set_root_id(scroll_id);
+    tree.insert(scroll);
+    tree.insert(panel);
+    tree.insert(slot);
+    tree.insert(slider);
+    tree.insert(track);
+    tree.clear_refresh_dirty();
+
+    let direct_pixels =
+        render_scene_to_pixels(280, 140, super::super::render_tree_scene(&tree).scene);
+    let cached_scene = super::super::render_tree_scene_with_scroll_layers(&tree).scene;
+    let mut cached_renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+        enabled: true,
+        ..RendererCacheConfig::default()
+    });
+    let _ =
+        render_scene_with_renderer_to_pixels(&mut cached_renderer, cached_scene.clone(), 280, 140);
+    let cached_pixels =
+        render_scene_with_renderer_to_pixels(&mut cached_renderer, cached_scene, 280, 140);
+
+    let top_direct = rgba_at(&direct_pixels, 280, 130, 34).3;
+    let top_cached = rgba_at(&cached_pixels, 280, 130, 34).3;
+    let right_direct = rgba_at(&direct_pixels, 280, 226, 62).3;
+    let right_cached = rgba_at(&cached_pixels, 280, 226, 62).3;
+
+    assert!(top_direct > 0, "direct top glow should be visible");
+    assert!(right_direct > 0, "direct right glow should be visible");
+    assert!(
+        top_cached > 0,
+        "scroll-moving focused slider top glow should not be clipped"
+    );
+    assert!(
+        right_cached > 0,
+        "scroll-moving focused slider right glow should not be clipped"
     );
 }
 
