@@ -6,6 +6,7 @@
 //! - `SceneRenderer` that executes scene nodes on backend-provided Skia surfaces
 //! - Font cache for text rendering
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 #[cfg(test)]
@@ -660,6 +661,95 @@ pub(crate) struct TextVisualMetrics {
     pub(crate) visual_width: f32,
 }
 
+#[derive(Clone, Debug)]
+struct TextVisualMetricsCacheEntry {
+    generation: u64,
+    family: String,
+    weight: u16,
+    italic: bool,
+    size_bits: u32,
+    text: String,
+    metrics: TextVisualMetrics,
+}
+
+struct TextVisualMetricsCacheLookup<'a> {
+    generation: u64,
+    family: &'a str,
+    weight: u16,
+    italic: bool,
+    size_bits: u32,
+    text: &'a str,
+}
+
+impl TextVisualMetricsCacheEntry {
+    fn matches(&self, lookup: &TextVisualMetricsCacheLookup<'_>) -> bool {
+        self.generation == lookup.generation
+            && self.family == lookup.family
+            && self.weight == lookup.weight
+            && self.italic == lookup.italic
+            && self.size_bits == lookup.size_bits
+            && self.text == lookup.text
+    }
+}
+
+#[derive(Default)]
+struct TextVisualMetricsCache {
+    buckets: HashMap<u64, Vec<TextVisualMetricsCacheEntry>>,
+    len: usize,
+}
+
+impl TextVisualMetricsCache {
+    fn get(
+        &self,
+        hash: u64,
+        lookup: &TextVisualMetricsCacheLookup<'_>,
+    ) -> Option<TextVisualMetrics> {
+        self.buckets.get(&hash).and_then(|bucket| {
+            bucket
+                .iter()
+                .find(|entry| entry.matches(lookup))
+                .map(|entry| entry.metrics)
+        })
+    }
+
+    fn insert(
+        &mut self,
+        hash: u64,
+        lookup: &TextVisualMetricsCacheLookup<'_>,
+        metrics: TextVisualMetrics,
+    ) {
+        if self.len >= TEXT_VISUAL_METRICS_CACHE_LIMIT {
+            self.clear();
+        }
+
+        self.buckets
+            .entry(hash)
+            .or_default()
+            .push(TextVisualMetricsCacheEntry {
+                generation: lookup.generation,
+                family: lookup.family.to_string(),
+                weight: lookup.weight,
+                italic: lookup.italic,
+                size_bits: lookup.size_bits,
+                text: lookup.text.to_string(),
+                metrics,
+            });
+        self.len += 1;
+    }
+
+    fn clear(&mut self) {
+        self.buckets.clear();
+        self.len = 0;
+    }
+}
+
+const TEXT_VISUAL_METRICS_CACHE_LIMIT: usize = 2048;
+
+thread_local! {
+    static TEXT_VISUAL_METRICS_CACHE: RefCell<TextVisualMetricsCache> =
+        RefCell::new(TextVisualMetricsCache::default());
+}
+
 pub(crate) fn measure_text_visual_metrics_with_font(font: &Font, text: &str) -> TextVisualMetrics {
     if text.is_empty() {
         return TextVisualMetrics {
@@ -680,6 +770,54 @@ pub(crate) fn measure_text_visual_metrics_with_font(font: &Font, text: &str) -> 
     }
 }
 
+fn text_visual_metrics_cache_hash(lookup: &TextVisualMetricsCacheLookup<'_>) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    lookup.generation.hash(&mut hasher);
+    lookup.family.hash(&mut hasher);
+    lookup.weight.hash(&mut hasher);
+    lookup.italic.hash(&mut hasher);
+    lookup.size_bits.hash(&mut hasher);
+    lookup.text.hash(&mut hasher);
+    hasher.finish()
+}
+
+pub(crate) fn measure_text_visual_metrics_cached_with_font(
+    font: &Font,
+    family: &str,
+    weight: u16,
+    italic: bool,
+    size: f32,
+    text: &str,
+) -> TextVisualMetrics {
+    if text.is_empty() {
+        return TextVisualMetrics {
+            advance: 0.0,
+            left_overhang: 0.0,
+            visual_width: 0.0,
+        };
+    }
+
+    let lookup = TextVisualMetricsCacheLookup {
+        generation: font_cache_generation(),
+        family,
+        weight,
+        italic,
+        size_bits: size.to_bits(),
+        text,
+    };
+    let hash = text_visual_metrics_cache_hash(&lookup);
+
+    TEXT_VISUAL_METRICS_CACHE.with(|cache| {
+        if let Some(metrics) = cache.borrow().get(hash, &lookup) {
+            metrics
+        } else {
+            let metrics = measure_text_visual_metrics_with_font(font, text);
+            cache.borrow_mut().insert(hash, &lookup, metrics);
+            metrics
+        }
+    })
+}
+
 pub(crate) fn measure_text_visual_metrics(
     family: &str,
     weight: u16,
@@ -688,7 +826,7 @@ pub(crate) fn measure_text_visual_metrics(
     text: &str,
 ) -> TextVisualMetrics {
     let font = make_font_with_style(family, weight, italic, size);
-    measure_text_visual_metrics_with_font(&font, text)
+    measure_text_visual_metrics_cached_with_font(&font, family, weight, italic, size, text)
 }
 
 fn configure_text_font(font: &mut Font) {
@@ -833,6 +971,8 @@ pub fn clear_global_caches() {
     {
         *cache = RenderedVectorCache::default();
     }
+
+    TEXT_VISUAL_METRICS_CACHE.with(|cache| cache.borrow_mut().clear());
 
     skia_safe::graphics::purge_all_caches();
     bump_asset_cache_generation();

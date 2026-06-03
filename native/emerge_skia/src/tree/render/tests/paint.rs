@@ -1180,6 +1180,74 @@ fn test_render_inset_shadow_emits_after_background() {
 }
 
 #[test]
+fn test_demo_interaction_scroll_panel_keeps_top_and_right_rounded_edges() {
+    let root_id = NodeId::from_term_bytes(vec![80]);
+    let panel_id = NodeId::from_term_bytes(vec![81]);
+
+    let mut root = Element::with_attrs(root_id, ElementKind::El, Vec::new(), Attrs::default());
+    root.children = vec![panel_id];
+    root.layout.frame = Some(Frame {
+        x: 0.0,
+        y: 0.0,
+        width: 220.0,
+        height: 160.0,
+        content_width: 220.0,
+        content_height: 160.0,
+    });
+
+    let panel_color = Color::Rgb {
+        r: 238,
+        g: 243,
+        b: 255,
+    };
+    let mut panel = Element::with_attrs(
+        panel_id,
+        ElementKind::El,
+        Vec::new(),
+        Attrs {
+            scrollbar_y: Some(true),
+            background: Some(Background::Color(panel_color.clone())),
+            border_radius: Some(BorderRadius::Uniform(24.0)),
+            ..Attrs::default()
+        },
+    );
+    panel.layout.frame = Some(Frame {
+        x: 16.0,
+        y: 16.0,
+        width: 188.0,
+        height: 128.0,
+        content_width: 188.0,
+        content_height: 260.0,
+    });
+    panel.layout.scroll_y_max = 132.0;
+
+    let mut tree = ElementTree::new();
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(panel);
+    tree.clear_refresh_dirty();
+
+    let scene = super::super::render_tree_scene_with_scroll_layers(&tree).scene;
+    let pixels = render_scene_to_pixels(220, 160, scene);
+
+    let top_edge = rgba_at(&pixels, 220, 58, 17);
+    assert_eq!(
+        top_edge,
+        (238, 243, 255, 255),
+        "Interaction page-style rounded scroll panel should not clip the top edge"
+    );
+    let right_edge = rgba_at(&pixels, 220, 202, 58);
+    assert_eq!(
+        right_edge.3, 255,
+        "Interaction page-style rounded scroll panel should not clip the right edge"
+    );
+    assert!(
+        right_edge.0 > 180 && right_edge.1 > 180 && right_edge.2 > 180,
+        "right edge should remain visibly painted, got {right_edge:?}"
+    );
+}
+
+#[test]
 fn test_glow_cards_in_scroll_y_panel_bleed_horizontally_at_outer_grid_edges() {
     let panel_frame = Frame {
         x: 20.0,
