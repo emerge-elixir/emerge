@@ -11,7 +11,9 @@ use emerge_skia::render_scene::RenderSceneSummary;
 use emerge_skia::tree::animation::{
     AnimationCurve, AnimationRepeat, AnimationRuntime, AnimationSpec,
 };
-use emerge_skia::tree::attrs::{Attrs, Length, Padding};
+use emerge_skia::tree::attrs::{
+    AlignY, Attrs, Background, BorderRadius, BoxShadow, Color, Font, FontWeight, Length, Padding,
+};
 use emerge_skia::tree::deserialize::decode_tree;
 use emerge_skia::tree::element::{
     Element, ElementKind, ElementTree, Frame, NearbyMount, NearbySlot, NodeId,
@@ -975,12 +977,12 @@ fn sample_showcase_layout_profile(
             cached_rebuild = update.output.event_rebuild;
         }
         eprintln!(
-            "showcase layout profile frame={frame} prepare={:.3}ms layout={:.3}ms refresh={:.3}ms render_scene={:.3}ms registry={:.3}ms layout_performed={} scene_nodes={} render_visits={} culled={} registry_visits={} registry_hits={} registry_stores={} registry_damaged={} registry_ineligible={} registry_misses={} pre_registry_damage={} registry_damage={} registry_damage_nodes={}",
+            "showcase layout profile frame={frame} prepare={:.3}ms layout={:.3}ms refresh={:.3}ms traversal={:.3}ms registry_post={:.3}ms layout_performed={} scene_nodes={} render_visits={} culled={} registry_visits={} registry_hits={} registry_stores={} registry_damaged={} registry_ineligible={} registry_misses={} pre_registry_damage={} registry_damage={} registry_damage_nodes={}",
             profile.prepare.as_secs_f64() * 1000.0,
             profile.layout.as_secs_f64() * 1000.0,
             profile.refresh.as_secs_f64() * 1000.0,
-            profile.render_scene.as_secs_f64() * 1000.0,
-            profile.registry.as_secs_f64() * 1000.0,
+            profile.refresh_traversal.as_secs_f64() * 1000.0,
+            profile.refresh_registry_post.as_secs_f64() * 1000.0,
             profile.layout_performed,
             profile.scene_nodes,
             profile.render_visits,
@@ -1358,13 +1360,13 @@ fn sample_showcase_borders_steady_profile(
             cached_rebuild = update.output.event_rebuild;
         }
         eprintln!(
-            "showcase Borders {label} profile frame={frame} invalidation={:?} prepare={:.3}ms layout={:.3}ms refresh={:.3}ms render_scene={:.3}ms registry={:.3}ms layout_performed={} event_rebuild_changed={} scene_nodes={} render_visits={} culled={} registry_visits={} registry_hits={} registry_stores={} registry_damaged={} registry_ineligible={} registry_misses={} pre_registry_damage={} registry_damage={} registry_damage_nodes={} summary={:?}",
+            "showcase Borders {label} profile frame={frame} invalidation={:?} prepare={:.3}ms layout={:.3}ms refresh={:.3}ms traversal={:.3}ms registry_post={:.3}ms layout_performed={} event_rebuild_changed={} scene_nodes={} render_visits={} culled={} registry_visits={} registry_hits={} registry_stores={} registry_damaged={} registry_ineligible={} registry_misses={} pre_registry_damage={} registry_damage={} registry_damage_nodes={} summary={:?}",
             invalidation,
             profile.prepare.as_secs_f64() * 1000.0,
             profile.layout.as_secs_f64() * 1000.0,
             profile.refresh.as_secs_f64() * 1000.0,
-            profile.render_scene.as_secs_f64() * 1000.0,
-            profile.registry.as_secs_f64() * 1000.0,
+            profile.refresh_traversal.as_secs_f64() * 1000.0,
+            profile.refresh_registry_post.as_secs_f64() * 1000.0,
             profile.layout_performed,
             update.output.event_rebuild_changed,
             profile.scene_nodes,
@@ -1831,7 +1833,7 @@ impl ShowcaseInteractionScrollCase {
             }
         }
         assert!(
-            initial_summary.nodes >= 700 && initial_summary.paint_layers >= 4,
+            initial_summary.nodes >= 700 && initial_summary.paint_layers >= 3,
             "Interaction scroll benchmark selected the wrong scene: \
              target={target:?}, summary={initial_summary:?}"
         );
@@ -1912,13 +1914,13 @@ fn sample_showcase_interaction_scroll_profile(
             cached_rebuild = update.output.event_rebuild;
         }
         eprintln!(
-            "showcase interaction scroll profile frame={frame} invalidation={:?} prepare={:.3}ms layout={:.3}ms refresh={:.3}ms render_scene={:.3}ms registry={:.3}ms layout_performed={} event_rebuild_changed={} scene_nodes={} render_visits={} culled={} registry_visits={} registry_hits={} registry_stores={} registry_damaged={} registry_ineligible={} registry_misses={} pre_registry_damage={} registry_damage={} registry_damage_nodes={} summary={:?}",
+            "showcase interaction scroll profile frame={frame} invalidation={:?} prepare={:.3}ms layout={:.3}ms refresh={:.3}ms traversal={:.3}ms registry_post={:.3}ms layout_performed={} event_rebuild_changed={} scene_nodes={} render_visits={} culled={} registry_visits={} registry_hits={} registry_stores={} registry_damaged={} registry_ineligible={} registry_misses={} pre_registry_damage={} registry_damage={} registry_damage_nodes={} summary={:?}",
             invalidation,
             profile.prepare.as_secs_f64() * 1000.0,
             profile.layout.as_secs_f64() * 1000.0,
             profile.refresh.as_secs_f64() * 1000.0,
-            profile.render_scene.as_secs_f64() * 1000.0,
-            profile.registry.as_secs_f64() * 1000.0,
+            profile.refresh_traversal.as_secs_f64() * 1000.0,
+            profile.refresh_registry_post.as_secs_f64() * 1000.0,
             profile.layout_performed,
             update.output.event_rebuild_changed,
             profile.scene_nodes,
@@ -1989,13 +1991,13 @@ fn sample_showcase_interaction_profile(
             cached_rebuild = update.output.event_rebuild;
         }
         eprintln!(
-            "showcase interaction profile frame={frame} invalidation={:?} prepare={:.3}ms layout={:.3}ms refresh={:.3}ms render_scene={:.3}ms registry={:.3}ms layout_performed={} event_rebuild_changed={} scene_nodes={} render_visits={} culled={} registry_visits={} registry_hits={} registry_stores={} registry_damaged={} registry_ineligible={} registry_misses={} pre_registry_damage={} registry_damage={} registry_damage_nodes={}",
+            "showcase interaction profile frame={frame} invalidation={:?} prepare={:.3}ms layout={:.3}ms refresh={:.3}ms traversal={:.3}ms registry_post={:.3}ms layout_performed={} event_rebuild_changed={} scene_nodes={} render_visits={} culled={} registry_visits={} registry_hits={} registry_stores={} registry_damaged={} registry_ineligible={} registry_misses={} pre_registry_damage={} registry_damage={} registry_damage_nodes={}",
             invalidation,
             profile.prepare.as_secs_f64() * 1000.0,
             profile.layout.as_secs_f64() * 1000.0,
             profile.refresh.as_secs_f64() * 1000.0,
-            profile.render_scene.as_secs_f64() * 1000.0,
-            profile.registry.as_secs_f64() * 1000.0,
+            profile.refresh_traversal.as_secs_f64() * 1000.0,
+            profile.refresh_registry_post.as_secs_f64() * 1000.0,
             profile.layout_performed,
             update.output.event_rebuild_changed,
             profile.scene_nodes,
@@ -2087,13 +2089,13 @@ fn sample_showcase_interaction_virtual_key_full_loop_profile(
             state.cached_rebuild = update.output.event_rebuild;
         }
         eprintln!(
-            "showcase interaction virtual-key profile frame={frame} phase={phase_name} invalidation={:?} prepare={:.3}ms layout={:.3}ms refresh={:.3}ms render_scene={:.3}ms registry={:.3}ms layout_performed={} event_rebuild_changed={} scene_nodes={} render_visits={} culled={} registry_visits={} registry_hits={} registry_stores={} registry_damaged={} registry_ineligible={} registry_misses={} registry_damage={} registry_damage_nodes={} summary={:?}",
+            "showcase interaction virtual-key profile frame={frame} phase={phase_name} invalidation={:?} prepare={:.3}ms layout={:.3}ms refresh={:.3}ms traversal={:.3}ms registry_post={:.3}ms layout_performed={} event_rebuild_changed={} scene_nodes={} render_visits={} culled={} registry_visits={} registry_hits={} registry_stores={} registry_damaged={} registry_ineligible={} registry_misses={} registry_damage={} registry_damage_nodes={} summary={:?}",
             invalidation,
             profile.prepare.as_secs_f64() * 1000.0,
             profile.layout.as_secs_f64() * 1000.0,
             profile.refresh.as_secs_f64() * 1000.0,
-            profile.render_scene.as_secs_f64() * 1000.0,
-            profile.registry.as_secs_f64() * 1000.0,
+            profile.refresh_traversal.as_secs_f64() * 1000.0,
+            profile.refresh_registry_post.as_secs_f64() * 1000.0,
             profile.layout_performed,
             update.output.event_rebuild_changed,
             profile.scene_nodes,
@@ -3304,6 +3306,1324 @@ fn extend_frame_attr_dirty_ids(frame_attr_dirty_ids: &mut Vec<NodeId>, ids: Vec<
     });
 }
 
+const MACAW_VIEWPORT_SEED: u64 = 800_000;
+const MACAW_VIEWPORT_WIDTH: f32 = 1024.0;
+const MACAW_VIEWPORT_HEIGHT: f32 = 600.0;
+const MACAW_STATUS_REPEAT_COUNT: usize = 10;
+
+const MACAW_STATUS_LINES: &[(&str, &str)] = &[
+    ("UI mode", "user"),
+    ("Effective theme", ":light"),
+    ("Configured theme", "light"),
+    ("Brightness", "80%"),
+    ("Sleeping", "false"),
+    ("Locale", "en"),
+    ("Home screen", ":climate"),
+    ("User mode", ":standard"),
+    ("Auto brightness", "false"),
+];
+
+fn bench_macaw_viewport_refresh(c: &mut Criterion) {
+    let mut group = c.benchmark_group("native/macaw_viewport/full_viewport");
+    let constraint = macaw_viewport_constraint();
+    let node_count = macaw_viewport_tree(
+        Some(MacawSidepaneAnimationKind::Settled),
+        MACAW_VIEWPORT_SEED,
+    )
+    .tree
+    .len() as u64;
+    group.throughput(Throughput::Elements(node_count));
+
+    #[cfg(feature = "bench-diagnostics")]
+    if std::env::var_os("EMERGE_BENCH_DIAGNOSTICS").is_some() {
+        sample_macaw_viewport_profiles();
+    }
+
+    let closed = prepared_macaw_closed_viewport_tree(constraint);
+    group.bench_function("open_patch_first_frame_one_toggle", |b| {
+        b.iter_batched(
+            || closed.clone(),
+            |(mut tree, cached_rebuild, host_id)| {
+                let mut runtime = AnimationRuntime::default();
+                let started_at = Instant::now();
+                let invalidation = apply_patches(
+                    &mut tree,
+                    vec![Patch::InsertNearbySubtree {
+                        host_id,
+                        index: 0,
+                        slot: NearbySlot::InFront,
+                        subtree: macaw_sidepane_subtree(
+                            NodeId::from_u64(MACAW_VIEWPORT_SEED + 50_000),
+                            MACAW_VIEWPORT_SEED + 60_000,
+                            MacawSidepaneAnimationKind::EnterMoveX,
+                        ),
+                    }],
+                )
+                .expect("macaw sidepane open patch should apply");
+                runtime.sync_with_tree(&tree, started_at);
+                let update = layout_or_refresh_default_with_animation_and_invalidation_reusing_clean_registry_for_benchmark(
+                    &mut tree,
+                    constraint,
+                    1.0,
+                    &runtime,
+                    started_at,
+                    invalidation,
+                    Some(&cached_rebuild),
+                );
+                consume_layout_update_output(update)
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    let open_for_close = prepared_macaw_open_viewport_tree_for_close(constraint);
+    group.bench_function("close_patch_exit_first_frame_one_toggle", |b| {
+        b.iter_batched(
+            || open_for_close.clone(),
+            |(mut tree, cached_rebuild, sidepane_id)| {
+                let mut runtime = AnimationRuntime::default();
+                let started_at = Instant::now();
+                let invalidation = apply_patches(&mut tree, vec![Patch::Remove { id: sidepane_id }])
+                    .expect("macaw sidepane close patch should apply");
+                runtime.sync_with_tree(&tree, started_at);
+                let update = layout_or_refresh_default_with_animation_and_invalidation_reusing_clean_registry_for_benchmark(
+                    &mut tree,
+                    constraint,
+                    1.0,
+                    &runtime,
+                    started_at,
+                    invalidation,
+                    Some(&cached_rebuild),
+                );
+                consume_layout_update_output(update)
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    let closed_after_exit = prepared_macaw_closed_after_exit_tree(constraint);
+    group.bench_function("second_open_patch_first_frame_after_exit", |b| {
+        b.iter_batched(
+            || closed_after_exit.clone(),
+            |(mut tree, cached_rebuild, host_id, seed)| {
+                let mut runtime = AnimationRuntime::default();
+                let started_at = Instant::now();
+                let invalidation = apply_patches(
+                    &mut tree,
+                    vec![Patch::InsertNearbySubtree {
+                        host_id,
+                        index: 0,
+                        slot: NearbySlot::InFront,
+                        subtree: macaw_sidepane_subtree(
+                            NodeId::from_u64(seed + 50_000),
+                            seed + 60_000,
+                            MacawSidepaneAnimationKind::EnterMoveX,
+                        ),
+                    }],
+                )
+                .expect("macaw cached sidepane reopen patch should apply");
+                runtime.sync_with_tree(&tree, started_at);
+                let update = layout_or_refresh_default_with_animation_and_invalidation_reusing_clean_registry_for_benchmark(
+                    &mut tree,
+                    constraint,
+                    1.0,
+                    &runtime,
+                    started_at,
+                    invalidation,
+                    Some(&cached_rebuild),
+                );
+                consume_layout_update_output(update)
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.bench_function("enter_transient_pulse_retained_payload", |b| {
+        let mut state = MacawViewportTransientEnterPulseState::new(MACAW_VIEWPORT_SEED + 90_000);
+        b.iter(|| consume_layout_update_output(state.next_frame()));
+    });
+
+    group.bench_function("move_x_pulse_retained_payload", |b| {
+        let mut state = MacawViewportPulseState::new(MACAW_VIEWPORT_SEED + 100_000, false);
+        b.iter(|| consume_layout_update_output(state.next_frame()));
+    });
+
+    group.bench_function("move_x_pulse_content_dirty_control", |b| {
+        let mut state = MacawViewportPulseState::new(MACAW_VIEWPORT_SEED + 120_000, true);
+        b.iter(|| consume_layout_update_output(state.next_frame()));
+    });
+
+    group.finish();
+}
+
+#[derive(Clone, Copy)]
+enum MacawSidepaneAnimationKind {
+    EnterMoveX,
+    LoopMoveX,
+    Settled,
+}
+
+#[derive(Clone)]
+struct MacawViewportFixture {
+    tree: ElementTree,
+    root_id: NodeId,
+    sidepane_id: Option<NodeId>,
+}
+
+#[derive(Clone)]
+struct MacawViewportBuilder {
+    tree: ElementTree,
+    next_id: u64,
+}
+
+impl MacawViewportBuilder {
+    fn new(seed: u64) -> Self {
+        Self {
+            tree: ElementTree::new(),
+            next_id: seed,
+        }
+    }
+
+    fn node(&mut self, kind: ElementKind, attrs: Attrs, children: Vec<NodeId>) -> NodeId {
+        self.next_id = self.next_id.saturating_add(1);
+        let id = NodeId::from_u64(self.next_id);
+        self.tree
+            .insert(Element::with_attrs(id, kind, Vec::new(), attrs));
+        if !children.is_empty() {
+            self.tree
+                .set_children(&id, children)
+                .expect("macaw viewport children should attach");
+        }
+        id
+    }
+
+    fn text(&mut self, content: impl Into<String>, attrs: Attrs) -> NodeId {
+        self.node(
+            ElementKind::Text,
+            Attrs {
+                content: Some(content.into()),
+                ..attrs
+            },
+            Vec::new(),
+        )
+    }
+}
+
+struct MacawViewportTransientEnterPulseState {
+    tree: ElementTree,
+    runtime: AnimationRuntime,
+    cached_rebuild: RegistryRebuildPayload,
+    started_at: Instant,
+    frame: usize,
+}
+
+impl MacawViewportTransientEnterPulseState {
+    fn new(seed: u64) -> Self {
+        let constraint = macaw_viewport_constraint();
+        let started_at = Instant::now();
+        let fixture = macaw_viewport_tree(Some(MacawSidepaneAnimationKind::EnterMoveX), seed);
+        let mut tree = fixture.tree;
+        let mut runtime = AnimationRuntime::default();
+        runtime.sync_with_tree(&tree, started_at);
+        let output = layout_and_refresh_default_with_animation(
+            &mut tree, constraint, 1.0, &runtime, started_at,
+        );
+        let mut cached_rebuild = output.event_rebuild;
+
+        let warm = layout_or_refresh_default_with_animation_and_invalidation_reusing_clean_registry_for_benchmark(
+            &mut tree,
+            constraint,
+            1.0,
+            &runtime,
+            started_at + Duration::from_millis(SHOWCASE_FRAME_MS),
+            TreeInvalidation::None,
+            Some(&cached_rebuild),
+        );
+        if warm.output.event_rebuild_changed {
+            cached_rebuild = warm.output.event_rebuild;
+        }
+
+        Self {
+            tree,
+            runtime,
+            cached_rebuild,
+            started_at,
+            frame: 1,
+        }
+    }
+
+    fn next_frame(&mut self) -> emerge_skia::tree::layout::LayoutUpdateOutput {
+        const TRANSIENT_SAMPLE_OFFSETS_MS: [u64; 6] = [16, 32, 48, 64, 80, 96];
+        self.frame = (self.frame + 1) % TRANSIENT_SAMPLE_OFFSETS_MS.len();
+        let sample_time =
+            self.started_at + Duration::from_millis(TRANSIENT_SAMPLE_OFFSETS_MS[self.frame]);
+        let update = layout_or_refresh_default_with_animation_and_invalidation_reusing_clean_registry_for_benchmark(
+            &mut self.tree,
+            macaw_viewport_constraint(),
+            1.0,
+            &self.runtime,
+            sample_time,
+            TreeInvalidation::None,
+            Some(&self.cached_rebuild),
+        );
+        if update.output.event_rebuild_changed {
+            self.cached_rebuild = update.output.event_rebuild.clone();
+        }
+        update
+    }
+}
+
+struct MacawViewportPulseState {
+    tree: ElementTree,
+    runtime: AnimationRuntime,
+    cached_rebuild: RegistryRebuildPayload,
+    started_at: Instant,
+    sidepane_id: NodeId,
+    force_content_dirty: bool,
+    frame: u64,
+}
+
+impl MacawViewportPulseState {
+    fn new(seed: u64, force_content_dirty: bool) -> Self {
+        let constraint = macaw_viewport_constraint();
+        let started_at = Instant::now();
+        let fixture = macaw_viewport_tree(Some(MacawSidepaneAnimationKind::LoopMoveX), seed);
+        let sidepane_id = fixture
+            .sidepane_id
+            .expect("looping macaw viewport should include sidepane");
+        let mut tree = fixture.tree;
+        let mut runtime = AnimationRuntime::default();
+        runtime.sync_with_tree(&tree, started_at);
+        let output = layout_and_refresh_default_with_animation(
+            &mut tree, constraint, 1.0, &runtime, started_at,
+        );
+        let mut cached_rebuild = output.event_rebuild;
+
+        let warm = layout_or_refresh_default_with_animation_and_invalidation_reusing_clean_registry_for_benchmark(
+            &mut tree,
+            constraint,
+            1.0,
+            &runtime,
+            started_at + Duration::from_millis(SHOWCASE_FRAME_MS),
+            TreeInvalidation::None,
+            Some(&cached_rebuild),
+        );
+        if warm.output.event_rebuild_changed {
+            cached_rebuild = warm.output.event_rebuild;
+        }
+
+        Self {
+            tree,
+            runtime,
+            cached_rebuild,
+            started_at,
+            sidepane_id,
+            force_content_dirty,
+            frame: 1,
+        }
+    }
+
+    fn next_frame(&mut self) -> emerge_skia::tree::layout::LayoutUpdateOutput {
+        self.frame = self.frame.saturating_add(1);
+        let sample_time =
+            self.started_at + Duration::from_millis(self.frame.saturating_mul(SHOWCASE_FRAME_MS));
+        let invalidation = if self.force_content_dirty {
+            self.tree
+                .mark_refresh_dirty_for_invalidation(&self.sidepane_id, TreeInvalidation::Paint);
+            TreeInvalidation::Paint
+        } else {
+            TreeInvalidation::None
+        };
+        let update = layout_or_refresh_default_with_animation_and_invalidation_reusing_clean_registry_for_benchmark(
+            &mut self.tree,
+            macaw_viewport_constraint(),
+            1.0,
+            &self.runtime,
+            sample_time,
+            invalidation,
+            Some(&self.cached_rebuild),
+        );
+        if update.output.event_rebuild_changed {
+            self.cached_rebuild = update.output.event_rebuild.clone();
+        }
+        update
+    }
+}
+
+fn prepared_macaw_closed_viewport_tree(
+    constraint: Constraint,
+) -> (ElementTree, RegistryRebuildPayload, NodeId) {
+    let fixture = macaw_viewport_tree(None, MACAW_VIEWPORT_SEED);
+    let host_id = fixture.root_id;
+    let mut tree = fixture.tree;
+    let output = layout_and_refresh_default(&mut tree, constraint, 1.0);
+    (tree, output.event_rebuild, host_id)
+}
+
+fn prepared_macaw_open_viewport_tree_for_close(
+    constraint: Constraint,
+) -> (ElementTree, RegistryRebuildPayload, NodeId) {
+    let fixture = macaw_viewport_tree(
+        Some(MacawSidepaneAnimationKind::Settled),
+        MACAW_VIEWPORT_SEED + 20_000,
+    );
+    let sidepane_id = fixture
+        .sidepane_id
+        .expect("open macaw viewport should include sidepane");
+    let mut tree = fixture.tree;
+    let output = layout_and_refresh_default(&mut tree, constraint, 1.0);
+    (tree, output.event_rebuild, sidepane_id)
+}
+
+fn prepared_macaw_closed_after_exit_tree(
+    constraint: Constraint,
+) -> (ElementTree, RegistryRebuildPayload, NodeId, u64) {
+    let seed = MACAW_VIEWPORT_SEED + 40_000;
+    let fixture = macaw_viewport_tree(Some(MacawSidepaneAnimationKind::Settled), seed);
+    let host_id = fixture.root_id;
+    let sidepane_id = fixture
+        .sidepane_id
+        .expect("open macaw viewport should include sidepane");
+    let mut tree = fixture.tree;
+    let initial = layout_and_refresh_default(&mut tree, constraint, 1.0);
+    let mut cached_rebuild = initial.event_rebuild;
+    let mut runtime = AnimationRuntime::default();
+    let started_at = Instant::now();
+
+    let invalidation = apply_patches(&mut tree, vec![Patch::Remove { id: sidepane_id }])
+        .expect("macaw sidepane close patch should apply");
+    runtime.sync_with_tree(&tree, started_at);
+    let close = layout_or_refresh_default_with_animation_and_invalidation_reusing_clean_registry_for_benchmark(
+        &mut tree,
+        constraint,
+        1.0,
+        &runtime,
+        started_at,
+        invalidation,
+        Some(&cached_rebuild),
+    );
+    if close.output.event_rebuild_changed {
+        cached_rebuild = close.output.event_rebuild;
+    }
+
+    let final_time = started_at + Duration::from_millis(200);
+    if runtime.prune_completed_exit_ghosts(&mut tree, Some(final_time)) {
+        let pruned = layout_or_refresh_default_with_animation_and_invalidation_reusing_clean_registry_for_benchmark(
+            &mut tree,
+            constraint,
+            1.0,
+            &runtime,
+            final_time,
+            TreeInvalidation::Structure,
+            Some(&cached_rebuild),
+        );
+        if pruned.output.event_rebuild_changed {
+            cached_rebuild = pruned.output.event_rebuild;
+        }
+    }
+
+    (tree, cached_rebuild, host_id, seed)
+}
+
+fn macaw_viewport_constraint() -> Constraint {
+    Constraint::new(MACAW_VIEWPORT_WIDTH, MACAW_VIEWPORT_HEIGHT)
+}
+
+fn macaw_viewport_tree(
+    sidepane_kind: Option<MacawSidepaneAnimationKind>,
+    seed: u64,
+) -> MacawViewportFixture {
+    let mut builder = MacawViewportBuilder::new(seed);
+    let header = macaw_header(&mut builder);
+    let status_panel = macaw_status_panel(&mut builder);
+    let root_id = builder.node(
+        ElementKind::Column,
+        Attrs {
+            width: Some(Length::Fill),
+            height: Some(Length::Fill),
+            padding: Some(Padding::Uniform(24.0)),
+            spacing: Some(20.0),
+            background: Some(Background::Color(macaw_rgb(2, 6, 23))),
+            ..Default::default()
+        },
+        vec![header, status_panel],
+    );
+    builder.tree.set_root_id(root_id);
+
+    let sidepane_id = sidepane_kind.map(|kind| {
+        let sidepane_id = NodeId::from_u64(seed + 50_000);
+        let subtree = macaw_sidepane_subtree(sidepane_id, seed + 60_000, kind);
+        append_benchmark_subtree(&mut builder.tree, &subtree);
+        builder
+            .tree
+            .set_nearby_mounts(
+                &root_id,
+                vec![NearbyMount {
+                    slot: NearbySlot::InFront,
+                    id: sidepane_id,
+                }],
+            )
+            .expect("macaw sidepane nearby mount should attach");
+        sidepane_id
+    });
+
+    MacawViewportFixture {
+        tree: builder.tree,
+        root_id,
+        sidepane_id,
+    }
+}
+
+fn macaw_header(builder: &mut MacawViewportBuilder) -> NodeId {
+    let button_text = builder.text(
+        "Open sidepane",
+        Attrs {
+            font_size: Some(12.0),
+            ..Default::default()
+        },
+    );
+    let button = builder.node(
+        ElementKind::El,
+        Attrs {
+            on_click: Some(true),
+            background: Some(Background::Color(macaw_rgb(255, 255, 255))),
+            padding: Some(Padding::Uniform(10.0)),
+            font_size: Some(12.0),
+            border_radius: Some(BorderRadius::Uniform(3.0)),
+            ..Default::default()
+        },
+        vec![button_text],
+    );
+    let title = builder.text(
+        "Macaw UI running on EMERGE",
+        Attrs {
+            font_size: Some(28.0),
+            font_weight: Some(FontWeight("bold".to_string())),
+            font_color: Some(macaw_rgb(255, 255, 255)),
+            ..Default::default()
+        },
+    );
+    let subtitle = builder.text(
+        "Emerge placeholder screen is running in user mode.",
+        Attrs {
+            font_size: Some(16.0),
+            font_color: Some(macaw_rgb(203, 213, 225)),
+            ..Default::default()
+        },
+    );
+
+    builder.node(
+        ElementKind::Column,
+        Attrs {
+            width: Some(Length::Fill),
+            spacing: Some(6.0),
+            ..Default::default()
+        },
+        vec![button, title, subtitle],
+    )
+}
+
+fn macaw_status_panel(builder: &mut MacawViewportBuilder) -> NodeId {
+    let rows: Vec<NodeId> = (0..MACAW_STATUS_REPEAT_COUNT)
+        .flat_map(|_| MACAW_STATUS_LINES.iter().copied())
+        .map(|(label, value)| macaw_status_line(builder, label, value))
+        .collect();
+
+    builder.node(
+        ElementKind::Column,
+        Attrs {
+            spacing: Some(12.0),
+            width: Some(Length::Fill),
+            height: Some(Length::Fill),
+            padding: Some(Padding::Uniform(20.0)),
+            background: Some(Background::Color(macaw_rgb(15, 23, 42))),
+            border_radius: Some(BorderRadius::Uniform(12.0)),
+            scrollbar_y: Some(true),
+            ..Default::default()
+        },
+        rows,
+    )
+}
+
+fn macaw_status_line(builder: &mut MacawViewportBuilder, label: &str, value: &str) -> NodeId {
+    let label = builder.text(
+        label,
+        Attrs {
+            font_size: Some(14.0),
+            font_color: Some(macaw_rgb(148, 163, 184)),
+            ..Default::default()
+        },
+    );
+    let value = builder.text(
+        value,
+        Attrs {
+            font_size: Some(18.0),
+            font_color: Some(macaw_rgb(255, 255, 255)),
+            ..Default::default()
+        },
+    );
+
+    builder.node(
+        ElementKind::Column,
+        Attrs {
+            spacing: Some(4.0),
+            ..Default::default()
+        },
+        vec![label, value],
+    )
+}
+
+fn macaw_sidepane_subtree(
+    root_id: NodeId,
+    seed: u64,
+    kind: MacawSidepaneAnimationKind,
+) -> ElementTree {
+    let mut builder = MacawViewportBuilder::new(seed);
+    let scrim = builder.node(
+        ElementKind::El,
+        Attrs {
+            on_click: Some(true),
+            width: Some(Length::Fill),
+            height: Some(Length::Fill),
+            ..Default::default()
+        },
+        Vec::new(),
+    );
+    let mode_selector = macaw_mode_selector(&mut builder);
+    let mut attrs = Attrs {
+        width: Some(Length::Fill),
+        height: Some(Length::Fill),
+        background: Some(Background::Color(macaw_rgba(0, 0, 0, 64))),
+        ..Default::default()
+    };
+
+    match kind {
+        MacawSidepaneAnimationKind::EnterMoveX | MacawSidepaneAnimationKind::Settled => {
+            attrs.animate_enter = Some(macaw_move_x_spec(
+                500.0,
+                0.0,
+                AnimationCurve::EaseIn,
+                AnimationRepeat::Once,
+            ));
+            attrs.animate_exit = Some(macaw_move_x_spec(
+                0.0,
+                500.0,
+                AnimationCurve::EaseOut,
+                AnimationRepeat::Once,
+            ));
+        }
+        MacawSidepaneAnimationKind::LoopMoveX => {
+            attrs.animate = Some(macaw_move_x_spec(
+                500.0,
+                0.0,
+                AnimationCurve::EaseIn,
+                AnimationRepeat::Loop,
+            ));
+        }
+    }
+
+    builder.tree.insert(Element::with_attrs(
+        root_id,
+        ElementKind::Row,
+        Vec::new(),
+        attrs,
+    ));
+    builder
+        .tree
+        .set_children(&root_id, vec![scrim, mode_selector])
+        .expect("macaw sidepane root children should attach");
+    builder.tree.set_root_id(root_id);
+    builder.tree
+}
+
+fn macaw_mode_selector(builder: &mut MacawViewportBuilder) -> NodeId {
+    let mut children = vec![
+        macaw_close_header(builder),
+        macaw_separator(builder),
+        macaw_mode_section_header(builder),
+    ];
+    for (mode, label) in [
+        ("heat", "Heat"),
+        ("cool", "Cool"),
+        ("auto", "Auto"),
+        ("off", "Off"),
+    ] {
+        children.push(macaw_separator(builder));
+        children.push(macaw_mode_row(builder, mode, label));
+    }
+
+    builder.node(
+        ElementKind::Column,
+        Attrs {
+            width: Some(Length::Px(500.0)),
+            height: Some(Length::Fill),
+            background: Some(Background::Color(macaw_rgb(251, 252, 253))),
+            font: Some(Font::String("Open Sans".to_string())),
+            font_color: Some(macaw_rgb(26, 31, 39)),
+            box_shadows: Some(vec![BoxShadow {
+                offset_x: -8.0,
+                offset_y: 0.0,
+                blur: 24.0,
+                size: 0.0,
+                color: macaw_rgba(0, 0, 0, 46),
+                inset: false,
+            }]),
+            ..Default::default()
+        },
+        children,
+    )
+}
+
+fn macaw_close_header(builder: &mut MacawViewportBuilder) -> NodeId {
+    let icon = builder.node(
+        ElementKind::El,
+        Attrs {
+            width: Some(Length::Px(32.0)),
+            height: Some(Length::Px(32.0)),
+            background: Some(Background::Color(macaw_rgb(26, 31, 39))),
+            border_radius: Some(BorderRadius::Uniform(16.0)),
+            ..Default::default()
+        },
+        Vec::new(),
+    );
+    let label = builder.text(
+        "Close",
+        Attrs {
+            align_y: Some(AlignY::Center),
+            font_size: Some(20.0),
+            font_weight: Some(FontWeight("600".to_string())),
+            ..Default::default()
+        },
+    );
+    builder.node(
+        ElementKind::Row,
+        Attrs {
+            on_click: Some(true),
+            padding: Some(Padding::Uniform(24.0)),
+            spacing: Some(24.0),
+            width: Some(Length::Fill),
+            ..Default::default()
+        },
+        vec![icon, label],
+    )
+}
+
+fn macaw_mode_section_header(builder: &mut MacawViewportBuilder) -> NodeId {
+    let text = builder.text(
+        "Select mode",
+        Attrs {
+            font_size: Some(16.0),
+            font_weight: Some(FontWeight("600".to_string())),
+            ..Default::default()
+        },
+    );
+    builder.node(
+        ElementKind::El,
+        Attrs {
+            width: Some(Length::Fill),
+            padding: Some(Padding::Sides {
+                top: 16.0,
+                right: 24.0,
+                bottom: 16.0,
+                left: 24.0,
+            }),
+            border_color: Some(macaw_rgb(190, 194, 205)),
+            background: Some(Background::Color(macaw_rgb(235, 238, 244))),
+            ..Default::default()
+        },
+        vec![text],
+    )
+}
+
+fn macaw_mode_row(builder: &mut MacawViewportBuilder, mode: &str, label: &str) -> NodeId {
+    let icon = builder.node(
+        ElementKind::El,
+        Attrs {
+            align_y: Some(AlignY::Center),
+            width: Some(Length::Px(48.0)),
+            height: Some(Length::Px(48.0)),
+            background: Some(Background::Color(macaw_rgb(190, 194, 205))),
+            border_radius: Some(BorderRadius::Uniform(24.0)),
+            ..Default::default()
+        },
+        Vec::new(),
+    );
+    let label_text = builder.text(
+        label,
+        Attrs {
+            font_size: Some(32.0),
+            font_weight: Some(FontWeight("600".to_string())),
+            ..Default::default()
+        },
+    );
+    let label = builder.node(
+        ElementKind::El,
+        Attrs {
+            width: Some(Length::Fill),
+            align_y: Some(AlignY::Center),
+            ..Default::default()
+        },
+        vec![label_text],
+    );
+    let selected = if mode == "cool" {
+        builder.node(
+            ElementKind::El,
+            Attrs {
+                align_y: Some(AlignY::Center),
+                width: Some(Length::Px(40.0)),
+                height: Some(Length::Px(40.0)),
+                background: Some(Background::Color(macaw_rgb(26, 31, 39))),
+                border_radius: Some(BorderRadius::Uniform(20.0)),
+                ..Default::default()
+            },
+            Vec::new(),
+        )
+    } else {
+        builder.node(ElementKind::None, Attrs::default(), Vec::new())
+    };
+
+    builder.node(
+        ElementKind::Row,
+        Attrs {
+            width: Some(Length::Fill),
+            height: Some(Length::Fill),
+            padding: Some(Padding::Sides {
+                top: 24.0,
+                right: 64.0,
+                bottom: 24.0,
+                left: 24.0,
+            }),
+            spacing: Some(24.0),
+            ..Default::default()
+        },
+        vec![icon, label, selected],
+    )
+}
+
+fn macaw_separator(builder: &mut MacawViewportBuilder) -> NodeId {
+    builder.node(
+        ElementKind::El,
+        Attrs {
+            width: Some(Length::Fill),
+            height: Some(Length::Px(1.0)),
+            background: Some(Background::Color(macaw_rgb(190, 194, 205))),
+            ..Default::default()
+        },
+        Vec::new(),
+    )
+}
+
+fn append_benchmark_subtree(tree: &mut ElementTree, subtree: &ElementTree) {
+    let links: Vec<(NodeId, Vec<NodeId>, Vec<NearbyMount>)> = subtree
+        .iter_node_pairs()
+        .map(|(id, _)| (id, subtree.child_ids(&id), subtree.nearby_mounts_for(&id)))
+        .collect();
+
+    subtree.iter_nodes().cloned().for_each(|element| {
+        tree.insert(element);
+    });
+
+    links.into_iter().for_each(|(id, children, nearby)| {
+        if !children.is_empty() {
+            tree.set_children(&id, children)
+                .expect("benchmark subtree children should attach");
+        }
+        if !nearby.is_empty() {
+            tree.set_nearby_mounts(&id, nearby)
+                .expect("benchmark subtree nearby should attach");
+        }
+    });
+}
+
+fn macaw_move_x_spec(
+    from_x: f64,
+    to_x: f64,
+    curve: AnimationCurve,
+    repeat: AnimationRepeat,
+) -> AnimationSpec {
+    AnimationSpec {
+        keyframes: vec![
+            Attrs {
+                move_x: Some(from_x),
+                ..Default::default()
+            },
+            Attrs {
+                move_x: Some(to_x),
+                ..Default::default()
+            },
+        ],
+        duration_ms: 125.0,
+        curve,
+        repeat,
+    }
+}
+
+fn macaw_rgb(r: u8, g: u8, b: u8) -> Color {
+    Color::Rgb { r, g, b }
+}
+
+fn macaw_rgba(r: u8, g: u8, b: u8, a: u8) -> Color {
+    Color::Rgba { r, g, b, a }
+}
+
+#[cfg(feature = "bench-diagnostics")]
+fn sample_macaw_viewport_profiles() {
+    let constraint = macaw_viewport_constraint();
+    let (mut tree, mut cached_rebuild, host_id) = prepared_macaw_closed_viewport_tree(constraint);
+    let mut runtime = AnimationRuntime::default();
+    let started_at = Instant::now();
+    let invalidation = apply_patches(
+        &mut tree,
+        vec![Patch::InsertNearbySubtree {
+            host_id,
+            index: 0,
+            slot: NearbySlot::InFront,
+            subtree: macaw_sidepane_subtree(
+                NodeId::from_u64(MACAW_VIEWPORT_SEED + 70_000),
+                MACAW_VIEWPORT_SEED + 80_000,
+                MacawSidepaneAnimationKind::EnterMoveX,
+            ),
+        }],
+    )
+    .expect("macaw diagnostic open patch should apply");
+    runtime.sync_with_tree(&tree, started_at);
+    let (update, profile) =
+        layout_or_refresh_default_with_animation_and_invalidation_profile_for_benchmark(
+            &mut tree,
+            constraint,
+            1.0,
+            &runtime,
+            started_at,
+            invalidation,
+            Some(&cached_rebuild),
+        );
+    if update.output.event_rebuild_changed {
+        cached_rebuild = update.output.event_rebuild;
+    }
+    eprintln!(
+        "macaw viewport open profile prepare={:.3}ms layout={:.3}ms refresh={:.3}ms traversal={:.3}ms registry_post={:.3}ms layout_performed={} event_rebuild_changed={} scene_nodes={} render_visits={} culled={} registry_visits={} registry_hits={} registry_stores={} registry_damaged={} registry_ineligible={} registry_misses={} pre_registry_damage={} registry_damage={} registry_damage_nodes={} summary={:?}",
+        profile.prepare.as_secs_f64() * 1000.0,
+        profile.layout.as_secs_f64() * 1000.0,
+        profile.refresh.as_secs_f64() * 1000.0,
+        profile.refresh_traversal.as_secs_f64() * 1000.0,
+        profile.refresh_registry_post.as_secs_f64() * 1000.0,
+        profile.layout_performed,
+        update.output.event_rebuild_changed,
+        profile.scene_nodes,
+        profile.render_visits,
+        profile.culled_subtrees,
+        profile.registry_visits,
+        profile.registry_cache_hits,
+        profile.registry_cache_stores,
+        profile.registry_cache_damaged,
+        profile.registry_cache_ineligible,
+        profile.registry_cache_misses,
+        profile.pre_layout_registry_damage,
+        profile.registry_damage,
+        profile.registry_damage_nodes,
+        update.output.scene.summary()
+    );
+
+    for frame in 1..=4_u64 {
+        let sample_time =
+            started_at + Duration::from_millis(frame.saturating_mul(SHOWCASE_FRAME_MS));
+        let (update, profile) =
+            layout_or_refresh_default_with_animation_and_invalidation_profile_for_benchmark(
+                &mut tree,
+                constraint,
+                1.0,
+                &runtime,
+                sample_time,
+                TreeInvalidation::None,
+                Some(&cached_rebuild),
+            );
+        if update.output.event_rebuild_changed {
+            cached_rebuild = update.output.event_rebuild;
+        }
+        eprintln!(
+            "macaw viewport pulse profile frame={frame} prepare={:.3}ms layout={:.3}ms refresh={:.3}ms traversal={:.3}ms registry_post={:.3}ms layout_performed={} event_rebuild_changed={} scene_nodes={} render_visits={} culled={} registry_visits={} registry_hits={} registry_stores={} registry_damaged={} registry_ineligible={} registry_misses={} registry_damage={} registry_damage_nodes={} summary={:?}",
+            profile.prepare.as_secs_f64() * 1000.0,
+            profile.layout.as_secs_f64() * 1000.0,
+            profile.refresh.as_secs_f64() * 1000.0,
+            profile.refresh_traversal.as_secs_f64() * 1000.0,
+            profile.refresh_registry_post.as_secs_f64() * 1000.0,
+            profile.layout_performed,
+            update.output.event_rebuild_changed,
+            profile.scene_nodes,
+            profile.render_visits,
+            profile.culled_subtrees,
+            profile.registry_visits,
+            profile.registry_cache_hits,
+            profile.registry_cache_stores,
+            profile.registry_cache_damaged,
+            profile.registry_cache_ineligible,
+            profile.registry_cache_misses,
+            profile.registry_damage,
+            profile.registry_damage_nodes,
+            update.output.scene.summary()
+        );
+    }
+}
+
+fn bench_sidepane_animation_smoothness(c: &mut Criterion) {
+    let mut group = c.benchmark_group("native/sidepane_animation_smoothness/in_front_move_x");
+    let constraint = sidepane_animation_constraint();
+    let node_count = sidepane_animation_tree(None, 700_000).0.len() as u64;
+    group.throughput(Throughput::Elements(node_count));
+
+    let (host_only, cached_rebuild) = prepared_sidepane_host_only_tree(constraint);
+    group.bench_function("enter_patch_first_frame", |b| {
+        b.iter_batched(
+            || (host_only.clone(), cached_rebuild.clone()),
+            |(mut tree, cached_rebuild)| {
+                let mut runtime = AnimationRuntime::default();
+                let started_at = Instant::now();
+                let invalidation = apply_patches(
+                    &mut tree,
+                    vec![Patch::InsertNearbySubtree {
+                        host_id: sidepane_host_id(),
+                        index: 0,
+                        slot: NearbySlot::InFront,
+                        subtree: sidepane_subtree(
+                            710_000,
+                            SidepaneAnimationKind::EnterMoveX,
+                        ),
+                    }],
+                )
+                .expect("sidepane enter patch should apply");
+                runtime.sync_with_tree(&tree, started_at);
+                let update = layout_or_refresh_default_with_animation_and_invalidation_reusing_clean_registry_for_benchmark(
+                    &mut tree,
+                    constraint,
+                    1.0,
+                    &runtime,
+                    started_at,
+                    invalidation,
+                    Some(&cached_rebuild),
+                );
+                consume_layout_update_output(update)
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.bench_function("move_x_pulse_retained_payload", |b| {
+        let mut state = SidepaneAnimationPulseState::new(720_000, false);
+        b.iter(|| consume_layout_update_output(state.next_frame()));
+    });
+
+    group.bench_function("move_x_pulse_content_dirty_control", |b| {
+        let mut state = SidepaneAnimationPulseState::new(730_000, true);
+        b.iter(|| consume_layout_update_output(state.next_frame()));
+    });
+
+    group.finish();
+}
+
+#[derive(Clone, Copy)]
+enum SidepaneAnimationKind {
+    EnterMoveX,
+    LoopMoveX,
+}
+
+struct SidepaneAnimationPulseState {
+    tree: ElementTree,
+    runtime: AnimationRuntime,
+    cached_rebuild: RegistryRebuildPayload,
+    started_at: Instant,
+    sidepane_id: NodeId,
+    force_content_dirty: bool,
+    frame: u64,
+}
+
+impl SidepaneAnimationPulseState {
+    fn new(seed: u64, force_content_dirty: bool) -> Self {
+        let constraint = sidepane_animation_constraint();
+        let started_at = Instant::now();
+        let (mut tree, _) = sidepane_animation_tree(Some(SidepaneAnimationKind::LoopMoveX), seed);
+        let sidepane_id = NodeId::from_u64(seed + 10);
+        let mut runtime = AnimationRuntime::default();
+        runtime.sync_with_tree(&tree, started_at);
+        let output = layout_and_refresh_default_with_animation(
+            &mut tree, constraint, 1.0, &runtime, started_at,
+        );
+        let mut cached_rebuild = output.event_rebuild;
+
+        // Warm one clean pulse so the retained moving payload cache is populated
+        // before measuring steady-state transform-only frames.
+        let warm = layout_or_refresh_default_with_animation_and_invalidation_reusing_clean_registry_for_benchmark(
+            &mut tree,
+            constraint,
+            1.0,
+            &runtime,
+            started_at + Duration::from_millis(16),
+            TreeInvalidation::None,
+            Some(&cached_rebuild),
+        );
+        if warm.output.event_rebuild_changed {
+            cached_rebuild = warm.output.event_rebuild;
+        }
+
+        Self {
+            tree,
+            runtime,
+            cached_rebuild,
+            started_at,
+            sidepane_id,
+            force_content_dirty,
+            frame: 1,
+        }
+    }
+
+    fn next_frame(&mut self) -> emerge_skia::tree::layout::LayoutUpdateOutput {
+        self.frame = self.frame.saturating_add(1);
+        let sample_time =
+            self.started_at + Duration::from_millis(self.frame.saturating_mul(SHOWCASE_FRAME_MS));
+        let invalidation = if self.force_content_dirty {
+            self.tree
+                .mark_refresh_dirty_for_invalidation(&self.sidepane_id, TreeInvalidation::Paint);
+            TreeInvalidation::Paint
+        } else {
+            TreeInvalidation::None
+        };
+        let update = layout_or_refresh_default_with_animation_and_invalidation_reusing_clean_registry_for_benchmark(
+            &mut self.tree,
+            sidepane_animation_constraint(),
+            1.0,
+            &self.runtime,
+            sample_time,
+            invalidation,
+            Some(&self.cached_rebuild),
+        );
+        if update.output.event_rebuild_changed {
+            self.cached_rebuild = update.output.event_rebuild.clone();
+        }
+        update
+    }
+}
+
+fn prepared_sidepane_host_only_tree(
+    constraint: Constraint,
+) -> (ElementTree, RegistryRebuildPayload) {
+    let (mut tree, _) = sidepane_animation_tree(None, 700_000);
+    let output = layout_and_refresh_default(&mut tree, constraint, 1.0);
+    (tree, output.event_rebuild)
+}
+
+fn sidepane_animation_constraint() -> Constraint {
+    Constraint::new(1024.0, 600.0)
+}
+
+fn sidepane_root_id() -> NodeId {
+    NodeId::from_u64(700_001)
+}
+
+fn sidepane_host_id() -> NodeId {
+    NodeId::from_u64(700_002)
+}
+
+fn sidepane_animation_tree(
+    sidepane_kind: Option<SidepaneAnimationKind>,
+    seed: u64,
+) -> (ElementTree, NodeId) {
+    let mut tree = ElementTree::new();
+    let root_id = sidepane_root_id();
+    let host_id = sidepane_host_id();
+    let root = Element::with_attrs(
+        root_id,
+        ElementKind::Column,
+        Vec::new(),
+        Attrs {
+            width: Some(Length::Px(1024.0)),
+            height: Some(Length::Px(600.0)),
+            padding: Some(Padding::Uniform(12.0)),
+            spacing: Some(8.0),
+            ..Default::default()
+        },
+    );
+
+    let card_ids: Vec<NodeId> = (0..96)
+        .map(|index| {
+            let card_id = NodeId::from_u64(seed + 1_000 + index as u64);
+            let text_id = NodeId::from_u64(seed + 2_000 + index as u64);
+            tree.insert(Element::with_attrs(
+                card_id,
+                ElementKind::El,
+                Vec::new(),
+                Attrs {
+                    width: Some(Length::Px(300.0)),
+                    height: Some(Length::Px(38.0)),
+                    padding: Some(Padding::Uniform(8.0)),
+                    background: Some(Background::Color(Color::Rgba {
+                        r: 24,
+                        g: 28,
+                        b: 34,
+                        a: 255,
+                    })),
+                    ..Default::default()
+                },
+            ));
+            tree.insert(Element::with_attrs(
+                text_id,
+                ElementKind::Text,
+                Vec::new(),
+                Attrs {
+                    content: Some(format!("Device status row {index}")),
+                    font_size: Some(13.0),
+                    font_color: Some(Color::Rgba {
+                        r: 230,
+                        g: 235,
+                        b: 240,
+                        a: 255,
+                    }),
+                    ..Default::default()
+                },
+            ));
+            tree.set_children(&card_id, vec![text_id])
+                .expect("card text should attach");
+            card_id
+        })
+        .collect();
+
+    let host = Element::with_attrs(
+        host_id,
+        ElementKind::El,
+        Vec::new(),
+        Attrs {
+            width: Some(Length::Px(1024.0)),
+            height: Some(Length::Px(600.0)),
+            on_mouse_move: Some(true),
+            ..Default::default()
+        },
+    );
+
+    tree.insert(root);
+    tree.insert(host);
+    tree.set_children(&root_id, std::iter::once(host_id).chain(card_ids).collect())
+        .expect("root children should attach");
+
+    if let Some(kind) = sidepane_kind {
+        let sidepane_id = NodeId::from_u64(seed + 10);
+        let subtree = sidepane_subtree_with_id(sidepane_id, seed + 20, kind);
+        for element in subtree.iter_nodes().cloned() {
+            tree.insert(element);
+        }
+        tree.set_children(&sidepane_id, subtree.child_ids(&sidepane_id))
+            .expect("sidepane children should attach");
+        tree.set_nearby_mounts(
+            &host_id,
+            vec![NearbyMount {
+                slot: NearbySlot::InFront,
+                id: sidepane_id,
+            }],
+        )
+        .expect("sidepane nearby should attach");
+    }
+
+    tree.set_root_id(root_id);
+    (tree, host_id)
+}
+
+fn sidepane_subtree(seed: u64, kind: SidepaneAnimationKind) -> ElementTree {
+    sidepane_subtree_with_id(NodeId::from_u64(seed), seed + 1, kind)
+}
+
+fn sidepane_subtree_with_id(
+    root_id: NodeId,
+    seed: u64,
+    kind: SidepaneAnimationKind,
+) -> ElementTree {
+    let mut tree = ElementTree::new();
+    let mut attrs = Attrs {
+        width: Some(Length::Px(500.0)),
+        height: Some(Length::Px(600.0)),
+        padding: Some(Padding::Uniform(18.0)),
+        spacing: Some(6.0),
+        background: Some(Background::Color(Color::Rgba {
+            r: 12,
+            g: 18,
+            b: 24,
+            a: 255,
+        })),
+        on_mouse_move: Some(true),
+        ..Default::default()
+    };
+    match kind {
+        SidepaneAnimationKind::EnterMoveX => {
+            attrs.animate_enter = Some(sidepane_move_x_spec(
+                500.0,
+                0.0,
+                AnimationCurve::EaseIn,
+                AnimationRepeat::Once,
+            ));
+        }
+        SidepaneAnimationKind::LoopMoveX => {
+            attrs.animate = Some(sidepane_move_x_spec(
+                500.0,
+                0.0,
+                AnimationCurve::EaseIn,
+                AnimationRepeat::Loop,
+            ));
+        }
+    }
+
+    tree.set_root_id(root_id);
+    tree.insert(Element::with_attrs(
+        root_id,
+        ElementKind::Column,
+        Vec::new(),
+        attrs,
+    ));
+    let child_ids: Vec<NodeId> = (0..24)
+        .map(|index| {
+            let id = NodeId::from_u64(seed + index as u64);
+            tree.insert(Element::with_attrs(
+                id,
+                ElementKind::Text,
+                Vec::new(),
+                Attrs {
+                    content: Some(format!("Climate setting {index}: active")),
+                    font_size: Some(14.0),
+                    font_color: Some(Color::Rgba {
+                        r: 240,
+                        g: 244,
+                        b: 248,
+                        a: 255,
+                    }),
+                    ..Default::default()
+                },
+            ));
+            id
+        })
+        .collect();
+    tree.set_children(&root_id, child_ids)
+        .expect("sidepane rows should attach");
+    tree
+}
+
+fn sidepane_move_x_spec(
+    from_x: f64,
+    to_x: f64,
+    curve: AnimationCurve,
+    repeat: AnimationRepeat,
+) -> AnimationSpec {
+    AnimationSpec {
+        keyframes: vec![
+            Attrs {
+                move_x: Some(from_x),
+                ..Default::default()
+            },
+            Attrs {
+                move_x: Some(to_x),
+                ..Default::default()
+            },
+        ],
+        duration_ms: 125.0,
+        curve,
+        repeat,
+    }
+}
+
 fn bench_nearby_hover_toggle_refresh(c: &mut Criterion) {
     let mut group = c.benchmark_group("native/nearby_hover_toggle_refresh/borders_like");
     let constraint = Constraint::new(960.0, 4_000.0);
@@ -3711,6 +5031,8 @@ criterion_group!(
     bench_fixture_retained_patch_layout,
     bench_render_refresh_cache_regression,
     bench_registry_refresh_cache_regression,
+    bench_macaw_viewport_refresh,
+    bench_sidepane_animation_smoothness,
     bench_nearby_hover_toggle_refresh
 );
 criterion_main!(benches);

@@ -127,10 +127,18 @@ pub enum RendererTimingMetric {
     Refresh,
     EventResolve,
     PatchTreeProcess,
+    PatchTreeDecode,
+    PatchTreeApply,
+    PatchTreeAnimationSync,
+    PatchTreePrepare,
+    PatchTreeLayout,
+    PatchTreeRefresh,
+    PatchTreeRefreshTraversal,
+    PatchTreeRefreshRegistryPost,
 }
 
 impl RendererTimingMetric {
-    pub const COUNT: usize = 16;
+    pub const COUNT: usize = 24;
     pub const ALL: [Self; Self::COUNT] = [
         Self::Render,
         Self::RenderDraw,
@@ -148,6 +156,14 @@ impl RendererTimingMetric {
         Self::Refresh,
         Self::EventResolve,
         Self::PatchTreeProcess,
+        Self::PatchTreeDecode,
+        Self::PatchTreeApply,
+        Self::PatchTreeAnimationSync,
+        Self::PatchTreePrepare,
+        Self::PatchTreeLayout,
+        Self::PatchTreeRefresh,
+        Self::PatchTreeRefreshTraversal,
+        Self::PatchTreeRefreshRegistryPost,
     ];
 
     #[inline]
@@ -173,6 +189,14 @@ impl RendererTimingMetric {
             Self::Refresh => "refresh",
             Self::EventResolve => "event resolve",
             Self::PatchTreeProcess => "patch tree actor",
+            Self::PatchTreeDecode => "patch tree decode",
+            Self::PatchTreeApply => "patch tree apply",
+            Self::PatchTreeAnimationSync => "patch tree animation sync",
+            Self::PatchTreePrepare => "patch tree prepare attrs",
+            Self::PatchTreeLayout => "patch tree layout",
+            Self::PatchTreeRefresh => "patch tree refresh",
+            Self::PatchTreeRefreshTraversal => "patch tree refresh traversal",
+            Self::PatchTreeRefreshRegistryPost => "patch tree refresh registry post",
         }
     }
 }
@@ -868,6 +892,38 @@ impl RendererStatsCollector {
 
     pub fn record_patch_tree_process(&self, duration: Duration) {
         self.record_timing(RendererTimingMetric::PatchTreeProcess, duration);
+    }
+
+    pub fn record_patch_tree_decode(&self, duration: Duration) {
+        self.record_timing(RendererTimingMetric::PatchTreeDecode, duration);
+    }
+
+    pub fn record_patch_tree_apply(&self, duration: Duration) {
+        self.record_timing(RendererTimingMetric::PatchTreeApply, duration);
+    }
+
+    pub fn record_patch_tree_animation_sync(&self, duration: Duration) {
+        self.record_timing(RendererTimingMetric::PatchTreeAnimationSync, duration);
+    }
+
+    pub fn record_patch_tree_prepare(&self, duration: Duration) {
+        self.record_timing(RendererTimingMetric::PatchTreePrepare, duration);
+    }
+
+    pub fn record_patch_tree_layout(&self, duration: Duration) {
+        self.record_timing(RendererTimingMetric::PatchTreeLayout, duration);
+    }
+
+    pub fn record_patch_tree_refresh(&self, duration: Duration) {
+        self.record_timing(RendererTimingMetric::PatchTreeRefresh, duration);
+    }
+
+    pub fn record_patch_tree_refresh_traversal(&self, duration: Duration) {
+        self.record_timing(RendererTimingMetric::PatchTreeRefreshTraversal, duration);
+    }
+
+    pub fn record_patch_tree_refresh_registry_post(&self, duration: Duration) {
+        self.record_timing(RendererTimingMetric::PatchTreeRefreshRegistryPost, duration);
     }
 
     pub fn record_layout_cache(&self, stats: LayoutCacheStats) {
