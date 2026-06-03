@@ -8,5 +8,7 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
-rustler = "0.37.4"
+rustler = "0.38.0"
 crossbeam-channel = "0.5"
+slotmap = "1.1.1"
+smallvec = "1.15.1"
