@@ -1,144 +1,15 @@
-# CLAUDE.md
+This is a clean no AI coding rewrite of ../emerge
+Goal is to work slowly and delibaretly and find an optimal architecture
+with clean code compared to the slop in original repo.
 
-This file provides guidance to AI agents when working with code in this repository.
+Your role is to serve as an assistant that provides synthesized information.
+You are not a coding agent.
+You do web searches and research topics.
+When responding be brief, direct and techical.
 
-## Communication and planning
+Your role is not to write bunch of code. If I ask for example you give me
+digestable minimal example idealy not more than 50 lines of code and a lot of explainations
+why you chose to present that.
 
-When making plans, asking question or presenting anything be brief.
-Don't use coding harness planning mode all planning is done inside of plans/ folder.
-
-## Build & Development Commands
-
-```bash
-./ci-tests.sh                   # Run the full CI check suite locally
-
-# Elixir
-mix deps.get                    # Install Elixir dependencies
-mix compile                     # Compile Elixir + Rust NIF (first build downloads Skia binaries)
-mix test                        # Run tests
-mix docs                        # Generate ExDoc documentation
-cd ../emerge_demo && iex -S mix # Run the standalone demo app from https://github.com/emerge-elixir/emerge_demo
-
-# Rust-specific (from native/emerge_skia/)
-cargo clippy                    # Lint Rust code
-cargo clippy -- -D warnings     # Lint with warnings as errors
-cargo build --release           # Build release (mix compile does this automatically)
-```
-
-## Testing Expectations
-
-- Always run `cargo test` and `mix test` after implementing changes.
-- Prefer `./ci-tests.sh` when validating full local CI coverage (`quality`, `test`, `dialyzer`, or `all`).
-
-## Architecture
-
-Emerge is a GUI framework for elixir that sits on top of EmergeSkia
-EmergeSkia is a layout engine and input system in Rust using Skia to renderer on various backend.
-EmergeSkia is implemented as Rustler NIF to bridge Elixir and Rust.
-
-### Data Flow
-
-Rendering
-```
-Elixir: EmergeSkia.upload_tree(renderer, tree)
-    │
-    │  EMRG binary decoded to ElementTree
-    ▼
-Rust tree actor: layout_and_refresh_default(tree, constraint, scale)
-    │
-    │  produces RenderScene + event rebuild
-    ▼
-Render thread: SkiaRenderer.render() draws to GPU surface
-    │
-    ▼
-backend: smithay-client-toolkit Wayland / libdrm / raster...
-
-```
-
-Events
-```
-backend: Wayland seat events / libinput
-    │
-    │ Raw Input Events 
-    ▼
-Rust event actor: event processing and translation
-    │
-    │  TreeActorEvents/Elixir messages
-    ▼
-TreeActor:rerender / Elixir: event forwarding 
-
-```
-
-### Key Components
-
-**Elixir Side:**
-- `EmergeSkia` (`lib/emerge_skia.ex`) - Public API: `start/1`, `upload_tree/2`, `patch_tree/3`, `render_to_pixels/2`, `measure_text/2`, `stop/1`
-- `EmergeSkia.Native` (`lib/emerge_skia/native.ex`) - Rustler NIF bindings
-
-**Rust Side** (`native/emerge_skia/src/lib.rs`):
-- `SkiaRenderer` - wraps Skia surface/context, executes render scenes
-- `RendererResource` - NIF resource holding render state and event proxy
-- `WaylandApp` - smithay-client-toolkit app state managing Wayland events
-- `LayoutOutput` struct - bundles render commands + event registry, returned by `refresh()` and `layout_and_refresh_default()`
-- `refresh()` / `layout_and_refresh_default()` - produce both outputs after DOM/scroll changes
-
-### Threading Model
-
-The NIF spawns dedicated native threads for the backend event loop and runtime actors. Communication happens via:
-- `Arc<Mutex<RendererState>>` - commands from Elixir to render thread
-- `EventLoopProxy<UserEvent>` - signals (Redraw/Stop) from Elixir to event loop
-
-### Color Format
-
-Colors are `u32` in RGBA format: `0xRRGGBBAA`. Use `EmergeSkia.rgb/3` or `EmergeSkia.rgba/4` helpers.
-
-### Draw Commands
-
-Commands are Elixir tuples decoded in Rust:
-- `{:rect, x, y, w, h, fill}` / `{:rounded_rect, x, y, w, h, radius, fill}`
-- `{:border, x, y, w, h, radius, stroke_width, color}`
-- `{:text, x, y, string, font_size, fill}`
-- `{:gradient, x, y, w, h, from_color, to_color, angle_degrees}`
-- `{:push_clip, x, y, w, h}` / `:pop_clip`
-- `{:translate, x, y}` / `:save` / `:restore`
-
-### Platform Support
-
-Linux (Wayland and DRM). The window backend uses smithay-client-toolkit plus EGL/Skia on Wayland.
-MacOS
-
-### Backends
-
-1. **Wayland** - Windowed EGL/Skia surface via smithay-client-toolkit
-2. **DRM** - Direct framebuffer rendering for embedded/kiosk (no window manager)
-3. **Raster** - Offscreen CPU rendering to RGB buffer (for testing/headless)
-
-## Documentation
-
-All docs currently live in `guides/internals/` (architecture, EMRG format, events, scrolling, tree patching).
-Run `mix docs` to generate the full ExDoc site.
-
-## Repository Coding Preferences
-
-- Default to functional composition for collection building (`map`, `filter`, `flat_map`, `fold`, `collect`) instead of mutable accumulator loops.
-- Avoid mutable accumulator patterns in general (for example `let mut out = Vec::new(); for ... { out.push(...) }`).
-- Prefer functions that return collections over functions that mutate passed-in output collections.
-- Prefer simpler solutions and favor code simplification and removal whenver possible.
-
-## BEAM Performance Constraints
-
-- For Elixir-side reconciliation, diffing, serialization, and registry code, treat lists as linked lists. Avoid hot-path algorithms that rely on repeated `Enum.at/2`, repeated indexing, or repeated `Enum.drop/2`.
-- Build lists by prepending (`[item | acc]`) and reversing once at the end. Avoid repeated `++` in reducers and loops.
-- Prefer maps/structs for lookup and fixed-shape state. Do not introduce array-like storage unless keys are truly dense and there is a measured need.
-- Keep ordered collections and lookup indexes separate: lists for order, maps for lookup.
-- Prefer fixed-width numeric ids over `term_to_binary`/`binary_to_term` once ids are numeric.
-- Prefer iodata/deep-list style binary construction over flattening intermediate data.
-- Avoid repeated full-list scans when one pass can decide the same result.
-- Avoid rebuilding full-tree derived structures when a subtree-local or incremental design is possible.
-- Do not cargo-cult tail recursion. Focus first on avoiding bad list construction, repeated passes, and random-access list operations.
-- Measure before introducing less idiomatic BEAM structures such as `:array`, ETS, or tuple-indexed storage.
-- See `guides/internals/beam-performance-constraints.md` for detailed rationale and examples.
-
-## Git Commit Guidelines
-
-- Do NOT include `Co-Authored-By` lines in commit messages
+You are not allowed to make changes to this repository outside of agent_playground folder
+that is used to create example where parts are easily copy-pastable.

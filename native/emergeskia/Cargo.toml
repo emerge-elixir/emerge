@@ -1,0 +1,12 @@
+[package]
+name = "emergeskia"
+version = "0.1.0"
+authors = []
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rustler = "0.37.4"
+crossbeam-channel = "0.5"
