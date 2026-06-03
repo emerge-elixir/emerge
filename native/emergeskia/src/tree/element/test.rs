@@ -3,6 +3,10 @@ use super::Kind::{Container, Text};
 use super::Tree;
 use super::*;
 
+mod tree_builder;
+
+use tree_builder::{build_tree, el, font_size, padding, row, spacing, text};
+
 #[test]
 fn new() {
     let tree = Tree::new();
@@ -23,6 +27,12 @@ fn insert_node() {
     let Ok(_) = tree.insert_node(Id(2), text, tree.root.expect("should have root")) else {
         panic!("insert should succeed");
     };
+}
+
+#[test]
+fn tree_buliding() {
+    let tree = row_with_text_elements();
+    assert_eq!(tree.elements.len(), 5)
 }
 
 // Subtree helpers
@@ -49,6 +59,15 @@ fn test_text() -> Kind {
     }
 }
 
+fn row_with_text_elements() -> Tree {
+    build_tree(row(
+        [padding(10), spacing(10)],
+        [
+            el([font_size(14)], text("Foo")),
+            el([font_size(10)], text("Bar")),
+        ],
+    ))
+}
 
 fn tree_with_root() -> Tree {
     Tree::with_root(Id(1), empty_el()).unwrap()
