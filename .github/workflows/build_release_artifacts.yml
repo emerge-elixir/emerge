@@ -67,6 +67,11 @@ jobs:
 
       - name: Set up Elixir and OTP
         uses: erlef/setup-beam@v1
+        env:
+          # GitHub's Ubuntu ARM runners currently expose ImageOS=ubuntu24-arm64,
+          # but setup-beam expects the OS-only ImageOS value and reads RUNNER_ARCH
+          # separately to pick arm64 OTP builds.
+          ImageOS: ubuntu24
         with:
           elixir-version: "1.19.0"
           otp-version: "28.3"
