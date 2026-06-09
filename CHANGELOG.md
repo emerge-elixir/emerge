@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.2] - 2026-06-09
+
+### Changed
+
+- Improved rendering cache for complex and mostly unchanged UI.
+- `renderer_cache.clean_subtree` options are now `renderer_cache.paint_layer` options.
+- Drag scroll works in both axes.
+- Improved runtime update performance.
+- Improved Wayland scaling and suspend/resume behavior.
+- Improved DRM animation timing.
+- Added renderer diagnostics for debugging slow updates.
+
 ## [0.3.1] - 2026-05-07
 
 ### Added
