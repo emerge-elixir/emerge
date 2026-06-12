@@ -1,15 +1,10 @@
-use super::super::{Attrs, ContainerKind, CreateError, Id, InsertError, Key, Kind, Tree};
-use smallvec::SmallVec;
+use super::super::{Attrs, ElementSpec, Id, Key, Tree};
+use super::shapes::el::ElSpec;
+use super::shapes::text::TextSpec;
 
 pub(super) struct NodeSpec {
-    kind: SpecKind,
+    spec: ElementSpec,
     children: Vec<NodeSpec>,
-}
-
-pub(super) enum SpecKind {
-    Row(Attrs),
-    El(Attrs),
-    Text(String),
 }
 
 pub(super) enum AttrSpec {
@@ -19,26 +14,30 @@ pub(super) enum AttrSpec {
 }
 
 // Element helpers
+/*
 pub(super) fn row(
-    attrs: impl IntoIterator<Item = AttrSpec>,
-    children: impl IntoIterator<Item = NodeSpec>,
+    attrs: impl IntoIterator<Item = Attr>,
+    children: impl IntoIterator<Item = ElementSpec>,
 ) -> NodeSpec {
     NodeSpec {
-        kind: SpecKind::Row(attrs_from(attrs)),
+        kind: El::Row(attrs_from(attrs)),
         children: children.into_iter().collect(),
     }
 }
+*/
 
 pub(super) fn el(attrs: impl IntoIterator<Item = AttrSpec>, child: NodeSpec) -> NodeSpec {
     NodeSpec {
-        kind: SpecKind::El(attrs_from(attrs)),
+        spec: ElementSpec::El(ElSpec {
+            attrs: attrs_from(attrs),
+        }),
         children: vec![child],
     }
 }
 
 pub(super) fn text(content: impl Into<String>) -> NodeSpec {
     NodeSpec {
-        kind: SpecKind::Text(content.into()),
+        spec: ElementSpec::Text(TextSpec { content: content.into() }),
         children: Vec::new(),
     }
 }
@@ -78,26 +77,6 @@ fn attrs_from(attrs: impl IntoIterator<Item = AttrSpec>) -> Attrs {
     out
 }
 
-fn kind_from_spec(kind: SpecKind) -> Kind {
-    match kind {
-        SpecKind::Text(content) => Kind::Text { content },
-
-        SpecKind::Row(attrs) => Kind::Container {
-            kind: ContainerKind::Row,
-            children: SmallVec::new(),
-            nearby: SmallVec::new(),
-            attrs,
-        },
-
-        SpecKind::El(attrs) => Kind::Container {
-            kind: ContainerKind::El,
-            children: SmallVec::new(),
-            nearby: SmallVec::new(),
-            attrs,
-        },
-    }
-}
-
 struct IdGen(u64);
 
 impl IdGen {
@@ -113,9 +92,8 @@ pub(super) fn build_tree(root: NodeSpec) -> Tree {
 
     let root_id = ids.next();
     let root_children = root.children;
-    let root_kind = kind_from_spec(root.kind);
 
-    let mut tree = Tree::with_root(root_id, root_kind).expect("tree should build");
+    let mut tree = Tree::with_root(root_id, root.spec).expect("tree should build");
     let root_key = tree.root.expect("Tree::with_root should create root");
 
     for child in root_children {
@@ -125,13 +103,12 @@ pub(super) fn build_tree(root: NodeSpec) -> Tree {
     tree
 }
 
-fn insert_spec(tree: &mut Tree, parent: Key, spec: NodeSpec, ids: &mut IdGen) -> Key {
+fn insert_spec(tree: &mut Tree, parent: Key, node: NodeSpec, ids: &mut IdGen) -> Key {
     let id = ids.next();
-    let children = spec.children;
-    let kind = kind_from_spec(spec.kind);
+    let children = node.children;
 
     let key = tree
-        .insert_node(id, kind, parent)
+        .insert_element(id, node.spec, parent)
         .expect("node should insert");
 
     for child in children {

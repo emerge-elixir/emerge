@@ -1,17 +1,11 @@
-use super::ContainerKind::El;
-use super::Kind::{Container, Text};
 use super::Tree;
+use super::geometry::*;
+use super::shapes::{ElementSpec, el::ElSpec, text::TextSpec};
 use super::*;
 
 mod tree_builder;
 
-use tree_builder::{build_tree, el, font_size, padding, row, spacing, text};
-
-#[test]
-fn new() {
-    let tree = Tree::new();
-    assert_eq!(tree.root, None)
-}
+use tree_builder::{build_tree, el, font_size, padding, spacing, text};
 
 #[test]
 fn with_root() {
@@ -21,28 +15,37 @@ fn with_root() {
 }
 
 #[test]
-fn insert_node() {
+fn insert_element() {
     let mut tree = tree_with_root();
     let text = test_text();
-    let Ok(_) = tree.insert_node(Id(2), text, tree.root.expect("should have root")) else {
-        panic!("insert should succeed");
-    };
+    let root = tree.root.expect("should have root");
+
+    tree.insert_element(Id(2), text, root)
+        .expect("insert_element should succeed");
 }
 
 #[test]
 fn tree_buliding() {
-    let tree = row_with_text_elements();
-    assert_eq!(tree.elements.len(), 5)
+    let tree = el_with_text();
+    assert_eq!(tree.elements.len(), 2)
+}
+
+#[test]
+fn layout_el() {
+    let mut tree = el_with_text();
+    tree.layout.layout(&tree.elements);
+    dbg!(&tree);
+    assert_eq!(tree.elements.len(), 2);
+    let root_key = tree.root.expect("expect root");
+    let root_frame = tree.layout.resolve[root_key].frame;
+    assert_eq!(root_frame, Rect::new(0.0, 0.0, 44.0, 26.0))
 }
 
 // Subtree helpers
-fn empty_el() -> Kind {
-    Container {
-        kind: El,
-        children: SmallVec::new(),
-        nearby: SmallVec::new(),
+fn empty_el() -> ElementSpec {
+    ElementSpec::El(ElSpec {
         attrs: empty_attrs(),
-    }
+    })
 }
 
 fn empty_attrs() -> Attrs {
@@ -53,12 +56,17 @@ fn empty_attrs() -> Attrs {
     }
 }
 
-fn test_text() -> Kind {
-    Text {
+fn test_text() -> ElementSpec {
+    ElementSpec::Text(TextSpec {
         content: "Test".into(),
-    }
+    })
 }
 
+fn el_with_text() -> Tree {
+    build_tree(el([padding(10), spacing(10)], text("Foo")))
+}
+
+/*
 fn row_with_text_elements() -> Tree {
     build_tree(row(
         [padding(10), spacing(10)],
@@ -68,6 +76,7 @@ fn row_with_text_elements() -> Tree {
         ],
     ))
 }
+*/
 
 fn tree_with_root() -> Tree {
     Tree::with_root(Id(1), empty_el()).unwrap()

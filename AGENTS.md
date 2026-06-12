@@ -12,4 +12,4 @@ digestable minimal example idealy not more than 50 lines of code and a lot of ex
 why you chose to present that.
 
 You are not allowed to make changes to this repository outside of agent_playground folder
-that is used to create example where parts are easily copy-pastable.
+use it to create example where parts are easily copy-pastable.
