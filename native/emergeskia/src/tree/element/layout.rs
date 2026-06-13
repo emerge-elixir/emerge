@@ -42,6 +42,11 @@ impl Layout {
         self.invalidation.clear();
     }
 
+    pub(crate) fn layout_queued(&mut self, elements: &Elements) {
+        self.sort_invalidation();
+        self.layout(elements);
+    }
+
     pub(crate) fn layout(&mut self, elements: &Elements) {
         while let Some(key) = self.invalidation.pop(Phase::Context) {
             let element = elements.get(key).expect("element present for layout");
@@ -78,6 +83,11 @@ impl Layout {
         }
     }
 
+    fn queue_context(&mut self, element: &ElementRef) {
+        self.invalidation
+            .queue(Phase::Context, element.key, element.depth);
+    }
+
     fn dirty_context(&mut self, element: &ElementRef) {
         self.invalidation
             .dirty(Phase::Context, element.key, element.depth);
@@ -106,6 +116,11 @@ impl Layout {
             .map(|parent| parent.key)
             .and_then(|parent_key| self.context.get(parent_key))
             .unwrap_or(&Context::DEFAULT)
+    }
+
+    fn queue_measure(&mut self, element: &ElementRef) {
+        self.invalidation
+            .queue(Phase::Measure, element.key, element.depth);
     }
 
     fn dirty_measure(&mut self, element: &ElementRef) {
@@ -145,6 +160,11 @@ impl Layout {
                     .expect("child measure before parent"),
             })
             .collect()
+    }
+
+    fn queue_resolve(&mut self, element: &ElementRef) {
+        self.invalidation
+            .queue(Phase::Resolve, element.key, element.depth);
     }
 
     fn dirty_resolve(&mut self, element: &ElementRef) {
@@ -197,12 +217,12 @@ impl Layout {
     }
 
     pub fn root_inserted(&mut self, element: &ElementRef) {
-        self.dirty_context(element);
+        self.queue_context(element);
     }
 
     pub fn element_inserted(&mut self, element: &ElementRef, parent: &ElementRef) {
-        self.dirty_context(element);
-        self.dirty_resolve(parent);
+        self.queue_context(element);
+        self.queue_resolve(parent);
     }
 
     // Required after subtree manipulations
@@ -271,7 +291,10 @@ impl ResolveResult {
         content_size: Size,
         child_placements: SmallVec<[(Key, Placement); 4]>,
     ) -> Self {
-        let children = child_placements .iter() .map(|(key, _placement)| *key) .collect();
+        let children = child_placements
+            .iter()
+            .map(|(key, _placement)| *key)
+            .collect();
 
         Self {
             resolve: Resolve {

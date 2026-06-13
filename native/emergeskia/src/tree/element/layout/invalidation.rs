@@ -10,7 +10,11 @@ struct WorkSet {
 }
 
 impl WorkSet {
-    fn insert(&mut self, key: Key, depth: usize, descending: bool) {
+    fn insert(&mut self, key: Key, depth: usize) {
+        self.roots.insert(key, depth);
+    }
+
+    fn ordered_insert(&mut self, key: Key, depth: usize, descending: bool) {
         if let Some(existing_depth) = self.roots.get_mut(&key) {
             *existing_depth = depth;
             return;
@@ -75,8 +79,12 @@ impl Default for Invalidation {
 }
 
 impl Invalidation {
+    pub(super) fn queue(&mut self, phase: Phase, key: Key, depth: usize) {
+        self.phases[phase.index()].insert(key, depth);
+    }
+
     pub(super) fn dirty(&mut self, phase: Phase, key: Key, depth: usize) {
-        self.phases[phase.index()].insert(key, depth, phase == Phase::Measure);
+        self.phases[phase.index()].ordered_insert(key, depth, phase == Phase::Measure);
     }
 
     pub(super) fn clean(&mut self, phase: Phase, key: Key) {

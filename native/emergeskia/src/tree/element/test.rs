@@ -33,7 +33,7 @@ fn tree_buliding() {
 #[test]
 fn layout_el() {
     let mut tree = build_tree(el([padding(10), spacing(10)], text("Foo")));
-    tree.layout.layout(&tree.elements);
+    tree.layout.layout_queued(&tree.elements);
     assert_eq!(tree.elements.len(), 2);
     let root_key = tree.root.expect("expect root");
     let root_frame = tree.layout.resolve[root_key].frame;
@@ -46,7 +46,7 @@ fn layout_nested_el() {
         [padding(10), spacing(10)],
         el([padding(13), spacing(13)], text("Foo")),
     ));
-    tree.layout.layout(&tree.elements);
+    tree.layout.layout_queued(&tree.elements);
     assert_eq!(tree.elements.len(), 3);
     let root_key = tree.root.expect("expect root");
     let root_frame = tree.layout.resolve[root_key].frame;
