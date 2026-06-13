@@ -1,19 +1,42 @@
 use indexmap::IndexMap;
 use std::cmp::Reverse;
 
-use crate::tree::element::Key;
 use super::Phase;
- 
+use crate::tree::element::Key;
+
 #[derive(Default, Debug)]
 struct WorkSet {
     roots: IndexMap<Key, usize>,
 }
 
 impl WorkSet {
-    fn insert(&mut self, key: Key, depth: usize) {
-        // shift_remove + insert ensures append.
-        self.roots.shift_remove(&key);
-        self.roots.insert(key, depth);
+    fn insert(&mut self, key: Key, depth: usize, descending: bool) {
+        if self.roots.contains_key(&key) {
+            self.roots.insert(key, depth); // update depth, preserve order
+            return;
+        }
+
+        let index = self
+            .roots
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, (_key, existing_depth))| {
+                let in_order = if descending {
+                    *existing_depth <= depth
+                } else {
+                    *existing_depth >= depth
+                };
+
+                in_order.then_some(index + 1)
+            })
+            .unwrap_or(0);
+
+        if index == self.roots.len() {
+            self.roots.insert(key, depth);
+        } else {
+            self.roots.insert_before(index, key, depth);
+        }
     }
 
     fn remove(&mut self, key: Key) {
@@ -53,7 +76,7 @@ impl Default for Invalidation {
 
 impl Invalidation {
     pub(super) fn dirty(&mut self, phase: Phase, key: Key, depth: usize) {
-        self.phases[phase.index()].insert(key, depth);
+        self.phases[phase.index()].insert(key, depth, phase == Phase::Measure);
     }
 
     pub(super) fn clean(&mut self, phase: Phase, key: Key) {
@@ -70,5 +93,9 @@ impl Invalidation {
 
     pub(super) fn clear(&mut self) {
         self.phases.iter_mut().for_each(WorkSet::clear);
+    }
+
+    pub(super) fn sort_all(&mut self) {
+        Phase::ALL.into_iter().for_each(|phase| self.sort(phase));
     }
 }

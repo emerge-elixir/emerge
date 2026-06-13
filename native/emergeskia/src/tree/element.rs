@@ -114,7 +114,8 @@ impl Tree {
         let mut tree = Self::default();
         let root = tree.elements.insert_root(id, element)?;
         tree.root = Some(root);
-        tree.layout.root_inserted(&tree.elements, root);
+        let element = &tree.elements.get(root).unwrap();
+        tree.layout.root_inserted(element);
         Ok(tree)
     }
 
@@ -125,7 +126,9 @@ impl Tree {
         parent: Key,
     ) -> Result<Key, InsertError> {
         let key = self.elements.insert_element(id, element, parent)?;
-        self.layout.element_inserted(&self.elements, key);
+        let element = &self.elements.get(key).unwrap();
+        let parent_element = &self.elements.get(parent).unwrap();
+        self.layout.element_inserted(element, parent_element);
         Ok(key)
     }
 }

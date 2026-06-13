@@ -1,4 +1,3 @@
-use indexmap::IndexMap;
 use slotmap::SecondaryMap;
 use smallvec::SmallVec;
 
@@ -18,7 +17,7 @@ enum Phase {
 
 impl Phase {
     const COUNT: usize = 3;
-
+    const ALL: [Phase; Self::COUNT] = [Self::Context, Self::Measure, Self::Resolve];
     const fn index(self) -> usize {
         self as usize
     }
@@ -29,6 +28,8 @@ pub(crate) struct Layout {
     pub context: SecondaryMap<Key, Context>,
     pub measure: SecondaryMap<Key, Measure>,
     pub resolve: SecondaryMap<Key, Resolve>,
+
+    placement: SecondaryMap<Key, Placement>,
     invalidation: Invalidation,
 }
 
@@ -41,7 +42,6 @@ impl Layout {
     }
 
     pub(crate) fn layout(&mut self, elements: &Elements) {
-        self.invalidation.sort(Phase::Context);
         while let Some(key) = self.invalidation.pop(Phase::Context) {
             let element = elements.get(key).expect("element present for layout");
             if self.compute_context(&element) {
@@ -53,12 +53,10 @@ impl Layout {
             }
         }
 
-        self.invalidation.sort(Phase::Measure);
         while let Some(key) = self.invalidation.pop(Phase::Measure) {
             let element = elements.get(key).expect("element present for layout");
             if self.compute_measure(&element) {
                 self.dirty_resolve(&element);
-
                 if let Some(parent_element) = element
                     .parent
                     .map(|parent| parent.key)
@@ -69,14 +67,12 @@ impl Layout {
             }
         }
 
-        self.invalidation.sort(Phase::Resolve);
         while let Some(key) = self.invalidation.pop(Phase::Resolve) {
             let element = elements.get(key).expect("element present for layout");
-            if self.compute_resolve(&element) {
-                for child_key in element.children {
-                    let child = elements.get(*child_key).expect("child");
-                    self.dirty_resolve(&child)
-                }
+            let (_changed, dirty_children) = self.compute_resolve(&element);
+            for child_key in dirty_children {
+                let child = elements.get(child_key).expect("child");
+                self.dirty_resolve(&child)
             }
         }
     }
@@ -87,8 +83,6 @@ impl Layout {
     }
 
     fn compute_context(&mut self, element: &ElementRef) -> bool {
-        self.invalidation.clean(Phase::Context, element.key);
-
         let parent_context = self.parent_context(element);
         let new = element.shape.context(parent_context);
         let old = self.context.get(element.key);
@@ -97,7 +91,6 @@ impl Layout {
             false
         } else {
             self.context.insert(element.key, new);
-            self.dirty_measure(element);
             true
         }
     }
@@ -120,8 +113,6 @@ impl Layout {
     }
 
     fn compute_measure(&mut self, element: &ElementRef) -> bool {
-        self.invalidation.clean(Phase::Measure, element.key);
-
         let context = self.context(element).expect("context before measure");
         let new = {
             let child_measurements = self.child_measurements(element);
@@ -133,7 +124,6 @@ impl Layout {
             false
         } else {
             self.measure.insert(element.key, new);
-            self.dirty_resolve(element);
             true
         }
     }
@@ -161,62 +151,62 @@ impl Layout {
             .dirty(Phase::Resolve, element.key, element.depth);
     }
 
-    fn compute_resolve(&mut self, element: &ElementRef) -> bool {
-        self.invalidation.clean(Phase::Resolve, element.key);
-
+    fn compute_resolve(&mut self, element: &ElementRef) -> (bool, SmallVec<[Key; 4]>) {
         let context = self.context(element).expect("context before resolve");
         let measure = self.measure(element).expect("measure before resolve");
+        let placement = self.placement(element);
 
-        let new = {
+        let result = {
             let child_measurements = self.child_measurements(element);
-            let placement = match element.parent {
-                None => &Placement::DEFAULT,
-                Some(_) => {
-                    self
-                        .parent_resolve(element)
-                        .expect("parent resolve before child")
-                        .children
-                        .get(&element.key)
-                        .expect("parent resolve to contain child")
-                }
-            };
 
             element
                 .shape
                 .resolve(context, measure, &child_measurements, placement)
         };
 
-        let old = self.resolve.get(element.key);
-        if old == Some(&new) {
-            false
-        } else {
-            self.resolve.insert(element.key, new);
-            self.dirty_resolve(element);
-            true
+        let resolve_changed = self.resolve.get(element.key) != Some(&result.resolve);
+        if resolve_changed {
+            self.resolve.insert(element.key, result.resolve);
+        }
+
+        let child_placement_changes = result
+            .child_placements
+            .iter()
+            .filter_map(|(child, placement)| {
+                if self.placement.get(*child) == Some(placement) {
+                    None
+                } else {
+                    self.placement.insert(*child, *placement);
+                    Some(*child)
+                }
+            })
+            .collect();
+
+        (resolve_changed, child_placement_changes)
+    }
+
+    fn placement(&self, element: &ElementRef) -> &Placement {
+        match element.parent {
+            None => &Placement::DEFAULT,
+            Some(_) => self
+                .placement
+                .get(element.key)
+                .expect("placement before child resolve"),
         }
     }
 
-    fn parent_resolve(&self, element: &ElementRef) -> Option<&Resolve> {
-        element
-            .parent
-            .map(|parent| parent.key)
-            .and_then(|parent_key| self.resolve.get(parent_key))
+    pub fn root_inserted(&mut self, element: &ElementRef) {
+        self.dirty_context(element);
     }
 
-    pub fn root_inserted(&mut self, elements: &Elements, key: Key) {
-        self.invalidation.dirty(
-            Phase::Context,
-            key,
-            elements.get(key).expect("element before layout").depth,
-        );
+    pub fn element_inserted(&mut self, element: &ElementRef, parent: &ElementRef) {
+        self.dirty_context(element);
+        self.dirty_resolve(parent);
     }
 
-    pub fn element_inserted(&mut self, elements: &Elements, key: Key) {
-        self.invalidation.dirty(
-            Phase::Context,
-            key,
-            elements.get(key).expect("element before layout").depth,
-        );
+    // Required after subtree manipulations
+    pub fn sort_invalidation(&mut self) {
+        self.invalidation.sort_all();
     }
 }
 
@@ -230,7 +220,7 @@ pub trait LayoutBehaviour<Data> {
         measure: &Measure,
         children: &[ChildMeasure<'_>],
         placement: &Placement,
-    ) -> Resolve;
+    ) -> ResolveResult;
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -268,6 +258,12 @@ pub struct ChildMeasure<'a> {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ResolveResult {
+    pub resolve: Resolve,
+    pub child_placements: SmallVec<[(Key, Placement); 4]>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Resolve {
     // Actual frame inside parent
     pub frame: Rect,
@@ -276,7 +272,7 @@ pub struct Resolve {
     // Content intrinsic size
     pub content_size: Size,
     // Frame that constrains each child
-    pub children: IndexMap<Key, Placement>,
+    pub children: SmallVec<[Key; 4]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]

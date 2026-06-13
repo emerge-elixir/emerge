@@ -26,19 +26,31 @@ fn insert_element() {
 
 #[test]
 fn tree_buliding() {
-    let tree = el_with_text();
+    let tree = build_tree(el([padding(10), spacing(10)], text("Foo")));
     assert_eq!(tree.elements.len(), 2)
 }
 
 #[test]
 fn layout_el() {
-    let mut tree = el_with_text();
+    let mut tree = build_tree(el([padding(10), spacing(10)], text("Foo")));
     tree.layout.layout(&tree.elements);
-    dbg!(&tree);
     assert_eq!(tree.elements.len(), 2);
     let root_key = tree.root.expect("expect root");
     let root_frame = tree.layout.resolve[root_key].frame;
-    assert_eq!(root_frame, Rect::new(0.0, 0.0, 44.0, 26.0))
+    assert_eq!(root_frame, Rect::new(0.0, 0.0, 44.0, 36.0))
+}
+
+#[test]
+fn layout_nested_el() {
+    let mut tree = build_tree(el(
+        [padding(10), spacing(10)],
+        el([padding(13), spacing(13)], text("Foo")),
+    ));
+    tree.layout.layout(&tree.elements);
+    assert_eq!(tree.elements.len(), 3);
+    let root_key = tree.root.expect("expect root");
+    let root_frame = tree.layout.resolve[root_key].frame;
+    assert_eq!(root_frame, Rect::new(0.0, 0.0, 70.0, 62.0))
 }
 
 // Subtree helpers
@@ -60,10 +72,6 @@ fn test_text() -> ElementSpec {
     ElementSpec::Text(TextSpec {
         content: "Test".into(),
     })
-}
-
-fn el_with_text() -> Tree {
-    build_tree(el([padding(10), spacing(10)], text("Foo")))
 }
 
 /*

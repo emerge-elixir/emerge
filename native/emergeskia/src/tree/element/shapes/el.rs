@@ -1,6 +1,6 @@
 use super::super::geometry::Size;
 use super::*;
-use indexmap::IndexMap;
+use crate::tree::element::layout::Resolve;
 use smallvec::SmallVec;
 
 use super::super::Attrs;
@@ -73,11 +73,11 @@ impl LayoutBehaviour<&ContainerData> for El {
         measure: &Measure,
         children: &[ChildMeasure<'_>],
         placement: &Placement,
-    ) -> Resolve {
+    ) -> ResolveResult {
         let frame = placement.frame(measure.intrinsic);
         let content = frame.inside_padding(context.padding);
 
-        let child_placement: IndexMap<Key, Placement> = children
+        let child_placements: SmallVec<[(Key, Placement); 4]> = children
             .iter()
             .map(|child| {
                 (
@@ -94,11 +94,14 @@ impl LayoutBehaviour<&ContainerData> for El {
             .first()
             .map_or_else(|| Size::ZERO, |child| child.measure.intrinsic);
 
-        Resolve {
-            frame,
-            content,
-            content_size,
-            children: child_placement,
+        ResolveResult {
+            resolve: Resolve {
+                frame,
+                content,
+                content_size,
+                children: child_placements.iter().map(|(key, _)| *key).collect(),
+            },
+            child_placements,
         }
     }
 }

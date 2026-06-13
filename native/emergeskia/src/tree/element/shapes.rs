@@ -1,6 +1,6 @@
 use super::{
     ContainerData, ContainerKey, Elements, InsertError, Key, TextData, TextKey,
-    layout::{ChildMeasure, Context, LayoutBehaviour, Measure, Placement, Resolve},
+    layout::{ChildMeasure, Context, LayoutBehaviour, Measure, Placement, ResolveResult},
 };
 
 
@@ -195,7 +195,7 @@ macro_rules! define_shapes {
                 measure: &Measure,
                 children: &[ChildMeasure<'_>],
                 parent: &Placement,
-            ) -> Resolve {
+            ) -> ResolveResult {
                 match self {
                     $(Self::$variant(_,_) => {
                         <$shape as LayoutBehaviour<&<<$shape as ElementInsert>::Store as ShapeStore>::Data>>::resolve(

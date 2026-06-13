@@ -1,7 +1,7 @@
 use super::super::geometry::{Rect, Size};
 use super::*;
+use crate::tree::element::layout::Resolve;
 use smallvec::SmallVec;
-use indexmap::IndexMap;
 
 pub(crate) struct TextSpec {
     pub content: String,
@@ -53,16 +53,19 @@ impl LayoutBehaviour<&TextData> for Text {
         measure: &Measure,
         _children: &[ChildMeasure<'_>],
         placement: &Placement,
-    ) -> Resolve {
+    ) -> ResolveResult {
         let frame = placement.frame(measure.intrinsic);
-        Resolve {
-            frame,
-            content: Rect {
-                origin: frame.origin,
-                size: frame.size,
+        ResolveResult {
+            resolve: Resolve {
+                frame,
+                content: Rect {
+                    origin: frame.origin,
+                    size: frame.size,
+                },
+                content_size: frame.size,
+                children: SmallVec::new(),
             },
-            content_size: frame.size,
-            children: IndexMap::new(),
+            child_placements: SmallVec::new(),
         }
     }
 }
