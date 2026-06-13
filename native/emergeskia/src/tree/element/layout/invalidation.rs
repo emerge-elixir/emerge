@@ -11,8 +11,8 @@ struct WorkSet {
 
 impl WorkSet {
     fn insert(&mut self, key: Key, depth: usize, descending: bool) {
-        if self.roots.contains_key(&key) {
-            self.roots.insert(key, depth); // update depth, preserve order
+        if let Some(existing_depth) = self.roots.get_mut(&key) {
+            *existing_depth = depth;
             return;
         }
 

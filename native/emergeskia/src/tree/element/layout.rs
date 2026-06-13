@@ -38,6 +38,7 @@ impl Layout {
         self.context.clear();
         self.measure.clear();
         self.resolve.clear();
+        self.placement.clear();
         self.invalidation.clear();
     }
 
@@ -261,6 +262,31 @@ pub struct ChildMeasure<'a> {
 pub(crate) struct ResolveResult {
     pub resolve: Resolve,
     pub child_placements: SmallVec<[(Key, Placement); 4]>,
+}
+
+impl ResolveResult {
+    pub(crate) fn new(
+        frame: Rect,
+        content: Rect,
+        content_size: Size,
+        child_placements: SmallVec<[(Key, Placement); 4]>,
+    ) -> Self {
+        let children = child_placements .iter() .map(|(key, _placement)| *key) .collect();
+
+        Self {
+            resolve: Resolve {
+                frame,
+                content,
+                content_size,
+                children,
+            },
+            child_placements,
+        }
+    }
+
+    pub(crate) fn new_leaf(frame: Rect, content: Rect, content_size: Size) -> Self {
+        Self::new(frame, content, content_size, SmallVec::new())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

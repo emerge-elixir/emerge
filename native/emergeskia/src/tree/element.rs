@@ -20,7 +20,7 @@ new_key_type! {
 struct Id(pub u64);
 
 #[derive(Debug)]
-struct Tree {
+pub(crate) struct Tree {
     root: Option<Key>,
     elements: Elements,
     layout: Layout,
@@ -37,7 +37,7 @@ impl Default for Tree {
 }
 
 #[derive(Debug)]
-struct Elements {
+pub(crate) struct Elements {
     storage: SlotMap<Key, Element>,
     by_element_id: HashMap<Id, Key>,
 

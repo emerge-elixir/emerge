@@ -55,18 +55,12 @@ impl LayoutBehaviour<&TextData> for Text {
         placement: &Placement,
     ) -> ResolveResult {
         let frame = placement.frame(measure.intrinsic);
-        ResolveResult {
-            resolve: Resolve {
-                frame,
-                content: Rect {
-                    origin: frame.origin,
-                    size: frame.size,
-                },
-                content_size: frame.size,
-                children: SmallVec::new(),
-            },
-            child_placements: SmallVec::new(),
-        }
+        let content = Rect {
+            origin: frame.origin,
+            size: frame.size,
+        };
+
+        ResolveResult::new_leaf(frame, content, frame.size)
     }
 }
 

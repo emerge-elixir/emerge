@@ -93,15 +93,6 @@ impl LayoutBehaviour<&ContainerData> for El {
         let content_size = children
             .first()
             .map_or_else(|| Size::ZERO, |child| child.measure.intrinsic);
-
-        ResolveResult {
-            resolve: Resolve {
-                frame,
-                content,
-                content_size,
-                children: child_placements.iter().map(|(key, _)| *key).collect(),
-            },
-            child_placements,
-        }
+        ResolveResult::new(frame, content, content_size, child_placements)
     }
 }
