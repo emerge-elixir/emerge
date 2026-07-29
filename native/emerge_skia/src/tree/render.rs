@@ -1096,7 +1096,7 @@ fn wrap_with_explicit_moving_paint_layer_payload(
         (
             PaintLayerPolicy::DynamicRedraw,
             PaintLayerReason::Animation,
-            0,
+            dynamic_paint_layer_own_content_generation(&content.own_nodes, bounds),
         )
     };
     let layer = RenderPaintLayer::from_prepared_children(
@@ -1515,15 +1515,31 @@ fn moving_paint_layer_own_content_generation(
     own_nodes: &[RenderNode],
     payload_bounds: Rect,
 ) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    hash_paint_layer_render_nodes(
-        &mut hasher,
+    paint_layer_own_content_generation(
         own_nodes,
+        payload_bounds,
         PaintLayerHashFloat::Quantized {
             scale: RENDER_MOVING_PAINT_LAYER_PAYLOAD_CONTENT_HASH_COORD_SCALE,
         },
-        Some(payload_bounds),
-    );
+    )
+}
+
+fn dynamic_paint_layer_own_content_generation(
+    own_nodes: &[RenderNode],
+    payload_bounds: Rect,
+) -> u64 {
+    // Dynamic payload hits happen before active-animation store suppression, so their key must
+    // distinguish every content change rather than intentionally quantizing small geometry noise.
+    paint_layer_own_content_generation(own_nodes, payload_bounds, PaintLayerHashFloat::Exact)
+}
+
+fn paint_layer_own_content_generation(
+    own_nodes: &[RenderNode],
+    payload_bounds: Rect,
+    float: PaintLayerHashFloat,
+) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    hash_paint_layer_render_nodes(&mut hasher, own_nodes, float, Some(payload_bounds));
     hasher.finish()
 }
 
@@ -2705,10 +2721,9 @@ fn wrap_with_paint_layer(
     };
     let content_generation = if let Some(content_generation) = content_generation {
         content_generation
-    } else if policy == PaintLayerPolicy::Cacheable
-        || (policy == PaintLayerPolicy::DynamicRedraw
-            && reason == PaintLayerReason::ScrollContainer)
-    {
+    } else if policy == PaintLayerPolicy::DynamicRedraw {
+        dynamic_paint_layer_own_content_generation(&content.own_nodes, bounds)
+    } else if policy.allows_payload_cache() {
         moving_paint_layer_own_content_generation(&content.own_nodes, bounds)
     } else {
         0

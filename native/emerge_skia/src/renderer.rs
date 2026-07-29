@@ -36,7 +36,7 @@ use crate::paint_layer_payload_cache::{
 use crate::render_scene::{
     DrawPrimitive, PaintLayerHashFloat, PaintLayerPolicy, PaintLayerReason, RenderNode,
     RenderPaintLayer, RenderScene, draw_primitive_visual_bounds, hash_paint_layer_affine2,
-    hash_paint_layer_draw_primitive, hash_paint_layer_rect,
+    hash_paint_layer_clip_shapes, hash_paint_layer_draw_primitive, hash_paint_layer_rect,
 };
 use crate::tree::attrs::{BorderStyle, ImageFit};
 use crate::tree::geometry::{ClipShape, CornerRadii, Rect as GeometryRect, clamp_radii};
@@ -54,6 +54,8 @@ pub struct RenderState {
     pub pipeline_submitted_at: Option<Instant>,
     pub pipeline_render_queued_at: Option<Instant>,
     pub animate: bool,
+    /// Compatibility name: this is true for every payload-cache candidate, including dynamic
+    /// redraw layers that become cacheable only after admission.
     pub has_cacheable_paint_layers: bool,
     pub has_scroll_moving_paint_layers: bool,
 }
@@ -487,7 +489,7 @@ impl Default for RenderState {
 
 impl RenderState {
     pub fn new(scene: RenderScene, clear_color: Color, render_version: u64, animate: bool) -> Self {
-        let has_cacheable_paint_layers = scene.has_cacheable_paint_layers();
+        let has_payload_cache_candidates = scene.has_payload_cache_candidate_layers();
         let has_scroll_moving_paint_layers = scene.has_scroll_moving_paint_layers();
         Self {
             scene,
@@ -496,13 +498,13 @@ impl RenderState {
             pipeline_submitted_at: None,
             pipeline_render_queued_at: None,
             animate,
-            has_cacheable_paint_layers,
+            has_cacheable_paint_layers: has_payload_cache_candidates,
             has_scroll_moving_paint_layers,
         }
     }
 
     pub fn set_scene(&mut self, scene: RenderScene) {
-        self.has_cacheable_paint_layers = scene.has_cacheable_paint_layers();
+        self.has_cacheable_paint_layers = scene.has_payload_cache_candidate_layers();
         self.has_scroll_moving_paint_layers = scene.has_scroll_moving_paint_layers();
         self.scene = scene;
     }
@@ -1477,6 +1479,11 @@ impl PaintLayerMovingPayloadKey {
         if !scale.is_finite() || scale <= 0.0 {
             return None;
         }
+        if layer.policy == PaintLayerPolicy::DynamicRedraw && layer.content_generation == 0 {
+            // Dynamic payloads need a content-derived generation. Treat zero as untrusted so a
+            // changed animation frame can never alias a previously cached payload.
+            return None;
+        }
 
         let (width_px, height_px, _) = moving_paint_layer_payload_bounds_size_with_subpixel_phase(
             layer.bounds,
@@ -1883,7 +1890,7 @@ fn paint_layer_cache_bypass_low_value(
 }
 
 fn paint_layer_own_payload_cache_enabled(layer: &RenderPaintLayer) -> bool {
-    layer.policy != PaintLayerPolicy::DirectOnly
+    layer.policy.allows_payload_cache()
 }
 
 fn paint_layer_minimum_visible_frames_before_store(layer: &RenderPaintLayer) -> u64 {
@@ -1900,6 +1907,26 @@ fn paint_layer_minimum_visible_frames_before_store(layer: &RenderPaintLayer) -> 
     }
 }
 
+fn render_primitive_resource_generation(primitive: &DrawPrimitive) -> Option<u64> {
+    match primitive {
+        DrawPrimitive::Video(..)
+        | DrawPrimitive::ImageLoading(..)
+        | DrawPrimitive::ImageFailed(..) => None,
+        DrawPrimitive::TextWithFont(..) => Some(font_cache_generation()),
+        DrawPrimitive::Image(_, _, _, _, image_id, _, _) => {
+            cached_asset(image_id).map(|asset| asset.generation)
+        }
+        DrawPrimitive::Rect(..)
+        | DrawPrimitive::RoundedRect(..)
+        | DrawPrimitive::Border(..)
+        | DrawPrimitive::BorderCorners(..)
+        | DrawPrimitive::BorderEdges(..)
+        | DrawPrimitive::Shadow(..)
+        | DrawPrimitive::InsetShadow(..)
+        | DrawPrimitive::Gradient(..) => Some(0),
+    }
+}
+
 fn moving_paint_layer_payload_resource_generation(nodes: &[RenderNode]) -> Option<u64> {
     nodes.iter().try_fold(0u64, |generation, node| {
         let node_generation = match node {
@@ -1913,23 +1940,7 @@ fn moving_paint_layer_payload_resource_generation(nodes: &[RenderNode]) -> Optio
                 moving_paint_layer_payload_resource_generation(children)?
             }
             RenderNode::PaintLayer(_) => 0,
-            RenderNode::Primitive(primitive) => match primitive {
-                DrawPrimitive::Video(..)
-                | DrawPrimitive::ImageLoading(..)
-                | DrawPrimitive::ImageFailed(..) => return None,
-                DrawPrimitive::TextWithFont(..) => font_cache_generation(),
-                DrawPrimitive::Image(_, _, _, _, image_id, _, _) => {
-                    cached_asset(image_id).map(|asset| asset.generation)?
-                }
-                DrawPrimitive::Rect(..)
-                | DrawPrimitive::RoundedRect(..)
-                | DrawPrimitive::Border(..)
-                | DrawPrimitive::BorderCorners(..)
-                | DrawPrimitive::BorderEdges(..)
-                | DrawPrimitive::Shadow(..)
-                | DrawPrimitive::InsetShadow(..)
-                | DrawPrimitive::Gradient(..) => 0,
-            },
+            RenderNode::Primitive(primitive) => render_primitive_resource_generation(primitive)?,
         };
 
         Some(
@@ -2670,6 +2681,7 @@ struct MovingLayerEligibility {
     current_clip: Option<PaintLayerDeviceRect>,
     clip_empty: bool,
     paint_attributes_eligible: bool,
+    image_bleed_device_outset: f32,
 }
 
 impl MovingLayerEligibility {
@@ -2679,6 +2691,7 @@ impl MovingLayerEligibility {
             current_clip: None,
             clip_empty: false,
             paint_attributes_eligible: true,
+            image_bleed_device_outset: 0.0,
         }
     }
 
@@ -2695,6 +2708,11 @@ impl MovingLayerEligibility {
         Self {
             current_clip,
             clip_empty: self.clip_empty || clip_empty,
+            image_bleed_device_outset: if relaxed {
+                RELAXED_IMAGE_DRAW_BLEED_DEVICE_OUTSET
+            } else {
+                self.image_bleed_device_outset
+            },
             ..self
         }
     }
@@ -2732,6 +2750,55 @@ fn hash_visible_render_nodes(
     })
 }
 
+fn hash_visible_clip_scope(
+    clips: &[ClipShape],
+    children: &[RenderNode],
+    relaxed: bool,
+    renderer_cache: &RendererCacheManager,
+    eligibility: MovingLayerEligibility,
+    alpha: f32,
+    hasher: &mut DefaultHasher,
+) -> bool {
+    if children.is_empty() {
+        return true;
+    }
+    if clips.is_empty() {
+        return hash_visible_render_nodes(children, renderer_cache, eligibility, alpha, hasher);
+    }
+
+    let clipped = eligibility.with_clip(clips, relaxed);
+    if clipped.clip_empty && !render_nodes_have_shadow_pass(children) {
+        return true;
+    }
+
+    if relaxed {
+        "relaxed-clip-start".hash(hasher);
+    } else {
+        "clip-start".hash(hasher);
+    }
+    hash_paint_layer_clip_shapes(hasher, clips, PaintLayerHashFloat::Exact);
+    let ready = children.iter().fold(true, |ready, child| {
+        let child_eligibility = if matches!(child, RenderNode::ShadowPass { .. }) {
+            eligibility
+        } else {
+            clipped
+        };
+        hash_visible_render_nodes(
+            std::slice::from_ref(child),
+            renderer_cache,
+            child_eligibility,
+            alpha,
+            hasher,
+        ) && ready
+    });
+    if relaxed {
+        "relaxed-clip-end".hash(hasher);
+    } else {
+        "clip-end".hash(hasher);
+    }
+    ready
+}
+
 fn hash_visible_render_node(
     node: &RenderNode,
     renderer_cache: &RendererCacheManager,
@@ -2741,16 +2808,30 @@ fn hash_visible_render_node(
 ) -> bool {
     match node {
         RenderNode::ShadowPass { children } => {
-            hash_visible_render_nodes(children, renderer_cache, eligibility, alpha, hasher)
+            "shadow-pass-start".hash(hasher);
+            let ready =
+                hash_visible_render_nodes(children, renderer_cache, eligibility, alpha, hasher);
+            "shadow-pass-end".hash(hasher);
+            ready
         }
-        RenderNode::Clip { clips, children } => {
-            let clipped = eligibility.with_clip(clips, false);
-            hash_visible_render_nodes(children, renderer_cache, clipped, alpha, hasher)
-        }
-        RenderNode::RelaxedClip { clips, children } => {
-            let clipped = eligibility.with_clip(clips, true);
-            hash_visible_render_nodes(children, renderer_cache, clipped, alpha, hasher)
-        }
+        RenderNode::Clip { clips, children } => hash_visible_clip_scope(
+            clips,
+            children,
+            false,
+            renderer_cache,
+            eligibility,
+            alpha,
+            hasher,
+        ),
+        RenderNode::RelaxedClip { clips, children } => hash_visible_clip_scope(
+            clips,
+            children,
+            true,
+            renderer_cache,
+            eligibility,
+            alpha,
+            hasher,
+        ),
         RenderNode::Transform {
             transform,
             children,
@@ -2761,30 +2842,53 @@ fn hash_visible_render_node(
         RenderNode::Alpha {
             alpha: layer_alpha,
             children,
-        } => hash_visible_render_nodes(
-            children,
-            renderer_cache,
-            eligibility,
-            alpha * layer_alpha.clamp(0.0, 1.0),
-            hasher,
-        ),
+        } => {
+            if children.is_empty() {
+                return true;
+            }
+            if *layer_alpha >= 1.0 {
+                return hash_visible_render_nodes(
+                    children,
+                    renderer_cache,
+                    eligibility,
+                    alpha,
+                    hasher,
+                );
+            }
+            let clamped = layer_alpha.clamp(0.0, 1.0);
+            "alpha-group-start".hash(hasher);
+            PaintLayerHashFloat::Exact.hash_f32(hasher, clamped);
+            children.len().hash(hasher);
+            let ready = hash_visible_render_nodes(
+                children,
+                renderer_cache,
+                eligibility,
+                alpha * clamped,
+                hasher,
+            );
+            "alpha-group-end".hash(hasher);
+            ready
+        }
         RenderNode::PaintLayer(layer) => {
             hash_visible_paint_layer(layer, renderer_cache, eligibility, alpha, hasher)
         }
         RenderNode::Primitive(primitive) => {
-            if let Some(visible) = visible_primitive_device_rect(primitive, eligibility) {
-                "primitive".hash(hasher);
-                visible.hash(hasher);
-                hash_paint_layer_affine2(
-                    hasher,
-                    eligibility.current_transform,
-                    PaintLayerHashFloat::Exact,
-                );
-                eligibility.current_clip.hash(hasher);
-                PaintLayerHashFloat::Exact.hash_f32(hasher, alpha);
-                hash_paint_layer_draw_primitive(hasher, primitive, PaintLayerHashFloat::Exact);
-            }
-            true
+            let Some(visible) = visible_primitive_device_rect(primitive, eligibility) else {
+                return true;
+            };
+            let resource_generation = render_primitive_resource_generation(primitive);
+            "primitive".hash(hasher);
+            visible.hash(hasher);
+            resource_generation.hash(hasher);
+            hash_paint_layer_affine2(
+                hasher,
+                eligibility.current_transform,
+                PaintLayerHashFloat::Exact,
+            );
+            eligibility.current_clip.hash(hasher);
+            PaintLayerHashFloat::Exact.hash_f32(hasher, alpha);
+            hash_paint_layer_draw_primitive(hasher, primitive, PaintLayerHashFloat::Exact);
+            resource_generation.is_some()
         }
     }
 }
@@ -2815,28 +2919,11 @@ fn hash_visible_paint_layer(
         eligibility.current_clip.hash(hasher);
         PaintLayerHashFloat::Exact.hash_f32(hasher, alpha);
 
-        if layer.policy == PaintLayerPolicy::Cacheable {
-            let resource_generation =
-                moving_paint_layer_payload_resource_generation(&layer.own_nodes);
-            resource_generation.hash(hasher);
-            ready &= resource_generation.is_some();
-            ready &= hash_visible_render_nodes(
-                &layer.own_nodes,
-                renderer_cache,
-                eligibility,
-                alpha,
-                hasher,
-            );
-        } else {
+        if layer.policy != PaintLayerPolicy::Cacheable {
             layer.content_generation.hash(hasher);
-            ready &= hash_visible_render_nodes(
-                &layer.own_nodes,
-                renderer_cache,
-                eligibility,
-                alpha,
-                hasher,
-            );
         }
+        ready &=
+            hash_visible_render_nodes(&layer.own_nodes, renderer_cache, eligibility, alpha, hasher);
     }
 
     let child_eligibility = paint_layer_child_ref_eligibility(layer, eligibility);
@@ -2874,6 +2961,14 @@ fn visible_primitive_device_rect(
     let transformed = eligibility
         .current_transform
         .map_rect_aabb(draw_primitive_visual_bounds(primitive));
+    let transformed = if matches!(
+        primitive,
+        DrawPrimitive::Image(..) | DrawPrimitive::Video(..)
+    ) {
+        paint_layer_outset_geometry_rect(transformed, eligibility.image_bleed_device_outset)
+    } else {
+        transformed
+    };
     let bounds = paint_layer_device_rect_from_geometry(transformed)?;
     match eligibility.current_clip {
         Some(clip) => paint_layer_intersect_device_rects(bounds, clip),
@@ -3411,8 +3506,8 @@ impl SceneRenderer {
             && layer.policy == PaintLayerPolicy::DynamicRedraw
             && layer.reason == PaintLayerReason::Animation
         {
-            // Repeated quantized animation samples can legitimately produce the same content key
-            // on adjacent presented frames. Do not mistake that for settled content: otherwise an
+            // Repeated animation samples can legitimately produce the same exact content on
+            // adjacent presented frames. Do not mistake that for settled content: otherwise an
             // A,A,B,B,C,C animation would store every intermediate payload. Existing exact-key
             // hits above remain safe; defer all new dynamic stores until animation is inactive.
             cache_tracking
@@ -6962,15 +7057,46 @@ mod tests {
     }
 
     #[test]
-    fn render_state_set_scene_refreshes_cacheable_paint_layer_flag() {
+    fn render_state_set_scene_refreshes_payload_cache_candidate_flag() {
         let mut state = RenderState::default();
         assert!(!state.has_cacheable_paint_layers);
 
         state.set_scene(translated_candidate_scene(1));
         assert!(state.has_cacheable_paint_layers);
 
+        state.set_scene(dynamic_animation_scene(199, 1, 0x2F80EDFF));
+        assert!(state.has_cacheable_paint_layers);
+
         state.set_scene(RenderScene::default());
         assert!(!state.has_cacheable_paint_layers);
+    }
+
+    #[test]
+    fn payload_cache_candidate_scan_finds_dynamic_child_below_direct_parent() {
+        let dynamic_child = dynamic_animation_scene(200, 1, 0x2F80EDFF)
+            .nodes
+            .into_iter()
+            .next()
+            .expect("dynamic scene should contain one layer");
+        let direct_parent = RenderPaintLayer::from_children(
+            201,
+            GeometryRect {
+                x: 0.0,
+                y: 0.0,
+                width: 22.0,
+                height: 16.0,
+            },
+            PaintLayerPlacement::Fixed,
+            PaintLayerPolicy::DirectOnly,
+            PaintLayerReason::StableSubtree,
+            0,
+            vec![dynamic_child],
+        );
+        let scene = RenderScene {
+            nodes: vec![RenderNode::PaintLayer(direct_parent)],
+        };
+
+        assert!(scene.has_payload_cache_candidate_layers());
     }
 
     #[test]
@@ -7062,7 +7188,7 @@ mod tests {
     }
 
     #[test]
-    fn paint_layer_cache_is_disabled_for_cpu_raster_frames() {
+    fn non_candidate_cpu_raster_frames_do_not_report_cache_stats() {
         let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
             enabled: true,
             ..RendererCacheConfig::default()
@@ -7454,6 +7580,40 @@ mod tests {
         ]
     }
 
+    fn dynamic_animation_nodes(color: u32) -> Vec<RenderNode> {
+        vec![
+            RenderNode::Primitive(DrawPrimitive::Rect(0.0, 0.0, 22.0, 16.0, color)),
+            RenderNode::Primitive(DrawPrimitive::RoundedRect(
+                4.0, 4.0, 14.0, 8.0, 3.0, 0xFFFFFFFF,
+            )),
+        ]
+    }
+
+    fn dynamic_animation_scene(stable_id: u64, content_generation: u64, color: u32) -> RenderScene {
+        RenderScene {
+            nodes: vec![RenderNode::PaintLayer(RenderPaintLayer::from_children(
+                stable_id,
+                GeometryRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 22.0,
+                    height: 16.0,
+                },
+                PaintLayerPlacement::Fixed,
+                PaintLayerPolicy::DynamicRedraw,
+                PaintLayerReason::Animation,
+                content_generation,
+                dynamic_animation_nodes(color),
+            ))],
+        }
+    }
+
+    fn dynamic_animation_direct_scene(color: u32) -> RenderScene {
+        RenderScene {
+            nodes: dynamic_animation_nodes(color),
+        }
+    }
+
     fn direct_payload_test_scene(animated_color: u32) -> RenderScene {
         let nodes = (0..20)
             .map(|index| {
@@ -7775,6 +7935,166 @@ mod tests {
             assert_eq!(stats.paint_layer.stores, 0);
             assert_eq!(stats.paint_layer.current_entries, 0);
         }
+    }
+
+    #[test]
+    fn generation_zero_dynamic_animation_layers_fail_closed() {
+        let expected =
+            render_scene_graph_to_pixels(32, 24, dynamic_animation_direct_scene(0x2F80EDFF));
+        let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+            enabled: true,
+            ..RendererCacheConfig::default()
+        });
+
+        for animation_active in [false, true] {
+            let (pixels, timings) =
+                render_scene_graph_to_pixels_and_timings_with_renderer_animation(
+                    &mut renderer,
+                    32,
+                    24,
+                    dynamic_animation_scene(202, 0, 0x2F80EDFF),
+                    animation_active,
+                );
+            assert_eq!(pixels, expected);
+            let stats = timings
+                .renderer_cache
+                .expect("dynamic layer should report rejected cache eligibility");
+            assert_eq!(stats.paint_layer.rejected_ineligible, 1);
+            assert_eq!(stats.paint_layer.hits, 0);
+            assert_eq!(stats.paint_layer.stores, 0);
+            assert_eq!(stats.paint_layer.current_entries, 0);
+        }
+    }
+
+    #[test]
+    fn changed_dynamic_animation_never_reuses_a_settled_payload() {
+        let red = 0xFF0000FF;
+        let green = 0x00FF00FF;
+        let expected_red =
+            render_scene_graph_to_pixels(32, 24, dynamic_animation_direct_scene(red));
+        let expected_green =
+            render_scene_graph_to_pixels(32, 24, dynamic_animation_direct_scene(green));
+        let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+            enabled: true,
+            ..RendererCacheConfig::default()
+        });
+
+        let (red_first, first_timings) = render_scene_graph_to_pixels_and_timings_with_renderer(
+            &mut renderer,
+            32,
+            24,
+            dynamic_animation_scene(203, 10, red),
+        );
+        assert_eq!(red_first, expected_red);
+        assert_eq!(
+            first_timings
+                .renderer_cache
+                .expect("first red frame should report deferred admission")
+                .paint_layer
+                .rejected_admission,
+            1
+        );
+
+        let (red_second, second_timings) = render_scene_graph_to_pixels_and_timings_with_renderer(
+            &mut renderer,
+            32,
+            24,
+            dynamic_animation_scene(203, 10, red),
+        );
+        assert_eq!(red_second, expected_red);
+        assert_eq!(
+            second_timings
+                .renderer_cache
+                .expect("second red frame should store the settled payload")
+                .paint_layer
+                .stores,
+            1
+        );
+
+        let (red_active, red_active_timings) =
+            render_scene_graph_to_pixels_and_timings_with_renderer_animation(
+                &mut renderer,
+                32,
+                24,
+                dynamic_animation_scene(203, 10, red),
+                true,
+            );
+        assert_eq!(red_active, expected_red);
+        assert_eq!(
+            red_active_timings
+                .renderer_cache
+                .expect("unchanged active content should report a safe exact-key hit")
+                .paint_layer
+                .hits,
+            1
+        );
+
+        let (green_active, green_active_timings) =
+            render_scene_graph_to_pixels_and_timings_with_renderer_animation(
+                &mut renderer,
+                32,
+                24,
+                dynamic_animation_scene(203, 11, green),
+                true,
+            );
+        assert_eq!(green_active, expected_green);
+        let green_active_stats = green_active_timings
+            .renderer_cache
+            .expect("changed active content should report deferred admission");
+        assert_eq!(green_active_stats.paint_layer.hits, 0);
+        assert_eq!(green_active_stats.paint_layer.stores, 0);
+        assert_eq!(green_active_stats.paint_layer.rejected_admission, 1);
+
+        let (green_first, green_first_timings) =
+            render_scene_graph_to_pixels_and_timings_with_renderer(
+                &mut renderer,
+                32,
+                24,
+                dynamic_animation_scene(203, 11, green),
+            );
+        assert_eq!(green_first, expected_green);
+        assert_eq!(
+            green_first_timings
+                .renderer_cache
+                .expect("first settled green frame should defer admission")
+                .paint_layer
+                .rejected_admission,
+            1
+        );
+
+        let (green_second, green_second_timings) =
+            render_scene_graph_to_pixels_and_timings_with_renderer(
+                &mut renderer,
+                32,
+                24,
+                dynamic_animation_scene(203, 11, green),
+            );
+        assert_eq!(green_second, expected_green);
+        assert_eq!(
+            green_second_timings
+                .renderer_cache
+                .expect("second settled green frame should store its payload")
+                .paint_layer
+                .stores,
+            1
+        );
+
+        let (green_third, green_third_timings) =
+            render_scene_graph_to_pixels_and_timings_with_renderer(
+                &mut renderer,
+                32,
+                24,
+                dynamic_animation_scene(203, 11, green),
+            );
+        assert_eq!(green_third, expected_green);
+        assert_eq!(
+            green_third_timings
+                .renderer_cache
+                .expect("third settled green frame should hit its payload")
+                .paint_layer
+                .hits,
+            1
+        );
     }
 
     #[test]
@@ -8278,6 +8598,225 @@ mod tests {
             true,
         );
         assert!(!renderer.can_skip_unchanged_visible_frame(&changed, (48, 32)));
+    }
+
+    #[test]
+    fn visible_frame_fingerprint_tracks_dynamic_only_scenes() {
+        let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+            enabled: true,
+            ..RendererCacheConfig::default()
+        });
+        let first = RenderState::new(
+            dynamic_animation_scene(204, 10, 0xFF0000FF),
+            Color::TRANSPARENT,
+            1,
+            true,
+        );
+        let same = RenderState::new(
+            dynamic_animation_scene(204, 10, 0xFF0000FF),
+            Color::TRANSPARENT,
+            2,
+            true,
+        );
+        let changed = RenderState::new(
+            dynamic_animation_scene(204, 11, 0x00FF00FF),
+            Color::TRANSPARENT,
+            3,
+            true,
+        );
+
+        assert!(!renderer.can_skip_unchanged_visible_frame(&first, (32, 24)));
+        assert!(renderer.can_skip_unchanged_visible_frame(&same, (32, 24)));
+        assert!(!renderer.can_skip_unchanged_visible_frame(&changed, (32, 24)));
+    }
+
+    #[test]
+    fn dynamic_candidate_fingerprint_tracks_direct_asset_generation() {
+        let image_id = "dynamic_only_fingerprint_tracks_asset_generation";
+        let red = vec![
+            255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255,
+        ];
+        cache_test_image(image_id, 2, 2, red);
+        let scene = || {
+            let mut scene = dynamic_animation_scene(205, 10, 0x2F80EDFF);
+            scene.nodes.push(RenderNode::Primitive(DrawPrimitive::Image(
+                0.0,
+                0.0,
+                12.0,
+                12.0,
+                image_id.to_string(),
+                ImageFit::Cover,
+                None,
+            )));
+            scene
+        };
+        let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+            enabled: true,
+            ..RendererCacheConfig::default()
+        });
+
+        let first = RenderState::new(scene(), Color::TRANSPARENT, 1, true);
+        let same = RenderState::new(scene(), Color::TRANSPARENT, 2, true);
+        assert!(!renderer.can_skip_unchanged_visible_frame(&first, (24, 24)));
+        assert!(renderer.can_skip_unchanged_visible_frame(&same, (24, 24)));
+
+        let blue = vec![
+            0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255,
+        ];
+        cache_test_image(image_id, 2, 2, blue);
+        let changed_resource = RenderState::new(scene(), Color::TRANSPARENT, 3, true);
+        assert!(!renderer.can_skip_unchanged_visible_frame(&changed_resource, (24, 24)));
+
+        remove_asset(image_id);
+    }
+
+    #[test]
+    fn dynamic_candidate_fingerprint_tracks_relaxed_clip_image_bleed() {
+        let image_id = "dynamic_candidate_fingerprint_tracks_relaxed_clip_image_bleed";
+        let red = vec![
+            255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255,
+        ];
+        cache_test_image(image_id, 2, 2, red);
+        let scene = || {
+            let mut scene = dynamic_animation_scene(206, 10, 0x2F80EDFF);
+            scene.nodes.push(RenderNode::RelaxedClip {
+                clips: vec![ClipShape {
+                    rect: GeometryRect {
+                        x: 22.0,
+                        y: 0.0,
+                        width: 2.0,
+                        height: 16.0,
+                    },
+                    radii: None,
+                }],
+                children: vec![RenderNode::Primitive(DrawPrimitive::Image(
+                    24.0,
+                    0.0,
+                    2.0,
+                    16.0,
+                    image_id.to_string(),
+                    ImageFit::Cover,
+                    None,
+                ))],
+            });
+            scene
+        };
+        let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+            enabled: true,
+            ..RendererCacheConfig::default()
+        });
+        let first = RenderState::new(scene(), Color::TRANSPARENT, 1, true);
+        let same = RenderState::new(scene(), Color::TRANSPARENT, 2, true);
+        assert!(!renderer.can_skip_unchanged_visible_frame(&first, (24, 24)));
+        assert!(renderer.can_skip_unchanged_visible_frame(&same, (24, 24)));
+
+        let blue = vec![
+            0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255,
+        ];
+        cache_test_image(image_id, 2, 2, blue);
+        let changed_resource = RenderState::new(scene(), Color::TRANSPARENT, 3, true);
+        assert!(!renderer.can_skip_unchanged_visible_frame(&changed_resource, (24, 24)));
+
+        remove_asset(image_id);
+    }
+
+    #[test]
+    fn dynamic_candidate_fingerprint_never_skips_direct_live_video() {
+        let mut scene = dynamic_animation_scene(206, 10, 0x2F80EDFF);
+        scene.nodes.push(RenderNode::Primitive(DrawPrimitive::Video(
+            0.0,
+            0.0,
+            22.0,
+            16.0,
+            "camera".to_string(),
+            ImageFit::Cover,
+        )));
+        let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+            enabled: true,
+            ..RendererCacheConfig::default()
+        });
+        let first = RenderState::new(scene.clone(), Color::TRANSPARENT, 1, true);
+        let same = RenderState::new(scene, Color::TRANSPARENT, 2, true);
+
+        assert!(!renderer.can_skip_unchanged_visible_frame(&first, (32, 24)));
+        assert!(!renderer.can_skip_unchanged_visible_frame(&same, (32, 24)));
+    }
+
+    #[test]
+    fn dynamic_candidate_fingerprint_tracks_direct_rounded_clip_shape() {
+        let scene = |radius: f32| {
+            let mut scene = dynamic_animation_scene(207, 10, 0x2F80EDFF);
+            scene.nodes.push(RenderNode::Clip {
+                clips: vec![ClipShape {
+                    rect: GeometryRect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 22.0,
+                        height: 16.0,
+                    },
+                    radii: Some(CornerRadii {
+                        tl: radius,
+                        tr: radius,
+                        br: radius,
+                        bl: radius,
+                    }),
+                }],
+                children: vec![RenderNode::Primitive(DrawPrimitive::Rect(
+                    0.0, 0.0, 22.0, 16.0, 0xFF0000FF,
+                ))],
+            });
+            scene
+        };
+        let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+            enabled: true,
+            ..RendererCacheConfig::default()
+        });
+        let first = RenderState::new(scene(2.0), Color::TRANSPARENT, 1, true);
+        let same = RenderState::new(scene(2.0), Color::TRANSPARENT, 2, true);
+        let changed_clip = RenderState::new(scene(8.0), Color::TRANSPARENT, 3, true);
+
+        assert!(!renderer.can_skip_unchanged_visible_frame(&first, (32, 24)));
+        assert!(renderer.can_skip_unchanged_visible_frame(&same, (32, 24)));
+        assert!(!renderer.can_skip_unchanged_visible_frame(&changed_clip, (32, 24)));
+    }
+
+    #[test]
+    fn dynamic_candidate_fingerprint_tracks_direct_alpha_group_boundaries() {
+        let red = RenderNode::Primitive(DrawPrimitive::Rect(0.0, 0.0, 18.0, 16.0, 0xFF0000FF));
+        let blue = RenderNode::Primitive(DrawPrimitive::Rect(4.0, 0.0, 18.0, 16.0, 0x0000FFFF));
+        let grouped = || {
+            let mut scene = dynamic_animation_scene(208, 10, 0x2F80EDFF);
+            scene.nodes.push(RenderNode::Alpha {
+                alpha: 0.5,
+                children: vec![red.clone(), blue.clone()],
+            });
+            scene
+        };
+        let split = || {
+            let mut scene = dynamic_animation_scene(208, 10, 0x2F80EDFF);
+            scene.nodes.extend([
+                RenderNode::Alpha {
+                    alpha: 0.5,
+                    children: vec![red.clone()],
+                },
+                RenderNode::Alpha {
+                    alpha: 0.5,
+                    children: vec![blue.clone()],
+                },
+            ]);
+            scene
+        };
+        let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+            enabled: true,
+            ..RendererCacheConfig::default()
+        });
+        let first = RenderState::new(grouped(), Color::TRANSPARENT, 1, true);
+        let same = RenderState::new(grouped(), Color::TRANSPARENT, 2, true);
+        let changed_groups = RenderState::new(split(), Color::TRANSPARENT, 3, true);
+
+        assert!(!renderer.can_skip_unchanged_visible_frame(&first, (32, 24)));
+        assert!(renderer.can_skip_unchanged_visible_frame(&same, (32, 24)));
+        assert!(!renderer.can_skip_unchanged_visible_frame(&changed_groups, (32, 24)));
     }
 
     #[test]
