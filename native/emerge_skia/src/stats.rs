@@ -123,6 +123,11 @@ pub enum RendererTimingMetric {
     PipelineRenderQueue,
     PipelineSubmitToSwap,
     PipelineSwapToFrameCallback,
+    VideoSubmitToImport,
+    VideoSubmitToRelease,
+    VideoRetireFence,
+    VideoSubmitToPresent,
+    DrmCommitToPageFlip,
     Layout,
     Refresh,
     EventResolve,
@@ -138,7 +143,7 @@ pub enum RendererTimingMetric {
 }
 
 impl RendererTimingMetric {
-    pub const COUNT: usize = 24;
+    pub const COUNT: usize = 29;
     pub const ALL: [Self; Self::COUNT] = [
         Self::Render,
         Self::RenderDraw,
@@ -152,6 +157,11 @@ impl RendererTimingMetric {
         Self::PipelineRenderQueue,
         Self::PipelineSubmitToSwap,
         Self::PipelineSwapToFrameCallback,
+        Self::VideoSubmitToImport,
+        Self::VideoSubmitToRelease,
+        Self::VideoRetireFence,
+        Self::VideoSubmitToPresent,
+        Self::DrmCommitToPageFlip,
         Self::Layout,
         Self::Refresh,
         Self::EventResolve,
@@ -185,6 +195,11 @@ impl RendererTimingMetric {
             Self::PipelineRenderQueue => "pipeline render queue",
             Self::PipelineSubmitToSwap => "pipeline submit->swap",
             Self::PipelineSwapToFrameCallback => "pipeline swap->frame callback",
+            Self::VideoSubmitToImport => "video submit->import",
+            Self::VideoSubmitToRelease => "video submit->lease release",
+            Self::VideoRetireFence => "video retired fence",
+            Self::VideoSubmitToPresent => "video submit->page flip",
+            Self::DrmCommitToPageFlip => "drm atomic commit->page flip",
             Self::Layout => "layout",
             Self::Refresh => "refresh",
             Self::EventResolve => "event resolve",
@@ -230,6 +245,7 @@ pub struct RendererStatsSnapshot {
     pub display_frame_ms: f64,
     pub frame_count: u64,
     pub timings: RendererTimingSnapshots,
+    pub video_pipeline: VideoPipelineStatsSnapshot,
     pub layout_cache: LayoutCacheStats,
     pub renderer_cache: RendererCacheStatsSnapshot,
 }
@@ -238,6 +254,33 @@ impl RendererStatsSnapshot {
     pub fn timing(&self, metric: RendererTimingMetric) -> &DurationStatsSnapshot {
         &self.timings[metric]
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct VideoPipelineStatsSnapshot {
+    pub submitted: u64,
+    pub pending_replaced: u64,
+    pub pending_taken: u64,
+    pub imported: u64,
+    pub leases_released: u64,
+    pub retired_fences_created: u64,
+    pub retired_fences_released: u64,
+    pub primary_prepared: u64,
+    pub video_primary_prepared: u64,
+    pub stale_prepared: u64,
+    pub stale_video_prepared: u64,
+    pub gbm_no_free: u64,
+    pub primary_commit_attempts: u64,
+    pub primary_commit_ebusy: u64,
+    pub primary_committed: u64,
+    pub primary_presented: u64,
+    pub video_primary_presented: u64,
+    pub current_pending: u64,
+    pub current_direct_imports: u64,
+    pub current_retired_imports: u64,
+    pub max_retired_imports: u64,
+    pub current_prepared: u64,
+    pub current_in_flight: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -427,11 +470,78 @@ impl RendererTimingWindows {
     }
 }
 
+#[derive(Default)]
+struct VideoPipelineStatsWindow {
+    submitted: u64,
+    pending_replaced: u64,
+    pending_taken: u64,
+    imported: u64,
+    leases_released: u64,
+    retired_fences_created: u64,
+    retired_fences_released: u64,
+    primary_prepared: u64,
+    video_primary_prepared: u64,
+    stale_prepared: u64,
+    stale_video_prepared: u64,
+    gbm_no_free: u64,
+    primary_commit_attempts: u64,
+    primary_commit_ebusy: u64,
+    primary_committed: u64,
+    primary_presented: u64,
+    video_primary_presented: u64,
+    current_pending: u64,
+    current_direct_imports: u64,
+    current_retired_imports: u64,
+    max_retired_imports: u64,
+    current_prepared: u64,
+    current_in_flight: u64,
+}
+
+impl VideoPipelineStatsWindow {
+    fn snapshot(&self) -> VideoPipelineStatsSnapshot {
+        VideoPipelineStatsSnapshot {
+            submitted: self.submitted,
+            pending_replaced: self.pending_replaced,
+            pending_taken: self.pending_taken,
+            imported: self.imported,
+            leases_released: self.leases_released,
+            retired_fences_created: self.retired_fences_created,
+            retired_fences_released: self.retired_fences_released,
+            primary_prepared: self.primary_prepared,
+            video_primary_prepared: self.video_primary_prepared,
+            stale_prepared: self.stale_prepared,
+            stale_video_prepared: self.stale_video_prepared,
+            gbm_no_free: self.gbm_no_free,
+            primary_commit_attempts: self.primary_commit_attempts,
+            primary_commit_ebusy: self.primary_commit_ebusy,
+            primary_committed: self.primary_committed,
+            primary_presented: self.primary_presented,
+            video_primary_presented: self.video_primary_presented,
+            current_pending: self.current_pending,
+            current_direct_imports: self.current_direct_imports,
+            current_retired_imports: self.current_retired_imports,
+            max_retired_imports: self.max_retired_imports,
+            current_prepared: self.current_prepared,
+            current_in_flight: self.current_in_flight,
+        }
+    }
+
+    fn copy_gauges_from(&mut self, previous: &Self) {
+        self.current_pending = previous.current_pending;
+        self.current_direct_imports = previous.current_direct_imports;
+        self.current_retired_imports = previous.current_retired_imports;
+        self.max_retired_imports = previous.current_retired_imports;
+        self.current_prepared = previous.current_prepared;
+        self.current_in_flight = previous.current_in_flight;
+    }
+}
+
 struct RendererStatsWindow {
     started_at: Instant,
     last_display_interval_ns: Option<u64>,
     frame_count: u64,
     timings: RendererTimingWindows,
+    video_pipeline: VideoPipelineStatsWindow,
     layout_cache: LayoutCacheStats,
     renderer_cache: RendererCacheStatsWindow,
 }
@@ -443,6 +553,7 @@ impl RendererStatsWindow {
             last_display_interval_ns,
             frame_count: 0,
             timings: RendererTimingWindows::default(),
+            video_pipeline: VideoPipelineStatsWindow::default(),
             layout_cache: LayoutCacheStats::default(),
             renderer_cache: RendererCacheStatsWindow::default(),
         }
@@ -468,6 +579,7 @@ impl RendererStatsWindow {
                 .unwrap_or(0.0),
             frame_count: self.frame_count,
             timings: self.timings.snapshot(),
+            video_pipeline: self.video_pipeline.snapshot(),
             layout_cache: self.layout_cache,
             renderer_cache: self.renderer_cache.snapshot(),
         }
@@ -799,6 +911,137 @@ impl RendererStatsCollector {
         self.record_timing(RendererTimingMetric::PresentSubmit, duration);
     }
 
+    pub fn record_video_submitted(&self, replaced_pending: bool) {
+        self.update_video_pipeline(|video| {
+            video.submitted = video.submitted.saturating_add(1);
+            if replaced_pending {
+                video.pending_replaced = video.pending_replaced.saturating_add(1);
+            } else {
+                video.current_pending = video.current_pending.saturating_add(1);
+            }
+        });
+    }
+
+    pub fn record_video_pending_taken(&self, count: usize) {
+        let count = u64::try_from(count).unwrap_or(u64::MAX);
+        self.update_video_pipeline(|video| {
+            video.pending_taken = video.pending_taken.saturating_add(count);
+            video.current_pending = video.current_pending.saturating_sub(count);
+        });
+    }
+
+    pub fn record_video_imported(&self, submit_to_import: Duration) {
+        self.update_video_pipeline(|video| {
+            video.imported = video.imported.saturating_add(1);
+        });
+        self.record_timing(RendererTimingMetric::VideoSubmitToImport, submit_to_import);
+    }
+
+    pub fn record_video_lease_released(&self, submit_to_release: Duration) {
+        self.update_video_pipeline(|video| {
+            video.leases_released = video.leases_released.saturating_add(1);
+        });
+        self.record_timing(
+            RendererTimingMetric::VideoSubmitToRelease,
+            submit_to_release,
+        );
+    }
+
+    pub fn record_video_retired_fence_created(&self, current_depth: usize) {
+        let current_depth = u64::try_from(current_depth).unwrap_or(u64::MAX);
+        self.update_video_pipeline(|video| {
+            video.retired_fences_created = video.retired_fences_created.saturating_add(1);
+            video.current_retired_imports = current_depth;
+            video.max_retired_imports = video.max_retired_imports.max(current_depth);
+        });
+    }
+
+    pub fn record_video_retired_fence_released(&self, retired_for: Duration) {
+        self.update_video_pipeline(|video| {
+            video.retired_fences_released = video.retired_fences_released.saturating_add(1);
+            video.current_retired_imports = video.current_retired_imports.saturating_sub(1);
+        });
+        self.record_timing(RendererTimingMetric::VideoRetireFence, retired_for);
+    }
+
+    pub fn set_video_import_gauges(&self, direct_imports: usize, retired_imports: usize) {
+        let direct_imports = u64::try_from(direct_imports).unwrap_or(u64::MAX);
+        let retired_imports = u64::try_from(retired_imports).unwrap_or(u64::MAX);
+        self.update_video_pipeline(|video| {
+            video.current_direct_imports = direct_imports;
+            video.current_retired_imports = retired_imports;
+            video.max_retired_imports = video.max_retired_imports.max(retired_imports);
+        });
+    }
+
+    pub fn record_drm_primary_prepared(&self, contains_new_video: bool) {
+        self.update_video_pipeline(|video| {
+            video.primary_prepared = video.primary_prepared.saturating_add(1);
+            if contains_new_video {
+                video.video_primary_prepared = video.video_primary_prepared.saturating_add(1);
+            }
+            video.current_prepared = 1;
+        });
+    }
+
+    pub fn record_drm_stale_prepared(&self, contained_new_video: bool) {
+        self.update_video_pipeline(|video| {
+            video.stale_prepared = video.stale_prepared.saturating_add(1);
+            if contained_new_video {
+                video.stale_video_prepared = video.stale_video_prepared.saturating_add(1);
+            }
+            video.current_prepared = 0;
+        });
+    }
+
+    pub fn record_drm_gbm_no_free_buffer(&self) {
+        self.update_video_pipeline(|video| {
+            video.gbm_no_free = video.gbm_no_free.saturating_add(1);
+        });
+    }
+
+    pub fn record_drm_primary_commit_attempt(&self) {
+        self.update_video_pipeline(|video| {
+            video.primary_commit_attempts = video.primary_commit_attempts.saturating_add(1);
+        });
+    }
+
+    pub fn record_drm_primary_commit_ebusy(&self) {
+        self.update_video_pipeline(|video| {
+            video.primary_commit_ebusy = video.primary_commit_ebusy.saturating_add(1);
+        });
+    }
+
+    pub fn record_drm_primary_committed(&self) {
+        self.update_video_pipeline(|video| {
+            video.primary_committed = video.primary_committed.saturating_add(1);
+            video.current_prepared = 0;
+            video.current_in_flight = 1;
+        });
+    }
+
+    pub fn record_drm_primary_presented(
+        &self,
+        contained_new_video: bool,
+        commit_to_page_flip: Duration,
+        video_submit_to_present: Option<Duration>,
+    ) {
+        self.update_video_pipeline(|video| {
+            video.primary_presented = video.primary_presented.saturating_add(1);
+            if contained_new_video {
+                video.video_primary_presented = video.video_primary_presented.saturating_add(1);
+            }
+            video.current_in_flight = 0;
+        });
+        self.record_timing(
+            RendererTimingMetric::DrmCommitToPageFlip,
+            commit_to_page_flip,
+        );
+        if let Some(duration) = video_submit_to_present {
+            self.record_timing(RendererTimingMetric::VideoSubmitToPresent, duration);
+        }
+    }
+
     pub fn record_pipeline(&self, submitted_at: Instant, presented_at: Instant) {
         self.record_timing_span(RendererTimingMetric::Pipeline, submitted_at, presented_at);
     }
@@ -970,8 +1213,14 @@ impl RendererStatsCollector {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let snapshot = window.snapshot(now);
-
-        *window = RendererStatsWindow::new(now, window.last_display_interval_ns);
+        let last_display_interval_ns = window.last_display_interval_ns;
+        let previous = std::mem::replace(
+            &mut *window,
+            RendererStatsWindow::new(now, last_display_interval_ns),
+        );
+        window
+            .video_pipeline
+            .copy_gauges_from(&previous.video_pipeline);
         snapshot
     }
 
@@ -981,7 +1230,26 @@ impl RendererStatsCollector {
             .window
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *window = RendererStatsWindow::new(now, window.last_display_interval_ns);
+        let last_display_interval_ns = window.last_display_interval_ns;
+        let previous = std::mem::replace(
+            &mut *window,
+            RendererStatsWindow::new(now, last_display_interval_ns),
+        );
+        window
+            .video_pipeline
+            .copy_gauges_from(&previous.video_pipeline);
+    }
+
+    fn update_video_pipeline(&self, update: impl FnOnce(&mut VideoPipelineStatsWindow)) {
+        if !self.families.timings {
+            return;
+        }
+
+        let mut window = self
+            .window
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        update(&mut window.video_pipeline);
     }
 
     #[inline]
@@ -1045,6 +1313,53 @@ pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSn
         snapshot.layout_cache.resolve_misses,
         snapshot.layout_cache.resolve_stores,
     );
+
+    let video = snapshot.video_pipeline;
+    let per_second = |count: u64| {
+        if snapshot.window.is_zero() {
+            0.0
+        } else {
+            count as f64 / snapshot.window.as_secs_f64()
+        }
+    };
+    message.push_str(&format!(
+        concat!(
+            "\n\n  video pipeline\n",
+            "    registry: submitted={} ({:.1}/s) replaced_pending={} taken={} current_pending={}\n",
+            "    imports: imported={} ({:.1}/s) current_direct={} retired={} max_retired={} fences={}/{}\n",
+            "    leases: released={} ({:.1}/s)\n",
+            "    drm: prepared={} video_prepared={} stale={} stale_video={} no_free_gbm={}\n",
+            "    present: commit_attempts={} committed={} ebusy={} presented={} ({:.1}/s) video_presented={} ({:.1}/s) prepared_now={} in_flight_now={}"
+        ),
+        video.submitted,
+        per_second(video.submitted),
+        video.pending_replaced,
+        video.pending_taken,
+        video.current_pending,
+        video.imported,
+        per_second(video.imported),
+        video.current_direct_imports,
+        video.current_retired_imports,
+        video.max_retired_imports,
+        video.retired_fences_created,
+        video.retired_fences_released,
+        video.leases_released,
+        per_second(video.leases_released),
+        video.primary_prepared,
+        video.video_primary_prepared,
+        video.stale_prepared,
+        video.stale_video_prepared,
+        video.gbm_no_free,
+        video.primary_commit_attempts,
+        video.primary_committed,
+        video.primary_commit_ebusy,
+        video.primary_presented,
+        per_second(video.primary_presented),
+        video.video_primary_presented,
+        per_second(video.video_primary_presented),
+        video.current_prepared,
+        video.current_in_flight,
+    ));
 
     message.push_str("\n\n  renderer cache\n");
     let paint_layer = combined_renderer_cache_snapshot(&snapshot.renderer_cache);
@@ -1906,6 +2221,23 @@ mod tests {
             pipeline_submitted_at + Duration::from_millis(11),
             pipeline_submitted_at + Duration::from_millis(18),
         );
+        stats.record_video_submitted(false);
+        stats.record_video_pending_taken(1);
+        stats.record_video_imported(Duration::from_millis(2));
+        stats.record_video_retired_fence_created(1);
+        stats.record_video_retired_fence_released(Duration::from_millis(4));
+        stats.record_video_lease_released(Duration::from_millis(12));
+        stats.set_video_import_gauges(1, 0);
+        stats.record_drm_primary_prepared(true);
+        stats.record_drm_primary_commit_attempt();
+        stats.record_drm_primary_commit_ebusy();
+        stats.record_drm_primary_commit_attempt();
+        stats.record_drm_primary_committed();
+        stats.record_drm_primary_presented(
+            true,
+            Duration::from_millis(17),
+            Some(Duration::from_millis(19)),
+        );
         stats.record_layout(Duration::from_millis(3));
         stats.record_refresh(Duration::from_millis(1));
         stats.record_event_resolve(Duration::from_millis(2));
@@ -1962,6 +2294,11 @@ mod tests {
         assert!(message.contains("    pipeline render queue: avg=2.000 ms"));
         assert!(message.contains("    pipeline submit->swap: avg=11.000 ms"));
         assert!(message.contains("    pipeline swap->frame callback: avg=7.000 ms"));
+        assert!(message.contains("    video submit->import: avg=2.000 ms"));
+        assert!(message.contains("    video submit->lease release: avg=12.000 ms"));
+        assert!(message.contains("    video retired fence: avg=4.000 ms"));
+        assert!(message.contains("    video submit->page flip: avg=19.000 ms"));
+        assert!(message.contains("    drm atomic commit->page flip: avg=17.000 ms"));
         assert!(message.contains("    layout: avg=3.000 ms"));
         assert!(message.contains("    refresh: avg=1.000 ms"));
         assert!(message.contains("    event resolve: avg=2.000 ms"));
@@ -1970,6 +2307,12 @@ mod tests {
         assert!(message.contains("    intrinsic measure: hits=0 misses=0 stores=0"));
         assert!(message.contains("    subtree measure:   hits=0 misses=0 stores=0"));
         assert!(message.contains("    resolve:           hits=11 misses=0 stores=0"));
+        assert!(message.contains("  video pipeline\n"));
+        assert!(message.contains("registry: submitted=1"));
+        assert!(message.contains("imports: imported=1"));
+        assert!(message.contains("leases: released=1"));
+        assert!(message.contains("drm: prepared=1 video_prepared=1"));
+        assert!(message.contains("present: commit_attempts=2 committed=1 ebusy=1 presented=1"));
         assert!(message.contains("  renderer cache\n"));
         assert!(message.contains("    paint_layer\n"));
         assert!(message.contains(

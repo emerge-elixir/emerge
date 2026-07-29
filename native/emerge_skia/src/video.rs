@@ -17,6 +17,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 use std::thread;
+use std::time::Instant;
 
 use crossbeam_channel::{Sender, unbounded};
 #[cfg(any(
@@ -36,7 +37,7 @@ use skia_safe::{
     gpu::{self, Mipmapped, Protected, SurfaceOrigin, gl::TextureInfo},
 };
 
-use crate::backend::wake::BackendWakeHandle;
+use crate::{backend::wake::BackendWakeHandle, stats::RendererStatsCollector};
 
 rustler::atoms! {
     keepalive,
@@ -362,9 +363,21 @@ pub struct PrimeFrame {
     planes: Vec<PrimePlaneDesc>,
     keepalive: FrozenTerm,
     owner_pid: LocalPid,
+    submitted_at: Instant,
+    stats: Option<Arc<RendererStatsCollector>>,
 }
 
 impl PrimeFrame {
+    fn record_imported(&self) {
+        if let Some(stats) = self.stats.as_deref() {
+            stats.record_video_imported(self.submitted_at.elapsed());
+        }
+    }
+
+    fn stats(&self) -> Option<Arc<RendererStatsCollector>> {
+        self.stats.clone()
+    }
+
     #[cfg(any(
         all(feature = "wayland", target_os = "linux"),
         all(feature = "drm", target_os = "linux")
@@ -494,12 +507,17 @@ impl From<PrimeDesc> for PrimeFrame {
                 .collect(),
             keepalive: desc.keepalive,
             owner_pid: desc.owner_pid,
+            submitted_at: Instant::now(),
+            stats: None,
         }
     }
 }
 
 impl Drop for PrimeFrame {
     fn drop(&mut self) {
+        if let Some(stats) = self.stats.as_deref() {
+            stats.record_video_lease_released(self.submitted_at.elapsed());
+        }
         self.keepalive
             .send_once_with(&self.owner_pid, |env, payload| {
                 (keepalive(), payload).encode(env)
@@ -538,14 +556,16 @@ pub struct VideoRegistry {
     state: Mutex<HashMap<String, VideoTargetEntry>>,
     release_tx: Sender<PrimeFrame>,
     generation: AtomicU64,
+    stats: Option<Arc<RendererStatsCollector>>,
 }
 
 impl VideoRegistry {
-    pub fn new(release_tx: Sender<PrimeFrame>) -> Self {
+    pub fn new(release_tx: Sender<PrimeFrame>, stats: Option<Arc<RendererStatsCollector>>) -> Self {
         Self {
             state: Mutex::new(HashMap::new()),
             release_tx,
             generation: AtomicU64::new(0),
+            stats,
         }
     }
 
@@ -577,11 +597,14 @@ impl VideoRegistry {
             .and_then(|mut state| state.remove(id).and_then(|entry| entry.pending));
         self.bump_generation();
         if let Some(frame) = pending {
+            if let Some(stats) = self.stats.as_deref() {
+                stats.record_video_pending_taken(1);
+            }
             self.defer_release(frame);
         }
     }
 
-    pub fn submit_prime(&self, id: &str, frame: PrimeFrame) -> Result<(), String> {
+    pub fn submit_prime(&self, id: &str, mut frame: PrimeFrame) -> Result<(), String> {
         let frame_width = frame.width;
         let frame_height = frame.height;
         let frame_format = frame.format;
@@ -617,8 +640,14 @@ impl VideoRegistry {
                 return Err(reason);
             }
 
+            frame.submitted_at = Instant::now();
+            frame.stats = self.stats.clone();
             entry.pending.replace(frame)
         };
+
+        if let Some(stats) = self.stats.as_deref() {
+            stats.record_video_submitted(previous.is_some());
+        }
 
         if let Some(previous) = previous {
             self.defer_release(previous);
@@ -653,6 +682,10 @@ impl VideoRegistry {
                     frame,
                 });
             }
+        }
+
+        if let Some(stats) = self.stats.as_deref() {
+            stats.record_video_pending_taken(pending.len());
         }
 
         Ok(VideoRegistrySnapshot { pending })
@@ -695,6 +728,12 @@ impl VideoRegistry {
         }
 
         Ok(())
+    }
+
+    fn record_import_gauges(&self, direct_imports: usize, retired_imports: usize) {
+        if let Some(stats) = self.stats.as_deref() {
+            stats.set_video_import_gauges(direct_imports, retired_imports);
+        }
     }
 
     pub fn defer_release(&self, frame: PrimeFrame) {
@@ -908,6 +947,7 @@ pub struct VideoSyncResult {
     pub resources_changed: bool,
     pub needs_cleanup: bool,
     pub imported_frames: usize,
+    pub newest_import_submitted_at: Option<Instant>,
     pub first_frame_diagnostics: Option<String>,
 }
 
@@ -918,6 +958,8 @@ pub struct VideoSyncResult {
 struct RetiredImport {
     sync: gl::types::GLsync,
     imported: ImportedExternalFrame,
+    retired_at: Instant,
+    stats: Option<Arc<RendererStatsCollector>>,
 }
 
 #[cfg(any(
@@ -964,6 +1006,9 @@ impl RetiredImport {
                 gl::Finish();
             }
             gl::DeleteSync(self.sync);
+        }
+        if let Some(stats) = self.stats.as_deref() {
+            stats.record_video_retired_fence_released(self.retired_at.elapsed());
         }
         drop(self.imported);
     }
@@ -1566,12 +1611,23 @@ impl ImportedExternalFrame {
             return Err(err);
         }
 
+        frame.record_imported();
         Ok(Self {
             support: Rc::clone(support),
             egl_image,
             texture_id,
             _frame: frame,
         })
+    }
+}
+
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
+impl ImportedExternalFrame {
+    fn stats(&self) -> Option<Arc<RendererStatsCollector>> {
+        self._frame.stats()
     }
 }
 
@@ -1883,8 +1939,16 @@ impl RenderedVideoTarget {
                 unsafe {
                     gl::Flush();
                 }
-                self.retired_imports
-                    .push_back(RetiredImport { sync, imported });
+                let stats = imported.stats();
+                self.retired_imports.push_back(RetiredImport {
+                    sync,
+                    imported,
+                    retired_at: Instant::now(),
+                    stats: stats.clone(),
+                });
+                if let Some(stats) = stats.as_deref() {
+                    stats.record_video_retired_fence_created(self.retired_imports.len());
+                }
                 return;
             }
         }
@@ -1949,6 +2013,26 @@ impl RenderedVideoTarget {
         self.image
             .as_ref()
             .map(|image| (image, self.spec.width, self.spec.height))
+    }
+
+    #[cfg(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux")
+    ))]
+    fn direct_import_count(&self) -> usize {
+        usize::from(self.direct_import.is_some())
+    }
+
+    #[cfg(not(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux")
+    )))]
+    fn direct_import_count(&self) -> usize {
+        0
+    }
+
+    fn retired_import_count(&self) -> usize {
+        self.retired_imports.len()
     }
 }
 
@@ -2201,6 +2285,7 @@ impl RendererVideoState {
         }
 
         let mut imported_frames = 0;
+        let mut newest_import_submitted_at = None;
         let mut first_frame_diagnostics = None;
         if let Some(ctx) = ctx {
             let snapshot = registry.snapshot_pending()?;
@@ -2208,19 +2293,38 @@ impl RendererVideoState {
                 let target = self.targets.get_mut(&pending.id).ok_or_else(|| {
                     format!("video target disappeared during sync: {}", pending.id)
                 })?;
+                let submitted_at = pending.frame.submitted_at;
                 if let Some(diagnostics) = target.upload_frame(pending.frame, ctx, gr_context)? {
                     first_frame_diagnostics.get_or_insert(diagnostics);
                 }
                 imported_frames += 1;
+                newest_import_submitted_at = Some(
+                    newest_import_submitted_at
+                        .map(|current: Instant| current.max(submitted_at))
+                        .unwrap_or(submitted_at),
+                );
                 resources_changed = true;
                 needs_cleanup |= target.reap_retired_imports();
             }
         }
 
+        let direct_imports = self
+            .targets
+            .values()
+            .map(RenderedVideoTarget::direct_import_count)
+            .sum();
+        let retired_imports = self
+            .targets
+            .values()
+            .map(RenderedVideoTarget::retired_import_count)
+            .sum();
+        registry.record_import_gauges(direct_imports, retired_imports);
+
         Ok(VideoSyncResult {
             resources_changed,
             needs_cleanup,
             imported_frames,
+            newest_import_submitted_at,
             first_frame_diagnostics,
         })
     }
@@ -2233,6 +2337,7 @@ impl RendererVideoState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stats::RendererTimingMetric;
     use crossbeam_channel::unbounded;
 
     fn test_prime_frame(width: u32, height: u32) -> PrimeFrame {
@@ -2247,13 +2352,15 @@ mod tests {
                 saved: None,
             },
             owner_pid: unsafe { std::mem::zeroed() },
+            submitted_at: Instant::now(),
+            stats: None,
         }
     }
 
     #[test]
     fn drain_pending_to_release_moves_pending_frames_to_release_queue() {
         let (release_tx, release_rx) = unbounded();
-        let registry = VideoRegistry::new(release_tx);
+        let registry = VideoRegistry::new(release_tx, None);
 
         registry
             .create_target(VideoTargetSpec {
@@ -2288,7 +2395,7 @@ mod tests {
     #[test]
     fn drain_pending_to_release_is_noop_when_registry_has_no_pending_frames() {
         let (release_tx, release_rx) = unbounded();
-        let registry = VideoRegistry::new(release_tx);
+        let registry = VideoRegistry::new(release_tx, None);
 
         registry
             .create_target(VideoTargetSpec {
@@ -2314,9 +2421,51 @@ mod tests {
     }
 
     #[test]
+    fn registry_records_latest_frame_replacement_and_release_lifetimes() {
+        let (release_tx, release_rx) = unbounded();
+        let stats = Arc::new(RendererStatsCollector::new());
+        let registry = VideoRegistry::new(release_tx, Some(Arc::clone(&stats)));
+
+        registry
+            .create_target(VideoTargetSpec {
+                id: "preview".to_string(),
+                width: 64,
+                height: 32,
+                mode: VideoMode::Prime,
+            })
+            .expect("target should be created");
+        registry
+            .submit_prime("preview", test_prime_frame(64, 32))
+            .expect("first frame should be accepted");
+        registry
+            .submit_prime("preview", test_prime_frame(64, 32))
+            .expect("replacement frame should be accepted");
+
+        let replaced = release_rx.try_recv().expect("expected replaced frame");
+        drop(replaced);
+        let snapshot = registry
+            .snapshot_pending()
+            .expect("snapshot should succeed");
+        drop(snapshot);
+
+        let snapshot = stats.snapshot();
+        assert_eq!(snapshot.video_pipeline.submitted, 2);
+        assert_eq!(snapshot.video_pipeline.pending_replaced, 1);
+        assert_eq!(snapshot.video_pipeline.pending_taken, 1);
+        assert_eq!(snapshot.video_pipeline.current_pending, 0);
+        assert_eq!(snapshot.video_pipeline.leases_released, 2);
+        assert_eq!(
+            snapshot
+                .timing(RendererTimingMetric::VideoSubmitToRelease)
+                .count,
+            2
+        );
+    }
+
+    #[test]
     fn submit_prime_releases_rejected_frame_to_release_queue() {
         let (release_tx, release_rx) = unbounded();
-        let registry = VideoRegistry::new(release_tx);
+        let registry = VideoRegistry::new(release_tx, None);
 
         registry
             .create_target(VideoTargetSpec {
