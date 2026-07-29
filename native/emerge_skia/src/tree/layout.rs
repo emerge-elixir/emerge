@@ -916,13 +916,10 @@ fn prepare_attrs_for_node_ix(
         .map(|capture_scale| next_scale / capture_scale.max(f32::EPSILON))
         .unwrap_or(next_scale);
 
-    if let Some(element) = tree.get_ix_mut(ix) {
-        let frame_attrs = frame_declared_attrs(element, samples);
-        element.layout.effective = scale_attrs(&frame_attrs, scale_factor);
-        element.normalize_extracted_state();
-    } else {
-        return None;
-    }
+    let element = tree.get_ix_mut(ix)?;
+    let frame_attrs = frame_declared_attrs(element, samples);
+    element.layout.effective = scale_attrs(&frame_attrs, scale_factor);
+    element.normalize_extracted_state();
 
     Some(next_scale)
 }

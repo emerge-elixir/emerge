@@ -11,6 +11,10 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 ))]
 use std::os::raw::c_char;
 use std::ptr;
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 use std::rc::Rc;
 use std::sync::{
     Arc, Mutex,
@@ -384,12 +388,20 @@ pub struct PrimeFrame {
 }
 
 impl PrimeFrame {
+    #[cfg(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux")
+    ))]
     fn record_imported(&self) {
         if let Some(stats) = self.stats.as_deref() {
             stats.record_video_imported(self.submitted_at.elapsed());
         }
     }
 
+    #[cfg(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux")
+    ))]
     fn stats(&self) -> Option<Arc<RendererStatsCollector>> {
         self.stats.clone()
     }
@@ -966,6 +978,10 @@ fn gl_step_check(step: &str) -> Result<(), String> {
     }
 }
 
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 #[derive(Clone, Copy, Debug)]
 struct ChannelSample {
     min: u8,
@@ -1687,6 +1703,10 @@ impl Drop for ImportedExternalFrame {
 
 struct RenderedVideoTarget {
     spec: VideoTargetSpec,
+    #[cfg(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux")
+    ))]
     path: VideoImportPath,
     output_texture: u32,
     output_fbo: u32,
@@ -1699,6 +1719,10 @@ struct RenderedVideoTarget {
     ))]
     direct_import: Option<ImportedExternalFrame>,
     retired_imports: VecDeque<RetiredImport>,
+    #[cfg(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux")
+    ))]
     diagnostics_pending: bool,
 }
 
@@ -1708,6 +1732,12 @@ impl RenderedVideoTarget {
         gr_context: &mut gpu::DirectContext,
         path: VideoImportPath,
     ) -> Result<Self, String> {
+        #[cfg(not(any(
+            all(feature = "wayland", target_os = "linux"),
+            all(feature = "drm", target_os = "linux")
+        )))]
+        let _ = path;
+
         let mut output_texture = 0;
         let mut output_fbo = 0;
 
@@ -1769,6 +1799,10 @@ impl RenderedVideoTarget {
 
         Ok(Self {
             spec,
+            #[cfg(any(
+                all(feature = "wayland", target_os = "linux"),
+                all(feature = "drm", target_os = "linux")
+            ))]
             path,
             output_texture,
             output_fbo,
@@ -1781,6 +1815,10 @@ impl RenderedVideoTarget {
             ))]
             direct_import: None,
             retired_imports: VecDeque::new(),
+            #[cfg(any(
+                all(feature = "wayland", target_os = "linux"),
+                all(feature = "drm", target_os = "linux")
+            ))]
             diagnostics_pending: true,
         })
     }
@@ -2157,6 +2195,10 @@ fn sample_rgba_output(
     }))
 }
 
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 fn format_frame_diagnostics(
     luma: Option<Result<ChannelSample, String>>,
     rgba: Result<[ChannelSample; 3], String>,
