@@ -11,6 +11,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 ))]
 use std::os::raw::c_char;
 use std::ptr;
+use std::rc::Rc;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicU64, Ordering},
@@ -42,6 +43,12 @@ rustler::atoms! {
 }
 
 const DRM_FORMAT_NV12: u32 = fourcc(b'N', b'V', b'1', b'2');
+#[cfg(target_os = "linux")]
+const DMA_BUF_IOCTL_SYNC: libc::c_ulong = 0x4008_6200;
+#[cfg(target_os = "linux")]
+const DMA_BUF_SYNC_READ: u64 = 1 << 0;
+#[cfg(target_os = "linux")]
+const DMA_BUF_SYNC_END: u64 = 1 << 2;
 
 #[cfg(any(
     all(feature = "wayland", target_os = "linux"),
@@ -217,7 +224,15 @@ impl<'a> Decoder<'a> for Fd {
             return Err(rustler::Error::BadArg);
         }
 
-        Ok(Self(unsafe { OwnedFd::from_raw_fd(fd) }))
+        // Prime descriptor fds are owned by the descriptor's keepalive resource. Duplicate the
+        // borrowed fd before taking ownership so dropping or fencing the frame cannot close the
+        // producer's copy, and a discarded BEAM message cannot leak an unmanaged integer fd.
+        let duplicated = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+        if duplicated < 0 {
+            return Err(rustler::Error::BadArg);
+        }
+
+        Ok(Self(unsafe { OwnedFd::from_raw_fd(duplicated) }))
     }
 }
 
@@ -368,6 +383,89 @@ impl PrimeFrame {
         self.planes
             .get(index)
             .ok_or_else(|| format!("prime plane index out of range: {index}"))
+    }
+
+    #[cfg(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux")
+    ))]
+    fn sample_luma(&self) -> Result<ChannelSample, String> {
+        let plane = self.plane(0)?;
+        let object = self.object(plane.obj_idx as usize)?;
+        let width = self.width as usize;
+        let height = self.height as usize;
+        let pitch = plane.pitch as usize;
+        let offset = plane.offset as usize;
+        let map_len = offset
+            .checked_add(
+                pitch
+                    .checked_mul(height.saturating_sub(1))
+                    .ok_or_else(|| "luma plane mapping length overflow".to_string())?,
+            )
+            .and_then(|last_row| last_row.checked_add(width))
+            .ok_or_else(|| "luma plane mapping length overflow".to_string())?;
+
+        let mut sync_flags = DMA_BUF_SYNC_READ;
+        if unsafe { libc::ioctl(object.fd.as_raw_fd(), DMA_BUF_IOCTL_SYNC, &mut sync_flags) } < 0 {
+            return Err(format!(
+                "failed to begin DMA-BUF CPU read: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        let mapping = unsafe {
+            libc::mmap(
+                ptr::null_mut(),
+                map_len,
+                libc::PROT_READ,
+                libc::MAP_SHARED,
+                object.fd.as_raw_fd(),
+                0,
+            )
+        };
+        if mapping == libc::MAP_FAILED {
+            let mapping_error = std::io::Error::last_os_error();
+            let mut end_flags = DMA_BUF_SYNC_READ | DMA_BUF_SYNC_END;
+            unsafe {
+                libc::ioctl(object.fd.as_raw_fd(), DMA_BUF_IOCTL_SYNC, &mut end_flags);
+            }
+            return Err(format!("failed to map NV12 luma plane: {mapping_error}"));
+        }
+
+        let mut min = u8::MAX;
+        let mut max = u8::MIN;
+        let mut sum = 0_u64;
+        for row in 0..height {
+            let row_ptr = unsafe { (mapping as *const u8).add(offset + row * pitch) };
+            let pixels = unsafe { std::slice::from_raw_parts(row_ptr, width) };
+            for value in pixels {
+                min = min.min(*value);
+                max = max.max(*value);
+                sum += u64::from(*value);
+            }
+        }
+
+        unsafe {
+            libc::munmap(mapping, map_len);
+        }
+        let mut end_flags = DMA_BUF_SYNC_READ | DMA_BUF_SYNC_END;
+        if unsafe { libc::ioctl(object.fd.as_raw_fd(), DMA_BUF_IOCTL_SYNC, &mut end_flags) } < 0 {
+            return Err(format!(
+                "failed to finish DMA-BUF CPU read: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        let count = width.saturating_mul(height);
+        if count == 0 {
+            return Err("cannot sample an empty luma plane".to_string());
+        }
+
+        Ok(ChannelSample {
+            min,
+            max,
+            mean: sum as f64 / count as f64,
+        })
     }
 }
 
@@ -696,14 +794,22 @@ type RawEglGetProcAddress =
         *const c_char,
     ) -> egl::types::__eglMustCastToProperFunctionPointerType;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VideoImportPath {
+    BlitRgba,
+    #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
+    DirectExternal,
+}
+
 #[cfg(any(
     all(feature = "wayland", target_os = "linux"),
     all(feature = "drm", target_os = "linux")
 ))]
 pub struct VideoImportContext {
-    support: EglDmabufSupport,
-    blitter: ExternalVideoBlitter,
+    support: Rc<EglDmabufSupport>,
+    blitter: Option<ExternalVideoBlitter>,
     use_gl_fences: bool,
+    path: VideoImportPath,
 }
 
 #[cfg(any(
@@ -712,8 +818,23 @@ pub struct VideoImportContext {
 ))]
 impl VideoImportContext {
     pub fn new_current() -> Result<Self, String> {
-        let support = EglDmabufSupport::new_current()?;
-        let blitter = ExternalVideoBlitter::new()?;
+        Self::new_current_with_path(VideoImportPath::BlitRgba)
+    }
+
+    #[cfg(all(feature = "drm", target_os = "linux"))]
+    pub fn new_current_direct() -> Result<Self, String> {
+        Self::new_current_with_path(VideoImportPath::DirectExternal)
+    }
+
+    fn path(&self) -> VideoImportPath {
+        self.path
+    }
+
+    fn new_current_with_path(path: VideoImportPath) -> Result<Self, String> {
+        let support = Rc::new(EglDmabufSupport::new_current()?);
+        // DRM normally samples the external texture directly, but retain the blitter as a
+        // one-way compatibility fallback when Ganesh cannot wrap an external texture.
+        let blitter = Some(ExternalVideoBlitter::new()?);
         let use_gl_fences = gl::FenceSync::is_loaded()
             && gl::ClientWaitSync::is_loaded()
             && gl::DeleteSync::is_loaded();
@@ -721,6 +842,7 @@ impl VideoImportContext {
             support,
             blitter,
             use_gl_fences,
+            path,
         })
     }
 }
@@ -738,6 +860,10 @@ pub struct VideoImportContext;
 impl VideoImportContext {
     pub fn new_current() -> Result<Self, String> {
         Err("prime video import requires a Wayland or DRM backend build".to_string())
+    }
+
+    fn path(&self) -> VideoImportPath {
+        VideoImportPath::BlitRgba
     }
 }
 
@@ -770,10 +896,19 @@ fn gl_step_check(step: &str) -> Result<(), String> {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
+struct ChannelSample {
+    min: u8,
+    max: u8,
+    mean: f64,
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct VideoSyncResult {
     pub resources_changed: bool,
     pub needs_cleanup: bool,
+    pub imported_frames: usize,
+    pub first_frame_diagnostics: Option<String>,
 }
 
 #[cfg(any(
@@ -1376,7 +1511,7 @@ fn program_info_log(program: u32) -> String {
     all(feature = "drm", target_os = "linux")
 ))]
 struct ImportedExternalFrame {
-    support: *const EglDmabufSupport,
+    support: Rc<EglDmabufSupport>,
     egl_image: egl::types::EGLImageKHR,
     texture_id: u32,
     _frame: PrimeFrame,
@@ -1387,7 +1522,11 @@ struct ImportedExternalFrame {
     all(feature = "drm", target_os = "linux")
 ))]
 impl ImportedExternalFrame {
-    fn new(target_id: &str, frame: PrimeFrame, support: &EglDmabufSupport) -> Result<Self, String> {
+    fn new(
+        target_id: &str,
+        frame: PrimeFrame,
+        support: &Rc<EglDmabufSupport>,
+    ) -> Result<Self, String> {
         let egl_image = support.create_image(target_id, &frame)?;
         let mut texture_id = 0;
         unsafe {
@@ -1417,12 +1556,18 @@ impl ImportedExternalFrame {
             gl::BindTexture(GL_TEXTURE_EXTERNAL_OES, 0);
         }
 
-        gl_step_check(&format!(
+        if let Err(err) = gl_step_check(&format!(
             "binding imported external texture for target={target_id}"
-        ))?;
+        )) {
+            unsafe {
+                gl::DeleteTextures(1, &texture_id);
+            }
+            support.destroy_image(egl_image);
+            return Err(err);
+        }
 
         Ok(Self {
-            support,
+            support: Rc::clone(support),
             egl_image,
             texture_id,
             _frame: frame,
@@ -1438,23 +1583,34 @@ impl Drop for ImportedExternalFrame {
     fn drop(&mut self) {
         unsafe {
             gl::DeleteTextures(1, &self.texture_id);
-            let support = &*self.support;
-            support.destroy_image(self.egl_image);
         }
+        self.support.destroy_image(self.egl_image);
     }
 }
 
 struct RenderedVideoTarget {
     spec: VideoTargetSpec,
+    path: VideoImportPath,
     output_texture: u32,
     output_fbo: u32,
     _backend_texture: gpu::BackendTexture,
     image: Option<Image>,
+    direct_backend_texture: Option<gpu::BackendTexture>,
+    #[cfg(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux")
+    ))]
+    direct_import: Option<ImportedExternalFrame>,
     retired_imports: VecDeque<RetiredImport>,
+    diagnostics_pending: bool,
 }
 
 impl RenderedVideoTarget {
-    fn new(spec: VideoTargetSpec, gr_context: &mut gpu::DirectContext) -> Result<Self, String> {
+    fn new(
+        spec: VideoTargetSpec,
+        gr_context: &mut gpu::DirectContext,
+        path: VideoImportPath,
+    ) -> Result<Self, String> {
         let mut output_texture = 0;
         let mut output_fbo = 0;
 
@@ -1516,11 +1672,19 @@ impl RenderedVideoTarget {
 
         Ok(Self {
             spec,
+            path,
             output_texture,
             output_fbo,
             _backend_texture: backend_texture,
             image,
+            direct_backend_texture: None,
+            #[cfg(any(
+                all(feature = "wayland", target_os = "linux"),
+                all(feature = "drm", target_os = "linux")
+            ))]
+            direct_import: None,
             retired_imports: VecDeque::new(),
+            diagnostics_pending: true,
         })
     }
 
@@ -1533,9 +1697,30 @@ impl RenderedVideoTarget {
         frame: PrimeFrame,
         ctx: &VideoImportContext,
         gr_context: &mut gpu::DirectContext,
-    ) -> Result<(), String> {
+    ) -> Result<Option<String>, String> {
+        match self.path {
+            VideoImportPath::BlitRgba => self.upload_blitted_frame(frame, ctx, gr_context),
+            VideoImportPath::DirectExternal => self.upload_direct_frame(frame, ctx, gr_context),
+        }
+    }
+
+    #[cfg(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux")
+    ))]
+    fn upload_blitted_frame(
+        &mut self,
+        frame: PrimeFrame,
+        ctx: &VideoImportContext,
+        gr_context: &mut gpu::DirectContext,
+    ) -> Result<Option<String>, String> {
+        let luma_sample = self.diagnostics_pending.then(|| frame.sample_luma());
         let imported = ImportedExternalFrame::new(&self.spec.id, frame, &ctx.support)?;
-        ctx.blitter.blit(
+        let blitter = ctx
+            .blitter
+            .as_ref()
+            .ok_or_else(|| "RGBA video blitter is unavailable".to_string())?;
+        blitter.blit(
             &self.spec.id,
             imported.texture_id,
             self.output_fbo,
@@ -1543,33 +1728,171 @@ impl RenderedVideoTarget {
             self.spec.height,
         )?;
 
+        let diagnostics = if self.diagnostics_pending {
+            self.diagnostics_pending = false;
+            let rgba_sample = sample_rgba_output(
+                self.output_fbo,
+                self.spec.width,
+                self.spec.height,
+                &self.spec.id,
+            );
+            Some(format_frame_diagnostics(luma_sample, rgba_sample))
+        } else {
+            None
+        };
+
         self.image = Some(make_output_image(
             &self._backend_texture,
             &self.spec.id,
             gr_context,
         )?);
+        self.retire_import(imported, ctx.use_gl_fences);
 
-        if ctx.use_gl_fences {
+        Ok(diagnostics)
+    }
+
+    #[cfg(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux")
+    ))]
+    fn upload_direct_frame(
+        &mut self,
+        frame: PrimeFrame,
+        ctx: &VideoImportContext,
+        gr_context: &mut gpu::DirectContext,
+    ) -> Result<Option<String>, String> {
+        let luma_sample = self.diagnostics_pending.then(|| frame.sample_luma());
+        let imported = ImportedExternalFrame::new(&self.spec.id, frame, &ctx.support)?;
+        let backend_texture = unsafe {
+            gpu::backend_textures::make_gl(
+                (self.spec.width as i32, self.spec.height as i32),
+                Mipmapped::No,
+                TextureInfo {
+                    target: GL_TEXTURE_EXTERNAL_OES,
+                    id: imported.texture_id,
+                    format: skia_safe::gpu::gl::Format::RGBA8.into(),
+                    protected: Protected::No,
+                },
+                format!("video-external:{}", self.spec.id),
+            )
+        };
+        let image = match Image::from_texture(
+            gr_context,
+            &backend_texture,
+            SurfaceOrigin::TopLeft,
+            ColorType::RGBA8888,
+            AlphaType::Premul,
+            None,
+        ) {
+            Some(image) => image,
+            None => {
+                drop(backend_texture);
+                eprintln!(
+                    "direct external video unavailable for target={}; falling back to RGBA blit",
+                    self.spec.id
+                );
+                return self.fallback_direct_to_blit(imported, luma_sample, ctx, gr_context);
+            }
+        };
+
+        let diagnostics = if self.diagnostics_pending {
+            self.diagnostics_pending = false;
+            Some(format_frame_diagnostics(
+                luma_sample,
+                Err("RGBA readback skipped for direct external video".to_string()),
+            ))
+        } else {
+            None
+        };
+
+        // Build the replacement first. If import or Skia wrapping fails, the last good frame and
+        // its lease remain intact. Drop the old Skia wrappers before fencing its imported texture.
+        self.image.take();
+        self.direct_backend_texture.take();
+        let previous_import = self.direct_import.take();
+        self.image = Some(image);
+        self.direct_backend_texture = Some(backend_texture);
+        self.direct_import = Some(imported);
+
+        if let Some(previous_import) = previous_import {
+            self.retire_import(previous_import, ctx.use_gl_fences);
+        }
+
+        Ok(diagnostics)
+    }
+
+    #[cfg(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux")
+    ))]
+    fn fallback_direct_to_blit(
+        &mut self,
+        imported: ImportedExternalFrame,
+        luma_sample: Option<Result<ChannelSample, String>>,
+        ctx: &VideoImportContext,
+        gr_context: &mut gpu::DirectContext,
+    ) -> Result<Option<String>, String> {
+        let blitter = ctx
+            .blitter
+            .as_ref()
+            .ok_or_else(|| "RGBA video blitter is unavailable".to_string())?;
+        blitter.blit(
+            &self.spec.id,
+            imported.texture_id,
+            self.output_fbo,
+            self.spec.width,
+            self.spec.height,
+        )?;
+
+        let diagnostics = if self.diagnostics_pending {
+            self.diagnostics_pending = false;
+            let rgba_sample = sample_rgba_output(
+                self.output_fbo,
+                self.spec.width,
+                self.spec.height,
+                &self.spec.id,
+            );
+            Some(format_frame_diagnostics(luma_sample, rgba_sample))
+        } else {
+            None
+        };
+        let output_image = make_output_image(&self._backend_texture, &self.spec.id, gr_context)?;
+
+        self.image.take();
+        self.direct_backend_texture.take();
+        let previous_import = self.direct_import.take();
+        self.path = VideoImportPath::BlitRgba;
+        self.image = Some(output_image);
+
+        if let Some(previous_import) = previous_import {
+            self.retire_import(previous_import, ctx.use_gl_fences);
+        }
+        self.retire_import(imported, ctx.use_gl_fences);
+
+        Ok(diagnostics)
+    }
+
+    #[cfg(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux")
+    ))]
+    fn retire_import(&mut self, imported: ImportedExternalFrame, use_gl_fences: bool) {
+        if use_gl_fences {
             let sync = unsafe { gl::FenceSync(gl::SYNC_GPU_COMMANDS_COMPLETE, 0) };
-            if sync.is_null() {
-                unsafe {
-                    gl::Finish();
-                }
-            } else {
+            if !sync.is_null() {
                 unsafe {
                     gl::Flush();
                 }
                 self.retired_imports
                     .push_back(RetiredImport { sync, imported });
-                return Ok(());
-            }
-        } else {
-            unsafe {
-                gl::Finish();
+                return;
             }
         }
 
-        Ok(())
+        unsafe {
+            gl::Finish();
+        }
+        drop(imported);
     }
 
     #[cfg(not(any(
@@ -1581,7 +1904,7 @@ impl RenderedVideoTarget {
         frame: PrimeFrame,
         ctx: &VideoImportContext,
         gr_context: &mut gpu::DirectContext,
-    ) -> Result<(), String> {
+    ) -> Result<Option<String>, String> {
         let _ = (&mut *self, frame, ctx, gr_context);
         Err("prime video import requires a Wayland or DRM backend build".to_string())
     }
@@ -1627,6 +1950,91 @@ impl RenderedVideoTarget {
             .as_ref()
             .map(|image| (image, self.spec.width, self.spec.height))
     }
+}
+
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
+fn sample_rgba_output(
+    target_fbo: u32,
+    width: u32,
+    height: u32,
+    target_id: &str,
+) -> Result<[ChannelSample; 3], String> {
+    let pixel_count = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or_else(|| "RGBA diagnostic pixel count overflow".to_string())?;
+    let byte_count = pixel_count
+        .checked_mul(4)
+        .ok_or_else(|| "RGBA diagnostic byte count overflow".to_string())?;
+    if pixel_count == 0 {
+        return Err("cannot sample an empty RGBA frame".to_string());
+    }
+
+    let mut pixels = vec![0_u8; byte_count];
+    let mut previous_fbo = 0_i32;
+    let mut previous_pack_alignment = 0_i32;
+    let _ = collect_gl_errors();
+    unsafe {
+        gl::GetIntegerv(gl::FRAMEBUFFER_BINDING, &mut previous_fbo);
+        gl::GetIntegerv(gl::PACK_ALIGNMENT, &mut previous_pack_alignment);
+        gl::BindFramebuffer(gl::FRAMEBUFFER, target_fbo);
+        gl::PixelStorei(gl::PACK_ALIGNMENT, 1);
+        gl::ReadPixels(
+            0,
+            0,
+            width as i32,
+            height as i32,
+            gl::RGBA,
+            gl::UNSIGNED_BYTE,
+            pixels.as_mut_ptr() as *mut c_void,
+        );
+        gl::PixelStorei(gl::PACK_ALIGNMENT, previous_pack_alignment);
+        gl::BindFramebuffer(gl::FRAMEBUFFER, previous_fbo as u32);
+    }
+    gl_step_check(&format!(
+        "reading diagnostic RGBA frame for target={target_id}"
+    ))?;
+
+    let mut min = [u8::MAX; 3];
+    let mut max = [u8::MIN; 3];
+    let mut sum = [0_u64; 3];
+    for pixel in pixels.chunks_exact(4) {
+        for channel in 0..3 {
+            min[channel] = min[channel].min(pixel[channel]);
+            max[channel] = max[channel].max(pixel[channel]);
+            sum[channel] += u64::from(pixel[channel]);
+        }
+    }
+
+    Ok(std::array::from_fn(|channel| ChannelSample {
+        min: min[channel],
+        max: max[channel],
+        mean: sum[channel] as f64 / pixel_count as f64,
+    }))
+}
+
+fn format_frame_diagnostics(
+    luma: Option<Result<ChannelSample, String>>,
+    rgba: Result<[ChannelSample; 3], String>,
+) -> String {
+    let luma = match luma {
+        Some(Ok(sample)) => format!(
+            "NV12 Y min={} max={} mean={:.2}",
+            sample.min, sample.max, sample.mean
+        ),
+        Some(Err(err)) => format!("NV12 Y sample failed: {err}"),
+        None => "NV12 Y sample unavailable".to_string(),
+    };
+    let rgba = match rgba {
+        Ok([r, g, b]) => format!(
+            "RGBA R={}/{}/{:.2} G={}/{}/{:.2} B={}/{}/{:.2}",
+            r.min, r.max, r.mean, g.min, g.max, g.mean, b.min, b.max, b.mean
+        ),
+        Err(err) => format!("RGBA sample failed: {err}"),
+    };
+    format!("{luma}; {rgba}")
 }
 
 fn make_output_image(
@@ -1735,6 +2143,19 @@ fn clear_scissored_rect(x: i32, y: i32, width: i32, height: i32, color: [f32; 4]
 
 impl Drop for RenderedVideoTarget {
     fn drop(&mut self) {
+        // The current direct import can be sampled again by UI-only redraws, so unlike retired
+        // imports it remains leased until target teardown. Finish before destroying either kind of
+        // backing, then explicitly drop Skia wrappers before their GL objects and EGL image.
+        unsafe {
+            gl::Finish();
+        }
+        self.image.take();
+        self.direct_backend_texture.take();
+        #[cfg(any(
+            all(feature = "wayland", target_os = "linux"),
+            all(feature = "drm", target_os = "linux")
+        ))]
+        self.direct_import.take();
         self.drain_retired_imports();
         unsafe {
             gl::DeleteFramebuffers(1, &self.output_fbo);
@@ -1761,6 +2182,9 @@ impl RendererVideoState {
         }
 
         let target_specs = registry.target_specs()?;
+        let import_path = ctx
+            .map(VideoImportContext::path)
+            .unwrap_or(VideoImportPath::BlitRgba);
         let existing: HashSet<_> = target_specs.keys().cloned().collect();
         let before = self.targets.len();
         self.targets.retain(|id, _| existing.contains(id));
@@ -1770,20 +2194,24 @@ impl RendererVideoState {
             if !self.targets.contains_key(id) {
                 self.targets.insert(
                     id.clone(),
-                    RenderedVideoTarget::new(spec.clone(), gr_context)?,
+                    RenderedVideoTarget::new(spec.clone(), gr_context, import_path)?,
                 );
                 resources_changed = true;
             }
         }
 
+        let mut imported_frames = 0;
+        let mut first_frame_diagnostics = None;
         if let Some(ctx) = ctx {
             let snapshot = registry.snapshot_pending()?;
             for pending in snapshot.pending {
-                let target = self
-                    .targets
-                    .entry(pending.id.clone())
-                    .or_insert(RenderedVideoTarget::new(pending.spec, gr_context)?);
-                target.upload_frame(pending.frame, ctx, gr_context)?;
+                let target = self.targets.get_mut(&pending.id).ok_or_else(|| {
+                    format!("video target disappeared during sync: {}", pending.id)
+                })?;
+                if let Some(diagnostics) = target.upload_frame(pending.frame, ctx, gr_context)? {
+                    first_frame_diagnostics.get_or_insert(diagnostics);
+                }
+                imported_frames += 1;
                 resources_changed = true;
                 needs_cleanup |= target.reap_retired_imports();
             }
@@ -1792,6 +2220,8 @@ impl RendererVideoState {
         Ok(VideoSyncResult {
             resources_changed,
             needs_cleanup,
+            imported_frames,
+            first_frame_diagnostics,
         })
     }
 

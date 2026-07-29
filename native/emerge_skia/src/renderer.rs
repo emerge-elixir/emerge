@@ -2901,7 +2901,16 @@ impl SceneRenderer {
             return Ok(VideoSyncResult::default());
         };
 
-        let result = self.video_state.sync_pending(registry, gr_context, ctx)?;
+        let result = match self.video_state.sync_pending(registry, gr_context, ctx) {
+            Ok(result) => result,
+            Err(err) => {
+                // DMA-BUF import and external-texture setup issue raw GL calls outside Skia.
+                // Restore Ganesh's state assumptions even when synchronization fails midway.
+                gr_context.reset(None);
+                self.invalidate_visible_frame_fingerprint();
+                return Err(err);
+            }
+        };
         if result.resources_changed {
             gr_context.reset(None);
             self.renderer_cache.clear();
