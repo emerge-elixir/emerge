@@ -18,8 +18,8 @@ use std::time::{Duration, Instant};
 use resvg::usvg;
 use skia_safe::{
     BlendMode, BlurStyle, Color, Data, FilterMode, Font, FontHinting, FontMgr, Image, MaskFilter,
-    Matrix, MipmapMode, Paint, PaintStyle, PathBuilder, PathFillType, Point, RRect, Rect,
-    SamplingOptions, Surface, TileMode, Typeface,
+    Matrix, MipmapMode, Paint, PaintStyle, PathBuilder, PathFillType, PixelGeometry, Point, RRect,
+    Rect, SamplingOptions, Surface, SurfaceProps, SurfacePropsFlags, TileMode, Typeface,
     canvas::{SaveLayerRec, SrcRectConstraint},
     color_filters, dash_path_effect,
     font::Edging as FontEdging,
@@ -831,12 +831,16 @@ pub(crate) fn measure_text_visual_metrics(
     measure_text_visual_metrics_cached_with_font(&font, family, weight, italic, size, text)
 }
 
+pub(crate) fn text_surface_props() -> SurfaceProps {
+    SurfaceProps::new(SurfacePropsFlags::default(), PixelGeometry::RGBH)
+}
+
 fn configure_text_font(font: &mut Font) {
     font.set_subpixel(true);
     font.set_linear_metrics(true);
-    font.set_baseline_snap(false);
-    font.set_edging(FontEdging::AntiAlias);
-    font.set_hinting(FontHinting::Slight);
+    font.set_baseline_snap(true);
+    font.set_edging(FontEdging::SubpixelAntiAlias);
+    font.set_hinting(FontHinting::Normal);
 }
 
 /// Load a font from binary data and register it in the cache.
@@ -9761,9 +9765,9 @@ mod tests {
 
         assert!(font.is_subpixel());
         assert!(font.is_linear_metrics());
-        assert!(!font.is_baseline_snap());
-        assert_eq!(font.edging(), FontEdging::AntiAlias);
-        assert_eq!(font.hinting(), FontHinting::Slight);
+        assert!(font.is_baseline_snap());
+        assert_eq!(font.edging(), FontEdging::SubpixelAntiAlias);
+        assert_eq!(font.hinting(), FontHinting::Normal);
     }
 
     #[test]

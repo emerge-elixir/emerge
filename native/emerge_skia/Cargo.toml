@@ -74,9 +74,7 @@ libc = "0.2"
 crossbeam-channel = "0.5"
 sha2 = "0.10"
 resvg = "0.47"
-skia-bindings = { version = "=0.93.1", default-features = false, features = ["jpeg"] }
-
-skia-safe = { version = "0.93.1", default-features = false, features = ["gl", "pdf", "binary-cache"] }
+skia-safe = { version = "0.99.0", default-features = false, features = ["gl", "jpeg", "binary-cache"] }
 
 [dev-dependencies]
 criterion = "0.7"

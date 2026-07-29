@@ -804,6 +804,66 @@ fn attrs_equivalent_for_plain_text_paint(before: &Attrs, after: &Attrs) -> bool 
         && before.svg_expected == after.svg_expected
 }
 
+fn text_paint_attrs_changed(before: &Attrs, after: &Attrs) -> bool {
+    before.font_color != after.font_color
+        || before.font_underline != after.font_underline
+        || before.font_strike != after.font_strike
+}
+
+fn affected_paragraph_flow_roots(tree: &ElementTree, id: &NodeId) -> Vec<NodeId> {
+    let mut ids = Vec::new();
+    let mut seen = HashSet::new();
+
+    if let Some(paragraph_id) = nearest_paragraph_ancestor_or_self(tree, id) {
+        push_unique_node_id(&mut ids, &mut seen, paragraph_id);
+    }
+    collect_paragraph_descendants(tree, id, &mut ids, &mut seen);
+
+    ids
+}
+
+fn nearest_paragraph_ancestor_or_self(tree: &ElementTree, id: &NodeId) -> Option<NodeId> {
+    let mut current_ix = tree.ix_of(id)?;
+
+    loop {
+        let element = tree.get_ix(current_ix)?;
+        if element.spec.kind == ElementKind::Paragraph {
+            return Some(element.id);
+        }
+
+        current_ix = match tree.parent_link_of(current_ix)? {
+            ParentLink::Child { parent } | ParentLink::Nearby { host: parent, .. } => parent,
+        };
+    }
+}
+
+fn collect_paragraph_descendants(
+    tree: &ElementTree,
+    id: &NodeId,
+    ids: &mut Vec<NodeId>,
+    seen: &mut HashSet<NodeId>,
+) {
+    if let Some(element) = tree.get(id)
+        && element.spec.kind == ElementKind::Paragraph
+    {
+        push_unique_node_id(ids, seen, *id);
+    }
+
+    for child_id in tree.child_ids(id) {
+        collect_paragraph_descendants(tree, &child_id, ids, seen);
+    }
+
+    for mount in tree.nearby_mounts_for(id) {
+        collect_paragraph_descendants(tree, &mount.id, ids, seen);
+    }
+}
+
+fn push_unique_node_id(ids: &mut Vec<NodeId>, seen: &mut HashSet<NodeId>, id: NodeId) {
+    if seen.insert(id) {
+        ids.push(id);
+    }
+}
+
 fn subtree_has_animation_attrs(tree: &ElementTree) -> bool {
     tree.iter_node_pairs().any(|(_, element)| {
         element.spec.declared.animate.is_some()
@@ -821,17 +881,30 @@ fn apply_patch(
     let invalidation = match patch {
         Patch::SetAttrs { id, attrs_raw } => {
             let text_content_layout_skip_path = text_content_patch_layout_skip_path(tree, &id);
+            let before_declared_attrs = tree
+                .get(&id)
+                .ok_or_else(|| "SetAttrs: node not found".to_string())?
+                .spec
+                .declared
+                .clone();
+            let mut decoded = decode_attrs(&attrs_raw).map_err(|e| e.to_string())?;
+            let paragraph_flow_dirty_ids =
+                if text_paint_attrs_changed(&before_declared_attrs, &decoded) {
+                    affected_paragraph_flow_roots(tree, &id)
+                } else {
+                    Vec::new()
+                };
+
             let invalidation = {
                 let element = tree
                     .get_mut(&id)
                     .ok_or_else(|| "SetAttrs: node not found".to_string())?;
-                let before_attrs = element.spec.declared.clone();
+                let before_attrs = before_declared_attrs.clone();
                 let before_patch_content = element.runtime.patch_content.clone();
                 let before_content_origin = element.runtime.text_input_content_origin;
                 let before_slider_patch_value = element.runtime.slider_patch_value;
                 let before_slider_value_origin = element.runtime.slider_value_origin;
 
-                let mut decoded = decode_attrs(&attrs_raw).map_err(|e| e.to_string())?;
                 element.spec.attrs_raw = attrs_raw;
                 let content_is_from_patch =
                     element.spec.kind.is_text_input_family() && decoded.content.is_some();
@@ -917,10 +990,16 @@ fn apply_patch(
             {
                 invalidation_kind = TreeInvalidation::Measure;
             }
+            if !paragraph_flow_dirty_ids.is_empty() {
+                invalidation_kind.add(TreeInvalidation::Resolve);
+            }
             if invalidation.2 {
                 tree.mark_layout_scale_dirty(&id);
             } else {
                 tree.mark_measure_dirty_for_invalidation(&id, invalidation_kind);
+            }
+            for paragraph_id in paragraph_flow_dirty_ids {
+                tree.mark_measure_dirty_for_invalidation(&paragraph_id, TreeInvalidation::Resolve);
             }
             if invalidation.1 {
                 tree.mark_registry_refresh_dirty(&id);
@@ -2795,6 +2874,77 @@ mod tests {
         .unwrap();
 
         assert_eq!(invalidation, TreeInvalidation::Paint);
+    }
+
+    #[test]
+    fn test_apply_patches_invalidates_paragraph_for_inherited_text_paint_attr() {
+        let root_id = NodeId::from_term_bytes(vec![1]);
+        let paragraph_id = NodeId::from_term_bytes(vec![2]);
+        let text_id = NodeId::from_term_bytes(vec![3]);
+        let mut tree = ElementTree::new();
+        tree.set_root_id(root_id);
+        tree.insert(Element::with_attrs(
+            root_id,
+            ElementKind::El,
+            Vec::new(),
+            Attrs::default(),
+        ));
+        tree.insert(Element::with_attrs(
+            paragraph_id,
+            ElementKind::Paragraph,
+            Vec::new(),
+            Attrs {
+                width: Some(Length::Px(200.0)),
+                ..Attrs::default()
+            },
+        ));
+        tree.insert(Element::with_attrs(
+            text_id,
+            ElementKind::Text,
+            Vec::new(),
+            Attrs {
+                content: Some("Todo item".to_string()),
+                ..Attrs::default()
+            },
+        ));
+        tree.set_children(&root_id, vec![paragraph_id]).unwrap();
+        tree.set_children(&paragraph_id, vec![text_id]).unwrap();
+        layout_tree_default(&mut tree, Constraint::new(400.0, 200.0), 1.0);
+
+        assert!(
+            tree.get(&paragraph_id)
+                .unwrap()
+                .layout
+                .paragraph_fragments
+                .as_ref()
+                .unwrap()
+                .iter()
+                .all(|fragment| !fragment.strike)
+        );
+
+        let invalidation = apply_patches(
+            &mut tree,
+            vec![Patch::SetAttrs {
+                id: root_id,
+                attrs_raw: vec![0, 1, 48, 1],
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(invalidation, TreeInvalidation::Resolve);
+        assert!(tree.get(&paragraph_id).unwrap().layout.resolve_dirty);
+
+        layout_tree_default(&mut tree, Constraint::new(400.0, 200.0), 1.0);
+        assert!(
+            tree.get(&paragraph_id)
+                .unwrap()
+                .layout
+                .paragraph_fragments
+                .as_ref()
+                .unwrap()
+                .iter()
+                .all(|fragment| fragment.strike)
+        );
     }
 
     #[test]
