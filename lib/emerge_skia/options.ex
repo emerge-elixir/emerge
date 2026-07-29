@@ -39,6 +39,10 @@ defmodule EmergeSkia.Options do
         opts
         |> Keyword.get(:drm_retry_interval_ms, 250)
         |> normalize_non_negative_integer!(":drm_retry_interval_ms"),
+      drm_force_gpu_finish:
+        opts
+        |> Keyword.get(:drm_force_gpu_finish, false)
+        |> normalize_boolean!(":drm_force_gpu_finish"),
       scroll_line_pixels:
         opts
         |> Keyword.get(:scroll_line_pixels, 30.0)

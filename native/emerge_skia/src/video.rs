@@ -186,6 +186,23 @@ impl Encoder for FrozenTerm {
     }
 }
 
+struct VideoLease {
+    keepalive: FrozenTerm,
+    owner_pid: LocalPid,
+}
+
+impl VideoLease {
+    fn release_from_native_thread(self) {
+        let Self {
+            keepalive: mut keepalive_term,
+            owner_pid,
+        } = self;
+        keepalive_term.send_once_with(&owner_pid, |env, payload| {
+            (keepalive(), payload).encode(env)
+        });
+    }
+}
+
 fn validate_prime_target(
     target_id: &str,
     mode: VideoMode,
@@ -345,7 +362,7 @@ struct PrimeObjectOwned {
 struct PrimePlaneDesc {
     obj_idx: u32,
     pitch: u32,
-    offset: u32,
+    offset: u64,
 }
 
 #[cfg_attr(
@@ -361,8 +378,7 @@ pub struct PrimeFrame {
     pub format: u32,
     objects: Vec<PrimeObjectOwned>,
     planes: Vec<PrimePlaneDesc>,
-    keepalive: FrozenTerm,
-    owner_pid: LocalPid,
+    lease: Option<VideoLease>,
     submitted_at: Instant,
     stats: Option<Arc<RendererStatsCollector>>,
 }
@@ -502,11 +518,13 @@ impl From<PrimeDesc> for PrimeFrame {
                 .map(|plane| PrimePlaneDesc {
                     obj_idx: plane.obj_idx,
                     pitch: plane.pitch,
-                    offset: plane.offset,
+                    offset: u64::from(plane.offset),
                 })
                 .collect(),
-            keepalive: desc.keepalive,
-            owner_pid: desc.owner_pid,
+            lease: Some(VideoLease {
+                keepalive: desc.keepalive,
+                owner_pid: desc.owner_pid,
+            }),
             submitted_at: Instant::now(),
             stats: None,
         }
@@ -518,10 +536,11 @@ impl Drop for PrimeFrame {
         if let Some(stats) = self.stats.as_deref() {
             stats.record_video_lease_released(self.submitted_at.elapsed());
         }
-        self.keepalive
-            .send_once_with(&self.owner_pid, |env, payload| {
-                (keepalive(), payload).encode(env)
-            });
+        self.planes.clear();
+        self.objects.clear();
+        if let Some(lease) = self.lease.take() {
+            lease.release_from_native_thread();
+        }
     }
 }
 
@@ -738,10 +757,22 @@ impl VideoRegistry {
 
     pub fn defer_release(&self, frame: PrimeFrame) {
         if let Err(err) = self.release_tx.send(frame) {
-            let frame = err.into_inner();
-            let _ = thread::Builder::new()
-                .name("emerge_skia_video_release".into())
-                .spawn(move || drop(frame));
+            let holder = Arc::new(Mutex::new(Some(err.into_inner())));
+            let worker_holder = Arc::clone(&holder);
+            let spawned = thread::Builder::new()
+                .name("emerge_skia_video_release_fallback".into())
+                .spawn(move || {
+                    if let Ok(mut frame) = worker_holder.lock() {
+                        drop(frame.take());
+                    }
+                });
+
+            if let Err(error) = spawned {
+                eprintln!("failed to start video release fallback thread: {error}");
+                // Frozen BEAM terms must be released from a native thread. Leaking in this
+                // process-failure path is safer than dropping the frame on a BEAM scheduler.
+                std::mem::forget(holder);
+            }
         }
     }
 }
@@ -807,16 +838,16 @@ impl Drop for VideoTargetResource {
     )),
     allow(dead_code)
 )]
-pub fn spawn_release_worker() -> Sender<PrimeFrame> {
+pub fn spawn_release_worker() -> std::io::Result<Sender<PrimeFrame>> {
     let (tx, rx) = unbounded();
-    let _ = thread::Builder::new()
+    thread::Builder::new()
         .name("emerge_skia_video_release".into())
         .spawn(move || {
             while let Ok(frame) = rx.recv() {
                 drop(frame);
             }
-        });
-    tx
+        })?;
+    Ok(tx)
 }
 
 #[cfg(any(
@@ -1142,11 +1173,15 @@ impl EglDmabufSupport {
         target_id: &str,
         frame: &PrimeFrame,
     ) -> Result<egl::types::EGLImageKHR, String> {
+        let width = i32::try_from(frame.width)
+            .map_err(|_| "DMA-BUF width exceeds EGL integer range".to_string())?;
+        let height = i32::try_from(frame.height)
+            .map_err(|_| "DMA-BUF height exceeds EGL integer range".to_string())?;
         let mut attrs = vec![
             egl::WIDTH as egl::types::EGLint,
-            frame.width as egl::types::EGLint,
+            width,
             egl::HEIGHT as egl::types::EGLint,
-            frame.height as egl::types::EGLint,
+            height,
             EGL_LINUX_DRM_FOURCC_EXT,
             frame.format as egl::types::EGLint,
         ];
@@ -1157,9 +1192,15 @@ impl EglDmabufSupport {
             attrs.push(plane_fd_attr(plane_index)?);
             attrs.push(object.fd.as_raw_fd());
             attrs.push(plane_offset_attr(plane_index)?);
-            attrs.push(plane.offset as egl::types::EGLint);
+            attrs
+                .push(i32::try_from(plane.offset).map_err(|_| {
+                    format!("plane {plane_index} offset exceeds EGL integer range")
+                })?);
             attrs.push(plane_pitch_attr(plane_index)?);
-            attrs.push(plane.pitch as egl::types::EGLint);
+            attrs.push(
+                i32::try_from(plane.pitch)
+                    .map_err(|_| format!("plane {plane_index} pitch exceeds EGL integer range"))?,
+            );
 
             if let Some(modifier) = object.modifier {
                 attrs.push(plane_modifier_lo_attr(plane_index)?);
@@ -1776,13 +1817,16 @@ impl RenderedVideoTarget {
             .blitter
             .as_ref()
             .ok_or_else(|| "RGBA video blitter is unavailable".to_string())?;
-        blitter.blit(
+        if let Err(error) = blitter.blit(
             &self.spec.id,
             imported.texture_id,
             self.output_fbo,
             self.spec.width,
             self.spec.height,
-        )?;
+        ) {
+            self.retire_import(imported, ctx.use_gl_fences);
+            return Err(error);
+        }
 
         let diagnostics = if self.diagnostics_pending {
             self.diagnostics_pending = false;
@@ -1797,11 +1841,15 @@ impl RenderedVideoTarget {
             None
         };
 
-        self.image = Some(make_output_image(
-            &self._backend_texture,
-            &self.spec.id,
-            gr_context,
-        )?);
+        let output_image =
+            match make_output_image(&self._backend_texture, &self.spec.id, gr_context) {
+                Ok(image) => image,
+                Err(error) => {
+                    self.retire_import(imported, ctx.use_gl_fences);
+                    return Err(error);
+                }
+            };
+        self.image = Some(output_image);
         self.retire_import(imported, ctx.use_gl_fences);
 
         Ok(diagnostics)
@@ -1892,13 +1940,16 @@ impl RenderedVideoTarget {
             .blitter
             .as_ref()
             .ok_or_else(|| "RGBA video blitter is unavailable".to_string())?;
-        blitter.blit(
+        if let Err(error) = blitter.blit(
             &self.spec.id,
             imported.texture_id,
             self.output_fbo,
             self.spec.width,
             self.spec.height,
-        )?;
+        ) {
+            self.retire_import(imported, ctx.use_gl_fences);
+            return Err(error);
+        }
 
         let diagnostics = if self.diagnostics_pending {
             self.diagnostics_pending = false;
@@ -1912,7 +1963,14 @@ impl RenderedVideoTarget {
         } else {
             None
         };
-        let output_image = make_output_image(&self._backend_texture, &self.spec.id, gr_context)?;
+        let output_image =
+            match make_output_image(&self._backend_texture, &self.spec.id, gr_context) {
+                Ok(image) => image,
+                Err(error) => {
+                    self.retire_import(imported, ctx.use_gl_fences);
+                    return Err(error);
+                }
+            };
 
         self.image.take();
         self.direct_backend_texture.take();
@@ -2347,11 +2405,7 @@ mod tests {
             format: DRM_FORMAT_NV12,
             objects: Vec::new(),
             planes: Vec::new(),
-            keepalive: FrozenTerm {
-                env: None,
-                saved: None,
-            },
-            owner_pid: unsafe { std::mem::zeroed() },
+            lease: None,
             submitted_at: Instant::now(),
             stats: None,
         }

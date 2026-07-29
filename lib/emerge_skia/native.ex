@@ -87,6 +87,7 @@ defmodule EmergeSkia.Native do
           required(:drm_card) => String.t() | nil,
           required(:drm_startup_retries) => non_neg_integer(),
           required(:drm_retry_interval_ms) => non_neg_integer(),
+          required(:drm_force_gpu_finish) => boolean(),
           required(:asset_sources) => [String.t()],
           required(:asset_runtime_enabled) => boolean(),
           required(:asset_allowlist) => [String.t()],
@@ -340,7 +341,7 @@ defmodule EmergeSkia.Native do
         }
 
   @typedoc """
-  Native stats payload. Current schema version: 15.
+  Native stats payload. Current schema version: 17.
   """
   @type stats_snapshot :: %{
           required(:version) => pos_integer(),
@@ -373,6 +374,24 @@ defmodule EmergeSkia.Native do
             required(:refresh) => duration_stats(),
             required(:event_resolve) => duration_stats(),
             required(:patch_tree_process) => duration_stats()
+          },
+          required(:drm) => %{
+            required(:forced_gpu_finish_before_swap) => duration_stats(),
+            required(:forced_gpu_finish_after_swap) => duration_stats(),
+            required(:gpu_queue_completion) => duration_stats(),
+            required(:egl_swap_buffers) => duration_stats(),
+            required(:gbm_lock_front_buffer) => duration_stats(),
+            required(:framebuffer_lookup) => duration_stats(),
+            required(:prepared_to_commit) => duration_stats(),
+            required(:previous_flip_to_commit) => duration_stats(),
+            required(:atomic_commit_ioctl) => duration_stats(),
+            required(:commit_to_kernel_page_flip) => duration_stats(),
+            required(:kernel_page_flip_interval) => duration_stats(),
+            required(:page_flip_dispatch_delay) => duration_stats(),
+            required(:commit_to_event_processed) => duration_stats(),
+            required(:page_flip_events) => non_neg_integer(),
+            required(:page_flip_sequence_steps) => non_neg_integer(),
+            required(:missed_vblanks) => non_neg_integer()
           },
           required(:counters) => %{
             required(:layout_cache) => layout_cache_stats(),

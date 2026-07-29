@@ -1264,6 +1264,16 @@ impl<'a> RenderFrame<'a> {
     }
 }
 
+fn flush_render_frame(
+    frame: &mut RenderFrame<'_>,
+    before_flush: &mut Option<&mut dyn FnMut()>,
+) -> RenderFlushTimings {
+    if let Some(before_flush) = before_flush.take() {
+        before_flush();
+    }
+    frame.flush()
+}
+
 const RENDERER_CACHE_DEFAULT_NEW_PAYLOADS_PER_FRAME: u32 = 16;
 const MOVING_PAINT_LAYER_PAYLOAD_CACHE_MIN_VISIBLE_BEFORE_STORE: u64 = 1;
 const MOVING_PAINT_LAYER_PAYLOAD_CACHE_MAX_ENTRIES: usize = 512;
@@ -1773,16 +1783,39 @@ fn text_payload_gpu_subpixel_phase(
     }
 
     let transform = eligibility.current_transform;
-    if !approx_eq(transform.xx, 1.0)
-        || !approx_eq(transform.yx, 0.0)
-        || !approx_eq(transform.xy, 0.0)
-        || !approx_eq(transform.yy, 1.0)
+    if approx_eq(transform.xx, 1.0)
+        && approx_eq(transform.yx, 0.0)
+        && approx_eq(transform.xy, 0.0)
+        && approx_eq(transform.yy, 1.0)
     {
-        return Err(RendererCacheRejectionReason::UnsupportedTransform);
+        return PaintLayerSubpixelPhase::from_translation(transform.tx, transform.ty)
+            .ok_or(RendererCacheRejectionReason::UnsupportedTransform);
     }
 
-    PaintLayerSubpixelPhase::from_translation(transform.tx, transform.ty)
-        .ok_or(RendererCacheRejectionReason::UnsupportedTransform)
+    // GPU paint-layer payloads are transparent RGBA surfaces, so Skia uses grayscale rather
+    // than panel-oriented LCD subpixel text. A pixel-aligned quarter turn or reflection can
+    // therefore cache text at its native local resolution and compose the payload through the
+    // existing transform without changing text rasterization. This is especially important for
+    // portrait displays whose entire logical viewport is rotated by 90 or 270 degrees.
+    let unit_axis = |a: f32, b: f32| {
+        (approx_eq(a.abs(), 1.0) && approx_eq(b, 0.0))
+            || (approx_eq(a, 0.0) && approx_eq(b.abs(), 1.0))
+    };
+    let determinant = transform.xx * transform.yy - transform.xy * transform.yx;
+    let pixel_aligned_orthogonal = transform.maps_rects_to_axis_aligned_rects()
+        && unit_axis(transform.xx, transform.xy)
+        && unit_axis(transform.yx, transform.yy)
+        && approx_eq(determinant.abs(), 1.0);
+    if pixel_aligned_orthogonal
+        && transform.tx.is_finite()
+        && transform.ty.is_finite()
+        && approx_eq(transform.tx, transform.tx.round())
+        && approx_eq(transform.ty, transform.ty.round())
+    {
+        return Ok(PaintLayerSubpixelPhase::default());
+    }
+
+    Err(RendererCacheRejectionReason::UnsupportedTransform)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1807,7 +1840,23 @@ fn paint_layer_cache_admission_estimate(
 fn paint_layer_cache_bypass_low_value(
     estimate: PaintLayerCacheAdmissionEstimate,
     gpu_backed: bool,
+    reason: PaintLayerReason,
 ) -> bool {
+    // Nearby layers are independent overlays and are commonly static UI above a video or other
+    // continuously changing surface. Animation layers can likewise remain in a published scene
+    // after the damage that created them has settled. Preserve both as GPU payload candidates
+    // rather than applying the generic cheap/simple bypass: dynamic animation layers still need
+    // two identical rendered frames before admission, while genuine animation changes its content
+    // key every frame and therefore never reaches a cache store.
+    if gpu_backed
+        && matches!(
+            reason,
+            PaintLayerReason::Nearby | PaintLayerReason::Animation
+        )
+    {
+        return false;
+    }
+
     let tiny_and_cheap = estimate.payload_pixels <= PAINT_LAYER_CACHE_LOW_VALUE_TINY_MAX_PIXELS
         && estimate.primitive_cost <= PAINT_LAYER_CACHE_LOW_VALUE_TINY_MAX_COST;
     if gpu_backed && tiny_and_cheap {
@@ -1834,9 +1883,21 @@ fn paint_layer_cache_bypass_low_value(
 }
 
 fn paint_layer_own_payload_cache_enabled(layer: &RenderPaintLayer) -> bool {
-    layer.policy == PaintLayerPolicy::Cacheable
-        || (layer.policy == PaintLayerPolicy::DynamicRedraw
-            && layer.reason == PaintLayerReason::ScrollContainer)
+    layer.policy != PaintLayerPolicy::DirectOnly
+}
+
+fn paint_layer_minimum_visible_frames_before_store(layer: &RenderPaintLayer) -> u64 {
+    if layer.policy == PaintLayerPolicy::DynamicRedraw
+        && layer.reason == PaintLayerReason::Animation
+    {
+        // A dynamic boundary can remain in the last published scene long after the tree damage
+        // that created it has settled. Cache it only after the exact same content is observed in
+        // two consecutive rendered frames. Genuine per-frame animation changes its content key
+        // every frame and therefore continues to draw directly without cache churn.
+        2
+    } else {
+        1
+    }
 }
 
 fn moving_paint_layer_payload_resource_generation(nodes: &[RenderNode]) -> Option<u64> {
@@ -2073,7 +2134,7 @@ impl RendererCacheManager {
     }
 
     fn prune_non_consecutive_visible_admissions(&mut self) {
-        if self.min_visible_before_store <= 1 || self.visible_admissions.is_empty() {
+        if self.visible_admissions.is_empty() {
             return;
         }
 
@@ -2085,8 +2146,10 @@ impl RendererCacheManager {
     fn moving_layer_visible_before_store_satisfied(
         &mut self,
         key: PaintLayerMovingPayloadKey,
+        minimum_visible_frames: u64,
     ) -> bool {
-        if self.min_visible_before_store <= 1 {
+        let minimum_visible_frames = self.min_visible_before_store.max(minimum_visible_frames);
+        if minimum_visible_frames <= 1 {
             return true;
         }
 
@@ -2113,7 +2176,7 @@ impl RendererCacheManager {
                 last_visible_frame: frame_index,
             });
 
-        admission.visible_frames >= self.min_visible_before_store
+        admission.visible_frames >= minimum_visible_frames
     }
 
     fn forget_visible_admission(&mut self, key: PaintLayerMovingPayloadKey) {
@@ -2592,6 +2655,7 @@ struct RenderCacheTracking<'a> {
     renderer_cache: &'a mut RendererCacheManager,
     frame: &'a mut RendererCacheFrame,
     gpu_context: Option<&'a mut gpu::DirectContext>,
+    animation_active: bool,
 }
 
 struct PreparedMovingLayerPayload {
@@ -2912,8 +2976,13 @@ impl SceneRenderer {
             }
         };
         if result.resources_changed {
+            // DMA-BUF import mutates raw GL state, so Ganesh must rebind its state before drawing.
+            // It does not invalidate Skia-owned cached paint-layer textures. In particular, video
+            // frames arrive every refresh while static UI payloads remain valid; clearing the cache
+            // here forced the entire UI to be rerasterized for every camera frame. Payloads that
+            // contain Video primitives are already ineligible for caching through
+            // moving_paint_layer_payload_resource_generation().
             gr_context.reset(None);
-            self.renderer_cache.clear();
             self.invalidate_visible_frame_fingerprint();
         }
         Ok(result)
@@ -2972,7 +3041,7 @@ impl SceneRenderer {
 
     /// Render the given state to the surface.
     pub fn render(&mut self, frame: &mut RenderFrame<'_>, state: &RenderState) -> RenderTimings {
-        self.render_with_draw_profile(frame, state, false)
+        self.render_with_draw_profile(frame, state, false, None)
     }
 
     pub fn render_profiled(
@@ -2980,7 +3049,27 @@ impl SceneRenderer {
         frame: &mut RenderFrame<'_>,
         state: &RenderState,
     ) -> RenderTimings {
-        self.render_with_draw_profile(frame, state, true)
+        self.render_with_draw_profile(frame, state, true, None)
+    }
+
+    #[cfg(any(test, all(feature = "drm", target_os = "linux")))]
+    pub(crate) fn render_with_before_flush(
+        &mut self,
+        frame: &mut RenderFrame<'_>,
+        state: &RenderState,
+        before_flush: &mut dyn FnMut(),
+    ) -> RenderTimings {
+        self.render_with_draw_profile(frame, state, false, Some(before_flush))
+    }
+
+    #[cfg(any(test, all(feature = "drm", target_os = "linux")))]
+    pub(crate) fn render_profiled_with_before_flush(
+        &mut self,
+        frame: &mut RenderFrame<'_>,
+        state: &RenderState,
+        before_flush: &mut dyn FnMut(),
+    ) -> RenderTimings {
+        self.render_with_draw_profile(frame, state, true, Some(before_flush))
     }
 
     fn render_with_draw_profile(
@@ -2988,6 +3077,7 @@ impl SceneRenderer {
         frame: &mut RenderFrame<'_>,
         state: &RenderState,
         profile_draw: bool,
+        mut before_flush: Option<&mut dyn FnMut()>,
     ) -> RenderTimings {
         let started_at = Instant::now();
         let draw_started_at = Instant::now();
@@ -3028,7 +3118,7 @@ impl SceneRenderer {
             };
 
             let draw = draw_started_at.elapsed();
-            let flush = frame.flush();
+            let flush = flush_render_frame(frame, &mut before_flush);
 
             return RenderTimings {
                 total: started_at.elapsed(),
@@ -3049,6 +3139,7 @@ impl SceneRenderer {
                 started_at,
                 draw_started_at,
                 None,
+                &mut before_flush,
             );
         }
 
@@ -3067,6 +3158,7 @@ impl SceneRenderer {
                 renderer_cache: &mut self.renderer_cache,
                 frame: &mut cache_frame,
                 gpu_context: frame.direct_context.as_deref_mut(),
+                animation_active: state.animate,
             };
             Self::render_nodes_with_cache_tracking(
                 canvas,
@@ -3091,6 +3183,7 @@ impl SceneRenderer {
                 renderer_cache: &mut self.renderer_cache,
                 frame: &mut cache_frame,
                 gpu_context: frame.direct_context.as_deref_mut(),
+                animation_active: state.animate,
             };
             Self::render_nodes_with_cache_tracking(
                 canvas,
@@ -3107,7 +3200,7 @@ impl SceneRenderer {
         };
 
         let draw = draw_started_at.elapsed();
-        let flush = frame.flush();
+        let flush = flush_render_frame(frame, &mut before_flush);
 
         RenderTimings {
             total: started_at.elapsed(),
@@ -3128,6 +3221,7 @@ impl SceneRenderer {
         started_at: Instant,
         draw_started_at: Instant,
         renderer_cache: Option<Box<RendererCacheFrameStats>>,
+        before_flush: &mut Option<&mut dyn FnMut()>,
     ) -> RenderTimings {
         let canvas = frame.surface.canvas();
         canvas.clear(state.clear_color);
@@ -3139,7 +3233,7 @@ impl SceneRenderer {
             &mut instrumentation,
         );
         let draw = draw_started_at.elapsed();
-        let flush = frame.flush();
+        let flush = flush_render_frame(frame, before_flush);
 
         RenderTimings {
             total: started_at.elapsed(),
@@ -3181,20 +3275,6 @@ impl SceneRenderer {
     ) {
         let has_own_nodes = layer.metrics.own_primitive_count > 0;
         if !has_own_nodes {
-            Self::render_paint_layer_direct_with_cache_tracking(
-                canvas,
-                layer,
-                options,
-                cache_tracking,
-                eligibility,
-                instrumentation,
-            );
-            return;
-        }
-
-        if layer.policy == PaintLayerPolicy::DynamicRedraw
-            && layer.reason == PaintLayerReason::Animation
-        {
             Self::render_paint_layer_direct_with_cache_tracking(
                 canvas,
                 layer,
@@ -3327,6 +3407,28 @@ impl SceneRenderer {
             return;
         }
 
+        if cache_tracking.animation_active
+            && layer.policy == PaintLayerPolicy::DynamicRedraw
+            && layer.reason == PaintLayerReason::Animation
+        {
+            // Repeated quantized animation samples can legitimately produce the same content key
+            // on adjacent presented frames. Do not mistake that for settled content: otherwise an
+            // A,A,B,B,C,C animation would store every intermediate payload. Existing exact-key
+            // hits above remain safe; defer all new dynamic stores until animation is inactive.
+            cache_tracking
+                .frame
+                .record_rejection(RendererCacheRejectionReason::AdmissionThreshold);
+            Self::render_paint_layer_direct_with_cache_tracking(
+                canvas,
+                layer,
+                options,
+                cache_tracking,
+                eligibility,
+                instrumentation,
+            );
+            return;
+        }
+
         let Some(bytes) = key.byte_len() else {
             cache_tracking
                 .frame
@@ -3346,6 +3448,7 @@ impl SceneRenderer {
         if paint_layer_cache_bypass_low_value(
             admission_estimate,
             cache_tracking.gpu_context.is_some(),
+            layer.reason,
         ) {
             cache_tracking.frame.record_low_value_bypass();
             if renderer_cache_diagnostics_enabled() {
@@ -3379,7 +3482,10 @@ impl SceneRenderer {
 
         if !cache_tracking
             .renderer_cache
-            .moving_layer_visible_before_store_satisfied(key)
+            .moving_layer_visible_before_store_satisfied(
+                key,
+                paint_layer_minimum_visible_frames_before_store(layer),
+            )
         {
             cache_tracking
                 .frame
@@ -6541,6 +6647,18 @@ mod tests {
         height: u32,
         scene: RenderScene,
     ) -> (Vec<u8>, RenderTimings) {
+        render_scene_graph_to_pixels_and_timings_with_renderer_animation(
+            renderer, width, height, scene, false,
+        )
+    }
+
+    fn render_scene_graph_to_pixels_and_timings_with_renderer_animation(
+        renderer: &mut SceneRenderer,
+        width: u32,
+        height: u32,
+        scene: RenderScene,
+        animation_active: bool,
+    ) -> (Vec<u8>, RenderTimings) {
         let info = skia_safe::ImageInfo::new(
             (width as i32, height as i32),
             skia_safe::ColorType::RGBA8888,
@@ -6550,7 +6668,7 @@ mod tests {
         let mut surface = skia_safe::surfaces::raster(&info, None, None)
             .expect("raster surface should be created for renderer test");
 
-        let state = RenderState::new(scene, Color::TRANSPARENT, 1, false);
+        let state = RenderState::new(scene, Color::TRANSPARENT, 1, animation_active);
         let timings = {
             let mut frame = RenderFrame::new(&mut surface, None);
             renderer.render(&mut frame, &state)
@@ -6737,6 +6855,18 @@ mod tests {
             tx: 0.0,
             ty: 0.0,
         });
+        let quarter_turn = MovingLayerEligibility::root().with_transform(Affine2 {
+            xx: 0.0,
+            yx: -1.0,
+            xy: 1.0,
+            yy: 0.0,
+            tx: 0.0,
+            ty: 2560.0,
+        });
+        let fractional_quarter_turn = MovingLayerEligibility::root().with_transform(Affine2 {
+            tx: 0.5,
+            ..quarter_turn.current_transform
+        });
 
         assert_eq!(
             text_payload_gpu_subpixel_phase(&layer, fractional_scroll, true),
@@ -6752,6 +6882,14 @@ mod tests {
         );
         assert_eq!(
             text_payload_gpu_subpixel_phase(&layer, scaled, true),
+            Err(RendererCacheRejectionReason::UnsupportedTransform)
+        );
+        assert_eq!(
+            text_payload_gpu_subpixel_phase(&layer, quarter_turn, true),
+            Ok(PaintLayerSubpixelPhase::default())
+        );
+        assert_eq!(
+            text_payload_gpu_subpixel_phase(&layer, fractional_quarter_turn, true),
             Err(RendererCacheRejectionReason::UnsupportedTransform)
         );
 
@@ -6784,6 +6922,43 @@ mod tests {
         let state = RenderState::new(scene, Color::TRANSPARENT, 1, false);
         let mut frame = RenderFrame::new(&mut surface, None);
         renderer.render_profiled(&mut frame, &state)
+    }
+
+    #[test]
+    fn before_flush_hook_runs_once_for_direct_and_cache_tracked_frames() {
+        for (profiled, scene) in [
+            (
+                false,
+                RenderScene {
+                    nodes: vec![RenderNode::Primitive(DrawPrimitive::Rect(
+                        0.0, 0.0, 8.0, 8.0, 0xFFFFFFFF,
+                    ))],
+                },
+            ),
+            (true, translated_candidate_scene(1)),
+        ] {
+            let info = skia_safe::ImageInfo::new(
+                (48, 32),
+                skia_safe::ColorType::RGBA8888,
+                skia_safe::AlphaType::Premul,
+                None,
+            );
+            let mut surface = skia_safe::surfaces::raster(&info, None, None)
+                .expect("raster surface should be created for renderer test");
+            let mut renderer = SceneRenderer::new();
+            let state = RenderState::new(scene, Color::TRANSPARENT, 1, false);
+            let mut frame = RenderFrame::new(&mut surface, None);
+            let mut calls = 0;
+            let mut before_flush = || calls += 1;
+
+            if profiled {
+                renderer.render_profiled_with_before_flush(&mut frame, &state, &mut before_flush);
+            } else {
+                renderer.render_with_before_flush(&mut frame, &state, &mut before_flush);
+            }
+
+            assert_eq!(calls, 1);
+        }
     }
 
     #[test]
@@ -6871,18 +7046,18 @@ mod tests {
         };
 
         let frame = cache.begin_frame();
-        assert!(!cache.moving_layer_visible_before_store_satisfied(key));
+        assert!(!cache.moving_layer_visible_before_store_satisfied(key, 1));
         cache.end_frame(frame);
 
         let frame = cache.begin_frame();
         cache.end_frame(frame);
 
         let frame = cache.begin_frame();
-        assert!(!cache.moving_layer_visible_before_store_satisfied(key));
+        assert!(!cache.moving_layer_visible_before_store_satisfied(key, 1));
         cache.end_frame(frame);
 
         let frame = cache.begin_frame();
-        assert!(cache.moving_layer_visible_before_store_satisfied(key));
+        assert!(cache.moving_layer_visible_before_store_satisfied(key, 1));
         cache.end_frame(frame);
     }
 
@@ -7115,8 +7290,26 @@ mod tests {
             visible_pixels: 9_801,
         };
 
-        assert!(paint_layer_cache_bypass_low_value(estimate, true));
-        assert!(!paint_layer_cache_bypass_low_value(estimate, false));
+        assert!(paint_layer_cache_bypass_low_value(
+            estimate,
+            true,
+            PaintLayerReason::StableSubtree
+        ));
+        assert!(!paint_layer_cache_bypass_low_value(
+            estimate,
+            false,
+            PaintLayerReason::StableSubtree
+        ));
+        assert!(!paint_layer_cache_bypass_low_value(
+            estimate,
+            true,
+            PaintLayerReason::Nearby
+        ));
+        assert!(!paint_layer_cache_bypass_low_value(
+            estimate,
+            true,
+            PaintLayerReason::Animation
+        ));
     }
 
     #[test]
@@ -7415,37 +7608,173 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_animation_paint_layer_draws_direct_without_payload_store() {
+    fn stable_dynamic_animation_paint_layer_caches_after_two_identical_frames() {
         let children = moving_paint_layer_payload_test_children();
         let transform = Affine2::translation(8.0, 5.0);
-        let direct = RenderNode::Transform {
-            transform,
-            children: children.clone(),
+        let scene = RenderScene {
+            nodes: vec![RenderNode::Transform {
+                transform,
+                children: vec![RenderNode::PaintLayer(RenderPaintLayer::from_children(
+                    199,
+                    crate::tree::geometry::Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 22.0,
+                        height: 16.0,
+                    },
+                    PaintLayerPlacement::ScrollMoving,
+                    PaintLayerPolicy::DynamicRedraw,
+                    PaintLayerReason::Animation,
+                    3,
+                    children,
+                ))],
+            }],
         };
-        let candidate = RenderNode::Transform {
-            transform,
-            children: vec![RenderNode::PaintLayer(RenderPaintLayer::from_children(
-                199,
+        let expected = render_scene_graph_to_pixels(
+            48,
+            32,
+            RenderScene {
+                nodes: vec![RenderNode::Transform {
+                    transform,
+                    children: moving_paint_layer_payload_test_children(),
+                }],
+            },
+        );
+        let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+            enabled: true,
+            ..RendererCacheConfig::default()
+        });
+
+        let (first_pixels, first_timings) = render_scene_graph_to_pixels_and_timings_with_renderer(
+            &mut renderer,
+            48,
+            32,
+            scene.clone(),
+        );
+        assert_eq!(first_pixels, expected);
+        let first_stats = first_timings
+            .renderer_cache
+            .expect("dynamic layer should report deferred admission");
+        assert_eq!(first_stats.paint_layer.rejected_admission, 1);
+        assert_eq!(first_stats.paint_layer.stores, 0);
+
+        let (second_pixels, second_timings) =
+            render_scene_graph_to_pixels_and_timings_with_renderer(
+                &mut renderer,
+                48,
+                32,
+                scene.clone(),
+            );
+        assert_eq!(second_pixels, expected);
+        let second_stats = second_timings
+            .renderer_cache
+            .expect("second identical frame should report a store");
+        assert_eq!(second_stats.paint_layer.misses, 1);
+        assert_eq!(second_stats.paint_layer.stores, 1);
+
+        let (third_pixels, third_timings) =
+            render_scene_graph_to_pixels_and_timings_with_renderer(&mut renderer, 48, 32, scene);
+        assert_eq!(third_pixels, expected);
+        let third_stats = third_timings
+            .renderer_cache
+            .expect("third identical frame should report a cache hit");
+        assert_eq!(third_stats.paint_layer.hits, 1);
+        assert_eq!(third_stats.paint_layer.stores, 0);
+    }
+
+    #[test]
+    fn changing_dynamic_animation_paint_layer_does_not_churn_payload_cache() {
+        let scene = |generation: u64, color: u32| RenderScene {
+            nodes: vec![RenderNode::PaintLayer(RenderPaintLayer::from_children(
+                200,
                 crate::tree::geometry::Rect {
-                    x: 0.0,
-                    y: 0.0,
+                    x: 4.0,
+                    y: 3.0,
                     width: 22.0,
                     height: 16.0,
                 },
-                PaintLayerPlacement::ScrollMoving,
+                PaintLayerPlacement::Fixed,
                 PaintLayerPolicy::DynamicRedraw,
                 PaintLayerReason::Animation,
-                3,
-                children,
+                generation,
+                vec![RenderNode::Primitive(DrawPrimitive::Rect(
+                    4.0, 3.0, 22.0, 16.0, color,
+                ))],
             ))],
         };
+        let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+            enabled: true,
+            ..RendererCacheConfig::default()
+        });
 
-        let timings = assert_moving_paint_layer_fallback_matches_direct(48, 32, direct, candidate);
+        for (generation, color) in [(1, 0xFF0000FF), (2, 0x00FF00FF), (3, 0x0000FFFF)] {
+            let (_pixels, timings) = render_scene_graph_to_pixels_and_timings_with_renderer(
+                &mut renderer,
+                32,
+                24,
+                scene(generation, color),
+            );
+            let stats = timings
+                .renderer_cache
+                .expect("dynamic layer should report deferred admission");
+            assert_eq!(stats.paint_layer.rejected_admission, 1);
+            assert_eq!(stats.paint_layer.stores, 0);
+            assert_eq!(stats.paint_layer.current_entries, 0);
+            assert!(
+                renderer.renderer_cache.visible_admissions.len() <= 2,
+                "changing dynamic keys must keep the admission map bounded"
+            );
+        }
+    }
 
-        assert!(
-            timings.renderer_cache.is_none(),
-            "direct dynamic paint layer should not become a renderer-cache candidate"
-        );
+    #[test]
+    fn repeated_active_animation_samples_do_not_churn_payload_cache() {
+        let scene = |generation: u64, color: u32| RenderScene {
+            nodes: vec![RenderNode::PaintLayer(RenderPaintLayer::from_children(
+                201,
+                crate::tree::geometry::Rect {
+                    x: 4.0,
+                    y: 3.0,
+                    width: 22.0,
+                    height: 16.0,
+                },
+                PaintLayerPlacement::Fixed,
+                PaintLayerPolicy::DynamicRedraw,
+                PaintLayerReason::Animation,
+                generation,
+                vec![RenderNode::Primitive(DrawPrimitive::Rect(
+                    4.0, 3.0, 22.0, 16.0, color,
+                ))],
+            ))],
+        };
+        let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+            enabled: true,
+            ..RendererCacheConfig::default()
+        });
+
+        for (generation, color) in [
+            (1, 0xFF0000FF),
+            (1, 0xFF0000FF),
+            (2, 0x00FF00FF),
+            (2, 0x00FF00FF),
+            (3, 0x0000FFFF),
+            (3, 0x0000FFFF),
+        ] {
+            let (_pixels, timings) =
+                render_scene_graph_to_pixels_and_timings_with_renderer_animation(
+                    &mut renderer,
+                    32,
+                    24,
+                    scene(generation, color),
+                    true,
+                );
+            let stats = timings
+                .renderer_cache
+                .expect("active dynamic layer should report deferred admission");
+            assert_eq!(stats.paint_layer.rejected_admission, 1);
+            assert_eq!(stats.paint_layer.stores, 0);
+            assert_eq!(stats.paint_layer.current_entries, 0);
+        }
     }
 
     #[test]

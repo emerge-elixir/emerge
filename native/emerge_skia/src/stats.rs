@@ -127,6 +127,18 @@ pub enum RendererTimingMetric {
     VideoSubmitToRelease,
     VideoRetireFence,
     VideoSubmitToPresent,
+    DrmForcedGpuFinishBeforeSwap,
+    DrmForcedGpuFinishAfterSwap,
+    DrmGpuQueueCompletion,
+    DrmEglSwapBuffers,
+    DrmGbmLockFrontBuffer,
+    DrmFramebufferLookup,
+    DrmPreparedToCommit,
+    DrmPreviousFlipToCommit,
+    DrmAtomicCommitIoctl,
+    DrmCommitToKernelPageFlip,
+    DrmKernelPageFlipInterval,
+    DrmPageFlipDispatchDelay,
     DrmCommitToPageFlip,
     Layout,
     Refresh,
@@ -143,7 +155,7 @@ pub enum RendererTimingMetric {
 }
 
 impl RendererTimingMetric {
-    pub const COUNT: usize = 29;
+    pub const COUNT: usize = 41;
     pub const ALL: [Self; Self::COUNT] = [
         Self::Render,
         Self::RenderDraw,
@@ -161,6 +173,18 @@ impl RendererTimingMetric {
         Self::VideoSubmitToRelease,
         Self::VideoRetireFence,
         Self::VideoSubmitToPresent,
+        Self::DrmForcedGpuFinishBeforeSwap,
+        Self::DrmForcedGpuFinishAfterSwap,
+        Self::DrmGpuQueueCompletion,
+        Self::DrmEglSwapBuffers,
+        Self::DrmGbmLockFrontBuffer,
+        Self::DrmFramebufferLookup,
+        Self::DrmPreparedToCommit,
+        Self::DrmPreviousFlipToCommit,
+        Self::DrmAtomicCommitIoctl,
+        Self::DrmCommitToKernelPageFlip,
+        Self::DrmKernelPageFlipInterval,
+        Self::DrmPageFlipDispatchDelay,
         Self::DrmCommitToPageFlip,
         Self::Layout,
         Self::Refresh,
@@ -199,7 +223,19 @@ impl RendererTimingMetric {
             Self::VideoSubmitToRelease => "video submit->lease release",
             Self::VideoRetireFence => "video retired fence",
             Self::VideoSubmitToPresent => "video submit->page flip",
-            Self::DrmCommitToPageFlip => "drm atomic commit->page flip",
+            Self::DrmForcedGpuFinishBeforeSwap => "drm forced GPU finish before swap",
+            Self::DrmForcedGpuFinishAfterSwap => "drm forced GPU finish after swap",
+            Self::DrmGpuQueueCompletion => "drm GPU queue completion span",
+            Self::DrmEglSwapBuffers => "drm eglSwapBuffers",
+            Self::DrmGbmLockFrontBuffer => "drm GBM lock front buffer",
+            Self::DrmFramebufferLookup => "drm framebuffer lookup",
+            Self::DrmPreparedToCommit => "drm prepared->atomic commit",
+            Self::DrmPreviousFlipToCommit => "drm previous kernel flip->next commit",
+            Self::DrmAtomicCommitIoctl => "drm atomic commit ioctl",
+            Self::DrmCommitToKernelPageFlip => "drm atomic commit->kernel page flip",
+            Self::DrmKernelPageFlipInterval => "drm kernel page flip interval",
+            Self::DrmPageFlipDispatchDelay => "drm kernel page flip->event dispatch",
+            Self::DrmCommitToPageFlip => "drm atomic commit->event processed",
             Self::Layout => "layout",
             Self::Refresh => "refresh",
             Self::EventResolve => "event resolve",
@@ -275,6 +311,9 @@ pub struct VideoPipelineStatsSnapshot {
     pub primary_committed: u64,
     pub primary_presented: u64,
     pub video_primary_presented: u64,
+    pub page_flip_events: u64,
+    pub page_flip_sequence_steps: u64,
+    pub missed_vblanks: u64,
     pub current_pending: u64,
     pub current_direct_imports: u64,
     pub current_retired_imports: u64,
@@ -489,6 +528,9 @@ struct VideoPipelineStatsWindow {
     primary_committed: u64,
     primary_presented: u64,
     video_primary_presented: u64,
+    page_flip_events: u64,
+    page_flip_sequence_steps: u64,
+    missed_vblanks: u64,
     current_pending: u64,
     current_direct_imports: u64,
     current_retired_imports: u64,
@@ -517,6 +559,9 @@ impl VideoPipelineStatsWindow {
             primary_committed: self.primary_committed,
             primary_presented: self.primary_presented,
             video_primary_presented: self.video_primary_presented,
+            page_flip_events: self.page_flip_events,
+            page_flip_sequence_steps: self.page_flip_sequence_steps,
+            missed_vblanks: self.missed_vblanks,
             current_pending: self.current_pending,
             current_direct_imports: self.current_direct_imports,
             current_retired_imports: self.current_retired_imports,
@@ -974,6 +1019,66 @@ impl RendererStatsCollector {
         });
     }
 
+    pub fn record_drm_forced_gpu_finish_before_swap(&self, duration: Duration) {
+        self.record_timing(RendererTimingMetric::DrmForcedGpuFinishBeforeSwap, duration);
+    }
+
+    pub fn record_drm_forced_gpu_finish_after_swap(&self, duration: Duration) {
+        self.record_timing(RendererTimingMetric::DrmForcedGpuFinishAfterSwap, duration);
+    }
+
+    pub fn record_drm_gpu_queue_completion(&self, duration: Duration) {
+        self.record_timing(RendererTimingMetric::DrmGpuQueueCompletion, duration);
+    }
+
+    pub fn record_drm_egl_swap_buffers(&self, duration: Duration) {
+        self.record_timing(RendererTimingMetric::DrmEglSwapBuffers, duration);
+    }
+
+    pub fn record_drm_gbm_lock_front_buffer(&self, duration: Duration) {
+        self.record_timing(RendererTimingMetric::DrmGbmLockFrontBuffer, duration);
+    }
+
+    pub fn record_drm_framebuffer_lookup(&self, duration: Duration) {
+        self.record_timing(RendererTimingMetric::DrmFramebufferLookup, duration);
+    }
+
+    pub fn record_drm_prepared_to_commit(&self, duration: Duration) {
+        self.record_timing(RendererTimingMetric::DrmPreparedToCommit, duration);
+    }
+
+    pub fn record_drm_previous_flip_to_commit(&self, duration: Duration) {
+        self.record_timing(RendererTimingMetric::DrmPreviousFlipToCommit, duration);
+    }
+
+    pub fn record_drm_atomic_commit_ioctl(&self, duration: Duration) {
+        self.record_timing(RendererTimingMetric::DrmAtomicCommitIoctl, duration);
+    }
+
+    pub fn record_drm_commit_to_kernel_page_flip(&self, duration: Duration) {
+        self.record_timing(RendererTimingMetric::DrmCommitToKernelPageFlip, duration);
+    }
+
+    pub fn record_drm_kernel_page_flip_interval(&self, duration: Duration) {
+        self.record_timing(RendererTimingMetric::DrmKernelPageFlipInterval, duration);
+    }
+
+    pub fn record_drm_page_flip_dispatch_delay(&self, duration: Duration) {
+        self.record_timing(RendererTimingMetric::DrmPageFlipDispatchDelay, duration);
+    }
+
+    pub fn record_drm_page_flip_sequence(&self, sequence_delta: Option<u32>) {
+        self.update_video_pipeline(|video| {
+            video.page_flip_events = video.page_flip_events.saturating_add(1);
+            if let Some(delta) = sequence_delta {
+                let delta = u64::from(delta);
+                video.page_flip_sequence_steps =
+                    video.page_flip_sequence_steps.saturating_add(delta);
+                video.missed_vblanks = video.missed_vblanks.saturating_add(delta.saturating_sub(1));
+            }
+        });
+    }
+
     pub fn record_drm_primary_prepared(&self, contains_new_video: bool) {
         self.update_video_pipeline(|video| {
             video.primary_prepared = video.primary_prepared.saturating_add(1);
@@ -1329,7 +1434,8 @@ pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSn
             "    imports: imported={} ({:.1}/s) current_direct={} retired={} max_retired={} fences={}/{}\n",
             "    leases: released={} ({:.1}/s)\n",
             "    drm: prepared={} video_prepared={} stale={} stale_video={} no_free_gbm={}\n",
-            "    present: commit_attempts={} committed={} ebusy={} presented={} ({:.1}/s) video_presented={} ({:.1}/s) prepared_now={} in_flight_now={}"
+            "    present: commit_attempts={} committed={} ebusy={} presented={} ({:.1}/s) video_presented={} ({:.1}/s) prepared_now={} in_flight_now={}\n",
+            "    kms: flip_events={} sequence_steps={} missed_vblanks={}"
         ),
         video.submitted,
         per_second(video.submitted),
@@ -1359,6 +1465,9 @@ pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSn
         per_second(video.video_primary_presented),
         video.current_prepared,
         video.current_in_flight,
+        video.page_flip_events,
+        video.page_flip_sequence_steps,
+        video.missed_vblanks,
     ));
 
     message.push_str("\n\n  renderer cache\n");
@@ -2228,6 +2337,20 @@ mod tests {
         stats.record_video_retired_fence_released(Duration::from_millis(4));
         stats.record_video_lease_released(Duration::from_millis(12));
         stats.set_video_import_gauges(1, 0);
+        stats.record_drm_forced_gpu_finish_before_swap(Duration::from_millis(5));
+        stats.record_drm_forced_gpu_finish_after_swap(Duration::from_millis(1));
+        stats.record_drm_gpu_queue_completion(Duration::from_millis(9));
+        stats.record_drm_egl_swap_buffers(Duration::from_millis(2));
+        stats.record_drm_gbm_lock_front_buffer(Duration::from_millis(3));
+        stats.record_drm_framebuffer_lookup(Duration::from_millis(1));
+        stats.record_drm_prepared_to_commit(Duration::from_millis(4));
+        stats.record_drm_previous_flip_to_commit(Duration::from_millis(6));
+        stats.record_drm_atomic_commit_ioctl(Duration::from_millis(1));
+        stats.record_drm_commit_to_kernel_page_flip(Duration::from_millis(14));
+        stats.record_drm_kernel_page_flip_interval(Duration::from_millis(20));
+        stats.record_drm_page_flip_dispatch_delay(Duration::from_millis(2));
+        stats.record_drm_page_flip_sequence(None);
+        stats.record_drm_page_flip_sequence(Some(2));
         stats.record_drm_primary_prepared(true);
         stats.record_drm_primary_commit_attempt();
         stats.record_drm_primary_commit_ebusy();
@@ -2298,7 +2421,19 @@ mod tests {
         assert!(message.contains("    video submit->lease release: avg=12.000 ms"));
         assert!(message.contains("    video retired fence: avg=4.000 ms"));
         assert!(message.contains("    video submit->page flip: avg=19.000 ms"));
-        assert!(message.contains("    drm atomic commit->page flip: avg=17.000 ms"));
+        assert!(message.contains("    drm forced GPU finish before swap: avg=5.000 ms"));
+        assert!(message.contains("    drm forced GPU finish after swap: avg=1.000 ms"));
+        assert!(message.contains("    drm GPU queue completion span: avg=9.000 ms"));
+        assert!(message.contains("    drm eglSwapBuffers: avg=2.000 ms"));
+        assert!(message.contains("    drm GBM lock front buffer: avg=3.000 ms"));
+        assert!(message.contains("    drm framebuffer lookup: avg=1.000 ms"));
+        assert!(message.contains("    drm prepared->atomic commit: avg=4.000 ms"));
+        assert!(message.contains("    drm previous kernel flip->next commit: avg=6.000 ms"));
+        assert!(message.contains("    drm atomic commit ioctl: avg=1.000 ms"));
+        assert!(message.contains("    drm atomic commit->kernel page flip: avg=14.000 ms"));
+        assert!(message.contains("    drm kernel page flip interval: avg=20.000 ms"));
+        assert!(message.contains("    drm kernel page flip->event dispatch: avg=2.000 ms"));
+        assert!(message.contains("    drm atomic commit->event processed: avg=17.000 ms"));
         assert!(message.contains("    layout: avg=3.000 ms"));
         assert!(message.contains("    refresh: avg=1.000 ms"));
         assert!(message.contains("    event resolve: avg=2.000 ms"));
@@ -2313,6 +2448,7 @@ mod tests {
         assert!(message.contains("leases: released=1"));
         assert!(message.contains("drm: prepared=1 video_prepared=1"));
         assert!(message.contains("present: commit_attempts=2 committed=1 ebusy=1 presented=1"));
+        assert!(message.contains("kms: flip_events=2 sequence_steps=2 missed_vblanks=1"));
         assert!(message.contains("  renderer cache\n"));
         assert!(message.contains("    paint_layer\n"));
         assert!(message.contains(

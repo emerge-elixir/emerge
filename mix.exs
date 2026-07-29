@@ -62,7 +62,7 @@ defmodule Emerge.MixProject do
 
   defp deps do
     [
-      {:rustler, "~> 0.37.0", optional: true},
+      {:rustler, "~> 0.38.0", optional: true},
       {:rustler_precompiled, "~> 0.8.4"},
       {:jason, "~> 1.4"},
       {:benchee, "~> 1.3", only: :dev, runtime: false},
