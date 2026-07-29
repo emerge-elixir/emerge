@@ -79,7 +79,7 @@ type LayoutFrame<'a> = (Binary<'a>, f32, f32, f32, f32);
 type LayoutFrames<'a> = Vec<LayoutFrame<'a>>;
 
 /// Bump whenever the public `EmergeSkia.stats/2` payload shape changes.
-const STATS_SCHEMA_VERSION: u64 = 15;
+const STATS_SCHEMA_VERSION: u64 = 17;
 
 #[derive(Clone, Copy, Debug, rustler::NifMap)]
 struct StatsConfigureNif {
@@ -102,6 +102,7 @@ struct StatsSnapshotNif {
     window: StatsWindowNif,
     frames: StatsFrameSnapshotNif,
     timings: StatsTimingSnapshotNif,
+    drm: StatsDrmSnapshotNif,
     counters: StatsCounterSnapshotNif,
 }
 
@@ -145,6 +146,26 @@ struct DurationStatsNif {
     avg_ms: f64,
     min_ms: f64,
     max_ms: f64,
+}
+
+#[derive(Clone, Copy, Debug, rustler::NifMap)]
+struct StatsDrmSnapshotNif {
+    forced_gpu_finish_before_swap: DurationStatsNif,
+    forced_gpu_finish_after_swap: DurationStatsNif,
+    gpu_queue_completion: DurationStatsNif,
+    egl_swap_buffers: DurationStatsNif,
+    gbm_lock_front_buffer: DurationStatsNif,
+    framebuffer_lookup: DurationStatsNif,
+    prepared_to_commit: DurationStatsNif,
+    previous_flip_to_commit: DurationStatsNif,
+    atomic_commit_ioctl: DurationStatsNif,
+    commit_to_kernel_page_flip: DurationStatsNif,
+    kernel_page_flip_interval: DurationStatsNif,
+    page_flip_dispatch_delay: DurationStatsNif,
+    commit_to_event_processed: DurationStatsNif,
+    page_flip_events: u64,
+    page_flip_sequence_steps: u64,
+    missed_vblanks: u64,
 }
 
 #[derive(Clone, Copy, Debug, rustler::NifMap)]
@@ -252,6 +273,28 @@ impl StatsSnapshotNif {
                 refresh: timing(RendererTimingMetric::Refresh),
                 event_resolve: timing(RendererTimingMetric::EventResolve),
                 patch_tree_process: timing(RendererTimingMetric::PatchTreeProcess),
+            },
+            drm: StatsDrmSnapshotNif {
+                forced_gpu_finish_before_swap: timing(
+                    RendererTimingMetric::DrmForcedGpuFinishBeforeSwap,
+                ),
+                forced_gpu_finish_after_swap: timing(
+                    RendererTimingMetric::DrmForcedGpuFinishAfterSwap,
+                ),
+                gpu_queue_completion: timing(RendererTimingMetric::DrmGpuQueueCompletion),
+                egl_swap_buffers: timing(RendererTimingMetric::DrmEglSwapBuffers),
+                gbm_lock_front_buffer: timing(RendererTimingMetric::DrmGbmLockFrontBuffer),
+                framebuffer_lookup: timing(RendererTimingMetric::DrmFramebufferLookup),
+                prepared_to_commit: timing(RendererTimingMetric::DrmPreparedToCommit),
+                previous_flip_to_commit: timing(RendererTimingMetric::DrmPreviousFlipToCommit),
+                atomic_commit_ioctl: timing(RendererTimingMetric::DrmAtomicCommitIoctl),
+                commit_to_kernel_page_flip: timing(RendererTimingMetric::DrmCommitToKernelPageFlip),
+                kernel_page_flip_interval: timing(RendererTimingMetric::DrmKernelPageFlipInterval),
+                page_flip_dispatch_delay: timing(RendererTimingMetric::DrmPageFlipDispatchDelay),
+                commit_to_event_processed: timing(RendererTimingMetric::DrmCommitToPageFlip),
+                page_flip_events: snapshot.video_pipeline.page_flip_events,
+                page_flip_sequence_steps: snapshot.video_pipeline.page_flip_sequence_steps,
+                missed_vblanks: snapshot.video_pipeline.missed_vblanks,
             },
             counters: StatsCounterSnapshotNif {
                 layout_cache: LayoutCacheStatsNif::from(snapshot.layout_cache),
@@ -796,6 +839,8 @@ struct StartConfig {
     #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
     drm_retry_interval_ms: u32,
     #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
+    drm_force_gpu_finish: bool,
+    #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
     drm_hw_cursor: bool,
     #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
     drm_cursor_overrides: Vec<DrmCursorOverrideConfig>,
@@ -873,6 +918,7 @@ struct StartOptsNif {
     drm_cursor: Vec<DrmCursorOverrideNif>,
     drm_startup_retries: u32,
     drm_retry_interval_ms: u32,
+    drm_force_gpu_finish: bool,
     hw_cursor: bool,
     input_log: bool,
     render_log: bool,
@@ -1008,6 +1054,9 @@ fn start_native_renderer_with_config(
     } else {
         None
     };
+    let release_tx = video::spawn_release_worker()
+        .map_err(|error| rustler::Error::Term(Box::new(error.to_string())))?;
+
     let mut handles = RendererHandles {
         heartbeat_handle: Some(spawn_running_heartbeat(
             Arc::clone(&running_flag),
@@ -1021,7 +1070,6 @@ fn start_native_renderer_with_config(
 
     let initial_width = config.width;
     let initial_height = config.height;
-    let release_tx = video::spawn_release_worker();
     let video_registry = Arc::new(VideoRegistry::new(release_tx, renderer_stats.clone()));
     #[cfg(any(
         all(feature = "wayland", target_os = "linux"),
@@ -1193,8 +1241,10 @@ fn start_native_renderer_with_config(
                 startup_retries: config.drm_startup_retries,
                 cursor_overrides: config.drm_cursor_overrides.clone(),
                 retry_interval_ms: config.drm_retry_interval_ms,
+                force_gpu_finish: config.drm_force_gpu_finish,
                 hw_cursor: config.drm_hw_cursor,
                 render_log: log_render,
+                renderer_stats_log: config.renderer_stats_log,
                 renderer_cache_config: config.renderer_cache_config,
             };
 
@@ -1370,6 +1420,7 @@ fn start(
                 drm_card: None,
                 drm_startup_retries: 40,
                 drm_retry_interval_ms: 250,
+                drm_force_gpu_finish: false,
                 drm_hw_cursor: true,
                 drm_cursor_overrides: Vec::new(),
                 drm_input_log: false,
@@ -1422,6 +1473,7 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
             drm_card: opts.drm_card,
             drm_startup_retries: opts.drm_startup_retries,
             drm_retry_interval_ms: opts.drm_retry_interval_ms,
+            drm_force_gpu_finish: opts.drm_force_gpu_finish,
             drm_hw_cursor: opts.hw_cursor,
             drm_cursor_overrides,
             drm_input_log: opts.input_log,

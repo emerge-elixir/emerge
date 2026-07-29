@@ -282,7 +282,11 @@ defmodule EmergeSkia.TreeTest do
 
       {:ok, disabled_stats} = Native.stats(tree, :peek)
       refute disabled_stats.enabled
-      assert disabled_stats.version == 15
+      assert disabled_stats.version == 17
+      assert disabled_stats.drm.missed_vblanks == 0
+      assert disabled_stats.drm.gpu_queue_completion.count == 0
+      assert disabled_stats.drm.egl_swap_buffers.count == 0
+      assert disabled_stats.drm.atomic_commit_ioctl.count == 0
       renderer_cache_stats = disabled_stats.counters.renderer_cache.paint_layer
       assert Map.has_key?(renderer_cache_stats, :draw_hit)
       refute Map.has_key?(renderer_cache_stats, :moved_hits)

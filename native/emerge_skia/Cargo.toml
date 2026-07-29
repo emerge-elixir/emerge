@@ -60,7 +60,7 @@ wayland = [
 drm = ["dep:drm", "dep:gbm", "dep:evdev"]
 
 [dependencies]
-rustler = "0.37"
+rustler = "0.38"
 objc2 = { version = "0.6", optional = true }
 objc2-foundation = { version = "0.3", features = ["NSArray", "NSAttributedString", "NSDate", "NSRange", "NSString", "NSRunLoop"], optional = true }
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSCell", "NSControl", "NSEvent", "NSGraphics", "NSImage", "NSImageView", "NSPasteboard", "NSResponder", "NSRunningApplication", "NSTextInputClient", "NSTrackingArea", "NSView", "NSWindow"], optional = true }

@@ -226,10 +226,13 @@ The native layout-caching foundation is in place:
   - `renderer_animation_log: true` enables separate Wayland animation cadence
     trace logs without coupling them to renderer stats logs
   - `Native.stats/2` and `EmergeSkia.stats/2` expose peek/take/reset snapshots
-  - current public stats payload schema is version 15; renderer paint-layer
+  - current public stats payload schema is version 17; renderer paint-layer
     stats keep aggregate admission/cache counters and `prepare`/`draw_hit`
-    timings, but no longer expose removed moved-hit/miss or stale timing
-    breakdown fields
+    timings, while the `drm` section exposes EGL/GBM/atomic page-flip timing
+    splits, sampled asynchronous GPU queue completion spans, and kernel
+    flip-event, sequence-step, and missed-vblank counters; on V3D the timer
+    uses Mesa CPU-queue timestamps around submission and dependency completion,
+    so it is deliberately not labeled as active GPU execution time
 - macOS and Linux now share retained-tree update semantics through the
   `TreeUpdateEngine`: `TreeMsg` application, animation sample timing,
   frame-attrs preparation, refresh/recompute decisions, cached-registry reuse,
@@ -310,6 +313,16 @@ The native layout-caching foundation is in place:
   `child_refs`; content after the first nested paint-layer boundary is kept in
   child refs so dirty child layers preserve paint order relative to later clean
   siblings
+- retained `Nearby` fragments suppress damage-only child paint-layer boundaries
+  because the enclosing nearby layer already isolates the overlay; otherwise a
+  localized interaction can persist a sparse boundary topology that leaves later
+  borders and siblings direct. Scroll and declared/active-animation boundaries
+  remain independent and are preserved. Raspberry Pi 5 validation after interaction
+  held 50.0 presentations/s with zero missed vblanks, two panel candidates, and a
+  5.305 ms sampled GPU queue-completion span. Age-only stale-payload cleanup is
+  amortized to one GPU payload per frame so a group crossing the 120-frame age
+  threshold cannot all retire on one interaction frame; budget-pressure eviction
+  remains immediate.
 - paint-layer cache proof benchmarks are wired into Criterion for scrolling and
   animation; each case asserts cache store/hit behavior before measurement. The
   demo-like rich Borders showcase is also wired into Criterion layout animation
