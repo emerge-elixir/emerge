@@ -47,6 +47,7 @@ use crate::video::{VideoImportContext, VideoRegistry};
 use self::cursor_theme::{CURSOR_PLANE_SIZE, CursorVisual, DrmCursorTheme};
 
 const EGL_PLATFORM_GBM_KHR: EGLenum = 0x31D7;
+const EGL_OPENGL_ES3_BIT_KHR: EGLint = 0x0040;
 
 #[derive(Clone)]
 pub(crate) struct DrmBackendWake {
@@ -115,6 +116,7 @@ struct PreparedPrimaryFrame {
     pipeline_swap_done_at: Option<Instant>,
     bo: BufferObject<()>,
     fb: framebuffer::Handle,
+    video_sync_succeeded: bool,
     video_needs_cleanup: bool,
     present_submit_duration: Duration,
 }
@@ -949,11 +951,36 @@ fn drm_session_mode_changed(
 fn should_consider_unchanged_primary_skip(
     commit_in_flight: bool,
     primary_dirty: bool,
+    video_sync_required: bool,
     hw_cursor_enabled: bool,
     cursor_visible: bool,
     animate: bool,
 ) -> bool {
-    !commit_in_flight && primary_dirty && !animate && (hw_cursor_enabled || !cursor_visible)
+    !commit_in_flight
+        && primary_dirty
+        && !video_sync_required
+        && !animate
+        && (hw_cursor_enabled || !cursor_visible)
+}
+
+fn should_prepare_primary(
+    desired_generation: u64,
+    committed_generation: u64,
+    in_flight_generation: Option<u64>,
+    prepared_generation: Option<u64>,
+) -> bool {
+    desired_generation != committed_generation
+        && in_flight_generation != Some(desired_generation)
+        && prepared_generation != Some(desired_generation)
+}
+
+fn should_schedule_video_cleanup(
+    submitted_frame_needs_cleanup: bool,
+    newer_frame_completed_video_sync: bool,
+) -> bool {
+    // A successful sync for a newer primary has already polled the submitted frame's retired
+    // imports and carries forward any remaining cleanup requirement. A failed sync has not.
+    submitted_frame_needs_cleanup && !newer_frame_completed_video_sync
 }
 
 #[cfg(test)]
@@ -1142,23 +1169,41 @@ mod tests {
     #[test]
     fn unchanged_primary_skip_requires_idle_dirty_primary_with_cursor_coverage() {
         assert!(should_consider_unchanged_primary_skip(
-            false, true, true, true, false,
+            false, true, false, true, true, false,
         ));
         assert!(!should_consider_unchanged_primary_skip(
-            false, true, true, true, true,
+            false, true, false, true, true, true,
         ));
         assert!(!should_consider_unchanged_primary_skip(
-            true, true, true, true, false,
+            true, true, false, true, true, false,
         ));
         assert!(!should_consider_unchanged_primary_skip(
-            false, false, true, true, false,
+            false, false, false, true, true, false,
         ));
         assert!(!should_consider_unchanged_primary_skip(
-            false, true, false, true, false,
+            false, true, false, false, true, false,
         ));
         assert!(should_consider_unchanged_primary_skip(
-            false, true, false, false, false,
+            false, true, false, false, false, false,
         ));
+        assert!(!should_consider_unchanged_primary_skip(
+            false, true, true, true, true, false,
+        ));
+    }
+
+    #[test]
+    fn primary_preparation_can_pipeline_a_new_generation_behind_a_commit() {
+        assert!(should_prepare_primary(3, 1, Some(2), None));
+        assert!(!should_prepare_primary(2, 1, Some(2), None));
+        assert!(!should_prepare_primary(3, 1, Some(2), Some(3)));
+        assert!(!should_prepare_primary(3, 3, None, None));
+    }
+
+    #[test]
+    fn successful_newer_video_sync_supersedes_older_cleanup_wakeup() {
+        assert!(should_schedule_video_cleanup(true, false));
+        assert!(!should_schedule_video_cleanup(true, true));
+        assert!(!should_schedule_video_cleanup(false, false));
     }
 
     #[test]
@@ -1340,7 +1385,7 @@ fn init_egl(
         egl::SURFACE_TYPE as EGLint,
         egl::WINDOW_BIT as EGLint,
         egl::RENDERABLE_TYPE as EGLint,
-        egl::OPENGL_ES2_BIT as EGLint,
+        EGL_OPENGL_ES3_BIT_KHR,
         egl::RED_SIZE as EGLint,
         8,
         egl::GREEN_SIZE as EGLint,
@@ -1370,7 +1415,7 @@ fn init_egl(
 
     let context_attribs: [EGLint; 3] = [
         egl::CONTEXT_CLIENT_VERSION as EGLint,
-        2,
+        3,
         egl::NONE as EGLint,
     ];
     let context =
@@ -1468,13 +1513,36 @@ fn prepare_primary_frame(
     card: &Card,
     framebuffer_cache: &mut HashMap<u32, framebuffer::Handle>,
     stats: Option<&RendererStatsCollector>,
+    native_log: &NativeLogRelay,
+    last_video_sync_error: &mut Option<String>,
+    logged_video_import: &mut bool,
 ) -> Result<PreparedPrimaryFrame, String> {
     let mut frame = frame_surface.frame();
-    let mut video_needs_cleanup = false;
-    match renderer.sync_video_frames(&mut frame, video_registry, video_import) {
-        Ok(result) => video_needs_cleanup = result.needs_cleanup,
-        Err(err) => eprintln!("video sync failed: {err}"),
-    }
+    let (video_sync_succeeded, video_needs_cleanup) =
+        match renderer.sync_video_frames(&mut frame, video_registry, video_import) {
+            Ok(result) => {
+                if last_video_sync_error.take().is_some() {
+                    native_log.info("video", "Prime video import recovered");
+                }
+                if result.imported_frames > 0 && !*logged_video_import {
+                    native_log.info("video", "Imported first DMA-BUF frame successfully");
+                    *logged_video_import = true;
+                }
+                if let Some(diagnostics) = result.first_frame_diagnostics {
+                    native_log.info("video", format!("First frame samples: {diagnostics}"));
+                }
+                (true, result.needs_cleanup)
+            }
+            Err(err) => {
+                // Keep cleanup sticky across a failed import/sync. This prepared frame may still
+                // be presented using the last good video image, then its page flip retries sync.
+                if last_video_sync_error.as_deref() != Some(err.as_str()) {
+                    native_log.error("video", format!("video sync failed: {err}"));
+                    *last_video_sync_error = Some(err);
+                }
+                (false, true)
+            }
+        };
 
     let render_started_at = Instant::now();
     let render_timings = renderer.render(&mut frame, render_state);
@@ -1514,6 +1582,7 @@ fn prepare_primary_frame(
         pipeline_swap_done_at: None,
         bo,
         fb,
+        video_sync_succeeded,
         video_needs_cleanup,
         present_submit_duration: present_submit_started_at.elapsed(),
     })
@@ -1982,13 +2051,21 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             }
         };
         let mut renderer = SceneRenderer::with_cache_config(config.renderer_cache_config);
-        let video_import = match VideoImportContext::new_current() {
-            Ok(ctx) => Some(ctx),
+        let video_import = match VideoImportContext::new_current_direct() {
+            Ok(ctx) => {
+                native_log.info(
+                    "video",
+                    "Prime video import context initialized (direct external composition)",
+                );
+                Some(ctx)
+            }
             Err(err) => {
-                eprintln!("prime video import unavailable: {err}");
+                native_log.error("video", format!("prime video import unavailable: {err}"));
                 None
             }
         };
+        let mut last_video_sync_error = None;
+        let mut logged_video_import = false;
 
         let mode_blob = match card.create_property_blob(&mode) {
             Ok(blob) => blob,
@@ -2198,6 +2275,10 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
 
         let mut next_hotplug_check = Instant::now() + hotplug_interval;
         let mut last_video_generation = video_registry.generation();
+        // Video submission and fence cleanup mutate renderer-owned resources without changing the
+        // scene fingerprint. Keep this sticky until sync_video_frames() has run so the generic
+        // unchanged-frame optimization cannot consume the generation and strand a pending frame.
+        let mut video_sync_required = true;
         let mut stop_requested = false;
 
         loop {
@@ -2229,9 +2310,15 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                                         );
                                         drop(old_primary.bo);
                                         committed_primary_generation = current_primary.generation;
-                                        if frame.video_needs_cleanup {
+                                        if should_schedule_video_cleanup(
+                                            frame.video_needs_cleanup,
+                                            prepared_primary
+                                                .as_ref()
+                                                .is_some_and(|frame| frame.video_sync_succeeded),
+                                        ) {
                                             desired_primary_generation =
                                                 desired_primary_generation.wrapping_add(1);
+                                            video_sync_required = true;
                                         }
                                         if log_render {
                                             eprintln!(
@@ -2408,6 +2495,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             if video_generation != last_video_generation {
                 desired_primary_generation = desired_primary_generation.wrapping_add(1);
                 last_video_generation = video_generation;
+                video_sync_required = true;
             }
 
             last_cursor_pos = cursor_pos;
@@ -2422,43 +2510,73 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             if should_consider_unchanged_primary_skip(
                 in_flight.is_some(),
                 primary_dirty,
+                video_sync_required,
                 hw_cursor_enabled,
                 cursor_visible,
                 render_state.animate,
             ) && renderer.can_skip_unchanged_visible_frame(&render_state, dimensions)
             {
                 committed_primary_generation = desired_primary_generation;
+                // A frame prepared behind the previous commit may prove visually redundant once
+                // that commit lands. Release its GBM lock when consuming the generation as a noop.
+                prepared_primary.take();
                 render_state.pipeline_submitted_at = None;
                 render_state.pipeline_render_queued_at = None;
             }
-            let primary_dirty = desired_primary_generation != committed_primary_generation;
-            if in_flight.is_none()
-                && primary_dirty
-                && prepared_primary.as_ref().map(|frame| frame.generation)
-                    != Some(desired_primary_generation)
-            {
-                match prepare_primary_frame(
-                    desired_primary_generation,
-                    &mut renderer,
-                    &mut frame_surface,
-                    &render_state,
-                    cursor_pos,
-                    cursor_visible,
-                    hw_cursor_enabled,
-                    current_cursor_icon,
-                    &cursor_theme,
-                    &video_registry,
-                    video_import.as_ref(),
-                    &egl_state,
-                    &gbm_surface,
-                    &card,
-                    &mut framebuffer_cache,
-                    stats.as_deref(),
-                ) {
-                    Ok(frame) => prepared_primary = Some(frame),
-                    Err(err) => {
-                        eprintln!("DRM backend unavailable: {err}");
-                        break;
+            let in_flight_primary_generation = in_flight
+                .as_ref()
+                .and_then(|commit| commit.primary.as_ref().map(|frame| frame.generation));
+            let prepared_primary_generation =
+                prepared_primary.as_ref().map(|frame| frame.generation);
+
+            // Render the next primary while the previous atomic commit is waiting for vblank.
+            // GBM keeps current, submitted, and staged buffers distinct, allowing GPU work and
+            // scanout to overlap instead of serializing every video frame behind its page flip.
+            if should_prepare_primary(
+                desired_primary_generation,
+                committed_primary_generation,
+                in_flight_primary_generation,
+                prepared_primary_generation,
+            ) {
+                // A stale staged frame is not scanout-visible; release its GBM lock before asking
+                // EGL for a replacement. Keeping it locked can exhaust the surface while this
+                // event-loop thread is also responsible for receiving the page-flip event that
+                // releases the current scanout buffer.
+                prepared_primary.take();
+
+                if gbm_surface.has_free_buffers() {
+                    match prepare_primary_frame(
+                        desired_primary_generation,
+                        &mut renderer,
+                        &mut frame_surface,
+                        &render_state,
+                        cursor_pos,
+                        cursor_visible,
+                        hw_cursor_enabled,
+                        current_cursor_icon,
+                        &cursor_theme,
+                        &video_registry,
+                        video_import.as_ref(),
+                        &egl_state,
+                        &gbm_surface,
+                        &card,
+                        &mut framebuffer_cache,
+                        stats.as_deref(),
+                        &native_log,
+                        &mut last_video_sync_error,
+                        &mut logged_video_import,
+                    ) {
+                        Ok(frame) => {
+                            // Failed syncs and pending retired-import fences must survive stale
+                            // prepared-frame replacement and unchanged-frame checks.
+                            video_sync_required =
+                                !frame.video_sync_succeeded || frame.video_needs_cleanup;
+                            prepared_primary = Some(frame);
+                        }
+                        Err(err) => {
+                            eprintln!("DRM backend unavailable: {err}");
+                            break;
+                        }
                     }
                 }
             }
