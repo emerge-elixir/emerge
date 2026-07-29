@@ -145,7 +145,7 @@ defmodule Emerge.Engine.Patch do
   defp decode_patches(<<>>, acc), do: acc
 
   defp decode_patches(<<1, id::unsigned-big-64, attr_len::unsigned-32, rest::binary>>, acc) do
-    <<attr_bin::binary-size(attr_len), rest::binary>> = rest
+    <<attr_bin::binary-size(^attr_len), rest::binary>> = rest
     attrs = Emerge.Engine.AttrCodec.decode_attrs(attr_bin)
     decode_patches(rest, [{:set_attrs, id, attrs} | acc])
   end
@@ -165,7 +165,7 @@ defmodule Emerge.Engine.Patch do
          acc
        ) do
     parent_id = NodeId.decode_parent(parent_bin)
-    <<subtree_bin::binary-size(len), rest::binary>> = rest
+    <<subtree_bin::binary-size(^len), rest::binary>> = rest
     subtree = Emerge.Engine.Serialization.decode(subtree_bin)
     decode_patches(rest, [{:insert_subtree, parent_id, index, subtree} | acc])
   end
@@ -179,7 +179,7 @@ defmodule Emerge.Engine.Patch do
            len::unsigned-32, rest::binary>>,
          acc
        ) do
-    <<subtree_bin::binary-size(len), rest::binary>> = rest
+    <<subtree_bin::binary-size(^len), rest::binary>> = rest
     subtree = Emerge.Engine.Serialization.decode(subtree_bin)
     slot = Nearby.slot_from_tag!(slot_tag)
     decode_patches(rest, [{:insert_nearby_subtree, host_id, index, slot, subtree} | acc])

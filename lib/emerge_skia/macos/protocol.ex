@@ -61,7 +61,7 @@ defmodule EmergeSkia.Macos.Protocol do
 
   def decode_log_payload(<<level_tag, source_len::unsigned-big-32, rest::binary>>)
       when byte_size(rest) >= source_len + 4 do
-    <<source::binary-size(source_len), message_len::unsigned-big-32,
+    <<source::binary-size(^source_len), message_len::unsigned-big-32,
       message::binary-size(message_len)>> = rest
 
     {:ok, {decode_log_level(level_tag), source, message}}
@@ -73,7 +73,7 @@ defmodule EmergeSkia.Macos.Protocol do
 
   def decode_key_payload(<<key_len::unsigned-big-32, rest::binary>>)
       when byte_size(rest) >= key_len + 2 do
-    <<key::binary-size(key_len), action, mods_bits>> = rest
+    <<key::binary-size(^key_len), action, mods_bits>> = rest
     {:ok, {:key, {String.to_atom(key), action, decode_mods(mods_bits)}}}
   rescue
     MatchError -> :error
@@ -83,7 +83,7 @@ defmodule EmergeSkia.Macos.Protocol do
 
   def decode_text_commit_payload(<<text_len::unsigned-big-32, rest::binary>>)
       when byte_size(rest) >= text_len + 1 do
-    <<text::binary-size(text_len), mods_bits>> = rest
+    <<text::binary-size(^text_len), mods_bits>> = rest
     {:ok, {:text_commit, {text, decode_mods(mods_bits)}}}
   rescue
     MatchError -> :error
@@ -93,7 +93,7 @@ defmodule EmergeSkia.Macos.Protocol do
 
   def decode_text_preedit_payload(<<text_len::unsigned-big-32, rest::binary>>)
       when byte_size(rest) >= text_len + 1 do
-    <<text::binary-size(text_len), has_cursor, cursor_rest::binary>> = rest
+    <<text::binary-size(^text_len), has_cursor, cursor_rest::binary>> = rest
 
     case {has_cursor, cursor_rest} do
       {0, <<>>} ->
@@ -115,7 +115,7 @@ defmodule EmergeSkia.Macos.Protocol do
         <<kind_tag, has_payload, id_len::unsigned-big-32, rest::binary>>
       )
       when byte_size(rest) >= id_len + 4 do
-    <<id::binary-size(id_len), payload_len::unsigned-big-32, payload::binary-size(payload_len)>> =
+    <<id::binary-size(^id_len), payload_len::unsigned-big-32, payload::binary-size(payload_len)>> =
       rest
 
     event =
@@ -253,7 +253,7 @@ defmodule EmergeSkia.Macos.Protocol do
 
   defp decode_init_ok_tuple(<<name_len::unsigned-big-16, rest::binary>>)
        when byte_size(rest) >= name_len + 2 + 8 + 4 do
-    <<protocol_name::binary-size(name_len), version::unsigned-big-16, host_id::unsigned-big-64,
+    <<protocol_name::binary-size(^name_len), version::unsigned-big-16, host_id::unsigned-big-64,
       host_pid::unsigned-big-32>> = rest
 
     {:ok, {protocol_name, version, host_id, host_pid}}

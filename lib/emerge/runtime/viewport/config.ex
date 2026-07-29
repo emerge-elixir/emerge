@@ -156,7 +156,7 @@ defmodule Emerge.Runtime.Viewport.Config do
 
   defp infer_otp_app!(module) when is_atom(module) do
     case Application.get_application(module) || infer_otp_app_from_module_root(module) do
-      otp_app when is_atom(otp_app) ->
+      otp_app when is_atom(otp_app) and not is_nil(otp_app) ->
         otp_app
 
       nil ->

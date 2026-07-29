@@ -6,15 +6,16 @@ mode="${1:-all}"
 
 run_quality() {
   mix format --check-formatted
+  mix compile --force --warnings-as-errors
   mix credo --strict
   cargo clippy --manifest-path native/emerge_skia/Cargo.toml -- -D warnings
 }
 
 run_tests() {
   if [[ "${CI:-}" == "true" || "${CI:-}" == "1" ]]; then
-    mix test
+    mix test --warnings-as-errors
   else
-    mix test --include full_sweep
+    mix test --include full_sweep --warnings-as-errors
   fi
 
   cargo test --release --manifest-path native/emerge_skia/Cargo.toml

@@ -289,7 +289,7 @@ defmodule Emerge.Engine.AttrCodec do
   defp decode_mouse_down_style(rest), do: decode_state_style(rest)
 
   defp decode_state_style(<<len::unsigned-32, rest::binary>>) do
-    <<attrs_bin::binary-size(len), rest::binary>> = rest
+    <<attrs_bin::binary-size(^len), rest::binary>> = rest
     {decode_attrs(attrs_bin), rest}
   end
 
@@ -316,7 +316,7 @@ defmodule Emerge.Engine.AttrCodec do
   end
 
   defp decode_animation(<<len::unsigned-32, rest::binary>>, owner) do
-    <<payload::binary-size(len), rest::binary>> = rest
+    <<payload::binary-size(^len), rest::binary>> = rest
     {value, <<>>} = decode_animation_payload(payload, owner)
     {value, rest}
   end
@@ -341,7 +341,7 @@ defmodule Emerge.Engine.AttrCodec do
   defp decode_animation_keyframes(rest, 0, acc), do: {Enum.reverse(acc), rest}
 
   defp decode_animation_keyframes(<<len::unsigned-32, rest::binary>>, count, acc) do
-    <<attrs_bin::binary-size(len), rest::binary>> = rest
+    <<attrs_bin::binary-size(^len), rest::binary>> = rest
     decode_animation_keyframes(rest, count - 1, [decode_attrs(attrs_bin) | acc])
   end
 
@@ -364,7 +364,7 @@ defmodule Emerge.Engine.AttrCodec do
   end
 
   defp decode_key_bindings(<<len::unsigned-32, rest::binary>>) do
-    <<payload::binary-size(len), rest::binary>> = rest
+    <<payload::binary-size(^len), rest::binary>> = rest
     {bindings, <<>>} = decode_key_bindings_payload(payload, [])
     {bindings, rest}
   end
@@ -407,7 +407,7 @@ defmodule Emerge.Engine.AttrCodec do
   end
 
   defp decode_virtual_key(<<len::unsigned-32, rest::binary>>) do
-    <<payload::binary-size(len), rest::binary>> = rest
+    <<payload::binary-size(^len), rest::binary>> = rest
     {value, <<>>} = decode_virtual_key_payload(payload)
     {value, rest}
   end
@@ -493,7 +493,7 @@ defmodule Emerge.Engine.AttrCodec do
   end
 
   defp decode_string(<<len::unsigned-16, rest::binary>>) do
-    <<value::binary-size(len), rest::binary>> = rest
+    <<value::binary-size(^len), rest::binary>> = rest
     {value, rest}
   end
 
@@ -538,7 +538,7 @@ defmodule Emerge.Engine.AttrCodec do
   end
 
   defp decode_atom(<<len::unsigned-16, rest::binary>>) do
-    <<value::binary-size(len), rest::binary>> = rest
+    <<value::binary-size(^len), rest::binary>> = rest
     {String.to_atom(value), rest}
   end
 

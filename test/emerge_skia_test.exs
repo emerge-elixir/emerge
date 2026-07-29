@@ -8,7 +8,7 @@ defmodule EmergeSkiaTest do
 
   defp rgba_at(pixels, width, x, y) do
     offset = (y * width + x) * 4
-    <<_::binary-size(offset), r, g, b, a, _::binary>> = pixels
+    <<_::binary-size(^offset), r, g, b, a, _::binary>> = pixels
     {r, g, b, a}
   end
 

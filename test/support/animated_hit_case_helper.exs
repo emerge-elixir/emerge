@@ -66,9 +66,6 @@ defmodule EmergeSkia.TestSupport.AnimatedHitCase do
   def expected_first_activation_range_ms(:newly_occupied_inside_host), do: 500..550
   def expected_first_activation_range_ms(:newly_occupied_outside_host), do: 500..700
 
-  def expected_first_activation_range_ms(label),
-    do: expected_first_activation_ms(label)..expected_first_activation_ms(label)
-
   def allowed_clear_tail_start_ms(:newly_occupied_inside_host), do: 1350
   def allowed_clear_tail_start_ms(:newly_occupied_outside_host), do: 1250
   def allowed_clear_tail_start_ms(label), do: expected_first_activation_ms(label)
@@ -93,7 +90,12 @@ defmodule EmergeSkia.TestSupport.AnimatedHitCase do
   def host_id_bin_for_target(%Element{} = assigned_tree, target_id_bin)
       when is_binary(target_id_bin) do
     target_id = NodeId.decode(target_id_bin)
-    host_id_from_tree(assigned_tree, target_id) |> NodeId.encode()
+
+    host_id =
+      host_id_from_tree(assigned_tree, target_id) ||
+        raise "could not find host slot element for target id in assigned tree"
+
+    NodeId.encode(host_id)
   end
 
   def page_switch_tree do
@@ -416,21 +418,18 @@ defmodule EmergeSkia.TestSupport.AnimatedHitCase do
   end
 
   defp host_id_from_tree(
-         %Element{id: id, nearby: nearby},
+         %Element{id: id, children: children, nearby: nearby},
          target_id
        ) do
     if Enum.any?(nearby, fn {slot, %Element{id: nearby_node_id}} ->
          slot == :in_front and nearby_node_id == target_id
        end) do
       id
+    else
+      Enum.find_value(children, &host_id_from_tree(&1, target_id)) ||
+        Enum.find_value(nearby, fn {_slot, child} ->
+          host_id_from_tree(child, target_id)
+        end)
     end
-  end
-
-  defp host_id_from_tree(%Element{children: children, nearby: nearby}, target_id) do
-    Enum.find_value(children, &host_id_from_tree(&1, target_id)) ||
-      Enum.find_value(nearby, fn {_slot, child} ->
-        host_id_from_tree(child, target_id)
-      end) ||
-      raise "could not find host slot element for target id in assigned tree"
   end
 end
