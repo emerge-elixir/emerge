@@ -555,8 +555,6 @@ defmodule EmergeSkia.BuildConfig do
     |> to_string()
   end
 
-  defp compiler_prefix(nil), do: nil
-
   defp compiler_prefix(compiler) do
     compiler
     |> String.split(~r/\s+/, trim: true)

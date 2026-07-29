@@ -315,10 +315,6 @@ defmodule Emerge.UI.Internal.Validation do
   defp skip_nil_or(_value, fun), do: fun.()
 
   defp validate_public_attr_value!(_attrs_owner, :key, _value), do: :ok
-  defp validate_public_attr_value!(_attrs_owner, :animate, _value), do: :ok
-  defp validate_public_attr_value!(_attrs_owner, :animate_enter, _value), do: :ok
-  defp validate_public_attr_value!(_attrs_owner, :animate_exit, _value), do: :ok
-  defp validate_public_attr_value!(_attrs_owner, :virtual_key, _value), do: :ok
 
   defp validate_public_attr_value!(attrs_owner, :width, value),
     do: validate_length!(attrs_owner, :width, value)

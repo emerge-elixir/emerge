@@ -105,7 +105,7 @@ defmodule Emerge.Engine.Serialization do
          count,
          acc
        ) do
-    <<attr_bin::binary-size(attr_len), rest::binary>> = rest
+    <<attr_bin::binary-size(^attr_len), rest::binary>> = rest
     attrs = Emerge.Engine.AttrCodec.decode_attrs(attr_bin)
     <<child_count::unsigned-16, rest::binary>> = rest
     {child_ids, rest} = decode_ids(rest, child_count, [])
