@@ -105,6 +105,47 @@ fn moving_paint_layer_payload_content_generation_ignores_off_payload_changes() {
 }
 
 #[test]
+fn dynamic_paint_layer_generation_tracks_visible_content() {
+    let frame = Frame {
+        x: 0.0,
+        y: 0.0,
+        width: 80.0,
+        height: 40.0,
+        content_width: 80.0,
+        content_height: 40.0,
+    };
+    let scene = |x, color| {
+        super::super::wrap_with_paint_layer(
+            vec![RenderNode::Primitive(DrawPrimitive::Rect(
+                x, 0.0, 80.0, 40.0, color,
+            ))],
+            77,
+            PaintLayerPlacement::Fixed,
+            PaintLayerPolicy::DynamicRedraw,
+            PaintLayerReason::Animation,
+            frame,
+            None,
+        )
+    };
+    let red_a = scene(0.0, 0xFF0000FF);
+    let red_b = scene(0.0, 0xFF0000FF);
+    let sub_bucket_red = scene(0.000_1, 0xFF0000FF);
+    let green = scene(0.0, 0x00FF00FF);
+    let generation = |nodes: &[RenderNode]| {
+        paint_layers(nodes)
+            .into_iter()
+            .next()
+            .expect("dynamic paint layer should be emitted")
+            .content_generation
+    };
+
+    assert_ne!(generation(&red_a), 0);
+    assert_eq!(generation(&red_a), generation(&red_b));
+    assert_ne!(generation(&red_a), generation(&sub_bucket_red));
+    assert_ne!(generation(&red_a), generation(&green));
+}
+
+#[test]
 fn render_damage_emits_dynamic_paint_layer_with_stable_id() {
     let parent_id = NodeId::from_term_bytes(vec![4]);
     let child_id = NodeId::from_term_bytes(vec![5]);
@@ -141,8 +182,16 @@ fn render_damage_emits_dynamic_paint_layer_with_stable_id() {
 
     let output = super::super::render_tree_scene_with_paint_layer_policy(&tree, true, true);
     let dirty_ids = dynamic_paint_layer_ids(&output.scene.nodes);
+    let dirty_layer = paint_layers(&output.scene.nodes)
+        .into_iter()
+        .find(|layer| {
+            layer.stable_id == child_id.to_wire_u64()
+                && layer.policy == PaintLayerPolicy::DynamicRedraw
+        })
+        .expect("render-damaged child should emit a dynamic paint layer");
 
     assert!(dirty_ids.contains(&child_id.to_wire_u64()));
+    assert_ne!(dirty_layer.content_generation, 0);
 }
 
 #[test]

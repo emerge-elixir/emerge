@@ -18,8 +18,16 @@ impl RenderScene {
         summary
     }
 
+    pub fn has_payload_cache_candidate_layers(&self) -> bool {
+        nodes_have_payload_cache_candidate_layers(&self.nodes)
+    }
+
+    /// Compatibility name retained for downstream renderer integrations.
+    ///
+    /// Dynamic redraw layers can now become cacheable after admission, so this reports every
+    /// payload-cache candidate rather than only layers whose policy is named `Cacheable`.
     pub fn has_cacheable_paint_layers(&self) -> bool {
-        nodes_have_cacheable_paint_layers(&self.nodes)
+        self.has_payload_cache_candidate_layers()
     }
 
     pub fn has_scroll_moving_paint_layers(&self) -> bool {
@@ -27,19 +35,19 @@ impl RenderScene {
     }
 }
 
-fn nodes_have_cacheable_paint_layers(nodes: &[RenderNode]) -> bool {
+fn nodes_have_payload_cache_candidate_layers(nodes: &[RenderNode]) -> bool {
     nodes.iter().any(|node| match node {
         RenderNode::ShadowPass { children }
         | RenderNode::Clip { children, .. }
         | RenderNode::RelaxedClip { children, .. }
         | RenderNode::Transform { children, .. }
-        | RenderNode::Alpha { children, .. } => nodes_have_cacheable_paint_layers(children),
+        | RenderNode::Alpha { children, .. } => nodes_have_payload_cache_candidate_layers(children),
         RenderNode::PaintLayer(layer) => {
-            layer.policy == PaintLayerPolicy::Cacheable
+            layer.policy.allows_payload_cache()
                 || layer
                     .child_refs
                     .iter()
-                    .any(|child| nodes_have_cacheable_paint_layers(&child.nodes))
+                    .any(|child| nodes_have_payload_cache_candidate_layers(&child.nodes))
         }
         RenderNode::Primitive(_) => false,
     })
@@ -396,8 +404,8 @@ impl RenderPaintLayerChildRef {
 #[cfg(test)]
 pub(crate) fn split_paint_layer_content(nodes: &[RenderNode]) -> RenderPaintLayerContent {
     nodes
-        .to_vec()
-        .into_iter()
+        .iter()
+        .cloned()
         .fold(RenderPaintLayerContent::default(), |mut content, node| {
             let mut split = split_paint_layer_node(node);
             content.own_nodes.append(&mut split.own_nodes);
@@ -729,6 +737,12 @@ pub enum PaintLayerPolicy {
     Cacheable,
     DynamicRedraw,
     DirectOnly,
+}
+
+impl PaintLayerPolicy {
+    pub(crate) fn allows_payload_cache(self) -> bool {
+        self != Self::DirectOnly
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
