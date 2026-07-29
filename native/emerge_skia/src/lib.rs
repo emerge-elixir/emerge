@@ -1022,7 +1022,7 @@ fn start_native_renderer_with_config(
     let initial_width = config.width;
     let initial_height = config.height;
     let release_tx = video::spawn_release_worker();
-    let video_registry = Arc::new(VideoRegistry::new(release_tx));
+    let video_registry = Arc::new(VideoRegistry::new(release_tx, renderer_stats.clone()));
     #[cfg(any(
         all(feature = "wayland", target_os = "linux"),
         all(feature = "drm", target_os = "linux")
@@ -2515,7 +2515,7 @@ mod tests {
             event_tx,
             input_target: Arc::new(InputTargetRelay::default()),
             render_tx: render_sender,
-            video_registry: Arc::new(VideoRegistry::new(release_tx)),
+            video_registry: Arc::new(VideoRegistry::new(release_tx, None)),
             video_wake: VideoWake::noop(),
             prime_video_supported: false,
             native_log: Arc::new(NativeLogRelay::default()),

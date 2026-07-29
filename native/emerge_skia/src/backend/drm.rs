@@ -118,6 +118,9 @@ struct PreparedPrimaryFrame {
     fb: framebuffer::Handle,
     video_sync_succeeded: bool,
     video_needs_cleanup: bool,
+    imported_video_frames: usize,
+    newest_video_submitted_at: Option<Instant>,
+    atomic_commit_submitted_at: Option<Instant>,
     present_submit_duration: Duration,
 }
 
@@ -1518,31 +1521,40 @@ fn prepare_primary_frame(
     logged_video_import: &mut bool,
 ) -> Result<PreparedPrimaryFrame, String> {
     let mut frame = frame_surface.frame();
-    let (video_sync_succeeded, video_needs_cleanup) =
-        match renderer.sync_video_frames(&mut frame, video_registry, video_import) {
-            Ok(result) => {
-                if last_video_sync_error.take().is_some() {
-                    native_log.info("video", "Prime video import recovered");
-                }
-                if result.imported_frames > 0 && !*logged_video_import {
-                    native_log.info("video", "Imported first DMA-BUF frame successfully");
-                    *logged_video_import = true;
-                }
-                if let Some(diagnostics) = result.first_frame_diagnostics {
-                    native_log.info("video", format!("First frame samples: {diagnostics}"));
-                }
-                (true, result.needs_cleanup)
+    let (
+        video_sync_succeeded,
+        video_needs_cleanup,
+        imported_video_frames,
+        newest_video_submitted_at,
+    ) = match renderer.sync_video_frames(&mut frame, video_registry, video_import) {
+        Ok(result) => {
+            if last_video_sync_error.take().is_some() {
+                native_log.info("video", "Prime video import recovered");
             }
-            Err(err) => {
-                // Keep cleanup sticky across a failed import/sync. This prepared frame may still
-                // be presented using the last good video image, then its page flip retries sync.
-                if last_video_sync_error.as_deref() != Some(err.as_str()) {
-                    native_log.error("video", format!("video sync failed: {err}"));
-                    *last_video_sync_error = Some(err);
-                }
-                (false, true)
+            if result.imported_frames > 0 && !*logged_video_import {
+                native_log.info("video", "Imported first DMA-BUF frame successfully");
+                *logged_video_import = true;
             }
-        };
+            if let Some(diagnostics) = result.first_frame_diagnostics {
+                native_log.info("video", format!("First frame samples: {diagnostics}"));
+            }
+            (
+                true,
+                result.needs_cleanup,
+                result.imported_frames,
+                result.newest_import_submitted_at,
+            )
+        }
+        Err(err) => {
+            // Keep cleanup sticky across a failed import/sync. This prepared frame may still
+            // be presented using the last good video image, then its page flip retries sync.
+            if last_video_sync_error.as_deref() != Some(err.as_str()) {
+                native_log.error("video", format!("video sync failed: {err}"));
+                *last_video_sync_error = Some(err);
+            }
+            (false, true, 0, None)
+        }
+    };
 
     let render_started_at = Instant::now();
     let render_timings = renderer.render(&mut frame, render_state);
@@ -1584,6 +1596,9 @@ fn prepare_primary_frame(
         fb,
         video_sync_succeeded,
         video_needs_cleanup,
+        imported_video_frames,
+        newest_video_submitted_at,
+        atomic_commit_submitted_at: None,
         present_submit_duration: present_submit_started_at.elapsed(),
     })
 }
@@ -2330,6 +2345,22 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                                         let presented_at = Instant::now();
                                         if let Some(stats) = stats.as_ref() {
                                             stats.record_frame_present();
+                                            if let Some(committed_at) =
+                                                frame.atomic_commit_submitted_at
+                                            {
+                                                stats.record_drm_primary_presented(
+                                                    frame.imported_video_frames > 0,
+                                                    presented_at
+                                                        .saturating_duration_since(committed_at),
+                                                    frame.newest_video_submitted_at.map(
+                                                        |submitted_at| {
+                                                            presented_at.saturating_duration_since(
+                                                                submitted_at,
+                                                            )
+                                                        },
+                                                    ),
+                                                );
+                                            }
                                             record_drm_pipeline_presented(
                                                 Some(stats),
                                                 frame.pipeline_submitted_at,
@@ -2519,7 +2550,11 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                 committed_primary_generation = desired_primary_generation;
                 // A frame prepared behind the previous commit may prove visually redundant once
                 // that commit lands. Release its GBM lock when consuming the generation as a noop.
-                prepared_primary.take();
+                if let Some(stale) = prepared_primary.take()
+                    && let Some(stats) = stats.as_deref()
+                {
+                    stats.record_drm_stale_prepared(stale.imported_video_frames > 0);
+                }
                 render_state.pipeline_submitted_at = None;
                 render_state.pipeline_render_queued_at = None;
             }
@@ -2542,7 +2577,11 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                 // EGL for a replacement. Keeping it locked can exhaust the surface while this
                 // event-loop thread is also responsible for receiving the page-flip event that
                 // releases the current scanout buffer.
-                prepared_primary.take();
+                if let Some(stale) = prepared_primary.take()
+                    && let Some(stats) = stats.as_deref()
+                {
+                    stats.record_drm_stale_prepared(stale.imported_video_frames > 0);
+                }
 
                 if gbm_surface.has_free_buffers() {
                     match prepare_primary_frame(
@@ -2571,6 +2610,9 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                             // prepared-frame replacement and unchanged-frame checks.
                             video_sync_required =
                                 !frame.video_sync_succeeded || frame.video_needs_cleanup;
+                            if let Some(stats) = stats.as_deref() {
+                                stats.record_drm_primary_prepared(frame.imported_video_frames > 0);
+                            }
                             prepared_primary = Some(frame);
                         }
                         Err(err) => {
@@ -2578,6 +2620,8 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                             break;
                         }
                     }
+                } else if let Some(stats) = stats.as_deref() {
+                    stats.record_drm_gbm_no_free_buffer();
                 }
             }
 
@@ -2678,12 +2722,22 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                     }
                 }
 
+                if submit_primary && let Some(stats) = stats.as_deref() {
+                    stats.record_drm_primary_commit_attempt();
+                }
+
                 match card.atomic_commit(
                     AtomicCommitFlags::NONBLOCK | AtomicCommitFlags::PAGE_FLIP_EVENT,
                     commit_req,
                 ) {
                     Ok(()) => {
                         let swap_done_at = Instant::now();
+                        if submit_primary && let Some(frame) = prepared_primary.as_mut() {
+                            frame.atomic_commit_submitted_at = Some(swap_done_at);
+                            if let Some(stats) = stats.as_deref() {
+                                stats.record_drm_primary_committed();
+                            }
+                        }
                         if let Some(stats) = stats.as_ref()
                             && let (Some(present_submit_started_at), Some(frame)) = (
                                 present_submit_started_at,
@@ -2737,6 +2791,9 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                     Err(err) => {
                         let err = err.to_string();
                         if is_ebusy(&err) {
+                            if submit_primary && let Some(stats) = stats.as_deref() {
+                                stats.record_drm_primary_commit_ebusy();
+                            }
                             if log_render {
                                 eprintln!("drm atomic commit EBUSY, retrying staged state");
                             }
