@@ -1137,6 +1137,117 @@ fn focused_style_slider_glow_payload_ignores_child_layout_changes() {
 }
 
 #[test]
+fn focused_style_text_input_glow_payload_ignores_content_changes() {
+    let root_id = NodeId::from_term_bytes(vec![77]);
+    let input_id = NodeId::from_term_bytes(vec![78]);
+
+    let mut root = Element::with_attrs(root_id, ElementKind::El, Vec::new(), Attrs::default());
+    root.children = vec![input_id];
+    root.layout.frame = Some(Frame {
+        x: 0.0,
+        y: 0.0,
+        width: 260.0,
+        height: 120.0,
+        content_width: 260.0,
+        content_height: 120.0,
+    });
+
+    let mut input = Element::with_attrs(
+        input_id,
+        ElementKind::TextInput,
+        Vec::new(),
+        Attrs {
+            content: Some("todo".to_string()),
+            width: Some(Length::Px(180.0)),
+            height: Some(Length::Px(44.0)),
+            padding: Some(Padding::Uniform(16.0)),
+            font_size: Some(24.0),
+            font_color: Some(Color::Rgb { r: 0, g: 0, b: 0 }),
+            focused: Some(MouseOverAttrs {
+                border_color: Some(Color::Rgba {
+                    r: 207,
+                    g: 125,
+                    b: 125,
+                    a: 255,
+                }),
+                box_shadows: Some(vec![BoxShadow {
+                    offset_x: 0.0,
+                    offset_y: 0.0,
+                    blur: 4.0,
+                    size: 2.0,
+                    color: Color::Rgba {
+                        r: 207,
+                        g: 125,
+                        b: 125,
+                        a: 71,
+                    },
+                    inset: false,
+                }]),
+                ..MouseOverAttrs::default()
+            }),
+            focused_active: Some(true),
+            border_width: Some(BorderWidth::Uniform(1.0)),
+            background: Some(Background::Color(Color::Rgba {
+                r: 255,
+                g: 255,
+                b: 255,
+                a: 0,
+            })),
+            ..Attrs::default()
+        },
+    );
+    input.runtime.focused_active = true;
+    input.runtime.text_input_focused = true;
+    input.layout.frame = Some(Frame {
+        x: 40.0,
+        y: 40.0,
+        width: 180.0,
+        height: 44.0,
+        content_width: 180.0,
+        content_height: 44.0,
+    });
+
+    let mut tree = ElementTree::new();
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(input);
+
+    let clean_output =
+        crate::tree::layout::refresh_default_with_frame_attrs(&mut tree, 1.0, None, None);
+    let clean_input_layer = paint_layers(&clean_output.scene.nodes)
+        .into_iter()
+        .find(|layer| layer.stable_id == input_id.to_wire_u64())
+        .expect("focused style should produce a text-input-owned glow layer");
+
+    assert_eq!(clean_input_layer.reason, PaintLayerReason::StableSubtree);
+    assert_eq!(clean_input_layer.policy, PaintLayerPolicy::Cacheable);
+    assert!(
+        contains_shadow_primitive(&clean_input_layer.own_nodes),
+        "focused text input layer should own its glow"
+    );
+    assert!(
+        !contains_text_primitive(&clean_input_layer.own_nodes),
+        "focused text input glow payload must not own changing input content"
+    );
+
+    tree.set_text_input_content(&input_id, "new todo".to_string());
+
+    let dirty_output =
+        crate::tree::layout::refresh_default_with_frame_attrs(&mut tree, 1.0, None, None);
+    let dirty_input_layer = paint_layers(&dirty_output.scene.nodes)
+        .into_iter()
+        .find(|layer| layer.stable_id == input_id.to_wire_u64())
+        .expect("focused text input should keep its glow layer while content changes");
+
+    assert_eq!(
+        dirty_input_layer.content_generation, clean_input_layer.content_generation,
+        "content edits must not invalidate the focused glow payload"
+    );
+    assert!(contains_shadow_primitive(&dirty_input_layer.own_nodes));
+    assert!(!contains_text_primitive(&dirty_input_layer.own_nodes));
+}
+
+#[test]
 fn nested_animated_shadow_inside_scroll_container_layer_emits_dirty_slot() {
     let scroll_id = NodeId::from_term_bytes(vec![10]);
     let page_id = NodeId::from_term_bytes(vec![11]);

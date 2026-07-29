@@ -1366,7 +1366,12 @@ fn should_emit_dynamic_paint_layer(element: &Element, traversal: &RenderTraversa
 }
 
 fn should_wrap_focused_own_payload_layer(element: &Element, has_outer_shadow: bool) -> bool {
-    element.spec.kind == ElementKind::Slider && element.runtime.focused_active && has_outer_shadow
+    // Focus rings are usually outer shadows. Keep that stable glow outside the
+    // redrawable content payload so focused controls do not lose their ring
+    // during frequent child/content refreshes.
+    (element.spec.kind == ElementKind::Slider || element.spec.kind.is_text_input_family())
+        && element.runtime.focused_active
+        && has_outer_shadow
 }
 
 fn should_wrap_media_leaf_order_boundary(

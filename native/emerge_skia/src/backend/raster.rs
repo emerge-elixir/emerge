@@ -5,7 +5,7 @@
 
 use skia_safe::{ColorType, ImageInfo, surfaces};
 
-use crate::renderer::{RenderFrame, RenderState, SceneRenderer};
+use crate::renderer::{RenderFrame, RenderState, SceneRenderer, text_surface_props};
 
 // ============================================================================
 // Configuration
@@ -57,7 +57,8 @@ impl RasterBackend {
             None,
         );
 
-        let surface = surfaces::raster(&info, None, None)
+        let surface_props = text_surface_props();
+        let surface = surfaces::raster(&info, None, Some(&surface_props))
             .ok_or_else(|| "Failed to create raster surface".to_string())?;
 
         Ok(Self {

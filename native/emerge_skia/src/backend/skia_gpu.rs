@@ -3,7 +3,7 @@ use skia_safe::{
     gpu::{self, SurfaceOrigin, backend_render_targets, gl::FramebufferInfo},
 };
 
-use crate::renderer::RenderFrame;
+use crate::renderer::{RenderFrame, text_surface_props};
 
 pub struct GlFrameSurface {
     surface: Surface,
@@ -77,13 +77,15 @@ fn create_gl_surface(
     let backend_render_target =
         backend_render_targets::make_gl(dimensions, num_samples, stencil_size, fb_info);
 
+    let surface_props = text_surface_props();
+
     gpu::surfaces::wrap_backend_render_target(
         direct_context,
         &backend_render_target,
         SurfaceOrigin::BottomLeft,
         skia_safe::ColorType::RGBA8888,
         None,
-        None,
+        Some(&surface_props),
     )
     .expect("Could not create Skia surface")
 }
