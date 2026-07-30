@@ -45,12 +45,11 @@ use crate::renderer::{RenderState, RenderTimings, RendererCacheConfig, SceneRend
 use crate::stats::{
     RendererStatsCollector, format_slow_render_frame_log, render_frame_has_slow_stage,
 };
-use crate::video::{VideoImportContext, VideoRegistry};
+use crate::video::{VideoImportCapabilities, VideoImportContext, VideoRegistry};
 
 use self::cursor_theme::{CURSOR_PLANE_SIZE, CursorVisual, DrmCursorTheme};
 
 const EGL_PLATFORM_GBM_KHR: EGLenum = 0x31D7;
-const EGL_OPENGL_ES3_BIT_KHR: EGLint = 0x0040;
 const RENDER_PROFILE_INTERVAL: Duration = Duration::from_secs(1);
 const GL_QUERY_COUNTER_BITS_EXT: gl::types::GLenum = 0x8864;
 const GL_QUERY_RESULT_EXT: gl::types::GLenum = 0x8866;
@@ -109,8 +108,95 @@ struct EglState {
     egl: egl::Egl,
     _egl_lib: Library,
     display: EGLDisplay,
-    _context: EGLContext,
+    context: EGLContext,
     surface: EGLSurface,
+}
+
+impl Drop for EglState {
+    fn drop(&mut self) {
+        unsafe {
+            self.egl.MakeCurrent(
+                self.display,
+                egl::NO_SURFACE,
+                egl::NO_SURFACE,
+                egl::NO_CONTEXT,
+            );
+            self.egl.DestroySurface(self.display, self.surface);
+            self.egl.DestroyContext(self.display, self.context);
+            self.egl.Terminate(self.display);
+        }
+    }
+}
+
+struct EglInitGuard<'a> {
+    egl: &'a egl::Egl,
+    display: EGLDisplay,
+    context: EGLContext,
+    surface: EGLSurface,
+    armed: bool,
+}
+
+impl<'a> EglInitGuard<'a> {
+    fn new(egl: &'a egl::Egl, display: EGLDisplay) -> Self {
+        Self {
+            egl,
+            display,
+            context: egl::NO_CONTEXT,
+            surface: egl::NO_SURFACE,
+            armed: true,
+        }
+    }
+
+    fn finish(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for EglInitGuard<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        unsafe {
+            self.egl.MakeCurrent(
+                self.display,
+                egl::NO_SURFACE,
+                egl::NO_SURFACE,
+                egl::NO_CONTEXT,
+            );
+            if self.surface != egl::NO_SURFACE {
+                self.egl.DestroySurface(self.display, self.surface);
+            }
+            if self.context != egl::NO_CONTEXT {
+                self.egl.DestroyContext(self.display, self.context);
+            }
+            self.egl.Terminate(self.display);
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EglPlatformDisplayPath {
+    Core,
+    Ext,
+    Legacy,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct GlCapabilities {
+    timer_query: bool,
+    video_import: VideoImportCapabilities,
+}
+
+impl GlCapabilities {
+    fn detect() -> Self {
+        let version = gl_string(gl::VERSION);
+        let extensions = gl_string(gl::EXTENSIONS);
+        Self {
+            timer_query: extension_list_contains(&extensions, "GL_EXT_disjoint_timer_query"),
+            video_import: VideoImportCapabilities::from_gl_report(&version, &extensions),
+        }
+    }
 }
 
 type GlGenQueriesExt = unsafe extern "system" fn(gl::types::GLsizei, *mut gl::types::GLuint);
@@ -157,8 +243,8 @@ struct GpuQueueTimer {
 }
 
 impl GpuQueueTimerApi {
-    fn load(egl: &egl::Egl) -> Result<Self, String> {
-        if !gl_has_extension("GL_EXT_disjoint_timer_query") {
+    fn load(egl: &egl::Egl, timer_query_advertised: bool) -> Result<Self, String> {
+        if !timer_query_advertised {
             return Err("GL_EXT_disjoint_timer_query is not advertised".to_string());
         }
 
@@ -202,7 +288,13 @@ impl GpuQueueTimerApi {
 }
 
 impl GpuQueueTimer {
-    fn new(egl: &egl::Egl, enabled: bool, log_results: bool, native_log: &NativeLogRelay) -> Self {
+    fn new(
+        egl: &egl::Egl,
+        enabled: bool,
+        log_results: bool,
+        timer_query_advertised: bool,
+        native_log: &NativeLogRelay,
+    ) -> Self {
         if !enabled {
             return Self {
                 api: None,
@@ -213,7 +305,7 @@ impl GpuQueueTimer {
             };
         }
 
-        match GpuQueueTimerApi::load(egl) {
+        match GpuQueueTimerApi::load(egl, timer_query_advertised) {
             Ok(api) => {
                 native_log.info(
                     "drm",
@@ -393,18 +485,10 @@ impl Drop for GpuQueueTimer {
     }
 }
 
-fn gl_has_extension(expected: &str) -> bool {
-    let mut count = 0;
-    unsafe {
-        gl::GetIntegerv(gl::NUM_EXTENSIONS, &mut count);
-    }
-    (0..count).any(|index| {
-        let value = unsafe { gl::GetStringi(gl::EXTENSIONS, index as gl::types::GLuint) };
-        if value.is_null() {
-            return false;
-        }
-        unsafe { CStr::from_ptr(value.cast()) }.to_bytes() == expected.as_bytes()
-    })
+fn extension_list_contains(extensions: &str, expected: &str) -> bool {
+    extensions
+        .split_ascii_whitespace()
+        .any(|extension| extension == expected)
 }
 
 struct CursorPlane {
@@ -1318,6 +1402,56 @@ mod tests {
     }
 
     #[test]
+    fn drm_egl_attributes_require_opengl_es_2() {
+        let config = drm_egl_config_attributes();
+        let renderable_type = config
+            .windows(2)
+            .find(|pair| pair[0] == egl::RENDERABLE_TYPE as EGLint)
+            .map(|pair| pair[1]);
+        assert_eq!(renderable_type, Some(egl::OPENGL_ES2_BIT as EGLint));
+
+        let context = drm_egl_context_attributes();
+        let client_version = context
+            .windows(2)
+            .find(|pair| pair[0] == egl::CONTEXT_CLIENT_VERSION as EGLint)
+            .map(|pair| pair[1]);
+        assert_eq!(client_version, Some(2));
+    }
+
+    #[test]
+    fn extension_matching_uses_exact_tokens() {
+        let extensions = "GL_EXT_disjoint_timer_query GL_OES_EGL_image_external";
+        assert!(extension_list_contains(
+            extensions,
+            "GL_EXT_disjoint_timer_query"
+        ));
+        assert!(!extension_list_contains(
+            extensions,
+            "GL_EXT_disjoint_timer"
+        ));
+    }
+
+    #[test]
+    fn egl_platform_display_paths_keep_legacy_fallback_last() {
+        assert_eq!(
+            egl_platform_display_paths("EGL_EXT_platform_base EGL_KHR_platform_gbm", true, true,),
+            vec![
+                EglPlatformDisplayPath::Core,
+                EglPlatformDisplayPath::Ext,
+                EglPlatformDisplayPath::Legacy,
+            ]
+        );
+        assert_eq!(
+            egl_platform_display_paths("EGL_EXT_platform_base EGL_MESA_platform_gbm", false, true,),
+            vec![EglPlatformDisplayPath::Ext, EglPlatformDisplayPath::Legacy,]
+        );
+        assert_eq!(
+            egl_platform_display_paths("", true, true),
+            vec![EglPlatformDisplayPath::Legacy]
+        );
+    }
+
+    #[test]
     fn drm_present_state_predicts_from_mode_interval_after_sparse_primary_flip() {
         let start = Instant::now();
         let mut present = DrmPresentState::new(Duration::from_millis(16));
@@ -1685,6 +1819,8 @@ struct EglDiagnostics {
     fence_sync: bool,
     wait_sync: bool,
     buffer_age: bool,
+    dma_buf_import: bool,
+    dma_buf_import_modifiers: bool,
 }
 
 fn egl_query_string(egl: &egl::Egl, display: EGLDisplay, name: EGLint) -> String {
@@ -1772,14 +1908,77 @@ fn load_egl() -> Result<(Library, egl::Egl), String> {
     Ok((lib, egl))
 }
 
+fn egl_platform_display_paths(
+    client_extensions: &str,
+    core_loaded: bool,
+    ext_loaded: bool,
+) -> Vec<EglPlatformDisplayPath> {
+    let supports_gbm_platform = extension_list_contains(client_extensions, "EGL_KHR_platform_gbm")
+        || extension_list_contains(client_extensions, "EGL_MESA_platform_gbm");
+    let ext_supported = extension_list_contains(client_extensions, "EGL_EXT_platform_base");
+
+    [
+        (core_loaded && supports_gbm_platform).then_some(EglPlatformDisplayPath::Core),
+        (ext_loaded && ext_supported && supports_gbm_platform)
+            .then_some(EglPlatformDisplayPath::Ext),
+        Some(EglPlatformDisplayPath::Legacy),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
 fn egl_get_platform_display(egl: &egl::Egl, display_ptr: *mut c_void) -> EGLDisplay {
-    if egl.GetPlatformDisplayEXT.is_loaded() {
-        unsafe { egl.GetPlatformDisplayEXT(EGL_PLATFORM_GBM_KHR, display_ptr, ptr::null()) }
-    } else if egl.GetPlatformDisplay.is_loaded() {
-        unsafe { egl.GetPlatformDisplay(EGL_PLATFORM_GBM_KHR, display_ptr, ptr::null()) }
-    } else {
-        unsafe { egl.GetDisplay(display_ptr as egl::EGLNativeDisplayType) }
-    }
+    let client_extensions = egl_query_string(egl, egl::NO_DISPLAY, egl::EXTENSIONS as EGLint);
+    let paths = egl_platform_display_paths(
+        &client_extensions,
+        egl.GetPlatformDisplay.is_loaded(),
+        egl.GetPlatformDisplayEXT.is_loaded(),
+    );
+
+    paths
+        .into_iter()
+        .find_map(|path| {
+            let display = match path {
+                EglPlatformDisplayPath::Core => unsafe {
+                    egl.GetPlatformDisplay(EGL_PLATFORM_GBM_KHR, display_ptr, ptr::null())
+                },
+                EglPlatformDisplayPath::Ext => unsafe {
+                    egl.GetPlatformDisplayEXT(EGL_PLATFORM_GBM_KHR, display_ptr, ptr::null())
+                },
+                EglPlatformDisplayPath::Legacy => unsafe {
+                    egl.GetDisplay(display_ptr as egl::EGLNativeDisplayType)
+                },
+            };
+            (display != egl::NO_DISPLAY).then_some(display)
+        })
+        .unwrap_or(egl::NO_DISPLAY)
+}
+
+const fn drm_egl_config_attributes() -> [EGLint; 13] {
+    [
+        egl::SURFACE_TYPE as EGLint,
+        egl::WINDOW_BIT as EGLint,
+        egl::RENDERABLE_TYPE as EGLint,
+        egl::OPENGL_ES2_BIT as EGLint,
+        egl::RED_SIZE as EGLint,
+        8,
+        egl::GREEN_SIZE as EGLint,
+        8,
+        egl::BLUE_SIZE as EGLint,
+        8,
+        egl::ALPHA_SIZE as EGLint,
+        0,
+        egl::NONE as EGLint,
+    ]
+}
+
+const fn drm_egl_context_attributes() -> [EGLint; 3] {
+    [
+        egl::CONTEXT_CLIENT_VERSION as EGLint,
+        2,
+        egl::NONE as EGLint,
+    ]
 }
 
 fn init_egl(
@@ -1797,30 +1996,17 @@ fn init_egl(
     if unsafe { egl.Initialize(display, &mut major, &mut minor) } == egl::FALSE {
         return Err("failed to initialize EGL".to_string());
     }
+    let mut init_guard = EglInitGuard::new(egl, display);
 
     if unsafe { egl.BindAPI(egl::OPENGL_ES_API) } == egl::FALSE {
         return Err("failed to bind EGL OpenGL ES API".to_string());
     }
 
     // EGL_NATIVE_VISUAL_ID is a queried config property, not a portable
-    // eglChooseConfig filter. Ask EGL for every RGB8/ES3 window candidate, then select
+    // eglChooseConfig filter. Ask EGL for every RGB8/ES2 window candidate, then select
     // the config whose native visual exactly matches the XRGB8888 GBM surface. This is
     // the selection pattern used by kmscube, SDL KMSDRM, and mpv.
-    let config_attribs: [EGLint; 13] = [
-        egl::SURFACE_TYPE as EGLint,
-        egl::WINDOW_BIT as EGLint,
-        egl::RENDERABLE_TYPE as EGLint,
-        EGL_OPENGL_ES3_BIT_KHR,
-        egl::RED_SIZE as EGLint,
-        8,
-        egl::GREEN_SIZE as EGLint,
-        8,
-        egl::BLUE_SIZE as EGLint,
-        8,
-        egl::ALPHA_SIZE as EGLint,
-        0,
-        egl::NONE as EGLint,
-    ];
+    let config_attribs = drm_egl_config_attributes();
 
     let mut total_configs: EGLint = 0;
     if unsafe { egl.GetConfigs(display, ptr::null_mut(), 0, &mut total_configs) } == egl::FALSE
@@ -1846,7 +2032,7 @@ fn init_egl(
         || matched_configs <= 0
     {
         return Err(format!(
-            "failed to choose RGB8 ES3 EGL configs (EGL error={:#06x})",
+            "failed to choose RGB8 ES2 EGL configs (EGL error={:#06x})",
             egl_error_code(egl)
         ));
     }
@@ -1878,17 +2064,13 @@ fn init_egl(
                 .map(|visual| format!("{:#010x}", visual as u32))
                 .collect::<Vec<_>>();
             format!(
-                "no RGB8 ES3 EGL config matches GBM XRGB8888 visual {:#010x}; available visuals={available_visuals:?}",
+                "no RGB8 ES2 EGL config matches GBM XRGB8888 visual {:#010x}; available visuals={available_visuals:?}",
                 required_visual as u32
             )
         })?;
     let config_diagnostics = egl_config_diagnostics(egl, display, config);
 
-    let context_attribs: [EGLint; 3] = [
-        egl::CONTEXT_CLIENT_VERSION as EGLint,
-        3,
-        egl::NONE as EGLint,
-    ];
+    let context_attribs = drm_egl_context_attributes();
     let context =
         unsafe { egl.CreateContext(display, config, egl::NO_CONTEXT, context_attribs.as_ptr()) };
     if context == egl::NO_CONTEXT {
@@ -1897,6 +2079,7 @@ fn init_egl(
             egl_error_code(egl)
         ));
     }
+    init_guard.context = context;
 
     let surface = unsafe {
         egl.CreateWindowSurface(
@@ -1908,22 +2091,14 @@ fn init_egl(
     };
     if surface == egl::NO_SURFACE {
         let error = egl_error_code(egl);
-        unsafe {
-            egl.DestroyContext(display, context);
-            egl.Terminate(display);
-        }
         return Err(format!(
             "failed to create EGL window surface ({config_diagnostics}; EGL error={error:#06x})"
         ));
     }
+    init_guard.surface = surface;
 
     if unsafe { egl.MakeCurrent(display, surface, surface, context) } == egl::FALSE {
         let error = egl_error_code(egl);
-        unsafe {
-            egl.DestroySurface(display, surface);
-            egl.DestroyContext(display, context);
-            egl.Terminate(display);
-        }
         return Err(format!(
             "failed to make EGL context current ({config_diagnostics}; EGL error={error:#06x})"
         ));
@@ -1934,12 +2109,6 @@ fn init_egl(
     // otherwise KMS can inherit an additional one-vblank wait from eglSwapBuffers().
     if unsafe { egl.SwapInterval(display, 0) } == egl::FALSE {
         let error = egl_error_code(egl);
-        unsafe {
-            egl.MakeCurrent(display, egl::NO_SURFACE, egl::NO_SURFACE, egl::NO_CONTEXT);
-            egl.DestroySurface(display, surface);
-            egl.DestroyContext(display, context);
-            egl.Terminate(display);
-        }
         return Err(format!(
             "failed to disable EGL swap throttling for direct DRM (EGL error={error:#06x})"
         ));
@@ -1972,20 +2141,30 @@ fn init_egl(
             egl_surface_attribute(egl, display, surface, egl::WIDTH as EGLint),
             egl_surface_attribute(egl, display, surface, egl::HEIGHT as EGLint),
         ),
-        native_fence_sync: extensions.contains("EGL_ANDROID_native_fence_sync"),
-        fence_sync: extensions.contains("EGL_KHR_fence_sync"),
-        wait_sync: extensions.contains("EGL_KHR_wait_sync"),
-        buffer_age: extensions.contains("EGL_EXT_buffer_age"),
+        native_fence_sync: extension_list_contains(&extensions, "EGL_ANDROID_native_fence_sync"),
+        fence_sync: extension_list_contains(&extensions, "EGL_KHR_fence_sync"),
+        wait_sync: extension_list_contains(&extensions, "EGL_KHR_wait_sync"),
+        buffer_age: extension_list_contains(&extensions, "EGL_EXT_buffer_age"),
+        dma_buf_import: extension_list_contains(&extensions, "EGL_EXT_image_dma_buf_import"),
+        dma_buf_import_modifiers: extension_list_contains(
+            &extensions,
+            "EGL_EXT_image_dma_buf_import_modifiers",
+        ),
     };
 
+    init_guard.finish();
     Ok((display, context, surface, diagnostics))
 }
 
-fn create_frame_surface(egl: &egl::Egl, dimensions: (u32, u32)) -> Result<GlFrameSurface, String> {
+fn create_frame_surface(
+    egl: &egl::Egl,
+    dimensions: (u32, u32),
+) -> Result<(GlFrameSurface, GlCapabilities), String> {
     gl::load_with(|s| unsafe {
         let symbol = CString::new(s).expect("gl symbol");
         egl.GetProcAddress(symbol.as_ptr()) as *const _
     });
+    let capabilities = GlCapabilities::detect();
 
     let interface = skia_safe::gpu::gl::Interface::new_load_with(|name| unsafe {
         if name == "eglGetCurrentDisplay" {
@@ -2010,7 +2189,8 @@ fn create_frame_surface(egl: &egl::Egl, dimensions: (u32, u32)) -> Result<GlFram
         }
     };
 
-    Ok(GlFrameSurface::new(dimensions, fb_info, gr_context, 0, 0))
+    let frame_surface = GlFrameSurface::try_new(dimensions, fb_info, gr_context, 0, 0)?;
+    Ok((frame_surface, capabilities))
 }
 
 fn gbm_bo_diagnostics(bo: &BufferObject<()>) -> String {
@@ -2322,6 +2502,9 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
         video_registry,
     } = context;
 
+    if let Err(err) = video_registry.set_prime_video_available(false) {
+        native_log.warning("video", format!("failed to disable PRIME video: {err}"));
+    }
     let log_render = config.render_log;
     if config.force_gpu_finish {
         native_log.info(
@@ -2354,6 +2537,10 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
     };
 
     loop {
+        if let Err(err) = video_registry.set_prime_video_available(false) {
+            native_log.warning("video", format!("failed to disable PRIME video: {err}"));
+        }
+
         if stop.load(Ordering::Relaxed) {
             if let Some(startup_tx) = startup_tx.take() {
                 let _ = startup_tx.send(Err("DRM startup aborted".to_string()));
@@ -2751,13 +2938,13 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             egl: egl_api,
             _egl_lib: egl_lib,
             display,
-            _context: context,
+            context,
             surface,
         };
         native_log.info(
             "drm",
             format!(
-                "EGL: vendor={} version={} APIs={} visual={:#010x} swap_range={:?}..{:?} surface={:?}x{:?} extensions={{native_fence={}, fence={}, wait={}, buffer_age={}}}",
+                "EGL: vendor={} version={} APIs={} visual={:#010x} swap_range={:?}..{:?} surface={:?}x{:?} extensions={{native_fence={}, fence={}, wait={}, buffer_age={}, dma_buf_import={}, dma_buf_modifiers={}}}",
                 egl_diagnostics.vendor,
                 egl_diagnostics.version,
                 egl_diagnostics.client_apis,
@@ -2770,6 +2957,8 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                 egl_diagnostics.fence_sync,
                 egl_diagnostics.wait_sync,
                 egl_diagnostics.buffer_age,
+                egl_diagnostics.dma_buf_import,
+                egl_diagnostics.dma_buf_import_modifiers,
             ),
         );
         native_log.info(
@@ -2786,54 +2975,61 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             );
         }
 
-        let mut frame_surface = match create_frame_surface(&egl_state.egl, dimensions) {
-            Ok(frame_surface) => frame_surface,
-            Err(err) => {
-                if handle_startup_failure_with_card(
-                    &card,
-                    &mut startup_tx,
-                    &running_flag,
-                    &stop,
-                    &mut startup_retries_remaining,
-                    retry_interval,
-                    format!("creating renderer failed: {err}"),
-                ) {
-                    break;
-                }
+        let (mut frame_surface, gl_capabilities) =
+            match create_frame_surface(&egl_state.egl, dimensions) {
+                Ok(values) => values,
+                Err(err) => {
+                    if handle_startup_failure_with_card(
+                        &card,
+                        &mut startup_tx,
+                        &running_flag,
+                        &stop,
+                        &mut startup_retries_remaining,
+                        retry_interval,
+                        format!("creating renderer failed: {err}"),
+                    ) {
+                        break;
+                    }
 
-                continue;
-            }
-        };
+                    continue;
+                }
+            };
         native_log.info(
             "drm",
             format!(
-                "GL: vendor={} renderer={} version={} shading_language={}",
+                "GL: vendor={} renderer={} version={} shading_language={} optional={{timer_query={}, external_image={}, core_vao={}, core_sync={}}}",
                 gl_string(gl::VENDOR),
                 gl_string(gl::RENDERER),
                 gl_string(gl::VERSION),
                 gl_string(gl::SHADING_LANGUAGE_VERSION),
+                gl_capabilities.timer_query,
+                gl_capabilities.video_import.external_image(),
+                gl_capabilities.video_import.core_vertex_arrays(),
+                gl_capabilities.video_import.core_sync_objects(),
             ),
         );
         let mut gpu_queue_timer = GpuQueueTimer::new(
             &egl_state.egl,
             stats.is_some() || config.renderer_stats_log,
             config.renderer_stats_log,
+            gl_capabilities.timer_query,
             &native_log,
         );
         let mut renderer = SceneRenderer::with_cache_config(config.renderer_cache_config);
-        let video_import = match VideoImportContext::new_current_direct() {
-            Ok(ctx) => {
-                native_log.info(
-                    "video",
-                    "Prime video import context initialized (direct external composition)",
-                );
-                Some(ctx)
-            }
-            Err(err) => {
-                native_log.error("video", format!("prime video import unavailable: {err}"));
-                None
-            }
-        };
+        let video_import =
+            match VideoImportContext::new_current_direct(gl_capabilities.video_import) {
+                Ok(ctx) => {
+                    native_log.info(
+                        "video",
+                        "Prime video import context initialized (direct external composition)",
+                    );
+                    Some(ctx)
+                }
+                Err(err) => {
+                    native_log.error("video", format!("prime video import unavailable: {err}"));
+                    None
+                }
+            };
         let mut last_video_sync_error = None;
         let mut logged_video_import = false;
 
@@ -3019,6 +3215,12 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             continue;
         }
 
+        if let Err(err) = video_registry.set_prime_video_available(video_import.is_some()) {
+            native_log.warning(
+                "video",
+                format!("failed to update PRIME video availability: {err}"),
+            );
+        }
         if let Some(startup_tx) = startup_tx.take() {
             let _ = startup_tx.send(Ok(()));
         }
@@ -3725,6 +3927,10 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                     break;
                 }
             }
+        }
+
+        if let Err(err) = video_registry.set_prime_video_available(false) {
+            native_log.warning("video", format!("failed to disable PRIME video: {err}"));
         }
 
         // Keep prepared and in-flight GBM buffers alive until teardown completes.
