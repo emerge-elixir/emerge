@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.3.3] - 2026-07-30
+
+### Added
+
+- Added detailed DRM video, GPU queue, atomic commit, and page-flip diagnostics, including the `drm_force_gpu_finish` diagnostic option.
+
+### Changed
+
+- Reworked the DRM PRIME/DMA-BUF video pipeline to own frames safely across page flips and improve import compatibility, synchronization, and release handling.
+- Improved retained paint-layer caching for dynamic, animated, scrolling, and visibility-changing content.
+- Upgraded Skia to 0.99 and Rustler to 0.38.
+- Upgraded the development, CI, and release toolchain to Elixir 1.20.2 and Erlang/OTP 29.0.4.
+
+### Fixed
+
+- Fixed text metrics and rendering-cache invalidation after text content updates.
+- Fixed inherited text decorations refreshing correctly when toggled.
+- Fixed macOS local host selection, frame retries when Metal drawables are unavailable, and text rendering across raster and Metal surfaces.
+- Fixed macOS compilation and compatibility with newer Clippy checks.
+
 ## [0.3.2] - 2026-06-09
 
 ### Changed

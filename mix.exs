@@ -1,7 +1,7 @@
 defmodule Emerge.MixProject do
   use Mix.Project
 
-  @version "0.3.2"
+  @version "0.3.3"
   @source_url "https://github.com/emerge-elixir/emerge"
 
   @nerves_rust_target_triple_mapping %{
@@ -151,9 +151,7 @@ defmodule Emerge.MixProject do
   end
 
   defp native_test_source?(path) do
-    path
-    |> Path.split()
-    |> Enum.member?("tests")
+    "tests" in Path.split(path) or Path.basename(path) == "test_support.rs"
   end
 
   defp package_assets do
@@ -204,6 +202,8 @@ defmodule Emerge.MixProject do
   defp public_docs_extras do
     [
       "README.md",
+      "THIRD_PARTY_ASSETS.md",
+      "NOTICE",
       "guides/tutorials/set_up_viewport.md",
       "guides/tutorials/describe_ui.md",
       "guides/tutorials/use_assets.md",

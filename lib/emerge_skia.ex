@@ -86,6 +86,9 @@ defmodule EmergeSkia do
   - `height` - Window height in pixels (default: 600)
   - `scroll_line_pixels` - Pixel distance used for each discrete mouse-wheel line step (default: `30.0`)
   - `drm_card` - DRM device path (default: `/dev/dri/card0`)
+  - `drm_startup_retries` - Number of DRM device startup retries (default: `40`)
+  - `drm_retry_interval_ms` - Delay between DRM startup retries in milliseconds (default: `250`)
+  - `drm_force_gpu_finish` - Force synchronous GPU completion before and after DRM buffer swaps for diagnostics. This can reduce rendering performance (default: `false`)
   - `hw_cursor` - Enable hardware cursor when available (default: true)
   - `drm_cursor` - Optional DRM-only cursor overrides for `default`, `text`, and `pointer`
   - `input_log` - Log DRM input devices on startup (default: false)
