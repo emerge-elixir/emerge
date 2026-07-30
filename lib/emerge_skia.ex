@@ -135,6 +135,11 @@ defmodule EmergeSkia do
   DRM cursor overrides are applied only on the `:drm` backend. Missing icons fall back to
   the built-in `mocu-black-right` theme.
 
+  The DRM backend explicitly requests OpenGL ES 2; no GLES compatibility option is needed.
+  GPU timer profiling and PRIME video import are enabled only when their required GL/EGL
+  extensions are available. Missing optional capabilities do not stop ordinary DRM UI
+  rendering, while unsupported PRIME video target operations return an error.
+
   Compile-time backend selection is configured separately with
   `config :emerge, compiled_backends: [...]`. If omitted, desktop builds assume
   `[:wayland]` and Nerves-style builds assume `[:drm]`.

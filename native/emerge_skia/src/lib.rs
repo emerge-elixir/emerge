@@ -410,7 +410,6 @@ struct RendererResource {
     render_tx: RenderSender,
     video_registry: Arc<VideoRegistry>,
     video_wake: VideoWake,
-    prime_video_supported: bool,
     native_log: Arc<NativeLogRelay>,
     stats: Option<Arc<RendererStatsCollector>>,
     close_signal_log: bool,
@@ -1083,7 +1082,7 @@ fn start_native_renderer_with_config(
     )))]
     let backend_wake = BackendWakeHandle::noop();
 
-    let (backend, prime_video_supported): (BackendKind, bool) = match config.backend {
+    let backend = match config.backend {
         #[cfg(all(feature = "wayland", target_os = "linux"))]
         BackendKind::Wayland => {
             let (proxy_tx, proxy_rx) = std::sync::mpsc::channel();
@@ -1182,7 +1181,10 @@ fn start_native_renderer_with_config(
                 },
             ));
 
-            (BackendKind::Wayland, startup.prime_video_supported)
+            video_registry
+                .set_prime_video_available(startup.prime_video_supported)
+                .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
+            BackendKind::Wayland
         }
         #[cfg(all(feature = "drm", target_os = "linux"))]
         BackendKind::Drm => {
@@ -1327,7 +1329,7 @@ fn start_native_renderer_with_config(
                 },
             ));
 
-            (BackendKind::Drm, true)
+            BackendKind::Drm
         }
         #[cfg(feature = "macos")]
         BackendKind::Macos => unreachable!("macOS backend should return before runtime startup"),
@@ -1373,7 +1375,6 @@ fn start_native_renderer_with_config(
         render_tx: render_sender,
         video_registry,
         video_wake,
-        prime_video_supported,
         native_log,
         stats: renderer_stats,
         close_signal_log,
@@ -1494,12 +1495,13 @@ fn stop(renderer: ResourceArc<RendererResource>) -> Atom {
     atoms::ok()
 }
 
+#[cfg(test)]
 fn ensure_video_target_mode_supported(
     prime_video_supported: bool,
     mode: VideoMode,
 ) -> Result<(), String> {
     if matches!(mode, VideoMode::Prime) && !prime_video_supported {
-        Err("prime video targets require a Prime-capable backend (:wayland or :drm)".to_string())
+        Err(video::prime_video_unavailable_error())
     } else {
         Ok(())
     }
@@ -1514,7 +1516,6 @@ fn video_target_new(
     mode: String,
 ) -> Result<ResourceArc<VideoTargetResource>, String> {
     let mode = VideoMode::parse(&mode)?;
-    ensure_video_target_mode_supported(renderer.prime_video_supported, mode)?;
 
     let spec = video::VideoTargetSpec {
         id: id.clone(),
@@ -1522,7 +1523,7 @@ fn video_target_new(
         height,
         mode,
     };
-    renderer.video_registry.create_target(spec)?;
+    renderer.video_registry.create_target_if_available(spec)?;
 
     Ok(ResourceArc::new(VideoTargetResource {
         id,
@@ -1539,9 +1540,9 @@ fn video_target_submit_prime(
     target: ResourceArc<VideoTargetResource>,
     desc: video::PrimeDesc,
 ) -> Result<bool, String> {
-    let spec = target.registry.target_spec(&target.id)?;
-    desc.validate_for_target(&target.id, spec.mode, spec.width, spec.height)?;
-    target.registry.submit_prime(&target.id, desc.into())?;
+    target
+        .registry
+        .submit_prime_if_available(&target.id, desc.into())?;
     target.wake.notify();
     Ok(true)
 }
@@ -2569,7 +2570,6 @@ mod tests {
             render_tx: render_sender,
             video_registry: Arc::new(VideoRegistry::new(release_tx, None)),
             video_wake: VideoWake::noop(),
-            prime_video_supported: false,
             native_log: Arc::new(NativeLogRelay::default()),
             stats: None,
             close_signal_log: false,
@@ -2660,7 +2660,7 @@ mod tests {
 
         assert_eq!(
             err,
-            "prime video targets require a Prime-capable backend (:wayland or :drm)"
+            "prime video targets require runtime DMA-BUF and external-image support on the active backend"
         );
     }
 

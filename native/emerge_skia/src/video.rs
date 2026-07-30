@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
     all(feature = "wayland", target_os = "linux"),
     all(feature = "drm", target_os = "linux")
 ))]
-use std::ffi::{CString, c_void};
+use std::ffi::{CStr, CString, c_void};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 #[cfg(any(
     all(feature = "wayland", target_os = "linux"),
@@ -323,26 +323,6 @@ pub struct PrimeDesc {
     trace_token: Option<TraceToken>,
 }
 
-impl PrimeDesc {
-    pub fn validate_for_target(
-        &self,
-        target_id: &str,
-        mode: VideoMode,
-        target_width: u32,
-        target_height: u32,
-    ) -> Result<(), String> {
-        validate_prime_target(
-            target_id,
-            mode,
-            target_width,
-            target_height,
-            self.width,
-            self.height,
-            self.format.0,
-        )
-    }
-}
-
 #[cfg_attr(
     not(any(
         all(feature = "wayland", target_os = "linux"),
@@ -561,6 +541,11 @@ pub enum VideoMode {
     Prime,
 }
 
+pub fn prime_video_unavailable_error() -> String {
+    "prime video targets require runtime DMA-BUF and external-image support on the active backend"
+        .to_string()
+}
+
 impl VideoMode {
     pub fn parse(value: &str) -> Result<Self, String> {
         match value {
@@ -583,8 +568,27 @@ struct VideoTargetEntry {
     pending: Option<PrimeFrame>,
 }
 
+#[derive(Default)]
+struct VideoRegistryState {
+    targets: HashMap<String, VideoTargetEntry>,
+    prime_video_available: bool,
+}
+
+fn take_pending_frames(targets: &mut HashMap<String, VideoTargetEntry>) -> Vec<PendingVideoFrame> {
+    targets
+        .iter_mut()
+        .filter_map(|(id, entry)| {
+            entry.pending.take().map(|frame| PendingVideoFrame {
+                id: id.clone(),
+                spec: entry.spec.clone(),
+                frame,
+            })
+        })
+        .collect()
+}
+
 pub struct VideoRegistry {
-    state: Mutex<HashMap<String, VideoTargetEntry>>,
+    state: Mutex<VideoRegistryState>,
     release_tx: Sender<PrimeFrame>,
     generation: AtomicU64,
     stats: Option<Arc<RendererStatsCollector>>,
@@ -593,7 +597,7 @@ pub struct VideoRegistry {
 impl VideoRegistry {
     pub fn new(release_tx: Sender<PrimeFrame>, stats: Option<Arc<RendererStatsCollector>>) -> Self {
         Self {
-            state: Mutex::new(HashMap::new()),
+            state: Mutex::new(VideoRegistryState::default()),
             release_tx,
             generation: AtomicU64::new(0),
             stats,
@@ -601,22 +605,64 @@ impl VideoRegistry {
     }
 
     pub fn create_target(&self, spec: VideoTargetSpec) -> Result<(), String> {
+        self.create_target_with_policy(spec, false)
+    }
+
+    pub fn create_target_if_available(&self, spec: VideoTargetSpec) -> Result<(), String> {
+        self.create_target_with_policy(spec, true)
+    }
+
+    fn create_target_with_policy(
+        &self,
+        spec: VideoTargetSpec,
+        require_available: bool,
+    ) -> Result<(), String> {
         let mut state = self
             .state
             .lock()
             .map_err(|_| "video registry lock poisoned")?;
-        if state.contains_key(&spec.id) {
+        if require_available && !state.prime_video_available {
+            return Err(prime_video_unavailable_error());
+        }
+        if state.targets.contains_key(&spec.id) {
             return Err(format!("video target already exists: {}", spec.id));
         }
 
-        state.insert(
+        state.targets.insert(
             spec.id.clone(),
             VideoTargetEntry {
                 spec,
                 pending: None,
             },
         );
+        drop(state);
         self.bump_generation();
+        Ok(())
+    }
+
+    pub fn set_prime_video_available(&self, available: bool) -> Result<(), String> {
+        let (changed, pending) = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| "video registry lock poisoned")?;
+            let changed = state.prime_video_available != available;
+            state.prime_video_available = available;
+            let pending = if available {
+                Vec::new()
+            } else {
+                take_pending_frames(&mut state.targets)
+            };
+            (changed, pending)
+        };
+
+        if changed || !pending.is_empty() {
+            self.bump_generation();
+        }
+        self.record_pending_taken(pending.len());
+        pending
+            .into_iter()
+            .for_each(|pending| self.defer_release(pending.frame));
         Ok(())
     }
 
@@ -625,7 +671,7 @@ impl VideoRegistry {
             .state
             .lock()
             .ok()
-            .and_then(|mut state| state.remove(id).and_then(|entry| entry.pending));
+            .and_then(|mut state| state.targets.remove(id).and_then(|entry| entry.pending));
         self.bump_generation();
         if let Some(frame) = pending {
             if let Some(stats) = self.stats.as_deref() {
@@ -635,7 +681,20 @@ impl VideoRegistry {
         }
     }
 
-    pub fn submit_prime(&self, id: &str, mut frame: PrimeFrame) -> Result<(), String> {
+    pub fn submit_prime_if_available(&self, id: &str, frame: PrimeFrame) -> Result<(), String> {
+        self.submit_prime_with_policy(id, frame, true)
+    }
+
+    pub fn submit_prime(&self, id: &str, frame: PrimeFrame) -> Result<(), String> {
+        self.submit_prime_with_policy(id, frame, false)
+    }
+
+    fn submit_prime_with_policy(
+        &self,
+        id: &str,
+        mut frame: PrimeFrame,
+        require_available: bool,
+    ) -> Result<(), String> {
         let frame_width = frame.width;
         let frame_height = frame.height;
         let frame_format = frame.format;
@@ -648,7 +707,12 @@ impl VideoRegistry {
                     return Err("video registry lock poisoned".to_string());
                 }
             };
-            let entry = match state.get_mut(id) {
+            if require_available && !state.prime_video_available {
+                drop(state);
+                self.defer_release(frame);
+                return Err(prime_video_unavailable_error());
+            }
+            let entry = match state.targets.get_mut(id) {
                 Some(entry) => entry,
                 None => {
                     drop(state);
@@ -699,26 +763,14 @@ impl VideoRegistry {
     }
 
     pub fn snapshot_pending(&self) -> Result<VideoRegistrySnapshot, String> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| "video registry lock poisoned")?;
-        let mut pending = Vec::new();
-
-        for (id, entry) in state.iter_mut() {
-            if let Some(frame) = entry.pending.take() {
-                pending.push(PendingVideoFrame {
-                    id: id.clone(),
-                    spec: entry.spec.clone(),
-                    frame,
-                });
-            }
-        }
-
-        if let Some(stats) = self.stats.as_deref() {
-            stats.record_video_pending_taken(pending.len());
-        }
-
+        let pending = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| "video registry lock poisoned")?;
+            take_pending_frames(&mut state.targets)
+        };
+        self.record_pending_taken(pending.len());
         Ok(VideoRegistrySnapshot { pending })
     }
 
@@ -728,6 +780,7 @@ impl VideoRegistry {
             .lock()
             .map_err(|_| "video registry lock poisoned")?;
         Ok(state
+            .targets
             .iter()
             .map(|(id, entry)| (id.clone(), entry.spec.clone()))
             .collect())
@@ -739,6 +792,7 @@ impl VideoRegistry {
             .lock()
             .map_err(|_| "video registry lock poisoned".to_string())?;
         state
+            .targets
             .get(id)
             .map(|entry| entry.spec.clone())
             .ok_or_else(|| format!("unknown video target: {id}"))
@@ -759,6 +813,14 @@ impl VideoRegistry {
         }
 
         Ok(())
+    }
+
+    fn record_pending_taken(&self, count: usize) {
+        if count > 0
+            && let Some(stats) = self.stats.as_deref()
+        {
+            stats.record_video_pending_taken(count);
+        }
     }
 
     fn record_import_gauges(&self, direct_imports: usize, retired_imports: usize) {
@@ -887,6 +949,88 @@ enum VideoImportPath {
     all(feature = "wayland", target_os = "linux"),
     all(feature = "drm", target_os = "linux")
 ))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct VideoImportCapabilities {
+    external_image: bool,
+    core_vertex_arrays: bool,
+    core_sync_objects: bool,
+}
+
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
+impl VideoImportCapabilities {
+    #[cfg(all(feature = "drm", target_os = "linux"))]
+    pub(crate) fn from_gl_report(version: &str, extensions: &str) -> Self {
+        Self::classify(
+            parse_gles_major(version),
+            extension_list_contains(extensions, "GL_OES_EGL_image_external"),
+            gl::GenVertexArrays::is_loaded() && gl::BindVertexArray::is_loaded(),
+            gl::FenceSync::is_loaded()
+                && gl::ClientWaitSync::is_loaded()
+                && gl::DeleteSync::is_loaded(),
+        )
+    }
+
+    fn current() -> Self {
+        // Preserve Wayland's existing late shader/symbol capability checks. DRM passes an
+        // explicit version-aware report so its GLES2 baseline never invokes core ES3 APIs.
+        Self {
+            external_image: true,
+            core_vertex_arrays: gl::GenVertexArrays::is_loaded()
+                && gl::BindVertexArray::is_loaded(),
+            core_sync_objects: gl::FenceSync::is_loaded()
+                && gl::ClientWaitSync::is_loaded()
+                && gl::DeleteSync::is_loaded(),
+        }
+    }
+
+    #[cfg(any(test, all(feature = "drm", target_os = "linux")))]
+    fn classify(
+        gles_major: Option<u8>,
+        external_image: bool,
+        vertex_array_entry_points: bool,
+        sync_entry_points: bool,
+    ) -> Self {
+        let gles3_or_newer = gles_major.is_some_and(|major| major >= 3);
+        Self {
+            external_image,
+            core_vertex_arrays: gles3_or_newer && vertex_array_entry_points,
+            core_sync_objects: gles3_or_newer && sync_entry_points,
+        }
+    }
+
+    pub(crate) fn external_image(self) -> bool {
+        self.external_image
+    }
+
+    pub(crate) fn core_vertex_arrays(self) -> bool {
+        self.core_vertex_arrays
+    }
+
+    pub(crate) fn core_sync_objects(self) -> bool {
+        self.core_sync_objects
+    }
+}
+
+#[cfg(any(test, all(feature = "drm", target_os = "linux")))]
+fn parse_gles_major(version: &str) -> Option<u8> {
+    let version = version.strip_prefix("OpenGL ES")?;
+    let version = version.trim_start_matches("-CM").trim_start();
+    version.split('.').next()?.parse().ok()
+}
+
+fn extension_list_contains(extensions: &str, expected: &str) -> bool {
+    extensions
+        .split_ascii_whitespace()
+        .any(|extension| extension == expected)
+}
+
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 pub struct VideoImportContext {
     support: Rc<EglDmabufSupport>,
     blitter: Option<ExternalVideoBlitter>,
@@ -900,30 +1044,46 @@ pub struct VideoImportContext {
 ))]
 impl VideoImportContext {
     pub fn new_current() -> Result<Self, String> {
-        Self::new_current_with_path(VideoImportPath::BlitRgba)
+        Self::new_current_with_path(
+            VideoImportPath::BlitRgba,
+            VideoImportCapabilities::current(),
+        )
     }
 
     #[cfg(all(feature = "drm", target_os = "linux"))]
-    pub fn new_current_direct() -> Result<Self, String> {
-        Self::new_current_with_path(VideoImportPath::DirectExternal)
+    pub(crate) fn new_current_direct(
+        capabilities: VideoImportCapabilities,
+    ) -> Result<Self, String> {
+        Self::new_current_with_path(VideoImportPath::DirectExternal, capabilities)
     }
 
     fn path(&self) -> VideoImportPath {
         self.path
     }
 
-    fn new_current_with_path(path: VideoImportPath) -> Result<Self, String> {
+    fn new_current_with_path(
+        path: VideoImportPath,
+        capabilities: VideoImportCapabilities,
+    ) -> Result<Self, String> {
+        if !capabilities.external_image() {
+            return Err("GL_OES_EGL_image_external is not advertised".to_string());
+        }
+
         let support = Rc::new(EglDmabufSupport::new_current()?);
-        // DRM normally samples the external texture directly, but retain the blitter as a
-        // one-way compatibility fallback when Ganesh cannot wrap an external texture.
-        let blitter = Some(ExternalVideoBlitter::new()?);
-        let use_gl_fences = gl::FenceSync::is_loaded()
-            && gl::ClientWaitSync::is_loaded()
-            && gl::DeleteSync::is_loaded();
+        // DRM normally samples the external texture directly. A failed fallback shader must not
+        // disable direct composition before Ganesh has had a chance to wrap an actual frame.
+        let blitter = match ExternalVideoBlitter::new(capabilities.core_vertex_arrays()) {
+            Ok(blitter) => Some(blitter),
+            Err(error) if path == VideoImportPath::DirectExternal => {
+                eprintln!("RGBA video fallback unavailable: {error}");
+                None
+            }
+            Err(error) => return Err(error),
+        };
         Ok(Self {
             support,
             blitter,
-            use_gl_fences,
+            use_gl_fences: capabilities.core_sync_objects(),
             path,
         })
     }
@@ -1127,6 +1287,7 @@ struct EglDmabufSupport {
     _lib: Library,
     display: egl::types::EGLDisplay,
     image_target_texture_2d_oes: GlEglImageTargetTexture2DOes,
+    supports_modifiers: bool,
 }
 
 #[cfg(any(
@@ -1153,6 +1314,20 @@ impl EglDmabufSupport {
         if display == egl::NO_DISPLAY {
             return Err("eglGetCurrentDisplay returned NO_DISPLAY".to_string());
         }
+
+        let egl_extensions = unsafe { egl.QueryString(display, egl::EXTENSIONS as i32) };
+        let egl_extensions = if egl_extensions.is_null() {
+            String::new()
+        } else {
+            unsafe { CStr::from_ptr(egl_extensions) }
+                .to_string_lossy()
+                .into_owned()
+        };
+        if !extension_list_contains(&egl_extensions, "EGL_EXT_image_dma_buf_import") {
+            return Err("EGL_EXT_image_dma_buf_import is not advertised".to_string());
+        }
+        let supports_modifiers =
+            extension_list_contains(&egl_extensions, "EGL_EXT_image_dma_buf_import_modifiers");
 
         if !egl.CreateImageKHR.is_loaded() && !egl.CreateImage.is_loaded() {
             return Err("neither eglCreateImageKHR nor eglCreateImage is available".to_string());
@@ -1181,6 +1356,7 @@ impl EglDmabufSupport {
                     unsafe extern "system" fn(u32, *const libc::c_void),
                 >(func)
             },
+            supports_modifiers,
         })
     }
 
@@ -1193,6 +1369,11 @@ impl EglDmabufSupport {
             .map_err(|_| "DMA-BUF width exceeds EGL integer range".to_string())?;
         let height = i32::try_from(frame.height)
             .map_err(|_| "DMA-BUF height exceeds EGL integer range".to_string())?;
+        validate_modifier_support(
+            self.supports_modifiers,
+            frame.objects.iter().any(|object| object.modifier.is_some()),
+        )?;
+
         let mut attrs = vec![
             egl::WIDTH as egl::types::EGLint,
             width,
@@ -1275,6 +1456,20 @@ impl EglDmabufSupport {
                     .DestroyImage(self.display, image as egl::types::EGLImage);
             }
         }
+    }
+}
+
+fn validate_modifier_support(
+    supports_modifiers: bool,
+    has_explicit_modifier: bool,
+) -> Result<(), String> {
+    if has_explicit_modifier && !supports_modifiers {
+        Err(
+            "DMA-BUF frame uses an explicit modifier, but EGL_EXT_image_dma_buf_import_modifiers is not advertised"
+                .to_string(),
+        )
+    } else {
+        Ok(())
     }
 }
 
@@ -1361,7 +1556,7 @@ struct ExternalVideoBlitter {
     all(feature = "drm", target_os = "linux")
 ))]
 impl ExternalVideoBlitter {
-    fn new() -> Result<Self, String> {
+    fn new(use_core_vertex_arrays: bool) -> Result<Self, String> {
         let vertices: [f32; 16] = [
             -1.0, -1.0, 0.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0,
         ];
@@ -1415,7 +1610,7 @@ void main() {
         let mut vertex_buffer = 0;
         let mut vertex_array = 0;
         unsafe {
-            if gl::GenVertexArrays::is_loaded() && gl::BindVertexArray::is_loaded() {
+            if use_core_vertex_arrays {
                 gl::GenVertexArrays(1, &mut vertex_array);
                 gl::BindVertexArray(vertex_array);
             }
@@ -2376,10 +2571,18 @@ impl RendererVideoState {
 
         for (id, spec) in &target_specs {
             if !self.targets.contains_key(id) {
-                self.targets.insert(
-                    id.clone(),
-                    RenderedVideoTarget::new(spec.clone(), gr_context, import_path)?,
-                );
+                let target = match RenderedVideoTarget::new(spec.clone(), gr_context, import_path) {
+                    Ok(target) => target,
+                    Err(error) => {
+                        registry.drain_pending_to_release().map_err(|release_error| {
+                            format!(
+                                "{error}; additionally failed to release pending video frames: {release_error}"
+                            )
+                        })?;
+                        return Err(error);
+                    }
+                };
+                self.targets.insert(id.clone(), target);
                 resources_changed = true;
             }
         }
@@ -2406,6 +2609,8 @@ impl RendererVideoState {
                 resources_changed = true;
                 needs_cleanup |= target.reap_retired_imports();
             }
+        } else {
+            registry.drain_pending_to_release()?;
         }
 
         let direct_imports = self
@@ -2450,6 +2655,179 @@ mod tests {
             lease: None,
             submitted_at: Instant::now(),
             stats: None,
+        }
+    }
+
+    #[test]
+    fn gles_version_and_extension_parsing_are_conservative() {
+        assert_eq!(parse_gles_major("OpenGL ES 2.0 Mesa 24.3"), Some(2));
+        assert_eq!(parse_gles_major("OpenGL ES 3.2 Vendor"), Some(3));
+        assert_eq!(parse_gles_major("OpenGL ES-CM 1.1"), Some(1));
+        assert_eq!(parse_gles_major("OpenGL 4.6"), None);
+
+        let extensions = "GL_OES_EGL_image_external GL_EXT_disjoint_timer_query";
+        assert!(extension_list_contains(
+            extensions,
+            "GL_OES_EGL_image_external"
+        ));
+        assert!(!extension_list_contains(extensions, "GL_OES_EGL_image"));
+    }
+
+    #[cfg(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux")
+    ))]
+    #[test]
+    fn es2_disables_core_vao_and_sync_even_with_loaded_entry_points() {
+        let capabilities = VideoImportCapabilities::classify(Some(2), true, true, true);
+        assert!(capabilities.external_image());
+        assert!(!capabilities.core_vertex_arrays());
+        assert!(!capabilities.core_sync_objects());
+
+        let capabilities = VideoImportCapabilities::classify(Some(3), true, true, true);
+        assert!(capabilities.core_vertex_arrays());
+        assert!(capabilities.core_sync_objects());
+    }
+
+    #[test]
+    fn explicit_dma_buf_modifiers_require_the_modifier_extension() {
+        assert!(validate_modifier_support(false, false).is_ok());
+        assert!(validate_modifier_support(true, true).is_ok());
+        assert!(validate_modifier_support(false, true).is_err());
+    }
+
+    #[test]
+    fn unavailable_prime_target_creation_is_rejected() {
+        let (release_tx, _release_rx) = unbounded();
+        let registry = VideoRegistry::new(release_tx, None);
+        let spec = VideoTargetSpec {
+            id: "preview".to_string(),
+            width: 64,
+            height: 32,
+            mode: VideoMode::Prime,
+        };
+
+        assert_eq!(
+            registry
+                .create_target_if_available(spec.clone())
+                .expect_err("unavailable import should reject the target"),
+            prime_video_unavailable_error()
+        );
+        registry
+            .set_prime_video_available(true)
+            .expect("availability should update");
+        registry
+            .create_target_if_available(spec)
+            .expect("available import should accept the target");
+    }
+
+    #[test]
+    fn unavailable_prime_submission_releases_the_frame() {
+        let (release_tx, release_rx) = unbounded();
+        let registry = VideoRegistry::new(release_tx, None);
+        registry
+            .create_target(VideoTargetSpec {
+                id: "preview".to_string(),
+                width: 64,
+                height: 32,
+                mode: VideoMode::Prime,
+            })
+            .expect("target should be created");
+
+        let error = registry
+            .submit_prime_if_available("preview", test_prime_frame(64, 32))
+            .expect_err("unavailable import should reject the frame");
+
+        assert_eq!(error, prime_video_unavailable_error());
+        let released = release_rx.try_recv().expect("expected released frame");
+        assert_eq!((released.width, released.height), (64, 32));
+    }
+
+    #[test]
+    fn disabling_prime_video_atomically_drains_a_pending_frame() {
+        let (release_tx, release_rx) = unbounded();
+        let registry = VideoRegistry::new(release_tx, None);
+        registry
+            .set_prime_video_available(true)
+            .expect("availability should update");
+        registry
+            .create_target_if_available(VideoTargetSpec {
+                id: "preview".to_string(),
+                width: 64,
+                height: 32,
+                mode: VideoMode::Prime,
+            })
+            .expect("target should be created");
+        registry
+            .submit_prime_if_available("preview", test_prime_frame(64, 32))
+            .expect("frame should be accepted");
+
+        registry
+            .set_prime_video_available(false)
+            .expect("availability should update");
+
+        assert!(
+            registry
+                .snapshot_pending()
+                .expect("snapshot should succeed")
+                .pending
+                .is_empty()
+        );
+        assert!(release_rx.try_recv().is_ok());
+    }
+
+    #[test]
+    fn availability_loss_racing_submission_never_strands_a_frame() {
+        let (release_tx, release_rx) = unbounded();
+        let registry = Arc::new(VideoRegistry::new(release_tx, None));
+        registry
+            .set_prime_video_available(true)
+            .expect("availability should update");
+        registry
+            .create_target_if_available(VideoTargetSpec {
+                id: "preview".to_string(),
+                width: 64,
+                height: 32,
+                mode: VideoMode::Prime,
+            })
+            .expect("target should be created");
+
+        for _ in 0..32 {
+            registry
+                .set_prime_video_available(true)
+                .expect("availability should update");
+            let barrier = Arc::new(std::sync::Barrier::new(3));
+            let submit_registry = Arc::clone(&registry);
+            let submit_barrier = Arc::clone(&barrier);
+            let submit = thread::spawn(move || {
+                submit_barrier.wait();
+                let _ =
+                    submit_registry.submit_prime_if_available("preview", test_prime_frame(64, 32));
+            });
+            let disable_registry = Arc::clone(&registry);
+            let disable_barrier = Arc::clone(&barrier);
+            let disable = thread::spawn(move || {
+                disable_barrier.wait();
+                disable_registry
+                    .set_prime_video_available(false)
+                    .expect("availability should update");
+            });
+
+            barrier.wait();
+            submit.join().expect("submit thread should finish");
+            disable.join().expect("disable thread should finish");
+
+            assert!(
+                registry
+                    .snapshot_pending()
+                    .expect("snapshot should succeed")
+                    .pending
+                    .is_empty()
+            );
+            release_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("racing frame should be released");
+            assert!(release_rx.try_recv().is_err());
         }
     }
 

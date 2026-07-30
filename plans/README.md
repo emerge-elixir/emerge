@@ -1,12 +1,13 @@
 # Plans
 
-Last updated: 2026-05-20.
+Last updated: 2026-07-30.
 
 This directory tracks active implementation notes and durable background
 research for native layout, renderer, and input/runtime work.
 
 Active implementation plans:
 
+- `active-drm-gles2-compatibility.md`
 - `active-low-resource-animation-smoothness.md`
 - `active-combined-refresh-traversal.md`
 - `active-combined-tree-walk-cleanup.md`
@@ -16,6 +17,13 @@ When a slice completes, fold the useful details into this index or one of the
 durable reference notes below, then remove the completed implementation log.
 
 ## Files
+
+### `active-drm-gles2-compatibility.md`
+
+Implementation record for restoring OpenGL ES 2 as the explicit DRM baseline while
+capability-gating timer profiling, PRIME video, core VAOs, and core sync paths.
+Automated validation and base GLES2-only Macaw rendering are confirmed; extended
+PRIME degradation and newer-device checks remain open.
 
 ### `active-low-resource-animation-smoothness.md`
 

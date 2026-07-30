@@ -140,7 +140,14 @@ If you leave `compiled_backends` unset, it defaults to `[:macos]` on macOS, `[:w
 Runtime backend options:
 
 - `backend: :macos` starts the macOS backend explicitly
+- `backend: :drm` starts the direct DRM backend explicitly
 - `macos_backend: :auto | :metal | :raster` selects the macOS surface backend. `:auto` prefers Metal and falls back to raster.
+
+DRM notes:
+
+- DRM explicitly requests an OpenGL ES 2 context, so GLES2-only devices remain supported without a compatibility option.
+- Startup logs report the selected GL version and optional capability paths.
+- GPU timer profiling and PRIME video import are optional. If their required extensions are missing, ordinary UI rendering continues; creating or submitting a PRIME video target returns an unsupported-capability error.
 
 macOS notes:
 
