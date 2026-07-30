@@ -1706,7 +1706,7 @@ mod tests {
         Element, ElementKind, Frame, NearbyMountIx, NearbySlot, NodeId, NodeIx, ParentLink,
         TextInputContentOrigin,
     };
-    use crate::tree::layout::{Constraint, layout_tree_default};
+    use crate::tree::layout::{Constraint, layout_and_refresh_default, layout_tree_default};
 
     fn exit_alpha_spec() -> AnimationSpec {
         alpha_spec(1.0, 0.0)
@@ -2877,7 +2877,7 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_patches_invalidates_paragraph_for_inherited_text_paint_attr() {
+    fn test_apply_patches_invalidates_paragraph_when_inherited_strike_toggles() {
         let root_id = NodeId::from_term_bytes(vec![1]);
         let paragraph_id = NodeId::from_term_bytes(vec![2]);
         let text_id = NodeId::from_term_bytes(vec![3]);
@@ -2909,7 +2909,9 @@ mod tests {
         ));
         tree.set_children(&root_id, vec![paragraph_id]).unwrap();
         tree.set_children(&paragraph_id, vec![text_id]).unwrap();
-        layout_tree_default(&mut tree, Constraint::new(400.0, 200.0), 1.0);
+        let initial_output =
+            layout_and_refresh_default(&mut tree, Constraint::new(400.0, 200.0), 1.0);
+        assert_eq!(initial_output.scene.summary().rects, 0);
 
         assert!(
             tree.get(&paragraph_id)
@@ -2934,7 +2936,9 @@ mod tests {
         assert_eq!(invalidation, TreeInvalidation::Resolve);
         assert!(tree.get(&paragraph_id).unwrap().layout.resolve_dirty);
 
-        layout_tree_default(&mut tree, Constraint::new(400.0, 200.0), 1.0);
+        let struck_output =
+            layout_and_refresh_default(&mut tree, Constraint::new(400.0, 200.0), 1.0);
+        assert!(struck_output.scene.summary().rects > 0);
         assert!(
             tree.get(&paragraph_id)
                 .unwrap()
@@ -2944,6 +2948,32 @@ mod tests {
                 .unwrap()
                 .iter()
                 .all(|fragment| fragment.strike)
+        );
+
+        let invalidation = apply_patches(
+            &mut tree,
+            vec![Patch::SetAttrs {
+                id: root_id,
+                attrs_raw: Vec::new(),
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(invalidation, TreeInvalidation::Resolve);
+        assert!(tree.get(&paragraph_id).unwrap().layout.resolve_dirty);
+
+        let restored_output =
+            layout_and_refresh_default(&mut tree, Constraint::new(400.0, 200.0), 1.0);
+        assert_eq!(restored_output.scene.summary().rects, 0);
+        assert!(
+            tree.get(&paragraph_id)
+                .unwrap()
+                .layout
+                .paragraph_fragments
+                .as_ref()
+                .unwrap()
+                .iter()
+                .all(|fragment| !fragment.strike)
         );
     }
 

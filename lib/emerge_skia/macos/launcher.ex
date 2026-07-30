@@ -49,6 +49,9 @@ defmodule EmergeSkia.Macos.Launcher do
     bundled_binary = Path.join(project_root(), "priv/native/macos_host")
 
     cond do
+      local_build_requested?() ->
+        maybe_build_local_host(target)
+
       File.regular?(bundled_binary) ->
         {:ok, bundled_binary}
 
@@ -58,6 +61,10 @@ defmodule EmergeSkia.Macos.Launcher do
       true ->
         ensure_downloaded_host_binary(target, cached_binary)
     end
+  end
+
+  defp local_build_requested? do
+    System.get_env(BuildConfig.build_local_macos_host_env_key()) in ["1", "true"]
   end
 
   defp ensure_downloaded_host_binary(target, cached_binary) do
@@ -78,7 +85,7 @@ defmodule EmergeSkia.Macos.Launcher do
   end
 
   defp maybe_build_local_host(_target, prior_reason \\ nil) do
-    if System.get_env(BuildConfig.build_local_macos_host_env_key()) in ["1", "true"] do
+    if local_build_requested?() do
       host_binary = local_dev_binary_path()
 
       case build_host_binary(host_binary) do
