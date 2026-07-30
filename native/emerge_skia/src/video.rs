@@ -1021,6 +1021,11 @@ fn parse_gles_major(version: &str) -> Option<u8> {
     version.split('.').next()?.parse().ok()
 }
 
+#[cfg(any(
+    test,
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 fn extension_list_contains(extensions: &str, expected: &str) -> bool {
     extensions
         .split_ascii_whitespace()
@@ -1459,6 +1464,11 @@ impl EglDmabufSupport {
     }
 }
 
+#[cfg(any(
+    test,
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 fn validate_modifier_support(
     supports_modifiers: bool,
     has_explicit_modifier: bool,
