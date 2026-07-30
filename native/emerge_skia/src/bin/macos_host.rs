@@ -40,7 +40,7 @@ mod app {
         keys::CanonicalKey,
         renderer::{
             RenderFrame, RenderState, RendererCacheConfig, RendererPaintLayerCacheConfig,
-            SceneRenderer,
+            SceneRenderer, text_surface_props,
         },
         runtime::tree_update::{
             TreeUpdateDecodePolicy, TreeUpdateEffect, TreeUpdateEngine, TreeUpdateOptions,
@@ -2161,7 +2161,8 @@ mod app {
             None,
         );
 
-        surfaces::raster(&info, None, None)
+        let surface_props = text_surface_props();
+        surfaces::raster(&info, None, Some(&surface_props))
             .ok_or_else(|| "failed to create raster fallback surface".to_string())
     }
 
@@ -2212,6 +2213,7 @@ mod app {
             (drawable_width as i32, drawable_height as i32),
             &texture_info,
         );
+        let surface_props = text_surface_props();
 
         let mut skia_surface = gpu::surfaces::wrap_backend_render_target(
             &mut surface.skia,
@@ -2219,7 +2221,7 @@ mod app {
             SurfaceOrigin::TopLeft,
             ColorType::BGRA8888,
             None,
-            None,
+            Some(&surface_props),
         )
         .ok_or_else(|| "failed to wrap CAMetalLayer drawable as Skia surface".to_string())?;
 
@@ -2319,12 +2321,20 @@ mod app {
         }
 
         let swap_done_at = match &mut session.surface {
-            SessionSurface::Metal(surface) => draw_metal_surface(
-                surface,
-                &mut session.renderer,
-                &session.render_state,
-                session.stats.as_deref(),
-            )?,
+            SessionSurface::Metal(surface) => {
+                let result = draw_metal_surface(
+                    surface,
+                    &mut session.renderer,
+                    &session.render_state,
+                    session.stats.as_deref(),
+                );
+                if !matches!(result, Ok(Some(_))) {
+                    // The skip probe records the candidate fingerprint before Metal acquires a
+                    // drawable. Keep an unpresented frame eligible for the next draw attempt.
+                    session.renderer.invalidate_visible_frame_fingerprint();
+                }
+                result?
+            }
             SessionSurface::Raster(surface) => draw_raster_surface(
                 surface,
                 &mut session.renderer,

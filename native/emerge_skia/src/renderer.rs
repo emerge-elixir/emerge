@@ -831,7 +831,8 @@ pub(crate) fn measure_text_visual_metrics(
     measure_text_visual_metrics_cached_with_font(&font, family, weight, italic, size, text)
 }
 
-pub(crate) fn text_surface_props() -> SurfaceProps {
+#[doc(hidden)]
+pub fn text_surface_props() -> SurfaceProps {
     SurfaceProps::new(SurfacePropsFlags::default(), PixelGeometry::RGBH)
 }
 
@@ -8602,6 +8603,19 @@ mod tests {
             true,
         );
         assert!(!renderer.can_skip_unchanged_visible_frame(&changed, (48, 32)));
+    }
+
+    #[test]
+    fn visible_frame_fingerprint_does_not_skip_after_failed_render() {
+        let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+            enabled: true,
+            ..RendererCacheConfig::default()
+        });
+        let state = RenderState::new(translated_candidate_scene(3), Color::TRANSPARENT, 1, true);
+
+        assert!(!renderer.can_skip_unchanged_visible_frame(&state, (48, 32)));
+        renderer.invalidate_visible_frame_fingerprint();
+        assert!(!renderer.can_skip_unchanged_visible_frame(&state, (48, 32)));
     }
 
     #[test]
