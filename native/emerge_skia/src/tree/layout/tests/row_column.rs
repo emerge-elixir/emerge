@@ -2656,6 +2656,116 @@ fn test_row_expands_height_when_child_paragraph_wraps() {
 }
 
 #[test]
+fn test_column_reallocates_fill_height_after_paragraph_wraps() {
+    let mut tree = ElementTree::new();
+
+    let col_attrs = Attrs {
+        width: Some(Length::Px(50.0)),
+        height: Some(Length::Px(100.0)),
+        spacing: Some(4.0),
+        ..Attrs::default()
+    };
+    let mut col = make_element("col", ElementKind::Column, col_attrs);
+
+    let mut para = make_element("para", ElementKind::Paragraph, fill_width_attrs());
+    let txt = make_element("txt", ElementKind::Text, text_attrs("AAAA BBBB"));
+    let fill = make_element("fill", ElementKind::El, fill_box_attrs());
+
+    let col_id = col.id;
+    let para_id = para.id;
+    let txt_id = txt.id;
+    let fill_id = fill.id;
+
+    para.children = vec![txt_id];
+    col.children = vec![para_id, fill_id];
+
+    tree.set_root_id(col_id);
+    tree.insert(col);
+    tree.insert(para);
+    tree.insert(txt);
+    tree.insert(fill);
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let para_frame = tree.get(&para_id).unwrap().layout.frame.unwrap();
+    assert_eq!(para_frame.height, 32.0);
+
+    let fill_frame = tree.get(&fill_id).unwrap().layout.frame.unwrap();
+    assert_eq!(fill_frame.y, 36.0);
+    assert_eq!(fill_frame.height, 64.0);
+}
+
+#[test]
+fn test_column_reallocates_weighted_fills_after_paragraph_wraps() {
+    let mut tree = ElementTree::new();
+
+    let col_attrs = Attrs {
+        width: Some(Length::Px(50.0)),
+        height: Some(Length::Px(100.0)),
+        spacing: Some(4.0),
+        ..Attrs::default()
+    };
+    let mut col = make_element("col", ElementKind::Column, col_attrs);
+
+    let mut para = make_element("para", ElementKind::Paragraph, fill_width_attrs());
+    let txt = make_element("txt", ElementKind::Text, text_attrs("AAAA BBBB"));
+    let fill_one = make_element(
+        "fill_one",
+        ElementKind::El,
+        Attrs {
+            width: Some(Length::Fill),
+            height: Some(Length::FillWeighted(1.0)),
+            ..Attrs::default()
+        },
+    );
+    let fill_three = make_element(
+        "fill_three",
+        ElementKind::El,
+        Attrs {
+            width: Some(Length::Fill),
+            height: Some(Length::FillWeighted(3.0)),
+            ..Attrs::default()
+        },
+    );
+
+    let col_id = col.id;
+    let para_id = para.id;
+    let txt_id = txt.id;
+    let fill_one_id = fill_one.id;
+    let fill_three_id = fill_three.id;
+
+    para.children = vec![txt_id];
+    col.children = vec![para_id, fill_one_id, fill_three_id];
+
+    tree.set_root_id(col_id);
+    tree.insert(col);
+    tree.insert(para);
+    tree.insert(txt);
+    tree.insert(fill_one);
+    tree.insert(fill_three);
+
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+
+    let fill_one_frame = tree.get(&fill_one_id).unwrap().layout.frame.unwrap();
+    assert_eq!(fill_one_frame.y, 36.0);
+    assert_eq!(fill_one_frame.height, 15.0);
+
+    let fill_three_frame = tree.get(&fill_three_id).unwrap().layout.frame.unwrap();
+    assert_eq!(fill_three_frame.y, 55.0);
+    assert_eq!(fill_three_frame.height, 45.0);
+}
+
+#[test]
 fn test_row_with_fill_height_does_not_expand_for_wrapped_paragraph_child() {
     let mut tree = ElementTree::new();
 
