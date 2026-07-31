@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -33,6 +34,33 @@ impl RenderScene {
     pub fn has_scroll_moving_paint_layers(&self) -> bool {
         nodes_have_scroll_moving_paint_layers(&self.nodes)
     }
+
+    pub fn video_target_ids(&self) -> HashSet<String> {
+        let mut targets = HashSet::new();
+        collect_video_target_ids(&self.nodes, &mut targets);
+        targets
+    }
+}
+
+fn collect_video_target_ids(nodes: &[RenderNode], targets: &mut HashSet<String>) {
+    nodes.iter().for_each(|node| match node {
+        RenderNode::ShadowPass { children }
+        | RenderNode::Clip { children, .. }
+        | RenderNode::RelaxedClip { children, .. }
+        | RenderNode::Transform { children, .. }
+        | RenderNode::Alpha { children, .. } => collect_video_target_ids(children, targets),
+        RenderNode::PaintLayer(layer) => {
+            collect_video_target_ids(&layer.own_nodes, targets);
+            layer
+                .child_refs
+                .iter()
+                .for_each(|child| collect_video_target_ids(&child.nodes, targets));
+        }
+        RenderNode::Primitive(DrawPrimitive::Video(_, _, _, _, target, _)) => {
+            targets.insert(target.clone());
+        }
+        RenderNode::Primitive(_) => {}
+    });
 }
 
 fn nodes_have_payload_cache_candidate_layers(nodes: &[RenderNode]) -> bool {
@@ -1165,4 +1193,37 @@ fn hash_paint_layer_image_fit<H: Hasher>(hasher: &mut H, fit: ImageFit) {
         ImageFit::RepeatY => 4u8,
     }
     .hash(hasher);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DrawPrimitive, RenderNode, RenderScene};
+    use crate::tree::attrs::ImageFit;
+    use std::collections::HashSet;
+
+    #[test]
+    fn video_target_ids_follow_only_primitives_in_the_current_scene() {
+        let scene = RenderScene {
+            nodes: vec![
+                RenderNode::Primitive(DrawPrimitive::Rect(0.0, 0.0, 10.0, 10.0, 0)),
+                RenderNode::Alpha {
+                    alpha: 1.0,
+                    children: vec![RenderNode::Primitive(DrawPrimitive::Video(
+                        0.0,
+                        0.0,
+                        64.0,
+                        32.0,
+                        "preview".to_string(),
+                        ImageFit::Contain,
+                    ))],
+                },
+            ],
+        };
+
+        assert_eq!(
+            scene.video_target_ids(),
+            HashSet::from(["preview".to_string()])
+        );
+        assert!(RenderScene::default().video_target_ids().is_empty());
+    }
 }

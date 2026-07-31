@@ -6,8 +6,7 @@
 use skia_safe::{ColorType, ImageInfo, surfaces};
 
 use crate::renderer::{
-    RenderFrame, RenderState, RenderTimings, RendererCacheConfig, SceneRenderer,
-    text_surface_props,
+    RenderFrame, RenderState, RenderTimings, RendererCacheConfig, SceneRenderer, text_surface_props,
 };
 
 // ============================================================================

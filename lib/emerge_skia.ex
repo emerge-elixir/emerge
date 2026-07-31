@@ -60,14 +60,16 @@ defmodule EmergeSkia do
   """
 
   alias EmergeSkia.Assets
+  alias EmergeSkia.HeadlessPrimeSession
   alias EmergeSkia.Macos.Renderer
   alias EmergeSkia.Native
   alias EmergeSkia.Options
   alias EmergeSkia.Transport
   alias EmergeSkia.TreeRenderer
+  alias EmergeSkia.VideoConsumerSession
   alias EmergeSkia.VideoTarget
 
-  @type renderer :: reference() | Renderer.t()
+  @type renderer :: reference() | Renderer.t() | HeadlessPrimeSession.t()
   @type color :: non_neg_integer()
   @type video_target :: VideoTarget.t()
 
@@ -78,7 +80,7 @@ defmodule EmergeSkia do
 
   - `otp_app` - OTP application used to resolve logical assets from its `priv` dir (**required**)
   - `backend` - Backend selection (`:wayland`, `:drm`, `:macos`, or `:headless`). Defaults to `:wayland` for Linux desktop builds, `:macos` on Darwin, and `:drm` for Nerves-style builds. Window/device backends must be present in `config :emerge, compiled_backends: [...]`.
-  - `backend_renderer` - Renderer selection (`:auto`, `:gl`, `:raster`, `:metal`, or configured raster/auto forms). Defaults to `:auto`. `:raster` is equivalent to `[raster: [present: :auto]]`; Wayland/DRM can force raster presentation with `[raster: [present: :gpu_upload | :cpu]]` or configure auto fallback with `[auto: [raster: [present: ...]]]`. Headless binary output uses raster for `:auto`; explicit headless `:gl` uses offscreen EGL/GL on Linux and fails instead of falling back if EGL/GL cannot start.
+  - `rendering_api` - Rendering API selection (`:auto`, `:opengl`, `:raster`, `:metal`, or configured raster/auto forms). Defaults to `:auto`. The deprecated `backend_renderer` option and `:gl` value remain accepted. `:raster` is equivalent to `[raster: [present: :auto]]`; Wayland/DRM can force raster presentation with `[raster: [present: :gpu_upload | :cpu]]` or configure auto fallback with `[auto: [raster: [present: ...]]]`. Headless binary `:auto` tries offscreen EGL/OpenGL on Linux, then falls back to raster. Headless PRIME requires Linux OpenGL and never falls back to raster.
   - `title` - Window title (default: "Emerge")
   - `width` - Window width in pixels (default: 800)
   - `height` - Window height in pixels (default: 600)
@@ -110,17 +112,24 @@ defmodule EmergeSkia do
   - `fonts` (default: `[]`)
 
   `headless` options, used with `backend: :headless`:
-  - `target` - Process pid that receives frame messages (**required** for headless)
-  - `mode` - `:binary` (default); `:prime` is not implemented yet
+  - `target` - Process pid that receives frame messages (required for binary output;
+    optional/deprecated for PRIME output, which may start disconnected)
+  - `mode` - `:binary` (default) or `:prime` for Linux headless dma-buf output
   - `pixel_format` - `:rgba8888` (default), `:rgb888`, `:gray8`, `:gray4`, `:gray2`, or `:bw1`
   - `bw1_polarity` - `:one_is_black` (default) or `:one_is_white`
   - `target_fps` - Requested animation cadence for retained headless output (optional)
   - `frame_message` - Message tag atom/string (default: `:emerge_skia_frame`)
+  - `prime.max_in_flight` - Maximum unreleased PRIME frames (default: `2`)
+  - `prime.on_backpressure` - `:drop_new` (default)
 
   Headless frames are delivered as `{message_tag, frame}` where `frame` is a
-  key/value list containing `"mode"`, `"sequence"`, `"width"`, `"height"`,
-  `"scale"`, `"pixel_format"`, `"stride_bytes"`, `"data"`, and
-  `"timestamp_native"`.
+  key/value list. Binary frames include `"mode"`, `"sequence"`, `"width"`,
+  `"height"`, `"scale"`, `"pixel_format"`, `"stride_bytes"`, `"data"`, and
+  `"timestamp_native"`. PRIME frames include a canonical
+  `%VideoInterop.Frame{}` under `"dmabuf"`. Its managed lease supports safe
+  fan-out with `VideoInterop.retain/2`; release each holder with
+  `VideoInterop.release/1`. Direct Emerge connections consume these holders
+  without exposing lease messages to applications.
 
   `renderer_cache` options:
   - `enabled` (default: `true`, GPU backends only)
@@ -165,7 +174,7 @@ defmodule EmergeSkia do
       raise ArgumentError, "drm_cursor is only supported with backend: :drm"
     end
 
-    case Options.backend_renderer_start_error(native_opts) do
+    case Options.rendering_api_start_error(native_opts) do
       nil ->
         native_opts.backend
         |> Transport.for_backend()
@@ -203,7 +212,7 @@ defmodule EmergeSkia do
   @doc """
   Stop the renderer and close the window.
   """
-  @spec stop(renderer()) :: :ok
+  @spec stop(renderer()) :: :ok | {:error, term()}
   def stop(renderer) do
     renderer
     |> Transport.for_renderer()
@@ -254,6 +263,8 @@ defmodule EmergeSkia do
       raise ArgumentError, "video target mode must be :prime in v1"
     end
 
+    renderer = EmergeSkia.Transport.Native.native_renderer(renderer)
+
     case Native.video_target_new(renderer, id, width, height, Atom.to_string(mode)) do
       {:ok, ref} when is_reference(ref) ->
         {:ok, %VideoTarget{id: id, width: width, height: height, mode: mode, ref: ref}}
@@ -267,10 +278,41 @@ defmodule EmergeSkia do
   end
 
   @doc """
-  Submit a DRM Prime descriptor to a video target.
+  Transfer a canonical frame to an opened video consumer session.
+
+  This is a consuming call. On every normal return the caller must not release
+  the supplied frame. Known caller-owned rejections are released by
+  `VideoInterop.consume/2`; native claims are retired by the renderer.
   """
+  @spec submit_video_frame(VideoConsumerSession.t(), VideoInterop.Frame.t()) ::
+          :ok | {:error, term()}
+  def submit_video_frame(%VideoConsumerSession{} = session, %VideoInterop.Frame{} = frame) do
+    VideoInterop.consume(session, frame)
+  end
+
+  @doc """
+  Submit a generic DRM PRIME descriptor to a video target.
+
+  The descriptor map contains `:width`, `:height`, `:format`, `:objects`,
+  `:planes`, `:keepalive`, and `:owner_pid`. It may additionally contain the
+  required explicit-sync shape `:acquire_fence_fd` set to a borrowed fd or
+  `nil`; maps without that key retain legacy implicit synchronization. Objects
+  contain `:fd` and an optional `:modifier`; planes contain `:object_index`,
+  `:offset`, and `:pitch`. The renderer duplicates every borrowed fd during this
+  call and sends
+  `{:keepalive, keepalive}` to `owner_pid` after GPU retirement. If the target
+  is absent from the current render scene, the frame is released immediately
+  without waking or redrawing the backend. NV12 requires two planes; ABGR8888
+  requires one plane with at least four bytes per pixel.
+  """
+  @deprecated "Open a VideoInterop consumer session and use submit_video_frame/2"
   @spec submit_prime(video_target(), map()) :: :ok | {:error, term()}
   def submit_prime(%VideoTarget{mode: :prime, ref: ref}, desc) when is_map(desc) do
+    desc =
+      Map.update!(desc, :objects, fn objects ->
+        Enum.map(objects, &Map.put_new(&1, :modifier, nil))
+      end)
+
     Native.video_target_submit_prime(ref, desc)
     |> normalize_native_ok()
   end
@@ -363,6 +405,10 @@ defmodule EmergeSkia do
     capture_pixels(renderer, opts)
   end
 
+  def render_to_pixels(%HeadlessPrimeSession{} = renderer, opts) when is_list(opts) do
+    capture_pixels(renderer, opts)
+  end
+
   def render_to_pixels(renderer, opts) when is_reference(renderer) and is_list(opts) do
     capture_pixels(renderer, opts)
   end
@@ -382,6 +428,10 @@ defmodule EmergeSkia do
   def render_to_png(renderer, opts \\ [])
 
   def render_to_png(%Renderer{} = renderer, opts) when is_list(opts) do
+    capture_png(renderer, opts)
+  end
+
+  def render_to_png(%HeadlessPrimeSession{} = renderer, opts) when is_list(opts) do
     capture_png(renderer, opts)
   end
 

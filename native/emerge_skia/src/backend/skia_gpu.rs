@@ -12,6 +12,8 @@ pub struct GlFrameSurface {
     fb_info: FramebufferInfo,
     num_samples: usize,
     stencil_size: usize,
+    origin: SurfaceOrigin,
+    abandoned: bool,
 }
 
 impl GlFrameSurface {
@@ -39,6 +41,24 @@ impl GlFrameSurface {
         num_samples: usize,
         stencil_size: usize,
     ) -> Result<Self, String> {
+        Self::try_new_with_origin(
+            dimensions,
+            fb_info,
+            direct_context,
+            num_samples,
+            stencil_size,
+            SurfaceOrigin::BottomLeft,
+        )
+    }
+
+    pub fn try_new_with_origin(
+        dimensions: (u32, u32),
+        fb_info: FramebufferInfo,
+        direct_context: gpu::DirectContext,
+        num_samples: usize,
+        stencil_size: usize,
+        origin: SurfaceOrigin,
+    ) -> Result<Self, String> {
         let mut direct_context = direct_context;
         let surface = try_create_gl_surface(
             (dimensions.0 as i32, dimensions.1 as i32),
@@ -46,6 +66,7 @@ impl GlFrameSurface {
             &mut direct_context,
             num_samples,
             stencil_size,
+            origin,
         )?;
 
         Ok(Self {
@@ -54,6 +75,8 @@ impl GlFrameSurface {
             fb_info,
             num_samples,
             stencil_size,
+            origin,
+            abandoned: false,
         })
     }
 
@@ -64,11 +87,44 @@ impl GlFrameSurface {
             &mut self.direct_context,
             self.num_samples,
             self.stencil_size,
+            self.origin,
         );
+    }
+
+    pub fn retarget(
+        &mut self,
+        dimensions: (u32, u32),
+        fb_info: FramebufferInfo,
+        origin: SurfaceOrigin,
+    ) -> Result<(), String> {
+        // PRIME slot setup uses raw GL calls. Ganesh caches GL bindings, so force it to restore
+        // every backend state before wrapping or drawing into the selected export framebuffer.
+        self.reset_context();
+        let surface = try_create_gl_surface(
+            (dimensions.0 as i32, dimensions.1 as i32),
+            fb_info,
+            &mut self.direct_context,
+            self.num_samples,
+            self.stencil_size,
+            origin,
+        )?;
+        self.surface = surface;
+        self.fb_info = fb_info;
+        self.origin = origin;
+        Ok(())
     }
 
     pub fn frame(&mut self) -> RenderFrame<'_> {
         RenderFrame::new(&mut self.surface, Some(&mut self.direct_context))
+    }
+
+    pub fn reset_context(&mut self) {
+        self.direct_context.reset(None);
+    }
+
+    pub fn abandon(mut self) {
+        self.direct_context.abandon();
+        self.abandoned = true;
     }
 
     pub fn present_rgba_pixels(
@@ -116,6 +172,10 @@ impl GlFrameSurface {
 
 impl Drop for GlFrameSurface {
     fn drop(&mut self) {
+        if self.abandoned {
+            return;
+        }
+
         self.direct_context.flush_and_submit();
         self.direct_context
             .perform_deferred_cleanup(std::time::Duration::ZERO, None);
@@ -133,6 +193,7 @@ fn create_gl_surface(
     direct_context: &mut gpu::DirectContext,
     num_samples: usize,
     stencil_size: usize,
+    origin: SurfaceOrigin,
 ) -> Surface {
     try_create_gl_surface(
         dimensions,
@@ -140,6 +201,7 @@ fn create_gl_surface(
         direct_context,
         num_samples,
         stencil_size,
+        origin,
     )
     .expect("Could not create Skia surface")
 }
@@ -150,6 +212,7 @@ fn try_create_gl_surface(
     direct_context: &mut gpu::DirectContext,
     num_samples: usize,
     stencil_size: usize,
+    origin: SurfaceOrigin,
 ) -> Result<Surface, String> {
     let backend_render_target =
         backend_render_targets::make_gl(dimensions, num_samples, stencil_size, fb_info);
@@ -159,7 +222,7 @@ fn try_create_gl_surface(
     gpu::surfaces::wrap_backend_render_target(
         direct_context,
         &backend_render_target,
-        SurfaceOrigin::BottomLeft,
+        origin,
         skia_safe::ColorType::RGBA8888,
         None,
         Some(&surface_props),

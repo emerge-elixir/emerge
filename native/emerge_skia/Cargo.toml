@@ -38,6 +38,12 @@ harness = false
 default = ["wayland"]
 bench-diagnostics = []
 hover-trace = []
+headless-opengl = [
+    "dep:gbm",
+    "dep:glutin",
+    "dep:glutin_egl_sys",
+    "video-interop/egl",
+]
 macos = [
     "dep:objc2",
     "dep:objc2-foundation",
@@ -49,7 +55,7 @@ macos = [
     "skia-safe/metal",
 ]
 wayland = [
-    "dep:glutin",
+    "headless-opengl",
     "dep:smithay-client-toolkit",
     "dep:wayland-client",
     "dep:wayland-backend",
@@ -57,10 +63,11 @@ wayland = [
     "dep:raw-window-handle",
     "dep:arboard",
 ]
-drm = ["dep:drm", "dep:gbm", "dep:evdev"]
+drm = ["headless-opengl", "dep:drm", "dep:evdev"]
 
 [dependencies]
 rustler = "0.38"
+video-interop = "0.1.0"
 objc2 = { version = "0.6", optional = true }
 objc2-foundation = { version = "0.3", features = ["NSArray", "NSAttributedString", "NSDate", "NSRange", "NSString", "NSRunLoop"], optional = true }
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSCell", "NSControl", "NSEvent", "NSGraphics", "NSImage", "NSImageView", "NSPasteboard", "NSResponder", "NSRunningApplication", "NSTextInputClient", "NSTrackingArea", "NSView", "NSWindow"], optional = true }
@@ -79,6 +86,10 @@ skia-safe = { version = "0.99.0", default-features = false, features = ["gl", "j
 [dev-dependencies]
 criterion = "0.7"
 
+# Development override until video-interop 0.1.0 is published to crates.io.
+[patch.crates-io]
+video-interop = { path = "../../../video_interop/rust/video-interop" }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 glutin = { version = "0.32", optional = true }
 smithay-client-toolkit = { version = "0.20", default-features = false, features = ["calloop", "xkbcommon"], optional = true }
@@ -88,6 +99,6 @@ wayland-protocols = { version = "0.32", features = ["client", "staging", "unstab
 raw-window-handle = { version = "0.6", optional = true }
 drm = { version = "0.14", optional = true }
 gbm = { version = "0.18", default-features = false, features = ["drm-support", "import-egl"], optional = true }
-glutin_egl_sys = "0.7"
+glutin_egl_sys = { version = "0.7", optional = true }
 evdev = { version = "0.13", optional = true }
 arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"], optional = true }

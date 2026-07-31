@@ -66,12 +66,12 @@ AppKit lifecycle correctly.
 
 macOS uses the shared renderer selection option:
 
-- `backend_renderer: :auto`
-- `backend_renderer: :metal`
-- `backend_renderer: :raster`
+- `rendering_api: :auto`
+- `rendering_api: :metal`
+- `rendering_api: :raster`
 
 `:auto` prefers Metal and falls back to raster when Metal is unavailable.
-The old `macos_backend` option has been removed; use `backend_renderer` instead.
+The old `macos_backend` option has been removed; use `rendering_api` instead.
 
 ## Assets And Fonts
 

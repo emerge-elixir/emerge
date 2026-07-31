@@ -282,8 +282,8 @@ defmodule EmergeSkia.TreeTest do
 
       {:ok, disabled_stats} = Native.stats(tree, :peek)
       refute disabled_stats.enabled
-      assert disabled_stats.version == 18
-      assert disabled_stats.backend_renderer == nil
+      assert disabled_stats.version == 19
+      assert disabled_stats.rendering_api == nil
       assert disabled_stats.drm.missed_vblanks == 0
       assert disabled_stats.drm.gpu_queue_completion.count == 0
       assert disabled_stats.drm.egl_swap_buffers.count == 0

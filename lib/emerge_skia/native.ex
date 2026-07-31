@@ -75,13 +75,13 @@ defmodule EmergeSkia.Native do
   def start(_title, _width, _height), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
-  Start the Skia renderer with backend options.
+  Start the Skia renderer with backend and rendering API options.
 
   Mirrors `EmergeSkia.start/1` keyword options.
   """
   @spec start_opts(%{
           required(:backend) => String.t(),
-          required(:backend_renderer) => %{
+          required(:rendering_api) => %{
             required(:kind) => String.t(),
             required(:raster_present) => String.t(),
             required(:raster_present_configured) => boolean()
@@ -132,7 +132,11 @@ defmodule EmergeSkia.Native do
             required(:pixel_format) => String.t(),
             required(:bw1_polarity) => String.t(),
             required(:target_fps) => pos_integer() | nil,
-            required(:frame_message) => String.t()
+            required(:frame_message) => String.t(),
+            required(:prime) => %{
+              required(:max_in_flight) => pos_integer(),
+              required(:on_backpressure) => String.t()
+            }
           }
         }) :: reference() | {:ok, reference()} | {:error, term()}
   def start_opts(_opts), do: :erlang.nif_error(:nif_not_loaded)
@@ -140,7 +144,7 @@ defmodule EmergeSkia.Native do
   @doc """
   Stop the renderer and close the window.
   """
-  @spec stop(reference()) :: :ok
+  @spec stop(reference()) :: {:ok, :ok} | {:error, String.t()}
   def stop(_renderer), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
@@ -225,6 +229,37 @@ defmodule EmergeSkia.Native do
   @spec video_target_submit_prime(reference(), map()) ::
           {:ok, boolean()} | {:error, String.t()}
   def video_target_submit_prime(_target, _desc), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec video_consumer_session_open(
+          reference(),
+          pos_integer(),
+          pos_integer(),
+          non_neg_integer(),
+          :per_buffer | VideoInterop.DMABuf.Modifier.t()
+        ) :: {:ok, reference()} | {:error, term()}
+  def video_consumer_session_open(_target, _width, _height, _fourcc, _modifier),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec video_consumer_session_submit(reference(), VideoInterop.Frame.t()) ::
+          {:ok, :transferred | :released}
+          | {:error, {:caller_owned | :transferred, term()}}
+  def video_consumer_session_submit(_session, _frame), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec video_consumer_decode_for_test(term()) ::
+          {:ok, :caller_owned} | {:error, {:caller_owned, String.t()}}
+  def video_consumer_decode_for_test(_frame), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec video_consumer_session_close(reference()) :: :ok
+  def video_consumer_session_close(_session), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec headless_prime_release_backend_token(reference()) :: :ok
+  def headless_prime_release_backend_token(_backend_token),
+    do: :erlang.nif_error(:nif_not_loaded)
 
   # ===========================================================================
   # Raster Backend
@@ -355,19 +390,19 @@ defmodule EmergeSkia.Native do
           required(:paint_layer) => renderer_cache_kind_stats()
         }
 
-  @type backend_renderer_info :: %{
+  @type rendering_api_info :: %{
           required(:requested) => atom() | String.t(),
           required(:selected) => atom() | String.t()
         }
 
   @typedoc """
-  Native stats payload. Current schema version: 18.
+  Native stats payload. Current schema version: 19.
   """
   @type stats_snapshot :: %{
           required(:version) => pos_integer(),
           required(:kind) => String.t(),
           required(:enabled) => boolean(),
-          required(:backend_renderer) => backend_renderer_info() | nil,
+          required(:rendering_api) => rendering_api_info() | nil,
           required(:window) => %{
             required(:elapsed_ms) => non_neg_integer(),
             required(:reset_on_read) => boolean()
@@ -426,7 +461,7 @@ defmodule EmergeSkia.Native do
 
   @type renderer_info :: %{
           required(:backend) => atom() | String.t(),
-          required(:backend_renderer) => backend_renderer_info(),
+          required(:rendering_api) => rendering_api_info(),
           required(:capabilities) => %{
             required(:gpu) => boolean(),
             required(:renderer_cache) => boolean(),

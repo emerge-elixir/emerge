@@ -1,49 +1,50 @@
 # Active Plan: Backend / Renderer Unification and Headless Output
 
 Created: 2026-05-27
-Status: current implementation complete through explicit headless GL binary readback; PRIME export planned in `active-headless-prime-output.md`; Vulkan deferred future work
+Status: current implementation complete through initial Linux headless PRIME output; hardware PRIME validation still pending; Vulkan deferred future work
 
 ## Confirmed decisions
 
-- Public renderer selector option: `backend_renderer`.
-- Default renderer selector: `:auto`.
-- GL renderer atom: `:gl`.
-- Headless platform atom: `backend: :headless`.
+- Public rendering API selector option: `rendering_api`.
+- Default rendering API selector: `:auto`.
+- OpenGL rendering API atom: `:opengl`.
+- Deprecated aliases `backend_renderer` and `:gl` remain accepted with warnings.
+- Headless backend atom: `backend: :headless`.
 - Headless-specific options should be nested under `headless: [...]`.
 - Headless binary output defaults to `pixel_format: :rgba8888`.
 - `:bw1` output should include a polarity option.
 - Headless mode should include a targeted FPS option.
 - Headless should support input/synthetic input in a later phase.
 - Dithering is a later slice and needs a separate larger design discussion.
-- macOS should follow the same `backend` + `backend_renderer` convention.
+- macOS should follow the same `backend` + `rendering_api` convention.
 - Remove `macos_backend`; passing it should raise a migration/deprecation error
-  telling callers to use `backend_renderer` instead.
-- `backend_renderer: :gl` should fail startup if GL/EGL is unavailable.
-- `backend_renderer: :auto` should make the default path work with whatever
-  renderer/present path is available on the selected platform.
-- `backend_renderer: :auto` fallback should cover startup and should also
+  telling callers to use `rendering_api` instead.
+- `rendering_api: :opengl` should fail startup if GL/EGL is unavailable.
+- `rendering_api: :auto` should make the default path work with whatever
+  renderer/present path is available on the selected backend.
+- `rendering_api: :auto` fallback should cover startup and should also
   recover from runtime renderer/present failure where safe.
-- Wayland/DRM `backend_renderer: :auto` should try `:gl` and fall back to
+- Wayland/DRM `rendering_api: :auto` should try `:opengl` and fall back to
   `:raster` when the raster presentation path is available.
 - True raster fallback without GL should eventually use CPU-present paths:
   Wayland `wl_shm` and DRM dumb-buffer / CPU KMS presentation.
 - The first Wayland/DRM raster implementation should cover both useful paths:
   CPU raster + GPU upload for testing when GL exists, and true CPU present for
   GL-unavailable fallback.
-- macOS should reject `backend_renderer: :gl`.
-- Linux backends should reject `backend_renderer: :metal`.
-- `backend_renderer: :metal` is macOS-only for current windowed backends; future
+- macOS should reject `rendering_api: :opengl`.
+- Linux backends should reject `rendering_api: :metal`.
+- `rendering_api: :metal` is macOS-only for current windowed backends; future
   macOS headless may support Metal too.
 - Renderer cache should be disabled by default for raster renderer mode, and
   stats should include the disable reason. Existing `renderer_cache:
   [enabled: true]` is enough to explicitly opt into raster paint-layer caching;
   raster cache payloads use normal CPU memory instead of GPU resources.
-- `backend_renderer: :auto` runtime failure recovery should try seamless
+- `rendering_api: :auto` runtime failure recovery should try seamless
   renderer migration where possible. If migration fails, retry a few times, then
   stop the renderer/session and surface an error.
-- Stats should expose requested and selected renderer as structured data, e.g.
-  `backend_renderer: %{requested: :auto, selected: :gl}`, while logs can display
-  `backend_renderer: :auto (:gl)`.
+- Stats should expose requested and selected rendering API as structured data, e.g.
+  `rendering_api: %{requested: :auto, selected: :opengl}`, while logs can display
+  `rendering_api: :auto (:opengl)`.
 - Stats should expose meaningful renderer-specific data. If a renderer has no
   GPU, stats should not expose a GPU section.
 - macOS runtime convergence should happen early, ideally in the first or second
@@ -61,18 +62,18 @@ Status: current implementation complete through explicit headless GL binary read
 - Screenshot options should include pixel format, scale, region, background,
   timeout, and PNG compression options.
 - Add a renderer info query, e.g. `EmergeSkia.renderer_info(renderer)`, so code
-  can inspect requested/selected backend renderer outside stats.
-- `backend_renderer: :raster` is shorthand for
-  `backend_renderer: [raster: [present: :auto]]`.
+  can inspect the backend and requested/selected rendering API outside stats.
+- `rendering_api: :raster` is shorthand for
+  `rendering_api: [raster: [present: :auto]]`.
 - Wayland/DRM raster rendering can use the nested renderer option to force the
-  raster present path: `backend_renderer: [raster: [present: :auto | :gpu_upload | :cpu]]`.
-- `backend_renderer: :auto` can also carry fallback options, e.g.
-  `backend_renderer: [auto: [raster: [present: :cpu]]]`.
+  raster present path: `rendering_api: [raster: [present: :auto | :gpu_upload | :cpu]]`.
+- `rendering_api: :auto` can also carry fallback options, e.g.
+  `rendering_api: [auto: [raster: [present: :cpu]]]`.
 - macOS should reject invalid renderer config, including Linux-only raster
   present overrides, while still accepting valid `:auto`, `:metal`, and
   `:raster` selections.
 - Runtime renderer migration should emit a message such as
-  `{:emerge_skia_renderer_changed, renderer, from: :gl, to: :raster, reason: reason}`
+  `{:emerge_skia_renderer_changed, renderer, from: :opengl, to: :raster, reason: reason}`
   to all relevant targets (log target, starter/session owner, viewport/runtime
   observers where available); viewport code should log it.
 - Investigate whether off-main-thread drawing on macOS makes sense at all.
@@ -81,14 +82,14 @@ Status: current implementation complete through explicit headless GL binary read
   off-main-thread drawing is too complex or not beneficial.
 - First unify the current backends (`:wayland`, `:drm`, `:macos`) under one
   model. Headless work comes after that foundation is done.
-- PRIME/dma-buf output is later work, not part of the first headless slice.
+- PRIME/dma-buf output is implemented as a later headless slice using Linux GL/GBM.
 
 ## Goal
 
 Make every runtime backend follow the same selection model:
 
 ```text
-platform backend  +  renderer backend  +  output mode/pixel format
+backend  +  rendering API  +  output mode/pixel format
 ```
 
 Examples the final API should be able to express:
@@ -101,11 +102,11 @@ Examples the final API should be able to express:
 - macOS window + raster renderer
 - headless session + raster renderer + binary frame delivery
 - headless session + GPU renderer + PRIME/dma-buf frame delivery
-- later: any supported platform + Vulkan renderer where available
+- later: any supported backend + Vulkan renderer where available
 
 The main architectural change is to stop treating `backend` as both the display
 system and the rendering technology. `backend` should mean the platform/session
-backend. A separate renderer selection should choose GL/raster/Metal/Vulkan.
+backend. A separate rendering API selection should choose GL/raster/Metal/Vulkan.
 
 ## Non-goals for this slice
 
@@ -145,16 +146,16 @@ Relevant existing pieces:
 
 Use these terms consistently in code and docs:
 
-- **Platform backend**: owns the session/window/output device, input source,
+- **Backend**: owns the session/window/output device, input source,
   lifecycle, event loop, wake/present timing, and OS-specific handles.
   Candidates: `:wayland`, `:drm`, `:macos`, `:headless`.
-- **Renderer backend**: owns how a `RenderScene` is drawn. Simple selections are
-  `:auto`, `:gl`, `:raster`, `:metal`, and future `:vulkan`.
-  `backend_renderer: :raster` means raster with default `present: :auto`; raster
+- **Rendering API**: owns how a `RenderScene` is drawn. Simple selections are
+  `:auto`, `:opengl`, `:raster`, `:metal`, and future `:vulkan`.
+  `rendering_api: :raster` means raster with default `present: :auto`; raster
   can also be configured as
-  `backend_renderer: [raster: [present: :auto | :gpu_upload | :cpu]]`.
+  `rendering_api: [raster: [present: :auto | :gpu_upload | :cpu]]`.
   `:auto` can be configured with fallback options as
-  `backend_renderer: [auto: [raster: [present: :auto | :gpu_upload | :cpu]]]`.
+  `rendering_api: [auto: [raster: [present: :auto | :gpu_upload | :cpu]]]`.
 - **Output mode**: how completed frames leave the renderer. Windowed backends
   present to their surface/device. Headless can deliver `:binary` frames or
   `:prime` descriptors to a process.
@@ -169,7 +170,7 @@ Preferred start shape:
 EmergeSkia.start(
   otp_app: :my_app,
   backend: :headless,
-  backend_renderer: :raster,
+  rendering_api: :raster,
   width: 800,
   height: 480,
   headless: [
@@ -183,44 +184,46 @@ EmergeSkia.start(
 Windowed examples:
 
 ```elixir
-EmergeSkia.start(otp_app: :my_app, backend: :wayland, backend_renderer: :gl)
-EmergeSkia.start(otp_app: :my_app, backend: :wayland, backend_renderer: :raster)
-EmergeSkia.start(otp_app: :my_app, backend: :wayland, backend_renderer: [raster: [present: :cpu]])
-EmergeSkia.start(otp_app: :my_app, backend: :drm, backend_renderer: :gl)
-EmergeSkia.start(otp_app: :my_app, backend: :drm, backend_renderer: :raster)
-EmergeSkia.start(otp_app: :my_app, backend: :drm, backend_renderer: [raster: [present: :gpu_upload]])
-EmergeSkia.start(otp_app: :my_app, backend: :macos, backend_renderer: :metal)
-EmergeSkia.start(otp_app: :my_app, backend: :macos, backend_renderer: :raster)
+EmergeSkia.start(otp_app: :my_app, backend: :wayland, rendering_api: :opengl)
+EmergeSkia.start(otp_app: :my_app, backend: :wayland, rendering_api: :raster)
+EmergeSkia.start(otp_app: :my_app, backend: :wayland, rendering_api: [raster: [present: :cpu]])
+EmergeSkia.start(otp_app: :my_app, backend: :drm, rendering_api: :opengl)
+EmergeSkia.start(otp_app: :my_app, backend: :drm, rendering_api: :raster)
+EmergeSkia.start(otp_app: :my_app, backend: :drm, rendering_api: [raster: [present: :gpu_upload]])
+EmergeSkia.start(otp_app: :my_app, backend: :macos, rendering_api: :metal)
+EmergeSkia.start(otp_app: :my_app, backend: :macos, rendering_api: :raster)
 ```
 
 Compatibility/migration:
 
-- Keep `backend` as the platform backend name.
-- Add `backend_renderer` as the cross-platform renderer selector.
+- Keep `backend` as the backend name.
+- Use `rendering_api` as the cross-platform rendering API selector.
+- Keep deprecated `backend_renderer` and `:gl` aliases with warnings; reject
+  calls that specify both `rendering_api` and `backend_renderer`.
 - Remove `macos_backend` from the accepted runtime options. If callers pass it,
   raise a clear migration/deprecation error telling them to use
-  `backend_renderer`.
-- Document `backend_renderer: :auto` defaults per platform:
+  `rendering_api`.
+- Document `rendering_api: :auto` defaults per backend:
   - macOS: prefer Metal, fall back to raster.
   - Wayland/DRM: try GL first and fall back to raster when the raster
     presentation path is available, so the default works with whatever renderer
     path is available. True fallback without GL requires CPU-present support
     (`wl_shm` on Wayland, dumb-buffer / CPU KMS on DRM). Auto fallback can be
-    configured with `backend_renderer: [auto: [raster: [present: ...]]]`.
-  - headless: prefer raster for `mode: :binary`; prefer GPU for `mode: :prime`
-    if PRIME export is requested and supported.
+    configured with `rendering_api: [auto: [raster: [present: ...]]]`.
+  - headless: for `mode: :binary`, try GL first and fall back to raster; for
+    `mode: :prime`, use GL/GBM only and fail without raster fallback.
 - Explicit renderer choices should not silently fall back. For example,
-  `backend_renderer: :gl` fails if GL/EGL is unavailable, macOS rejects
-  `backend_renderer: :gl`, and Linux rejects `backend_renderer: :metal`.
+  `rendering_api: :opengl` fails if GL/EGL is unavailable, macOS rejects
+  `rendering_api: :opengl`, and Linux rejects `rendering_api: :metal`.
 
-`backend_renderer` is the chosen public option name. Avoid reusing bare
+`rendering_api` is the chosen public option name. Avoid reusing bare
 `renderer` because `renderer` already commonly means the session handle.
 
 ## Headless backend semantics
 
-Headless now follows the shared platform + renderer selection model for binary
-output. Raster and explicit Linux GL readback are implemented; PRIME/dma-buf
-output remains future work.
+Headless now follows the shared backend + rendering API selection model for binary
+and PRIME output. Raster binary, Linux GL binary readback, and initial Linux
+GL/GBM PRIME descriptor delivery are implemented.
 
 A headless runtime backend is a retained session, not just a synchronous
 `render_to_pixels/2` call.
@@ -246,8 +249,10 @@ headless: [
 ]
 ```
 
-`target_fps` controls the requested animation-pulse cadence for retained
-headless output. Full pacing/drop behavior remains future hardening.
+`target_fps` caps retained headless animation delivery with deadline-based
+render-thread timers, so render time does not accumulate into cadence drift.
+PRIME backpressure still resumes an already-due animation pulse as soon as a
+leased slot retires.
 
 Frame delivery is message based:
 
@@ -272,25 +277,14 @@ keys equivalent to:
 }
 ```
 
-For PRIME mode, `frame` should include descriptor data similar to existing
-video-target PRIME descriptors, but for produced frames:
+For PRIME mode, `frame` includes a canonical
+`%Membrane.DMABuf.VideoFrame{}` under the `"dmabuf"` key.
 
-```elixir
-%{
-  mode: :prime,
-  sequence: non_neg_integer(),
-  width: pos_integer(),
-  height: pos_integer(),
-  drm_format: non_neg_integer(),
-  modifier: non_neg_integer() | nil,
-  planes: [map()],
-  timestamp_native: integer()
-}
-```
-
-The exact PRIME fd ownership contract must be specified before implementation:
-who owns/ closes fds, whether descriptors are one-shot, and whether explicit
-release/ack messages are needed for backpressure.
+DMA-BUF object fds are borrowed integers whose validity is bounded by a managed
+`Membrane.DMABuf.Lease`. The isolated `Membrane.DMABuf.LeaseOwner` supports
+fan-out holder accounting and retires native GL/EGL/GBM resources on the render
+thread only after every holder releases. Renderer shutdown drains outstanding
+leases before stopping native resources.
 
 ## Pixel format plan
 
@@ -329,22 +323,22 @@ later.
 
 Draft target matrix:
 
-| Platform backend | Renderer backend | Output | Notes |
+| Backend | Rendering API | Output | Notes |
 | --- | --- | --- | --- |
-| `:wayland` | `:gl` | window | Current EGL path. |
+| `:wayland` | `:opengl` | window | Current EGL path. |
 | `:wayland` | `:raster` | window | Needs raster draw plus both GPU-upload present for testing and `wl_shm` CPU present for true GL-free fallback. |
-| `:drm` | `:gl` | KMS | Current/future EGL+GBM path. |
+| `:drm` | `:opengl` | KMS | Current/future EGL+GBM path. |
 | `:drm` | `:raster` | KMS | Needs raster draw plus both GPU-upload present for testing and dumb-buffer / CPU KMS present for true GL-free fallback. |
 | `:macos` | `:metal` | window | Current host path. |
 | `:macos` | `:raster` | window | Current host fallback path. |
 | `:headless` | `:raster` | binary | Implemented first headless path. |
-| `:headless` | `:gl` | binary | Implemented on Linux via offscreen EGL/GL readback. |
+| `:headless` | `:opengl` | binary | Implemented on Linux via offscreen EGL/GL readback. |
 | `:headless` | `:metal` | binary | Future macOS headless path. |
-| `:headless` | `:gl` | prime | Requires dma-buf/PRIME export support. |
+| `:headless` | `:opengl` | prime | Requires dma-buf/PRIME export support. |
 | any | `:vulkan` | varies | Future only. |
 
 Unsupported combinations should fail during startup with precise errors, not
-silently fall back unless `backend_renderer: :auto` was requested.
+silently fall back unless `rendering_api: :auto` was requested.
 
 ## Architecture direction
 
@@ -353,8 +347,8 @@ silently fall back unless `backend_renderer: :auto` was requested.
 Introduce shared config concepts in Elixir and Rust:
 
 ```text
-PlatformBackendKind = wayland | drm | macos | headless
-RendererBackendKind = auto | gl | raster | metal | vulkan
+BackendKind = wayland | drm | macos | headless
+RenderingApi = auto | opengl | raster | metal | vulkan
 HeadlessOutputMode = binary | prime
 PixelFormat = rgba8888 | rgb888 | gray8 | gray4 | gray2 | bw1 | ...
 ```
@@ -362,12 +356,12 @@ PixelFormat = rgba8888 | rgb888 | gray8 | gray4 | gray2 | bw1 | ...
 Keep the Elixir option normalization authoritative for public errors, then pass
 normalized strings/atoms to native/host layers.
 
-### 2. Separate platform startup from render-surface creation
+### 2. Separate backend startup from render-surface creation
 
 Refactor backend startup around two decisions:
 
-1. platform backend creates/owns the session and output target
-2. renderer backend creates/owns the drawing surface for that target
+1. backend creates/owns the session and output target
+2. rendering API creates/owns the drawing surface for that target
 
 Avoid a large trait hierarchy at first. Prefer simple enums, factories, and
 shared helpers until at least two real backends use the same abstraction.
@@ -387,7 +381,7 @@ Headless should support input/synthetic input later through the same shared
 runtime semantics, not through a separate headless-only event model.
 
 macOS can remain externally hosted, but it should consume the same normalized
-platform/renderer config and report the selected renderer backend in the same
+backend/rendering API config and report the selected rendering API in the same
 shape as other platforms.
 
 ### 4. Introduce output sinks
@@ -399,14 +393,14 @@ Model final frame publication as a backend-specific sink:
 - headless pid binary sink
 - headless pid PRIME descriptor sink
 
-This keeps renderer backends focused on drawing and format/export, while
-platform backends handle delivery, present timing, and backpressure.
+This keeps rendering APIs focused on drawing and format/export, while
+backends handle delivery, present timing, and backpressure.
 
 ### 5. Screenshot APIs replace one-shot raster tree rendering
 
 The current `render_to_pixels/2` and `render_to_png/2` APIs render a supplied
 Elixir tree through a separate synchronous raster path. They do not reflect the
-current retained renderer state, selected platform backend, selected renderer,
+current retained renderer state, selected backend, selected rendering API,
 assets, animations, scroll offsets, or runtime state.
 
 Keep the names, but change their signatures and semantics so they ask the given
@@ -458,7 +452,7 @@ Rustler/NIF safety rules explicitly:
 
 Keep phases inspectable and independently reviewable. Prefer small slices with
 clear config/state/stat assertions over large backend rewrites.
-Convergence should remove platform-specific orchestration where shared runtime
+Convergence should remove backend-specific orchestration where shared runtime
 code can own the behavior; avoid adding permanent wrapper layers that leave the
 macOS host with duplicate event/tree/render control flow.
 
@@ -466,28 +460,28 @@ macOS host with duplicate event/tree/render control flow.
 
 Status: implemented in this slice.
 
-- [x] Add `backend_renderer` option normalization with default `:auto`.
-- [x] Accepted renderer selections for this plan: `:auto`, `:gl`, `:raster`,
+- [x] Add `rendering_api` option normalization with default `:auto`.
+- [x] Accepted rendering API selections for this plan: `:auto`, `:opengl`, `:raster`,
   `:metal`, future `:vulkan`, configured raster form
-  `backend_renderer: [raster: [present: :auto | :gpu_upload | :cpu]]`, and
+  `rendering_api: [raster: [present: :auto | :gpu_upload | :cpu]]`, and
   configured auto fallback form
-  `backend_renderer: [auto: [raster: [present: :auto | :gpu_upload | :cpu]]]`.
+  `rendering_api: [auto: [raster: [present: :auto | :gpu_upload | :cpu]]]`.
   `:raster` is equivalent to `[raster: [present: :auto]]`.
 - [x] Remove `macos_backend` as an accepted option and raise a clear migration
   error if callers still pass it.
 - [x] Preserve current default behavior where possible under
-  `backend_renderer: :auto`:
+  `rendering_api: :auto`:
   - Wayland/DRM keep the current GL path until raster fallback is implemented.
   - macOS keeps the current host behavior: prefer Metal and fall back to raster.
 - [x] Explicit renderer choices fail when unsupported; only `:auto` may
   fallback.
-- [x] macOS rejects `backend_renderer: :gl` and Linux-only nested raster present
+- [x] macOS rejects `rendering_api: :opengl` and Linux-only nested raster present
   config.
-- [x] Linux rejects `backend_renderer: :metal`.
+- [x] Linux rejects `rendering_api: :metal`.
 - [x] Do not implement headless in this phase; `backend: :headless` startup
   returns a clear `not implemented` error.
 - [x] Add tests for valid/invalid combinations and migration-error handling.
-- [x] Update docs to describe the platform/render split.
+- [x] Update docs to describe the backend/rendering API split.
 
 ### Phase 2: macOS runtime convergence
 
@@ -501,7 +495,7 @@ Status: implemented in this slice.
 - Multiple macOS viewports should each get their own runtime pump. Only
   host-level AppKit/main-thread resources and other unavoidable macOS state
   should be shared.
-- Keep the backend/window structure platform-specific, but make event/tree/render
+- Keep the backend/window structure backend-specific, but make event/tree/render
   orchestration converge.
 - Preserve macOS text-input/AppKit constraints while sharing stale-lane,
   registry-install, buffered-input replay, present timing, and render-state
@@ -536,14 +530,14 @@ Status: implemented in this slice.
 
 Status: implemented in this slice.
 
-- [x] Add shared normalized config types for platform backend and renderer
+- [x] Add shared normalized config types for backend and renderer
   backend on the Elixir/native/host boundary.
-  - Elixir normalizes `backend_renderer` into a map with `kind`,
+  - Elixir normalizes `rendering_api` into a map with `kind`,
     `raster_present`, and `raster_present_configured`.
   - Linux native startup now decodes the same map through Rust NIF structs and
     validates it before backend startup work.
   - macOS host startup consumes the same normalized Elixir map and passes the
-    selected renderer kind through the existing host protocol.
+    selected rendering API kind through the existing host protocol.
 - [x] Add explicit compatibility checks for current backends before startup
   work.
 - [x] Explicit renderer choices fail when unsupported; only `:auto` may
@@ -555,30 +549,30 @@ Status: implemented in this slice.
   - synchronous raster offscreen APIs
 - [x] Include future Linux CPU-present raster fallback rows in the matrix before
   those paths are implemented.
-- [x] Add Rust matrix/decode coverage for backend renderer config and Elixir
+- [x] Add Rust matrix/decode coverage for rendering API config and Elixir
   option coverage for the public normalization path.
 
 ### Phase 4: Renderer-aware stats, diagnostics, and info
 
 Status: implemented in this slice.
 
-- [x] Report requested and selected renderer backend as structured data, e.g.
-  `backend_renderer: %{requested: :auto, selected: :gl}`.
-  - Native stats schema is now version 16 and includes `backend_renderer` for
+- [x] Report requested and selected rendering API as structured data, e.g.
+  `rendering_api: %{requested: :auto, selected: :opengl}`.
+  - Native stats schema is now version 19 and includes `rendering_api` for
     renderer resources.
-  - Tree-resource stats keep `backend_renderer: nil`.
-- [x] Logs may display the same data compactly as `backend_renderer: :auto (:gl)`.
+  - Tree-resource stats keep `rendering_api: nil`.
+- [x] Logs may display the same data compactly as `rendering_api: :auto (:opengl)`.
   - Native and macOS-host periodic stats logs now include a compact requested /
-    selected renderer label.
+    selected rendering API label.
 - [x] Add a public renderer info query, `EmergeSkia.renderer_info(renderer)`,
-  that exposes selected platform backend, requested renderer backend, selected
-  renderer backend, and relevant capabilities without requiring stats to be
+  that exposes selected backend, requested rendering API, selected
+  rendering API, and relevant capabilities without requiring stats to be
   enabled.
 - [x] Keep GPU-only data out of renderer info for non-GPU selections.
 - [x] For raster mode, default renderer-cache config is disabled unless callers
   explicitly pass `renderer_cache: [enabled: true]`; stats expose the actual
   renderer-cache enabled state plus a disabled reason.
-- [x] Keep present/pipeline timings platform-specific enough to distinguish GL
+- [x] Keep present/pipeline timings backend-specific enough to distinguish GL
   swap, raster upload/present, Metal present, and future headless frame delivery.
 
 ### Phase 5: Screenshot API migration
@@ -607,11 +601,11 @@ Status: implemented in this slice.
 Status: implemented in this slice.
 
 - [x] Refactor Wayland and DRM startup around two decisions:
-  1. platform backend creates/owns window/device, input, wake, present timing,
+  1. backend creates/owns window/device, input, wake, present timing,
      and lifecycle
-  2. renderer backend creates/owns the drawing surface/render target
+  2. rendering API creates/owns the drawing surface/render target
 - [x] Extract GL/EGL surface setup into helpers that are selected by the
-  normalized renderer backend instead of being implicit in the platform backend.
+  normalized rendering API instead of being implicit in the backend.
   - `:auto` is resolved before backend startup.
   - Wayland/DRM currently select the GL helper; raster/Vulkan helper arms return
     precise not-implemented errors for the future slices.
@@ -627,7 +621,7 @@ Status: implemented in this slice.
   exists.
 - [x] Implement true CPU-present path with `wl_shm`; this provides the fallback
   presentation path needed for GL-unavailable Wayland sessions.
-- [x] Explicit `backend_renderer: :raster` or `backend_renderer: [raster: ...]`
+- [x] Explicit `rendering_api: :raster` or `rendering_api: [raster: ...]`
   means Skia draws through the raster renderer, even if presentation uploads the
   resulting pixels.
 - [x] Use the nested `present` option to force raster present path (`:auto`, GPU
@@ -644,7 +638,7 @@ Status: implemented in this slice for the current DRM render path.
 - [x] Add DRM + raster presentation support.
 - [x] Implement CPU raster + GPU upload for explicit raster testing when GL
   exists.
-- [x] Explicit `backend_renderer: :raster` or `backend_renderer: [raster: ...]`
+- [x] Explicit `rendering_api: :raster` or `rendering_api: [raster: ...]`
   means Skia draws through the raster renderer, even if presentation uploads the
   resulting pixels.
 - [x] Use the nested `present` option to select the raster renderer path. DRM
@@ -658,7 +652,7 @@ Status: implemented in this slice for the current DRM render path.
 
 Status: implemented in this slice.
 
-- [x] Start only after current backends share the common platform + renderer
+- [x] Start only after current backends share the common backend + rendering API
   model.
 - [x] Add retained headless runtime session using the shared tree update/render
   path.
@@ -678,29 +672,29 @@ Status: implemented in this slice.
 
 ### Phase 10: Headless GPU and PRIME output
 
-Status: partially implemented. Explicit Linux headless GL with binary readback is implemented; PRIME/dma-buf export remains deferred future work.
+Status: implemented for Linux GL binary readback and initial Linux GL/GBM PRIME output; macOS headless Metal and broader hardware validation remain future work.
 
 - [x] Add headless GL surface/device setup where supported.
 - [x] Add binary readback for GPU headless if useful.
 - Add macOS headless Metal support if a Metal offscreen path is needed.
 - Add headless input/synthetic-input support through the shared event runtime in
   a later phase.
-- Add PRIME export output with explicit fd ownership/backpressure rules.
+- [x] Add PRIME export output with explicit fd ownership/backpressure rules.
 - Reuse descriptor validation concepts from `video_target`, but keep the public
   headless output API separate.
 
-The remaining Phase 10 PRIME work is planned in
-`active-headless-prime-output.md`, using `../membrane_video_linux/` as the
-interoperability reference for `%Membrane.PrimeDesc{}` and keepalive release
-semantics. Current code rejects `headless: [mode: :prime]` with an explicit
-not-implemented error until that slice lands.
+The Phase 10 PRIME work is tracked in `active-headless-prime-output.md` and uses
+`../colibri/membrane_dmabuf` as the canonical descriptor, validation, and lease
+contract. Current code accepts `headless: [mode: :prime]` on Linux
+OpenGL/GBM-capable systems and fails during startup when required export
+resources are unavailable.
 
-### Phase 11: Future renderer backends
+### Phase 11: Future rendering APIs
 
 Status: deferred future work.
 
 - Add `:vulkan` only after the split is stable.
-- Treat Vulkan like another renderer backend selected through the same config and
+- Treat Vulkan like another rendering API selected through the same config and
   compatibility matrix.
 
 This stays deferred by the plan's non-goal: do not implement Vulkan yet.
@@ -709,11 +703,11 @@ This stays deferred by the plan's non-goal: do not implement Vulkan yet.
 
 Elixir:
 
-- option normalization for `backend` and `backend_renderer`
+- option normalization for `backend` and `rendering_api`
 - migration error when callers use removed `macos_backend`
 - current-backend startup errors for unsupported combinations
-- Linux rejects `backend_renderer: :metal`
-- macOS rejects `backend_renderer: :gl` and Linux-only nested raster present
+- Linux rejects `rendering_api: :metal`
+- macOS rejects `rendering_api: :opengl` and Linux-only nested raster present
   config
 - renderer cache disabled by default for raster renderer mode, with disable
   reason exposed in stats
@@ -727,12 +721,12 @@ Rust:
 
 - config decode and compatibility matrix tests
 - current Wayland/DRM/macOS-default behavior unchanged for default paths
-- macOS rejects GL renderer selection
-- Linux rejects Metal renderer selection
+- macOS rejects GL rendering API selection
+- Linux rejects Metal rendering API selection
 - renderer-aware stats snapshots/log labels remain meaningful per renderer
 - screenshot capture uses the latest already-presented frame from the current
   retained renderer/session
-- renderer info query reports requested and selected renderer backends
+- renderer info query reports requested and selected rendering APIs
 - raster paint-layer cache stores CPU-memory payloads when explicitly enabled
 - later: pixel format conversion fixture tests, especially packed 1/2/4-bit
   formats, excluding dithering until its separate design slice

@@ -31,7 +31,7 @@ use skia_safe::{Paint, Rect, gpu::gl::FramebufferInfo};
 
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 
-use crate::{DrmCursorOverrideConfig, LatestFrameStore, RendererBackendKind};
+use crate::RasterPresentKind;
 use crate::actors::{EventMsg, RenderMsg, TreeMsg};
 use crate::assets::AssetConfig;
 use crate::backend::raster::{RasterBackend, RasterConfig};
@@ -47,7 +47,7 @@ use crate::stats::{
     RendererStatsCollector, format_slow_render_frame_log, render_frame_has_slow_stage,
 };
 use crate::video::{VideoImportContext, VideoRegistry};
-use crate::RasterPresentKind;
+use crate::{DrmCursorOverrideConfig, LatestFrameStore, RenderingApi};
 
 use self::cursor_theme::{CURSOR_PLANE_SIZE, CursorVisual, DrmCursorTheme};
 
@@ -628,6 +628,7 @@ fn destroy_session_resources(
     destroy_mode_blob(card, mode_blob_id);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn teardown_drm_output(
     card: &Card,
     connector: connector::Handle,
@@ -683,6 +684,7 @@ fn teardown_drm_output(
         .map_err(|e| format!("tearing down DRM output failed: {e}"))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cleanup_active_session(
     card: &Card,
     connector: connector::Handle,
@@ -2041,19 +2043,15 @@ fn gbm_bo_diagnostics(bo: &BufferObject<()>) -> String {
 }
 
 fn create_renderer_frame_surface(
-    renderer_backend: RendererBackendKind,
+    rendering_api: RenderingApi,
     egl: &egl::Egl,
     dimensions: (u32, u32),
 ) -> Result<GlFrameSurface, String> {
-    match renderer_backend {
-        RendererBackendKind::Gl | RendererBackendKind::Raster => {
-            create_frame_surface(egl, dimensions)
-        }
-        RendererBackendKind::Auto => unreachable!("auto is resolved before DRM startup"),
-        RendererBackendKind::Metal => Err("DRM does not support Metal renderer".to_string()),
-        RendererBackendKind::Vulkan => {
-            Err("DRM Vulkan renderer is not implemented yet".to_string())
-        }
+    match rendering_api {
+        RenderingApi::OpenGl | RenderingApi::Raster => create_frame_surface(egl, dimensions),
+        RenderingApi::Auto => unreachable!("auto is resolved before DRM startup"),
+        RenderingApi::Metal => Err("DRM does not support Metal renderer".to_string()),
+        RenderingApi::Vulkan => Err("DRM Vulkan renderer is not implemented yet".to_string()),
     }
 }
 
@@ -2101,9 +2099,10 @@ fn framebuffer_for_bo(
     Ok(framebuffer)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn prepare_primary_frame(
     generation: u64,
-    renderer_backend: RendererBackendKind,
+    rendering_api: RenderingApi,
     renderer: &mut SceneRenderer,
     raster_renderer: Option<&mut RasterBackend>,
     frame_surface: &mut GlFrameSurface,
@@ -2139,8 +2138,8 @@ fn prepare_primary_frame(
         video_needs_cleanup,
         imported_video_frames,
         newest_video_submitted_at,
-    ) = match renderer_backend {
-        RendererBackendKind::Gl => {
+    ) = match rendering_api {
+        RenderingApi::OpenGl => {
             let mut frame = frame_surface.frame();
             let (
                 video_sync_succeeded,
@@ -2209,8 +2208,6 @@ fn prepare_primary_frame(
             if sample_gpu_queue {
                 gpu_queue_timer.end_sample(render_state.render_version, &render_timings);
             }
-            drop(frame);
-
             (
                 render_timings,
                 frame_surface.capture_rgba_pixels(),
@@ -2220,7 +2217,7 @@ fn prepare_primary_frame(
                 newest_video_submitted_at,
             )
         }
-        RendererBackendKind::Raster => {
+        RenderingApi::Raster => {
             let raster_renderer = raster_renderer
                 .ok_or_else(|| "DRM raster renderer was not initialized".to_string())?;
             let (raster_frame, render_timings) = raster_renderer.render_with_timings(render_state);
@@ -2234,9 +2231,9 @@ fn prepare_primary_frame(
                 None,
             )
         }
-        RendererBackendKind::Auto => unreachable!("auto is resolved before DRM startup"),
-        RendererBackendKind::Metal => return Err("DRM does not support Metal renderer".to_string()),
-        RendererBackendKind::Vulkan => {
+        RenderingApi::Auto => unreachable!("auto is resolved before DRM startup"),
+        RenderingApi::Metal => return Err("DRM does not support Metal renderer".to_string()),
+        RenderingApi::Vulkan => {
             return Err("DRM Vulkan renderer is not implemented yet".to_string());
         }
     };
@@ -2353,7 +2350,7 @@ pub(crate) struct DrmRunConfig {
     pub(crate) hw_cursor: bool,
     pub(crate) render_log: bool,
     pub(crate) renderer_stats_log: bool,
-    pub(crate) renderer_backend: RendererBackendKind,
+    pub(crate) rendering_api: RenderingApi,
     pub(crate) raster_present: RasterPresentKind,
     pub(crate) renderer_cache_config: RendererCacheConfig,
 }
@@ -2862,28 +2859,25 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             );
         }
 
-        let mut frame_surface = match create_renderer_frame_surface(
-            config.renderer_backend,
-            &egl_state.egl,
-            dimensions,
-        ) {
-            Ok(frame_surface) => frame_surface,
-            Err(err) => {
-                if handle_startup_failure_with_card(
-                    &card,
-                    &mut startup_tx,
-                    &running_flag,
-                    &stop,
-                    &mut startup_retries_remaining,
-                    retry_interval,
-                    format!("creating renderer failed: {err}"),
-                ) {
-                    break;
-                }
+        let mut frame_surface =
+            match create_renderer_frame_surface(config.rendering_api, &egl_state.egl, dimensions) {
+                Ok(frame_surface) => frame_surface,
+                Err(err) => {
+                    if handle_startup_failure_with_card(
+                        &card,
+                        &mut startup_tx,
+                        &running_flag,
+                        &stop,
+                        &mut startup_retries_remaining,
+                        retry_interval,
+                        format!("creating renderer failed: {err}"),
+                    ) {
+                        break;
+                    }
 
-                continue;
-            }
-        };
+                    continue;
+                }
+            };
         native_log.info(
             "drm",
             format!(
@@ -2901,8 +2895,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             &native_log,
         );
         let mut renderer = SceneRenderer::with_cache_config(config.renderer_cache_config);
-        let mut raster_renderer = if matches!(config.renderer_backend, RendererBackendKind::Raster)
-        {
+        let mut raster_renderer = if matches!(config.rendering_api, RenderingApi::Raster) {
             match RasterBackend::with_cache_config(
                 &RasterConfig {
                     width: dimensions.0,
@@ -2930,7 +2923,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
         } else {
             None
         };
-        let video_import = if matches!(config.renderer_backend, RendererBackendKind::Gl) {
+        let video_import = if matches!(config.rendering_api, RenderingApi::OpenGl) {
             match VideoImportContext::new_current_direct() {
                 Ok(ctx) => {
                     native_log.info(
@@ -3387,6 +3380,11 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                         let received_at = Instant::now();
                         let scene = *scene;
                         render_state.set_scene(scene);
+                        if let Err(error) =
+                            video_registry.set_active_targets(&render_state.video_target_ids)
+                        {
+                            eprintln!("video target visibility update failed: {error}");
+                        }
                         render_state.render_version = version;
                         render_state.pipeline_submitted_at = pipeline_submitted_at;
                         render_state.pipeline_render_queued_at = pipeline_render_queued_at;
@@ -3507,7 +3505,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                     let profile_render = config.renderer_stats_log && sampled_diagnostics_due;
                     match prepare_primary_frame(
                         desired_primary_generation,
-                        config.renderer_backend,
+                        config.rendering_api,
                         &mut renderer,
                         raster_renderer.as_mut(),
                         &mut frame_surface,
@@ -3597,20 +3595,20 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
 
                 let cursor_visual = cursor_theme.cursor(current_cursor_icon);
 
-                if submit_cursor && hw_cursor_enabled {
-                    if let Some(cursor_plane) = cursor_plane.as_mut()
-                        && let Err(err) = cursor_plane.write_visual(cursor_visual)
-                    {
-                        native_log.error(
-                            "drm",
-                            format!("DRM cursor setup failed during cursor upload: {err}"),
-                        );
-                        hw_cursor_enabled = false;
-                        committed_cursor_visible = false;
-                        committed_cursor_icon = None;
-                        desired_primary_generation = desired_primary_generation.wrapping_add(1);
-                        continue;
-                    }
+                if submit_cursor
+                    && hw_cursor_enabled
+                    && let Some(cursor_plane) = cursor_plane.as_mut()
+                    && let Err(err) = cursor_plane.write_visual(cursor_visual)
+                {
+                    native_log.error(
+                        "drm",
+                        format!("DRM cursor setup failed during cursor upload: {err}"),
+                    );
+                    hw_cursor_enabled = false;
+                    committed_cursor_visible = false;
+                    committed_cursor_icon = None;
+                    desired_primary_generation = desired_primary_generation.wrapping_add(1);
+                    continue;
                 }
 
                 if submit_cursor && let Some(plane) = cursor_plane.as_ref().map(CursorPlane::commit)

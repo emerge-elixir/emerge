@@ -9,6 +9,9 @@ Active implementation plans:
 
 - `active-backend-renderer-unification.md`
 - `active-headless-prime-output.md`
+- `active-headless-prime-explicit-sync.md`
+- `active-video-interop-library.md`
+- `active-headless-layer-aware-dithering.md`
 - `active-low-resource-animation-smoothness.md`
 - `active-combined-refresh-traversal.md`
 - `active-combined-tree-walk-cleanup.md`
@@ -23,7 +26,7 @@ durable reference notes below, then remove the completed implementation log.
 
 ### `active-backend-renderer-unification.md`
 
-Active plan for splitting platform selection from rendering API selection across
+Active plan for splitting backend selection from rendering API selection across
 Wayland, DRM, macOS, and headless output, while preparing the same model for
 future rendering APIs such as Vulkan.
 
@@ -57,10 +60,32 @@ animation remains page-flip backpressured.
 
 ### `active-headless-prime-output.md`
 
-Active plan for Linux headless PRIME/dma-buf output, including headless auto
-selection changes (`:auto` tries GL before raster for binary output),
-Membrane-compatible `%Membrane.PrimeDesc{}` delivery, and keepalive-based
-resource release based on `../membrane_video_linux/`.
+Implementation log for Linux headless PRIME/DMA-BUF output, including headless
+auto selection, canonical `%VideoInterop.Frame{}` delivery, managed fan-out
+leases, direct Emerge connections, and drained shutdown. Implementation is
+complete; hardware PRIME validation remains pending.
+
+### `active-headless-prime-explicit-sync.md`
+
+Implemented canonical sync-file acquire fences for headless PRIME production
+and generic Emerge input, including lease-safe fence ownership and implicit
+fallback. Independent review is complete; hardware acceptance remains pending.
+
+### `active-video-interop-library.md`
+
+Bootstrap and migration plan for the lightweight `emerge-elixir/video_interop`
+project, its single feature-gated Rust crate and Hex package, and the
+`membrane_video_interop` adapter built on top. The detailed library-owned frame
+consumption, direct Emerge connection, reusable Membrane sink, and synchronous
+shutdown design lives in
+`../video_interop/plans/library-owned-video-lifecycle.md`.
+
+### `active-headless-layer-aware-dithering.md`
+
+Active plan for built-in headless raster dithering aimed at e-ink targets such
+as Trellis/name_badge. The plan keeps SVG support, avoids a separate dithering
+NIF, and uses render-scene / paint-layer semantics to dither image-like regions
+while protecting solid UI and text.
 
 ### `layout-caching-roadmap.md`
 
@@ -177,8 +202,8 @@ documents below. Recently folded slices:
   event-registry extraction, incremental per-vnode event registry updates,
   update-path benchmarks, and parity coverage for event-heavy mutations;
   validation passed on 2026-05-20
-- explicit Linux headless GL support for `backend: :headless,
-  backend_renderer: :gl`, including a refactored headless runtime module, EGL
+- explicit Linux headless OpenGL support for `backend: :headless,
+  rendering_api: :opengl`, including a refactored headless runtime module, EGL
   device/surfaceless/default-display pbuffer startup, Skia GPU rendering,
   synchronous RGBA readback into existing binary frame delivery, renderer-info
   reporting, and hardware-gated frame/screenshot tests

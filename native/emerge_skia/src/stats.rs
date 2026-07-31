@@ -117,6 +117,11 @@ pub enum RendererTimingMetric {
     RenderGpuFlush,
     RenderSubmit,
     PresentSubmit,
+    HeadlessPrimePrepare,
+    HeadlessPrimeRetarget,
+    HeadlessPrimeFenceExport,
+    HeadlessPrimeGpuFinish,
+    HeadlessPrimeExportMetadata,
     Pipeline,
     PipelineSubmitToTreeStart,
     PipelineTree,
@@ -155,7 +160,7 @@ pub enum RendererTimingMetric {
 }
 
 impl RendererTimingMetric {
-    pub const COUNT: usize = 41;
+    pub const COUNT: usize = 46;
     pub const ALL: [Self; Self::COUNT] = [
         Self::Render,
         Self::RenderDraw,
@@ -163,6 +168,11 @@ impl RendererTimingMetric {
         Self::RenderGpuFlush,
         Self::RenderSubmit,
         Self::PresentSubmit,
+        Self::HeadlessPrimePrepare,
+        Self::HeadlessPrimeRetarget,
+        Self::HeadlessPrimeFenceExport,
+        Self::HeadlessPrimeGpuFinish,
+        Self::HeadlessPrimeExportMetadata,
         Self::Pipeline,
         Self::PipelineSubmitToTreeStart,
         Self::PipelineTree,
@@ -213,6 +223,11 @@ impl RendererTimingMetric {
             Self::RenderGpuFlush => "render gpu flush",
             Self::RenderSubmit => "render submit",
             Self::PresentSubmit => "present submit",
+            Self::HeadlessPrimePrepare => "headless PRIME prepare",
+            Self::HeadlessPrimeRetarget => "headless PRIME retarget",
+            Self::HeadlessPrimeFenceExport => "headless PRIME fence export",
+            Self::HeadlessPrimeGpuFinish => "headless PRIME GPU finish fallback",
+            Self::HeadlessPrimeExportMetadata => "headless PRIME export metadata",
             Self::Pipeline => "pipeline submit->frame callback",
             Self::PipelineSubmitToTreeStart => "pipeline submit->tree",
             Self::PipelineTree => "pipeline tree",
@@ -295,12 +310,18 @@ impl RendererStatsSnapshot {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct VideoPipelineStatsSnapshot {
     pub submitted: u64,
+    pub inactive_dropped: u64,
     pub pending_replaced: u64,
     pub pending_taken: u64,
     pub imported: u64,
     pub leases_released: u64,
     pub retired_fences_created: u64,
     pub retired_fences_released: u64,
+    pub acquire_fences_received: u64,
+    pub acquire_server_waits_queued: u64,
+    pub acquire_client_wait_fallbacks: u64,
+    pub acquire_wait_timeouts: u64,
+    pub acquire_wait_errors: u64,
     pub primary_prepared: u64,
     pub video_primary_prepared: u64,
     pub stale_prepared: u64,
@@ -512,12 +533,18 @@ impl RendererTimingWindows {
 #[derive(Default)]
 struct VideoPipelineStatsWindow {
     submitted: u64,
+    inactive_dropped: u64,
     pending_replaced: u64,
     pending_taken: u64,
     imported: u64,
     leases_released: u64,
     retired_fences_created: u64,
     retired_fences_released: u64,
+    acquire_fences_received: u64,
+    acquire_server_waits_queued: u64,
+    acquire_client_wait_fallbacks: u64,
+    acquire_wait_timeouts: u64,
+    acquire_wait_errors: u64,
     primary_prepared: u64,
     video_primary_prepared: u64,
     stale_prepared: u64,
@@ -543,12 +570,18 @@ impl VideoPipelineStatsWindow {
     fn snapshot(&self) -> VideoPipelineStatsSnapshot {
         VideoPipelineStatsSnapshot {
             submitted: self.submitted,
+            inactive_dropped: self.inactive_dropped,
             pending_replaced: self.pending_replaced,
             pending_taken: self.pending_taken,
             imported: self.imported,
             leases_released: self.leases_released,
             retired_fences_created: self.retired_fences_created,
             retired_fences_released: self.retired_fences_released,
+            acquire_fences_received: self.acquire_fences_received,
+            acquire_server_waits_queued: self.acquire_server_waits_queued,
+            acquire_client_wait_fallbacks: self.acquire_client_wait_fallbacks,
+            acquire_wait_timeouts: self.acquire_wait_timeouts,
+            acquire_wait_errors: self.acquire_wait_errors,
             primary_prepared: self.primary_prepared,
             video_primary_prepared: self.video_primary_prepared,
             stale_prepared: self.stale_prepared,
@@ -956,6 +989,31 @@ impl RendererStatsCollector {
         self.record_timing(RendererTimingMetric::PresentSubmit, duration);
     }
 
+    pub fn record_headless_prime_timings(
+        &self,
+        prepare: Duration,
+        retarget: Duration,
+        fence_export: Option<Duration>,
+        gpu_finish_fallback: Option<Duration>,
+        export_metadata: Duration,
+    ) {
+        self.record_timing(RendererTimingMetric::HeadlessPrimePrepare, prepare);
+        self.record_timing(RendererTimingMetric::HeadlessPrimeRetarget, retarget);
+        if let Some(fence_export) = fence_export {
+            self.record_timing(RendererTimingMetric::HeadlessPrimeFenceExport, fence_export);
+        }
+        if let Some(gpu_finish_fallback) = gpu_finish_fallback {
+            self.record_timing(
+                RendererTimingMetric::HeadlessPrimeGpuFinish,
+                gpu_finish_fallback,
+            );
+        }
+        self.record_timing(
+            RendererTimingMetric::HeadlessPrimeExportMetadata,
+            export_metadata,
+        );
+    }
+
     pub fn record_video_submitted(&self, replaced_pending: bool) {
         self.update_video_pipeline(|video| {
             video.submitted = video.submitted.saturating_add(1);
@@ -964,6 +1022,12 @@ impl RendererStatsCollector {
             } else {
                 video.current_pending = video.current_pending.saturating_add(1);
             }
+        });
+    }
+
+    pub fn record_video_inactive_drop(&self) {
+        self.update_video_pipeline(|video| {
+            video.inactive_dropped = video.inactive_dropped.saturating_add(1);
         });
     }
 
@@ -990,6 +1054,37 @@ impl RendererStatsCollector {
             RendererTimingMetric::VideoSubmitToRelease,
             submit_to_release,
         );
+    }
+
+    pub fn record_video_acquire_fence_received(&self) {
+        self.update_video_pipeline(|video| {
+            video.acquire_fences_received = video.acquire_fences_received.saturating_add(1);
+        });
+    }
+
+    pub fn record_video_acquire_server_wait_queued(&self) {
+        self.update_video_pipeline(|video| {
+            video.acquire_server_waits_queued = video.acquire_server_waits_queued.saturating_add(1);
+        });
+    }
+
+    pub fn record_video_acquire_client_wait_fallback(&self) {
+        self.update_video_pipeline(|video| {
+            video.acquire_client_wait_fallbacks =
+                video.acquire_client_wait_fallbacks.saturating_add(1);
+        });
+    }
+
+    pub fn record_video_acquire_wait_timeout(&self) {
+        self.update_video_pipeline(|video| {
+            video.acquire_wait_timeouts = video.acquire_wait_timeouts.saturating_add(1);
+        });
+    }
+
+    pub fn record_video_acquire_wait_error(&self) {
+        self.update_video_pipeline(|video| {
+            video.acquire_wait_errors = video.acquire_wait_errors.saturating_add(1);
+        });
     }
 
     pub fn record_video_retired_fence_created(&self, current_depth: usize) {
@@ -1378,7 +1473,7 @@ impl RendererStatsCollector {
 
 pub fn format_renderer_stats_log(
     backend_label: &str,
-    backend_renderer_label: &str,
+    rendering_api_label: &str,
     snapshot: &RendererStatsSnapshot,
 ) -> String {
     let timing_lines = RendererTimingMetric::ALL
@@ -1386,17 +1481,22 @@ pub fn format_renderer_stats_log(
         .map(|metric| format_duration_stat_line(metric.log_label(), snapshot.timing(metric)))
         .collect::<Vec<_>>()
         .join("\n");
+    let frame_clock_label = match backend_label {
+        "wayland" => "display mode",
+        "headless" => "target cadence",
+        _ => "display",
+    };
 
     let mut message = format!(
         concat!(
             "renderer stats\n",
             "  window\n",
             "    backend: {}\n",
-            "    backend_renderer: {}\n",
+            "    rendering_api: {}\n",
             "    duration: {} ms\n",
             "    frames: {}\n",
             "    fps: {:.1}\n",
-            "    display: {:.1} fps ({:.3} ms/frame)\n",
+            "    {}: {:.1} fps ({:.3} ms/frame)\n",
             "\n",
             "  timings\n",
             "{}\n",
@@ -1407,10 +1507,11 @@ pub fn format_renderer_stats_log(
             "    resolve:           hits={} misses={} stores={}"
         ),
         backend_label,
-        backend_renderer_label,
+        rendering_api_label,
         snapshot.window.as_millis(),
         snapshot.frame_count,
         snapshot.fps,
+        frame_clock_label,
         snapshot.display_fps,
         snapshot.display_frame_ms,
         timing_lines,
@@ -1436,8 +1537,9 @@ pub fn format_renderer_stats_log(
     message.push_str(&format!(
         concat!(
             "\n\n  video pipeline\n",
-            "    registry: submitted={} ({:.1}/s) replaced_pending={} taken={} current_pending={}\n",
+            "    registry: submitted={} ({:.1}/s) inactive_dropped={} replaced_pending={} taken={} current_pending={}\n",
             "    imports: imported={} ({:.1}/s) current_direct={} retired={} max_retired={} fences={}/{}\n",
+            "    acquire: received={} server_queued={} client_fallback={} timeouts={} errors={}\n",
             "    leases: released={} ({:.1}/s)\n",
             "    drm: prepared={} video_prepared={} stale={} stale_video={} no_free_gbm={}\n",
             "    present: commit_attempts={} committed={} ebusy={} presented={} ({:.1}/s) video_presented={} ({:.1}/s) prepared_now={} in_flight_now={}\n",
@@ -1445,6 +1547,7 @@ pub fn format_renderer_stats_log(
         ),
         video.submitted,
         per_second(video.submitted),
+        video.inactive_dropped,
         video.pending_replaced,
         video.pending_taken,
         video.current_pending,
@@ -1455,6 +1558,11 @@ pub fn format_renderer_stats_log(
         video.max_retired_imports,
         video.retired_fences_created,
         video.retired_fences_released,
+        video.acquire_fences_received,
+        video.acquire_server_waits_queued,
+        video.acquire_client_wait_fallbacks,
+        video.acquire_wait_timeouts,
+        video.acquire_wait_errors,
         video.leases_released,
         per_second(video.leases_released),
         video.primary_prepared,
@@ -2311,6 +2419,13 @@ mod tests {
         stats.record_render_gpu_flush(Duration::from_millis(1));
         stats.record_render_submit(Duration::from_millis(0));
         stats.record_present_submit(Duration::from_millis(1));
+        stats.record_headless_prime_timings(
+            Duration::from_millis(1),
+            Duration::from_millis(2),
+            Some(Duration::from_millis(3)),
+            Some(Duration::from_millis(4)),
+            Duration::from_millis(5),
+        );
         let pipeline_submitted_at = Instant::now();
         stats.record_pipeline(
             pipeline_submitted_at,
@@ -2339,6 +2454,11 @@ mod tests {
         stats.record_video_submitted(false);
         stats.record_video_pending_taken(1);
         stats.record_video_imported(Duration::from_millis(2));
+        stats.record_video_acquire_fence_received();
+        stats.record_video_acquire_server_wait_queued();
+        stats.record_video_acquire_client_wait_fallback();
+        stats.record_video_acquire_wait_timeout();
+        stats.record_video_acquire_wait_error();
         stats.record_video_retired_fence_created(1);
         stats.record_video_retired_fence_released(Duration::from_millis(4));
         stats.record_video_lease_released(Duration::from_millis(12));
@@ -2402,15 +2522,15 @@ mod tests {
             ..LayoutCacheStats::default()
         });
 
-        let message = format_renderer_stats_log("wayland", "auto (gl)", &stats.snapshot());
+        let message = format_renderer_stats_log("wayland", "auto (opengl)", &stats.snapshot());
 
         assert!(message.starts_with("renderer stats\n"));
         assert!(message.contains("  window\n"));
         assert!(message.contains("    backend: wayland\n"));
-        assert!(message.contains("    backend_renderer: auto (gl)\n"));
+        assert!(message.contains("    rendering_api: auto (opengl)\n"));
         assert!(message.contains("    frames: 1\n"));
         assert!(message.contains("    fps: "));
-        assert!(message.contains("    display: "));
+        assert!(message.contains("    display mode: "));
         assert!(message.contains("  timings\n"));
         assert!(message.contains("    render: avg=3.000 ms min=3.000 ms max=3.000 ms count=1"));
         assert!(message.contains("    render draw: avg=2.000 ms"));
@@ -2418,6 +2538,11 @@ mod tests {
         assert!(message.contains("    render gpu flush: avg=1.000 ms"));
         assert!(message.contains("    render submit: avg=0.000 ms"));
         assert!(message.contains("    present submit: avg=1.000 ms"));
+        assert!(message.contains("    headless PRIME prepare: avg=1.000 ms"));
+        assert!(message.contains("    headless PRIME retarget: avg=2.000 ms"));
+        assert!(message.contains("    headless PRIME fence export: avg=3.000 ms"));
+        assert!(message.contains("    headless PRIME GPU finish fallback: avg=4.000 ms"));
+        assert!(message.contains("    headless PRIME export metadata: avg=5.000 ms"));
         assert!(message.contains("    pipeline submit->frame callback: avg=18.000 ms"));
         assert!(message.contains("    pipeline submit->tree: avg=2.000 ms"));
         assert!(message.contains("    pipeline tree: avg=6.000 ms"));
@@ -2452,6 +2577,11 @@ mod tests {
         assert!(message.contains("  video pipeline\n"));
         assert!(message.contains("registry: submitted=1"));
         assert!(message.contains("imports: imported=1"));
+        assert!(
+            message.contains(
+                "acquire: received=1 server_queued=1 client_fallback=1 timeouts=1 errors=1"
+            )
+        );
         assert!(message.contains("leases: released=1"));
         assert!(message.contains("drm: prepared=1 video_prepared=1"));
         assert!(message.contains("present: commit_attempts=2 committed=1 ebusy=1 presented=1"));
@@ -2482,7 +2612,7 @@ mod tests {
         let stats = RendererStatsCollector::new();
         stats.record_frame_present();
 
-        let message = format_renderer_stats_log("wayland", "auto (gl)", &stats.snapshot());
+        let message = format_renderer_stats_log("wayland", "auto (opengl)", &stats.snapshot());
 
         assert!(message.contains("  renderer cache\n"));
         assert!(message.contains("    paint_layer\n"));

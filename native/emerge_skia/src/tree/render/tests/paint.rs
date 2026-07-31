@@ -214,7 +214,7 @@ fn demo_inset_glow_dotted_card_attrs(with_glow: bool) -> Attrs {
 fn test_render_image_source_pending_emits_loading_placeholder() {
     let id = NodeId::from_term_bytes(vec![9]);
     let attrs = Attrs {
-        image_src: Some(ImageSource::Logical("images/photo.jpg".to_string())),
+        image_src: Some(ImageSource::Id("paint_pending_photo".to_string())),
         image_fit: Some(ImageFit::Contain),
         ..Attrs::default()
     };
@@ -711,7 +711,7 @@ fn test_render_nested_image_contain_has_no_right_gap_when_touching_horizontal_ed
 fn test_render_background_image_pending_uses_self_clip() {
     let attrs = Attrs {
         background: Some(Background::Image {
-            source: ImageSource::Logical("images/background_pending_clip.png".to_string()),
+            source: ImageSource::Id("paint_pending_background_clip".to_string()),
             fit: ImageFit::Cover,
         }),
         border_radius: Some(BorderRadius::Corners {

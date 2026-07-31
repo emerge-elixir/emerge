@@ -98,6 +98,18 @@ defmodule Emerge.Runtime.Viewport do
     {:reply, runtime!(state).renderer, state}
   end
 
+  def handle_call({:emerge_viewport, :connect_video_output, target, opts}, _from, state) do
+    runtime = runtime!(state)
+    reply = invoke_optional_renderer(runtime, :connect_video_output, [target, opts])
+    {:reply, reply, state}
+  end
+
+  def handle_call({:emerge_viewport, :disconnect_video_output}, _from, state) do
+    runtime = runtime!(state)
+    reply = invoke_optional_renderer(runtime, :disconnect_video_output, [])
+    {:reply, reply, state}
+  end
+
   @impl true
   def terminate(reason, state) do
     terminate_viewport(reason, state)
@@ -281,6 +293,24 @@ defmodule Emerge.Runtime.Viewport do
     GenServer.call(pid, {:emerge_viewport, :renderer})
   end
 
+  @doc false
+  @spec connect_video_output(GenServer.server(), EmergeSkia.VideoTarget.t(), keyword()) ::
+          {:ok, reference()} | {:error, term()}
+  def connect_video_output(source, target, opts) when is_list(opts) do
+    GenServer.call(source, {:emerge_viewport, :connect_video_output, target, opts}, :infinity)
+  catch
+    :exit, reason -> {:error, {:source_down, reason}}
+  end
+
+  @doc false
+  @spec disconnect_video_output(GenServer.server()) :: :ok | {:error, term()}
+  def disconnect_video_output(source) do
+    GenServer.call(source, {:emerge_viewport, :disconnect_video_output}, :infinity)
+  catch
+    :exit, {:noproc, _details} -> :ok
+    :exit, reason -> {:error, {:source_down, reason}}
+  end
+
   @spec rerender(map()) :: map()
   def rerender(state) when is_map(state) do
     runtime = %{runtime!(state) | dirty?: true}
@@ -425,6 +455,25 @@ defmodule Emerge.Runtime.Viewport do
 
       _ ->
         false
+    end
+  end
+
+  defp invoke_optional_renderer(%State{renderer: nil}, _callback, _args), do: {:error, :not_ready}
+
+  defp invoke_optional_renderer(
+         %State{renderer_module: renderer_module, renderer: renderer},
+         callback,
+         args
+       ) do
+    arity = length(args) + 1
+
+    if function_exported?(renderer_module, callback, arity) do
+      case safe_invoke(fn -> apply(renderer_module, callback, [renderer | args]) end) do
+        {:ok, result} -> result
+        {:error, reason} -> {:error, {:renderer_callback_failed, reason}}
+      end
+    else
+      {:error, :video_output_unsupported}
     end
   end
 

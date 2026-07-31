@@ -4,16 +4,16 @@ defmodule EmergeSkia.Macos.Protocol do
   import Bitwise
 
   @protocol_name "emerge_skia_macos"
-  @protocol_version 8
+  @protocol_version 9
 
   @log_level_debug 0
   @log_level_info 1
   @log_level_warning 2
   @log_level_error 3
 
-  @macos_backend_auto 0
-  @macos_backend_metal 1
-  @macos_backend_raster 2
+  @rendering_api_auto 0
+  @rendering_api_metal 1
+  @rendering_api_raster 2
 
   @asset_mode_await 0
   @asset_mode_snapshot 1
@@ -155,7 +155,7 @@ defmodule EmergeSkia.Macos.Protocol do
         scroll_line_pixels,
         renderer_stats_log,
         renderer_cache,
-        backend_renderer,
+        rendering_api,
         asset_config
       ) do
     title = IO.iodata_to_binary(title)
@@ -167,16 +167,17 @@ defmodule EmergeSkia.Macos.Protocol do
     <<byte_size(title)::unsigned-big-32, title::binary, width::unsigned-big-32,
       height::unsigned-big-32, scroll_line_pixels::float-big-32, renderer_stats_log,
       encode_renderer_cache_config(renderer_cache)::binary,
-      encode_macos_backend_tag(backend_renderer), asset_payload::binary,
+      encode_rendering_api_tag(rendering_api), asset_payload::binary,
       encode_fonts(fonts, priv_dir)::binary>>
   end
 
   defp encode_renderer_cache_config(renderer_cache) do
     paint_layer = Map.fetch!(renderer_cache, :paint_layer)
     enabled = if Map.fetch!(renderer_cache, :enabled), do: 1, else: 0
+    enabled_configured = if Map.fetch!(renderer_cache, :enabled_configured), do: 1, else: 0
 
     <<Map.fetch!(renderer_cache, :max_new_payloads_per_frame)::unsigned-big-32, enabled,
-      Map.fetch!(paint_layer, :max_entries)::unsigned-big-64,
+      enabled_configured, Map.fetch!(paint_layer, :max_entries)::unsigned-big-64,
       Map.fetch!(paint_layer, :max_bytes)::unsigned-big-64,
       Map.fetch!(paint_layer, :max_entry_bytes)::unsigned-big-64,
       Map.fetch!(paint_layer, :min_visible_before_store)::unsigned-big-64,
@@ -224,11 +225,11 @@ defmodule EmergeSkia.Macos.Protocol do
   def decode_binary_reply(<<len::unsigned-big-32, data::binary-size(len)>>), do: {:ok, data}
   def decode_binary_reply(_payload), do: :error
 
-  def decode_macos_backend_tag(@macos_backend_metal), do: :metal
-  def decode_macos_backend_tag(@macos_backend_raster), do: :raster
+  def decode_rendering_api_tag(@rendering_api_metal), do: :metal
+  def decode_rendering_api_tag(@rendering_api_raster), do: :raster
 
-  def decode_macos_backend_tag(other) do
-    raise "unexpected macOS backend tag: #{inspect(other)}"
+  def decode_rendering_api_tag(other) do
+    raise "unexpected macOS rendering API tag: #{inspect(other)}"
   end
 
   def format_socket_error(:closed), do: "macOS host connection closed"
@@ -312,9 +313,9 @@ defmodule EmergeSkia.Macos.Protocol do
     <<byte_size(value)::unsigned-big-32, value::binary>>
   end
 
-  defp encode_macos_backend_tag("auto"), do: @macos_backend_auto
-  defp encode_macos_backend_tag("metal"), do: @macos_backend_metal
-  defp encode_macos_backend_tag("raster"), do: @macos_backend_raster
+  defp encode_rendering_api_tag("auto"), do: @rendering_api_auto
+  defp encode_rendering_api_tag("metal"), do: @rendering_api_metal
+  defp encode_rendering_api_tag("raster"), do: @rendering_api_raster
 
   defp encode_asset_mode("await"), do: @asset_mode_await
   defp encode_asset_mode("snapshot"), do: @asset_mode_snapshot

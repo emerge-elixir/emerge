@@ -58,6 +58,7 @@ pub struct RenderState {
     /// redraw layers that become cacheable only after admission.
     pub has_cacheable_paint_layers: bool,
     pub has_scroll_moving_paint_layers: bool,
+    pub video_target_ids: HashSet<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -483,6 +484,7 @@ impl Default for RenderState {
             animate: false,
             has_cacheable_paint_layers: false,
             has_scroll_moving_paint_layers: false,
+            video_target_ids: HashSet::new(),
         }
     }
 }
@@ -491,6 +493,7 @@ impl RenderState {
     pub fn new(scene: RenderScene, clear_color: Color, render_version: u64, animate: bool) -> Self {
         let has_payload_cache_candidates = scene.has_payload_cache_candidate_layers();
         let has_scroll_moving_paint_layers = scene.has_scroll_moving_paint_layers();
+        let video_target_ids = scene.video_target_ids();
         Self {
             scene,
             clear_color,
@@ -500,12 +503,14 @@ impl RenderState {
             animate,
             has_cacheable_paint_layers: has_payload_cache_candidates,
             has_scroll_moving_paint_layers,
+            video_target_ids,
         }
     }
 
     pub fn set_scene(&mut self, scene: RenderScene) {
         self.has_cacheable_paint_layers = scene.has_payload_cache_candidate_layers();
         self.has_scroll_moving_paint_layers = scene.has_scroll_moving_paint_layers();
+        self.video_target_ids = scene.video_target_ids();
         self.scene = scene;
     }
 }
@@ -3085,6 +3090,19 @@ impl SceneRenderer {
             self.invalidate_visible_frame_fingerprint();
         }
         Ok(result)
+    }
+
+    pub fn reap_video_cleanup(
+        &mut self,
+        registry: &Arc<crate::video::VideoRegistry>,
+        ctx: Option<&crate::video::VideoImportContext>,
+    ) -> crate::video::VideoCleanupResult {
+        let mut cleanup = self.video_state.reap_retired_imports(registry);
+        if let Some(ctx) = ctx {
+            cleanup.needs_cleanup |= ctx.retry_acquire_cleanup();
+            cleanup.needs_cleanup |= ctx.has_acquire_cleanup();
+        }
+        cleanup
     }
 
     pub fn invalidate_visible_frame_fingerprint(&mut self) {

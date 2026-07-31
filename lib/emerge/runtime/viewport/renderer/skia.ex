@@ -22,6 +22,18 @@ defmodule Emerge.Runtime.Viewport.Renderer.Skia do
   def set_input_mask(renderer, mask), do: EmergeSkia.set_input_mask(renderer, mask)
 
   @impl true
+  def connect_video_output(%EmergeSkia.HeadlessPrimeSession{} = renderer, target, opts),
+    do: EmergeSkia.HeadlessPrimeSession.connect(renderer, target, opts)
+
+  def connect_video_output(_renderer, _target, _opts), do: {:error, :wrong_mode}
+
+  @impl true
+  def disconnect_video_output(%EmergeSkia.HeadlessPrimeSession{} = renderer),
+    do: EmergeSkia.HeadlessPrimeSession.disconnect(renderer)
+
+  def disconnect_video_output(_renderer), do: {:error, :wrong_mode}
+
+  @impl true
   def upload_tree(renderer, tree), do: EmergeSkia.upload_tree(renderer, tree)
 
   @impl true

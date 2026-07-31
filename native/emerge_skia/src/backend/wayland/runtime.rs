@@ -50,7 +50,7 @@ use wayland_client::{
 };
 
 use crate::{
-    InputTargetRelay, LatestFrameStore, RasterPresentKind, RendererBackendKind,
+    InputTargetRelay, LatestFrameStore, RasterPresentKind, RenderingApi,
     actors::{AnimationFrameTrace, AnimationPulseTrace, EventMsg, RenderMsg, TreeMsg},
     backend::{
         raster::{RasterBackend, RasterConfig},
@@ -88,6 +88,7 @@ enum WakeAction {
 }
 
 const WAYLAND_DISPATCH_STOP_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const RENDER_PROFILE_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
 struct WaylandWake {
@@ -104,7 +105,7 @@ struct WaylandAppRuntime {
     stats: Option<Arc<RendererStatsCollector>>,
     renderer_stats_log: bool,
     renderer_animation_log: bool,
-    renderer_backend: RendererBackendKind,
+    rendering_api: RenderingApi,
     raster_present: RasterPresentKind,
     renderer_cache_config: RendererCacheConfig,
     latest_frame: Arc<LatestFrameStore>,
@@ -128,7 +129,7 @@ pub(crate) struct WaylandRunArgs {
     pub stats: Option<Arc<RendererStatsCollector>>,
     pub renderer_stats_log: bool,
     pub renderer_animation_log: bool,
-    pub renderer_backend: RendererBackendKind,
+    pub rendering_api: RenderingApi,
     pub raster_present: RasterPresentKind,
     pub renderer_cache_config: RendererCacheConfig,
     pub latest_frame: Arc<LatestFrameStore>,
@@ -147,7 +148,7 @@ enum WaylandVideoImportState {
 
 enum RasterWaylandPresentEnv {
     Cpu { pool: SlotPool },
-    GpuUpload { gl_env: GlEnv },
+    GpuUpload { gl_env: Box<GlEnv> },
 }
 
 struct RasterWaylandEnv {
@@ -172,7 +173,7 @@ impl RasterWaylandEnv {
                     .map_err(|err| format!("failed to create Wayland shm pool: {err}"))?,
             },
             RasterPresentKind::GpuUpload => RasterWaylandPresentEnv::GpuUpload {
-                gl_env: create_gl_env(conn, surface, size, renderer_cache_config)?,
+                gl_env: Box::new(create_gl_env(conn, surface, size, renderer_cache_config)?),
             },
         };
         let renderer = RasterBackend::with_cache_config(
@@ -507,6 +508,7 @@ impl BackendWake for WaylandWake {
 pub(super) struct WaylandApp {
     registry_state: RegistryState,
     output_state: OutputState,
+    surface_outputs: Vec<wl_output::WlOutput>,
     qh: QueueHandle<Self>,
     pub(super) window: Window,
     shm: Shm,
@@ -532,7 +534,7 @@ pub(super) struct WaylandApp {
     stats: Option<Arc<RendererStatsCollector>>,
     renderer_stats_log: bool,
     renderer_animation_log: bool,
-    renderer_backend: RendererBackendKind,
+    rendering_api: RenderingApi,
     raster_present: RasterPresentKind,
     renderer_cache_config: RendererCacheConfig,
     latest_frame: Arc<LatestFrameStore>,
@@ -544,6 +546,7 @@ pub(super) struct WaylandApp {
     render_state: RenderState,
     render_animation_trace: Option<AnimationFrameTrace>,
     animation_pulse_sequence: u64,
+    next_render_profile_at: Instant,
     diagnostics: WaylandRenderDiagnostics,
     pending_pipeline_submitted_at: Option<std::time::Instant>,
     pending_pipeline_swap_done_at: Option<std::time::Instant>,
@@ -582,7 +585,7 @@ impl WaylandApp {
             stats,
             renderer_stats_log,
             renderer_animation_log,
-            renderer_backend,
+            rendering_api,
             raster_present,
             renderer_cache_config,
             latest_frame,
@@ -598,6 +601,7 @@ impl WaylandApp {
         let mut app = Self {
             registry_state: RegistryState::new(globals),
             output_state: OutputState::new(globals, &qh),
+            surface_outputs: Vec::new(),
             qh: qh.clone(),
             window,
             shm,
@@ -623,7 +627,7 @@ impl WaylandApp {
             stats,
             renderer_stats_log,
             renderer_animation_log,
-            renderer_backend,
+            rendering_api,
             raster_present,
             renderer_cache_config,
             latest_frame,
@@ -635,6 +639,7 @@ impl WaylandApp {
             render_state: RenderState::default(),
             render_animation_trace: None,
             animation_pulse_sequence: 0,
+            next_render_profile_at: Instant::now(),
             diagnostics: WaylandRenderDiagnostics::default(),
             pending_pipeline_submitted_at: None,
             pending_pipeline_swap_done_at: None,
@@ -663,6 +668,16 @@ impl WaylandApp {
 
     fn present_snapshot(&self) -> PresentSnapshot {
         self.present.snapshot(Instant::now(), SystemTime::now())
+    }
+
+    fn nominal_display_interval(&self) -> Option<Duration> {
+        self.surface_outputs
+            .iter()
+            .filter_map(|output| self.output_state.info(output))
+            .flat_map(|info| info.modes.into_iter())
+            .filter(|mode| mode.current)
+            .filter_map(|mode| refresh_rate_interval(mode.refresh_rate))
+            .min()
     }
 
     fn log_present_skip_if_needed(&mut self, env_ready: bool, allow_late_replacement: bool) {
@@ -739,13 +754,34 @@ impl WaylandApp {
                 self.flush_backend_updates(conn);
             }
             WakeAction::VideoFrameAvailable => {
-                self.queue_redraw();
+                self.present.queue_video_redraw();
             }
         }
     }
 
     fn queue_redraw(&mut self) {
         self.present.queue_redraw();
+    }
+
+    fn reap_video_cleanup_before_redraw(&mut self) {
+        if !self.present.video_cleanup_requested() {
+            return;
+        }
+
+        let video_import_ctx = self.video_import.context();
+        let cleanup = self.env.as_mut().map(|env| {
+            let cleanup = env
+                .renderer
+                .reap_video_cleanup(&self.video_registry, video_import_ctx);
+            if cleanup.resources_changed {
+                // Retiring an imported frame deletes raw external GL textures behind Ganesh.
+                // Restore its binding assumptions before any later UI-only redraw.
+                env.frame_surface.reset_context();
+            }
+            cleanup
+        });
+        self.present
+            .finish_video_cleanup(cleanup.is_some_and(|cleanup| cleanup.needs_cleanup));
     }
 
     pub(super) fn send_input_event(&self, event: InputEvent) {
@@ -839,6 +875,12 @@ impl WaylandApp {
                     let animation_trace = animation_trace.map(|trace| *trace);
                     let scene = *scene;
                     self.render_state.set_scene(scene);
+                    if let Err(error) = self
+                        .video_registry
+                        .set_active_targets(&self.render_state.video_target_ids)
+                    {
+                        eprintln!("video target visibility update failed: {error}");
+                    }
                     self.render_state.render_version = version;
                     self.render_state.pipeline_submitted_at = pipeline_submitted_at;
                     self.render_state.pipeline_render_queued_at = pipeline_render_queued_at;
@@ -987,17 +1029,15 @@ impl WaylandApp {
     }
 
     fn maybe_draw(&mut self) {
-        let allow_late_replacement = matches!(self.renderer_backend, RendererBackendKind::Gl)
+        let allow_late_replacement = matches!(self.rendering_api, RenderingApi::OpenGl)
             && self
                 .env
                 .as_ref()
                 .is_some_and(|env| env.swap_buffers_nonblocking);
-        let env_ready = match self.renderer_backend {
-            RendererBackendKind::Gl => self.env.is_some(),
-            RendererBackendKind::Raster => self.raster_env.is_some(),
-            RendererBackendKind::Auto
-            | RendererBackendKind::Metal
-            | RendererBackendKind::Vulkan => false,
+        let env_ready = match self.rendering_api {
+            RenderingApi::OpenGl => self.env.is_some(),
+            RenderingApi::Raster => self.raster_env.is_some(),
+            RenderingApi::Auto | RenderingApi::Metal | RenderingApi::Vulkan => false,
         };
         let decision =
             frame_draw_decision(&self.present, env_ready, self.exit, allow_late_replacement);
@@ -1014,7 +1054,7 @@ impl WaylandApp {
     }
 
     fn draw(&mut self, draw_kind: DrawKind) {
-        if matches!(self.renderer_backend, RendererBackendKind::Raster) {
+        if matches!(self.rendering_api, RenderingApi::Raster) {
             self.draw_raster(draw_kind);
             return;
         }
@@ -1030,6 +1070,11 @@ impl WaylandApp {
         self.watchdog.mark_draw_start();
         let render_log = self.render_log;
         let native_log = Arc::clone(&self.native_log);
+        let profile_render = renderer_profile_due(
+            self.renderer_stats_log,
+            draw_started_at,
+            &mut self.next_render_profile_at,
+        );
 
         if render_log {
             native_log.info(
@@ -1099,7 +1144,12 @@ impl WaylandApp {
                         video_import_ctx,
                     ) {
                         Ok(result) => video_needs_cleanup = result.needs_cleanup,
-                        Err(err) => eprintln!("video sync failed: {err}"),
+                        Err(err) => {
+                            // Failed imports can still retire partially-created resources.
+                            // Keep one cleanup follow-up so their leases cannot be stranded.
+                            video_needs_cleanup = true;
+                            eprintln!("video sync failed: {err}");
+                        }
                     }
                 }
                 WaylandVideoSyncAction::Drop => {
@@ -1109,7 +1159,7 @@ impl WaylandApp {
                 }
             }
 
-            let render_timings = if self.renderer_stats_log {
+            let render_timings = if profile_render {
                 env.renderer.render_profiled(&mut frame, &self.render_state)
             } else {
                 env.renderer.render(&mut frame, &self.render_state)
@@ -1119,7 +1169,7 @@ impl WaylandApp {
                 stats.record_render_timings(render_timings.total, &render_timings);
             }
 
-            if self.renderer_stats_log && render_frame_has_slow_stage(&render_timings) {
+            if profile_render && render_frame_has_slow_stage(&render_timings) {
                 self.native_log.info(
                     "renderer_slow_frame",
                     format_slow_render_frame_log(
@@ -1141,7 +1191,6 @@ impl WaylandApp {
                 );
             }
 
-            drop(frame);
             env.frame_surface.capture_rgba_pixels()
         };
 
@@ -1227,7 +1276,7 @@ impl WaylandApp {
             stats.record_present_submit(present_submit);
         }
 
-        if self.renderer_stats_log && present_submit >= SLOW_PRESENT_SUBMIT_THRESHOLD {
+        if profile_render && present_submit >= SLOW_PRESENT_SUBMIT_THRESHOLD {
             self.native_log.info(
                 "renderer_slow_frame",
                 format_slow_present_frame_log(
@@ -1496,7 +1545,7 @@ impl WaylandApp {
         let geometry_changed = previous != self.geometry;
         let buffer_changed = previous.buffer_size != self.geometry.buffer_size;
 
-        if matches!(self.renderer_backend, RendererBackendKind::Raster) {
+        if matches!(self.rendering_api, RenderingApi::Raster) {
             if self.raster_env.is_none() {
                 match RasterWaylandEnv::new(
                     &self.shm,
@@ -1548,7 +1597,7 @@ impl WaylandApp {
             self.video_import = WaylandVideoImportState::PendingGlInit;
 
             match create_renderer_env(
-                self.renderer_backend,
+                self.rendering_api,
                 conn,
                 self.window.wl_surface(),
                 self.geometry.buffer_size,
@@ -1686,6 +1735,20 @@ impl WaylandApp {
 
 fn duration_ms(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1_000.0
+}
+
+fn refresh_rate_interval(refresh_rate_millihz: i32) -> Option<Duration> {
+    (refresh_rate_millihz > 0)
+        .then(|| Duration::from_secs_f64(1_000.0 / f64::from(refresh_rate_millihz)))
+}
+
+fn renderer_profile_due(enabled: bool, now: Instant, next_profile_at: &mut Instant) -> bool {
+    if !enabled || now < *next_profile_at {
+        return false;
+    }
+
+    *next_profile_at = now + RENDER_PROFILE_INTERVAL;
+    true
 }
 
 fn current_wall_ms() -> u64 {
@@ -2245,8 +2308,13 @@ impl CompositorHandler for WaylandApp {
         {
             stats.record_pipeline_swap_to_frame_callback(swap_done_at, received_at);
         }
+        let nominal_display_interval = self.nominal_display_interval();
         let previous_estimated_interval = self.present.estimated_frame_interval();
         self.present.frame_callback_received(received_at, time);
+        self.reap_video_cleanup_before_redraw();
+        if let Some(interval) = nominal_display_interval {
+            self.present.set_frame_interval(interval);
+        }
         self.diagnostics.last_frame_callback_received_at = Some(received_at);
         self.diagnostics.last_present_skip_log_key = None;
         self.watchdog.mark_frame_callback();
@@ -2279,8 +2347,11 @@ impl CompositorHandler for WaylandApp {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
         _surface: &wl_surface::WlSurface,
-        _output: &wl_output::WlOutput,
+        output: &wl_output::WlOutput,
     ) {
+        if !self.surface_outputs.contains(output) {
+            self.surface_outputs.push(output.clone());
+        }
         self.log_render_diagnostic(format!(
             "surface enter\n  geometry: {}\n  {}",
             format_surface_geometry(&self.geometry),
@@ -2293,8 +2364,9 @@ impl CompositorHandler for WaylandApp {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
         _surface: &wl_surface::WlSurface,
-        _output: &wl_output::WlOutput,
+        output: &wl_output::WlOutput,
     ) {
+        self.surface_outputs.retain(|current| current != output);
         self.log_render_diagnostic(format!(
             "surface leave\n  geometry: {}\n  {}",
             format_surface_geometry(&self.geometry),
@@ -2649,22 +2721,18 @@ impl ProvidesRegistryState for WaylandApp {
 }
 
 fn create_renderer_env(
-    renderer_backend: RendererBackendKind,
+    rendering_api: RenderingApi,
     conn: &Connection,
     surface: &wl_surface::WlSurface,
     dimensions: (u32, u32),
     renderer_cache_config: RendererCacheConfig,
 ) -> Result<GlEnv, String> {
-    match renderer_backend {
-        RendererBackendKind::Gl => create_gl_env(conn, surface, dimensions, renderer_cache_config),
-        RendererBackendKind::Auto => unreachable!("auto is resolved before Wayland startup"),
-        RendererBackendKind::Raster => {
-            Err("Wayland raster renderer is not implemented yet".to_string())
-        }
-        RendererBackendKind::Metal => Err("Wayland does not support Metal renderer".to_string()),
-        RendererBackendKind::Vulkan => {
-            Err("Wayland Vulkan renderer is not implemented yet".to_string())
-        }
+    match rendering_api {
+        RenderingApi::OpenGl => create_gl_env(conn, surface, dimensions, renderer_cache_config),
+        RenderingApi::Auto => unreachable!("auto is resolved before Wayland startup"),
+        RenderingApi::Raster => Err("Wayland raster renderer is not implemented yet".to_string()),
+        RenderingApi::Metal => Err("Wayland does not support Metal renderer".to_string()),
+        RenderingApi::Vulkan => Err("Wayland Vulkan renderer is not implemented yet".to_string()),
     }
 }
 
@@ -2692,7 +2760,7 @@ pub(crate) fn run(args: WaylandRunArgs) {
         stats,
         renderer_stats_log,
         renderer_animation_log,
-        renderer_backend,
+        rendering_api,
         raster_present,
         renderer_cache_config,
         latest_frame,
@@ -2838,7 +2906,7 @@ pub(crate) fn run(args: WaylandRunArgs) {
             stats,
             renderer_stats_log,
             renderer_animation_log,
-            renderer_backend,
+            rendering_api,
             raster_present,
             renderer_cache_config,
             latest_frame,
@@ -2872,7 +2940,7 @@ pub(crate) fn run(args: WaylandRunArgs) {
 
     let _ = proxy_tx.send(Ok(WindowBackendStartupInfo {
         wake,
-        prime_video_supported: matches!(renderer_backend, RendererBackendKind::Gl),
+        prime_video_supported: matches!(rendering_api, RenderingApi::OpenGl),
     }));
     app.log_render_diagnostic(format!(
         "startup complete\n  geometry: {}\n  env_ready: {}\n  {}",
@@ -2954,12 +3022,44 @@ mod tests {
     use crossbeam_channel::bounded;
 
     use super::{
-        DrawDecision, DrawKind, PresentState, WaylandVideoImportState, WaylandVideoSyncAction,
-        frame_draw_decision, key_text_commit_event, should_reconfigure_surface,
-        try_send_wayland_event, try_send_wayland_tree,
+        DrawDecision, DrawKind, PresentState, RENDER_PROFILE_INTERVAL, WaylandVideoImportState,
+        WaylandVideoSyncAction, frame_draw_decision, key_text_commit_event, refresh_rate_interval,
+        renderer_profile_due, should_reconfigure_surface, try_send_wayland_event,
+        try_send_wayland_tree,
     };
     use crate::actors::{EventMsg, TreeMsg};
     use crate::input::{InputEvent, MOD_SHIFT};
+
+    #[test]
+    fn wayland_output_refresh_rate_uses_millihertz() {
+        let interval = refresh_rate_interval(240_000).expect("240 Hz should be valid");
+        assert!((interval.as_secs_f64() - 1.0 / 240.0).abs() < 0.000_001);
+        assert!(refresh_rate_interval(0).is_none());
+    }
+
+    #[test]
+    fn renderer_slow_frame_profiles_are_sampled_once_per_interval() {
+        let started_at = std::time::Instant::now();
+        let mut next_profile_at = started_at;
+
+        assert!(renderer_profile_due(true, started_at, &mut next_profile_at));
+        assert_eq!(next_profile_at, started_at + RENDER_PROFILE_INTERVAL);
+        assert!(!renderer_profile_due(
+            true,
+            started_at + Duration::from_millis(10),
+            &mut next_profile_at
+        ));
+        assert!(renderer_profile_due(
+            true,
+            started_at + RENDER_PROFILE_INTERVAL,
+            &mut next_profile_at
+        ));
+        assert!(!renderer_profile_due(
+            false,
+            started_at + RENDER_PROFILE_INTERVAL * 2,
+            &mut next_profile_at
+        ));
+    }
 
     #[test]
     fn wayland_video_import_states_map_to_expected_sync_actions() {

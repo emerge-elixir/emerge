@@ -7,6 +7,9 @@ defmodule EmergeSkiaTest do
   alias EmergeSkia.BuildConfig
   alias EmergeSkia.Macos.Renderer
 
+  defp restore_env(name, nil), do: System.delete_env(name)
+  defp restore_env(name, value), do: System.put_env(name, value)
+
   defp rgba_at(pixels, width, x, y) do
     offset = (y * width + x) * 4
     <<_::binary-size(^offset), r, g, b, a, _::binary>> = pixels
@@ -219,18 +222,32 @@ defmodule EmergeSkiaTest do
   end
 
   test "start/1 rejects removed macos_backend option" do
-    assert_raise ArgumentError, ~r/macos_backend has been removed.*backend_renderer/, fn ->
+    assert_raise ArgumentError, ~r/macos_backend has been removed.*rendering_api/, fn ->
       EmergeSkia.start(otp_app: :emerge, backend: :drm, macos_backend: :raster)
     end
   end
 
   test "start/1 rejects backend renderers that are not implemented yet" do
-    assert {:error, {:error, "backend_renderer :vulkan is not implemented yet"}} =
-             EmergeSkia.start(otp_app: :emerge, backend: :drm, backend_renderer: :vulkan)
+    assert {:error, {:error, "rendering_api :vulkan is not implemented yet"}} =
+             EmergeSkia.start(otp_app: :emerge, backend: :drm, rendering_api: :vulkan)
 
-    assert_raise ArgumentError, ~r/:headless.target must be a pid/, fn ->
+    assert_raise ArgumentError, ~r/:headless.target must be a live local pid/, fn ->
       EmergeSkia.start(otp_app: :emerge, backend: :headless)
     end
+  end
+
+  test "headless PRIME rejects raster renderer instead of falling back" do
+    assert {:error, {:error, reason}} =
+             EmergeSkia.start(
+               otp_app: :emerge,
+               backend: :headless,
+               rendering_api: :raster,
+               width: 4,
+               height: 4,
+               headless: [target: self(), mode: :prime]
+             )
+
+    assert reason =~ "raster cannot export dma-buf frames"
   end
 
   test "headless backend delivers binary frames" do
@@ -238,7 +255,7 @@ defmodule EmergeSkiaTest do
       EmergeSkia.start(
         otp_app: :emerge,
         backend: :headless,
-        backend_renderer: :raster,
+        rendering_api: :raster,
         width: 4,
         height: 4,
         headless: [target: self(), pixel_format: :rgb888]
@@ -259,19 +276,20 @@ defmodule EmergeSkiaTest do
     assert :ok = EmergeSkia.stop(renderer)
   end
 
+  @tag :hardware
   test "headless GL backend delivers binary frames when explicitly enabled" do
     if System.get_env("EMERGE_SKIA_HEADLESS_GL_TEST") == "1" do
       {:ok, renderer} =
         EmergeSkia.start(
           otp_app: :emerge,
           backend: :headless,
-          backend_renderer: :gl,
+          rendering_api: :opengl,
           width: 4,
           height: 4,
           headless: [target: self(), pixel_format: :rgba8888]
         )
 
-      assert {:ok, %{backend_renderer: %{selected: :gl}, capabilities: %{gpu: true}}} =
+      assert {:ok, %{rendering_api: %{selected: :opengl}, capabilities: %{gpu: true}}} =
                EmergeSkia.renderer_info(renderer)
 
       tree = el([width(px(4)), height(px(4)), Emerge.UI.Background.color(:red)], none())
@@ -291,20 +309,143 @@ defmodule EmergeSkiaTest do
     end
   end
 
+  @tag :hardware
+  @tag :headless_prime_hardware
+  test "headless PRIME supported explicit-sync path delivers a canonical sync-file" do
+    previous_force = System.get_env("EMERGE_SKIA_HEADLESS_PRIME_FORCE_IMPLICIT_SYNC")
+    System.delete_env("EMERGE_SKIA_HEADLESS_PRIME_FORCE_IMPLICIT_SYNC")
+
+    on_exit(fn ->
+      restore_env("EMERGE_SKIA_HEADLESS_PRIME_FORCE_IMPLICIT_SYNC", previous_force)
+    end)
+
+    {:ok, renderer} =
+      EmergeSkia.start(
+        otp_app: :emerge,
+        backend: :headless,
+        rendering_api: :auto,
+        width: 4,
+        height: 4,
+        headless: [target: self(), mode: :prime, prime: [max_in_flight: 1]]
+      )
+
+    assert {:ok,
+            %{
+              rendering_api: %{selected: :opengl},
+              capabilities: %{gpu: true, screenshot: false}
+            }} = EmergeSkia.renderer_info(renderer)
+
+    assert {:error, "screenshot capture is not supported for headless PRIME output"} =
+             EmergeSkia.render_to_png(renderer)
+
+    tree = el([width(px(4)), height(px(4)), Emerge.UI.Background.color(:red)], none())
+    {_state, _assigned} = EmergeSkia.upload_tree(renderer, tree)
+
+    assert_receive {:emerge_skia_frame, frame}, 1_000
+    frame = Map.new(frame)
+    assert frame["mode"] == "prime"
+    assert frame["width"] == 4
+    assert frame["height"] == 4
+
+    dma_buf = frame["dmabuf"]
+
+    assert %VideoInterop.Frame{
+             coded_width: 4,
+             coded_height: 4,
+             visible_rect: %VideoInterop.Rect{x: 0, y: 0, width: 4, height: 4},
+             storage: %VideoInterop.DMABuf.Descriptor{
+               version: 1,
+               objects: [object],
+               layers: [%VideoInterop.DMABuf.Layer{fourcc: fourcc, planes: [plane]}]
+             },
+             acquire_sync: %VideoInterop.SyncFile{acquire_fence_fd: acquire_fence_fd},
+             lease: %VideoInterop.Lease{} = lease
+           } = dma_buf
+
+    assert is_integer(acquire_fence_fd) and acquire_fence_fd >= 0
+    assert {:ok, _stat} = File.stat("/proc/self/fd/#{acquire_fence_fd}")
+    assert is_integer(object.fd) and object.fd >= 0
+    assert object.size > 0
+    assert object.modifier == :implicit or is_integer(object.modifier)
+    assert is_integer(fourcc) and fourcc > 0
+    assert plane.object_index == 0
+    assert plane.pitch > 0
+    assert plane.offset >= 0
+    assert :ok = VideoInterop.validate(dma_buf)
+    assert lease.owner != self()
+    assert {:ok, child_lease} = VideoInterop.Lease.retain(lease)
+    assert child_lease.token == lease.token
+    assert child_lease.holder != lease.holder
+
+    assert :ok = VideoInterop.release(dma_buf)
+    blocked_tree = el([width(px(4)), height(px(4)), Emerge.UI.Background.color(:blue)], none())
+    {_state, _assigned} = EmergeSkia.upload_tree(renderer, blocked_tree)
+    refute_receive {:emerge_skia_frame, _frame}, 100
+
+    assert :ok = VideoInterop.release(child_lease)
+    assert %{active_leases: 0} = VideoInterop.LeaseOwner.stats(lease.owner)
+    next_tree = el([width(px(4)), height(px(4)), Emerge.UI.Background.color(:green)], none())
+    {_state, _assigned} = EmergeSkia.upload_tree(renderer, next_tree)
+    assert_receive {:emerge_skia_frame, next_frame}, 1_000
+    next_dma_buf = next_frame |> Map.new() |> Map.fetch!("dmabuf")
+    [%VideoInterop.DMABuf.Object{fd: next_fd}] = next_dma_buf.storage.objects
+    session_monitor = Process.monitor(renderer.pid)
+    test_pid = self()
+    spawn(fn -> send(test_pid, {:stop_result, EmergeSkia.stop(renderer)}) end)
+    refute_receive {:stop_result, _result}, 100
+    assert {:ok, _stat} = File.stat("/proc/self/fd/#{next_fd}")
+
+    assert :ok = VideoInterop.release(next_dma_buf)
+    assert_receive {:stop_result, :ok}, 1_000
+    refute EmergeSkia.running?(renderer)
+    assert_receive {:DOWN, ^session_monitor, :process, _pid, :normal}, 1_000
+  end
+
+  @tag :hardware
+  @tag :headless_prime_hardware
+  test "headless PRIME forced implicit-sync path is explicit and non-vacuous" do
+    previous_force = System.get_env("EMERGE_SKIA_HEADLESS_PRIME_FORCE_IMPLICIT_SYNC")
+    System.put_env("EMERGE_SKIA_HEADLESS_PRIME_FORCE_IMPLICIT_SYNC", "1")
+
+    on_exit(fn ->
+      restore_env("EMERGE_SKIA_HEADLESS_PRIME_FORCE_IMPLICIT_SYNC", previous_force)
+    end)
+
+    {:ok, renderer} =
+      EmergeSkia.start(
+        otp_app: :emerge,
+        backend: :headless,
+        rendering_api: :opengl,
+        width: 4,
+        height: 4,
+        headless: [target: self(), mode: :prime, prime: [max_in_flight: 1]]
+      )
+
+    tree = el([width(px(4)), height(px(4)), Emerge.UI.Background.color(:red)], none())
+    {_state, _assigned} = EmergeSkia.upload_tree(renderer, tree)
+
+    assert_receive {:emerge_skia_frame, frame}, 1_000
+    dma_buf = frame |> Map.new() |> Map.fetch!("dmabuf")
+    assert %VideoInterop.Frame{acquire_sync: :implicit} = dma_buf
+    assert :ok = VideoInterop.validate(dma_buf)
+    assert :ok = VideoInterop.release(dma_buf)
+    assert :ok = EmergeSkia.stop(renderer)
+  end
+
   test "renderer_info reports macOS renderer selection without stats" do
     renderer = %Renderer{
       session_id: 1,
       host_id: 1,
       host_pid: 1,
-      requested_backend_renderer: :auto,
-      backend_renderer: :metal,
+      requested_rendering_api: :auto,
+      rendering_api: :metal,
       renderer_cache_enabled: true
     }
 
     assert {:ok,
             %{
               backend: :macos,
-              backend_renderer: %{requested: :auto, selected: :metal},
+              rendering_api: %{requested: :auto, selected: :metal},
               capabilities: %{
                 gpu: true,
                 renderer_cache: true,
@@ -319,9 +460,10 @@ defmodule EmergeSkiaTest do
     {backend, message} =
       if :drm in BuildConfig.compiled_backends() do
         {:wayland,
-         "Wayland backend not compiled; add :wayland to config :emerge, compiled_backends: [...]"}
+         "Wayland backend is not compiled; add :wayland to config :emerge, compiled_backends: [...]"}
       else
-        {:drm, "DRM backend not compiled; add :drm to config :emerge, compiled_backends: [...]"}
+        {:drm,
+         "DRM backend is not compiled; add :drm to config :emerge, compiled_backends: [...]"}
       end
 
     assert {:error, {:error, ^message}} = EmergeSkia.start(otp_app: :emerge, backend: backend)
@@ -398,6 +540,39 @@ defmodule EmergeSkiaTest do
 
     assert File.regular?(path)
     assert :ok = EmergeSkia.load_font_file("lobster-test", 400, false, path)
+  end
+
+  test "video targets implement canonical consumer format validation before native open" do
+    target = %EmergeSkia.VideoTarget{
+      id: "preview",
+      width: 64,
+      height: 32,
+      mode: :prime,
+      ref: make_ref()
+    }
+
+    wrong_size = %VideoInterop.Format{
+      width: 16,
+      height: 16,
+      framerate: nil,
+      storage: %VideoInterop.DMABuf.Format{
+        fourcc: VideoInterop.DMABuf.FourCC.nv12(),
+        modifier: :per_buffer
+      }
+    }
+
+    assert VideoInterop.Consumer.impl_for(target)
+
+    assert {:error, {:wrong_size, {16, 16}, {64, 32}}} =
+             VideoInterop.open_consumer(target, wrong_size)
+
+    assert {:error, {:unsupported_interlace_mode, :interlaced_top_first}} =
+             VideoInterop.open_consumer(target, %{
+               wrong_size
+               | width: 64,
+                 height: 32,
+                 interlace_mode: :interlaced_top_first
+             })
   end
 
   test "video_target/2 accepts :prime mode at the Elixir API layer" do

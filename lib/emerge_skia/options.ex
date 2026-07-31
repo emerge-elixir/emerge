@@ -18,7 +18,7 @@ defmodule EmergeSkia.Options do
 
     if Keyword.has_key?(opts, :macos_backend) do
       raise ArgumentError,
-            "macos_backend has been removed; use backend_renderer: :auto | :metal | :raster instead"
+            "macos_backend has been removed; use rendering_api: :auto | :metal | :raster instead"
     end
 
     backend =
@@ -26,21 +26,18 @@ defmodule EmergeSkia.Options do
       |> Keyword.get(:backend, EmergeSkia.BuildConfig.default_runtime_backend())
       |> normalize_backend!()
 
-    backend_renderer =
+    rendering_api =
       opts
-      |> Keyword.get(:backend_renderer, :auto)
-      |> normalize_backend_renderer!()
+      |> option_with_deprecated_alias!(:rendering_api, :backend_renderer, :auto)
+      |> normalize_rendering_api!()
 
-    validate_backend_renderer_for_backend!(backend, backend_renderer)
+    validate_rendering_api_for_backend!(backend, rendering_api)
 
     renderer_cache =
       opts
       |> Keyword.get(:renderer_cache, [])
       |> normalize_renderer_cache_opts!()
-      |> maybe_disable_renderer_cache_for_raster_default!(
-        backend_renderer,
-        Keyword.has_key?(opts, :renderer_cache)
-      )
+      |> maybe_disable_renderer_cache_for_raster_default!(rendering_api)
 
     headless =
       opts
@@ -49,7 +46,7 @@ defmodule EmergeSkia.Options do
 
     %{
       backend: backend,
-      backend_renderer: backend_renderer,
+      rendering_api: rendering_api,
       title: Keyword.get(opts, :title, "Emerge"),
       width: Keyword.get(opts, :width, 800),
       height: Keyword.get(opts, :height, 600),
@@ -83,10 +80,10 @@ defmodule EmergeSkia.Options do
   end
 
   @doc false
-  def backend_renderer_start_error(%{backend: backend, backend_renderer: backend_renderer}) do
-    case {String.downcase(backend), backend_renderer.kind} do
+  def rendering_api_start_error(%{backend: backend, rendering_api: rendering_api}) do
+    case {String.downcase(backend), rendering_api.kind} do
       {backend, "vulkan"} when backend in ["wayland", "drm", "headless"] ->
-        "backend_renderer :vulkan is not implemented yet"
+        "rendering_api :vulkan is not implemented yet"
 
       _other ->
         nil
@@ -259,6 +256,7 @@ defmodule EmergeSkia.Options do
         opts
         |> Keyword.get(:enabled, true)
         |> normalize_boolean!(":renderer_cache.enabled"),
+      enabled_configured: Keyword.has_key?(opts, :enabled),
       max_new_payloads_per_frame:
         opts
         |> Keyword.get(:max_new_payloads_per_frame, 16)
@@ -302,35 +300,40 @@ defmodule EmergeSkia.Options do
   end
 
   defp maybe_disable_renderer_cache_for_raster_default!(
-         renderer_cache,
-         %{kind: "raster"},
-         false
+         %{enabled_configured: false} = renderer_cache,
+         %{kind: "raster"}
        ) do
     %{renderer_cache | enabled: false}
   end
 
-  defp maybe_disable_renderer_cache_for_raster_default!(
-         renderer_cache,
-         _backend_renderer,
-         _configured?
-       ),
-       do: renderer_cache
+  defp maybe_disable_renderer_cache_for_raster_default!(renderer_cache, _rendering_api),
+    do: renderer_cache
 
   defp normalize_headless_opts!(value, backend) do
     opts = normalize_keyword_or_map!(value, ":headless")
 
     target = Keyword.get(opts, :target)
 
-    if backend == "headless" and not is_pid(target) do
-      raise ArgumentError, ":headless.target must be a pid when backend: :headless"
+    mode =
+      opts
+      |> Keyword.get(:mode, :binary)
+      |> normalize_headless_mode!()
+
+    if backend == "headless" and mode == "binary" and
+         (not is_pid(target) or node(target) != node() or not Process.alive?(target)) do
+      raise ArgumentError,
+            ":headless.target must be a live local pid for binary headless output"
+    end
+
+    if backend == "headless" and mode == "prime" and not is_nil(target) and
+         (not is_pid(target) or node(target) != node() or not Process.alive?(target)) do
+      raise ArgumentError,
+            ":headless.target must be nil or a live local pid for PRIME headless output"
     end
 
     %{
       target: target,
-      mode:
-        opts
-        |> Keyword.get(:mode, :binary)
-        |> normalize_headless_mode!(),
+      mode: mode,
       pixel_format:
         opts
         |> Keyword.get(:pixel_format, :rgba8888)
@@ -346,17 +349,19 @@ defmodule EmergeSkia.Options do
       frame_message:
         opts
         |> Keyword.get(:frame_message, :emerge_skia_frame)
-        |> normalize_frame_message!()
+        |> normalize_frame_message!(),
+      prime:
+        opts
+        |> Keyword.get(:prime, [])
+        |> normalize_headless_prime_opts!()
     }
   end
 
   defp normalize_headless_mode!(value) when value in [:binary, "binary"], do: "binary"
-
-  defp normalize_headless_mode!(:prime),
-    do: raise(ArgumentError, ":headless.mode :prime is not implemented yet")
+  defp normalize_headless_mode!(value) when value in [:prime, "prime"], do: "prime"
 
   defp normalize_headless_mode!(value),
-    do: raise(ArgumentError, ":headless.mode must be :binary, got: #{inspect(value)}")
+    do: raise(ArgumentError, ":headless.mode must be :binary or :prime, got: #{inspect(value)}")
 
   defp normalize_headless_pixel_format!(value)
        when value in [:rgba8888, "rgba8888"],
@@ -384,6 +389,32 @@ defmodule EmergeSkia.Options do
       raise(
         ArgumentError,
         ":headless.bw1_polarity must be :one_is_black or :one_is_white, got: #{inspect(value)}"
+      )
+
+  defp normalize_headless_prime_opts!(value) do
+    opts = normalize_keyword_or_map!(value, ":headless.prime")
+    ensure_only_keys!(opts, [:max_in_flight, :on_backpressure], ":headless.prime")
+
+    %{
+      max_in_flight:
+        opts
+        |> Keyword.get(:max_in_flight, 2)
+        |> normalize_positive_integer!(":headless.prime.max_in_flight"),
+      on_backpressure:
+        opts
+        |> Keyword.get(:on_backpressure, :drop_new)
+        |> normalize_headless_prime_backpressure!()
+    }
+  end
+
+  defp normalize_headless_prime_backpressure!(value) when value in [:drop_new, "drop_new"],
+    do: "drop_new"
+
+  defp normalize_headless_prime_backpressure!(value),
+    do:
+      raise(
+        ArgumentError,
+        ":headless.prime.on_backpressure must be :drop_new, got: #{inspect(value)}"
       )
 
   defp normalize_optional_positive_integer!(nil, _field_name), do: nil
@@ -450,67 +481,72 @@ defmodule EmergeSkia.Options do
     end
   end
 
-  defp normalize_backend_renderer!(value) when value in [:auto, "auto"] do
-    backend_renderer_config("auto", "auto", false)
+  defp normalize_rendering_api!(value) when value in [:auto, "auto"] do
+    rendering_api_config("auto", "auto", false)
   end
 
-  defp normalize_backend_renderer!(value) when value in [:gl, "gl"] do
-    backend_renderer_config("gl", "auto", false)
+  defp normalize_rendering_api!(value) when value in [:opengl, "opengl"] do
+    rendering_api_config("opengl", "auto", false)
   end
 
-  defp normalize_backend_renderer!(value) when value in [:raster, "raster"] do
-    backend_renderer_config("raster", "auto", false)
+  defp normalize_rendering_api!(value) when value in [:gl, "gl"] do
+    IO.warn("rendering API :gl is deprecated; use :opengl")
+    rendering_api_config("opengl", "auto", false)
   end
 
-  defp normalize_backend_renderer!(value) when value in [:metal, "metal"] do
-    backend_renderer_config("metal", "auto", false)
+  defp normalize_rendering_api!(value) when value in [:raster, "raster"] do
+    rendering_api_config("raster", "auto", false)
   end
 
-  defp normalize_backend_renderer!(value) when value in [:vulkan, "vulkan"] do
-    backend_renderer_config("vulkan", "auto", false)
+  defp normalize_rendering_api!(value) when value in [:metal, "metal"] do
+    rendering_api_config("metal", "auto", false)
   end
 
-  defp normalize_backend_renderer!(value) when is_list(value) or is_map(value) do
-    opts = normalize_keyword_or_map!(value, ":backend_renderer")
+  defp normalize_rendering_api!(value) when value in [:vulkan, "vulkan"] do
+    rendering_api_config("vulkan", "auto", false)
+  end
+
+  defp normalize_rendering_api!(value) when is_list(value) or is_map(value) do
+    opts = normalize_keyword_or_map!(value, ":rendering_api")
 
     case opts do
       [raster: raster_opts] ->
-        raster_opts = normalize_keyword_or_map!(raster_opts, ":backend_renderer.raster")
-        ensure_only_keys!(raster_opts, [:present], ":backend_renderer.raster")
+        raster_opts = normalize_keyword_or_map!(raster_opts, ":rendering_api.raster")
+        ensure_only_keys!(raster_opts, [:present], ":rendering_api.raster")
 
         present =
           raster_opts
           |> Keyword.get(:present, :auto)
           |> normalize_raster_present!()
 
-        backend_renderer_config("raster", present, Keyword.has_key?(raster_opts, :present))
+        rendering_api_config("raster", present, Keyword.has_key?(raster_opts, :present))
 
       [auto: auto_opts] ->
-        auto_opts = normalize_keyword_or_map!(auto_opts, ":backend_renderer.auto")
-        ensure_only_keys!(auto_opts, [:raster], ":backend_renderer.auto")
+        auto_opts = normalize_keyword_or_map!(auto_opts, ":rendering_api.auto")
+        ensure_only_keys!(auto_opts, [:raster], ":rendering_api.auto")
         raster_opts = Keyword.get(auto_opts, :raster, [])
-        raster_opts = normalize_keyword_or_map!(raster_opts, ":backend_renderer.auto.raster")
-        ensure_only_keys!(raster_opts, [:present], ":backend_renderer.auto.raster")
+        raster_opts = normalize_keyword_or_map!(raster_opts, ":rendering_api.auto.raster")
+        ensure_only_keys!(raster_opts, [:present], ":rendering_api.auto.raster")
 
         present =
           raster_opts
           |> Keyword.get(:present, :auto)
           |> normalize_raster_present!()
 
-        backend_renderer_config("auto", present, Keyword.has_key?(raster_opts, :present))
+        rendering_api_config("auto", present, Keyword.has_key?(raster_opts, :present))
 
       _other ->
         raise ArgumentError,
-              ":backend_renderer must be :auto, :gl, :raster, :metal, :vulkan, [raster: [present: ...]], or [auto: [raster: [present: ...]]]"
+              ":rendering_api must be :auto, :opengl, :raster, :metal, :vulkan, [raster: [present: ...]], or [auto: [raster: [present: ...]]]"
     end
   end
 
-  defp normalize_backend_renderer!(value) do
+  defp normalize_rendering_api!(value) do
     raise ArgumentError,
-          ":backend_renderer must be :auto, :gl, :raster, :metal, :vulkan, [raster: [present: ...]], or [auto: [raster: [present: ...]]], got: #{inspect(value)}"
+          ":rendering_api must be :auto, :opengl, :raster, :metal, :vulkan, [raster: [present: ...]], or [auto: [raster: [present: ...]]], got: #{inspect(value)}"
   end
 
-  defp backend_renderer_config(kind, raster_present, raster_present_configured?) do
+  defp rendering_api_config(kind, raster_present, raster_present_configured?) do
     %{
       kind: kind,
       raster_present: raster_present,
@@ -538,48 +574,80 @@ defmodule EmergeSkia.Options do
 
   defp normalize_raster_present!(value) do
     raise ArgumentError,
-          ":backend_renderer raster present must be :auto, :gpu_upload, or :cpu, got: #{inspect(value)}"
+          ":rendering_api raster present must be :auto, :gpu_upload, or :cpu, got: #{inspect(value)}"
   end
 
-  defp validate_backend_renderer_for_backend!(backend, backend_renderer) do
+  defp validate_rendering_api_for_backend!(backend, rendering_api) do
     case String.downcase(backend) do
       "macos" ->
-        validate_macos_backend_renderer!(backend_renderer)
+        validate_macos_rendering_api!(rendering_api)
 
       backend when backend in ["wayland", "drm"] ->
-        validate_linux_backend_renderer!(backend, backend_renderer)
+        validate_linux_rendering_api!(backend, rendering_api)
+
+      "headless" ->
+        validate_headless_rendering_api!(rendering_api)
 
       _other ->
         :ok
     end
   end
 
-  defp validate_macos_backend_renderer!(%{kind: "gl"}) do
-    raise ArgumentError, "backend_renderer: :gl is not supported with backend: :macos"
+  defp validate_macos_rendering_api!(%{kind: "opengl"}) do
+    raise ArgumentError, "rendering_api: :opengl is not supported with backend: :macos"
   end
 
-  defp validate_macos_backend_renderer!(%{kind: "vulkan"}) do
-    raise ArgumentError, "backend_renderer: :vulkan is not supported with backend: :macos"
+  defp validate_macos_rendering_api!(%{kind: "vulkan"}) do
+    raise ArgumentError, "rendering_api: :vulkan is not supported with backend: :macos"
   end
 
-  defp validate_macos_backend_renderer!(%{raster_present_configured: true}) do
+  defp validate_macos_rendering_api!(%{raster_present_configured: true}) do
     raise ArgumentError,
-          "backend_renderer raster present options are only supported with backend: :wayland or :drm"
+          "rendering_api raster present options are only supported with backend: :wayland or :drm"
   end
 
-  defp validate_macos_backend_renderer!(_backend_renderer), do: :ok
+  defp validate_macos_rendering_api!(_rendering_api), do: :ok
 
-  defp validate_linux_backend_renderer!(_backend, %{kind: "metal"}) do
-    raise ArgumentError, "backend_renderer: :metal is only supported with backend: :macos"
+  defp validate_linux_rendering_api!(_backend, %{kind: "metal"}) do
+    raise ArgumentError, "rendering_api: :metal is only supported with backend: :macos"
   end
 
-  defp validate_linux_backend_renderer!(_backend, _backend_renderer), do: :ok
+  defp validate_linux_rendering_api!(_backend, _rendering_api), do: :ok
+
+  defp validate_headless_rendering_api!(%{kind: "metal"}) do
+    raise ArgumentError, "rendering_api: :metal is only supported with backend: :macos"
+  end
+
+  defp validate_headless_rendering_api!(%{raster_present_configured: true}) do
+    raise ArgumentError,
+          "rendering_api raster present options are only supported with backend: :wayland or :drm"
+  end
+
+  defp validate_headless_rendering_api!(_rendering_api), do: :ok
 
   defp normalize_keyword_list!(opts, error_message) when is_list(opts) do
     if Keyword.keyword?(opts) do
       Keyword.new(opts)
     else
       raise ArgumentError, error_message
+    end
+  end
+
+  defp option_with_deprecated_alias!(opts, canonical, deprecated, default) do
+    case {Keyword.fetch(opts, canonical), Keyword.fetch(opts, deprecated)} do
+      {{:ok, _canonical_value}, {:ok, _deprecated_value}} ->
+        raise ArgumentError,
+              "#{inspect(canonical)} and deprecated #{inspect(deprecated)} cannot be used together"
+
+      {{:ok, value}, :error} ->
+        value
+
+      {:error, {:ok, value}} ->
+        IO.warn("#{deprecated} is deprecated; use #{canonical} instead")
+        value
+
+      {:error, :error} ->
+        default
     end
   end
 

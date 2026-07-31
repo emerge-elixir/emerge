@@ -2,6 +2,7 @@ defmodule EmergeSkia.Transport do
   @moduledoc false
 
   alias EmergeSkia.BuildConfig
+  alias EmergeSkia.HeadlessPrimeSession
   alias EmergeSkia.Macos.Renderer
 
   @type renderer_handle :: term()
@@ -9,7 +10,7 @@ defmodule EmergeSkia.Transport do
   @type offscreen_opts :: map()
 
   @callback start_session(map(), asset_config()) :: {:ok, renderer_handle()} | {:error, term()}
-  @callback stop_session(renderer_handle()) :: :ok
+  @callback stop_session(renderer_handle()) :: :ok | {:error, term()}
   @callback session_running?(renderer_handle()) :: boolean()
   @callback set_input_target(renderer_handle(), pid() | nil) :: :ok
   @callback set_log_target(renderer_handle(), pid() | nil) :: :ok
@@ -32,11 +33,14 @@ defmodule EmergeSkia.Transport do
               binary() | {:ok, binary()} | {:error, String.t()}
 
   @spec for_backend(atom() | String.t()) :: module()
-  def for_backend(backend) when backend in [:macos, "macos"], do: EmergeSkia.Transport.MacosHost
+  def for_backend(backend) when backend in [:macos, "macos"],
+    do: EmergeSkia.Transport.MacosHost
+
   def for_backend(_backend), do: EmergeSkia.Transport.Native
 
   @spec for_renderer(renderer_handle()) :: module()
   def for_renderer(%Renderer{}), do: EmergeSkia.Transport.MacosHost
+  def for_renderer(%HeadlessPrimeSession{}), do: EmergeSkia.Transport.Native
   def for_renderer(_renderer), do: EmergeSkia.Transport.Native
 
   @spec default() :: module()

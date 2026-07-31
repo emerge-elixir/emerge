@@ -4,54 +4,50 @@ defmodule EmergeSkia.Transport.Native do
   @behaviour EmergeSkia.Transport
 
   alias EmergeSkia.Assets
+  alias EmergeSkia.HeadlessPrimeSession
   alias EmergeSkia.Native
 
   @impl true
   def start_session(native_opts, asset_config) do
-    case Native.start_opts(native_opts) do
-      ref when is_reference(ref) ->
-        case Assets.initialize_renderer_assets(ref, asset_config) do
-          :ok ->
-            {:ok, ref}
+    native_opts
+    |> start_native_session()
+    |> initialize_assets(asset_config)
+  end
 
-          {:error, reason} ->
-            _ = Native.stop(ref)
-            {:error, reason}
-        end
+  @impl true
+  def stop_session(%HeadlessPrimeSession{} = renderer), do: HeadlessPrimeSession.stop(renderer)
 
-      error ->
-        {:error, error}
+  def stop_session(renderer) do
+    case Native.stop(renderer) do
+      {:ok, :ok} -> :ok
+      {:error, _reason} = error -> error
     end
   end
 
   @impl true
-  def stop_session(renderer) do
-    Native.stop(renderer)
-  end
+  def session_running?(%HeadlessPrimeSession{} = renderer),
+    do: HeadlessPrimeSession.running?(renderer)
 
-  @impl true
-  def session_running?(renderer) do
-    Native.is_running(renderer)
-  end
+  def session_running?(renderer), do: Native.is_running(renderer)
 
   @impl true
   def set_input_target(renderer, pid) do
-    Native.set_input_target(renderer, pid)
+    Native.set_input_target(native_renderer(renderer), pid)
   end
 
   @impl true
   def set_log_target(renderer, pid) do
-    Native.set_log_target(renderer, pid)
+    Native.set_log_target(native_renderer(renderer), pid)
   end
 
   @impl true
   def stats(renderer, command) do
-    Native.stats(renderer, command)
+    Native.stats(native_renderer(renderer), command)
   end
 
   @impl true
   def renderer_info(renderer) do
-    case Native.renderer_info(renderer) do
+    case Native.renderer_info(native_renderer(renderer)) do
       {:ok, info} -> {:ok, normalize_renderer_info(info)}
       {:error, reason} -> {:error, reason}
     end
@@ -59,27 +55,27 @@ defmodule EmergeSkia.Transport.Native do
 
   @impl true
   def capture_pixels(renderer, opts) do
-    Native.renderer_capture_pixels(renderer, opts)
+    Native.renderer_capture_pixels(native_renderer(renderer), opts)
   end
 
   @impl true
   def capture_png(renderer, opts) do
-    Native.renderer_capture_png(renderer, opts)
+    Native.renderer_capture_png(native_renderer(renderer), opts)
   end
 
   @impl true
   def set_input_mask(renderer, mask) do
-    Native.set_input_mask(renderer, mask)
+    Native.set_input_mask(native_renderer(renderer), mask)
   end
 
   @impl true
   def upload_tree(renderer, full_bin) do
-    Native.renderer_upload(renderer, full_bin)
+    Native.renderer_upload(native_renderer(renderer), full_bin)
   end
 
   @impl true
   def patch_tree(renderer, patch_bin) do
-    Native.renderer_patch(renderer, patch_bin)
+    Native.renderer_patch(native_renderer(renderer), patch_bin)
   end
 
   @impl true
@@ -95,7 +91,7 @@ defmodule EmergeSkia.Transport.Native do
   @impl true
   def configure_assets(renderer, asset_config) do
     Native.configure_assets_nif(
-      renderer,
+      native_renderer(renderer),
       [asset_config.priv_dir],
       asset_config.runtime_enabled,
       asset_config.runtime_allowlist,
@@ -115,12 +111,39 @@ defmodule EmergeSkia.Transport.Native do
     Native.render_tree_to_png_nif(full_bin, offscreen_opts(raster_opts, asset_config))
   end
 
+  defp start_native_session(%{backend: "headless", headless: %{mode: "prime"}} = native_opts),
+    do: HeadlessPrimeSession.start(native_opts)
+
+  defp start_native_session(native_opts) do
+    case Native.start_opts(native_opts) do
+      ref when is_reference(ref) -> {:ok, ref}
+      error -> {:error, error}
+    end
+  end
+
+  defp initialize_assets({:ok, renderer}, asset_config) do
+    case Assets.initialize_renderer_assets(renderer, asset_config) do
+      :ok ->
+        {:ok, renderer}
+
+      {:error, reason} ->
+        _ = stop_session(renderer)
+        {:error, reason}
+    end
+  end
+
+  defp initialize_assets({:error, reason}, _asset_config), do: {:error, reason}
+
+  @doc false
+  def native_renderer(%HeadlessPrimeSession{renderer: renderer}), do: renderer
+  def native_renderer(renderer), do: renderer
+
   defp normalize_renderer_info(info) do
     %{
       backend: info.backend |> string_to_renderer_atom(),
-      backend_renderer: %{
-        requested: info.backend_renderer.requested |> string_to_renderer_atom(),
-        selected: info.backend_renderer.selected |> string_to_renderer_atom()
+      rendering_api: %{
+        requested: info.rendering_api.requested |> string_to_renderer_atom(),
+        selected: info.rendering_api.selected |> string_to_renderer_atom()
       },
       capabilities: %{
         gpu: info.capabilities.gpu,
@@ -135,7 +158,7 @@ defmodule EmergeSkia.Transport.Native do
   defp string_to_renderer_atom(value) when is_binary(value) do
     case value do
       "auto" -> :auto
-      "gl" -> :gl
+      "opengl" -> :opengl
       "raster" -> :raster
       "metal" -> :metal
       "vulkan" -> :vulkan

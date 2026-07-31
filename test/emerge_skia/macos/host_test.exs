@@ -67,7 +67,7 @@ defmodule EmergeSkia.Macos.HostTest do
 
     assert Protocol.encode_init_payload() ==
              <<byte_size("emerge_skia_macos")::unsigned-big-16, "emerge_skia_macos",
-               8::unsigned-big-16>>
+               9::unsigned-big-16>>
   end
 
   test "protocol decodes raw input payloads" do

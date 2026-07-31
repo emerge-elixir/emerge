@@ -7,13 +7,13 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
-use rustler::{Encoder, LocalPid, NifResult, OwnedBinary, OwnedEnv, ResourceArc};
+use crossbeam_channel::{Receiver, Sender, at, bounded, never, select, unbounded};
+use rustler::{Encoder, Env, LocalPid, NifResult, OwnedBinary, OwnedEnv, ResourceArc, Term};
+use video_interop::{AcquireSync, Descriptor, Layer, Modifier, Object, Plane};
 
 use crate::{
-    BackendKind, HeadlessConfig, InputTargetRelay, LatestFrameStore, RenderSender,
-    RendererBackendKind, RendererHandles, RendererResource, RendererRuntimeInfo, StartConfig,
-    VideoWake,
+    BackendKind, HeadlessConfig, InputTargetRelay, LatestFrameStore, RenderSender, RendererHandles,
+    RendererResource, RendererRuntimeInfo, RenderingApi, StartConfig, VideoWake,
     actors::{RenderMsg, TreeMsg},
     assets,
     backend::{
@@ -25,22 +25,83 @@ use crate::{
     renderer::{RenderState, RenderTimings, RendererCacheConfig},
     renderer_cache_status,
     runtime::tree_actor::TreeActorConfig,
-    send_tree,
+    send_tree, spawn_running_heartbeat,
     stats::RendererStatsCollector,
     video::{self, VideoRegistry},
 };
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "headless-opengl"))]
 mod offscreen_gl;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HeadlessMode {
+    Binary,
+    Prime,
+}
+
+impl HeadlessMode {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "binary" => Ok(Self::Binary),
+            "prime" => Ok(Self::Prime),
+            other => Err(format!("unsupported headless mode: {other}")),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum HeadlessReleaseMsg {
+    PrimeFrame(u64),
+}
+
+pub struct HeadlessPrimeBackendToken {
+    release_tx: Sender<HeadlessReleaseMsg>,
+    release_id: u64,
+    released: AtomicBool,
+}
+
+impl HeadlessPrimeBackendToken {
+    fn new(release_tx: Sender<HeadlessReleaseMsg>, release_id: u64) -> Self {
+        Self {
+            release_tx,
+            release_id,
+            released: AtomicBool::new(false),
+        }
+    }
+
+    pub(crate) fn release(&self) {
+        if !self.released.swap(true, Ordering::AcqRel) {
+            let _ = self
+                .release_tx
+                .send(HeadlessReleaseMsg::PrimeFrame(self.release_id));
+        }
+    }
+}
+
+impl Drop for HeadlessPrimeBackendToken {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+#[rustler::resource_impl]
+impl rustler::Resource for HeadlessPrimeBackendToken {}
+
+pub(crate) fn release_backend_token(backend_token: ResourceArc<HeadlessPrimeBackendToken>) {
+    backend_token.release();
+}
 
 pub(crate) fn start_renderer_with_config(
     config: StartConfig,
     initial_log_target: Option<LocalPid>,
 ) -> NifResult<ResourceArc<RendererResource>> {
-    if config.headless.mode != "binary" {
-        return Err(rustler::Error::Term(Box::new(
-            "headless mode :prime is not implemented yet".to_string(),
-        )));
+    let mode = HeadlessMode::parse(&config.headless.mode)
+        .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
+    if config.headless.prime.on_backpressure != "drop_new" {
+        return Err(rustler::Error::Term(Box::new(format!(
+            "unsupported headless PRIME backpressure policy: {}",
+            config.headless.prime.on_backpressure
+        ))));
     }
     let Some(target) = config.headless.target else {
         return Err(rustler::Error::Term(Box::new(
@@ -60,6 +121,7 @@ pub(crate) fn start_renderer_with_config(
     let (tree_tx, tree_rx) = bounded(512);
     let (event_tx, event_rx) = bounded(4096);
     let (render_tx, render_rx) = bounded(1);
+    let (release_tx, release_rx) = unbounded();
     let render_sender = RenderSender {
         tx: render_tx,
         drop_rx: render_rx.clone(),
@@ -67,7 +129,15 @@ pub(crate) fn start_renderer_with_config(
     };
 
     let backend_wake = BackendWakeHandle::noop();
-    let video_registry = Arc::new(VideoRegistry::new(video::spawn_release_worker()));
+    let video_release_tx = video::spawn_release_worker()
+        .map_err(|err| rustler::Error::Term(Box::new(err.to_string())))?;
+    let cleanup_dispatcher =
+        crate::CleanupDispatcher::start().map_err(|err| rustler::Error::Term(Box::new(err)))?;
+    let video_registry = Arc::new(VideoRegistry::new(
+        video_release_tx,
+        cleanup_dispatcher.clone(),
+        renderer_stats.clone(),
+    ));
     let headless = config.headless.clone();
     let latest_frame_for_thread = Arc::clone(&latest_frame);
     let stats_for_thread = renderer_stats.clone();
@@ -76,12 +146,14 @@ pub(crate) fn start_renderer_with_config(
     let width = config.width;
     let height = config.height;
     let renderer_cache_config = config.renderer_cache_config;
-    let renderer_backend = config.backend_renderer.kind;
+    let renderer_cache_enabled_configured = config.renderer_cache_enabled_configured;
+    let rendering_api = config.rendering_api.kind;
     let (startup_tx, startup_rx) = bounded(1);
 
     let render_handle = thread::spawn(move || {
         run_render_loop(
             render_rx,
+            release_rx,
             tree_tx_for_thread,
             running_for_thread,
             latest_frame_for_thread,
@@ -91,13 +163,16 @@ pub(crate) fn start_renderer_with_config(
             width,
             height,
             renderer_cache_config,
-            renderer_backend,
+            renderer_cache_enabled_configured,
+            rendering_api,
+            mode,
+            release_tx,
             startup_tx,
         );
     });
 
-    let selected_renderer = match startup_rx.recv() {
-        Ok(Ok(selected_renderer)) => selected_renderer,
+    let selected_rendering_api = match startup_rx.recv() {
+        Ok(Ok(selected_rendering_api)) => selected_rendering_api,
         Ok(Err(reason)) => {
             running_flag.store(false, Ordering::Relaxed);
             let _ = render_handle.join();
@@ -111,6 +186,37 @@ pub(crate) fn start_renderer_with_config(
             )));
         }
     };
+
+    let selected_renderer_cache_config = effective_renderer_cache_config(
+        selected_rendering_api,
+        renderer_cache_config,
+        renderer_cache_enabled_configured,
+    );
+    let renderer_info = RendererRuntimeInfo {
+        backend: BackendKind::Headless,
+        requested_rendering_api: config.requested_rendering_api,
+        selected_rendering_api,
+        raster_present: config.rendering_api.raster_present,
+        renderer_cache: renderer_cache_status(
+            selected_rendering_api,
+            selected_renderer_cache_config,
+        ),
+        screenshot_supported: matches!(mode, HeadlessMode::Binary),
+        prime_video_supported: false,
+    };
+    let heartbeat_stats = if config.renderer_stats_log {
+        renderer_stats.clone()
+    } else {
+        None
+    };
+    let heartbeat_handle = spawn_running_heartbeat(
+        Arc::clone(&running_flag),
+        Arc::clone(&input_target),
+        Arc::clone(&native_log),
+        heartbeat_stats,
+        "headless",
+        renderer_info.renderer_label(),
+    );
 
     assets::start(tree_tx.clone(), config.render_log);
 
@@ -155,31 +261,27 @@ pub(crate) fn start_renderer_with_config(
         native_log,
         stats: renderer_stats,
         latest_frame,
-        info: RendererRuntimeInfo {
-            backend: BackendKind::Headless,
-            requested_renderer: config.backend_renderer.kind,
-            selected_renderer,
-            raster_present: config.backend_renderer.raster_present,
-            renderer_cache: renderer_cache_status(selected_renderer, renderer_cache_config),
-            prime_video_supported: false,
-        },
+        info: renderer_info,
         close_signal_log: config.close_signal_log,
         log_render: config.render_log,
         log_input: false,
+        cleanup_dispatcher,
         handles: Mutex::new(Some(RendererHandles {
             backend_handle: Some(render_handle),
             input_handle: None,
             tree_handle: Some(tree_handle),
             event_handle: Some(event_handle),
-            heartbeat_handle: None,
+            heartbeat_handle: Some(heartbeat_handle),
         })),
     };
 
     Ok(ResourceArc::new(resource))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_render_loop(
     render_rx: Receiver<RenderMsg>,
+    release_rx: Receiver<HeadlessReleaseMsg>,
     tree_tx: Sender<TreeMsg>,
     running_flag: Arc<AtomicBool>,
     latest_frame: Arc<LatestFrameStore>,
@@ -189,109 +291,277 @@ fn run_render_loop(
     width: u32,
     height: u32,
     renderer_cache_config: RendererCacheConfig,
-    renderer_backend: RendererBackendKind,
-    startup_tx: Sender<Result<RendererBackendKind, String>>,
+    renderer_cache_enabled_configured: bool,
+    rendering_api: RenderingApi,
+    mode: HeadlessMode,
+    release_tx: Sender<HeadlessReleaseMsg>,
+    startup_tx: Sender<Result<RenderingApi, String>>,
 ) {
-    let mut renderer =
-        match HeadlessRenderer::new(renderer_backend, width, height, renderer_cache_config) {
-            Ok(renderer) => renderer,
-            Err(err) => {
-                let _ = startup_tx.send(Err(err));
-                running_flag.store(false, Ordering::Relaxed);
-                return;
-            }
-        };
-    let selected_renderer = renderer.selected_renderer();
-    if startup_tx.send(Ok(selected_renderer)).is_err() {
+    let mut renderer = match HeadlessRenderer::new(
+        mode,
+        rendering_api,
+        width,
+        height,
+        renderer_cache_config,
+        renderer_cache_enabled_configured,
+        headless.prime.max_in_flight,
+    ) {
+        Ok(renderer) => renderer,
+        Err(err) => {
+            let _ = startup_tx.send(Err(err));
+            running_flag.store(false, Ordering::Relaxed);
+            return;
+        }
+    };
+    let selected_rendering_api = renderer.selected_rendering_api();
+    if startup_tx.send(Ok(selected_rendering_api)).is_err() {
         running_flag.store(false, Ordering::Relaxed);
         return;
     }
 
     let mut sequence = 0_u64;
+    let mut pending_prime_animation = false;
     let frame_interval = headless
         .target_fps
         .map(|fps| Duration::from_secs_f64(1.0 / f64::from(fps.max(1))))
         .unwrap_or_else(|| Duration::from_millis(16));
+    let mut animation_tick = never();
+    let mut next_animation_at = None;
 
     while running_flag.load(Ordering::Relaxed) {
-        let Ok(msg) = render_rx.recv() else {
-            break;
-        };
-
-        match msg {
-            RenderMsg::Scene {
-                scene,
-                version: _,
-                pipeline_submitted_at,
-                pipeline_render_queued_at: _,
-                animation_trace: _,
-                animate,
-                ime_enabled: _,
-                ime_cursor_area: _,
-                ime_text_state: _,
-            } => {
-                let render_started_at = Instant::now();
-                let state = RenderState::new(*scene, Default::default(), sequence, animate);
-                match renderer.render(&state) {
-                    Ok(frame) => {
-                        if let Some(stats) = stats.as_ref() {
-                            stats
-                                .record_render_timings(render_started_at.elapsed(), &frame.timings);
-                            stats.record_present_submit(Duration::ZERO);
-                            stats.record_frame_present();
-                            if let Some(submitted_at) = pipeline_submitted_at {
-                                stats.record_pipeline_submit_to_swap(submitted_at, Instant::now());
-                            }
-                        }
-
-                        sequence = sequence.wrapping_add(1);
-                        latest_frame.publish_rgba(
-                            frame.width,
-                            frame.height,
-                            1.0,
-                            frame.data.clone(),
+        select! {
+            recv(animation_tick) -> _ => {
+                animation_tick = never();
+                maybe_send_animation_pulse(&tree_tx, true, frame_interval);
+            }
+            recv(release_rx) -> msg => {
+                match msg {
+                    Ok(HeadlessReleaseMsg::PrimeFrame(release_id)) => {
+                        renderer.release_prime(release_id);
+                        maybe_resume_prime_animation(
+                            &mut pending_prime_animation,
+                            &tree_tx,
+                            frame_interval,
                         );
-                        let converted = convert_frame(
-                            &frame.data,
-                            frame.width,
-                            &headless.pixel_format,
-                            &headless.bw1_polarity,
-                        );
-                        match converted {
-                            Ok((data, stride_bytes)) => send_frame(
-                                target,
-                                &headless.frame_message,
-                                sequence,
-                                frame.width,
-                                frame.height,
-                                &headless.pixel_format,
-                                stride_bytes,
-                                data,
-                            ),
-                            Err(err) => eprintln!("headless frame conversion failed: {err}"),
+                        if renderer.terminal_prime_shutdown_ready() {
+                            break;
                         }
-
-                        if animate {
-                            let now = Instant::now();
-                            send_tree(
-                                &tree_tx,
-                                TreeMsg::AnimationPulse {
-                                    presented_at: now,
-                                    predicted_next_present_at: now + frame_interval,
-                                    trace: None,
-                                },
-                                false,
-                            );
-                        }
-                    }
-                    Err(err) => eprintln!("headless render failed: {err}"),
+                    },
+                    Err(_) => break,
                 }
             }
-            RenderMsg::Stop => break,
+            recv(render_rx) -> msg => {
+                let Ok(msg) = msg else { break; };
+                match msg {
+                    RenderMsg::Scene {
+                        scene,
+                        version: _,
+                        pipeline_submitted_at,
+                        pipeline_render_queued_at: _,
+                        animation_trace: _,
+                        animate,
+                        ime_enabled: _,
+                        ime_cursor_area: _,
+                        ime_text_state: _,
+                    } => {
+                        let render_started_at = Instant::now();
+                        let state = RenderState::new(*scene, Default::default(), sequence, animate);
+                        match mode {
+                            HeadlessMode::Binary => match renderer.render_binary(&state) {
+                                Ok(frame) => {
+                                    record_render_stats(
+                                        stats.as_deref(),
+                                        render_started_at,
+                                        &frame.timings,
+                                        pipeline_submitted_at,
+                                        frame_interval,
+                                    );
+                                    sequence = sequence.wrapping_add(1);
+                                    latest_frame.publish_rgba(
+                                        frame.width,
+                                        frame.height,
+                                        1.0,
+                                        frame.data.clone(),
+                                    );
+                                    let converted = convert_frame(
+                                        &frame.data,
+                                        frame.width,
+                                        &headless.pixel_format,
+                                        &headless.bw1_polarity,
+                                    );
+                                    match converted {
+                                        Ok((data, stride_bytes)) => send_binary_frame(
+                                            target,
+                                            &headless.frame_message,
+                                            sequence,
+                                            frame.width,
+                                            frame.height,
+                                            &headless.pixel_format,
+                                            stride_bytes,
+                                            data,
+                                        ),
+                                        Err(err) => eprintln!("headless frame conversion failed: {err}"),
+                                    }
+                                    animation_tick = animation_tick_receiver(
+                                        animate,
+                                        frame_interval,
+                                        Instant::now(),
+                                        &mut next_animation_at,
+                                    );
+                                }
+                                Err(err) => eprintln!("headless render failed: {err}"),
+                            },
+                            HeadlessMode::Prime => match renderer.render_prime(&state) {
+                                Ok(Some(frame)) => {
+                                    record_render_stats(
+                                        stats.as_deref(),
+                                        render_started_at,
+                                        &frame.timings,
+                                        pipeline_submitted_at,
+                                        frame_interval,
+                                    );
+                                    if let Some(stats) = stats.as_deref() {
+                                        stats.record_headless_prime_timings(
+                                            frame.prime_timings.prepare,
+                                            frame.prime_timings.retarget,
+                                            frame.prime_timings.fence_export,
+                                            frame.prime_timings.gpu_finish_fallback,
+                                            frame.prime_timings.export_metadata,
+                                        );
+                                    }
+                                    sequence = sequence.wrapping_add(1);
+                                    send_prime_frame(
+                                        target,
+                                        &headless.frame_message,
+                                        sequence,
+                                        frame,
+                                        release_tx.clone(),
+                                    );
+                                    animation_tick = animation_tick_receiver(
+                                        animate,
+                                        frame_interval,
+                                        Instant::now(),
+                                        &mut next_animation_at,
+                                    );
+                                }
+                                Ok(None) => {
+                                    // Resume retained animation after a consumer frees a slot.
+                                    animation_tick = never();
+                                    pending_prime_animation |= animate;
+                                }
+                                Err(err) => {
+                                    eprintln!("headless PRIME render failed terminally: {err}");
+                                    animation_tick = never();
+                                    pending_prime_animation = false;
+                                    if renderer.terminal_prime_shutdown_ready() {
+                                        break;
+                                    }
+                                }
+                            },
+                        }
+                    }
+                    RenderMsg::Stop => break,
+                }
+            }
         }
     }
 
     running_flag.store(false, Ordering::Relaxed);
+}
+
+fn record_render_stats(
+    stats: Option<&RendererStatsCollector>,
+    render_started_at: Instant,
+    timings: &RenderTimings,
+    pipeline_submitted_at: Option<Instant>,
+    frame_interval: Duration,
+) {
+    if let Some(stats) = stats {
+        stats.record_render_timings(render_started_at.elapsed(), timings);
+        stats.record_present_submit(Duration::ZERO);
+        stats.record_display_interval(frame_interval);
+        stats.record_frame_present();
+        if let Some(submitted_at) = pipeline_submitted_at {
+            stats.record_pipeline_submit_to_swap(submitted_at, Instant::now());
+        }
+    }
+}
+
+fn maybe_resume_prime_animation(
+    pending: &mut bool,
+    tree_tx: &Sender<TreeMsg>,
+    frame_interval: Duration,
+) {
+    if std::mem::take(pending) {
+        maybe_send_animation_pulse(tree_tx, true, frame_interval);
+    }
+}
+
+fn animation_tick_receiver(
+    animate: bool,
+    frame_interval: Duration,
+    now: Instant,
+    next_animation_at: &mut Option<Instant>,
+) -> Receiver<Instant> {
+    if !animate {
+        *next_animation_at = None;
+        return never();
+    }
+
+    let deadline = next_animation_deadline(*next_animation_at, now, frame_interval);
+    *next_animation_at = Some(deadline);
+    at(deadline)
+}
+
+fn next_animation_deadline(
+    previous_deadline: Option<Instant>,
+    now: Instant,
+    frame_interval: Duration,
+) -> Instant {
+    let Some(previous_deadline) = previous_deadline else {
+        return now + frame_interval;
+    };
+    if previous_deadline > now {
+        return previous_deadline;
+    }
+
+    let missed_intervals = now
+        .saturating_duration_since(previous_deadline)
+        .as_nanos()
+        .checked_div(frame_interval.as_nanos())
+        .unwrap_or(0)
+        .saturating_add(1);
+    u32::try_from(missed_intervals)
+        .ok()
+        .and_then(|count| frame_interval.checked_mul(count))
+        .and_then(|advance| previous_deadline.checked_add(advance))
+        .unwrap_or(now + frame_interval)
+}
+
+fn maybe_send_animation_pulse(tree_tx: &Sender<TreeMsg>, animate: bool, frame_interval: Duration) {
+    if animate {
+        let now = Instant::now();
+        send_tree(
+            tree_tx,
+            TreeMsg::AnimationPulse {
+                presented_at: now,
+                predicted_next_present_at: now + frame_interval,
+                trace: None,
+            },
+            false,
+        );
+    }
+}
+
+fn effective_renderer_cache_config(
+    selected_rendering_api: RenderingApi,
+    mut config: RendererCacheConfig,
+    enabled_configured: bool,
+) -> RendererCacheConfig {
+    if matches!(selected_rendering_api, RenderingApi::Raster) && !enabled_configured {
+        config.enabled = false;
+    }
+    config
 }
 
 struct HeadlessRgbaFrame {
@@ -301,55 +571,166 @@ struct HeadlessRgbaFrame {
     timings: RenderTimings,
 }
 
+struct HeadlessPrimeExport {
+    release_id: u64,
+    width: u32,
+    height: u32,
+    format: u32,
+    objects: Vec<PrimeObjectMeta>,
+    planes: Vec<PrimePlaneMeta>,
+    acquire_sync: AcquireSync,
+    timings: RenderTimings,
+    prime_timings: HeadlessPrimeTimings,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct HeadlessPrimeTimings {
+    prepare: Duration,
+    retarget: Duration,
+    fence_export: Option<Duration>,
+    gpu_finish_fallback: Option<Duration>,
+    export_metadata: Duration,
+}
+
+struct PrimeObjectMeta {
+    fd: i32,
+    size: u64,
+    modifier: Option<u64>,
+}
+
+#[derive(Clone)]
+struct PrimePlaneMeta {
+    object_index: u32,
+    pitch: u32,
+    offset: u64,
+}
+
 enum HeadlessRenderer {
-    Raster(RasterHeadlessRenderer),
-    #[cfg(target_os = "linux")]
-    Gl(offscreen_gl::GlHeadlessRenderer),
+    Raster(Box<RasterHeadlessRenderer>),
+    #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
+    Gl(Box<offscreen_gl::GlHeadlessRenderer>),
 }
 
 impl HeadlessRenderer {
     fn new(
-        renderer_backend: RendererBackendKind,
+        mode: HeadlessMode,
+        rendering_api: RenderingApi,
         width: u32,
         height: u32,
         renderer_cache_config: RendererCacheConfig,
+        renderer_cache_enabled_configured: bool,
+        _max_prime_in_flight: u32,
     ) -> Result<Self, String> {
-        match renderer_backend {
-            RendererBackendKind::Auto | RendererBackendKind::Raster => {
-                RasterHeadlessRenderer::new(width, height, renderer_cache_config).map(Self::Raster)
+        let raster_renderer_cache_config = effective_renderer_cache_config(
+            RenderingApi::Raster,
+            renderer_cache_config,
+            renderer_cache_enabled_configured,
+        );
+
+        match (mode, rendering_api) {
+            (HeadlessMode::Binary, RenderingApi::Auto) => {
+                #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
+                {
+                    match offscreen_gl::GlHeadlessRenderer::new(width, height, renderer_cache_config) {
+                        Ok(renderer) => return Ok(Self::Gl(Box::new(renderer))),
+                        Err(err) => eprintln!(
+                            "headless auto GL startup failed; falling back to raster: {err}"
+                        ),
+                    }
+                }
+                RasterHeadlessRenderer::new(width, height, raster_renderer_cache_config)
+                    .map(Box::new)
+                    .map(Self::Raster)
             }
-            #[cfg(target_os = "linux")]
-            RendererBackendKind::Gl => {
-                offscreen_gl::GlHeadlessRenderer::new(width, height, renderer_cache_config)
+            (HeadlessMode::Binary, RenderingApi::Raster) => {
+                RasterHeadlessRenderer::new(width, height, raster_renderer_cache_config)
+                    .map(Box::new)
+                    .map(Self::Raster)
+            }
+            (HeadlessMode::Prime, RenderingApi::Auto | RenderingApi::OpenGl) => {
+                #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
+                {
+                    offscreen_gl::GlHeadlessRenderer::new_prime(
+                        width,
+                        height,
+                        renderer_cache_config,
+                        _max_prime_in_flight,
+                    )
+                    .map(Box::new)
                     .map(Self::Gl)
+                }
+                #[cfg(not(all(target_os = "linux", feature = "headless-opengl")))]
+                {
+                    Err("headless PRIME output requires Linux headless GL".to_string())
+                }
             }
-            #[cfg(not(target_os = "linux"))]
-            RendererBackendKind::Gl => Err(
-                "backend_renderer :gl is not available for backend :headless in this build"
+            (HeadlessMode::Prime, RenderingApi::Raster) => Err(
+                "headless PRIME output requires rendering_api :opengl or :auto; :raster cannot export dma-buf frames"
                     .to_string(),
             ),
-            RendererBackendKind::Metal => {
-                Err("backend_renderer :metal is only supported with backend :macos".to_string())
+            (_, RenderingApi::OpenGl) => {
+                #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
+                {
+                    offscreen_gl::GlHeadlessRenderer::new(width, height, renderer_cache_config)
+                        .map(Box::new)
+                        .map(Self::Gl)
+                }
+                #[cfg(not(all(target_os = "linux", feature = "headless-opengl")))]
+                {
+                    Err("rendering_api :opengl is not available for backend :headless in this build".to_string())
+                }
             }
-            RendererBackendKind::Vulkan => {
-                Err("backend_renderer :vulkan is not implemented yet".to_string())
+            (_, RenderingApi::Metal) => {
+                Err("rendering_api :metal is only supported with backend :macos".to_string())
+            }
+            (_, RenderingApi::Vulkan) => {
+                Err("rendering_api :vulkan is not implemented yet".to_string())
             }
         }
     }
 
-    fn selected_renderer(&self) -> RendererBackendKind {
+    fn selected_rendering_api(&self) -> RenderingApi {
         match self {
-            Self::Raster(_) => RendererBackendKind::Raster,
-            #[cfg(target_os = "linux")]
-            Self::Gl(_) => RendererBackendKind::Gl,
+            Self::Raster(_) => RenderingApi::Raster,
+            #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
+            Self::Gl(_) => RenderingApi::OpenGl,
         }
     }
 
-    fn render(&mut self, state: &RenderState) -> Result<HeadlessRgbaFrame, String> {
+    fn render_binary(&mut self, state: &RenderState) -> Result<HeadlessRgbaFrame, String> {
         match self {
             Self::Raster(renderer) => Ok(renderer.render(state)),
-            #[cfg(target_os = "linux")]
-            Self::Gl(renderer) => renderer.render(state),
+            #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
+            Self::Gl(renderer) => renderer.render_binary(state),
+        }
+    }
+
+    fn render_prime(
+        &mut self,
+        _state: &RenderState,
+    ) -> Result<Option<HeadlessPrimeExport>, String> {
+        match self {
+            Self::Raster(_) => {
+                Err("raster headless renderer cannot export PRIME frames".to_string())
+            }
+            #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
+            Self::Gl(renderer) => renderer.render_prime(_state),
+        }
+    }
+
+    fn release_prime(&mut self, _release_id: u64) {
+        match self {
+            Self::Raster(_) => {}
+            #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
+            Self::Gl(renderer) => renderer.release_prime(_release_id),
+        }
+    }
+
+    fn terminal_prime_shutdown_ready(&self) -> bool {
+        match self {
+            Self::Raster(_) => false,
+            #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
+            Self::Gl(renderer) => renderer.terminal_prime_shutdown_ready(),
         }
     }
 }
@@ -388,7 +769,8 @@ impl RasterHeadlessRenderer {
     }
 }
 
-fn send_frame(
+#[allow(clippy::too_many_arguments)]
+fn send_binary_frame(
     target: LocalPid,
     frame_message: &str,
     sequence: u64,
@@ -419,12 +801,78 @@ fn send_frame(
             ("timestamp_native", current_wall_ms().encode(inner_env)),
         ]
         .encode(inner_env);
-        if use_default_message {
-            (crate::atoms::emerge_skia_frame(), frame).encode(inner_env)
-        } else {
-            (frame_message, frame).encode(inner_env)
-        }
+        encode_frame_message(inner_env, use_default_message, &frame_message, frame)
     });
+}
+
+fn send_prime_frame(
+    target: LocalPid,
+    frame_message: &str,
+    sequence: u64,
+    frame: HeadlessPrimeExport,
+    release_tx: Sender<HeadlessReleaseMsg>,
+) {
+    let mut env = OwnedEnv::new();
+    let use_default_message = frame_message == "emerge_skia_frame";
+    let frame_message = frame_message.to_string();
+    let _ = env.send_and_clear(&target, move |inner_env| {
+        let backend_token =
+            ResourceArc::new(HeadlessPrimeBackendToken::new(release_tx, frame.release_id));
+        let width = frame.width;
+        let height = frame.height;
+        let descriptor = Descriptor {
+            version: 1,
+            objects: frame
+                .objects
+                .into_iter()
+                .map(|object| Object {
+                    fd: object.fd,
+                    size: object.size,
+                    modifier: object
+                        .modifier
+                        .map(Modifier::Explicit)
+                        .unwrap_or(Modifier::Implicit),
+                })
+                .collect(),
+            layers: vec![Layer {
+                fourcc: frame.format,
+                planes: frame
+                    .planes
+                    .into_iter()
+                    .map(|plane| Plane {
+                        object_index: plane.object_index,
+                        pitch: plane.pitch,
+                        offset: plane.offset,
+                    })
+                    .collect(),
+            }],
+        };
+        let frame = vec![
+            ("mode", "prime".encode(inner_env)),
+            ("sequence", sequence.encode(inner_env)),
+            ("width", width.encode(inner_env)),
+            ("height", height.encode(inner_env)),
+            ("descriptor", descriptor.encode(inner_env)),
+            ("acquire_sync", frame.acquire_sync.encode(inner_env)),
+            ("backend_token", backend_token.encode(inner_env)),
+            ("timestamp_native", current_wall_ms().encode(inner_env)),
+        ]
+        .encode(inner_env);
+        encode_frame_message(inner_env, use_default_message, &frame_message, frame)
+    });
+}
+
+fn encode_frame_message<'a>(
+    env: Env<'a>,
+    use_default_message: bool,
+    frame_message: &str,
+    frame: Term<'a>,
+) -> Term<'a> {
+    if use_default_message {
+        (crate::atoms::emerge_skia_frame(), frame).encode(env)
+    } else {
+        (frame_message, frame).encode(env)
+    }
 }
 
 fn convert_frame(
@@ -489,6 +937,73 @@ fn current_wall_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raster_fallback_disables_cache_without_explicit_opt_in() {
+        let default_config = RendererCacheConfig {
+            enabled: true,
+            ..RendererCacheConfig::default()
+        };
+
+        assert!(
+            !effective_renderer_cache_config(RenderingApi::Raster, default_config, false).enabled
+        );
+        assert!(
+            effective_renderer_cache_config(RenderingApi::Raster, default_config, true).enabled
+        );
+        assert!(
+            effective_renderer_cache_config(RenderingApi::OpenGl, default_config, false).enabled
+        );
+    }
+
+    #[test]
+    fn target_fps_deadlines_do_not_accumulate_render_time() {
+        let now = Instant::now();
+        let interval = Duration::from_millis(33);
+        let first = next_animation_deadline(None, now, interval);
+        assert_eq!(first, now + interval);
+
+        let before_deadline =
+            next_animation_deadline(Some(first), now + Duration::from_millis(10), interval);
+        assert_eq!(before_deadline, first);
+
+        let after_missed_deadlines =
+            next_animation_deadline(Some(first), now + Duration::from_millis(100), interval);
+        assert_eq!(after_missed_deadlines, now + Duration::from_millis(132));
+    }
+
+    #[test]
+    fn disabling_animation_cancels_the_target_fps_deadline() {
+        let mut next_animation_at = Some(Instant::now() + Duration::from_secs(1));
+        let disabled = animation_tick_receiver(
+            false,
+            Duration::from_millis(10),
+            Instant::now(),
+            &mut next_animation_at,
+        );
+
+        assert!(next_animation_at.is_none());
+        assert!(matches!(
+            disabled.recv_timeout(Duration::from_millis(1)),
+            Err(crossbeam_channel::RecvTimeoutError::Timeout)
+        ));
+    }
+
+    #[test]
+    fn prime_release_resumes_one_pending_animation_pulse() {
+        let (tree_tx, tree_rx) = unbounded();
+        let mut pending = true;
+
+        maybe_resume_prime_animation(&mut pending, &tree_tx, Duration::from_millis(16));
+        assert!(!pending);
+        assert!(matches!(
+            tree_rx.try_recv(),
+            Ok(TreeMsg::AnimationPulse { .. })
+        ));
+
+        maybe_resume_prime_animation(&mut pending, &tree_tx, Duration::from_millis(16));
+        assert!(tree_rx.try_recv().is_err());
+    }
 
     #[test]
     fn convert_frame_packs_gray_formats() {

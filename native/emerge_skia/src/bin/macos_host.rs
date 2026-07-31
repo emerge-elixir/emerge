@@ -138,9 +138,9 @@ mod app {
     const BUTTON_BACK: u8 = 4;
     const BUTTON_FORWARD: u8 = 5;
     const BUTTON_OTHER: u8 = 6;
-    const MACOS_BACKEND_AUTO: u8 = 0;
-    const MACOS_BACKEND_METAL: u8 = 1;
-    const MACOS_BACKEND_RASTER: u8 = 2;
+    const RENDERING_API_AUTO: u8 = 0;
+    const RENDERING_API_METAL: u8 = 1;
+    const RENDERING_API_RASTER: u8 = 2;
 
     pub fn run() -> Result<(), String> {
         let config = HostConfig::from_env_args()?;
@@ -240,7 +240,7 @@ mod app {
 
     struct HostSessionStats {
         backend_label: &'static str,
-        backend_renderer_label: String,
+        rendering_api_label: String,
         collector: Arc<RendererStatsCollector>,
     }
 
@@ -292,7 +292,7 @@ mod app {
             &self,
             session_id: u64,
             backend_label: &'static str,
-            backend_renderer_label: String,
+            rendering_api_label: String,
             stats: Option<Arc<RendererStatsCollector>>,
         ) {
             if let Ok(mut sessions) = self.running_sessions.lock() {
@@ -306,7 +306,7 @@ mod app {
                     session_id,
                     HostSessionStats {
                         backend_label,
-                        backend_renderer_label,
+                        rendering_api_label,
                         collector,
                     },
                 );
@@ -344,7 +344,7 @@ mod app {
                                     session_id,
                                     format_renderer_stats_log(
                                         session_stats.backend_label,
-                                        &session_stats.backend_renderer_label,
+                                        &session_stats.rendering_api_label,
                                         &session_stats.collector.snapshot(),
                                     )
                                 ),
@@ -364,7 +364,8 @@ mod app {
             scroll_line_pixels: f32,
             renderer_stats_log: bool,
             renderer_cache_config: RendererCacheConfig,
-            macos_backend: RequestedMacosBackend,
+            renderer_cache_enabled_configured: bool,
+            rendering_api: RequestedRenderingApi,
             asset_config: StartSessionAssetConfig,
             reply_tx: std::sync::mpsc::Sender<HostReply>,
         },
@@ -420,7 +421,7 @@ mod app {
     enum HostReply {
         StartSession {
             session_id: u64,
-            macos_backend: SelectedMacosBackend,
+            rendering_api: SelectedRenderingApi,
         },
         StopSession,
         UploadTree,
@@ -470,7 +471,8 @@ mod app {
         scroll_line_pixels: f32,
         renderer_stats_log: bool,
         renderer_cache_config: RendererCacheConfig,
-        backend: RequestedMacosBackend,
+        renderer_cache_enabled_configured: bool,
+        rendering_api: RequestedRenderingApi,
         asset_config: StartSessionAssetConfig,
     }
 
@@ -849,7 +851,7 @@ mod app {
         focused: bool,
         initial_notifications_sent: bool,
         initial_log_sent: bool,
-        selected_backend: SelectedMacosBackend,
+        selected_rendering_api: SelectedRenderingApi,
         _tracking_area: Retained<NSTrackingArea>,
         cursor_inside: bool,
         cursor_icon_rx: Receiver<CursorIcon>,
@@ -945,14 +947,14 @@ mod app {
     }
 
     #[derive(Clone, Copy)]
-    enum RequestedMacosBackend {
+    enum RequestedRenderingApi {
         Auto,
         Metal,
         Raster,
     }
 
     #[derive(Clone, Copy)]
-    enum SelectedMacosBackend {
+    enum SelectedRenderingApi {
         Metal,
         Raster,
     }
@@ -1629,7 +1631,8 @@ mod app {
                     scroll_line_pixels,
                     renderer_stats_log,
                     renderer_cache_config,
-                    macos_backend,
+                    renderer_cache_enabled_configured,
+                    rendering_api,
                     asset_config,
                     reply_tx,
                 }) => {
@@ -1657,16 +1660,17 @@ mod app {
                         scroll_line_pixels,
                         renderer_stats_log,
                         renderer_cache_config,
-                        requested_backend: macos_backend,
+                        renderer_cache_enabled_configured,
+                        requested_rendering_api: rendering_api,
                         ui_state,
                     }) {
-                        Ok((session, selected_backend)) => {
+                        Ok((session, selected_rendering_api)) => {
                             let stats = session.runtime.stats.clone();
                             ui_state.borrow_mut().sessions.insert(session_id, session);
                             state.register_session(
                                 session_id,
-                                selected_backend_stats_label(selected_backend),
-                                backend_renderer_stats_label(macos_backend, selected_backend),
+                                "macos",
+                                rendering_api_stats_label(rendering_api, selected_rendering_api),
                                 stats,
                             );
 
@@ -1682,7 +1686,7 @@ mod app {
 
                             let _ = reply_tx.send(HostReply::StartSession {
                                 session_id,
-                                macos_backend: selected_backend,
+                                rendering_api: selected_rendering_api,
                             });
                         }
                         Err(reason) => {
@@ -1924,7 +1928,7 @@ mod app {
                         "macos_host",
                         &format!(
                             "session using macOS backend {}",
-                            selected_backend_name(session.selected_backend)
+                            selected_rendering_api_name(session.selected_rendering_api)
                         ),
                     );
                     session.initial_log_sent = true;
@@ -2064,13 +2068,14 @@ mod app {
         scroll_line_pixels: f32,
         renderer_stats_log: bool,
         renderer_cache_config: RendererCacheConfig,
-        requested_backend: RequestedMacosBackend,
+        renderer_cache_enabled_configured: bool,
+        requested_rendering_api: RequestedRenderingApi,
         ui_state: &'a Rc<RefCell<HostUiState>>,
     }
 
     fn create_session(
         request: CreateSessionRequest<'_>,
-    ) -> Result<(HostSession, SelectedMacosBackend), String> {
+    ) -> Result<(HostSession, SelectedRenderingApi), String> {
         let CreateSessionRequest {
             app,
             mtm,
@@ -2081,8 +2086,9 @@ mod app {
             height,
             scroll_line_pixels,
             renderer_stats_log,
-            renderer_cache_config,
-            requested_backend,
+            mut renderer_cache_config,
+            renderer_cache_enabled_configured,
+            requested_rendering_api,
             ui_state,
         } = request;
 
@@ -2099,8 +2105,13 @@ mod app {
         let tracking_area = create_tracking_area(mtm, &content_view);
         content_view.addTrackingArea(&tracking_area);
         let metrics = session_metrics(&window, &content_view);
-        let (surface, selected_backend) =
-            create_session_surface(&content_view, mtm, &metrics, requested_backend)?;
+        let (surface, selected_rendering_api) =
+            create_session_surface(&content_view, mtm, &metrics, requested_rendering_api)?;
+        if matches!(selected_rendering_api, SelectedRenderingApi::Raster)
+            && !renderer_cache_enabled_configured
+        {
+            renderer_cache_config.enabled = false;
+        }
         let _ = window.makeFirstResponder(Some(input_view.as_super().as_super()));
         let focused = window.isKeyWindow();
         let stats = renderer_stats_log.then(|| Arc::new(RendererStatsCollector::new()));
@@ -2137,14 +2148,14 @@ mod app {
                 focused,
                 initial_notifications_sent: false,
                 initial_log_sent: false,
-                selected_backend,
+                selected_rendering_api,
                 _tracking_area: tracking_area,
                 cursor_inside: false,
                 cursor_icon_rx,
                 cursor_icon_state: CursorIconState::default(),
                 present: SessionPresentState::new(Duration::from_millis(16)),
             },
-            selected_backend,
+            selected_rendering_api,
         ))
     }
 
@@ -2210,27 +2221,27 @@ mod app {
         content_view: &NSView,
         mtm: MainThreadMarker,
         metrics: &SessionMetrics,
-        requested_backend: RequestedMacosBackend,
-    ) -> Result<(SessionSurface, SelectedMacosBackend), String> {
-        match requested_backend {
-            RequestedMacosBackend::Metal => create_metal_surface(content_view, metrics)
-                .map(|surface| (SessionSurface::Metal(surface), SelectedMacosBackend::Metal)),
-            RequestedMacosBackend::Raster => {
+        requested_rendering_api: RequestedRenderingApi,
+    ) -> Result<(SessionSurface, SelectedRenderingApi), String> {
+        match requested_rendering_api {
+            RequestedRenderingApi::Metal => create_metal_surface(content_view, metrics)
+                .map(|surface| (SessionSurface::Metal(surface), SelectedRenderingApi::Metal)),
+            RequestedRenderingApi::Raster => {
                 create_raster_surface(content_view, mtm, metrics).map(|surface| {
                     (
                         SessionSurface::Raster(surface),
-                        SelectedMacosBackend::Raster,
+                        SelectedRenderingApi::Raster,
                     )
                 })
             }
-            RequestedMacosBackend::Auto => match create_metal_surface(content_view, metrics) {
-                Ok(surface) => Ok((SessionSurface::Metal(surface), SelectedMacosBackend::Metal)),
+            RequestedRenderingApi::Auto => match create_metal_surface(content_view, metrics) {
+                Ok(surface) => Ok((SessionSurface::Metal(surface), SelectedRenderingApi::Metal)),
                 Err(reason) => {
                     eprintln!("macOS host falling back to raster presenter: {reason}");
                     create_raster_surface(content_view, mtm, metrics).map(|surface| {
                         (
                             SessionSurface::Raster(surface),
-                            SelectedMacosBackend::Raster,
+                            SelectedRenderingApi::Raster,
                         )
                     })
                 }
@@ -2939,36 +2950,29 @@ mod app {
         ));
     }
 
-    fn selected_backend_name(backend: SelectedMacosBackend) -> &'static str {
+    fn selected_rendering_api_name(backend: SelectedRenderingApi) -> &'static str {
         match backend {
-            SelectedMacosBackend::Metal => "metal",
-            SelectedMacosBackend::Raster => "raster",
+            SelectedRenderingApi::Metal => "metal",
+            SelectedRenderingApi::Raster => "raster",
         }
     }
 
-    fn selected_backend_stats_label(backend: SelectedMacosBackend) -> &'static str {
+    fn requested_rendering_api_name(backend: RequestedRenderingApi) -> &'static str {
         match backend {
-            SelectedMacosBackend::Metal => "macos-metal",
-            SelectedMacosBackend::Raster => "macos-raster",
+            RequestedRenderingApi::Auto => "auto",
+            RequestedRenderingApi::Metal => "metal",
+            RequestedRenderingApi::Raster => "raster",
         }
     }
 
-    fn requested_backend_name(backend: RequestedMacosBackend) -> &'static str {
-        match backend {
-            RequestedMacosBackend::Auto => "auto",
-            RequestedMacosBackend::Metal => "metal",
-            RequestedMacosBackend::Raster => "raster",
-        }
-    }
-
-    fn backend_renderer_stats_label(
-        requested: RequestedMacosBackend,
-        selected: SelectedMacosBackend,
+    fn rendering_api_stats_label(
+        requested: RequestedRenderingApi,
+        selected: SelectedRenderingApi,
     ) -> String {
         format!(
             "{} ({})",
-            requested_backend_name(requested),
-            selected_backend_name(selected)
+            requested_rendering_api_name(requested),
+            selected_rendering_api_name(selected)
         )
     }
 
@@ -3528,7 +3532,8 @@ mod app {
                     scroll_line_pixels: decoded.scroll_line_pixels,
                     renderer_stats_log: decoded.renderer_stats_log,
                     renderer_cache_config: decoded.renderer_cache_config,
-                    macos_backend: decoded.backend,
+                    renderer_cache_enabled_configured: decoded.renderer_cache_enabled_configured,
+                    rendering_api: decoded.rendering_api,
                     asset_config: decoded.asset_config,
                     reply_tx,
                 })
@@ -3730,13 +3735,13 @@ mod app {
         match reply {
             HostReply::StartSession {
                 session_id,
-                macos_backend,
+                rendering_api,
             } => encode_frame(
                 FRAME_REPLY,
                 request_id,
                 session_id,
                 tag,
-                &[encode_macos_backend(macos_backend)],
+                &[encode_rendering_api(rendering_api)],
             ),
             HostReply::StopSession => encode_frame(FRAME_REPLY, request_id, session_id, tag, &[]),
             HostReply::UploadTree => encode_frame(FRAME_REPLY, request_id, session_id, tag, &[]),
@@ -3786,8 +3791,9 @@ mod app {
         let height = decode_u32(payload, &mut cursor)?;
         let scroll_line_pixels = decode_f32(payload, &mut cursor)?;
         let renderer_stats_log = decode_u8(payload, &mut cursor)? != 0;
-        let renderer_cache_config = decode_renderer_cache_config(payload, &mut cursor)?;
-        let backend = decode_requested_macos_backend(decode_u8(payload, &mut cursor)?)?;
+        let (renderer_cache_config, renderer_cache_enabled_configured) =
+            decode_renderer_cache_config(payload, &mut cursor)?;
+        let rendering_api = decode_requested_rendering_api(decode_u8(payload, &mut cursor)?)?;
         let asset_config = decode_asset_config(payload, &mut cursor)?;
         let fonts = decode_font_list(payload, &mut cursor)?;
 
@@ -3802,7 +3808,8 @@ mod app {
             scroll_line_pixels,
             renderer_stats_log,
             renderer_cache_config,
-            backend,
+            renderer_cache_enabled_configured,
+            rendering_api,
             asset_config: StartSessionAssetConfig {
                 sources: asset_config.sources,
                 runtime_enabled: asset_config.runtime_enabled,
@@ -3818,26 +3825,30 @@ mod app {
     fn decode_renderer_cache_config(
         payload: &[u8],
         cursor: &mut usize,
-    ) -> Option<RendererCacheConfig> {
+    ) -> Option<(RendererCacheConfig, bool)> {
         let max_new_payloads_per_frame = decode_u32(payload, cursor)?;
         let enabled = decode_u8(payload, cursor)? != 0;
+        let enabled_configured = decode_u8(payload, cursor)? != 0;
         let max_entries = usize::try_from(decode_u64(payload, cursor)?).ok()?;
         let max_bytes = decode_u64(payload, cursor)?;
         let max_entry_bytes = decode_u64(payload, cursor)?;
         let min_visible_before_store = decode_u64(payload, cursor)?;
         let max_stale_frames = decode_u64(payload, cursor)?;
 
-        Some(RendererCacheConfig {
-            enabled,
-            max_new_payloads_per_frame,
-            paint_layer: RendererPaintLayerCacheConfig {
-                max_entries,
-                max_bytes,
-                max_entry_bytes,
-                min_visible_before_store,
-                max_stale_frames,
+        Some((
+            RendererCacheConfig {
+                enabled,
+                max_new_payloads_per_frame,
+                paint_layer: RendererPaintLayerCacheConfig {
+                    max_entries,
+                    max_bytes,
+                    max_entry_bytes,
+                    min_visible_before_store,
+                    max_stale_frames,
+                },
             },
-        })
+            enabled_configured,
+        ))
     }
 
     fn decode_measure_text(payload: &[u8]) -> Option<(String, f32)> {
@@ -4008,19 +4019,19 @@ mod app {
         now ^ (std::process::id() as u64)
     }
 
-    fn decode_requested_macos_backend(tag: u8) -> Option<RequestedMacosBackend> {
+    fn decode_requested_rendering_api(tag: u8) -> Option<RequestedRenderingApi> {
         match tag {
-            MACOS_BACKEND_AUTO => Some(RequestedMacosBackend::Auto),
-            MACOS_BACKEND_METAL => Some(RequestedMacosBackend::Metal),
-            MACOS_BACKEND_RASTER => Some(RequestedMacosBackend::Raster),
+            RENDERING_API_AUTO => Some(RequestedRenderingApi::Auto),
+            RENDERING_API_METAL => Some(RequestedRenderingApi::Metal),
+            RENDERING_API_RASTER => Some(RequestedRenderingApi::Raster),
             _ => None,
         }
     }
 
-    fn encode_macos_backend(backend: SelectedMacosBackend) -> u8 {
+    fn encode_rendering_api(backend: SelectedRenderingApi) -> u8 {
         match backend {
-            SelectedMacosBackend::Metal => MACOS_BACKEND_METAL,
-            SelectedMacosBackend::Raster => MACOS_BACKEND_RASTER,
+            SelectedRenderingApi::Metal => RENDERING_API_METAL,
+            SelectedRenderingApi::Raster => RENDERING_API_RASTER,
         }
     }
 

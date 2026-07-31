@@ -19,6 +19,7 @@ pub(super) enum FrameCallbackState {
 pub(super) enum DrawKind {
     Normal,
     LateReplacement,
+    LateVideoReplacement,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,6 +58,8 @@ pub(super) struct PresentSnapshot {
 pub(super) struct PresentState {
     pub(super) configured: bool,
     redraw_requested: bool,
+    video_redraw_requested: bool,
+    video_cleanup_requested: bool,
     frame_callback_state: FrameCallbackState,
     next_frame_callback_request_sequence: u64,
     requested_frame_callback: Option<FrameCallbackRequest>,
@@ -69,6 +72,7 @@ pub(super) struct PresentState {
     latest_received_animation_active: bool,
     last_submitted_render_version: Option<u64>,
     late_replacement_used: bool,
+    late_video_replacement_used: bool,
 }
 
 impl Default for PresentState {
@@ -76,6 +80,8 @@ impl Default for PresentState {
         Self {
             configured: false,
             redraw_requested: false,
+            video_redraw_requested: false,
+            video_cleanup_requested: false,
             frame_callback_state: FrameCallbackState::None,
             next_frame_callback_request_sequence: 0,
             requested_frame_callback: None,
@@ -88,6 +94,7 @@ impl Default for PresentState {
             latest_received_animation_active: false,
             last_submitted_render_version: None,
             late_replacement_used: false,
+            late_video_replacement_used: false,
         }
     }
 }
@@ -105,8 +112,12 @@ impl PresentState {
         self.redraw_requested = true;
     }
 
+    pub(super) fn queue_video_redraw(&mut self) {
+        self.video_redraw_requested = true;
+    }
+
     pub(super) fn draw_decision(&self, exit: bool, allow_late_replacement: bool) -> DrawDecision {
-        if exit || !self.configured || !self.redraw_requested {
+        if exit || !self.configured || !self.draw_requested() {
             return DrawDecision::Skip;
         }
 
@@ -116,6 +127,8 @@ impl PresentState {
 
         if allow_late_replacement && self.can_late_replace() {
             DrawDecision::Draw(DrawKind::LateReplacement)
+        } else if allow_late_replacement && self.can_late_replace_video() {
+            DrawDecision::Draw(DrawKind::LateVideoReplacement)
         } else {
             DrawDecision::Skip
         }
@@ -163,6 +176,7 @@ impl PresentState {
                 self.requested_frame_callback = Some(request);
                 self.frame_callback_state = FrameCallbackState::Requested;
                 self.late_replacement_used = false;
+                self.late_video_replacement_used = false;
                 Some(request)
             }
             FrameCallbackState::Requested => None,
@@ -195,6 +209,7 @@ impl PresentState {
         self.frame_callback_state = FrameCallbackState::Received;
         self.requested_frame_callback = None;
         self.late_replacement_used = false;
+        self.late_video_replacement_used = false;
     }
 
     pub(super) fn finish_present(
@@ -204,14 +219,34 @@ impl PresentState {
         video_needs_cleanup: bool,
     ) {
         self.last_submitted_render_version = Some(render_version);
-        self.late_replacement_used = kind == DrawKind::LateReplacement;
-        self.redraw_requested = video_needs_cleanup;
+        match kind {
+            DrawKind::Normal => {
+                self.late_replacement_used = false;
+                self.late_video_replacement_used = false;
+            }
+            DrawKind::LateReplacement => self.late_replacement_used = true,
+            DrawKind::LateVideoReplacement => self.late_video_replacement_used = true,
+        }
+        self.redraw_requested = false;
+        self.video_redraw_requested = false;
+        self.video_cleanup_requested = video_needs_cleanup;
     }
 
     pub(super) fn finish_noop_present(&mut self, render_version: u64) {
         self.last_submitted_render_version = Some(render_version);
         self.late_replacement_used = false;
+        self.late_video_replacement_used = false;
         self.redraw_requested = false;
+        self.video_redraw_requested = false;
+        self.video_cleanup_requested = false;
+    }
+
+    pub(super) fn video_cleanup_requested(&self) -> bool {
+        self.video_cleanup_requested
+    }
+
+    pub(super) fn finish_video_cleanup(&mut self, needs_cleanup: bool) {
+        self.video_cleanup_requested = needs_cleanup;
     }
 
     pub(super) fn present_timing_for_normal_draw(
@@ -232,8 +267,12 @@ impl PresentState {
         self.frame_interval.estimated_frame_interval()
     }
 
+    pub(super) fn set_frame_interval(&mut self, frame_interval: Duration) {
+        self.frame_interval.observe_interval(frame_interval);
+    }
+
     pub(super) fn clear_ready_frame_callback_timing_if_idle(&mut self) {
-        if !self.redraw_requested && self.frame_callback_state == FrameCallbackState::Received {
+        if !self.draw_requested() && self.frame_callback_state == FrameCallbackState::Received {
             self.ready_frame_callback_at = None;
             self.last_frame_callback_at = None;
             self.last_frame_callback_time_ms = None;
@@ -250,7 +289,7 @@ impl PresentState {
 
         PresentSnapshot {
             configured: self.configured,
-            redraw_requested: self.redraw_requested,
+            redraw_requested: self.draw_requested(),
             frame_callback_state: self.frame_callback_state,
             requested_frame_callback_sequence: self
                 .requested_frame_callback
@@ -263,10 +302,14 @@ impl PresentState {
             last_submitted_render_version: self.last_submitted_render_version,
             late_replacement_used: self.late_replacement_used,
             has_newer_received_scene: self.has_newer_received_scene(),
-            can_late_replace: self.can_late_replace(),
+            can_late_replace: self.can_late_replace() || self.can_late_replace_video(),
             ready_frame_callback_buffered: self.ready_frame_callback_at.is_some(),
             estimated_frame_interval: self.estimated_frame_interval(),
         }
+    }
+
+    fn draw_requested(&self) -> bool {
+        self.redraw_requested || self.video_redraw_requested || self.video_cleanup_requested
     }
 
     fn can_late_replace(&self) -> bool {
@@ -274,6 +317,10 @@ impl PresentState {
             && !self.latest_received_animation_active
             && !self.late_replacement_used
             && self.has_newer_received_scene()
+    }
+
+    fn can_late_replace_video(&self) -> bool {
+        self.video_redraw_requested && !self.late_video_replacement_used
     }
 
     fn has_newer_received_scene(&self) -> bool {
@@ -307,6 +354,28 @@ mod tests {
     }
 
     #[test]
+    fn completed_video_cleanup_cancels_only_its_follow_up_draw() {
+        let mut present = PresentState::configured_for_test();
+        present.finish_present(1, DrawKind::Normal, true);
+
+        assert_eq!(
+            present.draw_decision(false, true),
+            DrawDecision::Draw(DrawKind::Normal)
+        );
+
+        present.queue_redraw();
+        present.finish_video_cleanup(false);
+        assert_eq!(
+            present.draw_decision(false, true),
+            DrawDecision::Draw(DrawKind::Normal)
+        );
+
+        present.finish_present(2, DrawKind::Normal, true);
+        present.finish_video_cleanup(false);
+        assert_eq!(present.draw_decision(false, true), DrawDecision::Skip);
+    }
+
+    #[test]
     fn allows_one_patch_late_replacement_when_swap_is_nonblocking() {
         let mut present = PresentState {
             configured: true,
@@ -327,6 +396,73 @@ mod tests {
         present.note_scene_received(3, true, false);
 
         assert_eq!(present.draw_decision(false, true), DrawDecision::Skip);
+    }
+
+    #[test]
+    fn video_wake_gets_one_late_replacement_after_scene_replacement() {
+        let mut present = PresentState {
+            configured: true,
+            ..PresentState::default()
+        };
+        present.queue_redraw();
+        present.frame_callback_state = FrameCallbackState::Requested;
+        present.last_submitted_render_version = Some(1);
+        present.note_scene_received(2, true, false);
+
+        assert_eq!(
+            present.draw_decision(false, true),
+            DrawDecision::Draw(DrawKind::LateReplacement)
+        );
+        present.finish_present(2, DrawKind::LateReplacement, false);
+
+        present.queue_video_redraw();
+        assert_eq!(
+            present.draw_decision(false, true),
+            DrawDecision::Draw(DrawKind::LateVideoReplacement)
+        );
+        present.finish_present(2, DrawKind::LateVideoReplacement, false);
+
+        present.queue_video_redraw();
+        assert_eq!(present.draw_decision(false, true), DrawDecision::Skip);
+
+        present.frame_callback_received(Instant::now(), 1);
+        assert_eq!(
+            present.draw_decision(false, true),
+            DrawDecision::Draw(DrawKind::Normal)
+        );
+    }
+
+    #[test]
+    fn video_wake_late_replaces_without_a_new_scene() {
+        let mut present = PresentState {
+            configured: true,
+            ..PresentState::default()
+        };
+        present.frame_callback_state = FrameCallbackState::Requested;
+        present.last_submitted_render_version = Some(1);
+        present.queue_video_redraw();
+
+        assert_eq!(
+            present.draw_decision(false, true),
+            DrawDecision::Draw(DrawKind::LateVideoReplacement)
+        );
+    }
+
+    #[test]
+    fn video_wake_waits_for_callback_when_swap_may_block() {
+        let mut present = PresentState {
+            configured: true,
+            ..PresentState::default()
+        };
+        present.frame_callback_state = FrameCallbackState::Requested;
+        present.queue_video_redraw();
+
+        assert_eq!(present.draw_decision(false, false), DrawDecision::Skip);
+        present.frame_callback_received(Instant::now(), 1);
+        assert_eq!(
+            present.draw_decision(false, false),
+            DrawDecision::Draw(DrawKind::Normal)
+        );
     }
 
     #[test]

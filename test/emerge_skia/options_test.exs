@@ -1,6 +1,8 @@
 defmodule EmergeSkia.OptionsTest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureIO
+
   alias Emerge.Assets.Ref
   alias EmergeSkia.Assets
   alias EmergeSkia.BuildConfig
@@ -22,23 +24,23 @@ defmodule EmergeSkia.OptionsTest do
     assert %{backend: "wayland"} = Options.build_start_native_opts!(backend: "wayland")
   end
 
-  test "build_start_native_opts! normalizes backend_renderer" do
-    assert %{backend_renderer: %{kind: "auto", raster_present: "auto"}} =
+  test "build_start_native_opts! normalizes rendering_api" do
+    assert %{rendering_api: %{kind: "auto", raster_present: "auto"}} =
              Options.build_start_native_opts!([])
 
-    assert %{backend_renderer: %{kind: "gl", raster_present: "auto"}} =
-             Options.build_start_native_opts!(backend: :wayland, backend_renderer: :gl)
+    assert %{rendering_api: %{kind: "opengl", raster_present: "auto"}} =
+             Options.build_start_native_opts!(backend: :wayland, rendering_api: :opengl)
 
     assert %{
-             backend_renderer: %{
+             rendering_api: %{
                kind: "raster",
                raster_present: "auto",
                raster_present_configured: false
              }
-           } = Options.build_start_native_opts!(backend_renderer: :raster)
+           } = Options.build_start_native_opts!(rendering_api: :raster)
 
     assert %{
-             backend_renderer: %{
+             rendering_api: %{
                kind: "raster",
                raster_present: "cpu",
                raster_present_configured: true
@@ -46,11 +48,11 @@ defmodule EmergeSkia.OptionsTest do
            } =
              Options.build_start_native_opts!(
                backend: :wayland,
-               backend_renderer: [raster: [present: :cpu]]
+               rendering_api: [raster: [present: :cpu]]
              )
 
     assert %{
-             backend_renderer: %{
+             rendering_api: %{
                kind: "auto",
                raster_present: "gpu_upload",
                raster_present_configured: true
@@ -58,47 +60,74 @@ defmodule EmergeSkia.OptionsTest do
            } =
              Options.build_start_native_opts!(
                backend: :drm,
-               backend_renderer: [auto: [raster: [present: "gpu_upload"]]]
+               rendering_api: [auto: [raster: [present: "gpu_upload"]]]
              )
   end
 
-  test "build_start_native_opts! rejects invalid backend_renderer" do
-    assert_raise ArgumentError, ~r/:backend_renderer must be/, fn ->
-      Options.build_start_native_opts!(backend_renderer: :bogus)
+  test "build_start_native_opts! keeps deprecated rendering aliases" do
+    warning =
+      capture_io(:stderr, fn ->
+        send(
+          self(),
+          {:normalized_alias,
+           Options.build_start_native_opts!(backend: :wayland, backend_renderer: :gl)}
+        )
+      end)
+
+    assert_receive {:normalized_alias, %{rendering_api: %{kind: "opengl"}}}
+    assert warning =~ "backend_renderer is deprecated; use rendering_api instead"
+    assert warning =~ "rendering API :gl is deprecated; use :opengl"
+
+    assert_raise ArgumentError, ~r/cannot be used together/, fn ->
+      Options.build_start_native_opts!(rendering_api: :opengl, backend_renderer: :gl)
+    end
+  end
+
+  test "build_start_native_opts! rejects invalid rendering_api" do
+    assert_raise ArgumentError, ~r/:rendering_api must be/, fn ->
+      Options.build_start_native_opts!(rendering_api: :bogus)
     end
 
     assert_raise ArgumentError, ~r/raster present must be :auto, :gpu_upload, or :cpu/, fn ->
-      Options.build_start_native_opts!(backend_renderer: [raster: [present: :bogus]])
+      Options.build_start_native_opts!(rendering_api: [raster: [present: :bogus]])
     end
 
-    assert_raise ArgumentError, ~r/:backend_renderer.auto has unsupported option/, fn ->
-      Options.build_start_native_opts!(backend_renderer: [auto: [present: :cpu]])
+    assert_raise ArgumentError, ~r/:rendering_api.auto has unsupported option/, fn ->
+      Options.build_start_native_opts!(rendering_api: [auto: [present: :cpu]])
     end
   end
 
   test "build_start_native_opts! rejects removed macos_backend" do
-    assert_raise ArgumentError, ~r/macos_backend has been removed.*backend_renderer/, fn ->
+    assert_raise ArgumentError, ~r/macos_backend has been removed.*rendering_api/, fn ->
       Options.build_start_native_opts!(macos_backend: :raster)
     end
   end
 
-  test "build_start_native_opts! validates backend_renderer against backend" do
+  test "build_start_native_opts! validates rendering_api against backend" do
     assert_raise ArgumentError,
-                 ~r/backend_renderer: :gl is not supported with backend: :macos/,
+                 ~r/rendering_api: :opengl is not supported with backend: :macos/,
                  fn ->
-                   Options.build_start_native_opts!(backend: :macos, backend_renderer: :gl)
+                   Options.build_start_native_opts!(backend: :macos, rendering_api: :opengl)
                  end
 
     assert_raise ArgumentError,
-                 ~r/backend_renderer: :metal is only supported with backend: :macos/,
+                 ~r/rendering_api: :metal is only supported with backend: :macos/,
                  fn ->
-                   Options.build_start_native_opts!(backend: :wayland, backend_renderer: :metal)
+                   Options.build_start_native_opts!(backend: :wayland, rendering_api: :metal)
                  end
 
     assert_raise ArgumentError, ~r/raster present options are only supported/, fn ->
       Options.build_start_native_opts!(
         backend: :macos,
-        backend_renderer: [raster: [present: :cpu]]
+        rendering_api: [raster: [present: :cpu]]
+      )
+    end
+
+    assert_raise ArgumentError, ~r/raster present options are only supported/, fn ->
+      Options.build_start_native_opts!(
+        backend: :headless,
+        rendering_api: [auto: [raster: [present: :cpu]]],
+        headless: [target: self()]
       )
     end
   end
@@ -205,19 +234,59 @@ defmodule EmergeSkia.OptionsTest do
 
     assert %{
              backend: "headless",
-             backend_renderer: %{kind: "gl"},
+             rendering_api: %{kind: "opengl"},
              headless: %{target: target}
            } =
              Options.build_start_native_opts!(
                backend: :headless,
-               backend_renderer: :gl,
+               rendering_api: :opengl,
                headless: [target: self()]
              )
 
     assert target == self()
 
-    assert_raise ArgumentError, ~r/:headless.target must be a pid/, fn ->
+    assert %{
+             headless: %{
+               target: target,
+               mode: "prime",
+               prime: %{max_in_flight: 3, on_backpressure: "drop_new"}
+             }
+           } =
+             Options.build_start_native_opts!(
+               backend: :headless,
+               headless: [
+                 target: self(),
+                 mode: :prime,
+                 prime: [max_in_flight: 3, on_backpressure: :drop_new]
+               ]
+             )
+
+    assert target == self()
+
+    assert %{headless: %{mode: "prime", target: nil}} =
+             Options.build_start_native_opts!(
+               backend: :headless,
+               rendering_api: :opengl,
+               headless: [mode: :prime]
+             )
+
+    assert_raise ArgumentError, ~r/:headless.prime has unsupported option/, fn ->
+      Options.build_start_native_opts!(
+        backend: :headless,
+        headless: [target: self(), mode: :prime, prime: [max_inflight: 3]]
+      )
+    end
+
+    assert_raise ArgumentError, ~r/:headless.target must be a live local pid/, fn ->
       Options.build_start_native_opts!(backend: :headless)
+    end
+
+    dead_target = spawn(fn -> :ok end)
+    monitor = Process.monitor(dead_target)
+    assert_receive {:DOWN, ^monitor, :process, ^dead_target, _reason}
+
+    assert_raise ArgumentError, ~r/:headless.target must be a live local pid/, fn ->
+      Options.build_start_native_opts!(backend: :headless, headless: [target: dead_target])
     end
   end
 
@@ -274,11 +343,11 @@ defmodule EmergeSkia.OptionsTest do
 
   test "build_start_native_opts! disables renderer cache by default for raster renderer" do
     assert %{renderer_cache: %{enabled: false}} =
-             Options.build_start_native_opts!(backend_renderer: :raster)
+             Options.build_start_native_opts!(rendering_api: :raster)
 
     assert %{renderer_cache: %{enabled: true}} =
              Options.build_start_native_opts!(
-               backend_renderer: :raster,
+               rendering_api: :raster,
                renderer_cache: [enabled: true]
              )
   end

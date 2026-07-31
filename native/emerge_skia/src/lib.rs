@@ -4,9 +4,11 @@
 //! rendering, and headless rasterization for Emerge.
 
 use std::{
+    panic::{AssertUnwindSafe, catch_unwind},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc::{Sender as CleanupSender, channel as cleanup_channel},
     },
     thread,
     time::Duration,
@@ -19,7 +21,9 @@ use std::{
 use crossbeam_channel::unbounded;
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError, bounded};
 
-use rustler::{Atom, Binary, Encoder, Env, LocalPid, NewBinary, NifResult, ResourceArc, Term};
+use rustler::{
+    Atom, Binary, Decoder, Encoder, Env, LocalPid, NewBinary, NifResult, ResourceArc, Term,
+};
 pub mod actors;
 pub mod assets;
 pub mod backend;
@@ -73,13 +77,16 @@ use stats::{
 };
 use std::time::Instant;
 use tree::element::{ElementTree, NodeId};
-use video::{VideoMode, VideoRegistry, VideoTargetResource, VideoWake};
+use video::{
+    CanonicalSubmitError, VideoConsumerSessionResource, VideoMode, VideoRegistry,
+    VideoTargetResource, VideoWake,
+};
 
 type LayoutFrame<'a> = (Binary<'a>, f32, f32, f32, f32);
 type LayoutFrames<'a> = Vec<LayoutFrame<'a>>;
 
 /// Bump whenever the public `EmergeSkia.stats/2` payload shape changes.
-const STATS_SCHEMA_VERSION: u64 = 18;
+const STATS_SCHEMA_VERSION: u64 = 19;
 
 #[derive(Clone, Copy, Debug, rustler::NifMap)]
 struct StatsConfigureNif {
@@ -99,7 +106,7 @@ struct StatsSnapshotNif {
     version: u64,
     kind: String,
     enabled: bool,
-    backend_renderer: Option<BackendRendererInfoNif>,
+    rendering_api: Option<RenderingApiInfoNif>,
     window: StatsWindowNif,
     frames: StatsFrameSnapshotNif,
     timings: StatsTimingSnapshotNif,
@@ -233,7 +240,7 @@ impl StatsSnapshotNif {
         kind: &'static str,
         enabled: bool,
         reset_on_read: bool,
-        backend_renderer: Option<BackendRendererInfoNif>,
+        rendering_api: Option<RenderingApiInfoNif>,
         renderer_cache_status: RendererCacheStatus,
         snapshot: &RendererStatsSnapshot,
     ) -> Self {
@@ -243,7 +250,7 @@ impl StatsSnapshotNif {
             version: STATS_SCHEMA_VERSION,
             kind: kind.to_string(),
             enabled,
-            backend_renderer,
+            rendering_api,
             window: StatsWindowNif {
                 elapsed_ms: snapshot.window.as_millis() as u64,
                 reset_on_read,
@@ -394,6 +401,11 @@ mod atoms {
         ok,
         error,
         emerge_skia_frame,
+        caller_owned,
+        transferred,
+        released,
+        per_buffer,
+        implicit,
     }
 }
 
@@ -413,9 +425,9 @@ enum BackendKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RendererBackendKind {
+pub(crate) enum RenderingApi {
     Auto,
-    Gl,
+    OpenGl,
     Raster,
     Metal,
     Vulkan,
@@ -429,16 +441,16 @@ pub(crate) enum RasterPresentKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct BackendRendererConfig {
-    kind: RendererBackendKind,
+struct RenderingApiConfig {
+    kind: RenderingApi,
     raster_present: RasterPresentKind,
     raster_present_configured: bool,
 }
 
-impl BackendRendererConfig {
-    fn auto() -> Self {
+impl Default for RenderingApiConfig {
+    fn default() -> Self {
         Self {
-            kind: RendererBackendKind::Auto,
+            kind: RenderingApi::Auto,
             raster_present: RasterPresentKind::Auto,
             raster_present_configured: false,
         }
@@ -446,7 +458,7 @@ impl BackendRendererConfig {
 }
 
 #[derive(Clone, Debug, rustler::NifMap)]
-struct BackendRendererInfoNif {
+struct RenderingApiInfoNif {
     requested: String,
     selected: String,
 }
@@ -463,7 +475,7 @@ struct RendererCapabilitiesNif {
 #[derive(Clone, Debug, rustler::NifMap)]
 struct RendererInfoNif {
     backend: String,
-    backend_renderer: BackendRendererInfoNif,
+    rendering_api: RenderingApiInfoNif,
     capabilities: RendererCapabilitiesNif,
 }
 
@@ -492,10 +504,11 @@ impl RendererCacheStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct RendererRuntimeInfo {
     backend: BackendKind,
-    requested_renderer: RendererBackendKind,
-    selected_renderer: RendererBackendKind,
+    requested_rendering_api: RenderingApi,
+    selected_rendering_api: RenderingApi,
     raster_present: RasterPresentKind,
     renderer_cache: RendererCacheStatus,
+    screenshot_supported: bool,
     prime_video_supported: bool,
 }
 
@@ -517,6 +530,7 @@ struct RendererResource {
     close_signal_log: bool,
     log_render: bool,
     log_input: bool,
+    cleanup_dispatcher: CleanupDispatcher,
     handles: Mutex<Option<RendererHandles>>,
 }
 
@@ -683,6 +697,58 @@ struct ShutdownRuntimeContext {
     log_input: bool,
 }
 
+type CleanupTask = Box<dyn FnOnce() + Send + 'static>;
+
+#[derive(Clone)]
+pub(crate) struct CleanupDispatcher {
+    primary: CleanupSender<CleanupTask>,
+    fallback: CleanupSender<CleanupTask>,
+}
+
+impl CleanupDispatcher {
+    pub(crate) fn start() -> Result<Self, String> {
+        let primary = Self::start_worker("emerge_skia_cleanup")?;
+        let fallback = Self::start_worker("emerge_skia_cleanup_fallback")?;
+        Ok(Self { primary, fallback })
+    }
+
+    fn start_worker(name: &str) -> Result<CleanupSender<CleanupTask>, String> {
+        let (sender, receiver) = cleanup_channel::<CleanupTask>();
+        thread::Builder::new()
+            .name(name.to_string())
+            .spawn(move || {
+                while let Ok(task) = receiver.recv() {
+                    if catch_unwind(AssertUnwindSafe(task)).is_err() {
+                        eprintln!("EmergeSkia native cleanup task panicked; aborting");
+                        std::process::abort();
+                    }
+                }
+            })
+            .map_err(|error| format!("failed to start {name}: {error}"))?;
+        Ok(sender)
+    }
+
+    pub(crate) fn dispatch(&self, task: CleanupTask) {
+        let task = match self.primary.send(task) {
+            Ok(()) => return,
+            Err(error) => error.0,
+        };
+
+        if self.fallback.send(task).is_err() {
+            eprintln!("both EmergeSkia native cleanup workers stopped; aborting");
+            std::process::abort();
+        }
+    }
+
+    #[cfg(test)]
+    fn from_senders(
+        primary: CleanupSender<CleanupTask>,
+        fallback: CleanupSender<CleanupTask>,
+    ) -> Self {
+        Self { primary, fallback }
+    }
+}
+
 #[cfg_attr(
     not(any(
         all(feature = "wayland", target_os = "linux"),
@@ -705,6 +771,7 @@ struct TestHarnessResource {
     render_rx: Receiver<RenderMsg>,
     tree_tap_rx: Receiver<TreeMsg>,
     base_instant: Mutex<Instant>,
+    cleanup_dispatcher: CleanupDispatcher,
     handles: Mutex<Option<TestHarnessHandles>>,
 }
 
@@ -719,13 +786,39 @@ impl rustler::Resource for TestHarnessResource {}
 
 impl Drop for RendererResource {
     fn drop(&mut self) {
-        self.stop_inner(false);
+        self.video_registry.close_admission();
+        let registry = Arc::clone(&self.video_registry);
+        let wake = self.video_wake.clone();
+        let shutdown = self.take_shutdown_for_drop();
+
+        self.cleanup_dispatcher.dispatch(Box::new(move || {
+            registry.close();
+            wake.notify();
+            if let Some((ctx, handles)) = shutdown
+                && let Err(error) = shutdown_renderer_runtime(ctx, handles)
+            {
+                eprintln!("renderer drop shutdown failed: {error}");
+            }
+        }));
     }
 }
 
 impl Drop for TestHarnessResource {
     fn drop(&mut self) {
-        self.stop_inner();
+        let handles = match self.handles.get_mut() {
+            Ok(handles) => handles,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+        .take();
+        let Some(handles) = handles else {
+            return;
+        };
+        let tree_tx = self.tree_tx.clone();
+        let event_tx = self.event_tx.clone();
+
+        self.cleanup_dispatcher.dispatch(Box::new(move || {
+            stop_test_harness_runtime(tree_tx, event_tx, handles);
+        }));
     }
 }
 
@@ -741,37 +834,49 @@ impl TestHarnessResource {
         };
 
         drop(handles_guard);
-
-        send_event(&self.event_tx, EventMsg::Stop, false);
-        send_tree(&self.tree_tx, TreeMsg::Stop, false);
-
-        let _ = handles.proxy_handle.join();
-        let _ = handles.event_handle.join();
-        let _ = handles.tree_handle.join();
-        assets::stop();
-        clear_global_caches();
-        trim_process_allocator();
+        stop_test_harness_runtime(self.tree_tx.clone(), self.event_tx.clone(), handles);
     }
 }
 
+fn stop_test_harness_runtime(
+    tree_tx: Sender<TreeMsg>,
+    event_tx: Sender<EventMsg>,
+    handles: TestHarnessHandles,
+) {
+    send_event(&event_tx, EventMsg::Stop, false);
+    send_tree(&tree_tx, TreeMsg::Stop, false);
+
+    let _ = handles.proxy_handle.join();
+    let _ = handles.event_handle.join();
+    let _ = handles.tree_handle.join();
+    assets::stop();
+    clear_global_caches();
+    trim_process_allocator();
+}
+
 impl RendererResource {
-    fn stop(&self) {
-        self.stop_inner(true);
+    fn stop(&self) -> Result<(), String> {
+        self.video_registry.close();
+        self.video_wake.notify();
+        self.stop_inner()
     }
 
-    fn stop_inner(&self, block_until_joined: bool) {
+    fn stop_inner(&self) -> Result<(), String> {
         let mut handles_guard = match self.handles.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
 
         let Some(handles) = handles_guard.take() else {
-            return;
+            return Ok(());
         };
 
         drop(handles_guard);
+        shutdown_renderer_runtime(self.shutdown_context(), handles)
+    }
 
-        let ctx = ShutdownRuntimeContext {
+    fn shutdown_context(&self) -> ShutdownRuntimeContext {
+        ShutdownRuntimeContext {
             running_flag: Arc::clone(&self.running_flag),
             backend_wake: self.backend_wake.clone(),
             stop_flag: Arc::clone(&self.stop_flag),
@@ -781,17 +886,23 @@ impl RendererResource {
             close_signal_log: self.close_signal_log,
             log_render: self.log_render,
             log_input: self.log_input,
-        };
-
-        if block_until_joined || self.running_flag.load(Ordering::Relaxed) {
-            shutdown_renderer_runtime(ctx, handles);
-        } else {
-            thread::spawn(move || shutdown_renderer_runtime(ctx, handles));
         }
+    }
+
+    fn take_shutdown_for_drop(&mut self) -> Option<(ShutdownRuntimeContext, RendererHandles)> {
+        let handles = match self.handles.get_mut() {
+            Ok(handles) => handles,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+        .take()?;
+        Some((self.shutdown_context(), handles))
     }
 }
 
-fn shutdown_renderer_runtime(ctx: ShutdownRuntimeContext, mut handles: RendererHandles) {
+fn shutdown_renderer_runtime(
+    ctx: ShutdownRuntimeContext,
+    mut handles: RendererHandles,
+) -> Result<(), String> {
     let ShutdownRuntimeContext {
         running_flag,
         backend_wake,
@@ -814,29 +925,46 @@ fn shutdown_renderer_runtime(ctx: ShutdownRuntimeContext, mut handles: RendererH
 
     backend_wake.request_stop();
 
-    if let Some(handle) = handles.event_handle.take() {
-        let _ = handle.join();
-    }
-
-    if let Some(handle) = handles.heartbeat_handle.take() {
-        let _ = handle.join();
-    }
-
-    if let Some(handle) = handles.tree_handle.take() {
-        let _ = handle.join();
-    }
-
-    if let Some(handle) = handles.input_handle.take() {
-        let _ = handle.join();
-    }
-
-    if let Some(handle) = handles.backend_handle.take() {
-        let _ = handle.join();
-    }
+    let mut join_failures = Vec::new();
+    join_runtime_thread("event", handles.event_handle.take(), &mut join_failures);
+    join_runtime_thread(
+        "heartbeat",
+        handles.heartbeat_handle.take(),
+        &mut join_failures,
+    );
+    join_runtime_thread("tree", handles.tree_handle.take(), &mut join_failures);
+    join_runtime_thread("input", handles.input_handle.take(), &mut join_failures);
+    join_runtime_thread("backend", handles.backend_handle.take(), &mut join_failures);
 
     log_close_signal(close_signal_log, "nif_close", "shutdown end");
     clear_global_caches();
     trim_process_allocator();
+
+    if join_failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "renderer thread join failures: {}",
+            join_failures.join(", ")
+        ))
+    }
+}
+
+fn join_runtime_thread(
+    name: &'static str,
+    handle: Option<thread::JoinHandle<()>>,
+    failures: &mut Vec<String>,
+) {
+    if let Some(handle) = handle
+        && let Err(panic) = handle.join()
+    {
+        let detail = panic
+            .downcast_ref::<&str>()
+            .map(|message| (*message).to_string())
+            .or_else(|| panic.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown panic payload".to_string());
+        failures.push(format!("{name}: {detail}"));
+    }
 }
 
 #[cfg_attr(
@@ -864,21 +992,21 @@ impl BackendKind {
     }
 }
 
-impl RendererBackendKind {
+impl RenderingApi {
     fn as_str(self) -> &'static str {
         match self {
-            RendererBackendKind::Auto => "auto",
-            RendererBackendKind::Gl => "gl",
-            RendererBackendKind::Raster => "raster",
-            RendererBackendKind::Metal => "metal",
-            RendererBackendKind::Vulkan => "vulkan",
+            RenderingApi::Auto => "auto",
+            RenderingApi::OpenGl => "opengl",
+            RenderingApi::Raster => "raster",
+            RenderingApi::Metal => "metal",
+            RenderingApi::Vulkan => "vulkan",
         }
     }
 
     fn has_gpu(self) -> bool {
         matches!(
             self,
-            RendererBackendKind::Gl | RendererBackendKind::Metal | RendererBackendKind::Vulkan
+            RenderingApi::OpenGl | RenderingApi::Metal | RenderingApi::Vulkan
         )
     }
 }
@@ -894,18 +1022,18 @@ impl RasterPresentKind {
 }
 
 impl RendererRuntimeInfo {
-    fn backend_renderer_nif(self) -> BackendRendererInfoNif {
-        BackendRendererInfoNif {
-            requested: self.requested_renderer.as_str().to_string(),
-            selected: self.selected_renderer.as_str().to_string(),
+    fn rendering_api_nif(self) -> RenderingApiInfoNif {
+        RenderingApiInfoNif {
+            requested: self.requested_rendering_api.as_str().to_string(),
+            selected: self.selected_rendering_api.as_str().to_string(),
         }
     }
 
     fn renderer_label(self) -> String {
         format!(
             "{} ({})",
-            self.requested_renderer.as_str(),
-            self.selected_renderer.as_str()
+            self.requested_rendering_api.as_str(),
+            self.selected_rendering_api.as_str()
         )
     }
 
@@ -914,11 +1042,11 @@ impl RendererRuntimeInfo {
 
         RendererInfoNif {
             backend: self.backend.as_str().to_string(),
-            backend_renderer: self.backend_renderer_nif(),
+            rendering_api: self.rendering_api_nif(),
             capabilities: RendererCapabilitiesNif {
-                gpu: self.selected_renderer.has_gpu(),
+                gpu: self.selected_rendering_api.has_gpu(),
                 renderer_cache: self.renderer_cache.enabled,
-                screenshot: true,
+                screenshot: self.screenshot_supported,
                 raster_present: raster_present_capabilities(self.backend)
                     .into_iter()
                     .map(ToString::to_string)
@@ -941,20 +1069,24 @@ fn raster_present_capabilities(backend: BackendKind) -> Vec<&'static str> {
     }
 }
 
-fn selected_renderer_for_config(config: BackendRendererConfig) -> RendererBackendKind {
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
+fn selected_rendering_api_for_config(config: RenderingApiConfig) -> RenderingApi {
     match config.kind {
-        RendererBackendKind::Auto => RendererBackendKind::Gl,
+        RenderingApi::Auto => RenderingApi::OpenGl,
         explicit => explicit,
     }
 }
 
 fn renderer_cache_status(
-    selected_renderer: RendererBackendKind,
+    selected_rendering_api: RenderingApi,
     config: RendererCacheConfig,
 ) -> RendererCacheStatus {
     if config.enabled {
         RendererCacheStatus::enabled()
-    } else if matches!(selected_renderer, RendererBackendKind::Raster) {
+    } else if matches!(selected_rendering_api, RenderingApi::Raster) {
         RendererCacheStatus::disabled("raster_renderer")
     } else {
         RendererCacheStatus::disabled("configured_disabled")
@@ -974,7 +1106,7 @@ fn spawn_running_heartbeat(
     native_log: Arc<NativeLogRelay>,
     stats: Option<Arc<RendererStatsCollector>>,
     backend_label: &'static str,
-    backend_renderer_label: String,
+    rendering_api_label: String,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let mut ticks = 0_u64;
@@ -990,7 +1122,7 @@ fn spawn_running_heartbeat(
                         "renderer_stats",
                         stats::format_renderer_stats_log(
                             backend_label,
-                            &backend_renderer_label,
+                            &rendering_api_label,
                             &stats.snapshot(),
                         ),
                     );
@@ -1064,7 +1196,8 @@ struct StartConfig {
         )),
         allow(dead_code)
     )]
-    backend_renderer: BackendRendererConfig,
+    rendering_api: RenderingApiConfig,
+    requested_rendering_api: RenderingApi,
     #[cfg_attr(not(all(feature = "wayland", target_os = "linux")), allow(dead_code))]
     title: String,
     #[cfg_attr(
@@ -1152,6 +1285,7 @@ struct StartConfig {
         allow(dead_code)
     )]
     renderer_cache_config: RendererCacheConfig,
+    renderer_cache_enabled_configured: bool,
     headless: HeadlessConfig,
 }
 
@@ -1163,6 +1297,13 @@ struct HeadlessConfig {
     bw1_polarity: String,
     target_fps: Option<u32>,
     frame_message: String,
+    prime: HeadlessPrimeConfig,
+}
+
+#[derive(Clone, Debug)]
+struct HeadlessPrimeConfig {
+    max_in_flight: u32,
+    on_backpressure: String,
 }
 
 impl std::fmt::Debug for HeadlessConfig {
@@ -1174,6 +1315,7 @@ impl std::fmt::Debug for HeadlessConfig {
             .field("bw1_polarity", &self.bw1_polarity)
             .field("target_fps", &self.target_fps)
             .field("frame_message", &self.frame_message)
+            .field("prime", &self.prime)
             .finish()
     }
 }
@@ -1187,6 +1329,10 @@ impl Default for HeadlessConfig {
             bw1_polarity: "one_is_black".to_string(),
             target_fps: None,
             frame_message: "emerge_skia_frame".to_string(),
+            prime: HeadlessPrimeConfig {
+                max_in_flight: 2,
+                on_backpressure: "drop_new".to_string(),
+            },
         }
     }
 }
@@ -1202,7 +1348,7 @@ pub(crate) struct DrmCursorOverrideConfig {
 #[derive(rustler::NifMap)]
 struct StartOptsNif {
     backend: String,
-    backend_renderer: BackendRendererConfigNif,
+    rendering_api: RenderingApiConfigNif,
     headless: HeadlessConfigNif,
     title: String,
     width: u32,
@@ -1230,7 +1376,7 @@ struct StartOptsNif {
 }
 
 #[derive(Clone, Debug, rustler::NifMap)]
-struct BackendRendererConfigNif {
+struct RenderingApiConfigNif {
     kind: String,
     raster_present: String,
     raster_present_configured: bool,
@@ -1244,11 +1390,19 @@ struct HeadlessConfigNif {
     bw1_polarity: String,
     target_fps: Option<u32>,
     frame_message: String,
+    prime: HeadlessPrimeConfigNif,
+}
+
+#[derive(Clone, rustler::NifMap)]
+struct HeadlessPrimeConfigNif {
+    max_in_flight: u32,
+    on_backpressure: String,
 }
 
 #[derive(Clone, Copy, Debug, rustler::NifMap)]
 struct RendererCacheConfigNif {
     enabled: bool,
+    enabled_configured: bool,
     max_new_payloads_per_frame: u32,
     paint_layer: RendererPaintLayerCacheConfigNif,
 }
@@ -1302,7 +1456,7 @@ fn start_with_config(
     config: StartConfig,
     initial_log_target: Option<LocalPid>,
 ) -> NifResult<ResourceArc<RendererResource>> {
-    ensure_backend_renderer_supported(config.backend, config.backend_renderer)
+    ensure_rendering_api_supported(config.backend, config.rendering_api)
         .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
 
     if matches!(config.backend, BackendKind::Headless) {
@@ -1324,7 +1478,7 @@ fn renderer_cache_config_from_nif(
     config: RendererCacheConfigNif,
 ) -> Result<RendererCacheConfig, String> {
     let max_entries = usize::try_from(config.paint_layer.max_entries).map_err(|_| {
-        "renderer_cache.paint_layer.max_entries does not fit this platform".to_string()
+        "renderer_cache.paint_layer.max_entries does not fit this backend".to_string()
     })?;
 
     Ok(RendererCacheConfig {
@@ -1344,10 +1498,47 @@ fn renderer_cache_config_from_nif(
     all(feature = "wayland", target_os = "linux"),
     all(feature = "drm", target_os = "linux")
 ))]
+fn auto_raster_fallback_config(config: &StartConfig) -> Option<StartConfig> {
+    if !matches!(config.rendering_api.kind, RenderingApi::Auto) {
+        return None;
+    }
+
+    let mut fallback = config.clone();
+    fallback.rendering_api.kind = RenderingApi::Raster;
+    if !fallback.renderer_cache_enabled_configured {
+        fallback.renderer_cache_config.enabled = false;
+    }
+    Some(fallback)
+}
+
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
+fn start_auto_raster_fallback_or_error(
+    fallback: Option<StartConfig>,
+    initial_log_target: Option<LocalPid>,
+    reason: String,
+) -> NifResult<ResourceArc<RendererResource>> {
+    match fallback {
+        Some(config) => {
+            eprintln!("OpenGL backend startup failed; falling back to raster: {reason}");
+            start_native_renderer_with_config(config, initial_log_target)
+        }
+        None => Err(rustler::Error::Term(Box::new(reason))),
+    }
+}
+
+#[cfg(any(
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux")
+))]
 fn start_native_renderer_with_config(
     config: StartConfig,
     initial_log_target: Option<LocalPid>,
 ) -> NifResult<ResourceArc<RendererResource>> {
+    let auto_raster_fallback = auto_raster_fallback_config(&config);
+    let fallback_log_target = initial_log_target;
     let running_flag = Arc::new(AtomicBool::new(true));
     let stop_flag = Arc::new(AtomicBool::new(false));
     let render_counter = Arc::new(AtomicU64::new(0));
@@ -1364,14 +1555,16 @@ fn start_native_renderer_with_config(
     let renderer_stats = (config.stats_enabled || config.renderer_stats_log)
         .then(|| Arc::new(RendererStatsCollector::new()));
     let backend_label = backend_stats_label(config.backend);
-    let selected_renderer = selected_renderer_for_config(config.backend_renderer);
-    let renderer_cache = renderer_cache_status(selected_renderer, config.renderer_cache_config);
-    let backend_renderer_label = RendererRuntimeInfo {
+    let selected_rendering_api = selected_rendering_api_for_config(config.rendering_api);
+    let renderer_cache =
+        renderer_cache_status(selected_rendering_api, config.renderer_cache_config);
+    let rendering_api_label = RendererRuntimeInfo {
         backend: config.backend,
-        requested_renderer: config.backend_renderer.kind,
-        selected_renderer,
-        raster_present: config.backend_renderer.raster_present,
+        requested_rendering_api: config.requested_rendering_api,
+        selected_rendering_api,
+        raster_present: config.rendering_api.raster_present,
         renderer_cache,
+        screenshot_supported: true,
         prime_video_supported: false,
     }
     .renderer_label();
@@ -1405,6 +1598,8 @@ fn start_native_renderer_with_config(
     };
     let release_tx = video::spawn_release_worker()
         .map_err(|error| rustler::Error::Term(Box::new(error.to_string())))?;
+    let cleanup_dispatcher =
+        CleanupDispatcher::start().map_err(|error| rustler::Error::Term(Box::new(error)))?;
 
     let mut handles = RendererHandles {
         heartbeat_handle: Some(spawn_running_heartbeat(
@@ -1413,14 +1608,18 @@ fn start_native_renderer_with_config(
             Arc::clone(&native_log),
             heartbeat_stats,
             backend_label,
-            backend_renderer_label,
+            rendering_api_label,
         )),
         ..RendererHandles::default()
     };
 
     let initial_width = config.width;
     let initial_height = config.height;
-    let video_registry = Arc::new(VideoRegistry::new(release_tx, renderer_stats.clone()));
+    let video_registry = Arc::new(VideoRegistry::new(
+        release_tx,
+        cleanup_dispatcher.clone(),
+        renderer_stats.clone(),
+    ));
     #[cfg(any(
         all(feature = "wayland", target_os = "linux"),
         all(feature = "drm", target_os = "linux")
@@ -1466,8 +1665,8 @@ fn start_native_renderer_with_config(
                     stats: renderer_stats_clone,
                     renderer_stats_log,
                     renderer_animation_log,
-                    renderer_backend: selected_renderer,
-                    raster_present: config.backend_renderer.raster_present,
+                    rendering_api: selected_rendering_api,
+                    raster_present: config.rendering_api.raster_present,
                     renderer_cache_config,
                     latest_frame: latest_frame_clone,
                     native_log: native_log_clone,
@@ -1481,7 +1680,7 @@ fn start_native_renderer_with_config(
             let startup = match proxy_rx.recv() {
                 Ok(Ok(startup)) => startup,
                 Ok(Err(reason)) => {
-                    shutdown_renderer_runtime(
+                    let _ = shutdown_renderer_runtime(
                         ShutdownRuntimeContext {
                             running_flag: Arc::clone(&running_flag),
                             backend_wake: backend_wake.clone(),
@@ -1496,10 +1695,14 @@ fn start_native_renderer_with_config(
                         std::mem::take(&mut handles),
                     );
 
-                    return Err(rustler::Error::Term(Box::new(reason)));
+                    return start_auto_raster_fallback_or_error(
+                        auto_raster_fallback,
+                        fallback_log_target,
+                        reason,
+                    );
                 }
                 Err(_) => {
-                    shutdown_renderer_runtime(
+                    let _ = shutdown_renderer_runtime(
                         ShutdownRuntimeContext {
                             running_flag: Arc::clone(&running_flag),
                             backend_wake: backend_wake.clone(),
@@ -1514,9 +1717,11 @@ fn start_native_renderer_with_config(
                         std::mem::take(&mut handles),
                     );
 
-                    return Err(rustler::Error::Term(Box::new(
-                        "failed to receive backend startup info",
-                    )));
+                    return start_auto_raster_fallback_or_error(
+                        auto_raster_fallback,
+                        fallback_log_target,
+                        "failed to receive backend startup info".to_string(),
+                    );
                 }
             };
 
@@ -1600,8 +1805,8 @@ fn start_native_renderer_with_config(
                 hw_cursor: config.drm_hw_cursor,
                 render_log: log_render,
                 renderer_stats_log: config.renderer_stats_log,
-                renderer_backend: selected_renderer,
-                raster_present: config.backend_renderer.raster_present,
+                rendering_api: selected_rendering_api,
+                raster_present: config.rendering_api.raster_present,
                 renderer_cache_config: config.renderer_cache_config,
             };
 
@@ -1632,7 +1837,7 @@ fn start_native_renderer_with_config(
             match startup_rx.recv() {
                 Ok(Ok(())) => {}
                 Ok(Err(reason)) => {
-                    shutdown_renderer_runtime(
+                    let _ = shutdown_renderer_runtime(
                         ShutdownRuntimeContext {
                             running_flag: Arc::clone(&running_flag),
                             backend_wake: backend_wake.clone(),
@@ -1647,10 +1852,14 @@ fn start_native_renderer_with_config(
                         std::mem::take(&mut handles),
                     );
 
-                    return Err(rustler::Error::Term(Box::new(reason)));
+                    return start_auto_raster_fallback_or_error(
+                        auto_raster_fallback,
+                        fallback_log_target,
+                        reason,
+                    );
                 }
                 Err(_) => {
-                    shutdown_renderer_runtime(
+                    let _ = shutdown_renderer_runtime(
                         ShutdownRuntimeContext {
                             running_flag: Arc::clone(&running_flag),
                             backend_wake: backend_wake.clone(),
@@ -1665,9 +1874,11 @@ fn start_native_renderer_with_config(
                         std::mem::take(&mut handles),
                     );
 
-                    return Err(rustler::Error::Term(Box::new(
-                        "failed to receive DRM backend startup info",
-                    )));
+                    return start_auto_raster_fallback_or_error(
+                        auto_raster_fallback,
+                        fallback_log_target,
+                        "failed to receive DRM backend startup info".to_string(),
+                    );
                 }
             }
 
@@ -1687,7 +1898,7 @@ fn start_native_renderer_with_config(
 
             (
                 BackendKind::Drm,
-                matches!(selected_renderer, RendererBackendKind::Gl),
+                matches!(selected_rendering_api, RenderingApi::OpenGl),
             )
         }
         #[cfg(feature = "macos")]
@@ -1743,15 +1954,17 @@ fn start_native_renderer_with_config(
         latest_frame,
         info: RendererRuntimeInfo {
             backend,
-            requested_renderer: config.backend_renderer.kind,
-            selected_renderer,
-            raster_present: config.backend_renderer.raster_present,
+            requested_rendering_api: config.requested_rendering_api,
+            selected_rendering_api,
+            raster_present: config.rendering_api.raster_present,
             renderer_cache,
+            screenshot_supported: true,
             prime_video_supported,
         },
         close_signal_log,
         log_render,
         log_input,
+        cleanup_dispatcher,
         handles: Mutex::new(Some(handles)),
     };
 
@@ -1785,7 +1998,8 @@ fn start(
         start_with_config(
             StartConfig {
                 backend: BackendKind::Wayland,
-                backend_renderer: BackendRendererConfig::auto(),
+                rendering_api: RenderingApiConfig::default(),
+                requested_rendering_api: RenderingApi::Auto,
                 title,
                 width,
                 height,
@@ -1804,6 +2018,7 @@ fn start(
                 renderer_stats_log: false,
                 renderer_animation_log: false,
                 renderer_cache_config: RendererCacheConfig::default(),
+                renderer_cache_enabled_configured: false,
                 headless: HeadlessConfig::default(),
             },
             Some(env.pid()),
@@ -1813,7 +2028,7 @@ fn start(
     {
         let _ = (env, title, width, height);
         Err(rustler::Error::Term(Box::new(
-            "Wayland backend not compiled; add :wayland to config :emerge, compiled_backends: [...]"
+            "Wayland backend is not compiled; add :wayland to config :emerge, compiled_backends: [...]"
                 .to_string(),
         )))
     }
@@ -1824,7 +2039,7 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
     let backend = opts.backend.to_lowercase();
     let backend =
         parse_backend_name(&backend).map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
-    let backend_renderer = parse_backend_renderer_config(opts.backend_renderer)
+    let rendering_api = parse_rendering_api_config(opts.rendering_api)
         .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
     let asset_config = AssetConfig {
         sources: opts.asset_sources,
@@ -1836,13 +2051,15 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
     };
     let drm_cursor_overrides = parse_drm_cursor_overrides(opts.drm_cursor)
         .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
+    let renderer_cache_enabled_configured = opts.renderer_cache.enabled_configured;
     let renderer_cache_config = renderer_cache_config_from_nif(opts.renderer_cache)
         .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
 
     start_with_config(
         StartConfig {
             backend,
-            backend_renderer,
+            rendering_api,
+            requested_rendering_api: rendering_api.kind,
             title: opts.title,
             width: opts.width,
             height: opts.height,
@@ -1861,6 +2078,7 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
             renderer_stats_log: opts.renderer_stats_log,
             renderer_animation_log: opts.renderer_animation_log,
             renderer_cache_config,
+            renderer_cache_enabled_configured,
             headless: HeadlessConfig {
                 target: opts.headless.target,
                 mode: opts.headless.mode,
@@ -1868,6 +2086,10 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
                 bw1_polarity: opts.headless.bw1_polarity,
                 target_fps: opts.headless.target_fps,
                 frame_message: opts.headless.frame_message,
+                prime: HeadlessPrimeConfig {
+                    max_in_flight: opts.headless.prime.max_in_flight,
+                    on_backpressure: opts.headless.prime.on_backpressure,
+                },
             },
         },
         Some(env.pid()),
@@ -1875,9 +2097,9 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
 }
 
 #[rustler::nif(schedule = "DirtyIo")]
-fn stop(renderer: ResourceArc<RendererResource>) -> Atom {
-    renderer.stop();
-    atoms::ok()
+fn stop(renderer: ResourceArc<RendererResource>) -> Result<Atom, String> {
+    renderer.stop()?;
+    Ok(atoms::ok())
 }
 
 fn ensure_video_target_mode_supported(
@@ -1891,7 +2113,7 @@ fn ensure_video_target_mode_supported(
     }
 }
 
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 fn video_target_new(
     renderer: ResourceArc<RendererResource>,
     id: String,
@@ -1908,15 +2130,18 @@ fn video_target_new(
         height,
         mode,
     };
-    renderer.video_registry.create_target(spec)?;
+    let incarnation = renderer.video_registry.create_target(spec)?;
 
     Ok(ResourceArc::new(VideoTargetResource {
         id,
+        renderer_epoch: renderer.video_registry.renderer_epoch,
+        incarnation,
         _width: width,
         _height: height,
         _mode: mode,
         registry: Arc::clone(&renderer.video_registry),
         wake: renderer.video_wake.clone(),
+        cleanup_dispatcher: renderer.cleanup_dispatcher.clone(),
     }))
 }
 
@@ -1927,9 +2152,126 @@ fn video_target_submit_prime(
 ) -> Result<bool, String> {
     let spec = target.registry.target_spec(&target.id)?;
     desc.validate_for_target(&target.id, spec.mode, spec.width, spec.height)?;
-    target.registry.submit_prime(&target.id, desc.into())?;
+    let submitted =
+        target
+            .registry
+            .submit_prime_exact(&target.id, target.incarnation, desc.into())?;
+    if matches!(submitted, video::VideoSubmitResult::Queued) {
+        target.wake.notify();
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn video_consumer_session_open(
+    target: ResourceArc<VideoTargetResource>,
+    width: u32,
+    height: u32,
+    fourcc: u32,
+    modifier: Term<'_>,
+) -> Result<ResourceArc<VideoConsumerSessionResource>, String> {
+    if target.renderer_epoch != target.registry.renderer_epoch {
+        return Err("stale video renderer epoch".to_string());
+    }
+    let modifier_policy = decode_stream_modifier_policy(modifier)?;
+    let stream_id = target.registry.open_stream(
+        &target.id,
+        target.incarnation,
+        width,
+        height,
+        fourcc,
+        modifier_policy,
+    )?;
     target.wake.notify();
-    Ok(true)
+    Ok(ResourceArc::new(VideoConsumerSessionResource::new(
+        &target, stream_id,
+    )))
+}
+
+fn decode_stream_modifier_policy(term: Term<'_>) -> Result<video::StreamModifierPolicy, String> {
+    if let Ok(atom) = term.decode::<Atom>() {
+        if atom == atoms::per_buffer() {
+            return Ok(video::StreamModifierPolicy::PerBuffer);
+        }
+        if atom == atoms::implicit() {
+            return Ok(video::StreamModifierPolicy::Implicit);
+        }
+        return Err("unsupported video stream modifier policy".to_string());
+    }
+
+    term.decode::<u64>()
+        .map(video::StreamModifierPolicy::Explicit)
+        .map_err(|_| {
+            "video stream modifier policy must be :per_buffer, :implicit, or u64".to_string()
+        })
+}
+
+fn decode_video_frame(term: Term<'_>) -> Result<video_interop::Frame<'_>, (Atom, String)> {
+    video_interop::Frame::decode(term).map_err(|error| {
+        (
+            atoms::caller_owned(),
+            format!("invalid VideoInterop.Frame: {error:?}"),
+        )
+    })
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn video_consumer_session_submit(
+    session: ResourceArc<VideoConsumerSessionResource>,
+    frame: Term<'_>,
+) -> Result<Atom, (Atom, String)> {
+    let frame = decode_video_frame(frame)?;
+    if session.renderer_epoch != session.registry.renderer_epoch {
+        return Err((
+            atoms::caller_owned(),
+            "stale video renderer epoch".to_string(),
+        ));
+    }
+    if session.is_closed() {
+        return Err((
+            atoms::caller_owned(),
+            "video consumer stream is closed".to_string(),
+        ));
+    }
+    let prepared = frame
+        .prepare_cloexec()
+        .map_err(|error| (atoms::caller_owned(), error.to_string()))?;
+    match session.registry.submit_canonical(
+        &session.id,
+        session.incarnation,
+        session.stream_id,
+        prepared,
+    ) {
+        Ok(video::VideoSubmitResult::Queued) => {
+            session.wake.notify();
+            Ok(atoms::transferred())
+        }
+        Ok(video::VideoSubmitResult::DroppedInactive) => Ok(atoms::released()),
+        Err(CanonicalSubmitError::CallerOwned(reason)) => Err((atoms::caller_owned(), reason)),
+        Err(CanonicalSubmitError::Transferred(reason)) => Err((atoms::transferred(), reason)),
+    }
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn video_consumer_decode_for_test(frame: Term<'_>) -> Result<Atom, (Atom, String)> {
+    let _frame = decode_video_frame(frame)?;
+    Ok(atoms::caller_owned())
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn video_consumer_session_close(session: ResourceArc<VideoConsumerSessionResource>) -> Atom {
+    session.close();
+    atoms::ok()
+}
+
+#[rustler::nif]
+fn headless_prime_release_backend_token(
+    backend_token: ResourceArc<backend::headless::HeadlessPrimeBackendToken>,
+) -> Atom {
+    backend::headless::release_backend_token(backend_token);
+    atoms::ok()
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
@@ -2072,6 +2414,9 @@ fn renderer_capture_pixels<'a>(
     renderer: ResourceArc<RendererResource>,
     opts: ScreenshotOptsNif,
 ) -> Result<Binary<'a>, String> {
+    if !renderer.info.screenshot_supported {
+        return Err("screenshot capture is not supported for headless PRIME output".to_string());
+    }
     let capture = capture_latest_frame(renderer.latest_frame.latest(), &opts)?;
     let pixels = convert_screenshot_pixels(&capture, &opts.pixel_format)?;
     let mut binary = NewBinary::new(env, pixels.len());
@@ -2085,6 +2430,9 @@ fn renderer_capture_png<'a>(
     renderer: ResourceArc<RendererResource>,
     opts: ScreenshotOptsNif,
 ) -> Result<Binary<'a>, String> {
+    if !renderer.info.screenshot_supported {
+        return Err("screenshot capture is not supported for headless PRIME output".to_string());
+    }
     let capture = capture_latest_frame(renderer.latest_frame.latest(), &opts)?;
     let encoded = services::encode_rgba_png(capture.width, capture.height, &capture.pixels)?;
     let mut binary = NewBinary::new(env, encoded.len());
@@ -2123,7 +2471,7 @@ fn renderer_stats_snapshot<'a>(
             "renderer",
             enabled,
             reset_on_read,
-            Some(renderer.info.backend_renderer_nif()),
+            Some(renderer.info.rendering_api_nif()),
             renderer.info.renderer_cache,
             &snapshot,
         )
@@ -2213,7 +2561,7 @@ fn crop_screenshot_frame(
         .flat_map(|row| {
             let start = (start_row + row) * source_stride + x_offset;
             let end = start + dest_stride;
-            frame.pixels[start..end].iter().copied().collect::<Vec<_>>()
+            frame.pixels[start..end].to_vec()
         })
         .collect();
 
@@ -2596,12 +2944,15 @@ fn test_harness_new(width: u32, height: u32) -> Result<ResourceArc<TestHarnessRe
         ElementTree::new(),
     );
 
+    let cleanup_dispatcher = CleanupDispatcher::start()?;
+
     Ok(ResourceArc::new(TestHarnessResource {
         tree_tx,
         event_tx,
         render_rx,
         tree_tap_rx,
         base_instant: Mutex::new(Instant::now()),
+        cleanup_dispatcher,
         handles: Mutex::new(Some(TestHarnessHandles {
             proxy_handle,
             tree_handle,
@@ -3024,7 +3375,8 @@ mod tests {
                 event_handle: Some(event_handle),
                 heartbeat_handle: None,
             },
-        );
+        )
+        .expect("runtime threads should join cleanly");
 
         assert!(!running_flag.load(Ordering::Relaxed));
         assert!(stop_flag.load(Ordering::Relaxed));
@@ -3032,6 +3384,57 @@ mod tests {
         assert!(event_stopped.load(Ordering::Relaxed));
         assert!(backend_stopped.load(Ordering::Relaxed));
         assert!(input_stopped.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn shutdown_renderer_runtime_reports_thread_panics() {
+        let running_flag = Arc::new(AtomicBool::new(false));
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let (tree_tx, _tree_rx) = bounded(1);
+        let (event_tx, _event_rx) = bounded(1);
+        let (render_tx, render_rx) = bounded(1);
+        let backend_handle = thread::spawn(|| panic!("forced backend panic"));
+
+        let error = shutdown_renderer_runtime(
+            ShutdownRuntimeContext {
+                running_flag,
+                backend_wake: BackendWakeHandle::noop(),
+                stop_flag,
+                tree_tx,
+                event_tx,
+                render_tx: RenderSender {
+                    tx: render_tx,
+                    drop_rx: render_rx,
+                    log_render: false,
+                },
+                close_signal_log: false,
+                log_render: false,
+                log_input: false,
+            },
+            RendererHandles {
+                backend_handle: Some(backend_handle),
+                ..RendererHandles::default()
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.contains("backend: forced backend panic"));
+    }
+
+    #[test]
+    fn cleanup_dispatcher_uses_persistent_fallback_when_primary_is_closed() {
+        let (primary, primary_rx) = cleanup_channel::<CleanupTask>();
+        drop(primary_rx);
+        let fallback = CleanupDispatcher::start_worker("emerge_skia_cleanup_test_fallback")
+            .expect("fallback cleanup worker should start");
+        let dispatcher = CleanupDispatcher::from_senders(primary, fallback);
+        let (completed_tx, completed_rx) = std::sync::mpsc::channel();
+
+        dispatcher.dispatch(Box::new(move || {
+            let _ = completed_tx.send(());
+        }));
+
+        assert_eq!(completed_rx.recv_timeout(Duration::from_secs(1)), Ok(()));
     }
 
     #[test]
@@ -3088,6 +3491,7 @@ mod tests {
             })
         };
 
+        let cleanup_dispatcher = CleanupDispatcher::start().expect("start cleanup dispatcher");
         let resource = Arc::new(RendererResource {
             running_flag: Arc::clone(&running_flag),
             backend_wake: backend_wake.clone(),
@@ -3096,23 +3500,29 @@ mod tests {
             event_tx,
             input_target: Arc::new(InputTargetRelay::default()),
             render_tx: render_sender,
-            video_registry: Arc::new(VideoRegistry::new(release_tx, None)),
+            video_registry: Arc::new(VideoRegistry::new(
+                release_tx,
+                cleanup_dispatcher.clone(),
+                None,
+            )),
             video_wake: VideoWake::noop(),
             prime_video_supported: false,
             native_log: Arc::new(NativeLogRelay::default()),
             stats: None,
             latest_frame: Arc::new(LatestFrameStore::default()),
             info: RendererRuntimeInfo {
-                backend: BackendKind::Wayland,
-                requested_renderer: RendererBackendKind::Auto,
-                selected_renderer: RendererBackendKind::Gl,
+                backend: BackendKind::Headless,
+                requested_rendering_api: RenderingApi::Auto,
+                selected_rendering_api: RenderingApi::OpenGl,
                 raster_present: RasterPresentKind::Auto,
                 renderer_cache: RendererCacheStatus::enabled(),
+                screenshot_supported: true,
                 prime_video_supported: false,
             },
             close_signal_log: false,
             log_render: false,
             log_input: false,
+            cleanup_dispatcher,
             handles: Mutex::new(Some(RendererHandles {
                 backend_handle: Some(backend_handle),
                 input_handle: None,
@@ -3127,7 +3537,7 @@ mod tests {
             let resource = Arc::clone(&resource);
 
             thread::spawn(move || {
-                resource.stop();
+                resource.stop().expect("renderer should stop cleanly");
                 let _ = stop_done_tx.send(());
             })
         };
@@ -3208,43 +3618,43 @@ mod tests {
     }
 
     #[test]
-    fn parse_backend_renderer_config_accepts_nested_raster_present() {
-        let config = parse_backend_renderer_config(BackendRendererConfigNif {
+    fn parse_rendering_api_config_accepts_nested_raster_present() {
+        let config = parse_rendering_api_config(RenderingApiConfigNif {
             kind: "raster".to_string(),
             raster_present: "cpu".to_string(),
             raster_present_configured: true,
         })
         .expect("valid backend renderer config");
 
-        assert_eq!(config.kind, RendererBackendKind::Raster);
+        assert_eq!(config.kind, RenderingApi::Raster);
         assert_eq!(config.raster_present, RasterPresentKind::Cpu);
         assert!(config.raster_present_configured);
     }
 
     #[test]
-    fn parse_backend_renderer_config_rejects_unknown_present_mode() {
-        let err = parse_backend_renderer_config(BackendRendererConfigNif {
+    fn parse_rendering_api_config_rejects_unknown_present_mode() {
+        let err = parse_rendering_api_config(RenderingApiConfigNif {
             kind: "raster".to_string(),
             raster_present: "bogus".to_string(),
             raster_present_configured: true,
         })
         .expect_err("unknown present mode should be rejected");
 
-        assert!(err.contains("unsupported backend_renderer raster present mode"));
+        assert!(err.contains("unsupported rendering_api raster present mode"));
     }
 
     #[cfg(all(feature = "wayland", target_os = "linux"))]
     #[test]
-    fn backend_renderer_matrix_allows_wayland_auto_and_gl() {
+    fn rendering_api_matrix_allows_wayland_auto_and_gl() {
         assert!(
-            ensure_backend_renderer_supported(BackendKind::Wayland, BackendRendererConfig::auto())
+            ensure_rendering_api_supported(BackendKind::Wayland, RenderingApiConfig::default())
                 .is_ok()
         );
         assert!(
-            ensure_backend_renderer_supported(
+            ensure_rendering_api_supported(
                 BackendKind::Wayland,
-                BackendRendererConfig {
-                    kind: RendererBackendKind::Gl,
+                RenderingApiConfig {
+                    kind: RenderingApi::OpenGl,
                     raster_present: RasterPresentKind::Auto,
                     raster_present_configured: false,
                 }
@@ -3255,12 +3665,12 @@ mod tests {
 
     #[cfg(all(feature = "wayland", target_os = "linux"))]
     #[test]
-    fn backend_renderer_matrix_allows_wayland_raster() {
+    fn rendering_api_matrix_allows_wayland_raster() {
         assert!(
-            ensure_backend_renderer_supported(
+            ensure_rendering_api_supported(
                 BackendKind::Wayland,
-                BackendRendererConfig {
-                    kind: RendererBackendKind::Raster,
+                RenderingApiConfig {
+                    kind: RenderingApi::Raster,
                     raster_present: RasterPresentKind::Cpu,
                     raster_present_configured: true,
                 },
@@ -3271,11 +3681,11 @@ mod tests {
 
     #[cfg(all(feature = "drm", target_os = "linux"))]
     #[test]
-    fn backend_renderer_matrix_rejects_metal_on_drm() {
-        let err = ensure_backend_renderer_supported(
+    fn rendering_api_matrix_rejects_metal_on_drm() {
+        let err = ensure_rendering_api_supported(
             BackendKind::Drm,
-            BackendRendererConfig {
-                kind: RendererBackendKind::Metal,
+            RenderingApiConfig {
+                kind: RenderingApi::Metal,
                 raster_present: RasterPresentKind::Auto,
                 raster_present_configured: false,
             },
@@ -3284,21 +3694,21 @@ mod tests {
 
         assert_eq!(
             err,
-            "backend_renderer :metal is only supported with backend :macos"
+            "rendering_api :metal is only supported with backend :macos"
         );
     }
 
     #[test]
-    fn backend_renderer_matrix_allows_headless_auto_and_raster() {
+    fn rendering_api_matrix_allows_headless_auto_and_raster() {
         assert!(
-            ensure_backend_renderer_supported(BackendKind::Headless, BackendRendererConfig::auto())
+            ensure_rendering_api_supported(BackendKind::Headless, RenderingApiConfig::default())
                 .is_ok()
         );
         assert!(
-            ensure_backend_renderer_supported(
+            ensure_rendering_api_supported(
                 BackendKind::Headless,
-                BackendRendererConfig {
-                    kind: RendererBackendKind::Raster,
+                RenderingApiConfig {
+                    kind: RenderingApi::Raster,
                     raster_present: RasterPresentKind::Auto,
                     raster_present_configured: false,
                 },
@@ -3307,14 +3717,14 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
     #[test]
-    fn backend_renderer_matrix_allows_headless_gl_on_linux() {
+    fn rendering_api_matrix_allows_headless_gl_on_linux() {
         assert!(
-            ensure_backend_renderer_supported(
+            ensure_rendering_api_supported(
                 BackendKind::Headless,
-                BackendRendererConfig {
-                    kind: RendererBackendKind::Gl,
+                RenderingApiConfig {
+                    kind: RenderingApi::OpenGl,
                     raster_present: RasterPresentKind::Auto,
                     raster_present_configured: false,
                 },
@@ -3323,12 +3733,28 @@ mod tests {
         );
     }
 
+    #[cfg(not(all(target_os = "linux", feature = "headless-opengl")))]
     #[test]
-    fn backend_renderer_matrix_rejects_headless_metal_and_vulkan() {
-        let metal_err = ensure_backend_renderer_supported(
+    fn rendering_api_matrix_rejects_headless_gl_without_feature() {
+        let err = ensure_rendering_api_supported(
             BackendKind::Headless,
-            BackendRendererConfig {
-                kind: RendererBackendKind::Metal,
+            RenderingApiConfig {
+                kind: RenderingApi::OpenGl,
+                raster_present: RasterPresentKind::Auto,
+                raster_present_configured: false,
+            },
+        )
+        .expect_err("headless OpenGL should require the headless-opengl feature");
+
+        assert!(err.contains("not available for backend :headless in this build"));
+    }
+
+    #[test]
+    fn rendering_api_matrix_rejects_headless_metal_and_vulkan() {
+        let metal_err = ensure_rendering_api_supported(
+            BackendKind::Headless,
+            RenderingApiConfig {
+                kind: RenderingApi::Metal,
                 raster_present: RasterPresentKind::Auto,
                 raster_present_configured: false,
             },
@@ -3336,31 +3762,28 @@ mod tests {
         .expect_err("metal should be rejected on headless");
         assert_eq!(
             metal_err,
-            "backend_renderer :metal is only supported with backend :macos"
+            "rendering_api :metal is only supported with backend :macos"
         );
 
-        let vulkan_err = ensure_backend_renderer_supported(
+        let vulkan_err = ensure_rendering_api_supported(
             BackendKind::Headless,
-            BackendRendererConfig {
-                kind: RendererBackendKind::Vulkan,
+            RenderingApiConfig {
+                kind: RenderingApi::Vulkan,
                 raster_present: RasterPresentKind::Auto,
                 raster_present_configured: false,
             },
         )
         .expect_err("vulkan should be rejected on headless");
-        assert_eq!(
-            vulkan_err,
-            "backend_renderer :vulkan is not implemented yet"
-        );
+        assert_eq!(vulkan_err, "rendering_api :vulkan is not implemented yet");
     }
 
     #[cfg(feature = "macos")]
     #[test]
-    fn backend_renderer_matrix_rejects_gl_and_raster_present_on_macos() {
-        let gl_err = ensure_backend_renderer_supported(
+    fn rendering_api_matrix_rejects_gl_and_raster_present_on_macos() {
+        let gl_err = ensure_rendering_api_supported(
             BackendKind::Macos,
-            BackendRendererConfig {
-                kind: RendererBackendKind::Gl,
+            RenderingApiConfig {
+                kind: RenderingApi::OpenGl,
                 raster_present: RasterPresentKind::Auto,
                 raster_present_configured: false,
             },
@@ -3368,13 +3791,13 @@ mod tests {
         .expect_err("gl should be rejected on macOS");
         assert_eq!(
             gl_err,
-            "backend_renderer :gl is not supported with backend :macos"
+            "rendering_api :opengl is not supported with backend :macos"
         );
 
-        let raster_present_err = ensure_backend_renderer_supported(
+        let raster_present_err = ensure_rendering_api_supported(
             BackendKind::Macos,
-            BackendRendererConfig {
-                kind: RendererBackendKind::Raster,
+            RenderingApiConfig {
+                kind: RenderingApi::Raster,
                 raster_present: RasterPresentKind::Cpu,
                 raster_present_configured: true,
             },
@@ -3382,7 +3805,7 @@ mod tests {
         .expect_err("raster present options should be rejected on macOS");
         assert_eq!(
             raster_present_err,
-            "backend_renderer raster present options are only supported with backend :wayland or :drm"
+            "rendering_api raster present options are only supported with backend :wayland or :drm"
         );
     }
 
@@ -3408,7 +3831,7 @@ mod tests {
         assert_eq!(
             parse_backend_name("drm"),
             Err(
-                "DRM backend not compiled; add :drm to config :emerge, compiled_backends: [...]"
+                "DRM backend is not compiled; add :drm to config :emerge, compiled_backends: [...]"
                     .to_string()
             )
         );
@@ -3420,7 +3843,7 @@ mod tests {
         assert_eq!(
             parse_backend_name("wayland"),
             Err(
-                "Wayland backend not compiled; add :wayland to config :emerge, compiled_backends: [...]"
+                "Wayland backend is not compiled; add :wayland to config :emerge, compiled_backends: [...]"
                     .to_string()
             )
         );
@@ -3591,28 +4014,26 @@ fn parse_cursor_icon_name(value: &str) -> Result<CursorIcon, String> {
     }
 }
 
-fn parse_backend_renderer_config(
-    config: BackendRendererConfigNif,
-) -> Result<BackendRendererConfig, String> {
-    let kind = parse_renderer_backend_kind(&config.kind)?;
+fn parse_rendering_api_config(config: RenderingApiConfigNif) -> Result<RenderingApiConfig, String> {
+    let kind = parse_rendering_api(&config.kind)?;
     let raster_present = parse_raster_present_kind(&config.raster_present)?;
 
-    Ok(BackendRendererConfig {
+    Ok(RenderingApiConfig {
         kind,
         raster_present,
         raster_present_configured: config.raster_present_configured,
     })
 }
 
-fn parse_renderer_backend_kind(value: &str) -> Result<RendererBackendKind, String> {
+fn parse_rendering_api(value: &str) -> Result<RenderingApi, String> {
     match value.to_ascii_lowercase().as_str() {
-        "auto" => Ok(RendererBackendKind::Auto),
-        "gl" => Ok(RendererBackendKind::Gl),
-        "raster" => Ok(RendererBackendKind::Raster),
-        "metal" => Ok(RendererBackendKind::Metal),
-        "vulkan" => Ok(RendererBackendKind::Vulkan),
+        "auto" => Ok(RenderingApi::Auto),
+        "opengl" => Ok(RenderingApi::OpenGl),
+        "raster" => Ok(RenderingApi::Raster),
+        "metal" => Ok(RenderingApi::Metal),
+        "vulkan" => Ok(RenderingApi::Vulkan),
         other => Err(format!(
-            "unsupported backend_renderer kind: {other}; expected auto, gl, raster, metal, or vulkan"
+            "unsupported rendering_api kind: {other}; expected auto, opengl, raster, metal, or vulkan"
         )),
     }
 }
@@ -3623,90 +4044,85 @@ fn parse_raster_present_kind(value: &str) -> Result<RasterPresentKind, String> {
         "gpu_upload" => Ok(RasterPresentKind::GpuUpload),
         "cpu" => Ok(RasterPresentKind::Cpu),
         other => Err(format!(
-            "unsupported backend_renderer raster present mode: {other}; expected auto, gpu_upload, or cpu"
+            "unsupported rendering_api raster present mode: {other}; expected auto, gpu_upload, or cpu"
         )),
     }
 }
 
-fn ensure_backend_renderer_supported(
+fn ensure_rendering_api_supported(
     backend: BackendKind,
-    config: BackendRendererConfig,
+    config: RenderingApiConfig,
 ) -> Result<(), String> {
     let _raster_present = config.raster_present;
 
     match backend {
         #[cfg(feature = "macos")]
-        BackendKind::Macos => ensure_macos_backend_renderer_supported(config),
+        BackendKind::Macos => ensure_macos_rendering_api_supported(config),
         #[cfg(all(feature = "wayland", target_os = "linux"))]
-        BackendKind::Wayland => ensure_wayland_backend_renderer_supported(config),
+        BackendKind::Wayland => ensure_wayland_rendering_api_supported(config),
         #[cfg(all(feature = "drm", target_os = "linux"))]
-        BackendKind::Drm => ensure_drm_backend_renderer_supported(config),
-        BackendKind::Headless => ensure_headless_backend_renderer_supported(config),
+        BackendKind::Drm => ensure_drm_rendering_api_supported(config),
+        BackendKind::Headless => ensure_headless_rendering_api_supported(config),
     }
 }
 
 #[cfg(feature = "macos")]
-fn ensure_macos_backend_renderer_supported(config: BackendRendererConfig) -> Result<(), String> {
+fn ensure_macos_rendering_api_supported(config: RenderingApiConfig) -> Result<(), String> {
     match config.kind {
-        RendererBackendKind::Auto | RendererBackendKind::Metal | RendererBackendKind::Raster
+        RenderingApi::Auto | RenderingApi::Metal | RenderingApi::Raster
             if !config.raster_present_configured =>
         {
             Ok(())
         }
-        RendererBackendKind::Gl => {
-            Err("backend_renderer :gl is not supported with backend :macos".to_string())
+        RenderingApi::OpenGl => {
+            Err("rendering_api :opengl is not supported with backend :macos".to_string())
         }
-        RendererBackendKind::Vulkan => {
-            Err("backend_renderer :vulkan is not supported with backend :macos".to_string())
+        RenderingApi::Vulkan => {
+            Err("rendering_api :vulkan is not supported with backend :macos".to_string())
         }
-        RendererBackendKind::Auto | RendererBackendKind::Metal | RendererBackendKind::Raster => Err(
-            "backend_renderer raster present options are only supported with backend :wayland or :drm"
+        RenderingApi::Auto | RenderingApi::Metal | RenderingApi::Raster => Err(
+            "rendering_api raster present options are only supported with backend :wayland or :drm"
                 .to_string(),
         ),
     }
 }
 
 #[cfg(all(feature = "wayland", target_os = "linux"))]
-fn ensure_wayland_backend_renderer_supported(config: BackendRendererConfig) -> Result<(), String> {
+fn ensure_wayland_rendering_api_supported(config: RenderingApiConfig) -> Result<(), String> {
     match config.kind {
-        RendererBackendKind::Auto | RendererBackendKind::Gl | RendererBackendKind::Raster => Ok(()),
-        RendererBackendKind::Metal => {
-            Err("backend_renderer :metal is only supported with backend :macos".to_string())
+        RenderingApi::Auto | RenderingApi::OpenGl | RenderingApi::Raster => Ok(()),
+        RenderingApi::Metal => {
+            Err("rendering_api :metal is only supported with backend :macos".to_string())
         }
-        RendererBackendKind::Vulkan => {
-            Err("backend_renderer :vulkan is not implemented yet".to_string())
-        }
+        RenderingApi::Vulkan => Err("rendering_api :vulkan is not implemented yet".to_string()),
     }
 }
 
 #[cfg(all(feature = "drm", target_os = "linux"))]
-fn ensure_drm_backend_renderer_supported(config: BackendRendererConfig) -> Result<(), String> {
+fn ensure_drm_rendering_api_supported(config: RenderingApiConfig) -> Result<(), String> {
     match config.kind {
-        RendererBackendKind::Auto | RendererBackendKind::Gl | RendererBackendKind::Raster => Ok(()),
-        RendererBackendKind::Metal => {
-            Err("backend_renderer :metal is only supported with backend :macos".to_string())
+        RenderingApi::Auto | RenderingApi::OpenGl | RenderingApi::Raster => Ok(()),
+        RenderingApi::Metal => {
+            Err("rendering_api :metal is only supported with backend :macos".to_string())
         }
-        RendererBackendKind::Vulkan => {
-            Err("backend_renderer :vulkan is not implemented yet".to_string())
-        }
+        RenderingApi::Vulkan => Err("rendering_api :vulkan is not implemented yet".to_string()),
     }
 }
 
-fn ensure_headless_backend_renderer_supported(config: BackendRendererConfig) -> Result<(), String> {
+fn ensure_headless_rendering_api_supported(config: RenderingApiConfig) -> Result<(), String> {
     match config.kind {
-        RendererBackendKind::Auto | RendererBackendKind::Raster => Ok(()),
-        #[cfg(target_os = "linux")]
-        RendererBackendKind::Gl => Ok(()),
-        #[cfg(not(target_os = "linux"))]
-        RendererBackendKind::Gl => Err(
-            "backend_renderer :gl is not available for backend :headless in this build".to_string(),
+        RenderingApi::Auto | RenderingApi::Raster => Ok(()),
+        #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
+        RenderingApi::OpenGl => Ok(()),
+        #[cfg(not(all(target_os = "linux", feature = "headless-opengl")))]
+        RenderingApi::OpenGl => Err(
+            "rendering_api :opengl is not available for backend :headless in this build"
+                .to_string(),
         ),
-        RendererBackendKind::Metal => {
-            Err("backend_renderer :metal is only supported with backend :macos".to_string())
+        RenderingApi::Metal => {
+            Err("rendering_api :metal is only supported with backend :macos".to_string())
         }
-        RendererBackendKind::Vulkan => {
-            Err("backend_renderer :vulkan is not implemented yet".to_string())
-        }
+        RenderingApi::Vulkan => Err("rendering_api :vulkan is not implemented yet".to_string()),
     }
 }
 
@@ -3716,7 +4132,7 @@ fn parse_backend_name(value: &str) -> Result<BackendKind, String> {
         "macos" => Ok(BackendKind::Macos),
         #[cfg(not(feature = "macos"))]
         "macos" => Err(
-            "macOS backend not compiled; add :macos to config :emerge, compiled_backends: [...]"
+            "macOS backend is not compiled; add :macos to config :emerge, compiled_backends: [...]"
                 .to_string(),
         ),
         "headless" => Ok(BackendKind::Headless),
@@ -3724,14 +4140,14 @@ fn parse_backend_name(value: &str) -> Result<BackendKind, String> {
         "drm" => Ok(BackendKind::Drm),
         #[cfg(not(all(feature = "drm", target_os = "linux")))]
         "drm" => Err(
-            "DRM backend not compiled; add :drm to config :emerge, compiled_backends: [...]"
+            "DRM backend is not compiled; add :drm to config :emerge, compiled_backends: [...]"
                 .to_string(),
         ),
         #[cfg(all(feature = "wayland", target_os = "linux"))]
         "wayland" => Ok(BackendKind::Wayland),
         #[cfg(not(all(feature = "wayland", target_os = "linux")))]
         "wayland" => Err(
-            "Wayland backend not compiled; add :wayland to config :emerge, compiled_backends: [...]"
+            "Wayland backend is not compiled; add :wayland to config :emerge, compiled_backends: [...]"
                 .to_string(),
         ),
         "wayland_legacy" => {

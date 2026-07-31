@@ -261,25 +261,33 @@ pub fn resolve_tree_sources_sync(
 }
 
 pub fn ensure_source(source: &ImageSource) {
-    if let ImageSource::Id(id) = source
-        && let Some((width, height)) = asset_dimensions(id)
-    {
+    if let ImageSource::Id(id) = source {
+        let dimensions = asset_dimensions(id);
         if let Ok(guard) = global().lock()
             && let Ok(mut state) = guard.state.lock()
         {
-            if matches!(state.sources.get(source), Some(AssetStatus::Pending))
-                && state.pending_count > 0
-            {
-                state.pending_count -= 1;
+            match dimensions {
+                Some((width, height)) => {
+                    if matches!(state.sources.get(source), Some(AssetStatus::Pending))
+                        && state.pending_count > 0
+                    {
+                        state.pending_count -= 1;
+                    }
+                    state.set_source_status(
+                        source.clone(),
+                        AssetStatus::Ready(ResolvedAsset {
+                            id: id.clone(),
+                            width,
+                            height,
+                        }),
+                    );
+                }
+                None if !state.sources.contains_key(source) => {
+                    state.set_source_status(source.clone(), AssetStatus::Pending);
+                    state.pending_count = state.pending_count.saturating_add(1);
+                }
+                None => {}
             }
-            state.set_source_status(
-                source.clone(),
-                AssetStatus::Ready(ResolvedAsset {
-                    id: id.clone(),
-                    width,
-                    height,
-                }),
-            );
         }
         return;
     }
