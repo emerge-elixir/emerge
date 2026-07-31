@@ -4398,46 +4398,97 @@ struct ColumnLayoutPlan {
     total_height: f32,
 }
 
-fn build_column_layout_plan(
-    tree: &ElementTree,
+#[derive(Debug)]
+struct ColumnPlanSeed {
+    id: NodeId,
+    height: Option<Length>,
+    measured_height: f32,
+    fill_portion: f32,
+    rotated: bool,
+    align_y: AlignY,
+}
+
+fn build_column_layout_plan<M: TextMeasurer>(
+    tree: &mut ElementTree,
     child_ids: &[NodeId],
+    content: ContentRect,
     options: ColumnChildrenOptions,
-    content_height: f32,
+    inherited: &FontContext,
+    measurer: &M,
+    use_resolve_cache: bool,
 ) -> ColumnLayoutPlan {
-    let mut total_portions = 0.0_f32;
-    let mut fixed_height = 0.0_f32;
+    let seeds: Vec<_> = child_ids
+        .iter()
+        .filter_map(|child_id| {
+            let child = tree.get(child_id)?;
+            let height = child.layout.effective.height.clone();
 
-    for child_id in child_ids {
-        let Some(child) = tree.get(child_id) else {
-            continue;
-        };
-        let measured_height = child_measured_height(tree, child_id);
-        let portion = if options.allow_fill_height {
-            get_fill_weight(child.layout.effective.height.as_ref())
-        } else {
-            0.0
-        };
-        if portion > 0.0 {
-            total_portions += portion;
-        } else if layout_rotate_degrees(&child.layout.effective).is_some() {
-            fixed_height += measured_height;
-        } else {
-            fixed_height += resolve_planned_length(
-                child.layout.effective.height.as_ref(),
-                measured_height,
-                None,
-            );
-        }
-    }
+            Some(ColumnPlanSeed {
+                id: *child_id,
+                measured_height: child_measured_height(tree, child_id),
+                fill_portion: if options.allow_fill_height {
+                    get_fill_weight(height.as_ref())
+                } else {
+                    0.0
+                },
+                rotated: layout_rotate_degrees(&child.layout.effective).is_some(),
+                align_y: child.layout.effective.align_y.unwrap_or_default(),
+                height,
+            })
+        })
+        .collect();
 
-    // Calculate height per portion.
+    let total_portions = seeds.iter().map(|seed| seed.fill_portion).sum::<f32>();
+    let resolve_fixed_children = options.allow_fill_height && total_portions > 0.0;
+    let resolved_seeds: Vec<_> = seeds
+        .into_iter()
+        .map(|seed| {
+            let planned_height = if seed.rotated {
+                seed.measured_height
+            } else {
+                resolve_planned_length(seed.height.as_ref(), seed.measured_height, None)
+            };
+            let height_can_reflow =
+                seed.rotated || length_allows_content_expansion(seed.height.as_ref());
+            let resolved_height =
+                if resolve_fixed_children && seed.fill_portion == 0.0 && height_can_reflow {
+                    resolve_child_with_placement(
+                        tree,
+                        &seed.id,
+                        ResolvePlacement {
+                            constraint: Constraint::new(content.width, planned_height),
+                            x: content.x,
+                            y: content.y,
+                            inherited,
+                            use_resolve_cache,
+                        },
+                        measurer,
+                    )
+                    .map(|frame| frame.height)
+                    .unwrap_or(planned_height)
+                } else {
+                    planned_height
+                };
+
+            (seed, resolved_height)
+        })
+        .collect();
+    let fixed_height = resolved_seeds
+        .iter()
+        .filter(|(seed, _)| seed.fill_portion == 0.0)
+        .map(|(_, height)| *height)
+        .sum::<f32>();
+
+    // Calculate height per portion after width-dependent fixed children have
+    // resolved against the column's final content width. Their measured heights
+    // can be stale when a paragraph or wrapped row reflows.
     let effective_spacing = if options.space_evenly {
         0.0
     } else {
         options.spacing
     };
     let total_spacing = effective_spacing * (child_ids.len().saturating_sub(1)) as f32;
-    let remaining = (content_height - fixed_height - total_spacing).max(0.0);
+    let remaining = (content.height - fixed_height - total_spacing).max(0.0);
     let height_per_portion = if total_portions > 0.0 {
         remaining / total_portions
     } else {
@@ -4452,41 +4503,26 @@ fn build_column_layout_plan(
     let mut total_center_height = 0.0_f32;
     let mut total_height = 0.0_f32;
 
-    for child_id in child_ids {
-        let Some(child) = tree.get(child_id) else {
-            continue;
-        };
-        let measured_height = child_measured_height(tree, child_id);
-        let portion = if options.allow_fill_height {
-            get_fill_weight(child.layout.effective.height.as_ref())
-        } else {
-            0.0
-        };
-        let height = if portion > 0.0 {
+    for (seed, resolved_height) in resolved_seeds {
+        let height = if seed.fill_portion > 0.0 {
             resolve_planned_length(
-                child.layout.effective.height.as_ref(),
-                measured_height,
+                seed.height.as_ref(),
+                seed.measured_height,
                 Some(height_per_portion),
             )
-        } else if layout_rotate_degrees(&child.layout.effective).is_some() {
-            measured_height
         } else {
-            resolve_planned_length(
-                child.layout.effective.height.as_ref(),
-                measured_height,
-                None,
-            )
+            resolved_height
         };
-        children.push((*child_id, height));
+        children.push((seed.id, height));
         total_height += height;
 
-        match child.layout.effective.align_y.unwrap_or_default() {
-            AlignY::Top => top_children.push((*child_id, height)),
+        match seed.align_y {
+            AlignY::Top => top_children.push((seed.id, height)),
             AlignY::Center => {
-                center_children.push((*child_id, height));
+                center_children.push((seed.id, height));
                 total_center_height += height;
             }
-            AlignY::Bottom => bottom_children.push((*child_id, height)),
+            AlignY::Bottom => bottom_children.push((seed.id, height)),
         }
     }
 
@@ -4739,7 +4775,15 @@ fn resolve_column_children<M: TextMeasurer>(
         return 0.0;
     }
 
-    let plan = build_column_layout_plan(tree, child_ids, options, content.height);
+    let plan = build_column_layout_plan(
+        tree,
+        child_ids,
+        content,
+        options,
+        inherited,
+        measurer,
+        use_resolve_cache,
+    );
 
     if options.space_evenly {
         resolve_column_space_evenly(
