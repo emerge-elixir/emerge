@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.4] - 2026-07-31
+
+### Fixed
+
+- Fixed column fill and weighted-fill height allocation after width-dependent child reflow.
+
 ## [0.3.3] - 2026-07-30
 
 ### Added
