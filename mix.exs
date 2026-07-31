@@ -15,6 +15,7 @@ defmodule Emerge.MixProject do
     "CC",
     "CXX",
     "CFLAGS",
+    "BINDGEN_EXTRA_CLANG_ARGS",
     "CLANGCC",
     "CLANGCXX",
     "CPPFLAGS",
@@ -338,6 +339,7 @@ defmodule Emerge.MixProject do
     if nerves_build_env?(env) do
       env
       |> Map.put_new("SDKTARGETSYSROOT", Map.get(env, "NERVES_SDK_SYSROOT"))
+      |> configure_nerves_clang_flags(env)
       |> maybe_put_map_value("CC", skia_clang_command(env, "clang"))
       |> maybe_put_map_value("CXX", skia_clang_command(env, "clang++"))
       |> maybe_put_map_value("CLANGCC", skia_clang_command(env, "clang"))
@@ -347,11 +349,63 @@ defmodule Emerge.MixProject do
     end
   end
 
+  defp configure_nerves_clang_flags(effective_env, source_env) do
+    if nerves_sdk_env?(source_env) do
+      effective_env
+      |> sanitize_clang_cross_flags("CFLAGS")
+      |> sanitize_clang_cross_flags("CXXFLAGS")
+      |> append_clang_cxx_flags(source_env)
+    else
+      effective_env
+    end
+  end
+
+  defp sanitize_clang_cross_flags(env, key) do
+    case Map.get(env, key) do
+      flags when is_binary(flags) ->
+        sanitized =
+          flags
+          |> String.split(~r/\s+/, trim: true)
+          |> Enum.reject(&(&1 == "-mabi=lp64"))
+          |> Enum.join(" ")
+
+        Map.put(env, key, sanitized)
+
+      _other ->
+        env
+    end
+  end
+
+  defp append_clang_cxx_flags(effective_env, source_env) do
+    flags =
+      [Map.get(effective_env, "CXXFLAGS") | nerves_cxx_include_flags(source_env)]
+      |> List.flatten()
+      |> Enum.reject(&(&1 in [nil, ""]))
+      |> Kernel.++(["-Wno-invalid-constexpr"])
+      |> Enum.join(" ")
+
+    bindgen_flags =
+      [Map.get(effective_env, "BINDGEN_EXTRA_CLANG_ARGS"), flags]
+      |> Enum.reject(&(&1 in [nil, ""]))
+      |> Enum.join(" ")
+
+    effective_env
+    |> Map.put("CXXFLAGS", flags)
+    |> Map.put("BINDGEN_EXTRA_CLANG_ARGS", bindgen_flags)
+  end
+
   defp skia_clang_command(env, clang_binary) do
     if nerves_build_env?(env) do
       with sysroot when is_binary(sysroot) and sysroot != "" <- Map.get(env, "NERVES_SDK_SYSROOT"),
            clang when is_binary(clang) <- System.find_executable(clang_binary) do
-        [clang | skia_clang_flags(env, sysroot)] |> Enum.join(" ")
+        flags =
+          skia_clang_flags(env, sysroot) ++
+            if(clang_binary == "clang++" and nerves_sdk_env?(env),
+              do: ["-Wno-invalid-constexpr"],
+              else: []
+            )
+
+        [clang | flags] |> Enum.join(" ")
       else
         _ -> nil
       end
@@ -383,9 +437,7 @@ defmodule Emerge.MixProject do
            nerves_gxx_version(toolchain, prefix) do
       [
         Path.join([toolchain, prefix, "include", "c++", version]),
-        Path.join([toolchain, prefix, "include", "c++", version, prefix]),
-        Path.join([toolchain, "lib", "gcc", prefix, version, "include"]),
-        Path.join([toolchain, "lib", "gcc", prefix, version, "include-fixed"])
+        Path.join([toolchain, prefix, "include", "c++", version, prefix])
       ]
       |> Enum.filter(&File.exists?/1)
       |> Enum.map(&"-I#{&1}")
@@ -426,6 +478,12 @@ defmodule Emerge.MixProject do
     Enum.reduce(@rustler_passthrough_env_keys, [], fn key, acc ->
       maybe_put_env(acc, key, Map.get(env, key))
     end)
+  end
+
+  defp nerves_sdk_env?(env) do
+    value_present?(Map.get(env, "NERVES_SDK_SYSROOT")) and
+      value_present?(Map.get(env, "NERVES_TOOLCHAIN")) and
+      nerves_compiler?(Map.get(env, "CC"))
   end
 
   defp nerves_build_env?(env) do
