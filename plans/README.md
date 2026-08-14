@@ -1,6 +1,6 @@
 # Plans
 
-Last updated: 2026-08-10.
+Last updated: 2026-08-14.
 
 This directory tracks active implementation notes and durable background
 research for native layout, renderer, and input/runtime work.
@@ -21,6 +21,7 @@ Active implementation plans:
 - `active-drm-framerate-animation.md`
 - `active-paint-layer-model-simplification.md`
 - `active-rpi5-camera-60fps.md`
+- `active-camera-native-rgb-interop.md`
 - `active-vulkan-rendering-api.md`
 
 Files with an `active-` prefix are reserved for open implementation slices.
@@ -81,6 +82,13 @@ Two-track implementation plan for reaching stable 60 FPS with 30% GPU headroom o
 the exact RPi5 Camera Focus scene. The main track removes redundant tree/registry
 work; an isolated worktree prototypes persistent semantic-layer GPU backings. GPU
 benchmarks are serialized and target acceptance requires <=10.86 ms active GPU time.
+
+### `active-camera-native-rgb-interop.md`
+
+Cross-repository qualification plan for Camera/PiSP-native XRGB8888 DMA-BUF output,
+persistent direct Vulkan import, exact RGB color semantics, and an NV12 A/B comparison.
+It keeps Emerge's already-proven XRGB8888/BGRA DRM scanout and rejects Camera RGB unless
+allocation sizing, synchronization, exact pixels, 60 FPS, and 30% headroom all pass.
 
 ### `active-vulkan-rendering-api.md`
 
