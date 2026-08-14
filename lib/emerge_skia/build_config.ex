@@ -13,6 +13,7 @@ defmodule EmergeSkia.BuildConfig do
   @macos_host_targets ["aarch64-apple-darwin", "x86_64-apple-darwin"]
   @precompiled_nif_versions ["2.15"]
   @valid_backends [:wayland, :drm, :macos]
+  @valid_vulkan_backends [:wayland, :drm, :headless]
   @default_precompiled_source_url Mix.Project.config()[:source_url]
 
   @default_compiled_backends (
@@ -113,6 +114,51 @@ defmodule EmergeSkia.BuildConfig do
                        end
                      )
 
+  @compiled_vulkan_backends (
+                              backends =
+                                Application.compile_env(
+                                  :emerge,
+                                  :compiled_vulkan_backends,
+                                  []
+                                )
+
+                              invalid_entries =
+                                if is_list(backends) do
+                                  Enum.reject(backends, &(&1 in @valid_vulkan_backends))
+                                else
+                                  []
+                                end
+
+                              unavailable_entries =
+                                if is_list(backends) do
+                                  Enum.reject(
+                                    backends,
+                                    &(&1 == :headless or &1 in @compiled_backends)
+                                  )
+                                else
+                                  []
+                                end
+
+                              cond do
+                                not is_list(backends) ->
+                                  raise ArgumentError,
+                                        "config :emerge, compiled_vulkan_backends: ... must be a list of backend atoms, got: #{inspect(backends)}"
+
+                                invalid_entries != [] ->
+                                  raise ArgumentError,
+                                        "config :emerge, compiled_vulkan_backends: ... must contain only :wayland, :drm, and :headless, got invalid entries: #{inspect(invalid_entries)}"
+
+                                unavailable_entries != [] ->
+                                  raise ArgumentError,
+                                        "config :emerge, compiled_vulkan_backends: ... must be a subset of compiled_backends except for the presenter-independent :headless backend, got unavailable entries: #{inspect(unavailable_entries)}"
+
+                                true ->
+                                  for backend <- @valid_vulkan_backends,
+                                      backend in backends,
+                                      do: backend
+                              end
+                            )
+
   @default_runtime_backend Enum.find(@valid_backends, &(&1 in @compiled_backends)) || :wayland
 
   @doc false
@@ -120,6 +166,9 @@ defmodule EmergeSkia.BuildConfig do
 
   @doc false
   def compiled_backends, do: @compiled_backends
+
+  @doc false
+  def compiled_vulkan_backends, do: @compiled_vulkan_backends
 
   @doc false
   def default_runtime_backend, do: @default_runtime_backend
@@ -193,10 +242,48 @@ defmodule EmergeSkia.BuildConfig do
   end
 
   @doc false
-  def compiled_backends_to_rustler_features(backends) do
-    backends
-    |> normalize_compiled_backends!()
-    |> Enum.map(&Atom.to_string/1)
+  def normalize_compiled_vulkan_backends!(vulkan_backends, compiled_backends)
+      when is_list(vulkan_backends) and is_list(compiled_backends) do
+    compiled_backends = normalize_compiled_backends!(compiled_backends)
+    invalid_entries = Enum.reject(vulkan_backends, &(&1 in @valid_vulkan_backends))
+
+    unavailable_entries =
+      Enum.reject(vulkan_backends, &(&1 == :headless or &1 in compiled_backends))
+
+    cond do
+      invalid_entries != [] ->
+        raise ArgumentError,
+              "config :emerge, compiled_vulkan_backends: ... must contain only :wayland, :drm, and :headless, got invalid entries: #{inspect(invalid_entries)}"
+
+      unavailable_entries != [] ->
+        raise ArgumentError,
+              "config :emerge, compiled_vulkan_backends: ... must be a subset of compiled_backends except for the presenter-independent :headless backend, got unavailable entries: #{inspect(unavailable_entries)}"
+
+      true ->
+        for backend <- @valid_vulkan_backends, backend in vulkan_backends, do: backend
+    end
+  end
+
+  def normalize_compiled_vulkan_backends!(other, _compiled_backends) do
+    raise ArgumentError,
+          "config :emerge, compiled_vulkan_backends: ... must be a list of backend atoms, got: #{inspect(other)}"
+  end
+
+  @doc false
+  def compiled_backends_to_rustler_features(backends, vulkan_backends \\ []) do
+    backends = normalize_compiled_backends!(backends)
+    vulkan_backends = normalize_compiled_vulkan_backends!(vulkan_backends, backends)
+
+    backend_features =
+      Enum.map(backends, fn backend ->
+        if backend in vulkan_backends,
+          do: "#{backend}-all",
+          else: Atom.to_string(backend)
+      end)
+
+    if :headless in vulkan_backends,
+      do: backend_features ++ ["headless-all"],
+      else: backend_features
   end
 
   @doc false
@@ -339,11 +426,18 @@ defmodule EmergeSkia.BuildConfig do
     env = Keyword.get(opts, :env, System.get_env())
     checksum_path = Keyword.fetch!(opts, :checksum_path)
     compiled_backends = Keyword.get(opts, :compiled_backends, compiled_backends())
+
+    compiled_vulkan_backends =
+      opts
+      |> Keyword.get(:compiled_vulkan_backends, compiled_vulkan_backends())
+      |> normalize_compiled_vulkan_backends!(compiled_backends)
+
     targets = Keyword.get(opts, :targets, @precompiled_targets)
     nif_versions = Keyword.get(opts, :nif_versions, @precompiled_nif_versions)
     target_resolver = Keyword.get(opts, :target_resolver, &default_precompiled_target_resolver/2)
 
     force_build_requested?(env) ||
+      compiled_vulkan_backends != [] ||
       not File.exists?(checksum_path) ||
       unsupported_precompiled_profile?(
         env,

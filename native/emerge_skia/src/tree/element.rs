@@ -11,7 +11,7 @@ use super::invalidation::{
     TreeInvalidation, classify_interaction_style, content_box_is_layout_independent,
 };
 use crate::events::registry_builder::RegistrySubtreeCache;
-use crate::render_scene::{RenderNode, RenderPaintLayer};
+use crate::render_scene::RenderNode;
 use crate::stats::LayoutCacheStats;
 #[cfg(test)]
 use std::cell::Cell;
@@ -616,16 +616,9 @@ pub struct NodeRefreshState {
     pub registry_dirty: bool,
     pub registry_descendant_dirty: bool,
     pub registry_cache: Option<RegistrySubtreeCache>,
-    pub render_layer_cache: RefCell<Option<RenderLayerCache>>,
     pub render_fragment_cache: RefCell<Option<RenderFragmentCache>>,
     pub registry_subtree_affects: bool,
     pub paint_generation: u64,
-}
-
-#[derive(Clone, Debug)]
-pub struct RenderLayerCache {
-    pub key: RenderLayerCacheKey,
-    pub layer: RenderPaintLayer,
 }
 
 #[derive(Clone, Debug)]
@@ -651,13 +644,6 @@ pub struct RenderFragmentCacheKey {
     pub context: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct RenderLayerCacheKey {
-    pub paint_generation: u64,
-    pub topology: TopologyDependencyKey,
-    pub bounds: Rect,
-}
-
 impl Default for NodeRefreshState {
     fn default() -> Self {
         Self {
@@ -666,7 +652,6 @@ impl Default for NodeRefreshState {
             registry_dirty: true,
             registry_descendant_dirty: false,
             registry_cache: None,
-            render_layer_cache: RefCell::new(None),
             render_fragment_cache: RefCell::new(None),
             registry_subtree_affects: false,
             paint_generation: 1,
@@ -928,7 +913,6 @@ impl Element {
                 registry_dirty: self.refresh.registry_dirty,
                 registry_descendant_dirty: self.refresh.registry_descendant_dirty,
                 registry_cache: None,
-                render_layer_cache: RefCell::new(self.refresh.render_layer_cache.borrow().clone()),
                 render_fragment_cache: RefCell::new(
                     self.refresh.render_fragment_cache.borrow().clone(),
                 ),
@@ -2317,7 +2301,6 @@ impl ElementTree {
             if let Some(element) = self.get_ix_mut(ix) {
                 if render {
                     element.refresh.mark_render_changed();
-                    element.refresh.render_layer_cache.borrow_mut().take();
                     element.refresh.render_fragment_cache.borrow_mut().take();
                     if origin {
                         element.refresh.render_dirty = true;

@@ -32,6 +32,19 @@ defmodule EmergeSkia.OptionsTest do
              Options.build_start_native_opts!(backend: :wayland, rendering_api: :opengl)
 
     assert %{
+             rendering_api: %{kind: "vulkan", raster_present: "auto"},
+             vulkan_drm_node: "/dev/dri/renderD128"
+           } =
+             Options.build_start_native_opts!(
+               backend: :drm,
+               rendering_api: :vulkan,
+               vulkan_drm_node: "/dev/dri/renderD128"
+             )
+
+    assert %{rendering_api: %{kind: "vulkan", raster_present: "auto"}} =
+             Options.build_start_native_opts!(backend: :wayland, rendering_api: :vulkan)
+
+    assert %{
              rendering_api: %{
                kind: "raster",
                raster_present: "auto",
@@ -61,6 +74,59 @@ defmodule EmergeSkia.OptionsTest do
              Options.build_start_native_opts!(
                backend: :drm,
                rendering_api: [auto: [raster: [present: "gpu_upload"]]]
+             )
+  end
+
+  test "rendering_api_start_error delegates Linux Vulkan availability to native code" do
+    drm_opts =
+      Options.build_start_native_opts!(
+        backend: :drm,
+        rendering_api: :vulkan,
+        vulkan_drm_node: "/dev/dri/renderD128"
+      )
+
+    wayland_opts = Options.build_start_native_opts!(backend: :wayland, rendering_api: :vulkan)
+
+    headless_opts =
+      Options.build_start_native_opts!(
+        backend: :headless,
+        rendering_api: :vulkan,
+        headless: [target: self()]
+      )
+
+    assert Options.rendering_api_start_error(drm_opts) == nil
+    assert Options.rendering_api_start_error(wayland_opts) == nil
+    assert Options.rendering_api_start_error(headless_opts) == nil
+  end
+
+  test "DRM Vulkan requires an exact independent Vulkan node and rejects GL-only finish" do
+    assert_raise ArgumentError, ~r/requires an explicit :vulkan_drm_node absolute path/, fn ->
+      Options.build_start_native_opts!(backend: :drm, rendering_api: :vulkan)
+    end
+
+    assert_raise ArgumentError, ~r/:vulkan_drm_node must be an absolute path/, fn ->
+      Options.build_start_native_opts!(
+        backend: :drm,
+        rendering_api: :vulkan,
+        vulkan_drm_node: "renderD128"
+      )
+    end
+
+    assert_raise ArgumentError, ~r/OpenGL-only diagnostic/, fn ->
+      Options.build_start_native_opts!(
+        backend: :drm,
+        rendering_api: :vulkan,
+        vulkan_drm_node: "/dev/dri/renderD128",
+        drm_force_gpu_finish: true
+      )
+    end
+
+    assert %{rendering_api: %{kind: "opengl"}, drm_force_gpu_finish: true} =
+             Options.build_start_native_opts!(
+               backend: :drm,
+               rendering_api: :opengl,
+               vulkan_drm_node: "/dev/dri/renderD128",
+               drm_force_gpu_finish: true
              )
   end
 
@@ -249,7 +315,11 @@ defmodule EmergeSkia.OptionsTest do
              headless: %{
                target: target,
                mode: "prime",
-               prime: %{max_in_flight: 3, on_backpressure: "drop_new"}
+               prime: %{
+                 drm_node: "/dev/dri/renderD128",
+                 max_in_flight: 3,
+                 on_backpressure: "drop_new"
+               }
              }
            } =
              Options.build_start_native_opts!(
@@ -257,7 +327,11 @@ defmodule EmergeSkia.OptionsTest do
                headless: [
                  target: self(),
                  mode: :prime,
-                 prime: [max_in_flight: 3, on_backpressure: :drop_new]
+                 prime: [
+                   drm_node: "/dev/dri/renderD128",
+                   max_in_flight: 3,
+                   on_backpressure: :drop_new
+                 ]
                ]
              )
 
@@ -274,6 +348,20 @@ defmodule EmergeSkia.OptionsTest do
       Options.build_start_native_opts!(
         backend: :headless,
         headless: [target: self(), mode: :prime, prime: [max_inflight: 3]]
+      )
+    end
+
+    assert_raise ArgumentError, ~r/:headless.prime.drm_node must be an absolute path/, fn ->
+      Options.build_start_native_opts!(
+        backend: :headless,
+        headless: [target: self(), mode: :prime, prime: [drm_node: "renderD128"]]
+      )
+    end
+
+    assert_raise ArgumentError, ~r/:headless.prime.drm_node must be nil or a non-empty/, fn ->
+      Options.build_start_native_opts!(
+        backend: :headless,
+        headless: [target: self(), mode: :prime, prime: [drm_node: ""]]
       )
     end
 

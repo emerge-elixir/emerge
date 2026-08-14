@@ -73,6 +73,7 @@ pub(super) struct PresentState {
     last_submitted_render_version: Option<u64>,
     late_replacement_used: bool,
     late_video_replacement_used: bool,
+    unsubmitted_present_retry: bool,
 }
 
 impl Default for PresentState {
@@ -95,6 +96,7 @@ impl Default for PresentState {
             last_submitted_render_version: None,
             late_replacement_used: false,
             late_video_replacement_used: false,
+            unsubmitted_present_retry: false,
         }
     }
 }
@@ -116,12 +118,19 @@ impl PresentState {
         self.video_redraw_requested = true;
     }
 
+    pub(super) fn retry_unsubmitted_present(&mut self) {
+        self.redraw_requested = true;
+        self.unsubmitted_present_retry = true;
+    }
+
     pub(super) fn draw_decision(&self, exit: bool, allow_late_replacement: bool) -> DrawDecision {
         if exit || !self.configured || !self.draw_requested() {
             return DrawDecision::Skip;
         }
 
-        if self.frame_callback_state != FrameCallbackState::Requested {
+        if self.frame_callback_state != FrameCallbackState::Requested
+            || self.unsubmitted_present_retry
+        {
             return DrawDecision::Draw(DrawKind::Normal);
         }
 
@@ -210,6 +219,7 @@ impl PresentState {
         self.requested_frame_callback = None;
         self.late_replacement_used = false;
         self.late_video_replacement_used = false;
+        self.unsubmitted_present_retry = false;
     }
 
     pub(super) fn finish_present(
@@ -230,6 +240,7 @@ impl PresentState {
         self.redraw_requested = false;
         self.video_redraw_requested = false;
         self.video_cleanup_requested = video_needs_cleanup;
+        self.unsubmitted_present_retry = false;
     }
 
     pub(super) fn finish_noop_present(&mut self, render_version: u64) {
@@ -239,6 +250,7 @@ impl PresentState {
         self.redraw_requested = false;
         self.video_redraw_requested = false;
         self.video_cleanup_requested = false;
+        self.unsubmitted_present_retry = false;
     }
 
     pub(super) fn video_cleanup_requested(&self) -> bool {
@@ -351,6 +363,24 @@ mod tests {
         present.last_submitted_render_version = Some(1);
 
         assert_eq!(present.draw_decision(false, true), DrawDecision::Skip);
+    }
+
+    #[test]
+    fn unsubmitted_present_retries_without_waiting_for_an_orphaned_callback() {
+        let mut present = PresentState::configured_for_test();
+        present.queue_redraw();
+        present.frame_callback_state = FrameCallbackState::Requested;
+
+        assert_eq!(present.draw_decision(false, false), DrawDecision::Skip);
+
+        present.retry_unsubmitted_present();
+        assert_eq!(
+            present.draw_decision(false, false),
+            DrawDecision::Draw(DrawKind::Normal)
+        );
+
+        present.finish_present(1, DrawKind::Normal, false);
+        assert_eq!(present.draw_decision(false, false), DrawDecision::Skip);
     }
 
     #[test]

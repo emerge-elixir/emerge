@@ -24,6 +24,8 @@ emerge_skia-*.tar
 
 # Rust build artifacts
 /native/*/target/
+/native/*/target-emerge-nif/
+/native/*/target-vulkan-probe/
 
 # Compiled NIF
 /priv/native/

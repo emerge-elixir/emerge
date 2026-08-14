@@ -32,6 +32,8 @@ use crate::{
 
 #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
 mod offscreen_gl;
+#[cfg(all(target_os = "linux", feature = "headless-vulkan"))]
+mod vulkan;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HeadlessMode {
@@ -52,6 +54,12 @@ impl HeadlessMode {
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum HeadlessReleaseMsg {
     PrimeFrame(u64),
+}
+
+struct HeadlessStartupInfo {
+    selected_rendering_api: RenderingApi,
+    #[cfg(feature = "vulkan")]
+    vulkan_device: Option<crate::backend::vulkan::VulkanRendererReport>,
 }
 
 pub struct HeadlessPrimeBackendToken {
@@ -171,8 +179,8 @@ pub(crate) fn start_renderer_with_config(
         );
     });
 
-    let selected_rendering_api = match startup_rx.recv() {
-        Ok(Ok(selected_rendering_api)) => selected_rendering_api,
+    let startup = match startup_rx.recv() {
+        Ok(Ok(startup)) => startup,
         Ok(Err(reason)) => {
             running_flag.store(false, Ordering::Relaxed);
             let _ = render_handle.join();
@@ -187,6 +195,7 @@ pub(crate) fn start_renderer_with_config(
         }
     };
 
+    let selected_rendering_api = startup.selected_rendering_api;
     let selected_renderer_cache_config = effective_renderer_cache_config(
         selected_rendering_api,
         renderer_cache_config,
@@ -203,6 +212,8 @@ pub(crate) fn start_renderer_with_config(
         ),
         screenshot_supported: matches!(mode, HeadlessMode::Binary),
         prime_video_supported: false,
+        #[cfg(feature = "vulkan")]
+        vulkan_device: startup.vulkan_device,
     };
     let heartbeat_stats = if config.renderer_stats_log {
         renderer_stats.clone()
@@ -257,7 +268,6 @@ pub(crate) fn start_renderer_with_config(
         render_tx: render_sender,
         video_registry,
         video_wake: VideoWake::noop(),
-        prime_video_supported: false,
         native_log,
         stats: renderer_stats,
         latest_frame,
@@ -295,7 +305,7 @@ fn run_render_loop(
     rendering_api: RenderingApi,
     mode: HeadlessMode,
     release_tx: Sender<HeadlessReleaseMsg>,
-    startup_tx: Sender<Result<RenderingApi, String>>,
+    startup_tx: Sender<Result<HeadlessStartupInfo, String>>,
 ) {
     let mut renderer = match HeadlessRenderer::new(
         mode,
@@ -305,6 +315,7 @@ fn run_render_loop(
         renderer_cache_config,
         renderer_cache_enabled_configured,
         headless.prime.max_in_flight,
+        headless.prime.drm_node.as_deref(),
     ) {
         Ok(renderer) => renderer,
         Err(err) => {
@@ -313,8 +324,12 @@ fn run_render_loop(
             return;
         }
     };
-    let selected_rendering_api = renderer.selected_rendering_api();
-    if startup_tx.send(Ok(selected_rendering_api)).is_err() {
+    let startup = HeadlessStartupInfo {
+        selected_rendering_api: renderer.selected_rendering_api(),
+        #[cfg(feature = "vulkan")]
+        vulkan_device: renderer.vulkan_renderer_report(),
+    };
+    if startup_tx.send(Ok(startup)).is_err() {
         running_flag.store(false, Ordering::Relaxed);
         return;
     }
@@ -326,6 +341,7 @@ fn run_render_loop(
         .map(|fps| Duration::from_secs_f64(1.0 / f64::from(fps.max(1))))
         .unwrap_or_else(|| Duration::from_millis(16));
     let mut animation_tick = never();
+    let prime_completion_rx = renderer.prime_completion_receiver();
     let mut next_animation_at = None;
 
     while running_flag.load(Ordering::Relaxed) {
@@ -334,15 +350,30 @@ fn run_render_loop(
                 animation_tick = never();
                 maybe_send_animation_pulse(&tree_tx, true, frame_interval);
             }
+            recv(prime_completion_rx) -> completion => {
+                let Ok(release_id) = completion else { break; };
+                if renderer.complete_prime_retirement(release_id) {
+                    maybe_resume_prime_animation(
+                        &mut pending_prime_animation,
+                        &tree_tx,
+                        frame_interval,
+                    );
+                }
+                if renderer.terminal_prime_shutdown_ready() {
+                    break;
+                }
+            }
             recv(release_rx) -> msg => {
                 match msg {
                     Ok(HeadlessReleaseMsg::PrimeFrame(release_id)) => {
-                        renderer.release_prime(release_id);
-                        maybe_resume_prime_animation(
-                            &mut pending_prime_animation,
-                            &tree_tx,
-                            frame_interval,
-                        );
+                        let capacity_released = renderer.release_prime(release_id);
+                        if capacity_released {
+                            maybe_resume_prime_animation(
+                                &mut pending_prime_animation,
+                                &tree_tx,
+                                frame_interval,
+                            );
+                        }
                         if renderer.terminal_prime_shutdown_ready() {
                             break;
                         }
@@ -445,7 +476,8 @@ fn run_render_loop(
                                     );
                                 }
                                 Ok(None) => {
-                                    // Resume retained animation after a consumer frees a slot.
+                                    // Resume retained animation after a consumer frees a slot and
+                                    // its independent Vulkan release fence signals.
                                     animation_tick = never();
                                     pending_prime_animation |= animate;
                                 }
@@ -609,9 +641,12 @@ enum HeadlessRenderer {
     Raster(Box<RasterHeadlessRenderer>),
     #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
     Gl(Box<offscreen_gl::GlHeadlessRenderer>),
+    #[cfg(all(target_os = "linux", feature = "headless-vulkan"))]
+    Vulkan(Box<vulkan::VulkanHeadlessRenderer>),
 }
 
 impl HeadlessRenderer {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         mode: HeadlessMode,
         rendering_api: RenderingApi,
@@ -620,6 +655,7 @@ impl HeadlessRenderer {
         renderer_cache_config: RendererCacheConfig,
         renderer_cache_enabled_configured: bool,
         _max_prime_in_flight: u32,
+        _prime_drm_node: Option<&str>,
     ) -> Result<Self, String> {
         let raster_renderer_cache_config = effective_renderer_cache_config(
             RenderingApi::Raster,
@@ -655,6 +691,7 @@ impl HeadlessRenderer {
                         height,
                         renderer_cache_config,
                         _max_prime_in_flight,
+                        _prime_drm_node,
                     )
                     .map(Box::new)
                     .map(Self::Gl)
@@ -683,8 +720,27 @@ impl HeadlessRenderer {
             (_, RenderingApi::Metal) => {
                 Err("rendering_api :metal is only supported with backend :macos".to_string())
             }
-            (_, RenderingApi::Vulkan) => {
-                Err("rendering_api :vulkan is not implemented yet".to_string())
+            (HeadlessMode::Binary, RenderingApi::Vulkan) => Err(
+                "headless Vulkan supports PRIME output only; binary output is not supported"
+                    .to_string(),
+            ),
+            (HeadlessMode::Prime, RenderingApi::Vulkan) => {
+                #[cfg(all(target_os = "linux", feature = "headless-vulkan"))]
+                {
+                    vulkan::VulkanHeadlessRenderer::new_prime(
+                        width,
+                        height,
+                        renderer_cache_config,
+                        _max_prime_in_flight,
+                        _prime_drm_node,
+                    )
+                    .map(Box::new)
+                    .map(Self::Vulkan)
+                }
+                #[cfg(not(all(target_os = "linux", feature = "headless-vulkan")))]
+                {
+                    Err("Vulkan rendering support is not available in this build".to_string())
+                }
             }
         }
     }
@@ -694,6 +750,17 @@ impl HeadlessRenderer {
             Self::Raster(_) => RenderingApi::Raster,
             #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
             Self::Gl(_) => RenderingApi::OpenGl,
+            #[cfg(all(target_os = "linux", feature = "headless-vulkan"))]
+            Self::Vulkan(_) => RenderingApi::Vulkan,
+        }
+    }
+
+    #[cfg(feature = "vulkan")]
+    fn vulkan_renderer_report(&self) -> Option<crate::backend::vulkan::VulkanRendererReport> {
+        match self {
+            #[cfg(all(target_os = "linux", feature = "headless-vulkan"))]
+            Self::Vulkan(renderer) => Some(renderer.renderer_report()),
+            _ => None,
         }
     }
 
@@ -702,6 +769,8 @@ impl HeadlessRenderer {
             Self::Raster(renderer) => Ok(renderer.render(state)),
             #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
             Self::Gl(renderer) => renderer.render_binary(state),
+            #[cfg(all(target_os = "linux", feature = "headless-vulkan"))]
+            Self::Vulkan(_) => Err("headless Vulkan does not support binary output".to_string()),
         }
     }
 
@@ -715,14 +784,41 @@ impl HeadlessRenderer {
             }
             #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
             Self::Gl(renderer) => renderer.render_prime(_state),
+            #[cfg(all(target_os = "linux", feature = "headless-vulkan"))]
+            Self::Vulkan(renderer) => renderer.render_prime(_state),
         }
     }
 
-    fn release_prime(&mut self, _release_id: u64) {
+    fn release_prime(&mut self, _release_id: u64) -> bool {
         match self {
-            Self::Raster(_) => {}
+            Self::Raster(_) => false,
             #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
-            Self::Gl(renderer) => renderer.release_prime(_release_id),
+            Self::Gl(renderer) => {
+                renderer.release_prime(_release_id);
+                true
+            }
+            #[cfg(all(target_os = "linux", feature = "headless-vulkan"))]
+            Self::Vulkan(renderer) => renderer.release_prime(_release_id),
+        }
+    }
+
+    fn prime_completion_receiver(&self) -> Receiver<u64> {
+        match self {
+            #[cfg(all(target_os = "linux", feature = "headless-vulkan"))]
+            Self::Vulkan(renderer) => renderer.completion_receiver(),
+            Self::Raster(_) => never(),
+            #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
+            Self::Gl(_) => never(),
+        }
+    }
+
+    fn complete_prime_retirement(&mut self, _release_id: u64) -> bool {
+        match self {
+            #[cfg(all(target_os = "linux", feature = "headless-vulkan"))]
+            Self::Vulkan(renderer) => renderer.complete_retirement(_release_id),
+            Self::Raster(_) => false,
+            #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
+            Self::Gl(_) => false,
         }
     }
 
@@ -731,6 +827,8 @@ impl HeadlessRenderer {
             Self::Raster(_) => false,
             #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
             Self::Gl(renderer) => renderer.terminal_prime_shutdown_ready(),
+            #[cfg(all(target_os = "linux", feature = "headless-vulkan"))]
+            Self::Vulkan(renderer) => renderer.terminal_prime_shutdown_ready(),
         }
     }
 }

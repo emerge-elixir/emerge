@@ -151,9 +151,37 @@ defmodule EmergeSkia.Transport.Native do
         screenshot: info.capabilities.screenshot,
         raster_present: Enum.map(info.capabilities.raster_present, &string_to_renderer_atom/1),
         prime_video: info.capabilities.prime_video
-      }
+      },
+      vulkan_device: normalize_vulkan_device(info.vulkan_device)
     }
   end
+
+  defp normalize_vulkan_device(nil), do: nil
+
+  defp normalize_vulkan_device(device) do
+    %{
+      physical_device_name: device.physical_device_name,
+      driver_name: device.driver_name,
+      driver_id: device.driver_id,
+      software: device.software,
+      drm_node: normalize_vulkan_drm_node(device.drm_node)
+    }
+  end
+
+  defp normalize_vulkan_drm_node(nil), do: nil
+
+  defp normalize_vulkan_drm_node(node) do
+    %{
+      path: node.path,
+      match_field: string_to_drm_match_field(node.match_field),
+      major: node.major,
+      minor: node.minor
+    }
+  end
+
+  defp string_to_drm_match_field("primary"), do: :primary
+  defp string_to_drm_match_field("render"), do: :render
+  defp string_to_drm_match_field(value), do: value
 
   defp string_to_renderer_atom(value) when is_binary(value) do
     case value do

@@ -563,6 +563,14 @@ fn animation_spec_layout_effect(id: NodeId, spec: &AnimationSpec) -> Option<Anim
     })
 }
 
+pub(super) fn animation_spec_is_compositor_only(spec: &AnimationSpec) -> bool {
+    !spec.keyframes.is_empty()
+        && spec
+            .keyframes
+            .iter()
+            .all(animation_attrs_are_transform_only)
+}
+
 fn animation_attrs_are_transform_only(attrs: &Attrs) -> bool {
     classify_animation_sample_attrs(attrs) == TreeInvalidation::Paint
         && attrs.background.is_none()

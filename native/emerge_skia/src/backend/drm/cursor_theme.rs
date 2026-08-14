@@ -20,6 +20,7 @@ pub(crate) struct CursorVisual {
     image: Image,
     size: (u32, u32),
     hotspot: (f32, f32),
+    #[cfg_attr(not(feature = "drm"), allow(dead_code))]
     plane_bgra: Vec<u8>,
 }
 
@@ -36,6 +37,7 @@ impl CursorVisual {
         self.hotspot
     }
 
+    #[cfg_attr(not(feature = "drm"), allow(dead_code))]
     pub(crate) fn plane_bgra(&self) -> &[u8] {
         &self.plane_bgra
     }

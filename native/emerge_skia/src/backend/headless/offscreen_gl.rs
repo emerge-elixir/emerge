@@ -5,6 +5,7 @@ use std::{
     os::{
         fd::{AsRawFd, OwnedFd},
         raw::c_void,
+        unix::fs::{FileTypeExt, MetadataExt},
     },
     ptr,
     sync::Arc,
@@ -170,9 +171,18 @@ impl GlHeadlessRenderer {
         height: u32,
         renderer_cache_config: RendererCacheConfig,
         max_in_flight: u32,
+        drm_node: Option<&str>,
     ) -> Result<Self, String> {
         let dimensions = (width.max(1), height.max(1));
         let (egl_lib, egl) = load_egl()?;
+        if drm_node.is_none() {
+            let device_count = discovered_drm_device_groups().len();
+            if device_count != 1 {
+                return Err(format!(
+                    "headless PRIME DRM node selection is ambiguous across {device_count} devices; configure :headless.prime.drm_node explicitly"
+                ));
+            }
+        }
         let candidates = display_candidates(&egl);
         if candidates.is_empty() {
             return Err("headless PRIME could not find an EGL display candidate".to_string());
@@ -184,7 +194,7 @@ impl GlHeadlessRenderer {
                 Ok(state) => {
                     let mut renderer =
                         Self::from_state(state, width, height, renderer_cache_config);
-                    match renderer.enable_prime_export(max_in_flight) {
+                    match renderer.enable_prime_export(max_in_flight, drm_node) {
                         Ok(()) => return Ok(renderer),
                         Err(err) => errors.push(err),
                     }
@@ -215,7 +225,11 @@ impl GlHeadlessRenderer {
         }
     }
 
-    fn enable_prime_export(&mut self, max_in_flight: u32) -> Result<(), String> {
+    fn enable_prime_export(
+        &mut self,
+        max_in_flight: u32,
+        drm_node: Option<&str>,
+    ) -> Result<(), String> {
         self.make_current()?;
         let image_target_texture_2d_oes = load_egl_proc::<GlEglImageTargetTexture2DOes>(
             &self.state.egl,
@@ -226,6 +240,7 @@ impl GlHeadlessRenderer {
             self.state.display,
             image_target_texture_2d_oes,
             (self.width.max(1), self.height.max(1)),
+            drm_node,
         );
         if let Some(frame_surface) = self.state.frame_surface.as_mut() {
             frame_surface.reset_context();
@@ -914,7 +929,7 @@ fn render_prime_frame(
     slot.acquire_fence = synchronization.owned_fence;
 
     let export_metadata_started_at = Instant::now();
-    let modifier = modifier_to_option(slot.surface.bo.modifier().into());
+    let modifier = Some(linear_export_modifier(slot.surface.bo.modifier().into()));
     let plane_count = slot.surface.bo.plane_count().max(1);
     let objects = slot
         .fds
@@ -1217,6 +1232,13 @@ fn modifier_to_option(modifier: u64) -> Option<u64> {
     (modifier != DRM_FORMAT_MOD_INVALID).then_some(modifier)
 }
 
+fn linear_export_modifier(modifier: u64) -> u64 {
+    match modifier {
+        DRM_FORMAT_MOD_INVALID => DRM_FORMAT_MOD_LINEAR,
+        modifier => modifier,
+    }
+}
+
 fn prime_export_buffer_flags() -> BufferObjectFlags {
     // This output is consumed through EGL DMA-BUF import rather than direct scanout. Requiring a
     // linear BO avoids relying on implicit, driver-specific tiling metadata when GBM cannot report
@@ -1245,13 +1267,21 @@ fn open_prime_gbm_device(
     display: EGLDisplay,
     image_target_texture_2d_oes: GlEglImageTargetTexture2DOes,
     dimensions: (u32, u32),
+    configured_drm_node: Option<&str>,
 ) -> Result<(GbmDevice<File>, ExportSurface), String> {
     let mut errors = Vec::new();
-    for path in gbm_device_candidates(egl, display) {
+    for path in gbm_device_candidates(egl, display, configured_drm_node)? {
         let file = match OpenOptions::new().read(true).write(true).open(&path) {
             Ok(file) => file,
             Err(err) => {
                 errors.push(format!("{path}: open failed: {err}"));
+                continue;
+            }
+        };
+        let node = match drm_node_id(&file, &path) {
+            Ok(node) => node,
+            Err(err) => {
+                errors.push(err);
                 continue;
             }
         };
@@ -1270,7 +1300,13 @@ fn open_prime_gbm_device(
             image_target_texture_2d_oes,
             dimensions,
         ) {
-            Ok(probe) => return Ok((device, probe)),
+            Ok(probe) => {
+                eprintln!(
+                    "headless PRIME OpenGL allocation DRM node: {path} ({}:{})",
+                    node.major, node.minor
+                );
+                return Ok((device, probe));
+            }
             Err(err) => errors.push(format!("{path}: PRIME export probe failed: {err}")),
         }
     }
@@ -1281,18 +1317,118 @@ fn open_prime_gbm_device(
     ))
 }
 
-fn gbm_device_candidates(egl: &egl::Egl, display: EGLDisplay) -> Vec<String> {
-    let mut paths = egl_display_device_paths(egl, display);
-    for path in discovered_dri_device_paths().into_iter().chain(
-        (128..=143)
-            .map(|node| format!("/dev/dri/renderD{node}"))
-            .chain((0..=7).map(|node| format!("/dev/dri/card{node}"))),
-    ) {
-        if !paths.contains(&path) {
-            paths.push(path);
-        }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct DrmNodeId {
+    major: u32,
+    minor: u32,
+}
+
+fn drm_node_id(file: &File, path: &str) -> Result<DrmNodeId, String> {
+    let metadata = file
+        .metadata()
+        .map_err(|err| format!("{path}: stat failed: {err}"))?;
+    if !metadata.file_type().is_char_device() {
+        return Err(format!("{path}: expected a DRM character device"));
     }
-    paths
+
+    let rdev = metadata.rdev();
+    let node = DrmNodeId {
+        major: libc::major(rdev),
+        minor: libc::minor(rdev),
+    };
+    let subsystem = format!("/sys/dev/char/{}:{}/subsystem", node.major, node.minor);
+    let subsystem = std::fs::canonicalize(&subsystem)
+        .map_err(|err| format!("{path}: failed to resolve DRM subsystem identity: {err}"))?;
+    if subsystem.file_name().and_then(|name| name.to_str()) != Some("drm") {
+        return Err(format!(
+            "{path}: character device does not belong to the DRM subsystem"
+        ));
+    }
+    Ok(node)
+}
+
+fn drm_node_id_from_path(path: &str) -> Result<DrmNodeId, String> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|err| format!("{path}: open failed: {err}"))?;
+    drm_node_id(&file, path)
+}
+
+fn drm_physical_device_key(node: DrmNodeId) -> String {
+    let sysfs_device = format!("/sys/dev/char/{}:{}/device", node.major, node.minor);
+    std::fs::canonicalize(sysfs_device)
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| format!("{}:{}", node.major, node.minor))
+}
+
+fn gbm_device_candidates(
+    egl: &egl::Egl,
+    display: EGLDisplay,
+    configured_drm_node: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let egl_paths = egl_display_device_paths(egl, display);
+
+    if let Some(path) = configured_drm_node {
+        let configured = drm_node_id_from_path(path)?;
+        let reported = egl_paths
+            .iter()
+            .filter_map(|candidate| drm_node_id_from_path(candidate).ok())
+            .collect::<Vec<_>>();
+        if reported.is_empty() {
+            return Err(format!(
+                "cannot prove that EGL display matches configured headless PRIME DRM node {path} ({}:{}): EGL did not report a DRM device",
+                configured.major, configured.minor
+            ));
+        }
+        if !reported.contains(&configured) {
+            return Err(format!(
+                "EGL display DRM identity does not match configured headless PRIME node {path} ({}:{})",
+                configured.major, configured.minor
+            ));
+        }
+        return Ok(vec![path.to_string()]);
+    }
+
+    let reported = egl_paths
+        .into_iter()
+        .filter(|path| drm_node_id_from_path(path).is_ok())
+        .collect::<Vec<_>>();
+    if let Some(path) = reported.first() {
+        return Ok(vec![path.clone()]);
+    }
+
+    let groups = discovered_drm_device_groups();
+
+    if groups.len() != 1 {
+        return Err(format!(
+            "headless PRIME DRM node selection is ambiguous across {} devices; configure :headless.prime.drm_node explicitly",
+            groups.len()
+        ));
+    }
+
+    let mut paths = groups
+        .into_values()
+        .next()
+        .unwrap_or_default()
+        .into_iter()
+        .collect::<Vec<_>>();
+    paths.sort_by_key(|(_path, node)| (node.minor < 128, node.minor));
+    Ok(paths.into_iter().map(|(path, _node)| path).collect())
+}
+
+fn discovered_drm_device_groups() -> HashMap<String, Vec<(String, DrmNodeId)>> {
+    discovered_dri_device_paths()
+        .into_iter()
+        .filter_map(|path| {
+            let node = drm_node_id_from_path(&path).ok()?;
+            Some((drm_physical_device_key(node), (path, node)))
+        })
+        .fold(HashMap::new(), |mut groups, (key, candidate)| {
+            groups.entry(key).or_default().push(candidate);
+            groups
+        })
 }
 
 fn discovered_dri_device_paths() -> Vec<String> {
@@ -1610,6 +1746,7 @@ mod tests {
         assert!(validate_linear_export_modifier(DRM_FORMAT_MOD_LINEAR).is_ok());
         assert!(validate_linear_export_modifier(DRM_FORMAT_MOD_INVALID).is_ok());
         assert!(validate_linear_export_modifier(1).is_err());
+        assert_eq!(linear_export_modifier(DRM_FORMAT_MOD_INVALID), 0);
     }
 
     #[test]

@@ -6924,6 +6924,28 @@ mod tests {
             TreeMsg::SetSliderValue { element_id, value }
                 if *element_id == slider_id && (*value - 60.0).abs() < f64::EPSILON
         )));
+
+        let corrected = RegistryRebuildPayload {
+            base_registry: registry_builder::Registry::default(),
+            text_inputs: HashMap::new(),
+            sliders: HashMap::from([(
+                slider_id,
+                make_slider_state_with_patch(60.0, None, SliderValueOrigin::Event, 0.0, 100.0, 5.0),
+            )]),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+            focus_on_mount: None,
+        };
+        runtime.handle_registry_update(corrected, &tree_tx, false);
+
+        let state = runtime
+            .slider_states
+            .get(&slider_id)
+            .expect("corrected slider state preserved");
+        assert!((state.value - 60.0).abs() < f64::EPSILON);
+        assert_eq!(state.patch_value, None);
+        assert!(drain_msgs(&tree_rx).is_empty());
+        assert!(!runtime.listener_lane.is_stale());
     }
 
     #[test]

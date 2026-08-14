@@ -23,7 +23,7 @@ use emerge_skia::tree::element::{Element, ElementKind, ElementTree, Frame, Nearb
 use emerge_skia::tree::geometry::{ClipShape, CornerRadii, Rect};
 #[cfg(target_os = "linux")]
 use emerge_skia::tree::layout::{
-    Constraint, layout_and_refresh_default_with_animation,
+    Constraint, layout_and_refresh_default, layout_and_refresh_default_with_animation,
     layout_or_refresh_default_with_animation_and_invalidation_reusing_clean_registry_for_benchmark,
     layout_or_refresh_default_with_animation_reusing_clean_registry_for_benchmark,
 };
@@ -45,7 +45,11 @@ use std::sync::Once;
 #[cfg(target_os = "linux")]
 use std::time::{Duration, Instant};
 #[cfg(target_os = "linux")]
-use std::{ffi::CString, os::raw::c_void, ptr};
+use std::{
+    ffi::{CStr, CString},
+    os::raw::c_void,
+    ptr,
+};
 #[cfg(target_os = "linux")]
 use support::scrollable_rich_borders_shadow_showcase;
 
@@ -60,6 +64,36 @@ const EMERGE_DEMO_SHOWCASE_LAYOUT_EMRG: &[u8] =
 #[cfg(target_os = "linux")]
 const EMERGE_DEMO_SHOWCASE_BORDERS_EMRG: &[u8] =
     include_bytes!("../../../bench/external_fixtures/emerge_demo_showcase_borders/full.emrg");
+#[cfg(target_os = "linux")]
+const CAMERA_ACTIVE_SHUTTER_SLIDER_EMRG: [&[u8]; 8] = [
+    include_bytes!("../../../bench/external_fixtures/camera_active_slider/phase_0.emrg"),
+    include_bytes!("../../../bench/external_fixtures/camera_active_slider/phase_1.emrg"),
+    include_bytes!("../../../bench/external_fixtures/camera_active_slider/phase_2.emrg"),
+    include_bytes!("../../../bench/external_fixtures/camera_active_slider/phase_3.emrg"),
+    include_bytes!("../../../bench/external_fixtures/camera_active_slider/phase_4.emrg"),
+    include_bytes!("../../../bench/external_fixtures/camera_active_slider/phase_5.emrg"),
+    include_bytes!("../../../bench/external_fixtures/camera_active_slider/phase_6.emrg"),
+    include_bytes!("../../../bench/external_fixtures/camera_active_slider/phase_7.emrg"),
+];
+#[cfg(target_os = "linux")]
+const CAMERA_ACTIVE_FOCUS_SLIDER_EMRG: [&[u8]; 8] = [
+    include_bytes!("../../../bench/external_fixtures/camera_active_focus_slider/phase_0.emrg"),
+    include_bytes!("../../../bench/external_fixtures/camera_active_focus_slider/phase_1.emrg"),
+    include_bytes!("../../../bench/external_fixtures/camera_active_focus_slider/phase_2.emrg"),
+    include_bytes!("../../../bench/external_fixtures/camera_active_focus_slider/phase_3.emrg"),
+    include_bytes!("../../../bench/external_fixtures/camera_active_focus_slider/phase_4.emrg"),
+    include_bytes!("../../../bench/external_fixtures/camera_active_focus_slider/phase_5.emrg"),
+    include_bytes!("../../../bench/external_fixtures/camera_active_focus_slider/phase_6.emrg"),
+    include_bytes!("../../../bench/external_fixtures/camera_active_focus_slider/phase_7.emrg"),
+];
+#[cfg(target_os = "linux")]
+const CAMERA_ACTIVE_SLIDER_WIDTH: u32 = 1440;
+#[cfg(target_os = "linux")]
+const CAMERA_ACTIVE_SLIDER_HEIGHT: u32 = 2560;
+#[cfg(target_os = "linux")]
+const CAMERA_ACTIVE_SHUTTER_SLIDER_ID: u64 = 48;
+#[cfg(target_os = "linux")]
+const CAMERA_ACTIVE_FOCUS_SLIDER_ID: u64 = 74;
 #[cfg(target_os = "linux")]
 const EMERGE_DEMO_SHOWCASE_LAYOUT_FRAME_MS: [u64; 8] = [0, 16, 32, 48, 64, 80, 96, 112];
 #[cfg(target_os = "linux")]
@@ -327,6 +361,11 @@ fn bench_renderer_paint_layer_cache(c: &mut Criterion) {
         eprintln!("Skipping native/renderer/paint_layer_cache: EGL surfaceless setup failed");
         return;
     };
+    eprintln!(
+        "paint-layer benchmark GL_RENDERER={} GL_VERSION={}",
+        current_gl_string(gl::RENDERER),
+        current_gl_string(gl::VERSION)
+    );
     drop(surface_probe);
 
     let mut group = c.benchmark_group("native/renderer/paint_layer_cache");
@@ -717,7 +756,108 @@ fn bench_renderer_paint_layer_cache(c: &mut Criterion) {
         });
     });
 
+    let camera_active_shutter_states = camera_active_slider_fixture_states(
+        &CAMERA_ACTIVE_SHUTTER_SLIDER_EMRG,
+        NodeId::from_u64(CAMERA_ACTIVE_SHUTTER_SLIDER_ID),
+    );
+    bench_camera_active_slider(
+        &mut group,
+        "camera_active_shutter_slider/frame_sequence_gpu_complete",
+        &camera_active_shutter_states,
+        true,
+    );
+
+    let camera_active_focus_states = camera_active_slider_fixture_states(
+        &CAMERA_ACTIVE_FOCUS_SLIDER_EMRG,
+        NodeId::from_u64(CAMERA_ACTIVE_FOCUS_SLIDER_ID),
+    );
+    bench_camera_active_slider(
+        &mut group,
+        "camera_active_focus_slider/frame_sequence_gpu_complete",
+        &camera_active_focus_states,
+        true,
+    );
+    bench_camera_active_slider(
+        &mut group,
+        "camera_active_focus_slider/frame_sequence_cache_disabled_gpu_complete",
+        &camera_active_focus_states,
+        false,
+    );
+
     group.finish();
+}
+
+#[cfg(target_os = "linux")]
+fn bench_camera_active_slider(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    name: &str,
+    states: &[RenderState],
+    cache_enabled: bool,
+) {
+    states.iter().enumerate().for_each(|(phase, state)| {
+        let summary = state.scene.summary();
+        assert_eq!(summary.paint_layers, 9, "phase={phase} {summary:?}");
+        assert_eq!(summary.direct_only_layers, 1, "phase={phase} {summary:?}");
+        assert_eq!(summary.videos, 1, "phase={phase} {summary:?}");
+        let expected_focus_shadow = usize::from(phase > 0);
+        assert_eq!(
+            summary.shadow_passes, expected_focus_shadow,
+            "phase={phase} {summary:?}"
+        );
+        assert_eq!(
+            summary.shadows, expected_focus_shadow,
+            "phase={phase} {summary:?}"
+        );
+    });
+    group.throughput(Throughput::Elements(states[1].scene.summary().nodes as u64));
+    group.bench_function(name, |b| {
+        let mut state_index = 1usize;
+        let mut surface =
+            EglBenchSurface::new((CAMERA_ACTIVE_SLIDER_WIDTH, CAMERA_ACTIVE_SLIDER_HEIGHT))
+                .expect("EGL surfaceless setup should stay available after probe");
+        let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+            enabled: cache_enabled,
+            max_new_payloads_per_frame: 64,
+            ..RendererCacheConfig::default()
+        });
+
+        if cache_enabled {
+            let cold = render_paint_layer_cache_stats(&mut renderer, &mut surface, &states[0]);
+            let warm = render_paint_layer_cache_stats(&mut renderer, &mut surface, &states[0]);
+            let active = render_paint_layer_cache_stats(&mut renderer, &mut surface, &states[1]);
+            assert!(cold.stores > 0, "Camera fixture did not warm: {cold:?}");
+            assert!(warm.hits > 0, "Camera fixture did not hit: {warm:?}");
+            assert!(
+                active.hits > 0 && active.misses.saturating_add(active.rejected_admission) > 0,
+                "Camera fixture should mix static hits and changing direct runs: {active:?}"
+            );
+        } else {
+            [&states[0], &states[0], &states[1]]
+                .into_iter()
+                .for_each(|state| {
+                    let mut frame = surface.frame();
+                    let _ = renderer.render(&mut frame, state);
+                });
+        }
+        // Setup rendering is asynchronous. Complete it before Criterion starts timing so the
+        // first measured phase drains only work submitted by that phase.
+        unsafe { gl::Finish() };
+        b.iter(|| {
+            let state = &states[state_index];
+            state_index = (state_index + 1) % states.len().max(2);
+            if state_index == 0 {
+                state_index = 1;
+            }
+            let timings = {
+                let mut frame = surface.frame();
+                renderer.render(&mut frame, state)
+            };
+            // Surfaceless EGL does not present or otherwise throttle. Include completion so
+            // Criterion measures submitted GPU work rather than only command enqueue time.
+            unsafe { gl::Finish() };
+            black_box(timings);
+        });
+    });
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -1548,7 +1688,7 @@ fn emerge_demo_showcase_borders_benchmark() -> EmergeDemoShowcaseBordersBenchmar
         target.score
     );
     assert!(
-        summary.paint_layers >= 8 && summary.dynamic_layers > 0,
+        summary.paint_layers >= 6 && summary.cacheable_layers > 0,
         "emerge_demo showcase Borders benchmark did not select the animated Borders viewport: \
          size={}x{}, scroll_y={}, score={}, summary={summary:?}",
         target.width,
@@ -1601,7 +1741,7 @@ fn emerge_demo_showcase_borders_screenshot_benchmark() -> EmergeDemoShowcaseBord
         target.score
     );
     assert!(
-        summary.paint_layers >= 8 && summary.dynamic_layers > 0,
+        summary.paint_layers >= 6 && summary.cacheable_layers > 0,
         "emerge_demo showcase Borders screenshot benchmark did not select the animated Borders viewport: \
          size={}x{} scale={} scroll_y={}, score={}, summary={summary:?}",
         target.width,
@@ -2135,9 +2275,8 @@ fn emerge_demo_showcase_borders_target_score(summary: RenderSceneSummary) -> usi
         + summary.inset_shadows.abs_diff(0) * 8
         + summary.gradients.abs_diff(0) * 8
         + summary.borders.abs_diff(18) * 4
-        + summary.paint_layers.abs_diff(12) * 16
-        + summary.dynamic_layers.abs_diff(3) * 16
-        + summary.moving_layers.abs_diff(7) * 8
+        + summary.paint_layers.abs_diff(7) * 16
+        + summary.moving_layers.abs_diff(1) * 8
 }
 
 #[cfg(target_os = "linux")]
@@ -2334,7 +2473,7 @@ fn rich_borders_showcase_benchmark() -> RichBordersShowcaseBenchmark {
         target.score
     );
     assert!(
-        summary.dynamic_layers > 0,
+        summary.cacheable_layers > 0,
         "rich borders benchmark should select the animated-shadow viewport: \
          size={}x{}, scroll_y={}, score={}, summary={summary:?}",
         target.width,
@@ -2495,7 +2634,6 @@ fn rich_borders_showcase_target_score(summary: RenderSceneSummary) -> usize {
         + summary.shadows.abs_diff(14) * 8
         + summary.borders.abs_diff(18) * 4
         + summary.paint_layers.abs_diff(12) * 12
-        + summary.dynamic_layers.abs_diff(3) * 12
         + summary.moving_layers.abs_diff(7) * 6
 }
 
@@ -2892,7 +3030,7 @@ fn large_simple_paint_layer_scene() -> RenderScene {
             },
             PaintLayerPlacement::Fixed,
             PaintLayerPolicy::Cacheable,
-            PaintLayerReason::StableSubtree,
+            PaintLayerReason::Nearby,
             1,
             vec![
                 RenderNode::Primitive(DrawPrimitive::Rect(
@@ -2943,7 +3081,7 @@ fn text_heavy_paint_layer_scene() -> RenderScene {
             },
             PaintLayerPlacement::Fixed,
             PaintLayerPolicy::Cacheable,
-            PaintLayerReason::StableSubtree,
+            PaintLayerReason::Nearby,
             1,
             std::iter::once(RenderNode::Primitive(DrawPrimitive::RoundedRect(
                 58.0,
@@ -2970,6 +3108,37 @@ fn text_heavy_paint_layer_scene() -> RenderScene {
             .collect(),
         ))],
     }
+}
+
+#[cfg(target_os = "linux")]
+fn camera_active_slider_fixture_states(
+    encoded_states: &[&[u8]],
+    focused_slider_id: NodeId,
+) -> Vec<RenderState> {
+    encoded_states
+        .iter()
+        .enumerate()
+        .map(|(phase, encoded)| {
+            let mut tree = decode_tree(encoded).unwrap_or_else(|error| {
+                panic!("Camera phase {phase} fixture should decode: {error}")
+            });
+            if phase > 0 {
+                assert!(
+                    !tree.set_focused_active(&focused_slider_id, true).is_none(),
+                    "Camera phase {phase} should activate slider {focused_slider_id:?}"
+                );
+            }
+            let output = layout_and_refresh_default(
+                &mut tree,
+                Constraint::new(
+                    CAMERA_ACTIVE_SLIDER_WIDTH as f32,
+                    CAMERA_ACTIVE_SLIDER_HEIGHT as f32,
+                ),
+                1.0,
+            );
+            RenderState::new(output.scene, Color::BLACK, phase as u64 + 1, false)
+        })
+        .collect()
 }
 
 #[cfg(target_os = "linux")]
@@ -3062,7 +3231,7 @@ fn scrolling_paint_layer_scene(offset_y: f32) -> RenderScene {
                     },
                     PaintLayerPlacement::ScrollMoving,
                     PaintLayerPolicy::Cacheable,
-                    PaintLayerReason::ScrollContainer,
+                    PaintLayerReason::ScrollContent,
                     1,
                     scrolling_paint_layer_content(),
                 ))],
@@ -3140,7 +3309,7 @@ fn animated_paint_layer_scene(phase: usize) -> RenderScene {
                 },
                 PaintLayerPlacement::Fixed,
                 PaintLayerPolicy::Cacheable,
-                PaintLayerReason::StableSubtree,
+                PaintLayerReason::Nearby,
                 1,
                 animated_static_before(),
             )),
@@ -3153,7 +3322,7 @@ fn animated_paint_layer_scene(phase: usize) -> RenderScene {
                     height: 130.0,
                 },
                 PaintLayerPlacement::Fixed,
-                PaintLayerPolicy::DynamicRedraw,
+                PaintLayerPolicy::Cacheable,
                 PaintLayerReason::Animation,
                 phase as u64 + 1,
                 animated_dynamic_nodes(phase),
@@ -3168,7 +3337,7 @@ fn animated_paint_layer_scene(phase: usize) -> RenderScene {
                 },
                 PaintLayerPlacement::Fixed,
                 PaintLayerPolicy::Cacheable,
-                PaintLayerReason::StableSubtree,
+                PaintLayerReason::Nearby,
                 1,
                 animated_static_after(),
             )),
@@ -3295,7 +3464,7 @@ fn offscreen_layout_animation_scene(phase: usize) -> RenderScene {
                 },
                 PaintLayerPlacement::Fixed,
                 PaintLayerPolicy::Cacheable,
-                PaintLayerReason::ScrollContainer,
+                PaintLayerReason::ScrollContent,
                 1,
                 offscreen_layout_animation_children(phase),
             )),
@@ -3317,7 +3486,7 @@ fn offscreen_layout_animation_children(phase: usize) -> Vec<RenderNode> {
                     height: 88.0,
                 },
                 PaintLayerPlacement::Fixed,
-                PaintLayerPolicy::DynamicRedraw,
+                PaintLayerPolicy::Cacheable,
                 PaintLayerReason::Animation,
                 phase as u64 + 1,
                 offscreen_animated_layout_row(phase),
@@ -3342,7 +3511,7 @@ fn offscreen_visible_layout_rows() -> Vec<RenderNode> {
                 },
                 PaintLayerPlacement::Fixed,
                 PaintLayerPolicy::Cacheable,
-                PaintLayerReason::StableSubtree,
+                PaintLayerReason::Nearby,
                 1,
                 offscreen_visible_layout_row_nodes(index, y),
             ))
@@ -3454,7 +3623,7 @@ fn stable_descendant_layout_animation_scene(phase: usize) -> RenderScene {
                 },
                 PaintLayerPlacement::Fixed,
                 PaintLayerPolicy::Cacheable,
-                PaintLayerReason::ScrollContainer,
+                PaintLayerReason::ScrollContent,
                 1,
                 stable_descendant_layout_animation_children(phase),
             )),
@@ -3493,7 +3662,7 @@ fn stable_descendant_layout_animation_children(phase: usize) -> Vec<RenderNode> 
                     height: 86.0 + offscreen_shift,
                 },
                 PaintLayerPlacement::Fixed,
-                PaintLayerPolicy::DynamicRedraw,
+                PaintLayerPolicy::Cacheable,
                 PaintLayerReason::Animation,
                 phase as u64 + 1,
                 stable_descendant_animated_row(phase),
@@ -3529,7 +3698,7 @@ fn stable_descendant_layer(
         },
         PaintLayerPlacement::ScrollMoving,
         PaintLayerPolicy::Cacheable,
-        PaintLayerReason::StableSubtree,
+        PaintLayerReason::Nearby,
         1,
         vec![
             RenderNode::ShadowPass {
@@ -3648,7 +3817,7 @@ fn scroll_return_scene(scroll_y: f32) -> RenderScene {
                         },
                         PaintLayerPlacement::ScrollMoving,
                         PaintLayerPolicy::Cacheable,
-                        PaintLayerReason::StableSubtree,
+                        PaintLayerReason::Nearby,
                         1,
                         scroll_return_layer_content(),
                     ))],
@@ -3718,6 +3887,18 @@ struct EglBenchSurface {
     context: EGLContext,
     surface: EGLSurface,
     frame_surface: Option<GlFrameSurface>,
+}
+
+#[cfg(target_os = "linux")]
+fn current_gl_string(name: u32) -> String {
+    let value = unsafe { gl::GetString(name) };
+    if value.is_null() {
+        return "unavailable".to_string();
+    }
+
+    unsafe { CStr::from_ptr(value.cast()) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[cfg(target_os = "linux")]

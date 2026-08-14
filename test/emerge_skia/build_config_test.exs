@@ -16,6 +16,32 @@ defmodule EmergeSkia.BuildConfigTest do
            ]
   end
 
+  test "compiled_backends_to_rustler_features enables Vulkan per backend" do
+    assert BuildConfig.compiled_backends_to_rustler_features([:drm], [:drm]) == ["drm-all"]
+
+    assert BuildConfig.compiled_backends_to_rustler_features(
+             [:drm, :wayland],
+             [:wayland]
+           ) == ["wayland-all", "drm"]
+
+    assert BuildConfig.compiled_backends_to_rustler_features(
+             [:drm, :wayland],
+             [:drm, :wayland]
+           ) == ["wayland-all", "drm-all"]
+  end
+
+  test "compiled_backends_to_rustler_features enables the headless Vulkan producer independently" do
+    assert BuildConfig.compiled_backends_to_rustler_features(
+             [:wayland],
+             [:headless]
+           ) == ["wayland", "headless-all"]
+
+    assert BuildConfig.compiled_backends_to_rustler_features(
+             [:wayland],
+             [:wayland, :headless]
+           ) == ["wayland-all", "headless-all"]
+  end
+
   test "load_native_runtime? skips Rustler on macOS-only runtime builds" do
     refute BuildConfig.load_native_runtime?(%{"TARGET_OS" => "darwin"}, [:macos], :prod)
   end
@@ -222,6 +248,18 @@ defmodule EmergeSkia.BuildConfigTest do
            )
   end
 
+  test "force_precompiled_build? builds Vulkan configurations from source" do
+    assert BuildConfig.force_precompiled_build?(
+             checksum_path: __ENV__.file,
+             compiled_backends: [:wayland],
+             compiled_vulkan_backends: [:wayland],
+             env: %{},
+             target_resolver: fn _targets, _nif_versions ->
+               {:ok, "nif-2.15-x86_64-unknown-linux-gnu"}
+             end
+           )
+  end
+
   test "force_precompiled_build? uses precompiled artifacts for x64 drm and drm_wayland profiles" do
     refute BuildConfig.force_precompiled_build?(
              checksum_path: __ENV__.file,
@@ -286,6 +324,29 @@ defmodule EmergeSkia.BuildConfigTest do
   test "normalize_compiled_backends! rejects invalid entries" do
     assert_raise ArgumentError, ~r/containing only :wayland, :drm, and :macos/, fn ->
       BuildConfig.normalize_compiled_backends!([:wayland, :bogus, "drm"])
+    end
+  end
+
+  test "normalize_compiled_vulkan_backends! accepts the independent headless producer" do
+    assert BuildConfig.normalize_compiled_vulkan_backends!([:headless], [:wayland]) == [:headless]
+
+    assert BuildConfig.normalize_compiled_vulkan_backends!(
+             [:headless, :wayland],
+             [:wayland]
+           ) == [:wayland, :headless]
+  end
+
+  test "normalize_compiled_vulkan_backends! rejects invalid shapes and unavailable backends" do
+    assert_raise ArgumentError, ~r/must be a list of backend atoms/, fn ->
+      BuildConfig.normalize_compiled_vulkan_backends!(:wayland, [:wayland])
+    end
+
+    assert_raise ArgumentError, ~r/must contain only :wayland, :drm, and :headless/, fn ->
+      BuildConfig.normalize_compiled_vulkan_backends!([:macos], [:macos])
+    end
+
+    assert_raise ArgumentError, ~r/must be a subset of compiled_backends/, fn ->
+      BuildConfig.normalize_compiled_vulkan_backends!([:drm], [:wayland])
     end
   end
 end

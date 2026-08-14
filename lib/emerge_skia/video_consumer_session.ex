@@ -10,8 +10,7 @@ defmodule EmergeSkia.VideoConsumerSession do
   use GenServer
 
   alias EmergeSkia.Native
-  alias VideoInterop.{ConsumerContractError, Format, Frame}
-  alias VideoInterop.DMABuf
+  alias VideoInterop.{ConsumerContractError, Frame}
 
   @enforce_keys [:ref, :monitor]
   defstruct @enforce_keys
@@ -22,22 +21,14 @@ defmodule EmergeSkia.VideoConsumerSession do
           {:ok, t()} | {:error, term()}
   def open(%EmergeSkia.VideoTarget{ref: target_ref}, format, owner)
       when is_pid(owner) and node(owner) == node() do
-    %Format{
-      width: width,
-      height: height,
-      storage: %DMABuf.Format{fourcc: fourcc, modifier: modifier}
-    } = format
-
-    case normalize_open(
-           Native.video_consumer_session_open(target_ref, width, height, fourcc, modifier)
-         ) do
+    case normalize_open(Native.video_consumer_session_open(target_ref, format)) do
       {:ok, ref} ->
         case GenServer.start(__MODULE__, {owner, ref}) do
           {:ok, monitor} ->
             {:ok, %__MODULE__{ref: ref, monitor: monitor}}
 
           {:error, reason} ->
-            :ok = Native.video_consumer_session_close(ref)
+            :ok = close_native(ref)
             {:error, {:owner_monitor_start_failed, reason}}
         end
 
@@ -70,7 +61,7 @@ defmodule EmergeSkia.VideoConsumerSession do
 
   @spec close(t()) :: :ok
   def close(%__MODULE__{ref: ref, monitor: monitor}) do
-    :ok = Native.video_consumer_session_close(ref)
+    :ok = close_native(ref)
 
     if Process.alive?(monitor) do
       GenServer.cast(monitor, :stop)
@@ -86,7 +77,7 @@ defmodule EmergeSkia.VideoConsumerSession do
 
   @impl true
   def handle_info({:DOWN, monitor, :process, _owner, _reason}, %{owner_monitor: monitor} = state) do
-    :ok = Native.video_consumer_session_close(state.ref)
+    :ok = close_native(state.ref)
     {:stop, :normal, state}
   end
 
@@ -97,21 +88,31 @@ defmodule EmergeSkia.VideoConsumerSession do
 
   @impl true
   def terminate(_reason, state) do
-    _ = Native.video_consumer_session_close(state.ref)
-    :ok
+    :ok = close_native(state.ref)
+  end
+
+  # A timeout leaves the native dispatcher root owned by the session resource.
+  # Retry rather than fabricating closure or allowing that root to reach its
+  # fail-closed destructor while claims are still retiring.
+  defp close_native(ref) do
+    case Native.video_consumer_session_close(ref) do
+      :ok ->
+        :ok
+
+      {:error, {:timeout, _reason}} ->
+        close_native(ref)
+
+      {:error, reason} ->
+        raise ConsumerContractError, operation: :close, result: reason
+    end
   end
 
   defp normalize_open({:ok, ref}) when is_reference(ref), do: {:ok, ref}
   defp normalize_open({:error, "target_busy"}), do: {:error, :target_busy}
 
   defp normalize_open({:error, reason}) when is_binary(reason) do
-    if String.contains?(reason, [
-         "stale video target",
-         "stale video renderer",
-         "unknown video target",
-         "video registry is closed"
-       ]) do
-      {:error, :stale_target}
+    if stale_target_reason?(reason) do
+      {:error, {:stale_target, reason}}
     else
       {:error, reason}
     end
@@ -122,20 +123,25 @@ defmodule EmergeSkia.VideoConsumerSession do
   defp normalize_transfer_reason("video target is inactive"), do: :inactive
 
   defp normalize_transfer_reason(reason) when is_binary(reason) do
-    if String.contains?(reason, [
-         "stale video target",
-         "stale video renderer",
-         "unknown video target",
-         "video registry is closed",
-         "video consumer stream is closed"
-       ]) do
-      :stale_target
+    if stale_target_reason?(reason) do
+      {:stale_target, reason}
     else
       reason
     end
   end
 
   defp normalize_transfer_reason(reason), do: reason
+
+  defp stale_target_reason?(reason) do
+    String.contains?(reason, [
+      "stale video target",
+      "stale video renderer",
+      "stale video consumer stream",
+      "unknown video target",
+      "video registry is closed",
+      "video consumer stream is closed"
+    ])
+  end
 end
 
 defimpl VideoInterop.ConsumerSession, for: EmergeSkia.VideoConsumerSession do

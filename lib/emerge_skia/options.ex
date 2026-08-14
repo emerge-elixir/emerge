@@ -33,6 +33,22 @@ defmodule EmergeSkia.Options do
 
     validate_rendering_api_for_backend!(backend, rendering_api)
 
+    vulkan_drm_node =
+      opts
+      |> Keyword.get(:vulkan_drm_node)
+      |> normalize_optional_drm_node!(":vulkan_drm_node")
+
+    if backend == "drm" and rendering_api.kind == "vulkan" and is_nil(vulkan_drm_node) do
+      raise ArgumentError,
+            "rendering_api: :vulkan with backend: :drm requires an explicit :vulkan_drm_node absolute path, selected independently from :drm_card"
+    end
+
+    if backend == "drm" and rendering_api.kind == "vulkan" and
+         Keyword.get(opts, :drm_force_gpu_finish, false) == true do
+      raise ArgumentError,
+            ":drm_force_gpu_finish is an OpenGL-only diagnostic and cannot be used with rendering_api: :vulkan"
+    end
+
     renderer_cache =
       opts
       |> Keyword.get(:renderer_cache, [])
@@ -51,6 +67,7 @@ defmodule EmergeSkia.Options do
       width: Keyword.get(opts, :width, 800),
       height: Keyword.get(opts, :height, 600),
       drm_card: normalize_optional_string(Keyword.get(opts, :drm_card)),
+      vulkan_drm_node: vulkan_drm_node,
       drm_startup_retries:
         opts
         |> Keyword.get(:drm_startup_retries, 40)
@@ -82,8 +99,8 @@ defmodule EmergeSkia.Options do
   @doc false
   def rendering_api_start_error(%{backend: backend, rendering_api: rendering_api}) do
     case {String.downcase(backend), rendering_api.kind} do
-      {backend, "vulkan"} when backend in ["wayland", "drm", "headless"] ->
-        "rendering_api :vulkan is not implemented yet"
+      {backend, "vulkan"} when backend in ["drm", "wayland", "headless"] ->
+        nil
 
       _other ->
         nil
@@ -393,9 +410,18 @@ defmodule EmergeSkia.Options do
 
   defp normalize_headless_prime_opts!(value) do
     opts = normalize_keyword_or_map!(value, ":headless.prime")
-    ensure_only_keys!(opts, [:max_in_flight, :on_backpressure], ":headless.prime")
+
+    ensure_only_keys!(
+      opts,
+      [:drm_node, :max_in_flight, :on_backpressure],
+      ":headless.prime"
+    )
 
     %{
+      drm_node:
+        opts
+        |> Keyword.get(:drm_node)
+        |> normalize_optional_drm_node!(":headless.prime.drm_node"),
       max_in_flight:
         opts
         |> Keyword.get(:max_in_flight, 2)
@@ -416,6 +442,22 @@ defmodule EmergeSkia.Options do
         ArgumentError,
         ":headless.prime.on_backpressure must be :drop_new, got: #{inspect(value)}"
       )
+
+  defp normalize_optional_drm_node!(nil, _field_name), do: nil
+
+  defp normalize_optional_drm_node!(value, field_name)
+       when is_binary(value) and byte_size(value) > 0 do
+    if Path.type(value) == :absolute do
+      value
+    else
+      raise ArgumentError, "#{field_name} must be an absolute path, got: #{inspect(value)}"
+    end
+  end
+
+  defp normalize_optional_drm_node!(value, field_name) do
+    raise ArgumentError,
+          "#{field_name} must be nil or a non-empty absolute path, got: #{inspect(value)}"
+  end
 
   defp normalize_optional_positive_integer!(nil, _field_name), do: nil
 

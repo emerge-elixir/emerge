@@ -72,6 +72,12 @@ defmodule EmergeSkia do
   @type renderer :: reference() | Renderer.t() | HeadlessPrimeSession.t()
   @type color :: non_neg_integer()
   @type video_target :: VideoTarget.t()
+  @type video_target_info :: %{
+          required(:renderer_epoch) => non_neg_integer(),
+          required(:target_id) => binary(),
+          required(:target_incarnation) => non_neg_integer(),
+          required(:active_stream_id) => non_neg_integer() | nil
+        }
 
   @doc """
   Start a new renderer session.
@@ -80,12 +86,13 @@ defmodule EmergeSkia do
 
   - `otp_app` - OTP application used to resolve logical assets from its `priv` dir (**required**)
   - `backend` - Backend selection (`:wayland`, `:drm`, `:macos`, or `:headless`). Defaults to `:wayland` for Linux desktop builds, `:macos` on Darwin, and `:drm` for Nerves-style builds. Window/device backends must be present in `config :emerge, compiled_backends: [...]`.
-  - `rendering_api` - Rendering API selection (`:auto`, `:opengl`, `:raster`, `:metal`, or configured raster/auto forms). Defaults to `:auto`. The deprecated `backend_renderer` option and `:gl` value remain accepted. `:raster` is equivalent to `[raster: [present: :auto]]`; Wayland/DRM can force raster presentation with `[raster: [present: :gpu_upload | :cpu]]` or configure auto fallback with `[auto: [raster: [present: ...]]]`. Headless binary `:auto` tries offscreen EGL/OpenGL on Linux, then falls back to raster. Headless PRIME requires Linux OpenGL and never falls back to raster.
+  - `rendering_api` - Rendering API selection (`:auto`, `:opengl`, `:raster`, `:metal`, `:vulkan`, or configured raster/auto forms). Defaults to `:auto`. Explicit Vulkan requires a matching native feature and never falls back; `:auto` remains OpenGL-first. DRM Vulkan additionally fails closed at its output-allocation capability seam until a target probe proves one supported KMS/Vulkan direction. The deprecated `backend_renderer` option and `:gl` value remain accepted. `:raster` is equivalent to `[raster: [present: :auto]]`; Wayland/DRM can force raster presentation with `[raster: [present: :gpu_upload | :cpu]]` or configure auto fallback with `[auto: [raster: [present: ...]]]`. Headless binary `:auto` tries offscreen EGL/OpenGL on Linux, then falls back to raster. Headless PRIME never falls back to raster.
   - `title` - Window title (default: "Emerge")
   - `width` - Window width in pixels (default: 800)
   - `height` - Window height in pixels (default: 600)
   - `scroll_line_pixels` - Pixel distance used for each discrete mouse-wheel line step (default: `30.0`)
-  - `drm_card` - DRM device path (default: `/dev/dri/card0`)
+  - `drm_card` - KMS/modeset DRM primary-node path (default: `/dev/dri/card0`)
+  - `vulkan_drm_node` - Explicit primary/render DRM node used only for exact Vulkan physical-device selection. Required for `backend: :drm, rendering_api: :vulkan`; it is never inferred from `drm_card`.
   - `hw_cursor` - Enable hardware cursor when available (default: true)
   - `drm_cursor` - Optional DRM-only cursor overrides for `default`, `text`, and `pointer`
   - `input_log` - Log DRM input devices on startup (default: false)
@@ -94,7 +101,7 @@ defmodule EmergeSkia do
     `/tmp/emerge-wayland-watchdog-<pid>.log` (default: false)
   - `close_signal_log` - Log detailed Wayland window-close diagnostics to stderr (default: false)
   - `stats` - Enable renderer stats collection without periodic logging (default: false)
-  - `renderer_stats_log` - Enable renderer stats collection and log all current stat families every 5 seconds, including frame rate, split render timings, split patch-to-present pipeline timing, layout-cache counters, and renderer-cache counters. Slow Wayland render frames also include a scene primitive summary and per-frame renderer-cache counters. (default: false)
+  - `renderer_stats_log` - Enable renderer stats collection and log all current stat families every 5 seconds, including frame rate, split render timings, split patch-to-present pipeline timing, layout-cache counters, and renderer-cache counters. Slow Wayland render frames also include a scene primitive summary and per-frame renderer-cache counters. Individual DRM GPU timer samples require the separate verbose `render_log` option; their aggregate remains in the periodic stats log. (default: false)
   - `renderer_animation_log` - Log detailed Wayland animation cadence traces. This is intentionally separate from `renderer_stats_log` because continuous animations can produce very noisy frame-by-frame logs. (default: false)
   - `renderer_cache` - Renderer cache limits (optional)
   - `assets` - Asset runtime policy options (optional)
@@ -155,6 +162,11 @@ defmodule EmergeSkia do
   DRM cursor overrides are applied only on the `:drm` backend. Missing icons fall back to
   the built-in `mocu-black-right` theme.
 
+  The DRM backend explicitly requests OpenGL ES 2; no GLES compatibility option is needed.
+  GPU timer profiling and PRIME video import are enabled only when their required GL/EGL
+  extensions are available. Missing optional capabilities do not stop ordinary DRM UI
+  rendering, while unsupported PRIME video target operations return an error.
+
   Compile-time backend selection is configured separately with
   `config :emerge, compiled_backends: [...]`. If omitted, desktop builds assume
   `[:wayland]` and Nerves-style builds assume `[:drm]`.
@@ -174,15 +186,9 @@ defmodule EmergeSkia do
       raise ArgumentError, "drm_cursor is only supported with backend: :drm"
     end
 
-    case Options.rendering_api_start_error(native_opts) do
-      nil ->
-        native_opts.backend
-        |> Transport.for_backend()
-        |> apply(:start_session, [native_opts, asset_config])
-
-      reason ->
-        {:error, {:error, reason}}
-    end
+    native_opts.backend
+    |> Transport.for_backend()
+    |> apply(:start_session, [native_opts, asset_config])
   end
 
   @spec start(String.t()) :: no_return()
@@ -275,6 +281,16 @@ defmodule EmergeSkia do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  @doc """
+  Return the target's exact renderer, incarnation, and active stream identity.
+
+  This is a read-only query. A stale target or renderer returns an error.
+  """
+  @spec video_target_info(video_target()) :: {:ok, video_target_info()} | {:error, term()}
+  def video_target_info(%VideoTarget{ref: ref}) do
+    Native.video_target_info(ref)
   end
 
   @doc """
@@ -679,7 +695,9 @@ defmodule EmergeSkia do
 
   Stats collection is disabled by default. Start the renderer with `stats: true`
   or `renderer_stats_log: true` to collect renderer stats. Use `:take` to read
-  and reset the current stats window.
+  and reset the current stats window. On DRM, `:take` starts the next stats window
+  while asynchronous GPU samples finish in the closed window and may return a
+  draining error; retry it to receive the exact closed snapshot.
   """
   @spec stats(renderer(), Native.stats_command()) ::
           {:ok, Native.stats_snapshot()} | {:error, term()}
@@ -691,8 +709,14 @@ defmodule EmergeSkia do
 
   @doc """
   Fetch normalized renderer/backend information for a running renderer.
+
+  Explicit Vulkan renderers include `:vulkan_device`, retained from the physical device that
+  actually won startup selection. When a backend selected Vulkan through an exact DRM node, the
+  nested `:drm_node` contains that opened path, match field, and major/minor identity. The KMS card
+  is intentionally not reported as the Vulkan node on split-device systems. Non-Vulkan renderers
+  return `vulkan_device: nil`.
   """
-  @spec renderer_info(renderer()) :: {:ok, map()} | {:error, term()}
+  @spec renderer_info(renderer()) :: {:ok, Native.renderer_info()} | {:error, term()}
   def renderer_info(renderer) do
     renderer
     |> Transport.for_renderer()

@@ -3,6 +3,8 @@ defmodule EmergeSkia.Native do
   NIF bindings for the Skia renderer.
   """
 
+  @behaviour VideoInterop.AbandonmentGuard
+
   @checksum_only EmergeSkia.BuildConfig.checksum_only_mode?()
   @load_native_runtime EmergeSkia.BuildConfig.load_native_runtime?()
 
@@ -29,6 +31,7 @@ defmodule EmergeSkia.Native do
       @rustler_opts Mix.Project.config()[:rustler_opts] || []
       @crate_path Path.expand("../../native/emerge_skia", __DIR__)
       @compiled_backends EmergeSkia.BuildConfig.compiled_backends()
+      @compiled_vulkan_backends EmergeSkia.BuildConfig.compiled_vulkan_backends()
       @checksum_path Path.expand("../../checksum-Elixir.EmergeSkia.Native.exs", __DIR__)
       @version Mix.Project.config()[:version]
       @base_url {EmergeSkia.BuildConfig, :precompiled_tar_gz_url}
@@ -36,11 +39,13 @@ defmodule EmergeSkia.Native do
       @precompiled_nif_versions EmergeSkia.BuildConfig.precompiled_nif_versions()
       @precompiled_variants EmergeSkia.BuildConfig.precompiled_variants()
       @cargo_features EmergeSkia.BuildConfig.compiled_backends_to_rustler_features(
-                        @compiled_backends
+                        @compiled_backends,
+                        @compiled_vulkan_backends
                       )
       @force_build EmergeSkia.BuildConfig.force_precompiled_build?(
                      checksum_path: @checksum_path,
                      compiled_backends: @compiled_backends,
+                     compiled_vulkan_backends: @compiled_vulkan_backends,
                      targets: @precompiled_targets,
                      nif_versions: @precompiled_nif_versions
                    )
@@ -90,6 +95,7 @@ defmodule EmergeSkia.Native do
           required(:width) => non_neg_integer(),
           required(:height) => non_neg_integer(),
           required(:drm_card) => String.t() | nil,
+          required(:vulkan_drm_node) => String.t() | nil,
           required(:drm_startup_retries) => non_neg_integer(),
           required(:drm_retry_interval_ms) => non_neg_integer(),
           required(:drm_force_gpu_finish) => boolean(),
@@ -223,6 +229,19 @@ defmodule EmergeSkia.Native do
   def video_target_new(_renderer, _id, _width, _height, _mode),
     do: :erlang.nif_error(:nif_not_loaded)
 
+  @type video_target_info :: %{
+          required(:renderer_epoch) => non_neg_integer(),
+          required(:target_id) => binary(),
+          required(:target_incarnation) => non_neg_integer(),
+          required(:active_stream_id) => non_neg_integer() | nil
+        }
+
+  @doc """
+  Return the current exact identity of a renderer-owned video target.
+  """
+  @spec video_target_info(reference()) :: {:ok, video_target_info()} | {:error, String.t()}
+  def video_target_info(_target), do: :erlang.nif_error(:nif_not_loaded)
+
   @doc """
   Submit a DRM Prime descriptor to a video target.
   """
@@ -231,14 +250,9 @@ defmodule EmergeSkia.Native do
   def video_target_submit_prime(_target, _desc), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc false
-  @spec video_consumer_session_open(
-          reference(),
-          pos_integer(),
-          pos_integer(),
-          non_neg_integer(),
-          :per_buffer | VideoInterop.DMABuf.Modifier.t()
-        ) :: {:ok, reference()} | {:error, term()}
-  def video_consumer_session_open(_target, _width, _height, _fourcc, _modifier),
+  @spec video_consumer_session_open(reference(), VideoInterop.Format.t()) ::
+          {:ok, reference()} | {:error, term()}
+  def video_consumer_session_open(_target, _format),
     do: :erlang.nif_error(:nif_not_loaded)
 
   @doc false
@@ -253,8 +267,87 @@ defmodule EmergeSkia.Native do
   def video_consumer_decode_for_test(_frame), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc false
-  @spec video_consumer_session_close(reference()) :: :ok
+  @spec video_consumer_prepare_hold_for_test(reference(), term()) ::
+          {:ok, reference()} | {:error, {:caller_owned, String.t()}}
+  def video_consumer_prepare_hold_for_test(_session, _frame),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec video_consumer_prepared_drop_for_test(reference()) :: boolean()
+  def video_consumer_prepared_drop_for_test(_prepared),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec video_consumer_session_open_for_test() ::
+          {:ok, {reference(), reference()}} | {:error, String.t()}
+  def video_consumer_session_open_for_test, do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec video_consumer_target_set_active_for_test(reference(), boolean()) ::
+          {:ok, boolean()} | {:error, String.t()}
+  def video_consumer_target_set_active_for_test(_target, _active),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec video_consumer_target_replace_for_test(reference()) ::
+          {:ok, boolean()} | {:error, String.t()}
+  def video_consumer_target_replace_for_test(_target),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec video_consumer_target_pipeline_counts_for_test(reference()) ::
+          {:ok, {non_neg_integer(), non_neg_integer(), non_neg_integer()}} | {:error, String.t()}
+  def video_consumer_target_pipeline_counts_for_test(_target),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec video_interop_open_fd_for_test() ::
+          {:ok, {non_neg_integer(), reference()}} | {:error, String.t()}
+  def video_interop_open_fd_for_test, do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec video_consumer_session_close(reference()) ::
+          :ok | {:error, {:timeout | :dispatcher_close_failed, String.t()}}
   def video_consumer_session_close(_session), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec video_consumer_session_close_with_timeout_for_test(reference(), non_neg_integer()) ::
+          :ok | {:error, {:timeout | :dispatcher_close_failed, String.t()}}
+  def video_consumer_session_close_with_timeout_for_test(_session, _timeout_ms),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec headless_prime_release_dispatcher_new() ::
+          {:ok, reference()} | {:error, String.t()}
+  def headless_prime_release_dispatcher_new, do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec headless_prime_release_dispatcher_close(reference()) ::
+          :ok | {:error, {:timeout | :dispatcher_close_failed, String.t()}}
+  def headless_prime_release_dispatcher_close(_dispatcher),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec headless_prime_release_dispatcher_close_with_timeout_for_test(
+          reference(),
+          non_neg_integer()
+        ) :: :ok | {:error, {:timeout | :dispatcher_close_failed, String.t()}}
+  def headless_prime_release_dispatcher_close_with_timeout_for_test(_dispatcher, _timeout_ms),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec headless_prime_abandonment_guard_new(
+          pid(),
+          reference(),
+          reference(),
+          reference()
+        ) :: {:ok, reference()} | {:error, String.t()}
+  def headless_prime_abandonment_guard_new(_owner, _token, _holder, _dispatcher),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  @impl VideoInterop.AbandonmentGuard
+  @spec video_interop_abandonment_guard?(term()) :: boolean()
+  def video_interop_abandonment_guard?(_resource), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc false
   @spec headless_prime_release_backend_token(reference()) :: :ok
@@ -396,7 +489,7 @@ defmodule EmergeSkia.Native do
         }
 
   @typedoc """
-  Native stats payload. Current schema version: 19.
+  Native stats payload. Current schema version: 25.
   """
   @type stats_snapshot :: %{
           required(:version) => pos_integer(),
@@ -434,7 +527,11 @@ defmodule EmergeSkia.Native do
           required(:drm) => %{
             required(:forced_gpu_finish_before_swap) => duration_stats(),
             required(:forced_gpu_finish_after_swap) => duration_stats(),
-            required(:gpu_queue_completion) => duration_stats(),
+            required(:gpu_render_elapsed) => duration_stats(),
+            required(:gpu_render_elapsed_disjoint_discarded_samples) => non_neg_integer(),
+            required(:gpu_render_elapsed_pool_saturated_sample_skips) => non_neg_integer(),
+            required(:gpu_render_elapsed_stale_epoch_samples) => non_neg_integer(),
+            required(:video_retired_gl_finish_fallbacks) => non_neg_integer(),
             required(:egl_swap_buffers) => duration_stats(),
             required(:gbm_lock_front_buffer) => duration_stats(),
             required(:framebuffer_lookup) => duration_stats(),
@@ -450,6 +547,74 @@ defmodule EmergeSkia.Native do
             required(:missed_vblanks) => non_neg_integer()
           },
           required(:counters) => %{
+            required(:pipeline) => %{
+              required(:scenes_constructed) => non_neg_integer(),
+              required(:render_queue_overwrites) => non_neg_integer(),
+              required(:drm_scenes_selected_for_draw) => non_neg_integer(),
+              required(:drm_scenes_presented) => non_neg_integer()
+            },
+            required(:video) => %{
+              required(:submitted) => non_neg_integer(),
+              required(:inactive_dropped) => non_neg_integer(),
+              required(:pending_replaced) => non_neg_integer(),
+              required(:pending_taken) => non_neg_integer(),
+              required(:imported) => non_neg_integer(),
+              required(:leases_released) => non_neg_integer(),
+              required(:retired_fences_created) => non_neg_integer(),
+              required(:retired_fences_released) => non_neg_integer(),
+              required(:retired_gl_finish_fallbacks) => non_neg_integer(),
+              required(:acquire_fences_received) => non_neg_integer(),
+              required(:acquire_server_waits_queued) => non_neg_integer(),
+              required(:acquire_client_wait_fallbacks) => non_neg_integer(),
+              required(:acquire_wait_timeouts) => non_neg_integer(),
+              required(:acquire_wait_errors) => non_neg_integer(),
+              required(:primary_prepared) => non_neg_integer(),
+              required(:video_primary_prepared) => non_neg_integer(),
+              required(:stale_prepared) => non_neg_integer(),
+              required(:stale_video_prepared) => non_neg_integer(),
+              required(:gbm_no_free) => non_neg_integer(),
+              required(:primary_commit_attempts) => non_neg_integer(),
+              required(:primary_commit_ebusy) => non_neg_integer(),
+              required(:primary_committed) => non_neg_integer(),
+              required(:primary_presented) => non_neg_integer(),
+              required(:video_primary_presented) => non_neg_integer(),
+              required(:video_primary_ever_presented) => boolean(),
+              required(:last_presented_streams) => [
+                %{
+                  required(:renderer_epoch) => non_neg_integer(),
+                  required(:target_id) => binary(),
+                  required(:target_incarnation) => non_neg_integer(),
+                  required(:stream_id) => non_neg_integer()
+                }
+              ],
+              required(:page_flip_events) => non_neg_integer(),
+              required(:page_flip_sequence_steps) => non_neg_integer(),
+              required(:missed_vblanks) => non_neg_integer(),
+              required(:current_pending) => non_neg_integer(),
+              required(:current_direct_imports) => non_neg_integer(),
+              required(:current_retired_imports) => non_neg_integer(),
+              required(:max_retired_imports) => non_neg_integer(),
+              required(:current_prepared) => non_neg_integer(),
+              required(:current_in_flight) => non_neg_integer()
+            },
+            required(:vulkan_video) => %{
+              required(:acquire_sync_fd_imported) => non_neg_integer(),
+              required(:temporary_semaphore_import_failures) => non_neg_integer(),
+              required(:ownership_acquires_submitted) => non_neg_integer(),
+              required(:acquire_submit_failures) => non_neg_integer(),
+              required(:ganesh_waits_rejected) => non_neg_integer(),
+              required(:releases_submitted) => non_neg_integer(),
+              required(:release_submit_failures) => non_neg_integer(),
+              required(:releases_completed) => non_neg_integer(),
+              required(:release_fences_created) => non_neg_integer(),
+              required(:release_fence_errors) => non_neg_integer(),
+              required(:release_fence_completions) => non_neg_integer(),
+              required(:retirement_timeouts) => non_neg_integer(),
+              required(:import_cap_saturations) => non_neg_integer(),
+              required(:quarantined) => non_neg_integer(),
+              required(:global_quarantine_terminal) => boolean(),
+              required(:device_lost) => non_neg_integer()
+            },
             required(:layout_cache) => layout_cache_stats(),
             required(:renderer_cache) => renderer_cache_stats()
           }
@@ -458,6 +623,21 @@ defmodule EmergeSkia.Native do
   @doc false
   @spec stats(reference(), stats_command()) :: {:ok, stats_snapshot()} | {:error, String.t()}
   def stats(_resource, _command), do: :erlang.nif_error(:nif_not_loaded)
+
+  @type vulkan_drm_node_info :: %{
+          required(:path) => String.t(),
+          required(:match_field) => :primary | :render | String.t(),
+          required(:major) => non_neg_integer(),
+          required(:minor) => non_neg_integer()
+        }
+
+  @type vulkan_device_info :: %{
+          required(:physical_device_name) => String.t(),
+          required(:driver_name) => String.t() | nil,
+          required(:driver_id) => atom() | String.t() | nil,
+          required(:software) => boolean(),
+          required(:drm_node) => vulkan_drm_node_info() | nil
+        }
 
   @type renderer_info :: %{
           required(:backend) => atom() | String.t(),
@@ -468,7 +648,8 @@ defmodule EmergeSkia.Native do
             required(:screenshot) => boolean(),
             required(:raster_present) => [atom() | String.t()],
             required(:prime_video) => boolean()
-          }
+          },
+          required(:vulkan_device) => vulkan_device_info() | nil
         }
 
   @doc false

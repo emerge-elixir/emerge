@@ -282,10 +282,38 @@ defmodule EmergeSkia.TreeTest do
 
       {:ok, disabled_stats} = Native.stats(tree, :peek)
       refute disabled_stats.enabled
-      assert disabled_stats.version == 19
+      assert disabled_stats.version == 25
       assert disabled_stats.rendering_api == nil
       assert disabled_stats.drm.missed_vblanks == 0
-      assert disabled_stats.drm.gpu_queue_completion.count == 0
+      assert disabled_stats.drm.gpu_render_elapsed.count == 0
+      assert disabled_stats.drm.gpu_render_elapsed_disjoint_discarded_samples == 0
+      assert disabled_stats.drm.gpu_render_elapsed_pool_saturated_sample_skips == 0
+      assert disabled_stats.drm.gpu_render_elapsed_stale_epoch_samples == 0
+      assert disabled_stats.drm.video_retired_gl_finish_fallbacks == 0
+      assert disabled_stats.counters.pipeline.scenes_constructed == 0
+      assert disabled_stats.counters.video.submitted == 0
+      assert disabled_stats.counters.video.imported == 0
+      assert disabled_stats.counters.video.leases_released == 0
+      assert disabled_stats.counters.video.video_primary_presented == 0
+      refute disabled_stats.counters.video.video_primary_ever_presented
+      assert disabled_stats.counters.video.last_presented_streams == []
+      assert disabled_stats.counters.video.current_pending == 0
+      assert disabled_stats.counters.video.current_direct_imports == 0
+      assert disabled_stats.counters.video.current_retired_imports == 0
+      assert disabled_stats.counters.video.current_prepared == 0
+      assert disabled_stats.counters.video.current_in_flight == 0
+      assert disabled_stats.counters.vulkan_video.acquire_sync_fd_imported == 0
+      assert disabled_stats.counters.vulkan_video.temporary_semaphore_import_failures == 0
+      assert disabled_stats.counters.vulkan_video.acquire_submit_failures == 0
+      assert disabled_stats.counters.vulkan_video.release_submit_failures == 0
+      assert disabled_stats.counters.vulkan_video.releases_completed == 0
+      assert disabled_stats.counters.vulkan_video.release_fences_created == 0
+      assert disabled_stats.counters.vulkan_video.release_fence_errors == 0
+      assert disabled_stats.counters.vulkan_video.release_fence_completions == 0
+      assert disabled_stats.counters.vulkan_video.import_cap_saturations == 0
+      assert disabled_stats.counters.vulkan_video.quarantined == 0
+      refute disabled_stats.counters.vulkan_video.global_quarantine_terminal
+      assert disabled_stats.counters.vulkan_video.device_lost == 0
       assert disabled_stats.drm.egl_swap_buffers.count == 0
       assert disabled_stats.drm.atomic_commit_ioctl.count == 0
       assert disabled_stats.counters.renderer_cache.disabled_reason == "tree_resource"

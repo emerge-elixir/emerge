@@ -164,9 +164,8 @@ impl GlFrameSurface {
 
         self.direct_context.flush_and_submit();
         self.surface
-            .read_pixels(&info, pixels.as_mut_slice(), row_bytes, (0, 0));
-
-        Some((width, height, pixels))
+            .read_pixels(&info, pixels.as_mut_slice(), row_bytes, (0, 0))
+            .then_some((width, height, pixels))
     }
 }
 
@@ -227,5 +226,5 @@ fn try_create_gl_surface(
         None,
         Some(&surface_props),
     )
-    .ok_or_else(|| "could not create Skia GL surface".to_string())
+    .ok_or_else(|| "could not wrap the current OpenGL framebuffer as a Skia surface".to_string())
 }

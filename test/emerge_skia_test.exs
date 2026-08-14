@@ -227,10 +227,12 @@ defmodule EmergeSkiaTest do
     end
   end
 
-  test "start/1 rejects backend renderers that are not implemented yet" do
-    assert {:error, {:error, "rendering_api :vulkan is not implemented yet"}} =
-             EmergeSkia.start(otp_app: :emerge, backend: :drm, rendering_api: :vulkan)
+  test "start/1 delegates Wayland Vulkan availability to the native feature matrix" do
+    assert {:error, {:error, "Vulkan rendering support is not available in this build"}} =
+             EmergeSkia.start(otp_app: :emerge, backend: :wayland, rendering_api: :vulkan)
+  end
 
+  test "start/1 validates the headless target before native startup" do
     assert_raise ArgumentError, ~r/:headless.target must be a live local pid/, fn ->
       EmergeSkia.start(otp_app: :emerge, backend: :headless)
     end
@@ -260,6 +262,13 @@ defmodule EmergeSkiaTest do
         height: 4,
         headless: [target: self(), pixel_format: :rgb888]
       )
+
+    assert {:ok,
+            %{
+              backend: :headless,
+              rendering_api: %{requested: :raster, selected: :raster},
+              vulkan_device: nil
+            }} = EmergeSkia.renderer_info(renderer)
 
     tree = el([width(px(4)), height(px(4)), Emerge.UI.Background.color(:red)], none())
     {_state, _assigned} = EmergeSkia.upload_tree(renderer, tree)
@@ -373,9 +382,14 @@ defmodule EmergeSkiaTest do
     assert plane.offset >= 0
     assert :ok = VideoInterop.validate(dma_buf)
     assert lease.owner != self()
+    assert %VideoInterop.AbandonmentGuard{} = lease.abandonment_guard
+    assert VideoInterop.AbandonmentGuard.valid?(lease.abandonment_guard)
     assert {:ok, child_lease} = VideoInterop.Lease.retain(lease)
     assert child_lease.token == lease.token
     assert child_lease.holder != lease.holder
+    assert %VideoInterop.AbandonmentGuard{} = child_lease.abandonment_guard
+    assert VideoInterop.AbandonmentGuard.valid?(child_lease.abandonment_guard)
+    refute child_lease.abandonment_guard == lease.abandonment_guard
 
     assert :ok = VideoInterop.release(dma_buf)
     blocked_tree = el([width(px(4)), height(px(4)), Emerge.UI.Background.color(:blue)], none())
