@@ -1,6 +1,8 @@
 # Cross-repository commit sequence
 
-Status: planned; no files are staged and no commits have been created.
+Status: executed on 2026-08-14. Source commits were created in dependency order and all
+indexes are clear. Raw investigation artifacts and the separate RP1 D-PHY working hunks
+remain deliberately uncommitted.
 
 ## Objective
 
@@ -23,6 +25,34 @@ unfinished target qualification.
 The order is the source dependency order, not a publication claim. The Nerves system is
 technically independent of the core libraries but must precede the final Camera target
 assembly.
+
+## Execution record
+
+Intertwined final-state implementations were kept atomic where an artificial split would
+have created untested intermediate trees.
+
+| Repository | Commits |
+| --- | --- |
+| `video_interop` | `3c1e123` Add guarded VideoInterop lifecycle and Vulkan DMA-BUF import |
+| `membrane_video_interop` | `1854499` Make the Membrane video sink guarded and terminal-draining |
+| `membrane_libcamera` | `1664631` Fix Nerves libcamera C++ sysroot discovery; `74518b6` Harden libcamera DMA-BUF synchronization and finalization |
+| `emerge-headless` | `f08d80b` Add Vulkan rendering and deterministic video composition; `991a06c` Document Vulkan video architecture and target qualification |
+| `emerge_demo` | `4ef72d8` Add the four-route explicit Vulkan PRIME matrix; `476c13d` Pin OpenGL PRIME source in demo tests |
+| `nerves_system_rpi5` | `1562400` Make custom RPi5 system builds local and reproducible; `e3a2b29` Package V3DV diagnostics and persistent crash evidence; `8525aec` Ignore malformed libcamera array controls; `62e5d8b` and `2d2e9ec` record committed qualification identities |
+| `camera` | `3ace47b` Adopt fail-closed Vulkan Camera lifecycle; `4cf56c0` Document Camera Vulkan adoption and qualification gates |
+
+Validated after committing:
+
+- VideoInterop: default/Vulkan Rust matrices and 96 ExUnit tests;
+- MembraneVideoInterop: 47 ExUnit tests;
+- MembraneLibcamera: 17 mock Rust tests and 74 ExUnit tests with 3 excluded;
+- Emerge: 1,055 DRM-Vulkan Rust tests, benchmark fixture, and 448 ExUnit tests with
+  7 excluded;
+- Emerge Demo: 49 ExUnit tests;
+- Camera: 142 ExUnit tests using explicitly staged host mock NIFs, followed by restoring
+  AArch64 target artifacts;
+- Nerves system: diagnostic parser tests, shell syntax checks, and checked-in
+  configuration validation.
 
 ## Hard rules
 
