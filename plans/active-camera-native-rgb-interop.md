@@ -105,10 +105,25 @@ refactoring:
 - validation layers and `dmesg` report no V3D/MMU fault.
 
 If Camera allocations are too small for the truthful Vulkan requirement, stop the
-direct-import branch. The next investigation is producer buffers allocated with a
-Vulkan/GBM-proven size and supplied to libcamera, not forged size metadata. A sampled
-RGB-to-local-image staging pass may be measured separately, but it is not called direct
-interop and cannot silently replace this path.
+direct-import branch. Never forge size metadata.
+
+Target/source investigation rejected non-linear producer buffers as a direct-import
+escape hatch on the pinned stack. Libcamera and its Rust binding can accept
+application-owned DMA-BUF `FrameBuffer`s, but the RPi pipeline queues them through
+`V4L2_MEMORY_DMABUF`, whose buffer/plane API carries fd, offset, and length but no DRM
+modifier. The PiSP back-end programs output addresses from the DMA address plus the
+negotiated linear bytes-per-line layout; its RGB formats expose no V3D UIF output mode.
+V3DV, conversely, advertises `SAMPLED_IMAGE` for `B8G8R8A8_UNORM` only with optimal/UIF
+tiling, not linear modifier `0`. Supplying a UIF allocation would therefore make PiSP
+write linear pixels into tiled storage and corrupt the image. PiSP wallpaper/SAND and
+PiSP raw-compression layouts are not V3D UIF.
+
+Vulkan-sized application buffers remain technically useful only for a truthful linear
+transfer-source experiment: PiSP can write them and V3DV can copy/compute them into a
+local optimal image. That is staged RGB, not direct interop, and must be measured against
+NV12 planar without silent promotion. A separate packed texel-buffer composition path
+may also be investigated because V3DV advertises packed buffer features; it does not
+make the linear DMA-BUF a sampled Vulkan image.
 
 ## Phase 1: generic VideoInterop packed-image support
 
