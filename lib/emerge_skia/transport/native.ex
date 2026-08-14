@@ -150,7 +150,8 @@ defmodule EmergeSkia.Transport.Native do
         renderer_cache: info.capabilities.renderer_cache,
         screenshot: info.capabilities.screenshot,
         raster_present: Enum.map(info.capabilities.raster_present, &string_to_renderer_atom/1),
-        prime_video: info.capabilities.prime_video
+        prime_video: info.capabilities.prime_video,
+        prime_video_formats: info.capabilities.prime_video_formats
       },
       vulkan_device: normalize_vulkan_device(info.vulkan_device)
     }

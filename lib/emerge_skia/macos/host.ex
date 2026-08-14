@@ -178,7 +178,8 @@ defmodule EmergeSkia.Macos.Host do
          renderer_cache: renderer.renderer_cache_enabled,
          screenshot: false,
          raster_present: [],
-         prime_video: false
+         prime_video: false,
+         prime_video_formats: []
        }
      }}
   end

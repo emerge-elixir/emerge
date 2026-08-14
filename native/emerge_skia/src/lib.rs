@@ -669,6 +669,7 @@ struct RendererCapabilitiesNif {
     screenshot: bool,
     raster_present: Vec<String>,
     prime_video: bool,
+    prime_video_formats: Vec<String>,
 }
 
 #[derive(Clone, Debug, rustler::NifMap)]
@@ -764,6 +765,7 @@ struct RendererRuntimeInfo {
     renderer_cache: RendererCacheStatus,
     screenshot_supported: bool,
     prime_video_supported: bool,
+    prime_video_formats: Vec<String>,
     #[cfg(feature = "vulkan")]
     vulkan_device: Option<backend::vulkan::VulkanRendererReport>,
 }
@@ -778,6 +780,7 @@ struct RendererRuntimeInfo {
 struct NativeBackendStartupInfo {
     backend: BackendKind,
     prime_video_supported: bool,
+    prime_video_formats: Vec<String>,
     #[cfg(feature = "vulkan")]
     vulkan_device: Option<backend::vulkan::VulkanRendererReport>,
 }
@@ -1529,6 +1532,7 @@ impl RendererRuntimeInfo {
                     .map(ToString::to_string)
                     .collect(),
                 prime_video: self.prime_video_supported,
+                prime_video_formats: self.prime_video_formats.clone(),
             },
             #[cfg(feature = "vulkan")]
             vulkan_device: self.vulkan_device.as_ref().map(VulkanDeviceInfoNif::from),
@@ -2072,6 +2076,7 @@ fn start_native_renderer_with_config(
         renderer_cache,
         screenshot_supported: true,
         prime_video_supported: false,
+        prime_video_formats: Vec::new(),
         #[cfg(feature = "vulkan")]
         vulkan_device: None,
     }
@@ -2260,6 +2265,7 @@ fn start_native_renderer_with_config(
             NativeBackendStartupInfo {
                 backend: BackendKind::Wayland,
                 prime_video_supported: startup.prime_video_supported,
+                prime_video_formats: startup.prime_video_formats,
                 #[cfg(feature = "vulkan")]
                 vulkan_device: startup.vulkan_device,
             }
@@ -2430,6 +2436,7 @@ fn start_native_renderer_with_config(
             NativeBackendStartupInfo {
                 backend: BackendKind::Drm,
                 prime_video_supported: drm_startup.prime_video_supported,
+                prime_video_formats: drm_startup.prime_video_formats,
                 #[cfg(feature = "vulkan")]
                 vulkan_device: drm_startup.vulkan_device,
             }
@@ -2443,6 +2450,7 @@ fn start_native_renderer_with_config(
 
     let backend = backend_startup.backend;
     let prime_video_supported = backend_startup.prime_video_supported;
+    let prime_video_formats = backend_startup.prime_video_formats.clone();
 
     handles.event_handle = Some(spawn_event_actor(SpawnEventActorConfig {
         event_rx,
@@ -2495,6 +2503,7 @@ fn start_native_renderer_with_config(
             renderer_cache,
             screenshot_supported: true,
             prime_video_supported,
+            prime_video_formats,
             #[cfg(feature = "vulkan")]
             vulkan_device: backend_startup.vulkan_device,
         },
@@ -4139,6 +4148,7 @@ mod tests {
             renderer_cache: RendererCacheStatus::enabled(),
             screenshot_supported: true,
             prime_video_supported: true,
+            prime_video_formats: vec!["NV12".to_string(), "XRGB8888".to_string()],
             vulkan_device: Some(backend::vulkan::VulkanRendererReport {
                 device: backend::vulkan::VulkanDeviceReport {
                     physical_device_name: "test-vulkan-device".to_string(),
@@ -4182,6 +4192,7 @@ mod tests {
             renderer_cache: RendererCacheStatus::disabled("test"),
             screenshot_supported: true,
             prime_video_supported: false,
+            prime_video_formats: Vec::new(),
             #[cfg(feature = "vulkan")]
             vulkan_device: None,
         };
@@ -4504,6 +4515,7 @@ mod tests {
                 renderer_cache: RendererCacheStatus::enabled(),
                 screenshot_supported: true,
                 prime_video_supported: false,
+                prime_video_formats: Vec::new(),
                 #[cfg(feature = "vulkan")]
                 vulkan_device: None,
             },

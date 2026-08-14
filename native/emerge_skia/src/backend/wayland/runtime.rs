@@ -1640,6 +1640,7 @@ impl WaylandApp {
                     if let RendererVideoImportContext::Vulkan(vulkan) = &ctx
                         && let Err(error) = self.video_registry.set_vulkan_import_capabilities(
                             vulkan.rgba_linear_supported(),
+                            vulkan.bgra_linear_supported(),
                             vulkan.nv12_capabilities().to_vec(),
                         )
                     {
@@ -3195,9 +3196,26 @@ pub(crate) fn run(args: WaylandRunArgs) {
         )
     });
 
+    let prime_video_formats = match &app.video_import {
+        WaylandVideoImportState::Ready(context) => match context.as_ref() {
+            RendererVideoImportContext::OpenGl(_) => {
+                vec!["NV12".to_string(), "ABGR8888".to_string()]
+            }
+            #[cfg(feature = "wayland-vulkan")]
+            RendererVideoImportContext::Vulkan(context) => context
+                .supported_format_names()
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        },
+        WaylandVideoImportState::PendingGpuInit | WaylandVideoImportState::Unavailable => {
+            Vec::new()
+        }
+    };
     let _ = proxy_tx.send(Ok(WindowBackendStartupInfo {
         wake,
         prime_video_supported: matches!(app.video_import, WaylandVideoImportState::Ready(_)),
+        prime_video_formats,
         #[cfg(feature = "vulkan")]
         vulkan_device,
     }));

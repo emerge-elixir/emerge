@@ -647,7 +647,8 @@ defmodule EmergeSkia.Native do
             required(:renderer_cache) => boolean(),
             required(:screenshot) => boolean(),
             required(:raster_present) => [atom() | String.t()],
-            required(:prime_video) => boolean()
+            required(:prime_video) => boolean(),
+            required(:prime_video_formats) => [String.t()]
           },
           required(:vulkan_device) => vulkan_device_info() | nil
         }

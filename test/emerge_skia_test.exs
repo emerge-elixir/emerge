@@ -465,7 +465,8 @@ defmodule EmergeSkiaTest do
                 renderer_cache: true,
                 screenshot: false,
                 raster_present: [],
-                prime_video: false
+                prime_video: false,
+                prime_video_formats: []
               }
             }} = EmergeSkia.renderer_info(renderer)
   end

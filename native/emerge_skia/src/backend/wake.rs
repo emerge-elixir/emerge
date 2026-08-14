@@ -54,6 +54,7 @@ impl std::panic::UnwindSafe for BackendWakeHandle {}
 pub(crate) struct WindowBackendStartupInfo {
     pub(crate) wake: BackendWakeHandle,
     pub(crate) prime_video_supported: bool,
+    pub(crate) prime_video_formats: Vec<String>,
     #[cfg(feature = "vulkan")]
     pub(crate) vulkan_device: Option<crate::backend::vulkan::VulkanRendererReport>,
 }

@@ -8,8 +8,9 @@ use super::{VulkanDevice, device::VulkanDeviceIdentity, raw};
 pub use video_interop::vulkan::{
     ImportedPlane, Nv12AllocationBindingRecipe, Nv12Conversion, Nv12FrameTopology,
     Nv12ImportStrategy, Nv12Plane, Nv12SharedObjectLayout, Nv12StagingPreference,
-    SampledImageFormat, StagedNv12Planes, VulkanDmaBufImporter, VulkanImportPoolLimits, YcbcrModel,
-    YcbcrOffset, YcbcrRange, map_nv12_colorimetry, validate_nv12_shared_object_topology,
+    PackedImageFormat, PackedImageImport, SampledImageFormat, StagedNv12Planes,
+    VulkanDmaBufImporter, VulkanImportPoolLimits, YcbcrModel, YcbcrOffset, YcbcrRange,
+    map_nv12_colorimetry, validate_nv12_shared_object_topology,
 };
 
 pub type InteropVulkanDmaBufImporter = VulkanDmaBufImporter<VulkanDevice>;
@@ -392,6 +393,14 @@ pub fn validate_rgba_import_support(
     modifier: u64,
 ) -> Result<(), String> {
     video_interop::vulkan::validate_rgba_import_support(device.as_ref(), modifier)
+}
+
+pub fn validate_packed_import_support(
+    device: &Arc<VulkanDevice>,
+    format: PackedImageFormat,
+    modifier: u64,
+) -> Result<(), String> {
+    video_interop::vulkan::validate_packed_import_support(device.as_ref(), format, modifier)
 }
 
 #[cfg(test)]

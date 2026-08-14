@@ -212,6 +212,7 @@ pub(crate) fn start_renderer_with_config(
         ),
         screenshot_supported: matches!(mode, HeadlessMode::Binary),
         prime_video_supported: false,
+        prime_video_formats: Vec::new(),
         #[cfg(feature = "vulkan")]
         vulkan_device: startup.vulkan_device,
     };

@@ -15,8 +15,14 @@ The system is deliberately split across repositories so generic ownership is
 implemented once, graphics details stay in Emerge, Membrane remains an adapter,
 and applications mainly compose producers and consumers.
 
-Status snapshot: 2026-07-31. The lifecycle rules are normative; the migration
-and camera-shutdown notes describe the named development checkouts at that date.
+Status snapshot: 2026-07-31, with the later Vulkan Camera extension noted below. The lifecycle
+rules are normative; the migration and camera-shutdown notes describe the named development
+checkouts at that date.
+
+The Vulkan Camera path additionally admits strict `XRGB8888`/`XR24`: one linear DMA-BUF object
+and plane, complete allocation size, Rec.709 RGB/full color, opaque alpha, persistent
+`B8G8R8A8_UNORM` import, and the same external queue-family/fence retirement protocol as direct
+images. NV12 planar remains production-preferred until target qualification promotes packed RGB.
 
 ## Scope and terminology
 

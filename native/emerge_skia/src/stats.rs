@@ -349,6 +349,13 @@ pub struct VulkanVideoImportPoolStats {
     pub output_pool_busy_rejections: u64,
     pub source_cache_entries: usize,
     pub output_pool_slots: usize,
+    pub packed_cache_hits: u64,
+    pub packed_cache_misses: u64,
+    pub packed_cache_evictions: u64,
+    pub packed_active_reuse_rejections: u64,
+    pub packed_topology_collisions: u64,
+    pub packed_allocation_size_rejections: u64,
+    pub packed_cache_entries: usize,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -394,6 +401,13 @@ pub struct VideoPipelineStatsSnapshot {
     pub vulkan_output_pool_busy_rejections: u64,
     pub vulkan_source_cache_entries: u64,
     pub vulkan_output_pool_slots: u64,
+    pub vulkan_packed_cache_hits: u64,
+    pub vulkan_packed_cache_misses: u64,
+    pub vulkan_packed_cache_evictions: u64,
+    pub vulkan_packed_active_reuse_rejections: u64,
+    pub vulkan_packed_topology_collisions: u64,
+    pub vulkan_packed_allocation_size_rejections: u64,
+    pub vulkan_packed_cache_entries: u64,
     pub primary_prepared: u64,
     pub video_primary_prepared: u64,
     pub stale_prepared: u64,
@@ -647,6 +661,13 @@ struct VideoPipelineStatsWindow {
     vulkan_output_pool_busy_rejections: u64,
     vulkan_source_cache_entries: u64,
     vulkan_output_pool_slots: u64,
+    vulkan_packed_cache_hits: u64,
+    vulkan_packed_cache_misses: u64,
+    vulkan_packed_cache_evictions: u64,
+    vulkan_packed_active_reuse_rejections: u64,
+    vulkan_packed_topology_collisions: u64,
+    vulkan_packed_allocation_size_rejections: u64,
+    vulkan_packed_cache_entries: u64,
     primary_prepared: u64,
     video_primary_prepared: u64,
     stale_prepared: u64,
@@ -715,6 +736,13 @@ impl VideoPipelineStatsWindow {
             vulkan_output_pool_busy_rejections: self.vulkan_output_pool_busy_rejections,
             vulkan_source_cache_entries: self.vulkan_source_cache_entries,
             vulkan_output_pool_slots: self.vulkan_output_pool_slots,
+            vulkan_packed_cache_hits: self.vulkan_packed_cache_hits,
+            vulkan_packed_cache_misses: self.vulkan_packed_cache_misses,
+            vulkan_packed_cache_evictions: self.vulkan_packed_cache_evictions,
+            vulkan_packed_active_reuse_rejections: self.vulkan_packed_active_reuse_rejections,
+            vulkan_packed_topology_collisions: self.vulkan_packed_topology_collisions,
+            vulkan_packed_allocation_size_rejections: self.vulkan_packed_allocation_size_rejections,
+            vulkan_packed_cache_entries: self.vulkan_packed_cache_entries,
             primary_prepared: self.primary_prepared,
             video_primary_prepared: self.video_primary_prepared,
             stale_prepared: self.stale_prepared,
@@ -754,6 +782,14 @@ impl VideoPipelineStatsWindow {
         self.vulkan_output_pool_busy_rejections = previous.vulkan_output_pool_busy_rejections;
         self.vulkan_source_cache_entries = previous.vulkan_source_cache_entries;
         self.vulkan_output_pool_slots = previous.vulkan_output_pool_slots;
+        self.vulkan_packed_cache_hits = previous.vulkan_packed_cache_hits;
+        self.vulkan_packed_cache_misses = previous.vulkan_packed_cache_misses;
+        self.vulkan_packed_cache_evictions = previous.vulkan_packed_cache_evictions;
+        self.vulkan_packed_active_reuse_rejections = previous.vulkan_packed_active_reuse_rejections;
+        self.vulkan_packed_topology_collisions = previous.vulkan_packed_topology_collisions;
+        self.vulkan_packed_allocation_size_rejections =
+            previous.vulkan_packed_allocation_size_rejections;
+        self.vulkan_packed_cache_entries = previous.vulkan_packed_cache_entries;
         self.video_primary_ever_presented = previous.video_primary_ever_presented;
         self.last_presented_streams = previous.last_presented_streams.clone();
         self.current_retired_imports = previous.current_retired_imports;
@@ -1415,6 +1451,7 @@ impl RendererStatsCollector {
     pub fn set_vulkan_video_import_pool_stats(&self, stats: VulkanVideoImportPoolStats) {
         let source_cache_entries = u64::try_from(stats.source_cache_entries).unwrap_or(u64::MAX);
         let output_pool_slots = u64::try_from(stats.output_pool_slots).unwrap_or(u64::MAX);
+        let packed_cache_entries = u64::try_from(stats.packed_cache_entries).unwrap_or(u64::MAX);
         self.update_video_pipeline(|video| {
             video.vulkan_validation_enabled = stats.validation_enabled;
             video.vulkan_validation_errors = stats.validation_errors;
@@ -1427,6 +1464,14 @@ impl RendererStatsCollector {
             video.vulkan_output_pool_busy_rejections = stats.output_pool_busy_rejections;
             video.vulkan_source_cache_entries = source_cache_entries;
             video.vulkan_output_pool_slots = output_pool_slots;
+            video.vulkan_packed_cache_hits = stats.packed_cache_hits;
+            video.vulkan_packed_cache_misses = stats.packed_cache_misses;
+            video.vulkan_packed_cache_evictions = stats.packed_cache_evictions;
+            video.vulkan_packed_active_reuse_rejections = stats.packed_active_reuse_rejections;
+            video.vulkan_packed_topology_collisions = stats.packed_topology_collisions;
+            video.vulkan_packed_allocation_size_rejections =
+                stats.packed_allocation_size_rejections;
+            video.vulkan_packed_cache_entries = packed_cache_entries;
         });
     }
 
@@ -2170,6 +2215,7 @@ pub fn format_renderer_stats_log(
             "    acquire: received={} server_queued={} client_fallback={} timeouts={} errors={}\n",
             "    vulkan: sync_fd_imported={} temporary_import_failures={} ownership_acquires={} acquire_submit_failures={} ganesh_wait_rejected={} releases={}/{} release_submit_failures={} release_fences=created:{} errors:{} completed:{} retirement_timeouts={} import_cap_saturations={} quarantined={} global_quarantine_terminal={} device_lost={}\n",
             "    vulkan import pool: validation=enabled:{} errors:{} warnings:{} source_cache=hits:{} misses:{} evictions:{} active_reuse_rejections:{} topology_collisions:{} entries:{} output_pool=busy_rejections:{} slots:{}\n",
+            "    vulkan packed import: cache=hits:{} misses:{} evictions:{} active_reuse_rejections:{} topology_collisions:{} allocation_size_rejections:{} entries:{}\n",
             "    leases: released={} ({:.1}/s)\n",
             "    drm: prepared={} video_prepared={} stale={} stale_video={} no_free_gbm={}\n",
             "    present: commit_attempts={} committed={} ebusy={} presented={} ({:.1}/s) video_presented={} ({:.1}/s) prepared_now={} in_flight_now={}\n",
@@ -2221,6 +2267,13 @@ pub fn format_renderer_stats_log(
         video.vulkan_source_cache_entries,
         video.vulkan_output_pool_busy_rejections,
         video.vulkan_output_pool_slots,
+        video.vulkan_packed_cache_hits,
+        video.vulkan_packed_cache_misses,
+        video.vulkan_packed_cache_evictions,
+        video.vulkan_packed_active_reuse_rejections,
+        video.vulkan_packed_topology_collisions,
+        video.vulkan_packed_allocation_size_rejections,
+        video.vulkan_packed_cache_entries,
         video.leases_released,
         per_second(video.leases_released),
         video.primary_prepared,

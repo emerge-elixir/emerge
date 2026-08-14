@@ -87,6 +87,7 @@ pub(crate) struct DrmRunConfig {
 
 pub(crate) struct DrmBackendStartupInfo {
     pub(crate) prime_video_supported: bool,
+    pub(crate) prime_video_formats: Vec<String>,
     #[cfg(feature = "vulkan")]
     pub(crate) vulkan_device: Option<crate::backend::vulkan::VulkanRendererReport>,
 }
@@ -96,6 +97,11 @@ impl DrmBackendStartupInfo {
     pub(crate) fn opengl(prime_video_supported: bool) -> Self {
         Self {
             prime_video_supported,
+            prime_video_formats: if prime_video_supported {
+                vec!["NV12".to_string(), "ABGR8888".to_string()]
+            } else {
+                Vec::new()
+            },
             #[cfg(feature = "vulkan")]
             vulkan_device: None,
         }

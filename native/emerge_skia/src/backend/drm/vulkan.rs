@@ -1180,6 +1180,7 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
         }
         if let Err(error) = video_registry.set_vulkan_import_capabilities(
             video_context.rgba_linear_supported(),
+            video_context.bgra_linear_supported(),
             video_context.nv12_capabilities().to_vec(),
         ) {
             let _ = startup_tx.send(Err(format!(
@@ -1192,6 +1193,13 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
     let prime_video_supported = video_context
         .as_ref()
         .is_some_and(VulkanVideoImportContext::supports_any_format);
+    let prime_video_formats = video_context
+        .as_ref()
+        .map(VulkanVideoImportContext::supported_format_names)
+        .unwrap_or_default()
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
     if let Err(error) = video_registry.set_prime_video_available(prime_video_supported) {
         let _ = startup_tx.send(Err(format!(
             "DRM Vulkan backend unavailable: failed to publish PRIME video availability: {error}"
@@ -1556,6 +1564,7 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
                             if let Some(tx) = startup_tx.take() {
                                 let _ = tx.send(Ok(DrmBackendStartupInfo {
                                     prime_video_supported,
+                                    prime_video_formats: prime_video_formats.clone(),
                                     vulkan_device: Some(report.clone()),
                                 }));
                             }
