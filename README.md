@@ -14,7 +14,7 @@ Add `:emerge` to your dependencies:
 ```elixir
 defp deps do
   [
-    {:emerge, "~> 0.3.1"}
+    {:emerge, "~> 0.4.0"}
   ]
 end
 ```
@@ -154,7 +154,7 @@ For nerves example take a look at [`nerves_emerge_demo`](https://github.com/emer
 
 - **macOS** for desktop macOS windows, using Metal when available and falling back to raster rendering through the external `macos_host` runtime
 - **Wayland** for desktop Linux windows
-- **DRM** for embedded, kiosk, and Nerves deployments
+- **DRM** for embedded, kiosk, and Nerves deployments, with OpenGL ES 2 as the minimum and explicitly requested rendering API
 - **Raster** for offscreen rendering and tests (this backend doesn't work with viewport for now)
 
 The macOS backend does not currently include `video_target`.
@@ -165,9 +165,12 @@ For runtime backend selection and multi-backend setup, see [Set up a viewport](g
 
 - Elixir 1.19+
 - macOS for the `:macos` backend, or Linux with Wayland/DRM for Linux on-screen backends
+- OpenGL ES 2 or newer for DRM; no GLES version option is required
 - Rust toolchain (if rustler precompiled doesn't cover your combination)
 
 On macOS, Emerge downloads and caches the matching versioned `macos_host` runtime artifact automatically.
+
+On DRM, optional GPU timer profiling and PRIME video import are enabled only when the driver advertises their required GL/EGL extensions. Missing optional capabilities do not prevent ordinary UI rendering; PRIME video targets report an unsupported-capability error when DMA-BUF/external-image import is unavailable.
 
 ## Documentation
 

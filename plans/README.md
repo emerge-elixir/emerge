@@ -1,6 +1,6 @@
 # Plans
 
-Last updated: 2026-05-28.
+Last updated: 2026-08-10.
 
 This directory tracks active implementation notes and durable background
 research for native layout, renderer, and input/runtime work.
@@ -8,15 +8,20 @@ research for native layout, renderer, and input/runtime work.
 Active implementation plans:
 
 - `active-backend-renderer-unification.md`
+- `active-drm-gles2-compatibility.md`
 - `active-headless-prime-output.md`
 - `active-headless-prime-explicit-sync.md`
 - `active-video-interop-library.md`
+- `active-video-interop-shutdown-hardening.md`
 - `active-headless-layer-aware-dithering.md`
 - `active-low-resource-animation-smoothness.md`
 - `active-combined-refresh-traversal.md`
 - `active-combined-tree-walk-cleanup.md`
 - `active-enter-animation-completion.md`
 - `active-drm-framerate-animation.md`
+- `active-paint-layer-model-simplification.md`
+- `active-rpi5-camera-60fps.md`
+- `active-vulkan-rendering-api.md`
 
 Files with an `active-` prefix are reserved for open implementation slices.
 When a slice completes, fold the useful details into this index or one of the
@@ -29,6 +34,13 @@ durable reference notes below, then remove the completed implementation log.
 Active plan for splitting backend selection from rendering API selection across
 Wayland, DRM, macOS, and headless output, while preparing the same model for
 future rendering APIs such as Vulkan.
+
+### `active-drm-gles2-compatibility.md`
+
+Implementation record for restoring OpenGL ES 2 as the explicit DRM baseline while
+capability-gating timer profiling, PRIME video, core VAOs, and core sync paths.
+Automated validation and base GLES2-only Macaw rendering are confirmed; extended
+PRIME degradation and newer-device checks remain open.
 
 ### `active-low-resource-animation-smoothness.md`
 
@@ -58,6 +70,27 @@ Open plan for correcting DRM display framerate reporting and animation pulse
 prediction so fixed-mode displays report their physical refresh cadence while
 animation remains page-flip backpressured.
 
+### `active-paint-layer-model-simplification.md`
+
+Open deletion-oriented refactor replacing damage-dependent paint-layer discovery
+and flat-list splitting with stable semantic layer construction.
+
+### `active-rpi5-camera-60fps.md`
+
+Two-track implementation plan for reaching stable 60 FPS with 30% GPU headroom on
+the exact RPi5 Camera Focus scene. The main track removes redundant tree/registry
+work; an isolated worktree prototypes persistent semantic-layer GPU backings. GPU
+benchmarks are serialized and target acceptance requires <=10.86 ms active GPU time.
+
+### `active-vulkan-rendering-api.md`
+
+Phased implementation plan for supported Vulkan rendering with Skia Ganesh.
+Wayland UI, headless ABGR PRIME output, shared Vulkan ABGR input, and short
+candidate smokes for all four fresh-process OpenGL/Vulkan routes are workstation-validated.
+The next gates are the full five-minute matrix, synchronization-validation/device-loss injection, V3DV/KMS
+probing, direct Camera NV12, DRM no-WSI presentation, and authoritative RPi5 A/B
+acceptance. Performance never decides whether explicit Vulkan support is retained.
+
 ### `active-headless-prime-output.md`
 
 Implementation log for Linux headless PRIME/DMA-BUF output, including headless
@@ -79,6 +112,14 @@ project, its single feature-gated Rust crate and Hex package, and the
 consumption, direct Emerge connection, reusable Membrane sink, and synchronous
 shutdown design lives in
 `../video_interop/plans/library-owned-video-lifecycle.md`.
+
+### `active-video-interop-shutdown-hardening.md`
+
+Cross-repository shutdown hardening implemented in host/mock builds: acknowledged
+libcamera finalization, composite source/sink/lease/Emerge drainage, reusable
+Membrane terminal-error handling, fail-closed camera restart policy, and
+per-holder abandonment resources for killed Membrane queues. Registry-ordered
+publication, rebuilt target artifacts, and hardware/soak acceptance remain open.
 
 ### `active-headless-layer-aware-dithering.md`
 
@@ -261,13 +302,13 @@ The native layout-caching foundation is in place:
   - `renderer_animation_log: true` enables separate Wayland animation cadence
     trace logs without coupling them to renderer stats logs
   - `Native.stats/2` and `EmergeSkia.stats/2` expose peek/take/reset snapshots
-  - current public stats payload schema is version 17; renderer paint-layer
+  - current public stats payload schema is version 21; renderer paint-layer
     stats keep aggregate admission/cache counters and `prepare`/`draw_hit`
     timings, while the `drm` section exposes EGL/GBM/atomic page-flip timing
-    splits, sampled asynchronous GPU queue completion spans, and kernel
-    flip-event, sequence-step, and missed-vblank counters; on V3D the timer
-    uses Mesa CPU-queue timestamps around submission and dependency completion,
-    so it is deliberately not labeled as active GPU execution time
+    splits, sampled asynchronous `GL_TIME_ELAPSED_EXT` GPU render elapsed, query
+    disjoint/pool counters, and kernel flip-event, sequence-step, and
+    missed-vblank counters; scene counters distinguish construction, queue
+    overwrite, draw selection, and presentation
 - macOS and Linux now share retained-tree update semantics through the
   `TreeUpdateEngine`: `TreeMsg` application, animation sample timing,
   frame-attrs preparation, refresh/recompute decisions, cached-registry reuse,

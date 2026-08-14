@@ -1,5 +1,57 @@
 # Changelog
 
+## [0.4.0] - 2026-07-31
+
+### Added
+
+- Added raster and OpenGL headless backends with canonical guarded PRIME output and direct video-target connections.
+- Added canonical `VideoInterop` producer and consumer sessions with exact prepare/claim ownership, explicit synchronization, retirement, and drained shutdown.
+- Added bounded nonblocking DRM GPU render-elapsed sampling with exact stats-window draining, page-flip correlation, explicit discarded/skipped/stale sample diagnostics, and DRM-scoped draw/presentation counters.
+- Added strict immutable stream colorimetry forwarding and the shared direct Vulkan NV12 DMA-BUF importer for exact target-proven one-object/two-plane layouts, with BT.709 output-identical YCbCr conversion, sync-file ownership transfers, bounded process-wide terminal quarantine, and dedicated Vulkan video fault counters.
+
+### Changed
+
+- Replaced the old PRIME lease shape with authority-verified per-holder abandonment guards. This is a breaking video interoperability protocol change.
+- Unified renderer selection under `backend` and `rendering_api`, while retaining documented compatibility aliases.
+- Made producer and consumer release dispatchers lifecycle-owned and explicitly drained/joined outside BEAM resource destructors.
+- Replaced damage-inferred paint layers with deterministic semantic Root, Nearby, ScrollContent, Animation, SliderValue, and DirectMedia topology backed by broadly coalesced own runs with exact scoped interleaving.
+- Renamed the public DRM timer metric to `gpu_render_elapsed`; the native stats schema is now version 23 after adding dedicated Vulkan video synchronization, release-fence, saturation, quarantine-terminal, and device-loss diagnostics.
+
+### Fixed
+
+- Preserved DRM OpenGL ES 2 compatibility and the macOS fixes published in 0.3.3 while integrating the headless renderer line.
+- Removed unconditional full-frame GPU screenshot readback from DRM and Wayland presentation; screenshots now trigger one bounded on-demand capture without serializing every rendered frame.
+- Made canonical consumer sessions release inactive-target frames successfully so transient scene visibility no longer terminates an ownership-safe sink.
+- Fixed Wayland video-only redraw starvation and width-dependent column fill allocation.
+- Kept unchanged ordered paint runs reusable when another run in the same semantic layer changes, isolated correctness-bearing scopes from adjacent paint, deferred rapidly changing GPU payload replacements until stable, staggered related replacements across frames, and retained only the latest version per run.
+- Sized isolated text payloads from measured font visual bounds, including glyph overhang and vertical extents, instead of an approximate character-width estimate.
+
+## [0.3.4] - 2026-07-31
+
+### Fixed
+
+- Fixed column fill and weighted-fill height allocation after width-dependent child reflow.
+
+## [0.3.3] - 2026-07-30
+
+### Added
+
+- Added detailed DRM video, GPU queue, atomic commit, and page-flip diagnostics, including the `drm_force_gpu_finish` diagnostic option.
+
+### Changed
+
+- Reworked the DRM PRIME/DMA-BUF video pipeline to own frames safely across page flips and improve import compatibility, synchronization, and release handling.
+- Improved retained paint-layer caching for dynamic, animated, scrolling, and visibility-changing content.
+- Upgraded Skia to 0.99 and Rustler to 0.38.
+- Upgraded the development, CI, and release toolchain to Elixir 1.20.2 and Erlang/OTP 29.0.4.
+
+### Fixed
+
+- Fixed text metrics and rendering-cache invalidation after text content updates.
+- Fixed inherited text decorations refreshing correctly when toggled.
+- Fixed macOS local host selection, frame retries when Metal drawables are unavailable, and text rendering across raster and Metal surfaces.
+- Fixed macOS compilation and compatibility with newer Clippy checks.
+
 ## [0.3.2] - 2026-06-09
 
 ### Changed

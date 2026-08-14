@@ -141,6 +141,11 @@ The intended release flow is:
 The goal is that a user can run `emerge_demo` on macOS without any local Rust
 toolchain or source build.
 
+When developing the native host from a source checkout, run the demo with
+`EMERGE_SKIA_MACOS_HOST_BUILD_LOCAL=true`. This explicitly rebuilds and selects
+`native/emerge_skia/target/debug/macos_host`, even when an older bundled or
+downloaded host binary is present.
+
 Darwin Rustler NIFs are not the supported distribution path for normal runtime
 use.
 

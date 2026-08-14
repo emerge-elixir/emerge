@@ -140,8 +140,15 @@ If you leave `compiled_backends` unset, it defaults to `[:macos]` on macOS, `[:w
 Runtime backend options:
 
 - `backend: :macos` starts the macOS backend explicitly
+- `backend: :drm` starts the direct DRM backend explicitly
 - `rendering_api: :auto | :opengl | :raster | :metal` selects the renderer. `:auto` prefers the backend default (`:metal` then `:raster` on macOS; `:opengl` on current Linux backends).
 - `rendering_api: :raster` is equivalent to `rendering_api: [raster: [present: :auto]]`; Wayland supports `:cpu` and `:gpu_upload` raster presentation, while DRM currently supports raster GPU upload.
+
+DRM notes:
+
+- DRM explicitly requests an OpenGL ES 2 context, so GLES2-only devices remain supported without a compatibility option.
+- Startup logs report the selected GL version and optional capability paths.
+- GPU timer profiling and PRIME video import are optional. If their required extensions are missing, ordinary UI rendering continues; creating or submitting a PRIME video target returns an unsupported-capability error.
 
 macOS notes:
 

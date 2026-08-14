@@ -287,119 +287,83 @@ Render-scene construction is a tree traversal over laid-out elements:
 ```text
 render_tree_scene_with_scroll_layers
   -> build_element_subtree(root)
-  -> wrap root paint layer when eligible
+  -> wrap the result in the unconditional Root layer
 ```
 
-`build_element_subtree` reads:
+`build_element_subtree` reads effective layout, scene state, scroll state, and
+runtime visual state. It culls invisible subtrees, builds ordinary paint in
+order, and establishes boundaries only for semantic roles. Dirty flags may
+control traversal and Nearby fragment reuse, but they never create or remove a
+paint layer.
 
-- `layout.effective`
-- `layout.frame`
-- `layout.render_frame`
-- scroll state
-- runtime hover/focus/down state
-- refresh dirty flags
-
-For each element it:
-
-1. Resolves the current scene state from scroll, transforms, alpha, and clips.
-2. Culls the subtree if viewport culling proves it cannot be visible.
-3. Attempts to reuse a retained stable paint-layer scene fragment.
-4. Builds own visual nodes: shadows, background, host content, border, text,
-   images, videos, gradients, scrollbars, and nearby content.
-5. Recursively builds children.
-6. Wraps content with clips, transforms, alpha, and paint-layer boundaries.
-
-The result is a `RenderScene` made of `RenderNode` values. The renderer consumes
-this scene; it does not traverse the `ElementTree`.
+The result is a `RenderScene`; the renderer never traverses the `ElementTree`.
 
 ## Paint-Layer Boundaries
 
-Paint layers are semantic render boundaries. A frame is rendered as a
-composition of paint layers and direct render nodes.
+The stable semantic roles are:
 
-Current paint-layer reasons:
+| Reason | Boundary | Policy |
+|--------|----------|--------|
+| `Root` | Whole-scene composition shell, including top-level live Video. | `DirectOnly` |
+| `Nearby` | One mounted Nearby root. | `Cacheable` |
+| `ScrollContent` | Canonical scroll content; offset is a composition transform. | `Cacheable` |
+| `Animation` | Declared transform/alpha-only animation. | `Cacheable` |
+| `SliderValue` | Filled track and thumb of a valid three-slot Slider. | `Cacheable` |
+| `DirectMedia` | Live Video below a cacheable semantic owner. | `DirectOnly` |
 
-| Reason | Typical boundary | Policy |
-|--------|------------------|--------|
-| `Root` | Whole scene when root is clean and cacheable. | `Cacheable` |
-| `ScrollContainer` | The content boundary of a scroll container. | `DynamicRedraw` |
-| `StableSubtree` | Stable child content inside a scroll context. | `Cacheable` |
-| `Animation` | Dirty animated content that needs redraw. | `DynamicRedraw` |
-| `Nearby` | Nearby overlay content mounted from another element. | `Cacheable` |
+Ordinary rows, columns, elements, text, focus decoration, and custom subtrees
+remain in-flow paint. Recursive media/focus inspection and damage-created
+boundaries are not used.
 
-Placement is separate from contents:
+Placement remains separate from payload contents. `Fixed` content uses scene
+placement; `ScrollMoving` content keeps canonical payload coordinates and is
+translated during composition.
 
-| Placement | Meaning |
-|-----------|---------|
-| `Fixed` | Layer bounds are already in scene coordinates. |
-| `ScrollMoving` | Layer payload is stable; current placement can move during composition. |
+### Ordered Scoped Content
 
-This separation is the key compositing invariant. If an element's contents did
-not change, but its position changes inside a parent or scroll container, the
-payload can remain valid and the renderer only changes the transform used to
-compose it.
+A layer contains an ordered tree of:
 
-### Own Nodes and Child References
+- own paint runs;
+- semantic child layers;
+- clip, relaxed-clip, transform, alpha, and shadow-pass scopes.
 
-`RenderPaintLayer` splits layer content into:
+Own runs and child layers may interleave. A shared scope surrounds both exactly
+once, preserving cases such as parent paint, a child layer, and later parent
+paint under one group alpha. Each own run has a deterministic slot and its own
+payload bounds. Child contents never enter the parent's payload. All adjacent own
+paint between semantic child-layer boundaries coalesces into one run, including
+ordinary Clip, RelaxedClip, Transform, Alpha, and Shadow scopes.
 
-- `own_nodes`: primitives and wrappers owned by this layer payload
-- `child_refs`: nested paint layers that must stay independently composited
+The scene retains the complete inherited host-clip list required for shadow
+escapes, semantic boundaries, transforms, and payload correctness. Semantic child
+layers and composition scopes containing child layers preserve their structural
+boundaries. This avoids multiplying GPU payloads merely because ordinary own
+content uses nested clip, transform, alpha, or shadow scopes.
 
-This is a correctness requirement. If a parent paint layer is invalidated and
-redrawn, child layer references must survive so stable children do not lose
-their own cache identity. Parent payload preparation should redraw only the
-parent's own content, then compose child layers separately.
+## Nearby Render-Fragment Cache
 
-## Render-Layer Scene Cache
-
-Each element has `refresh.render_layer_cache`. This is not the GPU payload
-cache. It is a retained render-scene fragment used during render-scene
-construction.
-
-The key is:
-
-| Field | Meaning |
-|-------|---------|
-| `paint_generation` | Per-element generation incremented when render output changes. |
-| `topology` | Topology dependency key. |
-| `bounds` | Layer bounds that define payload size. |
-
-If a stable moving layer is clean and the key matches, render-scene construction
-can return the retained `RenderPaintLayer` without descending through its
-children. The layer is wrapped in the current placement transform, so scrolling
-or layout movement does not invalidate stable content.
-
-When render damage is marked on an element, `paint_generation` increments and
-the retained layer cache is cleared.
+Nearby roots retain a semantic render fragment so a clean mounted subtree can
+skip reconstruction. Its key includes paint generation, topology, bounds, and
+Nearby/clip context. This cache stores scene structure and focus outputs; it is
+separate from renderer image payloads. Arbitrary inferred subtree layer caches
+are not stored on elements.
 
 ## Renderer Paint-Layer Cache
 
-The renderer owns `RendererCacheManager`. It caches prepared paint-layer
-payloads as GPU images on GPU-backed backends and CPU images on raster paths.
-
-Each render frame:
-
-```text
-RendererCacheManager::begin_frame
-  -> render_nodes_with_cache_tracking
-     -> visit RenderNode tree
-     -> for each paint layer:
-        -> compute device-space visibility and payload key
-        -> hit: draw cached image
-        -> miss: render own_nodes into payload and store
-        -> compose child_refs independently
-  -> RendererCacheManager::end_frame
-  -> frame.flush
-```
+`RendererCacheManager` stores cacheable own runs as GPU images on GPU backends
+and CPU images on raster paths. It traverses ordered content directly: a hit
+composes the cached run at its exact position, a miss renders that run, and
+semantic children recurse independently. `DirectOnly` runs always draw direct
+but still compose cacheable children.
 
 The payload key includes:
 
-- layer stable id
-- content generation
-- payload width and height in pixels
-- scale bits
-- resource generation for fonts/images when applicable
+- typed semantic identity `(node_id, role)`;
+- own-run slot and exact run-content hash;
+- payload pixel size and scale/subpixel phase;
+- font/image resource generation.
+
+Video, loading placeholders, and failed media are ineligible payload resources.
 
 The cache records:
 
@@ -422,9 +386,20 @@ The renderer can bypass low-value payloads such as tiny cheap layers or large
 simple layers where texture composition is likely more expensive than direct
 drawing. It also rejects payloads that exceed entry or total byte budgets.
 
-Bypassing a payload does not change scene correctness. It only means the layer's
-own nodes are drawn directly for that frame while child layer references still
-compose independently.
+A first GPU payload for a semantic run may store immediately. A changed version
+of an already-known run must remain exact and visible for a probation period
+before another render-target snapshot is created. Rapidly changing runs draw
+direct during probation, preventing interaction from creating a stream of
+short-lived GPU surfaces. Stable replacements are admitted at most one per
+frame, so related text, focus, and value runs that settle together cannot create
+a burst of offscreen render passes. Once stored, a replacement evicts the
+previous version for the same `(PaintLayerId, run slot)`; unrelated runs remain
+resident.
+CPU raster payloads do not need this GPU-specific probation.
+
+Bypassing or deferring a payload does not change scene correctness. It only
+means the layer's current own nodes are drawn directly for that frame while
+semantic child layers still compose independently.
 
 ### GPU and Raster Behavior
 
@@ -448,7 +423,7 @@ render_descendant_dirty
 registry_dirty
 registry_descendant_dirty
 registry_cache
-render_layer_cache
+render_fragment_cache
 registry_subtree_affects
 paint_generation
 ```
@@ -456,7 +431,7 @@ paint_generation
 Marking render dirty:
 
 - increments `paint_generation` once for the dirty cycle
-- clears the node's retained `render_layer_cache`
+- clears the node's semantic Nearby `render_fragment_cache`
 - sets `render_dirty` on the origin
 - bubbles `render_descendant_dirty` to ancestors
 
@@ -544,7 +519,7 @@ Expected behavior:
 | Registry-affects prepass | `refresh_registry_subtree_affects_cache` | Tree | Layout recompute | `registry_subtree_affects` |
 | Measure | `measure_element` | Bottom-up | Recompute requiring measure | Intrinsic and subtree measure caches |
 | Resolve | `resolve_element` | Top-down | Recompute requiring resolve | Resolve cache |
-| Render scene | `build_element_subtree` | Top-down with child recursion | Every refresh | Retained render-layer scene cache |
+| Render scene | `build_element_subtree` | Top-down with child recursion | Every refresh | Semantic Nearby fragment cache |
 | Event registry | `build_registry_rebuild_cached` | Top-down with deferred nearby | Registry damage | Registry subtree cache and whole cached rebuild |
 | Renderer scene draw | `render_nodes_with_cache_tracking` | Render-node tree | Every rendered scene | Renderer paint-layer payload cache |
 | Visible hash/resource generation | `hash_visible_render_nodes` and resource-generation helpers | Render-node tree | Cache admission/keying | Font/image generation |
@@ -559,17 +534,18 @@ Expected behavior:
 | Resolve | Element layout state | Resolve attrs, available space, constraints, topology | Resolve/measure/structure damage or key change | Final frames and scroll/nearby geometry |
 | Registry subtree | Element refresh state | Registry attrs/runtime/frame/hover/scene/scroll/topology | Registry damage or key change | Event registry chunks |
 | Whole registry rebuild | `TreeUpdateEngine` | Last clean rebuild | Any registry rebuild replacement | Registry-only response and clean refresh |
-| Render-layer scene | Element refresh state | Paint generation, topology, bounds | Render damage or key change | `RenderPaintLayer` scene fragment |
-| Renderer paint payload | Renderer cache manager | Stable id, content generation, pixel size, scale, resource generation | Store budget, stale frames, resource/content change | GPU/CPU image payload |
+| Nearby render fragment | Element refresh state | Paint generation, topology, bounds, Nearby/clip context | Render damage or key change | Mounted Nearby scene fragment and focus outputs |
+| Renderer paint payload | Renderer cache manager | Semantic id, run slot/content hash, own generation, pixel size, scale, resource generation | Store budget, stale frames, resource/content change | GPU/CPU own-run image payload |
 
 ## Correctness Invariants
 
 - Layout and render read `layout.effective`, not the unscaled declared attrs.
 - Patches write unscaled declared attrs; preparation applies scale each frame.
-- A paint-layer payload is content plus independent placement. Position and
-  alpha can change at composition time without changing cached content.
-- A parent layer owns only `own_nodes`; nested layers are `child_refs`.
-- Child layer references must survive parent invalidation and redraw.
+- Paint-layer topology depends on semantic structure, never dirty state.
+- Placement-only scroll, transform, and alpha changes do not alter own-run payloads.
+- Own runs and child layers retain exact order under shared scopes.
+- A child layer content change does not invalidate unrelated parent own runs.
+- No cacheable own run contains Video.
 - Registry cache reuse is legal only when no registry damage exists and the
   subtree key matches the current scene and scroll context.
 - Renderer cache hits are an optimization only. Bypass or rejection must fall
@@ -588,7 +564,7 @@ Primary files:
 - `native/emerge_skia/src/tree/invalidation.rs`: invalidation ordering and
   refresh decision.
 - `native/emerge_skia/src/tree/element.rs`: tree state, dirty flags, layout
-  caches, registry caches, and retained render-layer scene cache.
+  caches, registry caches, and the semantic Nearby fragment cache.
 - `native/emerge_skia/src/tree/patch.rs`: patch application and patch
   invalidation.
 - `native/emerge_skia/src/tree/layout.rs`: frame attr preparation, measure,
@@ -597,7 +573,7 @@ Primary files:
   and registry subtree cache.
 - `native/emerge_skia/src/tree/render.rs`: tree-to-render-scene traversal and
   paint-layer boundary construction.
-- `native/emerge_skia/src/render_scene.rs`: render scene nodes, paint layer
-  model, own-node/child-ref split, and layer metrics.
+- `native/emerge_skia/src/render_scene.rs`: render scene nodes, ordered scoped
+  paint-layer content, own runs, semantic child layers, and metrics.
 - `native/emerge_skia/src/renderer.rs`: render-node traversal, paint-layer
   payload cache, cache stats, and Skia drawing.
