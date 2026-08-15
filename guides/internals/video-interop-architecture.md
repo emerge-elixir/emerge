@@ -20,9 +20,13 @@ rules are normative; the migration and camera-shutdown notes describe the named 
 checkouts at that date.
 
 The Vulkan Camera path additionally admits strict `XRGB8888`/`XR24`: one linear DMA-BUF object
-and plane, complete allocation size, Rec.709 RGB/full color, opaque alpha, persistent
-`B8G8R8A8_UNORM` import, and the same external queue-family/fence retirement protocol as direct
-images. NV12 planar remains production-preferred until target qualification promotes packed RGB.
+and plane, complete allocation size, Rec.709 RGB/full color, opaque alpha, and the same external
+queue-family/fence retirement protocol as direct images. A sampleable producer layout remains a
+persistent direct `B8G8R8A8_UNORM` import. Otherwise Emerge selects the explicit generic
+`LinearBufferToOptimalBgra` strategy: persistent bounded `R32_UINT` texel-buffer import, one
+compute byte-copy into a renderer-owned optimal BGRA image, early producer release after the copy,
+and ordinary Skia image composition at any paint-layer z position. NV12 planar remains
+production-preferred until target qualification promotes packed RGB.
 
 ## Scope and terminology
 

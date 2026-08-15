@@ -1180,7 +1180,7 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
         }
         if let Err(error) = video_registry.set_vulkan_import_capabilities(
             video_context.rgba_linear_supported(),
-            video_context.bgra_linear_supported(),
+            video_context.bgra_import_supported(),
             video_context.nv12_capabilities().to_vec(),
         ) {
             let _ = startup_tx.send(Err(format!(

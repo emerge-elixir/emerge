@@ -86,9 +86,10 @@ benchmarks are serialized and target acceptance requires <=10.86 ms active GPU t
 ### `active-camera-native-rgb-interop.md`
 
 Cross-repository qualification plan for Camera/PiSP-native XRGB8888 DMA-BUF output,
-persistent direct Vulkan import, exact RGB color semantics, and an NV12 A/B comparison.
-It keeps Emerge's already-proven XRGB8888/BGRA DRM scanout and rejects Camera RGB unless
-allocation sizing, synchronization, exact pixels, 60 FPS, and 30% headroom all pass.
+persistent direct-or-staged Vulkan import, exact RGB color semantics, and an NV12 A/B comparison.
+It keeps Emerge's already-proven XRGB8888/BGRA DRM scanout, uses a bounded optimal-BGRA compute
+copy when producer-linear images are not sampleable, and rejects Camera RGB unless allocation
+sizing, synchronization, exact pixels, 60 FPS, and 30% headroom all pass.
 
 ### `active-vulkan-rendering-api.md`
 

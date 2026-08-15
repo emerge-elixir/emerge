@@ -1640,7 +1640,7 @@ impl WaylandApp {
                     if let RendererVideoImportContext::Vulkan(vulkan) = &ctx
                         && let Err(error) = self.video_registry.set_vulkan_import_capabilities(
                             vulkan.rgba_linear_supported(),
-                            vulkan.bgra_linear_supported(),
+                            vulkan.bgra_import_supported(),
                             vulkan.nv12_capabilities().to_vec(),
                         )
                     {

@@ -7,14 +7,16 @@ Status: host implementation complete; pinned-RPi5 qualification pending. NV12 pl
 - Complete: persistent generic packed-image imports for RGBA/BGRA, truthful allocation-size checks, exact topology identity, bounded idle-only eviction, synchronization, and separate diagnostics.
 - Complete: strict libcamera `XRGB8888`/`XR24` production and mock paths with one-object/one-plane validation, explicit linear modifier, Rec.709 RGB/full semantics, analysis-stream coexistence, and lifecycle coverage.
 - Complete: Emerge `XR24` admission as Vulkan `B8G8R8A8_UNORM` / Skia `BGRA8888` / opaque alpha, persistent reuse, exact stream validation, and renderer format inventory.
+- Complete on host: explicit `LinearBufferToOptimalBgra` fallback for V3DV: persistent packed DMA-BUF texel-buffer imports, bounded persistent optimal BGRA outputs, exact byte-copy/alpha shader, early source release, ordinary Skia images at arbitrary z-order, and fail-closed capability selection. Pinned-RPi5 pixels, validation, safety, and performance remain unqualified.
 - Complete: Camera `auto|nv12|xrgb8888` selection, renderer-inventory gating before capture, immutable propagation through drained stream incarnations, diagnostics, and fail-closed forced mode.
 - Pending hardware only: Phase 0 topology/allocation attestation, pixel oracles, validation-layer/MMU checks, A/B/A performance, fault/soak qualification, and promotion decision.
 
 ## Goal
 
-Test whether PiSP can produce a renderer-native packed RGB DMA-BUF so Emerge can
-sample it directly, eliminating Emerge's per-frame NV12 staging and YUV conversion
-without adding CPU copies, EGL/GL interop, per-frame Vulkan imports, or unsafe
+Test whether PiSP packed RGB can eliminate Emerge's NV12 staging and YUV conversion.
+Prefer direct sampled import when the producer modifier is sampleable; otherwise use one
+bounded persistent linear-buffer-to-optimal-BGRA compute copy. Neither path may add CPU
+copies, EGL/GL interop, per-frame Vulkan memory imports, unsafe transfer reads, or forged
 allocation assumptions.
 
 The primary candidate is libcamera `XRGB8888` (`XR24`) imported as Vulkan
@@ -55,8 +57,10 @@ extra PiSP/memory traffic.
   `VK_QUEUE_FAMILY_EXTERNAL` from `GENERAL` before releasing the Camera lease.
 - Require one object, one plane, explicit linear modifier `0`, exact pitch/offset,
   and the complete DMA-BUF allocation size for packed Camera frames.
-- Pass object size into Vulkan image creation and reject an allocation smaller than
-  `vkGetImageMemoryRequirements*`. Never pad the descriptor or weaken requirements.
+- For direct images, pass object size into Vulkan image creation and reject an allocation
+  smaller than `vkGetImageMemoryRequirements*`. For staged packed input, validate the exact
+  packed span and imported Vulkan buffer requirement instead. Never pad the descriptor or
+  weaken requirements.
 - Cache imported packed images by stream incarnation, device/inode, object size,
   FourCC, modifier, dimensions, offset, and pitch. Active reuse or topology collision
   fails closed; eviction is idle-only and bounded.
@@ -118,12 +122,14 @@ tiling, not linear modifier `0`. Supplying a UIF allocation would therefore make
 write linear pixels into tiled storage and corrupt the image. PiSP wallpaper/SAND and
 PiSP raw-compression layouts are not V3D UIF.
 
-Vulkan-sized application buffers remain technically useful only for a truthful linear
-transfer-source experiment: PiSP can write them and V3DV can copy/compute them into a
-local optimal image. That is staged RGB, not direct interop, and must be measured against
-NV12 planar without silent promotion. A separate packed texel-buffer composition path
-may also be investigated because V3DV advertises packed buffer features; it does not
-make the linear DMA-BUF a sampled Vulkan image.
+The implemented alternative does not use a Vulkan transfer source or TFU read. It imports
+the truthful Camera allocation as an `R32_UINT` uniform texel buffer, reads only bounded
+packed bytes in compute, and writes through an `R32_UINT` storage view into an
+importer-owned mutable optimal `B8G8R8A8_UNORM` image. The ignored X byte is forced to
+255. The source returns to `QUEUE_FAMILY_EXTERNAL` as soon as the compute submission
+completes; the bounded optimal output remains owned through arbitrary-z-order Skia
+composition and renderer retirement. This is staged RGB rather than direct interop and
+must be measured against NV12 planar without silent production promotion.
 
 ## Phase 1: generic VideoInterop packed-image support
 

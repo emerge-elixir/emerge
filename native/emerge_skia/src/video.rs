@@ -131,11 +131,11 @@ use crate::{
         ImportedImageSyncErrorKind, ImportedPlane, InteropVulkanDmaBufImporter,
         Nv12AllocationBindingRecipe, Nv12Conversion, Nv12FrameTopology, Nv12ModifierCapability,
         Nv12Plane, Nv12StagingPreference, Nv12TargetAllocationProof, PackedImageFormat,
-        PackedImageImport, VulkanDevice, VulkanImportPoolLimits, VulkanVideoTiming, YcbcrModel,
-        YcbcrOffset, YcbcrRange, capabilities_for_importer, map_nv12_colorimetry,
-        validate_nv12_allocation_proof, validate_nv12_modifier_capability,
-        validate_nv12_shared_object_topology, validate_packed_import_support,
-        validate_rgba_import_support, validate_sync_fd_import, wait_surface_on_semaphore,
+        PackedImageImport, PackedImageImportStrategy, VulkanDevice, VulkanImportPoolLimits,
+        VulkanVideoTiming, YcbcrModel, YcbcrOffset, YcbcrRange, capabilities_for_importer,
+        map_nv12_colorimetry, validate_nv12_allocation_proof, validate_nv12_modifier_capability,
+        validate_nv12_shared_object_topology, validate_rgba_import_support,
+        validate_sync_fd_import, wait_surface_on_semaphore,
     },
     renderer::{BackendPostFlushTask, RenderFrame},
 };
@@ -1261,7 +1261,7 @@ fn validate_vulkan_stream_format(
         feature = "vulkan",
         any(feature = "wayland-core", feature = "drm-core")
     ))]
-    bgra_linear_supported: bool,
+    bgra_import_supported: bool,
     #[cfg(all(
         target_os = "linux",
         feature = "vulkan",
@@ -1309,9 +1309,9 @@ fn validate_vulkan_stream_format(
                 feature = "vulkan",
                 any(feature = "wayland-core", feature = "drm-core")
             ))]
-            if !bgra_linear_supported {
+            if !bgra_import_supported {
                 return Err(
-                    "Vulkan XRGB8888 linear DMA-BUF sampling is unavailable on the active device"
+                    "Vulkan XRGB8888 linear DMA-BUF direct/staged import is unavailable on the active device"
                         .to_string(),
                 );
             }
@@ -1508,7 +1508,7 @@ struct VideoRegistryState {
         feature = "vulkan",
         any(feature = "wayland-core", feature = "drm-core")
     ))]
-    vulkan_bgra_linear_supported: bool,
+    vulkan_bgra_import_supported: bool,
     #[cfg(all(
         target_os = "linux",
         feature = "vulkan",
@@ -1536,7 +1536,7 @@ impl Default for VideoRegistryState {
                 feature = "vulkan",
                 any(feature = "wayland-core", feature = "drm-core")
             ))]
-            vulkan_bgra_linear_supported: false,
+            vulkan_bgra_import_supported: false,
             #[cfg(all(
                 target_os = "linux",
                 feature = "vulkan",
@@ -1693,7 +1693,7 @@ impl VideoRegistry {
     pub fn set_vulkan_import_capabilities(
         &self,
         rgba_linear_supported: bool,
-        bgra_linear_supported: bool,
+        bgra_import_supported: bool,
         nv12_capabilities: Vec<Nv12ModifierCapability>,
     ) -> Result<(), String> {
         let mut state = self
@@ -1708,7 +1708,7 @@ impl VideoRegistry {
             return Err("cannot change Vulkan import capabilities with active streams".to_string());
         }
         state.vulkan_rgba_linear_supported = rgba_linear_supported;
-        state.vulkan_bgra_linear_supported = bgra_linear_supported;
+        state.vulkan_bgra_import_supported = bgra_import_supported;
         state.vulkan_nv12_capabilities = Some(nv12_capabilities);
         Ok(())
     }
@@ -1796,7 +1796,7 @@ impl VideoRegistry {
             feature = "vulkan",
             any(feature = "wayland-core", feature = "drm-core")
         ))]
-        let vulkan_bgra_linear_supported = state.vulkan_bgra_linear_supported;
+        let vulkan_bgra_import_supported = state.vulkan_bgra_import_supported;
         #[cfg(all(
             target_os = "linux",
             feature = "vulkan",
@@ -1836,7 +1836,7 @@ impl VideoRegistry {
                     feature = "vulkan",
                     any(feature = "wayland-core", feature = "drm-core")
                 ))]
-                vulkan_bgra_linear_supported,
+                vulkan_bgra_import_supported,
                 #[cfg(all(
                     target_os = "linux",
                     feature = "vulkan",
@@ -2924,7 +2924,7 @@ pub struct VulkanVideoImportContext {
     sync_pool: Arc<VulkanImportSyncPool>,
     nv12_effects: Mutex<HashMap<Nv12Conversion, RuntimeEffect>>,
     rgba_linear_supported: bool,
-    bgra_linear_supported: bool,
+    bgra_import_strategy: Option<PackedImageImportStrategy>,
     #[cfg_attr(not(feature = "wayland-vulkan"), allow(dead_code))]
     nv12_capabilities: Vec<Nv12ModifierCapability>,
     nv12_attestations: Mutex<Nv12RuntimeAttestations>,
@@ -2946,12 +2946,6 @@ impl VulkanVideoImportContext {
         validate_sync_fd_import(&device)?;
         let rgba_import = validate_rgba_import_support(&device, DRM_FORMAT_MOD_LINEAR);
         let rgba_linear_supported = rgba_import.is_ok();
-        let bgra_import = validate_packed_import_support(
-            &device,
-            PackedImageFormat::Bgra8888,
-            DRM_FORMAT_MOD_LINEAR,
-        );
-        let bgra_linear_supported = bgra_import.is_ok();
         let staging_preference = vulkan_nv12_staging_preference_from_value(
             std::env::var("EMERGE_VULKAN_NV12_STAGING").ok().as_deref(),
         )?;
@@ -2962,10 +2956,23 @@ impl VulkanVideoImportContext {
                 VulkanImportPoolLimits {
                     nv12_source_cache_entries: 16,
                     nv12_output_slots: 4,
+                    packed_source_cache_entries: 16,
+                    packed_output_slots: 4,
                 },
                 staging_preference,
             )?,
         );
+        let bgra_import =
+            importer.packed_import_strategy(PackedImageFormat::Bgra8888, DRM_FORMAT_MOD_LINEAR);
+        let bgra_import_strategy = bgra_import.as_ref().ok().copied();
+        match &bgra_import {
+            Ok(strategy) => {
+                eprintln!("Vulkan XRGB8888 import strategy: {strategy:?}");
+            }
+            Err(error) => {
+                eprintln!("Vulkan XRGB8888 import unavailable: {error}");
+            }
+        }
         let nv12_capabilities = capabilities_for_importer(&device, &importer);
         nv12_capabilities.iter().for_each(|capability| {
             eprintln!(
@@ -2975,7 +2982,8 @@ impl VulkanVideoImportContext {
                 capability.modifier_plane_count(),
             );
         });
-        if !rgba_linear_supported && !bgra_linear_supported && nv12_capabilities.is_empty() {
+        if !rgba_linear_supported && bgra_import_strategy.is_none() && nv12_capabilities.is_empty()
+        {
             return Err(format!(
                 "Vulkan device has no usable packed/NV12 video import strategy: RGBA={}; BGRA={}; no importable NV12 DRM modifiers were advertised",
                 rgba_import.expect_err("RGBA support was checked as unavailable"),
@@ -2989,7 +2997,7 @@ impl VulkanVideoImportContext {
             sync_pool,
             nv12_effects: Mutex::new(HashMap::new()),
             rgba_linear_supported,
-            bgra_linear_supported,
+            bgra_import_strategy,
             nv12_capabilities,
             nv12_attestations: Mutex::new(Nv12RuntimeAttestations::default()),
         })
@@ -3055,9 +3063,11 @@ impl VulkanVideoImportContext {
             source_topology_collisions: pool
                 .source_topology_collisions
                 .saturating_add(packed.source_topology_collisions),
-            output_pool_busy_rejections: pool.output_pool_busy_rejections,
+            output_pool_busy_rejections: pool
+                .output_pool_busy_rejections
+                .saturating_add(packed.output_pool_busy_rejections),
             source_cache_entries: pool.source_entries.saturating_add(packed.source_entries),
-            output_pool_slots: pool.output_slots,
+            output_pool_slots: pool.output_slots.saturating_add(packed.output_slots),
             packed_cache_hits: packed.source_cache_hits,
             packed_cache_misses: packed.source_cache_misses,
             packed_cache_evictions: packed.source_cache_evictions,
@@ -3072,8 +3082,14 @@ impl VulkanVideoImportContext {
         self.rgba_linear_supported
     }
 
-    pub(crate) fn bgra_linear_supported(&self) -> bool {
-        self.bgra_linear_supported
+    pub(crate) fn bgra_import_supported(&self) -> bool {
+        self.bgra_import_strategy.is_some()
+    }
+
+    fn bgra_import_strategy(&self) -> Result<PackedImageImportStrategy, String> {
+        self.bgra_import_strategy.ok_or_else(|| {
+            "Vulkan XRGB8888 has no active-device direct or staged import strategy".to_string()
+        })
     }
 
     pub(crate) fn supported_format_names(&self) -> Vec<&'static str> {
@@ -3084,7 +3100,7 @@ impl VulkanVideoImportContext {
         if self.rgba_linear_supported {
             formats.push("ABGR8888");
         }
-        if self.bgra_linear_supported {
+        if self.bgra_import_strategy.is_some() {
             formats.push("XRGB8888");
         }
         formats
@@ -3093,7 +3109,7 @@ impl VulkanVideoImportContext {
     #[cfg_attr(not(feature = "drm-vulkan"), allow(dead_code))]
     pub(crate) fn supports_any_format(&self) -> bool {
         self.rgba_linear_supported
-            || self.bgra_linear_supported
+            || self.bgra_import_strategy.is_some()
             || !self.nv12_capabilities.is_empty()
     }
 
@@ -4666,7 +4682,7 @@ impl VulkanImportTicket {
             if let Some(stats) = resource.stats.as_deref() {
                 stats.record_vulkan_video_retirement_timeout();
             }
-            return Err("Vulkan staged NV12 source-release fence timed out".to_string());
+            return Err("Vulkan staged source-release fence timed out".to_string());
         }
         Ok(false)
     }
@@ -5047,21 +5063,24 @@ fn import_vulkan_frame(
                 "Vulkan DMA-BUF import requires an explicit DRM modifier; implicit modifier is unsupported"
                     .to_string()
             })?;
-            let (packed_format, color_type, alpha_type) = if format == DRM_FORMAT_XRGB8888 {
-                (
-                    PackedImageFormat::Bgra8888,
-                    ColorType::BGRA8888,
-                    AlphaType::Opaque,
-                )
-            } else {
-                (
-                    PackedImageFormat::Rgba8888,
-                    ColorType::RGBA8888,
-                    AlphaType::Premul,
-                )
-            };
+            let (packed_format, import_strategy, color_type, alpha_type) =
+                if format == DRM_FORMAT_XRGB8888 {
+                    (
+                        PackedImageFormat::Bgra8888,
+                        context.bgra_import_strategy()?,
+                        ColorType::BGRA8888,
+                        AlphaType::Opaque,
+                    )
+                } else {
+                    (
+                        PackedImageFormat::Rgba8888,
+                        PackedImageImportStrategy::DirectSampledImage,
+                        ColorType::RGBA8888,
+                        AlphaType::Premul,
+                    )
+                };
             (
-                ImportedDmaBufImage::from_interop(context.importer().import_packed(
+                ImportedDmaBufImage::from_interop(context.importer().import_packed_with_strategy(
                     PackedImageImport {
                         stream_incarnation,
                         dimensions: (frame.width, frame.height),
@@ -5074,6 +5093,7 @@ fn import_vulkan_frame(
                         },
                         format: packed_format,
                     },
+                    import_strategy,
                 )?),
                 color_type,
                 alpha_type,
