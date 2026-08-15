@@ -21,17 +21,18 @@ defmodule EmergeSkia.VideoInteropSessionTest do
   alias VideoInterop.DMABuf.{Descriptor, Layer, Object, Plane}
 
   @abgr8888 VideoInterop.DMABuf.FourCC.from_string!("AB24")
+  @xrgb8888 VideoInterop.DMABuf.FourCC.from_string!("XR24")
 
   defp target do
     %VideoTarget{id: "preview", width: 64, height: 32, mode: :prime, ref: make_ref()}
   end
 
-  defp format(alpha_mode) do
+  defp format(alpha_mode, fourcc \\ @abgr8888) do
     %Format{
       width: 64,
       height: 32,
       framerate: nil,
-      storage: %DMABuf.Format{fourcc: @abgr8888, modifier: :per_buffer},
+      storage: %DMABuf.Format{fourcc: fourcc, modifier: :per_buffer},
       interlace_mode: :progressive,
       alpha_mode: alpha_mode
     }
@@ -101,6 +102,19 @@ defmodule EmergeSkia.VideoInteropSessionTest do
 
     assert :ok = VideoTargetConsumer.validate_target_format(target(), format(:opaque))
     assert :ok = VideoTargetConsumer.validate_target_format(target(), format(:premultiplied))
+  end
+
+  test "XRGB accepts only opaque alpha" do
+    assert :ok =
+             VideoTargetConsumer.validate_target_format(target(), format(:opaque, @xrgb8888))
+
+    for alpha_mode <- [:straight, :premultiplied] do
+      assert {:error, {:unsupported_alpha_mode, ^alpha_mode}} =
+               VideoTargetConsumer.validate_target_format(
+                 target(),
+                 format(alpha_mode, @xrgb8888)
+               )
+    end
   end
 
   test "lease release failures are recorded and logged while LeaseOwner retains retry ownership" do

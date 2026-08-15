@@ -7,6 +7,7 @@ defmodule EmergeSkia.VideoTargetConsumer do
 
   @nv12 VideoInterop.DMABuf.FourCC.from_string!("NV12")
   @abgr8888 VideoInterop.DMABuf.FourCC.from_string!("AB24")
+  @xrgb8888 VideoInterop.DMABuf.FourCC.from_string!("XR24")
 
   @spec open(VideoTarget.t(), Format.t(), keyword()) ::
           {:ok, VideoConsumerSession.t()} | {:error, term()}
@@ -31,9 +32,9 @@ defmodule EmergeSkia.VideoTargetConsumer do
           alpha_mode: alpha_mode
         }
       )
-      when fourcc in [@nv12, @abgr8888] do
+      when fourcc in [@nv12, @abgr8888, @xrgb8888] do
     cond do
-      fourcc == @nv12 and alpha_mode != :opaque ->
+      fourcc in [@nv12, @xrgb8888] and alpha_mode != :opaque ->
         {:error, {:unsupported_alpha_mode, alpha_mode}}
 
       fourcc == @abgr8888 and alpha_mode not in [:opaque, :premultiplied] ->
