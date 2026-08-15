@@ -9,6 +9,7 @@
 - Added bounded nonblocking DRM GPU render-elapsed sampling with exact stats-window draining, page-flip correlation, explicit discarded/skipped/stale sample diagnostics, and DRM-scoped draw/presentation counters.
 - Added strict immutable stream colorimetry forwarding and the shared direct Vulkan NV12 DMA-BUF importer for exact target-proven one-object/two-plane layouts, with BT.709 output-identical YCbCr conversion, sync-file ownership transfers, bounded process-wide terminal quarantine, and dedicated Vulkan video fault counters.
 - Added strict XRGB8888 Camera admission with persistent direct import where supported and bounded linear-texel-buffer-to-optimal-BGRA staging otherwise, preserving ordinary Skia composition at arbitrary paint-layer z-order.
+- Added an `auto` Vulkan NV12 path that transfers exact linear producer planes into bounded optimal multi-planar NV12 with exact sampler-YCbCr metadata, or separate optimal Y/UV images when exact hardware chroma filtering is unavailable; forced `planar` remains the compute-plane rollback.
 
 ### Changed
 

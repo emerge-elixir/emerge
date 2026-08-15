@@ -13,8 +13,11 @@ Make the pinned V3DV Camera path safe and fast without CPU upload, EGL/GL intero
 - [x] Pool bounded output images, descriptors, command pools/buffers, imported semaphores, fences, and timestamp queries.
 - [x] Fence the staged source release separately and retire its canonical lease as soon as the exact external-ownership return completes.
 - [x] Optimize the RGBA fallback as one invocation per 2x2 luma block.
-- [x] Prefer TFU-free optimal `R8_UNORM`/`R8G8_UNORM` staging when the active device proves sampled, linear-filter, and storage support.
-- [x] Compose staged planes through an Emerge-owned raw-child Skia RuntimeEffect with explicit range, BT.709 matrix, and left/center/top siting coordinates.
+- [x] Retain TFU-free optimal `R8_UNORM`/`R8G8_UNORM` compute staging as the forced `planar` rollback when the active device proves sampled, linear-filter, and storage support.
+- [x] In `auto`, prefer exact `vkCmdCopyBufferToImage` regions into one optimal multi-planar NV12 output when the selected queue, external transfer-source import, optimal transfer, filtered YCbCr sampling, and both required chroma locations are all proven.
+- [x] When the driver lacks exact linear YCbCr reconstruction, use the same exact transfer regions with separate optimal `R8_UNORM`/`R8G8_UNORM` outputs and the established exact Emerge YUV shader before considering compute staging.
+- [x] Persistently pool both transfer output shapes, transition them through transfer-destination to shader-read layouts, return source ownership in the same acquire submission, and expose either exact sampler-YCbCr metadata or exact raw planes to Skia.
+- [x] Compose staged compute planes through an Emerge-owned raw-child Skia RuntimeEffect with explicit range, BT.709 matrix, and left/center/top siting coordinates.
 - [x] Keep the RGBA staged path as the truthful capability fallback and direct image paths unchanged.
 - [x] Add host cache-identity, timestamp-wrap, capability, SPIR-V, chroma-coordinate, and RuntimeEffect compilation tests.
 - [x] Extend diagnostics/statistics, add opt-in authoritative debug-utils validation counting, and update architecture documentation.
@@ -64,11 +67,13 @@ validation disabled, so it does not satisfy the authoritative validation gate.
 - Output slots return to the pool only after post-Ganesh release completion.
 - Cache eviction occurs only for idle entries and is bounded.
 - Ordinary frames never CPU-wait or call queue/device idle.
-- `TRANSFER_SRC` is not used against unpadded Camera allocations.
+- Forced `planar` and `rgba` never declare transfer usage on Camera allocations.
+- `auto` admits transfer staging only with truthful full allocation size, four-byte-aligned plane offsets, exact row lengths and plane extents, external transfer-source import support, and exact optimal multi-planar or separate-plane destination support. It must remain target-qualified until validation/MMU and soak evidence proves the pinned V3DV implementation does not read outside those specified regions.
 
 ## Validation
 
 - [ ] `video_interop`: format, Clippy warnings denied, all Rust tests, all ExUnit tests, SPIR-V validation.
 - [ ] `emerge-headless`: format, Clippy warnings denied, `cargo test`, `mix test`, and CI checks where practical.
 - [ ] Restage AArch64 artifacts only after host validation.
-- [ ] RPi5: exact pixels, zero validation/MMU faults, stable FD/RSS, 300+ captures, 60 FPS and required headroom.
+- [ ] RPi5 `auto`: prove startup selects `LinearBufferToOptimalNv12` or, when pinned V3DV continues to omit linear YCbCr reconstruction, `LinearBufferToOptimalYuvPlanes`; then prove exact pixels, zero validation/MMU faults, stable FD/RSS, delayed/error-fence behavior, 300+ captures, 60 FPS and required headroom.
+- [ ] RPi5 forced `planar`: retain the known compute-plane rollback and compare matching timing/presentation statistics.

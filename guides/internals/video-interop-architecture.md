@@ -747,16 +747,20 @@ The selected backend uses one of these capability-proven paths:
   texture, then retire the imported input. DRM may fall back from direct
   external to blit when Ganesh cannot wrap the texture.
 - **Vulkan staged NV12** — persistently cache the imported linear source by
-  stream incarnation, DMA-BUF identity, allocation size, modifier, and exact
-  topology. A 2×2 compute dispatch reads through an `R32_UINT` uniform texel
-  buffer, avoiding V3DV SSBO/TFU read-ahead. Preferred V3DV output is persistent
-  optimal `R8_UNORM`/`R8G8_UNORM`; Emerge composes those raw planes with an
-  explicit limited/full-range BT.709 RuntimeEffect and exact left/midpoint
-  chroma coordinates. The importer-owned, Vulkan-sized optimal outputs declare
-  Ganesh-required transfer usage. The camera DMA-BUF remains a uniform texel
-  buffer without transfer usage, so this does not permit TFU/image-copy reads
-  from the producer allocation. A persistent optimal RGBA output is the
-  capability fallback.
+  stream incarnation, DMA-BUF identity, allocation size, modifier, exact
+  topology, and selected read strategy. In `auto`, the first capability choice
+  imports the producer allocation with transfer-source usage and copies two
+  explicit pitch/offset-bounded regions into one persistent optimal multi-planar
+  NV12 image. Skia samples that image with Vulkan's BT.709 YCbCr conversion and
+  exact left/midpoint chroma locations, without an RGB intermediate. If the
+  driver cannot provide exact linear chroma reconstruction, the same transfer
+  instead fills separate persistent optimal `R8_UNORM`/`R8G8_UNORM` images for
+  Emerge's exact YUV shader. All destinations are importer-owned and Vulkan-sized;
+  source offsets must be four-byte aligned and the copy regions never include
+  unpublished padding. If neither transfer output is available, the established
+  2×2 compute path reads through an `R32_UINT` uniform texel buffer into persistent
+  optimal `R8_UNORM`/`R8G8_UNORM` images. Emerge then uses its exact BT.709 RuntimeEffect.
+  Persistent optimal RGBA remains the final capability fallback.
 
 Vulkan staged sources have a dedicated completion fence. Once it proves both
 conversion and return to `QUEUE_FAMILY_EXTERNAL`, the canonical producer lease
@@ -766,10 +770,14 @@ post-Ganesh fence completes. Ready semaphores transferred to Skia are always
 Skia-owned and never pooled. GPU conversion/composition/total timestamps are
 read without `WAIT` only after that exact completion fence signals.
 
-`EMERGE_VULKAN_NV12_STAGING=planar|rgba` forces one exact staged-output strategy for
-controlled target comparisons; `auto` prefers planar and uses RGBA only when planar is
-unavailable. Forced strategies never silently switch. Emerge logs both the parsed policy
-and admitted capability strategy before capture starts.
+`EMERGE_VULKAN_NV12_STAGING=auto` prefers optimal multi-planar transfer, then separate
+optimal Y/UV transfer when exact hardware YCbCr filtering is unavailable, then compute
+Y/UV planes, and uses RGBA only when no planar path is available.
+`planar` deliberately forces the established compute Y/UV path for rollback and controlled
+comparisons; `rgba` forces compute RGBA. Forced strategies never silently switch. Emerge logs
+both the parsed policy and admitted capability strategy before capture starts. The transfer
+path remains target-qualified only until validation/MMU, exact-pixel, fence-error, and soak
+gates pass on the pinned RPi5.
 
 Qualification builds enable `EMERGE_VULKAN_VALIDATION=1` (or include
 `VK_LAYER_KHRONOS_validation` in `VK_INSTANCE_LAYERS`) plus synchronization

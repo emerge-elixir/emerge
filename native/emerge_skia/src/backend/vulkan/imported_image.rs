@@ -226,8 +226,8 @@ impl ImportedDmaBufImage {
             SampledImageFormat::Rgba8888 => (sk_vk::Format::R8G8B8A8_UNORM, None),
             SampledImageFormat::Bgra8888 => (sk_vk::Format::B8G8R8A8_UNORM, None),
             SampledImageFormat::Nv12 => {
-                let sampling = self.interop.direct_nv12_sampling().ok_or_else(|| {
-                    "direct Vulkan NV12 image is missing sampling metadata".to_string()
+                let sampling = self.interop.nv12_sampling().ok_or_else(|| {
+                    "Vulkan NV12 image is missing sampler-YCbCr metadata".to_string()
                 })?;
                 (
                     sk_vk::Format::G8_B8R8_2PLANE_420_UNORM,
