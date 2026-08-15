@@ -68,7 +68,7 @@ validation disabled, so it does not satisfy the authoritative validation gate.
 - Cache eviction occurs only for idle entries and is bounded.
 - Ordinary frames never CPU-wait or call queue/device idle.
 - Forced `planar` and `rgba` never declare transfer usage on Camera allocations.
-- `auto` admits transfer staging only with truthful full allocation size, four-byte-aligned plane offsets, exact row lengths and plane extents, external transfer-source import support, and exact optimal multi-planar or separate-plane destination support. It must remain target-qualified until validation/MMU and soak evidence proves the pinned V3DV implementation does not read outside those specified regions.
+- `auto` admits transfer staging only with truthful full allocation size, four-byte-aligned plane offsets, exact row lengths and plane extents, external transfer-source import support, and exact optimal multi-planar or separate-plane destination support. The producer may allocate and publish a real V3DV read-ahead tail, but the logical source buffer and every copy region end at the final visible plane byte. It must remain target-qualified until validation/MMU and soak evidence proves the pinned V3DV implementation confines its implementation read-ahead to that allocation tail.
 
 ## Validation
 

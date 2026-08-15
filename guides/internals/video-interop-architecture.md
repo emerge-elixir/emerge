@@ -755,9 +755,11 @@ The selected backend uses one of these capability-proven paths:
   exact left/midpoint chroma locations, without an RGB intermediate. If the
   driver cannot provide exact linear chroma reconstruction, the same transfer
   instead fills separate persistent optimal `R8_UNORM`/`R8G8_UNORM` images for
-  Emerge's exact YUV shader. All destinations are importer-owned and Vulkan-sized;
-  source offsets must be four-byte aligned and the copy regions never include
-  unpublished padding. If neither transfer output is available, the established
+  Emerge's exact YUV shader. All destinations are importer-owned and Vulkan-sized.
+  The Vulkan source buffer ends at the final copied plane byte while the imported
+  producer allocation may include a separately published driver read-ahead tail;
+  source offsets must be four-byte aligned and no copy region includes that tail.
+  If neither transfer output is available, the established
   2×2 compute path reads through an `R32_UINT` uniform texel buffer into persistent
   optimal `R8_UNORM`/`R8G8_UNORM` images. Emerge then uses its exact BT.709 RuntimeEffect.
   Persistent optimal RGBA remains the final capability fallback.
