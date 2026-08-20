@@ -7,7 +7,8 @@ use super::{VulkanDevice, device::VulkanDeviceIdentity, raw};
 
 pub use video_interop::vulkan::{
     ImportedPlane, Nv12AllocationBindingRecipe, Nv12Conversion, Nv12FrameTopology,
-    Nv12ImportStrategy, Nv12Plane, Nv12SharedObjectLayout, Nv12StagingPreference,
+    Nv12ImportStrategy, Nv12Plane, Nv12ResolveRequest, Nv12SharedObjectLayout,
+    Nv12StagingPreference,
     PackedImageFormat, PackedImageImport, PackedImageImportStrategy, SampledImageFormat,
     StagedNv12Planes, VulkanDmaBufImporter, VulkanImportPoolLimits, YcbcrModel, YcbcrOffset,
     YcbcrRange, map_nv12_colorimetry, validate_nv12_shared_object_topology,
@@ -104,6 +105,34 @@ pub fn query_nv12_modifier_capability(
         .ok_or_else(|| {
             format!("Vulkan device has no usable NV12 import path for modifier {modifier:#018x}")
         })
+}
+
+pub fn resolve_nv12_modifier_capability(
+    capabilities: &[Nv12ModifierCapability],
+    modifier: u64,
+    dimensions: (u32, u32),
+    conversion: Nv12Conversion,
+) -> Result<Nv12ModifierCapability, String> {
+    let interop = capabilities
+        .iter()
+        .map(|capability| capability.interop)
+        .collect::<Vec<_>>();
+    let selected = video_interop::vulkan::resolve_nv12_modifier_capability(
+        &interop,
+        Nv12ResolveRequest {
+            modifier,
+            dimensions,
+            conversion,
+        },
+    )?;
+    capabilities
+        .iter()
+        .copied()
+        .find(|capability| {
+            capability.modifier == selected.modifier
+                && capability.import_strategy() == selected.strategy
+        })
+        .ok_or_else(|| "resolved Vulkan NV12 capability disappeared".to_string())
 }
 
 pub fn validate_nv12_modifier_capability(

@@ -4,6 +4,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    thread::{self, ThreadId},
 };
 
 use ash::{Device, vk};
@@ -116,6 +117,7 @@ pub struct VulkanDevice {
     identity: VulkanDeviceIdentity,
     report: VulkanDeviceReport,
     enabled_extensions: Vec<String>,
+    queue_owner: ThreadId,
     lost: AtomicBool,
 }
 
@@ -280,6 +282,7 @@ impl VulkanDevice {
             identity: candidate.identity,
             report: candidate.report.clone(),
             enabled_extensions,
+            queue_owner: thread::current().id(),
             lost: AtomicBool::new(false),
         }))
     }
@@ -371,6 +374,19 @@ impl video_interop::vulkan::VulkanDeviceContext for VulkanDevice {
 
     fn queue_family_index(&self) -> u32 {
         self.queue_family_index
+    }
+
+    unsafe fn submit_video_queue(
+        &self,
+        submits: &[vk::SubmitInfo<'_>],
+        fence: vk::Fence,
+    ) -> Result<(), vk::Result> {
+        if thread::current().id() != self.queue_owner {
+            return Err(vk::Result::ERROR_VALIDATION_FAILED_EXT);
+        }
+        // SAFETY: this method is the VideoInterop queue-host-access authority. The renderer and
+        // Ganesh use the same recorded render thread, preventing concurrent host queue access.
+        unsafe { self.device.queue_submit(self.queue, submits, fence) }
     }
 
     fn mark_device_lost(&self) {

@@ -318,12 +318,13 @@ case VideoInterop.LeaseOwner.issue(owner, backend_token) do
 end
 ```
 
-The send to `LeaseOwner` is the ownership boundary:
+Issuance reserves finite capacity before transferring the token. The later
+token-bearing commit send is the ownership boundary:
 
-- `:caller_owned` proves no request was sent;
+- capacity, draining, timeout, or owner death before commit is `:caller_owned`;
 - success means the owner holds the private backend token;
-- every error after send is `:transferred`, including capacity, drain, timeout,
-  and concurrent owner death.
+- every error after the commit send is `:transferred`, including timeout,
+  release failure, and concurrent owner death.
 
 Because a local PID can die concurrently with send, the private backend token
 must also have an independent native resource/drop fallback. The caller must
@@ -1049,8 +1050,8 @@ dangerous than terminating the VM.
 
 | Failure point | Owner after failure | Required action |
 |---------------|---------------------|-----------------|
-| Before `LeaseOwner.issue/3` send | Producer caller | Release private backend token |
-| After issue send | `LeaseOwner` or token destructor fallback | Caller must not release |
+| Before token-bearing issue commit | Producer caller | Release private backend token |
+| After token-bearing issue commit | `LeaseOwner` or token destructor fallback | Caller must not release |
 | Retain partially succeeds | Created public holders | Release every created holder; emit no branch |
 | Frame validation before consume | Current holder caller | Release once |
 | Native prepare/FD duplication fails | Caller | `VideoInterop.consume/2` releases caller-owned rejection |

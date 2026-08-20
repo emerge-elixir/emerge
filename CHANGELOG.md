@@ -28,6 +28,7 @@
 - Kept unchanged ordered paint runs reusable when another run in the same semantic layer changes, isolated correctness-bearing scopes from adjacent paint, deferred rapidly changing GPU payload replacements until stable, staggered related replacements across frames, and retained only the latest version per run.
 - Sized isolated text payloads from measured font visual bounds, including glyph overhang and vertical extents, instead of an approximate character-width estimate.
 - Admitted opaque `XR24` stream formats at the Elixir `VideoTarget` consumer boundary so supported XRGB8888 frames reach native Vulkan validation and staging.
+- Serialized VideoInterop queue submissions through the Vulkan render-thread authority, resolved exact NV12 candidates per stream contract, bound synchronization lanes to unique imports, and preserved explicit recovery when Ganesh rejects a wait semaphore.
 
 ## [0.3.4] - 2026-07-31
 

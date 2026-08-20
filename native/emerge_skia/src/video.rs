@@ -133,8 +133,9 @@ use crate::{
         Nv12Plane, Nv12StagingPreference, Nv12TargetAllocationProof, PackedImageFormat,
         PackedImageImport, PackedImageImportStrategy, VulkanDevice, VulkanImportPoolLimits,
         VulkanVideoTiming, YcbcrModel, YcbcrOffset, YcbcrRange, capabilities_for_importer,
-        map_nv12_colorimetry, validate_nv12_allocation_proof, validate_nv12_modifier_capability,
-        validate_nv12_shared_object_topology, validate_rgba_import_support,
+        map_nv12_colorimetry, resolve_nv12_modifier_capability,
+        validate_nv12_allocation_proof, validate_nv12_shared_object_topology,
+        validate_rgba_import_support,
         validate_sync_fd_import, wait_surface_on_semaphore,
     },
     renderer::{BackendPostFlushTask, RenderFrame},
@@ -1337,23 +1338,16 @@ fn validate_vulkan_stream_format(
                 let StreamModifierPolicy::Explicit(modifier) = format.modifier_policy else {
                     unreachable!("explicit NV12 modifier was matched above")
                 };
-                let capability = nv12_capabilities
-                    .and_then(|capabilities| {
-                        capabilities
-                            .iter()
-                            .find(|capability| capability.modifier == modifier)
-                    })
-                    .copied()
-                    .ok_or_else(|| {
-                        format!(
-                            "Vulkan NV12 modifier {modifier:#018x} has no active-device import capability"
-                        )
-                    })?;
-                validate_nv12_modifier_capability(
-                    capability,
+                let capabilities = nv12_capabilities.ok_or_else(|| {
+                    "Vulkan NV12 has no active-device import candidates".to_string()
+                })?;
+                resolve_nv12_modifier_capability(
+                    capabilities,
+                    modifier,
                     (format.width, format.height),
                     conversion,
                 )
+                .map(|_capability| ())
             }
             #[cfg(not(all(
                 target_os = "linux",
@@ -1422,25 +1416,16 @@ fn validate_vulkan_frame_contract(
                 })
                 .collect::<Vec<_>>(),
         )?;
-        let capability = nv12_capabilities
-            .and_then(|capabilities| {
-                capabilities
-                    .iter()
-                    .find(|capability| capability.modifier == layout.modifier)
-            })
-            .copied()
-            .ok_or_else(|| {
-                format!(
-                    "Vulkan NV12 modifier {:#018x} has no immutable active-device capability",
-                    layout.modifier
-                )
-            })?;
+        let capabilities = nv12_capabilities
+            .ok_or_else(|| "Vulkan NV12 has no immutable active-device candidates".to_string())?;
         let conversion = map_nv12_colorimetry(format.colorimetry)?;
-        validate_nv12_modifier_capability(
-            capability,
+        resolve_nv12_modifier_capability(
+            capabilities,
+            layout.modifier,
             (frame.coded_width, frame.coded_height),
             conversion,
         )
+        .map(|_capability| ())
     }
     #[cfg(not(all(
         target_os = "linux",
@@ -3140,16 +3125,18 @@ impl VulkanVideoImportContext {
             .record(self.device.identity(), topology, recipe)
     }
 
-    fn nv12_capability(&self, modifier: u64) -> Result<Nv12ModifierCapability, String> {
-        self.nv12_capabilities
-            .iter()
-            .find(|capability| capability.modifier == modifier)
-            .copied()
-            .ok_or_else(|| {
-                format!(
-                    "Vulkan NV12 modifier {modifier:#018x} has no immutable active-device capability"
-                )
-            })
+    fn nv12_capability(
+        &self,
+        modifier: u64,
+        dimensions: (u32, u32),
+        conversion: Nv12Conversion,
+    ) -> Result<Nv12ModifierCapability, String> {
+        resolve_nv12_modifier_capability(
+            &self.nv12_capabilities,
+            modifier,
+            dimensions,
+            conversion,
+        )
     }
 }
 
@@ -4590,6 +4577,28 @@ impl VulkanImportTicket {
         Ok(())
     }
 
+    fn ganesh_wait_rejected(&self, semaphore: vk::Semaphore) -> Result<(), String> {
+        let result = match self.resource.lock() {
+            Ok(mut resource) => match resource.as_mut() {
+                Some(resource) => resource
+                    .sync
+                    .as_mut()
+                    .ok_or_else(|| "Vulkan imported-image sync was already recycled".to_string())?
+                    .ganesh_wait_rejected(semaphore),
+                None => Err("Vulkan imported-image ticket is quarantined".to_string()),
+            },
+            Err(poisoned) => {
+                let mut resource = poisoned.into_inner();
+                self.quarantine_poisoned_resource(&mut resource);
+                return Err("Vulkan imported-image ticket lock poisoned".to_string());
+            }
+        };
+        if result.is_err() {
+            self.quarantine();
+        }
+        result
+    }
+
     fn record_imported(&self) -> Result<(), String> {
         match self.resource.lock() {
             Ok(resource) => match resource.as_ref() {
@@ -4658,7 +4667,7 @@ impl VulkanImportTicket {
             .sync
             .as_ref()
             .ok_or_else(|| "Vulkan staged source sync was recycled too early".to_string())?
-            .source_release_complete(resource.allocation.interop())
+            .source_release_complete()
         {
             Ok(complete) => complete,
             Err(error) => {
@@ -5138,7 +5147,11 @@ fn import_vulkan_frame(
                 &planes,
             )?;
             let object = frame.object(0)?;
-            let capability = context.nv12_capability(layout.modifier)?;
+            let capability = context.nv12_capability(
+                layout.modifier,
+                (frame.width, frame.height),
+                conversion,
+            )?;
             let topology = layout.frame_topology((frame.width, frame.height));
             let recipe = capability.allocation_recipe();
             context.validate_nv12_topology(topology, recipe)?;
@@ -5264,11 +5277,15 @@ fn import_vulkan_frame(
         let resource = resource
             .as_mut()
             .ok_or_else(|| "Vulkan imported-image ticket is quarantined".to_string())?;
-        resource
-            .sync
-            .as_mut()
-            .ok_or_else(|| "Vulkan imported-image sync was already recycled".to_string())?
-            .submit_acquire(resource.allocation.interop(), acquire_sync_fd)
+        // SAFETY: the ticket owns both allocation and sync lane until the exact release fence
+        // completes or the complete resource is retained in process-wide quarantine.
+        unsafe {
+            resource
+                .sync
+                .as_mut()
+                .ok_or_else(|| "Vulkan imported-image sync was already recycled".to_string())?
+                .submit_acquire(resource.allocation.interop(), acquire_sync_fd)
+        }
     };
     let ready = match acquire_result {
         Ok(ready) => ready,
@@ -5295,6 +5312,7 @@ fn import_vulkan_frame(
             VulkanImportFault::AcquireFenceRejected
         ));
         ticket.record_stats(RendererStatsCollector::record_vulkan_video_ganesh_wait_rejected);
+        ticket.ganesh_wait_rejected(ready)?;
         drop(content);
         return Ok(VulkanFrameImport::RejectedAfterAcquire {
             ticket,
@@ -7669,7 +7687,7 @@ mod tests {
             registry
                 .open_stream("preview", incarnation, format)
                 .unwrap_err()
-                .contains("no active-device import capability")
+                .contains("no active-device import candidate")
         );
 
         format.modifier_policy = StreamModifierPolicy::Explicit(0);

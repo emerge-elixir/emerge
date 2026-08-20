@@ -491,7 +491,14 @@ defmodule EmergeSkia.HeadlessPrimeSession do
 
   defp external_destination(nil), do: {:disconnected, nil}
 
-  defp output_format(state, %EmergeSkia.VideoTarget{}, opts) do
+  defp output_format(
+         %{width: width, height: height, modifier: modifier} = state,
+         %EmergeSkia.VideoTarget{},
+         opts
+       )
+       when is_integer(width) and width > 0 and is_integer(height) and height > 0 and
+              (modifier == :implicit or
+                 (is_integer(modifier) and modifier >= 0 and modifier <= 0xFFFF_FFFF_FFFF_FFFF)) do
     unsupported = Keyword.keys(opts) -- [:notify, :acquire_sync]
     notify_to = Keyword.get(opts, :notify)
     acquire_sync = Keyword.get(opts, :acquire_sync, state.acquire_sync)
@@ -504,23 +511,26 @@ defmodule EmergeSkia.HeadlessPrimeSession do
           (not is_pid(notify_to) or node(notify_to) != node()) ->
         {:error, :notify_must_be_a_local_pid}
 
-      acquire_sync not in [:implicit, :sync_file, :per_frame] ->
-        {:error, :invalid_acquire_sync_policy}
-
       true ->
-        {:ok,
-         %Format{
-           width: state.width,
-           height: state.height,
-           framerate: nil,
-           storage: %DMABuf.Format{
-             fourcc: VideoInterop.DMABuf.FourCC.from_string!("AB24"),
-             modifier: state.modifier
-           },
-           interlace_mode: :progressive,
-           alpha_mode: :premultiplied,
-           acquire_sync: acquire_sync
-         }, notify_to}
+        case acquire_sync do
+          acquire_sync when acquire_sync in [:implicit, :sync_file, :per_frame] ->
+            {:ok,
+             %Format{
+               width: width,
+               height: height,
+               framerate: nil,
+               storage: %DMABuf.Format{
+                 fourcc: VideoInterop.DMABuf.FourCC.from_string!("AB24"),
+                 modifier: modifier
+               },
+               interlace_mode: :progressive,
+               alpha_mode: :premultiplied,
+               acquire_sync: acquire_sync
+             }, notify_to}
+
+          _other ->
+            {:error, :invalid_acquire_sync_policy}
+        end
     end
   end
 

@@ -30,8 +30,9 @@ pub use imported_image::{
     Nv12StagingPreference, Nv12TargetAllocationProof, PackedImageFormat, PackedImageImport,
     PackedImageImportStrategy, VulkanImportPoolLimits, YcbcrModel, YcbcrOffset, YcbcrRange,
     capabilities_for_importer, inventory_nv12_modifier_capabilities, map_nv12_colorimetry,
-    query_nv12_modifier_capability, validate_bgra_scanout_import_support,
-    validate_nv12_allocation_proof, validate_nv12_modifier_capability,
+    query_nv12_modifier_capability, resolve_nv12_modifier_capability,
+    validate_bgra_scanout_import_support, validate_nv12_allocation_proof,
+    validate_nv12_modifier_capability,
     validate_nv12_shared_object_topology, validate_nv12_target_allocation_proof,
     validate_packed_import_support, validate_packed_staging_support, validate_rgba_import_support,
 };
