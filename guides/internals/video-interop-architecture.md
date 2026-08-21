@@ -1175,9 +1175,9 @@ Before publication, remove sibling Mix path dependencies and Cargo
 5. applications/firmware.
 
 At the time of this guide, `video_interop`, `membrane_video_interop`, Emerge,
-`emerge_demo`, `membrane_libcamera`, and the camera application use the canonical
-contract. `membrane_video_surfaces` and `emerge_video_demo` still contain legacy
-transport and must be migrated as an atomic closure before they join this path.
+`emerge_demo`, `membrane_libcamera`, `membrane_video_transcode`, and the camera
+application use the canonical contract. `emerge_video_demo` still contains legacy
+transport and must be migrated before it joins this path.
 
 ## Rules for adding a producer
 

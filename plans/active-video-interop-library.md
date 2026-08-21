@@ -202,7 +202,7 @@ together.
    - Use Emerge's direct headless-output-to-`VideoTarget` connection.
    - Delete application-owned descriptor conversion, keepalive handling,
      `PrimeBridge`, and `PrimeRenderer`.
-5. Atomically migrate `../colibri/membrane_video_surfaces` and
+5. Atomically migrate `../colibri/membrane_video_transcode` and
    `../colibri/membrane_libcamera` to canonical adapter transport and the
    `video-interop` crate.
 6. Migrate `../emerge_video_demo` and the Colibri camera application to
