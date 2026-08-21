@@ -21,6 +21,8 @@
 
 ### Fixed
 
+- Made inertial touch scrolling preserve chronological final motion before release, accumulate high-frequency velocity samples, preserve sub-pixel fling motion, avoid stale-deadline watchdog spins, and clamp high-velocity flings exactly at either boundary.
+- Kept high-volume event-runtime traces at debug level while native diagnostic logging remains disabled by default.
 - Preserved DRM OpenGL ES 2 compatibility and the macOS fixes published in 0.3.3 while integrating the headless renderer line.
 - Removed unconditional full-frame GPU screenshot readback from DRM and Wayland presentation; screenshots now trigger one bounded on-demand capture without serializing every rendered frame.
 - Made canonical consumer sessions release inactive-target frames successfully so transient scene visibility no longer terminates an ownership-safe sink.

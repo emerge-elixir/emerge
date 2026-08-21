@@ -235,9 +235,12 @@ defmodule EmergeSkia.OptionsTest do
     end
   end
 
-  test "build_start_native_opts! keeps close_signal_log option" do
-    assert %{close_signal_log: false} = Options.build_start_native_opts!([])
-    assert %{close_signal_log: true} = Options.build_start_native_opts!(close_signal_log: true)
+  test "build_start_native_opts! keeps native diagnostic logs disabled by default" do
+    assert %{input_log: false, render_log: false, close_signal_log: false} =
+             Options.build_start_native_opts!([])
+
+    assert %{render_log: true, close_signal_log: true} =
+             Options.build_start_native_opts!(render_log: true, close_signal_log: true)
   end
 
   test "build_start_native_opts! keeps renderer_stats_log option" do

@@ -1585,6 +1585,15 @@ fn renderer_cache_status(
     )),
     allow(dead_code)
 )]
+fn try_take_renderer_stats_log_window(
+    stats: &RendererStatsCollector,
+) -> Option<Box<RendererStatsSnapshot>> {
+    match stats.try_take() {
+        RendererStatsWindowClose::Ready(snapshot) => Some(snapshot),
+        RendererStatsWindowClose::Draining { .. } => None,
+    }
+}
+
 fn spawn_running_heartbeat(
     running_flag: Arc<AtomicBool>,
     input_target: Arc<InputTargetRelay>,
@@ -1595,22 +1604,25 @@ fn spawn_running_heartbeat(
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let mut ticks = 0_u64;
+        let mut stats_log_due = false;
 
         while running_flag.load(Ordering::Relaxed) {
             input_target.send_running();
 
             if let Some(stats) = stats.as_ref() {
                 ticks = ticks.wrapping_add(1);
+                stats_log_due |= ticks.is_multiple_of(10);
 
-                if ticks.is_multiple_of(10) {
+                if stats_log_due && let Some(snapshot) = try_take_renderer_stats_log_window(stats) {
                     native_log.info(
                         "renderer_stats",
                         stats::format_renderer_stats_log(
                             backend_label,
                             &rendering_api_label,
-                            &stats.snapshot(),
+                            &snapshot,
                         ),
                     );
+                    stats_log_due = false;
                 }
             }
 
@@ -3952,6 +3964,22 @@ mod tests {
     use crate::input::InputEvent;
     use crate::tree::element::NodeId;
     use crossbeam_channel::RecvTimeoutError;
+
+    #[test]
+    fn renderer_stats_log_waits_for_pending_gpu_samples_instead_of_logging_empty_window() {
+        let stats = RendererStatsCollector::new();
+        stats.record_frame_present();
+        let epoch = stats
+            .begin_gpu_render_elapsed_sample()
+            .expect("GPU sample should start");
+
+        assert!(try_take_renderer_stats_log_window(&stats).is_none());
+        stats.cancel_gpu_render_elapsed_sample(epoch);
+
+        let snapshot = try_take_renderer_stats_log_window(&stats)
+            .expect("closed stats window should become available after draining");
+        assert_eq!(snapshot.frame_count, 1);
+    }
 
     struct LiveActorHarness {
         tree_tx: Sender<TreeMsg>,

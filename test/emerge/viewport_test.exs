@@ -775,6 +775,19 @@ defmodule Emerge.ViewportTest do
     assert log =~ "EmergeSkia native[drm] DRM cursor: hardware plane enabled"
   end
 
+  test "verbose event runtime traces stay below Logger's default level" do
+    log =
+      capture_log([level: :info], fn ->
+        assert {:noreply, %{}} =
+                 Emerge.Runtime.Viewport.handle_info(
+                   {:emerge_skia_log, :info, "event_runtime", "input begin"},
+                   %{}
+                 )
+      end)
+
+    assert log == ""
+  end
+
   test "rerender requests from callback state updates are coalesced" do
     {:ok, pid} = CounterViewport.start_link(count: 0)
     renderer = Emerge.renderer(pid)

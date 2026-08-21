@@ -7,6 +7,7 @@ use crate::events::send_log_event;
 #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeLogLevel {
+    Debug,
     Info,
     Warning,
     Error,
@@ -49,6 +50,11 @@ impl NativeLogRelay {
         if let Some(pid) = target {
             send_log_event(pid, level, source, &message.into());
         }
+    }
+
+    #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
+    pub fn debug(&self, source: &'static str, message: impl Into<String>) {
+        self.log(NativeLogLevel::Debug, source, message);
     }
 
     #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]

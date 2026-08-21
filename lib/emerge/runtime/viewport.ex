@@ -690,7 +690,7 @@ defmodule Emerge.Runtime.Viewport do
   end
 
   defp log_native_renderer_message(level, source, message) do
-    Logger.log(normalize_native_log_level(level), fn ->
+    Logger.log(normalize_native_log_level(level, source), fn ->
       {[
          "EmergeSkia native[",
          to_string(source),
@@ -700,10 +700,17 @@ defmodule Emerge.Runtime.Viewport do
     end)
   end
 
-  defp normalize_native_log_level(level) when level in [:debug, :info, :warning, :error],
-    do: level
+  # Event-runtime traces are high-volume diagnostics, not application lifecycle information.
+  # Keep older native artifacts that labeled them as :info quiet at Logger's default level too.
+  defp normalize_native_log_level(level, source)
+       when level in [:debug, :info] and source in ["event_runtime", :event_runtime],
+       do: :debug
 
-  defp normalize_native_log_level(_level), do: :info
+  defp normalize_native_log_level(level, _source)
+       when level in [:debug, :info, :warning, :error],
+       do: level
+
+  defp normalize_native_log_level(_level, _source), do: :info
 
   defp phase_label(:initial_render), do: "initial render"
   defp phase_label(:rerender), do: "rerender"
