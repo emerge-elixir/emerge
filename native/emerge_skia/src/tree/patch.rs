@@ -338,6 +338,7 @@ fn plain_single_child_wrapper_contains(
 fn plain_wrapper_attrs(attrs: &Attrs) -> bool {
     attrs.width.is_none()
         && attrs.height.is_none()
+        && attrs.align_x.unwrap_or(AlignX::Left) == AlignX::Left
         && attrs.layout_scale.is_none()
         && attrs.layout_rotate.is_none()
         && attrs.padding.is_none()
@@ -3141,6 +3142,65 @@ mod tests {
         assert!(after_text_width > before_text_width);
         assert!(after_wrapper_width > before_wrapper_width);
         assert!(after_column_width > before_column_width);
+    }
+
+    #[test]
+    fn test_apply_patches_relayouts_centered_column_text_label() {
+        let root_id = NodeId::from_term_bytes(vec![11]);
+        let wrapper_id = NodeId::from_term_bytes(vec![12]);
+        let text_id = NodeId::from_term_bytes(vec![13]);
+        let mut tree = ElementTree::new();
+        tree.set_root_id(root_id);
+        tree.insert(Element::with_attrs(
+            root_id,
+            ElementKind::Column,
+            Vec::new(),
+            Attrs {
+                width: Some(Length::Px(400.0)),
+                height: Some(Length::Px(200.0)),
+                padding: Some(Padding::Uniform(48.0)),
+                ..Attrs::default()
+            },
+        ));
+        tree.insert(Element::with_attrs(
+            wrapper_id,
+            ElementKind::El,
+            Vec::new(),
+            Attrs {
+                align_x: Some(AlignX::Center),
+                font_size: Some(48.0),
+                ..Attrs::default()
+            },
+        ));
+        tree.insert(Element::with_attrs(
+            text_id,
+            ElementKind::Text,
+            Vec::new(),
+            Attrs {
+                content: Some("Say intro here".to_string()),
+                ..Attrs::default()
+            },
+        ));
+        tree.set_children(&root_id, vec![wrapper_id]).unwrap();
+        tree.set_children(&wrapper_id, vec![text_id]).unwrap();
+        layout_tree_default(&mut tree, Constraint::new(400.0, 200.0), 1.0);
+        let before = tree.get(&wrapper_id).unwrap().layout.frame.unwrap();
+
+        let invalidation = apply_patches(
+            &mut tree,
+            vec![Patch::SetAttrs {
+                id: text_id,
+                attrs_raw: content_only_attrs_raw("Second slide notes"),
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(invalidation, TreeInvalidation::Measure);
+        layout_tree_default(&mut tree, Constraint::new(400.0, 200.0), 1.0);
+        let after = tree.get(&wrapper_id).unwrap().layout.frame.unwrap();
+        assert!(after.width > before.width);
+        assert!(after.x < before.x);
+        assert!((after.x + after.width / 2.0 - 200.0).abs() < 0.001);
     }
 
     #[test]
