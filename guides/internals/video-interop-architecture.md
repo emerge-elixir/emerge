@@ -613,22 +613,25 @@ not the renderer/session returned directly by `EmergeSkia.start/1`.
   )
 ```
 
-PRIME requires Linux OpenGL/GBM. `rendering_api: :raster` is rejected, and
-`:auto` does not fall back to raster for PRIME output. The only current
-backpressure policy is `:drop_new`; the default pool limit is two.
+PRIME requires either Linux OpenGL/GBM (`:auto` or `:opengl`) or the explicitly
+compiled headless Vulkan producer (`:vulkan`). `:auto` remains OpenGL-first and
+does not fall back to raster; `rendering_api: :raster` is rejected. The only
+current backpressure policy is `:drop_new`; the default pool limit is two.
 
 ### Slot pool
 
-Each `PrimeFrameSlot` owns:
-
-- a linear GBM BO;
-- exported DMA-BUF `OwnedFd`s and `fstat`-derived sizes;
-- EGLImage, GL texture, and FBO state;
-- an optional per-frame acquire-fence `OwnedFd`.
+An OpenGL `PrimeFrameSlot` owns a linear GBM BO, exported DMA-BUF `OwnedFd`s,
+EGLImage/texture/FBO state, and an optional per-frame acquire-fence `OwnedFd`.
+A Vulkan slot owns a dedicated exportable linear image/memory allocation, its
+DMA-BUF fd, graphics/external queue-transfer state, and one exported sync file.
+Both paths query the complete fd-backed allocation size once at slot creation.
+That published object size may include exporter alignment after the checked
+plane span; plane offset, pitch, and dimensions continue to bound visible bytes.
+The Vulkan `VkMemoryRequirements::size` is therefore not substituted for the
+fd-backed descriptor size.
 
 The export path currently requires single-plane linear ABGR8888. Rendering uses
-top-left orientation and one persistent Skia direct context retargeted across
-slots.
+top-left orientation and a persistent Skia context retargeted across slots.
 
 Slots move between:
 

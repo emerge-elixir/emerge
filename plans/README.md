@@ -1,6 +1,6 @@
 # Plans
 
-Last updated: 2026-08-14.
+Last updated: 2026-08-27.
 
 This directory tracks active implementation notes and durable background
 research for native layout, renderer, and input/runtime work.
@@ -10,6 +10,7 @@ Active implementation plans:
 - `active-backend-renderer-unification.md`
 - `active-drm-gles2-compatibility.md`
 - `active-headless-prime-output.md`
+- `active-headless-vulkan-prime-allocation-size.md`
 - `active-headless-prime-explicit-sync.md`
 - `active-video-interop-library.md`
 - `active-video-interop-shutdown-hardening.md`
@@ -106,6 +107,13 @@ Implementation log for Linux headless PRIME/DMA-BUF output, including headless
 auto selection, canonical `%VideoInterop.Frame{}` delivery, managed fan-out
 leases, direct Emerge connections, and drained shutdown. Implementation is
 complete; hardware PRIME validation remains pending.
+
+### `active-headless-vulkan-prime-allocation-size.md`
+
+Implemented cross-repository fix for publishing the complete fd-backed size of
+headless Vulkan PRIME allocations instead of the smaller Vulkan image requirement.
+Strict `video_interop` validation and direct Vulkan/OpenGL producer hardware proof
+pass; the Wayland Emerge Demo matrix remains pending.
 
 ### `active-headless-prime-explicit-sync.md`
 

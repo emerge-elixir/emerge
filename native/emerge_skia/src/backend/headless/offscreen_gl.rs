@@ -23,7 +23,7 @@ use skia_safe::gpu::{
     gl::{FramebufferInfo, Interface},
 };
 
-use video_interop::{AcquireSync, SyncFile, egl::NativeFenceFunctions};
+use video_interop::{AcquireSync, SyncFile, dmabuf_allocation_size, egl::NativeFenceFunctions};
 
 use crate::{
     backend::skia_gpu::GlFrameSurface,
@@ -1213,19 +1213,8 @@ fn destroy_prime_frame(egl: &egl::Egl, display: EGLDisplay, frame: PrimeFrameSlo
 }
 
 fn dma_buf_size(fd: &OwnedFd) -> Result<u64, String> {
-    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-    if unsafe { libc::fstat(fd.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
-        return Err(format!(
-            "fstat failed for exported headless PRIME dma-buf: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-
-    let size = unsafe { stat.assume_init() }.st_size;
-    u64::try_from(size)
-        .ok()
-        .filter(|size| *size > 0)
-        .ok_or_else(|| format!("exported headless PRIME dma-buf reported invalid size {size}"))
+    dmabuf_allocation_size(fd.as_raw_fd())
+        .map_err(|error| format!("failed to query exported headless PRIME DMA-BUF size: {error}"))
 }
 
 fn modifier_to_option(modifier: u64) -> Option<u64> {

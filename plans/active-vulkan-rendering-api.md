@@ -51,6 +51,10 @@ First validation authority: Emerge Demo PRIME tab on Wayland, matrix notation `h
   graphics/external transfers, one-shot sync-FD export, bounded slots, and reuse
   gated by both canonical release and producer-fence completion. Vulkan streams
   negotiate strict `acquire_sync: :sync_file` and modifier `0`.
+- [x] Corrected headless Vulkan descriptors to publish the complete size queried
+  from the exported DMA-BUF fd rather than `VkMemoryRequirements::size`; aligned
+  allocation tails remain outside the checked packed plane span. Host regression
+  coverage is complete; repeat both Vulkan-producer demo routes for hardware proof.
 - [x] Enabled Wayland Vulkan PRIME admission. `scripts/prime-matrix.sh` ran the
   OpenGL-OpenGL, Vulkan-OpenGL, OpenGL-Vulkan, and Vulkan-Vulkan candidate smoke
   successfully on RADV `/dev/dri/renderD128`; each route exercised byte-exact

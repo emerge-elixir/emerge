@@ -8,10 +8,9 @@ use super::{VulkanDevice, device::VulkanDeviceIdentity, raw};
 pub use video_interop::vulkan::{
     ImportedPlane, Nv12AllocationBindingRecipe, Nv12Conversion, Nv12FrameTopology,
     Nv12ImportStrategy, Nv12Plane, Nv12ResolveRequest, Nv12SharedObjectLayout,
-    Nv12StagingPreference,
-    PackedImageFormat, PackedImageImport, PackedImageImportStrategy, SampledImageFormat,
-    StagedNv12Planes, VulkanDmaBufImporter, VulkanImportPoolLimits, YcbcrModel, YcbcrOffset,
-    YcbcrRange, map_nv12_colorimetry, validate_nv12_shared_object_topology,
+    Nv12StagingPreference, PackedImageFormat, PackedImageImport, PackedImageImportStrategy,
+    SampledImageFormat, StagedNv12Planes, VulkanDmaBufImporter, VulkanImportPoolLimits, YcbcrModel,
+    YcbcrOffset, YcbcrRange, map_nv12_colorimetry, validate_nv12_shared_object_topology,
 };
 
 pub type InteropVulkanDmaBufImporter = VulkanDmaBufImporter<VulkanDevice>;

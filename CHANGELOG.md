@@ -13,6 +13,7 @@
 
 ### Changed
 
+- Updated the development Erlang/OTP 29 pin to 29.0.5.
 - Replaced the old PRIME lease shape with authority-verified per-holder abandonment guards. This is a breaking video interoperability protocol change.
 - Unified renderer selection under `backend` and `rendering_api`, while retaining documented compatibility aliases.
 - Made producer and consumer release dispatchers lifecycle-owned and explicitly drained/joined outside BEAM resource destructors.
@@ -21,6 +22,7 @@
 
 ### Fixed
 
+- Published the complete fd-backed allocation size for headless Vulkan PRIME frames instead of the smaller Vulkan image requirement, while keeping plane spans and importer validation strict.
 - Made inertial touch scrolling preserve chronological final motion before release, accumulate high-frequency velocity samples, preserve sub-pixel fling motion, avoid stale-deadline watchdog spins, and clamp high-velocity flings exactly at either boundary.
 - Kept high-volume event-runtime traces at debug level while native diagnostic logging remains disabled by default.
 - Preserved DRM OpenGL ES 2 compatibility and the macOS fixes published in 0.3.3 while integrating the headless renderer line.

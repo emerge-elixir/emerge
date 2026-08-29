@@ -217,8 +217,10 @@ impl RasterWaylandEnv {
 }
 
 fn rgba_to_wayland_argb(rgba: &[u8], argb: &mut [u8]) {
-    rgba.chunks_exact(4)
-        .zip(argb.chunks_exact_mut(4))
+    rgba.as_chunks::<4>()
+        .0
+        .iter()
+        .zip(argb.as_chunks_mut::<4>().0.iter_mut())
         .for_each(|(source, dest)| {
             dest[0] = source[2];
             dest[1] = source[1];

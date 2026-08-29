@@ -3437,7 +3437,9 @@ fn convert_screenshot_pixels(
         "rgba8888" => Ok(capture.pixels.clone()),
         "rgb888" => Ok(capture
             .pixels
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .flat_map(|rgba| [rgba[0], rgba[1], rgba[2]])
             .collect()),
         other => Err(format!(

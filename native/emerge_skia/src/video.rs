@@ -133,9 +133,8 @@ use crate::{
         Nv12Plane, Nv12StagingPreference, Nv12TargetAllocationProof, PackedImageFormat,
         PackedImageImport, PackedImageImportStrategy, VulkanDevice, VulkanImportPoolLimits,
         VulkanVideoTiming, YcbcrModel, YcbcrOffset, YcbcrRange, capabilities_for_importer,
-        map_nv12_colorimetry, resolve_nv12_modifier_capability,
-        validate_nv12_allocation_proof, validate_nv12_shared_object_topology,
-        validate_rgba_import_support,
+        map_nv12_colorimetry, resolve_nv12_modifier_capability, validate_nv12_allocation_proof,
+        validate_nv12_shared_object_topology, validate_rgba_import_support,
         validate_sync_fd_import, wait_surface_on_semaphore,
     },
     renderer::{BackendPostFlushTask, RenderFrame},
@@ -3131,12 +3130,7 @@ impl VulkanVideoImportContext {
         dimensions: (u32, u32),
         conversion: Nv12Conversion,
     ) -> Result<Nv12ModifierCapability, String> {
-        resolve_nv12_modifier_capability(
-            &self.nv12_capabilities,
-            modifier,
-            dimensions,
-            conversion,
-        )
+        resolve_nv12_modifier_capability(&self.nv12_capabilities, modifier, dimensions, conversion)
     }
 }
 
@@ -5946,7 +5940,7 @@ fn sample_rgba_output(
     let mut min = [u8::MAX; 3];
     let mut max = [u8::MIN; 3];
     let mut sum = [0_u64; 3];
-    for pixel in pixels.chunks_exact(4) {
+    for pixel in pixels.as_chunks::<4>().0 {
         for channel in 0..3 {
             min[channel] = min[channel].min(pixel[channel]);
             max[channel] = max[channel].max(pixel[channel]);
@@ -7893,6 +7887,21 @@ mod tests {
             &explicit,
         )
         .expect("explicit acquire sync should validate before render-thread wait");
+
+        let mut aligned_tail = canonical_owned_frame(64, 32, DRM_FORMAT_ABGR8888);
+        let OwnedStorage::DmaBuf(descriptor) = &mut aligned_tail.storage else {
+            panic!("test frame must use DMA-BUF storage");
+        };
+        descriptor.objects[0].size += 2_048;
+        PrimeFrame::validate_canonical(
+            "preview",
+            VideoMode::Prime,
+            64,
+            32,
+            DRM_FORMAT_ABGR8888,
+            &aligned_tail,
+        )
+        .expect("allocation padding after the packed plane span should validate");
 
         let mut undersized = canonical_owned_frame(64, 32, DRM_FORMAT_ABGR8888);
         let OwnedStorage::DmaBuf(descriptor) = &mut undersized.storage else {

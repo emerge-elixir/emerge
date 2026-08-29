@@ -4,6 +4,7 @@ use std::{
 };
 
 use ash::vk;
+use video_interop::dmabuf_allocation_size;
 
 use super::{GANESH_TARGET_IMAGE_USAGE, VulkanDevice};
 
@@ -26,7 +27,7 @@ pub struct ExportedDmaBufImage {
     image: vk::Image,
     memory: vk::DeviceMemory,
     fd: OwnedFd,
-    allocation_size: u64,
+    fd_allocation_size: u64,
     modifier: u64,
     plane: ExportedPlane,
     dimensions: (u32, u32),
@@ -155,13 +156,17 @@ impl ExportedDmaBufImage {
             }
             // SAFETY: successful vkGetMemoryFdKHR transfers one new owned descriptor to us.
             let fd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
+            let fd_allocation_size = dmabuf_allocation_size(fd.as_raw_fd()).map_err(|error| {
+                format!("failed to query exported Vulkan PRIME DMA-BUF allocation size: {error}")
+            })?;
+            validate_exported_allocation_size(requirements.size, fd_allocation_size)?;
 
             Ok(Self {
                 device: Arc::clone(&device),
                 image,
                 memory,
                 fd,
-                allocation_size: requirements.size,
+                fd_allocation_size,
                 modifier: modifier_properties.drm_format_modifier,
                 plane: ExportedPlane {
                     offset: layout.offset,
@@ -191,8 +196,8 @@ impl ExportedDmaBufImage {
         self.fd.as_raw_fd()
     }
 
-    pub fn allocation_size(&self) -> u64 {
-        self.allocation_size
+    pub fn fd_allocation_size(&self) -> u64 {
+        self.fd_allocation_size
     }
 
     pub fn modifier(&self) -> u64 {
@@ -311,6 +316,18 @@ fn validate_linear_rgba_export(device: &Arc<VulkanDevice>) -> Result<(), String>
     Ok(())
 }
 
+fn validate_exported_allocation_size(
+    vulkan_requirement: u64,
+    fd_allocation_size: u64,
+) -> Result<(), String> {
+    if fd_allocation_size < vulkan_requirement {
+        return Err(format!(
+            "exported Vulkan PRIME DMA-BUF allocation size {fd_allocation_size} is smaller than Vulkan image requirement {vulkan_requirement}"
+        ));
+    }
+    Ok(())
+}
+
 fn select_memory_type(device: &Arc<VulkanDevice>, bits: u32) -> Result<u32, String> {
     let properties = unsafe {
         device
@@ -334,4 +351,23 @@ fn select_memory_type(device: &Arc<VulkanDevice>, bits: u32) -> Result<u32, Stri
         .or_else(|| candidates.first())
         .map(|(index, _memory_type)| *index as u32)
         .ok_or_else(|| "Vulkan PRIME image has no compatible memory type".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_exported_allocation_size;
+
+    #[test]
+    fn exported_fd_allocation_may_include_alignment_tail() {
+        validate_exported_allocation_size(1_075_200, 1_075_200)
+            .expect("an exact fd-backed allocation is valid");
+        validate_exported_allocation_size(1_075_200, 1_077_248)
+            .expect("an fd-backed alignment tail is valid");
+    }
+
+    #[test]
+    fn exported_fd_allocation_cannot_be_shorter_than_vulkan_requirement() {
+        assert!(validate_exported_allocation_size(1_075_200, 0).is_err());
+        assert!(validate_exported_allocation_size(1_075_200, 1_075_199).is_err());
+    }
 }

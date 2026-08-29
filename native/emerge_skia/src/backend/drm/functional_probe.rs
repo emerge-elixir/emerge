@@ -22,6 +22,7 @@ use drm::{
 use gbm::{BufferObject, BufferObjectFlags, Device as GbmDevice, Format as GbmFormat, Modifier};
 use sha2::{Digest, Sha256};
 use skia_safe::{Color, Paint, Rect};
+use video_interop::dmabuf_allocation_size;
 
 use crate::{
     backend::vulkan::{
@@ -499,20 +500,8 @@ fn parse_in_formats_modifiers(blob: &[u8], required_format: u32) -> Result<Vec<u
 }
 
 pub(super) fn dma_buf_size(fd: &OwnedFd) -> Result<u64, String> {
-    let end = unsafe { libc::lseek(fd.as_raw_fd(), 0, libc::SEEK_END) };
-    if end > 0 {
-        let _ = unsafe { libc::lseek(fd.as_raw_fd(), 0, libc::SEEK_SET) };
-        return u64::try_from(end).map_err(|_| "DMA-BUF object size exceeds u64".to_string());
-    }
-    let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
-    if unsafe { libc::fstat(fd.as_raw_fd(), &mut stat) } == 0 && stat.st_size > 0 {
-        return u64::try_from(stat.st_size)
-            .map_err(|_| "DMA-BUF object size exceeds u64".to_string());
-    }
-    Err(format!(
-        "failed to obtain positive DMA-BUF object size: {}",
-        std::io::Error::last_os_error()
-    ))
+    dmabuf_allocation_size(fd.as_raw_fd())
+        .map_err(|error| format!("failed to query DMA-BUF object size: {error}"))
 }
 
 struct GpuSubmission {
@@ -690,20 +679,25 @@ fn capture_matches_pattern(pixels: &[u8], dimensions: (u32, u32)) -> bool {
         .and_then(|pixels| pixels.checked_mul(4));
     let width_usize = usize::try_from(width).unwrap_or(usize::MAX);
     expected_len == Some(pixels.len())
-        && pixels.chunks_exact(4).enumerate().all(|(index, pixel)| {
-            let x = index % width_usize;
-            let y = index / width_usize;
-            let expected = match (
-                x < usize::try_from(width / 2).unwrap_or(0),
-                y < usize::try_from(height / 2).unwrap_or(0),
-            ) {
-                (true, true) => [235, 56, 20, 255],
-                (false, true) => [76, 175, 80, 255],
-                (true, false) => [33, 150, 243, 255],
-                (false, false) => [255, 235, 59, 255],
-            };
-            pixel == expected
-        })
+        && pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .enumerate()
+            .all(|(index, pixel)| {
+                let x = index % width_usize;
+                let y = index / width_usize;
+                let expected = match (
+                    x < usize::try_from(width / 2).unwrap_or(0),
+                    y < usize::try_from(height / 2).unwrap_or(0),
+                ) {
+                    (true, true) => [235, 56, 20, 255],
+                    (false, true) => [76, 175, 80, 255],
+                    (true, false) => [33, 150, 243, 255],
+                    (false, false) => [255, 235, 59, 255],
+                };
+                pixel == expected
+            })
 }
 
 pub(super) fn checked_deadline(timeout: Duration) -> Result<Instant, String> {

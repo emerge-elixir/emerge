@@ -3229,6 +3229,8 @@ fn hash_visible_paint_layer(
     )
 }
 
+// Every visible node must contribute to the hash even after one node reports not ready.
+#[allow(clippy::unnecessary_fold)]
 fn hash_visible_paint_layer_content(
     content: &[RenderPaintLayerContentNode],
     renderer_cache: &RendererCacheManager,
@@ -7929,7 +7931,9 @@ mod tests {
         };
         let alpha_bounds = |pixels: &[u8]| {
             pixels
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .enumerate()
                 .filter(|(_index, pixel)| pixel[3] > 8)
                 .fold(None::<(i32, i32, i32, i32)>, |bounds, (index, _pixel)| {
@@ -12043,7 +12047,7 @@ mod tests {
 
         // Opaque, high-contrast source color to make dark seams visible.
         let mut src = vec![0u8; 24 * 16 * 4];
-        for px in src.chunks_exact_mut(4) {
+        for px in src.as_chunks_mut::<4>().0 {
             px[0] = 36;
             px[1] = 216;
             px[2] = 72;

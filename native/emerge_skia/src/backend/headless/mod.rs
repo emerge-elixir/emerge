@@ -983,12 +983,17 @@ fn convert_frame(
     match pixel_format {
         "rgba8888" => Ok((rgba.to_vec(), width * 4)),
         "rgb888" => Ok((
-            rgba.chunks_exact(4)
+            rgba.as_chunks::<4>()
+                .0
+                .iter()
                 .flat_map(|px| [px[0], px[1], px[2]])
                 .collect(),
             width * 3,
         )),
-        "gray8" => Ok((rgba.chunks_exact(4).map(luma8).collect(), width)),
+        "gray8" => Ok((
+            rgba.as_chunks::<4>().0.iter().map(|px| luma8(px)).collect(),
+            width,
+        )),
         "gray4" => Ok((pack_gray(rgba, 4, bw1_polarity), width.div_ceil(2))),
         "gray2" => Ok((pack_gray(rgba, 2, bw1_polarity), width.div_ceil(4))),
         "bw1" => Ok((pack_gray(rgba, 1, bw1_polarity), width.div_ceil(8))),
@@ -1003,7 +1008,9 @@ fn luma8(px: &[u8]) -> u8 {
 fn pack_gray(rgba: &[u8], bits: u8, bw1_polarity: &str) -> Vec<u8> {
     let values_per_byte = 8 / bits;
     let max_value = (1_u8 << bits) - 1;
-    rgba.chunks_exact(4)
+    rgba.as_chunks::<4>()
+        .0
+        .iter()
         .map(|px| {
             if bits == 1 {
                 let black = luma8(px) < 128;

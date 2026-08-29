@@ -417,6 +417,65 @@ defmodule EmergeSkiaTest do
 
   @tag :hardware
   @tag :headless_prime_hardware
+  test "headless Vulkan PRIME publishes the complete fd-backed allocation size" do
+    assert :headless in BuildConfig.compiled_vulkan_backends(),
+           "compile the test NIF with the headless Vulkan backend"
+
+    prime_opts =
+      case System.get_env("EMERGE_DEMO_PRIME_DRM_NODE") do
+        nil -> [max_in_flight: 1]
+        drm_node -> [max_in_flight: 1, drm_node: drm_node]
+      end
+
+    {:ok, renderer} =
+      EmergeSkia.start(
+        otp_app: :emerge,
+        backend: :headless,
+        rendering_api: :vulkan,
+        width: 640,
+        height: 420,
+        headless: [target: self(), mode: :prime, prime: prime_opts]
+      )
+
+    assert {:ok, %{rendering_api: %{selected: :vulkan}}} = EmergeSkia.renderer_info(renderer)
+
+    tree = el([width(px(640)), height(px(420)), Emerge.UI.Background.color(:red)], none())
+    {_state, _assigned} = EmergeSkia.upload_tree(renderer, tree)
+
+    assert_receive {:emerge_skia_frame, frame}, 5_000
+    dma_buf = frame |> Map.new() |> Map.fetch!("dmabuf")
+
+    assert %VideoInterop.Frame{
+             coded_width: 640,
+             coded_height: 420,
+             storage: %VideoInterop.DMABuf.Descriptor{
+               objects: [%VideoInterop.DMABuf.Object{} = object],
+               layers: [%VideoInterop.DMABuf.Layer{planes: [plane]} = layer]
+             },
+             acquire_sync: %VideoInterop.SyncFile{}
+           } = dma_buf
+
+    assert {:ok, %File.Stat{size: fd_allocation_size}} =
+             File.stat("/proc/self/fd/#{object.fd}")
+
+    visible_span = plane.offset + plane.pitch * 419 + 640 * 4
+    assert layer.fourcc == :binary.decode_unsigned("AB24", :little)
+    assert object.modifier == 0
+    assert object.size == fd_allocation_size
+    assert object.size >= visible_span
+    assert :ok = VideoInterop.validate(dma_buf)
+    assert :ok = VideoInterop.release(dma_buf)
+
+    next_tree = el([width(px(640)), height(px(420)), Emerge.UI.Background.color(:blue)], none())
+    {_state, _assigned} = EmergeSkia.upload_tree(renderer, next_tree)
+    assert_receive {:emerge_skia_frame, next_frame}, 5_000
+    next_dma_buf = next_frame |> Map.new() |> Map.fetch!("dmabuf")
+    assert :ok = VideoInterop.release(next_dma_buf)
+    assert :ok = EmergeSkia.stop(renderer)
+  end
+
+  @tag :hardware
+  @tag :headless_prime_hardware
   test "headless PRIME forced implicit-sync path is explicit and non-vacuous" do
     previous_force = System.get_env("EMERGE_SKIA_HEADLESS_PRIME_FORCE_IMPLICIT_SYNC")
     System.put_env("EMERGE_SKIA_HEADLESS_PRIME_FORCE_IMPLICIT_SYNC", "1")

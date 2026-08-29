@@ -30,7 +30,7 @@ use crate::{
 
 use super::{HeadlessPrimeExport, HeadlessPrimeTimings, PrimeObjectMeta, PrimePlaneMeta};
 
-const DRM_FORMAT_ABGR8888: u32 = u32::from_le_bytes([b'A', b'B', b'2', b'4']);
+const DRM_FORMAT_ABGR8888: u32 = u32::from_le_bytes(*b"AB24");
 
 struct GpuCompletionRequest {
     release_id: u64,
@@ -355,7 +355,7 @@ impl VulkanHeadlessRenderer {
             format: DRM_FORMAT_ABGR8888,
             objects: vec![PrimeObjectMeta {
                 fd: slot.allocation.fd(),
-                size: slot.allocation.allocation_size(),
+                size: slot.allocation.fd_allocation_size(),
                 modifier: Some(slot.allocation.modifier()),
             }],
             planes: vec![PrimePlaneMeta {

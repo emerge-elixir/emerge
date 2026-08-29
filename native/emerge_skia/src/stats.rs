@@ -2626,7 +2626,7 @@ fn format_render_draw_detail(draw: Duration, detail: &RenderDrawTimings) -> Stri
     }
 
     let mut paint_runs = detail.paint_run_details.iter().collect::<Vec<_>>();
-    paint_runs.sort_by(|left, right| right.duration.cmp(&left.duration));
+    paint_runs.sort_by_key(|run| std::cmp::Reverse(run.duration));
     if !paint_runs.is_empty() {
         message.push('\n');
         message.push_str(&format!(
