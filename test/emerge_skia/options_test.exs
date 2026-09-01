@@ -490,8 +490,7 @@ defmodule EmergeSkia.OptionsTest do
     assert %{
              cache_max_entries: 256,
              cache_max_bytes: 268_435_456,
-             decode_at_size: false,
-             memory_log: false
+             decode_at_size: false
            } = Assets.normalize_asset_config!(otp_app: :emerge)
 
     assert %{decode_at_size: true} =
@@ -502,23 +501,20 @@ defmodule EmergeSkia.OptionsTest do
         otp_app: :emerge,
         assets: %{
           cache: %{max_entries: 0, max_bytes: 1_024},
-          decode_at_size: true,
-          memory_log: true
+          decode_at_size: true
         }
       )
 
     assert %{
              cache_max_entries: 0,
              cache_max_bytes: 1_024,
-             decode_at_size: true,
-             memory_log: true
+             decode_at_size: true
            } = config
 
     assert %{
              asset_cache_max_entries: 0,
              asset_cache_max_bytes: 1_024,
-             asset_decode_at_size: true,
-             asset_memory_log: true
+             asset_decode_at_size: true
            } = Assets.native_start_asset_config(config)
 
     assert_raise ArgumentError, ~r/assets.cache.max_bytes must be a non-negative integer/, fn ->
@@ -530,10 +526,6 @@ defmodule EmergeSkia.OptionsTest do
 
     assert_raise ArgumentError, ~r/assets.decode_at_size must be a boolean/, fn ->
       Assets.normalize_asset_config!(otp_app: :emerge, assets: [decode_at_size: :yes])
-    end
-
-    assert_raise ArgumentError, ~r/assets.memory_log must be a boolean/, fn ->
-      Assets.normalize_asset_config!(otp_app: :emerge, assets: [memory_log: :yes])
     end
   end
 

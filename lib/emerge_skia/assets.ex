@@ -24,7 +24,6 @@ defmodule EmergeSkia.Assets do
           cache_max_entries: non_neg_integer(),
           cache_max_bytes: non_neg_integer(),
           decode_at_size: boolean(),
-          memory_log: boolean(),
           fonts: [font()]
         }
 
@@ -96,11 +95,6 @@ defmodule EmergeSkia.Assets do
       |> Keyword.get(:decode_at_size, Keyword.get(defaults, :decode_at_size, false))
       |> Options.normalize_boolean!("assets.decode_at_size")
 
-    memory_log =
-      assets_opts
-      |> Keyword.get(:memory_log, false)
-      |> Options.normalize_boolean!("assets.memory_log")
-
     runtime_enabled = Keyword.get(runtime_opts, :enabled, false)
     runtime_follow_symlinks = Keyword.get(runtime_opts, :follow_symlinks, false)
 
@@ -127,7 +121,6 @@ defmodule EmergeSkia.Assets do
       cache_max_entries: cache_max_entries,
       cache_max_bytes: cache_max_bytes,
       decode_at_size: decode_at_size,
-      memory_log: memory_log,
       fonts: fonts
     }
   end
@@ -152,8 +145,7 @@ defmodule EmergeSkia.Assets do
       asset_extensions: asset_config.runtime_extensions,
       asset_cache_max_entries: asset_config.cache_max_entries,
       asset_cache_max_bytes: asset_config.cache_max_bytes,
-      asset_decode_at_size: asset_config.decode_at_size,
-      asset_memory_log: asset_config.memory_log
+      asset_decode_at_size: asset_config.decode_at_size
     }
   end
 

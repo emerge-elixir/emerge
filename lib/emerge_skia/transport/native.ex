@@ -99,8 +99,7 @@ defmodule EmergeSkia.Transport.Native do
       extensions: asset_config.runtime_extensions,
       cache_max_entries: asset_config.cache_max_entries,
       cache_max_bytes: asset_config.cache_max_bytes,
-      decode_at_size: asset_config.decode_at_size,
-      memory_log: asset_config.memory_log
+      decode_at_size: asset_config.decode_at_size
     })
   end
 
@@ -218,7 +217,6 @@ defmodule EmergeSkia.Transport.Native do
       cache_max_entries: asset_config.cache_max_entries,
       cache_max_bytes: asset_config.cache_max_bytes,
       decode_at_size: asset_config.decode_at_size,
-      memory_log: asset_config.memory_log,
       asset_mode: raster_opts.asset_mode,
       asset_timeout_ms: raster_opts.asset_timeout_ms
     }

@@ -40,7 +40,7 @@ mod app {
         keys::CanonicalKey,
         renderer::{
             RenderFrame, RenderState, RendererCacheConfig, RendererPaintLayerCacheConfig,
-            SceneRenderer, text_surface_props,
+            SceneRenderer, asset_memory_stats_snapshot, text_surface_props,
         },
         runtime::tree_update::{
             TreeUpdateDecodePolicy, TreeUpdateEffect, TreeUpdateEngine, TreeUpdateOptions,
@@ -346,6 +346,7 @@ mod app {
                                         session_stats.backend_label,
                                         &session_stats.rendering_api_label,
                                         &session_stats.collector.snapshot(),
+                                        &asset_memory_stats_snapshot(),
                                     )
                                 ),
                             )
@@ -464,7 +465,6 @@ mod app {
         cache_max_entries: u64,
         cache_max_bytes: u64,
         decode_at_size: bool,
-        memory_log: bool,
         fonts: Vec<HostFontSpec>,
     }
 
@@ -886,7 +886,6 @@ mod app {
                 cache_max_entries: asset_config.cache_max_entries,
                 cache_max_bytes: asset_config.cache_max_bytes,
                 decode_at_size: asset_config.decode_at_size,
-                memory_log: asset_config.memory_log,
             },
         );
         if config_changed {
@@ -914,8 +913,7 @@ mod app {
             || existing.runtime_extensions != incoming.runtime_extensions
             || existing.cache_max_entries != incoming.cache_max_entries
             || existing.cache_max_bytes != incoming.cache_max_bytes
-            || existing.decode_at_size != incoming.decode_at_size
-            || existing.memory_log != incoming.memory_log;
+            || existing.decode_at_size != incoming.decode_at_size;
 
         if changed {
             *existing = incoming;
@@ -3842,7 +3840,6 @@ mod app {
                 cache_max_entries: asset_config.cache_max_entries,
                 cache_max_bytes: asset_config.cache_max_bytes,
                 decode_at_size: asset_config.decode_at_size,
-                memory_log: asset_config.memory_log,
                 fonts,
             },
         })
@@ -3914,7 +3911,6 @@ mod app {
             cache_max_entries: decode_u64(payload, cursor)?,
             cache_max_bytes: decode_u64(payload, cursor)?,
             decode_at_size: decode_u8(payload, cursor)? != 0,
-            memory_log: decode_u8(payload, cursor)? != 0,
         })
     }
 

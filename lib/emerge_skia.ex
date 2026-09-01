@@ -101,7 +101,7 @@ defmodule EmergeSkia do
     file to `/tmp/emerge-wayland-watchdog-<pid>.log` (default: false)
   - `close_signal_log` - Log detailed Wayland window-close diagnostics to stderr (default: false)
   - `stats` - Enable renderer stats collection without periodic logging (default: false)
-  - `renderer_stats_log` - Enable renderer stats collection and log all current stat families every 5 seconds, including frame rate, split render timings, split patch-to-present pipeline timing, layout-cache counters, and renderer-cache counters. Slow Wayland render frames also include a scene primitive summary and per-frame renderer-cache counters. Individual DRM GPU timer samples require the separate verbose `render_log` option; their aggregate remains in the periodic stats log. (default: false)
+  - `renderer_stats_log` - Enable renderer stats collection and log all current stat families every 5 seconds, including frame rate, split render timings, split patch-to-present pipeline timing, layout-cache counters, renderer-cache counters, and asset-memory totals with retained raster decode dimensions and ratios. Slow Wayland render frames also include a scene primitive summary and per-frame renderer-cache counters. Individual DRM GPU timer samples require the separate verbose `render_log` option; their aggregate remains in the periodic stats log. (default: false)
   - `renderer_animation_log` - Log detailed Wayland animation cadence traces. This is intentionally separate from `renderer_stats_log` because continuous animations can produce very noisy frame-by-frame logs. (default: false)
   - `renderer_cache` - Renderer cache limits (optional)
   - `assets` - Asset runtime policy options (optional)
@@ -119,7 +119,6 @@ defmodule EmergeSkia do
   - `cache.max_entries` (default: `256`)
   - `cache.max_bytes` (default: `268_435_456`)
   - `decode_at_size` - Decode and retain rasters at their device-space draw size when supported (default: `false` for windowed renderers)
-  - `memory_log` - Log encoded size, codec staging and peak bytes, final decode ratio/bytes, and retained source/cache usage whenever a raster variant is decoded (default: `false`)
   - `fonts` (default: `[]`)
 
   `headless` options, used with `backend: :headless`:

@@ -14,11 +14,11 @@ asset memory use.
   `../emerge-issues-71-72` onto the current headless branch.
 - Replace the motion and opacity showcase scenes with one picture grid.
 - Keep `:visual`, `:typography`, and `:pictures` scene selection in Solve.
-- Log one record whenever a raster variant is decoded, including source path/id,
-  encoded file bytes, source and decoded dimensions, decoded/source pixel ratio,
-  decoded bytes, decoded/encoded byte ratio, retention status, and total retained
-  raster-cache entries/bytes.
-- Enable the memory log only for the name-badge picture application; keep the
+- Include an asset-memory section in `renderer_stats_log` with source path/id,
+  encoded file bytes, source/codec/decoded dimensions, decoded/source pixel
+  ratio, decoded bytes, decoded/encoded byte ratio, peak decode bytes, and
+  retained source/raster/vector cache totals and limits.
+- Enable `renderer_stats_log` in the name-badge picture application; keep the
   library default disabled.
 
 ## Acceptance
@@ -28,5 +28,5 @@ asset memory use.
 - Each image is decoded near its fitted device-space size rather than source
   resolution.
 - Cache totals stay within configured entry/byte limits.
-- Repeated renders hit retained variants and do not emit repeated decode records.
+- Repeated renders hit retained variants and periodic stats report stable cache totals.
 - Rust, Elixir, EInk, and name-badge tests pass; the ARM release builds.

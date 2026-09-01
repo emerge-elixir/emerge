@@ -1711,6 +1711,7 @@ fn spawn_running_heartbeat(
                             backend_label,
                             &rendering_api_label,
                             &snapshot,
+                            &renderer::asset_memory_stats_snapshot(),
                         ),
                     );
                     stats_log_due = false;
@@ -1960,7 +1961,6 @@ struct StartOptsNif {
     asset_cache_max_entries: u64,
     asset_cache_max_bytes: u64,
     asset_decode_at_size: bool,
-    asset_memory_log: bool,
     drm_cursor: Vec<DrmCursorOverrideNif>,
     drm_startup_retries: u32,
     drm_retry_interval_ms: u32,
@@ -2037,7 +2037,6 @@ struct ConfigureAssetsOptsNif {
     cache_max_entries: u64,
     cache_max_bytes: u64,
     decode_at_size: bool,
-    memory_log: bool,
 }
 
 #[derive(rustler::NifMap)]
@@ -2054,7 +2053,6 @@ struct RenderTreeOffscreenOptsNif {
     cache_max_entries: u64,
     cache_max_bytes: u64,
     decode_at_size: bool,
-    memory_log: bool,
     asset_mode: String,
     asset_timeout_ms: u64,
 }
@@ -2727,7 +2725,6 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
         cache_max_entries: opts.asset_cache_max_entries,
         cache_max_bytes: opts.asset_cache_max_bytes,
         decode_at_size: opts.asset_decode_at_size,
-        memory_log: opts.asset_memory_log,
     };
     let drm_cursor_overrides = parse_drm_cursor_overrides(opts.drm_cursor)
         .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
@@ -3284,7 +3281,6 @@ fn configure_assets_nif(
         cache_max_entries: opts.cache_max_entries,
         cache_max_bytes: opts.cache_max_bytes,
         decode_at_size: opts.decode_at_size,
-        memory_log: opts.memory_log,
     });
     atoms::ok()
 }
@@ -3723,7 +3719,6 @@ fn offscreen_opts_from_nif(opts: RenderTreeOffscreenOptsNif) -> services::Offscr
             cache_max_entries: opts.cache_max_entries,
             cache_max_bytes: opts.cache_max_bytes,
             decode_at_size: opts.decode_at_size,
-            memory_log: opts.memory_log,
         },
     }
 }

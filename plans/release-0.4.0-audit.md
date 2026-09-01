@@ -189,7 +189,7 @@ The candidate #71/#72 working-tree integration mitigates this with:
 - entry- and byte-bounded LRU retention;
 - separate encoded source metadata;
 - checked decoded byte accounting;
-- opt-in asset-memory diagnostics.
+- asset-memory diagnostics in the periodic renderer stats log.
 
 That work should land before release, with additional limits for maximum source
 dimensions/decoded pixels and with the multi-renderer lifecycle tests above.
@@ -280,7 +280,7 @@ The asset work present during this audit should likewise remain reviewable as
 separate concerns where practical:
 
 1. bounded target-sized raster decoding;
-2. memory diagnostics and protocol transport;
+2. asset-memory renderer stats;
 3. unconditional vector/SVG support;
 4. application-level picture validation.
 

@@ -7,9 +7,9 @@ use std::{
 use crate::{
     render_scene::RenderSceneSummary,
     renderer::{
-        RenderDrawTimings, RenderImageDrawProfile, RenderPaintRunDrawProfile,
-        RenderShadowDrawProfile, RenderTimings, RendererCacheFrameStats,
-        RendererCachePaintLayerFrameStats,
+        AssetMemoryRasterVariantStats, AssetMemoryStatsSnapshot, RenderDrawTimings,
+        RenderImageDrawProfile, RenderPaintRunDrawProfile, RenderShadowDrawProfile, RenderTimings,
+        RendererCacheFrameStats, RendererCachePaintLayerFrameStats,
     },
     video::VideoStreamIdentity,
 };
@@ -2132,6 +2132,7 @@ pub fn format_renderer_stats_log(
     backend_label: &str,
     rendering_api_label: &str,
     snapshot: &RendererStatsSnapshot,
+    asset_memory: &AssetMemoryStatsSnapshot,
 ) -> String {
     let timing_lines = RendererTimingMetric::ALL
         .into_iter()
@@ -2302,8 +2303,99 @@ pub fn format_renderer_stats_log(
         &paint_layer,
         snapshot.frame_count,
     ));
+    message.push_str(&format_asset_memory_stats_log(asset_memory));
 
     message
+}
+
+fn format_asset_memory_stats_log(stats: &AssetMemoryStatsSnapshot) -> String {
+    let tracked_total_bytes = stats
+        .source_bytes
+        .saturating_add(stats.raster_cache_bytes)
+        .saturating_add(stats.vector_cache_bytes);
+    let mut message = format!(
+        concat!(
+            "\n\n  asset memory\n",
+            "    sources: entries={} encoded_bytes={}\n",
+            "    raster cache: entries={} bytes={} limits=entries:{} bytes:{}\n",
+            "    vector cache: entries={} bytes={} limits=entries:{} bytes:{}\n",
+            "    tracked_total_bytes={}\n",
+            "    raster variants"
+        ),
+        stats.source_entries,
+        stats.source_bytes,
+        stats.raster_cache_entries,
+        stats.raster_cache_bytes,
+        stats.raster_cache_max_entries,
+        stats.raster_cache_max_bytes,
+        stats.vector_cache_entries,
+        stats.vector_cache_bytes,
+        stats.vector_cache_max_entries,
+        stats.vector_cache_max_bytes,
+        tracked_total_bytes,
+    );
+
+    if stats.raster_variants.is_empty() {
+        message.push_str(": none");
+    } else {
+        stats.raster_variants.iter().for_each(|variant| {
+            message.push('\n');
+            message.push_str(&format_asset_memory_variant_line(variant));
+        });
+    }
+
+    message
+}
+
+fn format_asset_memory_variant_line(variant: &AssetMemoryRasterVariantStats) -> String {
+    let source_pixels =
+        u64::from(variant.source_width).saturating_mul(u64::from(variant.source_height));
+    let decoded_pixels =
+        u64::from(variant.decoded_width).saturating_mul(u64::from(variant.decoded_height));
+    let decode_pixel_ratio = if source_pixels == 0 {
+        0.0
+    } else {
+        decoded_pixels as f64 / source_pixels as f64
+    };
+    let decoded_to_file_ratio = if variant.encoded_bytes == 0 {
+        0.0
+    } else {
+        variant.decoded_bytes as f64 / variant.encoded_bytes as f64
+    };
+    let peak_decode_bytes = if variant.codec_width == variant.decoded_width
+        && variant.codec_height == variant.decoded_height
+    {
+        variant.decoded_bytes.max(variant.codec_bytes)
+    } else {
+        variant.codec_bytes.saturating_add(variant.decoded_bytes)
+    };
+
+    let retained_source_bytes = if variant.source_retained {
+        variant.encoded_bytes
+    } else {
+        0
+    };
+    let tracked_asset_bytes = variant.decoded_bytes.saturating_add(retained_source_bytes);
+
+    format!(
+        "      source={:?} id={} encoded_bytes={} source_retained={} source_dimensions={}x{} codec_dimensions={}x{} codec_bytes={} decoded_dimensions={}x{} decode_pixel_ratio={:.4} decoded_bytes={} decoded_to_file_ratio={:.2} peak_decode_bytes={} tracked_asset_bytes={}",
+        variant.source,
+        variant.id,
+        variant.encoded_bytes,
+        variant.source_retained,
+        variant.source_width,
+        variant.source_height,
+        variant.codec_width,
+        variant.codec_height,
+        variant.codec_bytes,
+        variant.decoded_width,
+        variant.decoded_height,
+        decode_pixel_ratio,
+        variant.decoded_bytes,
+        decoded_to_file_ratio,
+        peak_decode_bytes,
+        tracked_asset_bytes,
+    )
 }
 
 fn combined_renderer_cache_snapshot(
@@ -2815,10 +2907,10 @@ mod tests {
             RenderSceneSummary,
         },
         renderer::{
-            RenderBorderDrawSummary, RenderClipDrawSummary, RenderDrawTimings,
-            RenderImageAssetKind, RenderImageDrawProfile, RenderLayerDrawSummary,
-            RenderPaintRunDrawOutcome, RenderPaintRunDrawProfile, RenderShadowDrawPath,
-            RenderShadowDrawProfile, RenderTimings, RendererCacheFrameStats,
+            AssetMemoryRasterVariantStats, AssetMemoryStatsSnapshot, RenderBorderDrawSummary,
+            RenderClipDrawSummary, RenderDrawTimings, RenderImageAssetKind, RenderImageDrawProfile,
+            RenderLayerDrawSummary, RenderPaintRunDrawOutcome, RenderPaintRunDrawProfile,
+            RenderShadowDrawPath, RenderShadowDrawProfile, RenderTimings, RendererCacheFrameStats,
             RendererCachePaintLayerFrameStats,
         },
         tree::geometry::Rect,
@@ -3534,7 +3626,12 @@ mod tests {
         assert_eq!(snapshot.video_pipeline.vulkan_quarantined, 1);
         assert!(snapshot.video_pipeline.vulkan_global_quarantine_terminal);
         assert_eq!(snapshot.video_pipeline.vulkan_device_lost, 1);
-        let message = format_renderer_stats_log("wayland", "auto (opengl)", &snapshot);
+        let message = format_renderer_stats_log(
+            "wayland",
+            "auto (opengl)",
+            &snapshot,
+            &AssetMemoryStatsSnapshot::default(),
+        );
 
         assert!(message.starts_with("renderer stats\n"));
         assert!(message.contains("  window\n"));
@@ -3640,7 +3737,12 @@ mod tests {
         let stats = RendererStatsCollector::new();
         stats.record_frame_present();
 
-        let message = format_renderer_stats_log("wayland", "auto (opengl)", &stats.snapshot());
+        let message = format_renderer_stats_log(
+            "wayland",
+            "auto (opengl)",
+            &stats.snapshot(),
+            &AssetMemoryStatsSnapshot::default(),
+        );
 
         assert!(message.contains("  renderer cache\n"));
         assert!(message.contains("    paint_layer\n"));
@@ -3650,6 +3752,56 @@ mod tests {
         );
         assert!(!message.contains("    shell\n"));
         assert!(!message.contains("    moving_paint_layer\n"));
+    }
+
+    #[test]
+    fn log_format_includes_asset_memory_totals_and_raster_variants() {
+        let stats = RendererStatsCollector::new();
+        let asset_memory = AssetMemoryStatsSnapshot {
+            source_entries: 4,
+            source_bytes: 430_561,
+            raster_cache_entries: 1,
+            raster_cache_bytes: 96_012,
+            raster_cache_max_entries: 8,
+            raster_cache_max_bytes: 2 * 1024 * 1024,
+            vector_cache_entries: 2,
+            vector_cache_bytes: 32_768,
+            vector_cache_max_entries: 256,
+            vector_cache_max_bytes: 16 * 1024 * 1024,
+            raster_variants: vec![AssetMemoryRasterVariantStats {
+                source: "/priv/showcase/outside.jpg".to_string(),
+                id: "img_outside".to_string(),
+                encoded_bytes: 183_352,
+                source_width: 2_752,
+                source_height: 1_835,
+                codec_width: 344,
+                codec_height: 230,
+                codec_bytes: 316_480,
+                decoded_width: 189,
+                decoded_height: 127,
+                decoded_bytes: 96_012,
+                source_retained: true,
+            }],
+        };
+
+        let message =
+            format_renderer_stats_log("headless", "raster", &stats.snapshot(), &asset_memory);
+
+        assert!(message.contains("  asset memory\n"));
+        assert!(message.contains("sources: entries=4 encoded_bytes=430561"));
+        assert!(
+            message.contains("raster cache: entries=1 bytes=96012 limits=entries:8 bytes:2097152")
+        );
+        assert!(message.contains("vector cache: entries=2 bytes=32768"));
+        assert!(message.contains("tracked_total_bytes=559341"));
+        assert!(message.contains(
+            "source=\"/priv/showcase/outside.jpg\" id=img_outside encoded_bytes=183352 source_retained=true"
+        ));
+        assert!(message.contains("source_dimensions=2752x1835"));
+        assert!(message.contains("codec_dimensions=344x230 codec_bytes=316480"));
+        assert!(message.contains("decoded_dimensions=189x127 decode_pixel_ratio=0.0048"));
+        assert!(message.contains("decoded_bytes=96012 decoded_to_file_ratio=0.52"));
+        assert!(message.contains("peak_decode_bytes=412492 tracked_asset_bytes=279364"));
     }
 
     #[test]

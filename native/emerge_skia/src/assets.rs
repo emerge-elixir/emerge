@@ -28,7 +28,6 @@ pub struct AssetConfig {
     pub cache_max_entries: u64,
     pub cache_max_bytes: u64,
     pub decode_at_size: bool,
-    pub memory_log: bool,
 }
 
 impl Default for AssetConfig {
@@ -51,7 +50,6 @@ impl Default for AssetConfig {
             cache_max_entries: 256,
             cache_max_bytes: 256 * 1024 * 1024,
             decode_at_size: false,
-            memory_log: false,
         }
     }
 }
@@ -71,7 +69,6 @@ pub(crate) struct AssetRecord {
     pub encoded_bytes: u64,
     pub generation: u64,
     pub decode_at_size: bool,
-    pub memory_log: bool,
     pub kind: AssetRecordKind,
 }
 
@@ -135,6 +132,7 @@ impl Default for Global {
 
 enum AssetMsg {
     Ensure(ImageSource),
+    HydrateCached(ImageSource, String),
     Stop,
 }
 
@@ -183,6 +181,9 @@ pub fn start(tree_tx: Sender<TreeMsg>, log_render: bool) {
             match msg {
                 AssetMsg::Stop => break,
                 AssetMsg::Ensure(source) => worker.handle_ensure(source),
+                AssetMsg::HydrateCached(source, cached_id) => {
+                    worker.handle_hydrate_cached(source, &cached_id);
+                }
             }
         }
     });
@@ -379,7 +380,7 @@ pub fn ensure_source(source: &ImageSource) {
         Err(_) => return,
     };
 
-    let mut should_queue = false;
+    let mut queued_msg = None;
 
     if let Ok(mut state) = guard.state.lock() {
         match state.sources.get(source) {
@@ -387,24 +388,30 @@ pub fn ensure_source(source: &ImageSource) {
             | Some(AssetStatus::Ready(_))
             | Some(AssetStatus::Failed) => {}
             None => {
-                state.set_source_status(source.clone(), AssetStatus::Pending);
-                state.pending_count = state.pending_count.saturating_add(1);
-                should_queue = true;
+                if let Some(asset) = resolved_asset_from_raster_cache(source, &state.config) {
+                    let cached_id = asset.id.clone();
+                    state.set_source_status(source.clone(), AssetStatus::Ready(asset));
+                    queued_msg = Some(AssetMsg::HydrateCached(source.clone(), cached_id));
+                } else {
+                    state.set_source_status(source.clone(), AssetStatus::Pending);
+                    state.pending_count = state.pending_count.saturating_add(1);
+                    queued_msg = Some(AssetMsg::Ensure(source.clone()));
+                }
             }
         }
     }
 
-    if !should_queue {
+    let Some(msg) = queued_msg else {
         return;
-    }
+    };
 
     if let Some(tx) = guard.tx.as_ref() {
-        match tx.try_send(AssetMsg::Ensure(source.clone())) {
+        match tx.try_send(msg) {
             Ok(()) => {}
             Err(TrySendError::Full(msg)) => {
                 let _ = tx.send(msg);
             }
-            Err(TrySendError::Disconnected(_)) => {
+            Err(TrySendError::Disconnected(AssetMsg::Ensure(_))) => {
                 if let Ok(mut state) = guard.state.lock()
                     && matches!(state.sources.get(source), Some(AssetStatus::Pending))
                 {
@@ -414,8 +421,23 @@ pub fn ensure_source(source: &ImageSource) {
                     state.set_source_status(source.clone(), AssetStatus::Failed);
                 }
             }
+            Err(TrySendError::Disconnected(AssetMsg::HydrateCached(_, _) | AssetMsg::Stop)) => {}
         }
     }
+}
+
+fn resolved_asset_from_raster_cache(
+    source: &ImageSource,
+    config: &AssetConfig,
+) -> Option<ResolvedAsset> {
+    let path = match source {
+        ImageSource::Logical(logical) => resolve_logical_path(logical, config).ok()?,
+        ImageSource::RuntimePath(path) => resolve_runtime_path(path, config).ok()?,
+        ImageSource::Id(_) => return None,
+    };
+    let (id, width, height) =
+        crate::renderer::cached_raster_asset_for_source(&path.display().to_string())?;
+    Some(ResolvedAsset { id, width, height })
 }
 
 pub fn source_status(source: &ImageSource) -> Option<AssetStatus> {
@@ -472,7 +494,6 @@ pub(crate) fn register_raster_asset(
     source: &str,
     bytes: &[u8],
     decode_at_size: bool,
-    memory_log: bool,
 ) -> Result<Arc<AssetRecord>, String> {
     let data = Data::new_copy(bytes);
     let codec = Codec::from_data(data.clone())
@@ -495,7 +516,6 @@ pub(crate) fn register_raster_asset(
         encoded_bytes: bytes.len() as u64,
         generation: generation_for_id(id),
         decode_at_size,
-        memory_log,
         kind: AssetRecordKind::Raster(data),
     })
 }
@@ -515,7 +535,6 @@ pub(crate) fn register_vector_asset(
         encoded_bytes: 0,
         generation: generation_for_id(id),
         decode_at_size: false,
-        memory_log: false,
         kind: AssetRecordKind::Vector(Arc::new(tree)),
     })
 }
@@ -588,6 +607,47 @@ impl Worker {
                     }
                 }
                 true
+            }
+        } else {
+            false
+        };
+
+        if updated {
+            send_tree_update(&self.tree_tx, self.log_render);
+        }
+    }
+
+    fn handle_hydrate_cached(&mut self, source: ImageSource, cached_id: &str) {
+        let config = match self.state.lock() {
+            Ok(state) => state.config.clone(),
+            Err(_) => return,
+        };
+        let result = self.load_source(&source, &config);
+
+        let updated = if let Ok(mut state) = self.state.lock() {
+            let still_using_cached = matches!(
+                state.sources.get(&source),
+                Some(AssetStatus::Ready(asset)) if asset.id == cached_id
+            );
+
+            match (still_using_cached, result) {
+                (true, Ok(asset)) => {
+                    if asset.id != cached_id {
+                        state.set_source_status(source.clone(), AssetStatus::Ready(asset));
+                    }
+                    true
+                }
+                (true, Err(_)) => false,
+                (false, Ok(asset)) => {
+                    let still_referenced = state.sources.values().any(|status| {
+                        matches!(status, AssetStatus::Ready(ready) if ready.id == asset.id)
+                    });
+                    if !still_referenced {
+                        state.records.remove(&asset.id);
+                    }
+                    false
+                }
+                (false, Err(_)) => false,
             }
         } else {
             false
@@ -711,7 +771,6 @@ fn load_path(path: &Path, config: &AssetConfig) -> Result<ResolvedAsset, String>
             &path.display().to_string(),
             &bytes,
             config.decode_at_size,
-            config.memory_log,
         )?,
     };
 

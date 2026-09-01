@@ -4,7 +4,11 @@
 
 ### Changed
 
-- Added bounded raster asset caching with configurable 256-entry and 256 MiB defaults, target-sized offscreen image decoding, and optional per-decode asset memory diagnostics.
+- Added bounded raster asset caching with configurable 256-entry and 256 MiB defaults, target-sized offscreen image decoding, and asset source/decode/cache memory reporting in `renderer_stats_log`.
+
+### Fixed
+
+- Reused retained decoded rasters immediately when an inactive image source returns to the tree, avoiding a transient loading-placeholder frame while its active encoded source payload is restored.
 
 ## [0.4.0] - 2026-07-31
 

@@ -4,7 +4,7 @@ defmodule EmergeSkia.Macos.Protocol do
   import Bitwise
 
   @protocol_name "emerge_skia_macos"
-  @protocol_version 10
+  @protocol_version 9
 
   @log_level_debug 0
   @log_level_info 1
@@ -249,12 +249,11 @@ defmodule EmergeSkia.Macos.Protocol do
     cache_max_entries = Map.fetch!(asset_config, :cache_max_entries)
     cache_max_bytes = Map.fetch!(asset_config, :cache_max_bytes)
     decode_at_size = if Map.fetch!(asset_config, :decode_at_size), do: 1, else: 0
-    memory_log = if Map.fetch!(asset_config, :memory_log), do: 1, else: 0
 
     <<encode_string_list(sources)::binary, runtime_enabled, encode_string_list(allowlist)::binary,
       runtime_follow_symlinks, max_file_size::unsigned-big-64,
       encode_string_list(extensions)::binary, cache_max_entries::unsigned-big-64,
-      cache_max_bytes::unsigned-big-64, decode_at_size, memory_log>>
+      cache_max_bytes::unsigned-big-64, decode_at_size>>
   end
 
   defp decode_init_ok_tuple(<<name_len::unsigned-big-16, rest::binary>>)

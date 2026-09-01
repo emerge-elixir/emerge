@@ -113,7 +113,6 @@ defmodule EmergeSkia.Native do
           required(:asset_cache_max_entries) => non_neg_integer(),
           required(:asset_cache_max_bytes) => non_neg_integer(),
           required(:asset_decode_at_size) => boolean(),
-          required(:asset_memory_log) => boolean(),
           required(:drm_cursor) => [
             %{
               required(:icon) => String.t(),
