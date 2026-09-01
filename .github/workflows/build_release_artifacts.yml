@@ -9,6 +9,9 @@ on:
 permissions:
   contents: write
 
+env:
+  EMERGE_SOURCE_REVISION: ${{ github.sha }}
+
 jobs:
   build_release:
     name: NIF ${{ matrix.nif }} - ${{ matrix.job.name }}
@@ -82,16 +85,22 @@ jobs:
       - name: Extract project version
         shell: bash
         run: |
-          # Avoid custom Mix tasks here because they compile the project and can
-          # trigger a host NIF build before this job installs native packages.
+          # Read both source manifests even on tag builds. Deriving the version
+          # from the tag and comparing it back to the same tag proves nothing.
           project_version="$(awk -F'"' '/^  @version "/ { print $2; exit }' mix.exs)"
+          cargo_version="$(awk -F'"' '$0 == "[package]" { in_package=1; next } in_package && /^version = "/ { print $2; exit }' native/emerge_skia/Cargo.toml)"
 
-          if [[ -z "$project_version" ]]; then
-            echo "Failed to resolve project version" >&2
+          if [[ -z "$project_version" || -z "$cargo_version" ]]; then
+            echo "Failed to resolve Mix/Cargo project versions" >&2
             exit 1
           fi
 
-          if [[ "${GITHUB_REF_TYPE}" == "tag" && "v${project_version}" != "${GITHUB_REF_NAME}" ]]; then
+          if [[ "$project_version" != "$cargo_version" ]]; then
+            echo "Mix version ${project_version} does not match Cargo version ${cargo_version}" >&2
+            exit 1
+          fi
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v* && "v${project_version}" != "${GITHUB_REF_NAME}" ]]; then
             echo "Tag ${GITHUB_REF_NAME} does not match project version ${project_version}" >&2
             exit 1
           fi
@@ -131,7 +140,7 @@ jobs:
           path: ${{ steps.build-crate.outputs.file-path }}
 
       - name: Publish archives and packages
-        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ steps.build-crate.outputs.file-path }}
@@ -166,16 +175,20 @@ jobs:
       - name: Extract project version
         shell: bash
         run: |
-          # Avoid custom Mix tasks here because they compile the project and can
-          # trigger a host NIF build before this job installs native packages.
           project_version="$(awk -F'"' '/^  @version "/ { print $2; exit }' mix.exs)"
+          cargo_version="$(awk -F'"' '$0 == "[package]" { in_package=1; next } in_package && /^version = "/ { print $2; exit }' native/emerge_skia/Cargo.toml)"
 
-          if [[ -z "$project_version" ]]; then
-            echo "Failed to resolve project version" >&2
+          if [[ -z "$project_version" || -z "$cargo_version" ]]; then
+            echo "Failed to resolve Mix/Cargo project versions" >&2
             exit 1
           fi
 
-          if [[ "${GITHUB_REF_TYPE}" == "tag" && "v${project_version}" != "${GITHUB_REF_NAME}" ]]; then
+          if [[ "$project_version" != "$cargo_version" ]]; then
+            echo "Mix version ${project_version} does not match Cargo version ${cargo_version}" >&2
+            exit 1
+          fi
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v* && "v${project_version}" != "${GITHUB_REF_NAME}" ]]; then
             echo "Tag ${GITHUB_REF_NAME} does not match project version ${project_version}" >&2
             exit 1
           fi
@@ -216,7 +229,7 @@ jobs:
             ${{ env.ARCHIVE_NAME }}.sha256
 
       - name: Publish macos_host archives
-        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
         uses: softprops/action-gh-release@v2
         with:
           files: |

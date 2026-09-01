@@ -191,10 +191,11 @@ ElementTree
 - clip, relaxed clip, transform, alpha, and shadow-pass scopes
 - paint layers
 
-Paint layers are semantic composition boundaries. The renderer may cache a
-paint layer payload, then compose it later with new placement or alpha if the
-contents did not change. Nested paint layers are stored as child references so
-stable children survive parent invalidation and redraw.
+Paint layers are stable semantic composition boundaries: Root, Nearby,
+ScrollContent, compositor Animation, SliderValue, and DirectMedia. Their ordered
+content interleaves independently cacheable own-paint runs with semantic child
+layers under shared clip, transform, alpha, and shadow scopes. Damage changes
+payload generations; it does not change layer topology. Video remains direct.
 
 Renderer cache behavior is backend-neutral:
 
@@ -288,14 +289,13 @@ The architecture has several separate caches with different owners:
 | Layout resolve cache | `ElementTree` node layout state | Final frame and geometry reuse |
 | Registry subtree cache | `ElementTree` node refresh state | Event registry chunk reuse |
 | Cached registry rebuild | `TreeUpdateEngine` | Whole clean registry response |
-| Retained render-layer scene cache | `ElementTree` node refresh state | Reuse `RenderPaintLayer` scene fragments |
-| Renderer paint-layer payload cache | `SceneRenderer` | GPU/CPU image payload reuse |
+| Nearby render-fragment cache | `ElementTree` node refresh state | Reuse clean semantic Nearby fragments and focus outputs |
+| Renderer paint-layer payload cache | `SceneRenderer` | GPU/CPU own-run image reuse |
 | Asset/font/vector caches | Renderer globals | Resource reuse and resource generations |
 
-These caches are intentionally owned by the stage that can validate them. For
-example, the tree can decide that a retained paint-layer scene fragment is still
-semantically valid, but only the renderer can decide whether a concrete GPU
-payload should be stored or reused.
+These caches are intentionally owned by the stage that can validate them. The
+tree may reuse a clean semantic Nearby fragment; only the renderer can decide
+whether a concrete own-run GPU/CPU payload should be stored or reused.
 
 ## Module Structure
 

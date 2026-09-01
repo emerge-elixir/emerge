@@ -9,6 +9,8 @@ defmodule EmergeSkia.Assets do
   @supported_drm_cursor_extensions [".png", ".svg"]
   @default_runtime_extensions [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg"]
   @default_runtime_max_file_size 25_000_000
+  @default_cache_max_entries 256
+  @default_cache_max_bytes 256 * 1024 * 1024
   @default_font_extensions [".ttf", ".otf", ".ttc"]
 
   @type config :: %{
@@ -19,6 +21,9 @@ defmodule EmergeSkia.Assets do
           runtime_follow_symlinks: boolean(),
           runtime_max_file_size: pos_integer(),
           runtime_extensions: [String.t()],
+          cache_max_entries: non_neg_integer(),
+          cache_max_bytes: non_neg_integer(),
+          decode_at_size: boolean(),
           fonts: [font()]
         }
 
@@ -38,13 +43,19 @@ defmodule EmergeSkia.Assets do
 
   @doc false
   @spec normalize_asset_config!(keyword()) :: config()
-  def normalize_asset_config!(opts) do
+  @spec normalize_asset_config!(keyword(), keyword()) :: config()
+  def normalize_asset_config!(opts, defaults \\ []) do
     otp_app = normalize_otp_app!(opts)
 
     assets_opts =
       opts
       |> Keyword.get(:assets, [])
       |> Options.normalize_keyword_or_map!("assets")
+
+    cache_opts =
+      assets_opts
+      |> Keyword.get(:cache, [])
+      |> Options.normalize_keyword_or_map!("assets.cache")
 
     runtime_opts =
       assets_opts
@@ -69,6 +80,21 @@ defmodule EmergeSkia.Assets do
     runtime_max_file_size =
       Keyword.get(runtime_opts, :max_file_size, @default_runtime_max_file_size)
 
+    cache_max_entries =
+      cache_opts
+      |> Keyword.get(:max_entries, @default_cache_max_entries)
+      |> Options.normalize_non_negative_integer!("assets.cache.max_entries")
+
+    cache_max_bytes =
+      cache_opts
+      |> Keyword.get(:max_bytes, @default_cache_max_bytes)
+      |> Options.normalize_non_negative_integer!("assets.cache.max_bytes")
+
+    decode_at_size =
+      assets_opts
+      |> Keyword.get(:decode_at_size, Keyword.get(defaults, :decode_at_size, false))
+      |> Options.normalize_boolean!("assets.decode_at_size")
+
     runtime_enabled = Keyword.get(runtime_opts, :enabled, false)
     runtime_follow_symlinks = Keyword.get(runtime_opts, :follow_symlinks, false)
 
@@ -92,6 +118,9 @@ defmodule EmergeSkia.Assets do
       runtime_follow_symlinks: runtime_follow_symlinks,
       runtime_max_file_size: runtime_max_file_size,
       runtime_extensions: runtime_extensions,
+      cache_max_entries: cache_max_entries,
+      cache_max_bytes: cache_max_bytes,
+      decode_at_size: decode_at_size,
       fonts: fonts
     }
   end
@@ -113,7 +142,10 @@ defmodule EmergeSkia.Assets do
       asset_allowlist: asset_config.runtime_allowlist,
       asset_follow_symlinks: asset_config.runtime_follow_symlinks,
       asset_max_file_size: asset_config.runtime_max_file_size,
-      asset_extensions: asset_config.runtime_extensions
+      asset_extensions: asset_config.runtime_extensions,
+      asset_cache_max_entries: asset_config.cache_max_entries,
+      asset_cache_max_bytes: asset_config.cache_max_bytes,
+      asset_decode_at_size: asset_config.decode_at_size
     }
   end
 

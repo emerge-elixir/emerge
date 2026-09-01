@@ -101,6 +101,27 @@ defmodule Emerge do
     RuntimeViewport.renderer(pid)
   end
 
+  @doc """
+  Connects a headless PRIME viewport output directly to a canonical video target.
+
+  The returned reference identifies this connection incarnation. Reconnecting
+  closes the old consumer stream before opening the replacement. Pass
+  `notify: pid` to receive ordered `:connected`, first-frame, error, and
+  `:disconnected` diagnostic tuples; those messages never transfer ownership.
+  """
+  @spec connect_video_output(GenServer.server(), EmergeSkia.VideoTarget.t(), keyword()) ::
+          {:ok, reference()} | {:error, term()}
+  def connect_video_output(source, %EmergeSkia.VideoTarget{} = target, opts \\ [])
+      when is_list(opts) do
+    RuntimeViewport.connect_video_output(source, target, opts)
+  end
+
+  @doc "Closes the source's current direct video-output connection."
+  @spec disconnect_video_output(GenServer.server()) :: :ok | {:error, term()}
+  def disconnect_video_output(source) do
+    RuntimeViewport.disconnect_video_output(source)
+  end
+
   @spec rerender(state()) :: state()
   def rerender(state) when is_map(state) do
     RuntimeViewport.rerender(state)

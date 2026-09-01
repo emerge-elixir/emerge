@@ -1,5 +1,49 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Added bounded raster asset caching with configurable 256-entry and 256 MiB defaults, target-sized offscreen image decoding, and asset source/decode/cache memory reporting in `renderer_stats_log`.
+
+### Fixed
+
+- Reused retained decoded rasters immediately when an inactive image source returns to the tree, avoiding a transient loading-placeholder frame while its active encoded source payload is restored.
+
+## [0.4.0] - 2026-07-31
+
+### Added
+
+- Added raster and OpenGL headless backends with canonical guarded PRIME output and direct video-target connections.
+- Added canonical `VideoInterop` producer and consumer sessions with exact prepare/claim ownership, explicit synchronization, retirement, and drained shutdown.
+- Added bounded nonblocking DRM GPU render-elapsed sampling with exact stats-window draining, page-flip correlation, explicit discarded/skipped/stale sample diagnostics, and DRM-scoped draw/presentation counters.
+- Added strict immutable stream colorimetry forwarding and the shared direct Vulkan NV12 DMA-BUF importer for exact target-proven one-object/two-plane layouts, with BT.709 output-identical YCbCr conversion, sync-file ownership transfers, bounded process-wide terminal quarantine, and dedicated Vulkan video fault counters.
+- Added strict XRGB8888 Camera admission with persistent direct import where supported and bounded linear-texel-buffer-to-optimal-BGRA staging otherwise, preserving ordinary Skia composition at arbitrary paint-layer z-order.
+- Added an `auto` Vulkan NV12 path that transfers exact linear producer planes into bounded optimal multi-planar NV12 with exact sampler-YCbCr metadata, or separate optimal Y/UV images when exact hardware chroma filtering is unavailable; forced `planar` remains the compute-plane rollback. Transfer imports separate the final copied byte from the complete allocation so truthful producer-owned V3DV read-ahead tails remain outside every copy region.
+
+### Changed
+
+- Updated the development Erlang/OTP 29 pin to 29.0.5.
+- Replaced the old PRIME lease shape with authority-verified per-holder abandonment guards. This is a breaking video interoperability protocol change.
+- Unified renderer selection under `backend` and `rendering_api`, while retaining documented compatibility aliases.
+- Made producer and consumer release dispatchers lifecycle-owned and explicitly drained/joined outside BEAM resource destructors.
+- Replaced damage-inferred paint layers with deterministic semantic Root, Nearby, ScrollContent, Animation, SliderValue, and DirectMedia topology backed by broadly coalesced own runs with exact scoped interleaving.
+- Renamed the public DRM timer metric to `gpu_render_elapsed`; the native stats schema is now version 23 after adding dedicated Vulkan video synchronization, release-fence, saturation, quarantine-terminal, and device-loss diagnostics.
+
+### Fixed
+
+- Published the complete fd-backed allocation size for headless Vulkan PRIME frames instead of the smaller Vulkan image requirement, while keeping plane spans and importer validation strict.
+- Made inertial touch scrolling preserve chronological final motion before release, accumulate high-frequency velocity samples, preserve sub-pixel fling motion, avoid stale-deadline watchdog spins, and clamp high-velocity flings exactly at either boundary.
+- Kept high-volume event-runtime traces at debug level while native diagnostic logging remains disabled by default.
+- Preserved DRM OpenGL ES 2 compatibility and the macOS fixes published in 0.3.3 while integrating the headless renderer line.
+- Removed unconditional full-frame GPU screenshot readback from DRM and Wayland presentation; screenshots now trigger one bounded on-demand capture without serializing every rendered frame.
+- Made canonical consumer sessions release inactive-target frames successfully so transient scene visibility no longer terminates an ownership-safe sink.
+- Fixed Wayland video-only redraw starvation and width-dependent column fill allocation.
+- Kept unchanged ordered paint runs reusable when another run in the same semantic layer changes, isolated correctness-bearing scopes from adjacent paint, deferred rapidly changing GPU payload replacements until stable, staggered related replacements across frames, and retained only the latest version per run.
+- Sized isolated text payloads from measured font visual bounds, including glyph overhang and vertical extents, instead of an approximate character-width estimate.
+- Admitted opaque `XR24` stream formats at the Elixir `VideoTarget` consumer boundary so supported XRGB8888 frames reach native Vulkan validation and staging.
+- Serialized VideoInterop queue submissions through the Vulkan render-thread authority, resolved exact NV12 candidates per stream contract, bound synchronization lanes to unique imports, and preserved explicit recovery when Ganesh rejects a wait semaphore.
+
 ## [0.3.4] - 2026-07-31
 
 ### Fixed

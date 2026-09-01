@@ -1,4 +1,4 @@
 [tools]
 elixir = "1.20.2-otp-29"
-erlang = "29.0.4"
+erlang = "29.0.5"
 rust = "stable"

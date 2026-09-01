@@ -14,8 +14,9 @@ use crossbeam_channel::{Receiver, Sender as CrossbeamSender, TrySendError};
 use glutin::prelude::GlSurface;
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
-    delegate_compositor, delegate_keyboard, delegate_output, delegate_pointer, delegate_registry,
-    delegate_seat, delegate_shm, delegate_xdg_shell, delegate_xdg_window,
+    delegate_compositor, delegate_dmabuf, delegate_keyboard, delegate_output, delegate_pointer,
+    delegate_registry, delegate_seat, delegate_shm, delegate_xdg_shell, delegate_xdg_window,
+    dmabuf::{DmabufFeedback, DmabufHandler, DmabufState},
     output::{OutputHandler, OutputState},
     reexports::{
         calloop::{
@@ -41,18 +42,26 @@ use smithay_client_toolkit::{
             window::{Window, WindowConfigure, WindowDecorations, WindowHandler},
         },
     },
-    shm::{Shm, ShmHandler},
+    shm::{Shm, ShmHandler, slot::SlotPool},
 };
 use wayland_client::{
     Connection, QueueHandle,
     globals::registry_queue_init,
-    protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface},
+    protocol::{wl_buffer, wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
+};
+#[cfg(feature = "wayland-vulkan")]
+use wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1;
+use wayland_protocols::wp::linux_dmabuf::zv1::client::{
+    zwp_linux_buffer_params_v1, zwp_linux_dmabuf_feedback_v1,
 };
 
+#[cfg(feature = "wayland-vulkan")]
+use crate::backend::vulkan::capabilities::DrmNodeId;
 use crate::{
-    InputTargetRelay,
+    InputTargetRelay, LatestFrameStore, RasterPresentKind, RenderingApi,
     actors::{AnimationFrameTrace, AnimationPulseTrace, EventMsg, RenderMsg, TreeMsg},
     backend::{
+        raster::{RasterBackend, RasterConfig},
         wake::{
             BackendWake, BackendWakeHandle, WindowBackendStartupInfo, WindowBackendStartupResult,
         },
@@ -66,7 +75,7 @@ use crate::{
         RendererStatsCollector, SLOW_PRESENT_SUBMIT_THRESHOLD, earliest_pipeline_instant,
         format_slow_present_frame_log, format_slow_render_frame_log, render_frame_has_slow_stage,
     },
-    video::{VideoImportContext, VideoRegistry},
+    video::VideoRegistry,
 };
 
 use super::{
@@ -76,6 +85,7 @@ use super::{
     keyboard::{KeyboardInputState, key_from_keysym, mods_from_sctk},
     present::{DrawDecision, DrawKind, FrameCallbackState, PresentSnapshot, PresentState},
     protocols::ProtocolHandles,
+    renderer_env::{RendererEnv, RendererVideoImportContext},
     text_input::TextInputProtocolState,
 };
 
@@ -87,6 +97,9 @@ enum WakeAction {
 }
 
 const WAYLAND_DISPATCH_STOP_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const WAYLAND_VULKAN_STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
+const GPU_ACQUIRE_RETRY_INTERVAL: Duration = Duration::from_millis(1);
+const RENDER_PROFILE_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
 struct WaylandWake {
@@ -103,7 +116,10 @@ struct WaylandAppRuntime {
     stats: Option<Arc<RendererStatsCollector>>,
     renderer_stats_log: bool,
     renderer_animation_log: bool,
+    rendering_api: RenderingApi,
+    raster_present: RasterPresentKind,
     renderer_cache_config: RendererCacheConfig,
+    latest_frame: Arc<LatestFrameStore>,
     native_log: Arc<NativeLogRelay>,
     render_rx: Receiver<RenderMsg>,
     cursor_icon_rx: Receiver<CursorIcon>,
@@ -124,7 +140,10 @@ pub(crate) struct WaylandRunArgs {
     pub stats: Option<Arc<RendererStatsCollector>>,
     pub renderer_stats_log: bool,
     pub renderer_animation_log: bool,
+    pub rendering_api: RenderingApi,
+    pub raster_present: RasterPresentKind,
     pub renderer_cache_config: RendererCacheConfig,
+    pub latest_frame: Arc<LatestFrameStore>,
     pub native_log: Arc<NativeLogRelay>,
     pub render_rx: Receiver<RenderMsg>,
     pub cursor_icon_rx: Receiver<CursorIcon>,
@@ -133,9 +152,93 @@ pub(crate) struct WaylandRunArgs {
 }
 
 enum WaylandVideoImportState {
-    PendingGlInit,
-    Ready(Box<VideoImportContext>),
+    PendingGpuInit,
+    Ready(Box<RendererVideoImportContext>),
     Unavailable,
+}
+
+enum RasterWaylandPresentEnv {
+    Cpu { pool: SlotPool },
+    GpuUpload { gl_env: Box<GlEnv> },
+}
+
+struct RasterWaylandEnv {
+    renderer: RasterBackend,
+    present: RasterWaylandPresentEnv,
+    size: (u32, u32),
+}
+
+impl RasterWaylandEnv {
+    fn new(
+        shm: &Shm,
+        conn: &Connection,
+        surface: &wl_surface::WlSurface,
+        size: (u32, u32),
+        raster_present: RasterPresentKind,
+        renderer_cache_config: RendererCacheConfig,
+    ) -> Result<Self, String> {
+        let size = (size.0.max(1), size.1.max(1));
+        let present = match raster_present {
+            RasterPresentKind::Auto | RasterPresentKind::Cpu => RasterWaylandPresentEnv::Cpu {
+                pool: SlotPool::new(raster_pool_size(size)?, shm)
+                    .map_err(|err| format!("failed to create Wayland shm pool: {err}"))?,
+            },
+            RasterPresentKind::GpuUpload => RasterWaylandPresentEnv::GpuUpload {
+                gl_env: Box::new(create_gl_env(conn, surface, size, renderer_cache_config)?),
+            },
+        };
+        let renderer = RasterBackend::with_cache_config(
+            &RasterConfig {
+                width: size.0,
+                height: size.1,
+            },
+            renderer_cache_config,
+        )?;
+
+        Ok(Self {
+            renderer,
+            present,
+            size,
+        })
+    }
+
+    fn resize(&mut self, size: (u32, u32)) -> Result<(), String> {
+        let size = (size.0.max(1), size.1.max(1));
+        match &mut self.present {
+            RasterWaylandPresentEnv::Cpu { pool } => pool
+                .resize(raster_pool_size(size)?)
+                .map_err(|err| format!("failed to resize Wayland shm pool: {err}"))?,
+            RasterWaylandPresentEnv::GpuUpload { gl_env } => resize_gl_env(gl_env, size),
+        }
+        self.renderer.resize(size.0, size.1)?;
+        self.size = size;
+        Ok(())
+    }
+}
+
+fn rgba_to_wayland_argb(rgba: &[u8], argb: &mut [u8]) {
+    rgba.as_chunks::<4>()
+        .0
+        .iter()
+        .zip(argb.as_chunks_mut::<4>().0.iter_mut())
+        .for_each(|(source, dest)| {
+            dest[0] = source[2];
+            dest[1] = source[1];
+            dest[2] = source[0];
+            dest[3] = source[3];
+        });
+}
+
+fn raster_pool_size(size: (u32, u32)) -> Result<usize, String> {
+    usize::try_from(size.0)
+        .ok()
+        .and_then(|width| {
+            usize::try_from(size.1)
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
+        .and_then(|pixels| pixels.checked_mul(4).and_then(|bytes| bytes.checked_mul(2)))
+        .ok_or_else(|| "Wayland raster surface is too large".to_string())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -334,22 +437,26 @@ struct DrawStartLogInput<'a> {
 impl WaylandVideoImportState {
     fn sync_action(&self) -> WaylandVideoSyncAction {
         match self {
-            Self::PendingGlInit => WaylandVideoSyncAction::Hold,
+            Self::PendingGpuInit => WaylandVideoSyncAction::Hold,
             Self::Ready(_) => WaylandVideoSyncAction::Import,
             Self::Unavailable => WaylandVideoSyncAction::Drop,
         }
     }
 
-    fn context(&self) -> Option<&VideoImportContext> {
+    fn context(&self) -> Option<&RendererVideoImportContext> {
         match self {
             Self::Ready(ctx) => Some(ctx.as_ref()),
-            Self::PendingGlInit | Self::Unavailable => None,
+            Self::PendingGpuInit | Self::Unavailable => None,
         }
     }
 }
 
 fn should_reconfigure_surface(size_changed: bool, env_missing: bool) -> bool {
     size_changed || env_missing
+}
+
+fn requires_ready_renderer_before_startup_ack(rendering_api: RenderingApi) -> bool {
+    matches!(rendering_api, RenderingApi::OpenGl | RenderingApi::Vulkan)
 }
 
 fn frame_draw_decision(
@@ -418,10 +525,19 @@ impl BackendWake for WaylandWake {
 pub(super) struct WaylandApp {
     registry_state: RegistryState,
     output_state: OutputState,
+    surface_outputs: Vec<wl_output::WlOutput>,
     qh: QueueHandle<Self>,
     pub(super) window: Window,
     shm: Shm,
-    env: Option<GlEnv>,
+    dmabuf_state: DmabufState,
+    #[cfg(feature = "wayland-vulkan")]
+    vulkan_dmabuf_feedback: Option<ZwpLinuxDmabufFeedbackV1>,
+    #[cfg(feature = "wayland-vulkan")]
+    vulkan_feedback_ready: bool,
+    #[cfg(feature = "wayland-vulkan")]
+    vulkan_compositor_device: Option<DrmNodeId>,
+    env: Option<RendererEnv>,
+    raster_env: Option<RasterWaylandEnv>,
     protocols: ProtocolHandles,
     pub(super) geometry: SurfaceGeometry,
     present: PresentState,
@@ -442,7 +558,10 @@ pub(super) struct WaylandApp {
     stats: Option<Arc<RendererStatsCollector>>,
     renderer_stats_log: bool,
     renderer_animation_log: bool,
+    rendering_api: RenderingApi,
+    raster_present: RasterPresentKind,
     renderer_cache_config: RendererCacheConfig,
+    latest_frame: Arc<LatestFrameStore>,
     native_log: Arc<NativeLogRelay>,
     video_registry: Arc<VideoRegistry>,
     loop_handle: calloop::LoopHandle<'static, WaylandApp>,
@@ -451,9 +570,12 @@ pub(super) struct WaylandApp {
     render_state: RenderState,
     render_animation_trace: Option<AnimationFrameTrace>,
     animation_pulse_sequence: u64,
+    next_render_profile_at: Instant,
     diagnostics: WaylandRenderDiagnostics,
     pending_pipeline_submitted_at: Option<std::time::Instant>,
     pending_pipeline_swap_done_at: Option<std::time::Instant>,
+    gpu_acquire_retry_scheduled: bool,
+    startup_error: Option<String>,
 }
 
 impl WaylandApp {
@@ -476,6 +598,17 @@ impl WaylandApp {
         window.set_app_id("dev.emerge.emerge_skia");
 
         let protocols = ProtocolHandles::new(globals, &qh, compositor_state, &window);
+        let dmabuf_state = DmabufState::new(globals, &qh);
+        #[cfg(feature = "wayland-vulkan")]
+        let vulkan_dmabuf_feedback = matches!(runtime.rendering_api, RenderingApi::Vulkan)
+            .then(|| {
+                dmabuf_state
+                    .get_surface_feedback(window.wl_surface(), &qh)
+                    .ok()
+            })
+            .flatten();
+        #[cfg(feature = "wayland-vulkan")]
+        let vulkan_feedback_ready = vulkan_dmabuf_feedback.is_none();
 
         window.commit();
 
@@ -489,7 +622,10 @@ impl WaylandApp {
             stats,
             renderer_stats_log,
             renderer_animation_log,
+            rendering_api,
+            raster_present,
             renderer_cache_config,
+            latest_frame,
             native_log,
             render_rx,
             cursor_icon_rx,
@@ -502,10 +638,19 @@ impl WaylandApp {
         let mut app = Self {
             registry_state: RegistryState::new(globals),
             output_state: OutputState::new(globals, &qh),
+            surface_outputs: Vec::new(),
             qh: qh.clone(),
             window,
             shm,
+            dmabuf_state,
+            #[cfg(feature = "wayland-vulkan")]
+            vulkan_dmabuf_feedback,
+            #[cfg(feature = "wayland-vulkan")]
+            vulkan_feedback_ready,
+            #[cfg(feature = "wayland-vulkan")]
+            vulkan_compositor_device: None,
             env: None,
+            raster_env: None,
             protocols,
             geometry: SurfaceGeometry::new(config),
             present: PresentState::default(),
@@ -513,7 +658,7 @@ impl WaylandApp {
             cursor_icon_state: CursorIconState::default(),
             keyboard: KeyboardInputState::new(),
             text_input: TextInputProtocolState::new(globals, &qh),
-            video_import: WaylandVideoImportState::PendingGlInit,
+            video_import: WaylandVideoImportState::PendingGpuInit,
             exit: false,
             running_flag,
             tree_tx,
@@ -526,7 +671,10 @@ impl WaylandApp {
             stats,
             renderer_stats_log,
             renderer_animation_log,
+            rendering_api,
+            raster_present,
             renderer_cache_config,
+            latest_frame,
             native_log,
             video_registry,
             loop_handle,
@@ -535,9 +683,12 @@ impl WaylandApp {
             render_state: RenderState::default(),
             render_animation_trace: None,
             animation_pulse_sequence: 0,
+            next_render_profile_at: Instant::now(),
             diagnostics: WaylandRenderDiagnostics::default(),
             pending_pipeline_submitted_at: None,
             pending_pipeline_swap_done_at: None,
+            gpu_acquire_retry_scheduled: false,
+            startup_error: None,
         };
 
         app.apply_surface_scale_state();
@@ -563,6 +714,16 @@ impl WaylandApp {
 
     fn present_snapshot(&self) -> PresentSnapshot {
         self.present.snapshot(Instant::now(), SystemTime::now())
+    }
+
+    fn nominal_display_interval(&self) -> Option<Duration> {
+        self.surface_outputs
+            .iter()
+            .filter_map(|output| self.output_state.info(output))
+            .flat_map(|info| info.modes.into_iter())
+            .filter(|mode| mode.current)
+            .filter_map(|mode| refresh_rate_interval(mode.refresh_rate))
+            .min()
     }
 
     fn log_present_skip_if_needed(&mut self, env_ready: bool, allow_late_replacement: bool) {
@@ -637,15 +798,58 @@ impl WaylandApp {
             }
             WakeAction::Redraw => {
                 self.flush_backend_updates(conn);
+                if self.latest_frame.pending_capture_generation().is_some() {
+                    self.queue_redraw();
+                }
             }
             WakeAction::VideoFrameAvailable => {
-                self.queue_redraw();
+                self.present.queue_video_redraw();
             }
         }
     }
 
     fn queue_redraw(&mut self) {
         self.present.queue_redraw();
+    }
+
+    fn schedule_gpu_acquire_retry(&mut self) -> Result<(), String> {
+        if self.gpu_acquire_retry_scheduled {
+            return Ok(());
+        }
+        self.gpu_acquire_retry_scheduled = true;
+        self.loop_handle
+            .insert_source(Timer::from_duration(GPU_ACQUIRE_RETRY_INTERVAL), {
+                move |_, _, state| {
+                    state.gpu_acquire_retry_scheduled = false;
+                    state.queue_redraw();
+                    TimeoutAction::Drop
+                }
+            })
+            .map(|_| ())
+            .map_err(|error| format!("failed to schedule Vulkan image-acquire retry: {error}"))
+    }
+
+    fn reap_video_cleanup_before_redraw(&mut self) {
+        if !self.present.video_cleanup_requested() {
+            return;
+        }
+
+        let video_import_ctx = self.video_import.context();
+        let cleanup = self
+            .env
+            .as_mut()
+            .map(|env| env.reap_video_cleanup(&self.video_registry, video_import_ctx));
+        match cleanup.transpose() {
+            Ok(cleanup) => self
+                .present
+                .finish_video_cleanup(cleanup.is_some_and(|cleanup| cleanup.needs_cleanup)),
+            Err(error) => {
+                eprintln!("Wayland video cleanup failed terminally: {error}");
+                self.present.finish_video_cleanup(false);
+                self.running_flag.store(false, Ordering::Relaxed);
+                self.exit = true;
+            }
+        }
     }
 
     pub(super) fn send_input_event(&self, event: InputEvent) {
@@ -739,6 +943,12 @@ impl WaylandApp {
                     let animation_trace = animation_trace.map(|trace| *trace);
                     let scene = *scene;
                     self.render_state.set_scene(scene);
+                    if let Err(error) = self
+                        .video_registry
+                        .set_active_targets(&self.render_state.video_target_ids)
+                    {
+                        eprintln!("video target visibility update failed: {error}");
+                    }
                     self.render_state.render_version = version;
                     self.render_state.pipeline_submitted_at = pipeline_submitted_at;
                     self.render_state.pipeline_render_queued_at = pipeline_render_queued_at;
@@ -887,11 +1097,19 @@ impl WaylandApp {
     }
 
     fn maybe_draw(&mut self) {
+        if self.gpu_acquire_retry_scheduled {
+            return;
+        }
+
         let allow_late_replacement = self
             .env
             .as_ref()
-            .is_some_and(|env| env.swap_buffers_nonblocking);
-        let env_ready = self.env.is_some();
+            .is_some_and(RendererEnv::supports_late_replacement);
+        let env_ready = match self.rendering_api {
+            RenderingApi::OpenGl | RenderingApi::Vulkan => self.env.is_some(),
+            RenderingApi::Raster => self.raster_env.is_some(),
+            RenderingApi::Auto | RenderingApi::Metal => false,
+        };
         let decision =
             frame_draw_decision(&self.present, env_ready, self.exit, allow_late_replacement);
 
@@ -907,6 +1125,11 @@ impl WaylandApp {
     }
 
     fn draw(&mut self, draw_kind: DrawKind) {
+        if matches!(self.rendering_api, RenderingApi::Raster) {
+            self.draw_raster(draw_kind);
+            return;
+        }
+
         let (video_import, video_registry) = (&self.video_import, &self.video_registry);
         let sync_action = video_import.sync_action();
         let video_import_ctx = video_import.context();
@@ -918,6 +1141,11 @@ impl WaylandApp {
         self.watchdog.mark_draw_start();
         let render_log = self.render_log;
         let native_log = Arc::clone(&self.native_log);
+        let profile_render = renderer_profile_due(
+            self.renderer_stats_log,
+            draw_started_at,
+            &mut self.next_render_profile_at,
+        );
 
         if render_log {
             native_log.info(
@@ -935,14 +1163,14 @@ impl WaylandApp {
             );
         }
 
+        let capture_generation = self.latest_frame.pending_capture_generation();
         let Some(env) = self.env.as_mut() else {
             return;
         };
 
-        if matches!(sync_action, WaylandVideoSyncAction::Hold)
-            && env
-                .renderer
-                .can_skip_unchanged_visible_frame(&self.render_state, self.geometry.buffer_size)
+        if capture_generation.is_none()
+            && matches!(sync_action, WaylandVideoSyncAction::Hold)
+            && env.can_skip_unchanged_visible_frame(&self.render_state, self.geometry.buffer_size)
         {
             self.present
                 .finish_noop_present(self.render_state.render_version);
@@ -962,7 +1190,10 @@ impl WaylandApp {
             return;
         }
 
-        let frame_request = self.present.prepare_draw(draw_kind, &self.window, &self.qh);
+        let request_callback_before_render = env.requests_frame_callback_before_render();
+        let frame_request = request_callback_before_render
+            .then(|| self.present.prepare_draw(draw_kind, &self.window, &self.qh))
+            .flatten();
         if render_log && let Some(request) = frame_request {
             native_log.info(
                 "wayland_render",
@@ -975,19 +1206,27 @@ impl WaylandApp {
 
         let mut video_needs_cleanup = false;
 
-        {
-            let mut frame = env.frame_surface.frame();
-
+        let render_outcome = env.render_frame(capture_generation.is_some(), |renderer, frame| {
             match sync_action {
                 WaylandVideoSyncAction::Hold => {}
                 WaylandVideoSyncAction::Import => {
-                    match env.renderer.sync_video_frames(
-                        &mut frame,
-                        video_registry,
-                        video_import_ctx,
-                    ) {
+                    let result = match video_import_ctx {
+                        Some(RendererVideoImportContext::OpenGl(context)) => {
+                            renderer.sync_video_frames(frame, video_registry, Some(context))
+                        }
+                        #[cfg(feature = "wayland-vulkan")]
+                        Some(RendererVideoImportContext::Vulkan(context)) => renderer
+                            .sync_vulkan_video_frames(frame, video_registry, context),
+                        None => Err("Wayland video import context is unavailable".to_string()),
+                    };
+                    match result {
                         Ok(result) => video_needs_cleanup = result.needs_cleanup,
-                        Err(err) => eprintln!("video sync failed: {err}"),
+                        Err(err) => {
+                            // Failed imports can still retire partially-created resources.
+                            // Keep one cleanup follow-up so their leases cannot be stranded.
+                            video_needs_cleanup = true;
+                            eprintln!("video sync failed: {err}");
+                        }
                     }
                 }
                 WaylandVideoSyncAction::Drop => {
@@ -997,17 +1236,17 @@ impl WaylandApp {
                 }
             }
 
-            let render_timings = if self.renderer_stats_log {
-                env.renderer.render_profiled(&mut frame, &self.render_state)
+            let render_timings = if profile_render {
+                renderer.render_profiled(frame, &self.render_state)
             } else {
-                env.renderer.render(&mut frame, &self.render_state)
+                renderer.render(frame, &self.render_state)
             };
 
             if let Some(stats) = self.stats.as_ref() {
                 stats.record_render_timings(render_timings.total, &render_timings);
             }
 
-            if self.renderer_stats_log && render_frame_has_slow_stage(&render_timings) {
+            if profile_render && render_frame_has_slow_stage(&render_timings) {
                 self.native_log.info(
                     "renderer_slow_frame",
                     format_slow_render_frame_log(
@@ -1028,6 +1267,40 @@ impl WaylandApp {
                     ),
                 );
             }
+        });
+        match render_outcome {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                // Vulkan acquisition is deliberately nonblocking. A single bounded timer wakes
+                // the next acquire attempt without waiting the compositor thread or accumulating
+                // retry sources under unrelated Wayland traffic.
+                if let Err(err) = self.schedule_gpu_acquire_retry() {
+                    eprintln!("wayland GPU acquire retry failed: {err}");
+                    self.running_flag.store(false, Ordering::Relaxed);
+                    self.exit = true;
+                }
+                self.diagnostics.last_draw_finished_at = Some(Instant::now());
+                return;
+            }
+            Err(err) => {
+                eprintln!("wayland GPU render failed: {err}");
+                self.running_flag.store(false, Ordering::Relaxed);
+                self.exit = true;
+                return;
+            }
+        }
+
+        if !request_callback_before_render {
+            let frame_request = self.present.prepare_draw(draw_kind, &self.window, &self.qh);
+            if render_log && let Some(request) = frame_request {
+                native_log.info(
+                    "wayland_render",
+                    format!(
+                        "frame callback requested\n  sequence: {}\n  draw_sequence: {draw_sequence}\n  render_version: {}",
+                        request.sequence, self.render_state.render_version
+                    ),
+                );
+            }
         }
 
         let present_submit_started_at = Instant::now();
@@ -1043,25 +1316,48 @@ impl WaylandApp {
             );
         }
 
-        if let Err(err) = env.gl_surface.swap_buffers(&env.gl_context) {
-            eprintln!("wayland egl swap_buffers failed: {err}");
-            if render_log {
-                native_log.info(
-                    "wayland_render",
-                    format!(
-                        "swap error\n  sequence: {draw_sequence}\n  version: {}\n  error: {err}\n  {}",
-                        self.render_state.render_version,
-                        format_present_snapshot(&self.present_snapshot()),
-                    ),
-                );
+        let present_outcome = match env.present() {
+            Ok(outcome) => outcome,
+            Err(err) => {
+                eprintln!("wayland GPU present failed: {err}");
+                if render_log {
+                    native_log.info(
+                        "wayland_render",
+                        format!(
+                            "swap error\n  sequence: {draw_sequence}\n  version: {}\n  error: {err}\n  {}",
+                            self.render_state.render_version,
+                            format_present_snapshot(&self.present_snapshot()),
+                        ),
+                    );
+                }
+                self.running_flag.store(false, Ordering::Relaxed);
+                self.exit = true;
+                return;
             }
-            self.running_flag.store(false, Ordering::Relaxed);
-            self.exit = true;
-            return;
-        }
+        };
 
         let present_submit = present_submit_started_at.elapsed();
         let swap_done_at = Instant::now();
+        if !present_outcome.submitted {
+            // Out-of-date WSI results retire their generation without acknowledging a present.
+            // A configure/frame callback will pace the recreated swapchain retry.
+            self.present.retry_unsubmitted_present();
+            self.diagnostics.last_swap_done_at = Some(swap_done_at);
+            self.diagnostics.last_draw_finished_at = Some(swap_done_at);
+            self.watchdog.mark_swap_done();
+            return;
+        }
+        if let (Some(capture_generation), Some((width, height, pixels))) =
+            (capture_generation, present_outcome.capture)
+        {
+            self.latest_frame.publish_requested_capture(
+                capture_generation,
+                width,
+                height,
+                self.geometry.scale_factor(),
+                pixels,
+            );
+        }
         self.diagnostics.last_swap_done_at = Some(swap_done_at);
         self.diagnostics.last_draw_finished_at = Some(swap_done_at);
         self.watchdog.mark_swap_done();
@@ -1108,7 +1404,7 @@ impl WaylandApp {
             stats.record_present_submit(present_submit);
         }
 
-        if self.renderer_stats_log && present_submit >= SLOW_PRESENT_SUBMIT_THRESHOLD {
+        if profile_render && present_submit >= SLOW_PRESENT_SUBMIT_THRESHOLD {
             self.native_log.info(
                 "renderer_slow_frame",
                 format_slow_present_frame_log(
@@ -1160,22 +1456,207 @@ impl WaylandApp {
         self.render_animation_trace = None;
     }
 
+    fn draw_raster(&mut self, draw_kind: DrawKind) {
+        let animation_trace = self.render_animation_trace;
+        let draw_started_at = Instant::now();
+        let draw_sequence = self.diagnostics.draw_sequence;
+        self.diagnostics.draw_sequence = self.diagnostics.draw_sequence.wrapping_add(1);
+        self.diagnostics.last_draw_started_at = Some(draw_started_at);
+        self.watchdog.mark_draw_start();
+
+        if self.render_log {
+            self.native_log.info(
+                "wayland_render",
+                format_draw_start_log(DrawStartLogInput {
+                    draw_sequence,
+                    draw_kind,
+                    version: self.render_state.render_version,
+                    animate: self.render_state.animate,
+                    sync_action: WaylandVideoSyncAction::Drop,
+                    summary: self.render_state.scene.summary(),
+                    snapshot: &self.present_snapshot(),
+                    geometry: &self.geometry,
+                }),
+            );
+        }
+
+        let Some(env) = self.raster_env.as_mut() else {
+            return;
+        };
+
+        let frame_request = self.present.prepare_draw(draw_kind, &self.window, &self.qh);
+        if self.render_log
+            && let Some(request) = frame_request
+        {
+            self.native_log.info(
+                "wayland_render",
+                format!(
+                    "frame callback requested\n  sequence: {}\n  draw_sequence: {draw_sequence}\n  render_version: {}",
+                    request.sequence, self.render_state.render_version
+                ),
+            );
+        }
+
+        let render_started_at = Instant::now();
+        let (frame, render_timings) = env.renderer.render_with_timings(&self.render_state);
+        if let Some(stats) = self.stats.as_ref() {
+            stats.record_render_timings(render_started_at.elapsed(), &render_timings);
+        }
+
+        let present_submit_started_at = Instant::now();
+        self.diagnostics.last_swap_started_at = Some(present_submit_started_at);
+        self.watchdog.mark_swap_start();
+
+        let present_result = match &mut env.present {
+            RasterWaylandPresentEnv::Cpu { pool } => {
+                let stride = (self.geometry.buffer_size.0 * 4) as i32;
+                pool.create_buffer(
+                    self.geometry.buffer_size.0 as i32,
+                    self.geometry.buffer_size.1 as i32,
+                    stride,
+                    wl_shm::Format::Argb8888,
+                )
+                .map_err(|err| format!("failed to create Wayland raster buffer: {err}"))
+                .and_then(|(buffer, canvas)| {
+                    rgba_to_wayland_argb(&frame.data, canvas);
+                    self.window.wl_surface().damage_buffer(
+                        0,
+                        0,
+                        self.geometry.buffer_size.0 as i32,
+                        self.geometry.buffer_size.1 as i32,
+                    );
+                    buffer
+                        .attach_to(self.window.wl_surface())
+                        .map_err(|err| format!("failed to attach Wayland raster buffer: {err}"))?;
+                    self.window.commit();
+                    Ok(())
+                })
+            }
+            RasterWaylandPresentEnv::GpuUpload { gl_env } => gl_env
+                .frame_surface
+                .present_rgba_pixels(
+                    self.geometry.buffer_size.0,
+                    self.geometry.buffer_size.1,
+                    &frame.data,
+                )
+                .and_then(|()| {
+                    gl_env
+                        .gl_surface
+                        .swap_buffers(&gl_env.gl_context)
+                        .map_err(|err| format!("wayland raster gpu-upload swap failed: {err}"))
+                }),
+        };
+
+        if let Err(err) = present_result {
+            eprintln!("wayland raster present failed: {err}");
+            self.running_flag.store(false, Ordering::Relaxed);
+            self.exit = true;
+            return;
+        }
+
+        let present_submit = present_submit_started_at.elapsed();
+        let swap_done_at = Instant::now();
+        self.latest_frame.publish_rgba(
+            self.geometry.buffer_size.0,
+            self.geometry.buffer_size.1,
+            self.geometry.scale_factor(),
+            frame.data,
+        );
+        self.diagnostics.last_swap_done_at = Some(swap_done_at);
+        self.diagnostics.last_draw_finished_at = Some(swap_done_at);
+        self.watchdog.mark_swap_done();
+
+        if let (Some(stats), Some(submitted_at)) =
+            (self.stats.as_ref(), self.render_state.pipeline_submitted_at)
+        {
+            stats.record_pipeline_submit_to_swap(submitted_at, swap_done_at);
+        }
+        if self.render_state.pipeline_submitted_at.is_some() {
+            self.pending_pipeline_swap_done_at = Some(swap_done_at);
+        }
+        self.pending_pipeline_submitted_at = earliest_pipeline_instant(
+            self.pending_pipeline_submitted_at,
+            self.render_state.pipeline_submitted_at.take(),
+        );
+        self.render_state.pipeline_render_queued_at = None;
+
+        if let Some(stats) = self.stats.as_ref() {
+            stats.record_present_submit(present_submit);
+            stats.record_frame_present();
+        }
+
+        if self.renderer_animation_log && (self.render_state.animate || animation_trace.is_some()) {
+            self.native_log.info(
+                "renderer_animation",
+                format_animation_draw_log(AnimationDrawLogInput {
+                    backend_label: "wayland-raster",
+                    version: self.render_state.render_version,
+                    draw_kind,
+                    animate: self.render_state.animate,
+                    trace: animation_trace,
+                    draw_started_at,
+                    swap_done_at,
+                    present_submit,
+                }),
+            );
+        }
+
+        if draw_kind == DrawKind::Normal {
+            let fallback_presented_at = std::time::Instant::now();
+            let (presented_at, predicted_next_present_at) = self
+                .present
+                .present_timing_for_normal_draw(fallback_presented_at);
+
+            if let Some(stats) = self.stats.as_ref() {
+                stats.record_display_interval(
+                    predicted_next_present_at.saturating_duration_since(presented_at),
+                );
+            }
+
+            self.send_present_timing(presented_at, predicted_next_present_at);
+
+            if self.render_state.animate {
+                self.send_animation_pulse(presented_at, predicted_next_present_at);
+            }
+        }
+
+        self.present
+            .finish_present(self.render_state.render_version, draw_kind, false);
+        self.render_animation_trace = None;
+    }
+
     fn apply_surface_scale_state(&mut self) {
         self.geometry
             .apply_to_surface(&self.window, self.protocols.viewport.as_ref());
     }
 
     fn initialize_video_import(&mut self) {
-        if !matches!(self.video_import, WaylandVideoImportState::PendingGlInit) {
+        if !matches!(self.video_import, WaylandVideoImportState::PendingGpuInit) {
             return;
         }
 
-        self.video_import = match VideoImportContext::new_current() {
-            Ok(ctx) => WaylandVideoImportState::Ready(Box::new(ctx)),
-            Err(err) => {
-                eprintln!("prime video import unavailable: {err}");
-                WaylandVideoImportState::Unavailable
-            }
+        self.video_import = match self.env.as_ref() {
+            Some(env) => match env.initialize_video_import() {
+                Ok(ctx) => {
+                    #[cfg(feature = "wayland-vulkan")]
+                    if let RendererVideoImportContext::Vulkan(vulkan) = &ctx
+                        && let Err(error) = self.video_registry.set_vulkan_import_capabilities(
+                            vulkan.rgba_linear_supported(),
+                            vulkan.bgra_import_supported(),
+                            vulkan.nv12_capabilities().to_vec(),
+                        )
+                    {
+                        eprintln!("failed to publish Vulkan NV12 stream capabilities: {error}");
+                        return;
+                    }
+                    WaylandVideoImportState::Ready(Box::new(ctx))
+                }
+                Err(err) => {
+                    eprintln!("prime video import unavailable: {err}");
+                    WaylandVideoImportState::Unavailable
+                }
+            },
+            None => WaylandVideoImportState::PendingGpuInit,
         };
     }
 
@@ -1208,14 +1689,73 @@ impl WaylandApp {
         let geometry_changed = previous != self.geometry;
         let buffer_changed = previous.buffer_size != self.geometry.buffer_size;
 
-        if self.env.is_none() {
-            self.video_import = WaylandVideoImportState::PendingGlInit;
+        if matches!(self.rendering_api, RenderingApi::Raster) {
+            if self.raster_env.is_none() {
+                match RasterWaylandEnv::new(
+                    &self.shm,
+                    conn,
+                    self.window.wl_surface(),
+                    self.geometry.buffer_size,
+                    self.raster_present,
+                    self.renderer_cache_config,
+                ) {
+                    Ok(env) => {
+                        self.raster_env = Some(env);
+                        self.video_import = WaylandVideoImportState::Unavailable;
+                        if self.render_log {
+                            self.log_render_diagnostic(format!(
+                                "raster env created\n  geometry: {}",
+                                format_surface_geometry(&self.geometry),
+                            ));
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("wayland raster setup failed: {err}");
+                        if self.render_log {
+                            self.log_render_diagnostic(format!(
+                                "raster env create failed\n  geometry: {}\n  error: {err}",
+                                format_surface_geometry(&self.geometry),
+                            ));
+                        }
+                        self.running_flag.store(false, Ordering::Relaxed);
+                        self.exit = true;
+                        return;
+                    }
+                }
+            } else if buffer_changed && let Some(env) = self.raster_env.as_mut() {
+                if let Err(err) = env.resize(self.geometry.buffer_size) {
+                    eprintln!("wayland raster resize failed: {err}");
+                    self.running_flag.store(false, Ordering::Relaxed);
+                    self.exit = true;
+                    return;
+                }
+                if self.render_log {
+                    self.log_render_diagnostic(format!(
+                        "raster env resized\n  previous: {}\n  current: {}",
+                        format_surface_geometry(&previous),
+                        format_surface_geometry(&self.geometry),
+                    ));
+                }
+            }
+        } else if self.env.is_none() {
+            #[cfg(feature = "wayland-vulkan")]
+            if matches!(self.rendering_api, RenderingApi::Vulkan) && !self.vulkan_feedback_ready {
+                self.log_render_diagnostic(
+                    "Vulkan renderer initialization deferred until Wayland DMA-BUF feedback",
+                );
+                return;
+            }
 
-            match create_gl_env(
+            self.video_import = WaylandVideoImportState::PendingGpuInit;
+
+            match RendererEnv::new(
+                self.rendering_api,
                 conn,
                 self.window.wl_surface(),
                 self.geometry.buffer_size,
                 self.renderer_cache_config,
+                #[cfg(feature = "wayland-vulkan")]
+                self.vulkan_compositor_device,
             ) {
                 Ok(env) => {
                     self.env = Some(env);
@@ -1226,26 +1766,32 @@ impl WaylandApp {
                             format_surface_geometry(&self.geometry),
                             self.env
                                 .as_ref()
-                                .is_some_and(|env| env.swap_buffers_nonblocking),
+                                .is_some_and(RendererEnv::supports_late_replacement),
                         ));
                     }
                 }
                 Err(err) => {
-                    eprintln!("wayland egl setup failed: {err}");
+                    let message = format!("wayland GPU setup failed: {err}");
+                    eprintln!("{message}");
                     if self.render_log {
                         self.log_render_diagnostic(format!(
-                            "egl env create failed\n  geometry: {}\n  error: {err}",
+                            "GPU env create failed\n  geometry: {}\n  error: {err}",
                             format_surface_geometry(&self.geometry),
                         ));
                     }
+                    self.startup_error.get_or_insert(message);
                     self.running_flag.store(false, Ordering::Relaxed);
                     self.exit = true;
                     return;
                 }
             }
         } else if buffer_changed && let Some(env) = self.env.as_mut() {
-            resize_gl_env(env, self.geometry.buffer_size);
-            env.renderer.invalidate_visible_frame_fingerprint();
+            if let Err(err) = env.resize(self.geometry.buffer_size) {
+                eprintln!("wayland egl resize failed: {err}");
+                self.running_flag.store(false, Ordering::Relaxed);
+                self.exit = true;
+                return;
+            }
             if self.render_log {
                 self.log_render_diagnostic(format!(
                     "egl env resized\n  previous: {}\n  current: {}",
@@ -1349,6 +1895,20 @@ impl WaylandApp {
 
 fn duration_ms(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1_000.0
+}
+
+fn refresh_rate_interval(refresh_rate_millihz: i32) -> Option<Duration> {
+    (refresh_rate_millihz > 0)
+        .then(|| Duration::from_secs_f64(1_000.0 / f64::from(refresh_rate_millihz)))
+}
+
+fn renderer_profile_due(enabled: bool, now: Instant, next_profile_at: &mut Instant) -> bool {
+    if !enabled || now < *next_profile_at {
+        return false;
+    }
+
+    *next_profile_at = now + RENDER_PROFILE_INTERVAL;
+    true
 }
 
 fn current_wall_ms() -> u64 {
@@ -1908,8 +2468,13 @@ impl CompositorHandler for WaylandApp {
         {
             stats.record_pipeline_swap_to_frame_callback(swap_done_at, received_at);
         }
+        let nominal_display_interval = self.nominal_display_interval();
         let previous_estimated_interval = self.present.estimated_frame_interval();
         self.present.frame_callback_received(received_at, time);
+        self.reap_video_cleanup_before_redraw();
+        if let Some(interval) = nominal_display_interval {
+            self.present.set_frame_interval(interval);
+        }
         self.diagnostics.last_frame_callback_received_at = Some(received_at);
         self.diagnostics.last_present_skip_log_key = None;
         self.watchdog.mark_frame_callback();
@@ -1942,8 +2507,11 @@ impl CompositorHandler for WaylandApp {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
         _surface: &wl_surface::WlSurface,
-        _output: &wl_output::WlOutput,
+        output: &wl_output::WlOutput,
     ) {
+        if !self.surface_outputs.contains(output) {
+            self.surface_outputs.push(output.clone());
+        }
         self.log_render_diagnostic(format!(
             "surface enter\n  geometry: {}\n  {}",
             format_surface_geometry(&self.geometry),
@@ -1956,8 +2524,9 @@ impl CompositorHandler for WaylandApp {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
         _surface: &wl_surface::WlSurface,
-        _output: &wl_output::WlOutput,
+        output: &wl_output::WlOutput,
     ) {
+        self.surface_outputs.retain(|current| current != output);
         self.log_render_diagnostic(format!(
             "surface leave\n  geometry: {}\n  {}",
             format_surface_geometry(&self.geometry),
@@ -2288,6 +2857,7 @@ impl KeyboardHandler for WaylandApp {
 }
 
 delegate_compositor!(WaylandApp);
+delegate_dmabuf!(WaylandApp);
 delegate_keyboard!(WaylandApp);
 delegate_output!(WaylandApp);
 delegate_pointer!(WaylandApp);
@@ -2296,6 +2866,67 @@ delegate_shm!(WaylandApp);
 delegate_xdg_shell!(WaylandApp);
 delegate_xdg_window!(WaylandApp);
 delegate_registry!(WaylandApp);
+
+impl DmabufHandler for WaylandApp {
+    fn dmabuf_state(&mut self) -> &mut DmabufState {
+        &mut self.dmabuf_state
+    }
+
+    fn dmabuf_feedback(
+        &mut self,
+        conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        proxy: &zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1,
+        feedback: DmabufFeedback,
+    ) {
+        #[cfg(feature = "wayland-vulkan")]
+        {
+            if self.vulkan_dmabuf_feedback.as_ref() != Some(proxy) || self.env.is_some() {
+                return;
+            }
+            let device = feedback.main_device();
+            self.vulkan_compositor_device = Some(DrmNodeId {
+                major: libc::major(device),
+                minor: libc::minor(device),
+            });
+            self.vulkan_feedback_ready = true;
+            self.log_render_diagnostic(format!(
+                "Wayland DMA-BUF feedback selected compositor DRM device {}:{}",
+                libc::major(device),
+                libc::minor(device),
+            ));
+            self.reconfigure_surface_geometry(conn);
+        }
+        #[cfg(not(feature = "wayland-vulkan"))]
+        let _ = (conn, proxy, feedback);
+    }
+
+    fn created(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _params: &zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1,
+        buffer: wl_buffer::WlBuffer,
+    ) {
+        buffer.destroy();
+    }
+
+    fn failed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _params: &zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1,
+    ) {
+    }
+
+    fn released(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _buffer: &wl_buffer::WlBuffer,
+    ) {
+    }
+}
 
 impl ShmHandler for WaylandApp {
     fn shm_state(&mut self) -> &mut Shm {
@@ -2335,7 +2966,10 @@ pub(crate) fn run(args: WaylandRunArgs) {
         stats,
         renderer_stats_log,
         renderer_animation_log,
+        rendering_api,
+        raster_present,
         renderer_cache_config,
+        latest_frame,
         native_log,
         render_rx,
         cursor_icon_rx,
@@ -2478,7 +3112,10 @@ pub(crate) fn run(args: WaylandRunArgs) {
             stats,
             renderer_stats_log,
             renderer_animation_log,
+            rendering_api,
+            raster_present,
             renderer_cache_config,
+            latest_frame,
             native_log,
             render_rx,
             cursor_icon_rx,
@@ -2495,6 +3132,60 @@ pub(crate) fn run(args: WaylandRunArgs) {
             return;
         }
     };
+    if requires_ready_renderer_before_startup_ack(rendering_api) {
+        let deadline = Instant::now() + WAYLAND_VULKAN_STARTUP_TIMEOUT;
+        while app.env.is_none() && !app.exit {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            if let Err(err) = event_loop.dispatch(
+                Some(remaining.min(WAYLAND_DISPATCH_STOP_POLL_INTERVAL)),
+                &mut app,
+            ) {
+                app.startup_error = Some(format!(
+                    "Wayland event dispatch failed during Vulkan startup: {err}"
+                ));
+                break;
+            }
+        }
+
+        if app.env.is_none() {
+            let reason = app.startup_error.take().unwrap_or_else(|| {
+                format!(
+                    "Wayland {} renderer did not initialize within {} ms",
+                    rendering_api.as_str(),
+                    WAYLAND_VULKAN_STARTUP_TIMEOUT.as_millis()
+                )
+            });
+            fail_startup(&proxy_tx, &running_flag, &event_tx, reason);
+            return;
+        }
+    }
+
+    #[cfg(feature = "vulkan")]
+    let vulkan_device = {
+        #[cfg(feature = "wayland-vulkan")]
+        {
+            match app
+                .env
+                .as_ref()
+                .map(RendererEnv::vulkan_renderer_report)
+                .transpose()
+            {
+                Ok(report) => report.flatten(),
+                Err(error) => {
+                    fail_startup(&proxy_tx, &running_flag, &event_tx, error);
+                    return;
+                }
+            }
+        }
+        #[cfg(not(feature = "wayland-vulkan"))]
+        {
+            None
+        }
+    };
+
     let watchdog_stop = Arc::new(AtomicBool::new(false));
     let watchdog_handle = render_log.then(|| {
         spawn_wayland_thread_watchdog(
@@ -2507,9 +3198,28 @@ pub(crate) fn run(args: WaylandRunArgs) {
         )
     });
 
+    let prime_video_formats = match &app.video_import {
+        WaylandVideoImportState::Ready(context) => match context.as_ref() {
+            RendererVideoImportContext::OpenGl(_) => {
+                vec!["NV12".to_string(), "ABGR8888".to_string()]
+            }
+            #[cfg(feature = "wayland-vulkan")]
+            RendererVideoImportContext::Vulkan(context) => context
+                .supported_format_names()
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        },
+        WaylandVideoImportState::PendingGpuInit | WaylandVideoImportState::Unavailable => {
+            Vec::new()
+        }
+    };
     let _ = proxy_tx.send(Ok(WindowBackendStartupInfo {
         wake,
-        prime_video_supported: true,
+        prime_video_supported: matches!(app.video_import, WaylandVideoImportState::Ready(_)),
+        prime_video_formats,
+        #[cfg(feature = "vulkan")]
+        vulkan_device,
     }));
     app.log_render_diagnostic(format!(
         "startup complete\n  geometry: {}\n  env_ready: {}\n  {}",
@@ -2591,17 +3301,50 @@ mod tests {
     use crossbeam_channel::bounded;
 
     use super::{
-        DrawDecision, DrawKind, PresentState, WaylandVideoImportState, WaylandVideoSyncAction,
-        frame_draw_decision, key_text_commit_event, should_reconfigure_surface,
+        DrawDecision, DrawKind, PresentState, RENDER_PROFILE_INTERVAL, RenderingApi,
+        WaylandVideoImportState, WaylandVideoSyncAction, frame_draw_decision,
+        key_text_commit_event, refresh_rate_interval, renderer_profile_due,
+        requires_ready_renderer_before_startup_ack, should_reconfigure_surface,
         try_send_wayland_event, try_send_wayland_tree,
     };
     use crate::actors::{EventMsg, TreeMsg};
     use crate::input::{InputEvent, MOD_SHIFT};
 
     #[test]
+    fn wayland_output_refresh_rate_uses_millihertz() {
+        let interval = refresh_rate_interval(240_000).expect("240 Hz should be valid");
+        assert!((interval.as_secs_f64() - 1.0 / 240.0).abs() < 0.000_001);
+        assert!(refresh_rate_interval(0).is_none());
+    }
+
+    #[test]
+    fn renderer_slow_frame_profiles_are_sampled_once_per_interval() {
+        let started_at = std::time::Instant::now();
+        let mut next_profile_at = started_at;
+
+        assert!(renderer_profile_due(true, started_at, &mut next_profile_at));
+        assert_eq!(next_profile_at, started_at + RENDER_PROFILE_INTERVAL);
+        assert!(!renderer_profile_due(
+            true,
+            started_at + Duration::from_millis(10),
+            &mut next_profile_at
+        ));
+        assert!(renderer_profile_due(
+            true,
+            started_at + RENDER_PROFILE_INTERVAL,
+            &mut next_profile_at
+        ));
+        assert!(!renderer_profile_due(
+            false,
+            started_at + RENDER_PROFILE_INTERVAL * 2,
+            &mut next_profile_at
+        ));
+    }
+
+    #[test]
     fn wayland_video_import_states_map_to_expected_sync_actions() {
         assert_eq!(
-            WaylandVideoImportState::PendingGlInit.sync_action(),
+            WaylandVideoImportState::PendingGpuInit.sync_action(),
             WaylandVideoSyncAction::Hold
         );
         assert_eq!(
@@ -2619,7 +3362,20 @@ mod tests {
     }
 
     #[test]
-    fn draw_requires_gl_env_before_present_state_starts_frame() {
+    fn gpu_renderers_wait_for_real_initialization_before_startup_ack() {
+        assert!(requires_ready_renderer_before_startup_ack(
+            RenderingApi::Vulkan
+        ));
+        assert!(requires_ready_renderer_before_startup_ack(
+            RenderingApi::OpenGl
+        ));
+        assert!(!requires_ready_renderer_before_startup_ack(
+            RenderingApi::Raster
+        ));
+    }
+
+    #[test]
+    fn draw_requires_gpu_env_before_present_state_starts_frame() {
         let mut present = PresentState::configured_for_test();
         present.queue_redraw();
 

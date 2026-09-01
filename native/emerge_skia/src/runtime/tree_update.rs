@@ -564,6 +564,14 @@ impl TreeUpdateEngine {
             }
             RefreshDecision::UseCachedRebuild => {
                 self.clear_latest_sample_time_if_inactive(plan.animations_active);
+                if let Some(cached) = self.cached_rebuild.as_ref()
+                    && let Some(refreshed) =
+                        crate::events::registry_builder::refresh_runtime_state_in_cached_rebuild(
+                            &self.tree, cached,
+                        )
+                {
+                    self.cached_rebuild = Some(refreshed);
+                }
                 self.cached_rebuild
                     .clone()
                     .map_or(TreeUpdateEffect::Skip, |rebuild| {
@@ -991,7 +999,7 @@ mod tests {
     use crate::tree::{
         animation::{AnimationCurve, AnimationRepeat, AnimationSpec},
         attrs::{Attrs, Background, Color, Length},
-        element::{Element, ElementKind, Frame, NearbySlot},
+        element::{Element, ElementKind, Frame, NearbySlot, SliderValueOrigin},
         serialize::encode_tree,
     };
 
@@ -1022,6 +1030,23 @@ mod tests {
     fn encode_f64_attr(out: &mut Vec<u8>, tag: u8, value: f64) {
         out.push(tag);
         out.extend_from_slice(&value.to_be_bytes());
+    }
+
+    fn encoded_slider_value_patch(id: NodeId, value: f64) -> Vec<u8> {
+        let mut attrs = Vec::new();
+        attrs.extend_from_slice(&5u16.to_be_bytes());
+        encode_length_px_attr(&mut attrs, 1, 100.0);
+        encode_length_px_attr(&mut attrs, 2, 48.0);
+        encode_f64_attr(&mut attrs, 80, 0.0);
+        encode_f64_attr(&mut attrs, 81, 100.0);
+        encode_f64_attr(&mut attrs, 82, value);
+
+        let mut patch = Vec::new();
+        patch.push(1);
+        patch.extend_from_slice(&id.to_wire_u64().to_be_bytes());
+        patch.extend_from_slice(&(attrs.len() as u32).to_be_bytes());
+        patch.extend_from_slice(&attrs);
+        patch
     }
 
     fn encoded_move_x_keyframe(value: f64) -> Vec<u8> {
@@ -1258,13 +1283,7 @@ mod tests {
                         txs.push(transform.tx);
                         collect(children, txs);
                     }
-                    RenderNode::PaintLayer(layer) => {
-                        collect(&layer.own_nodes, txs);
-                        layer
-                            .child_refs
-                            .iter()
-                            .for_each(|child| collect(&child.nodes, txs));
-                    }
+                    RenderNode::PaintLayer(layer) => collect(&layer.content_nodes(), txs),
                     RenderNode::Primitive(_) => {}
                 }
             }
@@ -1291,34 +1310,32 @@ mod tests {
         );
     }
 
-    fn cached_layer_content_generation(engine: &TreeUpdateEngine, id: NodeId) -> Option<u64> {
-        engine
-            .tree()
-            .get(&id)
-            .and_then(|element| {
-                element
-                    .refresh
-                    .render_layer_cache
-                    .borrow()
-                    .as_ref()
-                    .cloned()
-            })
-            .map(|cache| cache.layer.content_generation)
-    }
+    fn slider_tree_with_runtime_patch(value: f64, patch_value: Option<f64>) -> ElementTree {
+        let id = NodeId::from_term_bytes(vec![2]);
+        let attrs = Attrs {
+            width: Some(Length::Px(100.0)),
+            height: Some(Length::Px(48.0)),
+            slider_min: Some(0.0),
+            slider_max: Some(100.0),
+            slider_value: Some(value),
+            ..Attrs::default()
+        };
+        let mut element = Element::with_attrs(id, ElementKind::Slider, Vec::new(), attrs);
+        element.runtime.slider_value_origin = SliderValueOrigin::Event;
+        element.runtime.slider_patch_value = patch_value.map(f64::to_bits);
+        element.layout.frame = Some(Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 48.0,
+            content_width: 100.0,
+            content_height: 48.0,
+        });
 
-    fn cached_layer_own_nodes_ptr(engine: &TreeUpdateEngine, id: NodeId) -> Option<usize> {
-        engine
-            .tree()
-            .get(&id)
-            .and_then(|element| {
-                element
-                    .refresh
-                    .render_layer_cache
-                    .borrow()
-                    .as_ref()
-                    .cloned()
-            })
-            .map(|cache| std::sync::Arc::as_ptr(&cache.layer.own_nodes) as usize)
+        let mut tree = ElementTree::new();
+        tree.insert(element);
+        tree.set_root_id(id);
+        tree
     }
 
     fn scrollable_tree_at_start() -> ElementTree {
@@ -1429,13 +1446,6 @@ mod tests {
                 .paint_generation,
             initial_paint_generation
         );
-        let mid_layer_generation = cached_layer_content_generation(&engine, sidepane_id).expect(
-            "translated sidepane should cache stable payload content after first clean pulse",
-        );
-        let mid_layer_own_nodes_ptr = cached_layer_own_nodes_ptr(&engine, sidepane_id).expect(
-            "translated sidepane should cache stable payload nodes after first clean pulse",
-        );
-
         let late_mid = layout_output(
             engine
                 .process_messages(
@@ -1450,15 +1460,6 @@ mod tests {
         );
         assert!(late_mid.animations_active);
         assert_scene_has_translate_x(&late_mid.scene, 200.0, 350.0);
-        assert_eq!(
-            cached_layer_content_generation(&engine, sidepane_id),
-            Some(mid_layer_generation)
-        );
-        assert_eq!(
-            cached_layer_own_nodes_ptr(&engine, sidepane_id),
-            Some(mid_layer_own_nodes_ptr)
-        );
-
         let final_output = layout_output(
             engine
                 .process_messages(
@@ -1583,6 +1584,59 @@ mod tests {
         assert_eq!(
             engine.tree().get(&id).unwrap().layout.frame.unwrap().width,
             200.0
+        );
+    }
+
+    #[test]
+    fn delayed_slider_marker_and_no_op_correction_are_registry_only() {
+        let id = NodeId::from_term_bytes(vec![2]);
+        let mut engine = TreeUpdateEngine::new(slider_tree_with_runtime_patch(60.0, None), 100, 48);
+        let options = TreeUpdateOptions::new(None, TreeUpdateDecodePolicy::ReturnErr);
+
+        let initial = layout_output(
+            engine
+                .process_messages(vec![TreeMsg::RebuildRegistry], options)
+                .unwrap(),
+        );
+        assert_eq!(initial.event_rebuild.sliders[&id].value, 60.0);
+        assert_eq!(initial.event_rebuild.sliders[&id].patch_value, None);
+
+        let delayed = engine
+            .process_messages(
+                vec![TreeMsg::PatchTree {
+                    bytes: encoded_slider_value_patch(id, 40.0),
+                    submitted_at: None,
+                }],
+                TreeUpdateOptions::new(None, TreeUpdateDecodePolicy::ReturnErr),
+            )
+            .unwrap();
+        let TreeUpdateEffect::RegistryUpdate { rebuild } = delayed else {
+            panic!("delayed marker-only patch should not construct a scene");
+        };
+        assert_eq!(rebuild.sliders[&id].value, 60.0);
+        assert_eq!(rebuild.sliders[&id].patch_value, Some(40.0));
+        assert_eq!(
+            engine.cached_rebuild.as_ref().unwrap().sliders[&id].patch_value,
+            Some(40.0)
+        );
+
+        let correction = engine
+            .process_messages(
+                vec![TreeMsg::SetSliderValue {
+                    element_id: id,
+                    value: 60.0,
+                }],
+                TreeUpdateOptions::new(None, TreeUpdateDecodePolicy::ReturnErr),
+            )
+            .unwrap();
+        let TreeUpdateEffect::RegistryUpdate { rebuild } = correction else {
+            panic!("no-op correction should publish refreshed registry without a scene");
+        };
+        assert_eq!(rebuild.sliders[&id].value, 60.0);
+        assert_eq!(rebuild.sliders[&id].patch_value, None);
+        assert_eq!(
+            engine.cached_rebuild.as_ref().unwrap().sliders[&id].patch_value,
+            None
         );
     }
 

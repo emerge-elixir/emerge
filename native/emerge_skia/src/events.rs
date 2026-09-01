@@ -1432,6 +1432,7 @@ rustler::atoms! {
     mouse_leave,
     mouse_move,
     window_close_requested,
+    debug,
     info,
     warning,
     error,
@@ -1512,6 +1513,7 @@ pub(crate) fn mouse_move_atom() -> Atom {
 #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
 fn log_level_atom(level: NativeLogLevel) -> Atom {
     match level {
+        NativeLogLevel::Debug => debug(),
         NativeLogLevel::Info => info(),
         NativeLogLevel::Warning => warning(),
         NativeLogLevel::Error => error(),

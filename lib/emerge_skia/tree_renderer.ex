@@ -72,7 +72,7 @@ defmodule EmergeSkia.TreeRenderer do
   end
 
   defp render_offscreen(tree, opts, default_asset_timeout_ms, action, label) do
-    asset_config = Assets.normalize_asset_config!(opts)
+    asset_config = Assets.normalize_asset_config!(opts, decode_at_size: true)
     raster_opts = Options.normalize_raster_opts!(opts, default_asset_timeout_ms)
     transport = Transport.default()
 

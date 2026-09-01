@@ -1,1610 +1,620 @@
 use super::common::{build_tree_with_child_frame, mount_nearby, solid_fill_attrs};
 use super::*;
 use crate::render_scene::{
-    DrawPrimitive, PaintLayerPlacement, PaintLayerPolicy, PaintLayerReason, RenderNode,
-    RenderPaintLayer,
+    DrawPrimitive, PaintLayerPolicy, PaintLayerReason, RenderNode, RenderPaintLayer,
+    RenderPaintLayerContentNode,
 };
-use crate::tree::animation::{AnimationCurve, AnimationRepeat, AnimationSpec};
-use crate::tree::geometry::Rect;
+use crate::renderer::{RendererCacheConfig, SceneRenderer};
+use std::collections::{BTreeMap, BTreeSet};
 
-#[test]
-fn moving_paint_layer_payload_content_generation_ignores_float_noise() {
-    let nodes_a = vec![RenderNode::Primitive(DrawPrimitive::Rect(
-        0.1 + 0.2,
-        10.000_001,
-        80.0,
-        40.0,
-        0x123456FF,
-    ))];
-    let nodes_b = vec![RenderNode::Primitive(DrawPrimitive::Rect(
-        0.3, 10.0, 80.0, 40.0, 0x123456FF,
-    ))];
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LayerDescriptor {
+    stable_id: u64,
+    parent: Option<(u64, PaintLayerReason)>,
+    reason: PaintLayerReason,
+    policy: PaintLayerPolicy,
+    own_colors: BTreeSet<u32>,
+    own_run_colors: Vec<BTreeSet<u32>>,
+    owns_video: bool,
+}
 
-    assert_eq!(
-        super::super::moving_paint_layer_content_generation(
-            &nodes_a,
-            Rect {
-                x: 0.0,
-                y: 0.0,
-                width: 120.0,
-                height: 80.0,
-            }
-        ),
-        super::super::moving_paint_layer_content_generation(
-            &nodes_b,
-            Rect {
-                x: 0.0,
-                y: 0.0,
-                width: 120.0,
-                height: 80.0,
-            }
-        )
-    );
+struct CameraFixture {
+    tree: ElementTree,
+    root_id: NodeId,
+    video_id: NodeId,
+    top_id: NodeId,
+    bottom_id: NodeId,
+    slider_ids: Vec<NodeId>,
+    track_ids: Vec<NodeId>,
+    fill_ids: Vec<NodeId>,
+    track_colors: Vec<u32>,
+    fill_colors: Vec<u32>,
+    thumb_colors: Vec<u32>,
+    static_colors: [u32; 3],
 }
 
 #[test]
-fn moving_paint_layer_payload_content_generation_preserves_real_geometry_changes() {
-    let nodes_a = vec![RenderNode::Primitive(DrawPrimitive::Rect(
-        0.0, 10.0, 80.0, 40.0, 0x123456FF,
-    ))];
-    let nodes_b = vec![RenderNode::Primitive(DrawPrimitive::Rect(
-        0.01, 10.0, 80.0, 40.0, 0x123456FF,
-    ))];
+fn camera_like_semantic_topology_is_exact_and_generation_local() {
+    let mut fixture = camera_fixture();
 
-    assert_ne!(
-        super::super::moving_paint_layer_content_generation(
-            &nodes_a,
-            Rect {
-                x: 0.0,
-                y: 0.0,
-                width: 120.0,
-                height: 80.0,
-            }
-        ),
-        super::super::moving_paint_layer_content_generation(
-            &nodes_b,
-            Rect {
-                x: 0.0,
-                y: 0.0,
-                width: 120.0,
-                height: 80.0,
-            }
-        )
-    );
-}
+    let dirty = super::super::render_tree_scene_with_scroll_layers(&fixture.tree).scene;
+    let dirty_descriptor = describe_scene(&dirty.nodes);
+    assert_camera_descriptor(&fixture, &dirty_descriptor);
+    let dirty_generations = layer_generations(&dirty.nodes);
 
-#[test]
-fn moving_paint_layer_payload_content_generation_ignores_off_payload_changes() {
-    let payload_bounds = Rect {
-        x: 0.0,
-        y: 0.0,
-        width: 120.0,
-        height: 80.0,
-    };
-    let visible_a = vec![RenderNode::Primitive(DrawPrimitive::Rect(
-        0.0, 10.0, 80.0, 40.0, 0x123456FF,
-    ))];
-    let visible_b = vec![RenderNode::Primitive(DrawPrimitive::Rect(
-        0.0, 11.0, 80.0, 40.0, 0x123456FF,
-    ))];
-    let offscreen_a = vec![RenderNode::Primitive(DrawPrimitive::Rect(
-        0.0, 180.0, 80.0, 40.0, 0x123456FF,
-    ))];
-    let offscreen_b = vec![RenderNode::Primitive(DrawPrimitive::Rect(
-        0.0, 181.0, 80.0, 40.0, 0x123456FF,
-    ))];
+    fixture.tree.clear_refresh_dirty();
+    let clean = super::super::render_tree_scene_with_scroll_layers(&fixture.tree).scene;
+    assert_eq!(describe_scene(&clean.nodes), dirty_descriptor);
+    assert_eq!(layer_generations(&clean.nodes), dirty_generations);
 
-    assert_ne!(
-        super::super::moving_paint_layer_content_generation(&visible_a, payload_bounds),
-        super::super::moving_paint_layer_content_generation(&visible_b, payload_bounds)
-    );
-    assert_eq!(
-        super::super::moving_paint_layer_content_generation(&offscreen_a, payload_bounds),
-        super::super::moving_paint_layer_content_generation(&offscreen_b, payload_bounds)
-    );
-}
-
-#[test]
-fn dynamic_paint_layer_generation_tracks_visible_content() {
-    let frame = Frame {
-        x: 0.0,
-        y: 0.0,
-        width: 80.0,
-        height: 40.0,
-        content_width: 80.0,
-        content_height: 40.0,
-    };
-    let scene = |x, color| {
-        super::super::wrap_with_paint_layer(
-            vec![RenderNode::Primitive(DrawPrimitive::Rect(
-                x, 0.0, 80.0, 40.0, color,
-            ))],
-            77,
-            PaintLayerPlacement::Fixed,
-            PaintLayerPolicy::DynamicRedraw,
-            PaintLayerReason::Animation,
-            frame,
-            None,
-        )
-    };
-    let red_a = scene(0.0, 0xFF0000FF);
-    let red_b = scene(0.0, 0xFF0000FF);
-    let sub_bucket_red = scene(0.000_1, 0xFF0000FF);
-    let green = scene(0.0, 0x00FF00FF);
-    let generation = |nodes: &[RenderNode]| {
-        paint_layers(nodes)
-            .into_iter()
-            .next()
-            .expect("dynamic paint layer should be emitted")
-            .content_generation
-    };
-
-    assert_ne!(generation(&red_a), 0);
-    assert_eq!(generation(&red_a), generation(&red_b));
-    assert_ne!(generation(&red_a), generation(&sub_bucket_red));
-    assert_ne!(generation(&red_a), generation(&green));
-}
-
-#[test]
-fn render_damage_emits_dynamic_paint_layer_with_stable_id() {
-    let parent_id = NodeId::from_term_bytes(vec![4]);
-    let child_id = NodeId::from_term_bytes(vec![5]);
-    let mut tree = build_tree_with_child_frame(
-        Attrs::default(),
-        Frame {
-            x: 0.0,
-            y: 0.0,
-            width: 200.0,
-            height: 120.0,
-            content_width: 200.0,
-            content_height: 120.0,
-        },
-        Attrs {
-            background: Some(Background::Color(Color::Rgb {
-                r: 20,
-                g: 30,
-                b: 40,
-            })),
-            ..Attrs::default()
-        },
-        Frame {
-            x: 20.0,
-            y: 30.0,
-            width: 80.0,
-            height: 40.0,
-            content_width: 80.0,
-            content_height: 40.0,
-        },
-    );
-    tree.get_mut(&parent_id).unwrap().layout.scroll_y_max = 140.0;
-    tree.clear_refresh_dirty();
-    tree.mark_render_and_registry_refresh_dirty(&child_id);
-
-    let output = super::super::render_tree_scene_with_paint_layer_policy(&tree, true, true);
-    let dirty_ids = dynamic_paint_layer_ids(&output.scene.nodes);
-    let dirty_layer = paint_layers(&output.scene.nodes)
-        .into_iter()
-        .find(|layer| {
-            layer.stable_id == child_id.to_wire_u64()
-                && layer.policy == PaintLayerPolicy::DynamicRedraw
+    let changed_fill = fixture.fill_ids[2];
+    fixture
+        .tree
+        .get_mut(&changed_fill)
+        .and_then(|fill| fill.layout.frame.as_mut())
+        .expect("selected slider fill frame")
+        .width += 7.0;
+    fixture
+        .tree
+        .mark_render_and_registry_refresh_dirty(&changed_fill);
+    let slider_changed = super::super::render_tree_scene_with_scroll_layers(&fixture.tree).scene;
+    assert_eq!(describe_scene(&slider_changed.nodes), dirty_descriptor);
+    let changed_generations = layer_generations(&slider_changed.nodes);
+    let changed_keys = changed_generations
+        .iter()
+        .filter_map(|(key, generation)| {
+            (dirty_generations.get(key) != Some(generation)).then_some(*key)
         })
-        .expect("render-damaged child should emit a dynamic paint layer");
+        .collect::<Vec<_>>();
+    assert_eq!(
+        changed_keys,
+        vec![(
+            fixture.slider_ids[2].to_wire_u64(),
+            PaintLayerReason::SliderValue,
+        )]
+    );
 
-    assert!(dirty_ids.contains(&child_id.to_wire_u64()));
-    assert_ne!(dirty_layer.content_generation, 0);
+    fixture.tree.clear_refresh_dirty();
+    fixture
+        .tree
+        .mark_render_and_registry_refresh_dirty(&fixture.video_id);
+    let camera_only = super::super::render_tree_scene_with_scroll_layers(&fixture.tree).scene;
+    assert_eq!(describe_scene(&camera_only.nodes), dirty_descriptor);
+    assert_eq!(layer_generations(&camera_only.nodes), changed_generations);
 }
 
 #[test]
-fn scroll_moving_paint_layer_bounds_include_outer_glow() {
-    let parent_id = NodeId::from_term_bytes(vec![4]);
-    let child_id = NodeId::from_term_bytes(vec![5]);
-    let mut tree = build_tree_with_child_frame(
-        Attrs {
-            scrollbar_y: Some(true),
-            ..Attrs::default()
-        },
-        Frame {
-            x: 0.0,
-            y: 0.0,
-            width: 220.0,
-            height: 120.0,
-            content_width: 220.0,
-            content_height: 260.0,
-        },
-        Attrs {
-            border_radius: Some(BorderRadius::Uniform(10.0)),
-            box_shadows: Some(vec![BoxShadow {
-                offset_x: 0.0,
-                offset_y: 0.0,
-                blur: 6.0,
-                size: 3.0,
-                color: Color::Rgba {
-                    r: 255,
-                    g: 220,
-                    b: 120,
-                    a: 90,
-                },
-                inset: false,
-            }]),
-            ..solid_fill_attrs((244, 248, 255))
-        },
-        Frame {
-            x: 40.0,
-            y: 40.0,
-            width: 100.0,
-            height: 32.0,
-            content_width: 100.0,
-            content_height: 32.0,
-        },
-    );
-    tree.get_mut(&parent_id).unwrap().layout.scroll_y_max = 140.0;
-    tree.clear_refresh_dirty();
+fn warm_camera_like_scene_reuses_every_static_run_while_video_stays_direct() {
+    let mut fixture = camera_fixture();
+    fixture.tree.clear_refresh_dirty();
+    let scene = super::super::render_tree_scene_with_scroll_layers(&fixture.tree).scene;
+    let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+        enabled: true,
+        max_new_payloads_per_frame: 64,
+        ..RendererCacheConfig::default()
+    });
 
-    let output = super::super::render_tree_scene_with_paint_layer_policy(&tree, true, true);
-    let scroll_layer =
-        paint_layer_by_reason(&output.scene.nodes, PaintLayerReason::ScrollContainer)
-            .expect("scroll container should emit a paint layer");
-    let layer = paint_layers(&output.scene.nodes)
-        .into_iter()
-        .find(|layer| layer.stable_id == child_id.to_wire_u64())
-        .expect("scroll child should emit a stable moving paint layer");
+    let (_, cold_timings) = super::pipeline::render_scene_with_renderer_to_pixels_and_timings(
+        &mut renderer,
+        scene.clone(),
+        800,
+        600,
+    );
+    let (_, warm_timings) = super::pipeline::render_scene_with_renderer_to_pixels_and_timings(
+        &mut renderer,
+        scene,
+        800,
+        600,
+    );
+    let cold = cold_timings
+        .renderer_cache
+        .expect("cold Camera cache stats");
+    let warm = warm_timings
+        .renderer_cache
+        .expect("warm Camera cache stats");
+    assert_eq!(cold.paint_layer.stores, 22);
+    assert_eq!(warm.paint_layer.hits, 22);
+    assert_eq!(warm.paint_layer.stores, 0);
 
-    assert_eq!(layer.reason, PaintLayerReason::StableSubtree);
-    assert!(
-        !contains_shadow_primitive(&scroll_layer.own_nodes),
-        "scroll parent should not own the child's cacheable outer glow"
+    fixture
+        .tree
+        .mark_render_and_registry_refresh_dirty(&fixture.video_id);
+    let camera_only = super::super::render_tree_scene_with_scroll_layers(&fixture.tree).scene;
+    let (_, video_timings) = super::pipeline::render_scene_with_renderer_to_pixels_and_timings(
+        &mut renderer,
+        camera_only,
+        800,
+        600,
     );
-    assert!(
-        contains_shadow_primitive(&layer.own_nodes),
-        "scroll child paint layer should cache its own outer glow"
+    let video = video_timings
+        .renderer_cache
+        .expect("camera-only redraw cache stats");
+    assert_eq!(video.paint_layer.hits, 22);
+    assert_eq!(video.paint_layer.stores, 0);
+
+    let changed_track = fixture.track_ids[2];
+    fixture
+        .tree
+        .get_mut(&changed_track)
+        .and_then(|track| track.layout.frame.as_mut())
+        .expect("selected slider track frame")
+        .width -= 5.0;
+    fixture
+        .tree
+        .mark_render_and_registry_refresh_dirty(&changed_track);
+    let changed_fill = fixture.fill_ids[2];
+    fixture
+        .tree
+        .get_mut(&changed_fill)
+        .and_then(|fill| fill.layout.frame.as_mut())
+        .expect("selected slider fill frame")
+        .width += 7.0;
+    fixture
+        .tree
+        .mark_render_and_registry_refresh_dirty(&changed_fill);
+    let slider_changed = super::super::render_tree_scene_with_scroll_layers(&fixture.tree).scene;
+    let (_, slider_timings) = super::pipeline::render_scene_with_renderer_to_pixels_and_timings(
+        &mut renderer,
+        slider_changed,
+        800,
+        600,
     );
-    assert!(layer.bounds.x < 0.0, "{:?}", layer.bounds);
-    assert!(layer.bounds.y < 0.0, "{:?}", layer.bounds);
-    assert!(layer.bounds.width > 100.0, "{:?}", layer.bounds);
-    assert!(layer.bounds.height > 32.0, "{:?}", layer.bounds);
+    let slider = slider_timings
+        .renderer_cache
+        .expect("changed slider cache stats");
+    assert_eq!(slider.paint_layer.hits, 20);
+    assert_eq!(slider.paint_layer.misses, 2);
+    assert_eq!(slider.paint_layer.stores, 2);
 }
 
 #[test]
-fn clean_deep_scroll_subtree_reuses_single_retained_paint_layer_without_descending() {
-    let root_id = NodeId::from_term_bytes(vec![30]);
-    let depth = 32_u8;
-    let mut tree = ElementTree::new();
+fn root_and_nearby_boundaries_do_not_depend_on_dirty_state() {
+    let mut fixture = camera_fixture();
+    let dirty = super::super::render_tree_scene_with_scroll_layers(&fixture.tree).scene;
+    fixture.tree.clear_refresh_dirty();
+    let clean = super::super::render_tree_scene_with_scroll_layers(&fixture.tree).scene;
 
-    let mut root = Element::with_attrs(
+    assert_eq!(describe_scene(&dirty.nodes), describe_scene(&clean.nodes));
+    let descriptor = describe_scene(&dirty.nodes);
+    assert_eq!(descriptor[0].reason, PaintLayerReason::Root);
+    assert_eq!(descriptor[0].policy, PaintLayerPolicy::DirectOnly);
+    assert_eq!(
+        descriptor
+            .iter()
+            .filter(|layer| layer.reason == PaintLayerReason::Nearby)
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn video_under_cacheable_nearby_becomes_local_direct_media() {
+    let root_id = NodeId::from_u64(50_000);
+    let nearby_id = NodeId::from_u64(50_001);
+    let video_id = NodeId::from_u64(50_002);
+    let mut root = element(
         root_id,
         ElementKind::El,
-        Vec::new(),
-        Attrs {
-            scrollbar_y: Some(true),
-            ..solid_fill_attrs((248, 250, 252))
-        },
+        solid_fill_attrs((5, 5, 5)),
+        frame(0.0, 0.0, 200.0, 120.0),
     );
-    root.children = vec![NodeId::from_term_bytes(vec![31])];
-    root.layout.frame = Some(Frame {
-        x: 0.0,
-        y: 0.0,
-        width: 320.0,
-        height: 160.0,
-        content_width: 320.0,
-        content_height: 640.0,
-    });
-    root.layout.scroll_y_max = 480.0;
+    root.nearby.push(NearbySlot::InFront, nearby_id);
+    let mut nearby = element(
+        nearby_id,
+        ElementKind::El,
+        Attrs::default(),
+        frame(0.0, 0.0, 200.0, 120.0),
+    );
+    nearby.children = vec![video_id];
+    let video = element(
+        video_id,
+        ElementKind::Video,
+        Attrs {
+            video_target: Some("overlay-video".to_string()),
+            ..Attrs::default()
+        },
+        frame(10.0, 10.0, 100.0, 80.0),
+    );
+    let mut tree = ElementTree::new();
     tree.set_root_id(root_id);
     tree.insert(root);
+    tree.insert(nearby);
+    tree.insert(video);
 
-    for index in 0..depth {
-        let id = NodeId::from_term_bytes(vec![31 + index]);
-        let next = (index + 1 < depth).then(|| NodeId::from_term_bytes(vec![32 + index]));
-        let mut node = Element::with_attrs(
-            id,
-            ElementKind::El,
-            Vec::new(),
+    let scene = super::super::render_tree_scene_with_scroll_layers(&tree).scene;
+    let descriptor = describe_scene(&scene.nodes);
+    assert_eq!(
+        descriptor
+            .iter()
+            .map(|layer| layer.reason)
+            .collect::<Vec<_>>(),
+        vec![
+            PaintLayerReason::Root,
+            PaintLayerReason::Nearby,
+            PaintLayerReason::DirectMedia,
+        ]
+    );
+    assert_eq!(descriptor[2].policy, PaintLayerPolicy::DirectOnly);
+    assert!(descriptor[2].owns_video);
+    assert!(!descriptor[1].owns_video);
+}
+
+#[test]
+fn animated_video_stays_direct_below_its_cacheable_animation_boundary() {
+    let root_id = NodeId::from_u64(55_000);
+    let video_id = NodeId::from_u64(55_001);
+    let mut root = element(
+        root_id,
+        ElementKind::El,
+        Attrs::default(),
+        frame(0.0, 0.0, 200.0, 120.0),
+    );
+    root.children = vec![video_id];
+    let animation = crate::tree::animation::AnimationSpec {
+        keyframes: vec![
             Attrs {
-                border_width: Some(BorderWidth::Uniform(1.0)),
-                ..solid_fill_attrs((220_u8.saturating_sub(index), 230, 240))
+                move_x: Some(0.0),
+                ..Attrs::default()
             },
-        );
-        node.children = next.into_iter().collect();
-        node.layout.frame = Some(Frame {
-            x: 8.0 + f32::from(index),
-            y: 12.0 + f32::from(index) * 4.0,
-            width: 260.0,
-            height: 28.0,
-            content_width: 260.0,
-            content_height: 28.0,
-        });
-        tree.insert(node);
-    }
-
-    tree.clear_refresh_dirty();
-    let first_output = super::super::render_tree_scene_with_paint_layer_policy(&tree, true, true);
-    let first_subtree_layer = paint_layers(&first_output.scene.nodes)
-        .into_iter()
-        .find(|layer| layer.stable_id == NodeId::from_term_bytes(vec![31]).to_wire_u64())
-        .expect("top scroll child should become the retained paint-layer boundary");
-
-    assert_eq!(first_subtree_layer.reason, PaintLayerReason::StableSubtree);
-    assert!(
-        first_subtree_layer.metrics.own_primitive_count >= u32::from(depth),
-        "the top clean subtree layer should own static descendants instead of \
-         splitting them into depth-based child layers"
-    );
-    assert!(
-        first_subtree_layer.child_refs.is_empty(),
-        "clean static descendants should be one payload, not nested child refs"
-    );
-
-    super::super::reset_render_traversal_diagnostics_for_benchmark();
-    let second_output = super::super::render_tree_scene_with_paint_layer_policy(&tree, true, true);
-    let diagnostics = super::super::take_render_traversal_diagnostics_for_benchmark();
-
-    assert_eq!(
-        diagnostics.element_visits, 2,
-        "second refresh should visit only the scroll root and retained subtree root"
-    );
-    let second_subtree_layer = paint_layers(&second_output.scene.nodes)
-        .into_iter()
-        .find(|layer| layer.stable_id == NodeId::from_term_bytes(vec![31]).to_wire_u64())
-        .expect("retained paint-layer should still be present");
-    assert!(std::sync::Arc::ptr_eq(
-        &first_subtree_layer.own_nodes,
-        &second_subtree_layer.own_nodes
-    ));
-}
-
-#[test]
-fn dirty_scroll_moving_focused_slider_layer_keeps_child_layers_independent() {
-    let scroll_id = NodeId::from_term_bytes(vec![40]);
-    let slider_id = NodeId::from_term_bytes(vec![41]);
-    let track_id = NodeId::from_term_bytes(vec![42]);
-
-    let mut scroll = Element::with_attrs(
-        scroll_id,
-        ElementKind::El,
-        Vec::new(),
+            Attrs {
+                move_x: Some(30.0),
+                ..Attrs::default()
+            },
+        ],
+        duration_ms: 100.0,
+        curve: crate::tree::animation::AnimationCurve::Linear,
+        repeat: crate::tree::animation::AnimationRepeat::Once,
+    };
+    let mut video = element(
+        video_id,
+        ElementKind::Video,
         Attrs {
-            scrollbar_y: Some(true),
+            video_target: Some("animated-video".to_string()),
             ..Attrs::default()
         },
+        frame(10.0, 10.0, 100.0, 80.0),
     );
-    scroll.children = vec![slider_id];
-    scroll.layout.frame = Some(Frame {
-        x: 0.0,
-        y: 0.0,
-        width: 320.0,
-        height: 120.0,
-        content_width: 320.0,
-        content_height: 260.0,
-    });
-    scroll.layout.scroll_y_max = 140.0;
-
-    let mut slider = Element::with_attrs(
-        slider_id,
-        ElementKind::Slider,
-        Vec::new(),
-        Attrs {
-            border_radius: Some(BorderRadius::Uniform(999.0)),
-            box_shadows: Some(vec![BoxShadow {
-                offset_x: 0.0,
-                offset_y: 0.0,
-                blur: 6.0,
-                size: 3.0,
-                color: Color::Rgba {
-                    r: 255,
-                    g: 220,
-                    b: 120,
-                    a: 90,
-                },
-                inset: false,
-            }]),
-            ..Attrs::default()
-        },
-    );
-    slider.children = vec![track_id];
-    slider.runtime.focused_active = true;
-    slider.layout.frame = Some(Frame {
-        x: 40.0,
-        y: 40.0,
-        width: 180.0,
-        height: 44.0,
-        content_width: 180.0,
-        content_height: 44.0,
-    });
-
-    let mut track = Element::with_attrs(
-        track_id,
-        ElementKind::El,
-        Vec::new(),
-        solid_fill_attrs((80, 80, 80)),
-    );
-    track.layout.frame = Some(Frame {
-        x: 55.0,
-        y: 56.0,
-        width: 150.0,
-        height: 12.0,
-        content_width: 150.0,
-        content_height: 12.0,
-    });
-
-    let mut tree = ElementTree::new();
-    tree.set_root_id(scroll_id);
-    tree.insert(scroll);
-    tree.insert(slider);
-    tree.insert(track);
-    tree.clear_refresh_dirty();
-
-    let clean_output = super::super::render_tree_scene_with_paint_layer_policy(&tree, true, true);
-    let clean_slider_layer = paint_layers(&clean_output.scene.nodes)
-        .into_iter()
-        .find(|layer| layer.stable_id == slider_id.to_wire_u64())
-        .expect("clean focused slider should emit its own paint layer");
-
-    tree.mark_render_and_registry_refresh_dirty(&slider_id);
-
-    let output = super::super::render_tree_scene_with_paint_layer_policy(&tree, true, true);
-    let scroll_layer =
-        paint_layer_by_reason(&output.scene.nodes, PaintLayerReason::ScrollContainer)
-            .expect("scroll container should emit a paint layer");
-    let slider_layer = paint_layers(&output.scene.nodes)
-        .into_iter()
-        .find(|layer| layer.stable_id == slider_id.to_wire_u64())
-        .expect("dirty focused slider should still emit its own paint layer");
-
-    assert_eq!(slider_layer.policy, PaintLayerPolicy::Cacheable);
-    assert_eq!(slider_layer.reason, PaintLayerReason::StableSubtree);
-    assert_eq!(slider_layer.placement, PaintLayerPlacement::ScrollMoving);
-    assert_eq!(
-        slider_layer.content_generation, clean_slider_layer.content_generation,
-        "dirty slider child movement should keep the focused glow payload key stable"
-    );
-    assert!(
-        !contains_shadow_primitive(&scroll_layer.own_nodes),
-        "scroll parent should not own the focused slider glow"
-    );
-    assert!(
-        contains_shadow_primitive(&slider_layer.own_nodes),
-        "focused slider paint layer should own its glow during drag"
-    );
-    assert!(
-        slider_layer.child_refs.is_empty(),
-        "scroll-moving focused slider glow layer should not carry clipped child refs"
-    );
-    assert!(
-        paint_layers(&output.scene.nodes)
-            .into_iter()
-            .any(|layer| layer.stable_id == track_id.to_wire_u64()),
-        "slider child rendering should stay independently cacheable"
-    );
-    assert!(slider_layer.bounds.x < 0.0, "{:?}", slider_layer.bounds);
-    assert!(slider_layer.bounds.y < 0.0, "{:?}", slider_layer.bounds);
-    assert!(
-        slider_layer.bounds.width > 180.0,
-        "{:?}",
-        slider_layer.bounds
-    );
-    assert!(
-        slider_layer.bounds.height > 44.0,
-        "{:?}",
-        slider_layer.bounds
-    );
-}
-
-#[test]
-fn dirty_fixed_focused_slider_layer_keeps_glow_payload_stable() {
-    let root_id = NodeId::from_term_bytes(vec![50]);
-    let slider_id = NodeId::from_term_bytes(vec![51]);
-    let track_id = NodeId::from_term_bytes(vec![52]);
-
-    let mut root = Element::with_attrs(root_id, ElementKind::El, Vec::new(), Attrs::default());
-    root.children = vec![slider_id];
-    root.layout.frame = Some(Frame {
-        x: 0.0,
-        y: 0.0,
-        width: 320.0,
-        height: 140.0,
-        content_width: 320.0,
-        content_height: 140.0,
-    });
-
-    let mut slider = Element::with_attrs(
-        slider_id,
-        ElementKind::Slider,
-        Vec::new(),
-        Attrs {
-            border_radius: Some(BorderRadius::Uniform(999.0)),
-            box_shadows: Some(vec![BoxShadow {
-                offset_x: 0.0,
-                offset_y: 0.0,
-                blur: 6.0,
-                size: 3.0,
-                color: Color::Rgba {
-                    r: 255,
-                    g: 220,
-                    b: 120,
-                    a: 90,
-                },
-                inset: false,
-            }]),
-            ..Attrs::default()
-        },
-    );
-    slider.children = vec![track_id];
-    slider.runtime.focused_active = true;
-    slider.layout.frame = Some(Frame {
-        x: 40.0,
-        y: 40.0,
-        width: 180.0,
-        height: 44.0,
-        content_width: 180.0,
-        content_height: 44.0,
-    });
-
-    let mut track = Element::with_attrs(
-        track_id,
-        ElementKind::El,
-        Vec::new(),
-        solid_fill_attrs((80, 80, 80)),
-    );
-    track.layout.frame = Some(Frame {
-        x: 55.0,
-        y: 56.0,
-        width: 150.0,
-        height: 12.0,
-        content_width: 150.0,
-        content_height: 12.0,
-    });
-
+    video.spec.declared.animate = Some(animation);
     let mut tree = ElementTree::new();
     tree.set_root_id(root_id);
     tree.insert(root);
-    tree.insert(slider);
-    tree.insert(track);
-    tree.clear_refresh_dirty();
+    tree.insert(video);
 
-    let clean_output = super::super::render_tree_scene_with_paint_layer_policy(&tree, true, true);
-    let clean_slider_layer = paint_layers(&clean_output.scene.nodes)
-        .into_iter()
-        .find(|layer| layer.stable_id == slider_id.to_wire_u64())
-        .expect("clean focused slider should emit its own fixed paint layer");
-
-    tree.get_mut(&track_id).unwrap().layout.frame = Some(Frame {
-        x: 78.0,
-        y: 56.0,
-        width: 112.0,
-        height: 12.0,
-        content_width: 112.0,
-        content_height: 12.0,
-    });
-    tree.mark_render_and_registry_refresh_dirty(&slider_id);
-    tree.mark_render_and_registry_refresh_dirty(&track_id);
-
-    let output = super::super::render_tree_scene_with_paint_layer_policy(&tree, true, true);
-    let slider_layer = paint_layers(&output.scene.nodes)
-        .into_iter()
-        .find(|layer| layer.stable_id == slider_id.to_wire_u64())
-        .expect("dirty focused slider should keep its own fixed paint layer");
-
-    assert_eq!(slider_layer.policy, PaintLayerPolicy::Cacheable);
-    assert_eq!(slider_layer.reason, PaintLayerReason::StableSubtree);
-    assert_eq!(slider_layer.placement, PaintLayerPlacement::Fixed);
+    let scene = super::super::render_tree_scene_with_scroll_layers(&tree).scene;
+    let descriptor = describe_scene(&scene.nodes);
     assert_eq!(
-        slider_layer.content_generation, clean_slider_layer.content_generation,
-        "dirty slider child movement should not invalidate the focused glow payload"
-    );
-    assert!(
-        contains_shadow_primitive(&slider_layer.own_nodes),
-        "fixed focused slider paint layer should own its glow during drag"
-    );
-    assert!(
-        !contains_rect_color(&slider_layer.own_nodes, 0x505050FF),
-        "fixed focused slider own payload should not include moving track pixels"
-    );
-    assert!(
-        slider_layer
-            .child_refs
+        descriptor
             .iter()
-            .flat_map(|child| paint_layers(&child.nodes))
-            .any(|layer| layer.reason == PaintLayerReason::Animation),
-        "moving slider children should be composed through a child paint layer"
+            .map(|layer| layer.reason)
+            .collect::<Vec<_>>(),
+        vec![
+            PaintLayerReason::Root,
+            PaintLayerReason::Animation,
+            PaintLayerReason::DirectMedia,
+        ]
     );
-    assert!(slider_layer.bounds.x < 40.0, "{:?}", slider_layer.bounds);
-    assert!(slider_layer.bounds.y < 40.0, "{:?}", slider_layer.bounds);
+    assert!(descriptor[2].owns_video);
     assert!(
-        slider_layer.bounds.width > 180.0,
-        "{:?}",
-        slider_layer.bounds
-    );
-    assert!(
-        slider_layer.bounds.height > 44.0,
-        "{:?}",
-        slider_layer.bounds
+        descriptor
+            .iter()
+            .filter(|layer| layer.policy == PaintLayerPolicy::Cacheable)
+            .all(|layer| !layer.owns_video)
     );
 }
 
 #[test]
-fn focused_text_input_inside_scroll_subtree_keeps_sibling_moving_layers() {
-    let scroll_id = NodeId::from_term_bytes(vec![60]);
-    let content_id = NodeId::from_term_bytes(vec![61]);
-    let before_id = NodeId::from_term_bytes(vec![62]);
-    let input_id = NodeId::from_term_bytes(vec![63]);
-    let after_id = NodeId::from_term_bytes(vec![64]);
-
-    let mut scroll = Element::with_attrs(
-        scroll_id,
+fn declared_scroll_and_animation_boundaries_are_structural() {
+    let root_id = NodeId::from_u64(60_000);
+    let scroll_id = NodeId::from_u64(60_001);
+    let animated_id = NodeId::from_u64(60_002);
+    let child_id = NodeId::from_u64(60_003);
+    let mut root = element(
+        root_id,
         ElementKind::El,
-        Vec::new(),
-        Attrs {
-            scrollbar_y: Some(true),
-            ..Attrs::default()
-        },
-    );
-    scroll.children = vec![content_id];
-    scroll.layout.frame = Some(Frame {
-        x: 0.0,
-        y: 0.0,
-        width: 360.0,
-        height: 180.0,
-        content_width: 360.0,
-        content_height: 520.0,
-    });
-    scroll.layout.scroll_y_max = 340.0;
-
-    let mut content = Element::with_attrs(
-        content_id,
-        ElementKind::Column,
-        Vec::new(),
-        Attrs {
-            spacing: Some(12.0),
-            ..Attrs::default()
-        },
-    );
-    content.children = vec![before_id, input_id, after_id];
-    content.layout.frame = Some(Frame {
-        x: 16.0,
-        y: 16.0,
-        width: 320.0,
-        height: 420.0,
-        content_width: 320.0,
-        content_height: 420.0,
-    });
-
-    let mut before = Element::with_attrs(
-        before_id,
-        ElementKind::El,
-        Vec::new(),
-        solid_fill_attrs((220, 230, 240)),
-    );
-    before.layout.frame = Some(Frame {
-        x: 24.0,
-        y: 24.0,
-        width: 300.0,
-        height: 80.0,
-        content_width: 300.0,
-        content_height: 80.0,
-    });
-
-    let mut input = Element::with_attrs(
-        input_id,
-        ElementKind::TextInput,
-        Vec::new(),
-        Attrs {
-            content: Some("focused".to_string()),
-            font_size: Some(16.0),
-            ..solid_fill_attrs((255, 255, 255))
-        },
-    );
-    input.runtime.text_input_focused = true;
-    input.runtime.text_input_cursor = Some(7);
-    input.layout.frame = Some(Frame {
-        x: 24.0,
-        y: 116.0,
-        width: 300.0,
-        height: 36.0,
-        content_width: 300.0,
-        content_height: 36.0,
-    });
-
-    let mut after = Element::with_attrs(
-        after_id,
-        ElementKind::El,
-        Vec::new(),
-        solid_fill_attrs((210, 220, 230)),
-    );
-    after.layout.frame = Some(Frame {
-        x: 24.0,
-        y: 164.0,
-        width: 300.0,
-        height: 120.0,
-        content_width: 300.0,
-        content_height: 120.0,
-    });
-
-    let mut tree = ElementTree::new();
-    tree.set_root_id(scroll_id);
-    tree.insert(scroll);
-    tree.insert(content);
-    tree.insert(before);
-    tree.insert(input);
-    tree.insert(after);
-    tree.clear_refresh_dirty();
-
-    let output = super::super::render_tree_scene_with_paint_layer_policy(&tree, true, true);
-    let layers = paint_layers(&output.scene.nodes);
-
-    assert!(output.text_input_focused);
-    assert!(
-        layers
-            .iter()
-            .any(|layer| layer.stable_id == before_id.to_wire_u64()
-                && layer.placement == PaintLayerPlacement::ScrollMoving),
-        "focused text input should not force sibling scroll content back to direct drawing"
-    );
-    assert!(
-        layers
-            .iter()
-            .any(|layer| layer.stable_id == after_id.to_wire_u64()
-                && layer.placement == PaintLayerPlacement::ScrollMoving),
-        "stable sibling after the focused input should remain independently cached"
-    );
-    assert!(
-        !layers
-            .iter()
-            .any(|layer| layer.stable_id == content_id.to_wire_u64()),
-        "the focused text subtree ancestor should not be cached as one moving layer \
-         because render output still needs focused text metadata"
-    );
-}
-
-#[test]
-fn pending_image_inside_scroll_subtree_keeps_sibling_moving_layers() {
-    let scroll_id = NodeId::from_term_bytes(vec![65]);
-    let content_id = NodeId::from_term_bytes(vec![66]);
-    let image_id = NodeId::from_term_bytes(vec![67]);
-    let after_id = NodeId::from_term_bytes(vec![68]);
-
-    let mut scroll = Element::with_attrs(
-        scroll_id,
-        ElementKind::El,
-        Vec::new(),
-        Attrs {
-            scrollbar_y: Some(true),
-            ..Attrs::default()
-        },
-    );
-    scroll.children = vec![content_id];
-    scroll.layout.frame = Some(Frame {
-        x: 0.0,
-        y: 0.0,
-        width: 360.0,
-        height: 180.0,
-        content_width: 360.0,
-        content_height: 520.0,
-    });
-    scroll.layout.scroll_y_max = 340.0;
-
-    let mut content = Element::with_attrs(
-        content_id,
-        ElementKind::Column,
-        Vec::new(),
         Attrs::default(),
+        frame(0.0, 0.0, 240.0, 160.0),
     );
-    content.children = vec![image_id, after_id];
-    content.layout.frame = Some(Frame {
-        x: 16.0,
-        y: 16.0,
-        width: 320.0,
-        height: 420.0,
-        content_width: 320.0,
-        content_height: 420.0,
-    });
-
-    let mut image = Element::with_attrs(
-        image_id,
-        ElementKind::Image,
-        Vec::new(),
-        Attrs {
-            image_src: Some(ImageSource::Logical("images/pending.png".to_string())),
-            image_fit: Some(ImageFit::Contain),
-            ..Attrs::default()
-        },
-    );
-    image.layout.frame = Some(Frame {
-        x: 24.0,
-        y: 24.0,
-        width: 120.0,
-        height: 90.0,
-        content_width: 120.0,
-        content_height: 90.0,
-    });
-
-    let mut after = Element::with_attrs(
-        after_id,
-        ElementKind::El,
-        Vec::new(),
-        solid_fill_attrs((210, 220, 230)),
-    );
-    after.layout.frame = Some(Frame {
-        x: 24.0,
-        y: 128.0,
-        width: 300.0,
-        height: 120.0,
-        content_width: 300.0,
-        content_height: 120.0,
-    });
-
-    let mut tree = ElementTree::new();
-    tree.set_root_id(scroll_id);
-    tree.insert(scroll);
-    tree.insert(content);
-    tree.insert(image);
-    tree.insert(after);
-    tree.clear_refresh_dirty();
-
-    let output = super::super::render_tree_scene_with_paint_layer_policy(&tree, true, true);
-    let layers = paint_layers(&output.scene.nodes);
-
-    assert!(
-        layers
-            .iter()
-            .any(|layer| layer.stable_id == after_id.to_wire_u64()
-                && layer.placement == PaintLayerPlacement::ScrollMoving),
-        "unsupported media placeholders should not force sibling scroll content \
-         back to direct drawing"
-    );
-    assert!(
-        !layers
-            .iter()
-            .any(|layer| layer.stable_id == content_id.to_wire_u64()),
-        "ancestor with an uncacheable media leaf should not swallow the whole scroll subtree"
-    );
-}
-
-#[test]
-fn focused_slider_inside_clean_scroll_ancestor_keeps_own_glow_layer() {
-    let scroll_id = NodeId::from_term_bytes(vec![70]);
-    let content_id = NodeId::from_term_bytes(vec![71]);
-    let slider_id = NodeId::from_term_bytes(vec![72]);
-    let track_id = NodeId::from_term_bytes(vec![73]);
-
-    let mut scroll = Element::with_attrs(
+    root.children = vec![scroll_id];
+    let mut scroll = element(
         scroll_id,
         ElementKind::El,
-        Vec::new(),
-        Attrs {
-            scrollbar_y: Some(true),
-            ..Attrs::default()
-        },
-    );
-    scroll.children = vec![content_id];
-    scroll.layout.frame = Some(Frame {
-        x: 0.0,
-        y: 0.0,
-        width: 360.0,
-        height: 160.0,
-        content_width: 360.0,
-        content_height: 340.0,
-    });
-    scroll.layout.scroll_y_max = 180.0;
-
-    let mut content = Element::with_attrs(
-        content_id,
-        ElementKind::Column,
-        Vec::new(),
-        Attrs::default(),
-    );
-    content.children = vec![slider_id];
-    content.layout.frame = Some(Frame {
-        x: 24.0,
-        y: 36.0,
-        width: 300.0,
-        height: 220.0,
-        content_width: 300.0,
-        content_height: 220.0,
-    });
-
-    let mut slider = Element::with_attrs(
-        slider_id,
-        ElementKind::Slider,
-        Vec::new(),
-        Attrs {
-            border_radius: Some(BorderRadius::Uniform(999.0)),
-            box_shadows: Some(vec![BoxShadow {
-                offset_x: 0.0,
-                offset_y: 0.0,
-                blur: 6.0,
-                size: 3.0,
-                color: Color::Rgba {
-                    r: 255,
-                    g: 220,
-                    b: 120,
-                    a: 90,
-                },
-                inset: false,
-            }]),
-            ..Attrs::default()
-        },
-    );
-    slider.children = vec![track_id];
-    slider.runtime.focused_active = true;
-    slider.layout.frame = Some(Frame {
-        x: 40.0,
-        y: 60.0,
-        width: 180.0,
-        height: 44.0,
-        content_width: 180.0,
-        content_height: 44.0,
-    });
-
-    let mut track = Element::with_attrs(
-        track_id,
-        ElementKind::El,
-        Vec::new(),
-        solid_fill_attrs((80, 80, 80)),
-    );
-    track.layout.frame = Some(Frame {
-        x: 55.0,
-        y: 76.0,
-        width: 150.0,
-        height: 12.0,
-        content_width: 150.0,
-        content_height: 12.0,
-    });
-
-    let mut tree = ElementTree::new();
-    tree.set_root_id(scroll_id);
-    tree.insert(scroll);
-    tree.insert(content);
-    tree.insert(slider);
-    tree.insert(track);
-    tree.clear_refresh_dirty();
-
-    let clean_output = super::super::render_tree_scene_with_paint_layer_policy(&tree, true, true);
-    let clean_slider_layer = paint_layers(&clean_output.scene.nodes)
-        .into_iter()
-        .find(|layer| layer.stable_id == slider_id.to_wire_u64())
-        .expect("clean ancestor should preserve focused slider's own glow layer");
-
-    assert_eq!(clean_slider_layer.reason, PaintLayerReason::StableSubtree);
-    assert_eq!(
-        clean_slider_layer.placement,
-        PaintLayerPlacement::ScrollMoving
-    );
-    assert!(
-        contains_shadow_primitive(&clean_slider_layer.own_nodes),
-        "focused slider layer should own its glow even under a clean cached ancestor"
-    );
-
-    tree.get_mut(&track_id).unwrap().layout.frame = Some(Frame {
-        x: 75.0,
-        y: 76.0,
-        width: 130.0,
-        height: 12.0,
-        content_width: 130.0,
-        content_height: 12.0,
-    });
-    tree.mark_render_and_registry_refresh_dirty(&slider_id);
-    tree.mark_render_and_registry_refresh_dirty(&track_id);
-
-    let dirty_output = super::super::render_tree_scene_with_paint_layer_policy(&tree, true, true);
-    let dirty_slider_layer = paint_layers(&dirty_output.scene.nodes)
-        .into_iter()
-        .find(|layer| layer.stable_id == slider_id.to_wire_u64())
-        .expect("dirty focused slider should keep the same own glow layer");
-
-    assert_eq!(
-        dirty_slider_layer.content_generation, clean_slider_layer.content_generation,
-        "track/thumb movement should not make the focused glow blink"
-    );
-    assert!(contains_shadow_primitive(&dirty_slider_layer.own_nodes));
-}
-
-#[test]
-fn focused_style_slider_glow_payload_ignores_child_layout_changes() {
-    let scroll_id = NodeId::from_term_bytes(vec![74]);
-    let slider_id = NodeId::from_term_bytes(vec![75]);
-    let label_id = NodeId::from_term_bytes(vec![76]);
-
-    let mut scroll = Element::with_attrs(
-        scroll_id,
-        ElementKind::El,
-        Vec::new(),
-        Attrs {
-            scrollbar_y: Some(true),
-            ..Attrs::default()
-        },
-    );
-    scroll.children = vec![slider_id];
-    scroll.layout.frame = Some(Frame {
-        x: 0.0,
-        y: 0.0,
-        width: 360.0,
-        height: 160.0,
-        content_width: 360.0,
-        content_height: 280.0,
-    });
-    scroll.layout.scroll_y_max = 120.0;
-
-    let mut slider = Element::with_attrs(
-        slider_id,
-        ElementKind::Slider,
-        Vec::new(),
-        Attrs {
-            border_radius: Some(BorderRadius::Uniform(999.0)),
-            focused: Some(MouseOverAttrs {
-                box_shadows: Some(vec![BoxShadow {
-                    offset_x: 0.0,
-                    offset_y: 0.0,
-                    blur: 6.0,
-                    size: 3.0,
-                    color: Color::Rgba {
-                        r: 255,
-                        g: 220,
-                        b: 120,
-                        a: 90,
-                    },
-                    inset: false,
-                }]),
-                ..MouseOverAttrs::default()
-            }),
-            focused_active: Some(true),
-            ..Attrs::default()
-        },
-    );
-    slider.children = vec![label_id];
-    slider.layout.frame = Some(Frame {
-        x: 40.0,
-        y: 60.0,
-        width: 180.0,
-        height: 44.0,
-        content_width: 180.0,
-        content_height: 44.0,
-    });
-
-    let mut label = Element::with_attrs(
-        label_id,
-        ElementKind::Text,
-        Vec::new(),
-        Attrs {
-            content: Some("thumb".to_string()),
-            font_size: Some(14.0),
-            font_color: Some(Color::Rgb {
-                r: 80,
-                g: 80,
-                b: 80,
-            }),
-            ..Attrs::default()
-        },
-    );
-    label.layout.frame = Some(Frame {
-        x: 55.0,
-        y: 76.0,
-        width: 60.0,
-        height: 18.0,
-        content_width: 60.0,
-        content_height: 18.0,
-    });
-
-    let mut tree = ElementTree::new();
-    tree.set_root_id(scroll_id);
-    tree.insert(scroll);
-    tree.insert(slider);
-    tree.insert(label);
-
-    let clean_output =
-        crate::tree::layout::refresh_default_with_frame_attrs(&mut tree, 1.0, None, None);
-    let clean_slider_layer = paint_layers(&clean_output.scene.nodes)
-        .into_iter()
-        .find(|layer| layer.stable_id == slider_id.to_wire_u64())
-        .expect("focused style should produce a slider-owned glow layer");
-
-    assert_eq!(clean_slider_layer.reason, PaintLayerReason::StableSubtree);
-    assert_eq!(
-        clean_slider_layer.placement,
-        PaintLayerPlacement::ScrollMoving
-    );
-    assert!(
-        contains_shadow_primitive(&clean_slider_layer.own_nodes),
-        "focused style shadow should live in the slider's own cached payload"
-    );
-    assert!(
-        !contains_text_primitive(&clean_slider_layer.own_nodes),
-        "slider glow payload must not own moving child content"
-    );
-
-    tree.get_mut(&label_id).unwrap().layout.frame = Some(Frame {
-        x: 125.0,
-        y: 76.0,
-        width: 60.0,
-        height: 18.0,
-        content_width: 60.0,
-        content_height: 18.0,
-    });
-    tree.mark_render_and_registry_refresh_dirty(&slider_id);
-
-    let dirty_output =
-        crate::tree::layout::refresh_default_with_frame_attrs(&mut tree, 1.0, None, None);
-    let dirty_slider_layer = paint_layers(&dirty_output.scene.nodes)
-        .into_iter()
-        .find(|layer| layer.stable_id == slider_id.to_wire_u64())
-        .expect("focused slider should keep its glow layer while a child moves");
-
-    assert_eq!(
-        dirty_slider_layer.content_generation, clean_slider_layer.content_generation,
-        "child movement must not invalidate the focused glow payload"
-    );
-    assert!(contains_shadow_primitive(&dirty_slider_layer.own_nodes));
-    assert!(!contains_text_primitive(&dirty_slider_layer.own_nodes));
-}
-
-#[test]
-fn focused_style_text_input_glow_payload_ignores_content_changes() {
-    let root_id = NodeId::from_term_bytes(vec![77]);
-    let input_id = NodeId::from_term_bytes(vec![78]);
-
-    let mut root = Element::with_attrs(root_id, ElementKind::El, Vec::new(), Attrs::default());
-    root.children = vec![input_id];
-    root.layout.frame = Some(Frame {
-        x: 0.0,
-        y: 0.0,
-        width: 260.0,
-        height: 120.0,
-        content_width: 260.0,
-        content_height: 120.0,
-    });
-
-    let mut input = Element::with_attrs(
-        input_id,
-        ElementKind::TextInput,
-        Vec::new(),
-        Attrs {
-            content: Some("todo".to_string()),
-            width: Some(Length::Px(180.0)),
-            height: Some(Length::Px(44.0)),
-            padding: Some(Padding::Uniform(16.0)),
-            font_size: Some(24.0),
-            font_color: Some(Color::Rgb { r: 0, g: 0, b: 0 }),
-            focused: Some(MouseOverAttrs {
-                border_color: Some(Color::Rgba {
-                    r: 207,
-                    g: 125,
-                    b: 125,
-                    a: 255,
-                }),
-                box_shadows: Some(vec![BoxShadow {
-                    offset_x: 0.0,
-                    offset_y: 0.0,
-                    blur: 4.0,
-                    size: 2.0,
-                    color: Color::Rgba {
-                        r: 207,
-                        g: 125,
-                        b: 125,
-                        a: 71,
-                    },
-                    inset: false,
-                }]),
-                ..MouseOverAttrs::default()
-            }),
-            focused_active: Some(true),
-            border_width: Some(BorderWidth::Uniform(1.0)),
-            background: Some(Background::Color(Color::Rgba {
-                r: 255,
-                g: 255,
-                b: 255,
-                a: 0,
-            })),
-            ..Attrs::default()
-        },
-    );
-    input.runtime.focused_active = true;
-    input.runtime.text_input_focused = true;
-    input.layout.frame = Some(Frame {
-        x: 40.0,
-        y: 40.0,
-        width: 180.0,
-        height: 44.0,
-        content_width: 180.0,
-        content_height: 44.0,
-    });
-
-    let mut tree = ElementTree::new();
-    tree.set_root_id(root_id);
-    tree.insert(root);
-    tree.insert(input);
-
-    let clean_output =
-        crate::tree::layout::refresh_default_with_frame_attrs(&mut tree, 1.0, None, None);
-    let clean_input_layer = paint_layers(&clean_output.scene.nodes)
-        .into_iter()
-        .find(|layer| layer.stable_id == input_id.to_wire_u64())
-        .expect("focused style should produce a text-input-owned glow layer");
-
-    assert_eq!(clean_input_layer.reason, PaintLayerReason::StableSubtree);
-    assert_eq!(clean_input_layer.policy, PaintLayerPolicy::Cacheable);
-    assert!(
-        contains_shadow_primitive(&clean_input_layer.own_nodes),
-        "focused text input layer should own its glow"
-    );
-    assert!(
-        !contains_text_primitive(&clean_input_layer.own_nodes),
-        "focused text input glow payload must not own changing input content"
-    );
-
-    tree.set_text_input_content(&input_id, "new todo".to_string());
-
-    let dirty_output =
-        crate::tree::layout::refresh_default_with_frame_attrs(&mut tree, 1.0, None, None);
-    let dirty_input_layer = paint_layers(&dirty_output.scene.nodes)
-        .into_iter()
-        .find(|layer| layer.stable_id == input_id.to_wire_u64())
-        .expect("focused text input should keep its glow layer while content changes");
-
-    assert_eq!(
-        dirty_input_layer.content_generation, clean_input_layer.content_generation,
-        "content edits must not invalidate the focused glow payload"
-    );
-    assert!(contains_shadow_primitive(&dirty_input_layer.own_nodes));
-    assert!(!contains_text_primitive(&dirty_input_layer.own_nodes));
-}
-
-#[test]
-fn nested_animated_shadow_inside_scroll_container_layer_emits_dirty_slot() {
-    let scroll_id = NodeId::from_term_bytes(vec![10]);
-    let page_id = NodeId::from_term_bytes(vec![11]);
-    let section_id = NodeId::from_term_bytes(vec![12]);
-    let row_id = NodeId::from_term_bytes(vec![13]);
-    let card_id = NodeId::from_term_bytes(vec![14]);
-    let text_id = NodeId::from_term_bytes(vec![15]);
-
-    let mut tree = ElementTree::new();
-    tree.set_root_id(scroll_id);
-
-    let mut scroll = Element::with_attrs(
-        scroll_id,
-        ElementKind::El,
-        Vec::new(),
-        Attrs {
-            scrollbar_y: Some(true),
-            background: Some(Background::Color(Color::Rgb {
-                r: 240,
-                g: 244,
-                b: 250,
-            })),
-            ..Attrs::default()
-        },
-    );
-    scroll.children = vec![page_id];
-    scroll.layout.frame = Some(Frame {
-        x: 0.0,
-        y: 0.0,
-        width: 960.0,
-        height: 900.0,
-        content_width: 960.0,
-        content_height: 2200.0,
-    });
-    scroll.layout.scroll_y_max = 1300.0;
-
-    let mut page = Element::with_attrs(
-        page_id,
-        ElementKind::Column,
-        Vec::new(),
-        Attrs {
-            width: Some(Length::Fill),
-            spacing: Some(28.0),
-            ..Attrs::default()
-        },
-    );
-    page.children = vec![section_id];
-    page.layout.frame = Some(Frame {
-        x: 0.0,
-        y: 0.0,
-        width: 960.0,
-        height: 2200.0,
-        content_width: 960.0,
-        content_height: 2200.0,
-    });
-
-    let mut section = Element::with_attrs(
-        section_id,
-        ElementKind::Column,
-        Vec::new(),
-        Attrs {
-            width: Some(Length::Fill),
-            spacing: Some(16.0),
-            ..Attrs::default()
-        },
-    );
-    section.children = vec![row_id];
-    section.layout.frame = Some(Frame {
-        x: 24.0,
-        y: 320.0,
-        width: 912.0,
-        height: 260.0,
-        content_width: 912.0,
-        content_height: 260.0,
-    });
-
-    let mut row = Element::with_attrs(
-        row_id,
-        ElementKind::Row,
-        Vec::new(),
-        Attrs {
-            width: Some(Length::Fill),
-            spacing: Some(14.0),
-            ..Attrs::default()
-        },
-    );
-    row.children = vec![card_id];
-    row.layout.frame = Some(Frame {
-        x: 60.0,
-        y: 420.0,
-        width: 840.0,
-        height: 140.0,
-        content_width: 840.0,
-        content_height: 140.0,
-    });
-
-    let mut card = Element::with_attrs(
-        card_id,
-        ElementKind::Column,
-        Vec::new(),
-        Attrs {
-            width: Some(Length::FillWeighted(1.0)),
-            height: Some(Length::Px(94.0)),
-            padding: Some(Padding::Uniform(14.0)),
-            background: Some(Background::Color(Color::Rgb {
-                r: 244,
-                g: 248,
-                b: 255,
-            })),
-            border_radius: Some(BorderRadius::Uniform(14.0)),
-            box_shadows: Some(vec![BoxShadow {
-                offset_x: 12.0,
-                offset_y: 0.0,
-                blur: 18.0,
-                size: 2.0,
-                color: Color::Rgba {
-                    r: 15,
-                    g: 23,
-                    b: 42,
-                    a: 40,
-                },
-                inset: false,
-            }]),
-            animate: Some(AnimationSpec {
-                keyframes: vec![
-                    Attrs {
-                        box_shadows: Some(vec![BoxShadow {
-                            offset_x: 0.0,
-                            offset_y: -12.0,
-                            blur: 18.0,
-                            size: 2.0,
-                            color: Color::Rgba {
-                                r: 15,
-                                g: 23,
-                                b: 42,
-                                a: 40,
-                            },
-                            inset: false,
-                        }]),
-                        ..Attrs::default()
-                    },
-                    Attrs {
-                        box_shadows: Some(vec![BoxShadow {
-                            offset_x: 12.0,
-                            offset_y: 0.0,
-                            blur: 18.0,
-                            size: 2.0,
-                            color: Color::Rgba {
-                                r: 15,
-                                g: 23,
-                                b: 42,
-                                a: 40,
-                            },
-                            inset: false,
-                        }]),
-                        ..Attrs::default()
-                    },
-                ],
-                duration_ms: 2800.0,
-                curve: AnimationCurve::Linear,
-                repeat: AnimationRepeat::Loop,
-            }),
-            ..Attrs::default()
-        },
-    );
-    card.children = vec![text_id];
-    card.layout.frame = Some(Frame {
-        x: 80.0,
-        y: 440.0,
-        width: 260.0,
-        height: 94.0,
-        content_width: 260.0,
-        content_height: 94.0,
-    });
-
-    let mut text = Element::with_attrs(
-        text_id,
-        ElementKind::Text,
-        Vec::new(),
-        Attrs {
-            content: Some("Stacked".to_string()),
-            font_size: Some(14.0),
-            ..Attrs::default()
-        },
-    );
-    text.layout.frame = Some(Frame {
-        x: 94.0,
-        y: 454.0,
-        width: 80.0,
-        height: 16.0,
-        content_width: 80.0,
-        content_height: 16.0,
-    });
-
-    tree.insert(scroll);
-    tree.insert(page);
-    tree.insert(section);
-    tree.insert(row);
-    tree.insert(card);
-    tree.insert(text);
-
-    tree.clear_refresh_dirty();
-
-    let output = super::super::render_tree_scene_with_paint_layer_policy(&tree, false, true);
-    let scroll_layer =
-        paint_layer_by_reason(&output.scene.nodes, PaintLayerReason::ScrollContainer)
-            .expect("scroll container should emit a paint layer");
-    let dirty_ids = dynamic_paint_layer_ids(&scroll_layer.content_nodes());
-
-    assert!(dirty_ids.contains(&card_id.to_wire_u64()));
-    assert!(dynamic_slot_count(&scroll_layer.content_nodes()) > 0);
-}
-
-#[test]
-fn nearby_escape_root_emits_nearby_layer_boundary_next_to_scroll_container_layer() {
-    let parent_id = NodeId::from_term_bytes(vec![4]);
-    let host_id = NodeId::from_term_bytes(vec![5]);
-    let nearby_id = NodeId::from_term_bytes(vec![42]);
-    let mut tree = build_tree_with_child_frame(
         Attrs {
             scrollbar_y: Some(true),
             ..Attrs::default()
         },
         Frame {
-            x: 0.0,
-            y: 0.0,
-            width: 320.0,
-            height: 180.0,
-            content_width: 320.0,
-            content_height: 420.0,
-        },
-        solid_fill_attrs((20, 24, 32)),
-        Frame {
-            x: 24.0,
-            y: 36.0,
-            width: 120.0,
-            height: 56.0,
-            content_width: 120.0,
-            content_height: 56.0,
-        },
-    );
-    tree.get_mut(&parent_id).unwrap().layout.scroll_y_max = 240.0;
-    mount_nearby(
-        &mut tree,
-        &host_id,
-        NearbySlot::InFront,
-        ElementKind::El,
-        solid_fill_attrs((248, 250, 252)),
-        Frame {
-            x: 24.0,
-            y: 36.0,
-            width: 160.0,
-            height: 72.0,
-            content_width: 160.0,
-            content_height: 72.0,
-        },
-        42,
-    );
-    tree.clear_refresh_dirty();
-
-    let output = super::super::render_tree_scene_with_paint_layer_policy(&tree, false, true);
-    paint_layer_by_reason(&output.scene.nodes, PaintLayerReason::ScrollContainer)
-        .expect("scroll container should emit a paint layer");
-
-    let nearby_layer = paint_layers(&output.scene.nodes)
-        .into_iter()
-        .find(|layer| layer.reason == PaintLayerReason::Nearby)
-        .expect("nearby root should be isolated as an escape paint layer");
-    assert_eq!(nearby_layer.stable_id, nearby_id.to_wire_u64());
-    assert_eq!(nearby_layer.policy, PaintLayerPolicy::Cacheable);
-    assert_eq!(semantic_paint_layer_count(&output.scene.nodes), 2);
-}
-
-#[test]
-fn nearby_layer_bounds_include_transformed_overlay_content() {
-    let host_id = NodeId::from_term_bytes(vec![5]);
-    let mut tree = build_tree_with_child_frame(
-        Attrs::default(),
-        Frame {
-            x: 0.0,
-            y: 0.0,
-            width: 220.0,
-            height: 160.0,
-            content_width: 220.0,
-            content_height: 160.0,
-        },
-        solid_fill_attrs((20, 24, 32)),
-        Frame {
-            x: 48.0,
-            y: 48.0,
-            width: 80.0,
-            height: 50.0,
-            content_width: 80.0,
-            content_height: 50.0,
-        },
-    );
-    mount_nearby(
-        &mut tree,
-        &host_id,
-        NearbySlot::InFront,
-        ElementKind::El,
-        Attrs {
-            move_x: Some(40.0),
-            rotate: Some(16.0),
-            scale: Some(1.18),
-            ..solid_fill_attrs((248, 250, 252))
-        },
-        Frame {
-            x: 48.0,
-            y: 48.0,
-            width: 80.0,
-            height: 50.0,
-            content_width: 80.0,
-            content_height: 50.0,
-        },
-        42,
-    );
-    tree.clear_refresh_dirty();
-
-    let output = super::super::render_tree_scene_with_paint_layer_policy(&tree, false, true);
-    let nearby_layer = paint_layers(&output.scene.nodes)
-        .into_iter()
-        .find(|layer| layer.reason == PaintLayerReason::Nearby)
-        .expect("nearby root should be isolated as a paint layer");
-
-    assert_eq!(nearby_layer.policy, PaintLayerPolicy::Cacheable);
-    assert!(nearby_layer.bounds.y < 48.0, "{:?}", nearby_layer.bounds);
-    assert!(
-        nearby_layer.bounds.width > 120.0,
-        "{:?}",
-        nearby_layer.bounds
-    );
-}
-
-#[test]
-fn clean_nearby_fragment_cache_reuses_mounted_subtree_without_descending() {
-    let host_id = NodeId::from_term_bytes(vec![5]);
-    let nearby_id = NodeId::from_term_bytes(vec![42]);
-    let mut tree = build_tree_with_child_frame(
-        Attrs::default(),
-        Frame {
-            x: 0.0,
-            y: 0.0,
-            width: 360.0,
-            height: 240.0,
-            content_width: 360.0,
             content_height: 240.0,
+            ..frame(0.0, 0.0, 240.0, 160.0)
         },
-        solid_fill_attrs((20, 24, 32)),
+    );
+    scroll.children = vec![animated_id];
+    scroll.layout.scroll_y_max = 80.0;
+    let animation = crate::tree::animation::AnimationSpec {
+        keyframes: vec![
+            Attrs {
+                move_x: Some(0.0),
+                ..Attrs::default()
+            },
+            Attrs {
+                move_x: Some(20.0),
+                ..Attrs::default()
+            },
+        ],
+        duration_ms: 100.0,
+        curve: crate::tree::animation::AnimationCurve::Linear,
+        repeat: crate::tree::animation::AnimationRepeat::Once,
+    };
+    let mut animated = element(
+        animated_id,
+        ElementKind::El,
+        solid_fill_attrs((20, 40, 60)),
+        frame(0.0, 0.0, 200.0, 80.0),
+    );
+    animated.spec.declared.animate = Some(animation);
+    animated.children = vec![child_id];
+    let child = element(
+        child_id,
+        ElementKind::El,
+        solid_fill_attrs((80, 100, 120)),
+        frame(0.0, 0.0, 100.0, 40.0),
+    );
+    let mut tree = ElementTree::new();
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(scroll);
+    tree.insert(animated);
+    tree.insert(child);
+
+    let dirty = super::super::render_tree_scene_with_scroll_layers(&tree).scene;
+    tree.clear_refresh_dirty();
+    let clean = super::super::render_tree_scene_with_scroll_layers(&tree).scene;
+    let reasons = describe_scene(&dirty.nodes)
+        .iter()
+        .map(|layer| layer.reason)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        reasons,
+        vec![
+            PaintLayerReason::Root,
+            PaintLayerReason::ScrollContent,
+            PaintLayerReason::Animation,
+        ]
+    );
+    assert_eq!(describe_scene(&dirty.nodes), describe_scene(&clean.nodes));
+    let clean_generations = layer_generations(&clean.nodes);
+    let clean_transform = transform_for_layer_reason(&clean.nodes, PaintLayerReason::Animation)
+        .expect("declared animation placement");
+
+    let animated = tree.get_mut(&animated_id).expect("animated element");
+    animated.layout.effective.move_x = Some(15.0);
+    animated.layout.effective.alpha = Some(0.6);
+    tree.mark_render_and_registry_refresh_dirty(&animated_id);
+    let sampled = super::super::render_tree_scene_with_scroll_layers(&tree).scene;
+
+    assert_eq!(describe_scene(&sampled.nodes), describe_scene(&clean.nodes));
+    let clean_animation = describe_layers(&clean.nodes)
+        .into_iter()
+        .find(|layer| layer.id.role == PaintLayerReason::Animation)
+        .expect("clean animation layer");
+    let sampled_animation = describe_layers(&sampled.nodes)
+        .into_iter()
+        .find(|layer| layer.id.role == PaintLayerReason::Animation)
+        .expect("sampled animation layer");
+    assert_eq!(
+        clean_animation.content.own_payload_render_nodes(),
+        sampled_animation.content.own_payload_render_nodes()
+    );
+    assert_eq!(layer_generations(&sampled.nodes), clean_generations);
+    assert_eq!(clean_transform, crate::tree::transform::Affine2::identity());
+    assert_eq!(
+        transform_for_layer_reason(&sampled.nodes, PaintLayerReason::Animation),
+        Some(crate::tree::transform::Affine2::translation(15.0, 0.0))
+    );
+}
+
+#[test]
+fn paint_animation_does_not_create_a_compositor_layer() {
+    let root_id = NodeId::from_u64(65_000);
+    let child_id = NodeId::from_u64(65_001);
+    let mut root = element(
+        root_id,
+        ElementKind::El,
+        Attrs::default(),
+        frame(0.0, 0.0, 160.0, 100.0),
+    );
+    root.children = vec![child_id];
+    let mut child = element(
+        child_id,
+        ElementKind::El,
+        solid_fill_attrs((20, 40, 60)),
+        frame(0.0, 0.0, 80.0, 40.0),
+    );
+    child.spec.declared.animate = Some(crate::tree::animation::AnimationSpec {
+        keyframes: vec![
+            Attrs {
+                background: Some(crate::tree::attrs::Background::Color(
+                    crate::tree::attrs::Color::Rgba {
+                        r: 0x10,
+                        g: 0x20,
+                        b: 0x30,
+                        a: 0xFF,
+                    },
+                )),
+                ..Attrs::default()
+            },
+            Attrs {
+                background: Some(crate::tree::attrs::Background::Color(
+                    crate::tree::attrs::Color::Rgba {
+                        r: 0x40,
+                        g: 0x50,
+                        b: 0x60,
+                        a: 0xFF,
+                    },
+                )),
+                ..Attrs::default()
+            },
+        ],
+        duration_ms: 100.0,
+        curve: crate::tree::animation::AnimationCurve::Linear,
+        repeat: crate::tree::animation::AnimationRepeat::Once,
+    });
+    let mut tree = ElementTree::new();
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(child);
+
+    let scene = super::super::render_tree_scene_with_scroll_layers(&tree).scene;
+    assert_eq!(
+        describe_scene(&scene.nodes)
+            .iter()
+            .map(|layer| layer.reason)
+            .collect::<Vec<_>>(),
+        vec![PaintLayerReason::Root]
+    );
+}
+
+#[test]
+fn scroll_content_normalizes_offset_out_of_payload_generation() {
+    let root_id = NodeId::from_u64(70_000);
+    let child_id = NodeId::from_u64(70_001);
+    let mut root = element(
+        root_id,
+        ElementKind::El,
+        Attrs {
+            scrollbar_y: Some(true),
+            ..Attrs::default()
+        },
         Frame {
-            x: 64.0,
-            y: 72.0,
-            width: 120.0,
-            height: 48.0,
-            content_width: 120.0,
-            content_height: 48.0,
+            content_height: 200.0,
+            ..frame(0.0, 0.0, 160.0, 100.0)
         },
+    );
+    root.children = vec![child_id];
+    root.layout.scroll_y_max = 100.0;
+    let child = element(
+        child_id,
+        ElementKind::El,
+        solid_fill_attrs((40, 80, 120)),
+        frame(0.0, 20.0, 140.0, 40.0),
+    );
+    let mut tree = ElementTree::new();
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(child);
+    tree.clear_refresh_dirty();
+
+    let first = super::super::render_tree_scene_with_scroll_layers(&tree).scene;
+    let first_layer = describe_layers(&first.nodes)
+        .into_iter()
+        .find(|layer| layer.id.role == PaintLayerReason::ScrollContent)
+        .expect("declared scroll content layer");
+    let first_generation = first_layer.content_generation;
+    let first_transform = transform_for_layer_reason(&first.nodes, PaintLayerReason::ScrollContent)
+        .expect("scroll content placement");
+
+    assert!(tree.apply_scroll_y(&root_id, -10.0).is_dirty());
+    let second = super::super::render_tree_scene_with_scroll_layers(&tree).scene;
+    let second_layer = describe_layers(&second.nodes)
+        .into_iter()
+        .find(|layer| layer.id.role == PaintLayerReason::ScrollContent)
+        .expect("stable scroll content layer");
+    let second_transform =
+        transform_for_layer_reason(&second.nodes, PaintLayerReason::ScrollContent)
+            .expect("moved scroll content placement");
+
+    assert_eq!(second_layer.content_generation, first_generation);
+    assert_eq!(first_transform, crate::tree::transform::Affine2::identity());
+    assert_eq!(
+        second_transform,
+        crate::tree::transform::Affine2::translation(0.0, -10.0)
+    );
+}
+
+#[test]
+fn nested_slider_generation_is_local_and_scroll_offset_independent() {
+    let root_id = NodeId::from_u64(75_000);
+    let slider_id = NodeId::from_u64(75_001);
+    let track_id = NodeId::from_u64(75_002);
+    let fill_id = NodeId::from_u64(75_003);
+    let thumb_id = NodeId::from_u64(75_004);
+    let mut root = element(
+        root_id,
+        ElementKind::El,
+        Attrs {
+            scrollbar_y: Some(true),
+            ..Attrs::default()
+        },
+        Frame {
+            content_height: 200.0,
+            ..frame(0.0, 0.0, 160.0, 100.0)
+        },
+    );
+    root.layout.scroll_y_max = 100.0;
+    root.children = vec![slider_id];
+    let mut slider = element(
+        slider_id,
+        ElementKind::Slider,
+        Attrs::default(),
+        frame(10.0, 20.0, 120.0, 24.0),
+    );
+    slider.children = vec![track_id, fill_id, thumb_id];
+    let track = element(
+        track_id,
+        ElementKind::El,
+        color_attrs(0x202020FF),
+        frame(10.0, 28.0, 120.0, 8.0),
+    );
+    let fill = element(
+        fill_id,
+        ElementKind::El,
+        color_attrs(0x40A0FFFF),
+        frame(10.0, 28.0, 70.0, 8.0),
+    );
+    let thumb = element(
+        thumb_id,
+        ElementKind::El,
+        color_attrs(0xFFFFFFFF),
+        frame(70.0, 22.0, 20.0, 20.0),
+    );
+    let mut tree = ElementTree::new();
+    tree.set_root_id(root_id);
+    for element in [root, slider, track, fill, thumb] {
+        tree.insert(element);
+    }
+    tree.clear_refresh_dirty();
+
+    let first = super::super::render_tree_scene_with_scroll_layers(&tree).scene;
+    let first_generations = layer_generations(&first.nodes);
+    assert!(tree.apply_scroll_y(&root_id, -10.0).is_dirty());
+    let scrolled = super::super::render_tree_scene_with_scroll_layers(&tree).scene;
+    assert_eq!(layer_generations(&scrolled.nodes), first_generations);
+
+    tree.get_mut(&fill_id)
+        .and_then(|fill| fill.layout.frame.as_mut())
+        .expect("slider fill frame")
+        .width += 5.0;
+    tree.mark_render_and_registry_refresh_dirty(&fill_id);
+    let changed = super::super::render_tree_scene_with_scroll_layers(&tree).scene;
+    let changed_generations = layer_generations(&changed.nodes);
+    assert_eq!(
+        changed_generations[&(root_id.to_wire_u64(), PaintLayerReason::ScrollContent)],
+        first_generations[&(root_id.to_wire_u64(), PaintLayerReason::ScrollContent)]
+    );
+    assert_ne!(
+        changed_generations[&(slider_id.to_wire_u64(), PaintLayerReason::SliderValue)],
+        first_generations[&(slider_id.to_wire_u64(), PaintLayerReason::SliderValue)]
+    );
+}
+
+#[test]
+fn clean_nearby_fragment_reuses_the_mounted_subtree_without_descending() {
+    let host_id = NodeId::from_term_bytes(vec![5]);
+    let nearby_id = NodeId::from_term_bytes(vec![42]);
+    let mut tree = build_tree_with_child_frame(
+        Attrs::default(),
+        frame(0.0, 0.0, 360.0, 240.0),
+        solid_fill_attrs((20, 24, 32)),
+        frame(64.0, 72.0, 120.0, 48.0),
     );
     mount_nearby(
         &mut tree,
@@ -1612,98 +622,327 @@ fn clean_nearby_fragment_cache_reuses_mounted_subtree_without_descending() {
         NearbySlot::InFront,
         ElementKind::El,
         solid_fill_attrs((248, 250, 252)),
-        Frame {
-            x: 64.0,
-            y: 72.0,
-            width: 220.0,
-            height: 180.0,
-            content_width: 220.0,
-            content_height: 180.0,
-        },
+        frame(64.0, 72.0, 220.0, 180.0),
         42,
     );
 
-    let child_ids: Vec<NodeId> = (0u8..24)
+    let child_ids = (0u8..24)
         .map(|index| {
             let id = NodeId::from_term_bytes(vec![100 + index]);
-            let mut child = Element::with_attrs(
+            let child = element(
                 id,
                 ElementKind::El,
-                Vec::new(),
                 solid_fill_attrs((80 + index, 120, 180)),
+                frame(72.0, 80.0 + f32::from(index) * 5.0, 160.0, 4.0),
             );
-            child.layout.frame = Some(Frame {
-                x: 72.0,
-                y: 80.0 + f32::from(index) * 5.0,
-                width: 160.0,
-                height: 4.0,
-                content_width: 160.0,
-                content_height: 4.0,
-            });
             tree.insert(child);
             id
         })
         .collect();
-    tree.get_mut(&nearby_id).unwrap().children = child_ids;
+    tree.get_mut(&nearby_id).expect("nearby root").children = child_ids;
     tree.clear_refresh_dirty();
 
     super::super::reset_render_traversal_diagnostics_for_benchmark();
-    let first_output = super::super::render_tree_scene_with_paint_layer_policy(&tree, false, true);
-    let first = super::super::take_render_traversal_diagnostics_for_benchmark();
+    let first = super::super::render_tree_scene_with_scroll_layers(&tree).scene;
+    let first_diagnostics = super::super::take_render_traversal_diagnostics_for_benchmark();
     assert!(
-        paint_layers(&first_output.scene.nodes)
+        describe_layers(&first.nodes)
             .iter()
-            .any(|layer| layer.reason == PaintLayerReason::Nearby)
+            .any(|layer| layer.id.role == PaintLayerReason::Nearby)
     );
 
     super::super::reset_render_traversal_diagnostics_for_benchmark();
-    let second_output = super::super::render_tree_scene_with_paint_layer_policy(&tree, false, true);
-    let second = super::super::take_render_traversal_diagnostics_for_benchmark();
+    let second = super::super::render_tree_scene_with_scroll_layers(&tree).scene;
+    let second_diagnostics = super::super::take_render_traversal_diagnostics_for_benchmark();
 
-    assert_eq!(
-        semantic_paint_layer_count(&first_output.scene.nodes),
-        semantic_paint_layer_count(&second_output.scene.nodes)
+    assert_eq!(describe_scene(&first.nodes), describe_scene(&second.nodes));
+    assert!(
+        first_diagnostics.element_visits >= 26,
+        "{first_diagnostics:?}"
     );
     assert!(
-        first.element_visits >= 26,
-        "first render should visit the mounted nearby subtree, got {first:?}"
-    );
-    assert!(
-        second.element_visits <= 3,
-        "clean render should reuse the nearby fragment instead of visiting descendants, got {second:?}"
+        second_diagnostics.element_visits <= 3,
+        "{second_diagnostics:?}"
     );
 }
 
-fn dynamic_paint_layer_ids(nodes: &[RenderNode]) -> Vec<u64> {
-    nodes
+fn camera_fixture() -> CameraFixture {
+    let root_id = NodeId::from_u64(10_000);
+    let video_id = NodeId::from_u64(10_001);
+    let top_id = NodeId::from_u64(10_002);
+    let bottom_id = NodeId::from_u64(10_003);
+    let mut root = element(
+        root_id,
+        ElementKind::El,
+        solid_fill_attrs((8, 12, 18)),
+        frame(0.0, 0.0, 800.0, 600.0),
+    );
+    root.children = vec![video_id];
+    root.nearby.push(NearbySlot::InFront, top_id);
+    root.nearby.push(NearbySlot::InFront, bottom_id);
+    let video = element(
+        video_id,
+        ElementKind::Video,
+        Attrs {
+            video_target: Some("camera-preview".to_string()),
+            ..Attrs::default()
+        },
+        frame(0.0, 0.0, 800.0, 600.0),
+    );
+    let top = element(
+        top_id,
+        ElementKind::El,
+        solid_fill_attrs((16, 24, 34)),
+        frame(0.0, 0.0, 800.0, 80.0),
+    );
+    let mut bottom = element(
+        bottom_id,
+        ElementKind::El,
+        solid_fill_attrs((20, 28, 38)),
+        frame(0.0, 360.0, 800.0, 240.0),
+    );
+    let header_id = NodeId::from_u64(10_004);
+    let button_id = NodeId::from_u64(10_005);
+    let footer_id = NodeId::from_u64(10_006);
+    let static_colors = [0xA02020FF, 0x20A020FF, 0x2020A0FF];
+    let header = element(
+        header_id,
+        ElementKind::El,
+        color_attrs(static_colors[0]),
+        frame(360.0, 372.0, 120.0, 18.0),
+    );
+    let button = element(
+        button_id,
+        ElementKind::El,
+        color_attrs(static_colors[1]),
+        frame(500.0, 440.0, 90.0, 28.0),
+    );
+    let footer = element(
+        footer_id,
+        ElementKind::El,
+        color_attrs(static_colors[2]),
+        frame(620.0, 570.0, 120.0, 18.0),
+    );
+    bottom.children.push(header_id);
+
+    let mut elements = vec![root, video, top, header, button, footer];
+    let mut slider_ids = Vec::new();
+    let mut track_ids = Vec::new();
+    let mut fill_ids = Vec::new();
+    let mut track_colors = Vec::new();
+    let mut fill_colors = Vec::new();
+    let mut thumb_colors = Vec::new();
+    for index in 0..6u64 {
+        let slider_id = NodeId::from_u64(11_000 + index * 10);
+        let track_id = NodeId::from_u64(11_001 + index * 10);
+        let fill_id = NodeId::from_u64(11_002 + index * 10);
+        let thumb_id = NodeId::from_u64(11_003 + index * 10);
+        let y = 380.0 + index as f32 * 30.0;
+        let track_color = 0x2000_00FFu32.wrapping_add((index as u32) << 16);
+        let fill_color = 0x0020_00FFu32.wrapping_add((index as u32) << 8);
+        let thumb_color = 0x0000_20FFu32.wrapping_add(index as u32);
+        let mut slider = element(
+            slider_id,
+            ElementKind::Slider,
+            Attrs::default(),
+            frame(40.0, y, 300.0, 24.0),
+        );
+        slider.children = vec![track_id, fill_id, thumb_id];
+        let track = element(
+            track_id,
+            ElementKind::El,
+            color_attrs(track_color),
+            frame(40.0, y + 8.0, 300.0, 8.0),
+        );
+        let fill = element(
+            fill_id,
+            ElementKind::El,
+            color_attrs(fill_color),
+            frame(40.0, y + 8.0, 180.0, 8.0),
+        );
+        let thumb = element(
+            thumb_id,
+            ElementKind::El,
+            color_attrs(thumb_color),
+            frame(210.0, y + 2.0, 20.0, 20.0),
+        );
+        bottom.children.push(slider_id);
+        if index == 2 {
+            bottom.children.push(button_id);
+        }
+        elements.extend([slider, track, fill, thumb]);
+        slider_ids.push(slider_id);
+        track_ids.push(track_id);
+        fill_ids.push(fill_id);
+        track_colors.push(track_color);
+        fill_colors.push(fill_color);
+        thumb_colors.push(thumb_color);
+    }
+    bottom.children.push(footer_id);
+    elements.push(bottom);
+
+    let mut tree = ElementTree::new();
+    tree.set_root_id(root_id);
+    elements
+        .into_iter()
+        .for_each(|element| tree.insert(element));
+    CameraFixture {
+        tree,
+        root_id,
+        video_id,
+        top_id,
+        bottom_id,
+        slider_ids,
+        track_ids,
+        fill_ids,
+        track_colors,
+        fill_colors,
+        thumb_colors,
+        static_colors,
+    }
+}
+
+fn assert_camera_descriptor(fixture: &CameraFixture, descriptor: &[LayerDescriptor]) {
+    assert_eq!(descriptor.len(), 9, "{descriptor:#?}");
+    assert_eq!(
+        descriptor
+            .iter()
+            .map(|layer| layer.reason)
+            .collect::<Vec<_>>(),
+        vec![
+            PaintLayerReason::Root,
+            PaintLayerReason::Nearby,
+            PaintLayerReason::Nearby,
+            PaintLayerReason::SliderValue,
+            PaintLayerReason::SliderValue,
+            PaintLayerReason::SliderValue,
+            PaintLayerReason::SliderValue,
+            PaintLayerReason::SliderValue,
+            PaintLayerReason::SliderValue,
+        ]
+    );
+    assert_eq!(descriptor[0].stable_id, fixture.root_id.to_wire_u64());
+    assert_eq!(descriptor[0].policy, PaintLayerPolicy::DirectOnly);
+    assert!(descriptor[0].owns_video);
+    assert_eq!(descriptor[1].stable_id, fixture.top_id.to_wire_u64());
+    assert_eq!(descriptor[2].stable_id, fixture.bottom_id.to_wire_u64());
+    assert_eq!(descriptor[1].policy, PaintLayerPolicy::Cacheable);
+    assert_eq!(descriptor[2].policy, PaintLayerPolicy::Cacheable);
+    assert_eq!(
+        descriptor[2].own_run_colors.len(),
+        9,
+        "bottom runs: {:?}",
+        descriptor[2].own_run_colors
+    );
+    assert!(descriptor[2].own_run_colors[0].contains(&fixture.static_colors[0]));
+    assert!(descriptor[2].own_run_colors[4].contains(&fixture.static_colors[1]));
+    assert!(descriptor[2].own_run_colors[8].contains(&fixture.static_colors[2]));
+    assert_eq!(
+        descriptor[1].parent,
+        Some((fixture.root_id.to_wire_u64(), PaintLayerReason::Root))
+    );
+    assert_eq!(descriptor[2].parent, descriptor[1].parent);
+
+    fixture
+        .slider_ids
         .iter()
-        .flat_map(|node| match node {
-            RenderNode::ShadowPass { children }
-            | RenderNode::Clip { children, .. }
-            | RenderNode::RelaxedClip { children, .. }
-            | RenderNode::Transform { children, .. }
-            | RenderNode::Alpha { children, .. } => dynamic_paint_layer_ids(children),
-            RenderNode::PaintLayer(layer) if layer.policy == PaintLayerPolicy::DynamicRedraw => {
-                let mut ids = vec![layer.stable_id];
-                ids.extend(dynamic_paint_layer_ids(&layer.content_nodes()));
-                ids
-            }
-            RenderNode::PaintLayer(layer) => dynamic_paint_layer_ids(&layer.content_nodes()),
-            RenderNode::Primitive(_) => Vec::new(),
-        })
+        .enumerate()
+        .for_each(|(index, id)| {
+            let layer = &descriptor[index + 3];
+            assert_eq!(layer.stable_id, id.to_wire_u64());
+            assert_eq!(layer.policy, PaintLayerPolicy::Cacheable);
+            assert_eq!(
+                layer.parent,
+                Some((fixture.bottom_id.to_wire_u64(), PaintLayerReason::Nearby))
+            );
+            assert!(layer.own_colors.contains(&fixture.fill_colors[index]));
+            assert!(layer.own_colors.contains(&fixture.thumb_colors[index]));
+            assert!(!layer.own_colors.contains(&fixture.track_colors[index]));
+            assert!(
+                descriptor[2]
+                    .own_colors
+                    .contains(&fixture.track_colors[index])
+            );
+            let run_index = [1, 2, 3, 5, 6, 7][index];
+            assert!(descriptor[2].own_run_colors[run_index].contains(&fixture.track_colors[index]));
+        });
+}
+
+fn describe_scene(nodes: &[RenderNode]) -> Vec<LayerDescriptor> {
+    let mut descriptors = Vec::new();
+    visit_scene_nodes(nodes, None, &mut descriptors);
+    descriptors
+}
+
+fn visit_scene_nodes(
+    nodes: &[RenderNode],
+    parent: Option<(u64, PaintLayerReason)>,
+    descriptors: &mut Vec<LayerDescriptor>,
+) {
+    nodes.iter().for_each(|node| match node {
+        RenderNode::ShadowPass { children }
+        | RenderNode::Clip { children, .. }
+        | RenderNode::RelaxedClip { children, .. }
+        | RenderNode::Transform { children, .. }
+        | RenderNode::Alpha { children, .. } => visit_scene_nodes(children, parent, descriptors),
+        RenderNode::PaintLayer(layer) => visit_layer(layer, parent, descriptors),
+        RenderNode::Primitive(_) => {}
+    });
+}
+
+fn visit_layer(
+    layer: &RenderPaintLayer,
+    parent: Option<(u64, PaintLayerReason)>,
+    descriptors: &mut Vec<LayerDescriptor>,
+) {
+    let own_nodes = layer.own_render_nodes();
+    let descriptor = LayerDescriptor {
+        stable_id: layer.id.node_id,
+        parent,
+        reason: layer.id.role,
+        policy: layer.policy,
+        own_colors: primitive_colors(&own_nodes),
+        own_run_colors: layer
+            .own_runs()
+            .into_iter()
+            .map(|run| primitive_colors(&run.nodes))
+            .collect(),
+        owns_video: nodes_contain_video(&own_nodes),
+    };
+    descriptors.push(descriptor);
+    visit_layer_content(
+        &layer.content.nodes,
+        Some((layer.id.node_id, layer.id.role)),
+        descriptors,
+    );
+}
+
+fn visit_layer_content(
+    content: &[RenderPaintLayerContentNode],
+    parent: Option<(u64, PaintLayerReason)>,
+    descriptors: &mut Vec<LayerDescriptor>,
+) {
+    content.iter().for_each(|node| match node {
+        RenderPaintLayerContentNode::Own(_) => {}
+        RenderPaintLayerContentNode::Child(layer) => visit_layer(layer, parent, descriptors),
+        RenderPaintLayerContentNode::ShadowPass { children }
+        | RenderPaintLayerContentNode::Clip { children, .. }
+        | RenderPaintLayerContentNode::RelaxedClip { children, .. }
+        | RenderPaintLayerContentNode::Transform { children, .. }
+        | RenderPaintLayerContentNode::Alpha { children, .. } => {
+            visit_layer_content(children, parent, descriptors)
+        }
+    });
+}
+
+fn layer_generations(nodes: &[RenderNode]) -> BTreeMap<(u64, PaintLayerReason), u64> {
+    describe_layers(nodes)
+        .into_iter()
+        .map(|layer| ((layer.id.node_id, layer.id.role), layer.content_generation))
         .collect()
 }
 
-fn paint_layer_by_reason(
-    nodes: &[RenderNode],
-    reason: PaintLayerReason,
-) -> Option<&RenderPaintLayer> {
-    paint_layers(nodes)
-        .into_iter()
-        .find(|layer| layer.reason == reason)
-}
-
-fn paint_layers(nodes: &[RenderNode]) -> Vec<&RenderPaintLayer> {
+fn describe_layers(nodes: &[RenderNode]) -> Vec<&RenderPaintLayer> {
     nodes
         .iter()
         .flat_map(|node| match node {
@@ -1711,14 +950,10 @@ fn paint_layers(nodes: &[RenderNode]) -> Vec<&RenderPaintLayer> {
             | RenderNode::Clip { children, .. }
             | RenderNode::RelaxedClip { children, .. }
             | RenderNode::Transform { children, .. }
-            | RenderNode::Alpha { children, .. } => paint_layers(children),
+            | RenderNode::Alpha { children, .. } => describe_layers(children),
             RenderNode::PaintLayer(layer) => {
                 let mut layers = vec![layer];
-                layers.extend(paint_layers(&layer.own_nodes));
-                layer
-                    .child_refs
-                    .iter()
-                    .for_each(|child| layers.extend(paint_layers(&child.nodes)));
+                layers.extend(layer.descendant_layers());
                 layers
             }
             RenderNode::Primitive(_) => Vec::new(),
@@ -1726,81 +961,109 @@ fn paint_layers(nodes: &[RenderNode]) -> Vec<&RenderPaintLayer> {
         .collect()
 }
 
-fn dynamic_slot_count(nodes: &[RenderNode]) -> usize {
-    nodes
-        .iter()
-        .map(|node| match node {
+fn transform_for_layer_reason(
+    nodes: &[RenderNode],
+    reason: PaintLayerReason,
+) -> Option<crate::tree::transform::Affine2> {
+    fn first_transform(
+        nodes: &[RenderNode],
+        transform: crate::tree::transform::Affine2,
+    ) -> Option<crate::tree::transform::Affine2> {
+        nodes.iter().find_map(|node| match node {
+            RenderNode::Transform {
+                transform: local, ..
+            } => Some(transform.then(*local)),
             RenderNode::ShadowPass { children }
             | RenderNode::Clip { children, .. }
             | RenderNode::RelaxedClip { children, .. }
-            | RenderNode::Transform { children, .. }
-            | RenderNode::Alpha { children, .. } => dynamic_slot_count(children),
-            RenderNode::PaintLayer(_) => 1,
-            RenderNode::Primitive(_) => 0,
+            | RenderNode::Alpha { children, .. } => first_transform(children, transform),
+            RenderNode::PaintLayer(layer) => first_transform(&layer.content_nodes(), transform),
+            RenderNode::Primitive(_) => None,
         })
-        .sum()
+    }
+
+    fn visit(
+        nodes: &[RenderNode],
+        reason: PaintLayerReason,
+        transform: crate::tree::transform::Affine2,
+    ) -> Option<crate::tree::transform::Affine2> {
+        nodes.iter().find_map(|node| match node {
+            RenderNode::Transform {
+                transform: local,
+                children,
+            } => visit(children, reason, transform.then(*local)),
+            RenderNode::ShadowPass { children }
+            | RenderNode::Clip { children, .. }
+            | RenderNode::RelaxedClip { children, .. }
+            | RenderNode::Alpha { children, .. } => visit(children, reason, transform),
+            RenderNode::PaintLayer(layer) if layer.id.role == reason => {
+                first_transform(&layer.content_nodes(), transform).or(Some(transform))
+            }
+            RenderNode::PaintLayer(layer) => visit(&layer.content_nodes(), reason, transform),
+            RenderNode::Primitive(_) => None,
+        })
+    }
+
+    visit(nodes, reason, crate::tree::transform::Affine2::identity())
 }
 
-fn contains_shadow_primitive(nodes: &[RenderNode]) -> bool {
-    nodes.iter().any(|node| match node {
+fn primitive_colors(nodes: &[RenderNode]) -> BTreeSet<u32> {
+    let mut colors = BTreeSet::new();
+    visit_primitives(nodes, &mut |primitive| match primitive {
+        DrawPrimitive::Rect(_, _, _, _, color)
+        | DrawPrimitive::RoundedRect(_, _, _, _, _, color) => {
+            colors.insert(*color);
+        }
+        _ => {}
+    });
+    colors
+}
+
+fn nodes_contain_video(nodes: &[RenderNode]) -> bool {
+    let mut found = false;
+    visit_primitives(nodes, &mut |primitive| {
+        found |= matches!(primitive, DrawPrimitive::Video(..))
+    });
+    found
+}
+
+fn visit_primitives(nodes: &[RenderNode], visitor: &mut impl FnMut(&DrawPrimitive)) {
+    nodes.iter().for_each(|node| match node {
         RenderNode::ShadowPass { children }
         | RenderNode::Clip { children, .. }
         | RenderNode::RelaxedClip { children, .. }
         | RenderNode::Transform { children, .. }
-        | RenderNode::Alpha { children, .. } => contains_shadow_primitive(children),
-        RenderNode::PaintLayer(layer) => {
-            contains_shadow_primitive(&layer.own_nodes)
-                || layer
-                    .child_refs
-                    .iter()
-                    .any(|child| contains_shadow_primitive(&child.nodes))
-        }
-        RenderNode::Primitive(DrawPrimitive::Shadow(..)) => true,
-        RenderNode::Primitive(_) => false,
-    })
+        | RenderNode::Alpha { children, .. } => visit_primitives(children, visitor),
+        RenderNode::PaintLayer(_) => {}
+        RenderNode::Primitive(primitive) => visitor(primitive),
+    });
 }
 
-fn contains_rect_color(nodes: &[RenderNode], expected: u32) -> bool {
-    nodes.iter().any(|node| match node {
-        RenderNode::ShadowPass { children }
-        | RenderNode::Clip { children, .. }
-        | RenderNode::RelaxedClip { children, .. }
-        | RenderNode::Transform { children, .. }
-        | RenderNode::Alpha { children, .. } => contains_rect_color(children, expected),
-        RenderNode::PaintLayer(layer) => {
-            contains_rect_color(&layer.own_nodes, expected)
-                || layer
-                    .child_refs
-                    .iter()
-                    .any(|child| contains_rect_color(&child.nodes, expected))
-        }
-        RenderNode::Primitive(DrawPrimitive::Rect(_, _, _, _, color)) => *color == expected,
-        RenderNode::Primitive(_) => false,
-    })
+fn element(id: NodeId, kind: ElementKind, attrs: Attrs, frame: Frame) -> Element {
+    let mut element = Element::with_attrs(id, kind, Vec::new(), attrs);
+    element.layout.frame = Some(frame);
+    element
 }
 
-fn contains_text_primitive(nodes: &[RenderNode]) -> bool {
-    nodes.iter().any(|node| match node {
-        RenderNode::ShadowPass { children }
-        | RenderNode::Clip { children, .. }
-        | RenderNode::RelaxedClip { children, .. }
-        | RenderNode::Transform { children, .. }
-        | RenderNode::Alpha { children, .. } => contains_text_primitive(children),
-        RenderNode::PaintLayer(layer) => {
-            contains_text_primitive(&layer.own_nodes)
-                || layer
-                    .child_refs
-                    .iter()
-                    .any(|child| contains_text_primitive(&child.nodes))
-        }
-        RenderNode::Primitive(DrawPrimitive::TextWithFont(..)) => true,
-        RenderNode::Primitive(_) => false,
-    })
+fn frame(x: f32, y: f32, width: f32, height: f32) -> Frame {
+    Frame {
+        x,
+        y,
+        width,
+        height,
+        content_width: width,
+        content_height: height,
+    }
 }
 
-fn semantic_paint_layer_count(nodes: &[RenderNode]) -> usize {
-    paint_layers(nodes)
-        .into_iter()
-        .filter(|layer| layer.reason != PaintLayerReason::Root)
-        .count()
+fn color_attrs(color: u32) -> Attrs {
+    Attrs {
+        background: Some(Background::Color(Color::Rgba {
+            r: (color >> 24) as u8,
+            g: (color >> 16) as u8,
+            b: (color >> 8) as u8,
+            a: color as u8,
+        })),
+        ..Attrs::default()
+    }
 }

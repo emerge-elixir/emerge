@@ -17,7 +17,8 @@ defmodule Emerge.ViewportTest do
           heartbeat_pid: nil,
           log_target: nil,
           skia_opts: skia_opts,
-          renderer_opts: renderer_opts
+          renderer_opts: renderer_opts,
+          video_connection: nil
         }
       end)
     end
@@ -96,6 +97,48 @@ defmodule Emerge.ViewportTest do
     end
 
     @impl true
+    def connect_video_output(renderer, target, opts) do
+      connection_ref = make_ref()
+      notify = Keyword.get(opts, :notify)
+
+      Agent.update(renderer, fn state ->
+        if state.video_connection do
+          {old_ref, old_notify} = state.video_connection
+
+          if old_notify,
+            do: send(old_notify, {:emerge_video_output, self(), old_ref, :disconnected})
+        end
+
+        if notify,
+          do: send(notify, {:emerge_video_output, self(), connection_ref, :connected})
+
+        state
+        |> Map.put(:video_connection, {connection_ref, notify})
+        |> log_op({:connect_video_output, connection_ref, target, opts})
+      end)
+
+      {:ok, connection_ref}
+    end
+
+    @impl true
+    def disconnect_video_output(renderer) do
+      Agent.update(renderer, fn state ->
+        if state.video_connection do
+          {connection_ref, notify} = state.video_connection
+
+          if notify,
+            do: send(notify, {:emerge_video_output, self(), connection_ref, :disconnected})
+        end
+
+        state
+        |> Map.put(:video_connection, nil)
+        |> log_op(:disconnect_video_output)
+      end)
+
+      :ok
+    end
+
+    @impl true
     def upload_tree(renderer, tree) do
       diff_state = Emerge.Engine.diff_state_new(tree)
       Agent.update(renderer, &log_op(&1, {:upload_tree, diff_state.tree}))
@@ -136,6 +179,35 @@ defmodule Emerge.ViewportTest do
 
     defp stop_heartbeat_unless_running(heartbeat_pid, true), do: heartbeat_pid
     defp stop_heartbeat_unless_running(heartbeat_pid, false), do: stop_heartbeat(heartbeat_pid)
+  end
+
+  defmodule NoConnectionRenderer do
+    @behaviour Emerge.Runtime.Viewport.Renderer
+
+    defdelegate start(skia_opts, renderer_opts), to: Emerge.ViewportTest.FakeRenderer
+    defdelegate stop(renderer), to: Emerge.ViewportTest.FakeRenderer
+    defdelegate running?(renderer), to: Emerge.ViewportTest.FakeRenderer
+    defdelegate set_input_target(renderer, pid), to: Emerge.ViewportTest.FakeRenderer
+    defdelegate set_log_target(renderer, pid), to: Emerge.ViewportTest.FakeRenderer
+    defdelegate set_input_mask(renderer, mask), to: Emerge.ViewportTest.FakeRenderer
+    defdelegate upload_tree(renderer, tree), to: Emerge.ViewportTest.FakeRenderer
+    defdelegate patch_tree(renderer, diff_state, tree), to: Emerge.ViewportTest.FakeRenderer
+  end
+
+  defmodule NoConnectionViewport do
+    use Emerge
+
+    @impl Viewport
+    def mount(_opts) do
+      {:ok,
+       viewport: [
+         renderer_module: Emerge.ViewportTest.NoConnectionRenderer,
+         renderer_check_interval_ms: nil
+       ]}
+    end
+
+    @impl Viewport
+    def render, do: el([], text("no connection"))
   end
 
   defmodule BareSkiaViewport do
@@ -506,6 +578,75 @@ defmodule Emerge.ViewportTest do
     GenServer.stop(pid)
   end
 
+  test "direct video output routes optional callbacks and rolls connection references" do
+    {:ok, pid} = CounterViewport.start_link(count: 1)
+    renderer = Emerge.renderer(pid)
+
+    target = %EmergeSkia.VideoTarget{
+      id: "preview",
+      width: 64,
+      height: 32,
+      mode: :prime,
+      ref: make_ref()
+    }
+
+    assert {:ok, first} = Emerge.connect_video_output(pid, target, notify: self())
+    assert_receive {:emerge_video_output, _source_pid, ^first, :connected}
+    assert {:ok, second} = Emerge.connect_video_output(pid, target)
+    assert_receive {:emerge_video_output, _source_pid, ^first, :disconnected}
+    assert first != second
+    assert :ok = Emerge.disconnect_video_output(pid)
+
+    assert Enum.any?(FakeRenderer.ops(renderer), fn
+             {:connect_video_output, ref, ^target, [notify: notify]} ->
+               ref == first and notify == self()
+
+             _other ->
+               false
+           end)
+
+    assert :disconnect_video_output = List.last(FakeRenderer.ops(renderer))
+    GenServer.stop(pid)
+  end
+
+  test "direct video output reports not ready and wrong renderer mode explicitly" do
+    target = %EmergeSkia.VideoTarget{
+      id: "preview",
+      width: 64,
+      height: 32,
+      mode: :prime,
+      ref: make_ref()
+    }
+
+    assert {:ok, state, {:continue, _mount}} =
+             Emerge.Runtime.Viewport.init_state(CounterViewport, [])
+
+    assert {:reply, {:error, :not_ready}, ^state} =
+             Emerge.Runtime.Viewport.handle_call(
+               {:emerge_viewport, :connect_video_output, target, []},
+               {self(), make_ref()},
+               state
+             )
+
+    assert {:error, :wrong_mode} =
+             Emerge.Runtime.Viewport.Renderer.Skia.connect_video_output(make_ref(), target, [])
+  end
+
+  test "direct video output reports unsupported for renderers without optional callbacks" do
+    {:ok, pid} = NoConnectionViewport.start_link()
+
+    target = %EmergeSkia.VideoTarget{
+      id: "preview",
+      width: 64,
+      height: 32,
+      mode: :prime,
+      ref: make_ref()
+    }
+
+    assert {:error, :video_output_unsupported} = Emerge.connect_video_output(pid, target)
+    GenServer.stop(pid)
+  end
+
   test "viewport child spec waits for renderer teardown during supervisor shutdown" do
     assert %{shutdown: :infinity} = CounterViewport.child_spec([])
   end
@@ -632,6 +773,19 @@ defmodule Emerge.ViewportTest do
       end)
 
     assert log =~ "EmergeSkia native[drm] DRM cursor: hardware plane enabled"
+  end
+
+  test "verbose event runtime traces stay below Logger's default level" do
+    log =
+      capture_log([level: :info], fn ->
+        assert {:noreply, %{}} =
+                 Emerge.Runtime.Viewport.handle_info(
+                   {:emerge_skia_log, :info, "event_runtime", "input begin"},
+                   %{}
+                 )
+      end)
+
+    assert log == ""
   end
 
   test "rerender requests from callback state updates are coalesced" do

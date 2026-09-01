@@ -22,7 +22,6 @@ defmodule EmergeSkia.Macos.Host do
 
   @request_start_session 0x0010
   @request_stop_session 0x0011
-  @request_session_running 0x0012
   @request_upload_tree 0x0013
   @request_patch_tree 0x0014
   @request_shutdown_host 0x0015
@@ -165,6 +164,26 @@ defmodule EmergeSkia.Macos.Host do
     end
   end
 
+  @spec renderer_info(Renderer.t()) :: {:ok, map()} | {:error, term()}
+  def renderer_info(%Renderer{} = renderer) do
+    {:ok,
+     %{
+       backend: :macos,
+       rendering_api: %{
+         requested: renderer.requested_rendering_api,
+         selected: renderer.rendering_api
+       },
+       capabilities: %{
+         gpu: renderer.rendering_api == :metal,
+         renderer_cache: renderer.renderer_cache_enabled,
+         screenshot: false,
+         raster_present: [],
+         prime_video: false,
+         prime_video_formats: []
+       }
+     }}
+  end
+
   @spec render_tree_to_pixels(binary(), map(), map()) :: binary() | {:error, term()}
   def render_tree_to_pixels(bytes, raster_opts, asset_config)
       when is_binary(bytes) and is_map(raster_opts) and is_map(asset_config) do
@@ -248,7 +267,7 @@ defmodule EmergeSkia.Macos.Host do
     scroll_line_pixels = Map.fetch!(native_opts, :scroll_line_pixels)
     renderer_stats_log = Map.fetch!(native_opts, :renderer_stats_log)
     renderer_cache = Map.fetch!(native_opts, :renderer_cache)
-    macos_backend = Map.fetch!(native_opts, :macos_backend)
+    rendering_api = Map.fetch!(native_opts, :rendering_api)
 
     case queue_request(
            state,
@@ -263,7 +282,7 @@ defmodule EmergeSkia.Macos.Host do
              scroll_line_pixels,
              renderer_stats_log,
              renderer_cache,
-             macos_backend,
+             Map.fetch!(rendering_api, :kind),
              asset_config
            )
          ) do
@@ -590,7 +609,7 @@ defmodule EmergeSkia.Macos.Host do
   end
 
   defp handle_reply_request(
-         {:start_session, _native_opts},
+         {:start_session, native_opts},
          from,
          session_id,
          @request_start_session,
@@ -599,13 +618,28 @@ defmodule EmergeSkia.Macos.Host do
        ) do
     case payload do
       <<backend_tag>> ->
-        selected_backend = Protocol.decode_macos_backend_tag(backend_tag)
+        selected_rendering_api = Protocol.decode_rendering_api_tag(backend_tag)
+
+        requested_rendering_api =
+          native_opts
+          |> Map.fetch!(:rendering_api)
+          |> Map.fetch!(:kind)
+          |> decode_renderer_kind!()
+
+        renderer_cache = Map.fetch!(native_opts, :renderer_cache)
+
+        renderer_cache_enabled =
+          Map.fetch!(renderer_cache, :enabled) and
+            (selected_rendering_api != :raster or
+               Map.fetch!(renderer_cache, :enabled_configured))
 
         renderer = %Renderer{
           session_id: session_id,
           host_id: state.host_id,
           host_pid: state.host_pid,
-          macos_backend: selected_backend
+          requested_rendering_api: requested_rendering_api,
+          rendering_api: selected_rendering_api,
+          renderer_cache_enabled: renderer_cache_enabled
         }
 
         sessions =
@@ -638,20 +672,6 @@ defmodule EmergeSkia.Macos.Host do
        ) do
     GenServer.reply(from, :ok)
     Session.mark_stopped(state, session_id, @input_mask_all)
-  end
-
-  defp handle_reply_request(
-         {:running, session_id},
-         from,
-         _reply_session_id,
-         @request_session_running,
-         <<running_flag>>,
-         state
-       )
-       when running_flag in 0..1 do
-    running? = running_flag == 1
-    GenServer.reply(from, running?)
-    Session.update_metadata(state, session_id, :running, running?, @input_mask_all)
   end
 
   defp handle_reply_request(
@@ -1002,4 +1022,8 @@ defmodule EmergeSkia.Macos.Host do
       reply_pending_error(request, from, message)
     end)
   end
+
+  defp decode_renderer_kind!("auto"), do: :auto
+  defp decode_renderer_kind!("metal"), do: :metal
+  defp decode_renderer_kind!("raster"), do: :raster
 end

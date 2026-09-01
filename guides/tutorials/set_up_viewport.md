@@ -141,7 +141,8 @@ Runtime backend options:
 
 - `backend: :macos` starts the macOS backend explicitly
 - `backend: :drm` starts the direct DRM backend explicitly
-- `macos_backend: :auto | :metal | :raster` selects the macOS surface backend. `:auto` prefers Metal and falls back to raster.
+- `rendering_api: :auto | :opengl | :raster | :metal` selects the renderer. `:auto` prefers the backend default (`:metal` then `:raster` on macOS; `:opengl` on current Linux backends).
+- `rendering_api: :raster` is equivalent to `rendering_api: [raster: [present: :auto]]`; Wayland supports `:cpu` and `:gpu_upload` raster presentation, while DRM currently supports raster GPU upload.
 
 DRM notes:
 
@@ -485,9 +486,6 @@ children = [
 
 Other backend/logging settings:
 
-- `drm_startup_retries` - Number of DRM device startup retries (default: `40`)
-- `drm_retry_interval_ms` - Delay between DRM startup retries in milliseconds (default: `250`)
-- `drm_force_gpu_finish` - Force synchronous GPU completion before and after buffer swaps for diagnostics. This can reduce rendering performance (default: `false`)
 - `hw_cursor` - Enable hardware cursor when available (default: true). If the device has a cursor plane, it will draw the cursor independently from the rest of the UI.
 - `drm_cursor` - Optional DRM-only cursor overrides for `default`, `text`, and `pointer`
 - `input_log` - Log DRM input devices on startup (default: false)

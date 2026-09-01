@@ -1,23 +1,20 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::{CStr, CString};
-use std::fs::{File, OpenOptions};
 use std::io;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
+use std::os::fd::{AsFd, AsRawFd};
 use std::os::raw::c_void;
 use std::ptr;
 use std::sync::mpsc::Sender as StartupSender;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant};
 
-mod cursor_theme;
-
 use drm::Device as BasicDevice;
 use drm::control::{
-    self, AtomicCommitFlags, Device as ControlDevice, FbCmd2Flags, PlaneType, ResourceHandles,
-    atomic, connector, crtc, encoder, framebuffer, plane, property,
+    self, AtomicCommitFlags, Device as ControlDevice, FbCmd2Flags, ResourceHandles, atomic,
+    connector, crtc, framebuffer, plane, property,
 };
 use drm::{ClientCapability, DriverCapability};
 use gbm::{
@@ -29,25 +26,36 @@ use glutin_egl_sys::egl::types::{EGLConfig, EGLContext, EGLDisplay, EGLSurface, 
 use libloading::Library;
 use skia_safe::{Paint, Rect, gpu::gl::FramebufferInfo};
 
-use crossbeam_channel::{Receiver, Sender, TrySendError};
-
-use crate::DrmCursorOverrideConfig;
 use crate::actors::{EventMsg, RenderMsg, TreeMsg};
-use crate::assets::AssetConfig;
+use crate::backend::raster::{RasterBackend, RasterConfig};
 use crate::backend::skia_gpu::GlFrameSurface;
-use crate::backend::wake::BackendWake;
-use crate::cursor::{CursorState, SharedCursorState};
+use crate::cursor::CursorState;
 use crate::events::CursorIcon;
 use crate::input::InputEvent;
-use crate::linux_wait::{EventFd, poll_fds};
+use crate::linux_wait::poll_fds;
 use crate::native_log::NativeLogRelay;
-use crate::renderer::{RenderState, RenderTimings, RendererCacheConfig, SceneRenderer};
+use crate::renderer::{RenderState, RenderTimings, SceneRenderer};
 use crate::stats::{
     RendererStatsCollector, format_slow_render_frame_log, render_frame_has_slow_stage,
 };
-use crate::video::{VideoImportCapabilities, VideoImportContext, VideoRegistry};
+use crate::video::{
+    VideoImportCapabilities, VideoImportContext, VideoRegistry, VideoStreamIdentity,
+};
+use crate::{LatestFrameStore, RenderingApi, capture_requested_gpu_frame};
+use crossbeam_channel::{Sender, TrySendError};
 
-use self::cursor_theme::{CURSOR_PLANE_SIZE, CursorVisual, DrmCursorTheme};
+use super::{
+    DrmRunConfig, DrmRunContext,
+    core::{
+        AtomicCommitErrorKind, Card, classify_atomic_commit_error, find_cursor_plane,
+        find_primary_plane, first_connected_connector, mode_frame_interval, mode_refresh_hz,
+        open_card, prop_handle,
+    },
+    cursor_theme::{CURSOR_PLANE_SIZE, CursorVisual, DrmCursorTheme},
+};
+
+#[cfg(test)]
+use super::core::{frame_interval_for_refresh_hz, precise_mode_refresh_hz};
 
 const EGL_PLATFORM_GBM_KHR: EGLenum = 0x31D7;
 const RENDER_PROFILE_INTERVAL: Duration = Duration::from_secs(1);
@@ -56,53 +64,8 @@ const GL_QUERY_RESULT_EXT: gl::types::GLenum = 0x8866;
 const GL_QUERY_RESULT_AVAILABLE_EXT: gl::types::GLenum = 0x8867;
 const GL_TIME_ELAPSED_EXT: gl::types::GLenum = 0x88BF;
 const GL_GPU_DISJOINT_EXT: gl::types::GLenum = 0x8FBB;
-
-#[derive(Clone)]
-pub(crate) struct DrmBackendWake {
-    presenter_wake: EventFd,
-    input_wake: EventFd,
-}
-
-impl DrmBackendWake {
-    pub(crate) fn new(presenter_wake: EventFd, input_wake: EventFd) -> Self {
-        Self {
-            presenter_wake,
-            input_wake,
-        }
-    }
-}
-
-impl BackendWake for DrmBackendWake {
-    fn request_stop(&self) {
-        let _ = self.presenter_wake.signal();
-        let _ = self.input_wake.signal();
-    }
-
-    fn request_redraw(&self) {
-        let _ = self.presenter_wake.signal();
-    }
-
-    fn notify_video_frame(&self) {
-        let _ = self.presenter_wake.signal();
-    }
-}
-
-struct Card(File);
-
-impl AsFd for Card {
-    fn as_fd(&self) -> BorrowedFd<'_> {
-        self.0.as_fd()
-    }
-}
-
-impl AsRawFd for Card {
-    fn as_raw_fd(&self) -> i32 {
-        self.0.as_raw_fd()
-    }
-}
-
-impl BasicDevice for Card {}
-impl ControlDevice for Card {}
+const GPU_RENDER_SAMPLE_INTERVAL_FRAMES: u64 = 4;
+const GPU_RENDER_QUERY_POOL_CAPACITY: usize = 8;
 
 struct EglState {
     egl: egl::Egl,
@@ -221,23 +184,54 @@ struct GpuQueueTimerApi {
     get_query_object_ui64v: GlGetQueryObjectui64vExt,
 }
 
-struct PendingGpuQueueTimerSample {
-    query: gl::types::GLuint,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct GpuRenderPresentation {
+    kms_sequence: u32,
+    kms_sequence_delta: Option<u32>,
+}
+
+struct GpuRenderTimerSample {
+    generation: u64,
     render_version: u64,
+    stats_epoch: Option<u64>,
+    stats_epoch_status: &'static str,
     ended_at: Instant,
     cpu_render: Duration,
     cpu_draw: Duration,
     cpu_flush: Duration,
     cpu_gpu_flush: Duration,
     cpu_submit: Duration,
+    cache_configuration: &'static str,
     cache_hits: u64,
-    cached_image_draws: u64,
+    primary_cached_image_draws: u64,
+    primary_cached_payload_pixels: u64,
+    presentation: Option<GpuRenderPresentation>,
+    not_presented_reason: Option<&'static str>,
 }
 
-struct GpuQueueTimer {
+struct ActiveGpuRenderTimerSample {
+    query: gl::types::GLuint,
+    stats_epoch: Option<u64>,
+}
+
+struct PendingGpuRenderTimerSample {
+    query: gl::types::GLuint,
+    sample: GpuRenderTimerSample,
+}
+
+struct ReadyGpuRenderTimerSample {
+    sample: GpuRenderTimerSample,
+    elapsed: Duration,
+}
+
+struct GpuRenderTimer {
     api: Option<GpuQueueTimerApi>,
-    active_query: Option<gl::types::GLuint>,
-    pending: Option<PendingGpuQueueTimerSample>,
+    stats: Option<Arc<RendererStatsCollector>>,
+    active_query: Option<ActiveGpuRenderTimerSample>,
+    pending: VecDeque<PendingGpuRenderTimerSample>,
+    ready_for_presentation: VecDeque<ReadyGpuRenderTimerSample>,
+    rendered_frames: u64,
+    sampling_disabled: bool,
     log_results: bool,
     logged_disjoint: bool,
 }
@@ -287,9 +281,10 @@ impl GpuQueueTimerApi {
     }
 }
 
-impl GpuQueueTimer {
+impl GpuRenderTimer {
     fn new(
         egl: &egl::Egl,
+        stats: Option<Arc<RendererStatsCollector>>,
         enabled: bool,
         log_results: bool,
         timer_query_advertised: bool,
@@ -298,8 +293,12 @@ impl GpuQueueTimer {
         if !enabled {
             return Self {
                 api: None,
+                stats,
                 active_query: None,
-                pending: None,
+                pending: VecDeque::new(),
+                ready_for_presentation: VecDeque::new(),
+                rendered_frames: 0,
+                sampling_disabled: false,
                 log_results,
                 logged_disjoint: false,
             };
@@ -309,12 +308,16 @@ impl GpuQueueTimer {
             Ok(api) => {
                 native_log.info(
                     "drm",
-                    "sampled asynchronous GPU queue completion-span profiling enabled via GL_EXT_disjoint_timer_query (at most one frame per second)",
+                    "sampled asynchronous GPU render elapsed profiling enabled via GL_EXT_disjoint_timer_query (every fourth rendered frame, nonblocking pool capacity 8)",
                 );
                 Self {
                     api: Some(api),
+                    stats,
                     active_query: None,
-                    pending: None,
+                    pending: VecDeque::new(),
+                    ready_for_presentation: VecDeque::new(),
+                    rendered_frames: 0,
+                    sampling_disabled: false,
                     log_results,
                     logged_disjoint: false,
                 }
@@ -322,12 +325,16 @@ impl GpuQueueTimer {
             Err(err) => {
                 native_log.warning(
                     "drm",
-                    format!("GPU queue completion-span profiling unavailable: {err}"),
+                    format!("GPU render elapsed profiling unavailable: {err}"),
                 );
                 Self {
                     api: None,
+                    stats,
                     active_query: None,
-                    pending: None,
+                    pending: VecDeque::new(),
+                    ready_for_presentation: VecDeque::new(),
+                    rendered_frames: 0,
+                    sampling_disabled: false,
                     log_results,
                     logged_disjoint: false,
                 }
@@ -335,88 +342,141 @@ impl GpuQueueTimer {
         }
     }
 
-    fn poll(&mut self, stats: Option<&RendererStatsCollector>, native_log: &NativeLogRelay) {
-        let (Some(api), Some(pending)) = (self.api, self.pending.as_ref()) else {
+    fn poll(&mut self, native_log: &NativeLogRelay) {
+        let Some(api) = self.api else {
             return;
         };
-
-        let mut available = 0;
-        unsafe {
-            (api.get_query_object_uiv)(
-                pending.query,
-                GL_QUERY_RESULT_AVAILABLE_EXT,
-                &mut available,
-            );
-        }
-        if available == 0 {
+        if self.pending.is_empty() {
             return;
         }
 
+        // The flag is global to the context and querying it clears it. Check before consuming any
+        // pooled result so one disjoint interval invalidates every query that may span it.
         let mut disjoint = 0;
         unsafe {
             gl::GetIntegerv(GL_GPU_DISJOINT_EXT, &mut disjoint);
         }
-
-        let pending = self
-            .pending
-            .take()
-            .expect("pending GPU query was checked above");
         if disjoint != 0 {
-            unsafe {
-                (api.delete_queries)(1, &pending.query);
-            }
+            let discarded = self.pending.len();
+            self.pending.drain(..).for_each(|pending| {
+                unsafe {
+                    (api.delete_queries)(1, &pending.query);
+                }
+                if let (Some(stats), Some(epoch)) =
+                    (self.stats.as_deref(), pending.sample.stats_epoch)
+                {
+                    stats.complete_gpu_render_elapsed_sample(epoch, None, true);
+                }
+            });
             if !self.logged_disjoint {
                 native_log.warning(
                     "drm",
-                    "discarded a GPU queue completion-span sample because GL_GPU_DISJOINT_EXT was set",
+                    format!(
+                        "discarded {discarded} GPU render elapsed sample(s) because GL_GPU_DISJOINT_EXT was set"
+                    ),
                 );
                 self.logged_disjoint = true;
             }
             return;
         }
 
-        let mut elapsed_ns = 0;
-        unsafe {
-            (api.get_query_object_ui64v)(pending.query, GL_QUERY_RESULT_EXT, &mut elapsed_ns);
-            (api.delete_queries)(1, &pending.query);
+        loop {
+            let Some(pending) = self.pending.front() else {
+                return;
+            };
+            let mut available = 0;
+            unsafe {
+                (api.get_query_object_uiv)(
+                    pending.query,
+                    GL_QUERY_RESULT_AVAILABLE_EXT,
+                    &mut available,
+                );
+            }
+            if available == 0 {
+                return;
+            }
+
+            let pending = self
+                .pending
+                .pop_front()
+                .expect("available GPU render query was checked above");
+            let mut elapsed_ns = 0;
+            unsafe {
+                (api.get_query_object_ui64v)(pending.query, GL_QUERY_RESULT_EXT, &mut elapsed_ns);
+                (api.delete_queries)(1, &pending.query);
+            }
+            let elapsed = Duration::from_nanos(elapsed_ns);
+            let mut sample = pending.sample;
+            sample.stats_epoch_status = match (self.stats.as_deref(), sample.stats_epoch) {
+                (Some(stats), Some(epoch)) => {
+                    if stats.complete_gpu_render_elapsed_sample(epoch, Some(elapsed), false) {
+                        "accepted"
+                    } else {
+                        "stale_rejected"
+                    }
+                }
+                _ => "untracked",
+            };
+
+            if !self.log_results {
+                continue;
+            }
+            if sample.presentation.is_some() {
+                log_gpu_render_timer_sample(native_log, &sample, elapsed, "presented");
+            } else if let Some(reason) = sample.not_presented_reason {
+                log_gpu_render_timer_sample(native_log, &sample, elapsed, reason);
+            } else {
+                if self.ready_for_presentation.len() >= GPU_RENDER_QUERY_POOL_CAPACITY
+                    && let Some(evicted) = self.ready_for_presentation.pop_front()
+                {
+                    log_gpu_render_timer_sample(
+                        native_log,
+                        &evicted.sample,
+                        evicted.elapsed,
+                        "not_presented_before_correlation_capacity",
+                    );
+                }
+                self.ready_for_presentation
+                    .push_back(ReadyGpuRenderTimerSample { sample, elapsed });
+            }
         }
-        let elapsed = Duration::from_nanos(elapsed_ns);
-        if let Some(stats) = stats {
-            stats.record_drm_gpu_queue_completion(elapsed);
+    }
+
+    fn sample_due(&mut self) -> bool {
+        self.rendered_frames = self.rendered_frames.wrapping_add(1);
+        if self.api.is_none()
+            || self.sampling_disabled
+            || !gpu_render_sample_frame(self.rendered_frames)
+            || self
+                .stats
+                .as_deref()
+                .is_some_and(|stats| !stats.gpu_render_elapsed_sampling_open())
+        {
+            return false;
         }
-        if self.log_results {
-            let query_result_age = pending.ended_at.elapsed();
-            native_log.info(
-                "renderer_gpu_queue",
-                format!(
-                    "GPU queue completion-span sample\n  render_version: {}\n  queue_completion_span: {:.3} ms\n  query_result_age: {:.3} ms\n  CPU: render={:.3} ms draw_recording={:.3} ms flush={:.3} ms gpu_flush={:.3} ms submit={:.3} ms\n  cache: hits={} image_draws={}",
-                    pending.render_version,
-                    elapsed.as_secs_f64() * 1_000.0,
-                    query_result_age.as_secs_f64() * 1_000.0,
-                    pending.cpu_render.as_secs_f64() * 1_000.0,
-                    pending.cpu_draw.as_secs_f64() * 1_000.0,
-                    pending.cpu_flush.as_secs_f64() * 1_000.0,
-                    pending.cpu_gpu_flush.as_secs_f64() * 1_000.0,
-                    pending.cpu_submit.as_secs_f64() * 1_000.0,
-                    pending.cache_hits,
-                    pending.cached_image_draws,
-                ),
-            );
+        if self.active_query.is_some() || self.pending.len() >= GPU_RENDER_QUERY_POOL_CAPACITY {
+            if let Some(stats) = self.stats.as_deref() {
+                stats.record_gpu_render_elapsed_pool_saturated_sample_skip();
+            }
+            return false;
         }
+        true
     }
 
     fn begin_sample(&mut self, native_log: &NativeLogRelay) {
         let Some(api) = self.api else {
             return;
         };
-        if self.active_query.is_some() || self.pending.is_some() {
+        if self.active_query.is_some() || self.pending.len() >= GPU_RENDER_QUERY_POOL_CAPACITY {
             return;
         }
 
-        // GL_EXT_disjoint_timer_query specifies that querying this flag clears stale state.
-        let mut ignored_disjoint = 0;
-        unsafe {
-            gl::GetIntegerv(GL_GPU_DISJOINT_EXT, &mut ignored_disjoint);
+        // Clear stale disjoint state only when no older pooled sample still depends on it.
+        if self.pending.is_empty() {
+            let mut ignored_disjoint = 0;
+            unsafe {
+                gl::GetIntegerv(GL_GPU_DISJOINT_EXT, &mut ignored_disjoint);
+            }
         }
 
         let mut query = 0;
@@ -424,22 +484,39 @@ impl GpuQueueTimer {
             (api.gen_queries)(1, &mut query);
         }
         if query == 0 {
-            self.api = None;
+            self.sampling_disabled = true;
             native_log.warning(
                 "drm",
-                "GPU queue completion-span profiling disabled after glGenQueriesEXT returned zero",
+                "GPU render elapsed profiling disabled after glGenQueriesEXT returned zero",
             );
+            return;
+        }
+
+        let stats_epoch = self
+            .stats
+            .as_deref()
+            .and_then(RendererStatsCollector::begin_gpu_render_elapsed_sample);
+        if self.stats.is_some() && stats_epoch.is_none() {
+            unsafe {
+                (api.delete_queries)(1, &query);
+            }
             return;
         }
 
         unsafe {
             (api.begin_query)(GL_TIME_ELAPSED_EXT, query);
         }
-        self.active_query = Some(query);
+        self.active_query = Some(ActiveGpuRenderTimerSample { query, stats_epoch });
     }
 
-    fn end_sample(&mut self, render_version: u64, timings: &RenderTimings) {
-        let (Some(api), Some(query)) = (self.api, self.active_query.take()) else {
+    fn end_sample(
+        &mut self,
+        generation: u64,
+        render_version: u64,
+        cache_enabled: bool,
+        timings: &RenderTimings,
+    ) {
+        let (Some(api), Some(active)) = (self.api, self.active_query.take()) else {
             return;
         };
 
@@ -451,38 +528,175 @@ impl GpuQueueTimer {
             .as_deref()
             .map(|cache| cache.paint_layer)
             .unwrap_or_default();
-        self.pending = Some(PendingGpuQueueTimerSample {
-            query,
-            render_version,
-            ended_at: Instant::now(),
-            cpu_render: timings.total,
-            cpu_draw: timings.draw,
-            cpu_flush: timings.flush,
-            cpu_gpu_flush: timings.gpu_flush,
-            cpu_submit: timings.submit,
-            cache_hits: paint_layer.hits,
-            cached_image_draws: paint_layer.cached_image_draws,
+        self.pending.push_back(PendingGpuRenderTimerSample {
+            query: active.query,
+            sample: GpuRenderTimerSample {
+                generation,
+                render_version,
+                stats_epoch: active.stats_epoch,
+                stats_epoch_status: "pending",
+                ended_at: Instant::now(),
+                cpu_render: timings.total,
+                cpu_draw: timings.draw,
+                cpu_flush: timings.flush,
+                cpu_gpu_flush: timings.gpu_flush,
+                cpu_submit: timings.submit,
+                cache_configuration: if cache_enabled { "enabled" } else { "disabled" },
+                cache_hits: paint_layer.hits,
+                primary_cached_image_draws: paint_layer.cached_image_draws,
+                primary_cached_payload_pixels: paint_layer.composited_payload_pixels,
+                presentation: None,
+                not_presented_reason: None,
+            },
         });
+    }
+
+    fn on_primary_presented(
+        &mut self,
+        generation: u64,
+        kms_sequence: u32,
+        kms_sequence_delta: Option<u32>,
+        native_log: &NativeLogRelay,
+    ) {
+        if !self.log_results {
+            return;
+        }
+        let presentation = GpuRenderPresentation {
+            kms_sequence,
+            kms_sequence_delta,
+        };
+        self.pending
+            .iter_mut()
+            .filter(|pending| pending.sample.generation == generation)
+            .for_each(|pending| pending.sample.presentation = Some(presentation));
+        if let Some(ready) = take_ready_gpu_render_sample_for_generation(
+            &mut self.ready_for_presentation,
+            generation,
+        ) {
+            let mut sample = ready.sample;
+            sample.presentation = Some(presentation);
+            log_gpu_render_timer_sample(native_log, &sample, ready.elapsed, "presented");
+        }
+    }
+
+    fn on_primary_not_presented(
+        &mut self,
+        generation: u64,
+        reason: &'static str,
+        native_log: &NativeLogRelay,
+    ) {
+        if !self.log_results {
+            return;
+        }
+        self.pending
+            .iter_mut()
+            .filter(|pending| pending.sample.generation == generation)
+            .for_each(|pending| pending.sample.not_presented_reason = Some(reason));
+        if let Some(ready) = take_ready_gpu_render_sample_for_generation(
+            &mut self.ready_for_presentation,
+            generation,
+        ) {
+            log_gpu_render_timer_sample(native_log, &ready.sample, ready.elapsed, reason);
+        }
+    }
+
+    fn window_drain_poll_required(&self) -> bool {
+        !self.pending.is_empty()
+            && self
+                .stats
+                .as_deref()
+                .is_some_and(RendererStatsCollector::gpu_render_elapsed_window_draining)
     }
 }
 
-impl Drop for GpuQueueTimer {
+impl Drop for GpuRenderTimer {
     fn drop(&mut self) {
         let Some(api) = self.api else {
             return;
         };
-        if let Some(query) = self.active_query.take() {
+        if let Some(active) = self.active_query.take() {
             unsafe {
                 (api.end_query)(GL_TIME_ELAPSED_EXT);
-                (api.delete_queries)(1, &query);
+                (api.delete_queries)(1, &active.query);
+            }
+            if let (Some(stats), Some(epoch)) = (self.stats.as_deref(), active.stats_epoch) {
+                stats.cancel_gpu_render_elapsed_sample(epoch);
             }
         }
-        if let Some(pending) = self.pending.take() {
+        self.pending.drain(..).for_each(|pending| {
             unsafe {
                 (api.delete_queries)(1, &pending.query);
             }
-        }
+            if let (Some(stats), Some(epoch)) = (self.stats.as_deref(), pending.sample.stats_epoch)
+            {
+                stats.cancel_gpu_render_elapsed_sample(epoch);
+            }
+        });
     }
+}
+
+fn take_ready_gpu_render_sample_for_generation(
+    ready: &mut VecDeque<ReadyGpuRenderTimerSample>,
+    generation: u64,
+) -> Option<ReadyGpuRenderTimerSample> {
+    ready
+        .iter()
+        .position(|sample| sample.sample.generation == generation)
+        .and_then(|index| ready.remove(index))
+}
+
+fn log_gpu_render_timer_sample(
+    native_log: &NativeLogRelay,
+    sample: &GpuRenderTimerSample,
+    elapsed: Duration,
+    disposition: &str,
+) {
+    native_log.info(
+        "renderer_gpu",
+        format_gpu_render_timer_sample(sample, elapsed, sample.ended_at.elapsed(), disposition),
+    );
+}
+
+fn format_gpu_render_timer_sample(
+    sample: &GpuRenderTimerSample,
+    elapsed: Duration,
+    query_result_age: Duration,
+    disposition: &str,
+) -> String {
+    let (presented_kms_sequence, presented_kms_sequence_delta) = sample
+        .presentation
+        .map(|presentation| {
+            (
+                Some(presentation.kms_sequence),
+                presentation.kms_sequence_delta,
+            )
+        })
+        .unwrap_or((None, None));
+    format!(
+        "GPU render elapsed sample\n  generation: {}\n  render_version: {}\n  stats_epoch: {:?} ({})\n  gpu_render_elapsed: {:.3} ms\n  query_result_age: {:.3} ms\n  kms: disposition={} presented_sequence={:?} presented_sequence_delta={:?}\n  CPU: render={:.3} ms draw_recording={:.3} ms flush={:.3} ms gpu_flush={:.3} ms submit={:.3} ms\n  cache: configuration={} hits={} primary_cached_image_draws={} primary_cached_payload_pixels={}",
+        sample.generation,
+        sample.render_version,
+        sample.stats_epoch,
+        sample.stats_epoch_status,
+        elapsed.as_secs_f64() * 1_000.0,
+        query_result_age.as_secs_f64() * 1_000.0,
+        disposition,
+        presented_kms_sequence,
+        presented_kms_sequence_delta,
+        sample.cpu_render.as_secs_f64() * 1_000.0,
+        sample.cpu_draw.as_secs_f64() * 1_000.0,
+        sample.cpu_flush.as_secs_f64() * 1_000.0,
+        sample.cpu_gpu_flush.as_secs_f64() * 1_000.0,
+        sample.cpu_submit.as_secs_f64() * 1_000.0,
+        sample.cache_configuration,
+        sample.cache_hits,
+        sample.primary_cached_image_draws,
+        sample.primary_cached_payload_pixels,
+    )
+}
+
+fn gpu_render_sample_frame(rendered_frame: u64) -> bool {
+    rendered_frame.is_multiple_of(GPU_RENDER_SAMPLE_INTERVAL_FRAMES)
 }
 
 fn extension_list_contains(extensions: &str, expected: &str) -> bool {
@@ -506,6 +720,7 @@ struct PreparedPrimaryFrame {
     video_sync_succeeded: bool,
     video_needs_cleanup: bool,
     imported_video_frames: usize,
+    imported_video_streams: Vec<VideoStreamIdentity>,
     newest_video_submitted_at: Option<Instant>,
     prepared_at: Instant,
     atomic_commit_submitted_at: Option<Instant>,
@@ -574,18 +789,6 @@ impl CursorPlane {
     }
 }
 
-fn open_card(card_path: Option<&str>) -> Result<Card, String> {
-    let card_path = card_path.unwrap_or("/dev/dri/card0");
-
-    let fd = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(card_path)
-        .map_err(|e| format!("failed to open {card_path}: {e}"))?;
-
-    Ok(Card(fd))
-}
-
 fn sleep_with_stop(stop: &Arc<AtomicBool>, duration: Duration) {
     let deadline = Instant::now() + duration;
 
@@ -607,7 +810,7 @@ fn release_master_lock(card: &Card) {
 
 fn handle_startup_failure_with_card(
     card: &Card,
-    startup_tx: &mut Option<StartupSender<Result<(), String>>>,
+    startup_tx: &mut Option<StartupSender<Result<super::DrmBackendStartupInfo, String>>>,
     running_flag: &Arc<AtomicBool>,
     stop: &Arc<AtomicBool>,
     retries_remaining: &mut u32,
@@ -627,7 +830,7 @@ fn handle_startup_failure_with_card(
 }
 
 fn handle_startup_failure(
-    startup_tx: &mut Option<StartupSender<Result<(), String>>>,
+    startup_tx: &mut Option<StartupSender<Result<super::DrmBackendStartupInfo, String>>>,
     running_flag: &Arc<AtomicBool>,
     stop: &Arc<AtomicBool>,
     retries_remaining: &mut u32,
@@ -710,6 +913,7 @@ fn destroy_session_resources(
     destroy_mode_blob(card, mode_blob_id);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn teardown_drm_output(
     card: &Card,
     connector: connector::Handle,
@@ -765,6 +969,7 @@ fn teardown_drm_output(
         .map_err(|e| format!("tearing down DRM output failed: {e}"))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cleanup_active_session(
     card: &Card,
     connector: connector::Handle,
@@ -792,305 +997,6 @@ fn cleanup_active_session(
 
     destroy_session_resources(card, cursor_plane, framebuffer_cache, mode_blob_id);
     release_master_lock(card);
-}
-
-fn mode_distance(mode: &control::Mode, requested: (u32, u32)) -> i64 {
-    let (width, height) = mode.size();
-    let dx = width as i64 - requested.0 as i64;
-    let dy = height as i64 - requested.1 as i64;
-    dx * dx + dy * dy
-}
-
-fn mode_area(mode: &control::Mode) -> i64 {
-    let (width, height) = mode.size();
-    width as i64 * height as i64
-}
-
-fn mode_is_preferred(mode: &control::Mode) -> bool {
-    mode.mode_type().contains(control::ModeTypeFlags::PREFERRED)
-}
-
-fn preferred_size(modes: &[control::Mode]) -> Option<(u32, u32)> {
-    modes
-        .iter()
-        .find(|mode| mode_is_preferred(mode))
-        .map(|mode| {
-            let (width, height) = mode.size();
-            (width as u32, height as u32)
-        })
-}
-
-fn choose_mode(
-    modes: &[control::Mode],
-    requested: Option<(u32, u32)>,
-) -> Result<control::Mode, String> {
-    let first = modes
-        .first()
-        .cloned()
-        .ok_or_else(|| "connector has no modes".to_string())?;
-
-    let target_size = requested.or_else(|| preferred_size(modes));
-    let mut best = first;
-    let mut best_score = score_mode(&best, target_size);
-
-    for mode in modes.iter().skip(1) {
-        let score = score_mode(mode, target_size);
-        if score < best_score {
-            best = *mode;
-            best_score = score;
-        }
-    }
-
-    Ok(best)
-}
-
-fn score_mode(mode: &control::Mode, target_size: Option<(u32, u32)>) -> (i64, i32, i32, i64) {
-    let distance = target_size
-        .map(|size| mode_distance(mode, size))
-        .unwrap_or(0);
-    let refresh = -(mode.vrefresh() as i32);
-    let preferred = if mode_is_preferred(mode) { 0 } else { 1 };
-    let area = -mode_area(mode);
-    (distance, refresh, preferred, area)
-}
-
-fn mode_refresh_hz(mode: &control::Mode) -> f64 {
-    precise_mode_refresh_hz(
-        mode.clock(),
-        mode.hsync().2,
-        mode.vsync().2,
-        mode.vscan(),
-        mode.flags(),
-    )
-    .unwrap_or_else(|| mode.vrefresh().max(1) as f64)
-}
-
-fn mode_frame_interval(mode: &control::Mode) -> Duration {
-    frame_interval_for_refresh_hz(mode_refresh_hz(mode))
-}
-
-fn frame_interval_for_refresh_hz(refresh_hz: f64) -> Duration {
-    Duration::from_secs_f64(1.0 / refresh_hz.max(1.0))
-}
-
-fn precise_mode_refresh_hz(
-    clock_khz: u32,
-    htotal: u16,
-    vtotal: u16,
-    vscan: u16,
-    flags: control::ModeFlags,
-) -> Option<f64> {
-    if clock_khz == 0 || htotal == 0 || vtotal == 0 {
-        return None;
-    }
-
-    let mut refresh_hz = clock_khz as f64 * 1_000.0 / htotal as f64 / vtotal as f64;
-    if flags.contains(control::ModeFlags::INTERLACE) {
-        refresh_hz *= 2.0;
-    }
-    if flags.contains(control::ModeFlags::DBLSCAN) {
-        refresh_hz /= 2.0;
-    }
-    refresh_hz /= vscan.max(1) as f64;
-
-    refresh_hz
-        .is_finite()
-        .then_some(refresh_hz)
-        .filter(|hz| *hz > 0.0)
-}
-
-fn first_connected_connector(
-    card: &Card,
-    resources: &ResourceHandles,
-    requested: Option<(u32, u32)>,
-) -> Result<
-    (
-        connector::Handle,
-        control::Mode,
-        crtc::Handle,
-        encoder::Handle,
-    ),
-    String,
-> {
-    let mut last_error = None;
-
-    for handle in resources.connectors() {
-        let info = card
-            .get_connector(*handle, false)
-            .map_err(|e| format!("failed to read connector {handle:?}: {e}"))?;
-
-        if info.state() != connector::State::Connected {
-            continue;
-        }
-
-        let mode = match choose_mode(info.modes(), requested) {
-            Ok(mode) => mode,
-            Err(err) => {
-                last_error = Some(format!("connector {handle:?} {err}"));
-                continue;
-            }
-        };
-
-        match pick_encoder_and_crtc(card, resources, &info) {
-            Ok((encoder, crtc)) => return Ok((*handle, mode, crtc, encoder)),
-            Err(err) => last_error = Some(err),
-        }
-    }
-
-    if let Some(err) = last_error {
-        Err(err)
-    } else {
-        Err("no connected DRM connectors found".into())
-    }
-}
-
-fn pick_encoder_and_crtc(
-    card: &Card,
-    resources: &ResourceHandles,
-    connector_info: &connector::Info,
-) -> Result<(encoder::Handle, crtc::Handle), String> {
-    let mut encoder_handles = Vec::new();
-
-    if let Some(current_encoder) = connector_info.current_encoder() {
-        encoder_handles.push(current_encoder);
-    }
-
-    for encoder_handle in connector_info.encoders() {
-        if !encoder_handles.contains(encoder_handle) {
-            encoder_handles.push(*encoder_handle);
-        }
-    }
-
-    for encoder_handle in encoder_handles {
-        let encoder_info = card
-            .get_encoder(encoder_handle)
-            .map_err(|e| format!("failed to read encoder {encoder_handle:?}: {e}"))?;
-
-        if let Some(crtc_handle) = encoder_info.crtc() {
-            return Ok((encoder_handle, crtc_handle));
-        }
-
-        if let Some(crtc_handle) = resources
-            .filter_crtcs(encoder_info.possible_crtcs())
-            .first()
-            .copied()
-        {
-            return Ok((encoder_handle, crtc_handle));
-        }
-    }
-
-    Err(format!(
-        "connector {:?} has no usable encoder/CRTC pair",
-        connector_info.handle()
-    ))
-}
-
-fn is_primary_plane(card: &Card, plane: plane::Handle) -> Result<bool, String> {
-    let props = card
-        .get_properties(plane)
-        .map_err(|e| format!("failed to get plane properties: {e}"))?;
-    for (&id, &val) in props.iter() {
-        let info = card
-            .get_property(id)
-            .map_err(|e| format!("failed to read property info: {e}"))?;
-        if info
-            .name()
-            .to_str()
-            .map(|name| name == "type")
-            .unwrap_or(false)
-        {
-            return Ok(val == u64::from(PlaneType::Primary as u32));
-        }
-    }
-    Ok(false)
-}
-
-fn is_cursor_plane(card: &Card, plane: plane::Handle) -> Result<bool, String> {
-    let props = card
-        .get_properties(plane)
-        .map_err(|e| format!("failed to get plane properties: {e}"))?;
-    for (&id, &val) in props.iter() {
-        let info = card
-            .get_property(id)
-            .map_err(|e| format!("failed to read property info: {e}"))?;
-        if info
-            .name()
-            .to_str()
-            .map(|name| name == "type")
-            .unwrap_or(false)
-        {
-            return Ok(val == u64::from(PlaneType::Cursor as u32));
-        }
-    }
-    Ok(false)
-}
-
-fn find_primary_plane(
-    card: &Card,
-    resources: &ResourceHandles,
-    crtc_handle: crtc::Handle,
-) -> Result<plane::Handle, String> {
-    let planes = card
-        .plane_handles()
-        .map_err(|e| format!("could not list planes: {e}"))?;
-    let mut compatible = Vec::new();
-    let mut primary = Vec::new();
-
-    for plane in planes {
-        let info = card
-            .get_plane(plane)
-            .map_err(|e| format!("failed to read plane info: {e}"))?;
-        let compatible_crtcs = resources.filter_crtcs(info.possible_crtcs());
-        if !compatible_crtcs.contains(&crtc_handle) {
-            continue;
-        }
-        compatible.push(plane);
-        if is_primary_plane(card, plane)? {
-            primary.push(plane);
-        }
-    }
-
-    primary
-        .first()
-        .copied()
-        .or_else(|| compatible.first().copied())
-        .ok_or_else(|| "no compatible planes found".to_string())
-}
-
-fn find_cursor_plane(
-    card: &Card,
-    resources: &ResourceHandles,
-    crtc_handle: crtc::Handle,
-) -> Result<Option<plane::Handle>, String> {
-    let planes = card
-        .plane_handles()
-        .map_err(|e| format!("could not list planes: {e}"))?;
-    let mut compatible = Vec::new();
-
-    for plane in planes {
-        let info = card
-            .get_plane(plane)
-            .map_err(|e| format!("failed to read plane info: {e}"))?;
-        let compatible_crtcs = resources.filter_crtcs(info.possible_crtcs());
-        if !compatible_crtcs.contains(&crtc_handle) {
-            continue;
-        }
-        if is_cursor_plane(card, plane)? {
-            compatible.push(plane);
-        }
-    }
-
-    Ok(compatible.first().copied())
-}
-
-fn prop_handle(
-    props: &HashMap<String, property::Info>,
-    name: &str,
-) -> Result<property::Handle, String> {
-    props
-        .get(name)
-        .map(|info| info.handle())
-        .ok_or_else(|| format!("missing property {name}"))
 }
 
 fn create_cursor_plane<T: AsFd>(
@@ -1399,6 +1305,97 @@ mod tests {
         let timing = snapshot.timing(metric);
         assert_eq!(timing.count, 1);
         assert!((timing.avg_ms - expected_avg_ms).abs() < 0.001);
+    }
+
+    #[test]
+    fn gpu_render_timer_samples_every_fourth_frame() {
+        let sampled: Vec<_> = (1..=12)
+            .filter(|frame| gpu_render_sample_frame(*frame))
+            .collect();
+        assert_eq!(sampled, vec![4, 8, 12]);
+    }
+
+    #[test]
+    fn gpu_render_sample_log_uses_presented_generation_sequence_and_cache_configuration() {
+        let sample = GpuRenderTimerSample {
+            generation: 17,
+            render_version: 41,
+            stats_epoch: Some(3),
+            stats_epoch_status: "accepted",
+            ended_at: Instant::now(),
+            cpu_render: Duration::from_millis(2),
+            cpu_draw: Duration::from_millis(1),
+            cpu_flush: Duration::from_micros(500),
+            cpu_gpu_flush: Duration::from_micros(250),
+            cpu_submit: Duration::from_micros(125),
+            cache_configuration: "enabled",
+            cache_hits: 0,
+            primary_cached_image_draws: 0,
+            primary_cached_payload_pixels: 0,
+            presentation: Some(GpuRenderPresentation {
+                kms_sequence: 901,
+                kms_sequence_delta: Some(2),
+            }),
+            not_presented_reason: None,
+        };
+
+        let message = format_gpu_render_timer_sample(
+            &sample,
+            Duration::from_millis(4),
+            Duration::from_millis(6),
+            "presented",
+        );
+
+        assert!(message.contains("generation: 17"));
+        assert!(message.contains("render_version: 41"));
+        assert!(message.contains("stats_epoch: Some(3) (accepted)"));
+        assert!(message.contains(
+            "kms: disposition=presented presented_sequence=Some(901) presented_sequence_delta=Some(2)"
+        ));
+        assert!(message.contains("cache: configuration=enabled hits=0"));
+        assert!(message.contains("primary_cached_image_draws=0"));
+        assert!(message.contains("primary_cached_payload_pixels=0"));
+        assert!(!message.contains("sequence_at_sample"));
+        assert!(!message.contains("cache: strategy="));
+    }
+
+    #[test]
+    fn ready_gpu_render_sample_is_joined_by_generation() {
+        let sample = |generation| GpuRenderTimerSample {
+            generation,
+            render_version: generation + 100,
+            stats_epoch: Some(0),
+            stats_epoch_status: "accepted",
+            ended_at: Instant::now(),
+            cpu_render: Duration::ZERO,
+            cpu_draw: Duration::ZERO,
+            cpu_flush: Duration::ZERO,
+            cpu_gpu_flush: Duration::ZERO,
+            cpu_submit: Duration::ZERO,
+            cache_configuration: "disabled",
+            cache_hits: 0,
+            primary_cached_image_draws: 0,
+            primary_cached_payload_pixels: 0,
+            presentation: None,
+            not_presented_reason: None,
+        };
+        let mut ready = VecDeque::from([
+            ReadyGpuRenderTimerSample {
+                sample: sample(7),
+                elapsed: Duration::from_millis(1),
+            },
+            ReadyGpuRenderTimerSample {
+                sample: sample(8),
+                elapsed: Duration::from_millis(2),
+            },
+        ]);
+
+        assert!(take_ready_gpu_render_sample_for_generation(&mut ready, 9).is_none());
+        let matched = take_ready_gpu_render_sample_for_generation(&mut ready, 8).unwrap();
+        assert_eq!(matched.sample.generation, 8);
+        assert_eq!(matched.sample.render_version, 108);
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready.front().unwrap().sample.generation, 7);
     }
 
     #[test]
@@ -1782,10 +1779,6 @@ fn add_plane_geometry(
         property::Value::UnsignedRange(height as u64),
     );
     Ok(())
-}
-
-fn is_ebusy(err: &str) -> bool {
-    err.contains("Device or resource busy") || err.contains("EBUSY")
 }
 
 fn monotonic_now() -> Option<Duration> {
@@ -2218,6 +2211,19 @@ fn gbm_bo_diagnostics(bo: &BufferObject<()>) -> String {
     )
 }
 
+fn create_renderer_frame_surface(
+    rendering_api: RenderingApi,
+    egl: &egl::Egl,
+    dimensions: (u32, u32),
+) -> Result<(GlFrameSurface, GlCapabilities), String> {
+    match rendering_api {
+        RenderingApi::OpenGl | RenderingApi::Raster => create_frame_surface(egl, dimensions),
+        RenderingApi::Auto => unreachable!("auto is resolved before DRM startup"),
+        RenderingApi::Metal => Err("DRM does not support Metal renderer".to_string()),
+        RenderingApi::Vulkan => Err("DRM Vulkan renderer is not implemented yet".to_string()),
+    }
+}
+
 fn framebuffer_for_bo(
     card: &Card,
     cache: &mut HashMap<u32, framebuffer::Handle>,
@@ -2262,10 +2268,14 @@ fn framebuffer_for_bo(
     Ok(framebuffer)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn prepare_primary_frame(
     generation: u64,
+    rendering_api: RenderingApi,
     renderer: &mut SceneRenderer,
+    raster_renderer: Option<&mut RasterBackend>,
     frame_surface: &mut GlFrameSurface,
+    dimensions: (u32, u32),
     render_state: &RenderState,
     cursor_pos: (f32, f32),
     cursor_visible: bool,
@@ -2281,78 +2291,137 @@ fn prepare_primary_frame(
     framebuffer_cache: &mut HashMap<u32, framebuffer::Handle>,
     stats: Option<&RendererStatsCollector>,
     profile_render: bool,
-    sample_gpu_queue: bool,
-    gpu_queue_timer: &mut GpuQueueTimer,
+    renderer_cache_enabled: bool,
+    gpu_render_timer: &mut GpuRenderTimer,
     native_log: &NativeLogRelay,
     last_video_sync_error: &mut Option<String>,
     logged_video_import: &mut bool,
+    latest_frame: &LatestFrameStore,
 ) -> Result<PreparedPrimaryFrame, String> {
-    let mut frame = frame_surface.frame();
+    let render_started_at = Instant::now();
     let (
+        render_timings,
+        captured_frame,
         video_sync_succeeded,
         video_needs_cleanup,
         imported_video_frames,
+        imported_video_streams,
         newest_video_submitted_at,
-    ) = match renderer.sync_video_frames(&mut frame, video_registry, video_import) {
-        Ok(result) => {
-            if last_video_sync_error.take().is_some() {
-                native_log.info("video", "Prime video import recovered");
-            }
-            if result.imported_frames > 0 && !*logged_video_import {
-                native_log.info("video", "Imported first DMA-BUF frame successfully");
-                *logged_video_import = true;
-            }
-            if let Some(diagnostics) = result.first_frame_diagnostics {
-                native_log.info("video", format!("First frame samples: {diagnostics}"));
-            }
-            (
-                true,
-                result.needs_cleanup,
-                result.imported_frames,
-                result.newest_import_submitted_at,
-            )
-        }
-        Err(err) => {
-            // Keep cleanup sticky across a failed import/sync. This prepared frame may still
-            // be presented using the last good video image, then its page flip retries sync.
-            if last_video_sync_error.as_deref() != Some(err.as_str()) {
-                native_log.error("video", format!("video sync failed: {err}"));
-                *last_video_sync_error = Some(err);
-            }
-            (false, true, 0, None)
-        }
-    };
+    ) = match rendering_api {
+        RenderingApi::OpenGl => {
+            let sample_gpu_render = gpu_render_timer.sample_due();
+            let mut frame = frame_surface.frame();
+            let (
+                video_sync_succeeded,
+                video_needs_cleanup,
+                imported_video_frames,
+                imported_video_streams,
+                newest_video_submitted_at,
+            ) = match renderer.sync_video_frames(&mut frame, video_registry, video_import) {
+                Ok(result) => {
+                    if last_video_sync_error.take().is_some() {
+                        native_log.info("video", "Prime video import recovered");
+                    }
+                    if result.imported_frames > 0 && !*logged_video_import {
+                        native_log.info("video", "Imported first DMA-BUF frame successfully");
+                        *logged_video_import = true;
+                    }
+                    if let Some(diagnostics) = result.first_frame_diagnostics {
+                        native_log.info("video", format!("First frame samples: {diagnostics}"));
+                    }
+                    (
+                        true,
+                        result.needs_cleanup,
+                        result.imported_frames,
+                        result.imported_streams,
+                        result.newest_import_submitted_at,
+                    )
+                }
+                Err(err) => {
+                    // Keep cleanup sticky across a failed import/sync. This prepared frame may
+                    // still be presented using the last good video image, then its page flip
+                    // retries sync.
+                    if last_video_sync_error.as_deref() != Some(err.as_str()) {
+                        native_log.error("video", format!("video sync failed: {err}"));
+                        *last_video_sync_error = Some(err);
+                    }
+                    (false, true, 0, Vec::new(), None)
+                }
+            };
 
-    gpu_queue_timer.poll(stats, native_log);
-    let render_started_at = Instant::now();
-    let render_timings = if sample_gpu_queue {
-        let mut begin_gpu_queue_sample = || gpu_queue_timer.begin_sample(native_log);
-        if profile_render {
-            renderer.render_profiled_with_before_flush(
-                &mut frame,
-                render_state,
-                &mut begin_gpu_queue_sample,
+            let render_timings = if sample_gpu_render {
+                let mut begin_gpu_render_sample =
+                    |_surface: &mut skia_safe::Surface| gpu_render_timer.begin_sample(native_log);
+                if profile_render {
+                    renderer.render_profiled_with_before_flush(
+                        &mut frame,
+                        render_state,
+                        &mut begin_gpu_render_sample,
+                    )
+                } else {
+                    renderer.render_with_before_flush(
+                        &mut frame,
+                        render_state,
+                        &mut begin_gpu_render_sample,
+                    )
+                }
+            } else if profile_render {
+                renderer.render_profiled(&mut frame, render_state)
+            } else {
+                renderer.render(&mut frame, render_state)
+            };
+            if !hw_cursor_enabled && cursor_visible {
+                draw_software_cursor(
+                    renderer,
+                    &mut frame,
+                    cursor_theme.cursor(cursor_icon),
+                    cursor_pos,
+                );
+            }
+            if sample_gpu_render {
+                gpu_render_timer.end_sample(
+                    generation,
+                    render_state.render_version,
+                    renderer_cache_enabled,
+                    &render_timings,
+                );
+            }
+            let captured_frame =
+                capture_requested_gpu_frame(latest_frame, || frame_surface.capture_rgba_pixels())
+                    .map(|(capture_generation, width, height, pixels)| {
+                        (Some(capture_generation), width, height, pixels)
+                    });
+            (
+                render_timings,
+                captured_frame,
+                video_sync_succeeded,
+                video_needs_cleanup,
+                imported_video_frames,
+                imported_video_streams,
+                newest_video_submitted_at,
             )
-        } else {
-            renderer.render_with_before_flush(&mut frame, render_state, &mut begin_gpu_queue_sample)
         }
-    } else if profile_render {
-        renderer.render_profiled(&mut frame, render_state)
-    } else {
-        renderer.render(&mut frame, render_state)
+        RenderingApi::Raster => {
+            let raster_renderer = raster_renderer
+                .ok_or_else(|| "DRM raster renderer was not initialized".to_string())?;
+            let (raster_frame, render_timings) = raster_renderer.render_with_timings(render_state);
+            frame_surface.present_rgba_pixels(dimensions.0, dimensions.1, &raster_frame.data)?;
+            (
+                render_timings,
+                Some((None, dimensions.0, dimensions.1, raster_frame.data)),
+                true,
+                false,
+                0,
+                Vec::new(),
+                None,
+            )
+        }
+        RenderingApi::Auto => unreachable!("auto is resolved before DRM startup"),
+        RenderingApi::Metal => return Err("DRM does not support Metal renderer".to_string()),
+        RenderingApi::Vulkan => {
+            return Err("DRM Vulkan renderer is not implemented yet".to_string());
+        }
     };
-    if !hw_cursor_enabled && cursor_visible {
-        draw_software_cursor(
-            renderer,
-            &mut frame,
-            cursor_theme.cursor(cursor_icon),
-            cursor_pos,
-        );
-    }
-    if sample_gpu_queue {
-        gpu_queue_timer.end_sample(render_state.render_version, &render_timings);
-    }
-    drop(frame);
 
     if let Some(stats) = stats {
         stats.record_render_timings(render_started_at.elapsed(), &render_timings);
@@ -2399,6 +2468,14 @@ fn prepare_primary_frame(
         }
     }
 
+    if let Some((capture_generation, width, height, pixels)) = captured_frame {
+        if let Some(capture_generation) = capture_generation {
+            latest_frame.publish_requested_capture(capture_generation, width, height, 1.0, pixels);
+        } else {
+            latest_frame.publish_rgba(width, height, 1.0, pixels);
+        }
+    }
+
     let lock_started_at = Instant::now();
     let bo = unsafe { gbm_surface.lock_front_buffer() }
         .map_err(|e| format!("locking GBM buffer failed: {e}"))?;
@@ -2422,6 +2499,7 @@ fn prepare_primary_frame(
         video_sync_succeeded,
         video_needs_cleanup,
         imported_video_frames,
+        imported_video_streams,
         newest_video_submitted_at,
         prepared_at: Instant::now(),
         atomic_commit_submitted_at: None,
@@ -2450,39 +2528,6 @@ fn draw_software_cursor(
     renderer.flush(frame);
 }
 
-#[derive(Clone)]
-pub(crate) struct DrmRunConfig {
-    pub(crate) requested_size: Option<(u32, u32)>,
-    pub(crate) card_path: Option<String>,
-    pub(crate) asset_config: AssetConfig,
-    pub(crate) startup_retries: u32,
-    pub(crate) cursor_overrides: Vec<DrmCursorOverrideConfig>,
-    pub(crate) retry_interval_ms: u32,
-    pub(crate) force_gpu_finish: bool,
-    pub(crate) hw_cursor: bool,
-    pub(crate) render_log: bool,
-    pub(crate) renderer_stats_log: bool,
-    pub(crate) renderer_cache_config: RendererCacheConfig,
-}
-
-pub(crate) struct DrmRunContext {
-    pub(crate) startup_tx: StartupSender<Result<(), String>>,
-    pub(crate) stop: Arc<AtomicBool>,
-    pub(crate) running_flag: Arc<AtomicBool>,
-    pub(crate) presenter_wake: EventFd,
-    pub(crate) input_wake: EventFd,
-    pub(crate) tree_tx: Sender<TreeMsg>,
-    pub(crate) render_rx: Receiver<RenderMsg>,
-    pub(crate) cursor_icon_rx: Receiver<CursorIcon>,
-    pub(crate) cursor_state: Arc<SharedCursorState>,
-    pub(crate) event_tx: Sender<EventMsg>,
-    pub(crate) screen_tx: Sender<(u32, u32)>,
-    pub(crate) render_counter: Arc<AtomicU64>,
-    pub(crate) native_log: Arc<NativeLogRelay>,
-    pub(crate) stats: Option<Arc<RendererStatsCollector>>,
-    pub(crate) video_registry: Arc<VideoRegistry>,
-}
-
 pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
     let DrmRunContext {
         startup_tx,
@@ -2499,6 +2544,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
         render_counter,
         native_log,
         stats,
+        latest_frame,
         video_registry,
     } = context;
 
@@ -2518,6 +2564,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             "sampled slow-frame profiling enabled (at most one frame per second)",
         );
     }
+    let _requested_raster_present = config.raster_present;
     let mut startup_tx = Some(startup_tx);
     let retry_interval = Duration::from_millis(config.retry_interval_ms as u64);
     let mut startup_retries_remaining = config.startup_retries;
@@ -2976,7 +3023,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
         }
 
         let (mut frame_surface, gl_capabilities) =
-            match create_frame_surface(&egl_state.egl, dimensions) {
+            match create_renderer_frame_surface(config.rendering_api, &egl_state.egl, dimensions) {
                 Ok(values) => values,
                 Err(err) => {
                     if handle_startup_failure_with_card(
@@ -3008,15 +3055,72 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                 gl_capabilities.video_import.core_sync_objects(),
             ),
         );
-        let mut gpu_queue_timer = GpuQueueTimer::new(
+        let source_revision = option_env!("EMERGE_SOURCE_REVISION")
+            .or(option_env!("GIT_SHA"))
+            .unwrap_or("unknown");
+        if source_revision.contains("unknown") {
+            native_log.error(
+                "drm",
+                "MEASUREMENT IDENTITY WARNING: source_revision=unknown; this build cannot identify its source snapshot. Rebuild with EMERGE_SOURCE_REVISION set (scripts/performance-lock.sh --source-revision <immutable-id> ...).",
+            );
+        }
+        let kernel_release = std::fs::read_to_string("/proc/sys/kernel/osrelease")
+            .map(|release| release.trim().to_string())
+            .unwrap_or_else(|_| "unknown".to_string());
+        let video_retirement = if gl_capabilities.video_import.core_sync_objects() {
+            "gl_fence"
+        } else {
+            "blocking_gl_finish_fallback"
+        };
+        native_log.info(
+            "drm",
+            format!(
+                "runtime diagnostics: source_revision={} crate_version={} kernel={} renderer_cache={:?} video_retirement={}",
+                source_revision,
+                env!("CARGO_PKG_VERSION"),
+                kernel_release,
+                config.renderer_cache_config,
+                video_retirement,
+            ),
+        );
+        let mut gpu_render_timer = GpuRenderTimer::new(
             &egl_state.egl,
+            stats.clone(),
             stats.is_some() || config.renderer_stats_log,
-            config.renderer_stats_log,
+            config.render_log,
             gl_capabilities.timer_query,
             &native_log,
         );
         let mut renderer = SceneRenderer::with_cache_config(config.renderer_cache_config);
-        let video_import =
+        let mut raster_renderer = if matches!(config.rendering_api, RenderingApi::Raster) {
+            match RasterBackend::with_cache_config(
+                &RasterConfig {
+                    width: dimensions.0,
+                    height: dimensions.1,
+                },
+                config.renderer_cache_config,
+            ) {
+                Ok(renderer) => Some(renderer),
+                Err(err) => {
+                    if handle_startup_failure_with_card(
+                        &card,
+                        &mut startup_tx,
+                        &running_flag,
+                        &stop,
+                        &mut startup_retries_remaining,
+                        retry_interval,
+                        format!("creating raster renderer failed: {err}"),
+                    ) {
+                        break;
+                    }
+
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
+        let video_import = if matches!(config.rendering_api, RenderingApi::OpenGl) {
             match VideoImportContext::new_current_direct(gl_capabilities.video_import) {
                 Ok(ctx) => {
                     native_log.info(
@@ -3029,7 +3133,10 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                     native_log.error("video", format!("prime video import unavailable: {err}"));
                     None
                 }
-            };
+            }
+        } else {
+            None
+        };
         let mut last_video_sync_error = None;
         let mut logged_video_import = false;
 
@@ -3222,7 +3329,9 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             );
         }
         if let Some(startup_tx) = startup_tx.take() {
-            let _ = startup_tx.send(Ok(()));
+            let _ = startup_tx.send(Ok(super::DrmBackendStartupInfo::opengl(
+                video_import.is_some(),
+            )));
         }
 
         if log_render {
@@ -3258,8 +3367,11 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             != 0;
         let mut last_kernel_page_flip_at: Option<Duration> = None;
         let mut last_page_flip_sequence: Option<u32> = None;
+        let mut last_selected_scene_version: Option<u64> = None;
+        let mut last_presented_scene_version: Option<u64> = None;
         let mut follow_up_primary_until: Option<Instant> = None;
         let mut retry_commit_at: Option<Instant> = None;
+        let mut observed_capture_generation = 0_u64;
         let mut drm_ready = false;
         let mut presenter_wake_ready = false;
 
@@ -3272,6 +3384,8 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
         let mut stop_requested = false;
 
         loop {
+            gpu_render_timer.poll(&native_log);
+
             if presenter_wake_ready {
                 let _ = presenter_wake.drain();
                 presenter_wake_ready = false;
@@ -3327,6 +3441,12 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                                         );
                                         drop(old_primary.bo);
                                         committed_primary_generation = current_primary.generation;
+                                        gpu_render_timer.on_primary_presented(
+                                            frame.generation,
+                                            page_flip.frame,
+                                            sequence_delta,
+                                            &native_log,
+                                        );
                                         if should_schedule_video_cleanup(
                                             frame.video_needs_cleanup,
                                             prepared_primary
@@ -3347,6 +3467,14 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                                         let presented_at = Instant::now();
                                         if let Some(stats) = stats.as_ref() {
                                             stats.record_frame_present();
+                                            if frame.render_version > 0
+                                                && last_presented_scene_version
+                                                    != Some(frame.render_version)
+                                            {
+                                                stats.record_drm_scene_presented();
+                                                last_presented_scene_version =
+                                                    Some(frame.render_version);
+                                            }
                                             if let (Some(committed), Some(kernel)) = (
                                                 frame.atomic_commit_monotonic_at,
                                                 kernel_page_flip_at,
@@ -3362,6 +3490,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                                             {
                                                 stats.record_drm_primary_presented(
                                                     frame.imported_video_frames > 0,
+                                                    &frame.imported_video_streams,
                                                     presented_at
                                                         .saturating_duration_since(committed_at),
                                                     frame.newest_video_submitted_at.map(
@@ -3476,6 +3605,11 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                         let received_at = Instant::now();
                         let scene = *scene;
                         render_state.set_scene(scene);
+                        if let Err(error) =
+                            video_registry.set_active_targets(&render_state.video_target_ids)
+                        {
+                            eprintln!("video target visibility update failed: {error}");
+                        }
                         render_state.render_version = version;
                         render_state.pipeline_submitted_at = pipeline_submitted_at;
                         render_state.pipeline_render_queued_at = pipeline_render_queued_at;
@@ -3545,27 +3679,42 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             last_cursor_visible = cursor_visible;
             last_cursor_icon = current_cursor_icon;
 
+            let capture_request_generation = latest_frame.pending_capture_generation();
+            if let Some(capture_generation) = capture_request_generation
+                && capture_generation != observed_capture_generation
+            {
+                observed_capture_generation = capture_generation;
+                desired_primary_generation = desired_primary_generation.wrapping_add(1);
+            }
+
             let primary_dirty = desired_primary_generation != committed_primary_generation;
             // Animation pulses are driven by primary page-flip completions. Even
             // when an enter frame is initially visually unchanged (for example
             // translated outside a clip), it still needs a committed primary so
             // the next pulse advances the animation clock.
-            if should_consider_unchanged_primary_skip(
-                in_flight.is_some(),
-                primary_dirty,
-                video_sync_required,
-                hw_cursor_enabled,
-                cursor_visible,
-                render_state.animate,
-            ) && renderer.can_skip_unchanged_visible_frame(&render_state, dimensions)
+            if capture_request_generation.is_none()
+                && should_consider_unchanged_primary_skip(
+                    in_flight.is_some(),
+                    primary_dirty,
+                    video_sync_required,
+                    hw_cursor_enabled,
+                    cursor_visible,
+                    render_state.animate,
+                )
+                && renderer.can_skip_unchanged_visible_frame(&render_state, dimensions)
             {
                 committed_primary_generation = desired_primary_generation;
                 // A frame prepared behind the previous commit may prove visually redundant once
                 // that commit lands. Release its GBM lock when consuming the generation as a noop.
-                if let Some(stale) = prepared_primary.take()
-                    && let Some(stats) = stats.as_deref()
-                {
-                    stats.record_drm_stale_prepared(stale.imported_video_frames > 0);
+                if let Some(stale) = prepared_primary.take() {
+                    gpu_render_timer.on_primary_not_presented(
+                        stale.generation,
+                        "not_presented_visually_redundant",
+                        &native_log,
+                    );
+                    if let Some(stats) = stats.as_deref() {
+                        stats.record_drm_stale_prepared(stale.imported_video_frames > 0);
+                    }
                 }
                 render_state.pipeline_submitted_at = None;
                 render_state.pipeline_render_queued_at = None;
@@ -3594,10 +3743,21 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                         next_render_profile_at = now + RENDER_PROFILE_INTERVAL;
                     }
                     let profile_render = config.renderer_stats_log && sampled_diagnostics_due;
+                    if render_state.render_version > 0
+                        && last_selected_scene_version != Some(render_state.render_version)
+                    {
+                        if let Some(stats) = stats.as_deref() {
+                            stats.record_drm_scene_selected_for_draw();
+                        }
+                        last_selected_scene_version = Some(render_state.render_version);
+                    }
                     match prepare_primary_frame(
                         desired_primary_generation,
+                        config.rendering_api,
                         &mut renderer,
+                        raster_renderer.as_mut(),
                         &mut frame_surface,
+                        dimensions,
                         &render_state,
                         cursor_pos,
                         cursor_visible,
@@ -3613,11 +3773,12 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                         &mut framebuffer_cache,
                         stats.as_deref(),
                         profile_render,
-                        sampled_diagnostics_due,
-                        &mut gpu_queue_timer,
+                        config.renderer_cache_config.enabled,
+                        &mut gpu_render_timer,
                         &native_log,
                         &mut last_video_sync_error,
                         &mut logged_video_import,
+                        &latest_frame,
                     ) {
                         Ok(frame) => {
                             // Failed syncs and pending retired-import fences must survive stale
@@ -3682,20 +3843,20 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
 
                 let cursor_visual = cursor_theme.cursor(current_cursor_icon);
 
-                if submit_cursor && hw_cursor_enabled {
-                    if let Some(cursor_plane) = cursor_plane.as_mut()
-                        && let Err(err) = cursor_plane.write_visual(cursor_visual)
-                    {
-                        native_log.error(
-                            "drm",
-                            format!("DRM cursor setup failed during cursor upload: {err}"),
-                        );
-                        hw_cursor_enabled = false;
-                        committed_cursor_visible = false;
-                        committed_cursor_icon = None;
-                        desired_primary_generation = desired_primary_generation.wrapping_add(1);
-                        continue;
-                    }
+                if submit_cursor
+                    && hw_cursor_enabled
+                    && let Some(cursor_plane) = cursor_plane.as_mut()
+                    && let Err(err) = cursor_plane.write_visual(cursor_visual)
+                {
+                    native_log.error(
+                        "drm",
+                        format!("DRM cursor setup failed during cursor upload: {err}"),
+                    );
+                    hw_cursor_enabled = false;
+                    committed_cursor_visible = false;
+                    committed_cursor_icon = None;
+                    desired_primary_generation = desired_primary_generation.wrapping_add(1);
+                    continue;
                 }
 
                 if submit_cursor && let Some(plane) = cursor_plane.as_ref().map(CursorPlane::commit)
@@ -3817,8 +3978,10 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                         });
                     }
                     Err(err) => {
-                        let err = err.to_string();
-                        if is_ebusy(&err) {
+                        if matches!(
+                            classify_atomic_commit_error(&err),
+                            AtomicCommitErrorKind::Busy
+                        ) {
                             if submit_primary && let Some(stats) = stats.as_deref() {
                                 stats.record_drm_primary_commit_ebusy();
                             }
@@ -3888,6 +4051,14 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                     next_deadline
                         .map(|current_deadline| current_deadline.min(deadline))
                         .unwrap_or(deadline),
+                );
+            }
+            if gpu_render_timer.window_drain_poll_required() {
+                let drain_poll_at = Instant::now() + Duration::from_millis(1);
+                next_deadline = Some(
+                    next_deadline
+                        .map(|deadline| deadline.min(drain_poll_at))
+                        .unwrap_or(drain_poll_at),
                 );
             }
             if in_flight.is_none()
