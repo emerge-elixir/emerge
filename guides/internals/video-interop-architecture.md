@@ -1,6 +1,6 @@
 # Video Interop Architecture
 
-This guide describes the canonical Linux video interoperability path shared by
+This guide describes the Linux video interoperability path shared by
 `video_interop`, `membrane_video_interop`, Emerge, `membrane_libcamera`, and the
 Colibri camera application. It covers frame schemas, DMA-BUF/PRIME transport,
 fan-out, ownership transfer, explicit synchronization, GPU retirement,
@@ -15,11 +15,14 @@ The system is deliberately split across repositories so generic ownership is
 implemented once, graphics details stay in Emerge, Membrane remains an adapter,
 and applications mainly compose producers and consumers.
 
-Status snapshot: 2026-07-31, with the later Vulkan Camera extension noted below. The lifecycle
-rules are normative; the migration and camera-shutdown notes describe the named development
-checkouts at that date.
+Status snapshot: 2026-09-01. The lifecycle rules below define the release contract. Migration and
+camera-shutdown notes describe the named development checkouts used for this work.
 
-The Vulkan Camera path additionally admits strict `XRGB8888`/`XR24`: one linear DMA-BUF object
+VideoInterop's Vulkan adapter and Emerge's Vulkan camera integration are experimental for their
+initial releases. The pinned-RPi5 qualification matrix must pass before either is described as
+stable.
+
+The Vulkan Camera path additionally admits `XRGB8888`/`XR24`: one linear DMA-BUF object
 and plane, complete allocation size, Rec.709 RGB/full color, opaque alpha, and the same external
 queue-family/fence retirement protocol as direct images. A sampleable producer layout remains a
 persistent direct `B8G8R8A8_UNORM` import. Otherwise Emerge selects the explicit generic
