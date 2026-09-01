@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Added bounded raster asset caching with configurable 256-entry and 256 MiB defaults, target-sized offscreen image decoding, and optional per-decode asset memory diagnostics.
+
 ## [0.4.0] - 2026-07-31
 
 ### Added

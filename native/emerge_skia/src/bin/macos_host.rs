@@ -461,6 +461,10 @@ mod app {
         runtime_follow_symlinks: bool,
         runtime_max_file_size: u64,
         runtime_extensions: Vec<String>,
+        cache_max_entries: u64,
+        cache_max_bytes: u64,
+        decode_at_size: bool,
+        memory_log: bool,
         fonts: Vec<HostFontSpec>,
     }
 
@@ -879,6 +883,10 @@ mod app {
                 runtime_follow_symlinks: asset_config.runtime_follow_symlinks,
                 runtime_max_file_size: asset_config.runtime_max_file_size,
                 runtime_extensions: asset_config.runtime_extensions.clone(),
+                cache_max_entries: asset_config.cache_max_entries,
+                cache_max_bytes: asset_config.cache_max_bytes,
+                decode_at_size: asset_config.decode_at_size,
+                memory_log: asset_config.memory_log,
             },
         );
         if config_changed {
@@ -903,7 +911,11 @@ mod app {
             || existing.runtime_allowlist != incoming.runtime_allowlist
             || existing.runtime_follow_symlinks != incoming.runtime_follow_symlinks
             || existing.runtime_max_file_size != incoming.runtime_max_file_size
-            || existing.runtime_extensions != incoming.runtime_extensions;
+            || existing.runtime_extensions != incoming.runtime_extensions
+            || existing.cache_max_entries != incoming.cache_max_entries
+            || existing.cache_max_bytes != incoming.cache_max_bytes
+            || existing.decode_at_size != incoming.decode_at_size
+            || existing.memory_log != incoming.memory_log;
 
         if changed {
             *existing = incoming;
@@ -3827,6 +3839,10 @@ mod app {
                 runtime_follow_symlinks: asset_config.runtime_follow_symlinks,
                 runtime_max_file_size: asset_config.runtime_max_file_size,
                 runtime_extensions: asset_config.runtime_extensions,
+                cache_max_entries: asset_config.cache_max_entries,
+                cache_max_bytes: asset_config.cache_max_bytes,
+                decode_at_size: asset_config.decode_at_size,
+                memory_log: asset_config.memory_log,
                 fonts,
             },
         })
@@ -3895,6 +3911,10 @@ mod app {
             runtime_follow_symlinks: decode_u8(payload, cursor)? != 0,
             runtime_max_file_size: decode_u64(payload, cursor)?,
             runtime_extensions: decode_string_list(payload, cursor)?,
+            cache_max_entries: decode_u64(payload, cursor)?,
+            cache_max_bytes: decode_u64(payload, cursor)?,
+            decode_at_size: decode_u8(payload, cursor)? != 0,
+            memory_log: decode_u8(payload, cursor)? != 0,
         })
     }
 

@@ -90,15 +90,18 @@ defmodule EmergeSkia.Transport.Native do
 
   @impl true
   def configure_assets(renderer, asset_config) do
-    Native.configure_assets_nif(
-      native_renderer(renderer),
-      [asset_config.priv_dir],
-      asset_config.runtime_enabled,
-      asset_config.runtime_allowlist,
-      asset_config.runtime_follow_symlinks,
-      asset_config.runtime_max_file_size,
-      asset_config.runtime_extensions
-    )
+    Native.configure_assets_nif(native_renderer(renderer), %{
+      sources: [asset_config.priv_dir],
+      runtime_enabled: asset_config.runtime_enabled,
+      allowlist: asset_config.runtime_allowlist,
+      follow_symlinks: asset_config.runtime_follow_symlinks,
+      max_file_size: asset_config.runtime_max_file_size,
+      extensions: asset_config.runtime_extensions,
+      cache_max_entries: asset_config.cache_max_entries,
+      cache_max_bytes: asset_config.cache_max_bytes,
+      decode_at_size: asset_config.decode_at_size,
+      memory_log: asset_config.memory_log
+    })
   end
 
   @impl true
@@ -212,6 +215,10 @@ defmodule EmergeSkia.Transport.Native do
       follow_symlinks: asset_config.runtime_follow_symlinks,
       max_file_size: asset_config.runtime_max_file_size,
       extensions: asset_config.runtime_extensions,
+      cache_max_entries: asset_config.cache_max_entries,
+      cache_max_bytes: asset_config.cache_max_bytes,
+      decode_at_size: asset_config.decode_at_size,
+      memory_log: asset_config.memory_log,
       asset_mode: raster_opts.asset_mode,
       asset_timeout_ms: raster_opts.asset_timeout_ms
     }

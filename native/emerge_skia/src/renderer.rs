@@ -15,21 +15,21 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-#[cfg(any(feature = "vector-assets", test))]
 use resvg::usvg;
 use skia_safe::{
-    AlphaType, BlendMode, BlurStyle, Color, ColorType, Data, FilterMode, Font, FontHinting,
-    FontMgr, Image, ImageInfo, MaskFilter, Matrix, MipmapMode, Paint, PaintStyle, PathBuilder,
+    AlphaType, BlendMode, BlurStyle, Color, ColorType, FilterMode, Font, FontHinting, FontMgr,
+    ISize, Image, ImageInfo, MaskFilter, Matrix, MipmapMode, Paint, PaintStyle, PathBuilder,
     PathFillType, PixelGeometry, Point, RRect, Rect, SamplingOptions, Surface, SurfaceProps,
     SurfacePropsFlags, TileMode, Typeface,
     canvas::{SaveLayerRec, SrcRectConstraint},
+    codec::Codec,
     color_filters, dash_path_effect,
     font::Edging as FontEdging,
     gpu,
     gradient::{Colors as GradientColors, Gradient, Interpolation},
-    image::CachingHint,
     shaders, surfaces,
 };
+use skia_safe::{Data, images};
 
 use crate::paint_layer_payload_cache::{
     PaintLayerPayloadCache, PaintLayerPayloadCacheConfig, PaintLayerPayloadKey,
@@ -910,29 +910,74 @@ pub fn load_font(family: &str, weight: u16, italic: bool, data: &[u8]) -> Result
     Ok(())
 }
 
-#[derive(Clone)]
-enum CachedAssetKind {
-    Raster(Image),
-    #[cfg(any(feature = "vector-assets", test))]
-    Vector(Box<usvg::Tree>),
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AssetKind {
     Raster,
-    #[cfg(any(feature = "vector-assets", test))]
     Vector,
 }
 
-#[derive(Clone)]
-struct CachedAsset {
-    kind: CachedAssetKind,
-    width: u32,
-    height: u32,
-    generation: u64,
+struct RasterDecode {
+    image: Image,
+    codec_width: u32,
+    codec_height: u32,
+    codec_bytes: u64,
 }
 
-#[cfg(any(feature = "vector-assets", test))]
+#[derive(Clone, Copy)]
+struct AssetDecodeMemory {
+    codec_width: u32,
+    codec_height: u32,
+    codec_bytes: u64,
+    decoded_width: u32,
+    decoded_height: u32,
+    decoded_bytes: u64,
+}
+
+impl RasterDecode {
+    #[cfg(test)]
+    fn from_final(image: Image) -> Self {
+        Self {
+            codec_width: image.width().max(0) as u32,
+            codec_height: image.height().max(0) as u32,
+            codec_bytes: image_pixel_bytes(&image).unwrap_or(0),
+            image,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct DecodedRaster {
+    image: Image,
+    width: u32,
+    height: u32,
+    bytes: u64,
+    last_used: u64,
+    source_generation: u64,
+}
+
+struct AssetRasterCache {
+    entries: HashMap<String, DecodedRaster>,
+    total_bytes: u64,
+    access_clock: u64,
+    max_entries: u64,
+    max_bytes: u64,
+}
+
+const ASSET_RASTER_CACHE_MAX_ENTRIES: u64 = 256;
+const ASSET_RASTER_CACHE_MAX_BYTES: u64 = 256 * 1024 * 1024;
+
+impl Default for AssetRasterCache {
+    fn default() -> Self {
+        Self {
+            entries: HashMap::new(),
+            total_bytes: 0,
+            access_clock: 0,
+            max_entries: ASSET_RASTER_CACHE_MAX_ENTRIES,
+            max_bytes: ASSET_RASTER_CACHE_MAX_BYTES,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct RenderedVectorKey {
     asset_id: String,
@@ -941,14 +986,12 @@ struct RenderedVectorKey {
     kind: RenderedVectorVariantKind,
 }
 
-#[cfg(any(feature = "vector-assets", test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum RenderedVectorVariantKind {
     Full,
     CoverViewport,
 }
 
-#[cfg(any(feature = "vector-assets", test))]
 #[derive(Clone)]
 struct RenderedVectorVariant {
     image: Image,
@@ -956,7 +999,6 @@ struct RenderedVectorVariant {
     last_used: u64,
 }
 
-#[cfg(any(feature = "vector-assets", test))]
 struct RenderedVectorCache {
     entries: HashMap<RenderedVectorKey, RenderedVectorVariant>,
     total_bytes: usize,
@@ -965,14 +1007,10 @@ struct RenderedVectorCache {
     max_bytes: usize,
 }
 
-#[cfg(any(feature = "vector-assets", test))]
 const RENDERED_VECTOR_CACHE_MAX_ENTRIES: usize = 256;
-#[cfg(any(feature = "vector-assets", test))]
 const RENDERED_VECTOR_CACHE_MAX_BYTES: usize = 16 * 1024 * 1024;
-#[cfg(any(feature = "vector-assets", test))]
 const RENDERED_VECTOR_CACHE_MAX_VARIANT_BYTES: usize = 1024 * 1024;
 
-#[cfg(any(feature = "vector-assets", test))]
 impl Default for RenderedVectorCache {
     fn default() -> Self {
         Self {
@@ -985,26 +1023,19 @@ impl Default for RenderedVectorCache {
     }
 }
 
-static ASSET_CACHE: OnceLock<Mutex<HashMap<String, Arc<CachedAsset>>>> = OnceLock::new();
-#[cfg(any(feature = "vector-assets", test))]
+static ASSET_RASTER_CACHE: OnceLock<Mutex<AssetRasterCache>> = OnceLock::new();
 static RENDERED_VECTOR_CACHE: OnceLock<Mutex<RenderedVectorCache>> = OnceLock::new();
-static ASSET_CACHE_GENERATION: AtomicU64 = AtomicU64::new(1);
 static FONT_CACHE_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 #[cfg(test)]
 static VECTOR_RASTERIZATION_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-fn get_asset_cache() -> &'static Mutex<HashMap<String, Arc<CachedAsset>>> {
-    ASSET_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+fn get_asset_raster_cache() -> &'static Mutex<AssetRasterCache> {
+    ASSET_RASTER_CACHE.get_or_init(|| Mutex::new(AssetRasterCache::default()))
 }
 
-#[cfg(any(feature = "vector-assets", test))]
 fn get_rendered_vector_cache() -> &'static Mutex<RenderedVectorCache> {
     RENDERED_VECTOR_CACHE.get_or_init(|| Mutex::new(RenderedVectorCache::default()))
-}
-
-fn bump_asset_cache_generation() -> u64 {
-    ASSET_CACHE_GENERATION.fetch_add(1, Ordering::Relaxed) + 1
 }
 
 fn font_cache_generation() -> u64 {
@@ -1029,10 +1060,10 @@ pub fn clear_global_caches() {
         cache.clear();
     }
 
-    if let Some(cache) = ASSET_CACHE.get()
+    if let Some(cache) = ASSET_RASTER_CACHE.get()
         && let Ok(mut cache) = cache.lock()
     {
-        cache.clear();
+        *cache = AssetRasterCache::default();
     }
 
     clear_rendered_vector_cache();
@@ -1040,31 +1071,222 @@ pub fn clear_global_caches() {
     TEXT_VISUAL_METRICS_CACHE.with(|cache| cache.borrow_mut().clear());
 
     skia_safe::graphics::purge_all_caches();
-    bump_asset_cache_generation();
     bump_font_cache_generation();
 }
 
 #[cfg(test)]
 pub fn clear_global_caches() {}
 
-fn cached_asset(id: &str) -> Option<Arc<CachedAsset>> {
-    let cache = get_asset_cache().lock().ok()?;
-    cache.get(id).cloned()
+pub fn configure_asset_cache(max_entries: u64, max_bytes: u64) {
+    if let Ok(mut cache) = get_asset_raster_cache().lock() {
+        cache.max_entries = max_entries;
+        cache.max_bytes = max_bytes;
+        evict_asset_rasters_if_needed(&mut cache);
+    }
 }
 
 pub fn asset_dimensions(id: &str) -> Option<(u32, u32)> {
-    cached_asset(id).map(|cached| (cached.width, cached.height))
+    crate::assets::asset_dimensions(id)
 }
 
 pub fn asset_kind(id: &str) -> Option<AssetKind> {
-    cached_asset(id).map(|cached| match &cached.kind {
-        CachedAssetKind::Raster(_) => AssetKind::Raster,
-        #[cfg(any(feature = "vector-assets", test))]
-        CachedAssetKind::Vector(_) => AssetKind::Vector,
+    crate::assets::asset_record(id).map(|record| match &record.kind {
+        crate::assets::AssetRecordKind::Raster(_) => AssetKind::Raster,
+        crate::assets::AssetRecordKind::Vector(_) => AssetKind::Vector,
     })
 }
 
-#[cfg(any(feature = "vector-assets", test))]
+fn asset_generation(id: &str) -> Option<u64> {
+    crate::assets::asset_record(id).map(|record| record.generation)
+}
+
+fn next_asset_raster_access_stamp(cache: &mut AssetRasterCache) -> u64 {
+    cache.access_clock = cache.access_clock.wrapping_add(1);
+    cache.access_clock
+}
+
+fn lookup_asset_raster(
+    id: &str,
+    source_generation: u64,
+    required_width: u32,
+    required_height: u32,
+) -> Option<Image> {
+    let mut cache = get_asset_raster_cache().lock().ok()?;
+    let stamp = next_asset_raster_access_stamp(&mut cache);
+    let entry = cache.entries.get_mut(id)?;
+    if entry.source_generation != source_generation
+        || entry.width < required_width
+        || entry.height < required_height
+    {
+        return None;
+    }
+
+    entry.last_used = stamp;
+    Some(entry.image.clone())
+}
+
+fn store_asset_raster(record: &crate::assets::AssetRecord, decoded: RasterDecode) -> Image {
+    let RasterDecode {
+        image,
+        codec_width,
+        codec_height,
+        codec_bytes,
+    } = decoded;
+    let width = image.width().max(0) as u32;
+    let height = image.height().max(0) as u32;
+    let Some(bytes) = image_pixel_bytes(&image) else {
+        return image;
+    };
+    let memory = AssetDecodeMemory {
+        codec_width,
+        codec_height,
+        codec_bytes,
+        decoded_width: width,
+        decoded_height: height,
+        decoded_bytes: bytes,
+    };
+
+    let Ok(mut cache) = get_asset_raster_cache().lock() else {
+        return image;
+    };
+
+    let existing_stamp = next_asset_raster_access_stamp(&mut cache);
+    let existing_image = cache.entries.get_mut(&record.id).and_then(|existing| {
+        if existing.source_generation == record.generation
+            && existing.width >= width
+            && existing.height >= height
+        {
+            existing.last_used = existing_stamp;
+            Some(existing.image.clone())
+        } else {
+            None
+        }
+    });
+    if let Some(existing_image) = existing_image {
+        log_asset_memory(record, memory, true, &cache);
+        return existing_image;
+    }
+
+    if cache.max_entries == 0 || bytes > cache.max_bytes {
+        log_asset_memory(record, memory, false, &cache);
+        return image;
+    }
+
+    if let Some(existing) = cache.entries.remove(&record.id) {
+        cache.total_bytes = cache.total_bytes.saturating_sub(existing.bytes);
+    }
+
+    let stamp = next_asset_raster_access_stamp(&mut cache);
+    cache.entries.insert(
+        record.id.clone(),
+        DecodedRaster {
+            image: image.clone(),
+            width,
+            height,
+            bytes,
+            last_used: stamp,
+            source_generation: record.generation,
+        },
+    );
+    cache.total_bytes = cache.total_bytes.saturating_add(bytes);
+    evict_asset_rasters_if_needed(&mut cache);
+    let retained = cache.entries.contains_key(&record.id);
+    log_asset_memory(record, memory, retained, &cache);
+    image
+}
+
+fn image_pixel_bytes(image: &Image) -> Option<u64> {
+    let byte_size = image.peek_pixels().map_or_else(
+        || image.image_info().compute_min_byte_size(),
+        |pixels| pixels.compute_byte_size(),
+    );
+    (byte_size != usize::MAX)
+        .then(|| u64::try_from(byte_size).ok())
+        .flatten()
+}
+
+fn log_asset_memory(
+    record: &crate::assets::AssetRecord,
+    memory: AssetDecodeMemory,
+    retained: bool,
+    cache: &AssetRasterCache,
+) {
+    let AssetDecodeMemory {
+        codec_width,
+        codec_height,
+        codec_bytes,
+        decoded_width,
+        decoded_height,
+        decoded_bytes,
+    } = memory;
+    if !record.memory_log {
+        return;
+    }
+
+    let source_pixels = u64::from(record.width).saturating_mul(u64::from(record.height));
+    let decoded_pixels = u64::from(decoded_width).saturating_mul(u64::from(decoded_height));
+    let decode_pixel_ratio = if source_pixels == 0 {
+        0.0
+    } else {
+        decoded_pixels as f64 / source_pixels as f64
+    };
+    let decoded_to_file_ratio = if record.encoded_bytes == 0 {
+        0.0
+    } else {
+        decoded_bytes as f64 / record.encoded_bytes as f64
+    };
+    let peak_decode_bytes = if codec_width == decoded_width && codec_height == decoded_height {
+        decoded_bytes.max(codec_bytes)
+    } else {
+        codec_bytes.saturating_add(decoded_bytes)
+    };
+    let (source_entries, source_bytes) = crate::assets::source_memory_snapshot();
+
+    eprintln!(
+        "asset_memory source={:?} id={} encoded_bytes={} source_dimensions={}x{} codec_dimensions={}x{} codec_bytes={} decoded_dimensions={}x{} decode_pixel_ratio={:.4} decoded_bytes={} decoded_to_file_ratio={:.2} peak_decode_bytes={} tracked_asset_bytes={} retained={} source_entries={} source_bytes={} cache_entries={} cache_bytes={} tracked_total_bytes={}",
+        record.source,
+        record.id,
+        record.encoded_bytes,
+        record.width,
+        record.height,
+        codec_width,
+        codec_height,
+        codec_bytes,
+        decoded_width,
+        decoded_height,
+        decode_pixel_ratio,
+        decoded_bytes,
+        decoded_to_file_ratio,
+        peak_decode_bytes,
+        record.encoded_bytes.saturating_add(decoded_bytes),
+        retained,
+        source_entries,
+        source_bytes,
+        cache.entries.len(),
+        cache.total_bytes,
+        source_bytes.saturating_add(cache.total_bytes)
+    );
+}
+
+fn evict_asset_rasters_if_needed(cache: &mut AssetRasterCache) {
+    while u64::try_from(cache.entries.len()).unwrap_or(u64::MAX) > cache.max_entries
+        || cache.total_bytes > cache.max_bytes
+    {
+        let Some(oldest_id) = cache
+            .entries
+            .iter()
+            .min_by_key(|(_, entry)| entry.last_used)
+            .map(|(id, _)| id.clone())
+        else {
+            break;
+        };
+
+        if let Some(entry) = cache.entries.remove(&oldest_id) {
+            cache.total_bytes = cache.total_bytes.saturating_sub(entry.bytes);
+        }
+    }
+}
+
 fn clear_rendered_vector_cache() {
     if let Some(cache) = RENDERED_VECTOR_CACHE.get()
         && let Ok(mut cache) = cache.lock()
@@ -1073,10 +1295,6 @@ fn clear_rendered_vector_cache() {
     }
 }
 
-#[cfg(not(any(feature = "vector-assets", test)))]
-fn clear_rendered_vector_cache() {}
-
-#[cfg(any(feature = "vector-assets", test))]
 fn rendered_vector_key(
     asset_id: &str,
     width: u32,
@@ -1091,27 +1309,23 @@ fn rendered_vector_key(
     }
 }
 
-#[cfg(any(feature = "vector-assets", test))]
 fn rendered_variant_bytes(width: u32, height: u32) -> Option<usize> {
     (width as usize)
         .checked_mul(height as usize)?
         .checked_mul(4)
 }
 
-#[cfg(any(feature = "vector-assets", test))]
 fn should_cache_rendered_variant(width: u32, height: u32) -> bool {
     rendered_variant_bytes(width, height)
         .map(|bytes| bytes <= RENDERED_VECTOR_CACHE_MAX_VARIANT_BYTES)
         .unwrap_or(false)
 }
 
-#[cfg(any(feature = "vector-assets", test))]
 fn next_rendered_vector_access_stamp(cache: &mut RenderedVectorCache) -> u64 {
     cache.access_clock = cache.access_clock.wrapping_add(1);
     cache.access_clock
 }
 
-#[cfg(any(feature = "vector-assets", test))]
 fn lookup_rendered_vector_variant(
     asset_id: &str,
     width: u32,
@@ -1126,7 +1340,6 @@ fn lookup_rendered_vector_variant(
     Some(variant.image.clone())
 }
 
-#[cfg(any(feature = "vector-assets", test))]
 fn evict_rendered_vector_variants_if_needed(cache: &mut RenderedVectorCache) {
     while cache.entries.len() > cache.max_entries || cache.total_bytes > cache.max_bytes {
         let Some(oldest_key) = cache
@@ -1144,7 +1357,6 @@ fn evict_rendered_vector_variants_if_needed(cache: &mut RenderedVectorCache) {
     }
 }
 
-#[cfg(any(feature = "vector-assets", test))]
 fn store_rendered_vector_variant(
     asset_id: &str,
     width: u32,
@@ -1182,7 +1394,6 @@ fn store_rendered_vector_variant(
     evict_rendered_vector_variants_if_needed(&mut cache);
 }
 
-#[cfg(any(feature = "vector-assets", test))]
 fn clear_rendered_vector_variants(asset_id: &str) {
     let Ok(mut cache) = get_rendered_vector_cache().lock() else {
         return;
@@ -1204,58 +1415,138 @@ fn clear_rendered_vector_variants(asset_id: &str) {
     cache.total_bytes = total_bytes;
 }
 
-#[cfg(not(any(feature = "vector-assets", test)))]
-fn clear_rendered_vector_variants(_asset_id: &str) {}
-
 pub fn insert_raster_asset(id: &str, data: &[u8]) -> Result<(u32, u32), String> {
-    let image = Image::from_encoded(Data::new_copy(data))
-        .and_then(|image| {
-            image.make_raster_image(None::<&mut gpu::DirectContext>, CachingHint::Allow)
-        })
-        .ok_or_else(|| "failed to decode image data".to_string())?;
-
-    let width = image.width().max(0) as u32;
-    let height = image.height().max(0) as u32;
-
-    clear_rendered_vector_variants(id);
-
-    let cache = get_asset_cache();
-    let mut cache = cache.lock().map_err(|_| "image cache lock poisoned")?;
-    let generation = bump_asset_cache_generation();
-    cache.insert(
-        id.to_string(),
-        Arc::new(CachedAsset {
-            kind: CachedAssetKind::Raster(image),
-            width,
-            height,
-            generation,
-        }),
-    );
-
-    Ok((width, height))
+    insert_raster_asset_with_policy(id, id, data, false, false)
 }
 
-#[cfg(any(feature = "vector-assets", test))]
-pub fn insert_vector_asset(id: &str, tree: usvg::Tree) -> Result<(u32, u32), String> {
-    let width = tree.size().width().ceil().max(1.0) as u32;
-    let height = tree.size().height().ceil().max(1.0) as u32;
-
+pub(crate) fn insert_raster_asset_with_policy(
+    id: &str,
+    source: &str,
+    data: &[u8],
+    decode_at_size: bool,
+    memory_log: bool,
+) -> Result<(u32, u32), String> {
     clear_rendered_vector_variants(id);
+    let record =
+        crate::assets::register_raster_asset(id, source, data, decode_at_size, memory_log)?;
+    if !decode_at_size {
+        preload_raster_asset_original(id)?;
+    }
+    Ok((record.width, record.height))
+}
 
-    let cache = get_asset_cache();
-    let mut cache = cache.lock().map_err(|_| "asset cache lock poisoned")?;
-    let generation = bump_asset_cache_generation();
-    cache.insert(
-        id.to_string(),
-        Arc::new(CachedAsset {
-            kind: CachedAssetKind::Vector(Box::new(tree)),
-            width,
-            height,
-            generation,
-        }),
+pub(crate) fn preload_raster_asset_original(id: &str) -> Result<(), String> {
+    let record =
+        crate::assets::asset_record(id).ok_or_else(|| format!("unknown raster asset: {id}"))?;
+    let image = decode_raster_record(&record, record.width, record.height)?;
+    store_asset_raster(&record, image);
+    Ok(())
+}
+
+fn decode_raster_record(
+    record: &crate::assets::AssetRecord,
+    target_width: u32,
+    target_height: u32,
+) -> Result<RasterDecode, String> {
+    let data = match &record.kind {
+        crate::assets::AssetRecordKind::Raster(data) => data,
+        crate::assets::AssetRecordKind::Vector(_) => {
+            return Err(format!("asset is not raster: {}", record.id));
+        }
+    };
+
+    let target_width = target_width.clamp(1, record.width);
+    let target_height = target_height.clamp(1, record.height);
+    let desired_scale = (target_width as f32 / record.width as f32)
+        .max(target_height as f32 / record.height as f32)
+        .clamp(f32::EPSILON, 1.0);
+
+    let mut codec =
+        Codec::from_data(data.clone()).ok_or_else(|| "failed to open image codec".to_string())?;
+    let decode_size = codec_decode_size_at_least(
+        &codec,
+        desired_scale,
+        target_width,
+        target_height,
+        ISize::new(record.width as i32, record.height as i32),
     );
 
-    Ok((width, height))
+    let decode_info = ImageInfo::new(
+        decode_size,
+        ColorType::RGBA8888,
+        AlphaType::Premul,
+        codec.info().color_space(),
+    );
+    let staging = codec
+        .get_image(decode_info, None)
+        .map_err(|result| format!("failed to decode image data: {result:?}"))?;
+    let codec_width = staging.width().max(0) as u32;
+    let codec_height = staging.height().max(0) as u32;
+    let codec_bytes = image_pixel_bytes(&staging).unwrap_or(0);
+
+    if staging.width() == target_width as i32 && staging.height() == target_height as i32 {
+        return Ok(RasterDecode {
+            image: staging,
+            codec_width,
+            codec_height,
+            codec_bytes,
+        });
+    }
+
+    let target_info = staging
+        .image_info()
+        .with_dimensions(ISize::new(target_width as i32, target_height as i32));
+    let image = staging
+        .make_scaled(
+            &target_info,
+            SamplingOptions::new(FilterMode::Linear, MipmapMode::None),
+        )
+        .ok_or_else(|| "failed to resample decoded image".to_string())?;
+    Ok(RasterDecode {
+        image,
+        codec_width,
+        codec_height,
+        codec_bytes,
+    })
+}
+
+fn codec_decode_size_at_least(
+    codec: &Codec<'_>,
+    desired_scale: f32,
+    target_width: u32,
+    target_height: u32,
+    original_size: ISize,
+) -> ISize {
+    let meets_target = |size: ISize| {
+        u32::try_from(size.width).unwrap_or(0) >= target_width
+            && u32::try_from(size.height).unwrap_or(0) >= target_height
+    };
+    let initial = codec.get_scaled_dimensions(desired_scale);
+    if meets_target(initial) {
+        return initial;
+    }
+
+    let mut low = desired_scale;
+    let mut high = 1.0;
+    let mut best = original_size;
+    for _ in 0..16 {
+        let scale = (low + high) * 0.5;
+        let candidate = codec.get_scaled_dimensions(scale);
+        if meets_target(candidate) {
+            best = candidate;
+            high = scale;
+        } else {
+            low = scale;
+        }
+    }
+    best
+}
+
+pub fn insert_vector_asset(id: &str, tree: usvg::Tree) -> Result<(u32, u32), String> {
+    clear_rendered_vector_variants(id);
+    remove_asset_raster(id);
+    let record = crate::assets::register_vector_asset(id, tree)?;
+    Ok((record.width, record.height))
 }
 
 #[cfg(test)]
@@ -1267,45 +1558,42 @@ pub fn insert_test_raster_asset_rgba(
 ) -> Result<(), String> {
     let image = raster_image_from_rgba(width, height, rgba_pixels)
         .ok_or_else(|| "failed to create raster image from RGBA pixels".to_string())?;
-
-    clear_rendered_vector_variants(id);
-
-    let cache = get_asset_cache();
-    let mut cache = cache.lock().map_err(|_| "asset cache lock poisoned")?;
-    let generation = bump_asset_cache_generation();
-    cache.insert(
-        id.to_string(),
-        Arc::new(CachedAsset {
-            kind: CachedAssetKind::Raster(image),
-            width,
-            height,
-            generation,
-        }),
-    );
-
+    let encoded = image
+        .encode(
+            None::<&mut gpu::DirectContext>,
+            skia_safe::EncodedImageFormat::PNG,
+            100,
+        )
+        .ok_or_else(|| "failed to encode test raster image".to_string())?;
+    let record = crate::assets::register_raster_asset(id, id, encoded.as_bytes(), false, false)?;
+    store_asset_raster(&record, RasterDecode::from_final(image));
     Ok(())
 }
 
-#[cfg(any(feature = "vector-assets", test))]
 fn raster_image_from_rgba(width: u32, height: u32, rgba_pixels: &[u8]) -> Option<Image> {
-    let info = skia_safe::ImageInfo::new(
+    let info = ImageInfo::new(
         (width as i32, height as i32),
-        skia_safe::ColorType::RGBA8888,
-        skia_safe::AlphaType::Premul,
+        ColorType::RGBA8888,
+        AlphaType::Premul,
         None,
     );
     let data = Data::new_copy(rgba_pixels);
-    skia_safe::images::raster_from_data(&info, data, (width * 4) as usize)
+    images::raster_from_data(&info, data, (width * 4) as usize)
+}
+
+fn remove_asset_raster(id: &str) {
+    if let Ok(mut cache) = get_asset_raster_cache().lock()
+        && let Some(entry) = cache.entries.remove(id)
+    {
+        cache.total_bytes = cache.total_bytes.saturating_sub(entry.bytes);
+    }
 }
 
 #[cfg(test)]
 fn remove_asset(id: &str) {
-    if let Ok(mut cache) = get_asset_cache().lock() {
-        cache.remove(id);
-    }
-
+    remove_asset_raster(id);
+    crate::assets::remove_asset_record(id);
     clear_rendered_vector_variants(id);
-    bump_asset_cache_generation();
 }
 
 // ============================================================================
@@ -2178,9 +2466,7 @@ fn render_primitive_resource_generation(primitive: &DrawPrimitive) -> Option<u64
         | DrawPrimitive::ImageLoading(..)
         | DrawPrimitive::ImageFailed(..) => None,
         DrawPrimitive::TextWithFont(..) => Some(font_cache_generation()),
-        DrawPrimitive::Image(_, _, _, _, image_id, _, _) => {
-            cached_asset(image_id).map(|asset| asset.generation)
-        }
+        DrawPrimitive::Image(_, _, _, _, image_id, _, _) => asset_generation(image_id),
         DrawPrimitive::Rect(..)
         | DrawPrimitive::RoundedRect(..)
         | DrawPrimitive::Border(..)
@@ -3828,7 +4114,6 @@ impl SceneRenderer {
             | DrawPrimitive::Video(..) => pass == GrayscalePolicyPass::Dither,
             DrawPrimitive::Image(_, _, _, _, image_id, _, _) => match asset_kind(image_id) {
                 Some(AssetKind::Raster) => pass == GrayscalePolicyPass::Dither,
-                #[cfg(any(feature = "vector-assets", test))]
                 Some(AssetKind::Vector) => pass == GrayscalePolicyPass::HardProtect,
                 None => pass == GrayscalePolicyPass::HardProtect,
             },
@@ -6155,26 +6440,32 @@ fn draw_cached_asset_with_fit(
         return;
     }
 
-    let Some(cached) = cached_asset(spec.image_id) else {
+    let Some(record) = crate::assets::asset_record(spec.image_id) else {
         return;
     };
 
-    match &cached.kind {
-        CachedAssetKind::Raster(image) => draw_image_with_fit(
-            canvas,
-            image,
-            cached.width,
-            cached.height,
-            spec,
-            image_bleed_device_outset,
-        ),
-        #[cfg(any(feature = "vector-assets", test))]
-        CachedAssetKind::Vector(tree) => draw_vector_asset_with_fit(
+    match &record.kind {
+        crate::assets::AssetRecordKind::Raster(_) => {
+            if let Some(image) = raster_image_for_draw(canvas, &record, spec) {
+                draw_image_with_fit(
+                    canvas,
+                    &image,
+                    record.width,
+                    record.height,
+                    spec,
+                    image_bleed_device_outset,
+                );
+            } else {
+                let RectSpec { x, y, w, h } = spec.rect;
+                draw_image_failed(canvas, x, y, w, h);
+            }
+        }
+        crate::assets::AssetRecordKind::Vector(tree) => draw_vector_asset_with_fit(
             canvas,
             spec.image_id,
             tree,
-            cached.width,
-            cached.height,
+            record.width,
+            record.height,
             spec,
             image_bleed_device_outset,
         ),
@@ -6192,40 +6483,48 @@ fn draw_cached_asset_with_fit_profiled(
 
     if w > 0.0 && h > 0.0 {
         let lookup_started_at = Instant::now();
-        let cached = cached_asset(spec.image_id);
-        profile.asset_lookup = lookup_started_at.elapsed();
+        let record = crate::assets::asset_record(spec.image_id);
 
-        if let Some(cached) = cached {
-            profile.source_width = cached.width;
-            profile.source_height = cached.height;
+        if let Some(record) = record {
+            profile.source_width = record.width;
+            profile.source_height = record.height;
 
-            match &cached.kind {
-                CachedAssetKind::Raster(image) => {
-                    profile.kind = RenderImageAssetKind::Raster;
-                    draw_image_with_fit_profiled(
-                        canvas,
-                        image,
-                        cached.width,
-                        cached.height,
-                        spec,
-                        image_bleed_device_outset,
-                        &mut profile,
-                    );
+            match &record.kind {
+                crate::assets::AssetRecordKind::Raster(_) => {
+                    let image = raster_image_for_draw(canvas, &record, spec);
+                    profile.asset_lookup = lookup_started_at.elapsed();
+                    if let Some(image) = image {
+                        profile.kind = RenderImageAssetKind::Raster;
+                        draw_image_with_fit_profiled(
+                            canvas,
+                            &image,
+                            record.width,
+                            record.height,
+                            spec,
+                            image_bleed_device_outset,
+                            &mut profile,
+                        );
+                    } else {
+                        let RectSpec { x, y, w, h } = spec.rect;
+                        draw_image_failed(canvas, x, y, w, h);
+                    }
                 }
-                #[cfg(any(feature = "vector-assets", test))]
-                CachedAssetKind::Vector(tree) => {
+                crate::assets::AssetRecordKind::Vector(tree) => {
+                    profile.asset_lookup = lookup_started_at.elapsed();
                     profile.kind = RenderImageAssetKind::Vector;
                     draw_vector_asset_with_fit_profiled(
                         canvas,
                         tree,
-                        cached.width,
-                        cached.height,
+                        record.width,
+                        record.height,
                         spec,
                         image_bleed_device_outset,
                         &mut profile,
                     );
                 }
             }
+        } else {
+            profile.asset_lookup = lookup_started_at.elapsed();
         }
     }
 
@@ -6233,11 +6532,78 @@ fn draw_cached_asset_with_fit_profiled(
     profile
 }
 
+fn raster_image_for_draw(
+    canvas: &skia_safe::Canvas,
+    record: &crate::assets::AssetRecord,
+    spec: ImageDrawSpec<'_>,
+) -> Option<Image> {
+    let (target_width, target_height) = raster_target_dimensions(canvas, record, spec)?;
+    lookup_asset_raster(&record.id, record.generation, target_width, target_height).or_else(|| {
+        decode_raster_record(record, target_width, target_height)
+            .ok()
+            .map(|image| store_asset_raster(record, image))
+    })
+}
+
+fn raster_target_dimensions(
+    canvas: &skia_safe::Canvas,
+    record: &crate::assets::AssetRecord,
+    spec: ImageDrawSpec<'_>,
+) -> Option<(u32, u32)> {
+    if !record.decode_at_size {
+        return Some((record.width, record.height));
+    }
+
+    match spec.fit {
+        ImageFit::Repeat | ImageFit::RepeatX | ImageFit::RepeatY => {
+            Some((record.width, record.height))
+        }
+        ImageFit::Contain | ImageFit::Cover => {
+            let RectSpec { x, y, w, h } = spec.rect;
+            let rects = compute_image_fit_rects(
+                record.width as f32,
+                record.height as f32,
+                x,
+                y,
+                w,
+                h,
+                spec.fit,
+            )?;
+            let full_image_rect = match spec.fit {
+                ImageFit::Contain => {
+                    Rect::from_xywh(rects.dst_x, rects.dst_y, rects.dst_w, rects.dst_h)
+                }
+                ImageFit::Cover => {
+                    let scale = (w / record.width as f32).max(h / record.height as f32);
+                    let full_width = record.width as f32 * scale;
+                    let full_height = record.height as f32 * scale;
+                    Rect::from_xywh(
+                        x + (w - full_width) * 0.5,
+                        y + (h - full_height) * 0.5,
+                        full_width,
+                        full_height,
+                    )
+                }
+                ImageFit::Repeat | ImageFit::RepeatX | ImageFit::RepeatY => unreachable!(),
+            };
+            let (device_rect, _) = canvas.local_to_device_as_3x3().map_rect(full_image_rect);
+            if !device_rect.width().is_finite() || !device_rect.height().is_finite() {
+                return None;
+            }
+
+            Some((
+                (device_rect.width().abs().ceil().max(1.0) as u32).min(record.width),
+                (device_rect.height().abs().ceil().max(1.0) as u32).min(record.height),
+            ))
+        }
+    }
+}
+
 fn draw_image_with_fit(
     canvas: &skia_safe::Canvas,
     image: &Image,
-    image_width: u32,
-    image_height: u32,
+    source_width: u32,
+    source_height: u32,
     spec: ImageDrawSpec<'_>,
     image_bleed_device_outset: f32,
 ) {
@@ -6245,8 +6611,8 @@ fn draw_image_with_fit(
 
     match spec.fit {
         ImageFit::Contain | ImageFit::Cover => {
-            let src_w = image_width as f32;
-            let src_h = image_height as f32;
+            let src_w = source_width as f32;
+            let src_h = source_height as f32;
             let Some(rects) = compute_image_fit_rects(src_w, src_h, x, y, w, h, spec.fit) else {
                 return;
             };
@@ -6255,7 +6621,7 @@ fn draw_image_with_fit(
             paint.set_anti_alias(false);
             let sampling = SamplingOptions::new(FilterMode::Linear, MipmapMode::None);
 
-            let src_rect = Rect::from_xywh(rects.src_x, rects.src_y, rects.src_w, rects.src_h);
+            let src_rect = fitted_raster_source_rect(image, source_width, source_height, &rects);
             let dst_rect = maybe_expand_fit_dst_rect(
                 canvas,
                 Rect::from_xywh(rects.dst_x, rects.dst_y, rects.dst_w, rects.dst_h),
@@ -6367,8 +6733,8 @@ fn draw_nv12_planes_with_fit(
 fn draw_image_with_fit_profiled(
     canvas: &skia_safe::Canvas,
     image: &Image,
-    image_width: u32,
-    image_height: u32,
+    source_width: u32,
+    source_height: u32,
     spec: ImageDrawSpec<'_>,
     image_bleed_device_outset: f32,
     profile: &mut RenderImageDrawProfile,
@@ -6378,8 +6744,8 @@ fn draw_image_with_fit_profiled(
     match spec.fit {
         ImageFit::Contain | ImageFit::Cover => {
             let fit_started_at = Instant::now();
-            let src_w = image_width as f32;
-            let src_h = image_height as f32;
+            let src_w = source_width as f32;
+            let src_h = source_height as f32;
             let Some(rects) = compute_image_fit_rects(src_w, src_h, x, y, w, h, spec.fit) else {
                 profile.fit_compute += fit_started_at.elapsed();
                 return;
@@ -6389,7 +6755,7 @@ fn draw_image_with_fit_profiled(
             paint.set_anti_alias(false);
             let sampling = SamplingOptions::new(FilterMode::Linear, MipmapMode::None);
 
-            let src_rect = Rect::from_xywh(rects.src_x, rects.src_y, rects.src_w, rects.src_h);
+            let src_rect = fitted_raster_source_rect(image, source_width, source_height, &rects);
             let dst_rect = maybe_expand_fit_dst_rect(
                 canvas,
                 Rect::from_xywh(rects.dst_x, rects.dst_y, rects.dst_w, rects.dst_h),
@@ -6444,7 +6810,22 @@ fn draw_image_with_fit_profiled(
     }
 }
 
-#[cfg(any(feature = "vector-assets", test))]
+fn fitted_raster_source_rect(
+    image: &Image,
+    source_width: u32,
+    source_height: u32,
+    rects: &ImageFitRects,
+) -> Rect {
+    let scale_x = image.width() as f32 / source_width.max(1) as f32;
+    let scale_y = image.height() as f32 / source_height.max(1) as f32;
+    Rect::from_xywh(
+        rects.src_x * scale_x,
+        rects.src_y * scale_y,
+        rects.src_w * scale_x,
+        rects.src_h * scale_y,
+    )
+}
+
 fn draw_image_fill_rect(canvas: &skia_safe::Canvas, image: &Image, x: f32, y: f32, w: f32, h: f32) {
     if w <= 0.0 || h <= 0.0 {
         return;
@@ -6459,7 +6840,6 @@ fn draw_image_fill_rect(canvas: &skia_safe::Canvas, image: &Image, x: f32, y: f3
     );
 }
 
-#[cfg(any(feature = "vector-assets", test))]
 fn draw_image_fill_rect_tinted(
     canvas: &skia_safe::Canvas,
     image: &Image,
@@ -6628,7 +7008,6 @@ fn paint_with_template_tint(paint: &Paint, tint: u32) -> Option<Paint> {
     Some(tinted)
 }
 
-#[cfg(any(feature = "vector-assets", test))]
 fn get_or_rasterize_vector_variant(
     asset_id: &str,
     tree: &usvg::Tree,
@@ -6652,7 +7031,6 @@ fn get_or_rasterize_vector_variant(
     Some(image)
 }
 
-#[cfg(any(feature = "vector-assets", test))]
 fn get_or_rasterize_vector_cover_viewport_variant(
     asset_id: &str,
     tree: &usvg::Tree,
@@ -6679,7 +7057,6 @@ fn get_or_rasterize_vector_cover_viewport_variant(
     Some(image)
 }
 
-#[cfg(any(feature = "vector-assets", test))]
 fn get_or_rasterize_vector_variant_profiled(
     asset_id: &str,
     tree: &usvg::Tree,
@@ -6715,7 +7092,6 @@ fn get_or_rasterize_vector_variant_profiled(
     Some(image)
 }
 
-#[cfg(any(feature = "vector-assets", test))]
 fn get_or_rasterize_vector_cover_viewport_variant_profiled(
     asset_id: &str,
     tree: &usvg::Tree,
@@ -6755,7 +7131,6 @@ fn get_or_rasterize_vector_cover_viewport_variant_profiled(
     Some(image)
 }
 
-#[cfg(any(feature = "vector-assets", test))]
 fn draw_vector_asset_with_fit(
     canvas: &skia_safe::Canvas,
     asset_id: &str,
@@ -6856,7 +7231,6 @@ fn draw_vector_asset_with_fit(
     }
 }
 
-#[cfg(any(feature = "vector-assets", test))]
 fn draw_vector_asset_with_fit_profiled(
     canvas: &skia_safe::Canvas,
     tree: &usvg::Tree,
@@ -7026,7 +7400,6 @@ fn draw_tiled_image(
     }
 }
 
-#[cfg(any(feature = "vector-assets", test))]
 fn rasterize_vector_tree(tree: &usvg::Tree, width: u32, height: u32) -> Option<Image> {
     if width == 0 || height == 0 {
         return None;
@@ -7043,7 +7416,6 @@ fn rasterize_vector_tree(tree: &usvg::Tree, width: u32, height: u32) -> Option<I
     rasterize_vector_tree_with_transform(tree, width, height, transform)
 }
 
-#[cfg(any(feature = "vector-assets", test))]
 fn rasterize_vector_tree_cover_viewport(
     tree: &usvg::Tree,
     width: u32,
@@ -7066,7 +7438,6 @@ fn rasterize_vector_tree_cover_viewport(
     rasterize_vector_tree_with_transform(tree, width, height, transform)
 }
 
-#[cfg(any(feature = "vector-assets", test))]
 fn rasterize_vector_tree_with_transform(
     tree: &usvg::Tree,
     width: u32,
@@ -7105,7 +7476,6 @@ fn vector_rasterization_count() -> usize {
     VECTOR_RASTERIZATION_COUNT.load(Ordering::Relaxed)
 }
 
-#[cfg(any(feature = "vector-assets", test))]
 fn compute_vector_fit_rect(
     src_w: f32,
     src_h: f32,
@@ -7983,6 +8353,120 @@ fn border_edge_clip_quads(rect: RectSpec, insets: EdgeInsets) -> [(f32, [(f32, f
 mod tests {
     use super::*;
     use crate::render_scene::{PaintLayerPlacement, PaintLayerReason};
+
+    #[test]
+    fn asset_raster_lru_enforces_entry_and_byte_limits() {
+        let image = raster_image_from_rgba(1, 1, &[255, 0, 0, 255]).expect("test image");
+        let mut cache = AssetRasterCache {
+            max_entries: 1,
+            max_bytes: 8,
+            ..AssetRasterCache::default()
+        };
+        cache.entries.insert(
+            "older".to_string(),
+            DecodedRaster {
+                image: image.clone(),
+                width: 1,
+                height: 1,
+                bytes: 4,
+                last_used: 1,
+                source_generation: 1,
+            },
+        );
+        cache.entries.insert(
+            "newer".to_string(),
+            DecodedRaster {
+                image,
+                width: 1,
+                height: 1,
+                bytes: 4,
+                last_used: 2,
+                source_generation: 2,
+            },
+        );
+        cache.total_bytes = 8;
+
+        evict_asset_rasters_if_needed(&mut cache);
+        assert!(!cache.entries.contains_key("older"));
+        assert!(cache.entries.contains_key("newer"));
+        assert_eq!(cache.total_bytes, 4);
+
+        cache.max_bytes = 0;
+        evict_asset_rasters_if_needed(&mut cache);
+        assert!(cache.entries.is_empty());
+        assert_eq!(cache.total_bytes, 0);
+    }
+
+    #[test]
+    fn cover_decode_target_accounts_for_the_full_cropped_image() {
+        let record = crate::assets::AssetRecord {
+            id: "cover_decode_target".to_string(),
+            source: "cover_decode_target".to_string(),
+            width: 3000,
+            height: 2000,
+            encoded_bytes: 0,
+            generation: 1,
+            decode_at_size: true,
+            memory_log: false,
+            kind: crate::assets::AssetRecordKind::Raster(Data::new_empty()),
+        };
+        let mut surface = skia_safe::surfaces::raster_n32_premul((96, 96)).expect("test surface");
+        let spec = ImageDrawSpec {
+            rect: RectSpec {
+                x: 0.0,
+                y: 0.0,
+                w: 96.0,
+                h: 96.0,
+            },
+            image_id: &record.id,
+            fit: ImageFit::Cover,
+            svg_tint: None,
+        };
+
+        assert_eq!(
+            raster_target_dimensions(surface.canvas(), &record, spec),
+            Some((144, 96))
+        );
+    }
+
+    #[test]
+    fn sized_jpeg_decode_caches_exact_draw_size() {
+        let id = "sized_jpeg_decode_caches_exact_draw_size";
+        let mut surface =
+            skia_safe::surfaces::raster_n32_premul((3000, 3000)).expect("test surface");
+        surface.canvas().clear(Color::RED);
+        let encoded = surface
+            .image_snapshot()
+            .encode(
+                None::<&mut gpu::DirectContext>,
+                skia_safe::EncodedImageFormat::JPEG,
+                90,
+            )
+            .expect("test JPEG");
+        drop(surface);
+
+        let record = crate::assets::register_raster_asset(id, id, encoded.as_bytes(), true, false)
+            .expect("raster metadata");
+        assert_eq!((record.width, record.height), (3000, 3000));
+
+        let crate::assets::AssetRecordKind::Raster(data) = &record.kind else {
+            panic!("expected raster record");
+        };
+        let codec = Codec::from_data(data.clone()).expect("JPEG codec");
+        let staging = codec.get_scaled_dimensions(96.0 / 3000.0);
+        assert_eq!((staging.width, staging.height), (375, 375));
+
+        let decoded = decode_raster_record(&record, 96, 96).expect("sized decode");
+        assert_eq!((decoded.image.width(), decoded.image.height()), (96, 96));
+        assert_eq!((decoded.codec_width, decoded.codec_height), (375, 375));
+
+        let cached = store_asset_raster(&record, decoded);
+        assert_eq!((cached.width(), cached.height()), (96, 96));
+        let cache = get_asset_raster_cache().lock().expect("raster cache");
+        let entry = cache.entries.get(id).expect("retained exact-size image");
+        assert_eq!((entry.width, entry.height), (96, 96));
+        assert_eq!(entry.bytes, 96 * 96 * 4);
+    }
 
     fn point_in_convex_polygon(p: (f32, f32), vertices: &[(f32, f32)]) -> bool {
         const EPS: f32 = 1.0e-4;
@@ -11291,29 +11775,8 @@ mod tests {
     }
 
     fn cache_test_image(id: &str, width: u32, height: u32, rgba_pixels: Vec<u8>) {
-        let info = skia_safe::ImageInfo::new(
-            (width as i32, height as i32),
-            skia_safe::ColorType::RGBA8888,
-            skia_safe::AlphaType::Premul,
-            None,
-        );
-        let data = Data::new_copy(&rgba_pixels);
-        let image = skia_safe::images::raster_from_data(&info, data, (width * 4) as usize)
-            .expect("test image should be created from RGBA pixels");
-
-        let mut cache = get_asset_cache()
-            .lock()
-            .expect("asset cache lock for test image insertion");
-        let generation = bump_asset_cache_generation();
-        cache.insert(
-            id.to_string(),
-            Arc::new(CachedAsset {
-                kind: CachedAssetKind::Raster(image),
-                width,
-                height,
-                generation,
-            }),
-        );
+        insert_test_raster_asset_rgba(id, width, height, &rgba_pixels)
+            .expect("test image should insert into the raster asset cache");
     }
 
     fn cache_test_svg_asset(id: &str, width: u32, height: u32, svg: &str) {

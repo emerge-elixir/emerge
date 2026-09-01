@@ -1,12 +1,17 @@
 # Plans
 
-Last updated: 2026-08-29.
+Last updated: 2026-08-30.
 
 This directory contains only open implementation plans and durable design/research
 notes. Completed implementation logs belong in Git history, the changelog, tests,
 or `guides/internals/`, not under an `active-` filename.
 
 ## Active implementation plans
+
+### `active-picture-asset-memory-validation.md`
+
+Trellis picture-grid validation for bounded target-sized raster decoding and
+per-asset encoded/decode/cache memory diagnostics.
 
 ### `active-headless-grayscale-output.md`
 
@@ -35,6 +40,12 @@ the XRGB candidate decision, active-scene GPU work reduction, exact ownership,
 and the 60 FPS / 30% headroom gates.
 
 ## Durable references
+
+### `release-0.4.0-audit.md`
+
+Commit-range and release-readiness audit from `v0.3.4` through the packed
+headless grayscale baseline, including dependency, packaging, lifecycle, CI,
+and qualification findings.
 
 ### `headless-low-memory-grayscale-investigation.md`
 

@@ -116,6 +116,10 @@ defmodule EmergeSkia do
   - `runtime_paths.follow_symlinks` (default: `false`)
   - `runtime_paths.max_file_size` (default: `25_000_000`)
   - `runtime_paths.extensions` (default image/SVG extension allowlist)
+  - `cache.max_entries` (default: `256`)
+  - `cache.max_bytes` (default: `268_435_456`)
+  - `decode_at_size` - Decode and retain rasters at their device-space draw size when supported (default: `false` for windowed renderers)
+  - `memory_log` - Log encoded size, codec staging and peak bytes, final decode ratio/bytes, and retained source/cache usage whenever a raster variant is decoded (default: `false`)
   - `fonts` (default: `[]`)
 
   `headless` options, used with `backend: :headless`:

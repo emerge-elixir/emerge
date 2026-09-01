@@ -1957,6 +1957,10 @@ struct StartOptsNif {
     asset_follow_symlinks: bool,
     asset_max_file_size: u64,
     asset_extensions: Vec<String>,
+    asset_cache_max_entries: u64,
+    asset_cache_max_bytes: u64,
+    asset_decode_at_size: bool,
+    asset_memory_log: bool,
     drm_cursor: Vec<DrmCursorOverrideNif>,
     drm_startup_retries: u32,
     drm_retry_interval_ms: u32,
@@ -2023,6 +2027,20 @@ struct DrmCursorOverrideNif {
 }
 
 #[derive(rustler::NifMap)]
+struct ConfigureAssetsOptsNif {
+    sources: Vec<String>,
+    runtime_enabled: bool,
+    allowlist: Vec<String>,
+    follow_symlinks: bool,
+    max_file_size: u64,
+    extensions: Vec<String>,
+    cache_max_entries: u64,
+    cache_max_bytes: u64,
+    decode_at_size: bool,
+    memory_log: bool,
+}
+
+#[derive(rustler::NifMap)]
 struct RenderTreeOffscreenOptsNif {
     width: u32,
     height: u32,
@@ -2033,6 +2051,10 @@ struct RenderTreeOffscreenOptsNif {
     follow_symlinks: bool,
     max_file_size: u64,
     extensions: Vec<String>,
+    cache_max_entries: u64,
+    cache_max_bytes: u64,
+    decode_at_size: bool,
+    memory_log: bool,
     asset_mode: String,
     asset_timeout_ms: u64,
 }
@@ -2702,6 +2724,10 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
         runtime_follow_symlinks: opts.asset_follow_symlinks,
         runtime_max_file_size: opts.asset_max_file_size,
         runtime_extensions: opts.asset_extensions,
+        cache_max_entries: opts.asset_cache_max_entries,
+        cache_max_bytes: opts.asset_cache_max_bytes,
+        decode_at_size: opts.asset_decode_at_size,
+        memory_log: opts.asset_memory_log,
     };
     let drm_cursor_overrides = parse_drm_cursor_overrides(opts.drm_cursor)
         .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
@@ -3246,20 +3272,19 @@ fn load_font_nif(name: String, weight: u32, italic: bool, data: Binary) -> Resul
 #[rustler::nif(schedule = "DirtyIo")]
 fn configure_assets_nif(
     _renderer: ResourceArc<RendererResource>,
-    sources: Vec<String>,
-    runtime_enabled: bool,
-    allowlist: Vec<String>,
-    follow_symlinks: bool,
-    max_file_size: u64,
-    extensions: Vec<String>,
+    opts: ConfigureAssetsOptsNif,
 ) -> Atom {
     services::configure_assets(AssetConfig {
-        sources,
-        runtime_enabled,
-        runtime_allowlist: allowlist,
-        runtime_follow_symlinks: follow_symlinks,
-        runtime_max_file_size: max_file_size,
-        runtime_extensions: extensions,
+        sources: opts.sources,
+        runtime_enabled: opts.runtime_enabled,
+        runtime_allowlist: opts.allowlist,
+        runtime_follow_symlinks: opts.follow_symlinks,
+        runtime_max_file_size: opts.max_file_size,
+        runtime_extensions: opts.extensions,
+        cache_max_entries: opts.cache_max_entries,
+        cache_max_bytes: opts.cache_max_bytes,
+        decode_at_size: opts.decode_at_size,
+        memory_log: opts.memory_log,
     });
     atoms::ok()
 }
@@ -3695,6 +3720,10 @@ fn offscreen_opts_from_nif(opts: RenderTreeOffscreenOptsNif) -> services::Offscr
             runtime_follow_symlinks: opts.follow_symlinks,
             runtime_max_file_size: opts.max_file_size,
             runtime_extensions: opts.extensions,
+            cache_max_entries: opts.cache_max_entries,
+            cache_max_bytes: opts.cache_max_bytes,
+            decode_at_size: opts.decode_at_size,
+            memory_log: opts.memory_log,
         },
     }
 }

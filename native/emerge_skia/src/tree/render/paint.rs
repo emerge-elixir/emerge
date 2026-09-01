@@ -154,13 +154,10 @@ fn paint_node_for_image_source(
 
     match assets::source_status(source) {
         Some(AssetStatus::Ready(asset)) => {
-            #[cfg(any(feature = "vector-assets", test))]
             let asset_is_vector = matches!(
                 crate::renderer::asset_kind(&asset.id),
                 Some(crate::renderer::AssetKind::Vector)
             );
-            #[cfg(not(any(feature = "vector-assets", test)))]
-            let asset_is_vector = false;
 
             if svg_expected && !asset_is_vector {
                 Some(RenderNode::Primitive(DrawPrimitive::ImageFailed(

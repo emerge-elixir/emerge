@@ -316,6 +316,7 @@ mod tests {
             runtime_follow_symlinks: false,
             runtime_max_file_size: 1_000_000,
             runtime_extensions: vec![".svg".to_string(), ".png".to_string()],
+            ..AssetConfig::default()
         };
         let theme = DrmCursorTheme::load(
             &asset_config,

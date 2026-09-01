@@ -109,6 +109,23 @@ defmodule EmergeSkiaTest do
     refute good == bad
   end
 
+  test "render_to_pixels remains correct when decoded asset retention is disabled" do
+    tree = image([width(px(32)), height(px(24))], "sample_assets/static.jpg")
+
+    opts = [
+      otp_app: :emerge,
+      width: 32,
+      height: 24,
+      assets: [cache: [max_entries: 0, max_bytes: 0], decode_at_size: true]
+    ]
+
+    first = render_tree_to_pixels(tree, opts)
+    second = render_tree_to_pixels(tree, opts)
+
+    assert byte_size(first) == 32 * 24 * 4
+    assert first == second
+  end
+
   test "render_to_pixels resolves logical SVG image assets" do
     tree = image([width(px(8)), height(px(8)), image_fit(:cover)], "sample_assets/tile_quad.svg")
 

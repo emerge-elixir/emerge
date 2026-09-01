@@ -1,5 +1,5 @@
 pub const PROTOCOL_NAME: &str = "emerge_skia_macos";
-pub const PROTOCOL_VERSION: u16 = 9;
+pub const PROTOCOL_VERSION: u16 = 10;
 
 pub const FRAME_INIT: u8 = 1;
 pub const FRAME_INIT_OK: u8 = 2;

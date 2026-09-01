@@ -486,6 +486,57 @@ defmodule EmergeSkia.OptionsTest do
              )
   end
 
+  test "normalize_asset_config! bounds the decoded cache and supports sized decode" do
+    assert %{
+             cache_max_entries: 256,
+             cache_max_bytes: 268_435_456,
+             decode_at_size: false,
+             memory_log: false
+           } = Assets.normalize_asset_config!(otp_app: :emerge)
+
+    assert %{decode_at_size: true} =
+             Assets.normalize_asset_config!([otp_app: :emerge], decode_at_size: true)
+
+    config =
+      Assets.normalize_asset_config!(
+        otp_app: :emerge,
+        assets: %{
+          cache: %{max_entries: 0, max_bytes: 1_024},
+          decode_at_size: true,
+          memory_log: true
+        }
+      )
+
+    assert %{
+             cache_max_entries: 0,
+             cache_max_bytes: 1_024,
+             decode_at_size: true,
+             memory_log: true
+           } = config
+
+    assert %{
+             asset_cache_max_entries: 0,
+             asset_cache_max_bytes: 1_024,
+             asset_decode_at_size: true,
+             asset_memory_log: true
+           } = Assets.native_start_asset_config(config)
+
+    assert_raise ArgumentError, ~r/assets.cache.max_bytes must be a non-negative integer/, fn ->
+      Assets.normalize_asset_config!(
+        otp_app: :emerge,
+        assets: [cache: [max_bytes: -1]]
+      )
+    end
+
+    assert_raise ArgumentError, ~r/assets.decode_at_size must be a boolean/, fn ->
+      Assets.normalize_asset_config!(otp_app: :emerge, assets: [decode_at_size: :yes])
+    end
+
+    assert_raise ArgumentError, ~r/assets.memory_log must be a boolean/, fn ->
+      Assets.normalize_asset_config!(otp_app: :emerge, assets: [memory_log: :yes])
+    end
+  end
+
   test "normalize_drm_cursor_overrides! normalizes logical and runtime sources" do
     runtime_path =
       Path.join(System.tmp_dir!(), "emerge_cursor_#{System.unique_integer([:positive])}.svg")

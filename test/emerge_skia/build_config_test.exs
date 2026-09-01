@@ -128,10 +128,7 @@ defmodule EmergeSkia.BuildConfigTest do
              "embedded-freetype"
            ]
 
-    assert BuildConfig.rustler_platform_features(%{}, [], []) == [
-             "vector-assets",
-             "video-interop-support"
-           ]
+    assert BuildConfig.rustler_platform_features(%{}, [], []) == ["video-interop-support"]
   end
 
   test "default_runtime_backend prefers wayland and falls back to drm" do

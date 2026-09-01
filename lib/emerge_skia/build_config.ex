@@ -280,7 +280,7 @@ defmodule EmergeSkia.BuildConfig do
         ["embedded-freetype"]
 
       compiled_backends == [] and compiled_vulkan_backends == [] ->
-        ["vector-assets", "video-interop-support"]
+        ["video-interop-support"]
 
       true ->
         []

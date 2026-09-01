@@ -110,6 +110,10 @@ defmodule EmergeSkia.Native do
           required(:asset_follow_symlinks) => boolean(),
           required(:asset_max_file_size) => pos_integer(),
           required(:asset_extensions) => [String.t()],
+          required(:asset_cache_max_entries) => non_neg_integer(),
+          required(:asset_cache_max_bytes) => non_neg_integer(),
+          required(:asset_decode_at_size) => boolean(),
+          required(:asset_memory_log) => boolean(),
           required(:drm_cursor) => [
             %{
               required(:icon) => String.t(),
@@ -201,25 +205,8 @@ defmodule EmergeSkia.Native do
   @doc """
   Configure native asset loading policy and source roots.
   """
-  @spec configure_assets_nif(
-          reference(),
-          [String.t()],
-          boolean(),
-          [String.t()],
-          boolean(),
-          non_neg_integer(),
-          [String.t()]
-        ) :: :ok
-  def configure_assets_nif(
-        _renderer,
-        _sources,
-        _runtime_enabled,
-        _allowlist,
-        _follow_symlinks,
-        _max_file_size,
-        _extensions
-      ),
-      do: :erlang.nif_error(:nif_not_loaded)
+  @spec configure_assets_nif(reference(), map()) :: :ok
+  def configure_assets_nif(_renderer, _opts), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Check if the renderer is still running.

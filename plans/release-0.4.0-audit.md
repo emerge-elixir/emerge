@@ -1,307 +1,306 @@
-# Emerge 0.4.0 Release Audit
+# Emerge 0.4.0 Commit Audit
+
+## Scope
+
+This audit reviews the committed range from `v0.3.4` through `088f644`
+(`Add packed grayscale headless output`). Candidate asset-cache, memory-log, and
+unconditional-vector changes that were still in the working tree at audit time
+are noted separately where they mitigate a finding.
+
+The history is not a normal descendant range:
+
+- `git log v0.3.4..088f644` reports 41 commits.
+- Eight commits are patch-equivalent to work already present in `v0.3.4`.
+- There are 33 genuinely new commits.
+- The tree comparison is approximately 42,800 additions and 12,200 deletions.
+- `headless-backend` forked from `v0.3.2`; `v0.3.4` is not an ancestor.
 
 ## Executive summary
 
-The candidate is a major backend/video release, not a small increment over 0.3.4. It adds headless rendering, Vulkan, canonical VideoInterop ownership, raster presentation, improved diagnostics, and substantial renderer/cache work.
+The range adds substantial and valuable functionality:
 
-It is **not ready to tag yet**. The main blockers are:
+- renderer/backend selection and capability reporting;
+- Wayland and DRM raster presentation;
+- headless raster, OpenGL, and Vulkan output;
+- canonical VideoInterop producer/consumer ownership;
+- Vulkan composition for XRGB8888 and NV12;
+- improved renderer diagnostics and screenshot capture;
+- packed BW1 and Gray2 rendering with deterministic protected-region
+  dithering;
+- touch scrolling, centered-text, and Nerves cross-compilation fixes.
 
-1. Unpublished `video_interop` dependencies and active sibling-path overrides.
-2. Missing `video_interop` entries in both Mix and Cargo registry locks.
-3. The release branch diverged before 0.3.3/0.3.4 and needs reconciliation with `main`.
-4. A large dirty working tree contains unfinished grayscale/dithering work.
-5. Committed packed grayscale output is incorrect for non-byte-aligned multi-row images.
-6. Vulkan and hardware matrices remain incomplete.
-7. Local commits in Emerge and VideoInterop are not pushed.
+It is not ready to tag as 0.4.0. Public dependency publication, package source
+builds, Gray4 correctness, ancestry reconciliation, and release gating remain
+blockers. Vulkan and multi-renderer lifecycle qualification also remain open.
 
-## Commit scope
+## Release blockers
 
-`git log v0.3.4..HEAD` reports **40 commits**, but this needs qualification:
+### 1. Public registry dependencies are unavailable
 
-- `headless-backend` forked at `v0.3.2`; it is not descended from `v0.3.4`.
-- Eight commits are patch-equivalent to changes already included by 0.3.4.
-- There are **32 genuinely new commits**.
-- Tree comparison: **137 files, +45,301 / -9,843 lines**.
+The candidate depends on packages that are not published:
 
-The branch also does not contain the ancestry of four 0.3.3 fixes plus the 0.3.3/0.3.4 release-preparation commits. Their behavior appears to have been carried into later large commits, but this should be resolved by rebasing/merging and rerunning regressions.
-
-### New commit groups
-
-| Area | Commits |
-|---|---|
-| Renderer selection, capabilities, stats, screenshots, raster presentation | `9c63668`, `191e05c`, `dd95693`, `33440f1`, `97c896f`, `a867f6a`, `9959e08`, `b614c5c`, `ac0c7e0`, `cea0cf4` |
-| Canonical headless PRIME and VideoInterop | `c085596` |
-| Vulkan, semantic layers, renderer restructuring | `f08d80b` |
-| XRGB/NV12/lifecycle/allocation follow-ups | `c68a383`, `ca5f81b`, `4ff095a`, `b06c0c7`, `22e7f8e`, `a75f1a3` |
-| Nerves, touch scrolling, centered text fixes | `e6bb0c8`, `dfb067a`, `fe4ecac` |
-| Documentation/planning/qualification records | Remaining 11 commits |
-
-## What 0.4.0 brings
-
-### 1. Unified backend and rendering API selection
-
-Rendering is now selected independently:
-
-- Backends: Wayland, DRM, macOS, headless
-- APIs: OpenGL, raster, Metal, Vulkan
-- `backend_renderer` and `:gl` remain deprecated compatibility aliases.
-- Explicit Vulkan is fail-closed: it does not silently fall back to OpenGL, raster, or software Vulkan.
-- `compiled_vulkan_backends` provides compile-time Vulkan feature selection.
-
-New combinations include:
-
-- Wayland raster CPU or GPU-upload presentation
-- DRM raster GPU upload
-- Headless raster/OpenGL binary frames
-- Headless OpenGL/Vulkan PRIME output
-- Explicit Wayland and DRM Vulkan rendering
-
-`rendering_api: :auto` remains OpenGL-first on Linux.
-
-### 2. Headless rendering
-
-The release adds retained headless sessions with:
-
-- Frame messages and configurable tags/FPS
-- `rgba8888`, `rgb888`, `gray8`, `gray4`, `gray2`, and `bw1` declarations
-- PRIME/DMA-BUF output with bounded in-flight frames and backpressure
-- Renderer screenshots for binary headless output
-- Direct viewport-to-video-target connections through:
-  - `Emerge.connect_video_output/3`
-  - `Emerge.disconnect_video_output/1`
-
-### 3. Canonical VideoInterop
-
-The old PRIME lease shape is replaced by the shared `VideoInterop` protocol:
-
-- Canonical frame, format, colorimetry and DMA-BUF structures
-- Per-holder abandonment guards
-- Prepare/claim ownership boundary
-- Explicit sync-file acquire fences
-- Exact retirement and drained shutdown
-- Safe lease fan-out
-- Lifecycle-owned release dispatchers
-- Strict allocation-size and plane-span validation
-
-This is a **breaking interoperability protocol change**. Producers, consumers, adapters, NIFs and applications must be upgraded together and cold-restarted or fully drained.
-
-### 4. Vulkan and camera/video paths
-
-New Vulkan functionality includes:
-
-- Wayland WSI rendering
-- Headless Vulkan PRIME production
-- DRM no-WSI/KMS presentation
-- Exact DRM-device matching
-- Vulkan validation diagnostics and `vulkan_probe`
-- Persistent DMA-BUF imports and bounded pools
-- Direct or staged XRGB8888 support
-- NV12 direct, optimal multi-planar, separate Y/UV and planar rollback paths
-- Exact BT.709 range/chroma metadata
-- Complete fd-backed allocation-size publication
-- Queue authority, sync-lane identity and device-loss quarantine
-
-### 5. Renderer and diagnostics
-
-- New `EmergeSkia.renderer_info/1`
-- Renderer-aware stats; schema version 23
-- DRM metric renamed to `gpu_render_elapsed`
-- GPU timing correlated with page flips and atomic commits
-- New Vulkan synchronization, saturation, quarantine and device-loss counters
-- On-demand screenshot capture replaces unconditional per-frame GPU readback
-- Deterministic semantic paint-layer topology and improved retained caching
-
-### 6. Correctness and platform fixes
-
-- Improved high-frequency touch scrolling and inertial fling behavior
-- Fixed centered text after content patches
-- Fixed Wayland video-only redraw starvation
-- Improved text visual-bound cache sizing
-- Better native log-level handling
-- Nerves Skia cross-compilation fixes for newer toolchains
-- macOS runtime convergence retained without adding Vulkan/video-target support
-
-## Dependency changes since 0.3.4
-
-### New direct dependencies
-
-| Ecosystem | Dependency | Purpose |
-|---|---|---|
-| Hex | `video_interop ~> 0.1.0` | Canonical Elixir frame, format, lease and consumer contracts |
-| crates.io | `video-interop = 0.1.0` | Rust schemas, FD ownership, EGL/Vulkan integration |
-| crates.io | `ash 0.38` | Vulkan API |
-| crates.io | `ash-window 0.13` | Wayland/window-surface Vulkan integration |
-
-### Changed dependency sources/features
-
-- `skia-safe` and `skia-bindings` remain version 0.99.0 but move from crates.io to pinned rust-skia commit:
-  `0d2261c63941f4b534522246cc1ace13ca4242d8`
-- `gl` and `glutin_egl_sys` are now optional.
-- GBM `import-egl` is enabled through the OpenGL feature bundle instead of unconditionally.
-- New Cargo feature families:
-  - `wayland-core`, `wayland-vulkan`, `wayland-all`
-  - `drm-core`, `drm-vulkan`, `drm-all`
-  - `headless-opengl`, `headless-vulkan`, `headless-all`
-  - `vulkan`, `vulkan-probe`
-
-### New transitive lock entries
-
-Mostly from `ash-window`/macOS raw-window support:
-
-`bitflags 1.3`, `block`, `cocoa`, `cocoa-foundation`, `core-foundation`, `core-foundation-sys`, `core-graphics`, `core-graphics-types`, `foreign-types`, `foreign-types-macros`, `foreign-types-shared`, `malloc_buf`, `objc`, `raw-window-metal`, and `syn 3`.
-
-The new `video-interop` crate requires **Rust 1.91**, which should be documented or declared by Emerge for source-build users.
-
-## Current release blockers
-
-### 1. Registry dependencies are not published
-
-Registry checks currently show:
-
-- crates.io `video-interop`: not found
-- Hex `video_interop`: not found
-- Hex `membrane_video_interop`: not found
-- Hex `emerge`: latest remains 0.3.4
-
-Consequences:
-
-- `mix deps.get` currently fails without `VIDEO_INTEROP_PATH`.
+- `mix.exs` declares `video_interop ~> 0.1.0` unless
+  `VIDEO_INTEROP_PATH` supplies a sibling checkout.
+- `native/emerge_skia/Cargo.toml` declares `video-interop = 0.1.0` and
+  patches crates.io to `../../../video_interop/rust/video-interop`.
 - `mix.lock` has no `video_interop` entry.
-- Cargo resolves `video-interop` through:
+- The Cargo lock records the path package without a registry source/checksum.
 
-```toml
-[patch.crates-io]
-video-interop = { path = "../../../video_interop/rust/video-interop" }
-```
-
-That path will not exist in GitHub release builders or downstream Hex source builds.
+Registry checks at audit time returned no `video_interop` Hex package and no
+`video-interop` crate. A clean `mix deps.get` failed for that reason.
 
 Before release:
 
-1. Publish the crate.
-2. Publish the Hex core package.
-3. Remove the Cargo patch.
-4. Regenerate and commit both lock files from registry sources.
+1. Publish the Rust crate.
+2. Publish the Elixir package.
+3. Remove the Cargo path patch.
+4. Regenerate both locks from registry sources.
+5. Build in a clean checkout without sibling repositories or path variables.
 
-### 2. Git state is not releasable
+### 2. The Hex package contains an invalid Cargo project
 
-- Emerge `headless-backend` is two commits ahead of its remote.
-- VideoInterop `main` is one commit ahead of its remote.
-- Emerge has extensive uncommitted source and plan changes.
-- No `v0.4.0` tag exists.
-- The branch must be reconciled with `v0.3.4`/`main`.
+`native/emerge_skia/Cargo.toml` declares five explicit benchmark targets:
 
-### 3. Packed grayscale correctness
+- `layout`
+- `patch`
+- `emrg`
+- `renderer`
+- `stats`
 
-Committed `pack_gray/3` packs the flattened pixel stream rather than restarting each scanline. For example, BW1 width 3 × height 2 produces one byte while metadata declares a one-byte stride and therefore requires two bytes.
+`mix.exs` packages native `src/` and support files but not
+`native/emerge_skia/benches/`.
 
-Gray2 and Gray4 have similar row-boundary/padding problems.
+The exact package check was:
 
-The dirty worktree contains a partial BW1 replacement and dithering implementation, but it is unfinished and uncommitted. Before 0.4.0 either:
+```bash
+mix hex.build --unpack
+cd emerge-0.4.0/native/emerge_skia
+cargo check --locked --no-default-features --features embedded-cpu
+```
 
-- finish and fully validate all advertised grayscale formats, or
-- remove/defer unsupported low-bit formats from the public 0.4.0 contract.
+It failed because all five declared benchmark source files were absent. After
+supplying those files manually, Cargo reached the next blocker and failed on
+the missing sibling `video-interop` path.
 
-### 4. Release documentation/hygiene
+Either include the benchmark source tree in the Hex package or remove the
+explicit benchmark declarations from the published manifest. Package
+validation must compile the unpacked package; `mix hex.build --unpack` alone is
+not sufficient.
 
-- Update the 0.4.0 changelog date.
-- Remove the duplicated column-fill fix from 0.4.0; that was already the 0.3.4 change.
-- Document Vulkan source-build requirements and absence of Vulkan precompiled NIFs.
-- Update the setup tutorial, which still omits Vulkan/headless details.
-- Fix `.gitignore`: the Hex archive is `emerge-*.tar`, not `emerge_skia-*.tar`.
+### 3. Advertised Gray4 output is malformed for odd multi-row frames
 
-## What still needs validation
+`EmergeSkia` accepts and documents `headless.pixel_format: :gray4`, but the
+committed `pack_gray4` implementation packs one flattened pixel stream. It does
+not restart packing at each row boundary.
 
-### Automated host/package validation
+For a 3x2 frame:
 
-Run from clean registry-only worktrees:
+- declared stride is 2 bytes;
+- required output is 4 bytes;
+- committed output is 3 bytes.
 
-- Full `./ci-tests.sh all`
-- `mix test --include full_sweep`
-- `mix docs`
-- Hex package build/unpack and compile from the unpacked archive
-- Cargo format/test/clippy for:
-  - no features
-  - Wayland/OpenGL/Vulkan/all
-  - DRM/OpenGL/Vulkan/all
-  - headless OpenGL/Vulkan/all
-  - macOS
-- Build and run `vulkan_probe`
-- AArch64 Nerves source build using registry dependencies
-- All six Linux precompiled NIF profiles
-- Both macOS host archives and checksums
-- NIF loading from generated release assets
+The Gray4/Gray8 active plan also states that these formats remain unfinished.
+Gray4 and Gray8 should be removed from the accepted public 0.4 contract until
+they have exact row, tail, alpha, ownership, and multi-row tests, or the active
+plan should be completed before release.
 
-Current CI exercises primarily default features and excludes hardware tests; it does not provide the complete Vulkan profile matrix.
+### 4. The branch is not descended from v0.3.4
 
-### Linux GPU/hardware qualification
+A merge trial between `088f644` and `v0.3.4` reported conflicts across release
+workflows, manifests, renderer code, DRM, macOS, stats, tests, and plans. The
+candidate also carries patch-equivalent copies of earlier commits while lacking
+the published release ancestry.
 
-Still open:
+Before tagging:
 
-- Four Wayland PRIME routes:
-  - GL → GL
-  - Vulkan → GL
-  - GL → Vulkan
-  - Vulkan → Vulkan
-- Five minutes / 9,000 frames per route
-- Exact pixels, resize, hide/show, reconnect and second renderer lifetime
-- Stable FD/RSS/cache/lease counts
-- Fence/export/rejection/consumer-disappearance fault handling
-- Explicit and forced-implicit OpenGL synchronization
-- Wayland Vulkan resize, screenshot, validation, device-loss and multi-GPU matching
-- RPi5 DRM/Vulkan functional probe, KMS restore and repeated restart/fault cycles
-- DRM OpenGL/GLES2 rollback smoke
+1. Create a clean integration branch from current `origin/main`/`v0.3.4`.
+2. Merge or rebase the genuinely new work.
+3. Resolve the published 0.3.3/0.3.4 fixes explicitly rather than relying on
+   similar later patches.
+4. Run regression and package tests on the resulting descendant.
+5. Verify `git merge-base --is-ancestor v0.3.4 <release-commit>`.
 
-### Camera/RPi5 qualification
+## High-priority findings
 
-Still open:
+### 5. Release tags can publish without running CI
 
-- Exact NV12 Rec.709/range/chroma pixel oracles
-- Validation-layer and V3D/MMU-clean runs
-- Delayed/error fence and device-loss injection
-- 300+ captures and 30-minute FD/RSS/cache/lease soak
-- NV12 versus XRGB A/B/A decision
-- Focus-active target:
-  - 59.8–60.2 FPS
-  - median GPU ≤10.86 ms
-  - p95 ≤11.67 ms
-  - p99 <16.67 ms
+The normal CI workflow runs on pull requests and pushes to `main`/`master`, not
+tag pushes. The tag-triggered artifact workflow builds archives but does not run
+Mix tests, Rust tests, Clippy, Dialyzer, docs, full feature checks, or unpacked
+package compilation.
 
-### Low-resource animation
+The Hex workflow can automatically publish after the artifact workflow
+succeeds. This makes a successful build matrix, rather than a successful release
+test suite, the publication gate.
 
-Constrained-device cadence remains below target:
+Require an exact-tag validation job before publication. It should run:
 
-- Patch actor approximately 17.4 ms versus ≤12 ms target
-- Re-baseline combined traversal
-- Add missing sidepane exit/prune and interrupted-handoff tests
-- Validate transform-only registry updates and event hit geometry
+```bash
+./ci-tests.sh all
+mix test --include full_sweep
+mix docs
+mix hex.build --unpack
+```
 
-### Grayscale, if included
+It should also compile the unpacked package and run the supported Cargo feature
+matrix. The publishing workflow should depend on that result and verify all NIF
+and macOS artifacts.
 
-The current dirty BW1 work requires exact row packing, alpha-over-white, deterministic dithering, glyph protection, screenshots, restart/memory testing, and direct 400×300 EInk hardware acceptance.
+### 6. Asset runtime ownership is incompatible with multiple native renderers
 
-## Required publication order
+The public viewport guide says multiple windows may run concurrently, but the
+native asset subsystem is process-global:
 
-1. **crates.io:** `video-interop` 0.1.0
-2. **Hex:** `video_interop` 0.1.0
-3. **Hex:** `membrane_video_interop` 0.1.0
-4. Remove path overrides and regenerate downstream locks
-5. Tag `v0.4.0`; publish Emerge GitHub assets:
-   - six Linux NIF archives
-   - two macOS host archives plus checksums
-6. **Hex:** `emerge` 0.4.0
-7. Publish migrated producer packages:
-   - `membrane_video_transcode`
-   - `membrane_libcamera`
-8. Update Demo/Camera locks and build the versioned Nerves system/firmware
+- starting a renderer stops the existing asset worker;
+- starting a renderer clears shared source status;
+- `configure_assets_nif` accepts a renderer resource but ignores it;
+- stopping any renderer stops global assets and clears global caches;
+- worker thread handles are discarded rather than joined.
 
-Not separately published:
+A second Wayland or headless renderer can therefore replace the first
+renderer's asset configuration and rerender destination. Stopping either
+renderer can invalidate the other. A stale worker can also outlive one renderer
+lifetime and mutate state shared with the next.
 
-- `emerge_skia` is an internal NIF crate, not a crates.io release.
-- `macos_host` and NIFs are GitHub release assets.
-- `vulkan_probe` is a diagnostic/system artifact.
-- Do not publish the legacy `membrane_dmabuf` protocol.
+Move source status, configuration, worker ownership, and tree notifications into
+a per-`RendererResource` asset runtime. A decoded payload cache may remain
+process-wide if it is separately bounded, generation-safe, and independent of
+renderer lifecycle.
 
-## Audit note
+Add tests that:
 
-No tests were run during this audit. Findings are based on Git history, manifests, current source, release workflows, plans, and registry checks.
+- run two native headless renderers with different asset roots;
+- load delayed assets in both;
+- stop one renderer while the other remains active;
+- restart a renderer while prior asset work is queued;
+- verify no stale status, cache invalidation, or rerender routing crosses the
+  renderer boundary.
+
+### 7. Committed raster decoding and retention are unbounded
+
+At the audited commit, raster insertion decodes the complete source image and
+stores it in an unbounded process-global map. A small compressed file may decode
+to a very large raster, and a long-lived process can retain every encountered
+asset until global shutdown.
+
+The candidate #71/#72 working-tree integration mitigates this with:
+
+- target-sized decode;
+- entry- and byte-bounded LRU retention;
+- separate encoded source metadata;
+- checked decoded byte accounting;
+- opt-in asset-memory diagnostics.
+
+That work should land before release, with additional limits for maximum source
+dimensions/decoded pixels and with the multi-renderer lifecycle tests above.
+Runtime file-size limits constrain encoded bytes, not decompression expansion.
+
+### 8. Vulkan and video qualification is incomplete
+
+The active Linux GPU and RPi5 plans still contain unaccepted routes and fault
+matrices, including:
+
+- four Wayland PRIME producer/consumer combinations;
+- explicit and forced-implicit OpenGL synchronization;
+- Wayland Vulkan resize, screenshot, device-loss, and multi-GPU behavior;
+- DRM/Vulkan KMS restore and restart behavior;
+- NV12 color/range/chroma pixel oracles;
+- delayed/error fence and device-loss injection;
+- long FD/RSS/cache/lease soaks.
+
+Either complete these gates before calling the paths stable, or clearly mark the
+Vulkan/video functionality experimental in 0.4 and exclude it from compatibility
+claims until qualification is complete.
+
+## API and documentation findings
+
+### 9. Screenshot migration is breaking but under-documented
+
+`render_to_pixels/2` and `render_to_png/2` changed from one-shot tree rendering
+that returned a binary to retained renderer capture that returns
+`{:ok, binary}` or `{:error, reason}`. The changelog mentions on-demand capture
+but not the removed tree form or changed return shape.
+
+Prefer retaining the old tree clauses as deprecated wrappers around
+`TreeRenderer`. Otherwise add a dedicated 0.3-to-0.4 migration section with
+before/after examples and a complete list of public return-shape changes.
+
+### 10. Release notes are stale
+
+The committed 0.4 changelog date predates later commits and omits packed
+BW1/Gray2 output and the centered-text fix. The existing release audit also
+predated the accepted BW1/Gray2 correction and used the old commit count.
+
+Before release:
+
+- use an `Unreleased` heading until the tag date is known;
+- document headless grayscale contracts and limitations;
+- document screenshot migration;
+- document the VideoInterop cold-restart/upgrade requirement;
+- remove duplicated fixes already released in 0.3.4;
+- update the setup guide for headless and Vulkan selection.
+
+### 11. Rust version requirements are undeclared
+
+The sibling `video-interop` crate declares Rust 1.91, while Emerge has no
+`rust-version` and tells users only to install a Rust toolchain. CI follows
+floating `stable`.
+
+Set `rust-version = "1.91"`, document it, test the minimum version, and retain a
+second latest-stable job for forward compatibility.
+
+### 12. Minor release hygiene
+
+- `.gitignore` ignores `emerge_skia-*.tar`, but `mix hex.build` creates
+  `emerge-*.tar`.
+- Native test support is included in the package after the explicit
+  `test_support.rs` exclusion was removed.
+- `Options.rendering_api_start_error/1` returns `nil` in every branch and has a
+  test that only confirms the dead behavior.
+- Public headless/video setup guidance is much smaller than the implementation
+  surface and currently depends heavily on internal plans.
+
+## Commit-structure review
+
+Several commits are too broad for reliable review and bisection:
+
+- `f08d80b`: 92 files and about 27,000 additions;
+- `c085596`: 50 files and about 8,000 additions;
+- `088f644`: 46 files, combining packed output with broad cleanup.
+
+Future backend work should be split by stable contract boundary:
+
+1. schemas and ownership types;
+2. backend implementation;
+3. public Elixir API;
+4. tests and fault injection;
+5. documentation and hardware qualification.
+
+The asset work present during this audit should likewise remain reviewable as
+separate concerns where practical:
+
+1. bounded target-sized raster decoding;
+2. memory diagnostics and protocol transport;
+3. unconditional vector/SVG support;
+4. application-level picture validation.
+
+## Suggested execution order
+
+1. Reconcile branch ancestry on a clean integration branch.
+2. Publish VideoInterop dependencies and regenerate locks.
+3. make the unpacked Hex package compile from registry-only sources.
+4. Remove or complete Gray4/Gray8.
+5. Land bounded target-sized raster decoding.
+6. Make asset runtime ownership per renderer.
+7. Add exact-tag release CI and feature-matrix gates.
+8. Complete or explicitly defer Vulkan/video hardware qualification.
+9. Add migration documentation, MSRV, and final changelog entries.
+10. Tag only from a clean, pushed commit descended from `v0.3.4`.
+
+## Audit validation performed
+
+This audit used Git history/tree comparisons, manifest and workflow review,
+public registry checks, and an exact `mix hex.build --unpack` package probe. The
+unpacked Cargo source-build probe exposed the missing benchmark files and then
+the sibling path dependency. No hardware qualification was performed as part of
+this audit.
