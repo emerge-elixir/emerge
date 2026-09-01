@@ -6,11 +6,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Sender, TrySendError, bounded};
+#[cfg(any(feature = "vector-assets", test))]
 use resvg::usvg;
 use sha2::{Digest, Sha256};
 
 use crate::actors::TreeMsg;
-use crate::renderer::{asset_dimensions, insert_raster_asset, insert_vector_asset};
+#[cfg(any(feature = "vector-assets", test))]
+use crate::renderer::insert_vector_asset;
+use crate::renderer::{asset_dimensions, insert_raster_asset};
 use crate::tree::attrs::{Background, ImageSource};
 use crate::tree::element::ElementTree;
 
@@ -505,6 +508,7 @@ fn load_path(path: &Path) -> Result<ResolvedAsset, String> {
     Ok(ResolvedAsset { id, width, height })
 }
 
+#[cfg(any(feature = "vector-assets", test))]
 fn load_svg_asset(path: &Path, id: &str, bytes: &[u8]) -> Result<(u32, u32), String> {
     let mut options = usvg::Options::default();
     options.fontdb_mut().load_system_fonts();
@@ -518,10 +522,20 @@ fn load_svg_asset(path: &Path, id: &str, bytes: &[u8]) -> Result<(u32, u32), Str
         .map_err(|reason| format!("failed to cache SVG {}: {reason}", path.display()))
 }
 
+#[cfg(not(any(feature = "vector-assets", test)))]
+fn load_svg_asset(path: &Path, _id: &str, _bytes: &[u8]) -> Result<(u32, u32), String> {
+    Err(format!(
+        "SVG assets are disabled in this embedded CPU build: {}",
+        path.display()
+    ))
+}
+
+#[cfg(any(feature = "vector-assets", test))]
 fn svg_dimensions(tree: &usvg::Tree) -> Option<(u32, u32)> {
     positive_dimensions(tree.size().width(), tree.size().height())
 }
 
+#[cfg(any(feature = "vector-assets", test))]
 fn positive_dimensions(width: f32, height: f32) -> Option<(u32, u32)> {
     if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
         return None;

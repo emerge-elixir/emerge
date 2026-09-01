@@ -60,6 +60,8 @@ defmodule EmergeSkia.Options do
       |> Keyword.get(:headless, [])
       |> normalize_headless_opts!(backend)
 
+    validate_headless_dither!(backend, rendering_api, headless)
+
     %{
       backend: backend,
       rendering_api: rendering_api,
@@ -359,6 +361,10 @@ defmodule EmergeSkia.Options do
         opts
         |> Keyword.get(:bw1_polarity, :one_is_black)
         |> normalize_bw1_polarity!(),
+      dither:
+        opts
+        |> Keyword.get(:dither, false)
+        |> normalize_boolean!(":headless.dither"),
       target_fps:
         opts
         |> Keyword.get(:target_fps)
@@ -407,6 +413,21 @@ defmodule EmergeSkia.Options do
         ArgumentError,
         ":headless.bw1_polarity must be :one_is_black or :one_is_white, got: #{inspect(value)}"
       )
+
+  defp validate_headless_dither!(_backend, _rendering_api, %{dither: false}), do: :ok
+
+  defp validate_headless_dither!("headless", %{kind: "raster"}, %{
+         dither: true,
+         mode: "binary",
+         pixel_format: pixel_format
+       })
+       when pixel_format in ["bw1", "gray2"],
+       do: :ok
+
+  defp validate_headless_dither!(backend, rendering_api, headless) do
+    raise ArgumentError,
+          ":headless.dither true currently requires backend: :headless, rendering_api: :raster, headless.mode: :binary, and headless.pixel_format: :bw1 or :gray2; got backend=#{inspect(backend)}, rendering_api=#{inspect(rendering_api.kind)}, mode=#{inspect(headless.mode)}, pixel_format=#{inspect(headless.pixel_format)}"
+  end
 
   defp normalize_headless_prime_opts!(value) do
     opts = normalize_keyword_or_map!(value, ":headless.prime")

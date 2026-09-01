@@ -3204,6 +3204,10 @@ pub struct VideoCleanupResult {
     pub needs_cleanup: bool,
 }
 
+#[cfg_attr(
+    not(any(feature = "linux-opengl", feature = "vulkan")),
+    allow(dead_code)
+)]
 #[derive(Clone, Debug, Default)]
 pub struct VideoSyncResult {
     pub resources_changed: bool,
@@ -3214,6 +3218,10 @@ pub struct VideoSyncResult {
     pub first_frame_diagnostics: Option<String>,
 }
 
+#[cfg_attr(
+    not(any(feature = "linux-opengl", feature = "vulkan", test)),
+    allow(dead_code)
+)]
 fn canonical_import_identity(
     renderer_epoch: u64,
     pending: &PendingVideoFrame,
@@ -6124,6 +6132,10 @@ impl Drop for RenderedVideoTarget {
     }
 }
 
+#[cfg_attr(
+    not(any(feature = "linux-opengl", feature = "vulkan", test)),
+    allow(dead_code)
+)]
 pub(crate) enum RenderedVideoFrame<'a> {
     Image(&'a Image),
     #[cfg(all(
@@ -6836,6 +6848,7 @@ impl RendererVideoState {
         Self
     }
 
+    #[allow(dead_code)]
     pub fn sync_pending(
         &mut self,
         registry: &Arc<VideoRegistry>,

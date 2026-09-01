@@ -1299,15 +1299,13 @@ native/emerge_skia/src/backend/wayland/runtime.rs
 
 ## Related documents
 
-- `plans/active-video-interop-library.md`
-- `plans/active-headless-prime-output.md`
-- `plans/active-headless-prime-explicit-sync.md`
+- `plans/active-linux-gpu-qualification.md`
+- `plans/active-rpi5-camera-60fps.md`
 - `/workspace/video_interop/README.md`
 - `/workspace/video_interop/plans/library-owned-video-lifecycle.md`
 - `/workspace/video_interop/plans/membrane-video-interop-migration.md`
 - `/workspace/membrane_video_interop/README.md`
 - `/workspace/colibri/membrane_libcamera/README.md`
 
-Some older implementation plans still describe the pre-migration
-`Membrane.DMABuf` contract. For current code, this guide and the canonical
-`video_interop` lifecycle plan take precedence.
+This guide and the canonical `video_interop` lifecycle plan take precedence over
+historical implementation plans in Git history.

@@ -21,6 +21,9 @@ defmodule Emerge.MixProject do
     "CPPFLAGS",
     "CXXFLAGS",
     "LDFLAGS",
+    "RUSTFLAGS",
+    "SKIA_GN_ARGS",
+    "CARGO_PROFILE_RELEASE_STRIP",
     "EMERGE_SOURCE_REVISION",
     "EMERGE_SKIA_HOST_PYTHON",
     "NERVES_SDK_SYSROOT",
@@ -152,13 +155,21 @@ defmodule Emerge.MixProject do
       "CHANGELOG.md",
       "mix.exs",
       "mix.lock"
-    ] ++ package_native_sources() ++ package_assets() ++ Path.wildcard("checksum-*.exs")
+    ] ++
+      package_native_sources() ++
+      package_native_support() ++ package_assets() ++ Path.wildcard("checksum-*.exs")
   end
 
   defp package_native_sources do
     "native/emerge_skia/src/**/*"
     |> Path.wildcard()
     |> Enum.reject(&(File.dir?(&1) or native_test_source?(&1)))
+  end
+
+  defp package_native_support do
+    "native/emerge_skia/support/**/*"
+    |> Path.wildcard()
+    |> Enum.reject(&File.dir?/1)
   end
 
   defp native_test_source?(path) do
@@ -382,6 +393,7 @@ defmodule Emerge.MixProject do
       env
       |> Map.put_new("SDKTARGETSYSROOT", Map.get(env, "NERVES_SDK_SYSROOT"))
       |> configure_nerves_clang_flags(env)
+      |> configure_nerves_skia()
       |> maybe_put_map_value("CC", skia_clang_command(env, "clang"))
       |> maybe_put_map_value("CXX", skia_clang_command(env, "clang++"))
       |> maybe_put_map_value("CLANGCC", skia_clang_command(env, "clang"))
@@ -389,6 +401,22 @@ defmodule Emerge.MixProject do
     else
       env
     end
+  end
+
+  defp configure_nerves_skia(env) do
+    link_stubs = Path.expand("native/emerge_skia/support/embedded-linux-link-stubs", __DIR__)
+
+    env
+    |> append_env("SKIA_GN_ARGS", "skia_use_fontconfig=false skia_use_system_freetype2=false")
+    |> append_env("RUSTFLAGS", "-Lnative=#{link_stubs}")
+    |> Map.put_new("CARGO_PROFILE_RELEASE_STRIP", "symbols")
+  end
+
+  defp append_env(env, key, value) do
+    Map.update(env, key, value, fn
+      "" -> value
+      existing -> existing <> " " <> value
+    end)
   end
 
   defp configure_nerves_clang_flags(effective_env, source_env) do

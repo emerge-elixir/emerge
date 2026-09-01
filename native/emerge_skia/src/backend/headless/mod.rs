@@ -9,7 +9,13 @@ use std::{
 
 use crossbeam_channel::{Receiver, Sender, at, bounded, never, select, unbounded};
 use rustler::{Encoder, Env, LocalPid, NifResult, OwnedBinary, OwnedEnv, ResourceArc, Term};
+use skia_safe::Color;
+#[cfg(any(feature = "video-interop-support", test))]
 use video_interop::{AcquireSync, Descriptor, Layer, Modifier, Object, Plane};
+
+use self::output::{
+    FramePixelFormat, FrameSource, convert_packed_gray_into, packed_gray_output_len,
+};
 
 use crate::{
     BackendKind, HeadlessConfig, InputTargetRelay, LatestFrameStore, RenderSender, RendererHandles,
@@ -17,7 +23,7 @@ use crate::{
     actors::{RenderMsg, TreeMsg},
     assets,
     backend::{
-        raster::{RasterBackend, RasterConfig},
+        raster::{RasterBackend, RasterConfig, RasterPixelFormat},
         wake::BackendWakeHandle,
     },
     events::{SpawnEventActorConfig, spawn_event_actor},
@@ -32,6 +38,7 @@ use crate::{
 
 #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
 mod offscreen_gl;
+mod output;
 #[cfg(all(target_os = "linux", feature = "headless-vulkan"))]
 mod vulkan;
 
@@ -51,6 +58,7 @@ impl HeadlessMode {
     }
 }
 
+#[cfg_attr(not(any(feature = "video-interop-support", test)), allow(dead_code))]
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum HeadlessReleaseMsg {
     PrimeFrame(u64),
@@ -62,12 +70,14 @@ struct HeadlessStartupInfo {
     vulkan_device: Option<crate::backend::vulkan::VulkanRendererReport>,
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 pub struct HeadlessPrimeBackendToken {
     release_tx: Sender<HeadlessReleaseMsg>,
     release_id: u64,
     released: AtomicBool,
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 impl HeadlessPrimeBackendToken {
     fn new(release_tx: Sender<HeadlessReleaseMsg>, release_id: u64) -> Self {
         Self {
@@ -86,15 +96,18 @@ impl HeadlessPrimeBackendToken {
     }
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 impl Drop for HeadlessPrimeBackendToken {
     fn drop(&mut self) {
         self.release();
     }
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 #[rustler::resource_impl]
 impl rustler::Resource for HeadlessPrimeBackendToken {}
 
+#[cfg(any(feature = "video-interop-support", test))]
 pub(crate) fn release_backend_token(backend_token: ResourceArc<HeadlessPrimeBackendToken>) {
     backend_token.release();
 }
@@ -105,6 +118,16 @@ pub(crate) fn start_renderer_with_config(
 ) -> NifResult<ResourceArc<RendererResource>> {
     let mode = HeadlessMode::parse(&config.headless.mode)
         .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
+    if config.headless.dither
+        && (!matches!(mode, HeadlessMode::Binary)
+            || !matches!(config.headless.pixel_format.as_str(), "bw1" | "gray2")
+            || !matches!(config.rendering_api.kind, RenderingApi::Raster))
+    {
+        return Err(rustler::Error::Term(Box::new(
+            "headless dithering currently requires binary BW1 or Gray2 output with rendering_api :raster"
+                .to_string(),
+        )));
+    }
     if config.headless.prime.on_backpressure != "drop_new" {
         return Err(rustler::Error::Term(Box::new(format!(
             "unsupported headless PRIME backpressure policy: {}",
@@ -153,8 +176,14 @@ pub(crate) fn start_renderer_with_config(
     let running_for_thread = Arc::clone(&running_flag);
     let width = config.width;
     let height = config.height;
-    let renderer_cache_config = config.renderer_cache_config;
-    let renderer_cache_enabled_configured = config.renderer_cache_enabled_configured;
+    let mut renderer_cache_config = config.renderer_cache_config;
+    let mut renderer_cache_enabled_configured = config.renderer_cache_enabled_configured;
+    if matches!(mode, HeadlessMode::Binary)
+        && matches!(config.headless.pixel_format.as_str(), "bw1" | "gray2")
+    {
+        renderer_cache_config.enabled = false;
+        renderer_cache_enabled_configured = true;
+    }
     let rendering_api = config.rendering_api.kind;
     let (startup_tx, startup_rx) = bounded(1);
 
@@ -317,6 +346,7 @@ fn run_render_loop(
         renderer_cache_enabled_configured,
         headless.prime.max_in_flight,
         headless.prime.drm_node.as_deref(),
+        &headless.pixel_format,
     ) {
         Ok(renderer) => renderer,
         Err(err) => {
@@ -397,7 +427,12 @@ fn run_render_loop(
                         ime_text_state: _,
                     } => {
                         let render_started_at = Instant::now();
-                        let state = RenderState::new(*scene, Default::default(), sequence, animate);
+                        let clear_color = if matches!(headless.pixel_format.as_str(), "bw1" | "gray2") {
+                            Color::WHITE
+                        } else {
+                            Color::TRANSPARENT
+                        };
+                        let state = RenderState::new(*scene, clear_color, sequence, animate);
                         match mode {
                             HeadlessMode::Binary => match renderer.render_binary(&state) {
                                 Ok(frame) => {
@@ -409,18 +444,67 @@ fn run_render_loop(
                                         frame_interval,
                                     );
                                     sequence = sequence.wrapping_add(1);
-                                    latest_frame.publish_rgba(
-                                        frame.width,
-                                        frame.height,
-                                        1.0,
-                                        frame.data.clone(),
-                                    );
-                                    let converted = convert_frame(
-                                        &frame.data,
-                                        frame.width,
-                                        &headless.pixel_format,
-                                        &headless.bw1_polarity,
-                                    );
+                                    let packed_bits = match headless.pixel_format.as_str() {
+                                        "bw1" => Some(1),
+                                        "gray2" => Some(2),
+                                        _ => None,
+                                    };
+                                    let converted = if let Some(bits) = packed_bits {
+                                        let policy = if headless.dither {
+                                            renderer.render_grayscale_dither_policy(&state).map(Some)
+                                        } else {
+                                            Ok(None)
+                                        };
+                                        policy.and_then(|policy| {
+                                            let mut data = vec![
+                                                0_u8;
+                                                packed_gray_output_len(
+                                                    frame.width,
+                                                    frame.height,
+                                                    bits,
+                                                )?
+                                            ];
+                                            let stride = convert_packed_gray_into(
+                                                FrameSource {
+                                                    data: &frame.data,
+                                                    width: frame.width,
+                                                    height: frame.height,
+                                                    row_bytes: frame.row_bytes,
+                                                    format: frame.pixel_format,
+                                                },
+                                                bits,
+                                                &headless.bw1_polarity,
+                                                policy.as_deref(),
+                                                &mut data,
+                                            )?;
+                                            Ok((data, stride))
+                                        })
+                                    } else if frame.pixel_format == FramePixelFormat::Rgba8888Premul {
+                                        convert_frame(
+                                            &frame.data,
+                                            frame.width,
+                                            &headless.pixel_format,
+                                            &headless.bw1_polarity,
+                                        )
+                                    } else {
+                                        Err("non-packed output unexpectedly received Gray8 pixels".to_string())
+                                    };
+
+                                    match frame.pixel_format {
+                                        FramePixelFormat::Rgba8888Premul => latest_frame.publish_rgba(
+                                            frame.width,
+                                            frame.height,
+                                            1.0,
+                                            frame.data,
+                                        ),
+                                        FramePixelFormat::Gray8Opaque => latest_frame.publish_gray8(
+                                            frame.width,
+                                            frame.height,
+                                            1.0,
+                                            frame.data,
+                                        ),
+                                    }
+
                                     match converted {
                                         Ok((data, stride_bytes)) => send_binary_frame(
                                             target,
@@ -600,17 +684,26 @@ fn effective_renderer_cache_config(
 struct HeadlessRgbaFrame {
     width: u32,
     height: u32,
+    row_bytes: usize,
+    pixel_format: FramePixelFormat,
     data: Vec<u8>,
     timings: RenderTimings,
 }
 
 struct HeadlessPrimeExport {
+    #[cfg(any(feature = "video-interop-support", test))]
     release_id: u64,
+    #[cfg(any(feature = "video-interop-support", test))]
     width: u32,
+    #[cfg(any(feature = "video-interop-support", test))]
     height: u32,
+    #[cfg(any(feature = "video-interop-support", test))]
     format: u32,
+    #[cfg(any(feature = "video-interop-support", test))]
     objects: Vec<PrimeObjectMeta>,
+    #[cfg(any(feature = "video-interop-support", test))]
     planes: Vec<PrimePlaneMeta>,
+    #[cfg(any(feature = "video-interop-support", test))]
     acquire_sync: AcquireSync,
     timings: RenderTimings,
     prime_timings: HeadlessPrimeTimings,
@@ -625,12 +718,14 @@ struct HeadlessPrimeTimings {
     export_metadata: Duration,
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 struct PrimeObjectMeta {
     fd: i32,
     size: u64,
     modifier: Option<u64>,
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 #[derive(Clone)]
 struct PrimePlaneMeta {
     object_index: u32,
@@ -657,12 +752,21 @@ impl HeadlessRenderer {
         renderer_cache_enabled_configured: bool,
         _max_prime_in_flight: u32,
         _prime_drm_node: Option<&str>,
+        pixel_format: &str,
     ) -> Result<Self, String> {
-        let raster_renderer_cache_config = effective_renderer_cache_config(
+        let mut raster_renderer_cache_config = effective_renderer_cache_config(
             RenderingApi::Raster,
             renderer_cache_config,
             renderer_cache_enabled_configured,
         );
+        if matches!(pixel_format, "bw1" | "gray2") {
+            raster_renderer_cache_config.enabled = false;
+        }
+        let raster_pixel_format = if matches!(pixel_format, "bw1" | "gray2") {
+            RasterPixelFormat::Gray8Opaque
+        } else {
+            RasterPixelFormat::Rgba8888Premul
+        };
 
         match (mode, rendering_api) {
             (HeadlessMode::Binary, RenderingApi::Auto) => {
@@ -675,14 +779,24 @@ impl HeadlessRenderer {
                         ),
                     }
                 }
-                RasterHeadlessRenderer::new(width, height, raster_renderer_cache_config)
-                    .map(Box::new)
-                    .map(Self::Raster)
+                RasterHeadlessRenderer::new(
+                    width,
+                    height,
+                    raster_renderer_cache_config,
+                    raster_pixel_format,
+                )
+                .map(Box::new)
+                .map(Self::Raster)
             }
             (HeadlessMode::Binary, RenderingApi::Raster) => {
-                RasterHeadlessRenderer::new(width, height, raster_renderer_cache_config)
-                    .map(Box::new)
-                    .map(Self::Raster)
+                RasterHeadlessRenderer::new(
+                    width,
+                    height,
+                    raster_renderer_cache_config,
+                    raster_pixel_format,
+                )
+                .map(Box::new)
+                .map(Self::Raster)
             }
             (HeadlessMode::Prime, RenderingApi::Auto | RenderingApi::OpenGl) => {
                 #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
@@ -823,6 +937,20 @@ impl HeadlessRenderer {
         }
     }
 
+    fn render_grayscale_dither_policy(&self, state: &RenderState) -> Result<Vec<u8>, String> {
+        match self {
+            Self::Raster(renderer) => renderer.renderer.render_grayscale_dither_policy(state),
+            #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
+            Self::Gl(_) => {
+                Err("grayscale dithering currently requires raster rendering".to_string())
+            }
+            #[cfg(all(target_os = "linux", feature = "headless-vulkan"))]
+            Self::Vulkan(_) => {
+                Err("grayscale dithering is unavailable for Vulkan PRIME".to_string())
+            }
+        }
+    }
+
     fn terminal_prime_shutdown_ready(&self) -> bool {
         match self {
             Self::Raster(_) => false,
@@ -845,10 +973,12 @@ impl RasterHeadlessRenderer {
         width: u32,
         height: u32,
         renderer_cache_config: RendererCacheConfig,
+        pixel_format: RasterPixelFormat,
     ) -> Result<Self, String> {
-        let renderer = RasterBackend::with_cache_config(
+        let renderer = RasterBackend::with_cache_config_and_format(
             &RasterConfig { width, height },
             renderer_cache_config,
+            pixel_format,
         )?;
         Ok(Self {
             renderer,
@@ -862,6 +992,11 @@ impl RasterHeadlessRenderer {
         HeadlessRgbaFrame {
             width: self.width,
             height: self.height,
+            row_bytes: frame.row_bytes,
+            pixel_format: match frame.format {
+                RasterPixelFormat::Rgba8888Premul => FramePixelFormat::Rgba8888Premul,
+                RasterPixelFormat::Gray8Opaque => FramePixelFormat::Gray8Opaque,
+            },
             data: frame.data,
             timings,
         }
@@ -904,6 +1039,7 @@ fn send_binary_frame(
     });
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 fn send_prime_frame(
     target: LocalPid,
     frame_message: &str,
@@ -961,6 +1097,17 @@ fn send_prime_frame(
     });
 }
 
+#[cfg(not(any(feature = "video-interop-support", test)))]
+fn send_prime_frame(
+    _target: LocalPid,
+    _frame_message: &str,
+    _sequence: u64,
+    _frame: HeadlessPrimeExport,
+    _release_tx: Sender<HeadlessReleaseMsg>,
+) {
+    unreachable!("embedded CPU builds reject headless PRIME during startup")
+}
+
 fn encode_frame_message<'a>(
     env: Env<'a>,
     use_default_message: bool,
@@ -978,7 +1125,7 @@ fn convert_frame(
     rgba: &[u8],
     width: u32,
     pixel_format: &str,
-    bw1_polarity: &str,
+    _bw1_polarity: &str,
 ) -> Result<(Vec<u8>, u32), String> {
     match pixel_format {
         "rgba8888" => Ok((rgba.to_vec(), width * 4)),
@@ -994,9 +1141,7 @@ fn convert_frame(
             rgba.as_chunks::<4>().0.iter().map(|px| luma8(px)).collect(),
             width,
         )),
-        "gray4" => Ok((pack_gray(rgba, 4, bw1_polarity), width.div_ceil(2))),
-        "gray2" => Ok((pack_gray(rgba, 2, bw1_polarity), width.div_ceil(4))),
-        "bw1" => Ok((pack_gray(rgba, 1, bw1_polarity), width.div_ceil(8))),
+        "gray4" => Ok((pack_gray4(rgba), width.div_ceil(2))),
         other => Err(format!("unsupported headless pixel format: {other}")),
     }
 }
@@ -1005,29 +1150,16 @@ fn luma8(px: &[u8]) -> u8 {
     ((u16::from(px[0]) * 77 + u16::from(px[1]) * 150 + u16::from(px[2]) * 29) >> 8) as u8
 }
 
-fn pack_gray(rgba: &[u8], bits: u8, bw1_polarity: &str) -> Vec<u8> {
-    let values_per_byte = 8 / bits;
-    let max_value = (1_u8 << bits) - 1;
+fn pack_gray4(rgba: &[u8]) -> Vec<u8> {
     rgba.as_chunks::<4>()
         .0
         .iter()
-        .map(|px| {
-            if bits == 1 {
-                let black = luma8(px) < 128;
-                match (black, bw1_polarity) {
-                    (true, "one_is_black") | (false, "one_is_white") => 1,
-                    _ => 0,
-                }
-            } else {
-                ((u16::from(luma8(px)) * u16::from(max_value)) / 255) as u8
-            }
-        })
+        .map(|px| ((u16::from(luma8(px)) * 15) / 255) as u8)
         .collect::<Vec<_>>()
-        .chunks(values_per_byte as usize)
+        .chunks(2)
         .map(|chunk| {
             chunk.iter().enumerate().fold(0_u8, |byte, (index, value)| {
-                let shift = 8 - bits * (index as u8 + 1);
-                byte | (value << shift)
+                byte | (value << (4 - 4 * index))
             })
         })
         .collect()
@@ -1123,10 +1255,5 @@ mod tests {
             convert_frame(&rgba, 3, "gray4", "one_is_black").unwrap().1,
             2
         );
-        assert_eq!(
-            convert_frame(&rgba, 3, "gray2", "one_is_black").unwrap().1,
-            1
-        );
-        assert_eq!(convert_frame(&rgba, 3, "bw1", "one_is_black").unwrap().1, 1);
     }
 }

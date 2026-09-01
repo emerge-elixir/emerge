@@ -31,7 +31,8 @@ use crate::{
 };
 
 use super::{
-    HeadlessPrimeExport, HeadlessPrimeTimings, HeadlessRgbaFrame, PrimeObjectMeta, PrimePlaneMeta,
+    FramePixelFormat, HeadlessPrimeExport, HeadlessPrimeTimings, HeadlessRgbaFrame,
+    PrimeObjectMeta, PrimePlaneMeta,
 };
 
 const EGL_PLATFORM_SURFACELESS_MESA: EGLenum = 0x31DD;
@@ -287,9 +288,12 @@ impl GlHeadlessRenderer {
             return Err("headless GL readback failed".to_string());
         };
 
+        let width = width.min(self.width.max(1));
         Ok(HeadlessRgbaFrame {
-            width: width.min(self.width.max(1)),
+            width,
             height: height.min(self.height.max(1)),
+            row_bytes: width as usize * 4,
+            pixel_format: FramePixelFormat::Rgba8888Premul,
             data,
             timings,
         })

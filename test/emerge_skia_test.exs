@@ -285,6 +285,123 @@ defmodule EmergeSkiaTest do
     assert :ok = EmergeSkia.stop(renderer)
   end
 
+  test "headless BW1 packs rows independently and expands Gray8 screenshots" do
+    {:ok, renderer} =
+      EmergeSkia.start(
+        otp_app: :emerge,
+        backend: :headless,
+        rendering_api: :raster,
+        width: 9,
+        height: 2,
+        headless: [
+          target: self(),
+          pixel_format: :bw1,
+          bw1_polarity: :one_is_white,
+          dither: false
+        ]
+      )
+
+    tree =
+      el(
+        [width(px(9)), height(px(2)), Emerge.UI.Background.color(:white)],
+        none()
+      )
+
+    {_state, _assigned} = EmergeSkia.upload_tree(renderer, tree)
+    assert_receive {:emerge_skia_frame, frame}, 1_000
+    frame = Map.new(frame)
+    assert frame["pixel_format"] == "bw1"
+    assert frame["stride_bytes"] == 2
+    assert frame["data"] == <<0xFF, 0x80, 0xFF, 0x80>>
+
+    assert {:ok, pixels} = EmergeSkia.render_to_pixels(renderer)
+    assert pixels == :binary.copy(<<255, 255, 255, 255>>, 18)
+    assert :ok = EmergeSkia.stop(renderer)
+  end
+
+  test "headless Gray2 packs canonical rows and expands Gray8 screenshots" do
+    {:ok, renderer} =
+      EmergeSkia.start(
+        otp_app: :emerge,
+        backend: :headless,
+        rendering_api: :raster,
+        width: 5,
+        height: 2,
+        headless: [target: self(), pixel_format: :gray2, dither: false]
+      )
+
+    tree =
+      el(
+        [width(px(5)), height(px(2)), Emerge.UI.Background.color(:white)],
+        none()
+      )
+
+    {_state, _assigned} = EmergeSkia.upload_tree(renderer, tree)
+    assert_receive {:emerge_skia_frame, frame}, 1_000
+    frame = Map.new(frame)
+    assert frame["pixel_format"] == "gray2"
+    assert frame["stride_bytes"] == 2
+    assert frame["data"] == <<0xFF, 0xC0, 0xFF, 0xC0>>
+
+    assert {:ok, pixels} = EmergeSkia.render_to_pixels(renderer)
+    assert pixels == :binary.copy(<<255, 255, 255, 255>>, 10)
+    assert :ok = EmergeSkia.stop(renderer)
+  end
+
+  test "packed grayscale dithering changes gradients but not text-only output" do
+    render = fn pixel_format, dither, tree ->
+      {:ok, renderer} =
+        EmergeSkia.start(
+          otp_app: :emerge,
+          backend: :headless,
+          rendering_api: :raster,
+          width: 64,
+          height: 36,
+          headless: [
+            target: self(),
+            pixel_format: pixel_format,
+            bw1_polarity: :one_is_white,
+            dither: dither
+          ]
+        )
+
+      {_state, _assigned} = EmergeSkia.upload_tree(renderer, tree)
+      assert_receive {:emerge_skia_frame, frame}, 1_000
+      assert :ok = EmergeSkia.stop(renderer)
+      Map.new(frame)["data"]
+    end
+
+    text_tree =
+      el(
+        [
+          width(px(64)),
+          height(px(36)),
+          Emerge.UI.Background.color(:white),
+          Emerge.UI.Font.color(:black),
+          Emerge.UI.Font.size(26)
+        ],
+        text("O")
+      )
+
+    gradient_tree =
+      el(
+        [
+          width(px(64)),
+          height(px(36)),
+          Emerge.UI.Background.gradient(:black, :white)
+        ],
+        none()
+      )
+
+    for pixel_format <- [:bw1, :gray2] do
+      assert render.(pixel_format, false, text_tree) ==
+               render.(pixel_format, true, text_tree)
+
+      refute render.(pixel_format, false, gradient_tree) ==
+               render.(pixel_format, true, gradient_tree)
+    end
+  end
+
   @tag :hardware
   test "headless GL backend delivers binary frames when explicitly enabled" do
     if System.get_env("EMERGE_SKIA_HEADLESS_GL_TEST") == "1" do

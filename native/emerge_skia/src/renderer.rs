@@ -15,18 +15,20 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+#[cfg(any(feature = "vector-assets", test))]
 use resvg::usvg;
 use skia_safe::{
-    BlendMode, BlurStyle, Color, Data, FilterMode, Font, FontHinting, FontMgr, Image, MaskFilter,
-    Matrix, MipmapMode, Paint, PaintStyle, PathBuilder, PathFillType, PixelGeometry, Point, RRect,
-    Rect, SamplingOptions, Surface, SurfaceProps, SurfacePropsFlags, TileMode, Typeface,
+    AlphaType, BlendMode, BlurStyle, Color, ColorType, Data, FilterMode, Font, FontHinting,
+    FontMgr, Image, ImageInfo, MaskFilter, Matrix, MipmapMode, Paint, PaintStyle, PathBuilder,
+    PathFillType, PixelGeometry, Point, RRect, Rect, SamplingOptions, Surface, SurfaceProps,
+    SurfacePropsFlags, TileMode, Typeface,
     canvas::{SaveLayerRec, SrcRectConstraint},
     color_filters, dash_path_effect,
     font::Edging as FontEdging,
     gpu,
     gradient::{Colors as GradientColors, Gradient, Interpolation},
     image::CachingHint,
-    shaders,
+    shaders, surfaces,
 };
 
 use crate::paint_layer_payload_cache::{
@@ -43,13 +45,15 @@ use crate::render_scene::{
 use crate::tree::attrs::{BorderStyle, ImageFit};
 use crate::tree::geometry::{ClipShape, CornerRadii, Rect as GeometryRect, clamp_radii};
 use crate::tree::transform::Affine2;
+#[cfg(any(feature = "linux-opengl", feature = "vulkan"))]
+use crate::video::VideoSyncResult;
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
     any(feature = "wayland-core", feature = "drm-core")
 ))]
 use crate::video::VulkanPlanarVideoFrame;
-use crate::video::{RenderedVideoFrame, RendererVideoState, VideoSyncResult};
+use crate::video::{RenderedVideoFrame, RendererVideoState};
 
 // ============================================================================
 // Render State
@@ -909,12 +913,14 @@ pub fn load_font(family: &str, weight: u16, italic: bool, data: &[u8]) -> Result
 #[derive(Clone)]
 enum CachedAssetKind {
     Raster(Image),
+    #[cfg(any(feature = "vector-assets", test))]
     Vector(Box<usvg::Tree>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AssetKind {
     Raster,
+    #[cfg(any(feature = "vector-assets", test))]
     Vector,
 }
 
@@ -926,6 +932,7 @@ struct CachedAsset {
     generation: u64,
 }
 
+#[cfg(any(feature = "vector-assets", test))]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct RenderedVectorKey {
     asset_id: String,
@@ -934,12 +941,14 @@ struct RenderedVectorKey {
     kind: RenderedVectorVariantKind,
 }
 
+#[cfg(any(feature = "vector-assets", test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum RenderedVectorVariantKind {
     Full,
     CoverViewport,
 }
 
+#[cfg(any(feature = "vector-assets", test))]
 #[derive(Clone)]
 struct RenderedVectorVariant {
     image: Image,
@@ -947,6 +956,7 @@ struct RenderedVectorVariant {
     last_used: u64,
 }
 
+#[cfg(any(feature = "vector-assets", test))]
 struct RenderedVectorCache {
     entries: HashMap<RenderedVectorKey, RenderedVectorVariant>,
     total_bytes: usize,
@@ -955,10 +965,14 @@ struct RenderedVectorCache {
     max_bytes: usize,
 }
 
+#[cfg(any(feature = "vector-assets", test))]
 const RENDERED_VECTOR_CACHE_MAX_ENTRIES: usize = 256;
+#[cfg(any(feature = "vector-assets", test))]
 const RENDERED_VECTOR_CACHE_MAX_BYTES: usize = 16 * 1024 * 1024;
+#[cfg(any(feature = "vector-assets", test))]
 const RENDERED_VECTOR_CACHE_MAX_VARIANT_BYTES: usize = 1024 * 1024;
 
+#[cfg(any(feature = "vector-assets", test))]
 impl Default for RenderedVectorCache {
     fn default() -> Self {
         Self {
@@ -972,6 +986,7 @@ impl Default for RenderedVectorCache {
 }
 
 static ASSET_CACHE: OnceLock<Mutex<HashMap<String, Arc<CachedAsset>>>> = OnceLock::new();
+#[cfg(any(feature = "vector-assets", test))]
 static RENDERED_VECTOR_CACHE: OnceLock<Mutex<RenderedVectorCache>> = OnceLock::new();
 static ASSET_CACHE_GENERATION: AtomicU64 = AtomicU64::new(1);
 static FONT_CACHE_GENERATION: AtomicU64 = AtomicU64::new(1);
@@ -983,6 +998,7 @@ fn get_asset_cache() -> &'static Mutex<HashMap<String, Arc<CachedAsset>>> {
     ASSET_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+#[cfg(any(feature = "vector-assets", test))]
 fn get_rendered_vector_cache() -> &'static Mutex<RenderedVectorCache> {
     RENDERED_VECTOR_CACHE.get_or_init(|| Mutex::new(RenderedVectorCache::default()))
 }
@@ -1019,11 +1035,7 @@ pub fn clear_global_caches() {
         cache.clear();
     }
 
-    if let Some(cache) = RENDERED_VECTOR_CACHE.get()
-        && let Ok(mut cache) = cache.lock()
-    {
-        *cache = RenderedVectorCache::default();
-    }
+    clear_rendered_vector_cache();
 
     TEXT_VISUAL_METRICS_CACHE.with(|cache| cache.borrow_mut().clear());
 
@@ -1047,10 +1059,24 @@ pub fn asset_dimensions(id: &str) -> Option<(u32, u32)> {
 pub fn asset_kind(id: &str) -> Option<AssetKind> {
     cached_asset(id).map(|cached| match &cached.kind {
         CachedAssetKind::Raster(_) => AssetKind::Raster,
+        #[cfg(any(feature = "vector-assets", test))]
         CachedAssetKind::Vector(_) => AssetKind::Vector,
     })
 }
 
+#[cfg(any(feature = "vector-assets", test))]
+fn clear_rendered_vector_cache() {
+    if let Some(cache) = RENDERED_VECTOR_CACHE.get()
+        && let Ok(mut cache) = cache.lock()
+    {
+        *cache = RenderedVectorCache::default();
+    }
+}
+
+#[cfg(not(any(feature = "vector-assets", test)))]
+fn clear_rendered_vector_cache() {}
+
+#[cfg(any(feature = "vector-assets", test))]
 fn rendered_vector_key(
     asset_id: &str,
     width: u32,
@@ -1065,23 +1091,27 @@ fn rendered_vector_key(
     }
 }
 
+#[cfg(any(feature = "vector-assets", test))]
 fn rendered_variant_bytes(width: u32, height: u32) -> Option<usize> {
     (width as usize)
         .checked_mul(height as usize)?
         .checked_mul(4)
 }
 
+#[cfg(any(feature = "vector-assets", test))]
 fn should_cache_rendered_variant(width: u32, height: u32) -> bool {
     rendered_variant_bytes(width, height)
         .map(|bytes| bytes <= RENDERED_VECTOR_CACHE_MAX_VARIANT_BYTES)
         .unwrap_or(false)
 }
 
+#[cfg(any(feature = "vector-assets", test))]
 fn next_rendered_vector_access_stamp(cache: &mut RenderedVectorCache) -> u64 {
     cache.access_clock = cache.access_clock.wrapping_add(1);
     cache.access_clock
 }
 
+#[cfg(any(feature = "vector-assets", test))]
 fn lookup_rendered_vector_variant(
     asset_id: &str,
     width: u32,
@@ -1096,6 +1126,7 @@ fn lookup_rendered_vector_variant(
     Some(variant.image.clone())
 }
 
+#[cfg(any(feature = "vector-assets", test))]
 fn evict_rendered_vector_variants_if_needed(cache: &mut RenderedVectorCache) {
     while cache.entries.len() > cache.max_entries || cache.total_bytes > cache.max_bytes {
         let Some(oldest_key) = cache
@@ -1113,6 +1144,7 @@ fn evict_rendered_vector_variants_if_needed(cache: &mut RenderedVectorCache) {
     }
 }
 
+#[cfg(any(feature = "vector-assets", test))]
 fn store_rendered_vector_variant(
     asset_id: &str,
     width: u32,
@@ -1150,6 +1182,7 @@ fn store_rendered_vector_variant(
     evict_rendered_vector_variants_if_needed(&mut cache);
 }
 
+#[cfg(any(feature = "vector-assets", test))]
 fn clear_rendered_vector_variants(asset_id: &str) {
     let Ok(mut cache) = get_rendered_vector_cache().lock() else {
         return;
@@ -1170,6 +1203,9 @@ fn clear_rendered_vector_variants(asset_id: &str) {
     cache.entries = retained;
     cache.total_bytes = total_bytes;
 }
+
+#[cfg(not(any(feature = "vector-assets", test)))]
+fn clear_rendered_vector_variants(_asset_id: &str) {}
 
 pub fn insert_raster_asset(id: &str, data: &[u8]) -> Result<(u32, u32), String> {
     let image = Image::from_encoded(Data::new_copy(data))
@@ -1199,6 +1235,7 @@ pub fn insert_raster_asset(id: &str, data: &[u8]) -> Result<(u32, u32), String> 
     Ok((width, height))
 }
 
+#[cfg(any(feature = "vector-assets", test))]
 pub fn insert_vector_asset(id: &str, tree: usvg::Tree) -> Result<(u32, u32), String> {
     let width = tree.size().width().ceil().max(1.0) as u32;
     let height = tree.size().height().ceil().max(1.0) as u32;
@@ -1249,6 +1286,7 @@ pub fn insert_test_raster_asset_rgba(
     Ok(())
 }
 
+#[cfg(any(feature = "vector-assets", test))]
 fn raster_image_from_rgba(width: u32, height: u32, rgba_pixels: &[u8]) -> Option<Image> {
     let info = skia_safe::ImageInfo::new(
         (width as i32, height as i32),
@@ -1352,18 +1390,21 @@ impl<'a> RenderFrame<'a> {
 
         match &mut self.flush {
             RenderFrameFlush::Direct => {
-                let mut gpu_flush = Duration::ZERO;
-                let mut submit = Duration::ZERO;
+                #[cfg(any(feature = "linux-opengl", feature = "vulkan", feature = "macos"))]
+                let (gpu_flush, submit) =
+                    if let Some(gr_context) = self.direct_context.as_deref_mut() {
+                        let flush_started_at = Instant::now();
+                        gr_context.flush(None);
+                        let gpu_flush = flush_started_at.elapsed();
 
-                if let Some(gr_context) = self.direct_context.as_deref_mut() {
-                    let flush_started_at = Instant::now();
-                    gr_context.flush(None);
-                    gpu_flush = flush_started_at.elapsed();
-
-                    let submit_started_at = Instant::now();
-                    gr_context.submit(gpu::SyncCpu::No);
-                    submit = submit_started_at.elapsed();
-                }
+                        let submit_started_at = Instant::now();
+                        gr_context.submit(gpu::SyncCpu::No);
+                        (gpu_flush, submit_started_at.elapsed())
+                    } else {
+                        (Duration::ZERO, Duration::ZERO)
+                    };
+                #[cfg(not(any(feature = "linux-opengl", feature = "vulkan", feature = "macos")))]
+                let (gpu_flush, submit) = (Duration::ZERO, Duration::ZERO);
 
                 RenderFlushTimings {
                     total: started_at.elapsed(),
@@ -3516,6 +3557,12 @@ struct RenderClipScope<'a> {
 
 struct DirectRenderMode;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GrayscalePolicyPass {
+    Dither,
+    HardProtect,
+}
+
 struct PaintLayerOwnRenderMode;
 
 struct CacheTrackingRenderMode<'mode, 'cache> {
@@ -3547,11 +3594,287 @@ impl SceneRenderer {
         }
     }
 
+    pub fn render_grayscale_dither_policy(
+        &self,
+        width: u32,
+        height: u32,
+        state: &RenderState,
+    ) -> Result<Vec<u8>, String> {
+        let width_i32 = i32::try_from(width).map_err(|_| "policy width is too large")?;
+        let height_i32 = i32::try_from(height).map_err(|_| "policy height is too large")?;
+        let info = ImageInfo::new(
+            (width_i32, height_i32),
+            ColorType::Gray8,
+            AlphaType::Opaque,
+            None,
+        );
+        let mut surface = surfaces::raster(&info, None, None)
+            .ok_or_else(|| "failed to create grayscale policy surface".to_string())?;
+        let row_bytes = usize::try_from(width).map_err(|_| "policy width is too large")?;
+        let pixel_len = row_bytes
+            .checked_mul(usize::try_from(height).map_err(|_| "policy height is too large")?)
+            .ok_or_else(|| "policy dimensions are too large".to_string())?;
+        let mask_len = pixel_len
+            .checked_add(7)
+            .map(|pixels| pixels / 8)
+            .ok_or_else(|| "policy dimensions are too large".to_string())?;
+        let mut pixels = vec![0_u8; pixel_len];
+        let mut mask = vec![0_u8; mask_len];
+
+        surface.canvas().clear(Color::BLACK);
+        Self::render_grayscale_policy_nodes(
+            surface.canvas(),
+            &state.scene.nodes,
+            GrayscalePolicyPass::Dither,
+            1.0,
+            &self.video_state,
+        );
+        if !surface.read_pixels(&info, &mut pixels, row_bytes, (0, 0)) {
+            return Err("failed to read grayscale dither policy".to_string());
+        }
+        for (index, value) in pixels.iter().copied().enumerate() {
+            if value != 0 {
+                let bit = 7 - index % 8;
+                mask[index / 8] |= 1 << bit;
+            }
+        }
+
+        surface.canvas().clear(Color::BLACK);
+        Self::render_grayscale_policy_nodes(
+            surface.canvas(),
+            &state.scene.nodes,
+            GrayscalePolicyPass::HardProtect,
+            1.0,
+            &self.video_state,
+        );
+        if !surface.read_pixels(&info, &mut pixels, row_bytes, (0, 0)) {
+            return Err("failed to read grayscale protected policy".to_string());
+        }
+        for (index, value) in pixels.iter().copied().enumerate() {
+            if value != 0 {
+                let bit = 7 - index % 8;
+                mask[index / 8] &= !(1 << bit);
+            }
+        }
+
+        Ok(mask)
+    }
+
+    fn render_grayscale_policy_nodes(
+        canvas: &skia_safe::Canvas,
+        nodes: &[RenderNode],
+        pass: GrayscalePolicyPass,
+        inherited_alpha: f32,
+        video_state: &RendererVideoState,
+    ) {
+        for node in nodes {
+            match node {
+                RenderNode::ShadowPass { children } => {
+                    Self::render_grayscale_policy_nodes(
+                        canvas,
+                        children,
+                        pass,
+                        inherited_alpha,
+                        video_state,
+                    );
+                }
+                RenderNode::Clip { clips, children } => Self::render_grayscale_policy_clipped(
+                    canvas,
+                    clips,
+                    children,
+                    false,
+                    pass,
+                    inherited_alpha,
+                    video_state,
+                ),
+                RenderNode::RelaxedClip { clips, children } => {
+                    Self::render_grayscale_policy_clipped(
+                        canvas,
+                        clips,
+                        children,
+                        true,
+                        pass,
+                        inherited_alpha,
+                        video_state,
+                    )
+                }
+                RenderNode::Transform {
+                    transform,
+                    children,
+                } => {
+                    canvas.save();
+                    canvas.concat(&matrix_from_affine2(*transform));
+                    Self::render_grayscale_policy_nodes(
+                        canvas,
+                        children,
+                        pass,
+                        inherited_alpha,
+                        video_state,
+                    );
+                    canvas.restore();
+                }
+                RenderNode::Alpha { alpha, children } => {
+                    let alpha = alpha.clamp(0.0, 1.0);
+                    canvas.save_layer_alpha(None, ((alpha * 255.0).round() as u8).into());
+                    Self::render_grayscale_policy_nodes(
+                        canvas,
+                        children,
+                        pass,
+                        inherited_alpha * alpha,
+                        video_state,
+                    );
+                    canvas.restore();
+                }
+                RenderNode::PaintLayer(layer) => {
+                    Self::render_grayscale_policy_nodes(
+                        canvas,
+                        &layer.content_nodes(),
+                        pass,
+                        inherited_alpha,
+                        video_state,
+                    );
+                }
+                RenderNode::Primitive(primitive) => {
+                    Self::render_grayscale_policy_primitive(
+                        canvas,
+                        primitive,
+                        pass,
+                        inherited_alpha,
+                        video_state,
+                    );
+                }
+            }
+        }
+    }
+
+    fn render_grayscale_policy_clipped(
+        canvas: &skia_safe::Canvas,
+        clips: &[ClipShape],
+        children: &[RenderNode],
+        relaxed: bool,
+        pass: GrayscalePolicyPass,
+        inherited_alpha: f32,
+        video_state: &RendererVideoState,
+    ) {
+        if clips.is_empty() {
+            Self::render_grayscale_policy_nodes(
+                canvas,
+                children,
+                pass,
+                inherited_alpha,
+                video_state,
+            );
+            return;
+        }
+
+        let apply_clips = |canvas: &skia_safe::Canvas| {
+            for clip in clips {
+                if relaxed {
+                    apply_relaxed_clip_shape(canvas, clip);
+                } else {
+                    apply_clip_shape(canvas, clip);
+                }
+            }
+        };
+        canvas.save();
+        apply_clips(canvas);
+        for child in children {
+            if let RenderNode::ShadowPass { children } = child {
+                canvas.restore();
+                Self::render_grayscale_policy_nodes(
+                    canvas,
+                    children,
+                    pass,
+                    inherited_alpha,
+                    video_state,
+                );
+                canvas.save();
+                apply_clips(canvas);
+            } else {
+                Self::render_grayscale_policy_nodes(
+                    canvas,
+                    std::slice::from_ref(child),
+                    pass,
+                    inherited_alpha,
+                    video_state,
+                );
+            }
+        }
+        canvas.restore();
+    }
+
+    fn render_grayscale_policy_primitive(
+        canvas: &skia_safe::Canvas,
+        primitive: &DrawPrimitive,
+        pass: GrayscalePolicyPass,
+        inherited_alpha: f32,
+        video_state: &RendererVideoState,
+    ) {
+        let white = match primitive {
+            DrawPrimitive::Rect(_, _, _, _, fill)
+            | DrawPrimitive::RoundedRect(_, _, _, _, _, fill) => {
+                pass == GrayscalePolicyPass::Dither
+                    && (color_alpha(*fill) < 255 || inherited_alpha < 1.0)
+            }
+            DrawPrimitive::Border(..)
+            | DrawPrimitive::BorderCorners(..)
+            | DrawPrimitive::BorderEdges(..)
+            | DrawPrimitive::TextWithFont(..)
+            | DrawPrimitive::ImageLoading(..)
+            | DrawPrimitive::ImageFailed(..) => pass == GrayscalePolicyPass::HardProtect,
+            DrawPrimitive::Shadow(..)
+            | DrawPrimitive::InsetShadow(..)
+            | DrawPrimitive::Gradient(..)
+            | DrawPrimitive::Video(..) => pass == GrayscalePolicyPass::Dither,
+            DrawPrimitive::Image(_, _, _, _, image_id, _, _) => match asset_kind(image_id) {
+                Some(AssetKind::Raster) => pass == GrayscalePolicyPass::Dither,
+                #[cfg(any(feature = "vector-assets", test))]
+                Some(AssetKind::Vector) => pass == GrayscalePolicyPass::HardProtect,
+                None => pass == GrayscalePolicyPass::HardProtect,
+            },
+        };
+
+        match primitive {
+            DrawPrimitive::Image(x, y, w, h, image_id, fit, _) => {
+                if asset_kind(image_id).is_some() {
+                    draw_cached_asset_with_fit(
+                        canvas,
+                        ImageDrawSpec {
+                            rect: RectSpec {
+                                x: *x,
+                                y: *y,
+                                w: *w,
+                                h: *h,
+                            },
+                            image_id,
+                            fit: *fit,
+                            svg_tint: Some(if white { 0xffff_ffff } else { 0x0000_00ff }),
+                        },
+                        0.0,
+                    );
+                } else {
+                    draw_policy_rect(canvas, Rect::from_xywh(*x, *y, *w, *h), 255, white, false);
+                }
+            }
+            DrawPrimitive::Video(x, y, w, h, _, _) => {
+                draw_policy_rect(canvas, Rect::from_xywh(*x, *y, *w, *h), 255, white, false);
+            }
+            DrawPrimitive::ImageLoading(x, y, w, h) | DrawPrimitive::ImageFailed(x, y, w, h) => {
+                draw_policy_rect(canvas, Rect::from_xywh(*x, *y, *w, *h), 255, white, true);
+            }
+            _ => {
+                let policy = recolor_policy_primitive(primitive, white);
+                Self::render_primitive(canvas, &policy, video_state, 0.0, false);
+            }
+        }
+    }
+
     #[doc(hidden)]
     pub fn enable_paint_layer_cache_for_benchmark(&mut self) {
         self.renderer_cache.set_enabled(true);
     }
 
+    #[cfg(feature = "linux-opengl")]
     pub fn sync_video_frames(
         &mut self,
         frame: &mut RenderFrame<'_>,
@@ -3630,6 +3953,7 @@ impl SceneRenderer {
         self.video_state.prepare_vulkan_shutdown()
     }
 
+    #[cfg(any(feature = "video-interop-support", test))]
     pub fn reap_video_cleanup(
         &mut self,
         registry: &Arc<crate::video::VideoRegistry>,
@@ -4505,6 +4829,7 @@ impl SceneRenderer {
         subpixel_phase: PaintLayerSubpixelPhase,
         gpu_context: Option<&mut gpu::DirectContext>,
     ) -> Option<PreparedMovingLayerPayload> {
+        #[cfg(any(feature = "linux-opengl", feature = "vulkan", feature = "macos"))]
         if let Some(gr_context) = gpu_context {
             return Self::prepare_moving_paint_layer_gpu_payload(
                 run,
@@ -4513,10 +4838,13 @@ impl SceneRenderer {
                 gr_context,
             );
         }
+        #[cfg(not(any(feature = "linux-opengl", feature = "vulkan", feature = "macos")))]
+        let _ = gpu_context;
 
         Self::rasterize_moving_layer_payload(run, options, subpixel_phase)
     }
 
+    #[cfg(any(feature = "linux-opengl", feature = "vulkan", feature = "macos"))]
     fn prepare_moving_paint_layer_gpu_payload(
         run: &RenderPaintRun,
         options: RenderTraversalOptions<'_>,
@@ -5840,6 +6168,7 @@ fn draw_cached_asset_with_fit(
             spec,
             image_bleed_device_outset,
         ),
+        #[cfg(any(feature = "vector-assets", test))]
         CachedAssetKind::Vector(tree) => draw_vector_asset_with_fit(
             canvas,
             spec.image_id,
@@ -5883,6 +6212,7 @@ fn draw_cached_asset_with_fit_profiled(
                         &mut profile,
                     );
                 }
+                #[cfg(any(feature = "vector-assets", test))]
                 CachedAssetKind::Vector(tree) => {
                     profile.kind = RenderImageAssetKind::Vector;
                     draw_vector_asset_with_fit_profiled(
@@ -6114,6 +6444,7 @@ fn draw_image_with_fit_profiled(
     }
 }
 
+#[cfg(any(feature = "vector-assets", test))]
 fn draw_image_fill_rect(canvas: &skia_safe::Canvas, image: &Image, x: f32, y: f32, w: f32, h: f32) {
     if w <= 0.0 || h <= 0.0 {
         return;
@@ -6128,6 +6459,7 @@ fn draw_image_fill_rect(canvas: &skia_safe::Canvas, image: &Image, x: f32, y: f3
     );
 }
 
+#[cfg(any(feature = "vector-assets", test))]
 fn draw_image_fill_rect_tinted(
     canvas: &skia_safe::Canvas,
     image: &Image,
@@ -6296,6 +6628,7 @@ fn paint_with_template_tint(paint: &Paint, tint: u32) -> Option<Paint> {
     Some(tinted)
 }
 
+#[cfg(any(feature = "vector-assets", test))]
 fn get_or_rasterize_vector_variant(
     asset_id: &str,
     tree: &usvg::Tree,
@@ -6319,6 +6652,7 @@ fn get_or_rasterize_vector_variant(
     Some(image)
 }
 
+#[cfg(any(feature = "vector-assets", test))]
 fn get_or_rasterize_vector_cover_viewport_variant(
     asset_id: &str,
     tree: &usvg::Tree,
@@ -6345,6 +6679,7 @@ fn get_or_rasterize_vector_cover_viewport_variant(
     Some(image)
 }
 
+#[cfg(any(feature = "vector-assets", test))]
 fn get_or_rasterize_vector_variant_profiled(
     asset_id: &str,
     tree: &usvg::Tree,
@@ -6380,6 +6715,7 @@ fn get_or_rasterize_vector_variant_profiled(
     Some(image)
 }
 
+#[cfg(any(feature = "vector-assets", test))]
 fn get_or_rasterize_vector_cover_viewport_variant_profiled(
     asset_id: &str,
     tree: &usvg::Tree,
@@ -6419,6 +6755,7 @@ fn get_or_rasterize_vector_cover_viewport_variant_profiled(
     Some(image)
 }
 
+#[cfg(any(feature = "vector-assets", test))]
 fn draw_vector_asset_with_fit(
     canvas: &skia_safe::Canvas,
     asset_id: &str,
@@ -6519,6 +6856,7 @@ fn draw_vector_asset_with_fit(
     }
 }
 
+#[cfg(any(feature = "vector-assets", test))]
 fn draw_vector_asset_with_fit_profiled(
     canvas: &skia_safe::Canvas,
     tree: &usvg::Tree,
@@ -6688,6 +7026,7 @@ fn draw_tiled_image(
     }
 }
 
+#[cfg(any(feature = "vector-assets", test))]
 fn rasterize_vector_tree(tree: &usvg::Tree, width: u32, height: u32) -> Option<Image> {
     if width == 0 || height == 0 {
         return None;
@@ -6704,6 +7043,7 @@ fn rasterize_vector_tree(tree: &usvg::Tree, width: u32, height: u32) -> Option<I
     rasterize_vector_tree_with_transform(tree, width, height, transform)
 }
 
+#[cfg(any(feature = "vector-assets", test))]
 fn rasterize_vector_tree_cover_viewport(
     tree: &usvg::Tree,
     width: u32,
@@ -6726,6 +7066,7 @@ fn rasterize_vector_tree_cover_viewport(
     rasterize_vector_tree_with_transform(tree, width, height, transform)
 }
 
+#[cfg(any(feature = "vector-assets", test))]
 fn rasterize_vector_tree_with_transform(
     tree: &usvg::Tree,
     width: u32,
@@ -6747,13 +7088,6 @@ fn rasterize_vector_tree_with_transform(
 }
 
 #[cfg(test)]
-fn clear_rendered_vector_cache() {
-    if let Ok(mut cache) = get_rendered_vector_cache().lock() {
-        *cache = RenderedVectorCache::default();
-    }
-}
-
-#[cfg(test)]
 fn rendered_vector_cache_entry_count() -> usize {
     get_rendered_vector_cache()
         .lock()
@@ -6771,6 +7105,7 @@ fn vector_rasterization_count() -> usize {
     VECTOR_RASTERIZATION_COUNT.load(Ordering::Relaxed)
 }
 
+#[cfg(any(feature = "vector-assets", test))]
 fn compute_vector_fit_rect(
     src_w: f32,
     src_h: f32,
@@ -7423,6 +7758,143 @@ fn apply_border_style(paint: &mut Paint, style: BorderStyle, stroke_width: f32) 
                 paint.set_path_effect(effect);
             }
         }
+    }
+}
+
+fn color_alpha(color: u32) -> u8 {
+    (color & 0xff) as u8
+}
+
+fn policy_color(color: u32, white: bool) -> u32 {
+    if white {
+        0xffff_ff00 | u32::from(color_alpha(color))
+    } else {
+        u32::from(color_alpha(color))
+    }
+}
+
+fn draw_policy_rect(
+    canvas: &skia_safe::Canvas,
+    rect: Rect,
+    alpha: u8,
+    white: bool,
+    anti_alias: bool,
+) {
+    let mut paint = Paint::default();
+    paint.set_color(color_from_u32(if white {
+        0xffff_ff00 | u32::from(alpha)
+    } else {
+        u32::from(alpha)
+    }));
+    paint.set_anti_alias(anti_alias);
+    canvas.draw_rect(rect, &paint);
+}
+
+fn recolor_policy_primitive(primitive: &DrawPrimitive, white: bool) -> DrawPrimitive {
+    match primitive {
+        DrawPrimitive::Rect(x, y, w, h, color) => {
+            DrawPrimitive::Rect(*x, *y, *w, *h, policy_color(*color, white))
+        }
+        DrawPrimitive::RoundedRect(x, y, w, h, radius, color) => {
+            DrawPrimitive::RoundedRect(*x, *y, *w, *h, *radius, policy_color(*color, white))
+        }
+        DrawPrimitive::Border(x, y, w, h, radius, width, color, style) => DrawPrimitive::Border(
+            *x,
+            *y,
+            *w,
+            *h,
+            *radius,
+            *width,
+            policy_color(*color, white),
+            *style,
+        ),
+        DrawPrimitive::BorderCorners(x, y, w, h, tl, tr, br, bl, width, color, style) => {
+            DrawPrimitive::BorderCorners(
+                *x,
+                *y,
+                *w,
+                *h,
+                *tl,
+                *tr,
+                *br,
+                *bl,
+                *width,
+                policy_color(*color, white),
+                *style,
+            )
+        }
+        DrawPrimitive::BorderEdges(x, y, w, h, tl, top, right, bottom, left, color, style) => {
+            DrawPrimitive::BorderEdges(
+                *x,
+                *y,
+                *w,
+                *h,
+                *tl,
+                *top,
+                *right,
+                *bottom,
+                *left,
+                policy_color(*color, white),
+                *style,
+            )
+        }
+        DrawPrimitive::Shadow(x, y, w, h, ox, oy, blur, size, radius, color) => {
+            DrawPrimitive::Shadow(
+                *x,
+                *y,
+                *w,
+                *h,
+                *ox,
+                *oy,
+                *blur,
+                *size,
+                *radius,
+                policy_color(*color, white),
+            )
+        }
+        DrawPrimitive::InsetShadow(x, y, w, h, ox, oy, blur, size, radius, color) => {
+            DrawPrimitive::InsetShadow(
+                *x,
+                *y,
+                *w,
+                *h,
+                *ox,
+                *oy,
+                *blur,
+                *size,
+                *radius,
+                policy_color(*color, white),
+            )
+        }
+        DrawPrimitive::TextWithFont(x, y, text, size, color, family, weight, italic) => {
+            DrawPrimitive::TextWithFont(
+                *x,
+                *y,
+                text.clone(),
+                *size,
+                policy_color(*color, white),
+                family.clone(),
+                *weight,
+                *italic,
+            )
+        }
+        DrawPrimitive::Gradient(x, y, w, h, from, to, angle) => DrawPrimitive::Gradient(
+            *x,
+            *y,
+            *w,
+            *h,
+            policy_color(*from, white),
+            policy_color(*to, white),
+            *angle,
+        ),
+        DrawPrimitive::Image(x, y, w, h, id, fit, tint) => {
+            DrawPrimitive::Image(*x, *y, *w, *h, id.clone(), *fit, *tint)
+        }
+        DrawPrimitive::Video(x, y, w, h, id, fit) => {
+            DrawPrimitive::Video(*x, *y, *w, *h, id.clone(), *fit)
+        }
+        DrawPrimitive::ImageLoading(x, y, w, h) => DrawPrimitive::ImageLoading(*x, *y, *w, *h),
+        DrawPrimitive::ImageFailed(x, y, w, h) => DrawPrimitive::ImageFailed(*x, *y, *w, *h),
     }
 }
 
@@ -12475,5 +12947,187 @@ mod tests {
                 interior_alpha
             );
         }
+    }
+
+    #[test]
+    fn grayscale_policy_dithers_opaque_background_under_group_alpha() {
+        let width = 64;
+        let height = 36;
+        let scene = RenderScene {
+            nodes: vec![RenderNode::Alpha {
+                alpha: 0.5,
+                children: vec![
+                    RenderNode::Primitive(DrawPrimitive::RoundedRect(
+                        4.0, 4.0, 56.0, 28.0, 4.0, 0x000000ff,
+                    )),
+                    RenderNode::Primitive(DrawPrimitive::TextWithFont(
+                        10.0,
+                        28.0,
+                        "O".to_string(),
+                        26.0,
+                        0xffffffff,
+                        "sans-serif".to_string(),
+                        400,
+                        false,
+                    )),
+                ],
+            }],
+        };
+        let renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+            enabled: false,
+            ..RendererCacheConfig::default()
+        });
+        let mask = renderer
+            .render_grayscale_dither_policy(
+                width,
+                height,
+                &RenderState::new(scene, Color::WHITE, 1, false),
+            )
+            .unwrap();
+        let dithers = |x: usize, y: usize| {
+            let index = y * width as usize + x;
+            mask[index / 8] & (1 << (7 - index % 8)) != 0
+        };
+
+        assert!(
+            dithers(48, 16),
+            "an opaque background under group alpha must dither"
+        );
+        assert!(
+            !dithers(0, 0),
+            "pixels outside the background stay unchanged"
+        );
+
+        let protected_glyph_pixels = (8..31)
+            .flat_map(|y| (8..38).map(move |x| (x, y)))
+            .filter(|(x, y)| !dithers(*x, *y))
+            .count();
+        assert!(
+            protected_glyph_pixels > 0,
+            "text coverage under group alpha must remain protected"
+        );
+    }
+
+    #[test]
+    fn grayscale_policy_protects_vector_coverage_without_protecting_its_bounds() {
+        let _guard = vector_cache_test_lock();
+        let image_id = "grayscale_policy_protects_vector_coverage";
+        let svg = r##"
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+                <rect x="2" y="2" width="4" height="12" fill="#000000"/>
+            </svg>
+        "##;
+        reset_vector_cache_test_state();
+        cache_test_svg_asset(image_id, 16, 16, svg);
+
+        let width = 32;
+        let height = 32;
+        let scene = RenderScene {
+            nodes: vec![
+                RenderNode::Primitive(DrawPrimitive::Gradient(
+                    0.0,
+                    0.0,
+                    width as f32,
+                    height as f32,
+                    0x202020ff,
+                    0xe0e0e0ff,
+                    0.0,
+                )),
+                RenderNode::Primitive(DrawPrimitive::Image(
+                    8.0,
+                    8.0,
+                    16.0,
+                    16.0,
+                    image_id.to_string(),
+                    ImageFit::Contain,
+                    None,
+                )),
+            ],
+        };
+        let renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+            enabled: false,
+            ..RendererCacheConfig::default()
+        });
+        let mask = renderer
+            .render_grayscale_dither_policy(
+                width,
+                height,
+                &RenderState::new(scene, Color::WHITE, 1, false),
+            )
+            .unwrap();
+        let dithers = |x: usize, y: usize| {
+            let index = y * width as usize + x;
+            mask[index / 8] & (1 << (7 - index % 8)) != 0
+        };
+
+        assert!(!dithers(12, 16), "visible SVG pixels must be protected");
+        assert!(
+            dithers(20, 16),
+            "transparent pixels inside SVG bounds must remain ditherable"
+        );
+
+        remove_asset(image_id);
+    }
+
+    #[test]
+    fn grayscale_policy_protects_glyph_coverage_without_protecting_text_bounds() {
+        let width = 64;
+        let height = 36;
+        let scene = RenderScene {
+            nodes: vec![
+                RenderNode::Primitive(DrawPrimitive::Gradient(
+                    0.0,
+                    0.0,
+                    width as f32,
+                    height as f32,
+                    0x202020ff,
+                    0xe0e0e0ff,
+                    0.0,
+                )),
+                RenderNode::Primitive(DrawPrimitive::TextWithFont(
+                    10.0,
+                    28.0,
+                    "O".to_string(),
+                    26.0,
+                    0x000000ff,
+                    "sans-serif".to_string(),
+                    400,
+                    false,
+                )),
+            ],
+        };
+        let renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+            enabled: false,
+            ..RendererCacheConfig::default()
+        });
+        let mask = renderer
+            .render_grayscale_dither_policy(
+                width,
+                height,
+                &RenderState::new(scene, Color::WHITE, 1, false),
+            )
+            .unwrap();
+        let dithers = |x: usize, y: usize| {
+            let index = y * width as usize + x;
+            mask[index / 8] & (1 << (7 - index % 8)) != 0
+        };
+
+        assert!(dithers(0, 0));
+        let protected = (5..32)
+            .flat_map(|y| (6..38).map(move |x| (x, y)))
+            .filter(|(x, y)| !dithers(*x, *y))
+            .count();
+        let background_inside_bounds = (5..32)
+            .flat_map(|y| (6..38).map(move |x| (x, y)))
+            .filter(|(x, y)| dithers(*x, *y))
+            .count();
+        assert!(
+            protected > 0,
+            "expected visible glyph coverage to be protected"
+        );
+        assert!(
+            background_inside_bounds > protected,
+            "expected the background and O counter to remain ditherable"
+        );
     }
 }

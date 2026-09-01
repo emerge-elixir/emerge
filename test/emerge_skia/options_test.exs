@@ -273,6 +273,7 @@ defmodule EmergeSkia.OptionsTest do
                mode: "binary",
                pixel_format: "rgba8888",
                bw1_polarity: "one_is_black",
+               dither: false,
                target_fps: nil,
                frame_message: "emerge_skia_frame"
              }
@@ -284,6 +285,7 @@ defmodule EmergeSkia.OptionsTest do
                mode: "binary",
                pixel_format: "bw1",
                bw1_polarity: "one_is_white",
+               dither: false,
                target_fps: 30,
                frame_message: "my_frame"
              }
@@ -300,6 +302,47 @@ defmodule EmergeSkia.OptionsTest do
              )
 
     assert target == self()
+
+    for pixel_format <- [:bw1, :gray2] do
+      assert %{headless: %{dither: true, pixel_format: normalized}} =
+               Options.build_start_native_opts!(
+                 backend: :headless,
+                 rendering_api: :raster,
+                 headless: [target: self(), pixel_format: pixel_format, dither: true]
+               )
+
+      assert normalized == Atom.to_string(pixel_format)
+    end
+
+    for opts <- [
+          [
+            backend: :headless,
+            rendering_api: :raster,
+            headless: [target: self(), pixel_format: :gray4, dither: true]
+          ],
+          [
+            backend: :headless,
+            rendering_api: :opengl,
+            headless: [target: self(), pixel_format: :bw1, dither: true]
+          ],
+          [
+            backend: :headless,
+            rendering_api: :raster,
+            headless: [target: self(), mode: :prime, dither: true]
+          ]
+        ] do
+      assert_raise ArgumentError, ~r/headless.dither true currently requires/, fn ->
+        Options.build_start_native_opts!(opts)
+      end
+    end
+
+    assert_raise ArgumentError, ~r/:headless.dither must be a boolean/, fn ->
+      Options.build_start_native_opts!(
+        backend: :headless,
+        rendering_api: :raster,
+        headless: [target: self(), pixel_format: :bw1, dither: :atkinson]
+      )
+    end
 
     assert %{
              backend: "headless",

@@ -123,7 +123,13 @@ defmodule EmergeSkia do
     optional/deprecated for PRIME output, which may start disconnected)
   - `mode` - `:binary` (default) or `:prime` for Linux headless dma-buf output
   - `pixel_format` - `:rgba8888` (default), `:rgb888`, `:gray8`, `:gray4`, `:gray2`, or `:bw1`
-  - `bw1_polarity` - `:one_is_black` (default) or `:one_is_white`
+  - `bw1_polarity` - `:one_is_black` (default) or `:one_is_white`; ignored by
+    other formats
+  - `dither` - Boolean Atkinson dithering switch for `:bw1` and `:gray2`
+    (default: `false`). `true` requires `backend: :headless`,
+    `rendering_api: :raster`, and `mode: :binary`. Text, borders, generated
+    crisp UI, and vector assets remain protected from diffusion; raster images,
+    gradients, shadows, and translucent fills dither.
   - `target_fps` - Requested animation cadence for retained headless output (optional)
   - `frame_message` - Message tag atom/string (default: `:emerge_skia_frame`)
   - `prime.max_in_flight` - Maximum unreleased PRIME frames (default: `2`)
@@ -132,7 +138,15 @@ defmodule EmergeSkia do
   Headless frames are delivered as `{message_tag, frame}` where `frame` is a
   key/value list. Binary frames include `"mode"`, `"sequence"`, `"width"`,
   `"height"`, `"scale"`, `"pixel_format"`, `"stride_bytes"`, `"data"`, and
-  `"timestamp_native"`. PRIME frames include a canonical
+  `"timestamp_native"`. BW1 rows are packed independently, MSB-first, with
+  stride `ceil(width / 8)` and zeroed unused low bits in each row's final byte.
+  Gray2 rows use four MSB-first two-bit pixels per byte, stride `ceil(width / 4)`,
+  zeroed unused low bits, and canonical levels `0..3` from black to white.
+  Non-dithered output uses nearest-level quantization. Opaque grayscale rendering
+  is composited over white before quantization or dithering. Dithering runs only
+  on the final composited grayscale frame; exact text glyph coverage is directly
+  quantized and blocks diffusion while image pixels between glyphs and inside
+  counters remain ditherable. PRIME frames include a canonical
   `%VideoInterop.Frame{}` under `"dmabuf"`. Its managed lease supports safe
   fan-out with `VideoInterop.retain/2`; release each holder with
   `VideoInterop.release/1`. Direct Emerge connections consume these holders

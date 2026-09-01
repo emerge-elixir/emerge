@@ -270,6 +270,24 @@ defmodule EmergeSkia.BuildConfig do
   end
 
   @doc false
+  def rustler_platform_features(env, compiled_backends, compiled_vulkan_backends)
+      when is_map(env) and is_list(compiled_backends) and is_list(compiled_vulkan_backends) do
+    cond do
+      nerves_build_env?(env) and compiled_backends == [] and compiled_vulkan_backends == [] ->
+        ["embedded-cpu"]
+
+      nerves_build_env?(env) ->
+        ["embedded-freetype"]
+
+      compiled_backends == [] and compiled_vulkan_backends == [] ->
+        ["vector-assets", "video-interop-support"]
+
+      true ->
+        []
+    end
+  end
+
+  @doc false
   def compiled_backends_to_rustler_features(backends, vulkan_backends \\ []) do
     backends = normalize_compiled_backends!(backends)
     vulkan_backends = normalize_compiled_vulkan_backends!(vulkan_backends, backends)

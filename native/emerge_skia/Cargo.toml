@@ -42,6 +42,14 @@ harness = false
 [features]
 default = ["wayland"]
 bench-diagnostics = []
+# Nerves raster-only builds provide fonts as registered assets and do not ship
+# desktop fontconfig/freetype development libraries.
+embedded-freetype = ["skia-safe/embed-freetype"]
+# ARM/Nerves headless raster profile. Keep CPU-rendered SVG icons while desktop,
+# GPU, and video capabilities remain absent unless explicitly selected.
+embedded-cpu = ["embedded-freetype", "vector-assets"]
+vector-assets = ["dep:resvg"]
+video-interop-support = ["dep:video-interop"]
 hover-trace = []
 # Opt-in diagnostic executable. Keep this separate from drm-vulkan so Rustler
 # cannot copy a host probe into the NIF's shared priv/native directory.
@@ -49,8 +57,11 @@ vulkan-probe = []
 # Shared Linux OpenGL dependency bundle. Existing backends keep their current
 # behavior while DRM and Vulkan cfg boundaries are split in later slices.
 linux-opengl = [
+    "vector-assets",
+    "video-interop-support",
     "dep:gbm",
     "dep:gl",
+    "dep:libloading",
     "dep:glutin",
     "dep:glutin_egl_sys",
     "gbm/import-egl",
@@ -62,6 +73,8 @@ headless-opengl = ["linux-opengl"]
 headless-vulkan = ["vulkan"]
 headless-all = ["headless-opengl", "headless-vulkan"]
 macos = [
+    "vector-assets",
+    "video-interop-support",
     "dep:objc2",
     "dep:objc2-foundation",
     "dep:objc2-app-kit",
@@ -88,14 +101,14 @@ wayland-all = ["wayland", "wayland-vulkan"]
 drm-core = ["dep:drm", "dep:evdev", "dep:gbm"]
 # Compatibility feature: DRM continues to mean the existing OpenGL backend.
 drm = ["drm-core", "headless-opengl"]
-vulkan = ["dep:ash", "skia-safe/vulkan", "video-interop/vulkan"]
+vulkan = ["vector-assets", "video-interop-support", "dep:ash", "skia-safe/vulkan", "video-interop/vulkan"]
 # Build scaffolding only until shared DRM cfgs and the Vulkan runner land.
 drm-vulkan = ["drm-core", "vulkan"]
 drm-all = ["drm", "drm-vulkan"]
 
 [dependencies]
 rustler = "0.38"
-video-interop = "0.1.0"
+video-interop = { version = "0.1.0", optional = true }
 ash = { version = "0.38", default-features = false, features = ["loaded", "std"], optional = true }
 ash-window = { version = "0.13", optional = true }
 objc2 = { version = "0.6", optional = true }
@@ -106,11 +119,11 @@ objc2-core-graphics = { version = "0.3", optional = true }
 objc2-metal = { version = "0.3", optional = true }
 objc2-quartz-core = { version = "0.3", features = ["CALayer", "CAMetalLayer", "objc2-metal", "objc2-core-foundation"], optional = true }
 gl = { version = "0.14", optional = true }
-libloading = "0.9"
+libloading = { version = "0.9", optional = true }
 libc = "0.2"
 crossbeam-channel = "0.5"
 sha2 = "0.10"
-resvg = "0.47"
+resvg = { version = "0.47", optional = true }
 # Pinned past the 0.99.0 tag for Vulkan BackendSemaphore make/get, Surface::wait, and
 # FlushInfo signal-semaphore wrappers. Exit this git pin when the first upstream rust-skia release
 # containing 0d2261c63941f4b534522246cc1ace13ca4242d8 is adopted. The workspace dependency keeps
@@ -119,6 +132,8 @@ skia-safe = { version = "0.99.0", git = "https://github.com/rust-skia/rust-skia"
 
 [dev-dependencies]
 criterion = "0.7"
+resvg = "0.47"
+video-interop = "0.1.0"
 
 # Coordinated-development override. Remove this after video-interop 0.1.0 is
 # published and before building immutable Emerge release artifacts.

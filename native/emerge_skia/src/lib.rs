@@ -4,9 +4,6 @@
 //! rendering, and headless rasterization for Emerge.
 
 use std::{
-    collections::HashSet,
-    fs::File,
-    os::fd::{AsRawFd, OwnedFd},
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
         Arc, Condvar, Mutex,
@@ -24,10 +21,18 @@ use std::{
 use crossbeam_channel::unbounded;
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError, bounded};
 
-use rustler::{
-    Atom, Binary, Decoder, Encoder, Env, LocalPid, NewBinary, NifResult, ResourceArc, Term,
-    types::reference::Reference,
+#[cfg(any(feature = "video-interop-support", test))]
+use rustler::Decoder;
+#[cfg(any(feature = "video-interop-support", test))]
+use rustler::types::reference::Reference;
+use rustler::{Atom, Binary, Encoder, Env, LocalPid, NewBinary, NifResult, ResourceArc, Term};
+#[cfg(any(feature = "video-interop-support", test))]
+use std::{
+    collections::HashSet,
+    fs::File,
+    os::fd::{AsRawFd, OwnedFd},
 };
+#[cfg(any(feature = "video-interop-support", test))]
 use video_interop::ReleaseDispatcher;
 pub mod actors;
 pub mod assets;
@@ -51,6 +56,10 @@ pub mod runtime;
 pub mod services;
 pub mod stats;
 pub mod tree;
+#[cfg(any(feature = "video-interop-support", test))]
+mod video;
+#[cfg(not(any(feature = "video-interop-support", test)))]
+#[path = "video_stub.rs"]
 mod video;
 
 use actors::{EventMsg, RenderMsg, TreeMsg};
@@ -83,10 +92,9 @@ use stats::{
 };
 use std::time::Instant;
 use tree::element::{ElementTree, NodeId};
-use video::{
-    CanonicalSubmitError, VideoConsumerSessionResource, VideoMode, VideoRegistry,
-    VideoTargetResource, VideoWake,
-};
+#[cfg(any(feature = "video-interop-support", test))]
+use video::{CanonicalSubmitError, VideoConsumerSessionResource, VideoMode, VideoTargetResource};
+use video::{VideoRegistry, VideoWake};
 
 type LayoutFrame<'a> = (Binary<'a>, f32, f32, f32, f32);
 type LayoutFrames<'a> = Vec<LayoutFrame<'a>>;
@@ -715,6 +723,7 @@ struct RendererInfoNif {
     vulkan_device: Option<VulkanDeviceInfoNif>,
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 #[derive(Clone, Debug, rustler::NifMap)]
 struct VideoTargetInfoNif {
     renderer_epoch: u64,
@@ -723,6 +732,7 @@ struct VideoTargetInfoNif {
     active_stream_id: Option<u64>,
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 impl From<video::VideoTargetInfo> for VideoTargetInfoNif {
     fn from(info: video::VideoTargetInfo) -> Self {
         Self {
@@ -898,13 +908,49 @@ impl RenderSender {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LatestFramePixelFormat {
+    Rgba8888Premul,
+    Gray8Opaque,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct LatestFrameSnapshot {
     pub width: u32,
     pub height: u32,
     pub scale: f32,
     pub sequence: u64,
+    pub pixel_format: LatestFramePixelFormat,
     pub pixels: Vec<u8>,
+}
+
+impl LatestFrameSnapshot {
+    fn into_rgba(mut self) -> Result<Self, String> {
+        if self.pixel_format == LatestFramePixelFormat::Rgba8888Premul {
+            return Ok(self);
+        }
+        let expected = usize::try_from(self.width)
+            .ok()
+            .and_then(|width| {
+                usize::try_from(self.height)
+                    .ok()
+                    .and_then(|height| width.checked_mul(height))
+            })
+            .ok_or_else(|| "latest Gray8 frame dimensions are too large".to_string())?;
+        if self.pixels.len() != expected {
+            return Err(format!(
+                "latest Gray8 frame length mismatch: expected {expected}, got {}",
+                self.pixels.len()
+            ));
+        }
+        self.pixels = self
+            .pixels
+            .into_iter()
+            .flat_map(|gray| [gray, gray, gray, 255])
+            .collect();
+        self.pixel_format = LatestFramePixelFormat::Rgba8888Premul;
+        Ok(self)
+    }
 }
 
 #[derive(Default)]
@@ -919,7 +965,34 @@ pub(crate) struct LatestFrameStore {
 
 impl LatestFrameStore {
     pub(crate) fn publish_rgba(&self, width: u32, height: u32, scale: f32, pixels: Vec<u8>) {
-        let frame = self.snapshot(width, height, scale, pixels);
+        self.publish(
+            width,
+            height,
+            scale,
+            LatestFramePixelFormat::Rgba8888Premul,
+            pixels,
+        );
+    }
+
+    pub(crate) fn publish_gray8(&self, width: u32, height: u32, scale: f32, pixels: Vec<u8>) {
+        self.publish(
+            width,
+            height,
+            scale,
+            LatestFramePixelFormat::Gray8Opaque,
+            pixels,
+        );
+    }
+
+    fn publish(
+        &self,
+        width: u32,
+        height: u32,
+        scale: f32,
+        pixel_format: LatestFramePixelFormat,
+        pixels: Vec<u8>,
+    ) {
+        let frame = self.snapshot(width, height, scale, pixel_format, pixels);
         let mut guard = self
             .frame
             .lock()
@@ -955,7 +1028,13 @@ impl LatestFrameStore {
         scale: f32,
         pixels: Vec<u8>,
     ) {
-        let frame = self.snapshot(width, height, scale, pixels);
+        let frame = self.snapshot(
+            width,
+            height,
+            scale,
+            LatestFramePixelFormat::Rgba8888Premul,
+            pixels,
+        );
         let mut guard = self
             .frame
             .lock()
@@ -1043,6 +1122,7 @@ impl LatestFrameStore {
         width: u32,
         height: u32,
         scale: f32,
+        pixel_format: LatestFramePixelFormat,
         pixels: Vec<u8>,
     ) -> LatestFrameSnapshot {
         let sequence = self
@@ -1054,6 +1134,7 @@ impl LatestFrameStore {
             height,
             scale,
             sequence,
+            pixel_format,
             pixels,
         }
     }
@@ -1179,17 +1260,22 @@ struct TestHarnessResource {
     handles: Mutex<Option<TestHarnessHandles>>,
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 struct ReleaseDispatcherHandleResource {
     dispatcher: Mutex<Option<ResourceArc<ReleaseDispatcher>>>,
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 const RELEASE_DISPATCHER_CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(any(feature = "video-interop-support", test))]
 type DispatcherCloseError = (Atom, String);
 
+#[cfg(any(feature = "video-interop-support", test))]
 struct VideoInteropFdForTestResource {
     _fd: OwnedFd,
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 struct VideoInteropPreparedForTestResource {
     prepared: Mutex<Option<video_interop::PreparedVideoFrame>>,
 }
@@ -1203,15 +1289,19 @@ impl rustler::Resource for TreeResource {}
 #[rustler::resource_impl]
 impl rustler::Resource for TestHarnessResource {}
 
+#[cfg(any(feature = "video-interop-support", test))]
 #[rustler::resource_impl]
 impl rustler::Resource for ReleaseDispatcherHandleResource {}
 
+#[cfg(any(feature = "video-interop-support", test))]
 #[rustler::resource_impl]
 impl rustler::Resource for VideoInteropFdForTestResource {}
 
+#[cfg(any(feature = "video-interop-support", test))]
 #[rustler::resource_impl]
 impl rustler::Resource for VideoInteropPreparedForTestResource {}
 
+#[cfg(any(feature = "video-interop-support", test))]
 impl ReleaseDispatcherHandleResource {
     fn start(name: &str) -> Result<Self, String> {
         Ok(Self {
@@ -1252,6 +1342,7 @@ impl ReleaseDispatcherHandleResource {
     }
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 fn dispatcher_close_error(reason: impl Into<String>) -> DispatcherCloseError {
     let reason = reason.into();
     let category = if reason.contains("timed out") {
@@ -1794,6 +1885,7 @@ struct HeadlessConfig {
     mode: String,
     pixel_format: String,
     bw1_polarity: String,
+    dither: bool,
     target_fps: Option<u32>,
     frame_message: String,
     prime: HeadlessPrimeConfig,
@@ -1813,6 +1905,7 @@ impl std::fmt::Debug for HeadlessConfig {
             .field("mode", &self.mode)
             .field("pixel_format", &self.pixel_format)
             .field("bw1_polarity", &self.bw1_polarity)
+            .field("dither", &self.dither)
             .field("target_fps", &self.target_fps)
             .field("frame_message", &self.frame_message)
             .field("prime", &self.prime)
@@ -1827,6 +1920,7 @@ impl Default for HeadlessConfig {
             mode: "binary".to_string(),
             pixel_format: "rgba8888".to_string(),
             bw1_polarity: "one_is_black".to_string(),
+            dither: false,
             target_fps: None,
             frame_message: "emerge_skia_frame".to_string(),
             prime: HeadlessPrimeConfig {
@@ -1890,6 +1984,7 @@ struct HeadlessConfigNif {
     mode: String,
     pixel_format: String,
     bw1_polarity: String,
+    dither: bool,
     target_fps: Option<u32>,
     frame_message: String,
     prime: HeadlessPrimeConfigNif,
@@ -2644,6 +2739,7 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
                 mode: opts.headless.mode,
                 pixel_format: opts.headless.pixel_format,
                 bw1_polarity: opts.headless.bw1_polarity,
+                dither: opts.headless.dither,
                 target_fps: opts.headless.target_fps,
                 frame_message: opts.headless.frame_message,
                 prime: HeadlessPrimeConfig {
@@ -2675,6 +2771,7 @@ fn ensure_video_target_mode_supported(
     }
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 #[rustler::nif(schedule = "DirtyCpu")]
 fn video_target_new(
     renderer: ResourceArc<RendererResource>,
@@ -2706,6 +2803,7 @@ fn video_target_new(
     }))
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 #[rustler::nif(schedule = "DirtyCpu")]
 fn video_target_info(
     target: ResourceArc<VideoTargetResource>,
@@ -2719,6 +2817,7 @@ fn video_target_info(
         .map(VideoTargetInfoNif::from)
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 #[rustler::nif(schedule = "DirtyCpu")]
 fn video_target_submit_prime(
     target: ResourceArc<VideoTargetResource>,
@@ -2739,6 +2838,7 @@ fn video_target_submit_prime(
     }
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 #[rustler::nif(schedule = "DirtyIo")]
 fn video_consumer_session_open(
     target: ResourceArc<VideoTargetResource>,
@@ -2773,6 +2873,7 @@ fn video_consumer_session_open(
     )))
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 fn decode_video_frame(term: Term<'_>) -> Result<video_interop::Frame<'_>, (Atom, String)> {
     video_interop::Frame::decode(term).map_err(|error| {
         (
@@ -2782,10 +2883,12 @@ fn decode_video_frame(term: Term<'_>) -> Result<video_interop::Frame<'_>, (Atom,
     })
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 fn start_video_release_dispatcher(name: &str) -> Result<ResourceArc<ReleaseDispatcher>, String> {
     ReleaseDispatcher::start(name).map_err(|error| error.to_string())
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 #[rustler::nif(schedule = "DirtyCpu")]
 fn video_consumer_session_submit(
     session: ResourceArc<VideoConsumerSessionResource>,
@@ -2827,12 +2930,14 @@ fn video_consumer_session_submit(
     }
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 #[rustler::nif(schedule = "DirtyCpu")]
 fn video_consumer_decode_for_test(frame: Term<'_>) -> Result<Atom, (Atom, String)> {
     let _frame = decode_video_frame(frame)?;
     Ok(atoms::caller_owned())
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 #[rustler::nif(schedule = "DirtyCpu")]
 fn video_consumer_prepare_hold_for_test(
     session: ResourceArc<VideoConsumerSessionResource>,
@@ -2850,6 +2955,7 @@ fn video_consumer_prepare_hold_for_test(
     }))
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 #[rustler::nif]
 fn video_consumer_prepared_drop_for_test(
     prepared: ResourceArc<VideoInteropPreparedForTestResource>,
@@ -2860,6 +2966,7 @@ fn video_consumer_prepared_drop_for_test(
     }
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 #[rustler::nif(schedule = "DirtyIo")]
 fn video_consumer_session_open_for_test() -> Result<
     (
@@ -2924,6 +3031,7 @@ fn video_consumer_session_open_for_test() -> Result<
     Ok((session, target))
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 #[rustler::nif]
 fn video_consumer_target_set_active_for_test(
     target: ResourceArc<VideoTargetResource>,
@@ -2938,6 +3046,7 @@ fn video_consumer_target_set_active_for_test(
     Ok(true)
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 #[rustler::nif]
 fn video_consumer_target_replace_for_test(
     target: ResourceArc<VideoTargetResource>,
@@ -2957,6 +3066,7 @@ fn video_consumer_target_replace_for_test(
     Ok(true)
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 #[rustler::nif]
 fn video_consumer_target_pipeline_counts_for_test(
     target: ResourceArc<VideoTargetResource>,
@@ -2967,6 +3077,7 @@ fn video_consumer_target_pipeline_counts_for_test(
         .ok_or_else(|| "video consumer test stats are unavailable".to_string())
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 #[rustler::nif(schedule = "DirtyIo")]
 fn video_interop_open_fd_for_test()
 -> Result<(i32, ResourceArc<VideoInteropFdForTestResource>), String> {
@@ -2979,6 +3090,7 @@ fn video_interop_open_fd_for_test()
     ))
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 #[rustler::nif(schedule = "DirtyIo")]
 fn video_consumer_session_close<'a>(
     env: Env<'a>,
@@ -2990,6 +3102,7 @@ fn video_consumer_session_close<'a>(
     )
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 #[rustler::nif(schedule = "DirtyIo")]
 fn video_consumer_session_close_with_timeout_for_test<'a>(
     env: Env<'a>,
@@ -3002,6 +3115,7 @@ fn video_consumer_session_close_with_timeout_for_test<'a>(
     )
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 fn video_consumer_session_close_with_timeout(
     session: &VideoConsumerSessionResource,
     timeout: Duration,
@@ -3011,6 +3125,7 @@ fn video_consumer_session_close_with_timeout(
         .map_err(dispatcher_close_error)
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 #[rustler::nif(schedule = "DirtyIo")]
 fn headless_prime_release_dispatcher_new()
 -> Result<ResourceArc<ReleaseDispatcherHandleResource>, String> {
@@ -3018,6 +3133,7 @@ fn headless_prime_release_dispatcher_new()
         .map(ResourceArc::new)
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 #[rustler::nif(schedule = "DirtyIo")]
 fn headless_prime_release_dispatcher_close<'a>(
     env: Env<'a>,
@@ -3029,6 +3145,7 @@ fn headless_prime_release_dispatcher_close<'a>(
     )
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 #[rustler::nif(schedule = "DirtyIo")]
 fn headless_prime_release_dispatcher_close_with_timeout_for_test<'a>(
     env: Env<'a>,
@@ -3041,6 +3158,7 @@ fn headless_prime_release_dispatcher_close_with_timeout_for_test<'a>(
     )
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 fn encode_dispatcher_close_result<'a>(
     env: Env<'a>,
     result: Result<(), DispatcherCloseError>,
@@ -3051,6 +3169,7 @@ fn encode_dispatcher_close_result<'a>(
     }
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 #[rustler::nif(schedule = "DirtyIo")]
 fn headless_prime_abandonment_guard_new<'a>(
     owner: LocalPid,
@@ -3062,11 +3181,13 @@ fn headless_prime_abandonment_guard_new<'a>(
         .map_err(|error| error.to_string())
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 #[rustler::nif(name = "video_interop_abandonment_guard?")]
 fn video_interop_abandonment_guard(resource: Term<'_>) -> bool {
     video_interop::is_abandonment_guard_resource(resource)
 }
 
+#[cfg(any(feature = "video-interop-support", test))]
 #[rustler::nif]
 fn headless_prime_release_backend_token(
     backend_token: ResourceArc<backend::headless::HeadlessPrimeBackendToken>,
@@ -3364,7 +3485,9 @@ fn capture_latest_frame(
         return Err("screenshot background currently only supports :transparent".to_string());
     }
 
-    let frame = frame.ok_or_else(|| "no presented frame is available yet".to_string())?;
+    let frame = frame
+        .ok_or_else(|| "no presented frame is available yet".to_string())?
+        .into_rgba()?;
     let _sequence = frame.sequence;
     let _frame_scale = frame.scale;
 

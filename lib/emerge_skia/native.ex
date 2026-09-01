@@ -38,10 +38,15 @@ defmodule EmergeSkia.Native do
       @precompiled_targets EmergeSkia.BuildConfig.precompiled_targets()
       @precompiled_nif_versions EmergeSkia.BuildConfig.precompiled_nif_versions()
       @precompiled_variants EmergeSkia.BuildConfig.precompiled_variants()
+      @platform_cargo_features EmergeSkia.BuildConfig.rustler_platform_features(
+                                 System.get_env(),
+                                 @compiled_backends,
+                                 @compiled_vulkan_backends
+                               )
       @cargo_features EmergeSkia.BuildConfig.compiled_backends_to_rustler_features(
                         @compiled_backends,
                         @compiled_vulkan_backends
-                      )
+                      ) ++ @platform_cargo_features
       @force_build EmergeSkia.BuildConfig.force_precompiled_build?(
                      checksum_path: @checksum_path,
                      compiled_backends: @compiled_backends,
@@ -137,6 +142,7 @@ defmodule EmergeSkia.Native do
             required(:mode) => String.t(),
             required(:pixel_format) => String.t(),
             required(:bw1_polarity) => String.t(),
+            required(:dither) => boolean(),
             required(:target_fps) => pos_integer() | nil,
             required(:frame_message) => String.t(),
             required(:prime) => %{

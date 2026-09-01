@@ -119,6 +119,21 @@ defmodule EmergeSkia.BuildConfigTest do
     assert BuildConfig.compiled_backends_to_rustler_features([]) == []
   end
 
+  test "Nerves raster-only builds select the minimal embedded CPU Rust profile" do
+    nerves_env = %{"MIX_TARGET" => "trellis"}
+
+    assert BuildConfig.rustler_platform_features(nerves_env, [], []) == ["embedded-cpu"]
+
+    assert BuildConfig.rustler_platform_features(nerves_env, [:drm], []) == [
+             "embedded-freetype"
+           ]
+
+    assert BuildConfig.rustler_platform_features(%{}, [], []) == [
+             "vector-assets",
+             "video-interop-support"
+           ]
+  end
+
   test "default_runtime_backend prefers wayland and falls back to drm" do
     assert BuildConfig.default_runtime_backend([:drm, :wayland]) == :wayland
     assert BuildConfig.default_runtime_backend([:drm]) == :drm
