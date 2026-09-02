@@ -519,8 +519,8 @@ defmodule EmergeSkiaTest do
              coded_height: 4,
              visible_rect: %VideoInterop.Rect{x: 0, y: 0, width: 4, height: 4},
              format: %VideoInterop.Format{
-               acquire_sync: :per_frame,
-               storage: %VideoInterop.DMABuf.Format{modifier: :per_buffer}
+               acquire_sync: :sync_file,
+               storage: %VideoInterop.DMABuf.Format{modifier: stream_modifier}
              },
              storage: %VideoInterop.DMABuf.Descriptor{
                version: 1,
@@ -533,6 +533,7 @@ defmodule EmergeSkiaTest do
 
     assert is_integer(acquire_fence_fd) and acquire_fence_fd >= 0
     assert {:ok, _stat} = File.stat("/proc/self/fd/#{acquire_fence_fd}")
+    assert stream_modifier == object.modifier
     assert is_integer(object.fd) and object.fd >= 0
     assert object.size > 0
     assert object.modifier == :implicit or is_integer(object.modifier)
@@ -557,7 +558,11 @@ defmodule EmergeSkiaTest do
     refute_receive {:emerge_skia_frame, _frame}, 100
 
     assert :ok = VideoInterop.release(child_lease)
-    assert %{active_leases: 0} = VideoInterop.LeaseOwner.stats(lease.owner)
+
+    assert eventually(fn ->
+             VideoInterop.LeaseOwner.stats(lease.owner).active_leases == 0
+           end)
+
     next_tree = el([width(px(4)), height(px(4)), Emerge.UI.Background.color(:green)], none())
     {_state, _assigned} = EmergeSkia.upload_tree(renderer, next_tree)
     assert_receive {:emerge_skia_frame, %VideoInterop.Frame{} = next_dma_buf}, 1_000
@@ -662,12 +667,16 @@ defmodule EmergeSkiaTest do
 
     assert %VideoInterop.Frame{
              format: %VideoInterop.Format{
-               acquire_sync: :per_frame,
-               storage: %VideoInterop.DMABuf.Format{modifier: :per_buffer}
+               acquire_sync: :implicit,
+               storage: %VideoInterop.DMABuf.Format{modifier: stream_modifier}
+             },
+             storage: %VideoInterop.DMABuf.Descriptor{
+               objects: [%VideoInterop.DMABuf.Object{} = object]
              },
              acquire_sync: :implicit
            } = dma_buf
 
+    assert stream_modifier == object.modifier
     assert :ok = VideoInterop.validate(dma_buf)
     assert :ok = VideoInterop.release(dma_buf)
     assert :ok = EmergeSkia.stop(renderer)
@@ -782,5 +791,22 @@ defmodule EmergeSkiaTest do
 
     assert File.regular?(path)
     assert :ok = EmergeSkia.load_font_file("lobster-test", 400, false, path)
+  end
+
+  defp eventually(predicate, timeout_ms \\ 1_000) do
+    wait_until(predicate, System.monotonic_time(:millisecond) + timeout_ms)
+  end
+
+  defp wait_until(predicate, deadline) do
+    if predicate.() do
+      true
+    else
+      if System.monotonic_time(:millisecond) >= deadline do
+        false
+      else
+        Process.sleep(10)
+        wait_until(predicate, deadline)
+      end
+    end
   end
 end

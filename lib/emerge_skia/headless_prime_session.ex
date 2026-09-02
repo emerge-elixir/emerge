@@ -6,7 +6,7 @@ defmodule EmergeSkia.HeadlessPrimeSession do
   require Logger
 
   alias EmergeSkia.Native
-  alias VideoInterop.{AbandonmentGuard, Format, Frame, LeaseOwner, Rect}
+  alias VideoInterop.{AbandonmentGuard, Format, Frame, LeaseOwner, Rect, SyncFile}
   alias VideoInterop.DMABuf
 
   @internal_frame_message "emerge_skia_internal_prime_frame"
@@ -185,7 +185,7 @@ defmodule EmergeSkia.HeadlessPrimeSession do
 
     case lease_owner_result do
       {:ok, lease_owner} ->
-        stream_contract = prime_stream_contract(native_opts.rendering_api)
+        rendering_api = native_opts.rendering_api
         native_opts = put_native_relay(native_opts, self())
 
         case safe_native_start(native_opts) do
@@ -203,7 +203,7 @@ defmodule EmergeSkia.HeadlessPrimeSession do
                destination_monitor: destination_monitor,
                producer: producer,
                frame_message: frame_message,
-               stream_contract: stream_contract,
+               rendering_api: rendering_api,
                producer_monitor: producer_monitor,
                mode: :open,
                stop_waiters: [],
@@ -223,11 +223,30 @@ defmodule EmergeSkia.HeadlessPrimeSession do
     end
   end
 
-  defp prime_stream_contract(%{kind: "vulkan"}),
+  @doc false
+  @spec prime_stream_contract(map(), DMABuf.Descriptor.t(), Frame.acquire_sync()) :: %{
+          acquire_sync: Format.acquire_sync(),
+          modifier: DMABuf.Modifier.t() | :per_buffer
+        }
+  def prime_stream_contract(%{kind: "vulkan"}, _descriptor, _acquire_sync),
     do: %{acquire_sync: :sync_file, modifier: 0}
 
-  defp prime_stream_contract(_rendering_api),
-    do: %{acquire_sync: :per_frame, modifier: :per_buffer}
+  def prime_stream_contract(_rendering_api, %DMABuf.Descriptor{} = descriptor, acquire_sync) do
+    %{
+      acquire_sync: stream_acquire_sync(acquire_sync),
+      modifier: stream_modifier(descriptor.objects)
+    }
+  end
+
+  defp stream_acquire_sync(:implicit), do: :implicit
+  defp stream_acquire_sync(%SyncFile{}), do: :sync_file
+
+  defp stream_modifier(objects) do
+    case objects |> Enum.map(& &1.modifier) |> Enum.uniq() do
+      [modifier] -> modifier
+      _modifiers -> :per_buffer
+    end
+  end
 
   defp safe_start_lease_owner(opts) do
     LeaseOwner.start_link(opts)
@@ -287,6 +306,7 @@ defmodule EmergeSkia.HeadlessPrimeSession do
     width = frame_value!(frame, "width")
     height = frame_value!(frame, "height")
     metadata = %{sequence: frame_value!(frame, "sequence"), width: width, height: height}
+    stream_contract = prime_stream_contract(state.rendering_api, descriptor, acquire_sync)
 
     case LeaseOwner.issue(state.lease_owner, backend_token, metadata: metadata) do
       {:ok, lease} ->
@@ -300,11 +320,11 @@ defmodule EmergeSkia.HeadlessPrimeSession do
             framerate: nil,
             storage: %DMABuf.Format{
               fourcc: VideoInterop.DMABuf.FourCC.from_string!("AB24"),
-              modifier: state.stream_contract.modifier
+              modifier: stream_contract.modifier
             },
             interlace_mode: :progressive,
             alpha_mode: :premultiplied,
-            acquire_sync: state.stream_contract.acquire_sync
+            acquire_sync: stream_contract.acquire_sync
           },
           storage: descriptor,
           acquire_sync: acquire_sync,

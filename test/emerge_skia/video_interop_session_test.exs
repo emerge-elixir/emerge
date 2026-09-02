@@ -6,6 +6,44 @@ defmodule EmergeSkia.DirectVideoFrameTest do
   alias VideoInterop.DMABuf
   alias VideoInterop.DMABuf.{Descriptor, FourCC, Layer, Object, Plane}
 
+  test "OpenGL PRIME publishes the concrete synchronization and modifier contract" do
+    descriptor = %Descriptor{
+      objects: [%Object{fd: 0, size: 4_096, modifier: 0}],
+      layers: []
+    }
+
+    assert %{acquire_sync: :sync_file, modifier: 0} =
+             EmergeSkia.HeadlessPrimeSession.prime_stream_contract(
+               %{kind: "opengl"},
+               descriptor,
+               %VideoInterop.SyncFile{acquire_fence_fd: 1}
+             )
+
+    assert %{acquire_sync: :implicit, modifier: 0} =
+             EmergeSkia.HeadlessPrimeSession.prime_stream_contract(
+               %{kind: "opengl"},
+               descriptor,
+               :implicit
+             )
+  end
+
+  test "OpenGL PRIME retains per-buffer modifier negotiation for mixed descriptors" do
+    descriptor = %Descriptor{
+      objects: [
+        %Object{fd: 0, size: 4_096, modifier: 0},
+        %Object{fd: 1, size: 4_096, modifier: 1}
+      ],
+      layers: []
+    }
+
+    assert %{modifier: :per_buffer} =
+             EmergeSkia.HeadlessPrimeSession.prime_stream_contract(
+               %{kind: "opengl"},
+               descriptor,
+               :implicit
+             )
+  end
+
   test "binary headless output and video submission use VideoInterop.Frame" do
     {:ok, renderer} =
       EmergeSkia.start(
