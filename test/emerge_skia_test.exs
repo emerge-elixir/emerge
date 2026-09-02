@@ -518,6 +518,7 @@ defmodule EmergeSkiaTest do
              coded_width: 4,
              coded_height: 4,
              visible_rect: %VideoInterop.Rect{x: 0, y: 0, width: 4, height: 4},
+             format: %VideoInterop.Format{acquire_sync: :per_frame},
              storage: %VideoInterop.DMABuf.Descriptor{
                version: 1,
                objects: [object],
@@ -602,6 +603,7 @@ defmodule EmergeSkiaTest do
     assert %VideoInterop.Frame{
              coded_width: 640,
              coded_height: 420,
+             format: %VideoInterop.Format{acquire_sync: :sync_file},
              storage: %VideoInterop.DMABuf.Descriptor{
                objects: [%VideoInterop.DMABuf.Object{} = object],
                layers: [%VideoInterop.DMABuf.Layer{planes: [plane]} = layer]
@@ -651,7 +653,12 @@ defmodule EmergeSkiaTest do
     {_state, _assigned} = EmergeSkia.upload_tree(renderer, tree)
 
     assert_receive {:emerge_skia_frame, %VideoInterop.Frame{} = dma_buf}, 1_000
-    assert %VideoInterop.Frame{acquire_sync: :implicit} = dma_buf
+
+    assert %VideoInterop.Frame{
+             format: %VideoInterop.Format{acquire_sync: :per_frame},
+             acquire_sync: :implicit
+           } = dma_buf
+
     assert :ok = VideoInterop.validate(dma_buf)
     assert :ok = VideoInterop.release(dma_buf)
     assert :ok = EmergeSkia.stop(renderer)

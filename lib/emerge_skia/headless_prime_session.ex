@@ -185,6 +185,7 @@ defmodule EmergeSkia.HeadlessPrimeSession do
 
     case lease_owner_result do
       {:ok, lease_owner} ->
+        stream_acquire_sync = prime_stream_acquire_sync(native_opts.rendering_api)
         native_opts = put_native_relay(native_opts, self())
 
         case safe_native_start(native_opts) do
@@ -202,6 +203,7 @@ defmodule EmergeSkia.HeadlessPrimeSession do
                destination_monitor: destination_monitor,
                producer: producer,
                frame_message: frame_message,
+               stream_acquire_sync: stream_acquire_sync,
                producer_monitor: producer_monitor,
                mode: :open,
                stop_waiters: [],
@@ -220,6 +222,9 @@ defmodule EmergeSkia.HeadlessPrimeSession do
         {:stop, {:native_start, combine_startup_cleanup(error, cleanup_result)}}
     end
   end
+
+  defp prime_stream_acquire_sync(%{kind: "vulkan"}), do: :sync_file
+  defp prime_stream_acquire_sync(_rendering_api), do: :per_frame
 
   defp safe_start_lease_owner(opts) do
     LeaseOwner.start_link(opts)
@@ -296,7 +301,7 @@ defmodule EmergeSkia.HeadlessPrimeSession do
             },
             interlace_mode: :progressive,
             alpha_mode: :premultiplied,
-            acquire_sync: :per_frame
+            acquire_sync: state.stream_acquire_sync
           },
           storage: descriptor,
           acquire_sync: acquire_sync,
