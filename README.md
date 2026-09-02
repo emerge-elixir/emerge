@@ -148,25 +148,31 @@ For nerves example take a look at [`nerves_emerge_demo`](https://github.com/emer
 - Handle buttons, text input, keyboard, pointer events, and interactive states
 - Render images, SVGs, backgrounds, borders, text, and font assets
 - Use scroll containers, nearby overlays, paint-time and layout-aware transforms, and animation
-- Run the same renderer on macOS, Wayland, DRM, and raster backends with high-DPI rendering and efficient tree updates
+- Run the same renderer on macOS, Wayland, DRM, and headless runtimes with Metal, OpenGL, raster, and experimental Vulkan rendering APIs
 
-## Backends
+## Backends and rendering APIs
 
-- **macOS** for desktop macOS windows, using Metal when available and falling back to raster rendering through the external `macos_host` runtime
-- **Wayland** for desktop Linux windows
-- **DRM** for embedded, kiosk, and Nerves deployments, with OpenGL ES 2 as the minimum and explicitly requested rendering API
-- **Raster** for offscreen rendering and tests (this backend doesn't work with viewport for now)
+- **macOS** provides desktop windows through the external `macos_host`, using Metal when available and falling back to raster.
+- **Wayland** provides Linux desktop windows with OpenGL or raster presentation.
+- **DRM** provides direct embedded, kiosk, and Nerves output with OpenGL ES 2 as the supported minimum or raster GPU upload.
+- **Headless** produces retained frame binaries or Linux PRIME/DMA-BUF output.
+- **Vulkan** rendering exists for Wayland, DRM, and headless PRIME, but remains experimental.
 
-The macOS backend does not currently include `video_target`.
+Raster is a rendering API used by windowed and headless runtimes, not a separate
+viewport backend. macOS currently has no video target or retained-frame capture.
 
-For runtime backend selection and multi-backend setup, see [Set up a viewport](guides/tutorials/set_up_viewport.md).
+Viewport modes and configuration examples are documented by
+[`Emerge`](https://hexdocs.pm/emerge/Emerge.html) and
+[`Emerge.Runtime.Viewport`](https://hexdocs.pm/emerge/Emerge.Runtime.Viewport.html).
+Exact renderer and frame contracts are documented by
+[`EmergeSkia`](https://hexdocs.pm/emerge/EmergeSkia.html).
 
 ## Requirements
 
 - Elixir 1.19+
 - macOS for the `:macos` backend, or Linux with Wayland/DRM for Linux on-screen backends
 - OpenGL ES 2 or newer for DRM; no GLES version option is required
-- Rust toolchain (if rustler precompiled doesn't cover your combination)
+- Rust 1.91 or newer when a source build is required
 
 On macOS, Emerge downloads and caches the matching versioned `macos_host` runtime artifact automatically.
 
@@ -176,12 +182,17 @@ On DRM, optional GPU timer profiling and PRIME video import are enabled only whe
 
 API reference and tutorials are published on [HexDocs](https://hexdocs.pm/emerge).
 
-Key guides:
+The tutorials build on one another:
 
-- [Set up a viewport](guides/tutorials/set_up_viewport.md)
-- [Describe your UI](guides/tutorials/describe_ui.md)
-- [Use assets](guides/tutorials/use_assets.md)
-- [Manage state](guides/tutorials/state_management.md)
+1. [Set up a viewport](guides/tutorials/set_up_viewport.md)
+2. [Describe your UI](guides/tutorials/describe_ui.md)
+3. [Use assets](guides/tutorials/use_assets.md)
+4. [Manage state](guides/tutorials/state_management.md)
+
+Other documentation:
+
+- [Migrate to Emerge 0.4](guides/migrations/0.4.md)
+- [Build the native renderer](guides/reference/native-renderer-builds.md)
 
 Run `mix docs` to build the full docs locally.
 
@@ -191,7 +202,10 @@ Emerge's UI API is heavily inspired by [elm-ui](https://package.elm-lang.org/pac
 
 ## Third-Party Assets
 
-Bundled third-party asset notices are documented in [THIRD_PARTY_ASSETS.md](THIRD_PARTY_ASSETS.md). Package/runtime-relevant notices are summarized in [NOTICE](NOTICE).
+Bundled third-party asset notices are documented in
+[THIRD_PARTY_ASSETS.md](https://github.com/emerge-elixir/emerge/blob/main/THIRD_PARTY_ASSETS.md).
+Package/runtime-relevant notices are summarized in
+[NOTICE](https://github.com/emerge-elixir/emerge/blob/main/NOTICE).
 
 Packaged/runtime-relevant asset groups:
 

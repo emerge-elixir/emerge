@@ -1,12 +1,19 @@
 # Plans
 
-Last updated: 2026-08-30.
+Last updated: 2026-09-01.
 
 This directory contains only open implementation plans and durable design/research
 notes. Completed implementation logs belong in Git history, the changelog, tests,
 or `guides/internals/`, not under an `active-` filename.
 
 ## Active implementation plans
+
+### `active-direct-video-frame-submission.md`
+
+Replace renderer-owned video targets and connection sessions with atom target
+identifiers, direct viewport frame submission, storage-neutral VideoInterop
+frames, unified binary/PRIME headless output, and Membrane-based
+headless-to-Emerge transport applied to `../emerge_demo`.
 
 ### `active-picture-asset-memory-validation.md`
 
@@ -46,6 +53,12 @@ and the 60 FPS / 30% headroom gates.
 Commit-range and release-readiness audit from `v0.3.4` through the packed
 headless grayscale baseline, including dependency, packaging, lifecycle, CI,
 and qualification findings.
+
+### `release-0.4-documentation-audit.md`
+
+Feature audit and completed user-facing documentation coverage for the 0.4
+release, including the ordered tutorial path, viewport and renderer API
+reference, migration notes, native builds, and package validation.
 
 ### `headless-low-memory-grayscale-investigation.md`
 

@@ -7,10 +7,17 @@ on:
       - main
       - master
 
+permissions:
+  contents: read
+
 jobs:
   ci_linux:
-    name: Linux CI
+    name: Linux CI / Rust ${{ matrix.rust }}
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: ["1.91.0", "stable"]
 
     steps:
       - name: Checkout source code
@@ -20,10 +27,13 @@ jobs:
         uses: erlef/setup-beam@v1
         with:
           elixir-version: "1.20.2"
-          otp-version: "29.0.4"
+          otp-version: "29.0.5"
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+          components: rustfmt, clippy
 
       - name: Install native build dependencies
         run: |
@@ -43,9 +53,9 @@ jobs:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-mix-elixir-1.20.2-otp-29.0.4-${{ hashFiles('mix.lock') }}
+          key: ${{ runner.os }}-mix-elixir-1.20.2-otp-29.0.5-${{ hashFiles('mix.lock') }}
           restore-keys: |
-            ${{ runner.os }}-mix-elixir-1.20.2-otp-29.0.4-
+            ${{ runner.os }}-mix-elixir-1.20.2-otp-29.0.5-
 
       - name: Cache Cargo dependencies and target
         uses: actions/cache@v5
@@ -54,9 +64,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             native/emerge_skia/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('native/emerge_skia/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ matrix.rust }}-${{ hashFiles('native/emerge_skia/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-${{ matrix.rust }}-
 
       - name: Install dependencies
         run: mix deps.get
@@ -76,7 +86,7 @@ jobs:
         uses: erlef/setup-beam@v1
         with:
           elixir-version: "1.20.2"
-          otp-version: "29.0.4"
+          otp-version: "29.0.5"
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -87,9 +97,9 @@ jobs:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-mix-elixir-1.20.2-otp-29.0.4-${{ hashFiles('mix.lock') }}
+          key: ${{ runner.os }}-mix-elixir-1.20.2-otp-29.0.5-${{ hashFiles('mix.lock') }}
           restore-keys: |
-            ${{ runner.os }}-mix-elixir-1.20.2-otp-29.0.4-
+            ${{ runner.os }}-mix-elixir-1.20.2-otp-29.0.5-
 
       - name: Cache Cargo dependencies and target
         uses: actions/cache@v5

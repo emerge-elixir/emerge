@@ -18,10 +18,8 @@ defmodule Emerge.Runtime.Viewport.Renderer do
   @callback set_input_target(term(), pid() | nil) :: :ok
   @callback set_log_target(term(), pid() | nil) :: :ok
   @callback set_input_mask(term(), non_neg_integer()) :: :ok
-
-  @callback connect_video_output(term(), EmergeSkia.VideoTarget.t(), keyword()) ::
-              {:ok, reference()} | {:error, term()}
-  @callback disconnect_video_output(term()) :: :ok | {:error, term()}
+  @callback submit_video_frame(term(), atom(), VideoInterop.Frame.t()) ::
+              :ok | {:error, term()}
 
   @callback upload_tree(term(), Emerge.Engine.Element.t()) ::
               {Emerge.Engine.diff_state(), Emerge.Engine.Element.t()}
@@ -33,6 +31,5 @@ defmodule Emerge.Runtime.Viewport.Renderer do
               {Emerge.Engine.diff_state(), nil}
 
   @optional_callbacks patch_tree_runtime: 3,
-                      connect_video_output: 3,
-                      disconnect_video_output: 1
+                      submit_video_frame: 3
 end

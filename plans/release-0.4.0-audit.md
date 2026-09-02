@@ -30,11 +30,12 @@ and column fill relayout are all present. The stale completed GLES2 plan was not
 resurrected by the merge.
 
 The public `main` and `v0.3.4` refs were both verified at `6fc99f6`. On the
-resolved integration tree, `./ci-tests.sh all` passed formatting,
-warnings-as-errors compilation, strict Credo, Clippy, 462 Elixir tests including
-the full sweep, 1,005 Rust tests plus the benchmark fixture, and Dialyzer. This
-validation still used the sibling VideoInterop source override; registry-only
-and unpacked-package validation remain blocked by findings 1 and 2.
+current reconciled working tree, `./ci-tests.sh all` passes formatting,
+warnings-as-errors compilation, strict Credo, Clippy, 438 Elixir tests including
+the full sweep with three hardware tests excluded, 1,005 Rust tests plus the
+benchmark fixture, and Dialyzer. Warning-free docs and unpacked-package
+all-target and embedded-CPU Cargo checks also pass with the coordinated sibling
+VideoInterop source. Registry-only validation remains blocked by publication.
 
 ## Executive summary
 
@@ -50,9 +51,11 @@ The range adds substantial and valuable functionality:
   dithering;
 - touch scrolling, centered-text, and Nerves cross-compilation fixes.
 
-It is not ready to tag as 0.4.0. Public dependency publication, package source
-builds, Gray4 correctness, ancestry reconciliation, and release gating remain
-blockers. Vulkan and multi-renderer lifecycle qualification also remain open.
+It is not ready to tag as 0.4.0. Public dependency publication, registry-only
+lock/package validation, exact release dates, and a clean pushed release commit
+remain blockers. Gray4 removal, ancestry reconciliation, package source closure,
+and release gating are complete. Vulkan hardware and multi-renderer lifecycle
+qualification remain open.
 
 ## Release blockers
 
@@ -78,20 +81,19 @@ Before release:
 4. Regenerate both locks from registry sources.
 5. Build in a clean checkout without sibling repositories or path variables.
 
-### 2. The Hex package contains an invalid Cargo project
+### 2. Hex package Cargo sources corrected; registry validation remains blocked
 
-`native/emerge_skia/Cargo.toml` declares five explicit benchmark targets:
+`native/emerge_skia/Cargo.toml` declares five explicit benchmark targets. The
+first audited package omitted `native/emerge_skia/benches/`, so Cargo rejected
+the unpacked manifest before compilation.
 
-- `layout`
-- `patch`
-- `emrg`
-- `renderer`
-- `stats`
+`mix.exs` now packages the benchmark sources, native support files, the ordered
+public tutorials, migration notes, and user-facing references. Maintainer-only
+internal guides remain outside the Hex package. Documentation is validated from
+the unpacked archive. Registry-only native compilation remains blocked until the
+published `video-interop` crate replaces the coordinated sibling path patch.
 
-`mix.exs` packages native `src/` and support files but not
-`native/emerge_skia/benches/`.
-
-The exact package check was:
+The final package gate remains:
 
 ```bash
 mix hex.build --unpack
@@ -99,72 +101,51 @@ cd emerge-0.4.0/native/emerge_skia
 cargo check --locked --no-default-features --features embedded-cpu
 ```
 
-It failed because all five declared benchmark source files were absent. After
-supplying those files manually, Cargo reached the next blocker and failed on
-the missing sibling `video-interop` path.
+Run it without sibling paths after VideoInterop publication.
 
-Either include the benchmark source tree in the Hex package or remove the
-explicit benchmark declarations from the published manifest. Package
-validation must compile the unpacked package; `mix hex.build --unpack` alone is
-not sufficient.
+### 3. Malformed Gray4 output removed from the accepted contract
 
-### 3. Advertised Gray4 output is malformed for odd multi-row frames
+The audit found that the former `pack_gray4` implementation flattened the pixel
+stream instead of restarting packing at each row. A 3x2 frame therefore declared
+a 2-byte stride and 4-byte output while producing only 3 bytes.
 
-`EmergeSkia` accepts and documents `headless.pixel_format: :gray4`, but the
-committed `pack_gray4` implementation packs one flattened pixel stream. It does
-not restart packing at each row boundary.
-
-For a 3x2 frame:
-
-- declared stride is 2 bytes;
-- required output is 4 bytes;
-- committed output is 3 bytes.
-
-The Gray4/Gray8 active plan also states that these formats remain unfinished.
-Gray4 and Gray8 should be removed from the accepted public 0.4 contract until
-they have exact row, tail, alpha, ownership, and multi-row tests, or the active
-plan should be completed before release.
+Gray4 has now been removed from option normalization and native conversion, so
+it fails during configuration instead of reaching an invalid frame or the
+storage-neutral output encoder. Gray8 remains accepted for ongoing work but is
+explicitly excluded from the stable 0.4 output contract. Its active plan still
+requires exact alpha, ownership, and multi-row qualification before stability.
 
 ### 4. Branch ancestry reconciliation completed
 
-`release/0.4.0-integration` now joins the published `v0.3.4` history and the
-reviewed headless candidate through `d88d897`. Patch-equivalent copies remain in
-the merged history, but the release line now has truthful ancestry and the
+The reconciled `headless-backend` history joins the published `v0.3.4` line and
+the reviewed headless candidate through `d88d897`. The temporary release
+worktree and redundant integration branch were removed. Patch-equivalent copies
+remain in the merged history, but the release line has truthful ancestry and the
 published 0.3.3/0.3.4 fixes listed above were verified in the merged tree.
 
 Required checks before tagging:
 
-1. Keep all subsequent release work on the integration branch.
-2. Run the full regression and package-source tests after the remaining
-   dependency/package blockers are resolved.
+1. Keep subsequent 0.4 work on `headless-backend` until the release commit is
+   selected.
+2. Repeat the passing full regression and unpacked-package source checks using
+   registry dependencies after publication.
 3. Verify `git merge-base --is-ancestor v0.3.4 <release-commit>` after every
    history rewrite and immediately before tagging.
 
 ## High-priority findings
 
-### 5. Release tags can publish without running CI
+### 5. Exact-tag validation now gates artifacts and publication
 
-The normal CI workflow runs on pull requests and pushes to `main`/`master`, not
-tag pushes. The tag-triggered artifact workflow builds archives but does not run
-Mix tests, Rust tests, Clippy, Dialyzer, docs, full feature checks, or unpacked
-package compilation.
+The artifact workflow now begins with a Rust-1.91 release validation job. It
+checks exact tag, Mix/Cargo version, dated changelog, and `v0.3.4` ancestry; runs
+the quality, test, full-sweep, Dialyzer, and warning-free documentation gates;
+and compiles all targets plus the embedded-CPU profile from the unpacked Hex
+package. NIF and macOS artifact jobs depend on that validation.
 
-The Hex workflow can automatically publish after the artifact workflow
-succeeds. This makes a successful build matrix, rather than a successful release
-test suite, the publication gate.
-
-Require an exact-tag validation job before publication. It should run:
-
-```bash
-./ci-tests.sh all
-mix test --include full_sweep
-mix docs
-mix hex.build --unpack
-```
-
-It should also compile the unpacked package and run the supported Cargo feature
-matrix. The publishing workflow should depend on that result and verify all NIF
-and macOS artifacts.
+The Hex workflow repeats the exact-tag metadata, full suite, docs, and unpacked
+package checks even on manual dispatch, then verifies required macOS assets
+before publication. This removes the former path where a successful artifact
+matrix or manual dispatch could publish unvalidated source.
 
 ### 6. Asset runtime ownership is incompatible with multiple native renderers
 
@@ -196,24 +177,15 @@ Add tests that:
 - verify no stale status, cache invalidation, or rerender routing crosses the
   renderer boundary.
 
-### 7. Committed raster decoding and retention are unbounded
+### 7. Decoded raster retention is bounded; decode expansion still needs a hard cap
 
-At the audited commit, raster insertion decodes the complete source image and
-stores it in an unbounded process-global map. A small compressed file may decode
-to a very large raster, and a long-lived process can retain every encountered
-asset until global shutdown.
+The #71/#72 integration landed target-sized decode, entry- and byte-bounded LRU
+retention, separate encoded source metadata, checked decoded-byte accounting,
+and periodic asset-memory diagnostics.
 
-The candidate #71/#72 working-tree integration mitigates this with:
-
-- target-sized decode;
-- entry- and byte-bounded LRU retention;
-- separate encoded source metadata;
-- checked decoded byte accounting;
-- asset-memory diagnostics in the periodic renderer stats log.
-
-That work should land before release, with additional limits for maximum source
-dimensions/decoded pixels and with the multi-renderer lifecycle tests above.
-Runtime file-size limits constrain encoded bytes, not decompression expansion.
+A remaining limit is maximum source dimensions/decoded pixels. Runtime file-size
+limits constrain encoded bytes, not decompression expansion. Keep this residual
+work with the multi-renderer lifecycle tests above.
 
 ### 8. Vulkan and video qualification is incomplete
 
@@ -234,51 +206,39 @@ claims until qualification is complete.
 
 ## API and documentation findings
 
-### 9. Screenshot migration is breaking but under-documented
+### 9. Screenshot migration documented
 
 `render_to_pixels/2` and `render_to_png/2` changed from one-shot tree rendering
 that returned a binary to retained renderer capture that returns
-`{:ok, binary}` or `{:error, reason}`. The changelog mentions on-demand capture
-but not the removed tree form or changed return shape.
+`{:ok, binary}` or `{:error, reason}`. The changelog, migration guide, and API
+docs now include the removed form, new return shape, backend support, and
+before/after examples.
 
-Prefer retaining the old tree clauses as deprecated wrappers around
-`TreeRenderer`. Otherwise add a dedicated 0.3-to-0.4 migration section with
-before/after examples and a complete list of public return-shape changes.
+### 10. Release documentation updated
 
-### 10. Release notes are stale
+The 0.4 entries now use one unreleased heading and include packed BW1/Gray2,
+centered-text, SVG, screenshot migration, renderer selection, video API,
+lifecycle, and Nerves build changes without duplicating 0.3.3/0.3.4 fixes.
 
-The committed 0.4 changelog date predates later commits and omits packed
-BW1/Gray2 output and the centered-text fix. The existing release audit also
-predated the accepted BW1/Gray2 correction and used the old commit count.
+The `Emerge` and viewport module documentation now cover viewport usage and
+configuration, including headless mode. `EmergeSkia` documents exact renderer,
+capture, diagnostics, and video contracts. Migration and native-build material
+is grouped separately from the four ordered tutorials. Maintainer internals are
+not included in the Hex package; all declared native benchmark sources are.
 
-Before release:
+### 11. Rust version floor declared
 
-- use an `Unreleased` heading until the tag date is known;
-- document headless grayscale contracts and limitations;
-- document screenshot migration;
-- document the VideoInterop cold-restart/upgrade requirement;
-- remove duplicated fixes already released in 0.3.4;
-- update the setup guide for headless and Vulkan selection.
-
-### 11. Rust version requirements are undeclared
-
-The sibling `video-interop` crate declares Rust 1.91, while Emerge has no
-`rust-version` and tells users only to install a Rust toolchain. CI follows
-floating `stable`.
-
-Set `rust-version = "1.91"`, document it, test the minimum version, and retain a
-second latest-stable job for forward compatibility.
+Emerge now declares Rust 1.91 in the native Cargo manifest, documents it for
+source builds, and runs Linux CI with Rust 1.91 and current stable.
 
 ### 12. Minor release hygiene
 
-- `.gitignore` ignores `emerge_skia-*.tar`, but `mix hex.build` creates
-  `emerge-*.tar`.
+- `.gitignore` now ignores the actual `emerge-*.tar` package artifact.
 - Native test support is included in the package after the explicit
   `test_support.rs` exclusion was removed.
 - `Options.rendering_api_start_error/1` returns `nil` in every branch and has a
   test that only confirms the dead behavior.
-- Public headless/video setup guidance is much smaller than the implementation
-  surface and currently depends heavily on internal plans.
+- Registry-only package validation still depends on VideoInterop publication.
 
 ## Commit-structure review
 
@@ -304,23 +264,19 @@ separate concerns where practical:
 3. unconditional vector/SVG support;
 4. application-level picture validation.
 
-## Suggested execution order
+## Remaining execution order
 
-1. Reconcile branch ancestry on a clean integration branch.
-2. Publish VideoInterop dependencies and regenerate locks.
-3. make the unpacked Hex package compile from registry-only sources.
-4. Remove or complete Gray4/Gray8.
-5. Land bounded target-sized raster decoding.
-6. Make asset runtime ownership per renderer.
-7. Add exact-tag release CI and feature-matrix gates.
-8. Complete or explicitly defer Vulkan/video hardware qualification.
-9. Add migration documentation, MSRV, and final changelog entries.
-10. Tag only from a clean, pushed commit descended from `v0.3.4`.
+1. Publish VideoInterop dependencies and regenerate locks.
+2. Repeat the unpacked Hex package checks from registry-only sources.
+3. Resolve or explicitly defer per-renderer asset runtime ownership.
+4. Complete or explicitly defer Vulkan/video hardware qualification.
+5. Set final changelog dates and tag only from a clean, pushed commit descended
+   from `v0.3.4`.
 
 ## Audit validation performed
 
 This audit used Git history/tree comparisons, manifest and workflow review,
-public registry checks, and an exact `mix hex.build --unpack` package probe. The
-unpacked Cargo source-build probe exposed the missing benchmark files and then
-the sibling path dependency. No hardware qualification was performed as part of
-this audit.
+public registry checks, full local CI, warning-free docs, and unpacked Hex
+package Cargo probes for all targets and embedded CPU. The final probes still
+use the coordinated sibling VideoInterop source because the packages are not
+published. No new hardware qualification was performed as part of this audit.

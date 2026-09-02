@@ -144,6 +144,8 @@ defmodule Emerge.MixProject do
     [
       "lib",
       "guides/tutorials",
+      "guides/migrations",
+      "guides/reference",
       "native/emerge_skia/Cargo.toml",
       "native/emerge_skia/Cargo.lock",
       "native/emerge_skia/Cross.toml",
@@ -151,31 +153,33 @@ defmodule Emerge.MixProject do
       "NOTICE",
       "THIRD_PARTY_ASSETS.md",
       "licenses",
+      "priv/sample_assets/static.jpg",
       "README.md",
       "CHANGELOG.md",
       "mix.exs",
       "mix.lock"
     ] ++
       package_native_sources() ++
+      package_native_benches() ++
       package_native_support() ++ package_assets() ++ Path.wildcard("checksum-*.exs")
   end
 
   defp package_native_sources do
     "native/emerge_skia/src/**/*"
     |> Path.wildcard()
-    |> Enum.reject(&(File.dir?(&1) or native_test_source?(&1)))
+    |> Enum.reject(&File.dir?/1)
+  end
+
+  defp package_native_benches do
+    "native/emerge_skia/benches/**/*"
+    |> Path.wildcard()
+    |> Enum.reject(&File.dir?/1)
   end
 
   defp package_native_support do
     "native/emerge_skia/support/**/*"
     |> Path.wildcard()
     |> Enum.reject(&File.dir?/1)
-  end
-
-  defp native_test_source?(path) do
-    path
-    |> Path.split()
-    |> Enum.member?("tests")
   end
 
   defp package_assets do
@@ -201,7 +205,7 @@ defmodule Emerge.MixProject do
       extras: docs_extras(),
       groups_for_extras: docs_groups_for_extras(),
       groups_for_modules: [
-        "Public API": [Emerge],
+        Viewport: [Emerge, Emerge.Runtime.Viewport],
         UI: ~r/^Emerge\.UI(\.|$)/,
         Assets: ~r/^Emerge\.Assets(\.|$)/,
         Runtime: ~r/^Emerge\.Runtime\./,
@@ -229,7 +233,9 @@ defmodule Emerge.MixProject do
       "guides/tutorials/set_up_viewport.md",
       "guides/tutorials/describe_ui.md",
       "guides/tutorials/use_assets.md",
-      "guides/tutorials/state_management.md"
+      "guides/tutorials/state_management.md",
+      "guides/migrations/0.4.md",
+      "guides/reference/native-renderer-builds.md"
     ]
     |> Enum.filter(&File.exists?/1)
   end
@@ -238,10 +244,13 @@ defmodule Emerge.MixProject do
     [
       "guides/internals/architecture.md",
       "guides/internals/assets-images.md",
+      "guides/internals/beam-performance-constraints.md",
       "guides/internals/macos-backend.md",
       "guides/internals/feature-roadmap.md",
       "guides/internals/emrg-format.md",
       "guides/internals/events.md",
+      "guides/internals/layout-refresh-render-flow.md",
+      "guides/internals/nearby-semantics.md",
       "guides/internals/tree-patching.md",
       "guides/internals/video-interop-architecture.md"
     ]
@@ -249,7 +258,11 @@ defmodule Emerge.MixProject do
   end
 
   defp docs_groups_for_extras do
-    [Tutorials: ~r/guides\/tutorials\/.*/] ++
+    [
+      Tutorials: ~r/guides\/tutorials\/.*/,
+      Migrations: ~r/guides\/migrations\/.*/,
+      Reference: ~r/guides\/reference\/.*/
+    ] ++
       if internal_docs_extras() == [] do
         []
       else
@@ -258,7 +271,7 @@ defmodule Emerge.MixProject do
   end
 
   defp include_internal_docs? do
-    System.get_env("EMERGE_INCLUDE_INTERNAL_DOCS", "true") not in ["0", "false"]
+    System.get_env("EMERGE_INCLUDE_INTERNAL_DOCS", "false") not in ["0", "false"]
   end
 
   defp rustler_opts do

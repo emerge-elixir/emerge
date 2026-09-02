@@ -4222,6 +4222,17 @@ impl SceneRenderer {
         self.renderer_cache.set_enabled(true);
     }
 
+    pub fn sync_cpu_video_frames(
+        &mut self,
+        registry: &Arc<crate::video::VideoRegistry>,
+    ) -> Result<bool, String> {
+        let changed = self.video_state.sync_cpu(registry)?;
+        if changed {
+            self.invalidate_visible_frame_fingerprint();
+        }
+        Ok(changed)
+    }
+
     #[cfg(feature = "linux-opengl")]
     pub fn sync_video_frames(
         &mut self,
@@ -4229,8 +4240,12 @@ impl SceneRenderer {
         registry: &Arc<crate::video::VideoRegistry>,
         ctx: Option<&crate::video::VideoImportContext>,
     ) -> Result<VideoSyncResult, String> {
+        let cpu_changed = self.sync_cpu_video_frames(registry)?;
         let Some(gr_context) = frame.direct_context.as_deref_mut() else {
-            return Ok(VideoSyncResult::default());
+            return Ok(VideoSyncResult {
+                resources_changed: cpu_changed,
+                ..VideoSyncResult::default()
+            });
         };
 
         let result = match self.video_state.sync_pending(registry, gr_context, ctx) {
@@ -4267,12 +4282,20 @@ impl SceneRenderer {
         registry: &Arc<crate::video::VideoRegistry>,
         context: &crate::video::VulkanVideoImportContext,
     ) -> Result<VideoSyncResult, String> {
+        let cpu_changed = self.sync_cpu_video_frames(registry)?;
         let Some(gr_context) = frame.direct_context.take() else {
-            return Ok(VideoSyncResult::default());
+            return Ok(VideoSyncResult {
+                resources_changed: cpu_changed,
+                ..VideoSyncResult::default()
+            });
         };
         let result = self
             .video_state
-            .sync_pending_vulkan(registry, frame, gr_context, context);
+            .sync_pending_vulkan(registry, frame, gr_context, context)
+            .map(|mut result| {
+                result.resources_changed |= cpu_changed;
+                result
+            });
         frame.direct_context = Some(gr_context);
         if result.as_ref().is_ok_and(|result| result.resources_changed) {
             self.invalidate_visible_frame_fingerprint();

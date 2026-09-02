@@ -118,7 +118,7 @@ commands.
 - video targets on macOS
 - in-process macOS NIF window backend
 
-`EmergeSkia.video_target/2` intentionally returns an error for macOS.
+Direct video-frame submission is not currently supported by the macOS host renderer.
 
 ## Validation
 

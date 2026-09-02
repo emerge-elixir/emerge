@@ -228,30 +228,40 @@ Supported backend families:
 
 | Backend | Purpose | Rendering path |
 |---------|---------|----------------|
-| Wayland | Windowed Linux runtime | EGL/Skia GPU surface and Wayland frame callbacks |
-| DRM | Direct Linux framebuffer/kiosk runtime | KMS/DRM presentation with Skia GPU surface |
-| macOS | Host runtime integration | Native host protocol and Skia rendering integration |
-| Raster | Offscreen/headless testing | CPU raster surface |
+| Wayland | Windowed Linux runtime | OpenGL, raster presentation, or experimental Vulkan with Wayland frame callbacks |
+| DRM | Direct Linux framebuffer/kiosk runtime | OpenGL, raster GPU upload, or experimental Vulkan with KMS presentation |
+| macOS | Host runtime integration | Metal or raster through the native host protocol |
+| Headless | Offscreen output | Retained frame binaries or Linux PRIME/DMA-BUF production |
 
+Raster is a rendering API used with a backend, not a separate runtime backend.
 Backends consume `RenderMsg::Scene`, update `RenderState`, and call
 `SceneRenderer`. They also forward native input to the event actor and expose a
 wake handle for redraws.
 
 ## Assets and Fonts
 
-The asset pipeline resolves source-based images after upload or patch. Loaded
-assets are inserted into renderer-global asset caches, and the tree is notified
-with `AssetStateChanged`.
+The asset pipeline resolves source-based images after upload or patch. Encoded
+raster source records are retained separately from final decoded pixels. Drawing
+computes fitted device-space dimensions and, when configured, decodes/resamples
+to that target before inserting the final image into an entry/byte-bounded LRU.
+The tree is notified with `AssetStateChanged` when source state changes.
 
-Renderer-global caches include:
+Process-global resource storage currently includes:
 
 - font typeface cache
-- image/video asset cache
-- rendered vector variant cache
+- encoded image/vector source records
+- bounded decoded-raster LRU
+- bounded rendered-vector variant cache
 - Skia global caches
 
-Font and asset generations participate in paint-layer payload keys so cached
-payloads are invalidated when resource contents change.
+A retained decoded raster may outlive its encoded source record and render while
+the source is restored asynchronously. Font and asset generations participate
+in paint-layer payload keys so cached payloads are invalidated when contents
+change.
+
+Asset source worker/configuration ownership is also process-global in 0.4. Two
+native renderers therefore share source lifecycle and cache limits; per-renderer
+ownership remains future lifecycle work.
 
 See [Assets and Images](assets-images.md) for source resolution, runtime path
 security, and async loading behavior.
@@ -291,7 +301,10 @@ The architecture has several separate caches with different owners:
 | Cached registry rebuild | `TreeUpdateEngine` | Whole clean registry response |
 | Nearby render-fragment cache | `ElementTree` node refresh state | Reuse clean semantic Nearby fragments and focus outputs |
 | Renderer paint-layer payload cache | `SceneRenderer` | GPU/CPU own-run image reuse |
-| Asset/font/vector caches | Renderer globals | Resource reuse and resource generations |
+| Encoded asset/source status | Process-global asset runtime | Source resolution, generations, and async hydration |
+| Decoded raster LRU | Process-global renderer storage | Entry/byte-bounded final pixel reuse |
+| Rendered vector variants | Process-global renderer storage | Bounded SVG rasterization reuse |
+| Font/Skia caches | Process globals | Typeface and Skia resource reuse |
 
 These caches are intentionally owned by the stage that can validate them. The
 tree may reuse a clean semantic Nearby fragment; only the renderer can decide
@@ -327,10 +340,12 @@ native/emerge_skia/src/
     scrollbar.rs                 Scrollbar hit and drag state
   assets.rs                      Asset actor and source resolution
   backend/
-    wayland/                     Wayland input, EGL rendering, presentation, IME
-    drm.rs                       Direct KMS/DRM backend
+    wayland/                     Wayland OpenGL/Vulkan/raster presentation and input
+    drm/                         Direct KMS with OpenGL/Vulkan/raster presentation
+    headless/                    Binary and PRIME output
+    vulkan/                      Shared experimental Vulkan device/import helpers
     macos/                       macOS host protocol integration
-    raster.rs                    Offscreen CPU renderer
+    raster.rs                    Shared CPU renderer
     wake.rs                      Backend wake abstraction
     skia_gpu.rs                  Shared Skia GPU helpers
 ```

@@ -109,6 +109,13 @@ impl RasterBackend {
         Ok(())
     }
 
+    pub fn sync_cpu_video_frames(
+        &mut self,
+        registry: &std::sync::Arc<crate::video::VideoRegistry>,
+    ) -> Result<bool, String> {
+        self.renderer.sync_cpu_video_frames(registry)
+    }
+
     pub fn render(&mut self, state: &RenderState) -> RasterFrame {
         self.render_with_timings(state).0
     }

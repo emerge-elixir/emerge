@@ -13,7 +13,83 @@ env:
   EMERGE_SOURCE_REVISION: ${{ github.sha }}
 
 jobs:
+  validate_release:
+    name: Validate release source
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Elixir and OTP
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.20.2"
+          otp-version: "29.0.5"
+
+      - name: Set up supported Rust floor
+        uses: dtolnay/rust-toolchain@1.91.0
+        with:
+          components: rustfmt, clippy
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libegl1-mesa-dev \
+            libgbm-dev \
+            libdrm-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libwayland-dev \
+            libxkbcommon-dev
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Verify exact release metadata
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          project_version="$(awk -F'"' '/^  @version "/ { print $2; exit }' mix.exs)"
+          cargo_version="$(awk -F'"' '$0 == "[package]" { in_package=1; next } in_package && /^version = "/ { print $2; exit }' native/emerge_skia/Cargo.toml)"
+          test -n "$project_version"
+          test "$project_version" = "$cargo_version"
+          test "$GITHUB_REF_NAME" = "v$project_version"
+          grep -Eq "^## \[$project_version\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$" CHANGELOG.md
+          git merge-base --is-ancestor v0.3.4 HEAD
+
+      - name: Run full quality, test, and Dialyzer suite
+        run: ./ci-tests.sh all
+
+      - name: Run full-sweep Elixir tests
+        run: mix test --include full_sweep --warnings-as-errors
+
+      - name: Build documentation without warnings
+        env:
+          EMERGE_INCLUDE_INTERNAL_DOCS: "false"
+        run: mix docs --warnings-as-errors
+
+      - name: Validate unpacked package native sources
+        shell: bash
+        run: |
+          package_dir="$RUNNER_TEMP/emerge-0.4.0"
+          mix hex.build --unpack --output "$package_dir"
+          cargo check \
+            --manifest-path "$package_dir/native/emerge_skia/Cargo.toml" \
+            --locked \
+            --all-targets
+          cargo check \
+            --manifest-path "$package_dir/native/emerge_skia/Cargo.toml" \
+            --locked \
+            --no-default-features \
+            --features embedded-cpu
+
   build_release:
+    needs: validate_release
     name: NIF ${{ matrix.nif }} - ${{ matrix.job.name }}
     runs-on: ${{ matrix.job.os }}
     strategy:
@@ -146,6 +222,7 @@ jobs:
           files: ${{ steps.build-crate.outputs.file-path }}
 
   build_macos_host:
+    needs: validate_release
     name: macos_host - ${{ matrix.job.name }}
     runs-on: ${{ matrix.job.os }}
     strategy:

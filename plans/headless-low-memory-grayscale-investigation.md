@@ -130,7 +130,7 @@ frame-related peak, not total VM/RSS.
 ### Select Gray8 for grayscale binary output
 
 For `backend: :headless`, `rendering_api: :raster`, and output formats
-`:gray8`, `:gray4`, `:gray2`, or `:bw1`:
+`:gray8`, `:gray2`, or `:bw1` (Gray4 was removed after its row-packing audit):
 
 - Create the main raster surface as `ColorType::Gray8` / `AlphaType::Opaque`.
 - Use unknown/no pixel geometry instead of RGB horizontal LCD geometry.

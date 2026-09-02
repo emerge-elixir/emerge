@@ -2,6 +2,7 @@
 name = "emerge_skia"
 version = "0.4.0"
 edition = "2024"
+rust-version = "1.91"
 
 [lib]
 name = "emerge_skia"

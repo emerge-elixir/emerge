@@ -44,22 +44,6 @@ defmodule EmergeSkia.HeadlessPrimeSession do
     :exit, _reason -> false
   end
 
-  @spec connect(t(), EmergeSkia.VideoTarget.t(), keyword()) ::
-          {:ok, reference()} | {:error, term()}
-  def connect(%__MODULE__{pid: pid}, %EmergeSkia.VideoTarget{} = target, opts \\ []) do
-    GenServer.call(pid, {:connect, target, opts}, :infinity)
-  catch
-    :exit, reason -> {:error, {:source_down, reason}}
-  end
-
-  @spec disconnect(t()) :: :ok | {:error, term()}
-  def disconnect(%__MODULE__{pid: pid}) do
-    GenServer.call(pid, :disconnect, :infinity)
-  catch
-    :exit, {:noproc, _details} -> :ok
-    :exit, {:normal, _details} -> :ok
-  end
-
   @doc false
   @spec release_backend_token(reference()) :: :ok
   def release_backend_token(token), do: Native.headless_prime_release_backend_token(token)
@@ -104,40 +88,6 @@ defmodule EmergeSkia.HeadlessPrimeSession do
   def handle_call(:stop, from, state) do
     state = %{state | stop_waiters: [from | state.stop_waiters]}
     {:noreply, begin_draining(state)}
-  end
-
-  def handle_call({:connect, _target, _opts}, _from, %{mode: mode} = state)
-      when mode != :open do
-    {:reply, {:error, :source_stopping}, state}
-  end
-
-  def handle_call({:connect, target, opts}, _from, state) do
-    with {:ok, format, notify_to} <- output_format(state, target, opts),
-         :ok <- validate_target_size(target, format) do
-      state = close_destination(state)
-
-      case VideoInterop.open_consumer(target, format, owner: self()) do
-        {:ok, session} ->
-          connection_ref = make_ref()
-
-          notify(
-            notify_to,
-            {:emerge_video_output, state.producer, connection_ref, :connected}
-          )
-
-          {:reply, {:ok, connection_ref},
-           %{state | destination: {:consumer, session, connection_ref, notify_to, false}}}
-
-        {:error, reason} ->
-          {:reply, {:error, reason}, state}
-      end
-    else
-      {:error, reason} -> {:reply, {:error, reason}, state}
-    end
-  end
-
-  def handle_call(:disconnect, _from, state) do
-    {:reply, :ok, close_destination(state)}
   end
 
   @impl true
@@ -252,16 +202,11 @@ defmodule EmergeSkia.HeadlessPrimeSession do
                destination_monitor: destination_monitor,
                producer: producer,
                frame_message: frame_message,
-               width: native_opts.width,
-               height: native_opts.height,
-               acquire_sync: output_acquire_sync(native_opts.rendering_api),
-               modifier: output_modifier(native_opts.rendering_api),
                producer_monitor: producer_monitor,
                mode: :open,
                stop_waiters: [],
                release_failure_count: 0,
-               last_release_failure: nil,
-               destination_close_error: nil
+               last_release_failure: nil
              }}
 
           error ->
@@ -341,6 +286,18 @@ defmodule EmergeSkia.HeadlessPrimeSession do
           coded_width: width,
           coded_height: height,
           visible_rect: %Rect{x: 0, y: 0, width: width, height: height},
+          format: %Format{
+            width: width,
+            height: height,
+            framerate: nil,
+            storage: %DMABuf.Format{
+              fourcc: VideoInterop.DMABuf.FourCC.from_string!("AB24"),
+              modifier: :per_buffer
+            },
+            interlace_mode: :progressive,
+            alpha_mode: :premultiplied,
+            acquire_sync: :per_frame
+          },
           storage: descriptor,
           acquire_sync: acquire_sync,
           lease: lease
@@ -357,54 +314,14 @@ defmodule EmergeSkia.HeadlessPrimeSession do
     end
   end
 
-  defp deliver_issued_frame(frame, video_frame, %{destination: {:external, target}} = state) do
+  defp deliver_issued_frame(_frame, video_frame, %{destination: {:external, target}} = state) do
     if Process.alive?(target) do
-      output_frame = canonical_output_frame(frame, video_frame)
-      send(target, {output_message_tag(state.frame_message), output_frame})
+      send(target, {output_message_tag(state.frame_message), video_frame})
       state
     else
-      VideoInterop.release(video_frame)
+      VideoInterop.release(video_frame.lease)
       begin_draining(state)
     end
-  end
-
-  defp deliver_issued_frame(
-         frame,
-         video_frame,
-         %{destination: {:consumer, session, ref, notify_to, first?}} = state
-       ) do
-    case EmergeSkia.submit_video_frame(session, video_frame) do
-      :ok when not first? ->
-        sequence = frame_value!(frame, "sequence")
-
-        notify(
-          notify_to,
-          {:emerge_video_output, state.producer, ref, {:first_frame_accepted, sequence}}
-        )
-
-        %{state | destination: {:consumer, session, ref, notify_to, true}}
-
-      :ok ->
-        state
-
-      {:error, reason} ->
-        case submission_error_action(reason) do
-          :keep ->
-            state
-
-          :disconnect ->
-            notify(notify_to, {:emerge_video_output, state.producer, ref, {:error, reason}})
-            close_destination(state)
-        end
-    end
-  end
-
-  defp canonical_output_frame(frame, video_frame) do
-    frame
-    |> List.keydelete("backend_token", 0)
-    |> List.keydelete("descriptor", 0)
-    |> List.keydelete("acquire_sync", 0)
-    |> List.keystore("dmabuf", 0, {"dmabuf", video_frame})
   end
 
   defp release_unissued_frame(frame) do
@@ -426,49 +343,10 @@ defmodule EmergeSkia.HeadlessPrimeSession do
   defp begin_draining(%{mode: :open} = state) do
     state = close_destination(state)
     _ = LeaseOwner.close(state.lease_owner)
-
-    case destination_close_shutdown_mode(Map.get(state, :destination_close_error)) do
-      :draining ->
-        %{state | mode: :draining}
-
-      :quarantined ->
-        error = Map.fetch!(state, :destination_close_error)
-        # A failed consumer close leaves holder ownership unknown. Do not stop the native producer
-        # or close its abandonment-guard dispatcher: either action could recycle a backend slot
-        # that the consumer still owns. Quarantine immediately so stop callers cannot hang waiting
-        # for a drain notification that the failed consumer may never produce.
-        result = {:error, error}
-        Enum.each(state.stop_waiters, &GenServer.reply(&1, result))
-
-        state
-        |> Map.merge(%{mode: :quarantined, stop_waiters: [], shutdown_result: result})
-    end
+    %{state | mode: :draining}
   end
 
   defp begin_draining(state), do: state
-
-  defp destination_close_shutdown_mode(nil), do: :draining
-  defp destination_close_shutdown_mode(_error), do: :quarantined
-
-  @doc false
-  def destination_close_shutdown_mode_for_test(error),
-    do: destination_close_shutdown_mode(error)
-
-  defp close_destination(%{destination: {:consumer, session, ref, notify_to, _first?}} = state) do
-    previous_close_error = Map.get(state, :destination_close_error)
-
-    close_error =
-      case safe_close_consumer(session) do
-        :ok -> previous_close_error
-        {:error, reason} -> previous_close_error || {:consumer_close_failed, reason}
-      end
-
-    notify(notify_to, {:emerge_video_output, state.producer, ref, :disconnected})
-
-    state
-    |> Map.merge(%{destination: :disconnected, destination_monitor: nil})
-    |> Map.put(:destination_close_error, close_error)
-  end
 
   defp close_destination(%{destination: {:external, _pid}} = state) do
     if state.destination_monitor, do: Process.demonitor(state.destination_monitor, [:flush])
@@ -477,82 +355,11 @@ defmodule EmergeSkia.HeadlessPrimeSession do
 
   defp close_destination(state), do: state
 
-  defp safe_close_consumer(session) do
-    :ok = VideoInterop.close_consumer(session)
-  rescue
-    error -> {:error, {:exception, error}}
-  catch
-    kind, reason -> {:error, {kind, reason}}
-  end
-
   defp external_destination(target) when is_pid(target) do
     {{:external, target}, Process.monitor(target)}
   end
 
   defp external_destination(nil), do: {:disconnected, nil}
-
-  defp output_format(
-         %{width: width, height: height, modifier: modifier} = state,
-         %EmergeSkia.VideoTarget{},
-         opts
-       )
-       when is_integer(width) and width > 0 and is_integer(height) and height > 0 and
-              (modifier == :implicit or
-                 (is_integer(modifier) and modifier >= 0 and modifier <= 0xFFFF_FFFF_FFFF_FFFF)) do
-    unsupported = Keyword.keys(opts) -- [:notify, :acquire_sync]
-    notify_to = Keyword.get(opts, :notify)
-    acquire_sync = Keyword.get(opts, :acquire_sync, state.acquire_sync)
-
-    cond do
-      unsupported != [] ->
-        {:error, {:unsupported_options, unsupported}}
-
-      not is_nil(notify_to) and
-          (not is_pid(notify_to) or node(notify_to) != node()) ->
-        {:error, :notify_must_be_a_local_pid}
-
-      true ->
-        case acquire_sync do
-          acquire_sync when acquire_sync in [:implicit, :sync_file, :per_frame] ->
-            {:ok,
-             %Format{
-               width: width,
-               height: height,
-               framerate: nil,
-               storage: %DMABuf.Format{
-                 fourcc: VideoInterop.DMABuf.FourCC.from_string!("AB24"),
-                 modifier: modifier
-               },
-               interlace_mode: :progressive,
-               alpha_mode: :premultiplied,
-               acquire_sync: acquire_sync
-             }, notify_to}
-
-          _other ->
-            {:error, :invalid_acquire_sync_policy}
-        end
-    end
-  end
-
-  defp output_acquire_sync(:vulkan), do: :sync_file
-  defp output_acquire_sync(_rendering_api), do: :per_frame
-
-  defp output_modifier(_rendering_api), do: 0
-
-  defp validate_target_size(%EmergeSkia.VideoTarget{mode: mode}, _format) when mode != :prime,
-    do: {:error, {:wrong_mode, mode}}
-
-  defp validate_target_size(%EmergeSkia.VideoTarget{width: width, height: height}, %Format{
-         width: width,
-         height: height
-       }),
-       do: :ok
-
-  defp validate_target_size(
-         %EmergeSkia.VideoTarget{width: expected_width, height: expected_height},
-         %Format{width: width, height: height}
-       ),
-       do: {:error, {:wrong_size, {width, height}, {expected_width, expected_height}}}
 
   @doc false
   @spec shutdown_result_for_test(term(), term() | nil) :: :ok | {:error, term()}
@@ -573,18 +380,10 @@ defmodule EmergeSkia.HeadlessPrimeSession do
     end
   end
 
-  @doc false
-  @spec submission_error_action(term()) :: :keep | :disconnect
-  def submission_error_action(:inactive), do: :keep
-  def submission_error_action(_reason), do: :disconnect
-
   defp finish_shutdown(state, lease_owner_error) do
-    ownership_error =
-      combine_ownership_errors(Map.get(state, :destination_close_error), lease_owner_error)
-
     native_result = safe_native_stop(state.renderer)
 
-    if is_nil(ownership_error) do
+    if is_nil(lease_owner_error) do
       state =
         Map.merge(state, %{
           mode: :dispatcher_closing,
@@ -597,18 +396,13 @@ defmodule EmergeSkia.HeadlessPrimeSession do
       # Unknown LeaseOwner ownership is permanent quarantine. Closing the
       # dispatcher here would suppress guards that may still be the only path
       # capable of retiring a published holder.
-      result = shutdown_result_for_test(native_result, ownership_error)
+      result = shutdown_result_for_test(native_result, lease_owner_error)
       Enum.each(state.stop_waiters, &GenServer.reply(&1, result))
 
       {:noreply,
        %{state | mode: :quarantined, stop_waiters: []} |> Map.put(:shutdown_result, result)}
     end
   end
-
-  defp combine_ownership_errors(nil, nil), do: nil
-  defp combine_ownership_errors(error, nil), do: error
-  defp combine_ownership_errors(nil, error), do: error
-  defp combine_ownership_errors(left, right), do: {left, right}
 
   defp close_release_dispatcher(state) do
     case Native.headless_prime_release_dispatcher_close(state.release_dispatcher) do
@@ -659,7 +453,4 @@ defmodule EmergeSkia.HeadlessPrimeSession do
   catch
     kind, reason -> {:error, {kind, reason}}
   end
-
-  defp notify(nil, _message), do: :ok
-  defp notify(pid, message), do: send(pid, message)
 end

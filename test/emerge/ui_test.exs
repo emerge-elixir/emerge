@@ -5,7 +5,6 @@ defmodule Emerge.UITest do
   import ExUnit.CaptureIO
 
   alias Emerge.Engine.Reconcile
-  alias EmergeSkia.VideoTarget
 
   defmodule UsingEmergeUIComponent do
     use Emerge.UI
@@ -971,16 +970,15 @@ defmodule Emerge.UITest do
     assert element.children == []
   end
 
-  test "video creates a video element" do
-    target = %VideoTarget{id: "preview", width: 640, height: 360, mode: :prime, ref: make_ref()}
-
-    element = video([width(px(160)), image_fit(:cover)], target)
+  test "video creates an atom-addressed video element" do
+    element = video([width(px(160)), height(px(90)), image_fit(:cover)], :preview)
 
     assert element.type == :video
     assert element.attrs.video_target == "preview"
-    assert element.attrs.image_size == {640, 360}
+    refute Map.has_key?(element.attrs, :image_size)
     assert element.attrs.image_fit == :cover
     assert element.attrs.width == {:px, 160}
+    assert element.attrs.height == {:px, 90}
     assert element.children == []
   end
 
@@ -1186,13 +1184,17 @@ defmodule Emerge.UITest do
   end
 
   test "video/2 validates attrs are first" do
-    target = %VideoTarget{id: "preview", width: 640, height: 360, mode: :prime, ref: make_ref()}
-
     assert_raise ArgumentError,
                  ~r/video\/2 expects the first argument to be a list of attributes, got:/,
                  fn ->
-                   video(target, [width(px(160))])
+                   video(:preview, [width(px(160))])
                  end
+  end
+
+  test "video/2 requires an atom target" do
+    assert_raise ArgumentError, ~r/expects the second argument to be an atom target/, fn ->
+      video([], "preview")
+    end
   end
 
   test "Input.text/2 validates attrs are first" do

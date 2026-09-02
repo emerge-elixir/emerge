@@ -17,8 +17,7 @@ defmodule Emerge.ViewportTest do
           heartbeat_pid: nil,
           log_target: nil,
           skia_opts: skia_opts,
-          renderer_opts: renderer_opts,
-          video_connection: nil
+          renderer_opts: renderer_opts
         }
       end)
     end
@@ -97,45 +96,9 @@ defmodule Emerge.ViewportTest do
     end
 
     @impl true
-    def connect_video_output(renderer, target, opts) do
-      connection_ref = make_ref()
-      notify = Keyword.get(opts, :notify)
-
-      Agent.update(renderer, fn state ->
-        if state.video_connection do
-          {old_ref, old_notify} = state.video_connection
-
-          if old_notify,
-            do: send(old_notify, {:emerge_video_output, self(), old_ref, :disconnected})
-        end
-
-        if notify,
-          do: send(notify, {:emerge_video_output, self(), connection_ref, :connected})
-
-        state
-        |> Map.put(:video_connection, {connection_ref, notify})
-        |> log_op({:connect_video_output, connection_ref, target, opts})
-      end)
-
-      {:ok, connection_ref}
-    end
-
-    @impl true
-    def disconnect_video_output(renderer) do
-      Agent.update(renderer, fn state ->
-        if state.video_connection do
-          {connection_ref, notify} = state.video_connection
-
-          if notify,
-            do: send(notify, {:emerge_video_output, self(), connection_ref, :disconnected})
-        end
-
-        state
-        |> Map.put(:video_connection, nil)
-        |> log_op(:disconnect_video_output)
-      end)
-
-      :ok
+    def submit_video_frame(renderer, target, frame) do
+      Agent.update(renderer, &log_op(&1, {:submit_video_frame, target, frame}))
+      VideoInterop.release(frame)
     end
 
     @impl true
@@ -578,73 +541,19 @@ defmodule Emerge.ViewportTest do
     GenServer.stop(pid)
   end
 
-  test "direct video output routes optional callbacks and rolls connection references" do
+  test "submits a frame through the private renderer endpoint" do
     {:ok, pid} = CounterViewport.start_link(count: 1)
     renderer = Emerge.renderer(pid)
+    frame = VideoInterop.Frame.binary(<<1, 2, 3>>, width: 1, height: 1, pixel_format: :rgb888)
 
-    target = %EmergeSkia.VideoTarget{
-      id: "preview",
-      width: 64,
-      height: 32,
-      mode: :prime,
-      ref: make_ref()
-    }
-
-    assert {:ok, first} = Emerge.connect_video_output(pid, target, notify: self())
-    assert_receive {:emerge_video_output, _source_pid, ^first, :connected}
-    assert {:ok, second} = Emerge.connect_video_output(pid, target)
-    assert_receive {:emerge_video_output, _source_pid, ^first, :disconnected}
-    assert first != second
-    assert :ok = Emerge.disconnect_video_output(pid)
-
-    assert Enum.any?(FakeRenderer.ops(renderer), fn
-             {:connect_video_output, ref, ^target, [notify: notify]} ->
-               ref == first and notify == self()
-
-             _other ->
-               false
-           end)
-
-    assert :disconnect_video_output = List.last(FakeRenderer.ops(renderer))
+    assert :ok = Emerge.submit_video_frame(pid, :preview, frame)
+    assert {:submit_video_frame, :preview, ^frame} = List.last(FakeRenderer.ops(renderer))
     GenServer.stop(pid)
   end
 
-  test "direct video output reports not ready and wrong renderer mode explicitly" do
-    target = %EmergeSkia.VideoTarget{
-      id: "preview",
-      width: 64,
-      height: 32,
-      mode: :prime,
-      ref: make_ref()
-    }
-
-    assert {:ok, state, {:continue, _mount}} =
-             Emerge.Runtime.Viewport.init_state(CounterViewport, [])
-
-    assert {:reply, {:error, :not_ready}, ^state} =
-             Emerge.Runtime.Viewport.handle_call(
-               {:emerge_viewport, :connect_video_output, target, []},
-               {self(), make_ref()},
-               state
-             )
-
-    assert {:error, :wrong_mode} =
-             Emerge.Runtime.Viewport.Renderer.Skia.connect_video_output(make_ref(), target, [])
-  end
-
-  test "direct video output reports unsupported for renderers without optional callbacks" do
-    {:ok, pid} = NoConnectionViewport.start_link()
-
-    target = %EmergeSkia.VideoTarget{
-      id: "preview",
-      width: 64,
-      height: 32,
-      mode: :prime,
-      ref: make_ref()
-    }
-
-    assert {:error, :video_output_unsupported} = Emerge.connect_video_output(pid, target)
-    GenServer.stop(pid)
+  test "submission consumes a frame when the viewport endpoint is absent" do
+    frame = VideoInterop.Frame.binary(<<1, 2, 3>>, width: 1, height: 1, pixel_format: :rgb888)
+    assert {:error, :viewport_not_ready} = Emerge.submit_video_frame(self(), :preview, frame)
   end
 
   test "viewport child spec waits for renderer teardown during supervisor shutdown" do

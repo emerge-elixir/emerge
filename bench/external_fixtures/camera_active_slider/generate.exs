@@ -1,5 +1,4 @@
 alias Emerge.Engine
-alias EmergeSkia.VideoTarget
 
 output = __DIR__
 
@@ -13,13 +12,7 @@ events =
 
 controls = Map.put(controls, :events_, events)
 
-target = %VideoTarget{
-  id: "camera-active-slider-benchmark",
-  width: 1280,
-  height: 720,
-  mode: :prime,
-  ref: make_ref()
-}
+target = :camera_active_slider_benchmark
 
 preview = %{
   status: :live,

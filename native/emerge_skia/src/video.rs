@@ -52,7 +52,9 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 use std::thread;
-use std::time::{Duration, Instant};
+#[cfg(any(feature = "wayland", feature = "drm", feature = "vulkan"))]
+use std::time::Duration;
+use std::time::Instant;
 
 #[cfg(all(
     target_os = "linux",
@@ -72,7 +74,7 @@ use glutin_egl_sys::egl;
 ))]
 use libloading::Library;
 use rustler::env::SavedTerm;
-use rustler::{Decoder, Encoder, Env, LocalPid, NifResult, OwnedEnv, ResourceArc, Term};
+use rustler::{Decoder, Encoder, Env, LocalPid, NifResult, OwnedEnv, Term};
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
@@ -110,7 +112,7 @@ use video_interop::{
     AcquireSyncPolicy as InteropAcquireSyncPolicy, AlphaMode as InteropAlphaMode, ClaimedLease,
     ClaimedVideoFrame, Colorimetry, Format as InteropFormat, InterlaceMode as InteropInterlaceMode,
     Modifier, ModifierPolicy as InteropModifierPolicy, OwnedAcquireSync, OwnedFrame, OwnedStorage,
-    PreparedVideoFrame, ReleaseDispatcher,
+    PreparedVideoFrame, StorageFormat as InteropStorageFormat,
 };
 
 #[cfg(all(
@@ -285,12 +287,15 @@ impl TryFrom<InteropFormat> for VideoStreamFormat {
         format
             .validate()
             .map_err(|error| format!("invalid video stream format: {error}"))?;
+        let InteropStorageFormat::DmaBuf(storage) = format.storage else {
+            return Err("direct video streams require DMA-BUF format storage".to_string());
+        };
         Ok(Self {
             width: format.width,
             height: format.height,
             framerate: format.framerate,
-            fourcc: format.storage.fourcc,
-            modifier_policy: match format.storage.modifier {
+            fourcc: storage.fourcc,
+            modifier_policy: match storage.modifier {
                 InteropModifierPolicy::PerBuffer => StreamModifierPolicy::PerBuffer,
                 InteropModifierPolicy::Implicit => StreamModifierPolicy::Implicit,
                 InteropModifierPolicy::Explicit(modifier) => {
@@ -1084,6 +1089,7 @@ impl PrimeFrame {
             OwnedStorage::DmaBuf(descriptor) => descriptor,
             _ => return Err("claimed frame has unsupported storage".to_string()),
         };
+        let lease = lease.ok_or_else(|| "claimed DMA-BUF frame has no lease".to_string())?;
         let mut layers = descriptor.layers.into_iter();
         let Some(layer) = layers.next() else {
             return Err("claimed frame has no DMA-BUF layer".to_string());
@@ -1475,9 +1481,18 @@ pub struct VideoTargetInfo {
     pub active_stream_id: Option<u64>,
 }
 
+#[derive(Clone)]
+pub struct CpuVideoFrame {
+    pub generation: u64,
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Arc<[u8]>,
+}
+
 struct VideoRegistryState {
     open: bool,
     targets: HashMap<String, VideoTargetEntry>,
+    cpu_frames: HashMap<String, CpuVideoFrame>,
     active_scene_targets: HashSet<String>,
     prime_video_available: bool,
     stream_requirements: Option<PrimeStreamRequirements>,
@@ -1506,6 +1521,7 @@ impl Default for VideoRegistryState {
         Self {
             open: true,
             targets: HashMap::new(),
+            cpu_frames: HashMap::new(),
             active_scene_targets: HashSet::new(),
             prime_video_available: false,
             stream_requirements: None,
@@ -1591,6 +1607,135 @@ impl VideoRegistry {
             next_stream_id: AtomicU64::new(1),
             stats,
         }
+    }
+
+    pub fn submit_cpu_frame(
+        &self,
+        id: &str,
+        mut frame: CpuVideoFrame,
+    ) -> Result<VideoSubmitResult, String> {
+        let pending = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| "video registry lock poisoned".to_string())?;
+            if self.admission_closed.load(Ordering::Acquire) || !state.open {
+                return Err("video registry is closed".to_string());
+            }
+            if !state.active_scene_targets.contains(id) {
+                return Ok(VideoSubmitResult::DroppedInactive);
+            }
+            frame.generation = self.generation.load(Ordering::Relaxed).saturating_add(1);
+            let pending = state
+                .targets
+                .get_mut(id)
+                .and_then(|entry| entry.pending.take());
+            state.cpu_frames.insert(id.to_string(), frame);
+            pending
+        };
+        if let Some(pending) = pending {
+            self.defer_release(pending);
+        }
+        self.bump_generation();
+        Ok(VideoSubmitResult::Queued)
+    }
+
+    pub fn ensure_direct_stream(
+        &self,
+        id: &str,
+        format: VideoStreamFormat,
+    ) -> Result<(u64, u64), String> {
+        let (identity, retired) = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| "video registry lock poisoned".to_string())?;
+            if self.admission_closed.load(Ordering::Acquire) || !state.open {
+                return Err("video registry is closed".to_string());
+            }
+            if !state.prime_video_available {
+                return Err(prime_video_unavailable_error());
+            }
+            match state.stream_requirements {
+                Some(PrimeStreamRequirements::Vulkan) => validate_vulkan_stream_format(
+                    format,
+                    #[cfg(all(
+                        target_os = "linux",
+                        feature = "vulkan",
+                        any(feature = "wayland-core", feature = "drm-core")
+                    ))]
+                    state.vulkan_rgba_linear_supported,
+                    #[cfg(all(
+                        target_os = "linux",
+                        feature = "vulkan",
+                        any(feature = "wayland-core", feature = "drm-core")
+                    ))]
+                    state.vulkan_bgra_import_supported,
+                    #[cfg(all(
+                        target_os = "linux",
+                        feature = "vulkan",
+                        any(feature = "wayland-core", feature = "drm-core")
+                    ))]
+                    state.vulkan_nv12_capabilities.as_deref(),
+                )?,
+                None => {
+                    format.modifier_policy.validate_supported()?;
+                }
+            }
+
+            if let Some(entry) = state.targets.get(id)
+                && entry.spec.width == format.width
+                && entry.spec.height == format.height
+                && let Some(active) = entry.active_stream
+                && active.format == format
+            {
+                return Ok((entry.incarnation, active.id));
+            }
+
+            let active = state.active_scene_targets.contains(id);
+            let retired = state.targets.remove(id).and_then(|entry| entry.pending);
+            state.cpu_frames.remove(id);
+            let incarnation = self.next_incarnation.fetch_add(1, Ordering::Relaxed);
+            let stream_id = self.next_stream_id.fetch_add(1, Ordering::Relaxed);
+            state.targets.insert(
+                id.to_string(),
+                VideoTargetEntry {
+                    spec: VideoTargetSpec {
+                        id: id.to_string(),
+                        width: format.width,
+                        height: format.height,
+                        mode: VideoMode::Prime,
+                    },
+                    incarnation,
+                    active,
+                    active_stream: Some(ActiveStream {
+                        id: stream_id,
+                        format,
+                    }),
+                    pending: None,
+                },
+            );
+            ((incarnation, stream_id), retired)
+        };
+        if let Some(retired) = retired {
+            self.defer_release(retired);
+        }
+        self.bump_generation();
+        Ok(identity)
+    }
+
+    pub fn cpu_frame_snapshot(&self) -> Result<HashMap<String, CpuVideoFrame>, String> {
+        self.state
+            .lock()
+            .map(|state| state.cpu_frames.clone())
+            .map_err(|_| "video registry lock poisoned".to_string())
+    }
+
+    pub fn target_is_active(&self, id: &str) -> Result<bool, String> {
+        self.state
+            .lock()
+            .map(|state| state.open && state.active_scene_targets.contains(id))
+            .map_err(|_| "video registry lock poisoned".to_string())
     }
 
     pub fn create_target(&self, spec: VideoTargetSpec) -> Result<u64, String> {
@@ -2183,6 +2328,9 @@ impl VideoRegistry {
             }
             state.active_scene_targets = active_targets.clone();
             state
+                .cpu_frames
+                .retain(|id, _frame| active_targets.contains(id));
+            state
                 .targets
                 .iter_mut()
                 .filter_map(|(id, entry)| {
@@ -2386,134 +2534,6 @@ impl VideoWake {
 
     pub fn notify(&self) {
         self.0.notify_video_frame();
-    }
-}
-
-pub struct VideoTargetResource {
-    pub id: String,
-    pub renderer_epoch: u64,
-    pub incarnation: u64,
-    pub _width: u32,
-    pub _height: u32,
-    pub _mode: VideoMode,
-    pub registry: Arc<VideoRegistry>,
-    pub wake: VideoWake,
-    pub cleanup_dispatcher: CleanupDispatcher,
-}
-
-#[rustler::resource_impl]
-impl rustler::Resource for VideoTargetResource {}
-
-impl Drop for VideoTargetResource {
-    fn drop(&mut self) {
-        let registry = Arc::clone(&self.registry);
-        let id = self.id.clone();
-        let incarnation = self.incarnation;
-        let wake = self.wake.clone();
-        self.cleanup_dispatcher.dispatch(Box::new(move || {
-            registry.remove_target(&id, incarnation);
-            wake.notify();
-        }));
-    }
-}
-
-pub struct VideoConsumerSessionResource {
-    pub id: String,
-    pub renderer_epoch: u64,
-    pub incarnation: u64,
-    pub stream_id: u64,
-    pub registry: Arc<VideoRegistry>,
-    pub wake: VideoWake,
-    release_dispatcher: Mutex<Option<ResourceArc<ReleaseDispatcher>>>,
-    cleanup_dispatcher: CleanupDispatcher,
-    // The stream is valid only for this exact target incarnation. Keep the
-    // target resource alive for the complete session so BEAM GC cannot remove
-    // the registry entry between otherwise valid frame submissions.
-    _target: ResourceArc<VideoTargetResource>,
-}
-
-impl VideoConsumerSessionResource {
-    pub fn new(
-        target: ResourceArc<VideoTargetResource>,
-        stream_id: u64,
-        release_dispatcher: ResourceArc<ReleaseDispatcher>,
-    ) -> Self {
-        Self {
-            id: target.id.clone(),
-            renderer_epoch: target.renderer_epoch,
-            incarnation: target.incarnation,
-            stream_id,
-            registry: Arc::clone(&target.registry),
-            wake: target.wake.clone(),
-            release_dispatcher: Mutex::new(Some(release_dispatcher)),
-            cleanup_dispatcher: target.cleanup_dispatcher.clone(),
-            _target: target,
-        }
-    }
-
-    pub fn release_dispatcher_for_submit(&self) -> Result<ResourceArc<ReleaseDispatcher>, String> {
-        self.release_dispatcher
-            .lock()
-            .map_err(|_| "video consumer release dispatcher lock poisoned".to_string())?
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| "video consumer release dispatcher is closed".to_string())
-    }
-
-    pub fn close_and_join(&self, timeout: Duration) -> Result<(), String> {
-        let dispatcher = self
-            .release_dispatcher
-            .lock()
-            .map_err(|_| "video consumer release dispatcher lock poisoned".to_string())?
-            .as_ref()
-            .cloned();
-        let Some(dispatcher) = dispatcher else {
-            return Ok(());
-        };
-
-        // Close the exact stream and wake the renderer before waiting. Pending
-        // and current claims retire on the normal renderer/release paths while
-        // the dirty-I/O caller waits for their counted dispatcher clients.
-        self.registry
-            .close_stream(&self.id, self.incarnation, self.stream_id);
-        self.wake.notify();
-        dispatcher
-            .close_and_join(timeout)
-            .map_err(|error| error.to_string())?;
-
-        let mut root = self
-            .release_dispatcher
-            .lock()
-            .map_err(|_| "video consumer release dispatcher lock poisoned".to_string())?;
-        root.take();
-        Ok(())
-    }
-}
-
-#[rustler::resource_impl]
-impl rustler::Resource for VideoConsumerSessionResource {}
-
-impl Drop for VideoConsumerSessionResource {
-    fn drop(&mut self) {
-        let close_stream = match self.release_dispatcher.get_mut() {
-            Ok(dispatcher) => dispatcher.is_some(),
-            Err(poisoned) => poisoned.into_inner().is_some(),
-        };
-
-        if close_stream {
-            let registry = Arc::clone(&self.registry);
-            let id = self.id.clone();
-            let incarnation = self.incarnation;
-            let stream_id = self.stream_id;
-            let wake = self.wake.clone();
-            self.cleanup_dispatcher.dispatch(Box::new(move || {
-                registry.close_stream(&id, incarnation, stream_id);
-                wake.notify();
-            }));
-        }
-        // The field is dropped after this nonblocking callback. An unclosed
-        // shared dispatcher then takes its fail-closed abort path; no BEAM
-        // resource destructor waits, joins, or detaches a native thread.
     }
 }
 
@@ -6510,12 +6530,75 @@ impl VulkanRendererVideoState {
     }
 }
 
+struct CpuRenderedVideoFrame {
+    generation: u64,
+    image: Image,
+    width: u32,
+    height: u32,
+}
+
+fn sync_cpu_frames(
+    rendered: &mut HashMap<String, CpuRenderedVideoFrame>,
+    registry: &Arc<VideoRegistry>,
+) -> Result<bool, String> {
+    let snapshot = registry.cpu_frame_snapshot()?;
+    let before = rendered.len();
+    rendered.retain(|id, _frame| snapshot.contains_key(id));
+    let mut changed = rendered.len() != before;
+
+    for (id, frame) in snapshot {
+        if rendered
+            .get(&id)
+            .is_some_and(|current| current.generation == frame.generation)
+        {
+            continue;
+        }
+        let info = skia_safe::ImageInfo::new(
+            (frame.width as i32, frame.height as i32),
+            skia_safe::ColorType::RGBA8888,
+            skia_safe::AlphaType::Premul,
+            None,
+        );
+        let image = skia_safe::images::raster_from_data(
+            &info,
+            skia_safe::Data::new_copy(frame.rgba.as_ref()),
+            frame.width as usize * 4,
+        )
+        .ok_or_else(|| format!("failed to create binary video image for target {id}"))?;
+        rendered.insert(
+            id,
+            CpuRenderedVideoFrame {
+                generation: frame.generation,
+                image,
+                width: frame.width,
+                height: frame.height,
+            },
+        );
+        changed = true;
+    }
+    Ok(changed)
+}
+
+fn cpu_image<'a>(
+    rendered: &'a HashMap<String, CpuRenderedVideoFrame>,
+    id: &str,
+) -> Option<(RenderedVideoFrame<'a>, u32, u32)> {
+    rendered.get(id).map(|frame| {
+        (
+            RenderedVideoFrame::Image(&frame.image),
+            frame.width,
+            frame.height,
+        )
+    })
+}
+
 #[cfg(any(
     all(feature = "wayland", target_os = "linux"),
     all(feature = "drm", target_os = "linux")
 ))]
 #[derive(Default)]
 pub struct RendererVideoState {
+    cpu: HashMap<String, CpuRenderedVideoFrame>,
     targets: HashMap<String, RenderedVideoTarget>,
     #[cfg(all(
         feature = "vulkan",
@@ -6533,12 +6616,17 @@ impl RendererVideoState {
         Self::default()
     }
 
+    pub fn sync_cpu(&mut self, registry: &Arc<VideoRegistry>) -> Result<bool, String> {
+        sync_cpu_frames(&mut self.cpu, registry)
+    }
+
     pub fn sync_pending(
         &mut self,
         registry: &Arc<VideoRegistry>,
         gr_context: &mut gpu::DirectContext,
         ctx: Option<&VideoImportContext>,
     ) -> Result<VideoSyncResult, String> {
+        let cpu_changed = self.sync_cpu(registry)?;
         let initial_cleanup = self.reap_retired_imports(registry);
         let mut needs_cleanup = initial_cleanup.needs_cleanup;
         if let Some(ctx) = ctx {
@@ -6568,7 +6656,7 @@ impl RendererVideoState {
             )
         });
         let mut resources_changed =
-            initial_cleanup.resources_changed || self.targets.len() != before;
+            cpu_changed || initial_cleanup.resources_changed || self.targets.len() != before;
 
         for target in snapshot.targets.iter().filter(|target| target.active) {
             let id = &target.spec.id;
@@ -6738,6 +6826,9 @@ impl RendererVideoState {
     }
 
     pub fn image(&self, id: &str) -> Option<(RenderedVideoFrame<'_>, u32, u32)> {
+        if let Some(image) = cpu_image(&self.cpu, id) {
+            return Some(image);
+        }
         #[cfg(all(
             feature = "vulkan",
             any(feature = "wayland-core", feature = "drm-core")
@@ -6757,6 +6848,7 @@ impl RendererVideoState {
 ))]
 #[derive(Default)]
 pub struct RendererVideoState {
+    cpu: HashMap<String, CpuRenderedVideoFrame>,
     vulkan: VulkanRendererVideoState,
 }
 
@@ -6771,15 +6863,23 @@ impl RendererVideoState {
         Self::default()
     }
 
+    pub fn sync_cpu(&mut self, registry: &Arc<VideoRegistry>) -> Result<bool, String> {
+        sync_cpu_frames(&mut self.cpu, registry)
+    }
+
     pub fn sync_pending(
         &mut self,
         registry: &Arc<VideoRegistry>,
         _gr_context: &mut gpu::DirectContext,
         _ctx: Option<&VideoImportContext>,
     ) -> Result<VideoSyncResult, String> {
+        let resources_changed = self.sync_cpu(registry)?;
         registry.drain_pending_to_release()?;
         registry.record_import_gauges(0, self.vulkan.retired.len());
-        Ok(VideoSyncResult::default())
+        Ok(VideoSyncResult {
+            resources_changed,
+            ..VideoSyncResult::default()
+        })
     }
 
     pub fn reap_retired_imports(&mut self, registry: &Arc<VideoRegistry>) -> VideoCleanupResult {
@@ -6814,7 +6914,7 @@ impl RendererVideoState {
     }
 
     pub fn image(&self, id: &str) -> Option<(RenderedVideoFrame<'_>, u32, u32)> {
-        self.vulkan.image(id)
+        cpu_image(&self.cpu, id).or_else(|| self.vulkan.image(id))
     }
 }
 
@@ -6830,7 +6930,9 @@ impl RendererVideoState {
     ))
 ))]
 #[derive(Default)]
-pub struct RendererVideoState;
+pub struct RendererVideoState {
+    cpu: HashMap<String, CpuRenderedVideoFrame>,
+}
 
 #[cfg(all(
     not(any(
@@ -6845,7 +6947,11 @@ pub struct RendererVideoState;
 ))]
 impl RendererVideoState {
     pub fn new() -> Self {
-        Self
+        Self::default()
+    }
+
+    pub fn sync_cpu(&mut self, registry: &Arc<VideoRegistry>) -> Result<bool, String> {
+        sync_cpu_frames(&mut self.cpu, registry)
     }
 
     #[allow(dead_code)]
@@ -6855,9 +6961,13 @@ impl RendererVideoState {
         _gr_context: &mut gpu::DirectContext,
         _ctx: Option<&VideoImportContext>,
     ) -> Result<VideoSyncResult, String> {
+        let resources_changed = self.sync_cpu(registry)?;
         registry.drain_pending_to_release()?;
         registry.record_import_gauges(0, 0);
-        Ok(VideoSyncResult::default())
+        Ok(VideoSyncResult {
+            resources_changed,
+            ..VideoSyncResult::default()
+        })
     }
 
     pub fn reap_retired_imports(&mut self, registry: &Arc<VideoRegistry>) -> VideoCleanupResult {
@@ -6865,8 +6975,8 @@ impl RendererVideoState {
         VideoCleanupResult::default()
     }
 
-    pub fn image(&self, _id: &str) -> Option<(RenderedVideoFrame<'_>, u32, u32)> {
-        None
+    pub fn image(&self, id: &str) -> Option<(RenderedVideoFrame<'_>, u32, u32)> {
+        cpu_image(&self.cpu, id)
     }
 }
 

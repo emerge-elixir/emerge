@@ -213,100 +213,11 @@ defmodule EmergeSkia.Native do
   @spec is_running(reference()) :: boolean()
   def is_running(_renderer), do: :erlang.nif_error(:nif_not_loaded)
 
-  @doc """
-  Create a renderer-owned video target.
-  """
-  @spec video_target_new(reference(), String.t(), pos_integer(), pos_integer(), String.t()) ::
-          reference() | {:ok, reference()} | {:error, String.t()}
-  def video_target_new(_renderer, _id, _width, _height, _mode),
-    do: :erlang.nif_error(:nif_not_loaded)
-
-  @type video_target_info :: %{
-          required(:renderer_epoch) => non_neg_integer(),
-          required(:target_id) => binary(),
-          required(:target_incarnation) => non_neg_integer(),
-          required(:active_stream_id) => non_neg_integer() | nil
-        }
-
-  @doc """
-  Return the current exact identity of a renderer-owned video target.
-  """
-  @spec video_target_info(reference()) :: {:ok, video_target_info()} | {:error, String.t()}
-  def video_target_info(_target), do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc """
-  Submit a DRM Prime descriptor to a video target.
-  """
-  @spec video_target_submit_prime(reference(), map()) ::
-          {:ok, boolean()} | {:error, String.t()}
-  def video_target_submit_prime(_target, _desc), do: :erlang.nif_error(:nif_not_loaded)
-
   @doc false
-  @spec video_consumer_session_open(reference(), VideoInterop.Format.t()) ::
-          {:ok, reference()} | {:error, term()}
-  def video_consumer_session_open(_target, _format),
-    do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc false
-  @spec video_consumer_session_submit(reference(), VideoInterop.Frame.t()) ::
+  @spec video_frame_submit(reference(), String.t(), VideoInterop.Frame.t()) ::
           {:ok, :transferred | :released}
-          | {:error, {:caller_owned | :transferred, term()}}
-  def video_consumer_session_submit(_session, _frame), do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc false
-  @spec video_consumer_decode_for_test(term()) ::
-          {:ok, :caller_owned} | {:error, {:caller_owned, String.t()}}
-  def video_consumer_decode_for_test(_frame), do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc false
-  @spec video_consumer_prepare_hold_for_test(reference(), term()) ::
-          {:ok, reference()} | {:error, {:caller_owned, String.t()}}
-  def video_consumer_prepare_hold_for_test(_session, _frame),
-    do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc false
-  @spec video_consumer_prepared_drop_for_test(reference()) :: boolean()
-  def video_consumer_prepared_drop_for_test(_prepared),
-    do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc false
-  @spec video_consumer_session_open_for_test() ::
-          {:ok, {reference(), reference()}} | {:error, String.t()}
-  def video_consumer_session_open_for_test, do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc false
-  @spec video_consumer_target_set_active_for_test(reference(), boolean()) ::
-          {:ok, boolean()} | {:error, String.t()}
-  def video_consumer_target_set_active_for_test(_target, _active),
-    do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc false
-  @spec video_consumer_target_replace_for_test(reference()) ::
-          {:ok, boolean()} | {:error, String.t()}
-  def video_consumer_target_replace_for_test(_target),
-    do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc false
-  @spec video_consumer_target_pipeline_counts_for_test(reference()) ::
-          {:ok, {non_neg_integer(), non_neg_integer(), non_neg_integer()}} | {:error, String.t()}
-  def video_consumer_target_pipeline_counts_for_test(_target),
-    do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc false
-  @spec video_interop_open_fd_for_test() ::
-          {:ok, {non_neg_integer(), reference()}} | {:error, String.t()}
-  def video_interop_open_fd_for_test, do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc false
-  @spec video_consumer_session_close(reference()) ::
-          :ok | {:error, {:timeout | :dispatcher_close_failed, String.t()}}
-  def video_consumer_session_close(_session), do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc false
-  @spec video_consumer_session_close_with_timeout_for_test(reference(), non_neg_integer()) ::
-          :ok | {:error, {:timeout | :dispatcher_close_failed, String.t()}}
-  def video_consumer_session_close_with_timeout_for_test(_session, _timeout_ms),
-    do: :erlang.nif_error(:nif_not_loaded)
+          | {:error, {:caller_owned | :transferred, String.t()}}
+  def video_frame_submit(_renderer, _target, _frame), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc false
   @spec headless_prime_release_dispatcher_new() ::

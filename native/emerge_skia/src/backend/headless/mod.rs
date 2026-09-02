@@ -1,14 +1,16 @@
+#[cfg(any(feature = "video-interop-support", test))]
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 use crossbeam_channel::{Receiver, Sender, at, bounded, never, select, unbounded};
-use rustler::{Encoder, Env, LocalPid, NifResult, OwnedBinary, OwnedEnv, ResourceArc, Term};
+use rustler::{Atom, Encoder, Env, LocalPid, NifResult, OwnedBinary, OwnedEnv, ResourceArc, Term};
 use skia_safe::Color;
 #[cfg(any(feature = "video-interop-support", test))]
 use video_interop::{AcquireSync, Descriptor, Layer, Modifier, Object, Plane};
@@ -24,7 +26,7 @@ use crate::{
     assets,
     backend::{
         raster::{RasterBackend, RasterConfig, RasterPixelFormat},
-        wake::BackendWakeHandle,
+        wake::{BackendWake, BackendWakeHandle},
     },
     events::{SpawnEventActorConfig, spawn_event_actor},
     native_log::NativeLogRelay,
@@ -41,6 +43,22 @@ mod offscreen_gl;
 mod output;
 #[cfg(all(target_os = "linux", feature = "headless-vulkan"))]
 mod vulkan;
+
+struct HeadlessBackendWake {
+    tree_tx: Sender<TreeMsg>,
+}
+
+impl BackendWake for HeadlessBackendWake {
+    fn request_stop(&self) {}
+
+    fn request_redraw(&self) {
+        self.notify_video_frame();
+    }
+
+    fn notify_video_frame(&self) {
+        send_tree(&self.tree_tx, TreeMsg::AssetStateChanged, false);
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HeadlessMode {
@@ -159,7 +177,9 @@ pub(crate) fn start_renderer_with_config(
         log_render: config.render_log,
     };
 
-    let backend_wake = BackendWakeHandle::noop();
+    let backend_wake = BackendWakeHandle::new(HeadlessBackendWake {
+        tree_tx: tree_tx.clone(),
+    });
     let video_release_tx = video::spawn_release_worker()
         .map_err(|err| rustler::Error::Term(Box::new(err.to_string())))?;
     let cleanup_dispatcher =
@@ -169,6 +189,7 @@ pub(crate) fn start_renderer_with_config(
         cleanup_dispatcher.clone(),
         renderer_stats.clone(),
     ));
+    let video_registry_for_thread = Arc::clone(&video_registry);
     let headless = config.headless.clone();
     let latest_frame_for_thread = Arc::clone(&latest_frame);
     let stats_for_thread = renderer_stats.clone();
@@ -204,6 +225,7 @@ pub(crate) fn start_renderer_with_config(
             rendering_api,
             mode,
             release_tx,
+            video_registry_for_thread,
             startup_tx,
         );
     });
@@ -298,6 +320,8 @@ pub(crate) fn start_renderer_with_config(
         render_tx: render_sender,
         video_registry,
         video_wake: VideoWake::noop(),
+        #[cfg(any(feature = "video-interop-support", test))]
+        direct_video_dispatcher: Arc::new(crate::ReleaseDispatcherHandleResource::lazy()),
         native_log,
         stats: renderer_stats,
         latest_frame,
@@ -335,6 +359,7 @@ fn run_render_loop(
     rendering_api: RenderingApi,
     mode: HeadlessMode,
     release_tx: Sender<HeadlessReleaseMsg>,
+    video_registry: Arc<VideoRegistry>,
     startup_tx: Sender<Result<HeadlessStartupInfo, String>>,
 ) {
     let mut renderer = match HeadlessRenderer::new(
@@ -433,6 +458,12 @@ fn run_render_loop(
                             Color::TRANSPARENT
                         };
                         let state = RenderState::new(*scene, clear_color, sequence, animate);
+                        if let Err(error) = video_registry.set_active_targets(&state.video_target_ids) {
+                            eprintln!("headless video target visibility update failed: {error}");
+                        }
+                        if let Err(error) = renderer.sync_cpu_video_frames(&video_registry) {
+                            eprintln!("headless binary video sync failed: {error}");
+                        }
                         match mode {
                             HeadlessMode::Binary => match renderer.render_binary(&state) {
                                 Ok(frame) => {
@@ -513,6 +544,7 @@ fn run_render_loop(
                                             frame.width,
                                             frame.height,
                                             &headless.pixel_format,
+                                            &headless.bw1_polarity,
                                             stride_bytes,
                                             data,
                                         ),
@@ -879,6 +911,16 @@ impl HeadlessRenderer {
         }
     }
 
+    fn sync_cpu_video_frames(&mut self, registry: &Arc<VideoRegistry>) -> Result<bool, String> {
+        match self {
+            Self::Raster(renderer) => renderer.renderer.sync_cpu_video_frames(registry),
+            #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
+            Self::Gl(_renderer) => Ok(false),
+            #[cfg(all(target_os = "linux", feature = "headless-vulkan"))]
+            Self::Vulkan(_renderer) => Ok(false),
+        }
+    }
+
     fn render_binary(&mut self, state: &RenderState) -> Result<HeadlessRgbaFrame, String> {
         match self {
             Self::Raster(renderer) => Ok(renderer.render(state)),
@@ -1011,6 +1053,7 @@ fn send_binary_frame(
     width: u32,
     height: u32,
     pixel_format: &str,
+    bw1_polarity: &str,
     stride_bytes: u32,
     data: Vec<u8>,
 ) {
@@ -1021,19 +1064,67 @@ fn send_binary_frame(
     let use_default_message = frame_message == "emerge_skia_frame";
     let frame_message = frame_message.to_string();
     let pixel_format = pixel_format.to_string();
+    let bw1_polarity = bw1_polarity.to_string();
+    let _ = sequence;
     let _ = env.send_and_clear(&target, move |inner_env| {
         let data = binary.release(inner_env);
-        let frame = vec![
-            ("mode", "binary".encode(inner_env)),
-            ("sequence", sequence.encode(inner_env)),
-            ("width", width.encode(inner_env)),
-            ("height", height.encode(inner_env)),
-            ("scale", 1.0_f64.encode(inner_env)),
-            ("pixel_format", pixel_format.encode(inner_env)),
-            ("stride_bytes", stride_bytes.encode(inner_env)),
-            ("data", data.encode(inner_env)),
-            ("timestamp_native", current_wall_ms().encode(inner_env)),
-        ]
+        let pixel_format_atom = match pixel_format.as_str() {
+            "rgba8888" => crate::atoms::rgba8888(),
+            "rgb888" => crate::atoms::rgb888(),
+            "gray8" => crate::atoms::gray8(),
+            "gray2" => crate::atoms::gray2(),
+            "bw1" => crate::atoms::bw1(),
+            _ => unreachable!("validated headless binary pixel format"),
+        };
+        let polarity = match (pixel_format.as_str(), bw1_polarity.as_str()) {
+            ("bw1", "one_is_black") => Some(crate::atoms::one_is_black()),
+            ("bw1", "one_is_white") => Some(crate::atoms::one_is_white()),
+            _ => None,
+        };
+        let format = crate::BinaryVideoFormat {
+            width,
+            height,
+            framerate: None,
+            storage: crate::BinaryVideoStorageFormat {
+                pixel_format: pixel_format_atom,
+                bw1_polarity: polarity,
+            },
+            colorimetry: crate::BinaryVideoColorimetry {
+                primaries: crate::atoms::bt709(),
+                transfer: crate::atoms::iec61966_2_1(),
+                matrix: crate::atoms::rgb(),
+                range: crate::atoms::full(),
+                chroma_location: crate::atoms::center(),
+            },
+            pixel_aspect_ratio: (1, 1),
+            alpha_mode: if pixel_format == "rgba8888" {
+                crate::atoms::premultiplied()
+            } else {
+                crate::atoms::opaque()
+            },
+            interlace_mode: crate::atoms::progressive(),
+            acquire_sync: crate::atoms::implicit(),
+        };
+        let frame = crate::BinaryVideoFrame {
+            coded_width: width,
+            coded_height: height,
+            visible_rect: crate::BinaryVideoRect {
+                x: 0,
+                y: 0,
+                width,
+                height,
+            },
+            format,
+            storage: crate::BinaryVideoStorage {
+                data,
+                planes: vec![crate::BinaryVideoPlane {
+                    offset: 0,
+                    stride: stride_bytes as usize,
+                }],
+            },
+            acquire_sync: crate::atoms::implicit(),
+            lease: None::<Atom>.encode(inner_env),
+        }
         .encode(inner_env);
         encode_frame_message(inner_env, use_default_message, &frame_message, frame)
     });
@@ -1141,7 +1232,6 @@ fn convert_frame(
             rgba.as_chunks::<4>().0.iter().map(|px| luma8(px)).collect(),
             width,
         )),
-        "gray4" => Ok((pack_gray4(rgba), width.div_ceil(2))),
         other => Err(format!("unsupported headless pixel format: {other}")),
     }
 }
@@ -1150,21 +1240,7 @@ fn luma8(px: &[u8]) -> u8 {
     ((u16::from(px[0]) * 77 + u16::from(px[1]) * 150 + u16::from(px[2]) * 29) >> 8) as u8
 }
 
-fn pack_gray4(rgba: &[u8]) -> Vec<u8> {
-    rgba.as_chunks::<4>()
-        .0
-        .iter()
-        .map(|px| ((u16::from(luma8(px)) * 15) / 255) as u8)
-        .collect::<Vec<_>>()
-        .chunks(2)
-        .map(|chunk| {
-            chunk.iter().enumerate().fold(0_u8, |byte, (index, value)| {
-                byte | (value << (4 - 4 * index))
-            })
-        })
-        .collect()
-}
-
+#[cfg(any(feature = "video-interop-support", test))]
 fn current_wall_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1244,16 +1320,12 @@ mod tests {
     }
 
     #[test]
-    fn convert_frame_packs_gray_formats() {
+    fn convert_frame_converts_gray8() {
         let rgba = vec![0, 0, 0, 255, 255, 255, 255, 255, 128, 128, 128, 255];
 
         assert_eq!(
             convert_frame(&rgba, 3, "gray8", "one_is_black").unwrap().1,
             3
-        );
-        assert_eq!(
-            convert_frame(&rgba, 3, "gray4", "one_is_black").unwrap().1,
-            2
         );
     }
 }

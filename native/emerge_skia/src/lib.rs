@@ -21,17 +21,11 @@ use std::{
 use crossbeam_channel::unbounded;
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError, bounded};
 
-#[cfg(any(feature = "video-interop-support", test))]
 use rustler::Decoder;
 #[cfg(any(feature = "video-interop-support", test))]
 use rustler::types::reference::Reference;
 use rustler::{Atom, Binary, Encoder, Env, LocalPid, NewBinary, NifResult, ResourceArc, Term};
 #[cfg(any(feature = "video-interop-support", test))]
-use std::{
-    collections::HashSet,
-    fs::File,
-    os::fd::{AsRawFd, OwnedFd},
-};
 #[cfg(any(feature = "video-interop-support", test))]
 use video_interop::ReleaseDispatcher;
 pub mod actors;
@@ -93,11 +87,77 @@ use stats::{
 use std::time::Instant;
 use tree::element::{ElementTree, NodeId};
 #[cfg(any(feature = "video-interop-support", test))]
-use video::{CanonicalSubmitError, VideoConsumerSessionResource, VideoMode, VideoTargetResource};
-use video::{VideoRegistry, VideoWake};
+use video::CanonicalSubmitError;
+use video::{CpuVideoFrame, VideoRegistry, VideoSubmitResult, VideoWake};
 
 type LayoutFrame<'a> = (Binary<'a>, f32, f32, f32, f32);
 type LayoutFrames<'a> = Vec<LayoutFrame<'a>>;
+
+#[derive(rustler::NifStruct)]
+#[module = "VideoInterop.Rect"]
+struct BinaryVideoRect {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+
+#[derive(rustler::NifStruct)]
+#[module = "VideoInterop.Binary.Plane"]
+struct BinaryVideoPlane {
+    offset: usize,
+    stride: usize,
+}
+
+#[derive(rustler::NifStruct)]
+#[module = "VideoInterop.Binary"]
+struct BinaryVideoStorage<'a> {
+    data: Binary<'a>,
+    planes: Vec<BinaryVideoPlane>,
+}
+
+#[derive(rustler::NifStruct)]
+#[module = "VideoInterop.Binary.Format"]
+struct BinaryVideoStorageFormat {
+    pixel_format: Atom,
+    bw1_polarity: Option<Atom>,
+}
+
+#[derive(rustler::NifStruct)]
+#[module = "VideoInterop.Colorimetry"]
+struct BinaryVideoColorimetry {
+    primaries: Atom,
+    transfer: Atom,
+    matrix: Atom,
+    range: Atom,
+    chroma_location: Atom,
+}
+
+#[derive(rustler::NifStruct)]
+#[module = "VideoInterop.Format"]
+struct BinaryVideoFormat {
+    width: u32,
+    height: u32,
+    framerate: Option<(u32, u32)>,
+    storage: BinaryVideoStorageFormat,
+    colorimetry: BinaryVideoColorimetry,
+    pixel_aspect_ratio: (u32, u32),
+    alpha_mode: Atom,
+    interlace_mode: Atom,
+    acquire_sync: Atom,
+}
+
+#[derive(rustler::NifStruct)]
+#[module = "VideoInterop.Frame"]
+struct BinaryVideoFrame<'a> {
+    coded_width: u32,
+    coded_height: u32,
+    visible_rect: BinaryVideoRect,
+    format: BinaryVideoFormat,
+    storage: BinaryVideoStorage<'a>,
+    acquire_sync: Atom,
+    lease: Term<'a>,
+}
 
 /// Bump whenever the public `EmergeSkia.stats/2` payload shape changes.
 const STATS_SCHEMA_VERSION: u64 = 25;
@@ -613,6 +673,21 @@ mod atoms {
         per_frame,
         implicit,
         sync_file,
+        rgba8888,
+        rgb888,
+        gray8,
+        gray2,
+        bw1,
+        one_is_black,
+        one_is_white,
+        bt709,
+        iec61966_2_1,
+        rgb,
+        full,
+        center,
+        opaque,
+        premultiplied,
+        progressive,
     }
 }
 
@@ -723,27 +798,6 @@ struct RendererInfoNif {
     vulkan_device: Option<VulkanDeviceInfoNif>,
 }
 
-#[cfg(any(feature = "video-interop-support", test))]
-#[derive(Clone, Debug, rustler::NifMap)]
-struct VideoTargetInfoNif {
-    renderer_epoch: u64,
-    target_id: String,
-    target_incarnation: u64,
-    active_stream_id: Option<u64>,
-}
-
-#[cfg(any(feature = "video-interop-support", test))]
-impl From<video::VideoTargetInfo> for VideoTargetInfoNif {
-    fn from(info: video::VideoTargetInfo) -> Self {
-        Self {
-            renderer_epoch: info.renderer_epoch,
-            target_id: info.target_id,
-            target_incarnation: info.target_incarnation,
-            active_stream_id: info.active_stream_id,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct RendererCacheStatus {
     enabled: bool,
@@ -805,6 +859,8 @@ struct RendererResource {
     render_tx: RenderSender,
     video_registry: Arc<VideoRegistry>,
     video_wake: VideoWake,
+    #[cfg(any(feature = "video-interop-support", test))]
+    direct_video_dispatcher: Arc<ReleaseDispatcherHandleResource>,
     native_log: Arc<NativeLogRelay>,
     stats: Option<Arc<RendererStatsCollector>>,
     latest_frame: Arc<LatestFrameStore>,
@@ -1270,16 +1326,6 @@ const RELEASE_DISPATCHER_CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(any(feature = "video-interop-support", test))]
 type DispatcherCloseError = (Atom, String);
 
-#[cfg(any(feature = "video-interop-support", test))]
-struct VideoInteropFdForTestResource {
-    _fd: OwnedFd,
-}
-
-#[cfg(any(feature = "video-interop-support", test))]
-struct VideoInteropPreparedForTestResource {
-    prepared: Mutex<Option<video_interop::PreparedVideoFrame>>,
-}
-
 #[rustler::resource_impl]
 impl rustler::Resource for RendererResource {}
 
@@ -1294,19 +1340,31 @@ impl rustler::Resource for TestHarnessResource {}
 impl rustler::Resource for ReleaseDispatcherHandleResource {}
 
 #[cfg(any(feature = "video-interop-support", test))]
-#[rustler::resource_impl]
-impl rustler::Resource for VideoInteropFdForTestResource {}
-
-#[cfg(any(feature = "video-interop-support", test))]
-#[rustler::resource_impl]
-impl rustler::Resource for VideoInteropPreparedForTestResource {}
-
-#[cfg(any(feature = "video-interop-support", test))]
 impl ReleaseDispatcherHandleResource {
+    fn lazy() -> Self {
+        Self {
+            dispatcher: Mutex::new(None),
+        }
+    }
+
     fn start(name: &str) -> Result<Self, String> {
         Ok(Self {
             dispatcher: Mutex::new(Some(start_video_release_dispatcher(name)?)),
         })
+    }
+
+    fn acquire_or_start(&self, name: &str) -> Result<ResourceArc<ReleaseDispatcher>, String> {
+        let mut dispatcher = self
+            .dispatcher
+            .lock()
+            .map_err(|_| "release dispatcher handle lock poisoned".to_string())?;
+        if dispatcher.is_none() {
+            *dispatcher = Some(start_video_release_dispatcher(name)?);
+        }
+        dispatcher
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "release dispatcher failed to start".to_string())
     }
 
     fn acquire(&self) -> Result<ResourceArc<ReleaseDispatcher>, String> {
@@ -1360,6 +1418,8 @@ impl Drop for RendererResource {
         let registry = Arc::clone(&self.video_registry);
         let wake = self.video_wake.clone();
         let shutdown = self.take_shutdown_for_drop();
+        #[cfg(any(feature = "video-interop-support", test))]
+        let direct_video_dispatcher = Arc::clone(&self.direct_video_dispatcher);
 
         self.cleanup_dispatcher.dispatch(Box::new(move || {
             registry.close();
@@ -1368,6 +1428,12 @@ impl Drop for RendererResource {
                 && let Err(error) = shutdown_renderer_runtime(ctx, handles)
             {
                 eprintln!("renderer drop shutdown failed: {error}");
+            }
+            #[cfg(any(feature = "video-interop-support", test))]
+            if let Err((_category, error)) =
+                direct_video_dispatcher.close_and_join(RELEASE_DISPATCHER_CLOSE_TIMEOUT)
+            {
+                eprintln!("direct video dispatcher shutdown failed: {error}");
             }
         }));
     }
@@ -1429,7 +1495,12 @@ impl RendererResource {
         self.latest_frame.stop();
         self.video_registry.close();
         self.video_wake.notify();
-        self.stop_inner()
+        self.stop_inner()?;
+        #[cfg(any(feature = "video-interop-support", test))]
+        self.direct_video_dispatcher
+            .close_and_join(RELEASE_DISPATCHER_CLOSE_TIMEOUT)
+            .map_err(|(_category, reason)| reason)?;
+        Ok(())
     }
 
     fn stop_inner(&self) -> Result<(), String> {
@@ -2619,6 +2690,8 @@ fn start_native_renderer_with_config(
         render_tx: render_sender,
         video_registry,
         video_wake,
+        #[cfg(any(feature = "video-interop-support", test))]
+        direct_video_dispatcher: Arc::new(ReleaseDispatcherHandleResource::lazy()),
         native_log,
         stats: renderer_stats,
         latest_frame,
@@ -2782,118 +2855,315 @@ fn stop(renderer: ResourceArc<RendererResource>) -> Result<Atom, String> {
     Ok(atoms::ok())
 }
 
-#[cfg(test)]
-fn ensure_video_target_mode_supported(
-    prime_video_supported: bool,
-    mode: VideoMode,
-) -> Result<(), String> {
-    if matches!(mode, VideoMode::Prime) && !prime_video_supported {
-        Err(video::prime_video_unavailable_error())
-    } else {
-        Ok(())
-    }
-}
-
-#[cfg(any(feature = "video-interop-support", test))]
 #[rustler::nif(schedule = "DirtyCpu")]
-fn video_target_new(
+fn video_frame_submit(
+    env: Env<'_>,
     renderer: ResourceArc<RendererResource>,
-    id: String,
-    width: u32,
-    height: u32,
-    mode: String,
-) -> Result<ResourceArc<VideoTargetResource>, String> {
-    let mode = VideoMode::parse(&mode)?;
+    target: String,
+    frame: Term<'_>,
+) -> Result<Atom, (Atom, String)> {
+    if let Ok(binary) = BinaryVideoFrame::decode(frame) {
+        validate_binary_video_lease(&binary).map_err(|reason| (atoms::caller_owned(), reason))?;
+        let target_active = renderer
+            .video_registry
+            .target_is_active(&target)
+            .map_err(|reason| (atoms::caller_owned(), reason))?;
+        if !target_active {
+            return Ok(atoms::released());
+        }
 
-    let spec = video::VideoTargetSpec {
-        id: id.clone(),
-        width,
-        height,
-        mode,
-    };
-    let incarnation = renderer.video_registry.create_target_if_available(spec)?;
-
-    Ok(ResourceArc::new(VideoTargetResource {
-        id,
-        renderer_epoch: renderer.video_registry.renderer_epoch,
-        incarnation,
-        _width: width,
-        _height: height,
-        _mode: mode,
-        registry: Arc::clone(&renderer.video_registry),
-        wake: renderer.video_wake.clone(),
-        cleanup_dispatcher: renderer.cleanup_dispatcher.clone(),
-    }))
-}
-
-#[cfg(any(feature = "video-interop-support", test))]
-#[rustler::nif(schedule = "DirtyCpu")]
-fn video_target_info(
-    target: ResourceArc<VideoTargetResource>,
-) -> Result<VideoTargetInfoNif, String> {
-    if target.renderer_epoch != target.registry.renderer_epoch {
-        return Err("stale video renderer epoch".to_string());
+        let frame = decode_binary_video_frame(env, binary)
+            .map_err(|reason| (atoms::caller_owned(), reason))?;
+        let submitted = renderer
+            .video_registry
+            .submit_cpu_frame(&target, frame)
+            .map_err(|reason| (atoms::caller_owned(), reason))?;
+        if matches!(submitted, VideoSubmitResult::Queued) {
+            renderer.video_wake.notify();
+            return Ok(atoms::transferred());
+        }
+        return Ok(atoms::released());
     }
-    target
-        .registry
-        .target_info(&target.id, target.incarnation)
-        .map(VideoTargetInfoNif::from)
-}
 
-#[cfg(any(feature = "video-interop-support", test))]
-#[rustler::nif(schedule = "DirtyCpu")]
-fn video_target_submit_prime(
-    target: ResourceArc<VideoTargetResource>,
-    desc: video::PrimeDesc,
-) -> Result<bool, String> {
-    let spec = target.registry.target_spec(&target.id)?;
-    desc.validate_for_target(&target.id, spec.mode, spec.width, spec.height)?;
-    let submitted = target.registry.submit_prime_exact_if_available(
-        &target.id,
-        target.incarnation,
-        desc.into(),
-    )?;
-    if matches!(submitted, video::VideoSubmitResult::Queued) {
-        target.wake.notify();
-        Ok(true)
-    } else {
-        Ok(false)
-    }
-}
+    #[cfg(any(feature = "video-interop-support", test))]
+    {
+        let frame = decode_video_frame(frame)?;
+        let target_active = renderer
+            .video_registry
+            .target_is_active(&target)
+            .map_err(|reason| (atoms::caller_owned(), reason))?;
+        if !target_active {
+            let dispatcher = renderer
+                .direct_video_dispatcher
+                .acquire_or_start("emerge_skia_direct_video_release")
+                .map_err(|reason| (atoms::caller_owned(), reason))?;
+            let prepared = frame
+                .prepare_cloexec(&dispatcher)
+                .map_err(|error| (atoms::caller_owned(), error.to_string()))?;
+            drop(prepared.claim());
+            return Ok(atoms::released());
+        }
 
-#[cfg(any(feature = "video-interop-support", test))]
-#[rustler::nif(schedule = "DirtyIo")]
-fn video_consumer_session_open(
-    target: ResourceArc<VideoTargetResource>,
-    format: video_interop::Format,
-) -> Result<ResourceArc<VideoConsumerSessionResource>, String> {
-    if target.renderer_epoch != target.registry.renderer_epoch {
-        return Err("stale video renderer epoch".to_string());
-    }
-    let format = video::VideoStreamFormat::try_from(format)?;
-    let stream_id = target
-        .registry
-        .open_stream(&target.id, target.incarnation, format)?;
-    let release_dispatcher =
-        match start_video_release_dispatcher("emerge_skia_video_consumer_release") {
-            Ok(dispatcher) => dispatcher,
-            Err(error) => {
-                // No session resource has been published. Roll back the exact
-                // stream admission synchronously so a dispatcher startup error
-                // cannot leave this target permanently busy.
-                target
-                    .registry
-                    .close_stream(&target.id, target.incarnation, stream_id);
-                target.wake.notify();
-                return Err(error);
+        let format = frame
+            .format
+            .clone()
+            .ok_or_else(|| {
+                (
+                    atoms::caller_owned(),
+                    "DMA-BUF direct submission requires frame.format".to_string(),
+                )
+            })
+            .and_then(|format| {
+                video::VideoStreamFormat::try_from(format)
+                    .map_err(|reason| (atoms::caller_owned(), reason))
+            })?;
+        let (incarnation, stream_id) = renderer
+            .video_registry
+            .ensure_direct_stream(&target, format)
+            .map_err(|reason| (atoms::caller_owned(), reason))?;
+        let dispatcher = renderer
+            .direct_video_dispatcher
+            .acquire_or_start("emerge_skia_direct_video_release")
+            .map_err(|reason| (atoms::caller_owned(), reason))?;
+        let prepared = frame
+            .prepare_cloexec(&dispatcher)
+            .map_err(|error| (atoms::caller_owned(), error.to_string()))?;
+        match renderer
+            .video_registry
+            .submit_canonical(&target, incarnation, stream_id, prepared)
+        {
+            Ok(VideoSubmitResult::Queued) => {
+                renderer.video_wake.notify();
+                Ok(atoms::transferred())
             }
-        };
-    target.wake.notify();
-    Ok(ResourceArc::new(VideoConsumerSessionResource::new(
-        target.clone(),
-        stream_id,
-        release_dispatcher,
-    )))
+            Ok(VideoSubmitResult::DroppedInactive) => Ok(atoms::released()),
+            Err(CanonicalSubmitError::CallerOwned(reason)) => Err((atoms::caller_owned(), reason)),
+            Err(CanonicalSubmitError::Transferred(reason)) => Err((atoms::transferred(), reason)),
+        }
+    }
+    #[cfg(not(any(feature = "video-interop-support", test)))]
+    {
+        let _ = renderer;
+        let _ = target;
+        Err((
+            atoms::caller_owned(),
+            "unsupported video frame storage; this build accepts VideoInterop.Binary only"
+                .to_string(),
+        ))
+    }
+}
+
+fn validate_binary_video_lease(frame: &BinaryVideoFrame<'_>) -> Result<(), String> {
+    let lease = frame
+        .lease
+        .atom_to_string()
+        .map_err(|_| "binary video frame must not have a lease".to_string())?;
+    if lease == "nil" {
+        Ok(())
+    } else {
+        Err("binary video frame must not have a lease".to_string())
+    }
+}
+
+fn decode_binary_video_frame(
+    env: Env<'_>,
+    frame: BinaryVideoFrame<'_>,
+) -> Result<CpuVideoFrame, String> {
+    let acquire_sync = frame
+        .acquire_sync
+        .to_term(env)
+        .atom_to_string()
+        .map_err(|_| "binary frame acquire_sync must be an atom".to_string())?;
+    let format_acquire_sync = frame
+        .format
+        .acquire_sync
+        .to_term(env)
+        .atom_to_string()
+        .map_err(|_| "binary frame format acquire_sync must be an atom".to_string())?;
+    if acquire_sync != "implicit" || format_acquire_sync != "implicit" {
+        return Err("binary video frames require implicit synchronization".to_string());
+    }
+    if frame.format.width != frame.coded_width || frame.format.height != frame.coded_height {
+        return Err("binary frame format dimensions do not match coded dimensions".to_string());
+    }
+    let rect = frame.visible_rect;
+    let right = rect
+        .x
+        .checked_add(rect.width)
+        .ok_or_else(|| "binary frame visible rectangle overflowed".to_string())?;
+    let bottom = rect
+        .y
+        .checked_add(rect.height)
+        .ok_or_else(|| "binary frame visible rectangle overflowed".to_string())?;
+    if rect.width == 0
+        || rect.height == 0
+        || right > frame.coded_width
+        || bottom > frame.coded_height
+    {
+        return Err("binary frame visible rectangle is outside coded dimensions".to_string());
+    }
+    let [plane] = frame.storage.planes.as_slice() else {
+        return Err("binary frame requires exactly one plane".to_string());
+    };
+    let pixel_format = frame
+        .format
+        .storage
+        .pixel_format
+        .to_term(env)
+        .atom_to_string()
+        .map_err(|_| "binary frame pixel_format must be an atom".to_string())?;
+    let alpha_mode = frame
+        .format
+        .alpha_mode
+        .to_term(env)
+        .atom_to_string()
+        .map_err(|_| "binary frame alpha_mode must be an atom".to_string())?;
+    let polarity = frame
+        .format
+        .storage
+        .bw1_polarity
+        .map(|value| {
+            value
+                .to_term(env)
+                .atom_to_string()
+                .map_err(|_| "binary frame bw1_polarity must be an atom".to_string())
+        })
+        .transpose()?;
+    let minimum_stride = binary_video_minimum_stride(frame.coded_width, &pixel_format)?;
+    if plane.stride < minimum_stride {
+        return Err(format!(
+            "binary frame stride {} is smaller than required {minimum_stride}",
+            plane.stride
+        ));
+    }
+    let required = plane
+        .stride
+        .checked_mul(frame.coded_height.saturating_sub(1) as usize)
+        .and_then(|bytes| bytes.checked_add(minimum_stride))
+        .and_then(|bytes| plane.offset.checked_add(bytes))
+        .ok_or_else(|| "binary frame byte size overflowed".to_string())?;
+    if frame.storage.data.len() < required {
+        return Err(format!(
+            "binary frame has {} bytes but requires at least {required}",
+            frame.storage.data.len()
+        ));
+    }
+
+    let pixel_count = (rect.width as usize)
+        .checked_mul(rect.height as usize)
+        .ok_or_else(|| "binary frame visible size overflowed".to_string())?;
+    let mut rgba = vec![0_u8; pixel_count.saturating_mul(4)];
+    for output_y in 0..rect.height as usize {
+        let source_y = rect.y as usize + output_y;
+        let row_offset = plane.offset + source_y * plane.stride;
+        for output_x in 0..rect.width as usize {
+            let source_x = rect.x as usize + output_x;
+            let destination = (output_y * rect.width as usize + output_x) * 4;
+            let pixel = decode_binary_video_pixel(
+                &frame.storage.data,
+                row_offset,
+                source_x,
+                &pixel_format,
+                polarity.as_deref(),
+                &alpha_mode,
+            )?;
+            rgba[destination..destination + 4].copy_from_slice(&pixel);
+        }
+    }
+
+    Ok(CpuVideoFrame {
+        generation: 0,
+        width: rect.width,
+        height: rect.height,
+        rgba: Arc::from(rgba),
+    })
+}
+
+fn binary_video_minimum_stride(width: u32, pixel_format: &str) -> Result<usize, String> {
+    let width = width as usize;
+    match pixel_format {
+        "rgba8888" => width
+            .checked_mul(4)
+            .ok_or_else(|| "binary RGBA stride overflowed".to_string()),
+        "rgb888" => width
+            .checked_mul(3)
+            .ok_or_else(|| "binary RGB stride overflowed".to_string()),
+        "gray8" => Ok(width),
+        "gray2" => Ok(width.div_ceil(4)),
+        "bw1" => Ok(width.div_ceil(8)),
+        other => Err(format!("unsupported binary video pixel format: {other}")),
+    }
+}
+
+fn decode_binary_video_pixel(
+    data: &[u8],
+    row_offset: usize,
+    x: usize,
+    pixel_format: &str,
+    polarity: Option<&str>,
+    alpha_mode: &str,
+) -> Result<[u8; 4], String> {
+    match pixel_format {
+        "rgba8888" => {
+            let offset = row_offset + x * 4;
+            let [red, green, blue, alpha] = [
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
+            ];
+            match alpha_mode {
+                "premultiplied" => Ok([red, green, blue, alpha]),
+                "straight" => Ok([
+                    premultiply_video_channel(red, alpha),
+                    premultiply_video_channel(green, alpha),
+                    premultiply_video_channel(blue, alpha),
+                    alpha,
+                ]),
+                "opaque" => Ok([red, green, blue, 255]),
+                other => Err(format!("unsupported binary RGBA alpha mode: {other}")),
+            }
+        }
+        "rgb888" => {
+            if alpha_mode != "opaque" {
+                return Err("binary RGB frames require opaque alpha mode".to_string());
+            }
+            let offset = row_offset + x * 3;
+            Ok([data[offset], data[offset + 1], data[offset + 2], 255])
+        }
+        "gray8" => {
+            if alpha_mode != "opaque" {
+                return Err("binary grayscale frames require opaque alpha mode".to_string());
+            }
+            let gray = data[row_offset + x];
+            Ok([gray, gray, gray, 255])
+        }
+        "gray2" => {
+            if alpha_mode != "opaque" {
+                return Err("binary grayscale frames require opaque alpha mode".to_string());
+            }
+            let shift = 6 - (x % 4) * 2;
+            let gray = ((data[row_offset + x / 4] >> shift) & 0b11) * 85;
+            Ok([gray, gray, gray, 255])
+        }
+        "bw1" => {
+            if alpha_mode != "opaque" {
+                return Err("binary grayscale frames require opaque alpha mode".to_string());
+            }
+            let one = data[row_offset + x / 8] & (0x80 >> (x % 8)) != 0;
+            let gray = match polarity {
+                Some("one_is_white") => u8::from(one) * 255,
+                Some("one_is_black") => u8::from(!one) * 255,
+                _ => return Err("BW1 binary video requires an explicit polarity".to_string()),
+            };
+            Ok([gray, gray, gray, 255])
+        }
+        other => Err(format!("unsupported binary video pixel format: {other}")),
+    }
+}
+
+fn premultiply_video_channel(channel: u8, alpha: u8) -> u8 {
+    ((u16::from(channel) * u16::from(alpha) + 127) / 255) as u8
 }
 
 #[cfg(any(feature = "video-interop-support", test))]
@@ -2909,243 +3179,6 @@ fn decode_video_frame(term: Term<'_>) -> Result<video_interop::Frame<'_>, (Atom,
 #[cfg(any(feature = "video-interop-support", test))]
 fn start_video_release_dispatcher(name: &str) -> Result<ResourceArc<ReleaseDispatcher>, String> {
     ReleaseDispatcher::start(name).map_err(|error| error.to_string())
-}
-
-#[cfg(any(feature = "video-interop-support", test))]
-#[rustler::nif(schedule = "DirtyCpu")]
-fn video_consumer_session_submit(
-    session: ResourceArc<VideoConsumerSessionResource>,
-    frame: Term<'_>,
-) -> Result<Atom, (Atom, String)> {
-    let frame = decode_video_frame(frame)?;
-    if session.renderer_epoch != session.registry.renderer_epoch {
-        return Err((
-            atoms::caller_owned(),
-            format!(
-                "stale video renderer epoch: session_epoch={} registry_epoch={} target={} target_incarnation={} stream_id={}",
-                session.renderer_epoch,
-                session.registry.renderer_epoch,
-                session.id,
-                session.incarnation,
-                session.stream_id
-            ),
-        ));
-    }
-    let release_dispatcher = session
-        .release_dispatcher_for_submit()
-        .map_err(|error| (atoms::caller_owned(), error))?;
-    let prepared = frame
-        .prepare_cloexec(&release_dispatcher)
-        .map_err(|error| (atoms::caller_owned(), error.to_string()))?;
-    match session.registry.submit_canonical(
-        &session.id,
-        session.incarnation,
-        session.stream_id,
-        prepared,
-    ) {
-        Ok(video::VideoSubmitResult::Queued) => {
-            session.wake.notify();
-            Ok(atoms::transferred())
-        }
-        Ok(video::VideoSubmitResult::DroppedInactive) => Ok(atoms::released()),
-        Err(CanonicalSubmitError::CallerOwned(reason)) => Err((atoms::caller_owned(), reason)),
-        Err(CanonicalSubmitError::Transferred(reason)) => Err((atoms::transferred(), reason)),
-    }
-}
-
-#[cfg(any(feature = "video-interop-support", test))]
-#[rustler::nif(schedule = "DirtyCpu")]
-fn video_consumer_decode_for_test(frame: Term<'_>) -> Result<Atom, (Atom, String)> {
-    let _frame = decode_video_frame(frame)?;
-    Ok(atoms::caller_owned())
-}
-
-#[cfg(any(feature = "video-interop-support", test))]
-#[rustler::nif(schedule = "DirtyCpu")]
-fn video_consumer_prepare_hold_for_test(
-    session: ResourceArc<VideoConsumerSessionResource>,
-    frame: Term<'_>,
-) -> Result<ResourceArc<VideoInteropPreparedForTestResource>, (Atom, String)> {
-    let frame = decode_video_frame(frame)?;
-    let dispatcher = session
-        .release_dispatcher_for_submit()
-        .map_err(|error| (atoms::caller_owned(), error))?;
-    let prepared = frame
-        .prepare_cloexec(&dispatcher)
-        .map_err(|error| (atoms::caller_owned(), error.to_string()))?;
-    Ok(ResourceArc::new(VideoInteropPreparedForTestResource {
-        prepared: Mutex::new(Some(prepared)),
-    }))
-}
-
-#[cfg(any(feature = "video-interop-support", test))]
-#[rustler::nif]
-fn video_consumer_prepared_drop_for_test(
-    prepared: ResourceArc<VideoInteropPreparedForTestResource>,
-) -> bool {
-    match prepared.prepared.lock() {
-        Ok(mut prepared) => prepared.take().is_some(),
-        Err(poisoned) => poisoned.into_inner().take().is_some(),
-    }
-}
-
-#[cfg(any(feature = "video-interop-support", test))]
-#[rustler::nif(schedule = "DirtyIo")]
-fn video_consumer_session_open_for_test() -> Result<
-    (
-        ResourceArc<VideoConsumerSessionResource>,
-        ResourceArc<VideoTargetResource>,
-    ),
-    String,
-> {
-    let cleanup_dispatcher = CleanupDispatcher::start()?;
-    let release_tx = video::spawn_release_worker().map_err(|error| error.to_string())?;
-    let stats = Arc::new(RendererStatsCollector::new());
-    let registry = Arc::new(VideoRegistry::new(
-        release_tx,
-        cleanup_dispatcher.clone(),
-        Some(stats),
-    ));
-    let id = "video-consumer-test".to_string();
-    let width = 64;
-    let height = 32;
-    let fourcc = u32::from_le_bytes(*b"AB24");
-    let incarnation = registry.create_target(video::VideoTargetSpec {
-        id: id.clone(),
-        width,
-        height,
-        mode: VideoMode::Prime,
-    })?;
-    registry.set_active_targets(&HashSet::from([id.clone()]))?;
-    let stream_id = registry.open_stream(
-        &id,
-        incarnation,
-        video::VideoStreamFormat {
-            width,
-            height,
-            framerate: None,
-            fourcc,
-            modifier_policy: video::StreamModifierPolicy::PerBuffer,
-            acquire_sync_policy: video::StreamAcquireSyncPolicy::PerFrame,
-            colorimetry: video_interop::Colorimetry::default(),
-            pixel_aspect_ratio: (1, 1),
-            interlace_mode: video_interop::InterlaceMode::Progressive,
-            alpha_mode: video_interop::AlphaMode::Opaque,
-        },
-    )?;
-    let target = ResourceArc::new(VideoTargetResource {
-        id,
-        renderer_epoch: registry.renderer_epoch,
-        incarnation,
-        _width: width,
-        _height: height,
-        _mode: VideoMode::Prime,
-        registry,
-        wake: VideoWake::noop(),
-        cleanup_dispatcher,
-    });
-    let release_dispatcher =
-        start_video_release_dispatcher("emerge_skia_video_consumer_release_test")?;
-    let session = ResourceArc::new(VideoConsumerSessionResource::new(
-        target.clone(),
-        stream_id,
-        release_dispatcher,
-    ));
-    Ok((session, target))
-}
-
-#[cfg(any(feature = "video-interop-support", test))]
-#[rustler::nif]
-fn video_consumer_target_set_active_for_test(
-    target: ResourceArc<VideoTargetResource>,
-    active: bool,
-) -> Result<bool, String> {
-    let active_targets = if active {
-        HashSet::from([target.id.clone()])
-    } else {
-        HashSet::new()
-    };
-    target.registry.set_active_targets(&active_targets)?;
-    Ok(true)
-}
-
-#[cfg(any(feature = "video-interop-support", test))]
-#[rustler::nif]
-fn video_consumer_target_replace_for_test(
-    target: ResourceArc<VideoTargetResource>,
-) -> Result<bool, String> {
-    target
-        .registry
-        .remove_target(&target.id, target.incarnation);
-    target.registry.create_target(video::VideoTargetSpec {
-        id: target.id.clone(),
-        width: target._width,
-        height: target._height,
-        mode: target._mode,
-    })?;
-    target
-        .registry
-        .set_active_targets(&HashSet::from([target.id.clone()]))?;
-    Ok(true)
-}
-
-#[cfg(any(feature = "video-interop-support", test))]
-#[rustler::nif]
-fn video_consumer_target_pipeline_counts_for_test(
-    target: ResourceArc<VideoTargetResource>,
-) -> Result<(u64, u64, u64), String> {
-    target
-        .registry
-        .pipeline_counts_for_test()
-        .ok_or_else(|| "video consumer test stats are unavailable".to_string())
-}
-
-#[cfg(any(feature = "video-interop-support", test))]
-#[rustler::nif(schedule = "DirtyIo")]
-fn video_interop_open_fd_for_test()
--> Result<(i32, ResourceArc<VideoInteropFdForTestResource>), String> {
-    let file = File::open("/dev/null").map_err(|error| error.to_string())?;
-    let fd: OwnedFd = file.into();
-    let raw_fd = fd.as_raw_fd();
-    Ok((
-        raw_fd,
-        ResourceArc::new(VideoInteropFdForTestResource { _fd: fd }),
-    ))
-}
-
-#[cfg(any(feature = "video-interop-support", test))]
-#[rustler::nif(schedule = "DirtyIo")]
-fn video_consumer_session_close<'a>(
-    env: Env<'a>,
-    session: ResourceArc<VideoConsumerSessionResource>,
-) -> Term<'a> {
-    encode_dispatcher_close_result(
-        env,
-        video_consumer_session_close_with_timeout(&session, RELEASE_DISPATCHER_CLOSE_TIMEOUT),
-    )
-}
-
-#[cfg(any(feature = "video-interop-support", test))]
-#[rustler::nif(schedule = "DirtyIo")]
-fn video_consumer_session_close_with_timeout_for_test<'a>(
-    env: Env<'a>,
-    session: ResourceArc<VideoConsumerSessionResource>,
-    timeout_ms: u64,
-) -> Term<'a> {
-    encode_dispatcher_close_result(
-        env,
-        video_consumer_session_close_with_timeout(&session, Duration::from_millis(timeout_ms)),
-    )
-}
-
-#[cfg(any(feature = "video-interop-support", test))]
-fn video_consumer_session_close_with_timeout(
-    session: &VideoConsumerSessionResource,
-    timeout: Duration,
-) -> Result<(), DispatcherCloseError> {
-    session
-        .close_and_join(timeout)
-        .map_err(dispatcher_close_error)
 }
 
 #[cfg(any(feature = "video-interop-support", test))]
@@ -4681,6 +4714,8 @@ mod tests {
                 None,
             )),
             video_wake: VideoWake::noop(),
+            #[cfg(any(feature = "video-interop-support", test))]
+            direct_video_dispatcher: Arc::new(ReleaseDispatcherHandleResource::lazy()),
             native_log: Arc::new(NativeLogRelay::default()),
             stats: None,
             latest_frame: Arc::new(LatestFrameStore::default()),
@@ -4779,19 +4814,15 @@ mod tests {
     }
 
     #[test]
-    fn video_target_new_rejects_prime_for_non_prime_backends() {
-        let err = ensure_video_target_mode_supported(false, VideoMode::Prime)
-            .expect_err("prime target should be rejected");
-
+    fn straight_rgba_video_pixels_are_premultiplied_once() {
         assert_eq!(
-            err,
-            "prime video targets require runtime DMA-BUF and external-image support on the active backend"
+            decode_binary_video_pixel(&[255, 64, 0, 128], 0, 0, "rgba8888", None, "straight"),
+            Ok([128, 32, 0, 128])
         );
-    }
-
-    #[test]
-    fn video_target_new_accepts_prime_for_prime_capable_wayland_renderer() {
-        assert!(ensure_video_target_mode_supported(true, VideoMode::Prime).is_ok());
+        assert_eq!(
+            decode_binary_video_pixel(&[128, 32, 0, 128], 0, 0, "rgba8888", None, "premultiplied"),
+            Ok([128, 32, 0, 128])
+        );
     }
 
     #[test]

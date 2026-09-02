@@ -170,8 +170,8 @@ defmodule Emerge.UI do
   @type image_source ::
           binary() | atom() | {:id, binary()} | {:path, binary()} | Emerge.Assets.Ref.t()
 
-  @typedoc "A video target accepted by `video/2`."
-  @type video_target :: EmergeSkia.VideoTarget.t()
+  @typedoc "A viewport-local atom target accepted by `video/2`."
+  @type video_target :: atom()
 
   @type key_attr :: {:key, key()}
   @type layout_scale_attr :: {:layout_scale, number()}
@@ -436,10 +436,11 @@ defmodule Emerge.UI do
   end
 
   @doc """
-  A video element backed by a renderer-owned video target.
+  A video element addressed by a viewport-local atom target.
 
-  `video/2` behaves like an image element whose pixels are provided by an owned
-  target instead of a file source.
+  Submit frames with `Emerge.submit_video_frame/3`. The element has no intrinsic
+  size; normal layout attrs determine its bounds and the latest frame is fitted
+  within them.
   """
   @spec video(attrs(), video_target()) :: t()
   def video(attrs, target) do
@@ -448,8 +449,7 @@ defmodule Emerge.UI do
 
     attrs
     |> Map.put_new(:image_fit, :contain)
-    |> Map.put(:video_target, target.id)
-    |> Map.put(:image_size, {target.width, target.height})
+    |> Map.put(:video_target, Atom.to_string(target))
     |> Builder.build_element(nearby, :video, [])
   end
 

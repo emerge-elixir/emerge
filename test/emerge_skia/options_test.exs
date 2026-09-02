@@ -314,12 +314,15 @@ defmodule EmergeSkia.OptionsTest do
       assert normalized == Atom.to_string(pixel_format)
     end
 
+    assert_raise ArgumentError, ~r/:headless.pixel_format must be/, fn ->
+      Options.build_start_native_opts!(
+        backend: :headless,
+        rendering_api: :raster,
+        headless: [target: self(), pixel_format: :gray4]
+      )
+    end
+
     for opts <- [
-          [
-            backend: :headless,
-            rendering_api: :raster,
-            headless: [target: self(), pixel_format: :gray4, dither: true]
-          ],
           [
             backend: :headless,
             rendering_api: :opengl,
@@ -383,12 +386,13 @@ defmodule EmergeSkia.OptionsTest do
 
     assert target == self()
 
-    assert %{headless: %{mode: "prime", target: nil}} =
-             Options.build_start_native_opts!(
-               backend: :headless,
-               rendering_api: :opengl,
-               headless: [mode: :prime]
-             )
+    assert_raise ArgumentError, ~r/:headless.target must be a live local pid/, fn ->
+      Options.build_start_native_opts!(
+        backend: :headless,
+        rendering_api: :opengl,
+        headless: [mode: :prime]
+      )
+    end
 
     assert_raise ArgumentError, ~r/:headless.prime has unsupported option/, fn ->
       Options.build_start_native_opts!(

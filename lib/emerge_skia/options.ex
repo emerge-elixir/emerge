@@ -338,16 +338,9 @@ defmodule EmergeSkia.Options do
       |> Keyword.get(:mode, :binary)
       |> normalize_headless_mode!()
 
-    if backend == "headless" and mode == "binary" and
+    if backend == "headless" and
          (not is_pid(target) or node(target) != node() or not Process.alive?(target)) do
-      raise ArgumentError,
-            ":headless.target must be a live local pid for binary headless output"
-    end
-
-    if backend == "headless" and mode == "prime" and not is_nil(target) and
-         (not is_pid(target) or node(target) != node() or not Process.alive?(target)) do
-      raise ArgumentError,
-            ":headless.target must be nil or a live local pid for PRIME headless output"
+      raise ArgumentError, ":headless.target must be a live local pid for headless output"
     end
 
     %{
@@ -392,13 +385,12 @@ defmodule EmergeSkia.Options do
 
   defp normalize_headless_pixel_format!(value) when value in [:rgb888, "rgb888"], do: "rgb888"
   defp normalize_headless_pixel_format!(value) when value in [:gray8, "gray8"], do: "gray8"
-  defp normalize_headless_pixel_format!(value) when value in [:gray4, "gray4"], do: "gray4"
   defp normalize_headless_pixel_format!(value) when value in [:gray2, "gray2"], do: "gray2"
   defp normalize_headless_pixel_format!(value) when value in [:bw1, "bw1"], do: "bw1"
 
   defp normalize_headless_pixel_format!(value) do
     raise ArgumentError,
-          ":headless.pixel_format must be :rgba8888, :rgb888, :gray8, :gray4, :gray2, or :bw1, got: #{inspect(value)}"
+          ":headless.pixel_format must be :rgba8888, :rgb888, :gray8, :gray2, or :bw1, got: #{inspect(value)}"
   end
 
   defp normalize_bw1_polarity!(value) when value in [:one_is_black, "one_is_black"],

@@ -6,6 +6,8 @@ defmodule EmergeSkiaTest do
   alias Emerge.UI.Svg
   alias EmergeSkia.BuildConfig
   alias EmergeSkia.Macos.Renderer
+  alias VideoInterop.{Binary, Frame}
+  alias VideoInterop.Binary.{Format, Plane}
 
   defp restore_env(name, nil), do: System.delete_env(name)
   defp restore_env(name, value), do: System.put_env(name, value)
@@ -29,6 +31,21 @@ defmodule EmergeSkiaTest do
 
   defp render_tree_to_png(tree, opts) do
     EmergeSkia.TreeRenderer.render_to_png(tree, opts, 30_000)
+  end
+
+  defp receive_latest_headless_frame(timeout \\ 1_000) do
+    assert_receive {:emerge_skia_frame, frame}, timeout
+    drain_headless_frames(frame, System.monotonic_time(:millisecond) + 50)
+  end
+
+  defp drain_headless_frames(frame, deadline) do
+    remaining = Kernel.max(deadline - System.monotonic_time(:millisecond), 0)
+
+    receive do
+      {:emerge_skia_frame, newer} -> drain_headless_frames(newer, deadline)
+    after
+      remaining -> frame
+    end
   end
 
   test "render_to_pixels returns RGBA binary" do
@@ -290,14 +307,15 @@ defmodule EmergeSkiaTest do
     tree = el([width(px(4)), height(px(4)), Emerge.UI.Background.color(:red)], none())
     {_state, _assigned} = EmergeSkia.upload_tree(renderer, tree)
 
-    assert_receive {:emerge_skia_frame, frame}, 1_000
-    frame = Map.new(frame)
-    assert frame["mode"] == "binary"
-    assert frame["width"] == 4
-    assert frame["height"] == 4
-    assert frame["pixel_format"] == "rgb888"
-    assert frame["stride_bytes"] == 12
-    assert byte_size(frame["data"]) == 4 * 4 * 3
+    assert %Frame{
+             coded_width: 4,
+             coded_height: 4,
+             format: %{storage: %Format{pixel_format: :rgb888}},
+             storage: %Binary{data: data, planes: [%Plane{stride: 12}]},
+             lease: nil
+           } = receive_latest_headless_frame()
+
+    assert byte_size(data) == 4 * 4 * 3
 
     assert :ok = EmergeSkia.stop(renderer)
   end
@@ -325,11 +343,16 @@ defmodule EmergeSkiaTest do
       )
 
     {_state, _assigned} = EmergeSkia.upload_tree(renderer, tree)
-    assert_receive {:emerge_skia_frame, frame}, 1_000
-    frame = Map.new(frame)
-    assert frame["pixel_format"] == "bw1"
-    assert frame["stride_bytes"] == 2
-    assert frame["data"] == <<0xFF, 0x80, 0xFF, 0x80>>
+
+    assert %Frame{
+             format: %{
+               storage: %Format{pixel_format: :bw1, bw1_polarity: :one_is_white}
+             },
+             storage: %Binary{
+               data: <<0xFF, 0x80, 0xFF, 0x80>>,
+               planes: [%Plane{stride: 2}]
+             }
+           } = receive_latest_headless_frame()
 
     assert {:ok, pixels} = EmergeSkia.render_to_pixels(renderer)
     assert pixels == :binary.copy(<<255, 255, 255, 255>>, 18)
@@ -354,11 +377,14 @@ defmodule EmergeSkiaTest do
       )
 
     {_state, _assigned} = EmergeSkia.upload_tree(renderer, tree)
-    assert_receive {:emerge_skia_frame, frame}, 1_000
-    frame = Map.new(frame)
-    assert frame["pixel_format"] == "gray2"
-    assert frame["stride_bytes"] == 2
-    assert frame["data"] == <<0xFF, 0xC0, 0xFF, 0xC0>>
+
+    assert %Frame{
+             format: %{storage: %Format{pixel_format: :gray2}},
+             storage: %Binary{
+               data: <<0xFF, 0xC0, 0xFF, 0xC0>>,
+               planes: [%Plane{stride: 2}]
+             }
+           } = receive_latest_headless_frame()
 
     assert {:ok, pixels} = EmergeSkia.render_to_pixels(renderer)
     assert pixels == :binary.copy(<<255, 255, 255, 255>>, 10)
@@ -383,9 +409,9 @@ defmodule EmergeSkiaTest do
         )
 
       {_state, _assigned} = EmergeSkia.upload_tree(renderer, tree)
-      assert_receive {:emerge_skia_frame, frame}, 1_000
+      assert %Frame{storage: %Binary{data: data}} = receive_latest_headless_frame()
       assert :ok = EmergeSkia.stop(renderer)
-      Map.new(frame)["data"]
+      data
     end
 
     text_tree =
@@ -438,10 +464,12 @@ defmodule EmergeSkiaTest do
       tree = el([width(px(4)), height(px(4)), Emerge.UI.Background.color(:red)], none())
       {_state, _assigned} = EmergeSkia.upload_tree(renderer, tree)
 
-      assert_receive {:emerge_skia_frame, frame}, 1_000
-      frame = Map.new(frame)
-      assert frame["pixel_format"] == "rgba8888"
-      assert byte_size(frame["data"]) == 4 * 4 * 4
+      assert %Frame{
+               format: %{storage: %Format{pixel_format: :rgba8888}},
+               storage: %Binary{data: data}
+             } = receive_latest_headless_frame()
+
+      assert byte_size(data) == 4 * 4 * 4
 
       assert {:ok, pixels} = EmergeSkia.render_to_pixels(renderer)
       assert byte_size(pixels) == 4 * 4 * 4
@@ -484,13 +512,7 @@ defmodule EmergeSkiaTest do
     tree = el([width(px(4)), height(px(4)), Emerge.UI.Background.color(:red)], none())
     {_state, _assigned} = EmergeSkia.upload_tree(renderer, tree)
 
-    assert_receive {:emerge_skia_frame, frame}, 1_000
-    frame = Map.new(frame)
-    assert frame["mode"] == "prime"
-    assert frame["width"] == 4
-    assert frame["height"] == 4
-
-    dma_buf = frame["dmabuf"]
+    assert_receive {:emerge_skia_frame, dma_buf}, 1_000
 
     assert %VideoInterop.Frame{
              coded_width: 4,
@@ -534,8 +556,7 @@ defmodule EmergeSkiaTest do
     assert %{active_leases: 0} = VideoInterop.LeaseOwner.stats(lease.owner)
     next_tree = el([width(px(4)), height(px(4)), Emerge.UI.Background.color(:green)], none())
     {_state, _assigned} = EmergeSkia.upload_tree(renderer, next_tree)
-    assert_receive {:emerge_skia_frame, next_frame}, 1_000
-    next_dma_buf = next_frame |> Map.new() |> Map.fetch!("dmabuf")
+    assert_receive {:emerge_skia_frame, %VideoInterop.Frame{} = next_dma_buf}, 1_000
     [%VideoInterop.DMABuf.Object{fd: next_fd}] = next_dma_buf.storage.objects
     session_monitor = Process.monitor(renderer.pid)
     test_pid = self()
@@ -576,8 +597,7 @@ defmodule EmergeSkiaTest do
     tree = el([width(px(640)), height(px(420)), Emerge.UI.Background.color(:red)], none())
     {_state, _assigned} = EmergeSkia.upload_tree(renderer, tree)
 
-    assert_receive {:emerge_skia_frame, frame}, 5_000
-    dma_buf = frame |> Map.new() |> Map.fetch!("dmabuf")
+    assert_receive {:emerge_skia_frame, dma_buf}, 5_000
 
     assert %VideoInterop.Frame{
              coded_width: 640,
@@ -602,8 +622,7 @@ defmodule EmergeSkiaTest do
 
     next_tree = el([width(px(640)), height(px(420)), Emerge.UI.Background.color(:blue)], none())
     {_state, _assigned} = EmergeSkia.upload_tree(renderer, next_tree)
-    assert_receive {:emerge_skia_frame, next_frame}, 5_000
-    next_dma_buf = next_frame |> Map.new() |> Map.fetch!("dmabuf")
+    assert_receive {:emerge_skia_frame, %VideoInterop.Frame{} = next_dma_buf}, 5_000
     assert :ok = VideoInterop.release(next_dma_buf)
     assert :ok = EmergeSkia.stop(renderer)
   end
@@ -631,8 +650,7 @@ defmodule EmergeSkiaTest do
     tree = el([width(px(4)), height(px(4)), Emerge.UI.Background.color(:red)], none())
     {_state, _assigned} = EmergeSkia.upload_tree(renderer, tree)
 
-    assert_receive {:emerge_skia_frame, frame}, 1_000
-    dma_buf = frame |> Map.new() |> Map.fetch!("dmabuf")
+    assert_receive {:emerge_skia_frame, %VideoInterop.Frame{} = dma_buf}, 1_000
     assert %VideoInterop.Frame{acquire_sync: :implicit} = dma_buf
     assert :ok = VideoInterop.validate(dma_buf)
     assert :ok = VideoInterop.release(dma_buf)
@@ -748,44 +766,5 @@ defmodule EmergeSkiaTest do
 
     assert File.regular?(path)
     assert :ok = EmergeSkia.load_font_file("lobster-test", 400, false, path)
-  end
-
-  test "video targets implement canonical consumer format validation before native open" do
-    target = %EmergeSkia.VideoTarget{
-      id: "preview",
-      width: 64,
-      height: 32,
-      mode: :prime,
-      ref: make_ref()
-    }
-
-    wrong_size = %VideoInterop.Format{
-      width: 16,
-      height: 16,
-      framerate: nil,
-      storage: %VideoInterop.DMABuf.Format{
-        fourcc: VideoInterop.DMABuf.FourCC.nv12(),
-        modifier: :per_buffer
-      }
-    }
-
-    assert VideoInterop.Consumer.impl_for(target)
-
-    assert {:error, {:wrong_size, {16, 16}, {64, 32}}} =
-             VideoInterop.open_consumer(target, wrong_size)
-
-    assert {:error, {:unsupported_interlace_mode, :interlaced_top_first}} =
-             VideoInterop.open_consumer(target, %{
-               wrong_size
-               | width: 64,
-                 height: 32,
-                 interlace_mode: :interlaced_top_first
-             })
-  end
-
-  test "video_target/2 accepts :prime mode at the Elixir API layer" do
-    assert_raise ArgumentError, ~r/argument error/, fn ->
-      EmergeSkia.video_target(make_ref(), id: "preview", width: 64, height: 32, mode: :prime)
-    end
   end
 end
