@@ -39,6 +39,7 @@
 - Removed unconditional full-frame GPU screenshot readback from DRM and Wayland presentation; screenshots now trigger one bounded on-demand capture without serializing every rendered frame.
 - Made direct video submission consume and release inactive-target frames successfully so transient scene visibility no longer terminates an ownership-safe sink.
 - Declared headless Vulkan PRIME output with immutable `:sync_file` acquisition and explicit linear modifier `0` so its frames can open Vulkan consumer streams without weakening synchronization or layout policy.
+- Removed a headless redraw feedback loop, kept PRIME backpressure recovery on the configured target cadence, and excluded Wayland late-replacement swaps from displayed-frame FPS counters.
 - Fixed Wayland video-only redraw starvation.
 - Kept unchanged ordered paint runs reusable when another run in the same semantic layer changes, isolated correctness-bearing scopes from adjacent paint, deferred rapidly changing GPU payload replacements until stable, staggered related replacements across frames, and retained only the latest version per run.
 - Sized isolated text payloads from measured font visual bounds, including glyph overhang and vertical extents, instead of an approximate character-width estimate.

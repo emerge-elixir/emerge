@@ -51,9 +51,7 @@ struct HeadlessBackendWake {
 impl BackendWake for HeadlessBackendWake {
     fn request_stop(&self) {}
 
-    fn request_redraw(&self) {
-        self.notify_video_frame();
-    }
+    fn request_redraw(&self) {}
 
     fn notify_video_frame(&self) {
         send_tree(&self.tree_tx, TreeMsg::AssetStateChanged, false);
@@ -310,6 +308,7 @@ pub(crate) fn start_renderer_with_config(
         stats: renderer_stats.clone(),
     });
 
+    let video_wake = VideoWake::new(backend_wake.clone());
     let resource = RendererResource {
         running_flag,
         backend_wake,
@@ -319,7 +318,7 @@ pub(crate) fn start_renderer_with_config(
         input_target,
         render_tx: render_sender,
         video_registry,
-        video_wake: VideoWake::noop(),
+        video_wake,
         #[cfg(any(feature = "video-interop-support", test))]
         direct_video_dispatcher: Arc::new(crate::ReleaseDispatcherHandleResource::lazy()),
         native_log,
@@ -408,12 +407,15 @@ fn run_render_loop(
             }
             recv(prime_completion_rx) -> completion => {
                 let Ok(release_id) = completion else { break; };
-                if renderer.complete_prime_retirement(release_id) {
-                    maybe_resume_prime_animation(
+                if renderer.complete_prime_retirement(release_id)
+                    && let Some(tick) = resume_prime_animation_tick(
                         &mut pending_prime_animation,
-                        &tree_tx,
                         frame_interval,
-                    );
+                        Instant::now(),
+                        &mut next_animation_at,
+                    )
+                {
+                    animation_tick = tick;
                 }
                 if renderer.terminal_prime_shutdown_ready() {
                     break;
@@ -423,12 +425,15 @@ fn run_render_loop(
                 match msg {
                     Ok(HeadlessReleaseMsg::PrimeFrame(release_id)) => {
                         let capacity_released = renderer.release_prime(release_id);
-                        if capacity_released {
-                            maybe_resume_prime_animation(
+                        if capacity_released
+                            && let Some(tick) = resume_prime_animation_tick(
                                 &mut pending_prime_animation,
-                                &tree_tx,
                                 frame_interval,
-                            );
+                                Instant::now(),
+                                &mut next_animation_at,
+                            )
+                        {
+                            animation_tick = tick;
                         }
                         if renderer.terminal_prime_shutdown_ready() {
                             break;
@@ -636,14 +641,14 @@ fn record_render_stats(
     }
 }
 
-fn maybe_resume_prime_animation(
+fn resume_prime_animation_tick(
     pending: &mut bool,
-    tree_tx: &Sender<TreeMsg>,
     frame_interval: Duration,
-) {
-    if std::mem::take(pending) {
-        maybe_send_animation_pulse(tree_tx, true, frame_interval);
-    }
+    now: Instant,
+    next_animation_at: &mut Option<Instant>,
+) -> Option<Receiver<Instant>> {
+    std::mem::take(pending)
+        .then(|| animation_tick_receiver(true, frame_interval, now, next_animation_at))
 }
 
 fn animation_tick_receiver(
@@ -1253,6 +1258,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn renderer_redraw_wake_does_not_feed_back_into_the_tree_actor() {
+        let (tree_tx, tree_rx) = unbounded();
+        let wake = HeadlessBackendWake { tree_tx };
+
+        wake.request_redraw();
+        assert!(tree_rx.try_recv().is_err());
+
+        wake.notify_video_frame();
+        assert!(matches!(tree_rx.try_recv(), Ok(TreeMsg::AssetStateChanged)));
+    }
+
+    #[test]
     fn raster_fallback_disables_cache_without_explicit_opt_in() {
         let default_config = RendererCacheConfig {
             enabled: true,
@@ -1304,19 +1321,25 @@ mod tests {
     }
 
     #[test]
-    fn prime_release_resumes_one_pending_animation_pulse() {
-        let (tree_tx, tree_rx) = unbounded();
+    fn prime_release_resumes_pending_animation_at_target_cadence() {
+        let now = Instant::now();
+        let interval = Duration::from_millis(30);
         let mut pending = true;
+        let mut next_animation_at = None;
 
-        maybe_resume_prime_animation(&mut pending, &tree_tx, Duration::from_millis(16));
+        let tick = resume_prime_animation_tick(&mut pending, interval, now, &mut next_animation_at)
+            .expect("pending animation should schedule a tick");
+
         assert!(!pending);
+        assert_eq!(next_animation_at, Some(now + interval));
         assert!(matches!(
-            tree_rx.try_recv(),
-            Ok(TreeMsg::AnimationPulse { .. })
+            tick.recv_timeout(Duration::from_millis(1)),
+            Err(crossbeam_channel::RecvTimeoutError::Timeout)
         ));
-
-        maybe_resume_prime_animation(&mut pending, &tree_tx, Duration::from_millis(16));
-        assert!(tree_rx.try_recv().is_err());
+        assert!(
+            resume_prime_animation_tick(&mut pending, interval, now, &mut next_animation_at,)
+                .is_none()
+        );
     }
 
     #[test]

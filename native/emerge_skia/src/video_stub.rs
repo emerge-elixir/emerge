@@ -124,6 +124,11 @@ impl VideoRegistry {
 pub struct VideoWake(BackendWakeHandle);
 
 impl VideoWake {
+    pub fn new(wake: BackendWakeHandle) -> Self {
+        Self(wake)
+    }
+
+    #[allow(dead_code)]
     pub fn noop() -> Self {
         Self(BackendWakeHandle::noop())
     }

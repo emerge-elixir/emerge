@@ -459,6 +459,14 @@ fn requires_ready_renderer_before_startup_ack(rendering_api: RenderingApi) -> bo
     matches!(rendering_api, RenderingApi::OpenGl | RenderingApi::Vulkan)
 }
 
+fn record_wayland_display_frame(stats: Option<&RendererStatsCollector>, draw_kind: DrawKind) {
+    if draw_kind == DrawKind::Normal
+        && let Some(stats) = stats
+    {
+        stats.record_frame_present();
+    }
+}
+
 fn frame_draw_decision(
     present: &PresentState,
     env_ready: bool,
@@ -1415,9 +1423,7 @@ impl WaylandApp {
             );
         }
 
-        if let Some(stats) = self.stats.as_ref() {
-            stats.record_frame_present();
-        }
+        record_wayland_display_frame(self.stats.as_deref(), draw_kind);
 
         if draw_kind == DrawKind::Normal {
             let fallback_presented_at = std::time::Instant::now();
@@ -1582,8 +1588,8 @@ impl WaylandApp {
 
         if let Some(stats) = self.stats.as_ref() {
             stats.record_present_submit(present_submit);
-            stats.record_frame_present();
         }
+        record_wayland_display_frame(self.stats.as_deref(), draw_kind);
 
         if self.renderer_animation_log && (self.render_state.animate || animation_trace.is_some()) {
             self.native_log.info(
@@ -3303,12 +3309,24 @@ mod tests {
     use super::{
         DrawDecision, DrawKind, PresentState, RENDER_PROFILE_INTERVAL, RenderingApi,
         WaylandVideoImportState, WaylandVideoSyncAction, frame_draw_decision,
-        key_text_commit_event, refresh_rate_interval, renderer_profile_due,
-        requires_ready_renderer_before_startup_ack, should_reconfigure_surface,
-        try_send_wayland_event, try_send_wayland_tree,
+        key_text_commit_event, record_wayland_display_frame, refresh_rate_interval,
+        renderer_profile_due, requires_ready_renderer_before_startup_ack,
+        should_reconfigure_surface, try_send_wayland_event, try_send_wayland_tree,
     };
     use crate::actors::{EventMsg, TreeMsg};
     use crate::input::{InputEvent, MOD_SHIFT};
+    use crate::stats::RendererStatsCollector;
+
+    #[test]
+    fn wayland_fps_counts_normal_display_frames_not_late_replacements() {
+        let stats = RendererStatsCollector::new();
+
+        record_wayland_display_frame(Some(&stats), DrawKind::LateReplacement);
+        record_wayland_display_frame(Some(&stats), DrawKind::LateVideoReplacement);
+        record_wayland_display_frame(Some(&stats), DrawKind::Normal);
+
+        assert_eq!(stats.peek().frame_count, 1);
+    }
 
     #[test]
     fn wayland_output_refresh_rate_uses_millihertz() {
