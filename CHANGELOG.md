@@ -24,6 +24,7 @@
 - Replaced `macos_backend` with `rendering_api` and removed `dispatch_mode`. The `backend_renderer` option and `:gl` rendering value remain accepted as deprecated aliases.
 - Replaced the old PRIME lease shape with authority-verified per-holder abandonment guards. This is a breaking video interoperability protocol change.
 - Replaced raw PRIME submission, renderer-owned video target handles, consumer-session ceremony, and direct viewport connections with `video(attrs, atom)` and `Emerge.submit_video_frame/3`.
+- Simplified mailbox-free video submission to register only the EmergeSkia renderer handle, call `EmergeSkia.submit_video_frame/3` directly, and document its low-level ownership receipts publicly.
 - Made producer and renderer release dispatchers lifecycle-owned and explicitly drained/joined outside BEAM resource destructors. `stop/1` can now return `{:error, reason}` when an ownership-safe PRIME shutdown cannot complete.
 - Replaced damage-inferred paint layers with deterministic semantic Root, Nearby, ScrollContent, Animation, SliderValue, and DirectMedia topology backed by broadly coalesced own runs with exact scoped interleaving.
 - Renamed the public DRM timer metric to `gpu_render_elapsed`; the native stats schema is now version 25 after adding renderer, cache, asset, Vulkan video synchronization, release-fence, saturation, quarantine-terminal, and device-loss diagnostics.

@@ -22,10 +22,6 @@ defmodule Emerge.Runtime.Viewport.Renderer.Skia do
   def set_input_mask(renderer, mask), do: EmergeSkia.set_input_mask(renderer, mask)
 
   @impl true
-  def submit_video_frame(renderer, target, frame),
-    do: EmergeSkia.submit_video_frame(renderer, target, frame)
-
-  @impl true
   def upload_tree(renderer, tree), do: EmergeSkia.upload_tree(renderer, tree)
 
   @impl true

@@ -59,8 +59,10 @@ fence. Format and per-frame synchronization policies must agree.
 ## Submission and visibility
 
 `Emerge.submit_video_frame/3` bypasses the viewport GenServer mailbox through a
-private renderer endpoint registry. This keeps high-rate media traffic out of
-application event handling.
+private registry that maps the viewport PID directly to its EmergeSkia renderer
+handle. Registration occurs once after renderer startup and is removed before
+renderer shutdown. This keeps high-rate media traffic out of application event
+handling without renderer-module dispatch.
 
 Every normal return consumes the supplied frame:
 
@@ -79,7 +81,8 @@ latest frame but do not create new lease holders.
 
 ```text
 Emerge.submit_video_frame(viewport, target, frame)
-  -> private renderer endpoint
+  -> lookup EmergeSkia renderer by viewport PID
+  -> EmergeSkia.submit_video_frame(renderer, target, frame)
   -> EmergeSkia.video_frame_submit NIF
   -> VideoRegistry
        hidden: retire/drop

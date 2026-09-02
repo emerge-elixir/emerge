@@ -96,12 +96,6 @@ defmodule Emerge.ViewportTest do
     end
 
     @impl true
-    def submit_video_frame(renderer, target, frame) do
-      Agent.update(renderer, &log_op(&1, {:submit_video_frame, target, frame}))
-      VideoInterop.release(frame)
-    end
-
-    @impl true
     def upload_tree(renderer, tree) do
       diff_state = Emerge.Engine.diff_state_new(tree)
       Agent.update(renderer, &log_op(&1, {:upload_tree, diff_state.tree}))
@@ -541,13 +535,14 @@ defmodule Emerge.ViewportTest do
     GenServer.stop(pid)
   end
 
-  test "submits a frame through the private renderer endpoint" do
+  test "rejects video submission to a non-Skia renderer" do
     {:ok, pid} = CounterViewport.start_link(count: 1)
-    renderer = Emerge.renderer(pid)
+    _renderer = Emerge.renderer(pid)
     frame = VideoInterop.Frame.binary(<<1, 2, 3>>, width: 1, height: 1, pixel_format: :rgb888)
 
-    assert :ok = Emerge.submit_video_frame(pid, :preview, frame)
-    assert {:submit_video_frame, :preview, ^frame} = List.last(FakeRenderer.ops(renderer))
+    assert {:error, :video_submission_unsupported} =
+             Emerge.submit_video_frame(pid, :preview, frame)
+
     GenServer.stop(pid)
   end
 

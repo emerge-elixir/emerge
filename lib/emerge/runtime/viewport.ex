@@ -748,7 +748,7 @@ defmodule Emerge.Runtime.Viewport do
           end)
           |> maybe_schedule_renderer_check()
 
-        :ok = VideoEndpoints.register(self(), runtime.renderer_module, renderer)
+        :ok = VideoEndpoints.register(self(), renderer)
         {:ok, state}
 
       {:ok, other} ->

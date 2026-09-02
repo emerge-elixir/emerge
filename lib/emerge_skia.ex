@@ -265,13 +265,46 @@ defmodule EmergeSkia do
     |> apply(:session_running?, [renderer])
   end
 
-  @doc false
-  @spec submit_video_frame(renderer(), atom(), VideoInterop.Frame.t()) ::
-          :ok | {:error, term()}
-  def submit_video_frame(%Renderer{}, _target, _frame),
-    do: {:error, :video_submission_unsupported}
+  @doc """
+  Submits one VideoInterop frame to a renderer-local video target.
 
-  def submit_video_frame(renderer, target, %VideoInterop.Frame{} = frame) when is_atom(target) do
+  The target is the atom passed to `Emerge.UI.video/2` in the renderer's tree.
+  Hidden targets consume and drop frames immediately. Visible targets retain
+  only the latest submitted frame.
+
+  This low-level function exposes ownership on errors:
+
+  - `:ok` means the frame was consumed.
+  - `{:error, {:caller_owned, reason}}` means submission did not consume the
+    frame; the caller must release borrowed storage.
+  - `{:error, {:transferred, reason}}` means ownership transferred before the
+    failure and the caller must not release the frame.
+
+  Applications submitting through a viewport should normally use
+  `Emerge.submit_video_frame/3`, which consumes the frame on every normal
+  return and hides these ownership receipts.
+  """
+  @spec submit_video_frame(renderer(), atom(), VideoInterop.Frame.t()) ::
+          :ok | {:error, {:caller_owned | :transferred, term()}}
+  def submit_video_frame(%Renderer{}, _target, %VideoInterop.Frame{}),
+    do: {:error, {:caller_owned, :video_submission_unsupported}}
+
+  def submit_video_frame(
+        %HeadlessPrimeSession{} = renderer,
+        target,
+        %VideoInterop.Frame{} = frame
+      )
+      when is_atom(target),
+      do: submit_native_video_frame(renderer, target, frame)
+
+  def submit_video_frame(renderer, target, %VideoInterop.Frame{} = frame)
+      when is_reference(renderer) and is_atom(target),
+      do: submit_native_video_frame(renderer, target, frame)
+
+  def submit_video_frame(_renderer, _target, %VideoInterop.Frame{}),
+    do: {:error, {:caller_owned, :video_submission_unsupported}}
+
+  defp submit_native_video_frame(renderer, target, frame) do
     renderer = EmergeSkia.Transport.Native.native_renderer(renderer)
 
     case Native.video_frame_submit(renderer, Atom.to_string(target), frame) do
