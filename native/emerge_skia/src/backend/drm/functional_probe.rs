@@ -696,7 +696,7 @@ fn capture_matches_pattern(pixels: &[u8], dimensions: (u32, u32)) -> bool {
                     (true, false) => [33, 150, 243, 255],
                     (false, false) => [255, 235, 59, 255],
                 };
-                pixel == expected
+                *pixel == expected
             })
 }
 
