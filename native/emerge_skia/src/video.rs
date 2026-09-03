@@ -5198,7 +5198,16 @@ fn import_vulkan_frame(
                     capability.import_strategy(),
                 );
             }
-            (allocation, ColorType::RGBA8888, AlphaType::Opaque)
+            let color_type = match allocation.interop().sampled_format() {
+                // Skia represents Vulkan sampler-YCbCr textures as opaque RGB. Passing RGBA8888
+                // makes BorrowTextureFrom reject an otherwise valid multi-planar image.
+                video_interop::vulkan::SampledImageFormat::Nv12 => ColorType::RGB888x,
+                video_interop::vulkan::SampledImageFormat::Rgba8888 => ColorType::RGBA8888,
+                video_interop::vulkan::SampledImageFormat::Bgra8888 => ColorType::BGRA8888,
+                // Separate planes are wrapped independently below; this value is not used.
+                video_interop::vulkan::SampledImageFormat::Nv12Planes => ColorType::RGB888x,
+            };
+            (allocation, color_type, AlphaType::Opaque)
         }
         fourcc => {
             return Err(format!(
@@ -5252,7 +5261,14 @@ fn import_vulkan_frame(
                 alpha_type,
                 None,
             )
-            .ok_or_else(|| format!("failed to wrap Vulkan video image for target {target_id}"))?;
+            .ok_or_else(|| {
+                format!(
+                    "failed to wrap Vulkan video image for target {target_id}: sampled_format={:?} color_type={color_type:?} size={}x{}",
+                    allocation.interop().sampled_format(),
+                    frame.width,
+                    frame.height
+                )
+            })?;
             VulkanOwnedVideoFrameContent::Image {
                 image,
                 _backend_texture: backend_texture,

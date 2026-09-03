@@ -14,7 +14,7 @@
 - Added experimental Vulkan rendering for Wayland, DRM, and headless sessions, with deterministic UI/video composition. Vulkan and its video import paths remain experimental pending hardware qualification.
 - Added strict immutable stream colorimetry forwarding and a shared Vulkan NV12 DMA-BUF importer for exact one-object/two-plane layouts, with BT.709 YCbCr conversion, sync-file ownership transfers, bounded terminal quarantine, and dedicated Vulkan video fault counters.
 - Added strict XRGB8888 Camera admission with persistent direct import where supported and bounded linear-texel-buffer-to-optimal-BGRA staging otherwise, preserving ordinary Skia composition at arbitrary paint-layer z-order.
-- Added an `auto` Vulkan NV12 path that transfers exact linear producer planes into bounded optimal multi-planar NV12 with exact sampler-YCbCr metadata, or separate optimal Y/UV images when exact hardware chroma filtering is unavailable; forced `planar` remains the compute-plane rollback. Transfer imports separate the final copied byte from the complete allocation so producer-owned V3DV read-ahead tails remain outside every copy region.
+- Added an `auto` Vulkan NV12 path that copies non-linear image planes or exact linear producer-buffer planes into bounded, ordinary optimal Y/UV images before Skia composition; forced `planar` remains the compute-plane rollback. Linear transfer imports separate the final copied byte from the complete allocation so producer-owned V3DV read-ahead tails remain outside every copy region.
 
 ### Changed
 

@@ -103,9 +103,10 @@ contract changes. Prepared descriptors remain caller-owned until registry
 admission succeeds; claimed frames carry exact release authority.
 
 OpenGL imports use EGLImage/native-fence support where available. Vulkan import
-supports exact validated packed and NV12 paths, including bounded staging when
-direct sampling is unavailable. Vulkan rendering and video import remain
-experimental pending pinned-RPi5 qualification.
+supports exact validated packed and NV12 paths. Non-linear NV12 images and
+linear NV12 buffers are copied plane-for-plane into bounded renderer-owned Y/UV
+images before Skia composition, avoiding direct multi-planar wrapping. Vulkan
+rendering and video import remain experimental pending pinned-RPi5 qualification.
 
 ## Headless output
 
