@@ -1191,15 +1191,6 @@ pub enum StreamModifierPolicy {
 }
 
 impl StreamModifierPolicy {
-    pub fn validate_supported(self) -> Result<Self, String> {
-        match self {
-            Self::Explicit(modifier) if modifier != 0 => Err(format!(
-                "unsupported negotiated DRM modifier {modifier:#018x}; only implicit and linear are supported"
-            )),
-            supported => Ok(supported),
-        }
-    }
-
     fn validate_frame(self, frame: &OwnedFrame) -> Result<(), String> {
         let descriptor = match &frame.storage {
             OwnedStorage::DmaBuf(descriptor) => descriptor,
@@ -1211,14 +1202,10 @@ impl StreamModifierPolicy {
             .iter()
             .enumerate()
             .try_for_each(|(index, object)| match (self, object.modifier) {
-                (Self::PerBuffer, Modifier::Implicit | Modifier::Explicit(0))
-                | (Self::Implicit, Modifier::Implicit) => Ok(()),
+                (Self::PerBuffer, _) | (Self::Implicit, Modifier::Implicit) => Ok(()),
                 (Self::Explicit(expected), Modifier::Explicit(actual)) if expected == actual => {
                     Ok(())
                 }
-                (Self::PerBuffer, Modifier::Explicit(modifier)) => Err(format!(
-                    "DMA-BUF object {index} has unsupported DRM modifier {modifier:#018x}; only implicit and linear are supported"
-                )),
                 (Self::Implicit, modifier) => Err(format!(
                     "DMA-BUF object {index} modifier {modifier:?} does not match negotiated implicit modifier policy"
                 )),
@@ -1678,9 +1665,7 @@ impl VideoRegistry {
                     ))]
                     state.vulkan_nv12_capabilities.as_deref(),
                 )?,
-                None => {
-                    format.modifier_policy.validate_supported()?;
-                }
+                None => {}
             }
 
             if let Some(entry) = state.targets.get(id)
@@ -1973,9 +1958,7 @@ impl VideoRegistry {
                 ))]
                 vulkan_nv12_capabilities.as_deref(),
             )?,
-            None => {
-                format.modifier_policy.validate_supported()?;
-            }
+            None => {}
         }
         let stream_id = self.next_stream_id.fetch_add(1, Ordering::Relaxed);
         entry.active_stream = Some(ActiveStream {
@@ -7489,7 +7472,7 @@ mod tests {
     }
 
     #[test]
-    fn stream_modifier_policy_accepts_exact_nonzero_match_and_rejects_mismatch() {
+    fn stream_modifier_policy_accepts_per_buffer_and_exact_nonzero_contracts() {
         let mut frame = canonical_owned_frame(64, 32, DRM_FORMAT_ABGR8888);
 
         StreamModifierPolicy::PerBuffer
@@ -7536,12 +7519,9 @@ mod tests {
                 .unwrap_err()
                 .contains("does not match negotiated DRM modifier 0x0000000000000002")
         );
-        assert!(
-            StreamModifierPolicy::PerBuffer
-                .validate_frame(&frame)
-                .unwrap_err()
-                .contains("unsupported DRM modifier 0x0000000000000001")
-        );
+        StreamModifierPolicy::PerBuffer
+            .validate_frame(&frame)
+            .expect("per-buffer policy must preserve explicit non-linear modifiers");
     }
 
     #[test]
@@ -7976,40 +7956,28 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_negotiated_modifier_does_not_open_stream() {
+    fn direct_opengl_stream_accepts_explicit_non_linear_modifier() {
         let (release_tx, _release_rx) = unbounded();
         let registry = test_registry(release_tx, None);
-        let incarnation = registry
-            .create_target(VideoTargetSpec {
-                id: "preview".to_string(),
-                width: 64,
-                height: 32,
-                mode: VideoMode::Prime,
-            })
-            .expect("target should be created");
+        registry
+            .set_prime_video_available(true)
+            .expect("PRIME video should become available");
 
-        assert!(
-            registry
-                .open_stream(
-                    "preview",
-                    incarnation,
-                    stream_format(
-                        DRM_FORMAT_ABGR8888,
-                        StreamModifierPolicy::Explicit(1),
-                        StreamAcquireSyncPolicy::PerFrame,
-                    ),
-                )
-                .unwrap_err()
-                .contains("unsupported negotiated DRM modifier 0x0000000000000001")
-        );
-        assert_eq!(
-            registry
-                .snapshot_for_sync(false)
-                .expect("registry snapshot")
-                .targets[0]
-                .active_stream,
-            None
-        );
+        let (incarnation, stream_id) = registry
+            .ensure_direct_stream(
+                "preview",
+                stream_format(
+                    DRM_FORMAT_NV12,
+                    StreamModifierPolicy::Explicit(0x0200_0000_1040_1b04),
+                    StreamAcquireSyncPolicy::SyncFile,
+                ),
+            )
+            .expect("OpenGL defers exact modifier support to EGL image import");
+        let snapshot = registry
+            .snapshot_for_sync(false)
+            .expect("registry snapshot");
+        assert_eq!(snapshot.targets[0].incarnation, incarnation);
+        assert_eq!(snapshot.targets[0].active_stream, Some(stream_id));
     }
 
     #[test]

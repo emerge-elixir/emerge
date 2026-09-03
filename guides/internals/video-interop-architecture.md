@@ -102,11 +102,16 @@ DMA-BUF submission derives an immutable native stream contract from
 contract changes. Prepared descriptors remain caller-owned until registry
 admission succeeds; claimed frames carry exact release authority.
 
-OpenGL imports use EGLImage/native-fence support where available. Vulkan import
-supports exact validated packed and NV12 paths. Non-linear NV12 images and
-linear NV12 buffers are copied plane-for-plane into bounded renderer-owned Y/UV
-images before Skia composition, avoiding direct multi-planar wrapping. Vulkan
-rendering and video import remain experimental pending pinned-RPi5 qualification.
+OpenGL imports use EGLImage/native-fence support where available. Explicit
+non-linear modifiers remain part of the immutable stream contract and are
+forwarded exactly through the per-plane EGL modifier attributes; the import
+fails if `EGL_EXT_image_dma_buf_import_modifiers` or driver support is absent.
+Per-buffer contracts likewise preserve each object's declared modifier. Vulkan
+import supports exact validated packed and NV12 paths. Non-linear NV12 images
+and linear NV12 buffers are copied plane-for-plane into bounded renderer-owned
+Y/UV images before Skia composition, avoiding direct multi-planar wrapping.
+Vulkan rendering and video import remain experimental pending pinned-RPi5
+qualification.
 
 ## Headless output
 

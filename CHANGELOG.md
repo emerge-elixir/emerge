@@ -40,6 +40,7 @@
 - Removed unconditional full-frame GPU screenshot readback from DRM and Wayland presentation; screenshots now trigger one bounded on-demand capture without serializing every rendered frame.
 - Made direct video submission consume and release inactive-target frames successfully so transient scene visibility no longer terminates an ownership-safe sink.
 - Declared concrete headless PRIME synchronization and modifier contracts from the selected producer path, allowing both Vulkan and explicit-sync OpenGL producers with linear DMA-BUFs to open Vulkan consumer streams without weakening synchronization or layout policy.
+- Allowed OpenGL consumers to admit explicit non-linear DMA-BUF modifier contracts and pass their exact per-plane modifiers to EGL, while retaining immutable stream/frame matching and failing import when the EGL modifier extension or driver support is unavailable.
 - Removed a headless redraw feedback loop, kept PRIME backpressure recovery on the configured target cadence, and excluded Wayland late-replacement swaps from displayed-frame FPS counters.
 - Fixed Wayland video-only redraw starvation.
 - Kept unchanged ordered paint runs reusable when another run in the same semantic layer changes, isolated correctness-bearing scopes from adjacent paint, deferred rapidly changing GPU payload replacements until stable, staggered related replacements across frames, and retained only the latest version per run.

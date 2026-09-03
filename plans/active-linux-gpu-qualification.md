@@ -18,7 +18,8 @@ docs; do not reopen their design phases here.
 - Headless raster/OpenGL binary output and OpenGL/Vulkan PRIME output.
 - Canonical `%VideoInterop.Frame{}` transport, bounded leases/backpressure, and
   render-thread retirement.
-- OpenGL native-fence export with safe `glFinish` fallback.
+- OpenGL native-fence export with safe `glFinish` fallback and exact EGL import
+  of explicit linear and non-linear DMA-BUF modifiers.
 - Vulkan sync-file import/export and external queue-family ownership.
 - Truthful DMA-BUF allocation sizes from the fd-backed allocation.
 - Shared ABGR8888 and NV12 Vulkan import paths.
