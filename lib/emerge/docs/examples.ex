@@ -30,7 +30,7 @@ defmodule Emerge.Docs.Examples do
     %{id: "ui-scroll-both", file: "ui-scroll-both.exs", width: 320, height: 180},
     %{id: "ui-border-radius-width", file: "ui-border-radius-width.exs", width: 332, height: 106},
     %{id: "ui-border-shadows", file: "ui-border-shadows.exs", width: 420, height: 154},
-    %{id: "ui-font-overview", file: "ui-font-overview.exs", width: 320, height: 182},
+    %{id: "ui-font-overview", file: "ui-font-overview.exs", width: 320, height: 216},
     %{id: "ui-font-alignment", file: "ui-font-alignment.exs", width: 320, height: 188},
     %{id: "ui-transform-translate", file: "ui-transform-translate.exs", width: 340, height: 108},
     %{
