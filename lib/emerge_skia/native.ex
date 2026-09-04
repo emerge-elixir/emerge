@@ -37,7 +37,11 @@ defmodule EmergeSkia.Native do
       @base_url {EmergeSkia.BuildConfig, :precompiled_tar_gz_url}
       @precompiled_targets EmergeSkia.BuildConfig.precompiled_targets()
       @precompiled_nif_versions EmergeSkia.BuildConfig.precompiled_nif_versions()
-      @precompiled_variants EmergeSkia.BuildConfig.precompiled_variants()
+      @precompiled_variants EmergeSkia.BuildConfig.precompiled_variants(
+                              System.get_env(),
+                              @compiled_backends,
+                              @compiled_vulkan_backends
+                            )
       @platform_cargo_features EmergeSkia.BuildConfig.rustler_platform_features(
                                  System.get_env(),
                                  @compiled_backends,

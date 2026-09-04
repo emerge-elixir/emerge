@@ -137,6 +137,33 @@ defmodule EmergeSkia.BuildConfigTest do
     assert BuildConfig.default_runtime_backend([]) == :wayland
   end
 
+  test "precompiled targets include 64-bit Linux and 32-bit ARM hard-float" do
+    assert BuildConfig.precompiled_targets() == [
+             "x86_64-unknown-linux-gnu",
+             "aarch64-unknown-linux-gnu",
+             "arm-unknown-linux-gnueabihf"
+           ]
+  end
+
+  test "Nerves ARM environment resolves the 32-bit precompiled target" do
+    assert {:ok, "nif-2.15-arm-unknown-linux-gnueabihf"} =
+             RustlerPrecompiled.target(
+               %{
+                 os_type: {:unix, :linux},
+                 target_system: %{
+                   arch: "arm",
+                   vendor: "unknown",
+                   os: "linux",
+                   abi: "gnueabihf"
+                 },
+                 word_size: 4,
+                 nif_version: "2.15"
+               },
+               BuildConfig.precompiled_targets(),
+               BuildConfig.precompiled_nif_versions()
+             )
+  end
+
   test "precompiled_profile resolves x86_64 backend profiles" do
     assert {:ok, %{variant: nil, backends: [:wayland]}} =
              BuildConfig.precompiled_profile(%{}, [:wayland], "x86_64-unknown-linux-gnu")
@@ -174,23 +201,63 @@ defmodule EmergeSkia.BuildConfigTest do
              BuildConfig.precompiled_profile(nerves_env, [:drm], "aarch64-unknown-linux-gnu")
   end
 
-  test "precompiled_variants mark exact x64 and aarch64 variants" do
-    x64_variants = BuildConfig.precompiled_variants(%{}, [:wayland, :drm])
+  test "precompiled_profile resolves raster, Vulkan, and 32-bit ARM profiles" do
+    for target <- ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"] do
+      assert {:ok, %{variant: :raster, backends: [], vulkan_backends: []}} =
+               BuildConfig.precompiled_profile(%{}, [], [], target)
+
+      assert {:ok, %{variant: :vulkan, vulkan_backends: [:headless]}} =
+               BuildConfig.precompiled_profile(%{}, [], [:headless], target)
+    end
+
+    assert {:ok, %{variant: nil, backends: [], vulkan_backends: []}} =
+             BuildConfig.precompiled_profile(
+               %{"MIX_TARGET" => "trellis"},
+               [],
+               [],
+               "arm-unknown-linux-gnueabihf"
+             )
+
+    assert {:ok, %{variant: :opengl, backends: [:drm], vulkan_backends: []}} =
+             BuildConfig.precompiled_profile(
+               %{"MIX_TARGET" => "trellis"},
+               [:drm],
+               [],
+               "arm-unknown-linux-gnueabihf"
+             )
+
+    assert {:error, :unsupported_profile} =
+             BuildConfig.precompiled_profile(
+               %{"MIX_TARGET" => "trellis"},
+               [:drm],
+               [:drm],
+               "arm-unknown-linux-gnueabihf"
+             )
+  end
+
+  test "precompiled_variants select exact backend and rendering profiles" do
+    x64_variants = BuildConfig.precompiled_variants(%{}, [:wayland, :drm], [])
     assert x64_variants["x86_64-unknown-linux-gnu"][:drm_wayland].(%{})
     refute x64_variants["x86_64-unknown-linux-gnu"][:drm].(%{})
 
-    host_env = %{"TARGET_ARCH" => "aarch64", "TARGET_OS" => "linux"}
-    host_variants = BuildConfig.precompiled_variants(host_env, [:drm])
-    assert host_variants["aarch64-unknown-linux-gnu"][:drm].(%{})
+    raster_variants = BuildConfig.precompiled_variants(%{}, [], [])
+    assert raster_variants["x86_64-unknown-linux-gnu"][:raster].(%{})
+    assert raster_variants["aarch64-unknown-linux-gnu"][:raster].(%{})
+    refute raster_variants["x86_64-unknown-linux-gnu"][:vulkan].(%{})
 
-    nerves_env = %{
-      "NERVES_SDK_SYSROOT" => "/tmp/nerves/staging",
-      "TARGET_ARCH" => "aarch64",
-      "TARGET_OS" => "linux"
-    }
+    vulkan_variants = BuildConfig.precompiled_variants(%{}, [], [:headless])
+    assert vulkan_variants["x86_64-unknown-linux-gnu"][:vulkan].(%{})
+    assert vulkan_variants["aarch64-unknown-linux-gnu"][:vulkan].(%{})
 
-    nerves_variants = BuildConfig.precompiled_variants(nerves_env, [:drm])
-    assert nerves_variants["aarch64-unknown-linux-gnu"][:drm].(%{})
+    arm_raster_variants =
+      BuildConfig.precompiled_variants(%{"MIX_TARGET" => "trellis"}, [], [])
+
+    refute arm_raster_variants["arm-unknown-linux-gnueabihf"][:opengl].(%{})
+
+    arm_opengl_variants =
+      BuildConfig.precompiled_variants(%{"MIX_TARGET" => "trellis"}, [:drm], [])
+
+    assert arm_opengl_variants["arm-unknown-linux-gnueabihf"][:opengl].(%{})
   end
 
   test "precompiled_tar_gz_url adds github auth headers when token is set" do
@@ -241,7 +308,7 @@ defmodule EmergeSkia.BuildConfigTest do
   test "force_precompiled_build? forces builds when backend profile is unsupported" do
     assert BuildConfig.force_precompiled_build?(
              checksum_path: __ENV__.file,
-             compiled_backends: [],
+             compiled_backends: [:macos],
              env: %{},
              target_resolver: fn _targets, _nif_versions ->
                {:ok, "nif-2.15-x86_64-unknown-linux-gnu"}
@@ -260,14 +327,24 @@ defmodule EmergeSkia.BuildConfigTest do
            )
   end
 
-  test "force_precompiled_build? builds Vulkan configurations from source" do
-    assert BuildConfig.force_precompiled_build?(
+  test "force_precompiled_build? uses 64-bit Vulkan artifacts and rejects 32-bit ARM Vulkan" do
+    refute BuildConfig.force_precompiled_build?(
              checksum_path: __ENV__.file,
              compiled_backends: [:wayland],
              compiled_vulkan_backends: [:wayland],
              env: %{},
              target_resolver: fn _targets, _nif_versions ->
                {:ok, "nif-2.15-x86_64-unknown-linux-gnu"}
+             end
+           )
+
+    assert BuildConfig.force_precompiled_build?(
+             checksum_path: __ENV__.file,
+             compiled_backends: [:drm],
+             compiled_vulkan_backends: [:drm],
+             env: %{"MIX_TARGET" => "trellis"},
+             target_resolver: fn _targets, _nif_versions ->
+               {:ok, "nif-2.15-arm-unknown-linux-gnueabihf"}
              end
            )
   end
@@ -304,6 +381,26 @@ defmodule EmergeSkia.BuildConfigTest do
              target_resolver: fn _targets, _nif_versions ->
                {:ok, "nif-2.15-aarch64-unknown-linux-gnu"}
              end
+           )
+  end
+
+  test "force_precompiled_build? uses 32-bit ARM raster and OpenGL artifacts" do
+    target_resolver = fn _targets, _nif_versions ->
+      {:ok, "nif-2.15-arm-unknown-linux-gnueabihf"}
+    end
+
+    refute BuildConfig.force_precompiled_build?(
+             checksum_path: __ENV__.file,
+             compiled_backends: [],
+             env: %{"MIX_TARGET" => "trellis"},
+             target_resolver: target_resolver
+           )
+
+    refute BuildConfig.force_precompiled_build?(
+             checksum_path: __ENV__.file,
+             compiled_backends: [:drm],
+             env: %{"MIX_TARGET" => "trellis"},
+             target_resolver: target_resolver
            )
   end
 

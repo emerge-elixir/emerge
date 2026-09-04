@@ -9,7 +9,13 @@ defmodule EmergeSkia.BuildConfig do
   @checksum_only_env_key "EMERGE_SKIA_CHECKSUM_ONLY"
   @github_token_env_key "EMERGE_SKIA_GITHUB_TOKEN"
   @precompiled_source_url_env_key "EMERGE_SKIA_PRECOMPILED_SOURCE_URL"
-  @precompiled_targets ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+  @linux_64_precompiled_targets [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu"
+  ]
+  @linux_arm32_precompiled_target "arm-unknown-linux-gnueabihf"
+  @linux_precompiled_backend_profiles [[], [:wayland], [:drm], [:wayland, :drm]]
+  @precompiled_targets @linux_64_precompiled_targets ++ [@linux_arm32_precompiled_target]
   @macos_host_targets ["aarch64-apple-darwin", "x86_64-apple-darwin"]
   @precompiled_nif_versions ["2.15"]
   @valid_backends [:wayland, :drm, :macos]
@@ -329,50 +335,95 @@ defmodule EmergeSkia.BuildConfig do
   end
 
   @doc false
-  def precompiled_variants(env \\ System.get_env(), compiled_backends \\ compiled_backends())
-      when is_map(env) and is_list(compiled_backends) do
+  def precompiled_variants(
+        env \\ System.get_env(),
+        compiled_backends \\ compiled_backends(),
+        compiled_vulkan_backends \\ compiled_vulkan_backends()
+      )
+      when is_map(env) and is_list(compiled_backends) and
+             is_list(compiled_vulkan_backends) do
+    variants_for = fn target, variants ->
+      Enum.map(variants, fn variant ->
+        {variant,
+         fn _config ->
+           precompiled_variant?(
+             env,
+             compiled_backends,
+             compiled_vulkan_backends,
+             target,
+             variant
+           )
+         end}
+      end)
+    end
+
     %{
-      "x86_64-unknown-linux-gnu" => [
-        drm: fn _config ->
-          precompiled_variant?(env, compiled_backends, "x86_64-unknown-linux-gnu", :drm)
-        end,
-        drm_wayland: fn _config ->
-          precompiled_variant?(env, compiled_backends, "x86_64-unknown-linux-gnu", :drm_wayland)
-        end
-      ],
-      "aarch64-unknown-linux-gnu" => [
-        drm: fn _config ->
-          precompiled_variant?(env, compiled_backends, "aarch64-unknown-linux-gnu", :drm)
-        end,
-        drm_wayland: fn _config ->
-          precompiled_variant?(env, compiled_backends, "aarch64-unknown-linux-gnu", :drm_wayland)
-        end
-      ]
+      "x86_64-unknown-linux-gnu" =>
+        variants_for.("x86_64-unknown-linux-gnu", [:drm, :drm_wayland, :raster, :vulkan]),
+      "aarch64-unknown-linux-gnu" =>
+        variants_for.("aarch64-unknown-linux-gnu", [:drm, :drm_wayland, :raster, :vulkan]),
+      @linux_arm32_precompiled_target => variants_for.(@linux_arm32_precompiled_target, [:opengl])
     }
   end
 
   @doc false
-  def precompiled_profile(env, compiled_backends, target)
-      when is_map(env) and is_list(compiled_backends) and is_binary(target) do
+  def precompiled_profile(env, compiled_backends, target) do
+    precompiled_profile(env, compiled_backends, [], target)
+  end
+
+  @doc false
+  def precompiled_profile(env, compiled_backends, compiled_vulkan_backends, target)
+      when is_map(env) and is_list(compiled_backends) and
+             is_list(compiled_vulkan_backends) and is_binary(target) do
     compiled_backends = normalize_compiled_backends!(compiled_backends)
 
-    cond do
-      compiled_backends == [:wayland] and target in @precompiled_targets ->
-        {:ok, %{target: target, variant: nil, backends: compiled_backends}}
+    compiled_vulkan_backends =
+      normalize_compiled_vulkan_backends!(compiled_vulkan_backends, compiled_backends)
 
-      target == "x86_64-unknown-linux-gnu" and compiled_backends == [:drm] ->
-        {:ok, %{target: target, variant: :drm, backends: compiled_backends}}
+    variant =
+      cond do
+        target in @linux_64_precompiled_targets and
+          compiled_backends in @linux_precompiled_backend_profiles and
+            compiled_vulkan_backends != [] ->
+          {:ok, :vulkan}
 
-      target == "x86_64-unknown-linux-gnu" and compiled_backends == [:wayland, :drm] ->
-        {:ok, %{target: target, variant: :drm_wayland, backends: compiled_backends}}
+        target in @linux_64_precompiled_targets and compiled_backends == [] ->
+          {:ok, :raster}
 
-      target == "aarch64-unknown-linux-gnu" and compiled_backends == [:drm] ->
-        {:ok, %{target: target, variant: :drm, backends: compiled_backends}}
+        target == @linux_arm32_precompiled_target and compiled_vulkan_backends != [] ->
+          :error
 
-      target == "aarch64-unknown-linux-gnu" and compiled_backends == [:wayland, :drm] ->
-        {:ok, %{target: target, variant: :drm_wayland, backends: compiled_backends}}
+        target == @linux_arm32_precompiled_target and compiled_backends == [] ->
+          {:ok, nil}
 
-      true ->
+        target == @linux_arm32_precompiled_target and compiled_backends == [:drm] ->
+          {:ok, :opengl}
+
+        target in @linux_64_precompiled_targets and compiled_backends == [:wayland] ->
+          {:ok, nil}
+
+        target in @linux_64_precompiled_targets and compiled_backends == [:drm] ->
+          {:ok, :drm}
+
+        target in @linux_64_precompiled_targets and
+            compiled_backends == [:wayland, :drm] ->
+          {:ok, :drm_wayland}
+
+        true ->
+          :error
+      end
+
+    case variant do
+      {:ok, variant} ->
+        {:ok,
+         %{
+           target: target,
+           variant: variant,
+           backends: compiled_backends,
+           vulkan_backends: compiled_vulkan_backends
+         }}
+
+      :error ->
         {:error, :unsupported_profile}
     end
   end
@@ -455,11 +506,11 @@ defmodule EmergeSkia.BuildConfig do
     target_resolver = Keyword.get(opts, :target_resolver, &default_precompiled_target_resolver/2)
 
     force_build_requested?(env) ||
-      compiled_vulkan_backends != [] ||
       not File.exists?(checksum_path) ||
       unsupported_precompiled_profile?(
         env,
         compiled_backends,
+        compiled_vulkan_backends,
         target_resolver,
         targets,
         nif_versions
@@ -626,13 +677,15 @@ defmodule EmergeSkia.BuildConfig do
   defp unsupported_precompiled_profile?(
          env,
          compiled_backends,
+         compiled_vulkan_backends,
          target_resolver,
          targets,
          nif_versions
        ) do
     with {:ok, nif_target} <- target_resolver.(targets, nif_versions),
          {:ok, target} <- target_from_nif_target(nif_target),
-         {:ok, _profile} <- precompiled_profile(env, compiled_backends, target) do
+         {:ok, _profile} <-
+           precompiled_profile(env, compiled_backends, compiled_vulkan_backends, target) do
       false
     else
       _ -> true
@@ -646,8 +699,14 @@ defmodule EmergeSkia.BuildConfig do
     end
   end
 
-  defp precompiled_variant?(env, compiled_backends, target, variant) do
-    case precompiled_profile(env, compiled_backends, target) do
+  defp precompiled_variant?(
+         env,
+         compiled_backends,
+         compiled_vulkan_backends,
+         target,
+         variant
+       ) do
+    case precompiled_profile(env, compiled_backends, compiled_vulkan_backends, target) do
       {:ok, %{variant: ^variant}} -> true
       _ -> false
     end

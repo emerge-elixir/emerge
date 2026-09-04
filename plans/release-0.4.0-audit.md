@@ -31,7 +31,7 @@ resurrected by the merge.
 
 The public `main` and `v0.3.4` refs were both verified at `6fc99f6`. On the
 current reconciled working tree, `./ci-tests.sh all` passes formatting,
-warnings-as-errors compilation, strict Credo, Clippy, 443 Elixir tests including
+warnings-as-errors compilation, strict Credo, Clippy, 447 Elixir tests including
 the full sweep with three hardware tests excluded, 1,007 Rust unit tests plus
 the benchmark fixture, and Dialyzer. Warning-free docs and unpacked-package
 all-target and embedded-CPU Cargo checks also pass with published VideoInterop
@@ -70,7 +70,7 @@ The candidate now resolves published VideoInterop 0.1.0 directly:
 - The Cargo lock records the crates.io source and checksum
   `74c9b748ac35e4feb2d5a88043fd05dd277d0ac5ccf0883901550c8eea60ce49`.
 
-Registry-only source validation passes 1,007 Rust tests, 443 Elixir tests, and a
+Registry-only source validation passes 1,007 Rust tests, 447 Elixir tests, and a
 forced Emerge source build. Cargo metadata resolves the crate from the Cargo
 registry rather than a sibling checkout.
 
@@ -139,6 +139,11 @@ The Hex workflow repeats the exact-tag metadata, full suite, docs, and unpacked
 package checks even on manual dispatch, then verifies required macOS assets
 before publication. This removes the former path where a successful artifact
 matrix or manual dispatch could publish unvalidated source.
+
+The release NIF matrix also publishes minimal raster and Vulkan variants for
+x86_64 and AArch64 Linux, plus minimal raster and DRM/headless OpenGL variants
+for 32-bit ARM hard-float Linux. The 32-bit ARM raster artifact is the dependency-minimal
+NameBadge profile.
 
 ### 6. Per-renderer asset runtime ownership completed
 

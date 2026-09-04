@@ -118,6 +118,20 @@ jobs:
             variant: "drm_wayland"
             cargo_args: "--no-default-features --features wayland,drm"
             system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev"
+          - name: linux_raster
+            target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+            use_cross: false
+            variant: "raster"
+            cargo_args: "--no-default-features --features embedded-cpu"
+            system_packages: ""
+          - name: linux_vulkan
+            target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+            use_cross: false
+            variant: "vulkan"
+            cargo_args: "--no-default-features --features wayland-all,drm-all,headless-all,embedded-freetype"
+            system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev"
           - name: linux_aarch64_wayland
             target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
@@ -139,6 +153,34 @@ jobs:
             variant: "drm_wayland"
             cargo_args: "--no-default-features --features wayland,drm"
             system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev"
+          - name: linux_aarch64_raster
+            target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            use_cross: false
+            variant: "raster"
+            cargo_args: "--no-default-features --features embedded-cpu"
+            system_packages: ""
+          - name: linux_aarch64_vulkan
+            target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            use_cross: false
+            variant: "vulkan"
+            cargo_args: "--no-default-features --features wayland-all,drm-all,headless-all,embedded-freetype"
+            system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev"
+          - name: linux_arm32_raster
+            target: arm-unknown-linux-gnueabihf
+            os: ubuntu-24.04
+            use_cross: true
+            variant: ""
+            cargo_args: "--no-default-features --features embedded-cpu"
+            system_packages: ""
+          - name: linux_arm32_opengl
+            target: arm-unknown-linux-gnueabihf
+            os: ubuntu-24.04
+            use_cross: true
+            variant: "opengl"
+            cargo_args: "--no-default-features --features drm,embedded-freetype"
+            system_packages: ""
 
     steps:
       - name: Checkout source code
@@ -196,6 +238,13 @@ jobs:
           toolchain: stable
           target: ${{ matrix.job.target }}
 
+      - name: Configure ARM32 cross pkg-config
+        if: ${{ matrix.job.target == 'arm-unknown-linux-gnueabihf' }}
+        shell: bash
+        run: |
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_LIBDIR=/usr/lib/arm-linux-gnueabihf/pkgconfig:/usr/share/pkgconfig" >> "$GITHUB_ENV"
+
       - name: Build the project
         id: build-crate
         uses: philss/rustler-precompiled-action@v1.1.4
@@ -205,6 +254,7 @@ jobs:
           target: ${{ matrix.job.target }}
           nif-version: ${{ matrix.nif }}
           use-cross: ${{ matrix.job.use_cross && 'true' || '' }}
+          cross-version: "v0.2.5"
           project-dir: native/emerge_skia
           variant: ${{ matrix.job.variant }}
           cargo-args: ${{ matrix.job.cargo_args }}

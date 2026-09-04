@@ -1,8 +1,9 @@
 # Build the native renderer
 
 Emerge normally downloads a precompiled Linux NIF or the matching macOS host.
-A source build is required for unsupported target profiles, custom backend
-combinations, Vulkan, and Nerves targets.
+Precompiled Linux artifacts cover x86_64, AArch64, and 32-bit ARM hard-float. A
+source build is required only for unsupported targets or custom backend
+combinations.
 
 ## Toolchain floor
 
@@ -51,8 +52,31 @@ config :emerge,
   compiled_vulkan_backends: []
 ```
 
-Any non-empty `compiled_vulkan_backends` selection forces a source build. See
-`EmergeSkia.start/1` for valid backend and rendering API combinations.
+The release artifact profiles are:
+
+| Target | Default artifact | Additional variants |
+|---|---|---|
+| `x86_64-unknown-linux-gnu` | Wayland/OpenGL | DRM/OpenGL, combined Wayland/DRM, minimal raster, Vulkan |
+| `aarch64-unknown-linux-gnu` | Wayland/OpenGL | DRM/OpenGL, combined Wayland/DRM, minimal raster, Vulkan |
+| `arm-unknown-linux-gnueabihf` | Minimal raster | DRM/headless OpenGL |
+
+A renderer-only embedded application selects the minimal raster artifact with:
+
+```elixir
+config :emerge,
+  compiled_backends: [],
+  compiled_vulkan_backends: []
+```
+
+This is the NameBadge profile. It contains CPU raster rendering, registered
+fonts, image decoding, and SVG rendering without desktop or video dependencies.
+On 32-bit ARM, `compiled_backends: [:drm]` selects the OpenGL artifact, which also
+supports headless OpenGL rendering.
+
+On 64-bit Linux, any valid non-empty `compiled_vulkan_backends` selection uses
+the Vulkan artifact. The artifact includes the Wayland, DRM, and headless
+Vulkan routes so it can satisfy every supported 64-bit Linux Vulkan profile.
+See `EmergeSkia.start/1` for valid backend and rendering API combinations.
 
 ## Nerves cross-builds
 

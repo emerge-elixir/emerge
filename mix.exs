@@ -142,6 +142,7 @@ defmodule Emerge.MixProject do
       "native/emerge_skia/Cargo.toml",
       "native/emerge_skia/Cargo.lock",
       "native/emerge_skia/Cross.toml",
+      "native/emerge_skia/Cross.toml",
       "LICENSE",
       "NOTICE",
       "THIRD_PARTY_ASSETS.md",

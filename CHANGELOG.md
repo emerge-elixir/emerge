@@ -13,6 +13,7 @@ See the [0.4 migration guide](guides/migrations/0.4.md) for upgrade examples.
 - Added Vulkan video composition for supported NV12 and XRGB8888 DMA-BUF streams, including explicit synchronization and linear or non-linear NV12 layouts.
 - Added bounded decoded-image caching, configurable target-sized raster decoding, and asset memory diagnostics. Defaults are 256 entries and 256 MiB per renderer.
 - Added `EmergeSkia.renderer_info/1` and expanded renderer statistics for rendering, caches, assets, and video.
+- Added precompiled minimal raster NIFs for x86_64, AArch64, and 32-bit ARM Linux, OpenGL for 32-bit ARM Linux, and Vulkan for 64-bit Linux.
 
 ### Changed
 
