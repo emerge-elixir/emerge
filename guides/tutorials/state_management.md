@@ -45,14 +45,27 @@ That keeps rendering and application logic as separate concerns.
 
 ## Introduce Solve
 
-Emerge uses `Solve` as its state management solution.
+Emerge uses [Solve](https://hexdocs.pm/solve) as its state management solution.
+Solve is an application framework, not a presentation framework: it models an
+application as a graph of reusable state machines without deciding how that
+application is rendered or how input reaches it. The same Solve app can drive an
+Emerge viewport, another UI, or several presentation processes at once.
 
-`Solve` keeps rendering separate from application state. Instead of pushing
-state into the viewport, you model application behavior in controllers and let
-rendering subscribe to the exposed state it needs.
+Add Solve to your dependencies:
 
-A controller owns one slice of interaction and behavior. An app coordinates a
-graph of controllers and defines how they work together.
+```elixir
+def deps do
+  [
+    {:solve, "~> 0.2.2"}
+  ]
+end
+```
+
+Instead of pushing state into the viewport, model application behavior in
+controllers and let rendering subscribe to the exposed state it needs. A
+controller owns one slice of interaction and behavior. A Solve app materializes
+those controllers, coordinates their lifecycles, and declares how data flows
+between them.
 
 This keeps the viewport focused on rendering while state changes are modeled in
 dedicated processes.
@@ -128,6 +141,22 @@ At this point:
 - the app becomes the stable place where rendering, workers, or tests read and
   dispatch state
 
+A running controller exposes a plain map. Without an `expose/3` callback, Solve
+exposes the controller's internal state directly. `nil` is reserved to mean that
+the controller is not currently running.
+
+At the lowest level, `Solve.subscribe/3` synchronously returns the current
+exposed map and sends `%Solve.Message{}` updates to the subscriber as that map
+changes:
+
+```elixir
+screen = Solve.subscribe(MyApp.App, :screen)
+```
+
+Emerge views normally use `Solve.Lookup` instead of handling those messages
+manually. The direct subscription API remains useful for workers, tests, and
+other presentation processes.
+
 ## Describe data flow in the app
 
 The app is not only a runtime container. It also describes how controllers
@@ -176,7 +205,59 @@ This graph describes data flow directly:
 - `:task_list` remains the owner of the canonical data
 
 Controllers implement behavior. The app defines how controllers read from and
-write to each other.
+write to each other. When `:task_list` exposes a new value, Solve recomputes the
+exposed value of `:filter` from that dependency.
+
+`controllers/0` is deliberately static. Solve validates the complete graph at
+startup and rejects circular dependencies, so the application module remains a
+reliable overview of data flow.
+
+## Use params to control controller lifecycle
+
+Every singleton controller has params. Omitting `params` is equivalent to a
+function that always returns `true`, so the controller remains active for the
+lifetime of the app.
+
+A params function receives app params and the controller's exposed dependencies:
+
+```elixir
+controller!(
+  name: :report,
+  module: MyApp.Report,
+  dependencies: [:screen],
+  params: fn %{app_params: app_params, dependencies: %{screen: screen}} ->
+    if screen.current == :reports do
+      %{account_id: app_params.account_id}
+    else
+      false
+    end
+  end
+)
+```
+
+Pass app-wide params when starting Solve:
+
+```elixir
+{:ok, app} = MyApp.App.start_link(params: %{account_id: 42})
+```
+
+The params value controls both lifecycle and identity:
+
+| Previous | Current | Result |
+| --- | --- | --- |
+| false or `nil` | false or `nil` | remain stopped |
+| false or `nil` | truthy | start with the new params |
+| truthy | false or `nil` | stop and expose `nil` |
+| truthy | equal truthy value | keep the existing controller |
+| truthy | different truthy value | stop and start a fresh controller |
+
+The truthy params value is passed to `init/2`, event handlers that request it,
+and `expose/3`. Use stable values when a controller should preserve its state.
+Use a changed value intentionally when the logical identity changed and the
+state should restart.
+
+A controller process also restarts from `init/2` after a crash. Subscribers see
+`nil` while that controller is unavailable, followed by its newly exposed state.
 
 ## Keep the viewport focused on rendering
 
@@ -286,6 +367,21 @@ end
 
 This controller owns one thing: screen selection and its menu state.
 
+Every event named in `events:` must have exactly one implemented arity. Multiple
+function clauses at that arity are allowed, as `set_screen/2` demonstrates. An
+event handler can request only the leading runtime values it needs:
+
+```elixir
+event_name(payload)
+event_name(payload, state)
+event_name(payload, state, dependencies)
+event_name(payload, state, dependencies, callbacks)
+event_name(payload, state, dependencies, callbacks, init_params)
+```
+
+Each handler returns the controller's next internal state directly. Defining the
+same event at more than one arity is a compile error.
+
 A controller is well-shaped when it has:
 
 - one clear interaction boundary
@@ -378,14 +474,27 @@ end
 
 This is the basic pattern:
 
-- read a controller with `solve/2`
-- render directly from the exposed state
+- read a singleton controller with `solve/2`
+- read a collection source with `collection/2`
+- build event tuples with `event/2` or `event/3`
+- render directly from exposed state
 - keep unrelated state out of the same view function
 
-That makes it clear which controller drives which part of the UI.
+The first lookup in a process subscribes synchronously and caches the exposed
+value in that process. Later lookups read the cache. `use Solve.Lookup` installs
+the `%Solve.Message{}` handling that refreshes the cache and invokes
+`handle_solve_updated/2`; that is why the viewport rerenders in the earlier
+example.
 
-It also avoids prop drilling controller refs through many helper layers just to
-reach a leaf widget.
+`use Solve.Lookup, :helpers` only imports the lookup helpers. It is appropriate
+for a view helper module because its functions execute in the viewport process,
+which already owns the subscriptions and message handling. Do not use helper
+mode in a separate long-running process unless another module in that same
+process handles Solve updates.
+
+This makes it clear which controller drives which part of the UI. It also avoids
+prop drilling controller refs through many helper layers just to reach a leaf
+widget.
 
 ## Keep reusable widgets state-agnostic
 
@@ -475,6 +584,17 @@ def comment_body_input do
 end
 ```
 
+`event/2` reads the direct event tuple attached by `Solve.Lookup`; `event/3`
+adds a fixed payload. Code outside the view can dispatch through the app
+explicitly:
+
+```elixir
+Solve.dispatch(MyApp.App, :screen, :set_screen, :reports)
+```
+
+Dispatching through the app keeps event delivery aligned with controller
+lifecycle changes.
+
 This keeps ownership obvious:
 
 - screen selection goes to the screen controller
@@ -503,8 +623,15 @@ Typical derived values include:
 - enabled actions
 
 A controller depends on the exposed state of another controller to compute
-these values in one place. That keeps source-of-truth state smaller and avoids
-duplicating logic in views.
+these values in one place. Whenever a dependency exposes a changed map, Solve
+refreshes the dependent controller's cached dependencies, reevaluates its
+params, and recomputes its exposed map. The dependent controller does not need
+to copy derived values into internal state.
+
+Dependencies provide read-only data flow. Declare them in the app rather than
+reaching into another controller process directly. This keeps source-of-truth
+state smaller, avoids duplicating logic in views, and leaves the full dependency
+graph visible in `controllers/0`.
 
 ## Use callbacks to cross boundaries
 
@@ -560,6 +687,33 @@ This keeps ownership explicit:
 - another controller owns the list
 - the handoff is visible in the app graph
 
+Callbacks are plain functions and are passed only to event handlers that request
+the callbacks argument. They intentionally cross the read-only dependency graph,
+so declare them in the app and avoid callback cycles.
+
+## Handle external process messages in controllers
+
+Controllers are `GenServer` processes and can react to timers, PubSub messages,
+monitors, and other BEAM messages with `handle_info`. Like event handlers,
+`handle_info` requests a leading subset of controller runtime values and returns
+the next internal state directly:
+
+```elixir
+def handle_info(message, state)
+def handle_info(message, state, dependencies)
+def handle_info(message, state, dependencies, callbacks)
+def handle_info(message, state, dependencies, callbacks, init_params)
+```
+
+For example, a controller can clear a temporary status after a timer:
+
+```elixir
+def handle_info(:clear_status, state), do: %{state | status: nil}
+```
+
+Use `Solve.dispatch/4` for application events. Reserve `handle_info` for messages
+that originate outside Solve's event routing.
+
 ## Use collection controllers for repeated local state
 
 When the same behavior repeats across many entities, use collection
@@ -583,11 +737,16 @@ controller!(
   dependencies: [:task_list],
   collect: fn _context = %{dependencies: %{task_list: task_list}} ->
     Enum.map(task_list.ids, fn id ->
-      {id, [params: %{id: id, title: task_list.tasks[id].title}]}
+      {id, [params: %{id: id, title: task_list.todos[id].title}]}
     end)
   end
 )
 ```
+
+The `collect` function receives exposed dependencies and app params. It returns
+one `{id, options}` pair per active item; options can contain item-specific
+`params` and `callbacks`. Removing an id stops that controller and exposes its
+removal to collection subscribers. Reintroducing the id starts fresh state.
 
 Views then read one item-specific controller instance directly:
 
@@ -602,10 +761,14 @@ def edit_row(task_id) do
 end
 ```
 
-Use this when many entities need the same local behavior, but each entity needs
-its own isolated state. If each item needs a multiline draft instead, swap
-`Input.text/2` for `Input.multiline/2`; the collection ownership pattern stays
-the same.
+Use `collection(MyApp.App, :task_editor)` when a view needs the complete
+collection rather than one item.
+
+Use collection controllers when many entities need the same local behavior and
+each entity needs isolated state. Do not use them merely to store a list; a
+singleton controller with a map is simpler when items do not need independent
+lifecycles. If each item needs a multiline draft, swap `Input.text/2` for
+`Input.multiline/2`; the collection ownership pattern stays the same.
 
 ## Keep overlays close to the trigger
 
