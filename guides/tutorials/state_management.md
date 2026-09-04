@@ -309,7 +309,9 @@ That means exposing values such as:
 Do not make every view recompute these values from low-level internal state.
 
 For example, a filter controller exposes `visible_ids` directly instead of
-forcing the view to filter the full list again during rendering:
+forcing the view to filter the full list again during rendering. In this
+example, `task_list` exposes ordered `ids` and a `tasks` map whose values contain
+a `completed?` field:
 
 ```elixir
 defmodule MyApp.Filter do
@@ -330,6 +332,16 @@ defmodule MyApp.Filter do
       active: state.active,
       visible_ids: visible_ids(state.active, task_list)
     }
+  end
+
+  defp visible_ids(:all, task_list), do: task_list.ids
+
+  defp visible_ids(:active, task_list) do
+    Enum.reject(task_list.ids, fn id -> task_list.tasks[id].completed? end)
+  end
+
+  defp visible_ids(:completed, task_list) do
+    Enum.filter(task_list.ids, fn id -> task_list.tasks[id].completed? end)
   end
 end
 ```
