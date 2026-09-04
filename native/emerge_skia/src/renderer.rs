@@ -876,7 +876,8 @@ pub(crate) fn measure_text_visual_metrics(
     measure_text_visual_metrics_cached_with_font(&font, family, weight, italic, size, text)
 }
 
-pub(crate) fn text_surface_props() -> SurfaceProps {
+#[doc(hidden)]
+pub fn text_surface_props() -> SurfaceProps {
     SurfaceProps::new(SurfacePropsFlags::default(), PixelGeometry::RGBH)
 }
 
