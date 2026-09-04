@@ -243,15 +243,26 @@ If you want multiple variants of the same family, register each variant:
 
 After that, use the configured family in UI code:
 
+<!-- emerge-example:ui-assets-font-variants -->
 ```elixir
-column([spacing(8)], [
-  el([Font.family("Inter"), Font.size(22), Font.bold()], text("Release notes")),
-  el([Font.family("Inter"), Font.regular()], text("Design system updated")),
-  el([Font.family("Inter"), Font.italic(), Font.color(color(:slate, 300))], text("Beta"))
-])
+column(
+  [
+    width(fill()),
+    height(fill()),
+    padding(24),
+    spacing(8),
+    Background.color(color(:slate, 900)),
+    Font.family("Inter")
+  ],
+  [
+    el([Font.size(22), Font.bold(), Font.color(color(:slate, 50))], text("Release notes")),
+    el([Font.regular(), Font.color(color(:slate, 200))], text("Design system updated")),
+    el([Font.italic(), Font.color(color(:slate, 300))], text("Beta"))
+  ]
+)
 ```
 
-<img src="assets/ui-font-overview.png" alt="Rendered font family, weight, and style example" width="320">
+<img src="assets/ui-assets-font-variants.png" alt="Rendered regular, bold, and italic font variants" width="320">
 
 The key idea is:
 
