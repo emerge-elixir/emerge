@@ -54,32 +54,49 @@ defmodule EmergeSkia.Native do
                         @compiled_vulkan_backends,
                         @compiled_opengl_backends
                       ) ++ @platform_cargo_features
-      @force_build EmergeSkia.BuildConfig.force_precompiled_build?(
-                     checksum_path: @checksum_path,
-                     compiled_backends: @compiled_backends,
-                     compiled_vulkan_backends: @compiled_vulkan_backends,
-                     compiled_opengl_backends: @compiled_opengl_backends,
-                     targets: @precompiled_targets,
-                     nif_versions: @precompiled_nif_versions
-                   )
+      # mix.exs already resolves the Rust target from the Nerves compiler.
+      # RustlerPrecompiled reads TARGET_ARCH instead of Rustler's :target option.
+      @original_target_arch System.get_env("TARGET_ARCH")
 
-      use RustlerPrecompiled,
-          Keyword.merge(
-            [
-              otp_app: :emerge,
-              crate: "emerge_skia",
-              base_url: @base_url,
-              version: @version,
-              force_build: @force_build,
-              targets: @precompiled_targets,
-              nif_versions: @precompiled_nif_versions,
-              variants: @precompiled_variants,
-              path: @crate_path,
-              default_features: false,
-              features: @cargo_features
-            ],
-            @rustler_opts
-          )
+      try do
+        if target = @rustler_opts[:target] do
+          [arch | _] = String.split(target, "-")
+          System.put_env("TARGET_ARCH", arch)
+        end
+
+        @force_build EmergeSkia.BuildConfig.force_precompiled_build?(
+                       checksum_path: @checksum_path,
+                       compiled_backends: @compiled_backends,
+                       compiled_vulkan_backends: @compiled_vulkan_backends,
+                       compiled_opengl_backends: @compiled_opengl_backends,
+                       targets: @precompiled_targets,
+                       nif_versions: @precompiled_nif_versions
+                     )
+
+        use RustlerPrecompiled,
+            Keyword.merge(
+              [
+                otp_app: :emerge,
+                crate: "emerge_skia",
+                base_url: @base_url,
+                version: @version,
+                force_build: @force_build,
+                targets: @precompiled_targets,
+                nif_versions: @precompiled_nif_versions,
+                variants: @precompiled_variants,
+                path: @crate_path,
+                default_features: false,
+                features: @cargo_features
+              ],
+              @rustler_opts
+            )
+      after
+        if @original_target_arch do
+          System.put_env("TARGET_ARCH", @original_target_arch)
+        else
+          System.delete_env("TARGET_ARCH")
+        end
+      end
     end
   end
 

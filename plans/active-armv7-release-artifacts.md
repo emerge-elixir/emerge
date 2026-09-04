@@ -18,11 +18,16 @@
 - [x] Keep embedded Skia free of desktop font dependencies and raster free of
   GPU dependencies; verify the produced ELF in the artifact jobs, including
   ELF32, ARMv7, and VFP register argument attributes.
-- [x] Keep generic ARM source fallback aligned with RustlerPrecompiled:
-  it ignores `TARGET_CPU` and `CC`. Do not normalize only Emerge's preflight
-  while leaving the actual downloader resolving `arm`, or mutate the global
-  environment while dependencies compile concurrently.
-- [x] Audit validation: full `./ci-tests.sh all` with 456 Elixir tests
+- [x] Reuse the compiler-prefix mapping already in `mix.exs`. Apply its Rust
+  target architecture to `TARGET_ARCH` around the existing preflight and
+  `use RustlerPrecompiled`, then restore the original value in `after`.
+  No separate CPU table, custom loader, or downstream override is needed.
+- [x] Isolated-process tests compile the actual NIF module using Trellis's
+  environment and the real Mix target mapping, with Rustler absent. Cover
+  raster download/load, OpenGL cache/load, checksum failure with environment
+  restoration, and ARMv6 source fallback. Test archives contain the host NIF,
+  not ARM code; hardware qualification remains separate.
+- [x] Audit validation: full `./ci-tests.sh all` with 460 Elixir tests
   (3 excluded), 1,007 Rust tests plus the benchmark fixture, formatting,
   warning-denied Clippy, Credo, and Dialyzer. Actionlint, 18-artifact matrix
   consistency, and warning-free docs also pass.
@@ -35,9 +40,7 @@
 
 ## Follow-up
 
-Automatic precompiled selection on Trellis remains unresolved: its environment
-exposes `TARGET_ARCH=arm`, not `armv7`. Until RustlerPrecompiled supports an
-explicit per-library target or CPU-aware resolution, the build environment must
-expose `TARGET_ARCH=armv7` to select these artifacts; otherwise Emerge safely
-builds from source. Do not claim that renaming the artifact alone enables
-precompiled downloads on existing Trellis projects.
+Trellis now selects ARMv7 automatically from its existing toolchain. The
+remaining gates are the ARMv7 artifact build and actual Trellis loading/rendering,
+including CPU and libc compatibility. Source builds remain the fallback for
+unsupported targets/profiles or explicitly forced builds.

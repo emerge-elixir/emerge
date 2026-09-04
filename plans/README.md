@@ -10,8 +10,8 @@ or `guides/internals/`, not under an `active-` filename.
 
 ### `active-armv7-release-artifacts.md`
 
-ARMv7 cross-image and release-artifact qualification, plus the remaining
-RustlerPrecompiled target-selection limitation on generic Nerves ARM environments.
+ARMv7 cross-image and release-artifact qualification, with automatic Trellis
+artifact selection from its existing Nerves toolchain.
 
 ### `active-direct-video-frame-submission.md`
 

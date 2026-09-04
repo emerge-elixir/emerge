@@ -257,13 +257,13 @@ defmodule EmergeSkia.BuildConfigTest do
              )
   end
 
-  test "generic Nerves ARM requires a source build even with an ARMv7 CPU" do
+  test "Nerves ARMv6 still requires a source build" do
     env = %{
       "TARGET_ARCH" => "arm",
-      "TARGET_CPU" => "cortex_a7",
+      "TARGET_CPU" => "arm1176jzf_s",
       "TARGET_OS" => "linux",
       "TARGET_ABI" => "gnueabihf",
-      "CC" => "/opt/toolchain/bin/armv7-nerves-linux-gnueabihf-gcc"
+      "CC" => "/opt/toolchain/bin/armv6-nerves-linux-gnueabihf-gcc"
     }
 
     target_system =

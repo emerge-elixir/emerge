@@ -71,13 +71,10 @@ The ARMv7 artifact uses the hard-float ABI of the
 `armv7-nerves-linux-gnueabihf` toolchain used by Cortex-A7 systems such as
 Trellis. ARMv6 targets require a source build.
 
-For cross builds, RustlerPrecompiled selects this artifact when the target
-environment exposes `TARGET_ARCH=armv7`. Nerves systems such as Trellis expose
-`TARGET_ARCH=arm` and `TARGET_CPU=cortex_a7`; RustlerPrecompiled does not use
-`TARGET_CPU` or the compiler prefix to select artifacts. These environments
-continue to build from source unless their build configuration exposes the
-explicit ARMv7 architecture before compiling Emerge. Emerge does not mutate
-the process-wide target environment during parallel dependency compilation.
+Trellis selects the ARMv7 artifact automatically. Emerge uses the Rust target
+already resolved from the Nerves compiler in `CC`, so
+`armv7-nerves-linux-gnueabihf-gcc` selects `armv7-unknown-linux-gnueabihf`
+even though Nerves exposes `TARGET_ARCH=arm`. No environment override is needed.
 
 A renderer-only embedded application selects the minimal raster artifact with:
 
