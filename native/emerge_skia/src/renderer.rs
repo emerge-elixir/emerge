@@ -4336,7 +4336,7 @@ impl SceneRenderer {
         self.video_state.prepare_vulkan_shutdown()
     }
 
-    #[cfg(any(feature = "video-interop-support", test))]
+    #[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
     pub fn reap_video_cleanup(
         &mut self,
         registry: &Arc<crate::video::VideoRegistry>,

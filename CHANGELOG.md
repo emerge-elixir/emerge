@@ -38,6 +38,7 @@
 - Made inertial touch scrolling preserve chronological final motion before release, accumulate high-frequency velocity samples, preserve sub-pixel fling motion, avoid stale-deadline watchdog spins, and clamp high-velocity flings exactly at either boundary.
 - Kept high-volume event-runtime traces at debug level while native diagnostic logging remains disabled by default.
 - Fixed Nerves Skia cross-compilation with newer host toolchains by isolating host Python, sanitizing Clang/sysroot flags, and packaging the embedded link support used by source builds.
+- Kept macOS host builds and tests independent of the Linux-only native VideoInterop/DMA-BUF path.
 - Removed unconditional full-frame GPU screenshot readback from DRM and Wayland presentation; screenshots now trigger one bounded on-demand capture without serializing every rendered frame.
 - Made direct video submission consume and release inactive-target frames successfully so transient scene visibility no longer terminates an ownership-safe sink.
 - Declared concrete headless PRIME synchronization and modifier contracts from the selected producer path, allowing both Vulkan and explicit-sync OpenGL producers with linear DMA-BUFs to open Vulkan consumer streams without weakening synchronization or layout policy.

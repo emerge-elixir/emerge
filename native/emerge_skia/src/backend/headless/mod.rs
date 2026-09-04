@@ -1,4 +1,4 @@
-#[cfg(any(feature = "video-interop-support", test))]
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{
     sync::{
@@ -12,7 +12,7 @@ use std::{
 use crossbeam_channel::{Receiver, Sender, at, bounded, never, select, unbounded};
 use rustler::{Atom, Encoder, Env, LocalPid, NifResult, OwnedBinary, OwnedEnv, ResourceArc, Term};
 use skia_safe::Color;
-#[cfg(any(feature = "video-interop-support", test))]
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
 use video_interop::{AcquireSync, Descriptor, Layer, Modifier, Object, Plane};
 
 use self::output::{
@@ -74,7 +74,10 @@ impl HeadlessMode {
     }
 }
 
-#[cfg_attr(not(any(feature = "video-interop-support", test)), allow(dead_code))]
+#[cfg_attr(
+    not(any(feature = "video-interop-support", all(test, target_os = "linux"))),
+    allow(dead_code)
+)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum HeadlessReleaseMsg {
     PrimeFrame(u64),
@@ -86,14 +89,14 @@ struct HeadlessStartupInfo {
     vulkan_device: Option<crate::backend::vulkan::VulkanRendererReport>,
 }
 
-#[cfg(any(feature = "video-interop-support", test))]
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
 pub struct HeadlessPrimeBackendToken {
     release_tx: Sender<HeadlessReleaseMsg>,
     release_id: u64,
     released: AtomicBool,
 }
 
-#[cfg(any(feature = "video-interop-support", test))]
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
 impl HeadlessPrimeBackendToken {
     fn new(release_tx: Sender<HeadlessReleaseMsg>, release_id: u64) -> Self {
         Self {
@@ -112,18 +115,18 @@ impl HeadlessPrimeBackendToken {
     }
 }
 
-#[cfg(any(feature = "video-interop-support", test))]
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
 impl Drop for HeadlessPrimeBackendToken {
     fn drop(&mut self) {
         self.release();
     }
 }
 
-#[cfg(any(feature = "video-interop-support", test))]
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
 #[rustler::resource_impl]
 impl rustler::Resource for HeadlessPrimeBackendToken {}
 
-#[cfg(any(feature = "video-interop-support", test))]
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
 pub(crate) fn release_backend_token(backend_token: ResourceArc<HeadlessPrimeBackendToken>) {
     backend_token.release();
 }
@@ -330,7 +333,7 @@ pub(crate) fn start_renderer_with_config(
         render_tx: render_sender,
         video_registry,
         video_wake,
-        #[cfg(any(feature = "video-interop-support", test))]
+        #[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
         direct_video_dispatcher: Arc::new(crate::ReleaseDispatcherHandleResource::lazy()),
         native_log,
         stats: renderer_stats,
@@ -739,19 +742,19 @@ struct HeadlessRgbaFrame {
 }
 
 struct HeadlessPrimeExport {
-    #[cfg(any(feature = "video-interop-support", test))]
+    #[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
     release_id: u64,
-    #[cfg(any(feature = "video-interop-support", test))]
+    #[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
     width: u32,
-    #[cfg(any(feature = "video-interop-support", test))]
+    #[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
     height: u32,
-    #[cfg(any(feature = "video-interop-support", test))]
+    #[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
     format: u32,
-    #[cfg(any(feature = "video-interop-support", test))]
+    #[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
     objects: Vec<PrimeObjectMeta>,
-    #[cfg(any(feature = "video-interop-support", test))]
+    #[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
     planes: Vec<PrimePlaneMeta>,
-    #[cfg(any(feature = "video-interop-support", test))]
+    #[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
     acquire_sync: AcquireSync,
     timings: RenderTimings,
     prime_timings: HeadlessPrimeTimings,
@@ -766,14 +769,14 @@ struct HeadlessPrimeTimings {
     export_metadata: Duration,
 }
 
-#[cfg(any(feature = "video-interop-support", test))]
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
 struct PrimeObjectMeta {
     fd: i32,
     size: u64,
     modifier: Option<u64>,
 }
 
-#[cfg(any(feature = "video-interop-support", test))]
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
 #[derive(Clone)]
 struct PrimePlaneMeta {
     object_index: u32,
@@ -1146,7 +1149,7 @@ fn send_binary_frame(
     });
 }
 
-#[cfg(any(feature = "video-interop-support", test))]
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
 fn send_prime_frame(
     target: LocalPid,
     frame_message: &str,
@@ -1204,7 +1207,7 @@ fn send_prime_frame(
     });
 }
 
-#[cfg(not(any(feature = "video-interop-support", test)))]
+#[cfg(not(any(feature = "video-interop-support", all(test, target_os = "linux"))))]
 fn send_prime_frame(
     _target: LocalPid,
     _frame_message: &str,
@@ -1256,7 +1259,7 @@ fn luma8(px: &[u8]) -> u8 {
     ((u16::from(px[0]) * 77 + u16::from(px[1]) * 150 + u16::from(px[2]) * 29) >> 8) as u8
 }
 
-#[cfg(any(feature = "video-interop-support", test))]
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
 fn current_wall_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

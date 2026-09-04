@@ -22,11 +22,11 @@ use crossbeam_channel::unbounded;
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError, bounded};
 
 use rustler::Decoder;
-#[cfg(any(feature = "video-interop-support", test))]
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
 use rustler::types::reference::Reference;
 use rustler::{Atom, Binary, Encoder, Env, LocalPid, NewBinary, NifResult, ResourceArc, Term};
-#[cfg(any(feature = "video-interop-support", test))]
-#[cfg(any(feature = "video-interop-support", test))]
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
 use video_interop::ReleaseDispatcher;
 pub mod actors;
 pub mod assets;
@@ -50,9 +50,9 @@ pub mod runtime;
 pub mod services;
 pub mod stats;
 pub mod tree;
-#[cfg(any(feature = "video-interop-support", test))]
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
 mod video;
-#[cfg(not(any(feature = "video-interop-support", test)))]
+#[cfg(not(any(feature = "video-interop-support", all(test, target_os = "linux"))))]
 #[path = "video_stub.rs"]
 mod video;
 
@@ -86,7 +86,7 @@ use stats::{
 };
 use std::time::Instant;
 use tree::element::{ElementTree, NodeId};
-#[cfg(any(feature = "video-interop-support", test))]
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
 use video::CanonicalSubmitError;
 use video::{CpuVideoFrame, VideoRegistry, VideoSubmitResult, VideoWake};
 
@@ -860,7 +860,7 @@ struct RendererResource {
     render_tx: RenderSender,
     video_registry: Arc<VideoRegistry>,
     video_wake: VideoWake,
-    #[cfg(any(feature = "video-interop-support", test))]
+    #[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
     direct_video_dispatcher: Arc<ReleaseDispatcherHandleResource>,
     native_log: Arc<NativeLogRelay>,
     stats: Option<Arc<RendererStatsCollector>>,
@@ -1320,14 +1320,14 @@ struct TestHarnessResource {
     handles: Mutex<Option<TestHarnessHandles>>,
 }
 
-#[cfg(any(feature = "video-interop-support", test))]
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
 struct ReleaseDispatcherHandleResource {
     dispatcher: Mutex<Option<ResourceArc<ReleaseDispatcher>>>,
 }
 
-#[cfg(any(feature = "video-interop-support", test))]
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
 const RELEASE_DISPATCHER_CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
-#[cfg(any(feature = "video-interop-support", test))]
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
 type DispatcherCloseError = (Atom, String);
 
 #[rustler::resource_impl]
@@ -1339,11 +1339,11 @@ impl rustler::Resource for TreeResource {}
 #[rustler::resource_impl]
 impl rustler::Resource for TestHarnessResource {}
 
-#[cfg(any(feature = "video-interop-support", test))]
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
 #[rustler::resource_impl]
 impl rustler::Resource for ReleaseDispatcherHandleResource {}
 
-#[cfg(any(feature = "video-interop-support", test))]
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
 impl ReleaseDispatcherHandleResource {
     fn lazy() -> Self {
         Self {
@@ -1404,7 +1404,7 @@ impl ReleaseDispatcherHandleResource {
     }
 }
 
-#[cfg(any(feature = "video-interop-support", test))]
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
 fn dispatcher_close_error(reason: impl Into<String>) -> DispatcherCloseError {
     let reason = reason.into();
     let category = if reason.contains("timed out") {
@@ -1422,7 +1422,7 @@ impl Drop for RendererResource {
         let registry = Arc::clone(&self.video_registry);
         let wake = self.video_wake.clone();
         let shutdown = self.take_shutdown_for_drop();
-        #[cfg(any(feature = "video-interop-support", test))]
+        #[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
         let direct_video_dispatcher = Arc::clone(&self.direct_video_dispatcher);
 
         self.cleanup_dispatcher.dispatch(Box::new(move || {
@@ -1433,7 +1433,7 @@ impl Drop for RendererResource {
             {
                 eprintln!("renderer drop shutdown failed: {error}");
             }
-            #[cfg(any(feature = "video-interop-support", test))]
+            #[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
             if let Err((_category, error)) =
                 direct_video_dispatcher.close_and_join(RELEASE_DISPATCHER_CLOSE_TIMEOUT)
             {
@@ -1506,7 +1506,7 @@ impl RendererResource {
         self.video_registry.close();
         self.video_wake.notify();
         self.stop_inner()?;
-        #[cfg(any(feature = "video-interop-support", test))]
+        #[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
         self.direct_video_dispatcher
             .close_and_join(RELEASE_DISPATCHER_CLOSE_TIMEOUT)
             .map_err(|(_category, reason)| reason)?;
@@ -2729,7 +2729,7 @@ fn start_native_renderer_with_config(
         render_tx: render_sender,
         video_registry,
         video_wake,
-        #[cfg(any(feature = "video-interop-support", test))]
+        #[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
         direct_video_dispatcher: Arc::new(ReleaseDispatcherHandleResource::lazy()),
         native_log,
         stats: renderer_stats,
@@ -2924,7 +2924,7 @@ fn video_frame_submit(
         return Ok(atoms::released());
     }
 
-    #[cfg(any(feature = "video-interop-support", test))]
+    #[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
     {
         let frame = decode_video_frame(frame)?;
         let target_active = renderer
@@ -2980,7 +2980,7 @@ fn video_frame_submit(
             Err(CanonicalSubmitError::Transferred(reason)) => Err((atoms::transferred(), reason)),
         }
     }
-    #[cfg(not(any(feature = "video-interop-support", test)))]
+    #[cfg(not(any(feature = "video-interop-support", all(test, target_os = "linux"))))]
     {
         let _ = renderer;
         let _ = target;
@@ -3205,7 +3205,7 @@ fn premultiply_video_channel(channel: u8, alpha: u8) -> u8 {
     ((u16::from(channel) * u16::from(alpha) + 127) / 255) as u8
 }
 
-#[cfg(any(feature = "video-interop-support", test))]
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
 fn decode_video_frame(term: Term<'_>) -> Result<video_interop::Frame<'_>, (Atom, String)> {
     video_interop::Frame::decode(term).map_err(|error| {
         (
@@ -3215,12 +3215,12 @@ fn decode_video_frame(term: Term<'_>) -> Result<video_interop::Frame<'_>, (Atom,
     })
 }
 
-#[cfg(any(feature = "video-interop-support", test))]
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
 fn start_video_release_dispatcher(name: &str) -> Result<ResourceArc<ReleaseDispatcher>, String> {
     ReleaseDispatcher::start(name).map_err(|error| error.to_string())
 }
 
-#[cfg(any(feature = "video-interop-support", test))]
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
 #[rustler::nif(schedule = "DirtyIo")]
 fn headless_prime_release_dispatcher_new()
 -> Result<ResourceArc<ReleaseDispatcherHandleResource>, String> {
@@ -3228,7 +3228,7 @@ fn headless_prime_release_dispatcher_new()
         .map(ResourceArc::new)
 }
 
-#[cfg(any(feature = "video-interop-support", test))]
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
 #[rustler::nif(schedule = "DirtyIo")]
 fn headless_prime_release_dispatcher_close<'a>(
     env: Env<'a>,
@@ -3240,7 +3240,7 @@ fn headless_prime_release_dispatcher_close<'a>(
     )
 }
 
-#[cfg(any(feature = "video-interop-support", test))]
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
 #[rustler::nif(schedule = "DirtyIo")]
 fn headless_prime_release_dispatcher_close_with_timeout_for_test<'a>(
     env: Env<'a>,
@@ -3253,7 +3253,7 @@ fn headless_prime_release_dispatcher_close_with_timeout_for_test<'a>(
     )
 }
 
-#[cfg(any(feature = "video-interop-support", test))]
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
 fn encode_dispatcher_close_result<'a>(
     env: Env<'a>,
     result: Result<(), DispatcherCloseError>,
@@ -3264,7 +3264,7 @@ fn encode_dispatcher_close_result<'a>(
     }
 }
 
-#[cfg(any(feature = "video-interop-support", test))]
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
 #[rustler::nif(schedule = "DirtyIo")]
 fn headless_prime_abandonment_guard_new<'a>(
     owner: LocalPid,
@@ -3276,13 +3276,13 @@ fn headless_prime_abandonment_guard_new<'a>(
         .map_err(|error| error.to_string())
 }
 
-#[cfg(any(feature = "video-interop-support", test))]
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
 #[rustler::nif(name = "video_interop_abandonment_guard?")]
 fn video_interop_abandonment_guard(resource: Term<'_>) -> bool {
     video_interop::is_abandonment_guard_resource(resource)
 }
 
-#[cfg(any(feature = "video-interop-support", test))]
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
 #[rustler::nif]
 fn headless_prime_release_backend_token(
     backend_token: ResourceArc<backend::headless::HeadlessPrimeBackendToken>,
@@ -4793,7 +4793,7 @@ mod tests {
                 None,
             )),
             video_wake: VideoWake::noop(),
-            #[cfg(any(feature = "video-interop-support", test))]
+            #[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
             direct_video_dispatcher: Arc::new(ReleaseDispatcherHandleResource::lazy()),
             native_log: Arc::new(NativeLogRelay::default()),
             stats: None,

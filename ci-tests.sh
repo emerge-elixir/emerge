@@ -3,12 +3,16 @@
 set -euo pipefail
 
 mode="${1:-all}"
+native_cargo_args=()
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  native_cargo_args=(--no-default-features --features macos)
+fi
 
 run_quality() {
   mix format --check-formatted
   mix compile --force --warnings-as-errors
   mix credo --strict
-  cargo clippy --manifest-path native/emerge_skia/Cargo.toml -- -D warnings
+  cargo clippy --manifest-path native/emerge_skia/Cargo.toml "${native_cargo_args[@]}" -- -D warnings
 }
 
 run_tests() {
@@ -18,7 +22,7 @@ run_tests() {
     mix test --include full_sweep --warnings-as-errors
   fi
 
-  cargo test --release --manifest-path native/emerge_skia/Cargo.toml
+  cargo test --release --manifest-path native/emerge_skia/Cargo.toml "${native_cargo_args[@]}"
 }
 
 run_dialyzer() {

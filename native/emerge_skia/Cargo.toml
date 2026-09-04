@@ -131,7 +131,6 @@ skia-safe = { version = "0.99.0", git = "https://github.com/rust-skia/rust-skia"
 
 [dev-dependencies]
 criterion = "0.7"
-video-interop = "0.1.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 glutin = { version = "0.32", optional = true }
@@ -145,3 +144,6 @@ gbm = { version = "0.18", default-features = false, features = ["drm-support"], 
 glutin_egl_sys = { version = "0.7", optional = true }
 evdev = { version = "0.13", optional = true }
 arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"], optional = true }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+video-interop = "0.1.0"
