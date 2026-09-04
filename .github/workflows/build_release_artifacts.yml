@@ -137,8 +137,8 @@ jobs:
             variant: "vulkan"
             cargo_args: "--no-default-features --features wayland-all,drm-all,headless-all,embedded-freetype"
             system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev"
-          - name: linux_arm32_raster
-            target: arm-unknown-linux-gnueabihf
+          - name: linux_armv7_raster
+            target: armv7-unknown-linux-gnueabihf
             os: ubuntu-24.04
             use_cross: true
             variant: ""
@@ -146,8 +146,8 @@ jobs:
             system_packages: ""
             embedded_skia: true
             raster_only: true
-          - name: linux_arm32_opengl
-            target: arm-unknown-linux-gnueabihf
+          - name: linux_armv7_opengl
+            target: armv7-unknown-linux-gnueabihf
             os: ubuntu-24.04
             use_cross: true
             variant: "opengl"
@@ -212,13 +212,12 @@ jobs:
           toolchain: stable
           target: ${{ matrix.job.target }}
 
-      - name: Configure ARM32 cross toolchain
-        if: ${{ matrix.job.target == 'arm-unknown-linux-gnueabihf' }}
+      - name: Configure ARMv7 cross toolchain
+        if: ${{ matrix.job.target == 'armv7-unknown-linux-gnueabihf' }}
         shell: bash
         run: |
-          toolchain=/x-tools/arm-unknown-linux-gnueabihf
-          sysroot="$toolchain/arm-unknown-linux-gnueabihf/sysroot"
-          clang_target="--target=arm-unknown-linux-gnueabihf --sysroot=$sysroot --gcc-toolchain=$toolchain"
+          sysroot=/usr/arm-linux-gnueabihf
+          clang_target="--target=armv7-unknown-linux-gnueabihf --sysroot=$sysroot"
 
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
           echo "PKG_CONFIG_LIBDIR=/usr/lib/arm-linux-gnueabihf/pkgconfig:/usr/share/pkgconfig" >> "$GITHUB_ENV"
@@ -260,11 +259,12 @@ jobs:
           variant: ${{ matrix.job.variant }}
           cargo-args: ${{ matrix.job.cargo_args }}
 
-      - name: Verify embedded dependency closure
+      - name: Verify embedded ABI and dependency closure
         if: ${{ matrix.job.embedded_skia == true }}
         shell: bash
         run: |
           set -euo pipefail
+          export LC_ALL=C
           artifact_dir="$RUNNER_TEMP/embedded-artifact"
           rm -rf "$artifact_dir"
           mkdir -p "$artifact_dir"
@@ -273,6 +273,19 @@ jobs:
           test -n "$artifact"
           dynamic_dependencies="$(readelf --dynamic "$artifact")"
           undefined_symbols="$(nm --dynamic --undefined-only "$artifact")"
+
+          if [[ "${{ matrix.job.target }}" == "armv7-unknown-linux-gnueabihf" ]]; then
+            elf_header="$(readelf --file-header "$artifact")"
+            arm_attributes="$(readelf --arch-specific "$artifact")"
+            printf '%s\n%s\n' "$elf_header" "$arm_attributes"
+            if ! grep --extended-regexp 'Class: +ELF32' <<<"$elf_header" ||
+               ! grep --extended-regexp 'Machine: +ARM' <<<"$elf_header" ||
+               ! grep --extended-regexp 'Tag_CPU_arch: v7$' <<<"$arm_attributes" ||
+               ! grep --fixed-strings 'Tag_ABI_VFP_args: VFP registers' <<<"$arm_attributes"; then
+              echo "ARMv7 artifact is not an ELF32 ARMv7 hard-float library" >&2
+              exit 1
+            fi
+          fi
 
           if grep --extended-regexp 'NEEDED.*(fontconfig|freetype)' <<<"$dynamic_dependencies"; then
             echo "Embedded artifact depends on desktop fontconfig or FreeType" >&2

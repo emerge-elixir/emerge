@@ -1,7 +1,7 @@
 # Build the native renderer
 
 Emerge normally downloads a precompiled Linux NIF or the matching macOS host.
-Precompiled Linux artifacts cover x86_64, AArch64, and 32-bit ARM hard-float. A
+Precompiled Linux artifacts cover x86_64, AArch64, and ARMv7 hard-float. A
 source build is required only for unsupported targets or custom backend
 combinations.
 
@@ -65,7 +65,19 @@ The release artifact profiles are:
 |---|---|---|
 | `x86_64-unknown-linux-gnu` | Wayland/OpenGL | DRM/OpenGL, combined Wayland/DRM, minimal raster, Vulkan-only Wayland/DRM/headless, combined Vulkan/OpenGL |
 | `aarch64-unknown-linux-gnu` | Wayland/OpenGL | DRM/OpenGL, combined Wayland/DRM, minimal raster, Vulkan-only Wayland/DRM/headless, combined Vulkan/OpenGL |
-| `arm-unknown-linux-gnueabihf` | Minimal raster | DRM/headless OpenGL |
+| `armv7-unknown-linux-gnueabihf` | Minimal raster | DRM/headless OpenGL |
+
+The ARMv7 artifact uses the hard-float ABI of the
+`armv7-nerves-linux-gnueabihf` toolchain used by Cortex-A7 systems such as
+Trellis. ARMv6 targets require a source build.
+
+For cross builds, RustlerPrecompiled selects this artifact when the target
+environment exposes `TARGET_ARCH=armv7`. Nerves systems such as Trellis expose
+`TARGET_ARCH=arm` and `TARGET_CPU=cortex_a7`; RustlerPrecompiled does not use
+`TARGET_CPU` or the compiler prefix to select artifacts. These environments
+continue to build from source unless their build configuration exposes the
+explicit ARMv7 architecture before compiling Emerge. Emerge does not mutate
+the process-wide target environment during parallel dependency compilation.
 
 A renderer-only embedded application selects the minimal raster artifact with:
 
@@ -76,7 +88,7 @@ config :emerge,
 
 This is the NameBadge profile. It contains CPU raster rendering, registered
 fonts, image decoding, and SVG rendering without desktop or video dependencies.
-On 32-bit ARM, `compiled_backends: [drm: [:opengl]]` selects the OpenGL artifact,
+On ARMv7, `compiled_backends: [drm: [:opengl]]` selects the OpenGL artifact,
 which also supports headless OpenGL rendering.
 
 Use an exact API list to exclude the other GPU API. For example, an RPi5 DRM

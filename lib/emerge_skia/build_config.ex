@@ -13,9 +13,9 @@ defmodule EmergeSkia.BuildConfig do
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu"
   ]
-  @linux_arm32_precompiled_target "arm-unknown-linux-gnueabihf"
+  @linux_armv7_precompiled_target "armv7-unknown-linux-gnueabihf"
   @linux_precompiled_backend_profiles [[], [:wayland], [:drm], [:wayland, :drm]]
-  @precompiled_targets @linux_64_precompiled_targets ++ [@linux_arm32_precompiled_target]
+  @precompiled_targets @linux_64_precompiled_targets ++ [@linux_armv7_precompiled_target]
   @macos_host_targets ["aarch64-apple-darwin", "x86_64-apple-darwin"]
   @precompiled_nif_versions ["2.15"]
   @valid_backends [:wayland, :drm, :macos]
@@ -440,7 +440,7 @@ defmodule EmergeSkia.BuildConfig do
           :drm_vulkan,
           :headless_vulkan
         ]),
-      @linux_arm32_precompiled_target => variants_for.(@linux_arm32_precompiled_target, [:opengl])
+      @linux_armv7_precompiled_target => variants_for.(@linux_armv7_precompiled_target, [:opengl])
     }
   end
 
@@ -502,14 +502,14 @@ defmodule EmergeSkia.BuildConfig do
           compiled_vulkan_backends == [] and compiled_opengl_backends == [] ->
           {:ok, :raster}
 
-        target == @linux_arm32_precompiled_target and compiled_vulkan_backends != [] ->
+        target == @linux_armv7_precompiled_target and compiled_vulkan_backends != [] ->
           :error
 
-        target == @linux_arm32_precompiled_target and compiled_backends == [] and
+        target == @linux_armv7_precompiled_target and compiled_backends == [] and
             compiled_opengl_backends == [] ->
           {:ok, nil}
 
-        target == @linux_arm32_precompiled_target and compiled_backends == [:drm] and
+        target == @linux_armv7_precompiled_target and compiled_backends == [:drm] and
             compiled_opengl_backends == [:drm] ->
           {:ok, :opengl}
 

@@ -143,7 +143,7 @@ matrix or manual dispatch could publish unvalidated source.
 The release NIF matrix also publishes minimal raster, Vulkan-only Wayland,
 Vulkan-only DRM, Vulkan-only headless, and combined OpenGL/Vulkan variants for
 x86_64 and AArch64 Linux. It publishes minimal raster and DRM/headless OpenGL
-variants for 32-bit ARM hard-float Linux. The 32-bit ARM raster artifact is the
+variants for ARMv7 hard-float Linux. The ARMv7 raster artifact is the
 dependency-minimal NameBadge profile. One `compiled_backends` matrix selects
 GPU APIs per backend; for example, `[drm: [:vulkan]]` excludes OpenGL while
 `[drm: :all]` includes both APIs.

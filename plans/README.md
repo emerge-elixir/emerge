@@ -8,6 +8,11 @@ or `guides/internals/`, not under an `active-` filename.
 
 ## Active implementation plans
 
+### `active-armv7-release-artifacts.md`
+
+ARMv7 cross-image and release-artifact qualification, plus the remaining
+RustlerPrecompiled target-selection limitation on generic Nerves ARM environments.
+
 ### `active-direct-video-frame-submission.md`
 
 Replace renderer-owned video targets and connection sessions with atom target

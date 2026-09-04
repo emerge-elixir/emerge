@@ -25,9 +25,11 @@ pre-build = [
     "apt-get install --assume-yes libegl1-mesa-dev:$CROSS_DEB_ARCH libgbm-dev:$CROSS_DEB_ARCH libdrm-dev:$CROSS_DEB_ARCH libfontconfig1-dev:$CROSS_DEB_ARCH libfreetype6-dev:$CROSS_DEB_ARCH libwayland-dev:$CROSS_DEB_ARCH libxkbcommon-dev:$CROSS_DEB_ARCH",
 ]
 
-# Embedded ARM32 artifacts force a Skia source build, so the container needs
-# host Python and Clang in addition to the target OpenGL development libraries.
-[target.arm-unknown-linux-gnueabihf]
+# Embedded ARMv7 artifacts force a Skia source build. Pin the current Ubuntu
+# 24.04 cross image so Skia gets a supported host Clang instead of the legacy
+# compiler in cross 0.2.5's default ARMv7 image.
+[target.armv7-unknown-linux-gnueabihf]
+image = "ghcr.io/cross-rs/armv7-unknown-linux-gnueabihf@sha256:2d3df5c06507fd14f29133d6ec6abbd662829731367cc8bbf2861d83eb533ef5"
 pre-build = [
     "dpkg --add-architecture $CROSS_DEB_ARCH",
     "apt-get update",

@@ -223,31 +223,78 @@ defmodule EmergeSkia.BuildConfigTest do
     assert BuildConfig.default_runtime_backend([]) == :wayland
   end
 
-  test "precompiled targets include 64-bit Linux and 32-bit ARM hard-float" do
+  test "precompiled targets include 64-bit Linux and ARMv7 hard-float" do
     assert BuildConfig.precompiled_targets() == [
              "x86_64-unknown-linux-gnu",
              "aarch64-unknown-linux-gnu",
-             "arm-unknown-linux-gnueabihf"
+             "armv7-unknown-linux-gnueabihf"
            ]
   end
 
-  test "Nerves ARM environment resolves the 32-bit precompiled target" do
-    assert {:ok, "nif-2.15-arm-unknown-linux-gnueabihf"} =
+  test "explicit ARMv7 environment resolves the ARMv7 precompiled target" do
+    env = %{
+      "TARGET_ARCH" => "armv7",
+      "TARGET_OS" => "linux",
+      "TARGET_ABI" => "gnueabihf"
+    }
+
+    target_system =
+      RustlerPrecompiled.maybe_override_with_env_vars(
+        %{arch: "x86_64", vendor: "pc", os: "linux", abi: "gnu"},
+        &Map.get(env, &1)
+      )
+
+    assert {:ok, "nif-2.15-armv7-unknown-linux-gnueabihf"} =
              RustlerPrecompiled.target(
                %{
                  os_type: {:unix, :linux},
-                 target_system: %{
-                   arch: "arm",
-                   vendor: "unknown",
-                   os: "linux",
-                   abi: "gnueabihf"
-                 },
-                 word_size: 4,
+                 target_system: target_system,
+                 word_size: 8,
                  nif_version: "2.15"
                },
                BuildConfig.precompiled_targets(),
                BuildConfig.precompiled_nif_versions()
              )
+  end
+
+  test "generic Nerves ARM requires a source build even with an ARMv7 CPU" do
+    env = %{
+      "TARGET_ARCH" => "arm",
+      "TARGET_CPU" => "cortex_a7",
+      "TARGET_OS" => "linux",
+      "TARGET_ABI" => "gnueabihf",
+      "CC" => "/opt/toolchain/bin/armv7-nerves-linux-gnueabihf-gcc"
+    }
+
+    target_system =
+      RustlerPrecompiled.maybe_override_with_env_vars(
+        %{arch: "x86_64", vendor: "pc", os: "linux", abi: "gnu"},
+        &Map.get(env, &1)
+      )
+
+    resolver = fn targets, nif_versions ->
+      RustlerPrecompiled.target(
+        %{
+          os_type: {:unix, :linux},
+          target_system: target_system,
+          word_size: 8,
+          nif_version: "2.15"
+        },
+        targets,
+        nif_versions
+      )
+    end
+
+    assert {:error, _} =
+             resolver.(BuildConfig.precompiled_targets(), BuildConfig.precompiled_nif_versions())
+
+    assert BuildConfig.force_precompiled_build?(
+             env: env,
+             checksum_path: __ENV__.file,
+             compiled_backends: [],
+             compiled_vulkan_backends: [],
+             target_resolver: resolver
+           )
   end
 
   test "precompiled_profile resolves x86_64 backend profiles" do
@@ -287,7 +334,7 @@ defmodule EmergeSkia.BuildConfigTest do
              BuildConfig.precompiled_profile(nerves_env, [:drm], "aarch64-unknown-linux-gnu")
   end
 
-  test "precompiled_profile resolves raster, Vulkan, and 32-bit ARM profiles" do
+  test "precompiled_profile resolves raster, Vulkan, and ARMv7 profiles" do
     for target <- ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"] do
       assert {:ok, %{variant: :raster, backends: [], vulkan_backends: []}} =
                BuildConfig.precompiled_profile(%{}, [], [], target)
@@ -311,7 +358,7 @@ defmodule EmergeSkia.BuildConfigTest do
                %{"MIX_TARGET" => "trellis"},
                [],
                [],
-               "arm-unknown-linux-gnueabihf"
+               "armv7-unknown-linux-gnueabihf"
              )
 
     assert {:ok, %{variant: :opengl, backends: [:drm], vulkan_backends: []}} =
@@ -319,7 +366,7 @@ defmodule EmergeSkia.BuildConfigTest do
                %{"MIX_TARGET" => "trellis"},
                [:drm],
                [],
-               "arm-unknown-linux-gnueabihf"
+               "armv7-unknown-linux-gnueabihf"
              )
 
     assert {:error, :unsupported_profile} =
@@ -327,7 +374,7 @@ defmodule EmergeSkia.BuildConfigTest do
                %{"MIX_TARGET" => "trellis"},
                [:drm],
                [:drm],
-               "arm-unknown-linux-gnueabihf"
+               "armv7-unknown-linux-gnueabihf"
              )
   end
 
@@ -353,12 +400,12 @@ defmodule EmergeSkia.BuildConfigTest do
     arm_raster_variants =
       BuildConfig.precompiled_variants(%{"MIX_TARGET" => "trellis"}, [], [])
 
-    refute arm_raster_variants["arm-unknown-linux-gnueabihf"][:opengl].(%{})
+    refute arm_raster_variants["armv7-unknown-linux-gnueabihf"][:opengl].(%{})
 
     arm_opengl_variants =
       BuildConfig.precompiled_variants(%{"MIX_TARGET" => "trellis"}, [:drm], [])
 
-    assert arm_opengl_variants["arm-unknown-linux-gnueabihf"][:opengl].(%{})
+    assert arm_opengl_variants["armv7-unknown-linux-gnueabihf"][:opengl].(%{})
   end
 
   test "precompiled_tar_gz_url adds github auth headers when token is set" do
@@ -428,7 +475,7 @@ defmodule EmergeSkia.BuildConfigTest do
            )
   end
 
-  test "force_precompiled_build? uses 64-bit Vulkan artifacts and rejects 32-bit ARM Vulkan" do
+  test "force_precompiled_build? uses 64-bit Vulkan artifacts and rejects ARMv7 Vulkan" do
     refute BuildConfig.force_precompiled_build?(
              checksum_path: __ENV__.file,
              compiled_backends: [:wayland],
@@ -457,7 +504,7 @@ defmodule EmergeSkia.BuildConfigTest do
              compiled_opengl_backends: [],
              env: %{"MIX_TARGET" => "trellis"},
              target_resolver: fn _targets, _nif_versions ->
-               {:ok, "nif-2.15-arm-unknown-linux-gnueabihf"}
+               {:ok, "nif-2.15-armv7-unknown-linux-gnueabihf"}
              end
            )
   end
@@ -497,9 +544,9 @@ defmodule EmergeSkia.BuildConfigTest do
            )
   end
 
-  test "force_precompiled_build? uses 32-bit ARM raster and OpenGL artifacts" do
+  test "force_precompiled_build? uses ARMv7 raster and OpenGL artifacts" do
     target_resolver = fn _targets, _nif_versions ->
-      {:ok, "nif-2.15-arm-unknown-linux-gnueabihf"}
+      {:ok, "nif-2.15-armv7-unknown-linux-gnueabihf"}
     end
 
     refute BuildConfig.force_precompiled_build?(
