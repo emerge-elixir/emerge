@@ -130,7 +130,7 @@ defmodule EmergeSkia.Assets do
   def initialize_renderer_assets(renderer, asset_config) do
     transport = Transport.for_renderer(renderer)
     :ok = configure_assets_for_renderer(renderer, asset_config, transport)
-    preload_font_assets(asset_config, transport)
+    preload_font_assets(renderer, asset_config, transport)
   end
 
   @doc false
@@ -158,22 +158,17 @@ defmodule EmergeSkia.Assets do
   end
 
   @doc false
-  @spec preload_font_assets(config()) :: :ok | {:error, term()}
-  def preload_font_assets(asset_config) do
-    preload_font_assets(asset_config, Transport.default())
-  end
+  @spec preload_font_assets(reference(), config(), module()) :: :ok | {:error, term()}
+  def preload_font_assets(_renderer, %{fonts: []}, _transport), do: :ok
 
-  @spec preload_font_assets(config(), module()) :: :ok | {:error, term()}
-  def preload_font_assets(%{fonts: []}, _transport), do: :ok
-
-  def preload_font_assets(%{fonts: fonts, priv_dir: priv_dir}, transport) do
+  def preload_font_assets(renderer, %{fonts: fonts, priv_dir: priv_dir}, transport) do
     Enum.reduce_while(fonts, :ok, fn font, :ok ->
       absolute_path = Path.join(priv_dir, font.source)
 
       case File.read(absolute_path) do
         {:ok, data} ->
           case normalize_transport_ok(
-                 transport.load_font(font.family, font.weight, font.italic, data)
+                 transport.load_font(renderer, font.family, font.weight, font.italic, data)
                ) do
             :ok ->
               {:cont, :ok}
@@ -194,14 +189,17 @@ defmodule EmergeSkia.Assets do
     end)
   end
 
-  @spec load_font_file(String.t(), non_neg_integer(), boolean(), Path.t()) ::
+  @spec load_font_file(reference(), String.t(), non_neg_integer(), boolean(), Path.t()) ::
           :ok | {:error, term()}
-  def load_font_file(name, weight, italic, path) do
-    transport = Transport.default()
+  def load_font_file(renderer, name, weight, italic, path) do
+    transport = Transport.for_renderer(renderer)
 
     case File.read(path) do
-      {:ok, data} -> normalize_transport_ok(transport.load_font(name, weight, italic, data))
-      {:error, reason} -> {:error, reason}
+      {:ok, data} ->
+        normalize_transport_ok(transport.load_font(renderer, name, weight, italic, data))
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

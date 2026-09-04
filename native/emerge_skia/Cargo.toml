@@ -71,8 +71,9 @@ headless-opengl = ["linux-opengl"]
 # Headless Vulkan is a PRIME producer, not a window-system or KMS presenter.
 headless-vulkan = ["vulkan"]
 headless-all = ["headless-opengl", "headless-vulkan"]
+# The external macOS host does not expose video targets. Keep Linux DMA-BUF
+# transport out of this feature so the host remains an Apple-only renderer build.
 macos = [
-    "video-interop-support",
     "dep:objc2",
     "dep:objc2-foundation",
     "dep:objc2-app-kit",
@@ -131,11 +132,6 @@ skia-safe = { version = "0.99.0", git = "https://github.com/rust-skia/rust-skia"
 [dev-dependencies]
 criterion = "0.7"
 video-interop = "0.1.0"
-
-# Coordinated-development override. Remove this after video-interop 0.1.0 is
-# published and before building immutable Emerge release artifacts.
-[patch.crates-io]
-video-interop = { path = "../../../video_interop/rust/video-interop" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 glutin = { version = "0.32", optional = true }

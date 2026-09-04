@@ -104,7 +104,7 @@ defmodule Emerge do
 
   Video elements use viewport-local atom targets. Submit owned binary or
   borrowed DMA-BUF frames with `submit_video_frame/3`. Vulkan rendering and
-  Vulkan video import remain experimental.
+  Vulkan video import are supported where compiled and available.
   """
 
   alias Emerge.Runtime.Viewport, as: RuntimeViewport

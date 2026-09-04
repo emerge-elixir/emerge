@@ -1,6 +1,7 @@
 mod support;
 
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
+use emerge_skia::assets::AssetRuntime;
 #[cfg(target_os = "linux")]
 use emerge_skia::backend::skia_gpu::GlFrameSurface;
 #[cfg(target_os = "linux")]
@@ -4111,13 +4112,17 @@ fn create_gpu_frame_surface(
     Ok(GlFrameSurface::new(dimensions, fb_info, gr_context, 0, 0))
 }
 
-criterion_group!(
-    benches,
-    bench_renderer_raster_direct,
-    bench_renderer_direct_candidates,
-    bench_renderer_cold_frames,
-    bench_renderer_gpu_surfaceless,
-    bench_renderer_gpu_cold_frames,
-    bench_renderer_paint_layer_cache
-);
+fn bench_renderer(c: &mut Criterion) {
+    let asset_runtime = AssetRuntime::new();
+    let _asset_context_guard = asset_runtime.enter();
+
+    bench_renderer_raster_direct(c);
+    bench_renderer_direct_candidates(c);
+    bench_renderer_cold_frames(c);
+    bench_renderer_gpu_surfaceless(c);
+    bench_renderer_gpu_cold_frames(c);
+    bench_renderer_paint_layer_cache(c);
+}
+
+criterion_group!(benches, bench_renderer);
 criterion_main!(benches);

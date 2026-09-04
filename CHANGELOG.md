@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.4.0] - Unreleased
+## [0.4.0] - 2026-09-03
 
 ### Added
 
@@ -11,7 +11,7 @@
 - Added `EmergeSkia.renderer_info/1`, renderer-aware statistics, and periodic renderer diagnostics for the selected backend, rendering API, cache, pipeline, and video paths.
 - Added retained raster and OpenGL headless binary output plus bounded PRIME output. Both modes deliver `%VideoInterop.Frame{}` values directly to a configured target process.
 - Added viewport-local atom video targets and `Emerge.submit_video_frame/3`, with owned binary and leased DMA-BUF storage, immediate hidden-target drops, latest-visible-frame replacement, explicit synchronization, retirement, and drained shutdown.
-- Added experimental Vulkan rendering for Wayland, DRM, and headless sessions, with deterministic UI/video composition. Vulkan and its video import paths remain experimental pending hardware qualification.
+- Added Vulkan rendering for Wayland, DRM, and headless sessions, with deterministic UI/video composition and supported DMA-BUF video import paths.
 - Added strict immutable stream colorimetry forwarding and a shared Vulkan NV12 DMA-BUF importer for exact one-object/two-plane layouts, with BT.709 YCbCr conversion, sync-file ownership transfers, bounded terminal quarantine, and dedicated Vulkan video fault counters.
 - Added strict XRGB8888 Camera admission with persistent direct import where supported and bounded linear-texel-buffer-to-optimal-BGRA staging otherwise, preserving ordinary Skia composition at arbitrary paint-layer z-order.
 - Added an `auto` Vulkan NV12 path that copies non-linear image planes or exact linear producer-buffer planes into bounded, ordinary optimal Y/UV images before Skia composition; forced `planar` remains the compute-plane rollback. Linear transfer imports separate the final copied byte from the complete allocation so producer-owned V3DV read-ahead tails remain outside every copy region.
@@ -28,6 +28,7 @@
 - Made producer and renderer release dispatchers lifecycle-owned and explicitly drained/joined outside BEAM resource destructors. `stop/1` can now return `{:error, reason}` when an ownership-safe PRIME shutdown cannot complete.
 - Replaced damage-inferred paint layers with deterministic semantic Root, Nearby, ScrollContent, Animation, SliderValue, and DirectMedia topology backed by broadly coalesced own runs with exact scoped interleaving.
 - Renamed the public DRM timer metric to `gpu_render_elapsed`; the native stats schema is now version 25 after adding renderer, cache, asset, Vulkan video synchronization, release-fence, saturation, quarantine-terminal, and device-loss diagnostics.
+- Scoped asset workers, source configuration, registered fonts, text metrics, decoded rasters, rendered vectors, generations, and diagnostics to each native renderer. Stopping or reconfiguring one renderer no longer changes another renderer. Runtime font loading now uses `EmergeSkia.load_font_file/5` with the owning renderer as its first argument.
 
 ### Fixed
 
@@ -47,6 +48,10 @@
 - Sized isolated text payloads from measured font visual bounds, including glyph overhang and vertical extents, instead of an approximate character-width estimate.
 - Admitted opaque `XR24` stream formats at the direct DMA-BUF submission boundary so supported XRGB8888 frames reach native Vulkan validation and staging.
 - Serialized VideoInterop queue submissions through the Vulkan render-thread authority, resolved exact NV12 candidates per stream contract, bound synchronization lanes to unique imports, and preserved explicit recovery when Ganesh rejects a wait semaphore.
+
+### Known limitations
+
+- Gray8 headless output remains outside the stable 0.4 output contract. Gray4 output is unsupported.
 
 ## [0.3.4] - 2026-07-31
 

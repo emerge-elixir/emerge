@@ -29,6 +29,7 @@ use rustler::LocalPid;
 
 use crate::{
     actors::{EventMsg, TreeMsg},
+    assets::AssetContext,
     backend::wake::BackendWakeHandle,
     clipboard::{ClipboardManager, ClipboardTarget},
     input::{ACTION_PRESS, InputEvent, InputHandler, SCROLL_LINE_PIXELS},
@@ -3033,6 +3034,7 @@ pub(crate) struct SpawnEventActorConfig {
     pub native_log: Arc<NativeLogRelay>,
     pub system_clipboard: bool,
     pub stats: Option<Arc<RendererStatsCollector>>,
+    pub asset_context: AssetContext,
 }
 
 pub(crate) fn spawn_event_actor(config: SpawnEventActorConfig) -> thread::JoinHandle<()> {
@@ -3046,9 +3048,11 @@ pub(crate) fn spawn_event_actor(config: SpawnEventActorConfig) -> thread::JoinHa
         native_log,
         system_clipboard,
         stats,
+        asset_context,
     } = config;
 
     thread::spawn(move || {
+        let _asset_context_guard = asset_context.enter();
         let mut driver = EventRuntimeDriver::new(
             system_clipboard,
             backend_cursor_tx,

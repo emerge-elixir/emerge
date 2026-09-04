@@ -110,8 +110,8 @@ Per-buffer contracts likewise preserve each object's declared modifier. Vulkan
 import supports exact validated packed and NV12 paths. Non-linear NV12 images
 and linear NV12 buffers are copied plane-for-plane into bounded renderer-owned
 Y/UV images before Skia composition, avoiding direct multi-planar wrapping.
-Vulkan rendering and video import remain experimental pending pinned-RPi5
-qualification.
+Vulkan rendering and video import are supported; platform-specific qualification
+continues without changing that API status.
 
 ## Headless output
 

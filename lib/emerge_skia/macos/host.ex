@@ -149,11 +149,16 @@ defmodule EmergeSkia.Macos.Host do
     end
   end
 
-  @spec load_font(String.t(), non_neg_integer(), boolean(), binary()) :: :ok | {:error, term()}
-  def load_font(family, weight, italic, data)
+  @spec load_font(Renderer.t(), String.t(), non_neg_integer(), boolean(), binary()) ::
+          :ok | {:error, term()}
+  def load_font(%Renderer{} = renderer, family, weight, italic, data)
       when is_binary(family) and is_integer(weight) and is_boolean(italic) and is_binary(data) do
     with :ok <- ensure_started() do
-      GenServer.call(@name, {:load_font, family, weight, italic, data}, 15_000)
+      GenServer.call(
+        @name,
+        {:load_font, renderer.session_id, family, weight, italic, data},
+        15_000
+      )
     end
   end
 
@@ -395,12 +400,12 @@ defmodule EmergeSkia.Macos.Host do
     end
   end
 
-  def handle_call({:load_font, family, weight, italic, data}, from, state) do
+  def handle_call({:load_font, session_id, family, weight, italic, data}, from, state) do
     case queue_request(
            state,
            from,
-           {:load_font},
-           0,
+           {:load_font, session_id},
+           session_id,
            @request_load_font,
            Protocol.encode_load_font(family, weight, italic, data)
          ) do
@@ -724,7 +729,14 @@ defmodule EmergeSkia.Macos.Host do
     state
   end
 
-  defp handle_reply_request({:load_font}, from, 0, @request_load_font, <<>>, state) do
+  defp handle_reply_request(
+         {:load_font, _session_id},
+         from,
+         _reply_session_id,
+         @request_load_font,
+         <<>>,
+         state
+       ) do
     GenServer.reply(from, :ok)
     state
   end
@@ -997,7 +1009,7 @@ defmodule EmergeSkia.Macos.Host do
   defp reply_pending_error({:measure_text}, from, message),
     do: GenServer.reply(from, {:error, message})
 
-  defp reply_pending_error({:load_font}, from, message),
+  defp reply_pending_error({:load_font, _session_id}, from, message),
     do: GenServer.reply(from, {:error, message})
 
   defp reply_pending_error({:configure_assets, _session_id}, from, message),

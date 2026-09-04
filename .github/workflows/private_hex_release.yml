@@ -41,7 +41,7 @@ jobs:
         uses: erlef/setup-beam@v1
         with:
           elixir-version: "1.20.2"
-          otp-version: "29.0.4"
+          otp-version: "29.0.5"
 
       - name: Set up supported Rust floor
         uses: dtolnay/rust-toolchain@1.91.0

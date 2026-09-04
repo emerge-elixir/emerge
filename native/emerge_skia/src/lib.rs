@@ -57,7 +57,7 @@ mod video;
 mod video;
 
 use actors::{EventMsg, RenderMsg, TreeMsg};
-use assets::AssetConfig;
+use assets::{AssetConfig, AssetContext, AssetRuntime};
 #[cfg(all(feature = "drm-core", target_os = "linux"))]
 use backend::drm;
 use backend::wake::BackendWakeHandle;
@@ -78,7 +78,7 @@ use native_log::NativeLogRelay;
     all(feature = "drm-core", target_os = "linux")
 ))]
 use renderer::set_render_log_enabled;
-use renderer::{RendererCacheConfig, RendererPaintLayerCacheConfig, clear_global_caches};
+use renderer::{RendererCacheConfig, RendererPaintLayerCacheConfig};
 use runtime::tree_actor::{TreeActorConfig, spawn_tree_actor_with_initial_tree};
 use stats::{
     LayoutCacheStats, RendererStatsCollector, RendererStatsSnapshot, RendererStatsWindowClose,
@@ -850,6 +850,7 @@ struct NativeBackendStartupInfo {
 }
 
 struct RendererResource {
+    asset_runtime: Arc<AssetRuntime>,
     running_flag: Arc<AtomicBool>,
     backend_wake: BackendWakeHandle,
     stop_flag: Arc<AtomicBool>,
@@ -1207,6 +1208,7 @@ pub(crate) fn capture_requested_gpu_frame(
 
 /// Resource for holding an element tree (for layout/rendering).
 struct TreeResource {
+    asset_runtime: AssetRuntime,
     tree: Mutex<ElementTree>,
     stats: Mutex<Option<Arc<RendererStatsCollector>>>,
 }
@@ -1227,6 +1229,7 @@ struct RendererHandles {
 }
 
 struct ShutdownRuntimeContext {
+    asset_runtime: Arc<AssetRuntime>,
     running_flag: Arc<AtomicBool>,
     backend_wake: BackendWakeHandle,
     stop_flag: Arc<AtomicBool>,
@@ -1307,6 +1310,7 @@ fn log_close_signal(enabled: bool, source: &'static str, message: impl Into<Stri
 }
 
 struct TestHarnessResource {
+    asset_runtime: Arc<AssetRuntime>,
     tree_tx: Sender<TreeMsg>,
     event_tx: Sender<EventMsg>,
     render_rx: Receiver<RenderMsg>,
@@ -1449,11 +1453,12 @@ impl Drop for TestHarnessResource {
         let Some(handles) = handles else {
             return;
         };
+        let asset_runtime = Arc::clone(&self.asset_runtime);
         let tree_tx = self.tree_tx.clone();
         let event_tx = self.event_tx.clone();
 
         self.cleanup_dispatcher.dispatch(Box::new(move || {
-            stop_test_harness_runtime(tree_tx, event_tx, handles);
+            stop_test_harness_runtime(asset_runtime, tree_tx, event_tx, handles);
         }));
     }
 }
@@ -1470,23 +1475,28 @@ impl TestHarnessResource {
         };
 
         drop(handles_guard);
-        stop_test_harness_runtime(self.tree_tx.clone(), self.event_tx.clone(), handles);
+        stop_test_harness_runtime(
+            Arc::clone(&self.asset_runtime),
+            self.tree_tx.clone(),
+            self.event_tx.clone(),
+            handles,
+        );
     }
 }
 
 fn stop_test_harness_runtime(
+    asset_runtime: Arc<AssetRuntime>,
     tree_tx: Sender<TreeMsg>,
     event_tx: Sender<EventMsg>,
     handles: TestHarnessHandles,
 ) {
+    asset_runtime.stop();
     send_event(&event_tx, EventMsg::Stop, false);
     send_tree(&tree_tx, TreeMsg::Stop, false);
 
     let _ = handles.proxy_handle.join();
     let _ = handles.event_handle.join();
     let _ = handles.tree_handle.join();
-    assets::stop();
-    clear_global_caches();
     trim_process_allocator();
 }
 
@@ -1519,6 +1529,7 @@ impl RendererResource {
 
     fn shutdown_context(&self) -> ShutdownRuntimeContext {
         ShutdownRuntimeContext {
+            asset_runtime: Arc::clone(&self.asset_runtime),
             running_flag: Arc::clone(&self.running_flag),
             backend_wake: self.backend_wake.clone(),
             stop_flag: Arc::clone(&self.stop_flag),
@@ -1546,6 +1557,7 @@ fn shutdown_renderer_runtime(
     mut handles: RendererHandles,
 ) -> Result<(), String> {
     let ShutdownRuntimeContext {
+        asset_runtime,
         running_flag,
         backend_wake,
         stop_flag,
@@ -1557,7 +1569,7 @@ fn shutdown_renderer_runtime(
         log_input,
     } = ctx;
 
-    assets::stop();
+    asset_runtime.stop();
     log_close_signal(close_signal_log, "nif_close", "shutdown begin");
     running_flag.store(false, Ordering::Relaxed);
     stop_flag.store(true, Ordering::Relaxed);
@@ -1579,7 +1591,6 @@ fn shutdown_renderer_runtime(
     join_runtime_thread("backend", handles.backend_handle.take(), &mut join_failures);
 
     log_close_signal(close_signal_log, "nif_close", "shutdown end");
-    clear_global_caches();
     trim_process_allocator();
 
     if join_failures.is_empty() {
@@ -1757,6 +1768,7 @@ fn try_take_renderer_stats_log_window(
 }
 
 fn spawn_running_heartbeat(
+    asset_context: AssetContext,
     running_flag: Arc<AtomicBool>,
     input_target: Arc<InputTargetRelay>,
     native_log: Arc<NativeLogRelay>,
@@ -1765,6 +1777,7 @@ fn spawn_running_heartbeat(
     rendering_api_label: String,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
+        let _asset_context_guard = asset_context.enter();
         let mut ticks = 0_u64;
         let mut stats_log_due = false;
 
@@ -2111,6 +2124,14 @@ struct ConfigureAssetsOptsNif {
 }
 
 #[derive(rustler::NifMap)]
+struct OffscreenFontNif {
+    family: String,
+    path: String,
+    weight: u16,
+    italic: bool,
+}
+
+#[derive(rustler::NifMap)]
 struct RenderTreeOffscreenOptsNif {
     width: u32,
     height: u32,
@@ -2126,6 +2147,7 @@ struct RenderTreeOffscreenOptsNif {
     decode_at_size: bool,
     asset_mode: String,
     asset_timeout_ms: u64,
+    fonts: Vec<OffscreenFontNif>,
 }
 
 #[derive(Clone, Debug, rustler::NifMap)]
@@ -2247,6 +2269,7 @@ fn start_native_renderer_with_config(
 ) -> NifResult<ResourceArc<RendererResource>> {
     let auto_raster_fallback = auto_raster_fallback_config(&config);
     let fallback_log_target = initial_log_target;
+    let asset_runtime = Arc::new(AssetRuntime::new());
     let running_flag = Arc::new(AtomicBool::new(true));
     let stop_flag = Arc::new(AtomicBool::new(false));
     let render_counter = Arc::new(AtomicU64::new(0));
@@ -2279,7 +2302,10 @@ fn start_native_renderer_with_config(
         vulkan_device: None,
     }
     .renderer_label();
-    set_render_log_enabled(log_render);
+    {
+        let _asset_context_guard = asset_runtime.enter();
+        set_render_log_enabled(log_render);
+    }
 
     let (tree_tx, tree_rx) = bounded(512);
     let (event_tx, event_rx) = bounded(4096);
@@ -2296,7 +2322,7 @@ fn start_native_renderer_with_config(
         visible: false,
     }));
 
-    assets::start(tree_tx.clone(), log_render);
+    asset_runtime.start(tree_tx.clone(), log_render);
 
     #[cfg(all(feature = "wayland", target_os = "linux"))]
     let system_clipboard = matches!(config.backend, BackendKind::Wayland);
@@ -2314,6 +2340,7 @@ fn start_native_renderer_with_config(
 
     let mut handles = RendererHandles {
         heartbeat_handle: Some(spawn_running_heartbeat(
+            asset_runtime.context(),
             Arc::clone(&running_flag),
             Arc::clone(&input_target),
             Arc::clone(&native_log),
@@ -2364,7 +2391,9 @@ fn start_native_renderer_with_config(
                 height: config.height,
             };
 
+            let asset_context = asset_runtime.context();
             handles.backend_handle = Some(thread::spawn(move || {
+                let _asset_context_guard = asset_context.enter();
                 wayland::run(wayland::WaylandRunArgs {
                     config: wayland_config,
                     running_flag: running_flag_clone,
@@ -2393,6 +2422,7 @@ fn start_native_renderer_with_config(
                 Ok(Err(reason)) => {
                     let _ = shutdown_renderer_runtime(
                         ShutdownRuntimeContext {
+                            asset_runtime: Arc::clone(&asset_runtime),
                             running_flag: Arc::clone(&running_flag),
                             backend_wake: backend_wake.clone(),
                             stop_flag: Arc::clone(&stop_flag),
@@ -2415,6 +2445,7 @@ fn start_native_renderer_with_config(
                 Err(_) => {
                     let _ = shutdown_renderer_runtime(
                         ShutdownRuntimeContext {
+                            asset_runtime: Arc::clone(&asset_runtime),
                             running_flag: Arc::clone(&running_flag),
                             backend_wake: backend_wake.clone(),
                             stop_flag: Arc::clone(&stop_flag),
@@ -2449,6 +2480,7 @@ fn start_native_renderer_with_config(
                     window_wake: startup.wake.clone(),
                     initial_width,
                     initial_height,
+                    asset_context: asset_runtime.context(),
                 },
             ));
 
@@ -2536,7 +2568,9 @@ fn start_native_renderer_with_config(
                 renderer_cache_config: config.renderer_cache_config,
             };
 
+            let asset_context = asset_runtime.context();
             handles.backend_handle = Some(thread::spawn(move || {
+                let _asset_context_guard = asset_context.enter();
                 drm::run(
                     drm::DrmRunContext {
                         startup_tx,
@@ -2565,6 +2599,7 @@ fn start_native_renderer_with_config(
                 Ok(Err(reason)) => {
                     let _ = shutdown_renderer_runtime(
                         ShutdownRuntimeContext {
+                            asset_runtime: Arc::clone(&asset_runtime),
                             running_flag: Arc::clone(&running_flag),
                             backend_wake: backend_wake.clone(),
                             stop_flag: Arc::clone(&stop_flag),
@@ -2587,6 +2622,7 @@ fn start_native_renderer_with_config(
                 Err(_) => {
                     let _ = shutdown_renderer_runtime(
                         ShutdownRuntimeContext {
+                            asset_runtime: Arc::clone(&asset_runtime),
                             running_flag: Arc::clone(&running_flag),
                             backend_wake: backend_wake.clone(),
                             stop_flag: Arc::clone(&stop_flag),
@@ -2628,6 +2664,7 @@ fn start_native_renderer_with_config(
                     window_wake: backend_wake.clone(),
                     initial_width,
                     initial_height,
+                    asset_context: asset_runtime.context(),
                 },
             ));
 
@@ -2660,6 +2697,7 @@ fn start_native_renderer_with_config(
         native_log: Arc::clone(&native_log),
         system_clipboard,
         stats: renderer_stats.clone(),
+        asset_context: asset_runtime.context(),
     }));
 
     #[cfg(any(
@@ -2681,6 +2719,7 @@ fn start_native_renderer_with_config(
     let video_wake = VideoWake::noop();
 
     let resource = RendererResource {
+        asset_runtime,
         running_flag,
         backend_wake,
         stop_flag,
@@ -3294,27 +3333,42 @@ fn measure_text(text: String, font_size: f32) -> (f32, f32, f32, f32) {
 /// - `italic`: Whether this is an italic variant
 /// - `data`: Binary font data (TTF file contents)
 #[rustler::nif(schedule = "DirtyIo")]
-fn load_font_nif(name: String, weight: u32, italic: bool, data: Binary) -> Result<bool, String> {
-    services::load_font_bytes(&name, weight as u16, italic, data.as_slice())?;
+fn load_font_nif(
+    renderer: ResourceArc<RendererResource>,
+    name: String,
+    weight: u32,
+    italic: bool,
+    data: Binary,
+) -> Result<bool, String> {
+    services::load_font_bytes(
+        &renderer.asset_runtime,
+        &name,
+        weight as u16,
+        italic,
+        data.as_slice(),
+    )?;
     Ok(true)
 }
 
 #[rustler::nif(schedule = "DirtyIo")]
 fn configure_assets_nif(
-    _renderer: ResourceArc<RendererResource>,
+    renderer: ResourceArc<RendererResource>,
     opts: ConfigureAssetsOptsNif,
 ) -> Atom {
-    services::configure_assets(AssetConfig {
-        sources: opts.sources,
-        runtime_enabled: opts.runtime_enabled,
-        runtime_allowlist: opts.allowlist,
-        runtime_follow_symlinks: opts.follow_symlinks,
-        runtime_max_file_size: opts.max_file_size,
-        runtime_extensions: opts.extensions,
-        cache_max_entries: opts.cache_max_entries,
-        cache_max_bytes: opts.cache_max_bytes,
-        decode_at_size: opts.decode_at_size,
-    });
+    services::configure_assets(
+        &renderer.asset_runtime,
+        AssetConfig {
+            sources: opts.sources,
+            runtime_enabled: opts.runtime_enabled,
+            runtime_allowlist: opts.allowlist,
+            runtime_follow_symlinks: opts.follow_symlinks,
+            runtime_max_file_size: opts.max_file_size,
+            runtime_extensions: opts.extensions,
+            cache_max_entries: opts.cache_max_entries,
+            cache_max_bytes: opts.cache_max_bytes,
+            decode_at_size: opts.decode_at_size,
+        },
+    );
     atoms::ok()
 }
 
@@ -3753,6 +3807,16 @@ fn offscreen_opts_from_nif(opts: RenderTreeOffscreenOptsNif) -> services::Offscr
             cache_max_bytes: opts.cache_max_bytes,
             decode_at_size: opts.decode_at_size,
         },
+        fonts: opts
+            .fonts
+            .into_iter()
+            .map(|font| services::OffscreenFont {
+                family: font.family,
+                path: font.path,
+                weight: font.weight,
+                italic: font.italic,
+            })
+            .collect(),
     }
 }
 
@@ -3808,6 +3872,7 @@ fn encode_layout_frames<'a>(env: Env<'a>, tree: &ElementTree) -> LayoutFrames<'a
 #[rustler::nif]
 fn tree_new() -> ResourceArc<TreeResource> {
     ResourceArc::new(TreeResource {
+        asset_runtime: AssetRuntime::new(),
         tree: Mutex::new(ElementTree::new()),
         stats: Mutex::new(None),
     })
@@ -3897,6 +3962,7 @@ fn tree_layout<'a>(
     height: f64,
     scale: f64,
 ) -> Result<LayoutFrames<'a>, String> {
+    let _asset_context_guard = tree_res.asset_runtime.enter();
     let stats = tree_res
         .stats
         .lock()
@@ -3932,6 +3998,7 @@ type HoverMsgList<'a> = Vec<HoverMsg<'a>>;
 
 #[rustler::nif(schedule = "DirtyIo")]
 fn test_harness_new(width: u32, height: u32) -> Result<ResourceArc<TestHarnessResource>, String> {
+    let asset_runtime = Arc::new(AssetRuntime::new());
     let (tree_tx, tree_rx_proxy) = bounded(512);
     let (tree_actor_tx, tree_actor_rx) = bounded(512);
     let (tree_tap_tx, tree_tap_rx) = bounded(4096);
@@ -3944,7 +4011,7 @@ fn test_harness_new(width: u32, height: u32) -> Result<ResourceArc<TestHarnessRe
     };
     let render_counter = Arc::new(AtomicU64::new(0));
 
-    assets::start(tree_tx.clone(), false);
+    asset_runtime.start(tree_tx.clone(), false);
 
     let proxy_handle = thread::spawn(move || {
         while let Ok(msg) = tree_rx_proxy.recv() {
@@ -3966,6 +4033,7 @@ fn test_harness_new(width: u32, height: u32) -> Result<ResourceArc<TestHarnessRe
         native_log: Arc::new(NativeLogRelay::default()),
         system_clipboard: false,
         stats: None,
+        asset_context: asset_runtime.context(),
     });
     let tree_handle = spawn_tree_actor_with_initial_tree(
         tree_actor_rx,
@@ -3978,6 +4046,7 @@ fn test_harness_new(width: u32, height: u32) -> Result<ResourceArc<TestHarnessRe
             window_wake: BackendWakeHandle::noop(),
             initial_width: width,
             initial_height: height,
+            asset_context: asset_runtime.context(),
         },
         ElementTree::new(),
     );
@@ -3985,6 +4054,7 @@ fn test_harness_new(width: u32, height: u32) -> Result<ResourceArc<TestHarnessRe
     let cleanup_dispatcher = CleanupDispatcher::start()?;
 
     Ok(ResourceArc::new(TestHarnessResource {
+        asset_runtime,
         tree_tx,
         event_tx,
         render_rx,
@@ -4164,6 +4234,7 @@ mod tests {
     }
 
     struct LiveActorHarness {
+        asset_runtime: Arc<AssetRuntime>,
         tree_tx: Sender<TreeMsg>,
         event_tx: Sender<EventMsg>,
         render_rx: Receiver<RenderMsg>,
@@ -4175,6 +4246,7 @@ mod tests {
 
     impl LiveActorHarness {
         fn new(width: u32, height: u32, initial_tree: ElementTree) -> Self {
+            let asset_runtime = Arc::new(AssetRuntime::new());
             let (tree_tx, tree_rx_proxy) = bounded(512);
             let (tree_actor_tx, tree_actor_rx) = bounded(512);
             let (tree_tap_tx, tree_tap_rx) = bounded(4096);
@@ -4187,7 +4259,7 @@ mod tests {
             };
             let render_counter = Arc::new(AtomicU64::new(0));
 
-            assets::start(tree_tx.clone(), false);
+            asset_runtime.start(tree_tx.clone(), false);
 
             let proxy_handle = thread::spawn(move || {
                 while let Ok(msg) = tree_rx_proxy.recv() {
@@ -4209,6 +4281,7 @@ mod tests {
                 native_log: Arc::new(NativeLogRelay::default()),
                 system_clipboard: false,
                 stats: None,
+                asset_context: asset_runtime.context(),
             });
             let tree_handle = spawn_tree_actor_with_initial_tree(
                 tree_actor_rx,
@@ -4221,11 +4294,13 @@ mod tests {
                     window_wake: BackendWakeHandle::noop(),
                     initial_width: width,
                     initial_height: height,
+                    asset_context: asset_runtime.context(),
                 },
                 initial_tree,
             );
 
             Self {
+                asset_runtime,
                 tree_tx,
                 event_tx,
                 render_rx,
@@ -4276,13 +4351,12 @@ mod tests {
         }
 
         fn stop(self) {
+            self.asset_runtime.stop();
             super::send_event(&self.event_tx, EventMsg::Stop, false);
             super::send_tree(&self.tree_tx, TreeMsg::Stop, false);
             let _ = self.proxy_handle.join();
             let _ = self.event_handle.join();
             let _ = self.tree_handle.join();
-            assets::stop();
-            clear_global_caches();
             trim_process_allocator();
         }
     }
@@ -4295,6 +4369,7 @@ mod tests {
 
     impl SpawnedEventActorHarness {
         fn new() -> Self {
+            let asset_runtime = AssetRuntime::new();
             let (event_tx, event_rx) = bounded(4096);
             let (tree_tx, tree_rx) = bounded(4096);
             let handle = spawn_event_actor(SpawnEventActorConfig {
@@ -4307,6 +4382,7 @@ mod tests {
                 native_log: Arc::new(NativeLogRelay::default()),
                 system_clipboard: false,
                 stats: None,
+                asset_context: asset_runtime.context(),
             });
 
             Self {
@@ -4566,6 +4642,7 @@ mod tests {
 
         shutdown_renderer_runtime(
             ShutdownRuntimeContext {
+                asset_runtime: Arc::new(AssetRuntime::new()),
                 running_flag: Arc::clone(&running_flag),
                 backend_wake: backend_wake.clone(),
                 stop_flag: Arc::clone(&stop_flag),
@@ -4605,6 +4682,7 @@ mod tests {
 
         let error = shutdown_renderer_runtime(
             ShutdownRuntimeContext {
+                asset_runtime: Arc::new(AssetRuntime::new()),
                 running_flag,
                 backend_wake: BackendWakeHandle::noop(),
                 stop_flag,
@@ -4701,6 +4779,7 @@ mod tests {
 
         let cleanup_dispatcher = CleanupDispatcher::start().expect("start cleanup dispatcher");
         let resource = Arc::new(RendererResource {
+            asset_runtime: Arc::new(AssetRuntime::new()),
             running_flag: Arc::clone(&running_flag),
             backend_wake: backend_wake.clone(),
             stop_flag: Arc::clone(&stop_flag),

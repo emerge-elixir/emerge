@@ -43,7 +43,7 @@ defmodule Emerge.Runtime.Viewport do
   | `title` | `"Emerge"` | Window title |
   | `width`, `height` | `800`, `600` | Initial window size or fixed headless size |
   | `backend` | platform default | `:macos`, `:wayland`, `:drm`, or `:headless` |
-  | `rendering_api` | `:auto` | `:metal`, `:opengl`, `:raster`, or experimental `:vulkan` where supported |
+  | `rendering_api` | `:auto` | `:metal`, `:opengl`, `:raster`, or `:vulkan` where supported |
   | `assets` | restrictive defaults | Fonts, image paths, raster decode, and cache limits |
   | `stats` | `false` | Collect renderer statistics |
   | `renderer_stats_log` | `false` | Log a renderer summary every five seconds |
@@ -70,8 +70,8 @@ defmodule Emerge.Runtime.Viewport do
       end
 
   `rendering_api: :auto` is recommended unless the application requires a
-  specific path. Raster is a rendering API, not a backend. Vulkan is opt-in at
-  build time and remains experimental.
+  specific path. Raster is a rendering API, not a backend. Vulkan support is
+  selected explicitly at build time.
 
   ## Headless binary viewports
 
@@ -183,8 +183,8 @@ defmodule Emerge.Runtime.Viewport do
       end
 
   Route those frames through `membrane_video_interop` and submit them to a
-  visible atom target with `Emerge.submit_video_frame/3`. PRIME is Linux-only.
-  Vulkan PRIME remains experimental.
+  visible atom target with `Emerge.submit_video_frame/3`. PRIME is Linux-only;
+  both OpenGL and Vulkan PRIME are supported when compiled and available.
 
   ## Raw input
 

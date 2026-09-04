@@ -180,9 +180,6 @@ impl Drop for GlFrameSurface {
             .perform_deferred_cleanup(std::time::Duration::ZERO, None);
         self.direct_context.free_gpu_resources();
         self.direct_context.flush_and_submit();
-
-        #[cfg(not(test))]
-        skia_safe::graphics::purge_all_caches();
     }
 }
 

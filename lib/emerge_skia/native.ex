@@ -188,6 +188,7 @@ defmodule EmergeSkia.Native do
   Load a font from binary data and register it with a name.
 
   ## Parameters
+  - `renderer` - Renderer that owns the font registration
   - `name` - Font family name to register (e.g., "my-font")
   - `weight` - Font weight (100-900, 400=normal, 700=bold)
   - `italic` - Whether this is an italic variant
@@ -195,11 +196,12 @@ defmodule EmergeSkia.Native do
 
   ## Example
       {:ok, data} = File.read("fonts/MyFont-Bold.ttf")
-      {:ok, true} = EmergeSkia.Native.load_font_nif("my-font", 700, false, data)
+      {:ok, true} = EmergeSkia.Native.load_font_nif(renderer, "my-font", 700, false, data)
   """
-  @spec load_font_nif(String.t(), non_neg_integer(), boolean(), binary()) ::
+  @spec load_font_nif(reference(), String.t(), non_neg_integer(), boolean(), binary()) ::
           {:ok, boolean()} | {:error, String.t()}
-  def load_font_nif(_name, _weight, _italic, _data), do: :erlang.nif_error(:nif_not_loaded)
+  def load_font_nif(_renderer, _name, _weight, _italic, _data),
+    do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Configure native asset loading policy and source roots.

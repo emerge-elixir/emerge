@@ -47,8 +47,8 @@ Startup/config flow:
 
 - `EmergeSkia.start/1` requires `otp_app` and calls `configure_assets_nif` with `<otp_app>/priv` as the source root, runtime-path policy, raster-cache limits, and sized-decode policy.
 - `EmergeSkia.start/1` preloads configured font assets (`assets.fonts`) from `<otp_app>/priv` and registers them in the native font cache.
-- Rust stores normalized config in `AssetManager` state and applies raster-cache limits to the process-wide decoded LRU.
-- Reconfiguration clears source-status cache so paths are revalidated under new policy.
+- Rust stores normalized config in the renderer's asset runtime and applies raster-cache limits to that renderer's decoded LRU.
+- Reconfiguration clears only that renderer's source-status cache so paths are revalidated under the new policy.
 
 Render behavior while waiting:
 
@@ -122,8 +122,8 @@ its dimensions are at least the requested target. A larger target replaces it
 with a larger decode. A smaller target does not create another variant.
 
 A zero entry limit, zero byte limit, or image larger than the byte limit skips
-retention without skipping the draw. Eviction is least-recently-used across the
-process-wide cache.
+retention without skipping the draw. Eviction is least-recently-used within the
+renderer's cache.
 
 Encoded source status and decoded retention have independent lifetimes. A
 retained raster can render while an evicted source record is hydrated again.
@@ -133,9 +133,10 @@ The rendered SVG cache is separate: 256 entries, 16 MiB total, and 1 MiB per
 variant. SVG parsing and CPU rendering are unconditional in embedded and desktop
 builds.
 
-In 0.4, source worker/configuration and these caches remain process-global.
-Multiple native renderers therefore share limits and source lifecycle. Moving
-source/configuration ownership per renderer remains separate lifecycle work.
+Each native renderer owns its source worker/configuration, encoded source
+records, decoded raster LRU, rendered SVG variants, registered fonts, and cache
+generations. Renderer shutdown joins only that renderer's worker and clears only
+that renderer's asset state.
 
 ## Memory Diagnostics
 

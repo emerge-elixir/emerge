@@ -148,7 +148,7 @@ For nerves example take a look at [`nerves_emerge_demo`](https://github.com/emer
 - Handle buttons, text input, keyboard, pointer events, and interactive states
 - Render images, SVGs, backgrounds, borders, text, and font assets
 - Use scroll containers, nearby overlays, paint-time and layout-aware transforms, and animation
-- Run the same renderer on macOS, Wayland, DRM, and headless runtimes with Metal, OpenGL, raster, and experimental Vulkan rendering APIs
+- Run the same renderer on macOS, Wayland, DRM, and headless runtimes with Metal, OpenGL, raster, and Vulkan rendering APIs
 
 ## Backends and rendering APIs
 
@@ -156,10 +156,14 @@ For nerves example take a look at [`nerves_emerge_demo`](https://github.com/emer
 - **Wayland** provides Linux desktop windows with OpenGL or raster presentation.
 - **DRM** provides direct embedded, kiosk, and Nerves output with OpenGL ES 2 as the supported minimum or raster GPU upload.
 - **Headless** produces retained frame binaries or Linux PRIME/DMA-BUF output.
-- **Vulkan** rendering exists for Wayland, DRM, and headless PRIME, but remains experimental.
+- **Vulkan** provides supported rendering for Wayland, DRM, and headless PRIME when compiled for those backends.
 
 Raster is a rendering API used by windowed and headless runtimes, not a separate
 viewport backend. macOS currently has no video target or retained-frame capture.
+
+Each native renderer owns its asset source worker, source policy, registered
+fonts, decoded raster cache, and rendered vector cache. Concurrent renderers can
+use different asset roots, fonts, and cache limits without affecting each other.
 
 Viewport modes and configuration examples are documented by
 [`Emerge`](https://hexdocs.pm/emerge/Emerge.html) and

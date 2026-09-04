@@ -23,7 +23,7 @@ defmodule EmergeSkia.Transport do
   @callback upload_tree(renderer_handle(), binary()) :: :ok | {:error, term()}
   @callback patch_tree(renderer_handle(), binary()) :: :ok | {:error, term()}
   @callback measure_text(String.t(), float()) :: {float(), float(), float(), float()}
-  @callback load_font(String.t(), non_neg_integer(), boolean(), binary()) ::
+  @callback load_font(renderer_handle(), String.t(), non_neg_integer(), boolean(), binary()) ::
               :ok | {:ok, boolean()} | {:error, term()}
   @callback configure_assets(renderer_handle(), asset_config()) ::
               :ok | {:error, term()}

@@ -1,6 +1,7 @@
 mod support;
 
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
+use emerge_skia::assets::AssetRuntime;
 use emerge_skia::events::{
     RegistryRebuildPayload,
     registry_builder::{
@@ -5045,26 +5046,30 @@ fn current_nearby_id(tree: &ElementTree, host_id: NodeId) -> NodeId {
         .id
 }
 
-criterion_group!(
-    benches,
-    bench_large_text_column,
-    bench_nested_card_grid,
-    bench_large_text_column_retained,
-    bench_nested_card_grid_retained,
-    bench_layout_aware_transform,
-    bench_layout_aware_transform_animation,
-    bench_animated_shadow_showcase,
-    bench_rich_borders_shadow_showcase,
-    bench_scrolling_animated_shadow_showcase,
-    bench_scrolling_rich_borders_shadow_showcase,
-    bench_emerge_demo_showcase_layout_refresh,
-    bench_scroll_viewport_culling,
-    bench_fixture_retained_layout_after_patch,
-    bench_fixture_retained_patch_layout,
-    bench_render_refresh_cache_regression,
-    bench_registry_refresh_cache_regression,
-    bench_macaw_viewport_refresh,
-    bench_sidepane_animation_smoothness,
-    bench_nearby_hover_toggle_refresh
-);
+fn bench_layout(c: &mut Criterion) {
+    let asset_runtime = AssetRuntime::new();
+    let _asset_context_guard = asset_runtime.enter();
+
+    bench_large_text_column(c);
+    bench_nested_card_grid(c);
+    bench_large_text_column_retained(c);
+    bench_nested_card_grid_retained(c);
+    bench_layout_aware_transform(c);
+    bench_layout_aware_transform_animation(c);
+    bench_animated_shadow_showcase(c);
+    bench_rich_borders_shadow_showcase(c);
+    bench_scrolling_animated_shadow_showcase(c);
+    bench_scrolling_rich_borders_shadow_showcase(c);
+    bench_emerge_demo_showcase_layout_refresh(c);
+    bench_scroll_viewport_culling(c);
+    bench_fixture_retained_layout_after_patch(c);
+    bench_fixture_retained_patch_layout(c);
+    bench_render_refresh_cache_regression(c);
+    bench_registry_refresh_cache_regression(c);
+    bench_macaw_viewport_refresh(c);
+    bench_sidepane_animation_smoothness(c);
+    bench_nearby_hover_toggle_refresh(c);
+}
+
+criterion_group!(benches, bench_layout);
 criterion_main!(benches);

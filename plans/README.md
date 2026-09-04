@@ -20,6 +20,11 @@ headless-to-Emerge transport applied to `../emerge_demo`.
 Trellis picture-grid validation for bounded target-sized raster decoding and
 per-asset encoded/decode/cache memory diagnostics.
 
+### `active-per-renderer-asset-runtime.md`
+
+Release-gate validation for renderer-local asset workers, policies, registered
+fonts, decoded caches, generations, diagnostics, and macOS host sessions.
+
 ### `active-headless-grayscale-output.md`
 
 Gray4 and Gray8 expansion on the accepted direct-Gray8 raster foundation. BW1

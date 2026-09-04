@@ -84,8 +84,8 @@ defmodule EmergeSkia.Transport.Native do
   end
 
   @impl true
-  def load_font(family, weight, italic, data) do
-    Native.load_font_nif(family, weight, italic, data)
+  def load_font(renderer, family, weight, italic, data) do
+    Native.load_font_nif(native_renderer(renderer), family, weight, italic, data)
   end
 
   @impl true
@@ -218,7 +218,16 @@ defmodule EmergeSkia.Transport.Native do
       cache_max_bytes: asset_config.cache_max_bytes,
       decode_at_size: asset_config.decode_at_size,
       asset_mode: raster_opts.asset_mode,
-      asset_timeout_ms: raster_opts.asset_timeout_ms
+      asset_timeout_ms: raster_opts.asset_timeout_ms,
+      fonts:
+        Enum.map(asset_config.fonts, fn font ->
+          %{
+            family: font.family,
+            path: Path.join(asset_config.priv_dir, font.source),
+            weight: font.weight,
+            italic: font.italic
+          }
+        end)
     }
   end
 end

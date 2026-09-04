@@ -86,8 +86,9 @@ That includes:
 - runtime max file size
 - preloaded custom fonts
 
-The host starts the shared asset worker and rerenders sessions when async asset
-state changes arrive.
+The host creates one asset runtime per session. Each session owns its worker,
+source policy, registered fonts, caches, generations, and diagnostics. Async
+asset changes rerender only the owning session.
 
 ## Input Model
 

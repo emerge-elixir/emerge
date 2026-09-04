@@ -156,6 +156,11 @@ pub(crate) fn start_renderer_with_config(
         )));
     };
 
+    let asset_runtime = Arc::new(assets::AssetRuntime::new());
+    {
+        let _asset_context_guard = asset_runtime.enter();
+        crate::renderer::set_render_log_enabled(config.render_log);
+    }
     let running_flag = Arc::new(AtomicBool::new(true));
     let stop_flag = Arc::new(AtomicBool::new(false));
     let render_counter = Arc::new(AtomicU64::new(0));
@@ -206,7 +211,9 @@ pub(crate) fn start_renderer_with_config(
     let rendering_api = config.rendering_api.kind;
     let (startup_tx, startup_rx) = bounded(1);
 
+    let render_asset_context = asset_runtime.context();
     let render_handle = thread::spawn(move || {
+        let _asset_context_guard = render_asset_context.enter();
         run_render_loop(
             render_rx,
             release_rx,
@@ -271,6 +278,7 @@ pub(crate) fn start_renderer_with_config(
         None
     };
     let heartbeat_handle = spawn_running_heartbeat(
+        asset_runtime.context(),
         Arc::clone(&running_flag),
         Arc::clone(&input_target),
         Arc::clone(&native_log),
@@ -279,7 +287,7 @@ pub(crate) fn start_renderer_with_config(
         renderer_info.renderer_label(),
     );
 
-    assets::start(tree_tx.clone(), config.render_log);
+    asset_runtime.start(tree_tx.clone(), config.render_log);
 
     let tree_handle = crate::runtime::tree_actor::spawn_tree_actor(
         tree_rx,
@@ -292,6 +300,7 @@ pub(crate) fn start_renderer_with_config(
             window_wake: backend_wake.clone(),
             initial_width: width,
             initial_height: height,
+            asset_context: asset_runtime.context(),
         },
     );
 
@@ -306,10 +315,12 @@ pub(crate) fn start_renderer_with_config(
         native_log: Arc::clone(&native_log),
         system_clipboard: false,
         stats: renderer_stats.clone(),
+        asset_context: asset_runtime.context(),
     });
 
     let video_wake = VideoWake::new(backend_wake.clone());
     let resource = RendererResource {
+        asset_runtime,
         running_flag,
         backend_wake,
         stop_flag,

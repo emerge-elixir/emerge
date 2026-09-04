@@ -79,6 +79,14 @@ defmodule EmergeSkiaTest do
     assert byte_size(png) > 50
   end
 
+  test "measure_text uses an isolated temporary default-font context" do
+    assert {width, line_height, ascent, descent} = EmergeSkia.measure_text("Hello", 16)
+    assert width > 0
+    assert line_height > 0
+    assert ascent > 0
+    assert descent >= 0
+  end
+
   test "public screenshot APIs reject old tree-render signatures" do
     tree = el([width(px(10)), height(px(10))], none())
 
@@ -141,6 +149,42 @@ defmodule EmergeSkiaTest do
 
     assert byte_size(first) == 32 * 24 * 4
     assert first == second
+  end
+
+  test "offscreen rendering loads fonts only into its temporary asset context" do
+    tree =
+      el(
+        [
+          width(px(180)),
+          height(px(40)),
+          Emerge.UI.Font.family("offscreen-lobster"),
+          Emerge.UI.Font.size(22),
+          Emerge.UI.Background.color(:white)
+        ],
+        text("Asset Fonts 123")
+      )
+
+    fallback = render_tree_to_pixels(tree, otp_app: :emerge, width: 180, height: 40)
+
+    custom =
+      render_tree_to_pixels(
+        tree,
+        otp_app: :emerge,
+        width: 180,
+        height: 40,
+        assets: [
+          fonts: [
+            [
+              family: "offscreen-lobster",
+              source: "test_assets/Lobster-Regular.ttf",
+              weight: 400
+            ]
+          ]
+        ]
+      )
+
+    refute custom == fallback
+    assert render_tree_to_pixels(tree, otp_app: :emerge, width: 180, height: 40) == fallback
   end
 
   test "render_to_pixels resolves logical SVG image assets" do
@@ -318,6 +362,72 @@ defmodule EmergeSkiaTest do
     assert byte_size(data) == 4 * 4 * 3
 
     assert :ok = EmergeSkia.stop(renderer)
+  end
+
+  @tag :tmp_dir
+  test "concurrent headless renderers isolate asset roots and worker shutdown", %{
+    tmp_dir: tmp_dir
+  } do
+    red_root = Path.join(tmp_dir, "red")
+    blue_root = Path.join(tmp_dir, "blue")
+    File.mkdir_p!(red_root)
+    File.mkdir_p!(blue_root)
+
+    write_solid_svg(Path.join(red_root, "shared.svg"), "#ff0000")
+    write_solid_svg(Path.join(blue_root, "shared.svg"), "#0000ff")
+
+    start_renderer = fn ->
+      EmergeSkia.start(
+        otp_app: :emerge,
+        backend: :headless,
+        rendering_api: :raster,
+        width: 4,
+        height: 4,
+        headless: [target: self(), pixel_format: :rgb888]
+      )
+    end
+
+    {:ok, red_renderer} = start_renderer.()
+    {:ok, blue_renderer} = start_renderer.()
+
+    on_exit(fn ->
+      EmergeSkia.stop(red_renderer)
+      EmergeSkia.stop(blue_renderer)
+    end)
+
+    base_config = EmergeSkia.Assets.normalize_asset_config!(otp_app: :emerge)
+
+    assert :ok =
+             EmergeSkia.Assets.initialize_renderer_assets(
+               red_renderer,
+               Map.put(base_config, :priv_dir, red_root)
+             )
+
+    assert :ok =
+             EmergeSkia.Assets.initialize_renderer_assets(
+               blue_renderer,
+               Map.put(base_config, :priv_dir, blue_root)
+             )
+
+    tree = image([width(px(4)), height(px(4))], "shared.svg")
+    {_state, _assigned} = EmergeSkia.upload_tree(red_renderer, tree)
+    assert_frame_color({255, 0, 0})
+
+    {_state, _assigned} = EmergeSkia.upload_tree(blue_renderer, tree)
+    assert_frame_color({0, 0, 255})
+
+    assert :ok = EmergeSkia.stop(red_renderer)
+
+    write_solid_svg(Path.join(blue_root, "shared.svg"), "#00ff00")
+
+    assert :ok =
+             EmergeSkia.Assets.initialize_renderer_assets(
+               blue_renderer,
+               Map.put(base_config, :priv_dir, blue_root)
+             )
+
+    {_state, _assigned} = EmergeSkia.upload_tree(blue_renderer, tree)
+    assert_frame_color({0, 255, 0})
   end
 
   test "headless BW1 packs rows independently and expands Gray8 screenshots" do
@@ -785,12 +895,39 @@ defmodule EmergeSkiaTest do
     end
   end
 
-  test "load_font_file/4 normalizes native ok tuple" do
+  test "load_font_file/5 loads into the selected renderer" do
+    {:ok, renderer} =
+      EmergeSkia.start(
+        otp_app: :emerge,
+        backend: :headless,
+        rendering_api: :raster,
+        width: 4,
+        height: 4,
+        headless: [target: self(), pixel_format: :rgb888]
+      )
+
+    on_exit(fn -> EmergeSkia.stop(renderer) end)
+
     priv_dir = :code.priv_dir(:emerge) |> List.to_string()
     path = Path.join(priv_dir, "test_assets/Lobster-Regular.ttf")
 
     assert File.regular?(path)
-    assert :ok = EmergeSkia.load_font_file("lobster-test", 400, false, path)
+    assert :ok = EmergeSkia.load_font_file(renderer, "lobster-test", 400, false, path)
+  end
+
+  defp write_solid_svg(path, color) do
+    File.write!(
+      path,
+      ~s(<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><rect width="4" height="4" fill="#{color}"/></svg>)
+    )
+  end
+
+  defp assert_frame_color({red, green, blue}) do
+    assert %Frame{
+             storage: %Binary{data: data, planes: [%Plane{stride: 12}]}
+           } = receive_latest_headless_frame(2_000)
+
+    assert data == :binary.copy(<<red, green, blue>>, 16)
   end
 
   defp eventually(predicate, timeout_ms \\ 1_000) do

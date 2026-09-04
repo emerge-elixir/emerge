@@ -40,12 +40,12 @@ Added or changed:
   raster and offscreen OpenGL binary output.
 - `compiled_vulkan_backends` controls Vulkan builds. DRM Vulkan requires a
   `vulkan_drm_node` separate from `drm_card`.
-- Wayland, DRM, and headless Vulkan remain experimental.
+- Wayland, DRM, and headless Vulkan are supported when compiled and available.
 
 Documentation gap: `EmergeSkia.start/1` contains most details, but the setup
-guide and README lack a compatibility/fallback matrix, Vulkan build config,
-exact DRM node rules, and consistent experimental labels. The README also calls
-raster a backend rather than a rendering API used with headless output.
+guide and README lack a compatibility/fallback matrix, Vulkan build config, and
+exact DRM node rules. The README also calls raster a backend rather than a
+rendering API used with headless output.
 
 ### Renderer information, capture, and diagnostics
 
@@ -114,7 +114,7 @@ Added or changed:
   stop. `stop/1` can return an error when safe shutdown cannot finish.
 
 Documentation gap: add a short ownership example, the “do not release after
-consume” rule, cold-restart upgrade guidance, and a concise experimental
+consume” rule, cold-restart upgrade guidance, and a concise
 backend/format/synchronization table.
 
 ### Render layers and payload caching
@@ -178,7 +178,7 @@ guides by default but `package_files/0` omits `guides/internals`.
   shutdown, Nerves build, and centered-text changelog entries.
 - [x] Correct `backend_renderer`: deprecated, not removed.
 - [x] Remove duplicated 0.3.3/0.3.4 entries from the 0.4 section.
-- [x] Label Vulkan rendering/video experimental.
+- [x] Document Vulkan rendering/video as supported and build-time selectable.
 - [x] Consolidate all 0.4 candidate entries under one unreleased heading; set
   the date only when tagging.
 - [x] Add `guides/migrations/0.4.md` covering:
@@ -195,8 +195,7 @@ guides by default but `package_files/0` omits `guides/internals`.
   `drm_card` versus `vulkan_drm_node`.
 - [x] Keep `set_up_viewport.md` focused on ordinary startup and link to the
   matrix.
-- [x] Correct the README backend list and link headless and experimental Vulkan
-  guidance.
+- [x] Correct the README backend list and link headless and Vulkan guidance.
 
 ### 3. Headless output — release blocking
 
@@ -215,7 +214,7 @@ guides by default but `package_files/0` omits `guides/internals`.
   shutdown in the `Emerge` and `EmergeSkia` API documentation.
 - [x] Add one lower-level `VideoInterop.Consumer` example with explicit
   ownership rules.
-- [x] Add the experimental backend/format/synchronization table.
+- [x] Add the backend/format/synchronization table.
 - [x] Keep the long internal architecture guide as an implementation reference;
   replace workspace-specific public instructions with repository links.
 
@@ -264,7 +263,7 @@ guides by default but `package_files/0` omits `guides/internals`.
 - Breaking changes are visible in the changelog and migration guide.
 - BW1/Gray2 contracts are exact; Gray4 is unavailable and Emerge Gray8 output is
   not stable in 0.4.
-- Vulkan rendering/video is consistently experimental.
+- Vulkan rendering/video is consistently documented as supported.
 - Asset limits and diagnostics cover constrained devices.
 - All linked guides/assets exist in the unpacked Hex package.
 - `mix docs` passes from a clean checkout and the unpacked package.

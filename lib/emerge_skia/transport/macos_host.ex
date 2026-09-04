@@ -71,8 +71,8 @@ defmodule EmergeSkia.Transport.MacosHost do
   end
 
   @impl true
-  def load_font(family, weight, italic, data) do
-    Host.load_font(family, weight, italic, data)
+  def load_font(renderer, family, weight, italic, data) do
+    Host.load_font(renderer, family, weight, italic, data)
   end
 
   @impl true

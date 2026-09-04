@@ -12,6 +12,7 @@ use crossbeam_channel::{Receiver, Sender, TrySendError};
 use crate::{
     RenderSender,
     actors::{AnimationFrameTraceSeed, EventMsg, RenderMsg, TreeMsg},
+    assets::AssetContext,
     backend::wake::BackendWakeHandle,
     events,
     stats::{RendererStatsCollector, record_pipeline_layout_queued},
@@ -35,6 +36,7 @@ pub(crate) struct TreeActorConfig {
     pub(crate) window_wake: BackendWakeHandle,
     pub(crate) initial_width: u32,
     pub(crate) initial_height: u32,
+    pub(crate) asset_context: AssetContext,
 }
 
 #[cfg_attr(
@@ -66,8 +68,10 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
             window_wake,
             initial_width,
             initial_height,
+            asset_context,
         } = config;
 
+        let _asset_context_guard = asset_context.enter();
         let mut engine = TreeUpdateEngine::new(initial_tree, initial_width, initial_height);
 
         loop {
@@ -237,6 +241,7 @@ mod tests {
                     window_wake: BackendWakeHandle::noop(),
                     initial_width: width,
                     initial_height: height,
+                    asset_context: crate::assets::AssetRuntime::new().context(),
                 },
                 initial_tree,
             );

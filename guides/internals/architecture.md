@@ -228,8 +228,8 @@ Supported backend families:
 
 | Backend | Purpose | Rendering path |
 |---------|---------|----------------|
-| Wayland | Windowed Linux runtime | OpenGL, raster presentation, or experimental Vulkan with Wayland frame callbacks |
-| DRM | Direct Linux framebuffer/kiosk runtime | OpenGL, raster GPU upload, or experimental Vulkan with KMS presentation |
+| Wayland | Windowed Linux runtime | OpenGL, raster presentation, or Vulkan with Wayland frame callbacks |
+| DRM | Direct Linux framebuffer/kiosk runtime | OpenGL, raster GPU upload, or Vulkan with KMS presentation |
 | macOS | Host runtime integration | Metal or raster through the native host protocol |
 | Headless | Offscreen output | Retained frame binaries or Linux PRIME/DMA-BUF production |
 
@@ -246,22 +246,20 @@ computes fitted device-space dimensions and, when configured, decodes/resamples
 to that target before inserting the final image into an entry/byte-bounded LRU.
 The tree is notified with `AssetStateChanged` when source state changes.
 
-Process-global resource storage currently includes:
+Each native renderer owns:
 
-- font typeface cache
+- its asset source worker and source configuration
+- registered font typefaces and text-metrics cache
 - encoded image/vector source records
 - bounded decoded-raster LRU
 - bounded rendered-vector variant cache
-- Skia global caches
+- asset and font generations and diagnostic state
 
 A retained decoded raster may outlive its encoded source record and render while
 the source is restored asynchronously. Font and asset generations participate
 in paint-layer payload keys so cached payloads are invalidated when contents
-change.
-
-Asset source worker/configuration ownership is also process-global in 0.4. Two
-native renderers therefore share source lifecycle and cache limits; per-renderer
-ownership remains future lifecycle work.
+change. Renderer shutdown joins that renderer's worker and clears only its
+asset state.
 
 See [Assets and Images](assets-images.md) for source resolution, runtime path
 security, and async loading behavior.
@@ -301,10 +299,10 @@ The architecture has several separate caches with different owners:
 | Cached registry rebuild | `TreeUpdateEngine` | Whole clean registry response |
 | Nearby render-fragment cache | `ElementTree` node refresh state | Reuse clean semantic Nearby fragments and focus outputs |
 | Renderer paint-layer payload cache | `SceneRenderer` | GPU/CPU own-run image reuse |
-| Encoded asset/source status | Process-global asset runtime | Source resolution, generations, and async hydration |
-| Decoded raster LRU | Process-global renderer storage | Entry/byte-bounded final pixel reuse |
-| Rendered vector variants | Process-global renderer storage | Bounded SVG rasterization reuse |
-| Font/Skia caches | Process globals | Typeface and Skia resource reuse |
+| Encoded asset/source status | Renderer asset runtime | Source resolution, generations, and async hydration |
+| Decoded raster LRU | Renderer asset context | Entry/byte-bounded final pixel reuse |
+| Rendered vector variants | Renderer asset context | Bounded SVG rasterization reuse |
+| Font/text metrics caches | Renderer asset context | Typeface and text measurement reuse |
 
 These caches are intentionally owned by the stage that can validate them. The
 tree may reuse a clean semantic Nearby fragment; only the renderer can decide
@@ -343,7 +341,7 @@ native/emerge_skia/src/
     wayland/                     Wayland OpenGL/Vulkan/raster presentation and input
     drm/                         Direct KMS with OpenGL/Vulkan/raster presentation
     headless/                    Binary and PRIME output
-    vulkan/                      Shared experimental Vulkan device/import helpers
+    vulkan/                      Shared Vulkan device/import helpers
     macos/                       macOS host protocol integration
     raster.rs                    Shared CPU renderer
     wake.rs                      Backend wake abstraction

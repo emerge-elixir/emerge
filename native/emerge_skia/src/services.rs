@@ -1,13 +1,20 @@
-use std::time::Duration;
+use std::{fs, time::Duration};
 
 use skia_safe::{AlphaType, ColorType, Data, EncodedImageFormat, ImageInfo, images};
 
 use crate::{
-    assets::{self, AssetConfig},
+    assets::{self, AssetConfig, AssetRuntime},
     backend::raster::{RasterBackend, RasterConfig},
     renderer::{RenderState, load_font, make_font_with_style},
     tree::{self, layout::layout_and_refresh_default},
 };
+
+pub struct OffscreenFont {
+    pub family: String,
+    pub path: String,
+    pub weight: u16,
+    pub italic: bool,
+}
 
 pub struct OffscreenRenderOptions {
     pub width: u32,
@@ -16,6 +23,7 @@ pub struct OffscreenRenderOptions {
     pub asset_mode: String,
     pub asset_timeout_ms: u64,
     pub asset_config: AssetConfig,
+    pub fonts: Vec<OffscreenFont>,
 }
 
 struct OffscreenRasterOutput {
@@ -40,6 +48,8 @@ impl OffscreenAssetMode {
 }
 
 pub fn measure_text(text: &str, font_size: f32) -> (f32, f32, f32, f32) {
+    let asset_runtime = AssetRuntime::new();
+    let _asset_context_guard = asset_runtime.enter();
     let font = make_font_with_style("default", 400, false, font_size);
 
     let (width, _bounds) = font.measure_str(text, None);
@@ -52,12 +62,19 @@ pub fn measure_text(text: &str, font_size: f32) -> (f32, f32, f32, f32) {
     (width, line_height, ascent, descent)
 }
 
-pub fn load_font_bytes(family: &str, weight: u16, italic: bool, data: &[u8]) -> Result<(), String> {
+pub fn load_font_bytes(
+    asset_runtime: &AssetRuntime,
+    family: &str,
+    weight: u16,
+    italic: bool,
+    data: &[u8],
+) -> Result<(), String> {
+    let _asset_context_guard = asset_runtime.enter();
     load_font(family, weight, italic, data)
 }
 
-pub fn configure_assets(asset_config: AssetConfig) {
-    assets::configure(asset_config);
+pub fn configure_assets(asset_runtime: &AssetRuntime, asset_config: AssetConfig) {
+    asset_runtime.configure(asset_config);
 }
 
 pub fn render_tree_to_pixels(data: &[u8], opts: OffscreenRenderOptions) -> Result<Vec<u8>, String> {
@@ -83,9 +100,16 @@ fn render_tree_offscreen(
     opts: OffscreenRenderOptions,
 ) -> Result<OffscreenRasterOutput, String> {
     let mode = OffscreenAssetMode::parse(&opts.asset_mode)?;
+    let asset_runtime = AssetRuntime::new();
+    let _asset_context_guard = asset_runtime.enter();
     let mut tree = tree::deserialize::decode_tree(data).map_err(|e| e.to_string())?;
 
-    assets::configure(opts.asset_config);
+    asset_runtime.configure(opts.asset_config);
+    for font in opts.fonts {
+        let data = fs::read(&font.path)
+            .map_err(|err| format!("failed to read font asset {}: {err}", font.path))?;
+        load_font(&font.family, font.weight, font.italic, &data)?;
+    }
 
     match mode {
         OffscreenAssetMode::Await => assets::resolve_tree_sources_sync(

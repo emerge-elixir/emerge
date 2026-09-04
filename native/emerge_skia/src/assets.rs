@@ -1,9 +1,10 @@
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::thread;
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Sender, TrySendError, bounded};
@@ -116,18 +117,169 @@ impl AssetState {
     }
 }
 
-struct Global {
+#[derive(Clone)]
+pub struct AssetContext {
     state: Arc<Mutex<AssetState>>,
-    tx: Option<Sender<AssetMsg>>,
+    tx: Arc<Mutex<Option<Sender<AssetMsg>>>>,
+    renderer: Arc<crate::renderer::RendererAssetContext>,
+    generation: Arc<AtomicU64>,
 }
 
-impl Default for Global {
+impl Default for AssetContext {
     fn default() -> Self {
         Self {
             state: Arc::new(Mutex::new(AssetState::default())),
-            tx: None,
+            tx: Arc::new(Mutex::new(None)),
+            renderer: Arc::new(crate::renderer::RendererAssetContext::default()),
+            generation: Arc::new(AtomicU64::new(1)),
         }
     }
+}
+
+pub struct AssetRuntime {
+    context: AssetContext,
+    worker: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl Default for AssetRuntime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AssetRuntime {
+    pub fn new() -> Self {
+        Self {
+            context: AssetContext::default(),
+            worker: Mutex::new(None),
+        }
+    }
+
+    pub fn context(&self) -> AssetContext {
+        self.context.clone()
+    }
+
+    pub fn enter(&self) -> AssetContextGuard {
+        self.context.enter()
+    }
+
+    pub fn start(&self, tree_tx: Sender<TreeMsg>, log_render: bool) {
+        self.stop_worker();
+        let (tx, rx) = bounded(4096);
+
+        if let Ok(mut state) = self.context.state.lock() {
+            state.clear_sources();
+        }
+        if let Ok(mut current_tx) = self.context.tx.lock() {
+            *current_tx = Some(tx);
+        }
+
+        let context = self.context.clone();
+        let state = Arc::clone(&context.state);
+        let handle = thread::spawn(move || {
+            let _context_guard = context.enter();
+            let mut worker = Worker {
+                tree_tx,
+                state,
+                log_render,
+            };
+
+            while let Ok(msg) = rx.recv() {
+                match msg {
+                    AssetMsg::Stop => break,
+                    AssetMsg::Ensure(source) => worker.handle_ensure(source),
+                    AssetMsg::HydrateCached(source, cached_id) => {
+                        worker.handle_hydrate_cached(source, &cached_id);
+                    }
+                }
+            }
+        });
+
+        if let Ok(mut worker) = self.worker.lock() {
+            *worker = Some(handle);
+        }
+    }
+
+    pub fn stop(&self) {
+        self.stop_worker();
+        let _context_guard = self.enter();
+        if let Ok(mut state) = self.context.state.lock() {
+            state.clear_sources();
+        }
+        crate::renderer::clear_renderer_asset_context();
+    }
+
+    pub fn configure(&self, config: AssetConfig) {
+        let _context_guard = self.enter();
+        configure(config);
+    }
+
+    fn stop_worker(&self) {
+        if let Ok(mut tx) = self.context.tx.lock()
+            && let Some(tx) = tx.take()
+        {
+            let _ = tx.send(AssetMsg::Stop);
+        }
+
+        let handle = self.worker.lock().ok().and_then(|mut worker| worker.take());
+        if let Some(handle) = handle {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for AssetRuntime {
+    fn drop(&mut self) {
+        self.stop_worker();
+    }
+}
+
+impl AssetContext {
+    pub fn enter(&self) -> AssetContextGuard {
+        let previous = CURRENT_ASSET_CONTEXT.with(|current| current.replace(Some(self.clone())));
+        AssetContextGuard { previous }
+    }
+}
+
+pub struct AssetContextGuard {
+    previous: Option<AssetContext>,
+}
+
+impl Drop for AssetContextGuard {
+    fn drop(&mut self) {
+        CURRENT_ASSET_CONTEXT.with(|current| {
+            current.replace(self.previous.take());
+        });
+    }
+}
+
+thread_local! {
+    static CURRENT_ASSET_CONTEXT: RefCell<Option<AssetContext>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_ASSET_CONTEXT: AssetContext = AssetContext::default();
+}
+
+fn current_context() -> AssetContext {
+    CURRENT_ASSET_CONTEXT
+        .with(|current| current.borrow().clone())
+        .unwrap_or_else(missing_current_context)
+}
+
+#[cfg(test)]
+fn missing_current_context() -> AssetContext {
+    TEST_ASSET_CONTEXT.with(Clone::clone)
+}
+
+#[cfg(not(test))]
+fn missing_current_context() -> AssetContext {
+    panic!("renderer asset access requires an active renderer asset context")
+}
+
+pub(crate) fn current_renderer_context() -> Arc<crate::renderer::RendererAssetContext> {
+    current_context().renderer
 }
 
 enum AssetMsg {
@@ -142,77 +294,11 @@ struct Worker {
     log_render: bool,
 }
 
-static GLOBAL: OnceLock<Mutex<Global>> = OnceLock::new();
-static ASSET_GENERATION: AtomicU64 = AtomicU64::new(1);
-
-fn global() -> &'static Mutex<Global> {
-    GLOBAL.get_or_init(|| Mutex::new(Global::default()))
-}
-
-pub fn start(tree_tx: Sender<TreeMsg>, log_render: bool) {
-    let (tx, rx) = bounded(4096);
-
-    let mut guard = match global().lock() {
-        Ok(guard) => guard,
-        Err(_) => return,
-    };
-
-    if let Some(existing) = guard.tx.take() {
-        let _ = existing.send(AssetMsg::Stop);
-    }
-
-    let state = Arc::clone(&guard.state);
-
-    if let Ok(mut state_guard) = state.lock() {
-        state_guard.clear_sources();
-    }
-
-    guard.tx = Some(tx.clone());
-    drop(guard);
-
-    thread::spawn(move || {
-        let mut worker = Worker {
-            tree_tx,
-            state,
-            log_render,
-        };
-
-        while let Ok(msg) = rx.recv() {
-            match msg {
-                AssetMsg::Stop => break,
-                AssetMsg::Ensure(source) => worker.handle_ensure(source),
-                AssetMsg::HydrateCached(source, cached_id) => {
-                    worker.handle_hydrate_cached(source, &cached_id);
-                }
-            }
-        }
-    });
-}
-
-pub fn stop() {
-    let mut guard = match global().lock() {
-        Ok(guard) => guard,
-        Err(_) => return,
-    };
-
-    if let Some(tx) = guard.tx.take() {
-        let _ = tx.send(AssetMsg::Stop);
-    }
-
-    if let Ok(mut state) = guard.state.lock() {
-        state.clear_sources();
-    }
-}
-
 pub fn configure(config: AssetConfig) {
     configure_asset_cache(config.cache_max_entries, config.cache_max_bytes);
 
-    let guard = match global().lock() {
-        Ok(guard) => guard,
-        Err(_) => return,
-    };
-
-    if let Ok(mut state) = guard.state.lock() {
+    let context = current_context();
+    if let Ok(mut state) = context.state.lock() {
         state.config = normalize_config(config);
         state.clear_sources();
         state.status_generation = state.status_generation.wrapping_add(1);
@@ -222,10 +308,9 @@ pub fn configure(config: AssetConfig) {
 pub fn ensure_tree_sources(tree: &ElementTree) {
     let sources = collect_tree_sources(tree);
     let active_sources = sources.iter().cloned().collect::<HashSet<_>>();
+    let context = current_context();
 
-    if let Ok(guard) = global().lock()
-        && let Ok(mut state) = guard.state.lock()
-    {
+    if let Ok(mut state) = context.state.lock() {
         let removed_ids = state
             .sources
             .iter()
@@ -271,19 +356,15 @@ pub fn ensure_tree_sources(tree: &ElementTree) {
 
 pub fn snapshot_tree_sources(tree: &ElementTree) {
     let sources = collect_tree_sources(tree);
+    let context = current_context();
+    let worker_running = context.tx.lock().is_ok_and(|tx| tx.is_some());
 
-    let guard = match global().lock() {
-        Ok(guard) => guard,
-        Err(_) => return,
-    };
-
-    if guard.tx.is_some() {
-        drop(guard);
+    if worker_running {
         sources.iter().for_each(ensure_source);
         return;
     }
 
-    if let Ok(mut state) = guard.state.lock() {
+    if let Ok(mut state) = context.state.lock() {
         state.pending_count = 0;
         sources.iter().for_each(|source| {
             state.set_source_status(source.clone(), snapshot_status_for_source(source))
@@ -293,13 +374,9 @@ pub fn snapshot_tree_sources(tree: &ElementTree) {
 
 pub fn snapshot_tree_sources_for_offscreen(tree: &ElementTree) {
     let sources = collect_tree_sources(tree);
+    let context = current_context();
 
-    let guard = match global().lock() {
-        Ok(guard) => guard,
-        Err(_) => return,
-    };
-
-    if let Ok(mut state) = guard.state.lock() {
+    if let Ok(mut state) = context.state.lock() {
         state.pending_count = 0;
         sources.iter().for_each(|source| {
             state.set_source_status(source.clone(), snapshot_status_for_source(source))
@@ -313,12 +390,8 @@ pub fn resolve_tree_sources_sync(
 ) -> Result<(), String> {
     let sources = collect_tree_sources(tree);
 
-    let guard = global()
-        .lock()
-        .map_err(|_| "failed to lock asset global state".to_string())?;
-
-    let state = Arc::clone(&guard.state);
-    drop(guard);
+    let context = current_context();
+    let state = Arc::clone(&context.state);
 
     let config = state
         .lock()
@@ -344,11 +417,10 @@ pub fn resolve_tree_sources_sync(
 }
 
 pub fn ensure_source(source: &ImageSource) {
+    let context = current_context();
     if let ImageSource::Id(id) = source {
         let dimensions = asset_dimensions(id);
-        if let Ok(guard) = global().lock()
-            && let Ok(mut state) = guard.state.lock()
-        {
+        if let Ok(mut state) = context.state.lock() {
             match dimensions {
                 Some((width, height)) => {
                     if matches!(state.sources.get(source), Some(AssetStatus::Pending))
@@ -375,14 +447,9 @@ pub fn ensure_source(source: &ImageSource) {
         return;
     }
 
-    let guard = match global().lock() {
-        Ok(guard) => guard,
-        Err(_) => return,
-    };
-
     let mut queued_msg = None;
 
-    if let Ok(mut state) = guard.state.lock() {
+    if let Ok(mut state) = context.state.lock() {
         match state.sources.get(source) {
             Some(AssetStatus::Pending)
             | Some(AssetStatus::Ready(_))
@@ -405,14 +472,15 @@ pub fn ensure_source(source: &ImageSource) {
         return;
     };
 
-    if let Some(tx) = guard.tx.as_ref() {
+    let tx = context.tx.lock().ok().and_then(|tx| tx.clone());
+    if let Some(tx) = tx {
         match tx.try_send(msg) {
             Ok(()) => {}
             Err(TrySendError::Full(msg)) => {
                 let _ = tx.send(msg);
             }
             Err(TrySendError::Disconnected(AssetMsg::Ensure(_))) => {
-                if let Ok(mut state) = guard.state.lock()
+                if let Ok(mut state) = context.state.lock()
                     && matches!(state.sources.get(source), Some(AssetStatus::Pending))
                 {
                     if state.pending_count > 0 {
@@ -441,8 +509,8 @@ fn resolved_asset_from_raster_cache(
 }
 
 pub fn source_status(source: &ImageSource) -> Option<AssetStatus> {
-    let guard = global().lock().ok()?;
-    let state = guard.state.lock().ok()?;
+    let context = current_context();
+    let state = context.state.lock().ok()?;
     state.sources.get(source).cloned()
 }
 
@@ -454,10 +522,8 @@ pub fn source_dimensions(source: &ImageSource) -> Option<(u32, u32)> {
 }
 
 pub fn source_status_generation() -> u64 {
-    let Ok(guard) = global().lock() else {
-        return 0;
-    };
-    let Ok(state) = guard.state.lock() else {
+    let context = current_context();
+    let Ok(state) = context.state.lock() else {
         return 0;
     };
 
@@ -465,8 +531,8 @@ pub fn source_status_generation() -> u64 {
 }
 
 pub(crate) fn asset_record(id: &str) -> Option<Arc<AssetRecord>> {
-    let guard = global().lock().ok()?;
-    let state = guard.state.lock().ok()?;
+    let context = current_context();
+    let state = context.state.lock().ok()?;
     state.records.get(id).cloned()
 }
 
@@ -475,10 +541,8 @@ pub(crate) fn asset_dimensions(id: &str) -> Option<(u32, u32)> {
 }
 
 pub(crate) fn source_memory_snapshot() -> (usize, u64) {
-    let Ok(global) = global().lock() else {
-        return (0, 0);
-    };
-    let Ok(state) = global.state.lock() else {
+    let context = current_context();
+    let Ok(state) = context.state.lock() else {
         return (0, 0);
     };
     let bytes = state
@@ -541,10 +605,8 @@ pub(crate) fn register_vector_asset(
 
 fn register_asset_record(record: AssetRecord) -> Result<Arc<AssetRecord>, String> {
     let record = Arc::new(record);
-    let guard = global()
-        .lock()
-        .map_err(|_| "failed to lock asset global state".to_string())?;
-    let mut state = guard
+    let context = current_context();
+    let mut state = context
         .state
         .lock()
         .map_err(|_| "failed to lock asset state".to_string())?;
@@ -557,14 +619,13 @@ fn generation_for_id(id: &str) -> u64 {
         .and_then(|hex| hex.get(..16))
         .and_then(|hex| u64::from_str_radix(hex, 16).ok())
         .filter(|generation| *generation != 0)
-        .unwrap_or_else(|| ASSET_GENERATION.fetch_add(1, Ordering::Relaxed) + 1)
+        .unwrap_or_else(|| current_context().generation.fetch_add(1, Ordering::Relaxed) + 1)
 }
 
 #[cfg(test)]
 pub(crate) fn remove_asset_record(id: &str) {
-    if let Ok(guard) = global().lock()
-        && let Ok(mut state) = guard.state.lock()
-    {
+    let context = current_context();
+    if let Ok(mut state) = context.state.lock() {
         state.records.remove(id);
     }
 }

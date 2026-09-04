@@ -301,14 +301,21 @@ assets: [
 
 A font entry requires `family` and logical `source`; `weight` defaults to `400`
 and must be from `100` through `900`, while `italic` defaults to `false`.
-Runtime file-size limits do not bound decoded dimensions or pixels, so use the
-raster-cache limits as a separate memory control.
+
+Asset source workers, configuration, registered fonts, and decoded caches are
+renderer-local. Concurrent renderers can use different source roots, runtime
+path policies, fonts, and cache limits.
+
+Runtime file-size limits do not bound decoded dimensions or pixels. Validate
+asset dimensions before making untrusted files available to the renderer. The
+raster-cache limits bound retained decoded pixels, not peak decode allocation.
 
 ## Bound decoded raster memory
 
 Raster source files are compressed, but decoded pixels normally use four bytes
-per pixel. Configure decoded-raster retention independently from runtime file
-limits:
+per pixel. Cache limits apply independently to each renderer, so process-wide
+retention can reach the sum of all running renderers' limits. Configure
+decoded-raster retention independently from runtime file limits:
 
 ```elixir
 assets: [

@@ -19,7 +19,7 @@ mod app {
     use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
     use emerge_skia::{
         actors::{RenderMsg, TreeMsg},
-        assets::{self, AssetConfig},
+        assets::{AssetConfig, AssetContext, AssetRuntime},
         backend::{
             macos::protocol::{
                 DecodedFrame, FRAME_ERROR, FRAME_INIT, FRAME_INIT_OK, FRAME_NOTIFY, FRAME_REPLY,
@@ -242,6 +242,7 @@ mod app {
         backend_label: &'static str,
         rendering_api_label: String,
         collector: Arc<RendererStatsCollector>,
+        asset_context: AssetContext,
     }
 
     impl HostState {
@@ -294,6 +295,7 @@ mod app {
             backend_label: &'static str,
             rendering_api_label: String,
             stats: Option<Arc<RendererStatsCollector>>,
+            asset_context: AssetContext,
         ) {
             if let Ok(mut sessions) = self.running_sessions.lock() {
                 sessions.insert(session_id);
@@ -308,6 +310,7 @@ mod app {
                         backend_label,
                         rendering_api_label,
                         collector,
+                        asset_context,
                     },
                 );
             }
@@ -337,6 +340,7 @@ mod app {
                     stats
                         .iter()
                         .map(|(session_id, session_stats)| {
+                            let _asset_context_guard = session_stats.asset_context.enter();
                             (
                                 *session_id,
                                 format!(
@@ -393,6 +397,7 @@ mod app {
             reply_tx: std::sync::mpsc::Sender<HostReply>,
         },
         LoadFont {
+            session_id: u64,
             family: String,
             weight: u16,
             italic: bool,
@@ -842,6 +847,8 @@ mod app {
     }
 
     struct HostSession {
+        asset_runtime: AssetRuntime,
+        asset_rx: Option<Receiver<TreeMsg>>,
         window: Retained<NSWindow>,
         content_view: Retained<NSView>,
         _input_view: Retained<HostInputView>,
@@ -863,76 +870,44 @@ mod app {
         present: SessionPresentState,
     }
 
+    impl HostSession {
+        fn enter_asset_context(&self) -> emerge_skia::assets::AssetContextGuard {
+            self.asset_runtime.enter()
+        }
+    }
+
+    impl Drop for HostSession {
+        fn drop(&mut self) {
+            self.asset_rx.take();
+            self.asset_runtime.stop();
+        }
+    }
+
     #[derive(Default)]
     struct HostUiState {
         sessions: HashMap<u64, HostSession>,
-        asset_config: AssetConfig,
-        loaded_fonts: HashSet<HostFontSpec>,
     }
 
     fn configure_host_assets_for_start(
-        ui_state: &mut HostUiState,
+        asset_runtime: &AssetRuntime,
         asset_config: &StartSessionAssetConfig,
-    ) -> Result<bool, String> {
-        let config_changed = replace_asset_config(
-            &mut ui_state.asset_config,
-            AssetConfig {
-                sources: asset_config.sources.clone(),
-                runtime_enabled: asset_config.runtime_enabled,
-                runtime_allowlist: asset_config.runtime_allowlist.clone(),
-                runtime_follow_symlinks: asset_config.runtime_follow_symlinks,
-                runtime_max_file_size: asset_config.runtime_max_file_size,
-                runtime_extensions: asset_config.runtime_extensions.clone(),
-                cache_max_entries: asset_config.cache_max_entries,
-                cache_max_bytes: asset_config.cache_max_bytes,
-                decode_at_size: asset_config.decode_at_size,
-            },
-        );
-        if config_changed {
-            assets::configure(ui_state.asset_config.clone());
-        }
-
-        let fonts_changed = load_host_fonts(&mut ui_state.loaded_fonts, &asset_config.fonts)?;
-        Ok(config_changed || fonts_changed)
+    ) -> Result<(), String> {
+        asset_runtime.configure(AssetConfig {
+            sources: asset_config.sources.clone(),
+            runtime_enabled: asset_config.runtime_enabled,
+            runtime_allowlist: asset_config.runtime_allowlist.clone(),
+            runtime_follow_symlinks: asset_config.runtime_follow_symlinks,
+            runtime_max_file_size: asset_config.runtime_max_file_size,
+            runtime_extensions: asset_config.runtime_extensions.clone(),
+            cache_max_entries: asset_config.cache_max_entries,
+            cache_max_bytes: asset_config.cache_max_bytes,
+            decode_at_size: asset_config.decode_at_size,
+        });
+        load_host_fonts(asset_runtime, &asset_config.fonts)
     }
 
-    fn configure_host_assets(ui_state: &mut HostUiState, asset_config: AssetConfig) -> bool {
-        let changed = replace_asset_config(&mut ui_state.asset_config, asset_config);
-        if changed {
-            assets::configure(ui_state.asset_config.clone());
-        }
-        changed
-    }
-
-    fn replace_asset_config(existing: &mut AssetConfig, incoming: AssetConfig) -> bool {
-        let changed = existing.sources != incoming.sources
-            || existing.runtime_enabled != incoming.runtime_enabled
-            || existing.runtime_allowlist != incoming.runtime_allowlist
-            || existing.runtime_follow_symlinks != incoming.runtime_follow_symlinks
-            || existing.runtime_max_file_size != incoming.runtime_max_file_size
-            || existing.runtime_extensions != incoming.runtime_extensions
-            || existing.cache_max_entries != incoming.cache_max_entries
-            || existing.cache_max_bytes != incoming.cache_max_bytes
-            || existing.decode_at_size != incoming.decode_at_size;
-
-        if changed {
-            *existing = incoming;
-        }
-
-        changed
-    }
-
-    fn load_host_fonts(
-        loaded_fonts: &mut HashSet<HostFontSpec>,
-        fonts: &[HostFontSpec],
-    ) -> Result<bool, String> {
-        let mut changed = false;
-
+    fn load_host_fonts(asset_runtime: &AssetRuntime, fonts: &[HostFontSpec]) -> Result<(), String> {
         for font in fonts {
-            if loaded_fonts.contains(font) {
-                continue;
-            }
-
             let data = fs::read(&font.path).map_err(|err| {
                 format!(
                     "failed to read macOS font asset family={} path={}: {err}",
@@ -940,20 +915,16 @@ mod app {
                 )
             })?;
 
-            services::load_font_bytes(&font.family, font.weight, font.italic, &data).map_err(
-                |err| {
+            services::load_font_bytes(asset_runtime, &font.family, font.weight, font.italic, &data)
+                .map_err(|err| {
                     format!(
                         "failed to load macOS font asset family={} path={}: {err}",
                         font.family, font.path
                     )
-                },
-            )?;
-
-            loaded_fonts.insert(font.clone());
-            changed = true;
+                })?;
         }
 
-        Ok(changed)
+        Ok(())
     }
 
     #[derive(Clone, Copy)]
@@ -1032,6 +1003,7 @@ mod app {
             let ui_state = self.ivars().ui_state.borrow().upgrade()?;
             let mut ui_state = ui_state.borrow_mut();
             let session = ui_state.sessions.get_mut(&session_id)?;
+            let _asset_context_guard = session.enter_asset_context();
             Some(f(session))
         }
 
@@ -1062,6 +1034,7 @@ mod app {
             let ui_state = self.ivars().ui_state.borrow().upgrade()?;
             let mut ui_state = ui_state.borrow_mut();
             let session = ui_state.sessions.get_mut(&session_id)?;
+            let _asset_context_guard = session.enter_asset_context();
             Some(f(session))
         }
     }
@@ -1566,8 +1539,6 @@ mod app {
     ) {
         let distant_past = NSDate::distantPast();
         let ui_state = Rc::new(RefCell::new(HostUiState::default()));
-        let (asset_tx, asset_rx) = bounded(256);
-        assets::start(asset_tx, false);
 
         while state.is_running() {
             drain_commands(&app, mtm, &state, &command_rx, &ui_state);
@@ -1585,7 +1556,7 @@ mod app {
             sync_session_sizes(&state, &ui_state);
             tick_session_runtimes(&ui_state);
             tick_session_animations(&ui_state);
-            handle_asset_updates(&ui_state, &asset_rx);
+            handle_asset_updates(&ui_state);
             draw_dirty_sessions(&ui_state);
             reap_closed_sessions(&state, &ui_state);
             thread::sleep(Duration::from_millis(10));
@@ -1598,8 +1569,6 @@ mod app {
             .for_each(|(_, session)| {
                 session.window.close();
             });
-
-        assets::stop();
 
         let _ = fs::remove_file(config.socket_path);
     }
@@ -1648,17 +1617,6 @@ mod app {
                 }) => {
                     let session_id = state.next_session_id();
 
-                    let assets_changed = {
-                        let mut ui = ui_state.borrow_mut();
-                        match configure_host_assets_for_start(&mut ui, &asset_config) {
-                            Ok(changed) => changed,
-                            Err(reason) => {
-                                let _ = reply_tx.send(HostReply::Error(reason));
-                                continue;
-                            }
-                        }
-                    };
-
                     match create_session(CreateSessionRequest {
                         app,
                         mtm,
@@ -1672,27 +1630,20 @@ mod app {
                         renderer_cache_config,
                         renderer_cache_enabled_configured,
                         requested_rendering_api: rendering_api,
+                        asset_config,
                         ui_state,
                     }) {
                         Ok((session, selected_rendering_api)) => {
                             let stats = session.runtime.stats.clone();
+                            let asset_context = session.asset_runtime.context();
                             ui_state.borrow_mut().sessions.insert(session_id, session);
                             state.register_session(
                                 session_id,
                                 "macos",
                                 rendering_api_stats_label(rendering_api, selected_rendering_api),
                                 stats,
+                                asset_context,
                             );
-
-                            if assets_changed {
-                                ui_state.borrow_mut().sessions.values_mut().for_each(|session| {
-                                    if let Err(err) =
-                                        session.runtime.process_tree_messages(vec![TreeMsg::AssetStateChanged])
-                                    {
-                                        eprintln!("macOS session rerender after asset update failed: {err}");
-                                    }
-                                });
-                            }
 
                             let _ = reply_tx.send(HostReply::StartSession {
                                 session_id,
@@ -1718,6 +1669,7 @@ mod app {
                 Ok(HostCommand::UploadTree { session_id, bytes }) => {
                     match ui_state.borrow_mut().sessions.get_mut(&session_id) {
                         Some(session) => {
+                            let _asset_context_guard = session.enter_asset_context();
                             if let Err(err) = session.runtime.upload_tree(&bytes) {
                                 eprintln!(
                                     "macOS upload_tree failed for session {session_id}: {err}"
@@ -1740,6 +1692,7 @@ mod app {
                 Ok(HostCommand::PatchTree { session_id, bytes }) => {
                     match ui_state.borrow_mut().sessions.get_mut(&session_id) {
                         Some(session) => {
+                            let _asset_context_guard = session.enter_asset_context();
                             let result = session.runtime.patch_tree(&bytes);
 
                             if let Err(err) = result {
@@ -1791,15 +1744,25 @@ mod app {
                     });
                 }
                 Ok(HostCommand::LoadFont {
+                    session_id,
                     family,
                     weight,
                     italic,
                     data,
                     reply_tx,
                 }) => {
-                    let reply = match services::load_font_bytes(&family, weight, italic, &data) {
-                        Ok(()) => HostReply::LoadFont,
-                        Err(reason) => HostReply::Error(reason),
+                    let reply = match ui_state.borrow().sessions.get(&session_id) {
+                        Some(session) => match services::load_font_bytes(
+                            &session.asset_runtime,
+                            &family,
+                            weight,
+                            italic,
+                            &data,
+                        ) {
+                            Ok(()) => HostReply::LoadFont,
+                            Err(reason) => HostReply::Error(reason),
+                        },
+                        None => HostReply::Error(format!("unknown session_id {session_id}")),
                     };
 
                     let _ = reply_tx.send(reply);
@@ -1809,25 +1772,19 @@ mod app {
                     asset_config,
                     reply_tx,
                 }) => {
-                    let reply = if ui_state.borrow().sessions.contains_key(&session_id) {
-                        let assets_changed = {
-                            let mut ui = ui_state.borrow_mut();
-                            configure_host_assets(&mut ui, asset_config)
-                        };
-
-                        if assets_changed {
-                            ui_state.borrow_mut().sessions.values_mut().for_each(|session| {
-                                if let Err(err) =
-                                    session.runtime.process_tree_messages(vec![TreeMsg::AssetStateChanged])
-                                {
-                                    eprintln!("macOS session rerender after asset update failed: {err}");
-                                }
-                            });
+                    let reply = match ui_state.borrow_mut().sessions.get_mut(&session_id) {
+                        Some(session) => {
+                            session.asset_runtime.configure(asset_config);
+                            let _asset_context_guard = session.enter_asset_context();
+                            match session
+                                .runtime
+                                .process_tree_messages(vec![TreeMsg::AssetStateChanged])
+                            {
+                                Ok(()) => HostReply::ConfigureAssets,
+                                Err(reason) => HostReply::Error(reason),
+                            }
                         }
-
-                        HostReply::ConfigureAssets
-                    } else {
-                        HostReply::Error(format!("unknown session_id {session_id}"))
+                        None => HostReply::Error(format!("unknown session_id {session_id}")),
                     };
 
                     let _ = reply_tx.send(reply);
@@ -1890,6 +1847,7 @@ mod app {
     }
 
     fn sync_session_size(session: &mut HostSession, draw_now: bool) -> Result<bool, String> {
+        let _asset_context_guard = session.enter_asset_context();
         let metrics = session_metrics(&session.window, &session.content_view);
 
         if metrics.render_size == session.logical_size
@@ -1989,32 +1947,26 @@ mod app {
             });
     }
 
-    fn handle_asset_updates(
-        ui_state: &Rc<RefCell<HostUiState>>,
-        asset_rx: &Receiver<emerge_skia::actors::TreeMsg>,
-    ) {
-        let mut saw_update = false;
-
-        while let Ok(message) = asset_rx.try_recv() {
-            if matches!(message, emerge_skia::actors::TreeMsg::AssetStateChanged) {
-                saw_update = true;
-            }
-        }
-
-        if !saw_update {
-            return;
-        }
-
+    fn handle_asset_updates(ui_state: &Rc<RefCell<HostUiState>>) {
         ui_state
             .borrow_mut()
             .sessions
             .values_mut()
             .for_each(|session| {
-                if let Err(err) = session
-                    .runtime
-                    .process_tree_messages(vec![TreeMsg::AssetStateChanged])
-                {
-                    eprintln!("macOS asset rerender failed: {err}");
+                let saw_update = session.asset_rx.as_ref().is_some_and(|asset_rx| {
+                    asset_rx.try_iter().fold(false, |saw_update, message| {
+                        saw_update || matches!(message, TreeMsg::AssetStateChanged)
+                    })
+                });
+
+                if saw_update {
+                    let _asset_context_guard = session.enter_asset_context();
+                    if let Err(err) = session
+                        .runtime
+                        .process_tree_messages(vec![TreeMsg::AssetStateChanged])
+                    {
+                        eprintln!("macOS asset rerender failed: {err}");
+                    }
                 }
             });
     }
@@ -2025,6 +1977,7 @@ mod app {
             .sessions
             .values_mut()
             .for_each(|session| {
+                let _asset_context_guard = session.enter_asset_context();
                 session.runtime.event_runtime.handle_timers();
 
                 if let Err(err) = process_runtime_messages(session) {
@@ -2053,6 +2006,7 @@ mod app {
                     return;
                 };
 
+                let _asset_context_guard = session.enter_asset_context();
                 if let Err(err) =
                     session
                         .runtime
@@ -2080,6 +2034,7 @@ mod app {
         renderer_cache_config: RendererCacheConfig,
         renderer_cache_enabled_configured: bool,
         requested_rendering_api: RequestedRenderingApi,
+        asset_config: StartSessionAssetConfig,
         ui_state: &'a Rc<RefCell<HostUiState>>,
     }
 
@@ -2099,8 +2054,15 @@ mod app {
             mut renderer_cache_config,
             renderer_cache_enabled_configured,
             requested_rendering_api,
+            asset_config,
             ui_state,
         } = request;
+
+        let asset_runtime = AssetRuntime::new();
+        let (asset_tx, asset_rx) = bounded(256);
+        asset_runtime.start(asset_tx, false);
+        configure_host_assets_for_start(&asset_runtime, &asset_config)?;
+        let _asset_context_guard = asset_runtime.enter();
 
         let window = create_window(app, mtm, title, width, height)?;
         let initial_content_view = window
@@ -2140,6 +2102,8 @@ mod app {
 
         Ok((
             HostSession {
+                asset_runtime,
+                asset_rx: Some(asset_rx),
                 window,
                 content_view,
                 _input_view: input_view,
@@ -2469,6 +2433,7 @@ mod app {
     }
 
     fn draw_session(session: &mut HostSession) -> Result<(), String> {
+        let _asset_context_guard = session.enter_asset_context();
         let draw_started_at = Instant::now();
         if let SessionSurface::Metal(surface) = &session.surface {
             let size = surface.metal_layer.drawableSize();
@@ -2584,6 +2549,7 @@ mod app {
     }
 
     fn process_runtime_messages(session: &mut HostSession) -> Result<(), String> {
+        let _asset_context_guard = session.enter_asset_context();
         drain_cursor_icon_changes(session);
         let messages = session.runtime.event_runtime.drain_tree_messages();
         let result = if messages.is_empty() {
@@ -2596,6 +2562,7 @@ mod app {
     }
 
     fn handle_runtime_input(session: &mut HostSession, event: InputEvent) -> Result<(), String> {
+        let _asset_context_guard = session.enter_asset_context();
         session.runtime.event_runtime.handle_input(event);
         process_runtime_messages(session)
     }
@@ -3625,6 +3592,7 @@ mod app {
                 };
 
                 roundtrip(command_tx, |reply_tx| HostCommand::LoadFont {
+                    session_id: frame.session_id,
                     family,
                     weight,
                     italic,
@@ -3927,6 +3895,15 @@ mod app {
         };
         let asset_timeout_ms = decode_u32(payload, &mut cursor)? as u64;
         let asset_config = decode_asset_config(payload, &mut cursor)?;
+        let fonts = decode_font_list(payload, &mut cursor)?
+            .into_iter()
+            .map(|font| services::OffscreenFont {
+                family: font.family,
+                path: font.path,
+                weight: font.weight,
+                italic: font.italic,
+            })
+            .collect();
 
         if cursor == payload.len() {
             Some((
@@ -3938,6 +3915,7 @@ mod app {
                     asset_mode,
                     asset_timeout_ms,
                     asset_config,
+                    fonts,
                 },
             ))
         } else {

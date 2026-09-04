@@ -651,7 +651,7 @@ viewport restart, and has bounded frames, leases, file descriptors, and RSS.
 - BW1/Gray2 unpack correctness when used as an Emerge video source;
 - DMA-BUF implicit and sync-file paths;
 - lease release on replace, hide, rejection, context loss, and shutdown;
-- raster, Wayland, DRM, headless, Vulkan experimental, and macOS routes.
+- raster, Wayland, DRM, headless, Vulkan, and macOS routes.
 
 ### End to end
 

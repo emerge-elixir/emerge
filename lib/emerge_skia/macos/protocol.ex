@@ -4,7 +4,7 @@ defmodule EmergeSkia.Macos.Protocol do
   import Bitwise
 
   @protocol_name "emerge_skia_macos"
-  @protocol_version 9
+  @protocol_version 10
 
   @log_level_debug 0
   @log_level_info 1
@@ -214,12 +214,13 @@ defmodule EmergeSkia.Macos.Protocol do
     asset_mode = encode_asset_mode(Map.fetch!(raster_opts, :asset_mode))
     asset_timeout_ms = Map.fetch!(raster_opts, :asset_timeout_ms)
     asset_payload = encode_asset_config(asset_config)
+    fonts = encode_fonts(Map.fetch!(asset_config, :fonts), Map.fetch!(asset_config, :priv_dir))
 
     <<byte_size(tree)::unsigned-big-32, tree::binary,
       Map.fetch!(raster_opts, :width)::unsigned-big-32,
       Map.fetch!(raster_opts, :height)::unsigned-big-32,
       Map.fetch!(raster_opts, :scale)::float-big-32, asset_mode,
-      asset_timeout_ms::unsigned-big-32, asset_payload::binary>>
+      asset_timeout_ms::unsigned-big-32, asset_payload::binary, fonts::binary>>
   end
 
   def decode_binary_reply(<<len::unsigned-big-32, data::binary-size(len)>>), do: {:ok, data}

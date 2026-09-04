@@ -6,13 +6,14 @@
 //! - `SceneRenderer` that executes scene nodes on backend-provided Skia surfaces
 //! - Font cache for text rendering
 
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 #[cfg(test)]
+use std::sync::OnceLock;
+#[cfg(test)]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use resvg::usvg;
@@ -603,10 +604,6 @@ impl Default for FontKey {
     }
 }
 
-static FONT_CACHE: OnceLock<Mutex<HashMap<FontKey, Arc<Typeface>>>> = OnceLock::new();
-static SYNTHETIC_LOGGED: OnceLock<Mutex<HashSet<FontKey>>> = OnceLock::new();
-static RENDER_LOG_ENABLED: AtomicBool = AtomicBool::new(false);
-
 fn default_font_cache() -> HashMap<FontKey, Arc<Typeface>> {
     let mut cache = HashMap::new();
     let font_mgr = FontMgr::new();
@@ -627,21 +624,20 @@ fn default_font_cache() -> HashMap<FontKey, Arc<Typeface>> {
     cache
 }
 
-fn get_font_cache() -> &'static Mutex<HashMap<FontKey, Arc<Typeface>>> {
-    FONT_CACHE.get_or_init(|| Mutex::new(default_font_cache()))
-}
-
-fn get_synthetic_log_cache() -> &'static Mutex<HashSet<FontKey>> {
-    SYNTHETIC_LOGGED.get_or_init(|| Mutex::new(HashSet::new()))
+fn asset_context() -> Arc<RendererAssetContext> {
+    crate::assets::current_renderer_context()
 }
 
 pub fn set_render_log_enabled(enabled: bool) {
-    RENDER_LOG_ENABLED.store(enabled, Ordering::Relaxed);
+    asset_context()
+        .render_log_enabled
+        .store(enabled, Ordering::Relaxed);
 }
 
-/// Get a typeface from the cache by key.
+/// Get a typeface from the renderer-local cache by key.
 pub fn get_typeface(key: &FontKey) -> Option<Arc<Typeface>> {
-    let cache = get_font_cache().lock().ok()?;
+    let context = asset_context();
+    let cache = context.font_cache.lock().ok()?;
     cache.get(key).cloned()
 }
 
@@ -683,9 +679,10 @@ pub fn make_font_with_style(family: &str, weight: u16, italic: bool, size: f32) 
             font.set_skew_x(-0.25);
         }
 
-        if RENDER_LOG_ENABLED.load(Ordering::Relaxed) {
+        let context = asset_context();
+        if context.render_log_enabled.load(Ordering::Relaxed) {
             let key = FontKey::new(family, weight, italic);
-            if let Ok(mut cache) = get_synthetic_log_cache().lock()
+            if let Ok(mut cache) = context.synthetic_logged.lock()
                 && cache.insert(key)
             {
                 eprintln!(
@@ -792,11 +789,6 @@ impl TextVisualMetricsCache {
 
 const TEXT_VISUAL_METRICS_CACHE_LIMIT: usize = 2048;
 
-thread_local! {
-    static TEXT_VISUAL_METRICS_CACHE: RefCell<TextVisualMetricsCache> =
-        RefCell::new(TextVisualMetricsCache::default());
-}
-
 pub(crate) fn measure_text_visual_metrics_with_font(font: &Font, text: &str) -> TextVisualMetrics {
     if text.is_empty() {
         return TextVisualMetrics {
@@ -860,15 +852,17 @@ pub(crate) fn measure_text_visual_metrics_cached_with_font(
     };
     let hash = text_visual_metrics_cache_hash(&lookup);
 
-    TEXT_VISUAL_METRICS_CACHE.with(|cache| {
-        if let Some(metrics) = cache.borrow().get(hash, &lookup) {
-            metrics
-        } else {
-            let metrics = measure_text_visual_metrics_with_font(font, text);
-            cache.borrow_mut().insert(hash, &lookup, metrics);
-            metrics
-        }
-    })
+    let context = asset_context();
+    let Ok(mut cache) = context.text_visual_metrics_cache.lock() else {
+        return measure_text_visual_metrics_with_font(font, text);
+    };
+    if let Some(metrics) = cache.get(hash, &lookup) {
+        metrics
+    } else {
+        let metrics = measure_text_visual_metrics_with_font(font, text);
+        cache.insert(hash, &lookup, metrics);
+        metrics
+    }
 }
 
 pub(crate) fn measure_text_visual_metrics(
@@ -901,8 +895,11 @@ pub fn load_font(family: &str, weight: u16, italic: bool, data: &[u8]) -> Result
         .new_from_data(data, 0)
         .ok_or_else(|| "Invalid font data".to_string())?;
 
-    let cache = get_font_cache();
-    let mut cache = cache.lock().map_err(|_| "Font cache lock poisoned")?;
+    let context = asset_context();
+    let mut cache = context
+        .font_cache
+        .lock()
+        .map_err(|_| "Font cache lock poisoned")?;
 
     cache.insert(FontKey::new(family, weight, italic), Arc::new(typeface));
     bump_font_cache_generation();
@@ -1051,62 +1048,69 @@ impl Default for RenderedVectorCache {
     }
 }
 
-static ASSET_RASTER_CACHE: OnceLock<Mutex<AssetRasterCache>> = OnceLock::new();
-static RENDERED_VECTOR_CACHE: OnceLock<Mutex<RenderedVectorCache>> = OnceLock::new();
-static FONT_CACHE_GENERATION: AtomicU64 = AtomicU64::new(1);
+pub(crate) struct RendererAssetContext {
+    font_cache: Mutex<HashMap<FontKey, Arc<Typeface>>>,
+    synthetic_logged: Mutex<HashSet<FontKey>>,
+    render_log_enabled: AtomicBool,
+    font_cache_generation: AtomicU64,
+    text_visual_metrics_cache: Mutex<TextVisualMetricsCache>,
+    raster_cache: Mutex<AssetRasterCache>,
+    vector_cache: Mutex<RenderedVectorCache>,
+}
+
+impl Default for RendererAssetContext {
+    fn default() -> Self {
+        Self {
+            font_cache: Mutex::new(default_font_cache()),
+            synthetic_logged: Mutex::new(HashSet::new()),
+            render_log_enabled: AtomicBool::new(false),
+            font_cache_generation: AtomicU64::new(1),
+            text_visual_metrics_cache: Mutex::new(TextVisualMetricsCache::default()),
+            raster_cache: Mutex::new(AssetRasterCache::default()),
+            vector_cache: Mutex::new(RenderedVectorCache::default()),
+        }
+    }
+}
 
 #[cfg(test)]
 static VECTOR_RASTERIZATION_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-fn get_asset_raster_cache() -> &'static Mutex<AssetRasterCache> {
-    ASSET_RASTER_CACHE.get_or_init(|| Mutex::new(AssetRasterCache::default()))
-}
-
-fn get_rendered_vector_cache() -> &'static Mutex<RenderedVectorCache> {
-    RENDERED_VECTOR_CACHE.get_or_init(|| Mutex::new(RenderedVectorCache::default()))
-}
-
 fn font_cache_generation() -> u64 {
-    FONT_CACHE_GENERATION.load(Ordering::Relaxed)
+    asset_context()
+        .font_cache_generation
+        .load(Ordering::Relaxed)
 }
 
 fn bump_font_cache_generation() -> u64 {
-    FONT_CACHE_GENERATION.fetch_add(1, Ordering::Relaxed) + 1
+    asset_context()
+        .font_cache_generation
+        .fetch_add(1, Ordering::Relaxed)
+        + 1
 }
 
-#[cfg(not(test))]
-pub fn clear_global_caches() {
-    if let Some(cache) = FONT_CACHE.get()
-        && let Ok(mut cache) = cache.lock()
-    {
+pub fn clear_renderer_asset_context() {
+    let context = asset_context();
+    if let Ok(mut cache) = context.font_cache.lock() {
         *cache = default_font_cache();
     }
-
-    if let Some(cache) = SYNTHETIC_LOGGED.get()
-        && let Ok(mut cache) = cache.lock()
-    {
+    if let Ok(mut cache) = context.synthetic_logged.lock() {
         cache.clear();
     }
-
-    if let Some(cache) = ASSET_RASTER_CACHE.get()
-        && let Ok(mut cache) = cache.lock()
-    {
+    if let Ok(mut cache) = context.raster_cache.lock() {
         *cache = AssetRasterCache::default();
     }
-
-    clear_rendered_vector_cache();
-
-    TEXT_VISUAL_METRICS_CACHE.with(|cache| cache.borrow_mut().clear());
-
-    skia_safe::graphics::purge_all_caches();
+    if let Ok(mut cache) = context.vector_cache.lock() {
+        *cache = RenderedVectorCache::default();
+    }
+    if let Ok(mut cache) = context.text_visual_metrics_cache.lock() {
+        cache.clear();
+    }
     bump_font_cache_generation();
 }
 
-#[cfg(test)]
-pub fn clear_global_caches() {}
-
 pub fn configure_asset_cache(max_entries: u64, max_bytes: u64) {
-    if let Ok(mut cache) = get_asset_raster_cache().lock() {
+    let context = asset_context();
+    if let Ok(mut cache) = context.raster_cache.lock() {
         cache.max_entries = max_entries;
         cache.max_bytes = max_bytes;
         evict_asset_rasters_if_needed(&mut cache);
@@ -1127,7 +1131,8 @@ pub fn asset_kind(id: &str) -> Option<AssetKind> {
 }
 
 pub(crate) fn cached_raster_asset_for_source(source: &str) -> Option<(String, u32, u32)> {
-    let mut cache = get_asset_raster_cache().lock().ok()?;
+    let context = asset_context();
+    let mut cache = context.raster_cache.lock().ok()?;
     let id = cache
         .entries
         .iter()
@@ -1140,7 +1145,8 @@ pub(crate) fn cached_raster_asset_for_source(source: &str) -> Option<(String, u3
 }
 
 fn cached_raster_contains(id: &str) -> bool {
-    get_asset_raster_cache()
+    asset_context()
+        .raster_cache
         .lock()
         .is_ok_and(|cache| cache.entries.contains_key(id))
 }
@@ -1160,7 +1166,8 @@ fn lookup_asset_raster(
     required_width: u32,
     required_height: u32,
 ) -> Option<Image> {
-    let mut cache = get_asset_raster_cache().lock().ok()?;
+    let context = asset_context();
+    let mut cache = context.raster_cache.lock().ok()?;
     let stamp = next_asset_raster_access_stamp(&mut cache);
     let entry = cache.entries.get_mut(id)?;
     if entry.source_generation != source_generation
@@ -1175,7 +1182,8 @@ fn lookup_asset_raster(
 }
 
 fn lookup_retained_asset_raster(id: &str) -> Option<(Image, u32, u32)> {
-    let mut cache = get_asset_raster_cache().lock().ok()?;
+    let context = asset_context();
+    let mut cache = context.raster_cache.lock().ok()?;
     let stamp = next_asset_raster_access_stamp(&mut cache);
     let entry = cache.entries.get_mut(id)?;
     entry.last_used = stamp;
@@ -1195,7 +1203,8 @@ fn store_asset_raster(record: &crate::assets::AssetRecord, decoded: RasterDecode
         return image;
     };
 
-    let Ok(mut cache) = get_asset_raster_cache().lock() else {
+    let context = asset_context();
+    let Ok(mut cache) = context.raster_cache.lock() else {
         return image;
     };
 
@@ -1266,7 +1275,7 @@ pub fn asset_memory_stats_snapshot() -> AssetMemoryStatsSnapshot {
         raster_cache_max_entries,
         raster_cache_max_bytes,
         mut raster_variants,
-    ) = get_asset_raster_cache().lock().map_or_else(
+    ) = asset_context().raster_cache.lock().map_or_else(
         |_| (0, 0, 0, 0, Vec::new()),
         |cache| {
             let variants = cache
@@ -1307,7 +1316,8 @@ pub fn asset_memory_stats_snapshot() -> AssetMemoryStatsSnapshot {
         vector_cache_bytes,
         vector_cache_max_entries,
         vector_cache_max_bytes,
-    ) = get_rendered_vector_cache()
+    ) = asset_context()
+        .vector_cache
         .lock()
         .map_or((0, 0, 0, 0), |cache| {
             (
@@ -1352,10 +1362,9 @@ fn evict_asset_rasters_if_needed(cache: &mut AssetRasterCache) {
     }
 }
 
+#[cfg(test)]
 fn clear_rendered_vector_cache() {
-    if let Some(cache) = RENDERED_VECTOR_CACHE.get()
-        && let Ok(mut cache) = cache.lock()
-    {
+    if let Ok(mut cache) = asset_context().vector_cache.lock() {
         *cache = RenderedVectorCache::default();
     }
 }
@@ -1397,7 +1406,8 @@ fn lookup_rendered_vector_variant(
     height: u32,
     kind: RenderedVectorVariantKind,
 ) -> Option<Image> {
-    let mut cache = get_rendered_vector_cache().lock().ok()?;
+    let context = asset_context();
+    let mut cache = context.vector_cache.lock().ok()?;
     let key = rendered_vector_key(asset_id, width, height, kind);
     let stamp = next_rendered_vector_access_stamp(&mut cache);
     let variant = cache.entries.get_mut(&key)?;
@@ -1437,7 +1447,8 @@ fn store_rendered_vector_variant(
         return;
     };
 
-    let Ok(mut cache) = get_rendered_vector_cache().lock() else {
+    let context = asset_context();
+    let Ok(mut cache) = context.vector_cache.lock() else {
         return;
     };
 
@@ -1460,7 +1471,8 @@ fn store_rendered_vector_variant(
 }
 
 fn clear_rendered_vector_variants(asset_id: &str) {
-    let Ok(mut cache) = get_rendered_vector_cache().lock() else {
+    let context = asset_context();
+    let Ok(mut cache) = context.vector_cache.lock() else {
         return;
     };
 
@@ -1645,7 +1657,7 @@ fn raster_image_from_rgba(width: u32, height: u32, rgba_pixels: &[u8]) -> Option
 }
 
 fn remove_asset_raster(id: &str) {
-    if let Ok(mut cache) = get_asset_raster_cache().lock()
+    if let Ok(mut cache) = asset_context().raster_cache.lock()
         && let Some(entry) = cache.entries.remove(id)
     {
         cache.total_bytes = cache.total_bytes.saturating_sub(entry.bytes);
@@ -7571,7 +7583,8 @@ fn rasterize_vector_tree_with_transform(
 
 #[cfg(test)]
 fn rendered_vector_cache_entry_count() -> usize {
-    get_rendered_vector_cache()
+    asset_context()
+        .vector_cache
         .lock()
         .map(|cache| cache.entries.len())
         .unwrap_or(0)
@@ -8586,7 +8599,8 @@ mod tests {
 
         let cached = store_asset_raster(&record, decoded);
         assert_eq!((cached.width(), cached.height()), (96, 96));
-        let cache = get_asset_raster_cache().lock().expect("raster cache");
+        let context = asset_context();
+        let cache = context.raster_cache.lock().expect("raster cache");
         let entry = cache.entries.get(id).expect("retained exact-size image");
         assert_eq!((entry.width, entry.height), (96, 96));
         assert_eq!(entry.bytes, 96 * 96 * 4);
@@ -12267,6 +12281,52 @@ mod tests {
         assert!(font.is_baseline_snap());
         assert_eq!(font.edging(), FontEdging::SubpixelAntiAlias);
         assert_eq!(font.hinting(), FontHinting::Normal);
+    }
+
+    #[test]
+    fn renderer_asset_contexts_isolate_registered_fonts_and_shutdown() {
+        let font_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../priv/test_assets/Lobster-Regular.ttf");
+        let data = std::fs::read(&font_path).expect("lobster font asset should exist");
+        let first = crate::assets::AssetRuntime::new();
+        let second = crate::assets::AssetRuntime::new();
+        first.configure(crate::assets::AssetConfig {
+            cache_max_entries: 3,
+            cache_max_bytes: 12_345,
+            ..crate::assets::AssetConfig::default()
+        });
+        second.configure(crate::assets::AssetConfig {
+            cache_max_entries: 7,
+            cache_max_bytes: 67_890,
+            ..crate::assets::AssetConfig::default()
+        });
+
+        crate::services::load_font_bytes(&first, "first-renderer-font", 400, false, &data)
+            .expect("first renderer font should load");
+        crate::services::load_font_bytes(&second, "second-renderer-font", 400, false, &data)
+            .expect("second renderer font should load");
+
+        {
+            let _guard = first.enter();
+            assert!(get_typeface(&FontKey::new("first-renderer-font", 400, false)).is_some());
+            assert!(get_typeface(&FontKey::new("second-renderer-font", 400, false)).is_none());
+            let stats = asset_memory_stats_snapshot();
+            assert_eq!(stats.raster_cache_max_entries, 3);
+            assert_eq!(stats.raster_cache_max_bytes, 12_345);
+        }
+        {
+            let _guard = second.enter();
+            assert!(get_typeface(&FontKey::new("first-renderer-font", 400, false)).is_none());
+            assert!(get_typeface(&FontKey::new("second-renderer-font", 400, false)).is_some());
+            let stats = asset_memory_stats_snapshot();
+            assert_eq!(stats.raster_cache_max_entries, 7);
+            assert_eq!(stats.raster_cache_max_bytes, 67_890);
+        }
+
+        drop(first);
+
+        let _guard = second.enter();
+        assert!(get_typeface(&FontKey::new("second-renderer-font", 400, false)).is_some());
     }
 
     #[test]

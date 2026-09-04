@@ -31,11 +31,11 @@ resurrected by the merge.
 
 The public `main` and `v0.3.4` refs were both verified at `6fc99f6`. On the
 current reconciled working tree, `./ci-tests.sh all` passes formatting,
-warnings-as-errors compilation, strict Credo, Clippy, 438 Elixir tests including
-the full sweep with three hardware tests excluded, 1,005 Rust tests plus the
-benchmark fixture, and Dialyzer. Warning-free docs and unpacked-package
-all-target and embedded-CPU Cargo checks also pass with the coordinated sibling
-VideoInterop source. Registry-only validation remains blocked by publication.
+warnings-as-errors compilation, strict Credo, Clippy, 443 Elixir tests including
+the full sweep with three hardware tests excluded, 1,007 Rust unit tests plus
+the benchmark fixture, and Dialyzer. Warning-free docs and unpacked-package
+all-target and embedded-CPU Cargo checks also pass with published VideoInterop
+dependencies.
 
 ## Executive summary
 
@@ -51,37 +51,30 @@ The range adds substantial and valuable functionality:
   dithering;
 - touch scrolling, centered-text, and Nerves cross-compilation fixes.
 
-It is not ready to tag as 0.4.0. Public dependency publication, registry-only
-lock/package validation, exact release dates, and a clean pushed release commit
-remain blockers. Gray4 removal, ancestry reconciliation, package source closure,
-and release gating are complete. Vulkan hardware and multi-renderer lifecycle
-qualification remain open.
+It is not ready to tag as 0.4.0. A clean pushed release commit and exact-tag CI
+remain blockers. Public VideoInterop publication, registry-only lock and package
+validation, Gray4 removal, ancestry reconciliation, package source closure,
+release gating, and per-renderer asset ownership are complete. Remaining Vulkan
+hardware qualification is tracked separately from the supported API contract.
 
 ## Release blockers
 
-### 1. Public registry dependencies are unavailable
+### 1. Public registry dependencies verified
 
-The candidate depends on packages that are not published:
+The candidate now resolves published VideoInterop 0.1.0 directly:
 
-- `mix.exs` declares `video_interop ~> 0.1.0` unless
-  `VIDEO_INTEROP_PATH` supplies a sibling checkout.
-- `native/emerge_skia/Cargo.toml` declares `video-interop = 0.1.0` and
-  patches crates.io to `../../../video_interop/rust/video-interop`.
-- `mix.lock` has no `video_interop` entry.
-- The Cargo lock records the path package without a registry source/checksum.
+- `mix.exs` declares `video_interop ~> 0.1.0` without a path override.
+- `native/emerge_skia/Cargo.toml` declares `video-interop = 0.1.0` without a
+  crates.io patch.
+- `mix.lock` records the Hex package checksum.
+- The Cargo lock records the crates.io source and checksum
+  `74c9b748ac35e4feb2d5a88043fd05dd277d0ac5ccf0883901550c8eea60ce49`.
 
-Registry checks at audit time returned no `video_interop` Hex package and no
-`video-interop` crate. A clean `mix deps.get` failed for that reason.
+Registry-only source validation passes 1,007 Rust tests, 443 Elixir tests, and a
+forced Emerge source build. Cargo metadata resolves the crate from the Cargo
+registry rather than a sibling checkout.
 
-Before release:
-
-1. Publish the Rust crate.
-2. Publish the Elixir package.
-3. Remove the Cargo path patch.
-4. Regenerate both locks from registry sources.
-5. Build in a clean checkout without sibling repositories or path variables.
-
-### 2. Hex package Cargo sources corrected; registry validation remains blocked
+### 2. Hex package Cargo sources and registry validation complete
 
 `native/emerge_skia/Cargo.toml` declares five explicit benchmark targets. The
 first audited package omitted `native/emerge_skia/benches/`, so Cargo rejected
@@ -90,10 +83,10 @@ the unpacked manifest before compilation.
 `mix.exs` now packages the benchmark sources, native support files, the ordered
 public tutorials, migration notes, and user-facing references. Maintainer-only
 internal guides remain outside the Hex package. Documentation is validated from
-the unpacked archive. Registry-only native compilation remains blocked until the
-published `video-interop` crate replaces the coordinated sibling path patch.
+the unpacked archive. The unpacked package resolves VideoInterop from Hex and
+crates.io and completes its forced native source build without sibling paths.
 
-The final package gate remains:
+The final package gate is:
 
 ```bash
 mix hex.build --unpack
@@ -101,7 +94,7 @@ cd emerge-0.4.0/native/emerge_skia
 cargo check --locked --no-default-features --features embedded-cpu
 ```
 
-Run it without sibling paths after VideoInterop publication.
+Run it without sibling paths before the final Emerge tag.
 
 ### 3. Malformed Gray4 output removed from the accepted contract
 
@@ -147,35 +140,25 @@ package checks even on manual dispatch, then verifies required macOS assets
 before publication. This removes the former path where a successful artifact
 matrix or manual dispatch could publish unvalidated source.
 
-### 6. Asset runtime ownership is incompatible with multiple native renderers
+### 6. Per-renderer asset runtime ownership completed
 
-The public viewport guide says multiple windows may run concurrently, but the
-native asset subsystem is process-global:
+Every `RendererResource` now owns an `AssetRuntime`. Its worker, source policy,
+source status, encoded records, registered fonts, text metrics, decoded raster
+LRU, rendered vector variants, generations, and diagnostics belong only to that
+renderer. Worker and backend threads enter the owning context before layout,
+asset, render, and statistics work. Shutdown stops and joins only the owning
+worker.
 
-- starting a renderer stops the existing asset worker;
-- starting a renderer clears shared source status;
-- `configure_assets_nif` accepts a renderer resource but ignores it;
-- stopping any renderer stops global assets and clears global caches;
-- worker thread handles are discarded rather than joined.
+The external macOS host applies the same model per session. Asset worker
+notifications carry no global destination and rerender only the owning session.
+Offscreen rendering creates a temporary runtime, configures and loads its fonts,
+renders, then drops it without touching live renderers.
 
-A second Wayland or headless renderer can therefore replace the first
-renderer's asset configuration and rerender destination. Stopping either
-renderer can invalidate the other. A stale worker can also outlive one renderer
-lifetime and mutate state shared with the next.
-
-Move source status, configuration, worker ownership, and tree notifications into
-a per-`RendererResource` asset runtime. A decoded payload cache may remain
-process-wide if it is separately bounded, generation-safe, and independent of
-renderer lifecycle.
-
-Add tests that:
-
-- run two native headless renderers with different asset roots;
-- load delayed assets in both;
-- stop one renderer while the other remains active;
-- restart a renderer while prior asset work is queued;
-- verify no stale status, cache invalidation, or rerender routing crosses the
-  renderer boundary.
+Validation covers two concurrent headless renderers resolving the same logical
+path from different roots, stopping one while the other reloads changed source
+content, renderer-local font registration, and temporary offscreen font
+isolation. Exact source-build CI on macOS remains the release gate for the
+external-host route because Linux cross-checking lacks a macOS SDK.
 
 ### 7. Decoded raster retention is bounded; decode expansion still needs a hard cap
 
@@ -184,8 +167,8 @@ retention, separate encoded source metadata, checked decoded-byte accounting,
 and periodic asset-memory diagnostics.
 
 A remaining limit is maximum source dimensions/decoded pixels. Runtime file-size
-limits constrain encoded bytes, not decompression expansion. Keep this residual
-work with the multi-renderer lifecycle tests above.
+limits constrain encoded bytes, not decompression expansion. This is independent
+of the completed renderer-lifecycle isolation work.
 
 ### 8. Vulkan and video qualification is incomplete
 
@@ -200,9 +183,9 @@ matrices, including:
 - delayed/error fence and device-loss injection;
 - long FD/RSS/cache/lease soaks.
 
-Either complete these gates before calling the paths stable, or clearly mark the
-Vulkan/video functionality experimental in 0.4 and exclude it from compatibility
-claims until qualification is complete.
+These remaining platform checks do not change the supported Vulkan/video API
+status. Complete or explicitly defer them before release, and keep hardware-
+specific compatibility claims scoped to the matrices actually run.
 
 ## API and documentation findings
 
@@ -238,7 +221,7 @@ source builds, and runs Linux CI with Rust 1.91 and current stable.
   `test_support.rs` exclusion was removed.
 - `Options.rendering_api_start_error/1` returns `nil` in every branch and has a
   test that only confirms the dead behavior.
-- Registry-only package validation still depends on VideoInterop publication.
+- Registry-only package validation now uses the published VideoInterop Hex and Cargo artifacts.
 
 ## Commit-structure review
 
@@ -266,17 +249,16 @@ separate concerns where practical:
 
 ## Remaining execution order
 
-1. Publish VideoInterop dependencies and regenerate locks.
-2. Repeat the unpacked Hex package checks from registry-only sources.
-3. Resolve or explicitly defer per-renderer asset runtime ownership.
-4. Complete or explicitly defer Vulkan/video hardware qualification.
-5. Set final changelog dates and tag only from a clean, pushed commit descended
-   from `v0.3.4`.
+1. Push the candidate and validate the per-session macOS asset route in exact source-build CI.
+2. Verify the final changelog date and tag only from that clean pushed commit descended from `v0.3.4`.
+3. Continue Vulkan/video hardware qualification under its dedicated platform plan.
 
 ## Audit validation performed
 
 This audit used Git history/tree comparisons, manifest and workflow review,
-public registry checks, full local CI, warning-free docs, and unpacked Hex
-package Cargo probes for all targets and embedded CPU. The final probes still
-use the coordinated sibling VideoInterop source because the packages are not
-published. No new hardware qualification was performed as part of this audit.
+public registry checks, full local CI, warning-free docs, unpacked Hex package
+Cargo probes for all targets and embedded CPU, concurrent renderer asset-root
+isolation, worker-shutdown isolation, renderer-local fonts, and temporary
+offscreen font contexts. Registry-only source and unpacked-package native builds
+use published VideoInterop artifacts. No new hardware qualification or native
+macOS execution was performed as part of this audit.

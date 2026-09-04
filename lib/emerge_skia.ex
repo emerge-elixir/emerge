@@ -66,10 +66,10 @@ defmodule EmergeSkia do
   | Backend/mode | Rendering APIs | Fallback | Capture | Video |
   |---|---|---|---|---|
   | macOS | `:auto`, `:metal`, `:raster` | `:auto` falls back from Metal to raster | No | No |
-  | Wayland | `:auto`, `:opengl`, `:raster`, experimental `:vulkan` | `:auto` falls back from OpenGL to raster | Yes | OpenGL/Vulkan when supported |
-  | DRM | `:auto`, `:opengl`, `:raster`, experimental `:vulkan` | `:auto` falls back from OpenGL to raster GPU upload | Yes | OpenGL/Vulkan when supported |
+  | Wayland | `:auto`, `:opengl`, `:raster`, `:vulkan` | `:auto` falls back from OpenGL to raster | Yes | OpenGL/Vulkan when supported |
+  | DRM | `:auto`, `:opengl`, `:raster`, `:vulkan` | `:auto` falls back from OpenGL to raster GPU upload | Yes | OpenGL/Vulkan when supported |
   | headless binary | `:auto`, `:opengl`, `:raster` | `:auto` falls back from OpenGL to raster | Yes | No |
-  | headless PRIME | `:auto`, `:opengl`, experimental `:vulkan` | None | No | Produces ABGR8888 DMA-BUF frames |
+  | headless PRIME | `:auto`, `:opengl`, `:vulkan` | None | No | Produces ABGR8888 DMA-BUF frames |
 
   Explicit Vulkan never falls back. DRM Vulkan requires
   `vulkan_drm_node` in addition to the KMS `drm_card`.
@@ -89,7 +89,7 @@ defmodule EmergeSkia do
         compiled_vulkan_backends: []
 
   Headless does not appear in `compiled_backends`. Add `:headless` to
-  `compiled_vulkan_backends` only for experimental headless Vulkan PRIME.
+  `compiled_vulkan_backends` to build headless Vulkan PRIME support.
 
   ## Options
 
@@ -367,7 +367,11 @@ defmodule EmergeSkia do
   The font is registered by name and can be used with `Font.family/1` in elements.
   Load different variants (bold, italic) with separate calls using appropriate weight/italic params.
 
+  The registration belongs only to `renderer` and does not change any other
+  renderer or offscreen render.
+
   ## Parameters
+  - `renderer` - Renderer returned by `start/1`
   - `name` - Font family name to register (e.g., "my-font")
   - `weight` - Font weight (100-900, 400=normal, 700=bold)
   - `italic` - Whether this is an italic variant
@@ -375,19 +379,19 @@ defmodule EmergeSkia do
 
   ## Example
 
-      # Load font variants
-      :ok = EmergeSkia.load_font_file("my-font", 400, false, "priv/fonts/MyFont-Regular.ttf")
-      :ok = EmergeSkia.load_font_file("my-font", 700, false, "priv/fonts/MyFont-Bold.ttf")
-      :ok = EmergeSkia.load_font_file("my-font", 400, true, "priv/fonts/MyFont-Italic.ttf")
+      # Load font variants into one renderer
+      :ok = EmergeSkia.load_font_file(renderer, "my-font", 400, false, "priv/fonts/MyFont-Regular.ttf")
+      :ok = EmergeSkia.load_font_file(renderer, "my-font", 700, false, "priv/fonts/MyFont-Bold.ttf")
+      :ok = EmergeSkia.load_font_file(renderer, "my-font", 400, true, "priv/fonts/MyFont-Italic.ttf")
 
       # Use in elements
       el([Font.family("my-font"), Font.size(16)], text("Hello"))
       el([Font.family("my-font"), Font.bold()], text("Bold text"))
   """
-  @spec load_font_file(String.t(), non_neg_integer(), boolean(), Path.t()) ::
+  @spec load_font_file(renderer(), String.t(), non_neg_integer(), boolean(), Path.t()) ::
           :ok | {:error, term()}
-  def load_font_file(name, weight, italic, path) do
-    Assets.load_font_file(name, weight, italic, path)
+  def load_font_file(renderer, name, weight, italic, path) do
+    Assets.load_font_file(renderer, name, weight, italic, path)
   end
 
   # ===========================================================================
