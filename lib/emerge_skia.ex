@@ -82,14 +82,20 @@ defmodule EmergeSkia do
 
   Wayland supports `:cpu` and `:gpu_upload`. DRM supports `:gpu_upload`.
 
-  Runtime backends must be compiled into the NIF:
+  Runtime backends and their GPU APIs must be compiled into the NIF:
 
       config :emerge,
-        compiled_backends: [:wayland, :drm],
-        compiled_vulkan_backends: []
+        compiled_backends: [
+          wayland: [:opengl],
+          drm: [:opengl, :vulkan],
+          headless: [:vulkan]
+        ]
 
-  Headless does not appear in `compiled_backends`. Add `:headless` to
-  `compiled_vulkan_backends` to build headless Vulkan PRIME support.
+  Use `:all` to compile every GPU API supported by one backend, for example
+  `[drm: :all]`. Use an exact list such as `[drm: [:vulkan]]` to omit OpenGL.
+  Atom entries remain the compatibility shorthand, selecting OpenGL on Linux
+  and Metal on macOS: `[:wayland, :drm]`. Headless raster rendering requires no
+  matrix entry.
 
   ## Options
 

@@ -43,40 +43,56 @@ Vulkan headers/loaders must also be available for Vulkan builds.
 
 ## Build selected backends
 
-Backend features come from compile-time application config:
+Backend features come from one compile-time backend/API matrix:
 
 ```elixir
 # config/config.exs
 config :emerge,
-  compiled_backends: [:wayland, :drm],
-  compiled_vulkan_backends: []
+  compiled_backends: [
+    wayland: [:opengl],
+    drm: [:opengl, :vulkan],
+    headless: [:vulkan]
+  ]
 ```
+
+Each value is `:all` or an exact GPU API list. Wayland, DRM, and headless
+support `:opengl` and `:vulkan`; macOS supports `:metal`. Atom entries retain
+the compatibility behavior: `[:wayland, :drm]` selects OpenGL for both.
 
 The release artifact profiles are:
 
 | Target | Default artifact | Additional variants |
 |---|---|---|
-| `x86_64-unknown-linux-gnu` | Wayland/OpenGL | DRM/OpenGL, combined Wayland/DRM, minimal raster, Vulkan |
-| `aarch64-unknown-linux-gnu` | Wayland/OpenGL | DRM/OpenGL, combined Wayland/DRM, minimal raster, Vulkan |
+| `x86_64-unknown-linux-gnu` | Wayland/OpenGL | DRM/OpenGL, combined Wayland/DRM, minimal raster, Vulkan-only Wayland/DRM/headless, combined Vulkan/OpenGL |
+| `aarch64-unknown-linux-gnu` | Wayland/OpenGL | DRM/OpenGL, combined Wayland/DRM, minimal raster, Vulkan-only Wayland/DRM/headless, combined Vulkan/OpenGL |
 | `arm-unknown-linux-gnueabihf` | Minimal raster | DRM/headless OpenGL |
 
 A renderer-only embedded application selects the minimal raster artifact with:
 
 ```elixir
 config :emerge,
-  compiled_backends: [],
-  compiled_vulkan_backends: []
+  compiled_backends: []
 ```
 
 This is the NameBadge profile. It contains CPU raster rendering, registered
 fonts, image decoding, and SVG rendering without desktop or video dependencies.
-On 32-bit ARM, `compiled_backends: [:drm]` selects the OpenGL artifact, which also
-supports headless OpenGL rendering.
+On 32-bit ARM, `compiled_backends: [drm: [:opengl]]` selects the OpenGL artifact,
+which also supports headless OpenGL rendering.
 
-On 64-bit Linux, any valid non-empty `compiled_vulkan_backends` selection uses
-the Vulkan artifact. The artifact includes the Wayland, DRM, and headless
-Vulkan routes so it can satisfy every supported 64-bit Linux Vulkan profile.
-See `EmergeSkia.start/1` for valid backend and rendering API combinations.
+Use an exact API list to exclude the other GPU API. For example, an RPi5 DRM
+build can omit all OpenGL code with:
+
+```elixir
+config :emerge,
+  compiled_backends: [drm: [:vulkan]]
+```
+
+On 64-bit Linux this selects the `drm_vulkan` artifact. Equivalent
+`wayland_vulkan` and `headless_vulkan` artifacts are available. `[drm: :all]`
+or `[drm: [:opengl, :vulkan]]` includes both APIs and selects the comprehensive
+`vulkan` artifact; custom combinations not covered by the release matrix build
+from source. See `EmergeSkia.start/1` for valid backend and rendering API
+combinations.
 
 ## Nerves cross-builds
 

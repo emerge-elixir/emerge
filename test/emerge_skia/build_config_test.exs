@@ -9,6 +9,70 @@ defmodule EmergeSkia.BuildConfigTest do
     assert BuildConfig.normalize_compiled_backends!([:drm, :wayland, :drm]) == [:wayland, :drm]
   end
 
+  test "compiled backend matrix selects APIs per backend" do
+    assert BuildConfig.normalize_compiled_backend_matrix!(drm: :all) == [
+             drm: [:opengl, :vulkan]
+           ]
+
+    assert BuildConfig.normalize_compiled_backend_matrix!(
+             headless: [:vulkan],
+             drm: [:opengl]
+           ) == [drm: [:opengl], headless: [:vulkan]]
+
+    assert BuildConfig.normalize_compiled_backend_matrix!([:drm]) == [drm: [:opengl]]
+
+    matrix = BuildConfig.normalize_compiled_backend_matrix!(drm: [:vulkan])
+    assert EmergeSkia.BuildConfig.Schema.presenter_backends(matrix) == [:drm]
+    assert EmergeSkia.BuildConfig.Schema.api_backends(matrix, :opengl) == []
+    assert EmergeSkia.BuildConfig.Schema.api_backends(matrix, :vulkan) == [:drm]
+  end
+
+  test "compiled backend matrix maps OpenGL, Vulkan, and all selections to Cargo features" do
+    for {matrix_config, expected_features} <- [
+          {[wayland: [:opengl]], ["wayland"]},
+          {[wayland: [:vulkan]], ["wayland-vulkan"]},
+          {[wayland: :all], ["wayland-all"]},
+          {[drm: [:opengl]], ["drm"]},
+          {[drm: [:vulkan]], ["drm-vulkan"]},
+          {[drm: :all], ["drm-all"]},
+          {[headless: [:opengl]], ["headless-opengl"]},
+          {[headless: [:vulkan]], ["headless-vulkan"]},
+          {[headless: :all], ["headless-all"]},
+          {[macos: :all], ["macos"]}
+        ] do
+      matrix = BuildConfig.normalize_compiled_backend_matrix!(matrix_config)
+      presenters = EmergeSkia.BuildConfig.Schema.presenter_backends(matrix)
+      opengl = EmergeSkia.BuildConfig.Schema.api_backends(matrix, :opengl)
+      vulkan = EmergeSkia.BuildConfig.Schema.api_backends(matrix, :vulkan)
+
+      assert BuildConfig.compiled_backends_to_rustler_features(
+               presenters,
+               vulkan,
+               opengl
+             ) == expected_features
+    end
+  end
+
+  test "compiled backend matrix rejects duplicate backends and unsupported APIs" do
+    assert_raise ArgumentError, ~r/must contain each backend once/, fn ->
+      BuildConfig.normalize_compiled_backend_matrix!([:drm, drm: [:vulkan]])
+    end
+
+    assert_raise ArgumentError, ~r/unsupported APIs for :macos/, fn ->
+      BuildConfig.normalize_compiled_backend_matrix!(macos: [:vulkan])
+    end
+
+    assert_raise ArgumentError, ~r/requires at least one API for :drm/, fn ->
+      BuildConfig.normalize_compiled_backend_matrix!(drm: [])
+    end
+  end
+
+  test "compiled backend matrix cannot be mixed with legacy API lists" do
+    assert_raise ArgumentError, ~r/cannot be combined/, fn ->
+      EmergeSkia.BuildConfig.Schema.resolve!([drm: [:vulkan]], [], [:drm])
+    end
+  end
+
   test "compiled_backends_to_rustler_features returns stable feature order" do
     assert BuildConfig.compiled_backends_to_rustler_features([:drm, :wayland]) == [
              "wayland",
@@ -40,6 +104,28 @@ defmodule EmergeSkia.BuildConfigTest do
              [:wayland],
              [:wayland, :headless]
            ) == ["wayland-all", "headless-all"]
+  end
+
+  test "compiled_backends_to_rustler_features supports Vulkan without OpenGL" do
+    assert BuildConfig.compiled_backends_to_rustler_features(
+             [:wayland],
+             [:wayland],
+             []
+           ) == ["wayland-vulkan"]
+
+    assert BuildConfig.compiled_backends_to_rustler_features([:drm], [:drm], []) == [
+             "drm-vulkan"
+           ]
+
+    assert BuildConfig.compiled_backends_to_rustler_features([], [:headless], []) == [
+             "headless-vulkan"
+           ]
+  end
+
+  test "compiled_backends_to_rustler_features supports CPU-presented Wayland raster" do
+    assert BuildConfig.compiled_backends_to_rustler_features([:wayland], [], []) == [
+             "wayland-core"
+           ]
   end
 
   test "load_native_runtime? skips Rustler on macOS-only runtime builds" do
@@ -208,6 +294,16 @@ defmodule EmergeSkia.BuildConfigTest do
 
       assert {:ok, %{variant: :vulkan, vulkan_backends: [:headless]}} =
                BuildConfig.precompiled_profile(%{}, [], [:headless], target)
+
+      assert {:ok,
+              %{variant: :headless_vulkan, vulkan_backends: [:headless], opengl_backends: []}} =
+               BuildConfig.precompiled_profile(%{}, [], [:headless], [], target)
+
+      assert {:ok, %{variant: :wayland_vulkan, vulkan_backends: [:wayland], opengl_backends: []}} =
+               BuildConfig.precompiled_profile(%{}, [:wayland], [:wayland], [], target)
+
+      assert {:ok, %{variant: :drm_vulkan, vulkan_backends: [:drm], opengl_backends: []}} =
+               BuildConfig.precompiled_profile(%{}, [:drm], [:drm], [], target)
     end
 
     assert {:ok, %{variant: nil, backends: [], vulkan_backends: []}} =
@@ -248,6 +344,11 @@ defmodule EmergeSkia.BuildConfigTest do
     vulkan_variants = BuildConfig.precompiled_variants(%{}, [], [:headless])
     assert vulkan_variants["x86_64-unknown-linux-gnu"][:vulkan].(%{})
     assert vulkan_variants["aarch64-unknown-linux-gnu"][:vulkan].(%{})
+
+    vulkan_only_variants = BuildConfig.precompiled_variants(%{}, [:drm], [:drm], [])
+    assert vulkan_only_variants["x86_64-unknown-linux-gnu"][:drm_vulkan].(%{})
+    assert vulkan_only_variants["aarch64-unknown-linux-gnu"][:drm_vulkan].(%{})
+    refute vulkan_only_variants["x86_64-unknown-linux-gnu"][:vulkan].(%{})
 
     arm_raster_variants =
       BuildConfig.precompiled_variants(%{"MIX_TARGET" => "trellis"}, [], [])
@@ -338,10 +439,22 @@ defmodule EmergeSkia.BuildConfigTest do
              end
            )
 
+    refute BuildConfig.force_precompiled_build?(
+             checksum_path: __ENV__.file,
+             compiled_backends: [:drm],
+             compiled_vulkan_backends: [:drm],
+             compiled_opengl_backends: [],
+             env: %{},
+             target_resolver: fn _targets, _nif_versions ->
+               {:ok, "nif-2.15-aarch64-unknown-linux-gnu"}
+             end
+           )
+
     assert BuildConfig.force_precompiled_build?(
              checksum_path: __ENV__.file,
              compiled_backends: [:drm],
              compiled_vulkan_backends: [:drm],
+             compiled_opengl_backends: [],
              env: %{"MIX_TARGET" => "trellis"},
              target_resolver: fn _targets, _nif_versions ->
                {:ok, "nif-2.15-arm-unknown-linux-gnueabihf"}
@@ -443,6 +556,27 @@ defmodule EmergeSkia.BuildConfigTest do
              [:headless, :wayland],
              [:wayland]
            ) == [:wayland, :headless]
+  end
+
+  test "normalize_compiled_opengl_backends! accepts presenter and independent headless routes" do
+    assert BuildConfig.normalize_compiled_opengl_backends!(
+             [:headless, :drm],
+             [:drm]
+           ) == [:drm, :headless]
+  end
+
+  test "normalize_compiled_opengl_backends! rejects invalid and unavailable backends" do
+    assert_raise ArgumentError, ~r/must be a list of backend atoms/, fn ->
+      BuildConfig.normalize_compiled_opengl_backends!(:drm, [:drm])
+    end
+
+    assert_raise ArgumentError, ~r/must contain only :wayland, :drm, and :headless/, fn ->
+      BuildConfig.normalize_compiled_opengl_backends!([:macos], [:macos])
+    end
+
+    assert_raise ArgumentError, ~r/must be a subset of compiled_backends/, fn ->
+      BuildConfig.normalize_compiled_opengl_backends!([:drm], [:wayland])
+    end
   end
 
   test "normalize_compiled_vulkan_backends! rejects invalid shapes and unavailable backends" do

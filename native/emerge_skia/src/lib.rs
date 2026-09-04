@@ -15,7 +15,7 @@ use std::{
 };
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
+    all(feature = "wayland-core", target_os = "linux"),
     all(feature = "drm-core", target_os = "linux")
 ))]
 use crossbeam_channel::unbounded;
@@ -61,9 +61,9 @@ use assets::{AssetConfig, AssetContext, AssetRuntime};
 #[cfg(all(feature = "drm-core", target_os = "linux"))]
 use backend::drm;
 use backend::wake::BackendWakeHandle;
-#[cfg(all(feature = "wayland", target_os = "linux"))]
+#[cfg(all(feature = "wayland-core", target_os = "linux"))]
 use backend::wayland;
-#[cfg(all(feature = "wayland", target_os = "linux"))]
+#[cfg(all(feature = "wayland-core", target_os = "linux"))]
 use backend::wayland_config::WaylandConfig;
 #[cfg(all(feature = "drm-core", target_os = "linux"))]
 use cursor::{CursorState, SharedCursorState};
@@ -74,7 +74,7 @@ use events::{CursorIcon, SpawnEventActorConfig, spawn_event_actor};
 use linux_wait::EventFd;
 use native_log::NativeLogRelay;
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
+    all(feature = "wayland-core", target_os = "linux"),
     all(feature = "drm-core", target_os = "linux")
 ))]
 use renderer::set_render_log_enabled;
@@ -699,7 +699,7 @@ mod atoms {
 enum BackendKind {
     #[cfg(feature = "macos")]
     Macos,
-    #[cfg(all(feature = "wayland", target_os = "linux"))]
+    #[cfg(all(feature = "wayland-core", target_os = "linux"))]
     Wayland,
     #[cfg(all(feature = "drm-core", target_os = "linux"))]
     Drm,
@@ -836,7 +836,7 @@ struct RendererRuntimeInfo {
 
 #[cfg_attr(
     not(any(
-        all(feature = "wayland", target_os = "linux"),
+        all(feature = "wayland-core", target_os = "linux"),
         all(feature = "drm-core", target_os = "linux")
     )),
     allow(dead_code)
@@ -881,7 +881,7 @@ pub(crate) struct InputTargetRelay {
 impl InputTargetRelay {
     #[cfg_attr(
         not(any(
-            all(feature = "wayland", target_os = "linux"),
+            all(feature = "wayland-core", target_os = "linux"),
             all(feature = "drm-core", target_os = "linux")
         )),
         allow(dead_code)
@@ -911,7 +911,7 @@ impl InputTargetRelay {
         }
     }
 
-    #[cfg(all(feature = "wayland", target_os = "linux"))]
+    #[cfg(all(feature = "wayland-core", target_os = "linux"))]
     fn send_close_requested(&self, close_signal_log: bool) {
         let target = *self
             .target
@@ -1059,8 +1059,8 @@ impl LatestFrameStore {
 
     #[cfg_attr(
         not(any(
-            all(feature = "wayland", target_os = "linux"),
-            all(feature = "drm", target_os = "linux")
+            all(feature = "wayland-core", target_os = "linux"),
+            all(feature = "drm-core", target_os = "linux")
         )),
         allow(dead_code)
     )]
@@ -1072,8 +1072,8 @@ impl LatestFrameStore {
 
     #[cfg_attr(
         not(any(
-            all(feature = "wayland", target_os = "linux"),
-            all(feature = "drm", target_os = "linux")
+            all(feature = "wayland-core", target_os = "linux"),
+            all(feature = "drm-core", target_os = "linux")
         )),
         allow(dead_code)
     )]
@@ -1295,7 +1295,7 @@ impl CleanupDispatcher {
 
 #[cfg_attr(
     not(any(
-        all(feature = "wayland", target_os = "linux"),
+        all(feature = "wayland-core", target_os = "linux"),
         all(feature = "drm-core", target_os = "linux")
     )),
     allow(dead_code)
@@ -1622,7 +1622,7 @@ fn join_runtime_thread(
 
 #[cfg_attr(
     not(any(
-        all(feature = "wayland", target_os = "linux"),
+        all(feature = "wayland-core", target_os = "linux"),
         all(feature = "drm-core", target_os = "linux")
     )),
     allow(dead_code)
@@ -1636,7 +1636,7 @@ impl BackendKind {
         match self {
             #[cfg(feature = "macos")]
             BackendKind::Macos => "macos",
-            #[cfg(all(feature = "wayland", target_os = "linux"))]
+            #[cfg(all(feature = "wayland-core", target_os = "linux"))]
             BackendKind::Wayland => "wayland",
             #[cfg(all(feature = "drm-core", target_os = "linux"))]
             BackendKind::Drm => "drm",
@@ -1719,16 +1719,28 @@ fn raster_present_capabilities(backend: BackendKind) -> Vec<&'static str> {
     match backend {
         #[cfg(feature = "macos")]
         BackendKind::Macos => Vec::new(),
-        #[cfg(all(feature = "wayland", target_os = "linux"))]
-        BackendKind::Wayland => vec!["gpu_upload", "cpu"],
+        #[cfg(all(feature = "wayland-core", target_os = "linux"))]
+        BackendKind::Wayland => {
+            if cfg!(feature = "wayland") {
+                vec!["gpu_upload", "cpu"]
+            } else {
+                vec!["cpu"]
+            }
+        }
         #[cfg(all(feature = "drm-core", target_os = "linux"))]
-        BackendKind::Drm => vec!["gpu_upload"],
+        BackendKind::Drm => {
+            if cfg!(feature = "drm") {
+                vec!["gpu_upload"]
+            } else {
+                Vec::new()
+            }
+        }
         BackendKind::Headless => Vec::new(),
     }
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
+    all(feature = "wayland-core", target_os = "linux"),
     all(feature = "drm-core", target_os = "linux")
 ))]
 fn selected_rendering_api_for_config(config: RenderingApiConfig) -> RenderingApi {
@@ -1753,7 +1765,7 @@ fn renderer_cache_status(
 
 #[cfg_attr(
     not(any(
-        all(feature = "wayland", target_os = "linux"),
+        all(feature = "wayland-core", target_os = "linux"),
         all(feature = "drm-core", target_os = "linux")
     )),
     allow(dead_code)
@@ -1854,7 +1866,7 @@ fn send_event(event_tx: &Sender<EventMsg>, msg: EventMsg, log_input: bool) {
 struct StartConfig {
     #[cfg_attr(
         not(any(
-            all(feature = "wayland", target_os = "linux"),
+            all(feature = "wayland-core", target_os = "linux"),
             all(feature = "drm-core", target_os = "linux"),
             feature = "macos"
         )),
@@ -1863,7 +1875,7 @@ struct StartConfig {
     backend: BackendKind,
     #[cfg_attr(
         not(any(
-            all(feature = "wayland", target_os = "linux"),
+            all(feature = "wayland-core", target_os = "linux"),
             all(feature = "drm-core", target_os = "linux"),
             feature = "macos"
         )),
@@ -1871,11 +1883,14 @@ struct StartConfig {
     )]
     rendering_api: RenderingApiConfig,
     requested_rendering_api: RenderingApi,
-    #[cfg_attr(not(all(feature = "wayland", target_os = "linux")), allow(dead_code))]
+    #[cfg_attr(
+        not(all(feature = "wayland-core", target_os = "linux")),
+        allow(dead_code)
+    )]
     title: String,
     #[cfg_attr(
         not(any(
-            all(feature = "wayland", target_os = "linux"),
+            all(feature = "wayland-core", target_os = "linux"),
             all(feature = "drm-core", target_os = "linux")
         )),
         allow(dead_code)
@@ -1883,7 +1898,7 @@ struct StartConfig {
     width: u32,
     #[cfg_attr(
         not(any(
-            all(feature = "wayland", target_os = "linux"),
+            all(feature = "wayland-core", target_os = "linux"),
             all(feature = "drm-core", target_os = "linux")
         )),
         allow(dead_code)
@@ -1891,7 +1906,7 @@ struct StartConfig {
     height: u32,
     #[cfg_attr(
         not(any(
-            all(feature = "wayland", target_os = "linux"),
+            all(feature = "wayland-core", target_os = "linux"),
             all(feature = "drm-core", target_os = "linux")
         )),
         allow(dead_code)
@@ -1917,7 +1932,7 @@ struct StartConfig {
     drm_input_log: bool,
     #[cfg_attr(
         not(any(
-            all(feature = "wayland", target_os = "linux"),
+            all(feature = "wayland-core", target_os = "linux"),
             all(feature = "drm-core", target_os = "linux")
         )),
         allow(dead_code)
@@ -1925,7 +1940,7 @@ struct StartConfig {
     render_log: bool,
     #[cfg_attr(
         not(any(
-            all(feature = "wayland", target_os = "linux"),
+            all(feature = "wayland-core", target_os = "linux"),
             all(feature = "drm-core", target_os = "linux")
         )),
         allow(dead_code)
@@ -1933,7 +1948,7 @@ struct StartConfig {
     close_signal_log: bool,
     #[cfg_attr(
         not(any(
-            all(feature = "wayland", target_os = "linux"),
+            all(feature = "wayland-core", target_os = "linux"),
             all(feature = "drm-core", target_os = "linux"),
         )),
         allow(dead_code)
@@ -1941,20 +1956,20 @@ struct StartConfig {
     stats_enabled: bool,
     #[cfg_attr(
         not(any(
-            all(feature = "wayland", target_os = "linux"),
+            all(feature = "wayland-core", target_os = "linux"),
             all(feature = "drm-core", target_os = "linux"),
         )),
         allow(dead_code)
     )]
     renderer_stats_log: bool,
     #[cfg_attr(
-        not(any(all(feature = "wayland", target_os = "linux"),)),
+        not(any(all(feature = "wayland-core", target_os = "linux"),)),
         allow(dead_code)
     )]
     renderer_animation_log: bool,
     #[cfg_attr(
         not(any(
-            all(feature = "wayland", target_os = "linux"),
+            all(feature = "wayland-core", target_os = "linux"),
             all(feature = "drm-core", target_os = "linux"),
         )),
         allow(dead_code)
@@ -2017,7 +2032,7 @@ impl Default for HeadlessConfig {
     }
 }
 
-#[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
+#[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
 #[derive(Clone, Debug)]
 pub(crate) struct DrmCursorOverrideConfig {
     pub icon: CursorIcon,
@@ -2217,7 +2232,7 @@ fn renderer_cache_config_from_nif(
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
+    all(feature = "wayland-core", target_os = "linux"),
     all(feature = "drm-core", target_os = "linux")
 ))]
 fn auto_raster_fallback_config(config: &StartConfig) -> Option<StartConfig> {
@@ -2234,7 +2249,7 @@ fn auto_raster_fallback_config(config: &StartConfig) -> Option<StartConfig> {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
+    all(feature = "wayland-core", target_os = "linux"),
     all(feature = "drm-core", target_os = "linux")
 ))]
 fn uses_auto_raster_fallback(rendering_api: RenderingApi) -> bool {
@@ -2242,7 +2257,7 @@ fn uses_auto_raster_fallback(rendering_api: RenderingApi) -> bool {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
+    all(feature = "wayland-core", target_os = "linux"),
     all(feature = "drm-core", target_os = "linux")
 ))]
 fn start_auto_raster_fallback_or_error(
@@ -2260,7 +2275,7 @@ fn start_auto_raster_fallback_or_error(
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
+    all(feature = "wayland-core", target_os = "linux"),
     all(feature = "drm-core", target_os = "linux")
 ))]
 fn start_native_renderer_with_config(
@@ -2324,9 +2339,9 @@ fn start_native_renderer_with_config(
 
     asset_runtime.start(tree_tx.clone(), log_render);
 
-    #[cfg(all(feature = "wayland", target_os = "linux"))]
+    #[cfg(all(feature = "wayland-core", target_os = "linux"))]
     let system_clipboard = matches!(config.backend, BackendKind::Wayland);
-    #[cfg(not(all(feature = "wayland", target_os = "linux")))]
+    #[cfg(not(all(feature = "wayland-core", target_os = "linux")))]
     let system_clipboard = false;
     let heartbeat_stats = if config.renderer_stats_log {
         renderer_stats.clone()
@@ -2359,19 +2374,19 @@ fn start_native_renderer_with_config(
         renderer_stats.clone(),
     ));
     #[cfg(any(
-        all(feature = "wayland", target_os = "linux"),
+        all(feature = "wayland-core", target_os = "linux"),
         all(feature = "drm-core", target_os = "linux")
     ))]
     #[allow(unused_assignments)]
     let mut backend_wake = BackendWakeHandle::noop();
     #[cfg(not(any(
-        all(feature = "wayland", target_os = "linux"),
+        all(feature = "wayland-core", target_os = "linux"),
         all(feature = "drm-core", target_os = "linux")
     )))]
     let backend_wake = BackendWakeHandle::noop();
 
     let backend_startup = match config.backend {
-        #[cfg(all(feature = "wayland", target_os = "linux"))]
+        #[cfg(all(feature = "wayland-core", target_os = "linux"))]
         BackendKind::Wayland => {
             let (proxy_tx, proxy_rx) = std::sync::mpsc::channel();
             let running_flag_clone = Arc::clone(&running_flag);
@@ -2701,11 +2716,11 @@ fn start_native_renderer_with_config(
     }));
 
     #[cfg(any(
-        all(feature = "wayland", target_os = "linux"),
+        all(feature = "wayland-core", target_os = "linux"),
         all(feature = "drm-core", target_os = "linux")
     ))]
     let video_wake = match backend {
-        #[cfg(all(feature = "wayland", target_os = "linux"))]
+        #[cfg(all(feature = "wayland-core", target_os = "linux"))]
         BackendKind::Wayland => VideoWake::new(backend_wake.clone()),
         #[cfg(all(feature = "drm-core", target_os = "linux"))]
         BackendKind::Drm => VideoWake::new(backend_wake.clone()),
@@ -2713,7 +2728,7 @@ fn start_native_renderer_with_config(
         _ => VideoWake::noop(),
     };
     #[cfg(not(any(
-        all(feature = "wayland", target_os = "linux"),
+        all(feature = "wayland-core", target_os = "linux"),
         all(feature = "drm-core", target_os = "linux")
     )))]
     let video_wake = VideoWake::noop();
@@ -2757,7 +2772,7 @@ fn start_native_renderer_with_config(
 }
 
 #[cfg(not(any(
-    all(feature = "wayland", target_os = "linux"),
+    all(feature = "wayland-core", target_os = "linux"),
     all(feature = "drm-core", target_os = "linux")
 )))]
 fn start_native_renderer_with_config(
@@ -2778,7 +2793,7 @@ fn start(
     width: u32,
     height: u32,
 ) -> NifResult<ResourceArc<RendererResource>> {
-    #[cfg(all(feature = "wayland", target_os = "linux"))]
+    #[cfg(all(feature = "wayland-core", target_os = "linux"))]
     {
         start_with_config(
             StartConfig {
@@ -2810,7 +2825,7 @@ fn start(
             Some(env.pid()),
         )
     }
-    #[cfg(not(all(feature = "wayland", target_os = "linux")))]
+    #[cfg(not(all(feature = "wayland-core", target_os = "linux")))]
     {
         let _ = (env, title, width, height);
         Err(rustler::Error::Term(Box::new(
@@ -3501,7 +3516,7 @@ fn uses_on_demand_gpu_capture(info: &RendererRuntimeInfo) -> bool {
     }
 
     match info.backend {
-        #[cfg(all(feature = "wayland", target_os = "linux"))]
+        #[cfg(all(feature = "wayland-core", target_os = "linux"))]
         BackendKind::Wayland => true,
         #[cfg(all(feature = "drm-core", target_os = "linux"))]
         BackendKind::Drm => true,
@@ -4950,7 +4965,29 @@ mod tests {
         );
     }
 
-    #[cfg(all(feature = "wayland", target_os = "linux"))]
+    #[cfg(all(
+        feature = "wayland-core",
+        not(feature = "wayland"),
+        target_os = "linux"
+    ))]
+    #[test]
+    fn vulkan_only_wayland_build_rejects_opengl_without_fallback() {
+        let error = ensure_rendering_api_supported(
+            BackendKind::Wayland,
+            RenderingApiConfig {
+                kind: RenderingApi::OpenGl,
+                raster_present: RasterPresentKind::Auto,
+                raster_present_configured: false,
+            },
+        )
+        .expect_err("Vulkan-only Wayland must not select OpenGL");
+        assert_eq!(
+            error,
+            "OpenGL Wayland rendering support is not available in this build"
+        );
+    }
+
+    #[cfg(all(feature = "wayland-core", target_os = "linux"))]
     #[test]
     fn rendering_api_matrix_allows_wayland_raster() {
         assert!(
@@ -4967,7 +5004,7 @@ mod tests {
     }
 
     #[cfg(all(
-        feature = "wayland",
+        feature = "wayland-core",
         not(feature = "wayland-vulkan"),
         target_os = "linux"
     ))]
@@ -5184,8 +5221,24 @@ mod tests {
         .expect("headless Vulkan should be available when compiled");
     }
 
+    #[cfg(all(
+        feature = "wayland-core",
+        not(feature = "wayland"),
+        target_os = "linux"
+    ))]
+    #[test]
+    fn vulkan_only_wayland_reports_only_cpu_raster_presentation() {
+        assert_eq!(raster_present_capabilities(BackendKind::Wayland), ["cpu"]);
+    }
+
+    #[cfg(all(feature = "drm-core", not(feature = "drm"), target_os = "linux"))]
+    #[test]
+    fn vulkan_only_drm_reports_no_raster_presentation() {
+        assert!(raster_present_capabilities(BackendKind::Drm).is_empty());
+    }
+
     #[cfg(any(
-        all(feature = "wayland", target_os = "linux"),
+        all(feature = "wayland-core", target_os = "linux"),
         all(feature = "drm-core", target_os = "linux")
     ))]
     #[test]
@@ -5255,7 +5308,7 @@ mod tests {
         );
     }
 
-    #[cfg(not(feature = "wayland"))]
+    #[cfg(not(feature = "wayland-core"))]
     #[test]
     fn parse_backend_name_rejects_wayland_when_not_compiled() {
         assert_eq!(
@@ -5476,7 +5529,7 @@ fn ensure_rendering_api_supported(
     match backend {
         #[cfg(feature = "macos")]
         BackendKind::Macos => ensure_macos_rendering_api_supported(config),
-        #[cfg(all(feature = "wayland", target_os = "linux"))]
+        #[cfg(all(feature = "wayland-core", target_os = "linux"))]
         BackendKind::Wayland => ensure_wayland_rendering_api_supported(config),
         #[cfg(all(feature = "drm-core", target_os = "linux"))]
         BackendKind::Drm => ensure_drm_rendering_api_supported(config),
@@ -5512,10 +5565,14 @@ fn ensure_macos_rendering_api_supported(config: RenderingApiConfig) -> Result<()
     }
 }
 
-#[cfg(all(feature = "wayland", target_os = "linux"))]
+#[cfg(all(feature = "wayland-core", target_os = "linux"))]
 fn ensure_wayland_rendering_api_supported(config: RenderingApiConfig) -> Result<(), String> {
     match config.kind {
-        RenderingApi::Auto | RenderingApi::OpenGl | RenderingApi::Raster => Ok(()),
+        RenderingApi::Auto | RenderingApi::OpenGl if cfg!(feature = "wayland") => Ok(()),
+        RenderingApi::Auto | RenderingApi::OpenGl => {
+            Err("OpenGL Wayland rendering support is not available in this build".to_string())
+        }
+        RenderingApi::Raster => Ok(()),
         RenderingApi::Metal => {
             Err("rendering_api :metal is only supported with backend :macos".to_string())
         }
@@ -5586,9 +5643,9 @@ fn parse_backend_name(value: &str) -> Result<BackendKind, String> {
             "DRM backend is not compiled; add :drm to config :emerge, compiled_backends: [...]"
                 .to_string(),
         ),
-        #[cfg(all(feature = "wayland", target_os = "linux"))]
+        #[cfg(all(feature = "wayland-core", target_os = "linux"))]
         "wayland" => Ok(BackendKind::Wayland),
-        #[cfg(not(all(feature = "wayland", target_os = "linux")))]
+        #[cfg(not(all(feature = "wayland-core", target_os = "linux")))]
         "wayland" => Err(
             "Wayland backend is not compiled; add :wayland to config :emerge, compiled_backends: [...]"
                 .to_string(),

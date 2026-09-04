@@ -38,8 +38,8 @@ Added or changed:
   `dispatch_mode` were removed.
 - Wayland and DRM gained raster presentation routes; headless gained retained
   raster and offscreen OpenGL binary output.
-- `compiled_vulkan_backends` controls Vulkan builds. DRM Vulkan requires a
-  `vulkan_drm_node` separate from `drm_card`.
+- `compiled_backends` maps each backend to `:all` or an exact GPU API list.
+  DRM Vulkan requires a `vulkan_drm_node` separate from `drm_card`.
 - Wayland, DRM, and headless Vulkan are supported when compiled and available.
 
 Documentation gap: `EmergeSkia.start/1` contains most details, but the setup
@@ -191,8 +191,8 @@ guides by default but `package_files/0` omits `guides/internals`.
 
 - [x] Document backend/API compatibility, presentation, build flags, fallback,
   capture, video, and support status in `EmergeSkia.start/1`.
-- [x] Document `compiled_backends`, `compiled_vulkan_backends`, and
-  `drm_card` versus `vulkan_drm_node`.
+- [x] Document the `compiled_backends` backend/API matrix and `drm_card`
+  versus `vulkan_drm_node`.
 - [x] Keep `set_up_viewport.md` focused on ordinary startup and link to the
   matrix.
 - [x] Correct the README backend list and link headless and Vulkan guidance.

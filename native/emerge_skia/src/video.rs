@@ -52,7 +52,15 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 use std::thread;
-#[cfg(any(feature = "wayland", feature = "drm", feature = "vulkan"))]
+#[cfg(any(
+    feature = "wayland",
+    feature = "drm",
+    all(
+        target_os = "linux",
+        feature = "vulkan",
+        any(feature = "wayland-core", feature = "drm-core")
+    )
+))]
 use std::time::Duration;
 use std::time::Instant;
 
@@ -75,6 +83,16 @@ use glutin_egl_sys::egl;
 use libloading::Library;
 use rustler::env::SavedTerm;
 use rustler::{Decoder, Encoder, Env, LocalPid, NifResult, OwnedEnv, Term};
+use skia_safe::Image;
+#[cfg(any(
+    feature = "linux-opengl",
+    all(
+        target_os = "linux",
+        feature = "vulkan",
+        any(feature = "wayland-core", feature = "drm-core")
+    )
+))]
+use skia_safe::gpu;
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
@@ -99,7 +117,6 @@ use skia_safe::{
     Data, FilterMode, MipmapMode, RuntimeEffect, SamplingOptions, Shader, TileMode,
     runtime_effect::ChildPtr,
 };
-use skia_safe::{Image, gpu};
 #[cfg(any(
     all(feature = "wayland", target_os = "linux"),
     all(feature = "drm", target_os = "linux")
@@ -3207,10 +3224,14 @@ pub struct VideoCleanupResult {
     pub needs_cleanup: bool,
 }
 
-#[cfg_attr(
-    not(any(feature = "linux-opengl", feature = "vulkan")),
-    allow(dead_code)
-)]
+#[cfg(any(
+    feature = "linux-opengl",
+    all(
+        target_os = "linux",
+        feature = "vulkan",
+        any(feature = "wayland-core", feature = "drm-core")
+    )
+))]
 #[derive(Clone, Debug, Default)]
 pub struct VideoSyncResult {
     pub resources_changed: bool,
@@ -3221,10 +3242,16 @@ pub struct VideoSyncResult {
     pub first_frame_diagnostics: Option<String>,
 }
 
-#[cfg_attr(
-    not(any(feature = "linux-opengl", feature = "vulkan", test)),
-    allow(dead_code)
-)]
+#[cfg(any(
+    test,
+    all(feature = "wayland", target_os = "linux"),
+    all(feature = "drm", target_os = "linux"),
+    all(
+        target_os = "linux",
+        feature = "vulkan",
+        any(feature = "wayland-core", feature = "drm-core")
+    )
+))]
 fn canonical_import_identity(
     renderer_epoch: u64,
     pending: &PendingVideoFrame,
@@ -6866,21 +6893,6 @@ impl RendererVideoState {
         sync_cpu_frames(&mut self.cpu, registry)
     }
 
-    pub fn sync_pending(
-        &mut self,
-        registry: &Arc<VideoRegistry>,
-        _gr_context: &mut gpu::DirectContext,
-        _ctx: Option<&VideoImportContext>,
-    ) -> Result<VideoSyncResult, String> {
-        let resources_changed = self.sync_cpu(registry)?;
-        registry.drain_pending_to_release()?;
-        registry.record_import_gauges(0, self.vulkan.retired.len());
-        Ok(VideoSyncResult {
-            resources_changed,
-            ..VideoSyncResult::default()
-        })
-    }
-
     pub fn reap_retired_imports(&mut self, registry: &Arc<VideoRegistry>) -> VideoCleanupResult {
         self.vulkan.record_gauges(registry);
         VideoCleanupResult::default()
@@ -6953,7 +6965,7 @@ impl RendererVideoState {
         sync_cpu_frames(&mut self.cpu, registry)
     }
 
-    #[allow(dead_code)]
+    #[cfg(feature = "linux-opengl")]
     pub fn sync_pending(
         &mut self,
         registry: &Arc<VideoRegistry>,
@@ -7231,8 +7243,14 @@ mod tests {
         let write = unsafe { OwnedFd::from_raw_fd(fds[1]) };
 
         drop(frame);
-        assert_eq!(unsafe { libc::fcntl(raw, libc::F_GETFD) }, -1);
-        assert!(write.as_raw_fd() >= 0);
+
+        let mut write_status = libc::pollfd {
+            fd: write.as_raw_fd(),
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        assert_eq!(unsafe { libc::poll(&mut write_status, 1, 0) }, 1);
+        assert_ne!(write_status.revents & libc::POLLERR, 0);
     }
 
     #[test]

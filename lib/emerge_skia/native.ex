@@ -32,6 +32,7 @@ defmodule EmergeSkia.Native do
       @crate_path Path.expand("../../native/emerge_skia", __DIR__)
       @compiled_backends EmergeSkia.BuildConfig.compiled_backends()
       @compiled_vulkan_backends EmergeSkia.BuildConfig.compiled_vulkan_backends()
+      @compiled_opengl_backends EmergeSkia.BuildConfig.compiled_opengl_backends()
       @checksum_path Path.expand("../../checksum-Elixir.EmergeSkia.Native.exs", __DIR__)
       @version Mix.Project.config()[:version]
       @base_url {EmergeSkia.BuildConfig, :precompiled_tar_gz_url}
@@ -40,7 +41,8 @@ defmodule EmergeSkia.Native do
       @precompiled_variants EmergeSkia.BuildConfig.precompiled_variants(
                               System.get_env(),
                               @compiled_backends,
-                              @compiled_vulkan_backends
+                              @compiled_vulkan_backends,
+                              @compiled_opengl_backends
                             )
       @platform_cargo_features EmergeSkia.BuildConfig.rustler_platform_features(
                                  System.get_env(),
@@ -49,12 +51,14 @@ defmodule EmergeSkia.Native do
                                )
       @cargo_features EmergeSkia.BuildConfig.compiled_backends_to_rustler_features(
                         @compiled_backends,
-                        @compiled_vulkan_backends
+                        @compiled_vulkan_backends,
+                        @compiled_opengl_backends
                       ) ++ @platform_cargo_features
       @force_build EmergeSkia.BuildConfig.force_precompiled_build?(
                      checksum_path: @checksum_path,
                      compiled_backends: @compiled_backends,
                      compiled_vulkan_backends: @compiled_vulkan_backends,
+                     compiled_opengl_backends: @compiled_opengl_backends,
                      targets: @precompiled_targets,
                      nif_versions: @precompiled_nif_versions
                    )

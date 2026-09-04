@@ -1385,7 +1385,7 @@ pub(crate) fn send_running_message_in_env(env: Env<'_>, pid: LocalPid) {
     let _ = env.send(&pid, (emerge_viewport_renderer(), heartbeat()));
 }
 
-#[cfg(all(feature = "wayland", target_os = "linux"))]
+#[cfg(all(feature = "wayland-core", target_os = "linux"))]
 pub(crate) fn send_close_message(pid: LocalPid) {
     let mut env = OwnedEnv::new();
     let _ = env.send_and_clear(&pid, |inner_env| {
@@ -1393,7 +1393,7 @@ pub(crate) fn send_close_message(pid: LocalPid) {
     });
 }
 
-#[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
+#[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
 pub(crate) fn send_log_event(pid: LocalPid, level: NativeLogLevel, source: &str, message: &str) {
     let mut env = OwnedEnv::new();
     let _ = env.send_and_clear(&pid, |inner_env| {
@@ -1510,7 +1510,7 @@ pub(crate) fn mouse_move_atom() -> Atom {
     mouse_move()
 }
 
-#[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
+#[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
 fn log_level_atom(level: NativeLogLevel) -> Atom {
     match level {
         NativeLogLevel::Debug => debug(),

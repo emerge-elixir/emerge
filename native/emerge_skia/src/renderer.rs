@@ -46,7 +46,14 @@ use crate::render_scene::{
 use crate::tree::attrs::{BorderStyle, ImageFit};
 use crate::tree::geometry::{ClipShape, CornerRadii, Rect as GeometryRect, clamp_radii};
 use crate::tree::transform::Affine2;
-#[cfg(any(feature = "linux-opengl", feature = "vulkan"))]
+#[cfg(any(
+    feature = "linux-opengl",
+    all(
+        target_os = "linux",
+        feature = "vulkan",
+        any(feature = "wayland-core", feature = "drm-core")
+    )
+))]
 use crate::video::VideoSyncResult;
 #[cfg(all(
     target_os = "linux",

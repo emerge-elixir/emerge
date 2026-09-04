@@ -41,8 +41,8 @@ pub(crate) struct TreeActorConfig {
 
 #[cfg_attr(
     not(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
+        all(feature = "wayland-core", target_os = "linux"),
+        all(feature = "drm-core", target_os = "linux")
     )),
     allow(dead_code)
 )]

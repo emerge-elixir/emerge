@@ -140,10 +140,23 @@ package checks even on manual dispatch, then verifies required macOS assets
 before publication. This removes the former path where a successful artifact
 matrix or manual dispatch could publish unvalidated source.
 
-The release NIF matrix also publishes minimal raster and Vulkan variants for
-x86_64 and AArch64 Linux, plus minimal raster and DRM/headless OpenGL variants
-for 32-bit ARM hard-float Linux. The 32-bit ARM raster artifact is the dependency-minimal
-NameBadge profile.
+The release NIF matrix also publishes minimal raster, Vulkan-only Wayland,
+Vulkan-only DRM, Vulkan-only headless, and combined OpenGL/Vulkan variants for
+x86_64 and AArch64 Linux. It publishes minimal raster and DRM/headless OpenGL
+variants for 32-bit ARM hard-float Linux. The 32-bit ARM raster artifact is the
+dependency-minimal NameBadge profile. One `compiled_backends` matrix selects
+GPU APIs per backend; for example, `[drm: [:vulkan]]` excludes OpenGL while
+`[drm: :all]` includes both APIs.
+
+An x86_64 release-size probe measured the actual artifact profiles after
+`strip --strip-unneeded`: Wayland/OpenGL was 15,565,608 bytes,
+Wayland/Vulkan was 16,249,032 bytes, DRM/OpenGL was 13,874,312 bytes, and
+DRM/Vulkan was 14,734,552 bytes. The Vulkan artifacts include embedded
+FreeType, as they do in the release matrix. Selecting dedicated DRM/Vulkan
+instead of the comprehensive OpenGL/Vulkan artifact saves 3,063,696 bytes
+uncompressed and 1,106,058 bytes after gzip. Vulkan-only artifacts also remove
+direct EGL/OpenGL linkage; the Wayland variant does not directly link EGL or
+GBM. This keeps embedded Vulkan deployments from carrying unused OpenGL code.
 
 ### 6. Per-renderer asset runtime ownership completed
 

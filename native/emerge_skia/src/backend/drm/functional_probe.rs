@@ -39,7 +39,7 @@ use super::core::{
     open_vulkan_selection_node, probe_kms_output, prop_handle,
 };
 
-const DRM_FORMAT_XRGB8888: u32 = u32::from_le_bytes([b'X', b'R', b'2', b'4']);
+const DRM_FORMAT_XRGB8888: u32 = u32::from_le_bytes(*b"XR24");
 const MAX_PAGE_FLIP_TIMEOUT: Duration = Duration::from_secs(60);
 const REQUIRED_EXTENSIONS: [&std::ffi::CStr; 5] = [
     ash::khr::external_memory_fd::NAME,

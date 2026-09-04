@@ -69,7 +69,7 @@ fn sleep_with_stop(stop: &Arc<std::sync::atomic::AtomicBool>, duration: Duration
 const PAGE_FLIP_TIMEOUT: Duration = Duration::from_secs(2);
 const HOTPLUG_INTERVAL: Duration = Duration::from_millis(750);
 const RENDER_PROFILE_INTERVAL: Duration = Duration::from_secs(1);
-const DRM_FORMAT_XRGB8888: u32 = u32::from_le_bytes([b'X', b'R', b'2', b'4']);
+const DRM_FORMAT_XRGB8888: u32 = u32::from_le_bytes(*b"XR24");
 
 fn required_device_extensions() -> [&'static std::ffi::CStr; 7] {
     [

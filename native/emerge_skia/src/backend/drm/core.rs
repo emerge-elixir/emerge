@@ -176,9 +176,7 @@ pub(super) fn probe_kms_output(
     let info = card
         .get_plane(primary)
         .map_err(|error| format!("failed to inspect selected primary plane: {error}"))?;
-    let primary_supports_xrgb8888 = info
-        .formats()
-        .contains(&u32::from_le_bytes([b'X', b'R', b'2', b'4']));
+    let primary_supports_xrgb8888 = info.formats().contains(&u32::from_le_bytes(*b"XR24"));
     let primary_props = card
         .get_properties(primary)
         .and_then(|props| props.as_hashmap(&card))

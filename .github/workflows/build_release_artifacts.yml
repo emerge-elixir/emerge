@@ -104,6 +104,13 @@ jobs:
             variant: ""
             cargo_args: "--no-default-features --features wayland"
             system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev"
+          - name: linux_wayland_vulkan
+            target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+            use_cross: false
+            variant: "wayland_vulkan"
+            cargo_args: "--no-default-features --features wayland-vulkan,embedded-freetype"
+            system_packages: "libdrm-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev"
           - name: linux_drm
             target: x86_64-unknown-linux-gnu
             os: ubuntu-24.04
@@ -111,6 +118,13 @@ jobs:
             variant: "drm"
             cargo_args: "--no-default-features --features drm"
             system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev libxkbcommon-dev"
+          - name: linux_drm_vulkan
+            target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+            use_cross: false
+            variant: "drm_vulkan"
+            cargo_args: "--no-default-features --features drm-vulkan,embedded-freetype"
+            system_packages: "libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev"
           - name: linux_drm_wayland
             target: x86_64-unknown-linux-gnu
             os: ubuntu-24.04
@@ -125,6 +139,13 @@ jobs:
             variant: "raster"
             cargo_args: "--no-default-features --features embedded-cpu"
             system_packages: ""
+          - name: linux_headless_vulkan
+            target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+            use_cross: false
+            variant: "headless_vulkan"
+            cargo_args: "--no-default-features --features headless-vulkan,embedded-freetype"
+            system_packages: "libfontconfig1-dev libfreetype6-dev"
           - name: linux_vulkan
             target: x86_64-unknown-linux-gnu
             os: ubuntu-24.04
@@ -139,6 +160,13 @@ jobs:
             variant: ""
             cargo_args: "--no-default-features --features wayland"
             system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev"
+          - name: linux_aarch64_wayland_vulkan
+            target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            use_cross: false
+            variant: "wayland_vulkan"
+            cargo_args: "--no-default-features --features wayland-vulkan,embedded-freetype"
+            system_packages: "libdrm-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev"
           - name: linux_aarch64_drm
             target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
@@ -146,6 +174,13 @@ jobs:
             variant: "drm"
             cargo_args: "--no-default-features --features drm"
             system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev libxkbcommon-dev"
+          - name: linux_aarch64_drm_vulkan
+            target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            use_cross: false
+            variant: "drm_vulkan"
+            cargo_args: "--no-default-features --features drm-vulkan,embedded-freetype"
+            system_packages: "libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev"
           - name: linux_aarch64_drm_wayland
             target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
@@ -160,6 +195,13 @@ jobs:
             variant: "raster"
             cargo_args: "--no-default-features --features embedded-cpu"
             system_packages: ""
+          - name: linux_aarch64_headless_vulkan
+            target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            use_cross: false
+            variant: "headless_vulkan"
+            cargo_args: "--no-default-features --features headless-vulkan,embedded-freetype"
+            system_packages: "libfontconfig1-dev libfreetype6-dev"
           - name: linux_aarch64_vulkan
             target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
@@ -244,6 +286,16 @@ jobs:
         run: |
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
           echo "PKG_CONFIG_LIBDIR=/usr/lib/arm-linux-gnueabihf/pkgconfig:/usr/share/pkgconfig" >> "$GITHUB_ENV"
+
+      - name: Verify Vulkan-only dependency closure
+        if: ${{ matrix.job.variant == 'wayland_vulkan' || matrix.job.variant == 'drm_vulkan' || matrix.job.variant == 'headless_vulkan' }}
+        shell: bash
+        run: |
+          dependency_tree="$(cargo tree --manifest-path native/emerge_skia/Cargo.toml ${{ matrix.job.cargo_args }} --edges features)"
+          if grep --extended-regexp ' gl v[0-9]|glutin|glutin_egl_sys|video-interop feature "egl"|skia-safe feature "gl"|emerge_skia feature "linux-opengl"' <<<"${dependency_tree}"; then
+            echo "Vulkan-only artifact enables an OpenGL dependency or feature" >&2
+            exit 1
+          fi
 
       - name: Build the project
         id: build-crate

@@ -11,6 +11,7 @@ use std::{
 };
 
 use crossbeam_channel::{Receiver, Sender as CrossbeamSender, TrySendError};
+#[cfg(feature = "wayland")]
 use glutin::prelude::GlSurface;
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
@@ -78,8 +79,9 @@ use crate::{
     video::VideoRegistry,
 };
 
+#[cfg(feature = "wayland")]
+use super::egl::{GlEnv, create_gl_env, resize_gl_env};
 use super::{
-    egl::{GlEnv, create_gl_env, resize_gl_env},
     geometry::SurfaceGeometry,
     input::{PointerInputState, pointer_button_event, pointer_scroll_event},
     keyboard::{KeyboardInputState, key_from_keysym, mods_from_sctk},
@@ -158,8 +160,13 @@ enum WaylandVideoImportState {
 }
 
 enum RasterWaylandPresentEnv {
-    Cpu { pool: SlotPool },
-    GpuUpload { gl_env: Box<GlEnv> },
+    Cpu {
+        pool: SlotPool,
+    },
+    #[cfg(feature = "wayland")]
+    GpuUpload {
+        gl_env: Box<GlEnv>,
+    },
 }
 
 struct RasterWaylandEnv {
@@ -178,14 +185,23 @@ impl RasterWaylandEnv {
         renderer_cache_config: RendererCacheConfig,
     ) -> Result<Self, String> {
         let size = (size.0.max(1), size.1.max(1));
+        #[cfg(not(feature = "wayland"))]
+        let _ = (conn, surface);
         let present = match raster_present {
             RasterPresentKind::Auto | RasterPresentKind::Cpu => RasterWaylandPresentEnv::Cpu {
                 pool: SlotPool::new(raster_pool_size(size)?, shm)
                     .map_err(|err| format!("failed to create Wayland shm pool: {err}"))?,
             },
+            #[cfg(feature = "wayland")]
             RasterPresentKind::GpuUpload => RasterWaylandPresentEnv::GpuUpload {
                 gl_env: Box::new(create_gl_env(conn, surface, size, renderer_cache_config)?),
             },
+            #[cfg(not(feature = "wayland"))]
+            RasterPresentKind::GpuUpload => {
+                return Err(
+                    "Wayland raster GPU upload support is not available in this build".to_string(),
+                );
+            }
         };
         let renderer = RasterBackend::with_cache_config(
             &RasterConfig {
@@ -208,6 +224,7 @@ impl RasterWaylandEnv {
             RasterWaylandPresentEnv::Cpu { pool } => pool
                 .resize(raster_pool_size(size)?)
                 .map_err(|err| format!("failed to resize Wayland shm pool: {err}"))?,
+            #[cfg(feature = "wayland")]
             RasterWaylandPresentEnv::GpuUpload { gl_env } => resize_gl_env(gl_env, size),
         }
         self.renderer.resize(size.0, size.1)?;
@@ -1140,6 +1157,7 @@ impl WaylandApp {
 
         let (video_import, video_registry) = (&self.video_import, &self.video_registry);
         let sync_action = video_import.sync_action();
+        #[cfg(any(feature = "wayland", feature = "wayland-vulkan"))]
         let video_import_ctx = video_import.context();
         let animation_trace = self.render_animation_trace;
         let draw_started_at = Instant::now();
@@ -1212,29 +1230,40 @@ impl WaylandApp {
             );
         }
 
+        #[cfg(any(feature = "wayland", feature = "wayland-vulkan"))]
         let mut video_needs_cleanup = false;
+        #[cfg(not(any(feature = "wayland", feature = "wayland-vulkan")))]
+        let video_needs_cleanup = false;
 
         let render_outcome = env.render_frame(capture_generation.is_some(), |renderer, frame| {
             match sync_action {
                 WaylandVideoSyncAction::Hold => {}
                 WaylandVideoSyncAction::Import => {
-                    let result = match video_import_ctx {
-                        Some(RendererVideoImportContext::OpenGl(context)) => {
-                            renderer.sync_video_frames(frame, video_registry, Some(context))
+                    #[cfg(any(feature = "wayland", feature = "wayland-vulkan"))]
+                    {
+                        let result = match video_import_ctx {
+                            #[cfg(feature = "wayland")]
+                            Some(RendererVideoImportContext::OpenGl(context)) => {
+                                renderer.sync_video_frames(frame, video_registry, Some(context))
+                            }
+                            #[cfg(feature = "wayland-vulkan")]
+                            Some(RendererVideoImportContext::Vulkan(context)) => renderer
+                                .sync_vulkan_video_frames(frame, video_registry, context),
+                            None => Err("Wayland video import context is unavailable".to_string()),
+                        };
+                        match result {
+                            Ok(result) => video_needs_cleanup = result.needs_cleanup,
+                            Err(err) => {
+                                // Failed imports can still retire partially-created resources.
+                                // Keep one cleanup follow-up so their leases cannot be stranded.
+                                video_needs_cleanup = true;
+                                eprintln!("video sync failed: {err}");
+                            }
                         }
-                        #[cfg(feature = "wayland-vulkan")]
-                        Some(RendererVideoImportContext::Vulkan(context)) => renderer
-                            .sync_vulkan_video_frames(frame, video_registry, context),
-                        None => Err("Wayland video import context is unavailable".to_string()),
-                    };
-                    match result {
-                        Ok(result) => video_needs_cleanup = result.needs_cleanup,
-                        Err(err) => {
-                            // Failed imports can still retire partially-created resources.
-                            // Keep one cleanup follow-up so their leases cannot be stranded.
-                            video_needs_cleanup = true;
-                            eprintln!("video sync failed: {err}");
-                        }
+                    }
+                    #[cfg(not(any(feature = "wayland", feature = "wayland-vulkan")))]
+                    if let Err(err) = video_registry.drain_pending_to_release() {
+                        eprintln!("video sync failed: {err}");
                     }
                 }
                 WaylandVideoSyncAction::Drop => {
@@ -1538,6 +1567,7 @@ impl WaylandApp {
                     Ok(())
                 })
             }
+            #[cfg(feature = "wayland")]
             RasterWaylandPresentEnv::GpuUpload { gl_env } => gl_env
                 .frame_surface
                 .present_rgba_pixels(
@@ -3206,6 +3236,7 @@ pub(crate) fn run(args: WaylandRunArgs) {
 
     let prime_video_formats = match &app.video_import {
         WaylandVideoImportState::Ready(context) => match context.as_ref() {
+            #[cfg(feature = "wayland")]
             RendererVideoImportContext::OpenGl(_) => {
                 vec!["NV12".to_string(), "ABGR8888".to_string()]
             }
@@ -3215,6 +3246,8 @@ pub(crate) fn run(args: WaylandRunArgs) {
                 .into_iter()
                 .map(str::to_string)
                 .collect(),
+            #[cfg(not(any(feature = "wayland", feature = "wayland-vulkan")))]
+            _ => Vec::new(),
         },
         WaylandVideoImportState::PendingGpuInit | WaylandVideoImportState::Unavailable => {
             Vec::new()
@@ -3294,7 +3327,10 @@ pub(crate) fn run(args: WaylandRunArgs) {
     }
 
     let env = app.env.take();
+    #[cfg(any(feature = "wayland", feature = "wayland-vulkan"))]
     drop(env);
+    #[cfg(not(any(feature = "wayland", feature = "wayland-vulkan")))]
+    let _ = env;
     drop(app);
     drop(event_loop);
     drop(conn);

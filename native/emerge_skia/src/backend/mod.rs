@@ -14,7 +14,7 @@ pub mod skia_gpu;
 #[cfg(feature = "vulkan")]
 pub mod vulkan;
 pub mod wake;
-#[cfg(all(feature = "wayland", target_os = "linux"))]
+#[cfg(all(feature = "wayland-core", target_os = "linux"))]
 pub mod wayland;
-#[cfg(all(feature = "wayland", target_os = "linux"))]
+#[cfg(all(feature = "wayland-core", target_os = "linux"))]
 pub mod wayland_config;

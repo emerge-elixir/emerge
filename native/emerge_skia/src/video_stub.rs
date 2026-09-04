@@ -30,9 +30,20 @@ pub struct CpuVideoFrame {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrimeStreamRequirements {
+    Vulkan,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VideoSubmitResult {
     Queued,
     DroppedInactive,
+}
+
+#[cfg(feature = "wayland-core")]
+#[derive(Clone, Debug, Default)]
+pub struct VideoCleanupResult {
+    pub needs_cleanup: bool,
 }
 
 #[derive(Default)]
@@ -104,6 +115,21 @@ impl VideoRegistry {
             .lock()
             .map(|state| state.frames.clone())
             .map_err(|_| "video registry lock poisoned".to_string())
+    }
+
+    pub fn set_prime_stream_requirements(
+        &self,
+        _requirements: Option<PrimeStreamRequirements>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    pub fn set_prime_video_available(&self, _available: bool) -> Result<(), String> {
+        Ok(())
+    }
+
+    pub fn drain_pending_to_release(&self) -> Result<(), String> {
+        Ok(())
     }
 
     pub fn close_admission(&self) {

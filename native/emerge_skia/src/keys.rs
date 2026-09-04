@@ -315,7 +315,7 @@ impl CanonicalKey {
     }
 
     #[cfg_attr(
-        not(any(all(feature = "wayland", target_os = "linux"), feature = "macos")),
+        not(any(all(feature = "wayland-core", target_os = "linux"), feature = "macos")),
         allow(dead_code)
     )]
     pub fn from_printable_char(ch: char) -> Option<Self> {

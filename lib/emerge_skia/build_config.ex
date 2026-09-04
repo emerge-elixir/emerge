@@ -19,6 +19,7 @@ defmodule EmergeSkia.BuildConfig do
   @macos_host_targets ["aarch64-apple-darwin", "x86_64-apple-darwin"]
   @precompiled_nif_versions ["2.15"]
   @valid_backends [:wayland, :drm, :macos]
+  @valid_opengl_backends [:wayland, :drm, :headless]
   @valid_vulkan_backends [:wayland, :drm, :headless]
   @default_precompiled_source_url Mix.Project.config()[:source_url]
 
@@ -91,78 +92,34 @@ defmodule EmergeSkia.BuildConfig do
                                end
                              )
 
-  @compiled_backends (
-                       backends =
-                         Application.compile_env(
+  @raw_compiled_backends Application.compile_env(
                            :emerge,
                            :compiled_backends,
                            @default_compiled_backends
                          )
-
-                       invalid_entries =
-                         if is_list(backends) do
-                           Enum.reject(backends, &(&1 in @valid_backends))
-                         else
-                           []
-                         end
-
-                       cond do
-                         not is_list(backends) ->
-                           raise ArgumentError,
-                                 "config :emerge, compiled_backends: ... must be a list of backend atoms, got: #{inspect(backends)}"
-
-                         invalid_entries != [] ->
-                           raise ArgumentError,
-                                 "config :emerge, compiled_backends: ... must be a list containing only :wayland, :drm, and :macos, got invalid entries: #{inspect(invalid_entries)}"
-
-                         true ->
-                           for backend <- @valid_backends, backend in backends, do: backend
-                       end
-                     )
-
-  @compiled_vulkan_backends (
-                              backends =
-                                Application.compile_env(
-                                  :emerge,
-                                  :compiled_vulkan_backends,
-                                  []
-                                )
-
-                              invalid_entries =
-                                if is_list(backends) do
-                                  Enum.reject(backends, &(&1 in @valid_vulkan_backends))
-                                else
-                                  []
-                                end
-
-                              unavailable_entries =
-                                if is_list(backends) do
-                                  Enum.reject(
-                                    backends,
-                                    &(&1 == :headless or &1 in @compiled_backends)
-                                  )
-                                else
-                                  []
-                                end
-
-                              cond do
-                                not is_list(backends) ->
-                                  raise ArgumentError,
-                                        "config :emerge, compiled_vulkan_backends: ... must be a list of backend atoms, got: #{inspect(backends)}"
-
-                                invalid_entries != [] ->
-                                  raise ArgumentError,
-                                        "config :emerge, compiled_vulkan_backends: ... must contain only :wayland, :drm, and :headless, got invalid entries: #{inspect(invalid_entries)}"
-
-                                unavailable_entries != [] ->
-                                  raise ArgumentError,
-                                        "config :emerge, compiled_vulkan_backends: ... must be a subset of compiled_backends except for the presenter-independent :headless backend, got unavailable entries: #{inspect(unavailable_entries)}"
-
-                                true ->
-                                  for backend <- @valid_vulkan_backends,
-                                      backend in backends,
-                                      do: backend
-                              end
+  @legacy_compiled_opengl_backends Application.compile_env(
+                                     :emerge,
+                                     :compiled_opengl_backends,
+                                     :unset
+                                   )
+  @legacy_compiled_vulkan_backends Application.compile_env(
+                                     :emerge,
+                                     :compiled_vulkan_backends,
+                                     :unset
+                                   )
+  @compiled_backend_matrix EmergeSkia.BuildConfig.Schema.resolve!(
+                             @raw_compiled_backends,
+                             @legacy_compiled_opengl_backends,
+                             @legacy_compiled_vulkan_backends
+                           )
+  @compiled_backends EmergeSkia.BuildConfig.Schema.presenter_backends(@compiled_backend_matrix)
+  @compiled_opengl_backends EmergeSkia.BuildConfig.Schema.api_backends(
+                              @compiled_backend_matrix,
+                              :opengl
+                            )
+  @compiled_vulkan_backends EmergeSkia.BuildConfig.Schema.api_backends(
+                              @compiled_backend_matrix,
+                              :vulkan
                             )
 
   @default_runtime_backend Enum.find(@valid_backends, &(&1 in @compiled_backends)) || :wayland
@@ -171,10 +128,16 @@ defmodule EmergeSkia.BuildConfig do
   def default_compiled_backends, do: @default_compiled_backends
 
   @doc false
+  def compiled_backend_matrix, do: @compiled_backend_matrix
+
+  @doc false
   def compiled_backends, do: @compiled_backends
 
   @doc false
   def compiled_vulkan_backends, do: @compiled_vulkan_backends
+
+  @doc false
+  def compiled_opengl_backends, do: @compiled_opengl_backends
 
   @doc false
   def default_runtime_backend, do: @default_runtime_backend
@@ -231,6 +194,11 @@ defmodule EmergeSkia.BuildConfig do
   end
 
   @doc false
+  def normalize_compiled_backend_matrix!(backends) do
+    EmergeSkia.BuildConfig.Schema.normalize!(backends)
+  end
+
+  @doc false
   def normalize_compiled_backends!(backends) when is_list(backends) do
     invalid_entries = Enum.reject(backends, &(&1 in @valid_backends))
 
@@ -276,6 +244,34 @@ defmodule EmergeSkia.BuildConfig do
   end
 
   @doc false
+  def normalize_compiled_opengl_backends!(opengl_backends, compiled_backends)
+      when is_list(opengl_backends) and is_list(compiled_backends) do
+    compiled_backends = normalize_compiled_backends!(compiled_backends)
+    invalid_entries = Enum.reject(opengl_backends, &(&1 in @valid_opengl_backends))
+
+    unavailable_entries =
+      Enum.reject(opengl_backends, &(&1 == :headless or &1 in compiled_backends))
+
+    cond do
+      invalid_entries != [] ->
+        raise ArgumentError,
+              "config :emerge, compiled_opengl_backends: ... must contain only :wayland, :drm, and :headless, got invalid entries: #{inspect(invalid_entries)}"
+
+      unavailable_entries != [] ->
+        raise ArgumentError,
+              "config :emerge, compiled_opengl_backends: ... must be a subset of compiled_backends except for the presenter-independent :headless backend, got unavailable entries: #{inspect(unavailable_entries)}"
+
+      true ->
+        for backend <- @valid_opengl_backends, backend in opengl_backends, do: backend
+    end
+  end
+
+  def normalize_compiled_opengl_backends!(other, _compiled_backends) do
+    raise ArgumentError,
+          "config :emerge, compiled_opengl_backends: ... must be a list of backend atoms, got: #{inspect(other)}"
+  end
+
+  @doc false
   def rustler_platform_features(env, compiled_backends, compiled_vulkan_backends)
       when is_map(env) and is_list(compiled_backends) and is_list(compiled_vulkan_backends) do
     cond do
@@ -294,20 +290,43 @@ defmodule EmergeSkia.BuildConfig do
   end
 
   @doc false
-  def compiled_backends_to_rustler_features(backends, vulkan_backends \\ []) do
+  def compiled_backends_to_rustler_features(
+        backends,
+        vulkan_backends \\ [],
+        opengl_backends \\ :default
+      ) do
     backends = normalize_compiled_backends!(backends)
     vulkan_backends = normalize_compiled_vulkan_backends!(vulkan_backends, backends)
 
+    opengl_backends =
+      case opengl_backends do
+        :default -> default_opengl_backends(backends, vulkan_backends)
+        configured -> normalize_compiled_opengl_backends!(configured, backends)
+      end
+
     backend_features =
-      Enum.map(backends, fn backend ->
-        if backend in vulkan_backends,
-          do: "#{backend}-all",
-          else: Atom.to_string(backend)
+      Enum.map(backends, fn
+        :macos ->
+          "macos"
+
+        backend ->
+          case {backend in opengl_backends, backend in vulkan_backends} do
+            {true, true} -> "#{backend}-all"
+            {true, false} -> Atom.to_string(backend)
+            {false, true} -> "#{backend}-vulkan"
+            {false, false} -> "#{backend}-core"
+          end
       end)
 
-    if :headless in vulkan_backends,
-      do: backend_features ++ ["headless-all"],
-      else: backend_features
+    headless_features =
+      case {:headless in opengl_backends, :headless in vulkan_backends} do
+        {true, true} -> ["headless-all"]
+        {true, false} -> ["headless-opengl"]
+        {false, true} -> ["headless-vulkan"]
+        {false, false} -> []
+      end
+
+    backend_features ++ headless_features
   end
 
   @doc false
@@ -335,13 +354,55 @@ defmodule EmergeSkia.BuildConfig do
   end
 
   @doc false
+  def precompiled_variants do
+    precompiled_variants(
+      System.get_env(),
+      compiled_backends(),
+      compiled_vulkan_backends(),
+      compiled_opengl_backends()
+    )
+  end
+
+  @doc false
+  def precompiled_variants(env) when is_map(env) do
+    precompiled_variants(
+      env,
+      compiled_backends(),
+      compiled_vulkan_backends(),
+      compiled_opengl_backends()
+    )
+  end
+
+  @doc false
+  def precompiled_variants(env, compiled_backends) do
+    precompiled_variants(env, compiled_backends, [], :default)
+  end
+
+  @doc false
+  def precompiled_variants(env, compiled_backends, compiled_vulkan_backends) do
+    precompiled_variants(env, compiled_backends, compiled_vulkan_backends, :default)
+  end
+
+  @doc false
   def precompiled_variants(
-        env \\ System.get_env(),
-        compiled_backends \\ compiled_backends(),
-        compiled_vulkan_backends \\ compiled_vulkan_backends()
+        env,
+        compiled_backends,
+        compiled_vulkan_backends,
+        compiled_opengl_backends
       )
       when is_map(env) and is_list(compiled_backends) and
              is_list(compiled_vulkan_backends) do
+    compiled_backends = normalize_compiled_backends!(compiled_backends)
+
+    compiled_vulkan_backends =
+      normalize_compiled_vulkan_backends!(compiled_vulkan_backends, compiled_backends)
+
+    compiled_opengl_backends =
+      case compiled_opengl_backends do
+        :default -> default_opengl_backends(compiled_backends, compiled_vulkan_backends)
+        configured -> normalize_compiled_opengl_backends!(configured, compiled_backends)
+      end
+
     variants_for = fn target, variants ->
       Enum.map(variants, fn variant ->
         {variant,
@@ -350,6 +411,7 @@ defmodule EmergeSkia.BuildConfig do
              env,
              compiled_backends,
              compiled_vulkan_backends,
+             compiled_opengl_backends,
              target,
              variant
            )
@@ -359,20 +421,47 @@ defmodule EmergeSkia.BuildConfig do
 
     %{
       "x86_64-unknown-linux-gnu" =>
-        variants_for.("x86_64-unknown-linux-gnu", [:drm, :drm_wayland, :raster, :vulkan]),
+        variants_for.("x86_64-unknown-linux-gnu", [
+          :drm,
+          :drm_wayland,
+          :raster,
+          :vulkan,
+          :wayland_vulkan,
+          :drm_vulkan,
+          :headless_vulkan
+        ]),
       "aarch64-unknown-linux-gnu" =>
-        variants_for.("aarch64-unknown-linux-gnu", [:drm, :drm_wayland, :raster, :vulkan]),
+        variants_for.("aarch64-unknown-linux-gnu", [
+          :drm,
+          :drm_wayland,
+          :raster,
+          :vulkan,
+          :wayland_vulkan,
+          :drm_vulkan,
+          :headless_vulkan
+        ]),
       @linux_arm32_precompiled_target => variants_for.(@linux_arm32_precompiled_target, [:opengl])
     }
   end
 
   @doc false
   def precompiled_profile(env, compiled_backends, target) do
-    precompiled_profile(env, compiled_backends, [], target)
+    precompiled_profile(env, compiled_backends, [], :default, target)
   end
 
   @doc false
-  def precompiled_profile(env, compiled_backends, compiled_vulkan_backends, target)
+  def precompiled_profile(env, compiled_backends, compiled_vulkan_backends, target) do
+    precompiled_profile(env, compiled_backends, compiled_vulkan_backends, :default, target)
+  end
+
+  @doc false
+  def precompiled_profile(
+        env,
+        compiled_backends,
+        compiled_vulkan_backends,
+        compiled_opengl_backends,
+        target
+      )
       when is_map(env) and is_list(compiled_backends) and
              is_list(compiled_vulkan_backends) and is_binary(target) do
     compiled_backends = normalize_compiled_backends!(compiled_backends)
@@ -380,33 +469,61 @@ defmodule EmergeSkia.BuildConfig do
     compiled_vulkan_backends =
       normalize_compiled_vulkan_backends!(compiled_vulkan_backends, compiled_backends)
 
+    compiled_opengl_backends =
+      case compiled_opengl_backends do
+        :default -> default_opengl_backends(compiled_backends, compiled_vulkan_backends)
+        configured -> normalize_compiled_opengl_backends!(configured, compiled_backends)
+      end
+
+    default_opengl_backends =
+      default_opengl_backends(compiled_backends, compiled_vulkan_backends)
+
     variant =
       cond do
+        target in @linux_64_precompiled_targets and compiled_opengl_backends == [] and
+          compiled_backends == [:wayland] and compiled_vulkan_backends == [:wayland] ->
+          {:ok, :wayland_vulkan}
+
+        target in @linux_64_precompiled_targets and compiled_opengl_backends == [] and
+          compiled_backends == [:drm] and compiled_vulkan_backends == [:drm] ->
+          {:ok, :drm_vulkan}
+
+        target in @linux_64_precompiled_targets and compiled_opengl_backends == [] and
+          compiled_backends == [] and compiled_vulkan_backends == [:headless] ->
+          {:ok, :headless_vulkan}
+
         target in @linux_64_precompiled_targets and
           compiled_backends in @linux_precompiled_backend_profiles and
-            compiled_vulkan_backends != [] ->
+          compiled_vulkan_backends != [] and
+            compiled_opengl_backends == default_opengl_backends ->
           {:ok, :vulkan}
 
-        target in @linux_64_precompiled_targets and compiled_backends == [] ->
+        target in @linux_64_precompiled_targets and compiled_backends == [] and
+          compiled_vulkan_backends == [] and compiled_opengl_backends == [] ->
           {:ok, :raster}
 
         target == @linux_arm32_precompiled_target and compiled_vulkan_backends != [] ->
           :error
 
-        target == @linux_arm32_precompiled_target and compiled_backends == [] ->
+        target == @linux_arm32_precompiled_target and compiled_backends == [] and
+            compiled_opengl_backends == [] ->
           {:ok, nil}
 
-        target == @linux_arm32_precompiled_target and compiled_backends == [:drm] ->
+        target == @linux_arm32_precompiled_target and compiled_backends == [:drm] and
+            compiled_opengl_backends == [:drm] ->
           {:ok, :opengl}
 
-        target in @linux_64_precompiled_targets and compiled_backends == [:wayland] ->
+        target in @linux_64_precompiled_targets and compiled_backends == [:wayland] and
+          compiled_vulkan_backends == [] and compiled_opengl_backends == [:wayland] ->
           {:ok, nil}
 
-        target in @linux_64_precompiled_targets and compiled_backends == [:drm] ->
+        target in @linux_64_precompiled_targets and compiled_backends == [:drm] and
+          compiled_vulkan_backends == [] and compiled_opengl_backends == [:drm] ->
           {:ok, :drm}
 
         target in @linux_64_precompiled_targets and
-            compiled_backends == [:wayland, :drm] ->
+          compiled_backends == [:wayland, :drm] and compiled_vulkan_backends == [] and
+            compiled_opengl_backends == [:wayland, :drm] ->
           {:ok, :drm_wayland}
 
         true ->
@@ -420,7 +537,8 @@ defmodule EmergeSkia.BuildConfig do
            target: target,
            variant: variant,
            backends: compiled_backends,
-           vulkan_backends: compiled_vulkan_backends
+           vulkan_backends: compiled_vulkan_backends,
+           opengl_backends: compiled_opengl_backends
          }}
 
       :error ->
@@ -501,6 +619,12 @@ defmodule EmergeSkia.BuildConfig do
       |> Keyword.get(:compiled_vulkan_backends, compiled_vulkan_backends())
       |> normalize_compiled_vulkan_backends!(compiled_backends)
 
+    compiled_opengl_backends =
+      case Keyword.get(opts, :compiled_opengl_backends, :default) do
+        :default -> default_opengl_backends(compiled_backends, compiled_vulkan_backends)
+        configured -> normalize_compiled_opengl_backends!(configured, compiled_backends)
+      end
+
     targets = Keyword.get(opts, :targets, @precompiled_targets)
     nif_versions = Keyword.get(opts, :nif_versions, @precompiled_nif_versions)
     target_resolver = Keyword.get(opts, :target_resolver, &default_precompiled_target_resolver/2)
@@ -511,6 +635,7 @@ defmodule EmergeSkia.BuildConfig do
         env,
         compiled_backends,
         compiled_vulkan_backends,
+        compiled_opengl_backends,
         target_resolver,
         targets,
         nif_versions
@@ -525,6 +650,11 @@ defmodule EmergeSkia.BuildConfig do
       [] -> :wayland
       normalized -> Enum.find(@valid_backends, &(&1 in normalized)) || :wayland
     end
+  end
+
+  defp default_opengl_backends(compiled_backends, compiled_vulkan_backends) do
+    Enum.filter(compiled_backends, &(&1 in @valid_opengl_backends)) ++
+      if(:headless in compiled_vulkan_backends, do: [:headless], else: [])
   end
 
   defp nerves_compiler?(nil), do: false
@@ -678,6 +808,7 @@ defmodule EmergeSkia.BuildConfig do
          env,
          compiled_backends,
          compiled_vulkan_backends,
+         compiled_opengl_backends,
          target_resolver,
          targets,
          nif_versions
@@ -685,7 +816,13 @@ defmodule EmergeSkia.BuildConfig do
     with {:ok, nif_target} <- target_resolver.(targets, nif_versions),
          {:ok, target} <- target_from_nif_target(nif_target),
          {:ok, _profile} <-
-           precompiled_profile(env, compiled_backends, compiled_vulkan_backends, target) do
+           precompiled_profile(
+             env,
+             compiled_backends,
+             compiled_vulkan_backends,
+             compiled_opengl_backends,
+             target
+           ) do
       false
     else
       _ -> true
@@ -703,10 +840,17 @@ defmodule EmergeSkia.BuildConfig do
          env,
          compiled_backends,
          compiled_vulkan_backends,
+         compiled_opengl_backends,
          target,
          variant
        ) do
-    case precompiled_profile(env, compiled_backends, compiled_vulkan_backends, target) do
+    case precompiled_profile(
+           env,
+           compiled_backends,
+           compiled_vulkan_backends,
+           compiled_opengl_backends,
+           target
+         ) do
       {:ok, %{variant: ^variant}} -> true
       _ -> false
     end

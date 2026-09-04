@@ -1,7 +1,9 @@
 //! Wayland backend built on smithay-client-toolkit.
 
+#[cfg(feature = "wayland")]
 mod egl;
 mod geometry;
+#[cfg(any(feature = "wayland", feature = "wayland-vulkan"))]
 mod handles;
 mod input;
 mod keyboard;

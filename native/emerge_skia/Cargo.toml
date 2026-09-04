@@ -54,8 +54,8 @@ hover-trace = []
 # Opt-in diagnostic executable. Keep this separate from drm-vulkan so Rustler
 # cannot copy a host probe into the NIF's shared priv/native directory.
 vulkan-probe = []
-# Shared Linux OpenGL dependency bundle. Existing backends keep their current
-# behavior while DRM and Vulkan cfg boundaries are split in later slices.
+# Shared Linux OpenGL dependency bundle. Vulkan-only presenter features do not
+# enable this bundle.
 linux-opengl = [
     "video-interop-support",
     "dep:gbm",
@@ -93,15 +93,14 @@ wayland-core = [
 ]
 # Compatibility/default feature: Wayland continues to mean the existing OpenGL backend.
 wayland = ["wayland-core", "headless-opengl"]
-# Transitional compatibility: keep the established Wayland/OpenGL build available while the
-# Vulkan presenter is selected explicitly at runtime.
-wayland-vulkan = ["wayland", "vulkan", "dep:ash-window"]
+# Vulkan-only Wayland build. Use wayland-all when runtime OpenGL fallback is required.
+wayland-vulkan = ["wayland-core", "vulkan", "dep:ash-window"]
 wayland-all = ["wayland", "wayland-vulkan"]
 drm-core = ["dep:drm", "dep:evdev", "dep:gbm"]
 # Compatibility feature: DRM continues to mean the existing OpenGL backend.
 drm = ["drm-core", "headless-opengl"]
 vulkan = ["video-interop-support", "dep:ash", "skia-safe/vulkan", "video-interop/vulkan"]
-# Build scaffolding only until shared DRM cfgs and the Vulkan runner land.
+# Vulkan-only DRM/KMS build. Use drm-all when runtime OpenGL fallback is required.
 drm-vulkan = ["drm-core", "vulkan"]
 drm-all = ["drm", "drm-vulkan"]
 
