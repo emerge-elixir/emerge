@@ -9,6 +9,11 @@ passthrough = [
     "EMERGE_SOURCE_REVISION",
     "FORCE_SKIA_BUILD",
     "SKIA_GN_ARGS",
+    "SDKTARGETSYSROOT",
+    "CLANGCC",
+    "CLANGCXX",
+    "HOST_CC",
+    "HOST_CXX",
     "PKG_CONFIG_ALLOW_CROSS",
     "PKG_CONFIG_LIBDIR",
 ]
@@ -20,9 +25,11 @@ pre-build = [
     "apt-get install --assume-yes libegl1-mesa-dev:$CROSS_DEB_ARCH libgbm-dev:$CROSS_DEB_ARCH libdrm-dev:$CROSS_DEB_ARCH libfontconfig1-dev:$CROSS_DEB_ARCH libfreetype6-dev:$CROSS_DEB_ARCH libwayland-dev:$CROSS_DEB_ARCH libxkbcommon-dev:$CROSS_DEB_ARCH",
 ]
 
+# Embedded ARM32 artifacts force a Skia source build, so the container needs
+# host Python and Clang in addition to the target OpenGL development libraries.
 [target.arm-unknown-linux-gnueabihf]
 pre-build = [
     "dpkg --add-architecture $CROSS_DEB_ARCH",
     "apt-get update",
-    "DEBIAN_FRONTEND=noninteractive apt-get install --assume-yes pkg-config libegl1-mesa-dev:$CROSS_DEB_ARCH libgbm-dev:$CROSS_DEB_ARCH libdrm-dev:$CROSS_DEB_ARCH",
+    "DEBIAN_FRONTEND=noninteractive apt-get install --assume-yes clang python3 pkg-config libegl1-mesa-dev:$CROSS_DEB_ARCH libgbm-dev:$CROSS_DEB_ARCH libdrm-dev:$CROSS_DEB_ARCH",
 ]

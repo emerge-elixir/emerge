@@ -288,12 +288,21 @@ jobs:
           toolchain: stable
           target: ${{ matrix.job.target }}
 
-      - name: Configure ARM32 cross pkg-config
+      - name: Configure ARM32 cross toolchain
         if: ${{ matrix.job.target == 'arm-unknown-linux-gnueabihf' }}
         shell: bash
         run: |
+          toolchain=/x-tools/arm-unknown-linux-gnueabihf
+          sysroot="$toolchain/arm-unknown-linux-gnueabihf/sysroot"
+          clang_target="--target=arm-unknown-linux-gnueabihf --sysroot=$sysroot --gcc-toolchain=$toolchain"
+
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
           echo "PKG_CONFIG_LIBDIR=/usr/lib/arm-linux-gnueabihf/pkgconfig:/usr/share/pkgconfig" >> "$GITHUB_ENV"
+          echo "SDKTARGETSYSROOT=$sysroot" >> "$GITHUB_ENV"
+          echo "CLANGCC=clang $clang_target" >> "$GITHUB_ENV"
+          echo "CLANGCXX=clang++ $clang_target" >> "$GITHUB_ENV"
+          echo "HOST_CC=gcc" >> "$GITHUB_ENV"
+          echo "HOST_CXX=g++" >> "$GITHUB_ENV"
 
       - name: Configure embedded Skia
         if: ${{ matrix.job.embedded_skia == true }}
