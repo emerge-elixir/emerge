@@ -377,19 +377,19 @@ defmodule EmergeSkiaTest do
     write_solid_svg(Path.join(red_root, "shared.svg"), "#ff0000")
     write_solid_svg(Path.join(blue_root, "shared.svg"), "#0000ff")
 
-    start_renderer = fn ->
+    start_renderer = fn frame_message ->
       EmergeSkia.start(
         otp_app: :emerge,
         backend: :headless,
         rendering_api: :raster,
         width: 4,
         height: 4,
-        headless: [target: self(), pixel_format: :rgb888]
+        headless: [target: self(), frame_message: frame_message, pixel_format: :rgb888]
       )
     end
 
-    {:ok, red_renderer} = start_renderer.()
-    {:ok, blue_renderer} = start_renderer.()
+    {:ok, red_renderer} = start_renderer.("red_asset_frame")
+    {:ok, blue_renderer} = start_renderer.("blue_asset_frame")
 
     on_exit(fn ->
       EmergeSkia.stop(red_renderer)
@@ -412,10 +412,10 @@ defmodule EmergeSkiaTest do
 
     tree = image([width(px(4)), height(px(4))], "shared.svg")
     {_state, _assigned} = EmergeSkia.upload_tree(red_renderer, tree)
-    assert_frame_color({255, 0, 0})
+    assert_frame_color("red_asset_frame", {255, 0, 0})
 
     {_state, _assigned} = EmergeSkia.upload_tree(blue_renderer, tree)
-    assert_frame_color({0, 0, 255})
+    assert_frame_color("blue_asset_frame", {0, 0, 255})
 
     assert :ok = EmergeSkia.stop(red_renderer)
 
@@ -428,7 +428,7 @@ defmodule EmergeSkiaTest do
              )
 
     {_state, _assigned} = EmergeSkia.upload_tree(blue_renderer, tree)
-    assert_frame_color({0, 255, 0})
+    assert_frame_color("blue_asset_frame", {0, 255, 0})
   end
 
   test "headless BW1 packs rows independently and expands Gray8 screenshots" do
@@ -923,12 +923,28 @@ defmodule EmergeSkiaTest do
     )
   end
 
-  defp assert_frame_color({red, green, blue}) do
-    assert %Frame{
-             storage: %Binary{data: data, planes: [%Plane{stride: 12}]}
-           } = receive_latest_headless_frame(2_000)
+  defp assert_frame_color(message_tag, {red, green, blue}) do
+    expected = :binary.copy(<<red, green, blue>>, 16)
+    deadline = System.monotonic_time(:millisecond) + 5_000
+    assert_frame_color_until(message_tag, expected, deadline, nil)
+  end
 
-    assert data == :binary.copy(<<red, green, blue>>, 16)
+  defp assert_frame_color_until(message_tag, expected, deadline, last_frame) do
+    remaining = Kernel.max(deadline - System.monotonic_time(:millisecond), 0)
+
+    receive do
+      {^message_tag, %Frame{storage: %Binary{data: data, planes: [%Plane{stride: 12}]}}} ->
+        if data == expected do
+          :ok
+        else
+          assert_frame_color_until(message_tag, expected, deadline, data)
+        end
+    after
+      remaining ->
+        flunk(
+          "did not receive expected #{inspect(message_tag)} pixels; last frame was #{inspect(last_frame)}"
+        )
+    end
   end
 
   defp eventually(predicate, timeout_ms \\ 1_000) do
