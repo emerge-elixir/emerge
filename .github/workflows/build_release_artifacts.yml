@@ -139,6 +139,8 @@ jobs:
             variant: "raster"
             cargo_args: "--no-default-features --features embedded-cpu"
             system_packages: ""
+            embedded_skia: true
+            raster_only: true
           - name: linux_headless_vulkan
             target: x86_64-unknown-linux-gnu
             os: ubuntu-24.04
@@ -195,6 +197,8 @@ jobs:
             variant: "raster"
             cargo_args: "--no-default-features --features embedded-cpu"
             system_packages: ""
+            embedded_skia: true
+            raster_only: true
           - name: linux_aarch64_headless_vulkan
             target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
@@ -216,13 +220,17 @@ jobs:
             variant: ""
             cargo_args: "--no-default-features --features embedded-cpu"
             system_packages: ""
+            embedded_skia: true
+            raster_only: true
           - name: linux_arm32_opengl
             target: arm-unknown-linux-gnueabihf
             os: ubuntu-24.04
             use_cross: true
             variant: "opengl"
-            cargo_args: "--no-default-features --features drm,embedded-freetype"
+            cargo_args: "--no-default-features --features drm,embedded-cpu"
             system_packages: ""
+            embedded_skia: true
+            raster_only: false
 
     steps:
       - name: Checkout source code
@@ -287,6 +295,14 @@ jobs:
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
           echo "PKG_CONFIG_LIBDIR=/usr/lib/arm-linux-gnueabihf/pkgconfig:/usr/share/pkgconfig" >> "$GITHUB_ENV"
 
+      - name: Configure embedded Skia
+        if: ${{ matrix.job.embedded_skia == true }}
+        shell: bash
+        run: |
+          echo "FORCE_SKIA_BUILD=1" >> "$GITHUB_ENV"
+          echo "SKIA_GN_ARGS=skia_use_fontconfig=false skia_use_system_freetype2=false" >> "$GITHUB_ENV"
+          echo "RUSTFLAGS=-Lnative=support/embedded-linux-link-stubs" >> "$GITHUB_ENV"
+
       - name: Verify Vulkan-only dependency closure
         if: ${{ matrix.job.variant == 'wayland_vulkan' || matrix.job.variant == 'drm_vulkan' || matrix.job.variant == 'headless_vulkan' }}
         shell: bash
@@ -310,6 +326,36 @@ jobs:
           project-dir: native/emerge_skia
           variant: ${{ matrix.job.variant }}
           cargo-args: ${{ matrix.job.cargo_args }}
+
+      - name: Verify embedded dependency closure
+        if: ${{ matrix.job.embedded_skia == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact_dir="$RUNNER_TEMP/embedded-artifact"
+          rm -rf "$artifact_dir"
+          mkdir -p "$artifact_dir"
+          tar -xzf "${{ steps.build-crate.outputs.file-path }}" -C "$artifact_dir"
+          artifact="$(find "$artifact_dir" -maxdepth 1 -type f -name '*.so' -print -quit)"
+          test -n "$artifact"
+          dynamic_dependencies="$(readelf --dynamic "$artifact")"
+          undefined_symbols="$(nm --dynamic --undefined-only "$artifact")"
+
+          if grep --extended-regexp 'NEEDED.*(fontconfig|freetype)' <<<"$dynamic_dependencies"; then
+            echo "Embedded artifact depends on desktop fontconfig or FreeType" >&2
+            exit 1
+          fi
+
+          if grep --extended-regexp ' (Fc|FT_)' <<<"$undefined_symbols"; then
+            echo "Embedded artifact contains unresolved fontconfig or FreeType symbols" >&2
+            exit 1
+          fi
+
+          if [[ "${{ matrix.job.raster_only }}" == "true" ]] &&
+             grep --extended-regexp 'NEEDED.*(EGL|GLES|GL|gbm|drm|wayland)' <<<"$dynamic_dependencies"; then
+            echo "Raster-only artifact depends on a desktop or GPU library" >&2
+            exit 1
+          fi
 
       - name: Artifact upload
         uses: actions/upload-artifact@v6
