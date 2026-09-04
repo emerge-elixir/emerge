@@ -310,7 +310,7 @@ Do not make every view recompute these values from low-level internal state.
 
 For example, a filter controller exposes `visible_ids` directly instead of
 forcing the view to filter the full list again during rendering. In this
-example, `task_list` exposes ordered `ids` and a `tasks` map whose values contain
+example, `task_list` exposes ordered `ids` and a `todos` map whose values contain
 a `completed?` field:
 
 ```elixir
@@ -334,15 +334,13 @@ defmodule MyApp.Filter do
     }
   end
 
-  defp visible_ids(:all, task_list), do: task_list.ids
+  defp visible_ids(:all, %{ids: ids}), do: ids
 
-  defp visible_ids(:active, task_list) do
-    Enum.reject(task_list.ids, fn id -> task_list.tasks[id].completed? end)
-  end
+  defp visible_ids(:active, %{ids: ids, todos: todos}),
+    do: Enum.reject(ids, fn id -> todos[id].completed? end)
 
-  defp visible_ids(:completed, task_list) do
-    Enum.filter(task_list.ids, fn id -> task_list.tasks[id].completed? end)
-  end
+  defp visible_ids(:completed, %{ids: ids, todos: todos}),
+    do: Enum.filter(ids, fn id -> todos[id].completed? end)
 end
 ```
 
