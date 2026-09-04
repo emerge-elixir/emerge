@@ -1954,9 +1954,12 @@ mod app {
             .values_mut()
             .for_each(|session| {
                 let saw_update = session.asset_rx.as_ref().is_some_and(|asset_rx| {
-                    asset_rx.try_iter().fold(false, |saw_update, message| {
-                        saw_update || matches!(message, TreeMsg::AssetStateChanged)
-                    })
+                    // Drain every queued update; Iterator::any would stop at the first match.
+                    let mut saw_update = false;
+                    for message in asset_rx.try_iter() {
+                        saw_update |= matches!(message, TreeMsg::AssetStateChanged);
+                    }
+                    saw_update
                 });
 
                 if saw_update {
