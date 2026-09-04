@@ -99,15 +99,15 @@ defmodule EmergeSkia.Options do
   end
 
   @doc false
-  def rendering_api_start_error(%{backend: backend, rendering_api: rendering_api}) do
-    case {String.downcase(backend), rendering_api.kind} do
-      {backend, "vulkan"} when backend in ["drm", "wayland", "headless"] ->
-        nil
-
-      _other ->
-        nil
-    end
+  def rendering_api_start_error(%{
+        backend: "headless",
+        rendering_api: %{kind: "raster"},
+        headless: %{mode: "prime"}
+      }) do
+    "headless PRIME output requires rendering_api :opengl or :auto; :raster cannot export dma-buf frames"
   end
+
+  def rendering_api_start_error(_native_opts), do: nil
 
   @doc false
   def normalize_render_to_pixels_keyword_opts!(opts) do

@@ -85,6 +85,7 @@ defmodule EmergeSkia.DirectVideoFrameTest do
                    1_000
   end
 
+  @tag :linux_only
   test "hidden targets consume and release borrowed frames without GPU setup" do
     {fd, file, path} = open_test_fd()
 

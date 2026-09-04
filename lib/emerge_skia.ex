@@ -217,9 +217,15 @@ defmodule EmergeSkia do
       raise ArgumentError, "drm_cursor is only supported with backend: :drm"
     end
 
-    native_opts.backend
-    |> Transport.for_backend()
-    |> apply(:start_session, [native_opts, asset_config])
+    case Options.rendering_api_start_error(native_opts) do
+      nil ->
+        native_opts.backend
+        |> Transport.for_backend()
+        |> apply(:start_session, [native_opts, asset_config])
+
+      reason ->
+        {:error, {:error, reason}}
+    end
   end
 
   @spec start(String.t()) :: no_return()

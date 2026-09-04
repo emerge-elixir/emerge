@@ -305,6 +305,7 @@ defmodule EmergeSkiaTest do
     end
   end
 
+  @tag :linux_only
   test "start/1 delegates Wayland Vulkan availability to the native feature matrix" do
     assert {:error, {:error, "Vulkan rendering support is not available in this build"}} =
              EmergeSkia.start(otp_app: :emerge, backend: :wayland, rendering_api: :vulkan)
