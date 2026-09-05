@@ -33,5 +33,5 @@ image = "ghcr.io/cross-rs/armv7-unknown-linux-gnueabihf@sha256:2d3df5c06507fd14f
 pre-build = [
     "dpkg --add-architecture $CROSS_DEB_ARCH",
     "apt-get update",
-    "DEBIAN_FRONTEND=noninteractive apt-get install --assume-yes clang python3 pkg-config libegl1-mesa-dev:$CROSS_DEB_ARCH libgbm-dev:$CROSS_DEB_ARCH libdrm-dev:$CROSS_DEB_ARCH",
+    "DEBIAN_FRONTEND=noninteractive apt-get install --assume-yes clang python3 ninja-build pkg-config libegl1-mesa-dev:$CROSS_DEB_ARCH libgbm-dev:$CROSS_DEB_ARCH libdrm-dev:$CROSS_DEB_ARCH",
 ]

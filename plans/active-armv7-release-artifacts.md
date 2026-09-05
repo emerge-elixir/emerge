@@ -4,7 +4,11 @@
 
 - Run `33923915654` at `2dcc55d` failed both ARM32 jobs in `Build the project`.
 - Detailed logs require authenticated GitHub access (HTTP 403); annotations
-  only expose exit code 1. The exact compiler failure is not yet confirmed.
+  only expose exit code 1.
+- User-provided raster logs for run `33931152579` at `829b0a8` confirm GN
+  generation succeeds, then rust-skia cannot execute `ninja` (`ENOENT`). The
+  `is_skia_standalone` warning is non-fatal; the missing library at packaging
+  is a consequence of the failed build.
 - Trellis uses Cortex-A7 and `armv7-nerves-linux-gnueabihf`. `mix.exs` already
   maps that compiler to `armv7-unknown-linux-gnueabihf` for source builds.
 - The legacy cross image has an obsolete host toolchain for a Skia source build.
@@ -15,6 +19,8 @@
   triple consistently in Cargo targets, artifact metadata, tests, and docs.
 - [x] Pin the modern cross ARMv7 image by OCI digest and use its actual
   `/usr/arm-linux-gnueabihf` sysroot, linker, CMake, and bindgen configuration.
+- [x] Install host `ninja-build` in the shared ARMv7 cross image setup, used
+  by both raster and OpenGL source builds.
 - [x] Keep embedded Skia free of desktop font dependencies and raster free of
   GPU dependencies; verify the produced ELF in the artifact jobs, including
   ELF32, ARMv7, and VFP register argument attributes.
