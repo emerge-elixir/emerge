@@ -7,9 +7,11 @@ use std::{
 use crate::{
     render_scene::RenderSceneSummary,
     renderer::{
-        RenderDrawTimings, RenderImageDrawProfile, RenderShadowDrawProfile, RenderTimings,
+        AssetMemoryRasterVariantStats, AssetMemoryStatsSnapshot, RenderDrawTimings,
+        RenderImageDrawProfile, RenderPaintRunDrawProfile, RenderShadowDrawProfile, RenderTimings,
         RendererCacheFrameStats, RendererCachePaintLayerFrameStats,
     },
+    video::VideoStreamIdentity,
 };
 
 pub const SLOW_RENDER_STAGE_THRESHOLD: Duration = Duration::from_millis(4);
@@ -117,6 +119,11 @@ pub enum RendererTimingMetric {
     RenderGpuFlush,
     RenderSubmit,
     PresentSubmit,
+    HeadlessPrimePrepare,
+    HeadlessPrimeRetarget,
+    HeadlessPrimeFenceExport,
+    HeadlessPrimeGpuFinish,
+    HeadlessPrimeExportMetadata,
     Pipeline,
     PipelineSubmitToTreeStart,
     PipelineTree,
@@ -127,9 +134,12 @@ pub enum RendererTimingMetric {
     VideoSubmitToRelease,
     VideoRetireFence,
     VideoSubmitToPresent,
+    VulkanVideoConversionGpu,
+    VulkanVideoCompositionGpu,
+    VulkanVideoTotalGpu,
     DrmForcedGpuFinishBeforeSwap,
     DrmForcedGpuFinishAfterSwap,
-    DrmGpuQueueCompletion,
+    DrmGpuRenderElapsed,
     DrmEglSwapBuffers,
     DrmGbmLockFrontBuffer,
     DrmFramebufferLookup,
@@ -155,7 +165,7 @@ pub enum RendererTimingMetric {
 }
 
 impl RendererTimingMetric {
-    pub const COUNT: usize = 41;
+    pub const COUNT: usize = 49;
     pub const ALL: [Self; Self::COUNT] = [
         Self::Render,
         Self::RenderDraw,
@@ -163,6 +173,11 @@ impl RendererTimingMetric {
         Self::RenderGpuFlush,
         Self::RenderSubmit,
         Self::PresentSubmit,
+        Self::HeadlessPrimePrepare,
+        Self::HeadlessPrimeRetarget,
+        Self::HeadlessPrimeFenceExport,
+        Self::HeadlessPrimeGpuFinish,
+        Self::HeadlessPrimeExportMetadata,
         Self::Pipeline,
         Self::PipelineSubmitToTreeStart,
         Self::PipelineTree,
@@ -173,9 +188,12 @@ impl RendererTimingMetric {
         Self::VideoSubmitToRelease,
         Self::VideoRetireFence,
         Self::VideoSubmitToPresent,
+        Self::VulkanVideoConversionGpu,
+        Self::VulkanVideoCompositionGpu,
+        Self::VulkanVideoTotalGpu,
         Self::DrmForcedGpuFinishBeforeSwap,
         Self::DrmForcedGpuFinishAfterSwap,
-        Self::DrmGpuQueueCompletion,
+        Self::DrmGpuRenderElapsed,
         Self::DrmEglSwapBuffers,
         Self::DrmGbmLockFrontBuffer,
         Self::DrmFramebufferLookup,
@@ -213,6 +231,11 @@ impl RendererTimingMetric {
             Self::RenderGpuFlush => "render gpu flush",
             Self::RenderSubmit => "render submit",
             Self::PresentSubmit => "present submit",
+            Self::HeadlessPrimePrepare => "headless PRIME prepare",
+            Self::HeadlessPrimeRetarget => "headless PRIME retarget",
+            Self::HeadlessPrimeFenceExport => "headless PRIME fence export",
+            Self::HeadlessPrimeGpuFinish => "headless PRIME GPU finish fallback",
+            Self::HeadlessPrimeExportMetadata => "headless PRIME export metadata",
             Self::Pipeline => "pipeline submit->frame callback",
             Self::PipelineSubmitToTreeStart => "pipeline submit->tree",
             Self::PipelineTree => "pipeline tree",
@@ -223,9 +246,12 @@ impl RendererTimingMetric {
             Self::VideoSubmitToRelease => "video submit->lease release",
             Self::VideoRetireFence => "video retired fence",
             Self::VideoSubmitToPresent => "video submit->page flip",
+            Self::VulkanVideoConversionGpu => "Vulkan video conversion GPU",
+            Self::VulkanVideoCompositionGpu => "Vulkan video composition GPU",
+            Self::VulkanVideoTotalGpu => "Vulkan video total GPU",
             Self::DrmForcedGpuFinishBeforeSwap => "drm forced GPU finish before swap",
             Self::DrmForcedGpuFinishAfterSwap => "drm forced GPU finish after swap",
-            Self::DrmGpuQueueCompletion => "drm GPU queue completion span",
+            Self::DrmGpuRenderElapsed => "drm GPU render elapsed",
             Self::DrmEglSwapBuffers => "drm eglSwapBuffers",
             Self::DrmGbmLockFrontBuffer => "drm GBM lock front buffer",
             Self::DrmFramebufferLookup => "drm framebuffer lookup",
@@ -284,6 +310,13 @@ pub struct RendererStatsSnapshot {
     pub video_pipeline: VideoPipelineStatsSnapshot,
     pub layout_cache: LayoutCacheStats,
     pub renderer_cache: RendererCacheStatsSnapshot,
+    pub pipeline: RendererPipelineStatsSnapshot,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum RendererStatsWindowClose {
+    Ready(Box<RendererStatsSnapshot>),
+    Draining { pending_gpu_samples: u64 },
 }
 
 impl RendererStatsSnapshot {
@@ -293,14 +326,88 @@ impl RendererStatsSnapshot {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RendererPipelineStatsSnapshot {
+    pub scenes_constructed: u64,
+    pub render_queue_overwrites: u64,
+    pub drm_scenes_selected_for_draw: u64,
+    pub drm_scenes_presented: u64,
+    pub gpu_render_elapsed_disjoint_discarded_samples: u64,
+    pub gpu_render_elapsed_pool_saturated_sample_skips: u64,
+    pub gpu_render_elapsed_stale_epoch_samples: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct VulkanVideoImportPoolStats {
+    pub validation_enabled: bool,
+    pub validation_errors: u64,
+    pub validation_warnings: u64,
+    pub source_cache_hits: u64,
+    pub source_cache_misses: u64,
+    pub source_cache_evictions: u64,
+    pub source_active_reuse_rejections: u64,
+    pub source_topology_collisions: u64,
+    pub output_pool_busy_rejections: u64,
+    pub source_cache_entries: usize,
+    pub output_pool_slots: usize,
+    pub packed_cache_hits: u64,
+    pub packed_cache_misses: u64,
+    pub packed_cache_evictions: u64,
+    pub packed_active_reuse_rejections: u64,
+    pub packed_topology_collisions: u64,
+    pub packed_allocation_size_rejections: u64,
+    pub packed_cache_entries: usize,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct VideoPipelineStatsSnapshot {
     pub submitted: u64,
+    pub inactive_dropped: u64,
     pub pending_replaced: u64,
     pub pending_taken: u64,
     pub imported: u64,
     pub leases_released: u64,
     pub retired_fences_created: u64,
     pub retired_fences_released: u64,
+    pub retired_gl_finish_fallbacks: u64,
+    pub acquire_fences_received: u64,
+    pub acquire_server_waits_queued: u64,
+    pub acquire_client_wait_fallbacks: u64,
+    pub acquire_wait_timeouts: u64,
+    pub acquire_wait_errors: u64,
+    pub vulkan_acquire_sync_fd_imported: u64,
+    pub vulkan_temporary_semaphore_import_failures: u64,
+    pub vulkan_ownership_acquires_submitted: u64,
+    pub vulkan_acquire_submit_failures: u64,
+    pub vulkan_ganesh_waits_rejected: u64,
+    pub vulkan_releases_submitted: u64,
+    pub vulkan_release_submit_failures: u64,
+    pub vulkan_releases_completed: u64,
+    pub vulkan_release_fences_created: u64,
+    pub vulkan_release_fence_errors: u64,
+    pub vulkan_release_fence_completions: u64,
+    pub vulkan_retirement_timeouts: u64,
+    pub vulkan_import_cap_saturations: u64,
+    pub vulkan_quarantined: u64,
+    pub vulkan_global_quarantine_terminal: bool,
+    pub vulkan_device_lost: u64,
+    pub vulkan_validation_enabled: bool,
+    pub vulkan_validation_errors: u64,
+    pub vulkan_validation_warnings: u64,
+    pub vulkan_source_cache_hits: u64,
+    pub vulkan_source_cache_misses: u64,
+    pub vulkan_source_cache_evictions: u64,
+    pub vulkan_source_active_reuse_rejections: u64,
+    pub vulkan_source_topology_collisions: u64,
+    pub vulkan_output_pool_busy_rejections: u64,
+    pub vulkan_source_cache_entries: u64,
+    pub vulkan_output_pool_slots: u64,
+    pub vulkan_packed_cache_hits: u64,
+    pub vulkan_packed_cache_misses: u64,
+    pub vulkan_packed_cache_evictions: u64,
+    pub vulkan_packed_active_reuse_rejections: u64,
+    pub vulkan_packed_topology_collisions: u64,
+    pub vulkan_packed_allocation_size_rejections: u64,
+    pub vulkan_packed_cache_entries: u64,
     pub primary_prepared: u64,
     pub video_primary_prepared: u64,
     pub stale_prepared: u64,
@@ -311,6 +418,8 @@ pub struct VideoPipelineStatsSnapshot {
     pub primary_committed: u64,
     pub primary_presented: u64,
     pub video_primary_presented: u64,
+    pub video_primary_ever_presented: bool,
+    pub last_presented_streams: Vec<VideoStreamIdentity>,
     pub page_flip_events: u64,
     pub page_flip_sequence_steps: u64,
     pub missed_vblanks: u64,
@@ -512,12 +621,53 @@ impl RendererTimingWindows {
 #[derive(Default)]
 struct VideoPipelineStatsWindow {
     submitted: u64,
+    inactive_dropped: u64,
     pending_replaced: u64,
     pending_taken: u64,
     imported: u64,
     leases_released: u64,
     retired_fences_created: u64,
     retired_fences_released: u64,
+    retired_gl_finish_fallbacks: u64,
+    acquire_fences_received: u64,
+    acquire_server_waits_queued: u64,
+    acquire_client_wait_fallbacks: u64,
+    acquire_wait_timeouts: u64,
+    acquire_wait_errors: u64,
+    vulkan_acquire_sync_fd_imported: u64,
+    vulkan_temporary_semaphore_import_failures: u64,
+    vulkan_ownership_acquires_submitted: u64,
+    vulkan_acquire_submit_failures: u64,
+    vulkan_ganesh_waits_rejected: u64,
+    vulkan_releases_submitted: u64,
+    vulkan_release_submit_failures: u64,
+    vulkan_releases_completed: u64,
+    vulkan_release_fences_created: u64,
+    vulkan_release_fence_errors: u64,
+    vulkan_release_fence_completions: u64,
+    vulkan_retirement_timeouts: u64,
+    vulkan_import_cap_saturations: u64,
+    vulkan_quarantined: u64,
+    vulkan_global_quarantine_terminal: bool,
+    vulkan_device_lost: u64,
+    vulkan_validation_enabled: bool,
+    vulkan_validation_errors: u64,
+    vulkan_validation_warnings: u64,
+    vulkan_source_cache_hits: u64,
+    vulkan_source_cache_misses: u64,
+    vulkan_source_cache_evictions: u64,
+    vulkan_source_active_reuse_rejections: u64,
+    vulkan_source_topology_collisions: u64,
+    vulkan_output_pool_busy_rejections: u64,
+    vulkan_source_cache_entries: u64,
+    vulkan_output_pool_slots: u64,
+    vulkan_packed_cache_hits: u64,
+    vulkan_packed_cache_misses: u64,
+    vulkan_packed_cache_evictions: u64,
+    vulkan_packed_active_reuse_rejections: u64,
+    vulkan_packed_topology_collisions: u64,
+    vulkan_packed_allocation_size_rejections: u64,
+    vulkan_packed_cache_entries: u64,
     primary_prepared: u64,
     video_primary_prepared: u64,
     stale_prepared: u64,
@@ -528,6 +678,8 @@ struct VideoPipelineStatsWindow {
     primary_committed: u64,
     primary_presented: u64,
     video_primary_presented: u64,
+    video_primary_ever_presented: bool,
+    last_presented_streams: Vec<VideoStreamIdentity>,
     page_flip_events: u64,
     page_flip_sequence_steps: u64,
     missed_vblanks: u64,
@@ -543,12 +695,54 @@ impl VideoPipelineStatsWindow {
     fn snapshot(&self) -> VideoPipelineStatsSnapshot {
         VideoPipelineStatsSnapshot {
             submitted: self.submitted,
+            inactive_dropped: self.inactive_dropped,
             pending_replaced: self.pending_replaced,
             pending_taken: self.pending_taken,
             imported: self.imported,
             leases_released: self.leases_released,
             retired_fences_created: self.retired_fences_created,
             retired_fences_released: self.retired_fences_released,
+            retired_gl_finish_fallbacks: self.retired_gl_finish_fallbacks,
+            acquire_fences_received: self.acquire_fences_received,
+            acquire_server_waits_queued: self.acquire_server_waits_queued,
+            acquire_client_wait_fallbacks: self.acquire_client_wait_fallbacks,
+            acquire_wait_timeouts: self.acquire_wait_timeouts,
+            acquire_wait_errors: self.acquire_wait_errors,
+            vulkan_acquire_sync_fd_imported: self.vulkan_acquire_sync_fd_imported,
+            vulkan_temporary_semaphore_import_failures: self
+                .vulkan_temporary_semaphore_import_failures,
+            vulkan_ownership_acquires_submitted: self.vulkan_ownership_acquires_submitted,
+            vulkan_acquire_submit_failures: self.vulkan_acquire_submit_failures,
+            vulkan_ganesh_waits_rejected: self.vulkan_ganesh_waits_rejected,
+            vulkan_releases_submitted: self.vulkan_releases_submitted,
+            vulkan_release_submit_failures: self.vulkan_release_submit_failures,
+            vulkan_releases_completed: self.vulkan_releases_completed,
+            vulkan_release_fences_created: self.vulkan_release_fences_created,
+            vulkan_release_fence_errors: self.vulkan_release_fence_errors,
+            vulkan_release_fence_completions: self.vulkan_release_fence_completions,
+            vulkan_retirement_timeouts: self.vulkan_retirement_timeouts,
+            vulkan_import_cap_saturations: self.vulkan_import_cap_saturations,
+            vulkan_quarantined: self.vulkan_quarantined,
+            vulkan_global_quarantine_terminal: self.vulkan_global_quarantine_terminal,
+            vulkan_device_lost: self.vulkan_device_lost,
+            vulkan_validation_enabled: self.vulkan_validation_enabled,
+            vulkan_validation_errors: self.vulkan_validation_errors,
+            vulkan_validation_warnings: self.vulkan_validation_warnings,
+            vulkan_source_cache_hits: self.vulkan_source_cache_hits,
+            vulkan_source_cache_misses: self.vulkan_source_cache_misses,
+            vulkan_source_cache_evictions: self.vulkan_source_cache_evictions,
+            vulkan_source_active_reuse_rejections: self.vulkan_source_active_reuse_rejections,
+            vulkan_source_topology_collisions: self.vulkan_source_topology_collisions,
+            vulkan_output_pool_busy_rejections: self.vulkan_output_pool_busy_rejections,
+            vulkan_source_cache_entries: self.vulkan_source_cache_entries,
+            vulkan_output_pool_slots: self.vulkan_output_pool_slots,
+            vulkan_packed_cache_hits: self.vulkan_packed_cache_hits,
+            vulkan_packed_cache_misses: self.vulkan_packed_cache_misses,
+            vulkan_packed_cache_evictions: self.vulkan_packed_cache_evictions,
+            vulkan_packed_active_reuse_rejections: self.vulkan_packed_active_reuse_rejections,
+            vulkan_packed_topology_collisions: self.vulkan_packed_topology_collisions,
+            vulkan_packed_allocation_size_rejections: self.vulkan_packed_allocation_size_rejections,
+            vulkan_packed_cache_entries: self.vulkan_packed_cache_entries,
             primary_prepared: self.primary_prepared,
             video_primary_prepared: self.video_primary_prepared,
             stale_prepared: self.stale_prepared,
@@ -559,6 +753,8 @@ impl VideoPipelineStatsWindow {
             primary_committed: self.primary_committed,
             primary_presented: self.primary_presented,
             video_primary_presented: self.video_primary_presented,
+            video_primary_ever_presented: self.video_primary_ever_presented,
+            last_presented_streams: self.last_presented_streams.clone(),
             page_flip_events: self.page_flip_events,
             page_flip_sequence_steps: self.page_flip_sequence_steps,
             missed_vblanks: self.missed_vblanks,
@@ -574,6 +770,28 @@ impl VideoPipelineStatsWindow {
     fn copy_gauges_from(&mut self, previous: &Self) {
         self.current_pending = previous.current_pending;
         self.current_direct_imports = previous.current_direct_imports;
+        self.vulkan_global_quarantine_terminal = previous.vulkan_global_quarantine_terminal;
+        self.vulkan_validation_enabled = previous.vulkan_validation_enabled;
+        self.vulkan_validation_errors = previous.vulkan_validation_errors;
+        self.vulkan_validation_warnings = previous.vulkan_validation_warnings;
+        self.vulkan_source_cache_hits = previous.vulkan_source_cache_hits;
+        self.vulkan_source_cache_misses = previous.vulkan_source_cache_misses;
+        self.vulkan_source_cache_evictions = previous.vulkan_source_cache_evictions;
+        self.vulkan_source_active_reuse_rejections = previous.vulkan_source_active_reuse_rejections;
+        self.vulkan_source_topology_collisions = previous.vulkan_source_topology_collisions;
+        self.vulkan_output_pool_busy_rejections = previous.vulkan_output_pool_busy_rejections;
+        self.vulkan_source_cache_entries = previous.vulkan_source_cache_entries;
+        self.vulkan_output_pool_slots = previous.vulkan_output_pool_slots;
+        self.vulkan_packed_cache_hits = previous.vulkan_packed_cache_hits;
+        self.vulkan_packed_cache_misses = previous.vulkan_packed_cache_misses;
+        self.vulkan_packed_cache_evictions = previous.vulkan_packed_cache_evictions;
+        self.vulkan_packed_active_reuse_rejections = previous.vulkan_packed_active_reuse_rejections;
+        self.vulkan_packed_topology_collisions = previous.vulkan_packed_topology_collisions;
+        self.vulkan_packed_allocation_size_rejections =
+            previous.vulkan_packed_allocation_size_rejections;
+        self.vulkan_packed_cache_entries = previous.vulkan_packed_cache_entries;
+        self.video_primary_ever_presented = previous.video_primary_ever_presented;
+        self.last_presented_streams = previous.last_presented_streams.clone();
         self.current_retired_imports = previous.current_retired_imports;
         self.max_retired_imports = previous.current_retired_imports;
         self.current_prepared = previous.current_prepared;
@@ -581,26 +799,65 @@ impl VideoPipelineStatsWindow {
     }
 }
 
+#[derive(Default)]
+struct RendererPipelineStatsWindow {
+    scenes_constructed: u64,
+    render_queue_overwrites: u64,
+    drm_scenes_selected_for_draw: u64,
+    drm_scenes_presented: u64,
+    gpu_render_elapsed_disjoint_discarded_samples: u64,
+    gpu_render_elapsed_pool_saturated_sample_skips: u64,
+    gpu_render_elapsed_stale_epoch_samples: u64,
+}
+
+impl RendererPipelineStatsWindow {
+    fn snapshot(&self) -> RendererPipelineStatsSnapshot {
+        RendererPipelineStatsSnapshot {
+            scenes_constructed: self.scenes_constructed,
+            render_queue_overwrites: self.render_queue_overwrites,
+            drm_scenes_selected_for_draw: self.drm_scenes_selected_for_draw,
+            drm_scenes_presented: self.drm_scenes_presented,
+            gpu_render_elapsed_disjoint_discarded_samples: self
+                .gpu_render_elapsed_disjoint_discarded_samples,
+            gpu_render_elapsed_pool_saturated_sample_skips: self
+                .gpu_render_elapsed_pool_saturated_sample_skips,
+            gpu_render_elapsed_stale_epoch_samples: self.gpu_render_elapsed_stale_epoch_samples,
+        }
+    }
+}
+
 struct RendererStatsWindow {
     started_at: Instant,
+    epoch: u64,
+    gpu_sampling_open: bool,
+    closed_at: Option<Instant>,
+    close_return_snapshot: bool,
+    pending_gpu_samples: u64,
     last_display_interval_ns: Option<u64>,
     frame_count: u64,
     timings: RendererTimingWindows,
     video_pipeline: VideoPipelineStatsWindow,
     layout_cache: LayoutCacheStats,
     renderer_cache: RendererCacheStatsWindow,
+    pipeline: RendererPipelineStatsWindow,
 }
 
 impl RendererStatsWindow {
-    fn new(started_at: Instant, last_display_interval_ns: Option<u64>) -> Self {
+    fn new(started_at: Instant, last_display_interval_ns: Option<u64>, epoch: u64) -> Self {
         Self {
             started_at,
+            epoch,
+            gpu_sampling_open: true,
+            closed_at: None,
+            close_return_snapshot: true,
+            pending_gpu_samples: 0,
             last_display_interval_ns,
             frame_count: 0,
             timings: RendererTimingWindows::default(),
             video_pipeline: VideoPipelineStatsWindow::default(),
             layout_cache: LayoutCacheStats::default(),
             renderer_cache: RendererCacheStatsWindow::default(),
+            pipeline: RendererPipelineStatsWindow::default(),
         }
     }
 
@@ -627,6 +884,7 @@ impl RendererStatsWindow {
             video_pipeline: self.video_pipeline.snapshot(),
             layout_cache: self.layout_cache,
             renderer_cache: self.renderer_cache.snapshot(),
+            pipeline: self.pipeline.snapshot(),
         }
     }
 }
@@ -823,8 +1081,28 @@ impl RendererCachePaintLayerStatsWindow {
     }
 }
 
+struct RendererStatsCollectorState {
+    active: RendererStatsWindow,
+    draining: Option<RendererStatsWindow>,
+    completed_close: Option<Box<RendererStatsSnapshot>>,
+}
+
+impl std::ops::Deref for RendererStatsCollectorState {
+    type Target = RendererStatsWindow;
+
+    fn deref(&self) -> &Self::Target {
+        &self.active
+    }
+}
+
+impl std::ops::DerefMut for RendererStatsCollectorState {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.active
+    }
+}
+
 pub struct RendererStatsCollector {
-    window: Mutex<RendererStatsWindow>,
+    window: Mutex<RendererStatsCollectorState>,
     families: StatsFamilies,
 }
 
@@ -887,7 +1165,11 @@ impl RendererStatsCollector {
 
     pub fn with_families(families: StatsFamilies) -> Self {
         Self {
-            window: Mutex::new(RendererStatsWindow::new(Instant::now(), None)),
+            window: Mutex::new(RendererStatsCollectorState {
+                active: RendererStatsWindow::new(Instant::now(), None, 0),
+                draining: None,
+                completed_close: None,
+            }),
             families,
         }
     }
@@ -905,6 +1187,9 @@ impl RendererStatsCollector {
             .window
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !window.gpu_sampling_open {
+            return;
+        }
         window.frame_count = window.frame_count.saturating_add(1);
     }
 
@@ -917,6 +1202,9 @@ impl RendererStatsCollector {
             .window
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !window.gpu_sampling_open {
+            return;
+        }
         let ns = duration.as_nanos().min(u128::from(u64::MAX)) as u64;
         window.last_display_interval_ns = Some(ns);
     }
@@ -956,6 +1244,31 @@ impl RendererStatsCollector {
         self.record_timing(RendererTimingMetric::PresentSubmit, duration);
     }
 
+    pub fn record_headless_prime_timings(
+        &self,
+        prepare: Duration,
+        retarget: Duration,
+        fence_export: Option<Duration>,
+        gpu_finish_fallback: Option<Duration>,
+        export_metadata: Duration,
+    ) {
+        self.record_timing(RendererTimingMetric::HeadlessPrimePrepare, prepare);
+        self.record_timing(RendererTimingMetric::HeadlessPrimeRetarget, retarget);
+        if let Some(fence_export) = fence_export {
+            self.record_timing(RendererTimingMetric::HeadlessPrimeFenceExport, fence_export);
+        }
+        if let Some(gpu_finish_fallback) = gpu_finish_fallback {
+            self.record_timing(
+                RendererTimingMetric::HeadlessPrimeGpuFinish,
+                gpu_finish_fallback,
+            );
+        }
+        self.record_timing(
+            RendererTimingMetric::HeadlessPrimeExportMetadata,
+            export_metadata,
+        );
+    }
+
     pub fn record_video_submitted(&self, replaced_pending: bool) {
         self.update_video_pipeline(|video| {
             video.submitted = video.submitted.saturating_add(1);
@@ -964,6 +1277,12 @@ impl RendererStatsCollector {
             } else {
                 video.current_pending = video.current_pending.saturating_add(1);
             }
+        });
+    }
+
+    pub fn record_video_inactive_drop(&self) {
+        self.update_video_pipeline(|video| {
+            video.inactive_dropped = video.inactive_dropped.saturating_add(1);
         });
     }
 
@@ -992,12 +1311,203 @@ impl RendererStatsCollector {
         );
     }
 
+    pub fn record_video_acquire_fence_received(&self) {
+        self.update_video_pipeline(|video| {
+            video.acquire_fences_received = video.acquire_fences_received.saturating_add(1);
+        });
+    }
+
+    pub fn record_video_acquire_server_wait_queued(&self) {
+        self.update_video_pipeline(|video| {
+            video.acquire_server_waits_queued = video.acquire_server_waits_queued.saturating_add(1);
+        });
+    }
+
+    pub fn record_video_acquire_client_wait_fallback(&self) {
+        self.update_video_pipeline(|video| {
+            video.acquire_client_wait_fallbacks =
+                video.acquire_client_wait_fallbacks.saturating_add(1);
+        });
+    }
+
+    pub fn record_video_acquire_wait_timeout(&self) {
+        self.update_video_pipeline(|video| {
+            video.acquire_wait_timeouts = video.acquire_wait_timeouts.saturating_add(1);
+        });
+    }
+
+    pub fn record_video_acquire_wait_error(&self) {
+        self.update_video_pipeline(|video| {
+            video.acquire_wait_errors = video.acquire_wait_errors.saturating_add(1);
+        });
+    }
+
+    pub fn record_vulkan_video_acquire_sync_fd_imported(&self) {
+        self.update_video_pipeline(|video| {
+            video.vulkan_acquire_sync_fd_imported =
+                video.vulkan_acquire_sync_fd_imported.saturating_add(1);
+        });
+    }
+
+    pub fn record_vulkan_video_temporary_semaphore_import_failure(&self) {
+        self.update_video_pipeline(|video| {
+            video.vulkan_temporary_semaphore_import_failures = video
+                .vulkan_temporary_semaphore_import_failures
+                .saturating_add(1);
+        });
+    }
+
+    pub fn record_vulkan_video_ownership_acquire_submitted(&self) {
+        self.update_video_pipeline(|video| {
+            video.vulkan_ownership_acquires_submitted =
+                video.vulkan_ownership_acquires_submitted.saturating_add(1);
+        });
+    }
+
+    pub fn record_vulkan_video_acquire_submit_failure(&self) {
+        self.update_video_pipeline(|video| {
+            video.vulkan_acquire_submit_failures =
+                video.vulkan_acquire_submit_failures.saturating_add(1);
+        });
+    }
+
+    pub fn record_vulkan_video_ganesh_wait_rejected(&self) {
+        self.update_video_pipeline(|video| {
+            video.vulkan_ganesh_waits_rejected =
+                video.vulkan_ganesh_waits_rejected.saturating_add(1);
+        });
+    }
+
+    pub fn record_vulkan_video_release_submitted(&self) {
+        self.update_video_pipeline(|video| {
+            video.vulkan_releases_submitted = video.vulkan_releases_submitted.saturating_add(1);
+        });
+    }
+
+    pub fn record_vulkan_video_release_submit_failure(&self) {
+        self.update_video_pipeline(|video| {
+            video.vulkan_release_submit_failures =
+                video.vulkan_release_submit_failures.saturating_add(1);
+        });
+    }
+
+    pub fn record_vulkan_video_release_completed(&self) {
+        self.update_video_pipeline(|video| {
+            video.vulkan_releases_completed = video.vulkan_releases_completed.saturating_add(1);
+        });
+    }
+
+    pub fn record_vulkan_video_release_fence_created(&self) {
+        self.update_video_pipeline(|video| {
+            video.vulkan_release_fences_created =
+                video.vulkan_release_fences_created.saturating_add(1);
+        });
+    }
+
+    pub fn record_vulkan_video_release_fence_error(&self) {
+        self.update_video_pipeline(|video| {
+            video.vulkan_release_fence_errors = video.vulkan_release_fence_errors.saturating_add(1);
+        });
+    }
+
+    pub fn record_vulkan_video_release_fence_completion(&self) {
+        self.update_video_pipeline(|video| {
+            video.vulkan_release_fence_completions =
+                video.vulkan_release_fence_completions.saturating_add(1);
+        });
+    }
+
+    pub fn record_vulkan_video_retirement_timeout(&self) {
+        self.update_video_pipeline(|video| {
+            video.vulkan_retirement_timeouts = video.vulkan_retirement_timeouts.saturating_add(1);
+        });
+    }
+
+    pub fn record_vulkan_video_import_cap_saturation(&self) {
+        self.update_video_pipeline(|video| {
+            video.vulkan_import_cap_saturations =
+                video.vulkan_import_cap_saturations.saturating_add(1);
+        });
+    }
+
+    pub fn record_vulkan_video_quarantined(&self) {
+        self.update_video_pipeline(|video| {
+            video.vulkan_quarantined = video.vulkan_quarantined.saturating_add(1);
+        });
+    }
+
+    pub fn record_vulkan_video_global_quarantine_terminal(&self) {
+        self.update_video_pipeline(|video| {
+            video.vulkan_global_quarantine_terminal = true;
+        });
+    }
+
+    pub fn record_vulkan_video_device_lost(&self) {
+        self.update_video_pipeline(|video| {
+            video.vulkan_device_lost = video.vulkan_device_lost.saturating_add(1);
+        });
+    }
+
+    pub fn set_vulkan_video_import_pool_stats(&self, stats: VulkanVideoImportPoolStats) {
+        let source_cache_entries = u64::try_from(stats.source_cache_entries).unwrap_or(u64::MAX);
+        let output_pool_slots = u64::try_from(stats.output_pool_slots).unwrap_or(u64::MAX);
+        let packed_cache_entries = u64::try_from(stats.packed_cache_entries).unwrap_or(u64::MAX);
+        self.update_video_pipeline(|video| {
+            video.vulkan_validation_enabled = stats.validation_enabled;
+            video.vulkan_validation_errors = stats.validation_errors;
+            video.vulkan_validation_warnings = stats.validation_warnings;
+            video.vulkan_source_cache_hits = stats.source_cache_hits;
+            video.vulkan_source_cache_misses = stats.source_cache_misses;
+            video.vulkan_source_cache_evictions = stats.source_cache_evictions;
+            video.vulkan_source_active_reuse_rejections = stats.source_active_reuse_rejections;
+            video.vulkan_source_topology_collisions = stats.source_topology_collisions;
+            video.vulkan_output_pool_busy_rejections = stats.output_pool_busy_rejections;
+            video.vulkan_source_cache_entries = source_cache_entries;
+            video.vulkan_output_pool_slots = output_pool_slots;
+            video.vulkan_packed_cache_hits = stats.packed_cache_hits;
+            video.vulkan_packed_cache_misses = stats.packed_cache_misses;
+            video.vulkan_packed_cache_evictions = stats.packed_cache_evictions;
+            video.vulkan_packed_active_reuse_rejections = stats.packed_active_reuse_rejections;
+            video.vulkan_packed_topology_collisions = stats.packed_topology_collisions;
+            video.vulkan_packed_allocation_size_rejections =
+                stats.packed_allocation_size_rejections;
+            video.vulkan_packed_cache_entries = packed_cache_entries;
+        });
+    }
+
+    pub fn record_vulkan_video_gpu_timing(
+        &self,
+        conversion_ns: u64,
+        composition_ns: u64,
+        total_ns: u64,
+    ) {
+        let duration = Duration::from_nanos;
+        self.record_timing(
+            RendererTimingMetric::VulkanVideoConversionGpu,
+            duration(conversion_ns),
+        );
+        self.record_timing(
+            RendererTimingMetric::VulkanVideoCompositionGpu,
+            duration(composition_ns),
+        );
+        self.record_timing(
+            RendererTimingMetric::VulkanVideoTotalGpu,
+            duration(total_ns),
+        );
+    }
+
     pub fn record_video_retired_fence_created(&self, current_depth: usize) {
         let current_depth = u64::try_from(current_depth).unwrap_or(u64::MAX);
         self.update_video_pipeline(|video| {
             video.retired_fences_created = video.retired_fences_created.saturating_add(1);
             video.current_retired_imports = current_depth;
             video.max_retired_imports = video.max_retired_imports.max(current_depth);
+        });
+    }
+
+    pub fn record_video_retired_gl_finish_fallback(&self) {
+        self.update_video_pipeline(|video| {
+            video.retired_gl_finish_fallbacks = video.retired_gl_finish_fallbacks.saturating_add(1);
         });
     }
 
@@ -1027,8 +1537,173 @@ impl RendererStatsCollector {
         self.record_timing(RendererTimingMetric::DrmForcedGpuFinishAfterSwap, duration);
     }
 
-    pub fn record_drm_gpu_queue_completion(&self, duration: Duration) {
-        self.record_timing(RendererTimingMetric::DrmGpuQueueCompletion, duration);
+    pub fn gpu_render_elapsed_sampling_open(&self) -> bool {
+        if !self.families.timings {
+            return false;
+        }
+
+        let window = self
+            .window
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        window.gpu_sampling_open
+    }
+
+    pub fn gpu_render_elapsed_window_draining(&self) -> bool {
+        if !self.families.timings {
+            return false;
+        }
+
+        self.window
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .draining
+            .is_some()
+    }
+
+    pub fn begin_gpu_render_elapsed_sample(&self) -> Option<u64> {
+        if !self.families.timings {
+            return None;
+        }
+
+        let mut window = self
+            .window
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !window.gpu_sampling_open {
+            return None;
+        }
+        window.pending_gpu_samples = window.pending_gpu_samples.saturating_add(1);
+        Some(window.epoch)
+    }
+
+    pub fn complete_gpu_render_elapsed_sample(
+        &self,
+        epoch: u64,
+        elapsed: Option<Duration>,
+        disjoint_discarded: bool,
+    ) -> bool {
+        if !self.families.timings {
+            return false;
+        }
+
+        let mut state = self
+            .window
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.active.epoch == epoch {
+            Self::record_completed_gpu_sample(&mut state.active, elapsed, disjoint_discarded);
+            return true;
+        }
+        if state
+            .draining
+            .as_ref()
+            .is_some_and(|window| window.epoch == epoch)
+        {
+            let drained = {
+                let window = state
+                    .draining
+                    .as_mut()
+                    .expect("checked draining GPU stats window");
+                Self::record_completed_gpu_sample(window, elapsed, disjoint_discarded);
+                window.pending_gpu_samples == 0
+            };
+            if drained {
+                Self::finish_draining_window(&mut state);
+            }
+            return true;
+        }
+
+        state.active.pipeline.gpu_render_elapsed_stale_epoch_samples = state
+            .active
+            .pipeline
+            .gpu_render_elapsed_stale_epoch_samples
+            .saturating_add(1);
+        false
+    }
+
+    pub fn cancel_gpu_render_elapsed_sample(&self, epoch: u64) {
+        if !self.families.timings {
+            return;
+        }
+
+        let mut state = self
+            .window
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.active.epoch == epoch {
+            state.active.pending_gpu_samples = state.active.pending_gpu_samples.saturating_sub(1);
+        } else if state
+            .draining
+            .as_ref()
+            .is_some_and(|window| window.epoch == epoch)
+        {
+            let drained = {
+                let window = state
+                    .draining
+                    .as_mut()
+                    .expect("checked draining GPU stats window");
+                window.pending_gpu_samples = window.pending_gpu_samples.saturating_sub(1);
+                window.pending_gpu_samples == 0
+            };
+            if drained {
+                Self::finish_draining_window(&mut state);
+            }
+        }
+    }
+
+    fn record_completed_gpu_sample(
+        window: &mut RendererStatsWindow,
+        elapsed: Option<Duration>,
+        disjoint_discarded: bool,
+    ) {
+        window.pending_gpu_samples = window.pending_gpu_samples.saturating_sub(1);
+        if let Some(elapsed) = elapsed {
+            window
+                .timings
+                .record(RendererTimingMetric::DrmGpuRenderElapsed, elapsed);
+        }
+        if disjoint_discarded {
+            window
+                .pipeline
+                .gpu_render_elapsed_disjoint_discarded_samples = window
+                .pipeline
+                .gpu_render_elapsed_disjoint_discarded_samples
+                .saturating_add(1);
+        }
+    }
+
+    pub fn record_gpu_render_elapsed_pool_saturated_sample_skip(&self) {
+        self.update_pipeline(|pipeline| {
+            pipeline.gpu_render_elapsed_pool_saturated_sample_skips = pipeline
+                .gpu_render_elapsed_pool_saturated_sample_skips
+                .saturating_add(1);
+        });
+    }
+
+    pub fn record_scene_constructed(&self) {
+        self.update_pipeline(|pipeline| {
+            pipeline.scenes_constructed = pipeline.scenes_constructed.saturating_add(1);
+        });
+    }
+
+    pub fn record_render_queue_overwrite(&self) {
+        self.update_pipeline(|pipeline| {
+            pipeline.render_queue_overwrites = pipeline.render_queue_overwrites.saturating_add(1);
+        });
+    }
+
+    pub fn record_drm_scene_selected_for_draw(&self) {
+        self.update_pipeline(|pipeline| {
+            pipeline.drm_scenes_selected_for_draw =
+                pipeline.drm_scenes_selected_for_draw.saturating_add(1);
+        });
+    }
+
+    pub fn record_drm_scene_presented(&self) {
+        self.update_pipeline(|pipeline| {
+            pipeline.drm_scenes_presented = pipeline.drm_scenes_presented.saturating_add(1);
+        });
     }
 
     pub fn record_drm_egl_swap_buffers(&self, duration: Duration) {
@@ -1128,6 +1803,7 @@ impl RendererStatsCollector {
     pub fn record_drm_primary_presented(
         &self,
         contained_new_video: bool,
+        presented_streams: &[VideoStreamIdentity],
         commit_to_page_flip: Duration,
         video_submit_to_present: Option<Duration>,
     ) {
@@ -1135,6 +1811,11 @@ impl RendererStatsCollector {
             video.primary_presented = video.primary_presented.saturating_add(1);
             if contained_new_video {
                 video.video_primary_presented = video.video_primary_presented.saturating_add(1);
+                video.video_primary_ever_presented = true;
+            }
+            if !presented_streams.is_empty() {
+                video.last_presented_streams = presented_streams.to_vec();
+                video.last_presented_streams.sort_unstable();
             }
             video.current_in_flight = 0;
         });
@@ -1283,6 +1964,9 @@ impl RendererStatsCollector {
             .window
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !window.gpu_sampling_open {
+            return;
+        }
         window.layout_cache.add(stats);
     }
 
@@ -1295,6 +1979,9 @@ impl RendererStatsCollector {
             .window
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !window.gpu_sampling_open {
+            return;
+        }
         window.renderer_cache.record(stats);
     }
 
@@ -1304,45 +1991,104 @@ impl RendererStatsCollector {
             .window
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        window.snapshot(now)
+        window.snapshot(window.closed_at.unwrap_or(now))
     }
 
     pub fn snapshot(&self) -> RendererStatsSnapshot {
-        self.take()
+        match self.try_take() {
+            RendererStatsWindowClose::Ready(snapshot) => *snapshot,
+            RendererStatsWindowClose::Draining { .. } => self.peek(),
+        }
     }
 
     pub fn take(&self) -> RendererStatsSnapshot {
-        let now = Instant::now();
-        let mut window = self
-            .window
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let snapshot = window.snapshot(now);
-        let last_display_interval_ns = window.last_display_interval_ns;
-        let previous = std::mem::replace(
-            &mut *window,
-            RendererStatsWindow::new(now, last_display_interval_ns),
-        );
-        window
-            .video_pipeline
-            .copy_gauges_from(&previous.video_pipeline);
-        snapshot
+        self.snapshot()
+    }
+
+    pub fn try_take(&self) -> RendererStatsWindowClose {
+        self.try_close_gpu_window(true)
+    }
+
+    pub fn try_reset(&self) -> RendererStatsWindowClose {
+        self.try_close_gpu_window(false)
     }
 
     pub fn reset(&self) {
+        let _ = self.try_reset();
+    }
+
+    fn try_close_gpu_window(&self, return_snapshot: bool) -> RendererStatsWindowClose {
         let now = Instant::now();
+        let mut state = self
+            .window
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(snapshot) = state.completed_close.take() {
+            return RendererStatsWindowClose::Ready(snapshot);
+        }
+        if let Some(window) = state.draining.as_ref() {
+            return RendererStatsWindowClose::Draining {
+                pending_gpu_samples: window.pending_gpu_samples,
+            };
+        }
+
+        state.active.close_return_snapshot = return_snapshot;
+        state.active.gpu_sampling_open = false;
+        let closed_at = *state.active.closed_at.get_or_insert(now);
+        let last_display_interval_ns = state.active.last_display_interval_ns;
+        let next_epoch = state.active.epoch.wrapping_add(1);
+        let previous = std::mem::replace(
+            &mut state.active,
+            RendererStatsWindow::new(now, last_display_interval_ns, next_epoch),
+        );
+        state
+            .active
+            .video_pipeline
+            .copy_gauges_from(&previous.video_pipeline);
+
+        if previous.pending_gpu_samples > 0 {
+            let pending_gpu_samples = previous.pending_gpu_samples;
+            state.draining = Some(previous);
+            RendererStatsWindowClose::Draining {
+                pending_gpu_samples,
+            }
+        } else {
+            let snapshot = if return_snapshot {
+                previous.snapshot(closed_at)
+            } else {
+                RendererStatsSnapshot::default()
+            };
+            RendererStatsWindowClose::Ready(Box::new(snapshot))
+        }
+    }
+
+    fn finish_draining_window(state: &mut RendererStatsCollectorState) {
+        let Some(window) = state.draining.take() else {
+            return;
+        };
+        debug_assert_eq!(window.pending_gpu_samples, 0);
+        let closed_at = window.closed_at.unwrap_or_else(Instant::now);
+        let snapshot = if window.close_return_snapshot {
+            window.snapshot(closed_at)
+        } else {
+            RendererStatsSnapshot::default()
+        };
+        state.completed_close = Some(Box::new(snapshot));
+    }
+
+    fn update_pipeline(&self, update: impl FnOnce(&mut RendererPipelineStatsWindow)) {
+        if !self.families.timings {
+            return;
+        }
+
         let mut window = self
             .window
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let last_display_interval_ns = window.last_display_interval_ns;
-        let previous = std::mem::replace(
-            &mut *window,
-            RendererStatsWindow::new(now, last_display_interval_ns),
-        );
-        window
-            .video_pipeline
-            .copy_gauges_from(&previous.video_pipeline);
+        if !window.gpu_sampling_open {
+            return;
+        }
+        update(&mut window.pipeline);
     }
 
     fn update_video_pipeline(&self, update: impl FnOnce(&mut VideoPipelineStatsWindow)) {
@@ -1354,6 +2100,9 @@ impl RendererStatsCollector {
             .window
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !window.gpu_sampling_open {
+            return;
+        }
         update(&mut window.video_pipeline);
     }
 
@@ -1372,26 +2121,40 @@ impl RendererStatsCollector {
             .window
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !window.gpu_sampling_open {
+            return;
+        }
         window.timings.record(metric, duration);
     }
 }
 
-pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSnapshot) -> String {
+pub fn format_renderer_stats_log(
+    backend_label: &str,
+    rendering_api_label: &str,
+    snapshot: &RendererStatsSnapshot,
+    asset_memory: &AssetMemoryStatsSnapshot,
+) -> String {
     let timing_lines = RendererTimingMetric::ALL
         .into_iter()
         .map(|metric| format_duration_stat_line(metric.log_label(), snapshot.timing(metric)))
         .collect::<Vec<_>>()
         .join("\n");
+    let frame_clock_label = match backend_label {
+        "wayland" => "display mode",
+        "headless" => "target cadence",
+        _ => "display",
+    };
 
     let mut message = format!(
         concat!(
             "renderer stats\n",
             "  window\n",
             "    backend: {}\n",
+            "    rendering_api: {}\n",
             "    duration: {} ms\n",
             "    frames: {}\n",
             "    fps: {:.1}\n",
-            "    display: {:.1} fps ({:.3} ms/frame)\n",
+            "    {}: {:.1} fps ({:.3} ms/frame)\n",
             "\n",
             "  timings\n",
             "{}\n",
@@ -1402,9 +2165,11 @@ pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSn
             "    resolve:           hits={} misses={} stores={}"
         ),
         backend_label,
+        rendering_api_label,
         snapshot.window.as_millis(),
         snapshot.frame_count,
         snapshot.fps,
+        frame_clock_label,
         snapshot.display_fps,
         snapshot.display_frame_ms,
         timing_lines,
@@ -1419,7 +2184,23 @@ pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSn
         snapshot.layout_cache.resolve_stores,
     );
 
-    let video = snapshot.video_pipeline;
+    let pipeline = snapshot.pipeline;
+    message.push_str(&format!(
+        concat!(
+            "\n\n  scene pipeline\n",
+            "    constructed={} queue_overwrites={} drm_selected_for_draw={} drm_presented={}\n",
+            "    gpu_render_elapsed: disjoint_discarded_samples={} pool_saturated_sample_skips={} stale_epoch_samples={}"
+        ),
+        pipeline.scenes_constructed,
+        pipeline.render_queue_overwrites,
+        pipeline.drm_scenes_selected_for_draw,
+        pipeline.drm_scenes_presented,
+        pipeline.gpu_render_elapsed_disjoint_discarded_samples,
+        pipeline.gpu_render_elapsed_pool_saturated_sample_skips,
+        pipeline.gpu_render_elapsed_stale_epoch_samples,
+    ));
+
+    let video = &snapshot.video_pipeline;
     let per_second = |count: u64| {
         if snapshot.window.is_zero() {
             0.0
@@ -1430,8 +2211,12 @@ pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSn
     message.push_str(&format!(
         concat!(
             "\n\n  video pipeline\n",
-            "    registry: submitted={} ({:.1}/s) replaced_pending={} taken={} current_pending={}\n",
-            "    imports: imported={} ({:.1}/s) current_direct={} retired={} max_retired={} fences={}/{}\n",
+            "    registry: submitted={} ({:.1}/s) inactive_dropped={} replaced_pending={} taken={} current_pending={}\n",
+            "    imports: imported={} ({:.1}/s) current_direct={} retired={} max_retired={} fences={}/{} gl_finish_fallbacks={}\n",
+            "    acquire: received={} server_queued={} client_fallback={} timeouts={} errors={}\n",
+            "    vulkan: sync_fd_imported={} temporary_import_failures={} ownership_acquires={} acquire_submit_failures={} ganesh_wait_rejected={} releases={}/{} release_submit_failures={} release_fences=created:{} errors:{} completed:{} retirement_timeouts={} import_cap_saturations={} quarantined={} global_quarantine_terminal={} device_lost={}\n",
+            "    vulkan import pool: validation=enabled:{} errors:{} warnings:{} source_cache=hits:{} misses:{} evictions:{} active_reuse_rejections:{} topology_collisions:{} entries:{} output_pool=busy_rejections:{} slots:{}\n",
+            "    vulkan packed import: cache=hits:{} misses:{} evictions:{} active_reuse_rejections:{} topology_collisions:{} allocation_size_rejections:{} entries:{}\n",
             "    leases: released={} ({:.1}/s)\n",
             "    drm: prepared={} video_prepared={} stale={} stale_video={} no_free_gbm={}\n",
             "    present: commit_attempts={} committed={} ebusy={} presented={} ({:.1}/s) video_presented={} ({:.1}/s) prepared_now={} in_flight_now={}\n",
@@ -1439,6 +2224,7 @@ pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSn
         ),
         video.submitted,
         per_second(video.submitted),
+        video.inactive_dropped,
         video.pending_replaced,
         video.pending_taken,
         video.current_pending,
@@ -1449,6 +2235,46 @@ pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSn
         video.max_retired_imports,
         video.retired_fences_created,
         video.retired_fences_released,
+        video.retired_gl_finish_fallbacks,
+        video.acquire_fences_received,
+        video.acquire_server_waits_queued,
+        video.acquire_client_wait_fallbacks,
+        video.acquire_wait_timeouts,
+        video.acquire_wait_errors,
+        video.vulkan_acquire_sync_fd_imported,
+        video.vulkan_temporary_semaphore_import_failures,
+        video.vulkan_ownership_acquires_submitted,
+        video.vulkan_acquire_submit_failures,
+        video.vulkan_ganesh_waits_rejected,
+        video.vulkan_releases_submitted,
+        video.vulkan_releases_completed,
+        video.vulkan_release_submit_failures,
+        video.vulkan_release_fences_created,
+        video.vulkan_release_fence_errors,
+        video.vulkan_release_fence_completions,
+        video.vulkan_retirement_timeouts,
+        video.vulkan_import_cap_saturations,
+        video.vulkan_quarantined,
+        video.vulkan_global_quarantine_terminal,
+        video.vulkan_device_lost,
+        video.vulkan_validation_enabled,
+        video.vulkan_validation_errors,
+        video.vulkan_validation_warnings,
+        video.vulkan_source_cache_hits,
+        video.vulkan_source_cache_misses,
+        video.vulkan_source_cache_evictions,
+        video.vulkan_source_active_reuse_rejections,
+        video.vulkan_source_topology_collisions,
+        video.vulkan_source_cache_entries,
+        video.vulkan_output_pool_busy_rejections,
+        video.vulkan_output_pool_slots,
+        video.vulkan_packed_cache_hits,
+        video.vulkan_packed_cache_misses,
+        video.vulkan_packed_cache_evictions,
+        video.vulkan_packed_active_reuse_rejections,
+        video.vulkan_packed_topology_collisions,
+        video.vulkan_packed_allocation_size_rejections,
+        video.vulkan_packed_cache_entries,
         video.leases_released,
         per_second(video.leases_released),
         video.primary_prepared,
@@ -1477,8 +2303,99 @@ pub fn format_renderer_stats_log(backend_label: &str, snapshot: &RendererStatsSn
         &paint_layer,
         snapshot.frame_count,
     ));
+    message.push_str(&format_asset_memory_stats_log(asset_memory));
 
     message
+}
+
+fn format_asset_memory_stats_log(stats: &AssetMemoryStatsSnapshot) -> String {
+    let tracked_total_bytes = stats
+        .source_bytes
+        .saturating_add(stats.raster_cache_bytes)
+        .saturating_add(stats.vector_cache_bytes);
+    let mut message = format!(
+        concat!(
+            "\n\n  asset memory\n",
+            "    sources: entries={} encoded_bytes={}\n",
+            "    raster cache: entries={} bytes={} limits=entries:{} bytes:{}\n",
+            "    vector cache: entries={} bytes={} limits=entries:{} bytes:{}\n",
+            "    tracked_total_bytes={}\n",
+            "    raster variants"
+        ),
+        stats.source_entries,
+        stats.source_bytes,
+        stats.raster_cache_entries,
+        stats.raster_cache_bytes,
+        stats.raster_cache_max_entries,
+        stats.raster_cache_max_bytes,
+        stats.vector_cache_entries,
+        stats.vector_cache_bytes,
+        stats.vector_cache_max_entries,
+        stats.vector_cache_max_bytes,
+        tracked_total_bytes,
+    );
+
+    if stats.raster_variants.is_empty() {
+        message.push_str(": none");
+    } else {
+        stats.raster_variants.iter().for_each(|variant| {
+            message.push('\n');
+            message.push_str(&format_asset_memory_variant_line(variant));
+        });
+    }
+
+    message
+}
+
+fn format_asset_memory_variant_line(variant: &AssetMemoryRasterVariantStats) -> String {
+    let source_pixels =
+        u64::from(variant.source_width).saturating_mul(u64::from(variant.source_height));
+    let decoded_pixels =
+        u64::from(variant.decoded_width).saturating_mul(u64::from(variant.decoded_height));
+    let decode_pixel_ratio = if source_pixels == 0 {
+        0.0
+    } else {
+        decoded_pixels as f64 / source_pixels as f64
+    };
+    let decoded_to_file_ratio = if variant.encoded_bytes == 0 {
+        0.0
+    } else {
+        variant.decoded_bytes as f64 / variant.encoded_bytes as f64
+    };
+    let peak_decode_bytes = if variant.codec_width == variant.decoded_width
+        && variant.codec_height == variant.decoded_height
+    {
+        variant.decoded_bytes.max(variant.codec_bytes)
+    } else {
+        variant.codec_bytes.saturating_add(variant.decoded_bytes)
+    };
+
+    let retained_source_bytes = if variant.source_retained {
+        variant.encoded_bytes
+    } else {
+        0
+    };
+    let tracked_asset_bytes = variant.decoded_bytes.saturating_add(retained_source_bytes);
+
+    format!(
+        "      source={:?} id={} encoded_bytes={} source_retained={} source_dimensions={}x{} codec_dimensions={}x{} codec_bytes={} decoded_dimensions={}x{} decode_pixel_ratio={:.4} decoded_bytes={} decoded_to_file_ratio={:.2} peak_decode_bytes={} tracked_asset_bytes={}",
+        variant.source,
+        variant.id,
+        variant.encoded_bytes,
+        variant.source_retained,
+        variant.source_width,
+        variant.source_height,
+        variant.codec_width,
+        variant.codec_height,
+        variant.codec_bytes,
+        variant.decoded_width,
+        variant.decoded_height,
+        decode_pixel_ratio,
+        variant.decoded_bytes,
+        decoded_to_file_ratio,
+        peak_decode_bytes,
+        tracked_asset_bytes,
+    )
 }
 
 fn combined_renderer_cache_snapshot(
@@ -1800,7 +2717,55 @@ fn format_render_draw_detail(draw: Duration, detail: &RenderDrawTimings) -> Stri
         message.push_str(&format_image_draw_detail(index, image));
     }
 
+    let mut paint_runs = detail.paint_run_details.iter().collect::<Vec<_>>();
+    paint_runs.sort_by_key(|run| std::cmp::Reverse(run.duration));
+    if !paint_runs.is_empty() {
+        message.push('\n');
+        message.push_str(&format!(
+            "  paint runs: total={} showing_slowest={}",
+            detail.paint_run_count,
+            paint_runs.len()
+        ));
+    }
+    for (index, run) in paint_runs.into_iter().enumerate() {
+        message.push('\n');
+        message.push_str(&format_paint_run_draw_detail(index, run));
+    }
+
     message
+}
+
+fn format_paint_run_draw_detail(index: usize, run: &RenderPaintRunDrawProfile) -> String {
+    let summary = run.summary;
+    format!(
+        concat!(
+            "  paint run[{}]: node_id={} role={:?} slot={} outcome={:?} time={:.3} ms ",
+            "bounds=({:.1},{:.1} {:.1}x{:.1}) nodes={} primitives={} cost={} pixels={} ",
+            "draws={{rects={} rounded_rects={} borders={} shadows={} texts={} text_bytes={} images={} videos={}}}"
+        ),
+        index,
+        run.layer_id.node_id,
+        run.layer_id.role,
+        run.slot,
+        run.outcome,
+        duration_ms(run.duration),
+        run.bounds.x,
+        run.bounds.y,
+        run.bounds.width,
+        run.bounds.height,
+        run.node_count,
+        run.primitive_count,
+        run.primitive_cost,
+        run.payload_pixels,
+        summary.rects,
+        summary.rounded_rects,
+        summary.borders + summary.border_corners + summary.border_edges,
+        summary.shadows + summary.inset_shadows,
+        summary.texts,
+        summary.text_bytes,
+        summary.images,
+        summary.videos,
+    )
 }
 
 fn format_clip_draw_detail(detail: &RenderDrawTimings) -> String {
@@ -1932,18 +2897,24 @@ fn duration_ms(duration: Duration) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        LayoutCacheStats, RendererStatsCollector, RendererTimingMetric, format_renderer_stats_log,
-        format_slow_present_frame_log, format_slow_render_frame_log, record_pipeline_layout_queued,
-        render_frame_has_slow_stage,
+        LayoutCacheStats, RendererStatsCollector, RendererTimingMetric,
+        format_paint_run_draw_detail, format_renderer_stats_log, format_slow_present_frame_log,
+        format_slow_render_frame_log, record_pipeline_layout_queued, render_frame_has_slow_stage,
     };
     use crate::{
-        render_scene::{DrawPrimitive, RenderNode, RenderScene},
+        render_scene::{
+            DrawPrimitive, PaintLayerId, PaintLayerReason, RenderNode, RenderScene,
+            RenderSceneSummary,
+        },
         renderer::{
-            RenderBorderDrawSummary, RenderClipDrawSummary, RenderDrawTimings,
-            RenderImageAssetKind, RenderImageDrawProfile, RenderLayerDrawSummary,
+            AssetMemoryRasterVariantStats, AssetMemoryStatsSnapshot, RenderBorderDrawSummary,
+            RenderClipDrawSummary, RenderDrawTimings, RenderImageAssetKind, RenderImageDrawProfile,
+            RenderLayerDrawSummary, RenderPaintRunDrawOutcome, RenderPaintRunDrawProfile,
             RenderShadowDrawPath, RenderShadowDrawProfile, RenderTimings, RendererCacheFrameStats,
             RendererCachePaintLayerFrameStats,
         },
+        tree::geometry::Rect,
+        video::VideoStreamIdentity,
     };
     use std::time::{Duration, Instant};
 
@@ -2237,6 +3208,196 @@ mod tests {
         assert_eq!(reset_snapshot.renderer_cache.paint_layer.candidates, 0);
     }
 
+    fn stream_identity(
+        target_id: &str,
+        target_incarnation: u64,
+        stream_id: u64,
+    ) -> VideoStreamIdentity {
+        VideoStreamIdentity {
+            renderer_epoch: 7,
+            target_id: target_id.to_string(),
+            target_incarnation,
+            stream_id,
+        }
+    }
+
+    #[test]
+    fn video_primary_presentation_proof_is_page_flip_gated_and_reset_stable() {
+        let stats = RendererStatsCollector::new();
+        let streams = vec![
+            stream_identity("secondary", 3, 12),
+            stream_identity("preview", 2, 11),
+        ];
+
+        assert!(!stats.peek().video_pipeline.video_primary_ever_presented);
+        stats.record_drm_primary_presented(false, &[], Duration::from_millis(16), None);
+        assert!(!stats.peek().video_pipeline.video_primary_ever_presented);
+
+        stats.record_drm_primary_presented(
+            true,
+            &streams,
+            Duration::from_millis(16),
+            Some(Duration::from_millis(18)),
+        );
+        let completed = stats.snapshot();
+        assert_eq!(completed.video_pipeline.video_primary_presented, 1);
+        assert!(completed.video_pipeline.video_primary_ever_presented);
+        assert_eq!(
+            completed.video_pipeline.last_presented_streams,
+            vec![
+                stream_identity("preview", 2, 11),
+                stream_identity("secondary", 3, 12),
+            ]
+        );
+
+        let reset = stats.peek();
+        assert_eq!(reset.video_pipeline.video_primary_presented, 0);
+        assert!(reset.video_pipeline.video_primary_ever_presented);
+        assert_eq!(
+            reset.video_pipeline.last_presented_streams,
+            completed.video_pipeline.last_presented_streams
+        );
+    }
+
+    #[test]
+    fn take_drain_keeps_old_gpu_completion_and_routes_post_close_video_to_next_window() {
+        let stats = RendererStatsCollector::new();
+        let stream_a = stream_identity("preview", 2, 11);
+        let stream_b = stream_identity("preview", 2, 12);
+        stats.record_frame_present();
+        stats.set_video_import_gauges(1, 2);
+        stats.record_drm_primary_presented(
+            true,
+            std::slice::from_ref(&stream_a),
+            Duration::from_millis(16),
+            Some(Duration::from_millis(18)),
+        );
+        let epoch = stats.begin_gpu_render_elapsed_sample().unwrap();
+
+        assert_eq!(
+            stats.try_take(),
+            super::RendererStatsWindowClose::Draining {
+                pending_gpu_samples: 1
+            }
+        );
+        assert!(stats.gpu_render_elapsed_sampling_open());
+        assert!(stats.gpu_render_elapsed_window_draining());
+
+        stats.record_frame_present();
+        stats.record_video_submitted(false);
+        stats.record_vulkan_video_global_quarantine_terminal();
+        stats.set_video_import_gauges(4, 5);
+        stats.record_drm_primary_presented(
+            true,
+            std::slice::from_ref(&stream_b),
+            Duration::from_millis(20),
+            Some(Duration::from_millis(22)),
+        );
+        assert!(stats.complete_gpu_render_elapsed_sample(
+            epoch,
+            Some(Duration::from_millis(7)),
+            false,
+        ));
+
+        let super::RendererStatsWindowClose::Ready(snapshot) = stats.try_take() else {
+            panic!("drained GPU stats window should close");
+        };
+        assert_eq!(snapshot.frame_count, 1);
+        assert_eq!(snapshot.video_pipeline.submitted, 0);
+        assert!(!snapshot.video_pipeline.vulkan_global_quarantine_terminal);
+        assert_eq!(snapshot.video_pipeline.current_direct_imports, 1);
+        assert_eq!(snapshot.video_pipeline.current_retired_imports, 2);
+        assert_eq!(
+            snapshot.video_pipeline.last_presented_streams,
+            vec![stream_a]
+        );
+        assert_eq!(
+            snapshot
+                .timing(RendererTimingMetric::DrmGpuRenderElapsed)
+                .avg_ms,
+            7.0
+        );
+
+        assert!(!stats.gpu_render_elapsed_window_draining());
+        let next = stats.peek();
+        assert_eq!(next.frame_count, 1);
+        assert_eq!(next.video_pipeline.submitted, 1);
+        assert!(next.video_pipeline.vulkan_global_quarantine_terminal);
+        assert_eq!(next.video_pipeline.current_direct_imports, 4);
+        assert_eq!(next.video_pipeline.current_retired_imports, 5);
+        assert_eq!(next.video_pipeline.last_presented_streams, vec![stream_b]);
+        assert_eq!(
+            next.timing(RendererTimingMetric::DrmGpuRenderElapsed).count,
+            0
+        );
+    }
+
+    #[test]
+    fn reset_drain_preserves_reset_stable_identity_and_post_close_updates() {
+        let stats = RendererStatsCollector::new();
+        let stream_a = stream_identity("preview", 2, 21);
+        let stream_b = stream_identity("preview", 2, 22);
+        stats.record_drm_primary_presented(
+            true,
+            std::slice::from_ref(&stream_a),
+            Duration::from_millis(16),
+            None,
+        );
+        stats.set_video_import_gauges(1, 1);
+        let epoch = stats.begin_gpu_render_elapsed_sample().unwrap();
+
+        assert_eq!(
+            stats.try_reset(),
+            super::RendererStatsWindowClose::Draining {
+                pending_gpu_samples: 1
+            }
+        );
+        stats.record_video_imported(Duration::from_millis(2));
+        stats.record_vulkan_video_device_lost();
+        stats.set_video_import_gauges(3, 4);
+        stats.record_drm_primary_presented(
+            true,
+            std::slice::from_ref(&stream_b),
+            Duration::from_millis(17),
+            None,
+        );
+        stats.cancel_gpu_render_elapsed_sample(epoch);
+
+        let super::RendererStatsWindowClose::Ready(discarded) = stats.try_reset() else {
+            panic!("drained reset should complete");
+        };
+        assert_eq!(*discarded, super::RendererStatsSnapshot::default());
+
+        let next = stats.peek();
+        assert_eq!(next.video_pipeline.imported, 1);
+        assert_eq!(next.video_pipeline.vulkan_device_lost, 1);
+        assert_eq!(next.video_pipeline.current_direct_imports, 3);
+        assert_eq!(next.video_pipeline.current_retired_imports, 4);
+        assert_eq!(next.video_pipeline.last_presented_streams, vec![stream_b]);
+        assert_eq!(next.video_pipeline.video_primary_presented, 1);
+    }
+
+    #[test]
+    fn stale_gpu_sample_is_rejected_and_counted() {
+        let stats = RendererStatsCollector::new();
+        let epoch = stats.begin_gpu_render_elapsed_sample().unwrap();
+
+        assert!(!stats.complete_gpu_render_elapsed_sample(
+            epoch.wrapping_add(1),
+            Some(Duration::from_millis(9)),
+            false,
+        ));
+        let snapshot = stats.peek();
+        assert_eq!(
+            snapshot
+                .timing(RendererTimingMetric::DrmGpuRenderElapsed)
+                .count,
+            0
+        );
+        assert_eq!(snapshot.pipeline.gpu_render_elapsed_stale_epoch_samples, 1);
+        stats.cancel_gpu_render_elapsed_sample(epoch);
+    }
+
     #[test]
     fn pipeline_helpers_record_layout_draw_and_present_spans() {
         let stats = RendererStatsCollector::new();
@@ -2305,6 +3466,13 @@ mod tests {
         stats.record_render_gpu_flush(Duration::from_millis(1));
         stats.record_render_submit(Duration::from_millis(0));
         stats.record_present_submit(Duration::from_millis(1));
+        stats.record_headless_prime_timings(
+            Duration::from_millis(1),
+            Duration::from_millis(2),
+            Some(Duration::from_millis(3)),
+            Some(Duration::from_millis(4)),
+            Duration::from_millis(5),
+        );
         let pipeline_submitted_at = Instant::now();
         stats.record_pipeline(
             pipeline_submitted_at,
@@ -2333,13 +3501,49 @@ mod tests {
         stats.record_video_submitted(false);
         stats.record_video_pending_taken(1);
         stats.record_video_imported(Duration::from_millis(2));
+        stats.record_video_acquire_fence_received();
+        stats.record_video_acquire_server_wait_queued();
+        stats.record_video_acquire_client_wait_fallback();
+        stats.record_video_acquire_wait_timeout();
+        stats.record_video_acquire_wait_error();
+        stats.record_vulkan_video_acquire_sync_fd_imported();
+        stats.record_vulkan_video_temporary_semaphore_import_failure();
+        stats.record_vulkan_video_ownership_acquire_submitted();
+        stats.record_vulkan_video_acquire_submit_failure();
+        stats.record_vulkan_video_ganesh_wait_rejected();
+        stats.record_vulkan_video_release_submitted();
+        stats.record_vulkan_video_release_submit_failure();
+        stats.record_vulkan_video_release_completed();
+        stats.record_vulkan_video_release_fence_created();
+        stats.record_vulkan_video_release_fence_error();
+        stats.record_vulkan_video_release_fence_completion();
+        stats.record_vulkan_video_retirement_timeout();
+        stats.record_vulkan_video_import_cap_saturation();
+        stats.record_vulkan_video_quarantined();
+        stats.record_vulkan_video_global_quarantine_terminal();
+        stats.record_vulkan_video_device_lost();
         stats.record_video_retired_fence_created(1);
         stats.record_video_retired_fence_released(Duration::from_millis(4));
+        stats.record_video_retired_gl_finish_fallback();
         stats.record_video_lease_released(Duration::from_millis(12));
         stats.set_video_import_gauges(1, 0);
         stats.record_drm_forced_gpu_finish_before_swap(Duration::from_millis(5));
         stats.record_drm_forced_gpu_finish_after_swap(Duration::from_millis(1));
-        stats.record_drm_gpu_queue_completion(Duration::from_millis(9));
+        let elapsed_epoch = stats.begin_gpu_render_elapsed_sample().unwrap();
+        assert!(stats.complete_gpu_render_elapsed_sample(
+            elapsed_epoch,
+            Some(Duration::from_millis(9)),
+            false,
+        ));
+        for _ in 0..2 {
+            let disjoint_epoch = stats.begin_gpu_render_elapsed_sample().unwrap();
+            assert!(stats.complete_gpu_render_elapsed_sample(disjoint_epoch, None, true));
+        }
+        stats.record_gpu_render_elapsed_pool_saturated_sample_skip();
+        stats.record_scene_constructed();
+        stats.record_render_queue_overwrite();
+        stats.record_drm_scene_selected_for_draw();
+        stats.record_drm_scene_presented();
         stats.record_drm_egl_swap_buffers(Duration::from_millis(2));
         stats.record_drm_gbm_lock_front_buffer(Duration::from_millis(3));
         stats.record_drm_framebuffer_lookup(Duration::from_millis(1));
@@ -2358,6 +3562,7 @@ mod tests {
         stats.record_drm_primary_committed();
         stats.record_drm_primary_presented(
             true,
+            &[stream_identity("preview", 2, 11)],
             Duration::from_millis(17),
             Some(Duration::from_millis(19)),
         );
@@ -2396,14 +3601,45 @@ mod tests {
             ..LayoutCacheStats::default()
         });
 
-        let message = format_renderer_stats_log("wayland", &stats.snapshot());
+        let snapshot = stats.snapshot();
+        assert_eq!(snapshot.video_pipeline.vulkan_acquire_sync_fd_imported, 1);
+        assert_eq!(
+            snapshot
+                .video_pipeline
+                .vulkan_temporary_semaphore_import_failures,
+            1
+        );
+        assert_eq!(
+            snapshot.video_pipeline.vulkan_ownership_acquires_submitted,
+            1
+        );
+        assert_eq!(snapshot.video_pipeline.vulkan_acquire_submit_failures, 1);
+        assert_eq!(snapshot.video_pipeline.vulkan_ganesh_waits_rejected, 1);
+        assert_eq!(snapshot.video_pipeline.vulkan_releases_submitted, 1);
+        assert_eq!(snapshot.video_pipeline.vulkan_release_submit_failures, 1);
+        assert_eq!(snapshot.video_pipeline.vulkan_releases_completed, 1);
+        assert_eq!(snapshot.video_pipeline.vulkan_release_fences_created, 1);
+        assert_eq!(snapshot.video_pipeline.vulkan_release_fence_errors, 1);
+        assert_eq!(snapshot.video_pipeline.vulkan_release_fence_completions, 1);
+        assert_eq!(snapshot.video_pipeline.vulkan_retirement_timeouts, 1);
+        assert_eq!(snapshot.video_pipeline.vulkan_import_cap_saturations, 1);
+        assert_eq!(snapshot.video_pipeline.vulkan_quarantined, 1);
+        assert!(snapshot.video_pipeline.vulkan_global_quarantine_terminal);
+        assert_eq!(snapshot.video_pipeline.vulkan_device_lost, 1);
+        let message = format_renderer_stats_log(
+            "wayland",
+            "auto (opengl)",
+            &snapshot,
+            &AssetMemoryStatsSnapshot::default(),
+        );
 
         assert!(message.starts_with("renderer stats\n"));
         assert!(message.contains("  window\n"));
         assert!(message.contains("    backend: wayland\n"));
+        assert!(message.contains("    rendering_api: auto (opengl)\n"));
         assert!(message.contains("    frames: 1\n"));
         assert!(message.contains("    fps: "));
-        assert!(message.contains("    display: "));
+        assert!(message.contains("    display mode: "));
         assert!(message.contains("  timings\n"));
         assert!(message.contains("    render: avg=3.000 ms min=3.000 ms max=3.000 ms count=1"));
         assert!(message.contains("    render draw: avg=2.000 ms"));
@@ -2411,6 +3647,11 @@ mod tests {
         assert!(message.contains("    render gpu flush: avg=1.000 ms"));
         assert!(message.contains("    render submit: avg=0.000 ms"));
         assert!(message.contains("    present submit: avg=1.000 ms"));
+        assert!(message.contains("    headless PRIME prepare: avg=1.000 ms"));
+        assert!(message.contains("    headless PRIME retarget: avg=2.000 ms"));
+        assert!(message.contains("    headless PRIME fence export: avg=3.000 ms"));
+        assert!(message.contains("    headless PRIME GPU finish fallback: avg=4.000 ms"));
+        assert!(message.contains("    headless PRIME export metadata: avg=5.000 ms"));
         assert!(message.contains("    pipeline submit->frame callback: avg=18.000 ms"));
         assert!(message.contains("    pipeline submit->tree: avg=2.000 ms"));
         assert!(message.contains("    pipeline tree: avg=6.000 ms"));
@@ -2421,9 +3662,15 @@ mod tests {
         assert!(message.contains("    video submit->lease release: avg=12.000 ms"));
         assert!(message.contains("    video retired fence: avg=4.000 ms"));
         assert!(message.contains("    video submit->page flip: avg=19.000 ms"));
+        assert!(message.contains(
+            "    vulkan: sync_fd_imported=1 temporary_import_failures=1 ownership_acquires=1 acquire_submit_failures=1 ganesh_wait_rejected=1 releases=1/1 release_submit_failures=1 release_fences=created:1 errors:1 completed:1 retirement_timeouts=1 import_cap_saturations=1 quarantined=1 global_quarantine_terminal=true device_lost=1"
+        ));
+        assert!(message.contains(
+            "    vulkan import pool: validation=enabled:false errors:0 warnings:0 source_cache=hits:0 misses:0 evictions:0 active_reuse_rejections:0 topology_collisions:0 entries:0 output_pool=busy_rejections:0 slots:0"
+        ));
         assert!(message.contains("    drm forced GPU finish before swap: avg=5.000 ms"));
         assert!(message.contains("    drm forced GPU finish after swap: avg=1.000 ms"));
-        assert!(message.contains("    drm GPU queue completion span: avg=9.000 ms"));
+        assert!(message.contains("    drm GPU render elapsed: avg=9.000 ms"));
         assert!(message.contains("    drm eglSwapBuffers: avg=2.000 ms"));
         assert!(message.contains("    drm GBM lock front buffer: avg=3.000 ms"));
         assert!(message.contains("    drm framebuffer lookup: avg=1.000 ms"));
@@ -2442,9 +3689,24 @@ mod tests {
         assert!(message.contains("    intrinsic measure: hits=0 misses=0 stores=0"));
         assert!(message.contains("    subtree measure:   hits=0 misses=0 stores=0"));
         assert!(message.contains("    resolve:           hits=11 misses=0 stores=0"));
+        assert!(message.contains("  scene pipeline\n"));
+        assert!(
+            message.contains(
+                "constructed=1 queue_overwrites=1 drm_selected_for_draw=1 drm_presented=1"
+            )
+        );
+        assert!(message.contains(
+            "gpu_render_elapsed: disjoint_discarded_samples=2 pool_saturated_sample_skips=1 stale_epoch_samples=0"
+        ));
         assert!(message.contains("  video pipeline\n"));
         assert!(message.contains("registry: submitted=1"));
         assert!(message.contains("imports: imported=1"));
+        assert!(message.contains("fences=1/1 gl_finish_fallbacks=1"));
+        assert!(
+            message.contains(
+                "acquire: received=1 server_queued=1 client_fallback=1 timeouts=1 errors=1"
+            )
+        );
         assert!(message.contains("leases: released=1"));
         assert!(message.contains("drm: prepared=1 video_prepared=1"));
         assert!(message.contains("present: commit_attempts=2 committed=1 ebusy=1 presented=1"));
@@ -2475,7 +3737,12 @@ mod tests {
         let stats = RendererStatsCollector::new();
         stats.record_frame_present();
 
-        let message = format_renderer_stats_log("wayland", &stats.snapshot());
+        let message = format_renderer_stats_log(
+            "wayland",
+            "auto (opengl)",
+            &stats.snapshot(),
+            &AssetMemoryStatsSnapshot::default(),
+        );
 
         assert!(message.contains("  renderer cache\n"));
         assert!(message.contains("    paint_layer\n"));
@@ -2485,6 +3752,95 @@ mod tests {
         );
         assert!(!message.contains("    shell\n"));
         assert!(!message.contains("    moving_paint_layer\n"));
+    }
+
+    #[test]
+    fn log_format_includes_asset_memory_totals_and_raster_variants() {
+        let stats = RendererStatsCollector::new();
+        let asset_memory = AssetMemoryStatsSnapshot {
+            source_entries: 4,
+            source_bytes: 430_561,
+            raster_cache_entries: 1,
+            raster_cache_bytes: 96_012,
+            raster_cache_max_entries: 8,
+            raster_cache_max_bytes: 2 * 1024 * 1024,
+            vector_cache_entries: 2,
+            vector_cache_bytes: 32_768,
+            vector_cache_max_entries: 256,
+            vector_cache_max_bytes: 16 * 1024 * 1024,
+            raster_variants: vec![AssetMemoryRasterVariantStats {
+                source: "/priv/showcase/outside.jpg".to_string(),
+                id: "img_outside".to_string(),
+                encoded_bytes: 183_352,
+                source_width: 2_752,
+                source_height: 1_835,
+                codec_width: 344,
+                codec_height: 230,
+                codec_bytes: 316_480,
+                decoded_width: 189,
+                decoded_height: 127,
+                decoded_bytes: 96_012,
+                source_retained: true,
+            }],
+        };
+
+        let message =
+            format_renderer_stats_log("headless", "raster", &stats.snapshot(), &asset_memory);
+
+        assert!(message.contains("  asset memory\n"));
+        assert!(message.contains("sources: entries=4 encoded_bytes=430561"));
+        assert!(
+            message.contains("raster cache: entries=1 bytes=96012 limits=entries:8 bytes:2097152")
+        );
+        assert!(message.contains("vector cache: entries=2 bytes=32768"));
+        assert!(message.contains("tracked_total_bytes=559341"));
+        assert!(message.contains(
+            "source=\"/priv/showcase/outside.jpg\" id=img_outside encoded_bytes=183352 source_retained=true"
+        ));
+        assert!(message.contains("source_dimensions=2752x1835"));
+        assert!(message.contains("codec_dimensions=344x230 codec_bytes=316480"));
+        assert!(message.contains("decoded_dimensions=189x127 decode_pixel_ratio=0.0048"));
+        assert!(message.contains("decoded_bytes=96012 decoded_to_file_ratio=0.52"));
+        assert!(message.contains("peak_decode_bytes=412492 tracked_asset_bytes=279364"));
+    }
+
+    #[test]
+    fn paint_run_detail_reports_semantic_identity_outcome_bounds_and_draws() {
+        let line = format_paint_run_draw_detail(
+            0,
+            &RenderPaintRunDrawProfile {
+                layer_id: PaintLayerId::new(42, PaintLayerReason::Nearby),
+                slot: 3,
+                outcome: RenderPaintRunDrawOutcome::DirectRejected(
+                    crate::renderer::RendererCacheRejectionReason::AdmissionThreshold,
+                ),
+                bounds: Rect {
+                    x: 1.0,
+                    y: 2.0,
+                    width: 30.0,
+                    height: 40.0,
+                },
+                node_count: 4,
+                primitive_count: 3,
+                primitive_cost: 38,
+                payload_pixels: 1_200,
+                summary: RenderSceneSummary {
+                    primitives: 3,
+                    rects: 1,
+                    borders: 1,
+                    texts: 1,
+                    text_bytes: 2,
+                    ..RenderSceneSummary::default()
+                },
+                duration: Duration::from_micros(750),
+            },
+        );
+
+        assert!(line.contains("node_id=42 role=Nearby slot=3"));
+        assert!(line.contains("outcome=DirectRejected(AdmissionThreshold)"));
+        assert!(line.contains("time=0.750 ms bounds=(1.0,2.0 30.0x40.0)"));
+        assert!(line.contains("rects=1 rounded_rects=0 borders=1"));
+        assert!(line.contains("texts=1 text_bytes=2"));
     }
 
     #[test]

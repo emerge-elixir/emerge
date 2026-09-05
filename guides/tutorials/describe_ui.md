@@ -197,3 +197,8 @@ The rest of the nearby helpers follow the same idea:
 - `Nearby.above/1` and `Nearby.below/1` anchor vertically with `align_left()`, `center_x()`, and `align_right()`
 - `Nearby.on_left/1` and `Nearby.on_right/1` anchor horizontally with `align_top()`, `center_y()`, and `align_bottom()`
 - `Nearby.in_front/1` paints over the host slot, and `width(fill())` makes it the host's width, while bigger sizes let it escape the host size
+
+## Next
+
+Continue with [Use assets](use_assets.md) to add images, SVGs, and fonts to your
+UI.

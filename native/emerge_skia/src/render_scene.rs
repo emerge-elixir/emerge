@@ -1,7 +1,9 @@
+use std::collections::HashSet;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
+use crate::renderer::measure_text_visual_metrics;
 use crate::tree::attrs::{BorderStyle, ImageFit};
 use crate::tree::geometry::{ClipShape, Rect};
 use crate::tree::transform::Affine2;
@@ -23,9 +25,7 @@ impl RenderScene {
     }
 
     /// Compatibility name retained for downstream renderer integrations.
-    ///
-    /// Dynamic redraw layers can now become cacheable after admission, so this reports every
-    /// payload-cache candidate rather than only layers whose policy is named `Cacheable`.
+    /// Reports whether the semantic layer tree contains any cacheable payload.
     pub fn has_cacheable_paint_layers(&self) -> bool {
         self.has_payload_cache_candidate_layers()
     }
@@ -33,6 +33,48 @@ impl RenderScene {
     pub fn has_scroll_moving_paint_layers(&self) -> bool {
         nodes_have_scroll_moving_paint_layers(&self.nodes)
     }
+
+    pub fn video_target_ids(&self) -> HashSet<String> {
+        let mut targets = HashSet::new();
+        collect_video_target_ids(&self.nodes, &mut targets);
+        targets
+    }
+}
+
+fn collect_video_target_ids(nodes: &[RenderNode], targets: &mut HashSet<String>) {
+    nodes.iter().for_each(|node| match node {
+        RenderNode::ShadowPass { children }
+        | RenderNode::Clip { children, .. }
+        | RenderNode::RelaxedClip { children, .. }
+        | RenderNode::Transform { children, .. }
+        | RenderNode::Alpha { children, .. } => collect_video_target_ids(children, targets),
+        RenderNode::PaintLayer(layer) => {
+            collect_video_target_ids_from_layer_content(layer.content.nodes.as_slice(), targets)
+        }
+        RenderNode::Primitive(DrawPrimitive::Video(_, _, _, _, target, _)) => {
+            targets.insert(target.clone());
+        }
+        RenderNode::Primitive(_) => {}
+    });
+}
+
+fn collect_video_target_ids_from_layer_content(
+    content: &[RenderPaintLayerContentNode],
+    targets: &mut HashSet<String>,
+) {
+    content.iter().for_each(|node| match node {
+        RenderPaintLayerContentNode::Own(run) => collect_video_target_ids(&run.nodes, targets),
+        RenderPaintLayerContentNode::Child(layer) => {
+            collect_video_target_ids_from_layer_content(&layer.content.nodes, targets)
+        }
+        RenderPaintLayerContentNode::ShadowPass { children }
+        | RenderPaintLayerContentNode::Clip { children, .. }
+        | RenderPaintLayerContentNode::RelaxedClip { children, .. }
+        | RenderPaintLayerContentNode::Transform { children, .. }
+        | RenderPaintLayerContentNode::Alpha { children, .. } => {
+            collect_video_target_ids_from_layer_content(children, targets)
+        }
+    });
 }
 
 fn nodes_have_payload_cache_candidate_layers(nodes: &[RenderNode]) -> bool {
@@ -44,12 +86,26 @@ fn nodes_have_payload_cache_candidate_layers(nodes: &[RenderNode]) -> bool {
         | RenderNode::Alpha { children, .. } => nodes_have_payload_cache_candidate_layers(children),
         RenderNode::PaintLayer(layer) => {
             layer.policy.allows_payload_cache()
-                || layer
-                    .child_refs
-                    .iter()
-                    .any(|child| nodes_have_payload_cache_candidate_layers(&child.nodes))
+                || layer_content_has_payload_cache_candidate(&layer.content.nodes)
         }
         RenderNode::Primitive(_) => false,
+    })
+}
+
+fn layer_content_has_payload_cache_candidate(content: &[RenderPaintLayerContentNode]) -> bool {
+    content.iter().any(|node| match node {
+        RenderPaintLayerContentNode::Own(_) => false,
+        RenderPaintLayerContentNode::Child(layer) => {
+            layer.policy.allows_payload_cache()
+                || layer_content_has_payload_cache_candidate(&layer.content.nodes)
+        }
+        RenderPaintLayerContentNode::ShadowPass { children }
+        | RenderPaintLayerContentNode::Clip { children, .. }
+        | RenderPaintLayerContentNode::RelaxedClip { children, .. }
+        | RenderPaintLayerContentNode::Transform { children, .. }
+        | RenderPaintLayerContentNode::Alpha { children, .. } => {
+            layer_content_has_payload_cache_candidate(children)
+        }
     })
 }
 
@@ -62,12 +118,26 @@ fn nodes_have_scroll_moving_paint_layers(nodes: &[RenderNode]) -> bool {
         | RenderNode::Alpha { children, .. } => nodes_have_scroll_moving_paint_layers(children),
         RenderNode::PaintLayer(layer) => {
             layer.placement == PaintLayerPlacement::ScrollMoving
-                || layer
-                    .child_refs
-                    .iter()
-                    .any(|child| nodes_have_scroll_moving_paint_layers(&child.nodes))
+                || layer_content_has_scroll_moving_paint_layer(&layer.content.nodes)
         }
         RenderNode::Primitive(_) => false,
+    })
+}
+
+fn layer_content_has_scroll_moving_paint_layer(content: &[RenderPaintLayerContentNode]) -> bool {
+    content.iter().any(|node| match node {
+        RenderPaintLayerContentNode::Own(_) => false,
+        RenderPaintLayerContentNode::Child(layer) => {
+            layer.placement == PaintLayerPlacement::ScrollMoving
+                || layer_content_has_scroll_moving_paint_layer(&layer.content.nodes)
+        }
+        RenderPaintLayerContentNode::ShadowPass { children }
+        | RenderPaintLayerContentNode::Clip { children, .. }
+        | RenderPaintLayerContentNode::RelaxedClip { children, .. }
+        | RenderPaintLayerContentNode::Transform { children, .. }
+        | RenderPaintLayerContentNode::Alpha { children, .. } => {
+            layer_content_has_scroll_moving_paint_layer(children)
+        }
     })
 }
 
@@ -97,12 +167,17 @@ pub struct RenderSceneSummary {
     pub image_failed: usize,
     pub paint_layers: usize,
     pub cacheable_layers: usize,
-    pub dynamic_layers: usize,
     pub moving_layers: usize,
     pub direct_only_layers: usize,
 }
 
 impl RenderSceneSummary {
+    pub(crate) fn from_nodes(nodes: &[RenderNode]) -> Self {
+        let mut summary = Self::default();
+        summary.record_nodes(nodes);
+        summary
+    }
+
     fn record_nodes(&mut self, nodes: &[RenderNode]) {
         for node in nodes {
             self.nodes += 1;
@@ -130,25 +205,56 @@ impl RenderSceneSummary {
                     self.alphas += 1;
                     self.record_nodes(children);
                 }
-                RenderNode::PaintLayer(layer) => {
-                    self.paint_layers += 1;
-                    match layer.policy {
-                        PaintLayerPolicy::Cacheable => self.cacheable_layers += 1,
-                        PaintLayerPolicy::DynamicRedraw => self.dynamic_layers += 1,
-                        PaintLayerPolicy::DirectOnly => self.direct_only_layers += 1,
-                    }
-                    if layer.placement == PaintLayerPlacement::ScrollMoving {
-                        self.moving_layers += 1;
-                    }
-                    self.record_nodes(&layer.own_nodes);
-                    layer
-                        .child_refs
-                        .iter()
-                        .for_each(|child| self.record_nodes(&child.nodes));
-                }
+                RenderNode::PaintLayer(layer) => self.record_paint_layer(layer),
                 RenderNode::Primitive(primitive) => self.record_primitive(primitive),
             }
         }
+    }
+
+    fn record_paint_layer(&mut self, layer: &RenderPaintLayer) {
+        self.paint_layers += 1;
+        match layer.policy {
+            PaintLayerPolicy::Cacheable => self.cacheable_layers += 1,
+            PaintLayerPolicy::DirectOnly => self.direct_only_layers += 1,
+        }
+        if layer.placement == PaintLayerPlacement::ScrollMoving {
+            self.moving_layers += 1;
+        }
+        self.record_layer_content(&layer.content.nodes);
+    }
+
+    fn record_layer_content(&mut self, content: &[RenderPaintLayerContentNode]) {
+        content.iter().for_each(|node| match node {
+            RenderPaintLayerContentNode::Own(run) => self.record_nodes(&run.nodes),
+            RenderPaintLayerContentNode::Child(layer) => self.record_paint_layer(layer),
+            RenderPaintLayerContentNode::ShadowPass { children } => {
+                self.nodes += 1;
+                self.shadow_passes += 1;
+                self.record_layer_content(children);
+            }
+            RenderPaintLayerContentNode::Clip { clips, children } => {
+                self.nodes += 1;
+                self.clips += 1;
+                self.clip_shapes += clips.len();
+                self.record_layer_content(children);
+            }
+            RenderPaintLayerContentNode::RelaxedClip { clips, children } => {
+                self.nodes += 1;
+                self.relaxed_clips += 1;
+                self.clip_shapes += clips.len();
+                self.record_layer_content(children);
+            }
+            RenderPaintLayerContentNode::Transform { children, .. } => {
+                self.nodes += 1;
+                self.transforms += 1;
+                self.record_layer_content(children);
+            }
+            RenderPaintLayerContentNode::Alpha { children, .. } => {
+                self.nodes += 1;
+                self.alphas += 1;
+                self.record_layer_content(children);
+            }
+        });
     }
 
     fn record_primitive(&mut self, primitive: &DrawPrimitive) {
@@ -184,8 +290,7 @@ impl fmt::Display for RenderSceneSummary {
                 "clip_shapes={} transforms={} alphas={}}} draws={{rects={} rounded_rects={} ",
                 "borders={} border_corners={} border_edges={} shadows={} inset_shadows={} ",
                 "texts={} text_bytes={} gradients={} images={} videos={} image_loading={} ",
-                "image_failed={}}} paint_layers={{total={} cacheable={} dynamic={} moving={} ",
-                "direct_only={}}}"
+                "image_failed={}}} paint_layers={{total={} cacheable={} moving={} direct_only={}}}"
             ),
             self.nodes,
             self.primitives,
@@ -211,7 +316,6 @@ impl fmt::Display for RenderSceneSummary {
             self.image_failed,
             self.paint_layers,
             self.cacheable_layers,
-            self.dynamic_layers,
             self.moving_layers,
             self.direct_only_layers
         )
@@ -243,17 +347,26 @@ pub enum RenderNode {
     Primitive(DrawPrimitive),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PaintLayerId {
+    pub node_id: u64,
+    pub role: PaintLayerReason,
+}
+
+impl PaintLayerId {
+    pub const fn new(node_id: u64, role: PaintLayerReason) -> Self {
+        Self { node_id, role }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct RenderPaintLayer {
-    pub stable_id: u64,
-    pub root_id: u64,
+    pub id: PaintLayerId,
     pub bounds: Rect,
     pub placement: PaintLayerPlacement,
     pub policy: PaintLayerPolicy,
-    pub reason: PaintLayerReason,
     pub content_generation: u64,
-    pub own_nodes: Arc<Vec<RenderNode>>,
-    pub child_refs: Arc<Vec<RenderPaintLayerChildRef>>,
+    pub content: Arc<RenderPaintLayerContent>,
     pub metrics: RenderPaintLayerMetrics,
 }
 
@@ -267,56 +380,43 @@ impl RenderPaintLayer {
         content_generation: u64,
         children: Vec<RenderNode>,
     ) -> Self {
-        let content = split_paint_layer_content_owned(children);
         Self::from_prepared_children(
             RenderPaintLayerBuildParts {
-                stable_id,
-                root_id: stable_id,
+                id: PaintLayerId::new(stable_id, reason),
                 bounds,
                 placement,
                 policy,
-                reason,
                 content_generation,
                 visual_bounds: None,
             },
-            content,
+            RenderPaintLayerContent::from_nodes(children),
         )
     }
 
     pub(crate) fn from_prepared_children(
         parts: RenderPaintLayerBuildParts,
-        content: RenderPaintLayerContent,
+        mut content: RenderPaintLayerContent,
     ) -> Self {
-        let metrics = RenderPaintLayerMetrics::from_own_nodes(
-            &content.own_nodes,
+        content.assign_run_metadata(parts.bounds);
+        let metrics = RenderPaintLayerMetrics::from_content(
+            &content.nodes,
             parts.bounds,
             parts.visual_bounds,
         );
 
         Self {
-            stable_id: parts.stable_id,
-            root_id: parts.root_id,
+            id: parts.id,
             bounds: parts.bounds,
             placement: parts.placement,
             policy: parts.policy,
-            reason: parts.reason,
             content_generation: parts.content_generation,
-            own_nodes: Arc::new(content.own_nodes),
-            child_refs: Arc::new(content.child_refs),
+            content: Arc::new(content),
             metrics,
         }
     }
 
     pub(crate) fn content_nodes(&self) -> Vec<RenderNode> {
-        self.own_nodes
-            .iter()
-            .cloned()
-            .chain(
-                self.child_refs
-                    .iter()
-                    .flat_map(|child| child.nodes.iter().cloned()),
-            )
-            .collect()
+        self.content.to_render_nodes()
     }
 
     pub(crate) fn with_children(&self, children: Vec<RenderNode>) -> Self {
@@ -324,31 +424,49 @@ impl RenderPaintLayer {
     }
 
     pub(crate) fn with_bounds_and_children(&self, bounds: Rect, children: Vec<RenderNode>) -> Self {
-        let content = split_paint_layer_content_owned(children);
         Self::from_prepared_children(
             RenderPaintLayerBuildParts {
-                stable_id: self.stable_id,
-                root_id: self.root_id,
+                id: self.id,
                 bounds,
                 placement: self.placement,
                 policy: self.policy,
-                reason: self.reason,
                 content_generation: self.content_generation,
                 visual_bounds: None,
             },
-            content,
+            RenderPaintLayerContent::from_composition_nodes(children),
         )
+    }
+
+    pub(crate) fn child_layer_count(&self) -> usize {
+        self.content.child_layer_count()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn own_render_nodes(&self) -> Vec<RenderNode> {
+        self.content.own_render_nodes()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn own_runs(&self) -> Vec<&RenderPaintRun> {
+        let mut runs = Vec::new();
+        collect_layer_own_runs(&self.content.nodes, &mut runs);
+        runs
+    }
+
+    #[cfg(test)]
+    pub(crate) fn descendant_layers(&self) -> Vec<&RenderPaintLayer> {
+        let mut layers = Vec::new();
+        collect_layer_descendants(&self.content.nodes, &mut layers);
+        layers
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct RenderPaintLayerBuildParts {
-    pub stable_id: u64,
-    pub root_id: u64,
+    pub id: PaintLayerId,
     pub bounds: Rect,
     pub placement: PaintLayerPlacement,
     pub policy: PaintLayerPolicy,
-    pub reason: PaintLayerReason,
     pub content_generation: u64,
     pub visual_bounds: Option<Rect>,
 }
@@ -364,12 +482,17 @@ pub struct RenderPaintLayerMetrics {
 }
 
 impl RenderPaintLayerMetrics {
-    fn from_own_nodes(nodes: &[RenderNode], bounds: Rect, visual_bounds: Option<Rect>) -> Self {
+    fn from_content(
+        content: &[RenderPaintLayerContentNode],
+        bounds: Rect,
+        visual_bounds: Option<Rect>,
+    ) -> Self {
+        let own_nodes = layer_content_own_render_nodes(content);
         let visual_bounds = visual_bounds
-            .or_else(|| render_nodes_visual_bounds(nodes, Affine2::identity()))
+            .or_else(|| render_nodes_visual_bounds(&own_nodes, Affine2::identity()))
             .map(|content_bounds| union_rect(bounds, content_bounds))
             .unwrap_or(bounds);
-        let node_metrics = render_nodes_metrics(nodes);
+        let node_metrics = render_nodes_metrics(&own_nodes);
 
         Self {
             own_node_count: node_metrics.node_count.min(u32::MAX as usize) as u32,
@@ -383,56 +506,394 @@ impl RenderPaintLayerMetrics {
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct RenderPaintLayerContent {
-    pub own_nodes: Vec<RenderNode>,
-    pub child_refs: Vec<RenderPaintLayerChildRef>,
+pub struct RenderPaintLayerContent {
+    pub nodes: Vec<RenderPaintLayerContentNode>,
+}
+
+impl RenderPaintLayerContent {
+    pub(crate) fn from_nodes(nodes: Vec<RenderNode>) -> Self {
+        Self {
+            nodes: build_ordered_layer_content(nodes),
+        }
+    }
+
+    pub(crate) fn from_composition_nodes(nodes: Vec<RenderNode>) -> Self {
+        Self {
+            nodes: build_composition_layer_content(nodes),
+        }
+    }
+
+    pub(crate) fn own_render_nodes(&self) -> Vec<RenderNode> {
+        layer_content_own_render_nodes(&self.nodes)
+    }
+
+    pub(crate) fn own_payload_render_nodes(&self) -> Vec<RenderNode> {
+        let mut nodes = Vec::new();
+        collect_layer_own_payload_nodes(&self.nodes, &mut nodes);
+        nodes
+    }
+
+    pub(crate) fn to_render_nodes(&self) -> Vec<RenderNode> {
+        layer_content_to_render_nodes(&self.nodes)
+    }
+
+    pub(crate) fn child_layer_count(&self) -> usize {
+        layer_content_child_layer_count(&self.nodes)
+    }
+
+    fn assign_run_metadata(&mut self, bounds: Rect) {
+        let mut next_slot = 0;
+        assign_layer_run_metadata(&mut self.nodes, bounds, &mut next_slot);
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct RenderPaintLayerChildRef {
-    pub nodes: Arc<Vec<RenderNode>>,
+pub enum RenderPaintLayerContentNode {
+    Own(RenderPaintRun),
+    Child(RenderPaintLayer),
+    ShadowPass {
+        children: Vec<RenderPaintLayerContentNode>,
+    },
+    Clip {
+        clips: Vec<ClipShape>,
+        children: Vec<RenderPaintLayerContentNode>,
+    },
+    RelaxedClip {
+        clips: Vec<ClipShape>,
+        children: Vec<RenderPaintLayerContentNode>,
+    },
+    Transform {
+        transform: Affine2,
+        children: Vec<RenderPaintLayerContentNode>,
+    },
+    Alpha {
+        alpha: f32,
+        children: Vec<RenderPaintLayerContentNode>,
+    },
 }
 
-impl RenderPaintLayerChildRef {
-    pub(crate) fn from_nodes(nodes: Vec<RenderNode>) -> Self {
+#[derive(Clone, Debug, PartialEq)]
+pub struct RenderPaintRun {
+    pub slot: u32,
+    pub bounds: Rect,
+    pub nodes: Arc<Vec<RenderNode>>,
+    pub metrics: RenderPaintLayerMetrics,
+}
+
+impl RenderPaintRun {
+    fn from_node(node: RenderNode) -> Self {
         Self {
-            nodes: Arc::new(nodes),
+            slot: 0,
+            bounds: Rect::default(),
+            nodes: Arc::new(vec![node]),
+            metrics: RenderPaintLayerMetrics::default(),
         }
     }
 }
 
-#[cfg(test)]
-pub(crate) fn split_paint_layer_content(nodes: &[RenderNode]) -> RenderPaintLayerContent {
-    nodes
-        .iter()
-        .cloned()
-        .fold(RenderPaintLayerContent::default(), |mut content, node| {
-            let mut split = split_paint_layer_node(node);
-            content.own_nodes.append(&mut split.own_nodes);
-            content.child_refs.append(&mut split.child_refs);
-            content
-        })
+fn build_ordered_layer_content(nodes: Vec<RenderNode>) -> Vec<RenderPaintLayerContentNode> {
+    nodes.into_iter().fold(Vec::new(), |mut content, node| {
+        append_ordered_layer_node(&mut content, node);
+        content
+    })
 }
 
-pub(crate) fn split_paint_layer_content_owned(nodes: Vec<RenderNode>) -> RenderPaintLayerContent {
-    // Renderers draw `own_nodes` before `child_refs`, so only the contiguous
-    // prefix before the first nested paint layer can stay in `own_nodes`.
-    // Everything after that boundary remains in ordered child refs to avoid
-    // repainting dirty child layers over later clean siblings.
-    nodes
-        .into_iter()
-        .fold(RenderPaintLayerContent::default(), |mut content, node| {
-            if content.child_refs.is_empty() {
-                let mut split = split_paint_layer_node(node);
-                content.own_nodes.append(&mut split.own_nodes);
-                content.child_refs.append(&mut split.child_refs);
-            } else {
-                content
-                    .child_refs
-                    .push(RenderPaintLayerChildRef::from_nodes(vec![node]));
+fn append_ordered_layer_node(content: &mut Vec<RenderPaintLayerContentNode>, node: RenderNode) {
+    match node {
+        RenderNode::PaintLayer(layer) => content.push(RenderPaintLayerContentNode::Child(layer)),
+        RenderNode::ShadowPass { children } => {
+            content.push(RenderPaintLayerContentNode::ShadowPass {
+                children: build_ordered_layer_content(children),
+            });
+        }
+        RenderNode::Clip { clips, children } if render_nodes_contain_paint_layer(&children) => {
+            content.push(RenderPaintLayerContentNode::Clip {
+                clips,
+                children: build_ordered_layer_content(children),
+            });
+        }
+        RenderNode::RelaxedClip { clips, children }
+            if render_nodes_contain_paint_layer(&children) =>
+        {
+            content.push(RenderPaintLayerContentNode::RelaxedClip {
+                clips,
+                children: build_ordered_layer_content(children),
+            });
+        }
+        RenderNode::Transform {
+            transform,
+            children,
+        } if render_nodes_contain_paint_layer(&children) => {
+            content.push(RenderPaintLayerContentNode::Transform {
+                transform,
+                children: build_ordered_layer_content(children),
+            });
+        }
+        RenderNode::Alpha { alpha, children } if render_nodes_contain_paint_layer(&children) => {
+            content.push(RenderPaintLayerContentNode::Alpha {
+                alpha,
+                children: build_ordered_layer_content(children),
+            });
+        }
+        own => append_own_render_node(content, own),
+    }
+}
+
+fn build_composition_layer_content(nodes: Vec<RenderNode>) -> Vec<RenderPaintLayerContentNode> {
+    nodes.into_iter().fold(Vec::new(), |mut content, node| {
+        append_composition_layer_node(&mut content, node);
+        content
+    })
+}
+
+fn append_composition_layer_node(content: &mut Vec<RenderPaintLayerContentNode>, node: RenderNode) {
+    match node {
+        RenderNode::PaintLayer(layer) => content.push(RenderPaintLayerContentNode::Child(layer)),
+        RenderNode::ShadowPass { children } => {
+            content.push(RenderPaintLayerContentNode::ShadowPass {
+                children: build_composition_layer_content(children),
+            })
+        }
+        RenderNode::Clip { clips, children } => content.push(RenderPaintLayerContentNode::Clip {
+            clips,
+            children: build_composition_layer_content(children),
+        }),
+        RenderNode::RelaxedClip { clips, children } => {
+            content.push(RenderPaintLayerContentNode::RelaxedClip {
+                clips,
+                children: build_composition_layer_content(children),
+            });
+        }
+        RenderNode::Transform {
+            transform,
+            children,
+        } => {
+            content.push(RenderPaintLayerContentNode::Transform {
+                transform,
+                children: build_composition_layer_content(children),
+            });
+        }
+        RenderNode::Alpha { alpha, children } => content.push(RenderPaintLayerContentNode::Alpha {
+            alpha,
+            children: build_composition_layer_content(children),
+        }),
+        RenderNode::Primitive(_) => append_own_render_node(content, node),
+    }
+}
+
+fn append_own_render_node(content: &mut Vec<RenderPaintLayerContentNode>, node: RenderNode) {
+    if let Some(RenderPaintLayerContentNode::Own(run)) = content.last_mut() {
+        Arc::make_mut(&mut run.nodes).push(node);
+    } else {
+        content.push(RenderPaintLayerContentNode::Own(RenderPaintRun::from_node(
+            node,
+        )));
+    }
+}
+
+fn render_nodes_contain_paint_layer(nodes: &[RenderNode]) -> bool {
+    nodes.iter().any(|node| match node {
+        RenderNode::PaintLayer(_) => true,
+        RenderNode::ShadowPass { children }
+        | RenderNode::Clip { children, .. }
+        | RenderNode::RelaxedClip { children, .. }
+        | RenderNode::Transform { children, .. }
+        | RenderNode::Alpha { children, .. } => render_nodes_contain_paint_layer(children),
+        RenderNode::Primitive(_) => false,
+    })
+}
+
+fn assign_layer_run_metadata(
+    content: &mut [RenderPaintLayerContentNode],
+    bounds: Rect,
+    next_slot: &mut u32,
+) {
+    content.iter_mut().for_each(|node| match node {
+        RenderPaintLayerContentNode::Own(run) => {
+            run.slot = *next_slot;
+            *next_slot = (*next_slot).saturating_add(1);
+            let node_metrics = render_nodes_metrics(&run.nodes);
+            let visual_bounds =
+                render_nodes_visual_bounds(&run.nodes, Affine2::identity()).unwrap_or(bounds);
+            run.bounds = visual_bounds;
+            run.metrics = RenderPaintLayerMetrics {
+                own_node_count: node_metrics.node_count.min(u32::MAX as usize) as u32,
+                own_primitive_count: node_metrics.primitive_count.min(u32::MAX as usize) as u32,
+                own_primitive_cost: node_metrics.primitive_cost,
+                payload_pixels: paint_layer_payload_pixels(run.bounds),
+                visual_bounds,
+                opaque: false,
+            };
+        }
+        RenderPaintLayerContentNode::Child(_) => {}
+        RenderPaintLayerContentNode::ShadowPass { children }
+        | RenderPaintLayerContentNode::Clip { children, .. }
+        | RenderPaintLayerContentNode::RelaxedClip { children, .. }
+        | RenderPaintLayerContentNode::Transform { children, .. }
+        | RenderPaintLayerContentNode::Alpha { children, .. } => {
+            assign_layer_run_metadata(children, bounds, next_slot)
+        }
+    });
+}
+
+fn collect_layer_own_payload_nodes(
+    content: &[RenderPaintLayerContentNode],
+    nodes: &mut Vec<RenderNode>,
+) {
+    content.iter().for_each(|node| match node {
+        RenderPaintLayerContentNode::Own(run) => nodes.extend(run.nodes.iter().cloned()),
+        RenderPaintLayerContentNode::Child(_) => {}
+        RenderPaintLayerContentNode::ShadowPass { children }
+        | RenderPaintLayerContentNode::Clip { children, .. }
+        | RenderPaintLayerContentNode::RelaxedClip { children, .. }
+        | RenderPaintLayerContentNode::Transform { children, .. }
+        | RenderPaintLayerContentNode::Alpha { children, .. } => {
+            collect_layer_own_payload_nodes(children, nodes)
+        }
+    });
+}
+
+#[cfg(test)]
+fn collect_layer_own_runs<'a>(
+    content: &'a [RenderPaintLayerContentNode],
+    runs: &mut Vec<&'a RenderPaintRun>,
+) {
+    content.iter().for_each(|node| match node {
+        RenderPaintLayerContentNode::Own(run) => runs.push(run),
+        RenderPaintLayerContentNode::Child(_) => {}
+        RenderPaintLayerContentNode::ShadowPass { children }
+        | RenderPaintLayerContentNode::Clip { children, .. }
+        | RenderPaintLayerContentNode::RelaxedClip { children, .. }
+        | RenderPaintLayerContentNode::Transform { children, .. }
+        | RenderPaintLayerContentNode::Alpha { children, .. } => {
+            collect_layer_own_runs(children, runs)
+        }
+    });
+}
+
+#[cfg(test)]
+fn collect_layer_descendants<'a>(
+    content: &'a [RenderPaintLayerContentNode],
+    layers: &mut Vec<&'a RenderPaintLayer>,
+) {
+    content.iter().for_each(|node| match node {
+        RenderPaintLayerContentNode::Own(_) => {}
+        RenderPaintLayerContentNode::Child(layer) => {
+            layers.push(layer);
+            collect_layer_descendants(&layer.content.nodes, layers);
+        }
+        RenderPaintLayerContentNode::ShadowPass { children }
+        | RenderPaintLayerContentNode::Clip { children, .. }
+        | RenderPaintLayerContentNode::RelaxedClip { children, .. }
+        | RenderPaintLayerContentNode::Transform { children, .. }
+        | RenderPaintLayerContentNode::Alpha { children, .. } => {
+            collect_layer_descendants(children, layers)
+        }
+    });
+}
+
+fn layer_content_child_layer_count(content: &[RenderPaintLayerContentNode]) -> usize {
+    content
+        .iter()
+        .map(|node| match node {
+            RenderPaintLayerContentNode::Own(_) => 0,
+            RenderPaintLayerContentNode::Child(layer) => {
+                1 + layer_content_child_layer_count(&layer.content.nodes)
             }
-            content
+            RenderPaintLayerContentNode::ShadowPass { children }
+            | RenderPaintLayerContentNode::Clip { children, .. }
+            | RenderPaintLayerContentNode::RelaxedClip { children, .. }
+            | RenderPaintLayerContentNode::Transform { children, .. }
+            | RenderPaintLayerContentNode::Alpha { children, .. } => {
+                layer_content_child_layer_count(children)
+            }
         })
+        .sum()
+}
+
+fn layer_content_own_render_nodes(content: &[RenderPaintLayerContentNode]) -> Vec<RenderNode> {
+    content
+        .iter()
+        .filter_map(|node| match node {
+            RenderPaintLayerContentNode::Own(run) => Some(run.nodes.iter().cloned().collect()),
+            RenderPaintLayerContentNode::Child(_) => None,
+            RenderPaintLayerContentNode::ShadowPass { children } => {
+                nonempty_scoped_own_nodes(children, |children| RenderNode::ShadowPass { children })
+            }
+            RenderPaintLayerContentNode::Clip { clips, children } => {
+                nonempty_scoped_own_nodes(children, |children| RenderNode::Clip {
+                    clips: clips.clone(),
+                    children,
+                })
+            }
+            RenderPaintLayerContentNode::RelaxedClip { clips, children } => {
+                nonempty_scoped_own_nodes(children, |children| RenderNode::RelaxedClip {
+                    clips: clips.clone(),
+                    children,
+                })
+            }
+            RenderPaintLayerContentNode::Transform {
+                transform,
+                children,
+            } => nonempty_scoped_own_nodes(children, |children| RenderNode::Transform {
+                transform: *transform,
+                children,
+            }),
+            RenderPaintLayerContentNode::Alpha { alpha, children } => {
+                nonempty_scoped_own_nodes(children, |children| RenderNode::Alpha {
+                    alpha: *alpha,
+                    children,
+                })
+            }
+        })
+        .flatten()
+        .collect()
+}
+
+fn nonempty_scoped_own_nodes(
+    children: &[RenderPaintLayerContentNode],
+    wrap: impl FnOnce(Vec<RenderNode>) -> RenderNode,
+) -> Option<Vec<RenderNode>> {
+    let children = layer_content_own_render_nodes(children);
+    (!children.is_empty()).then(|| vec![wrap(children)])
+}
+
+fn layer_content_to_render_nodes(content: &[RenderPaintLayerContentNode]) -> Vec<RenderNode> {
+    content
+        .iter()
+        .flat_map(|node| match node {
+            RenderPaintLayerContentNode::Own(run) => run.nodes.iter().cloned().collect(),
+            RenderPaintLayerContentNode::Child(layer) => {
+                vec![RenderNode::PaintLayer(layer.clone())]
+            }
+            RenderPaintLayerContentNode::ShadowPass { children } => {
+                vec![RenderNode::ShadowPass {
+                    children: layer_content_to_render_nodes(children),
+                }]
+            }
+            RenderPaintLayerContentNode::Clip { clips, children } => vec![RenderNode::Clip {
+                clips: clips.clone(),
+                children: layer_content_to_render_nodes(children),
+            }],
+            RenderPaintLayerContentNode::RelaxedClip { clips, children } => {
+                vec![RenderNode::RelaxedClip {
+                    clips: clips.clone(),
+                    children: layer_content_to_render_nodes(children),
+                }]
+            }
+            RenderPaintLayerContentNode::Transform {
+                transform,
+                children,
+            } => vec![RenderNode::Transform {
+                transform: *transform,
+                children: layer_content_to_render_nodes(children),
+            }],
+            RenderPaintLayerContentNode::Alpha { alpha, children } => vec![RenderNode::Alpha {
+                alpha: *alpha,
+                children: layer_content_to_render_nodes(children),
+            }],
+        })
+        .collect()
 }
 
 pub(crate) fn paint_layer_own_content_visual_bounds(nodes: &[RenderNode]) -> Option<Rect> {
@@ -615,13 +1076,16 @@ pub(crate) fn draw_primitive_visual_bounds(primitive: &DrawPrimitive) -> Rect {
             }
         }
         DrawPrimitive::InsetShadow(x, y, w, h, _, _, _, _, _, _) => rect_from_xywh(*x, *y, *w, *h),
-        DrawPrimitive::TextWithFont(x, y, text, font_size, _, _, _, _) => {
-            let width = text.chars().count() as f32 * *font_size * 0.65;
+        DrawPrimitive::TextWithFont(x, y, text, font_size, _, family, weight, italic) => {
+            const TEXT_VISUAL_BOUNDS_OUTSET: f32 = 1.0;
+            let metrics =
+                measure_text_visual_metrics(family, *weight, *italic, *font_size, text.as_str());
             Rect {
-                x: *x,
-                y: *y - *font_size,
-                width,
-                height: *font_size * 1.25,
+                x: *x - metrics.left_overhang - TEXT_VISUAL_BOUNDS_OUTSET,
+                y: *y + metrics.visual_top - TEXT_VISUAL_BOUNDS_OUTSET,
+                width: metrics.visual_width + TEXT_VISUAL_BOUNDS_OUTSET * 2.0,
+                height: (metrics.visual_bottom - metrics.visual_top).max(0.0)
+                    + TEXT_VISUAL_BOUNDS_OUTSET * 2.0,
             }
         }
     }
@@ -659,73 +1123,6 @@ fn union_rect(a: Rect, b: Rect) -> Rect {
     }
 }
 
-fn split_paint_layer_node(node: RenderNode) -> RenderPaintLayerContent {
-    match node {
-        RenderNode::ShadowPass { children } => {
-            split_scoped_paint_layer_content(children, |children| RenderNode::ShadowPass {
-                children,
-            })
-        }
-        RenderNode::Clip { clips, children } => {
-            split_scoped_paint_layer_content(children, |children| RenderNode::Clip {
-                clips: clips.clone(),
-                children,
-            })
-        }
-        RenderNode::RelaxedClip { clips, children } => {
-            split_scoped_paint_layer_content(children, |children| RenderNode::RelaxedClip {
-                clips: clips.clone(),
-                children,
-            })
-        }
-        RenderNode::Transform {
-            transform,
-            children,
-        } => split_scoped_paint_layer_content(children, |children| RenderNode::Transform {
-            transform,
-            children,
-        }),
-        RenderNode::Alpha { alpha, children } => {
-            split_scoped_paint_layer_content(children, |children| RenderNode::Alpha {
-                alpha,
-                children,
-            })
-        }
-        RenderNode::PaintLayer(_) => RenderPaintLayerContent {
-            own_nodes: Vec::new(),
-            child_refs: vec![RenderPaintLayerChildRef::from_nodes(vec![node])],
-        },
-        RenderNode::Primitive(_) => RenderPaintLayerContent {
-            own_nodes: vec![node],
-            child_refs: Vec::new(),
-        },
-    }
-}
-
-fn split_scoped_paint_layer_content(
-    children: Vec<RenderNode>,
-    wrap: impl Fn(Vec<RenderNode>) -> RenderNode + Copy,
-) -> RenderPaintLayerContent {
-    let content = split_paint_layer_content_owned(children);
-    let own_nodes = if content.own_nodes.is_empty() {
-        Vec::new()
-    } else {
-        vec![wrap(content.own_nodes)]
-    };
-    let child_refs = content
-        .child_refs
-        .into_iter()
-        .map(|child| {
-            RenderPaintLayerChildRef::from_nodes(vec![wrap(child.nodes.iter().cloned().collect())])
-        })
-        .collect();
-
-    RenderPaintLayerContent {
-        own_nodes,
-        child_refs,
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PaintLayerPlacement {
     Fixed,
@@ -735,23 +1132,23 @@ pub enum PaintLayerPlacement {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PaintLayerPolicy {
     Cacheable,
-    DynamicRedraw,
     DirectOnly,
 }
 
 impl PaintLayerPolicy {
     pub(crate) fn allows_payload_cache(self) -> bool {
-        self != Self::DirectOnly
+        self == Self::Cacheable
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PaintLayerReason {
     Root,
-    ScrollContainer,
-    StableSubtree,
-    Animation,
     Nearby,
+    ScrollContent,
+    Animation,
+    SliderValue,
+    DirectMedia,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -798,25 +1195,12 @@ pub enum DrawPrimitive {
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum PaintLayerHashFloat {
     Exact,
-    Quantized { scale: f64 },
 }
 
 impl PaintLayerHashFloat {
     pub(crate) fn hash_f32<H: Hasher>(self, hasher: &mut H, value: f32) {
         match self {
             Self::Exact => value.to_bits().hash(hasher),
-            Self::Quantized { scale } => {
-                let bucket = if value.is_finite() {
-                    (f64::from(value) * scale).round() as i64
-                } else if value.is_nan() {
-                    i64::MIN
-                } else if value.is_sign_positive() {
-                    i64::MAX
-                } else {
-                    i64::MIN + 1
-                };
-                bucket.hash(hasher);
-            }
         }
     }
 }
@@ -989,11 +1373,9 @@ fn paint_layer_hash_clip_scope(
 }
 
 pub(crate) fn hash_paint_layer_metadata<H: Hasher>(hasher: &mut H, layer: &RenderPaintLayer) {
-    layer.stable_id.hash(hasher);
-    layer.root_id.hash(hasher);
+    layer.id.hash(hasher);
     layer.placement.hash(hasher);
     layer.policy.hash(hasher);
-    layer.reason.hash(hasher);
     layer.content_generation.hash(hasher);
 }
 
@@ -1165,4 +1547,76 @@ fn hash_paint_layer_image_fit<H: Hasher>(hasher: &mut H, fit: ImageFit) {
         ImageFit::RepeatY => 4u8,
     }
     .hash(hasher);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        DrawPrimitive, PaintLayerPlacement, PaintLayerPolicy, PaintLayerReason, RenderNode,
+        RenderPaintLayer, RenderScene,
+    };
+    use crate::tree::attrs::ImageFit;
+    use crate::tree::geometry::Rect;
+    use std::collections::HashSet;
+
+    #[test]
+    fn summary_and_video_targets_follow_ordered_layer_content() {
+        let bounds = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 64.0,
+            height: 32.0,
+        };
+        let child = RenderPaintLayer::from_children(
+            2,
+            bounds,
+            PaintLayerPlacement::Fixed,
+            PaintLayerPolicy::DirectOnly,
+            PaintLayerReason::Nearby,
+            0,
+            vec![RenderNode::Primitive(DrawPrimitive::Video(
+                0.0,
+                0.0,
+                64.0,
+                32.0,
+                "secondary".to_string(),
+                ImageFit::Contain,
+            ))],
+        );
+        let parent = RenderPaintLayer::from_children(
+            1,
+            bounds,
+            PaintLayerPlacement::Fixed,
+            PaintLayerPolicy::DirectOnly,
+            PaintLayerReason::Root,
+            0,
+            vec![RenderNode::Alpha {
+                alpha: 1.0,
+                children: vec![
+                    RenderNode::Primitive(DrawPrimitive::Video(
+                        0.0,
+                        0.0,
+                        64.0,
+                        32.0,
+                        "preview".to_string(),
+                        ImageFit::Contain,
+                    )),
+                    RenderNode::PaintLayer(child),
+                ],
+            }],
+        );
+        let scene = RenderScene {
+            nodes: vec![RenderNode::PaintLayer(parent)],
+        };
+
+        assert_eq!(
+            scene.video_target_ids(),
+            HashSet::from(["preview".to_string(), "secondary".to_string()])
+        );
+        let summary = scene.summary();
+        assert_eq!(summary.paint_layers, 2);
+        assert_eq!(summary.alphas, 1);
+        assert_eq!(summary.videos, 2);
+        assert!(RenderScene::default().video_target_ids().is_empty());
+    }
 }

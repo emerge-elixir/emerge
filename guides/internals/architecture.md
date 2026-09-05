@@ -191,10 +191,11 @@ ElementTree
 - clip, relaxed clip, transform, alpha, and shadow-pass scopes
 - paint layers
 
-Paint layers are semantic composition boundaries. The renderer may cache a
-paint layer payload, then compose it later with new placement or alpha if the
-contents did not change. Nested paint layers are stored as child references so
-stable children survive parent invalidation and redraw.
+Paint layers are stable semantic composition boundaries: Root, Nearby,
+ScrollContent, compositor Animation, SliderValue, and DirectMedia. Their ordered
+content interleaves independently cacheable own-paint runs with semantic child
+layers under shared clip, transform, alpha, and shadow scopes. Damage changes
+payload generations; it does not change layer topology. Video remains direct.
 
 Renderer cache behavior is backend-neutral:
 
@@ -227,30 +228,38 @@ Supported backend families:
 
 | Backend | Purpose | Rendering path |
 |---------|---------|----------------|
-| Wayland | Windowed Linux runtime | EGL/Skia GPU surface and Wayland frame callbacks |
-| DRM | Direct Linux framebuffer/kiosk runtime | KMS/DRM presentation with Skia GPU surface |
-| macOS | Host runtime integration | Native host protocol and Skia rendering integration |
-| Raster | Offscreen/headless testing | CPU raster surface |
+| Wayland | Windowed Linux runtime | OpenGL, raster presentation, or Vulkan with Wayland frame callbacks |
+| DRM | Direct Linux framebuffer/kiosk runtime | OpenGL, raster GPU upload, or Vulkan with KMS presentation |
+| macOS | Host runtime integration | Metal or raster through the native host protocol |
+| Headless | Offscreen output | Retained frame binaries or Linux PRIME/DMA-BUF production |
 
+Raster is a rendering API used with a backend, not a separate runtime backend.
 Backends consume `RenderMsg::Scene`, update `RenderState`, and call
 `SceneRenderer`. They also forward native input to the event actor and expose a
 wake handle for redraws.
 
 ## Assets and Fonts
 
-The asset pipeline resolves source-based images after upload or patch. Loaded
-assets are inserted into renderer-global asset caches, and the tree is notified
-with `AssetStateChanged`.
+The asset pipeline resolves source-based images after upload or patch. Encoded
+raster source records are retained separately from final decoded pixels. Drawing
+computes fitted device-space dimensions and, when configured, decodes/resamples
+to that target before inserting the final image into an entry/byte-bounded LRU.
+The tree is notified with `AssetStateChanged` when source state changes.
 
-Renderer-global caches include:
+Each native renderer owns:
 
-- font typeface cache
-- image/video asset cache
-- rendered vector variant cache
-- Skia global caches
+- its asset source worker and source configuration
+- registered font typefaces and text-metrics cache
+- encoded image/vector source records
+- bounded decoded-raster LRU
+- bounded rendered-vector variant cache
+- asset and font generations and diagnostic state
 
-Font and asset generations participate in paint-layer payload keys so cached
-payloads are invalidated when resource contents change.
+A retained decoded raster may outlive its encoded source record and render while
+the source is restored asynchronously. Font and asset generations participate
+in paint-layer payload keys so cached payloads are invalidated when contents
+change. Renderer shutdown joins that renderer's worker and clears only its
+asset state.
 
 See [Assets and Images](assets-images.md) for source resolution, runtime path
 security, and async loading behavior.
@@ -288,14 +297,16 @@ The architecture has several separate caches with different owners:
 | Layout resolve cache | `ElementTree` node layout state | Final frame and geometry reuse |
 | Registry subtree cache | `ElementTree` node refresh state | Event registry chunk reuse |
 | Cached registry rebuild | `TreeUpdateEngine` | Whole clean registry response |
-| Retained render-layer scene cache | `ElementTree` node refresh state | Reuse `RenderPaintLayer` scene fragments |
-| Renderer paint-layer payload cache | `SceneRenderer` | GPU/CPU image payload reuse |
-| Asset/font/vector caches | Renderer globals | Resource reuse and resource generations |
+| Nearby render-fragment cache | `ElementTree` node refresh state | Reuse clean semantic Nearby fragments and focus outputs |
+| Renderer paint-layer payload cache | `SceneRenderer` | GPU/CPU own-run image reuse |
+| Encoded asset/source status | Renderer asset runtime | Source resolution, generations, and async hydration |
+| Decoded raster LRU | Renderer asset context | Entry/byte-bounded final pixel reuse |
+| Rendered vector variants | Renderer asset context | Bounded SVG rasterization reuse |
+| Font/text metrics caches | Renderer asset context | Typeface and text measurement reuse |
 
-These caches are intentionally owned by the stage that can validate them. For
-example, the tree can decide that a retained paint-layer scene fragment is still
-semantically valid, but only the renderer can decide whether a concrete GPU
-payload should be stored or reused.
+These caches are intentionally owned by the stage that can validate them. The
+tree may reuse a clean semantic Nearby fragment; only the renderer can decide
+whether a concrete own-run GPU/CPU payload should be stored or reused.
 
 ## Module Structure
 
@@ -327,10 +338,12 @@ native/emerge_skia/src/
     scrollbar.rs                 Scrollbar hit and drag state
   assets.rs                      Asset actor and source resolution
   backend/
-    wayland/                     Wayland input, EGL rendering, presentation, IME
-    drm.rs                       Direct KMS/DRM backend
+    wayland/                     Wayland OpenGL/Vulkan/raster presentation and input
+    drm/                         Direct KMS with OpenGL/Vulkan/raster presentation
+    headless/                    Binary and PRIME output
+    vulkan/                      Shared Vulkan device/import helpers
     macos/                       macOS host protocol integration
-    raster.rs                    Offscreen CPU renderer
+    raster.rs                    Shared CPU renderer
     wake.rs                      Backend wake abstraction
     skia_gpu.rs                  Shared Skia GPU helpers
 ```

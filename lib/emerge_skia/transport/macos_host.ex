@@ -36,6 +36,21 @@ defmodule EmergeSkia.Transport.MacosHost do
   end
 
   @impl true
+  def renderer_info(renderer) do
+    Host.renderer_info(renderer)
+  end
+
+  @impl true
+  def capture_pixels(_renderer, _opts) do
+    {:error, :not_supported}
+  end
+
+  @impl true
+  def capture_png(_renderer, _opts) do
+    {:error, :not_supported}
+  end
+
+  @impl true
   def set_input_mask(renderer, mask) do
     Host.set_input_mask(renderer, mask)
   end
@@ -56,8 +71,8 @@ defmodule EmergeSkia.Transport.MacosHost do
   end
 
   @impl true
-  def load_font(family, weight, italic, data) do
-    Host.load_font(family, weight, italic, data)
+  def load_font(renderer, family, weight, italic, data) do
+    Host.load_font(renderer, family, weight, italic, data)
   end
 
   @impl true

@@ -1,7 +1,7 @@
 defmodule Emerge.MixProject do
   use Mix.Project
 
-  @version "0.3.4"
+  @version "0.4.0"
   @source_url "https://github.com/emerge-elixir/emerge"
 
   @nerves_rust_target_triple_mapping %{
@@ -15,11 +15,17 @@ defmodule Emerge.MixProject do
     "CC",
     "CXX",
     "CFLAGS",
+    "BINDGEN_EXTRA_CLANG_ARGS",
     "CLANGCC",
     "CLANGCXX",
     "CPPFLAGS",
     "CXXFLAGS",
     "LDFLAGS",
+    "RUSTFLAGS",
+    "SKIA_GN_ARGS",
+    "CARGO_PROFILE_RELEASE_STRIP",
+    "EMERGE_SOURCE_REVISION",
+    "EMERGE_SKIA_HOST_PYTHON",
     "NERVES_SDK_SYSROOT",
     "NERVES_TOOLCHAIN",
     "PKG_CONFIG_SYSROOT_DIR",
@@ -64,6 +70,7 @@ defmodule Emerge.MixProject do
     [
       {:rustler, "~> 0.38.0", optional: true},
       {:rustler_precompiled, "~> 0.8.4"},
+      {:video_interop, "~> 0.1.1"},
       {:jason, "~> 1.4"},
       {:benchee, "~> 1.3", only: :dev, runtime: false},
       {:ex_doc, "~> 0.35", only: :dev, runtime: false},
@@ -130,28 +137,43 @@ defmodule Emerge.MixProject do
     [
       "lib",
       "guides/tutorials",
+      "guides/migrations",
+      "guides/reference",
       "native/emerge_skia/Cargo.toml",
       "native/emerge_skia/Cargo.lock",
+      "native/emerge_skia/Cross.toml",
       "native/emerge_skia/Cross.toml",
       "LICENSE",
       "NOTICE",
       "THIRD_PARTY_ASSETS.md",
       "licenses",
+      "priv/sample_assets/static.jpg",
       "README.md",
       "CHANGELOG.md",
       "mix.exs",
       "mix.lock"
-    ] ++ package_native_sources() ++ package_assets() ++ Path.wildcard("checksum-*.exs")
+    ] ++
+      package_native_sources() ++
+      package_native_benches() ++
+      package_native_support() ++ package_assets() ++ Path.wildcard("checksum-*.exs")
   end
 
   defp package_native_sources do
     "native/emerge_skia/src/**/*"
     |> Path.wildcard()
-    |> Enum.reject(&(File.dir?(&1) or native_test_source?(&1)))
+    |> Enum.reject(&File.dir?/1)
   end
 
-  defp native_test_source?(path) do
-    "tests" in Path.split(path) or Path.basename(path) == "test_support.rs"
+  defp package_native_benches do
+    "native/emerge_skia/benches/**/*"
+    |> Path.wildcard()
+    |> Enum.reject(&File.dir?/1)
+  end
+
+  defp package_native_support do
+    "native/emerge_skia/support/**/*"
+    |> Path.wildcard()
+    |> Enum.reject(&File.dir?/1)
   end
 
   defp package_assets do
@@ -177,7 +199,7 @@ defmodule Emerge.MixProject do
       extras: docs_extras(),
       groups_for_extras: docs_groups_for_extras(),
       groups_for_modules: [
-        "Public API": [Emerge],
+        Viewport: [Emerge, Emerge.Runtime.Viewport],
         UI: ~r/^Emerge\.UI(\.|$)/,
         Assets: ~r/^Emerge\.Assets(\.|$)/,
         Runtime: ~r/^Emerge\.Runtime\./,
@@ -202,12 +224,12 @@ defmodule Emerge.MixProject do
   defp public_docs_extras do
     [
       "README.md",
-      "THIRD_PARTY_ASSETS.md",
-      "NOTICE",
       "guides/tutorials/set_up_viewport.md",
       "guides/tutorials/describe_ui.md",
       "guides/tutorials/use_assets.md",
-      "guides/tutorials/state_management.md"
+      "guides/tutorials/state_management.md",
+      "guides/migrations/0.4.md",
+      "guides/reference/native-renderer-builds.md"
     ]
     |> Enum.filter(&File.exists?/1)
   end
@@ -216,17 +238,25 @@ defmodule Emerge.MixProject do
     [
       "guides/internals/architecture.md",
       "guides/internals/assets-images.md",
+      "guides/internals/beam-performance-constraints.md",
       "guides/internals/macos-backend.md",
       "guides/internals/feature-roadmap.md",
       "guides/internals/emrg-format.md",
       "guides/internals/events.md",
-      "guides/internals/tree-patching.md"
+      "guides/internals/layout-refresh-render-flow.md",
+      "guides/internals/nearby-semantics.md",
+      "guides/internals/tree-patching.md",
+      "guides/internals/video-interop-architecture.md"
     ]
     |> Enum.filter(&File.exists?/1)
   end
 
   defp docs_groups_for_extras do
-    [Tutorials: ~r/guides\/tutorials\/.*/] ++
+    [
+      Tutorials: ~r/guides\/tutorials\/.*/,
+      Migrations: ~r/guides\/migrations\/.*/,
+      Reference: ~r/guides\/reference\/.*/
+    ] ++
       if internal_docs_extras() == [] do
         []
       else
@@ -235,7 +265,7 @@ defmodule Emerge.MixProject do
   end
 
   defp include_internal_docs? do
-    System.get_env("EMERGE_INCLUDE_INTERNAL_DOCS", "true") not in ["0", "false"]
+    System.get_env("EMERGE_INCLUDE_INTERNAL_DOCS", "false") not in ["0", "false"]
   end
 
   defp rustler_opts do
@@ -331,12 +361,46 @@ defmodule Emerge.MixProject do
     |> maybe_put_env("CARGO_TARGET_#{target_key}_LINKER", Map.get(env, "CC"))
     |> maybe_put_env("HOST_CC", Map.get(env, "HOST_CC") || System.find_executable("cc"))
     |> maybe_put_env("HOST_CXX", Map.get(env, "HOST_CXX") || System.find_executable("c++"))
+    |> maybe_put_env("PATH", rustler_path(effective_env, env))
   end
+
+  defp rustler_path(effective_env, source_env) do
+    path = Map.get(effective_env, "PATH")
+
+    if nerves_sdk_env?(source_env) do
+      host_tools = Path.expand("native/emerge_skia/target/nerves-host-tools", __DIR__)
+      host_python = Map.get(source_env, "EMERGE_SKIA_HOST_PYTHON", "/usr/bin/python3")
+
+      unless Path.type(host_python) == :absolute and File.regular?(host_python) do
+        raise "Nerves rust-skia builds require host Python at an absolute path; " <>
+                "set EMERGE_SKIA_HOST_PYTHON, got: #{inspect(host_python)}"
+      end
+
+      wrapper =
+        "#!/bin/sh\nunset PYTHONHOME PYTHONPATH LD_LIBRARY_PATH\nexec #{shell_quote(host_python)} \"$@\"\n"
+
+      File.mkdir_p!(host_tools)
+
+      Enum.each(["python", "python3"], fn name ->
+        destination = Path.join(host_tools, name)
+        File.write!(destination, wrapper)
+        File.chmod!(destination, 0o755)
+      end)
+
+      Enum.join([host_tools, path], ":")
+    else
+      path
+    end
+  end
+
+  defp shell_quote(value), do: "'#{String.replace(value, "'", "'\\\"'\\\"'")}'"
 
   defp effective_rustler_env(env) do
     if nerves_build_env?(env) do
       env
       |> Map.put_new("SDKTARGETSYSROOT", Map.get(env, "NERVES_SDK_SYSROOT"))
+      |> configure_nerves_clang_flags(env)
+      |> configure_nerves_skia()
       |> maybe_put_map_value("CC", skia_clang_command(env, "clang"))
       |> maybe_put_map_value("CXX", skia_clang_command(env, "clang++"))
       |> maybe_put_map_value("CLANGCC", skia_clang_command(env, "clang"))
@@ -346,11 +410,79 @@ defmodule Emerge.MixProject do
     end
   end
 
+  defp configure_nerves_skia(env) do
+    link_stubs = Path.expand("native/emerge_skia/support/embedded-linux-link-stubs", __DIR__)
+
+    env
+    |> append_env("SKIA_GN_ARGS", "skia_use_fontconfig=false skia_use_system_freetype2=false")
+    |> append_env("RUSTFLAGS", "-Lnative=#{link_stubs}")
+    |> Map.put_new("CARGO_PROFILE_RELEASE_STRIP", "symbols")
+  end
+
+  defp append_env(env, key, value) do
+    Map.update(env, key, value, fn
+      "" -> value
+      existing -> existing <> " " <> value
+    end)
+  end
+
+  defp configure_nerves_clang_flags(effective_env, source_env) do
+    if nerves_sdk_env?(source_env) do
+      effective_env
+      |> sanitize_clang_cross_flags("CFLAGS")
+      |> sanitize_clang_cross_flags("CXXFLAGS")
+      |> append_clang_cxx_flags(source_env)
+    else
+      effective_env
+    end
+  end
+
+  defp sanitize_clang_cross_flags(env, key) do
+    case Map.get(env, key) do
+      flags when is_binary(flags) ->
+        sanitized =
+          flags
+          |> String.split(~r/\s+/, trim: true)
+          |> Enum.reject(&(&1 == "-mabi=lp64"))
+          |> Enum.join(" ")
+
+        Map.put(env, key, sanitized)
+
+      _other ->
+        env
+    end
+  end
+
+  defp append_clang_cxx_flags(effective_env, source_env) do
+    flags =
+      [Map.get(effective_env, "CXXFLAGS") | nerves_cxx_include_flags(source_env)]
+      |> List.flatten()
+      |> Enum.reject(&(&1 in [nil, ""]))
+      |> Kernel.++(["-Wno-invalid-constexpr"])
+      |> Enum.join(" ")
+
+    bindgen_flags =
+      [Map.get(effective_env, "BINDGEN_EXTRA_CLANG_ARGS"), flags]
+      |> Enum.reject(&(&1 in [nil, ""]))
+      |> Enum.join(" ")
+
+    effective_env
+    |> Map.put("CXXFLAGS", flags)
+    |> Map.put("BINDGEN_EXTRA_CLANG_ARGS", bindgen_flags)
+  end
+
   defp skia_clang_command(env, clang_binary) do
     if nerves_build_env?(env) do
       with sysroot when is_binary(sysroot) and sysroot != "" <- Map.get(env, "NERVES_SDK_SYSROOT"),
            clang when is_binary(clang) <- System.find_executable(clang_binary) do
-        [clang | skia_clang_flags(env, sysroot)] |> Enum.join(" ")
+        flags =
+          skia_clang_flags(env, sysroot) ++
+            if(clang_binary == "clang++" and nerves_sdk_env?(env),
+              do: ["-Wno-invalid-constexpr"],
+              else: []
+            )
+
+        [clang | flags] |> Enum.join(" ")
       else
         _ -> nil
       end
@@ -365,12 +497,26 @@ defmodule Emerge.MixProject do
   end
 
   defp gcc_toolchain_flag(env) do
-    env
-    |> Map.get("CC")
-    |> compiler_executable_path()
-    |> case do
+    packaged_toolchain =
+      case Map.get(env, "NERVES_TOOLCHAIN") do
+        toolchain when is_binary(toolchain) and toolchain != "" ->
+          [toolchain, Path.join(toolchain, "opt/ext-toolchain")]
+          |> Enum.find(&File.dir?(Path.join(&1, "lib/gcc")))
+
+        _other ->
+          nil
+      end
+
+    case packaged_toolchain || compiler_toolchain_root(Map.get(env, "CC")) do
       nil -> nil
-      compiler_path -> "--gcc-toolchain=#{compiler_path |> Path.dirname() |> Path.dirname()}"
+      toolchain -> "--gcc-toolchain=#{toolchain}"
+    end
+  end
+
+  defp compiler_toolchain_root(compiler) do
+    case compiler_executable_path(compiler) do
+      nil -> nil
+      compiler_path -> compiler_path |> Path.dirname() |> Path.dirname()
     end
   end
 
@@ -378,30 +524,24 @@ defmodule Emerge.MixProject do
     with toolchain when is_binary(toolchain) and toolchain != "" <-
            Map.get(env, "NERVES_TOOLCHAIN"),
          prefix when is_binary(prefix) and prefix != "" <- Map.get(env, "CC") |> compiler_prefix(),
-         version when is_binary(version) and version != "" <-
-           nerves_gxx_version(toolchain, prefix) do
-      [
-        Path.join([toolchain, prefix, "include", "c++", version]),
-        Path.join([toolchain, prefix, "include", "c++", version, prefix]),
-        Path.join([toolchain, "lib", "gcc", prefix, version, "include"]),
-        Path.join([toolchain, "lib", "gcc", prefix, version, "include-fixed"])
-      ]
-      |> Enum.filter(&File.exists?/1)
+         cxx_root when is_binary(cxx_root) <- nerves_cxx_root(toolchain, prefix) do
+      [cxx_root, Path.join(cxx_root, prefix)]
+      |> Enum.filter(&File.dir?/1)
       |> Enum.map(&"-I#{&1}")
     else
       _ -> []
     end
   end
 
-  defp nerves_gxx_version(toolchain, prefix) do
-    Path.join([toolchain, prefix, "include", "c++", "*"])
-    |> Path.wildcard()
+  defp nerves_cxx_root(toolchain, prefix) do
+    [
+      Path.join([toolchain, prefix, "include", "c++", "*"]),
+      Path.join([toolchain, "opt", "ext-toolchain", prefix, "include", "c++", "*"])
+    ]
+    |> Enum.flat_map(&Path.wildcard/1)
+    |> Enum.filter(&File.dir?/1)
     |> Enum.sort()
     |> List.last()
-    |> case do
-      nil -> nil
-      version_dir -> Path.basename(version_dir)
-    end
   end
 
   defp compiler_executable_path(nil), do: nil
@@ -425,6 +565,12 @@ defmodule Emerge.MixProject do
     Enum.reduce(@rustler_passthrough_env_keys, [], fn key, acc ->
       maybe_put_env(acc, key, Map.get(env, key))
     end)
+  end
+
+  defp nerves_sdk_env?(env) do
+    value_present?(Map.get(env, "NERVES_SDK_SYSROOT")) and
+      value_present?(Map.get(env, "NERVES_TOOLCHAIN")) and
+      nerves_compiler?(Map.get(env, "CC"))
   end
 
   defp nerves_build_env?(env) do

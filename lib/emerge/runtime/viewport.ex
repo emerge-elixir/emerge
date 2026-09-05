@@ -1,18 +1,211 @@
 defmodule Emerge.Runtime.Viewport do
   @moduledoc """
-  Runtime GenServer backing `use Emerge` viewport modules.
+  Configuration reference for viewports defined with `use Emerge`.
 
-  This module owns the process lifecycle, renderer integration, tree upload and
-  patch flow, and event routing used by the public `Emerge` API.
+  You normally start the generated function on your viewport module rather than
+  calling this module directly:
 
-  Most application code should use `Emerge` directly instead of calling this
-  module.
+      {:ok, viewport} = MyApp.Viewport.start_link(title: "My App")
+
+  The options passed to `start_link/1` are received by `c:Emerge.mount/1`. The
+  options returned from `mount/1` configure the viewport.
+
+  ## Option locations
+
+  Renderer options may be returned directly:
+
+      {:ok, Keyword.merge([title: "My App", width: 800, height: 600], opts)}
+
+  They may also be placed under `emerge_skia: [...]`. Nested values override
+  duplicate top-level renderer values:
+
+      {:ok,
+       [
+         title: "My App",
+         emerge_skia: [scroll_line_pixels: 45]
+       ]}
+
+  Runtime-only options belong under `viewport: [...]`:
+
+  | Option | Default | Use |
+  |---|---|---|
+  | `input_mask` | renderer default | Bitmask selecting raw events delivered to `c:Emerge.handle_input/2` |
+  | `renderer_check_interval_ms` | `500` | Renderer liveness-check interval; use `nil` to disable it |
+
+  `viewport.renderer_module` and `viewport.renderer_opts` are advanced adapter
+  options and are not needed when using EmergeSkia.
+
+  ## Common renderer options
+
+  | Option | Default | Use |
+  |---|---|---|
+  | `otp_app` | inferred | Application whose `priv/` directory contains assets |
+  | `title` | `"Emerge"` | Window title |
+  | `width`, `height` | `800`, `600` | Initial window size or fixed headless size |
+  | `backend` | platform default | `:macos`, `:wayland`, `:drm`, or `:headless` |
+  | `rendering_api` | `:auto` | `:metal`, `:opengl`, `:raster`, or `:vulkan` where supported |
+  | `assets` | restrictive defaults | Fonts, image paths, raster decode, and cache limits |
+  | `stats` | `false` | Collect renderer statistics |
+  | `renderer_stats_log` | `false` | Log a renderer summary every five seconds |
+  | `headless` | binary defaults | Headless binary or PRIME output options |
+
+  `backend_renderer` and `:gl` are deprecated compatibility names.
+  `macos_backend` and `dispatch_mode` were removed in 0.4.
+
+  ## Windowed and display viewports
+
+  Most desktop viewports need no backend option. Emerge defaults to macOS on
+  Darwin and Wayland on Linux desktop:
+
+      def mount(opts), do: {:ok, Keyword.merge([title: "My App"], opts)}
+
+  Use DRM for direct display output on Linux or Nerves:
+
+      def mount(opts) do
+        {:ok,
+         Keyword.merge(
+           [backend: :drm, drm_card: "/dev/dri/card0"],
+           opts
+         )}
+      end
+
+  `rendering_api: :auto` is recommended unless the application requires a
+  specific path. Raster is a rendering API, not a backend. Vulkan support is
+  selected explicitly at build time.
+
+  ## Headless binary viewports
+
+  Headless is another viewport mode. It uses the same `mount`, `render`, event,
+  rerender, and supervision APIs without opening a window.
+
+  Binary mode sends frames directly to a live local PID. A sink can be an
+  ordinary GenServer:
+
+      defmodule MyApp.FrameSink do
+        use GenServer
+
+        def start_link(_opts) do
+          GenServer.start_link(__MODULE__, nil, name: __MODULE__)
+        end
+
+        @impl true
+        def init(_opts), do: {:ok, nil}
+
+        @impl true
+        def handle_info(
+              {:emerge_skia_frame,
+               %VideoInterop.Frame{
+                 coded_height: height,
+                 storage: %VideoInterop.Binary{
+                   data: data,
+                   planes: [%VideoInterop.Binary.Plane{stride: stride}]
+                 }
+               } = frame},
+              last_frame
+            ) do
+          :ok = VideoInterop.validate(frame)
+
+          if byte_size(data) != stride * height do
+            raise "invalid headless frame"
+          end
+
+          if data != last_frame do
+            MyApp.Display.draw(frame)
+          end
+
+          {:noreply, data}
+        end
+      end
+
+  Configure the viewport with that process as its direct target:
+
+      defmodule MyApp.DisplayViewport do
+        use Emerge
+
+        @impl Viewport
+        def mount(opts) do
+          target = Process.whereis(MyApp.FrameSink) || raise "frame sink is not running"
+
+          {:ok,
+           Keyword.merge(
+             [
+               backend: :headless,
+               rendering_api: :raster,
+               width: 400,
+               height: 300,
+               headless: [
+                 mode: :binary,
+                 target: target,
+                 pixel_format: :gray2,
+                 dither: true,
+                 bw1_polarity: :one_is_white
+               ]
+             ],
+             opts
+           )}
+        end
+
+        @impl Viewport
+        def render, do: MyApp.UI.display()
+      end
+
+  Start the frame sink before the viewport. Use `:rest_for_one` when a sink
+  restart must also restart the viewport holding its PID:
+
+      children = [MyApp.FrameSink, MyApp.DisplayViewport]
+      Supervisor.start_link(children, strategy: :rest_for_one)
+
+  The target receives `{:emerge_skia_frame, %VideoInterop.Frame{}}` by default.
+  See `EmergeSkia.start/1` for packed BW1/Gray2 rules and all headless options.
+
+  ## Headless PRIME viewports
+
+  PRIME mode produces leased Linux DMA-BUF frames. Its target is usually a
+  `Membrane.VideoInterop.Source` process:
+
+      def mount(opts) do
+        {:ok,
+         Keyword.merge(
+           [
+             backend: :headless,
+             rendering_api: :opengl,
+             width: 640,
+             height: 420,
+             headless: [
+               mode: :prime,
+               target: frame_source,
+               target_fps: 30,
+               prime: [max_in_flight: 3, on_backpressure: :drop_new]
+             ]
+           ],
+           opts
+         )}
+      end
+
+  Route those frames through `membrane_video_interop` and submit them to a
+  visible atom target with `Emerge.submit_video_frame/3`. PRIME is Linux-only;
+  both OpenGL and Vulkan PRIME are supported when compiled and available.
+
+  ## Raw input
+
+  Set `viewport.input_mask` with the bitmasks returned by
+  `EmergeSkia.input_mask_*`. Selected messages are delivered to
+  `c:Emerge.handle_input/2`, for example:
+
+      @impl Viewport
+      def handle_input({:resized, {width, height, scale}}, state) do
+        IO.inspect({width, height, scale})
+        {:noreply, state}
+      end
+
+  Element events still use `c:Emerge.handle_info/2`.
   """
 
   use GenServer
 
   require Logger
 
+  alias Emerge.Runtime.VideoEndpoints
   alias Emerge.Runtime.Viewport.Config
   alias Emerge.Runtime.Viewport.ReloadGroup
   alias Emerge.Runtime.Viewport.Renderer
@@ -248,6 +441,8 @@ defmodule Emerge.Runtime.Viewport do
   @doc false
   @spec terminate_viewport(term(), t()) :: :ok
   def terminate_viewport(_reason, state) when is_map(state) do
+    _ = VideoEndpoints.unregister(self())
+
     case Map.get(state, @runtime_key) do
       %State{renderer: nil} ->
         :ok
@@ -553,6 +748,7 @@ defmodule Emerge.Runtime.Viewport do
           end)
           |> maybe_schedule_renderer_check()
 
+        :ok = VideoEndpoints.register(self(), renderer)
         {:ok, state}
 
       {:ok, other} ->
@@ -641,7 +837,7 @@ defmodule Emerge.Runtime.Viewport do
   end
 
   defp log_native_renderer_message(level, source, message) do
-    Logger.log(normalize_native_log_level(level), fn ->
+    Logger.log(normalize_native_log_level(level, source), fn ->
       {[
          "EmergeSkia native[",
          to_string(source),
@@ -651,10 +847,17 @@ defmodule Emerge.Runtime.Viewport do
     end)
   end
 
-  defp normalize_native_log_level(level) when level in [:debug, :info, :warning, :error],
-    do: level
+  # Event-runtime traces are high-volume diagnostics, not application lifecycle information.
+  # Keep older native artifacts that labeled them as :info quiet at Logger's default level too.
+  defp normalize_native_log_level(level, source)
+       when level in [:debug, :info] and source in ["event_runtime", :event_runtime],
+       do: :debug
 
-  defp normalize_native_log_level(_level), do: :info
+  defp normalize_native_log_level(level, _source)
+       when level in [:debug, :info, :warning, :error],
+       do: level
+
+  defp normalize_native_log_level(_level, _source), do: :info
 
   defp phase_label(:initial_render), do: "initial render"
   defp phase_label(:rerender), do: "rerender"

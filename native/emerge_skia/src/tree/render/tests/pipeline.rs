@@ -89,6 +89,65 @@ fn combined_refresh_matches_separate_render_and_registry_for_interactive_tree() 
 }
 
 #[test]
+fn compositor_animation_moves_content_behind_a_fixed_parent_clip() {
+    let root_id = NodeId::from_u64(189_000);
+    let child_id = NodeId::from_u64(189_001);
+    let mut root = Element::with_attrs(root_id, ElementKind::El, Vec::new(), Attrs::default());
+    root.children = vec![child_id];
+    root.layout.frame = Some(Frame {
+        x: 0.0,
+        y: 0.0,
+        width: 50.0,
+        height: 50.0,
+        content_width: 50.0,
+        content_height: 50.0,
+    });
+    root.layout.effective = root.spec.declared.clone();
+
+    let mut child = Element::with_attrs(
+        child_id,
+        ElementKind::El,
+        Vec::new(),
+        solid_fill_attrs((255, 0, 0)),
+    );
+    child.layout.frame = Some(Frame {
+        x: 0.0,
+        y: 0.0,
+        width: 40.0,
+        height: 40.0,
+        content_width: 40.0,
+        content_height: 40.0,
+    });
+    child.spec.declared.animate = Some(crate::tree::animation::AnimationSpec {
+        keyframes: vec![
+            Attrs {
+                move_x: Some(0.0),
+                ..Attrs::default()
+            },
+            Attrs {
+                move_x: Some(30.0),
+                ..Attrs::default()
+            },
+        ],
+        duration_ms: 100.0,
+        curve: crate::tree::animation::AnimationCurve::Linear,
+        repeat: crate::tree::animation::AnimationRepeat::Once,
+    });
+    child.layout.effective = child.spec.declared.clone();
+    child.layout.effective.move_x = Some(30.0);
+
+    let mut tree = ElementTree::new();
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(child);
+    let scene = super::super::render_tree_scene_with_scroll_layers(&tree).scene;
+    let pixels = render_scene_to_pixels(80, 50, scene);
+
+    assert_eq!(rgba_at(&pixels, 80, 45, 20), (255, 0, 0, 255));
+    assert_eq!(rgba_at(&pixels, 80, 60, 20), (0, 0, 0, 0));
+}
+
+#[test]
 fn combined_refresh_matches_separate_registry_for_local_and_escape_nearby() {
     let root_id = NodeId::from_term_bytes(vec![193]);
     let child_id = NodeId::from_term_bytes(vec![194]);
@@ -327,6 +386,15 @@ fn render_scene_with_renderer_to_pixels(
     width: u32,
     height: u32,
 ) -> Vec<u8> {
+    render_scene_with_renderer_to_pixels_and_timings(renderer, scene, width, height).0
+}
+
+pub(super) fn render_scene_with_renderer_to_pixels_and_timings(
+    renderer: &mut SceneRenderer,
+    scene: crate::render_scene::RenderScene,
+    width: u32,
+    height: u32,
+) -> (Vec<u8>, crate::renderer::RenderTimings) {
     let info = skia_safe::ImageInfo::new(
         (width as i32, height as i32),
         skia_safe::ColorType::RGBA8888,
@@ -337,11 +405,11 @@ fn render_scene_with_renderer_to_pixels(
         .expect("raster surface should be created for render test");
     let state = RenderState::new(scene, skia_safe::Color::TRANSPARENT, 1, false);
     let mut frame = RenderFrame::new(&mut surface, None);
-    renderer.render(&mut frame, &state);
+    let timings = renderer.render(&mut frame, &state);
 
     let mut pixels = vec![0u8; (width * height * 4) as usize];
     surface.read_pixels(&info, pixels.as_mut_slice(), (width * 4) as usize, (0, 0));
-    pixels
+    (pixels, timings)
 }
 
 #[test]
@@ -1244,6 +1312,77 @@ fn test_alpha_shadow_keeps_shadow_visible_and_alpha_reduced_inside_parent_clip()
     );
     assert!(body.3 > 0, "body fill should render");
     assert!(body.3 < 255, "body fill should also inherit alpha");
+}
+
+#[test]
+fn nested_alpha_shadow_body_keeps_non_nearest_rounded_ancestor_clip() {
+    let root_id = NodeId::from_u64(189_100);
+    let middle_id = NodeId::from_u64(189_101);
+    let child_id = NodeId::from_u64(189_102);
+
+    let mut root = Element::with_attrs(
+        root_id,
+        ElementKind::El,
+        Vec::new(),
+        Attrs {
+            border_radius: Some(BorderRadius::Uniform(24.0)),
+            ..Attrs::default()
+        },
+    );
+    root.children = vec![middle_id];
+    root.layout.frame = Some(Frame {
+        x: 0.0,
+        y: 0.0,
+        width: 100.0,
+        height: 100.0,
+        content_width: 100.0,
+        content_height: 100.0,
+    });
+
+    let mut middle = Element::with_attrs(middle_id, ElementKind::El, Vec::new(), Attrs::default());
+    middle.children = vec![child_id];
+    middle.layout.frame = root.layout.frame;
+
+    let mut child = Element::with_attrs(
+        child_id,
+        ElementKind::El,
+        Vec::new(),
+        Attrs {
+            background: Some(Background::Color(Color::Rgb { r: 255, g: 0, b: 0 })),
+            alpha: Some(0.5),
+            box_shadows: Some(vec![BoxShadow {
+                offset_x: 30.0,
+                offset_y: 0.0,
+                blur: 0.0,
+                size: 0.0,
+                color: Color::Named("black".to_string()),
+                inset: false,
+            }]),
+            ..Attrs::default()
+        },
+    );
+    child.layout.frame = root.layout.frame;
+
+    let mut tree = ElementTree::new();
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(middle);
+    tree.insert(child);
+
+    let output = super::super::render_tree_scene_with_scroll_layers(&tree);
+    let pixels = render_scene_to_pixels(140, 100, output.scene);
+
+    assert_eq!(
+        rgba_at(&pixels, 140, 1, 1).3,
+        0,
+        "alpha body must retain the non-nearest rounded root clip"
+    );
+    let body = rgba_at(&pixels, 140, 50, 50);
+    assert!(body.0 > 0 && body.3 > 0 && body.3 < 255);
+    assert!(
+        rgba_at(&pixels, 140, 110, 50).3 > 0,
+        "translated outer shadow should still escape the rounded root clip"
+    );
 }
 
 #[test]
@@ -2864,38 +3003,39 @@ fn test_svg_slider_thumb_paints_above_scroll_moving_track_layers() {
     tree.insert(thumb);
     tree.clear_refresh_dirty();
 
-    let output = super::super::render_tree_scene_with_paint_layer_policy(&tree, true, true);
+    let output = super::super::render_tree_scene_with_scroll_layers(&tree);
     let scroll_layer =
-        first_paint_layer_with_reason(&output.scene.nodes, PaintLayerReason::ScrollContainer)
+        first_paint_layer_with_reason(&output.scene.nodes, PaintLayerReason::ScrollContent)
             .expect("scroll container should produce the compositing layer");
 
     assert!(
-        !render_nodes_contain_image_asset(&scroll_layer.own_nodes, image_id),
-        "SVG thumb must not be parent-owned payload that can be painted below child track layers"
+        !render_nodes_contain_image_asset(&scroll_layer.own_render_nodes(), image_id),
+        "SVG thumb must not enter the scroll-content own payload"
     );
-    let child_layer_ids = paint_layer_ids_in_nodes(
-        &scroll_layer
-            .child_refs
-            .iter()
-            .flat_map(|child| child.nodes.iter().cloned())
-            .collect::<Vec<_>>(),
-    );
-    let track_pos = child_layer_ids
-        .iter()
-        .position(|id| *id == track_id.to_wire_u64())
-        .expect("track should be a child paint layer");
-    let filled_pos = child_layer_ids
-        .iter()
-        .position(|id| *id == filled_id.to_wire_u64())
-        .expect("filled track should be a child paint layer");
-    let thumb_pos = child_layer_ids
-        .iter()
-        .position(|id| *id == thumb_id.to_wire_u64())
-        .expect("SVG thumb should be a child paint layer");
-
+    let slider_value = scroll_layer
+        .descendant_layers()
+        .into_iter()
+        .find(|layer| {
+            layer.id.node_id == slider_id.to_wire_u64()
+                && layer.id.role == PaintLayerReason::SliderValue
+        })
+        .expect("slider should expose one semantic value layer");
     assert!(
-        track_pos < thumb_pos && filled_pos < thumb_pos,
-        "SVG thumb child layer must stay after track layers: {child_layer_ids:?}"
+        slider_value
+            .own_render_nodes()
+            .iter()
+            .any(render_node_contains_image_placeholder),
+        "pending SVG thumb should be owned by the slider value layer: {:#?}",
+        slider_value.own_render_nodes()
+    );
+    assert_eq!(
+        slider_value
+            .descendant_layers()
+            .into_iter()
+            .filter(|layer| layer.id.role == PaintLayerReason::SliderValue)
+            .count(),
+        0,
+        "filled track and thumb should share one layer"
     );
 }
 
@@ -2911,35 +3051,33 @@ fn first_paint_layer_with_reason(
         | crate::render_scene::RenderNode::Alpha { children, .. } => {
             first_paint_layer_with_reason(children, reason)
         }
-        crate::render_scene::RenderNode::PaintLayer(layer) if layer.reason == reason => Some(layer),
+        crate::render_scene::RenderNode::PaintLayer(layer) if layer.id.role == reason => {
+            Some(layer)
+        }
         crate::render_scene::RenderNode::PaintLayer(layer) => layer
-            .child_refs
-            .iter()
-            .find_map(|child| first_paint_layer_with_reason(&child.nodes, reason)),
+            .descendant_layers()
+            .into_iter()
+            .find(|child| child.id.role == reason),
         crate::render_scene::RenderNode::Primitive(_) => None,
     })
 }
 
-fn paint_layer_ids_in_nodes(nodes: &[crate::render_scene::RenderNode]) -> Vec<u64> {
-    nodes.iter().fold(Vec::new(), |mut ids, node| {
-        match node {
-            crate::render_scene::RenderNode::ShadowPass { children }
-            | crate::render_scene::RenderNode::Clip { children, .. }
-            | crate::render_scene::RenderNode::RelaxedClip { children, .. }
-            | crate::render_scene::RenderNode::Transform { children, .. }
-            | crate::render_scene::RenderNode::Alpha { children, .. } => {
-                ids.extend(paint_layer_ids_in_nodes(children));
-            }
-            crate::render_scene::RenderNode::PaintLayer(layer) => {
-                ids.push(layer.stable_id);
-                layer.child_refs.iter().for_each(|child| {
-                    ids.extend(paint_layer_ids_in_nodes(&child.nodes));
-                });
-            }
-            crate::render_scene::RenderNode::Primitive(_) => {}
+fn render_node_contains_image_placeholder(node: &crate::render_scene::RenderNode) -> bool {
+    match node {
+        crate::render_scene::RenderNode::ShadowPass { children }
+        | crate::render_scene::RenderNode::Clip { children, .. }
+        | crate::render_scene::RenderNode::RelaxedClip { children, .. }
+        | crate::render_scene::RenderNode::Transform { children, .. }
+        | crate::render_scene::RenderNode::Alpha { children, .. } => {
+            children.iter().any(render_node_contains_image_placeholder)
         }
-        ids
-    })
+        crate::render_scene::RenderNode::PaintLayer(layer) => layer
+            .content_nodes()
+            .iter()
+            .any(render_node_contains_image_placeholder),
+        crate::render_scene::RenderNode::Primitive(DrawPrimitive::ImageLoading(..)) => true,
+        crate::render_scene::RenderNode::Primitive(_) => false,
+    }
 }
 
 fn render_nodes_contain_image_asset(
@@ -2955,11 +3093,7 @@ fn render_nodes_contain_image_asset(
             render_nodes_contain_image_asset(children, image_id)
         }
         crate::render_scene::RenderNode::PaintLayer(layer) => {
-            render_nodes_contain_image_asset(&layer.own_nodes, image_id)
-                || layer
-                    .child_refs
-                    .iter()
-                    .any(|child| render_nodes_contain_image_asset(&child.nodes, image_id))
+            render_nodes_contain_image_asset(&layer.content_nodes(), image_id)
         }
         crate::render_scene::RenderNode::Primitive(DrawPrimitive::Image(
             _,
@@ -4159,7 +4293,6 @@ fn test_outer_shadow_clips_only_on_vertical_scroll_axis() {
     });
 
     let shadow_clip_scope = immediate_clip_scope(&trace, shadow).unwrap();
-    let body_clip_scope = immediate_clip_scope(&trace, body).unwrap();
     assert_eq!(
         clip_scope_shapes(shadow_clip_scope).unwrap(),
         &[ClipShape {
@@ -4172,19 +4305,9 @@ fn test_outer_shadow_clips_only_on_vertical_scroll_axis() {
             radii: None,
         }]
     );
-    assert_eq!(
-        clip_scope_shapes(body_clip_scope).unwrap(),
-        &[
-            ClipShape {
-                rect: Rect {
-                    x: 0.0,
-                    y: 0.0,
-                    width: 200.0,
-                    height: 120.0,
-                },
-                radii: None,
-            },
-            ClipShape {
+    assert!(body.clips.iter().any(|clip| {
+        clip.shape
+            == ClipShape {
                 rect: Rect {
                     x: 40.0,
                     y: 20.0,
@@ -4192,9 +4315,8 @@ fn test_outer_shadow_clips_only_on_vertical_scroll_axis() {
                     height: 60.0,
                 },
                 radii: None,
-            },
-        ]
-    );
+            }
+    }));
 }
 
 #[test]
@@ -4260,7 +4382,6 @@ fn test_outer_shadow_clips_only_on_horizontal_scroll_axis() {
     });
 
     let shadow_clip_scope = immediate_clip_scope(&trace, shadow).unwrap();
-    let body_clip_scope = immediate_clip_scope(&trace, body).unwrap();
     assert_eq!(
         clip_scope_shapes(shadow_clip_scope).unwrap(),
         &[ClipShape {
@@ -4273,19 +4394,9 @@ fn test_outer_shadow_clips_only_on_horizontal_scroll_axis() {
             radii: None,
         }]
     );
-    assert_eq!(
-        clip_scope_shapes(body_clip_scope).unwrap(),
-        &[
-            ClipShape {
-                rect: Rect {
-                    x: 0.0,
-                    y: 0.0,
-                    width: 200.0,
-                    height: 120.0,
-                },
-                radii: None,
-            },
-            ClipShape {
+    assert!(body.clips.iter().any(|clip| {
+        clip.shape
+            == ClipShape {
                 rect: Rect {
                     x: 40.0,
                     y: 20.0,
@@ -4293,9 +4404,8 @@ fn test_outer_shadow_clips_only_on_horizontal_scroll_axis() {
                     height: 60.0,
                 },
                 radii: None,
-            },
-        ]
-    );
+            }
+    }));
 }
 
 #[test]
@@ -4377,30 +4487,15 @@ fn test_outer_shadow_reuses_full_rounded_clip_when_both_scroll_axes_enabled() {
     };
 
     let shadow_clip_scope = immediate_clip_scope(&trace, shadow).unwrap();
-    let body_clip_scope = immediate_clip_scope(&trace, body).unwrap();
     assert_eq!(
         clip_scope_shapes(shadow_clip_scope).unwrap(),
         &[expected_clip]
     );
-    assert_eq!(
-        clip_scope_shapes(body_clip_scope).unwrap(),
-        &[
-            ClipShape {
-                rect: Rect {
-                    x: 0.0,
-                    y: 0.0,
-                    width: 200.0,
-                    height: 120.0,
-                },
-                radii: None,
-            },
-            expected_clip,
-        ]
-    );
+    assert!(body.clips.iter().any(|clip| clip.shape == expected_clip));
 }
 
 #[test]
-fn test_scrollable_shadowed_child_uses_screen_space_positions_without_translation() {
+fn test_scrollable_shadowed_child_uses_one_composition_translation() {
     let root_id = NodeId::from_term_bytes(vec![30]);
     let child_a_id = NodeId::from_term_bytes(vec![31]);
     let child_b_id = NodeId::from_term_bytes(vec![32]);
@@ -4483,40 +4578,26 @@ fn test_scrollable_shadowed_child_uses_screen_space_positions_without_translatio
     let trace = trace_tree(&tree);
     let draws = &trace.draws;
 
-    assert!(
-        draws
-            .iter()
-            .all(|draw| draw.cumulative_transform == Affine2::identity()),
-        "scroll rendering should not need transform wrappers"
-    );
-
     let shadow = only_draw(draws, |draw| {
         matches!(draw.primitive, DrawPrimitive::Shadow(..))
     });
     let child_c = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(0.0, 30.0, 100.0, 20.0, 0x0000FFFF)
+            DrawPrimitive::Rect(_, _, 100.0, 20.0, 0x0000FFFF)
         )
     });
 
+    assert_eq!(
+        shadow.cumulative_transform,
+        Affine2::translation(0.0, -10.0)
+    );
+    assert_eq!(child_c.cumulative_transform, shadow.cumulative_transform);
     assert!(paints_before(shadow, child_c));
-    assert!(shadow.clips.iter().any(|clip| {
-        clip.shape
-            == ClipShape {
-                rect: Rect {
-                    x: 0.0,
-                    y: 0.0,
-                    width: 100.0,
-                    height: 50.0,
-                },
-                radii: None,
-            }
-    }));
 }
 
 #[test]
-fn test_nested_scroll_host_clip_uses_screen_space_geometry_without_translation() {
+fn test_nested_scroll_host_clip_uses_canonical_geometry_with_local_translation() {
     let root_id = NodeId::from_term_bytes(vec![60]);
     let inner_id = NodeId::from_term_bytes(vec![61]);
     let text_id = NodeId::from_term_bytes(vec![62]);
@@ -4589,19 +4670,27 @@ fn test_nested_scroll_host_clip_uses_screen_space_geometry_without_translation()
         |draw| matches!(&draw.primitive, DrawPrimitive::TextWithFont(_, _, text, _, _, _, _, _) if text == "visible"),
     );
 
-    assert_eq!(text_draw.cumulative_transform, Affine2::identity());
-    assert!(text_draw.clips.iter().any(|clip| {
-        clip.shape
-            == ClipShape {
-                rect: Rect {
-                    x: 10.0,
-                    y: 50.0,
-                    width: 80.0,
-                    height: 40.0,
-                },
-                radii: None,
-            }
-    }));
+    assert_eq!(
+        text_draw.cumulative_transform,
+        Affine2::translation(0.0, -10.0)
+    );
+    assert!(
+        text_draw.clips.iter().any(|clip| {
+            clip.shape
+                == ClipShape {
+                    rect: Rect {
+                        x: 10.0,
+                        y: 60.0,
+                        width: 80.0,
+                        height: 40.0,
+                    },
+                    radii: None,
+                }
+                && clip.transform_at_application == Affine2::translation(0.0, -10.0)
+        }),
+        "nested clips: {:?}",
+        text_draw.clips
+    );
     assert!(!text_draw.clips.iter().any(|clip| {
         clip.shape
             == ClipShape {
@@ -4667,27 +4756,21 @@ fn test_render_scroll_host_clip_uses_current_frame_geometry() {
         |draw| matches!(&draw.primitive, DrawPrimitive::TextWithFont(_, _, text, _, _, _, _, _) if text == "shifted"),
     );
     assert!(text_draw.clips.iter().any(|clip| {
-        clip.shape
-            == ClipShape {
-                rect: Rect {
-                    x: 50.0,
-                    y: 60.0,
-                    width: 120.0,
-                    height: 40.0,
-                },
-                radii: None,
+        clip.transform_at_application.map_rect_aabb(clip.shape.rect)
+            == Rect {
+                x: 50.0,
+                y: 60.0,
+                width: 120.0,
+                height: 40.0,
             }
     }));
     assert!(!text_draw.clips.iter().any(|clip| {
-        clip.shape
-            == ClipShape {
-                rect: Rect {
-                    x: 0.0,
-                    y: 0.0,
-                    width: 120.0,
-                    height: 40.0,
-                },
-                radii: None,
+        clip.transform_at_application.map_rect_aabb(clip.shape.rect)
+            == Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 120.0,
+                height: 40.0,
             }
     }));
 }

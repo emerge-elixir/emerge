@@ -64,13 +64,14 @@ AppKit lifecycle correctly.
 
 ## Backend Selection
 
-macOS supports:
+macOS uses the shared renderer selection option:
 
-- `macos_backend: :auto`
-- `macos_backend: :metal`
-- `macos_backend: :raster`
+- `rendering_api: :auto`
+- `rendering_api: :metal`
+- `rendering_api: :raster`
 
-` :auto` prefers Metal and falls back to raster when Metal is unavailable.
+`:auto` prefers Metal and falls back to raster when Metal is unavailable.
+The old `macos_backend` option has been removed; use `rendering_api` instead.
 
 ## Assets And Fonts
 
@@ -85,8 +86,9 @@ That includes:
 - runtime max file size
 - preloaded custom fonts
 
-The host starts the shared asset worker and rerenders sessions when async asset
-state changes arrive.
+The host creates one asset runtime per session. Each session owns its worker,
+source policy, registered fonts, caches, generations, and diagnostics. Async
+asset changes rerender only the owning session.
 
 ## Input Model
 
@@ -117,7 +119,7 @@ commands.
 - video targets on macOS
 - in-process macOS NIF window backend
 
-`EmergeSkia.video_target/2` intentionally returns an error for macOS.
+Direct video-frame submission is not currently supported by the macOS host renderer.
 
 ## Validation
 

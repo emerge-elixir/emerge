@@ -29,6 +29,7 @@ use rustler::LocalPid;
 
 use crate::{
     actors::{EventMsg, TreeMsg},
+    assets::AssetContext,
     backend::wake::BackendWakeHandle,
     clipboard::{ClipboardManager, ClipboardTarget},
     input::{ACTION_PRESS, InputEvent, InputHandler, SCROLL_LINE_PIXELS},
@@ -99,7 +100,7 @@ impl EventRuntimeDriver {
 
     fn log_event_diagnostic(&self, build: impl FnOnce() -> String) {
         if self.log_render {
-            self.native_log.info("event_runtime", build());
+            self.native_log.debug("event_runtime", build());
         }
     }
 
@@ -380,6 +381,7 @@ const ADAPTIVE_SCROLL_PHYSICAL_COEFF: f32 = 51_890.203;
 const ADAPTIVE_SCROLL_MIN_VELOCITY: f32 = 500.0;
 const ADAPTIVE_SCROLL_MAX_VELOCITY: f32 = 6_000.0;
 const ADAPTIVE_SCROLL_STOP_TOLERANCE: f32 = 0.5;
+const ADAPTIVE_SCROLL_WATCHDOG_MIN_DELAY: Duration = Duration::from_millis(1);
 const ADAPTIVE_SCROLL_WATCHDOG_MAX_DELAY: Duration = Duration::from_millis(100);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PresentTimingState {
@@ -392,6 +394,7 @@ struct DragMotionState {
     element_id: NodeId,
     axis: ScrollbarAxis,
     last_pointer_axis: f32,
+    sampled_pointer_axis: f32,
     last_sample_at: Instant,
     velocity_px_per_sec: f32,
 }
@@ -929,7 +932,7 @@ impl DirectEventRuntime {
 
     fn log_event_diagnostic(&self, log_render: bool, build: impl FnOnce() -> String) {
         if log_render {
-            self.native_log.info("event_runtime", build());
+            self.native_log.debug("event_runtime", build());
         }
     }
 
@@ -1051,10 +1054,12 @@ impl DirectEventRuntime {
         now: Instant,
     ) {
         let axis = Self::drag_axis_from_gesture(locked_axis);
+        let pointer_axis = Self::pointer_axis_value(axis, last_x, last_y);
         self.drag_motion = Some(DragMotionState {
             element_id,
             axis,
-            last_pointer_axis: Self::pointer_axis_value(axis, last_x, last_y),
+            last_pointer_axis: pointer_axis,
+            sampled_pointer_axis: pointer_axis,
             last_sample_at: now,
             velocity_px_per_sec: 0.0,
         });
@@ -1065,8 +1070,8 @@ impl DirectEventRuntime {
             return;
         };
 
-        let next_axis = Self::pointer_axis_value(motion.axis, last_x, last_y);
-        Self::update_drag_motion_axis_sample(motion, next_axis, now);
+        motion.last_pointer_axis = Self::pointer_axis_value(motion.axis, last_x, last_y);
+        Self::sample_drag_motion_velocity(motion, now);
     }
 
     fn update_drag_motion_by_delta(&mut self, axis_delta: f32, now: Instant) {
@@ -1074,26 +1079,30 @@ impl DirectEventRuntime {
             return;
         };
 
-        let next_axis = motion.last_pointer_axis + axis_delta;
-        Self::update_drag_motion_axis_sample(motion, next_axis, now);
+        motion.last_pointer_axis += axis_delta;
+        Self::sample_drag_motion_velocity(motion, now);
     }
 
-    fn update_drag_motion_axis_sample(motion: &mut DragMotionState, next_axis: f32, now: Instant) {
+    fn sample_drag_motion_velocity(motion: &mut DragMotionState, now: Instant) {
         let dt = now.saturating_duration_since(motion.last_sample_at);
-        if dt >= DRAG_VELOCITY_SAMPLE_MIN_DT {
-            let dt_secs = dt.as_secs_f32();
-            if dt_secs > 0.0 {
-                let instantaneous = (next_axis - motion.last_pointer_axis) / dt_secs;
-                let filtered = motion.velocity_px_per_sec;
-                motion.velocity_px_per_sec = if filtered == 0.0 {
-                    instantaneous
-                } else {
-                    filtered + (instantaneous - filtered) * DRAG_VELOCITY_FILTER_ALPHA
-                };
-                motion.last_sample_at = now;
-            }
+        if dt < DRAG_VELOCITY_SAMPLE_MIN_DT {
+            return;
         }
-        motion.last_pointer_axis = next_axis;
+
+        let dt_secs = dt.as_secs_f32();
+        if dt_secs <= 0.0 {
+            return;
+        }
+
+        let instantaneous = (motion.last_pointer_axis - motion.sampled_pointer_axis) / dt_secs;
+        let filtered = motion.velocity_px_per_sec;
+        motion.velocity_px_per_sec = if filtered == 0.0 {
+            instantaneous
+        } else {
+            filtered + (instantaneous - filtered) * DRAG_VELOCITY_FILTER_ALPHA
+        };
+        motion.sampled_pointer_axis = motion.last_pointer_axis;
+        motion.last_sample_at = now;
     }
 
     fn edge_blocks_inertial_scroll(
@@ -1116,13 +1125,12 @@ impl DirectEventRuntime {
     }
 
     fn next_inertial_watchdog_deadline(&self, now: Instant) -> Instant {
+        let earliest = now + ADAPTIVE_SCROLL_WATCHDOG_MIN_DELAY;
+        let latest = now + ADAPTIVE_SCROLL_WATCHDOG_MAX_DELAY;
+
         self.last_present_timing
-            .map(|timing| {
-                timing
-                    .predicted_next_present_at
-                    .min(now + ADAPTIVE_SCROLL_WATCHDOG_MAX_DELAY)
-            })
-            .unwrap_or(now + ADAPTIVE_SCROLL_WATCHDOG_MAX_DELAY)
+            .map(|timing| timing.predicted_next_present_at.max(earliest).min(latest))
+            .unwrap_or(latest)
     }
 
     fn clamp_inertial_scroll_delta(
@@ -1143,10 +1151,7 @@ impl DirectEventRuntime {
             0.0
         };
 
-        (
-            clamped,
-            (clamped - delta).abs() > ADAPTIVE_SCROLL_STOP_TOLERANCE,
-        )
+        (clamped, (clamped - delta).abs() > f32::EPSILON)
     }
 
     fn maybe_start_inertial_scroll(&mut self, now: Instant) {
@@ -1196,12 +1201,10 @@ impl DirectEventRuntime {
         let position = inertia.simulation.x(elapsed_secs);
         let delta = position - inertia.last_sample_position;
 
-        if delta.abs() <= ADAPTIVE_SCROLL_STOP_TOLERANCE {
-            if inertia.simulation.is_done(elapsed_secs) {
-                return;
-            }
-
-            inertia.last_sample_position = position;
+        let simulation_done = inertia.simulation.is_done(elapsed_secs);
+        if delta.abs() <= ADAPTIVE_SCROLL_STOP_TOLERANCE && !simulation_done {
+            // Keep the last emitted position so frequent timer/present samples accumulate rather
+            // than silently consuming sub-pixel motion from the finite fling trajectory.
             inertia.watchdog_deadline = self.next_inertial_watchdog_deadline(now);
             self.inertial_scroll = Some(inertia);
             self.backend_wake.request_redraw();
@@ -1236,7 +1239,7 @@ impl DirectEventRuntime {
             );
         }
 
-        if hit_boundary || inertia.simulation.is_done(elapsed_secs) {
+        if hit_boundary || simulation_done {
             return;
         }
 
@@ -2939,41 +2942,46 @@ fn apply_focus_to(
 }
 
 fn coalesce_input_events(events: &mut Vec<InputEvent>) -> Vec<InputEvent> {
-    let mut coalesced = Vec::new();
-    let mut last_cursor: Option<InputEvent> = None;
-    let mut scroll_acc: Option<(f32, f32, f32, f32)> = None;
-    let mut last_resize: Option<InputEvent> = None;
-
-    for event in events.drain(..) {
-        let event = event.normalize_scroll();
-        match event {
-            InputEvent::CursorPos { .. } => {
-                last_cursor = Some(event);
+    events
+        .drain(..)
+        .map(InputEvent::normalize_scroll)
+        .fold(Vec::new(), |mut coalesced, event| {
+            match event {
+                InputEvent::CursorPos { .. } => {
+                    if let Some(last @ InputEvent::CursorPos { .. }) = coalesced.last_mut() {
+                        *last = event;
+                    } else {
+                        coalesced.push(event);
+                    }
+                }
+                InputEvent::CursorScroll { dx, dy, x, y } => {
+                    if let Some(InputEvent::CursorScroll {
+                        dx: acc_dx,
+                        dy: acc_dy,
+                        x: acc_x,
+                        y: acc_y,
+                    }) = coalesced.last_mut()
+                    {
+                        *acc_dx += dx;
+                        *acc_dy += dy;
+                        *acc_x = x;
+                        *acc_y = y;
+                    } else {
+                        coalesced.push(InputEvent::CursorScroll { dx, dy, x, y });
+                    }
+                }
+                InputEvent::Resized { .. } => {
+                    if let Some(last @ InputEvent::Resized { .. }) = coalesced.last_mut() {
+                        *last = event;
+                    } else {
+                        coalesced.push(event);
+                    }
+                }
+                other => coalesced.push(other),
             }
-            InputEvent::CursorScroll { dx, dy, x, y } => {
-                scroll_acc = Some(match scroll_acc {
-                    Some((acc_dx, acc_dy, _, _)) => (acc_dx + dx, acc_dy + dy, x, y),
-                    None => (dx, dy, x, y),
-                });
-            }
-            InputEvent::Resized { .. } => {
-                last_resize = Some(event);
-            }
-            other => coalesced.push(other),
-        }
-    }
 
-    if let Some((dx, dy, x, y)) = scroll_acc {
-        coalesced.push(InputEvent::CursorScroll { dx, dy, x, y });
-    }
-    if let Some(resize) = last_resize {
-        coalesced.push(resize);
-    }
-    if let Some(cursor) = last_cursor {
-        coalesced.push(cursor);
-    }
-
-    coalesced
+            coalesced
+        })
 }
 
 fn drain_fresh_input_events(
@@ -3026,6 +3034,7 @@ pub(crate) struct SpawnEventActorConfig {
     pub native_log: Arc<NativeLogRelay>,
     pub system_clipboard: bool,
     pub stats: Option<Arc<RendererStatsCollector>>,
+    pub asset_context: AssetContext,
 }
 
 pub(crate) fn spawn_event_actor(config: SpawnEventActorConfig) -> thread::JoinHandle<()> {
@@ -3039,9 +3048,11 @@ pub(crate) fn spawn_event_actor(config: SpawnEventActorConfig) -> thread::JoinHa
         native_log,
         system_clipboard,
         stats,
+        asset_context,
     } = config;
 
     thread::spawn(move || {
+        let _asset_context_guard = asset_context.enter();
         let mut driver = EventRuntimeDriver::new(
             system_clipboard,
             backend_cursor_tx,
@@ -3130,6 +3141,9 @@ mod tests {
     use crate::events::{CursorIcon, FocusOnMountTarget, RegistryRebuildPayload};
     use crate::input::{ACTION_PRESS, ACTION_RELEASE};
     use crate::keys::CanonicalKey;
+    use crate::runtime::tree_update::{
+        TreeUpdateDecodePolicy, TreeUpdateEffect, TreeUpdateEngine, TreeUpdateOptions,
+    };
     use crate::tree::animation::{
         AnimationCurve, AnimationRepeat, AnimationRuntime, AnimationSpec,
     };
@@ -3371,6 +3385,40 @@ mod tests {
         }
     }
 
+    fn process_host_runtime_boundary(
+        runtime: &mut HostEventRuntime,
+        engine: &mut TreeUpdateEngine,
+        messages: Vec<TreeMsg>,
+    ) {
+        let mut messages = messages;
+
+        for _ in 0..8 {
+            let effect = engine
+                .process_messages(
+                    messages,
+                    TreeUpdateOptions::new(None, TreeUpdateDecodePolicy::ReturnErr),
+                )
+                .expect("tree update should succeed");
+
+            match effect {
+                TreeUpdateEffect::Stop | TreeUpdateEffect::Skip => {}
+                TreeUpdateEffect::RegistryUpdate { rebuild } => runtime.install_rebuild(rebuild),
+                TreeUpdateEffect::Layout { output, .. } => {
+                    if output.event_rebuild_changed {
+                        runtime.install_rebuild(output.event_rebuild.clone());
+                    }
+                }
+            }
+
+            messages = runtime.drain_tree_messages();
+            if messages.is_empty() {
+                return;
+            }
+        }
+
+        panic!("host runtime boundary did not settle after registry replay");
+    }
+
     fn rebuild_with_focus(id: u8) -> RegistryRebuildPayload {
         RegistryRebuildPayload {
             focused_id: Some(NodeId::from_term_bytes(vec![id])),
@@ -3556,6 +3604,21 @@ mod tests {
         element
     }
 
+    fn host_runtime_mouse_listener_tree(element_id: NodeId) -> ElementTree {
+        let attrs = Attrs {
+            width: Some(Length::Px(100.0)),
+            height: Some(Length::Px(40.0)),
+            on_mouse_down: Some(true),
+            on_mouse_move: Some(true),
+            ..Attrs::default()
+        };
+        let element = Element::with_attrs(element_id, ElementKind::El, Vec::new(), attrs);
+        let mut tree = ElementTree::new();
+        tree.insert(element);
+        tree.set_root_id(element_id);
+        tree
+    }
+
     fn animated_width_move_rebuild_at(
         sample_ms: u64,
         hover_active: bool,
@@ -3629,17 +3692,127 @@ mod tests {
 
         let buffered = lane.mark_fresh_and_take_buffered();
         assert_eq!(buffered.len(), 2);
+        assert!(
+            matches!(buffered[0], InputEvent::CursorPos { x, y } if (x - 3.0).abs() < f32::EPSILON && (y - 4.0).abs() < f32::EPSILON)
+        );
         assert!(matches!(
-            buffered[0],
+            buffered[1],
             InputEvent::CursorScroll { dx, dy, x, y }
                 if (dx - 3.0).abs() < f32::EPSILON
                     && (dy + 1.0).abs() < f32::EPSILON
                     && (x - 5.0).abs() < f32::EPSILON
                     && (y - 6.0).abs() < f32::EPSILON
         ));
-        assert!(
-            matches!(buffered[1], InputEvent::CursorPos { x, y } if (x - 3.0).abs() < f32::EPSILON && (y - 4.0).abs() < f32::EPSILON)
+    }
+
+    #[test]
+    fn listener_lane_keeps_final_touch_motion_before_release() {
+        let mut lane = ListenerLaneState::initially_stale();
+        lane.buffer_input(InputEvent::CursorPos { x: 10.0, y: 20.0 });
+        lane.buffer_input(InputEvent::CursorPos { x: 10.0, y: 120.0 });
+        lane.buffer_input(InputEvent::CursorButton {
+            button: "left".to_string(),
+            action: crate::input::ACTION_RELEASE,
+            mods: 0,
+            x: 10.0,
+            y: 120.0,
+        });
+
+        let buffered = lane.mark_fresh_and_take_buffered();
+        assert_eq!(buffered.len(), 2);
+        assert!(matches!(
+            buffered[0],
+            InputEvent::CursorPos { x, y }
+                if (x - 10.0).abs() < f32::EPSILON && (y - 120.0).abs() < f32::EPSILON
+        ));
+        assert!(matches!(
+            &buffered[1],
+            InputEvent::CursorButton { button, action, x, y, .. }
+                if button == "left"
+                    && *action == crate::input::ACTION_RELEASE
+                    && (*x - 10.0).abs() < f32::EPSILON
+                    && (*y - 120.0).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn direct_runtime_replays_final_touch_motion_before_starting_release_inertia() {
+        let element_id = NodeId::from_term_bytes(vec![219]);
+        let attrs = Attrs {
+            scrollbar_y: Some(true),
+            scroll_y: Some(20.0),
+            scroll_y_max: Some(100.0),
+            ..Attrs::default()
+        };
+        let element = with_interaction(make_element(219, ElementKind::El, attrs));
+        let rebuild = RegistryRebuildPayload {
+            base_registry: registry_builder::registry_for_elements(&[element]),
+            text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+            focus_on_mount: None,
+        };
+        let (tree_tx, tree_rx) = bounded(32);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild.clone(), &tree_tx, false);
+
+        runtime.runtime_overlay.drag = registry_builder::DragTrackerState::Active {
+            element_id,
+            matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
+            last_x: 10.0,
+            last_y: 30.0,
+            locked_axis: GestureAxis::Vertical,
+            scroll_mode: registry_builder::DragScrollMode::Locked,
+        };
+        let now = Instant::now();
+        runtime.sync_drag_motion_start(
+            element_id,
+            GestureAxis::Vertical,
+            10.0,
+            30.0,
+            now.checked_sub(Duration::from_millis(10)).unwrap_or(now),
         );
+        runtime.recompose_overlay_registry();
+        runtime.listener_lane.mark_stale();
+
+        runtime.handle_input_event(InputEvent::CursorPos { x: 10.0, y: 5.0 }, &tree_tx, false);
+        runtime.handle_input_event(
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: crate::input::ACTION_RELEASE,
+                mods: 0,
+                x: 10.0,
+                y: 5.0,
+            },
+            &tree_tx,
+            false,
+        );
+
+        runtime.handle_registry_update(rebuild.clone(), &tree_tx, false);
+        assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
+            msg,
+            TreeMsg::ScrollRequest { element_id: id, dx, dy }
+                if *id == element_id
+                    && dx.abs() < f32::EPSILON
+                    && (*dy + 25.0).abs() < 0.001
+        )));
+        assert!(matches!(
+            runtime.runtime_overlay.drag,
+            registry_builder::DragTrackerState::Active { .. }
+        ));
+        assert!(matches!(
+            runtime.listener_lane.buffered_inputs.as_slice(),
+            [InputEvent::CursorButton { action, .. }]
+                if *action == crate::input::ACTION_RELEASE
+        ));
+
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+        assert!(matches!(
+            runtime.runtime_overlay.drag,
+            registry_builder::DragTrackerState::Inactive
+        ));
+        assert!(runtime.inertial_scroll.is_some());
     }
 
     #[test]
@@ -3672,6 +3845,62 @@ mod tests {
             InputEvent::CursorPos { x, y }
                 if (x - 10.0).abs() < f32::EPSILON && (y - 20.0).abs() < f32::EPSILON
         ));
+    }
+
+    #[test]
+    fn host_runtime_tree_update_boundary_replays_buffered_input_after_cached_registry() {
+        let element_id = NodeId::from_term_bytes(vec![86]);
+        let mut runtime =
+            HostEventRuntime::new(false, SCROLL_LINE_PIXELS, false, noop_host_sink(), None);
+        let mut engine =
+            TreeUpdateEngine::new(host_runtime_mouse_listener_tree(element_id), 100, 40);
+
+        process_host_runtime_boundary(&mut runtime, &mut engine, vec![TreeMsg::RebuildRegistry]);
+        assert!(!runtime.driver.runtime.listener_lane.is_stale());
+
+        runtime.handle_input(InputEvent::CursorEntered { entered: true });
+        runtime.handle_input(InputEvent::CursorPos { x: 10.0, y: 10.0 });
+
+        runtime.handle_input(InputEvent::CursorButton {
+            button: "left".to_string(),
+            action: ACTION_PRESS,
+            mods: 0,
+            x: 10.0,
+            y: 10.0,
+        });
+
+        assert!(runtime.driver.runtime.listener_lane.is_stale());
+
+        let tree_messages = runtime.drain_tree_messages();
+        assert!(
+            tree_messages
+                .iter()
+                .any(|message| matches!(message, TreeMsg::RebuildRegistry))
+        );
+
+        runtime.handle_input(InputEvent::CursorPos { x: 20.0, y: 10.0 });
+        assert!(
+            !runtime
+                .driver
+                .runtime
+                .listener_lane
+                .buffered_inputs
+                .is_empty(),
+            "listener input should buffer while the host lane is stale"
+        );
+
+        process_host_runtime_boundary(&mut runtime, &mut engine, tree_messages);
+
+        assert!(!runtime.driver.runtime.listener_lane.is_stale());
+        assert!(
+            runtime
+                .driver
+                .runtime
+                .listener_lane
+                .buffered_inputs
+                .is_empty()
+        );
+        assert_eq!(runtime.driver.runtime.last_cursor_pos, Some((20.0, 10.0)));
     }
 
     #[test]
@@ -4779,6 +5008,36 @@ mod tests {
     }
 
     #[test]
+    fn direct_runtime_high_frequency_drag_accumulates_velocity_samples() {
+        let element_id = NodeId::from_term_bytes(vec![218]);
+        let mut runtime = DirectEventRuntime::new(false);
+        let now = Instant::now();
+
+        runtime.sync_drag_motion_start(element_id, GestureAxis::Vertical, 0.0, 0.0, now);
+        for sample in 1_u64..=4 {
+            runtime.update_drag_motion_by_delta(-16.0, now + Duration::from_millis(sample));
+        }
+
+        let sampled_velocity = runtime
+            .drag_motion
+            .as_ref()
+            .expect("drag motion should remain active")
+            .velocity_px_per_sec;
+        assert!((sampled_velocity + 16_000.0).abs() < 1.0);
+
+        runtime.maybe_start_inertial_scroll(now + Duration::from_millis(5));
+        let inertia = runtime
+            .inertial_scroll
+            .as_ref()
+            .expect("fast drag should start inertia");
+        assert_eq!(
+            inertia.simulation.initial_velocity,
+            -ADAPTIVE_SCROLL_MAX_VELOCITY
+        );
+        assert!(inertia.simulation.distance < -4_000.0);
+    }
+
+    #[test]
     fn direct_runtime_present_timing_steps_inertia_with_adaptive_decay() {
         let element_id = NodeId::from_term_bytes(vec![212]);
         let (tree_tx, tree_rx) = bounded(32);
@@ -4859,6 +5118,81 @@ mod tests {
             .expect("inertia should continue after one frame");
         assert!(inertia.last_sample_position > first_dx);
         assert_eq!(inertia.watchdog_deadline, now + Duration::from_millis(28));
+    }
+
+    #[test]
+    fn direct_runtime_high_velocity_samples_accumulate_to_exact_edges() {
+        for (id_byte, velocity, scroll_offset, expected_delta) in [
+            (216_u8, 6_000.0_f32, 0.55_f32, 0.55_f32),
+            (217_u8, -6_000.0_f32, 99.45_f32, -0.55_f32),
+        ] {
+            let element_id = NodeId::from_term_bytes(vec![id_byte]);
+            let (tree_tx, tree_rx) = bounded(32);
+            let mut runtime = DirectEventRuntime::new(false);
+            let now = Instant::now();
+
+            runtime.scrollbar_nodes.insert(
+                scrollbar_key(&element_id, ScrollbarAxis::Y),
+                ScrollbarNode {
+                    axis: ScrollbarAxis::Y,
+                    track_rect: crate::tree::geometry::Rect::default(),
+                    thumb_rect: crate::tree::geometry::Rect::default(),
+                    track_start: 0.0,
+                    track_len: 80.0,
+                    thumb_start: 0.0,
+                    thumb_len: 20.0,
+                    scroll_offset,
+                    scroll_range: 100.0,
+                    screen_to_local: None,
+                },
+            );
+            runtime.inertial_scroll = Some(InertialScrollState {
+                element_id,
+                axis: ScrollbarAxis::Y,
+                simulation: AdaptiveScrollSimulation::new(0.0, velocity)
+                    .expect("simulation should start"),
+                started_at: now,
+                last_sample_position: 0.0,
+                watchdog_deadline: now + Duration::from_millis(16),
+            });
+
+            runtime.handle_present_timing(
+                now + Duration::from_micros(50),
+                now + Duration::from_millis(16),
+                &tree_tx,
+                false,
+            );
+            assert!(drain_msgs(&tree_rx).is_empty());
+            assert_eq!(
+                runtime
+                    .inertial_scroll
+                    .as_ref()
+                    .expect("sub-pixel sample should keep inertia")
+                    .last_sample_position,
+                0.0
+            );
+
+            runtime.handle_present_timing(
+                now + Duration::from_micros(100),
+                now + Duration::from_millis(16),
+                &tree_tx,
+                false,
+            );
+
+            let emitted_delta = drain_msgs(&tree_rx)
+                .into_iter()
+                .find_map(|msg| match msg {
+                    TreeMsg::ScrollRequest {
+                        element_id: id,
+                        dx,
+                        dy,
+                    } if id == element_id && dx.abs() < f32::EPSILON => Some(dy),
+                    _ => None,
+                })
+                .expect("accumulated fling sample should reach the edge");
+            assert!((emitted_delta - expected_delta).abs() < 0.001);
+            assert!(runtime.inertial_scroll.is_none());
+        }
     }
 
     #[test]
@@ -4977,6 +5311,14 @@ mod tests {
             TreeMsg::ScrollRequest { element_id: id, dx, dy }
                 if *id == element_id && dx.abs() < f32::EPSILON && *dy < -1.0
         )));
+        assert!(
+            runtime
+                .inertial_scroll
+                .as_ref()
+                .expect("watchdog step should keep inertia")
+                .watchdog_deadline
+                > now
+        );
     }
 
     #[test]
@@ -6816,6 +7158,28 @@ mod tests {
             TreeMsg::SetSliderValue { element_id, value }
                 if *element_id == slider_id && (*value - 60.0).abs() < f64::EPSILON
         )));
+
+        let corrected = RegistryRebuildPayload {
+            base_registry: registry_builder::Registry::default(),
+            text_inputs: HashMap::new(),
+            sliders: HashMap::from([(
+                slider_id,
+                make_slider_state_with_patch(60.0, None, SliderValueOrigin::Event, 0.0, 100.0, 5.0),
+            )]),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+            focus_on_mount: None,
+        };
+        runtime.handle_registry_update(corrected, &tree_tx, false);
+
+        let state = runtime
+            .slider_states
+            .get(&slider_id)
+            .expect("corrected slider state preserved");
+        assert!((state.value - 60.0).abs() < f64::EPSILON);
+        assert_eq!(state.patch_value, None);
+        assert!(drain_msgs(&tree_rx).is_empty());
+        assert!(!runtime.listener_lane.is_stale());
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use std::{ffi::CString, num::NonZeroU32, ptr::NonNull};
+use std::{ffi::CString, num::NonZeroU32};
 
 use glutin::{
     config::{ConfigTemplateBuilder, GlConfig},
@@ -7,17 +7,18 @@ use glutin::{
     prelude::GlSurface,
     surface::{Surface as GlutinSurface, SurfaceAttributesBuilder, SwapInterval, WindowSurface},
 };
-use raw_window_handle::{HasDisplayHandle, RawDisplayHandle, RawWindowHandle, WaylandWindowHandle};
 use skia_safe::gpu::{
     direct_contexts,
     gl::{FramebufferInfo, Interface},
 };
-use wayland_client::{Connection, Proxy, protocol::wl_surface};
+use wayland_client::{Connection, protocol::wl_surface};
 
 use crate::{
     backend::skia_gpu::GlFrameSurface,
     renderer::{RendererCacheConfig, SceneRenderer},
 };
+
+use super::handles::{raw_display_handle, raw_window_handle};
 
 pub(super) struct GlEnv {
     pub(super) gl_surface: GlutinSurface<WindowSurface>,
@@ -25,6 +26,7 @@ pub(super) struct GlEnv {
     pub(super) swap_buffers_nonblocking: bool,
     pub(super) renderer: SceneRenderer,
     pub(super) frame_surface: GlFrameSurface,
+    pub(super) pending_capture: Option<(u32, u32, Vec<u8>)>,
 }
 
 fn non_zero_dimension(value: u32) -> NonZeroU32 {
@@ -149,6 +151,7 @@ pub(super) fn create_gl_env(
         swap_buffers_nonblocking,
         renderer: SceneRenderer::with_cache_config(renderer_cache_config),
         frame_surface,
+        pending_capture: None,
     })
 }
 
@@ -160,18 +163,4 @@ pub(super) fn resize_gl_env(env: &mut GlEnv, dimensions: (u32, u32)) {
     );
     env.frame_surface
         .resize((dimensions.0.max(1), dimensions.1.max(1)));
-}
-
-fn raw_display_handle(conn: &Connection) -> Result<RawDisplayHandle, String> {
-    conn.backend()
-        .display_handle()
-        .map(|handle| handle.as_raw())
-        .map_err(|err| format!("failed to get wayland display handle: {err}"))
-}
-
-fn raw_window_handle(surface: &wl_surface::WlSurface) -> Result<RawWindowHandle, String> {
-    let ptr = NonNull::new(surface.id().as_ptr().cast())
-        .ok_or_else(|| "failed to get wl_surface pointer".to_string())?;
-
-    Ok(RawWindowHandle::Wayland(WaylandWindowHandle::new(ptr)))
 }

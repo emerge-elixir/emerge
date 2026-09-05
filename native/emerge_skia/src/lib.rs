@@ -4,35 +4,43 @@
 //! rendering, and headless rasterization for Emerge.
 
 use std::{
+    panic::{AssertUnwindSafe, catch_unwind},
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc::{Sender as CleanupSender, channel as cleanup_channel},
     },
     thread,
     time::Duration,
 };
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(feature = "wayland-core", target_os = "linux"),
+    all(feature = "drm-core", target_os = "linux")
 ))]
 use crossbeam_channel::unbounded;
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError, bounded};
 
+use rustler::Decoder;
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
+use rustler::types::reference::Reference;
 use rustler::{Atom, Binary, Encoder, Env, LocalPid, NewBinary, NifResult, ResourceArc, Term};
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
+use video_interop::ReleaseDispatcher;
 pub mod actors;
 pub mod assets;
 pub mod backend;
 mod clipboard;
-#[cfg(all(feature = "drm", target_os = "linux"))]
+#[cfg(all(feature = "drm-core", target_os = "linux"))]
 mod cursor;
 mod debug_trace;
-#[cfg(all(feature = "drm", target_os = "linux"))]
+#[cfg(all(feature = "drm-core", target_os = "linux"))]
 mod drm_input;
 pub mod events;
 pub mod input;
 pub mod keys;
-#[cfg(all(feature = "drm", target_os = "linux"))]
+#[cfg(all(feature = "drm-core", target_os = "linux"))]
 mod linux_wait;
 mod native_log;
 pub mod paint_layer_payload_cache;
@@ -42,44 +50,117 @@ pub mod runtime;
 pub mod services;
 pub mod stats;
 pub mod tree;
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
+mod video;
+#[cfg(not(any(feature = "video-interop-support", all(test, target_os = "linux"))))]
+#[path = "video_stub.rs"]
 mod video;
 
 use actors::{EventMsg, RenderMsg, TreeMsg};
-use assets::AssetConfig;
-#[cfg(all(feature = "drm", target_os = "linux"))]
+use assets::{AssetConfig, AssetContext, AssetRuntime};
+#[cfg(all(feature = "drm-core", target_os = "linux"))]
 use backend::drm;
 use backend::wake::BackendWakeHandle;
-#[cfg(all(feature = "wayland", target_os = "linux"))]
+#[cfg(all(feature = "wayland-core", target_os = "linux"))]
 use backend::wayland;
-#[cfg(all(feature = "wayland", target_os = "linux"))]
+#[cfg(all(feature = "wayland-core", target_os = "linux"))]
 use backend::wayland_config::WaylandConfig;
-#[cfg(all(feature = "drm", target_os = "linux"))]
+#[cfg(all(feature = "drm-core", target_os = "linux"))]
 use cursor::{CursorState, SharedCursorState};
-#[cfg(all(feature = "drm", target_os = "linux"))]
+#[cfg(all(feature = "drm-core", target_os = "linux"))]
 use drm_input::DrmInput;
 use events::{CursorIcon, SpawnEventActorConfig, spawn_event_actor};
-#[cfg(all(feature = "drm", target_os = "linux"))]
+#[cfg(all(feature = "drm-core", target_os = "linux"))]
 use linux_wait::EventFd;
 use native_log::NativeLogRelay;
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(feature = "wayland-core", target_os = "linux"),
+    all(feature = "drm-core", target_os = "linux")
 ))]
 use renderer::set_render_log_enabled;
-use renderer::{RendererCacheConfig, RendererPaintLayerCacheConfig, clear_global_caches};
+use renderer::{RendererCacheConfig, RendererPaintLayerCacheConfig};
 use runtime::tree_actor::{TreeActorConfig, spawn_tree_actor_with_initial_tree};
 use stats::{
-    LayoutCacheStats, RendererStatsCollector, RendererStatsSnapshot, RendererTimingMetric,
+    LayoutCacheStats, RendererStatsCollector, RendererStatsSnapshot, RendererStatsWindowClose,
+    RendererTimingMetric,
 };
 use std::time::Instant;
 use tree::element::{ElementTree, NodeId};
-use video::{VideoMode, VideoRegistry, VideoTargetResource, VideoWake};
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
+use video::CanonicalSubmitError;
+use video::{CpuVideoFrame, VideoRegistry, VideoSubmitResult, VideoWake};
 
 type LayoutFrame<'a> = (Binary<'a>, f32, f32, f32, f32);
 type LayoutFrames<'a> = Vec<LayoutFrame<'a>>;
 
+#[derive(rustler::NifStruct)]
+#[module = "VideoInterop.Rect"]
+struct BinaryVideoRect {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+
+#[derive(rustler::NifStruct)]
+#[module = "VideoInterop.Binary.Plane"]
+struct BinaryVideoPlane {
+    offset: usize,
+    stride: usize,
+}
+
+#[derive(rustler::NifStruct)]
+#[module = "VideoInterop.Binary"]
+struct BinaryVideoStorage<'a> {
+    data: Binary<'a>,
+    planes: Vec<BinaryVideoPlane>,
+}
+
+#[derive(rustler::NifStruct)]
+#[module = "VideoInterop.Binary.Format"]
+struct BinaryVideoStorageFormat {
+    pixel_format: Atom,
+    bw1_polarity: Option<Atom>,
+}
+
+#[derive(rustler::NifStruct)]
+#[module = "VideoInterop.Colorimetry"]
+struct BinaryVideoColorimetry {
+    primaries: Atom,
+    transfer: Atom,
+    matrix: Atom,
+    range: Atom,
+    chroma_location: Atom,
+}
+
+#[derive(rustler::NifStruct)]
+#[module = "VideoInterop.Format"]
+struct BinaryVideoFormat {
+    width: u32,
+    height: u32,
+    framerate: Option<(u32, u32)>,
+    storage: BinaryVideoStorageFormat,
+    colorimetry: BinaryVideoColorimetry,
+    pixel_aspect_ratio: (u32, u32),
+    alpha_mode: Atom,
+    interlace_mode: Atom,
+    acquire_sync: Atom,
+}
+
+#[derive(rustler::NifStruct)]
+#[module = "VideoInterop.Frame"]
+struct BinaryVideoFrame<'a> {
+    coded_width: u32,
+    coded_height: u32,
+    visible_rect: BinaryVideoRect,
+    format: BinaryVideoFormat,
+    storage: BinaryVideoStorage<'a>,
+    acquire_sync: Atom,
+    lease: Term<'a>,
+}
+
 /// Bump whenever the public `EmergeSkia.stats/2` payload shape changes.
-const STATS_SCHEMA_VERSION: u64 = 17;
+const STATS_SCHEMA_VERSION: u64 = 25;
 
 #[derive(Clone, Copy, Debug, rustler::NifMap)]
 struct StatsConfigureNif {
@@ -99,6 +180,7 @@ struct StatsSnapshotNif {
     version: u64,
     kind: String,
     enabled: bool,
+    rendering_api: Option<RenderingApiInfoNif>,
     window: StatsWindowNif,
     frames: StatsFrameSnapshotNif,
     timings: StatsTimingSnapshotNif,
@@ -152,7 +234,11 @@ struct DurationStatsNif {
 struct StatsDrmSnapshotNif {
     forced_gpu_finish_before_swap: DurationStatsNif,
     forced_gpu_finish_after_swap: DurationStatsNif,
-    gpu_queue_completion: DurationStatsNif,
+    gpu_render_elapsed: DurationStatsNif,
+    gpu_render_elapsed_disjoint_discarded_samples: u64,
+    gpu_render_elapsed_pool_saturated_sample_skips: u64,
+    gpu_render_elapsed_stale_epoch_samples: u64,
+    video_retired_gl_finish_fallbacks: u64,
     egl_swap_buffers: DurationStatsNif,
     gbm_lock_front_buffer: DurationStatsNif,
     framebuffer_lookup: DurationStatsNif,
@@ -168,10 +254,99 @@ struct StatsDrmSnapshotNif {
     missed_vblanks: u64,
 }
 
-#[derive(Clone, Copy, Debug, rustler::NifMap)]
+#[derive(Clone, Debug, rustler::NifMap)]
 struct StatsCounterSnapshotNif {
+    pipeline: StatsPipelineSnapshotNif,
+    video: StatsVideoSnapshotNif,
+    vulkan_video: StatsVulkanVideoSnapshotNif,
     layout_cache: LayoutCacheStatsNif,
     renderer_cache: RendererCacheStatsNif,
+}
+
+#[derive(Clone, Copy, Debug, rustler::NifMap)]
+struct StatsPipelineSnapshotNif {
+    scenes_constructed: u64,
+    render_queue_overwrites: u64,
+    drm_scenes_selected_for_draw: u64,
+    drm_scenes_presented: u64,
+}
+
+#[derive(Clone, Debug, rustler::NifMap)]
+struct StatsVideoSnapshotNif {
+    submitted: u64,
+    inactive_dropped: u64,
+    pending_replaced: u64,
+    pending_taken: u64,
+    imported: u64,
+    leases_released: u64,
+    retired_fences_created: u64,
+    retired_fences_released: u64,
+    retired_gl_finish_fallbacks: u64,
+    acquire_fences_received: u64,
+    acquire_server_waits_queued: u64,
+    acquire_client_wait_fallbacks: u64,
+    acquire_wait_timeouts: u64,
+    acquire_wait_errors: u64,
+    primary_prepared: u64,
+    video_primary_prepared: u64,
+    stale_prepared: u64,
+    stale_video_prepared: u64,
+    gbm_no_free: u64,
+    primary_commit_attempts: u64,
+    primary_commit_ebusy: u64,
+    primary_committed: u64,
+    primary_presented: u64,
+    video_primary_presented: u64,
+    video_primary_ever_presented: bool,
+    last_presented_streams: Vec<PresentedVideoStreamNif>,
+    page_flip_events: u64,
+    page_flip_sequence_steps: u64,
+    missed_vblanks: u64,
+    current_pending: u64,
+    current_direct_imports: u64,
+    current_retired_imports: u64,
+    max_retired_imports: u64,
+    current_prepared: u64,
+    current_in_flight: u64,
+}
+
+#[derive(Clone, Debug, rustler::NifMap)]
+struct PresentedVideoStreamNif {
+    renderer_epoch: u64,
+    target_id: String,
+    target_incarnation: u64,
+    stream_id: u64,
+}
+
+impl From<&video::VideoStreamIdentity> for PresentedVideoStreamNif {
+    fn from(identity: &video::VideoStreamIdentity) -> Self {
+        Self {
+            renderer_epoch: identity.renderer_epoch,
+            target_id: identity.target_id.clone(),
+            target_incarnation: identity.target_incarnation,
+            stream_id: identity.stream_id,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, rustler::NifMap)]
+struct StatsVulkanVideoSnapshotNif {
+    acquire_sync_fd_imported: u64,
+    temporary_semaphore_import_failures: u64,
+    ownership_acquires_submitted: u64,
+    acquire_submit_failures: u64,
+    ganesh_waits_rejected: u64,
+    releases_submitted: u64,
+    release_submit_failures: u64,
+    releases_completed: u64,
+    release_fences_created: u64,
+    release_fence_errors: u64,
+    release_fence_completions: u64,
+    retirement_timeouts: u64,
+    import_cap_saturations: u64,
+    quarantined: u64,
+    global_quarantine_terminal: bool,
+    device_lost: u64,
 }
 
 #[derive(Clone, Copy, Debug, rustler::NifMap)]
@@ -187,8 +362,10 @@ struct LayoutCacheStatsNif {
     resolve_stores: u64,
 }
 
-#[derive(Clone, Copy, Debug, rustler::NifMap)]
+#[derive(Clone, Debug, rustler::NifMap)]
 struct RendererCacheStatsNif {
+    enabled: bool,
+    disabled_reason: Option<String>,
     paint_layer: RendererCachePaintLayerStatsNif,
 }
 
@@ -226,14 +403,12 @@ struct RendererCachePaintLayerStatsNif {
 }
 
 impl StatsSnapshotNif {
-    fn disabled(kind: &'static str) -> Self {
-        Self::from_snapshot(kind, false, false, &RendererStatsSnapshot::default())
-    }
-
     fn from_snapshot(
         kind: &'static str,
         enabled: bool,
         reset_on_read: bool,
+        rendering_api: Option<RenderingApiInfoNif>,
+        renderer_cache_status: RendererCacheStatus,
         snapshot: &RendererStatsSnapshot,
     ) -> Self {
         let timing = |metric| DurationStatsNif::from(*snapshot.timing(metric));
@@ -242,6 +417,7 @@ impl StatsSnapshotNif {
             version: STATS_SCHEMA_VERSION,
             kind: kind.to_string(),
             enabled,
+            rendering_api,
             window: StatsWindowNif {
                 elapsed_ms: snapshot.window.as_millis() as u64,
                 reset_on_read,
@@ -281,7 +457,19 @@ impl StatsSnapshotNif {
                 forced_gpu_finish_after_swap: timing(
                     RendererTimingMetric::DrmForcedGpuFinishAfterSwap,
                 ),
-                gpu_queue_completion: timing(RendererTimingMetric::DrmGpuQueueCompletion),
+                gpu_render_elapsed: timing(RendererTimingMetric::DrmGpuRenderElapsed),
+                gpu_render_elapsed_disjoint_discarded_samples: snapshot
+                    .pipeline
+                    .gpu_render_elapsed_disjoint_discarded_samples,
+                gpu_render_elapsed_pool_saturated_sample_skips: snapshot
+                    .pipeline
+                    .gpu_render_elapsed_pool_saturated_sample_skips,
+                gpu_render_elapsed_stale_epoch_samples: snapshot
+                    .pipeline
+                    .gpu_render_elapsed_stale_epoch_samples,
+                video_retired_gl_finish_fallbacks: snapshot
+                    .video_pipeline
+                    .retired_gl_finish_fallbacks,
                 egl_swap_buffers: timing(RendererTimingMetric::DrmEglSwapBuffers),
                 gbm_lock_front_buffer: timing(RendererTimingMetric::DrmGbmLockFrontBuffer),
                 framebuffer_lookup: timing(RendererTimingMetric::DrmFramebufferLookup),
@@ -297,8 +485,95 @@ impl StatsSnapshotNif {
                 missed_vblanks: snapshot.video_pipeline.missed_vblanks,
             },
             counters: StatsCounterSnapshotNif {
+                pipeline: StatsPipelineSnapshotNif {
+                    scenes_constructed: snapshot.pipeline.scenes_constructed,
+                    render_queue_overwrites: snapshot.pipeline.render_queue_overwrites,
+                    drm_scenes_selected_for_draw: snapshot.pipeline.drm_scenes_selected_for_draw,
+                    drm_scenes_presented: snapshot.pipeline.drm_scenes_presented,
+                },
+                video: StatsVideoSnapshotNif {
+                    submitted: snapshot.video_pipeline.submitted,
+                    inactive_dropped: snapshot.video_pipeline.inactive_dropped,
+                    pending_replaced: snapshot.video_pipeline.pending_replaced,
+                    pending_taken: snapshot.video_pipeline.pending_taken,
+                    imported: snapshot.video_pipeline.imported,
+                    leases_released: snapshot.video_pipeline.leases_released,
+                    retired_fences_created: snapshot.video_pipeline.retired_fences_created,
+                    retired_fences_released: snapshot.video_pipeline.retired_fences_released,
+                    retired_gl_finish_fallbacks: snapshot
+                        .video_pipeline
+                        .retired_gl_finish_fallbacks,
+                    acquire_fences_received: snapshot.video_pipeline.acquire_fences_received,
+                    acquire_server_waits_queued: snapshot
+                        .video_pipeline
+                        .acquire_server_waits_queued,
+                    acquire_client_wait_fallbacks: snapshot
+                        .video_pipeline
+                        .acquire_client_wait_fallbacks,
+                    acquire_wait_timeouts: snapshot.video_pipeline.acquire_wait_timeouts,
+                    acquire_wait_errors: snapshot.video_pipeline.acquire_wait_errors,
+                    primary_prepared: snapshot.video_pipeline.primary_prepared,
+                    video_primary_prepared: snapshot.video_pipeline.video_primary_prepared,
+                    stale_prepared: snapshot.video_pipeline.stale_prepared,
+                    stale_video_prepared: snapshot.video_pipeline.stale_video_prepared,
+                    gbm_no_free: snapshot.video_pipeline.gbm_no_free,
+                    primary_commit_attempts: snapshot.video_pipeline.primary_commit_attempts,
+                    primary_commit_ebusy: snapshot.video_pipeline.primary_commit_ebusy,
+                    primary_committed: snapshot.video_pipeline.primary_committed,
+                    primary_presented: snapshot.video_pipeline.primary_presented,
+                    video_primary_presented: snapshot.video_pipeline.video_primary_presented,
+                    video_primary_ever_presented: snapshot
+                        .video_pipeline
+                        .video_primary_ever_presented,
+                    last_presented_streams: snapshot
+                        .video_pipeline
+                        .last_presented_streams
+                        .iter()
+                        .map(PresentedVideoStreamNif::from)
+                        .collect(),
+                    page_flip_events: snapshot.video_pipeline.page_flip_events,
+                    page_flip_sequence_steps: snapshot.video_pipeline.page_flip_sequence_steps,
+                    missed_vblanks: snapshot.video_pipeline.missed_vblanks,
+                    current_pending: snapshot.video_pipeline.current_pending,
+                    current_direct_imports: snapshot.video_pipeline.current_direct_imports,
+                    current_retired_imports: snapshot.video_pipeline.current_retired_imports,
+                    max_retired_imports: snapshot.video_pipeline.max_retired_imports,
+                    current_prepared: snapshot.video_pipeline.current_prepared,
+                    current_in_flight: snapshot.video_pipeline.current_in_flight,
+                },
+                vulkan_video: StatsVulkanVideoSnapshotNif {
+                    acquire_sync_fd_imported: snapshot
+                        .video_pipeline
+                        .vulkan_acquire_sync_fd_imported,
+                    temporary_semaphore_import_failures: snapshot
+                        .video_pipeline
+                        .vulkan_temporary_semaphore_import_failures,
+                    ownership_acquires_submitted: snapshot
+                        .video_pipeline
+                        .vulkan_ownership_acquires_submitted,
+                    acquire_submit_failures: snapshot.video_pipeline.vulkan_acquire_submit_failures,
+                    ganesh_waits_rejected: snapshot.video_pipeline.vulkan_ganesh_waits_rejected,
+                    releases_submitted: snapshot.video_pipeline.vulkan_releases_submitted,
+                    release_submit_failures: snapshot.video_pipeline.vulkan_release_submit_failures,
+                    releases_completed: snapshot.video_pipeline.vulkan_releases_completed,
+                    release_fences_created: snapshot.video_pipeline.vulkan_release_fences_created,
+                    release_fence_errors: snapshot.video_pipeline.vulkan_release_fence_errors,
+                    release_fence_completions: snapshot
+                        .video_pipeline
+                        .vulkan_release_fence_completions,
+                    retirement_timeouts: snapshot.video_pipeline.vulkan_retirement_timeouts,
+                    import_cap_saturations: snapshot.video_pipeline.vulkan_import_cap_saturations,
+                    quarantined: snapshot.video_pipeline.vulkan_quarantined,
+                    global_quarantine_terminal: snapshot
+                        .video_pipeline
+                        .vulkan_global_quarantine_terminal,
+                    device_lost: snapshot.video_pipeline.vulkan_device_lost,
+                },
                 layout_cache: LayoutCacheStatsNif::from(snapshot.layout_cache),
-                renderer_cache: RendererCacheStatsNif::from(snapshot.renderer_cache.clone()),
+                renderer_cache: RendererCacheStatsNif::from_snapshot(
+                    snapshot.renderer_cache.clone(),
+                    renderer_cache_status,
+                ),
             },
         }
     }
@@ -331,9 +606,14 @@ impl From<LayoutCacheStats> for LayoutCacheStatsNif {
     }
 }
 
-impl From<stats::RendererCacheStatsSnapshot> for RendererCacheStatsNif {
-    fn from(stats: stats::RendererCacheStatsSnapshot) -> Self {
+impl RendererCacheStatsNif {
+    fn from_snapshot(
+        stats: stats::RendererCacheStatsSnapshot,
+        status: RendererCacheStatus,
+    ) -> Self {
         Self {
+            enabled: status.enabled,
+            disabled_reason: status.disabled_reason.map(ToString::to_string),
             paint_layer: RendererCachePaintLayerStatsNif::from(stats.paint_layer),
         }
     }
@@ -383,6 +663,31 @@ mod atoms {
     rustler::atoms! {
         ok,
         error,
+        emerge_skia_frame,
+        caller_owned,
+        transferred,
+        released,
+        timeout,
+        dispatcher_close_failed,
+        per_buffer,
+        per_frame,
+        implicit,
+        sync_file,
+        rgba8888,
+        rgb888,
+        gray8,
+        gray2,
+        bw1,
+        one_is_black,
+        one_is_white,
+        bt709,
+        iec61966_2_1,
+        rgb,
+        full,
+        center,
+        opaque,
+        premultiplied,
+        progressive,
     }
 }
 
@@ -394,13 +699,158 @@ mod atoms {
 enum BackendKind {
     #[cfg(feature = "macos")]
     Macos,
-    #[cfg(all(feature = "wayland", target_os = "linux"))]
+    #[cfg(all(feature = "wayland-core", target_os = "linux"))]
     Wayland,
-    #[cfg(all(feature = "drm", target_os = "linux"))]
+    #[cfg(all(feature = "drm-core", target_os = "linux"))]
     Drm,
+    Headless,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RenderingApi {
+    Auto,
+    OpenGl,
+    Raster,
+    Metal,
+    Vulkan,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RasterPresentKind {
+    Auto,
+    GpuUpload,
+    Cpu,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RenderingApiConfig {
+    kind: RenderingApi,
+    raster_present: RasterPresentKind,
+    raster_present_configured: bool,
+}
+
+impl Default for RenderingApiConfig {
+    fn default() -> Self {
+        Self {
+            kind: RenderingApi::Auto,
+            raster_present: RasterPresentKind::Auto,
+            raster_present_configured: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, rustler::NifMap)]
+struct RenderingApiInfoNif {
+    requested: String,
+    selected: String,
+}
+
+#[derive(Clone, Debug, rustler::NifMap)]
+struct RendererCapabilitiesNif {
+    gpu: bool,
+    renderer_cache: bool,
+    screenshot: bool,
+    raster_present: Vec<String>,
+    prime_video: bool,
+    prime_video_formats: Vec<String>,
+}
+
+#[derive(Clone, Debug, rustler::NifMap)]
+struct VulkanDrmNodeInfoNif {
+    path: String,
+    match_field: String,
+    major: u32,
+    minor: u32,
+}
+
+#[derive(Clone, Debug, rustler::NifMap)]
+struct VulkanDeviceInfoNif {
+    physical_device_name: String,
+    driver_name: Option<String>,
+    driver_id: Option<String>,
+    software: bool,
+    drm_node: Option<VulkanDrmNodeInfoNif>,
+}
+
+#[cfg(feature = "vulkan")]
+impl From<&backend::vulkan::VulkanRendererReport> for VulkanDeviceInfoNif {
+    fn from(report: &backend::vulkan::VulkanRendererReport) -> Self {
+        Self {
+            physical_device_name: report.device.physical_device_name.clone(),
+            driver_name: report.device.driver_name.clone(),
+            driver_id: report.device.driver_id.clone(),
+            software: report.device.software,
+            drm_node: report.drm_node.as_ref().map(|node| VulkanDrmNodeInfoNif {
+                path: node.path.clone(),
+                match_field: node.match_field.to_string(),
+                major: node.major,
+                minor: node.minor,
+            }),
+        }
+    }
+}
+
+#[derive(Clone, Debug, rustler::NifMap)]
+struct RendererInfoNif {
+    backend: String,
+    rendering_api: RenderingApiInfoNif,
+    capabilities: RendererCapabilitiesNif,
+    vulkan_device: Option<VulkanDeviceInfoNif>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RendererCacheStatus {
+    enabled: bool,
+    disabled_reason: Option<&'static str>,
+}
+
+impl RendererCacheStatus {
+    fn enabled() -> Self {
+        Self {
+            enabled: true,
+            disabled_reason: None,
+        }
+    }
+
+    fn disabled(reason: &'static str) -> Self {
+        Self {
+            enabled: false,
+            disabled_reason: Some(reason),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RendererRuntimeInfo {
+    backend: BackendKind,
+    requested_rendering_api: RenderingApi,
+    selected_rendering_api: RenderingApi,
+    raster_present: RasterPresentKind,
+    renderer_cache: RendererCacheStatus,
+    screenshot_supported: bool,
+    prime_video_supported: bool,
+    prime_video_formats: Vec<String>,
+    #[cfg(feature = "vulkan")]
+    vulkan_device: Option<backend::vulkan::VulkanRendererReport>,
+}
+
+#[cfg_attr(
+    not(any(
+        all(feature = "wayland-core", target_os = "linux"),
+        all(feature = "drm-core", target_os = "linux")
+    )),
+    allow(dead_code)
+)]
+struct NativeBackendStartupInfo {
+    backend: BackendKind,
+    prime_video_supported: bool,
+    prime_video_formats: Vec<String>,
+    #[cfg(feature = "vulkan")]
+    vulkan_device: Option<backend::vulkan::VulkanRendererReport>,
 }
 
 struct RendererResource {
+    asset_runtime: Arc<AssetRuntime>,
     running_flag: Arc<AtomicBool>,
     backend_wake: BackendWakeHandle,
     stop_flag: Arc<AtomicBool>,
@@ -410,11 +860,16 @@ struct RendererResource {
     render_tx: RenderSender,
     video_registry: Arc<VideoRegistry>,
     video_wake: VideoWake,
+    #[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
+    direct_video_dispatcher: Arc<ReleaseDispatcherHandleResource>,
     native_log: Arc<NativeLogRelay>,
     stats: Option<Arc<RendererStatsCollector>>,
+    latest_frame: Arc<LatestFrameStore>,
+    info: RendererRuntimeInfo,
     close_signal_log: bool,
     log_render: bool,
     log_input: bool,
+    cleanup_dispatcher: CleanupDispatcher,
     handles: Mutex<Option<RendererHandles>>,
 }
 
@@ -426,8 +881,8 @@ pub(crate) struct InputTargetRelay {
 impl InputTargetRelay {
     #[cfg_attr(
         not(any(
-            all(feature = "wayland", target_os = "linux"),
-            all(feature = "drm", target_os = "linux")
+            all(feature = "wayland-core", target_os = "linux"),
+            all(feature = "drm-core", target_os = "linux")
         )),
         allow(dead_code)
     )]
@@ -456,7 +911,7 @@ impl InputTargetRelay {
         }
     }
 
-    #[cfg(all(feature = "wayland", target_os = "linux"))]
+    #[cfg(all(feature = "wayland-core", target_os = "linux"))]
     fn send_close_requested(&self, close_signal_log: bool) {
         let target = *self
             .target
@@ -488,26 +943,272 @@ pub(crate) struct RenderSender {
 }
 
 impl RenderSender {
-    fn send_latest(&self, msg: RenderMsg) {
+    fn send_latest(&self, msg: RenderMsg) -> bool {
         match self.tx.try_send(msg) {
-            Ok(()) => {}
+            Ok(()) => false,
             Err(TrySendError::Full(msg)) => {
                 let mut msg = msg;
-                if let Ok(dropped) = self.drop_rx.try_recv() {
+                let overwritten = if let Ok(dropped) = self.drop_rx.try_recv() {
                     msg.absorb_pipeline_submitted_at(&dropped);
-                }
+                    true
+                } else {
+                    false
+                };
                 let _ = self.tx.try_send(msg);
-                if self.log_render {
+                if overwritten && self.log_render {
                     eprintln!("render queue overwrite");
                 }
+                overwritten
             }
-            Err(TrySendError::Disconnected(_)) => {}
+            Err(TrySendError::Disconnected(_)) => false,
         }
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LatestFramePixelFormat {
+    Rgba8888Premul,
+    Gray8Opaque,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct LatestFrameSnapshot {
+    pub width: u32,
+    pub height: u32,
+    pub scale: f32,
+    pub sequence: u64,
+    pub pixel_format: LatestFramePixelFormat,
+    pub pixels: Vec<u8>,
+}
+
+impl LatestFrameSnapshot {
+    fn into_rgba(mut self) -> Result<Self, String> {
+        if self.pixel_format == LatestFramePixelFormat::Rgba8888Premul {
+            return Ok(self);
+        }
+        let expected = usize::try_from(self.width)
+            .ok()
+            .and_then(|width| {
+                usize::try_from(self.height)
+                    .ok()
+                    .and_then(|height| width.checked_mul(height))
+            })
+            .ok_or_else(|| "latest Gray8 frame dimensions are too large".to_string())?;
+        if self.pixels.len() != expected {
+            return Err(format!(
+                "latest Gray8 frame length mismatch: expected {expected}, got {}",
+                self.pixels.len()
+            ));
+        }
+        self.pixels = self
+            .pixels
+            .into_iter()
+            .flat_map(|gray| [gray, gray, gray, 255])
+            .collect();
+        self.pixel_format = LatestFramePixelFormat::Rgba8888Premul;
+        Ok(self)
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct LatestFrameStore {
+    sequence: AtomicU64,
+    requested_capture_generation: AtomicU64,
+    completed_capture_generation: AtomicU64,
+    stopped: AtomicBool,
+    frame: Mutex<Option<LatestFrameSnapshot>>,
+    capture_completed: Condvar,
+}
+
+impl LatestFrameStore {
+    pub(crate) fn publish_rgba(&self, width: u32, height: u32, scale: f32, pixels: Vec<u8>) {
+        self.publish(
+            width,
+            height,
+            scale,
+            LatestFramePixelFormat::Rgba8888Premul,
+            pixels,
+        );
+    }
+
+    pub(crate) fn publish_gray8(&self, width: u32, height: u32, scale: f32, pixels: Vec<u8>) {
+        self.publish(
+            width,
+            height,
+            scale,
+            LatestFramePixelFormat::Gray8Opaque,
+            pixels,
+        );
+    }
+
+    fn publish(
+        &self,
+        width: u32,
+        height: u32,
+        scale: f32,
+        pixel_format: LatestFramePixelFormat,
+        pixels: Vec<u8>,
+    ) {
+        let frame = self.snapshot(width, height, scale, pixel_format, pixels);
+        let mut guard = self
+            .frame
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard = Some(frame);
+    }
+
+    #[cfg_attr(
+        not(any(
+            all(feature = "wayland-core", target_os = "linux"),
+            all(feature = "drm-core", target_os = "linux")
+        )),
+        allow(dead_code)
+    )]
+    pub(crate) fn pending_capture_generation(&self) -> Option<u64> {
+        let requested = self.requested_capture_generation.load(Ordering::Acquire);
+        let completed = self.completed_capture_generation.load(Ordering::Acquire);
+        (requested > completed).then_some(requested)
+    }
+
+    #[cfg_attr(
+        not(any(
+            all(feature = "wayland-core", target_os = "linux"),
+            all(feature = "drm-core", target_os = "linux")
+        )),
+        allow(dead_code)
+    )]
+    pub(crate) fn publish_requested_capture(
+        &self,
+        capture_generation: u64,
+        width: u32,
+        height: u32,
+        scale: f32,
+        pixels: Vec<u8>,
+    ) {
+        let frame = self.snapshot(
+            width,
+            height,
+            scale,
+            LatestFramePixelFormat::Rgba8888Premul,
+            pixels,
+        );
+        let mut guard = self
+            .frame
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        if capture_generation >= self.completed_capture_generation.load(Ordering::Acquire) {
+            *guard = Some(frame);
+            self.completed_capture_generation
+                .store(capture_generation, Ordering::Release);
+        }
+
+        drop(guard);
+        self.capture_completed.notify_all();
+    }
+
+    fn request_capture(&self) -> Result<u64, String> {
+        if self.stopped.load(Ordering::Acquire) {
+            return Err("renderer stopped before screenshot capture".to_string());
+        }
+
+        Ok(self
+            .requested_capture_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1))
+    }
+
+    fn wait_for_capture(
+        &self,
+        capture_generation: u64,
+        timeout: Duration,
+        running: &AtomicBool,
+    ) -> Result<LatestFrameSnapshot, String> {
+        let started_at = Instant::now();
+        let mut guard = self
+            .frame
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        loop {
+            if self.completed_capture_generation.load(Ordering::Acquire) >= capture_generation {
+                return guard
+                    .clone()
+                    .ok_or_else(|| "screenshot capture completed without pixels".to_string());
+            }
+            if self.stopped.load(Ordering::Acquire) || !running.load(Ordering::Acquire) {
+                return Err("renderer stopped while waiting for screenshot capture".to_string());
+            }
+
+            let elapsed = started_at.elapsed();
+            if elapsed >= timeout {
+                return Err(format!(
+                    "screenshot capture timed out after {} ms",
+                    timeout.as_millis()
+                ));
+            }
+
+            // Backend failures may update running without reaching the normal stop path. Poll that
+            // flag at a bounded interval while still using the condition variable for normal
+            // capture completion and shutdown wakeups.
+            let wait_for = timeout
+                .saturating_sub(elapsed)
+                .min(Duration::from_millis(25));
+            let (next_guard, _) = self
+                .capture_completed
+                .wait_timeout(guard, wait_for)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard = next_guard;
+        }
+    }
+
+    fn stop(&self) {
+        self.stopped.store(true, Ordering::Release);
+        self.capture_completed.notify_all();
+    }
+
+    fn latest(&self) -> Option<LatestFrameSnapshot> {
+        self.frame
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    fn snapshot(
+        &self,
+        width: u32,
+        height: u32,
+        scale: f32,
+        pixel_format: LatestFramePixelFormat,
+        pixels: Vec<u8>,
+    ) -> LatestFrameSnapshot {
+        let sequence = self
+            .sequence
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
+        LatestFrameSnapshot {
+            width,
+            height,
+            scale,
+            sequence,
+            pixel_format,
+            pixels,
+        }
+    }
+}
+
+#[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
+pub(crate) fn capture_requested_gpu_frame(
+    latest_frame: &LatestFrameStore,
+    capture: impl FnOnce() -> Option<(u32, u32, Vec<u8>)>,
+) -> Option<(u64, u32, u32, Vec<u8>)> {
+    let capture_generation = latest_frame.pending_capture_generation()?;
+    capture().map(|(width, height, pixels)| (capture_generation, width, height, pixels))
+}
+
 /// Resource for holding an element tree (for layout/rendering).
 struct TreeResource {
+    asset_runtime: AssetRuntime,
     tree: Mutex<ElementTree>,
     stats: Mutex<Option<Arc<RendererStatsCollector>>>,
 }
@@ -528,6 +1229,7 @@ struct RendererHandles {
 }
 
 struct ShutdownRuntimeContext {
+    asset_runtime: Arc<AssetRuntime>,
     running_flag: Arc<AtomicBool>,
     backend_wake: BackendWakeHandle,
     stop_flag: Arc<AtomicBool>,
@@ -539,10 +1241,62 @@ struct ShutdownRuntimeContext {
     log_input: bool,
 }
 
+type CleanupTask = Box<dyn FnOnce() + Send + 'static>;
+
+#[derive(Clone)]
+pub(crate) struct CleanupDispatcher {
+    primary: CleanupSender<CleanupTask>,
+    fallback: CleanupSender<CleanupTask>,
+}
+
+impl CleanupDispatcher {
+    pub(crate) fn start() -> Result<Self, String> {
+        let primary = Self::start_worker("emerge_skia_cleanup")?;
+        let fallback = Self::start_worker("emerge_skia_cleanup_fallback")?;
+        Ok(Self { primary, fallback })
+    }
+
+    fn start_worker(name: &str) -> Result<CleanupSender<CleanupTask>, String> {
+        let (sender, receiver) = cleanup_channel::<CleanupTask>();
+        thread::Builder::new()
+            .name(name.to_string())
+            .spawn(move || {
+                while let Ok(task) = receiver.recv() {
+                    if catch_unwind(AssertUnwindSafe(task)).is_err() {
+                        eprintln!("EmergeSkia native cleanup task panicked; aborting");
+                        std::process::abort();
+                    }
+                }
+            })
+            .map_err(|error| format!("failed to start {name}: {error}"))?;
+        Ok(sender)
+    }
+
+    pub(crate) fn dispatch(&self, task: CleanupTask) {
+        let task = match self.primary.send(task) {
+            Ok(()) => return,
+            Err(error) => error.0,
+        };
+
+        if self.fallback.send(task).is_err() {
+            eprintln!("both EmergeSkia native cleanup workers stopped; aborting");
+            std::process::abort();
+        }
+    }
+
+    #[cfg(test)]
+    fn from_senders(
+        primary: CleanupSender<CleanupTask>,
+        fallback: CleanupSender<CleanupTask>,
+    ) -> Self {
+        Self { primary, fallback }
+    }
+}
+
 #[cfg_attr(
     not(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
+        all(feature = "wayland-core", target_os = "linux"),
+        all(feature = "drm-core", target_os = "linux")
     )),
     allow(dead_code)
 )]
@@ -556,13 +1310,25 @@ fn log_close_signal(enabled: bool, source: &'static str, message: impl Into<Stri
 }
 
 struct TestHarnessResource {
+    asset_runtime: Arc<AssetRuntime>,
     tree_tx: Sender<TreeMsg>,
     event_tx: Sender<EventMsg>,
     render_rx: Receiver<RenderMsg>,
     tree_tap_rx: Receiver<TreeMsg>,
     base_instant: Mutex<Instant>,
+    cleanup_dispatcher: CleanupDispatcher,
     handles: Mutex<Option<TestHarnessHandles>>,
 }
+
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
+struct ReleaseDispatcherHandleResource {
+    dispatcher: Mutex<Option<ResourceArc<ReleaseDispatcher>>>,
+}
+
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
+const RELEASE_DISPATCHER_CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
+type DispatcherCloseError = (Atom, String);
 
 #[rustler::resource_impl]
 impl rustler::Resource for RendererResource {}
@@ -573,15 +1339,127 @@ impl rustler::Resource for TreeResource {}
 #[rustler::resource_impl]
 impl rustler::Resource for TestHarnessResource {}
 
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
+#[rustler::resource_impl]
+impl rustler::Resource for ReleaseDispatcherHandleResource {}
+
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
+impl ReleaseDispatcherHandleResource {
+    fn lazy() -> Self {
+        Self {
+            dispatcher: Mutex::new(None),
+        }
+    }
+
+    fn start(name: &str) -> Result<Self, String> {
+        Ok(Self {
+            dispatcher: Mutex::new(Some(start_video_release_dispatcher(name)?)),
+        })
+    }
+
+    fn acquire_or_start(&self, name: &str) -> Result<ResourceArc<ReleaseDispatcher>, String> {
+        let mut dispatcher = self
+            .dispatcher
+            .lock()
+            .map_err(|_| "release dispatcher handle lock poisoned".to_string())?;
+        if dispatcher.is_none() {
+            *dispatcher = Some(start_video_release_dispatcher(name)?);
+        }
+        dispatcher
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "release dispatcher failed to start".to_string())
+    }
+
+    fn acquire(&self) -> Result<ResourceArc<ReleaseDispatcher>, String> {
+        self.dispatcher
+            .lock()
+            .map_err(|_| "release dispatcher handle lock poisoned".to_string())?
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "release dispatcher handle is closed".to_string())
+    }
+
+    fn close_and_join(&self, timeout: Duration) -> Result<(), DispatcherCloseError> {
+        let dispatcher = self
+            .dispatcher
+            .lock()
+            .map_err(|_| dispatcher_close_error("release dispatcher handle lock poisoned"))?
+            .as_ref()
+            .cloned();
+        let Some(dispatcher) = dispatcher else {
+            return Ok(());
+        };
+
+        dispatcher
+            .close_and_join(timeout)
+            .map_err(|error| dispatcher_close_error(error.to_string()))?;
+
+        let mut root = self
+            .dispatcher
+            .lock()
+            .map_err(|_| dispatcher_close_error("release dispatcher handle lock poisoned"))?;
+        root.take();
+        Ok(())
+    }
+}
+
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
+fn dispatcher_close_error(reason: impl Into<String>) -> DispatcherCloseError {
+    let reason = reason.into();
+    let category = if reason.contains("timed out") {
+        atoms::timeout()
+    } else {
+        atoms::dispatcher_close_failed()
+    };
+    (category, reason)
+}
+
 impl Drop for RendererResource {
     fn drop(&mut self) {
-        self.stop_inner(false);
+        self.latest_frame.stop();
+        self.video_registry.close_admission();
+        let registry = Arc::clone(&self.video_registry);
+        let wake = self.video_wake.clone();
+        let shutdown = self.take_shutdown_for_drop();
+        #[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
+        let direct_video_dispatcher = Arc::clone(&self.direct_video_dispatcher);
+
+        self.cleanup_dispatcher.dispatch(Box::new(move || {
+            registry.close();
+            wake.notify();
+            if let Some((ctx, handles)) = shutdown
+                && let Err(error) = shutdown_renderer_runtime(ctx, handles)
+            {
+                eprintln!("renderer drop shutdown failed: {error}");
+            }
+            #[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
+            if let Err((_category, error)) =
+                direct_video_dispatcher.close_and_join(RELEASE_DISPATCHER_CLOSE_TIMEOUT)
+            {
+                eprintln!("direct video dispatcher shutdown failed: {error}");
+            }
+        }));
     }
 }
 
 impl Drop for TestHarnessResource {
     fn drop(&mut self) {
-        self.stop_inner();
+        let handles = match self.handles.get_mut() {
+            Ok(handles) => handles,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+        .take();
+        let Some(handles) = handles else {
+            return;
+        };
+        let asset_runtime = Arc::clone(&self.asset_runtime);
+        let tree_tx = self.tree_tx.clone();
+        let event_tx = self.event_tx.clone();
+
+        self.cleanup_dispatcher.dispatch(Box::new(move || {
+            stop_test_harness_runtime(asset_runtime, tree_tx, event_tx, handles);
+        }));
     }
 }
 
@@ -597,37 +1475,61 @@ impl TestHarnessResource {
         };
 
         drop(handles_guard);
-
-        send_event(&self.event_tx, EventMsg::Stop, false);
-        send_tree(&self.tree_tx, TreeMsg::Stop, false);
-
-        let _ = handles.proxy_handle.join();
-        let _ = handles.event_handle.join();
-        let _ = handles.tree_handle.join();
-        assets::stop();
-        clear_global_caches();
-        trim_process_allocator();
+        stop_test_harness_runtime(
+            Arc::clone(&self.asset_runtime),
+            self.tree_tx.clone(),
+            self.event_tx.clone(),
+            handles,
+        );
     }
 }
 
+fn stop_test_harness_runtime(
+    asset_runtime: Arc<AssetRuntime>,
+    tree_tx: Sender<TreeMsg>,
+    event_tx: Sender<EventMsg>,
+    handles: TestHarnessHandles,
+) {
+    asset_runtime.stop();
+    send_event(&event_tx, EventMsg::Stop, false);
+    send_tree(&tree_tx, TreeMsg::Stop, false);
+
+    let _ = handles.proxy_handle.join();
+    let _ = handles.event_handle.join();
+    let _ = handles.tree_handle.join();
+    trim_process_allocator();
+}
+
 impl RendererResource {
-    fn stop(&self) {
-        self.stop_inner(true);
+    fn stop(&self) -> Result<(), String> {
+        self.latest_frame.stop();
+        self.video_registry.close();
+        self.video_wake.notify();
+        self.stop_inner()?;
+        #[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
+        self.direct_video_dispatcher
+            .close_and_join(RELEASE_DISPATCHER_CLOSE_TIMEOUT)
+            .map_err(|(_category, reason)| reason)?;
+        Ok(())
     }
 
-    fn stop_inner(&self, block_until_joined: bool) {
+    fn stop_inner(&self) -> Result<(), String> {
         let mut handles_guard = match self.handles.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
 
         let Some(handles) = handles_guard.take() else {
-            return;
+            return Ok(());
         };
 
         drop(handles_guard);
+        shutdown_renderer_runtime(self.shutdown_context(), handles)
+    }
 
-        let ctx = ShutdownRuntimeContext {
+    fn shutdown_context(&self) -> ShutdownRuntimeContext {
+        ShutdownRuntimeContext {
+            asset_runtime: Arc::clone(&self.asset_runtime),
             running_flag: Arc::clone(&self.running_flag),
             backend_wake: self.backend_wake.clone(),
             stop_flag: Arc::clone(&self.stop_flag),
@@ -637,18 +1539,25 @@ impl RendererResource {
             close_signal_log: self.close_signal_log,
             log_render: self.log_render,
             log_input: self.log_input,
-        };
-
-        if block_until_joined || self.running_flag.load(Ordering::Relaxed) {
-            shutdown_renderer_runtime(ctx, handles);
-        } else {
-            thread::spawn(move || shutdown_renderer_runtime(ctx, handles));
         }
+    }
+
+    fn take_shutdown_for_drop(&mut self) -> Option<(ShutdownRuntimeContext, RendererHandles)> {
+        let handles = match self.handles.get_mut() {
+            Ok(handles) => handles,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+        .take()?;
+        Some((self.shutdown_context(), handles))
     }
 }
 
-fn shutdown_renderer_runtime(ctx: ShutdownRuntimeContext, mut handles: RendererHandles) {
+fn shutdown_renderer_runtime(
+    ctx: ShutdownRuntimeContext,
+    mut handles: RendererHandles,
+) -> Result<(), String> {
     let ShutdownRuntimeContext {
+        asset_runtime,
         running_flag,
         backend_wake,
         stop_flag,
@@ -660,7 +1569,7 @@ fn shutdown_renderer_runtime(ctx: ShutdownRuntimeContext, mut handles: RendererH
         log_input,
     } = ctx;
 
-    assets::stop();
+    asset_runtime.stop();
     log_close_signal(close_signal_log, "nif_close", "shutdown begin");
     running_flag.store(false, Ordering::Relaxed);
     stop_flag.store(true, Ordering::Relaxed);
@@ -670,77 +1579,238 @@ fn shutdown_renderer_runtime(ctx: ShutdownRuntimeContext, mut handles: RendererH
 
     backend_wake.request_stop();
 
-    if let Some(handle) = handles.event_handle.take() {
-        let _ = handle.join();
-    }
-
-    if let Some(handle) = handles.heartbeat_handle.take() {
-        let _ = handle.join();
-    }
-
-    if let Some(handle) = handles.tree_handle.take() {
-        let _ = handle.join();
-    }
-
-    if let Some(handle) = handles.input_handle.take() {
-        let _ = handle.join();
-    }
-
-    if let Some(handle) = handles.backend_handle.take() {
-        let _ = handle.join();
-    }
+    let mut join_failures = Vec::new();
+    join_runtime_thread("event", handles.event_handle.take(), &mut join_failures);
+    join_runtime_thread(
+        "heartbeat",
+        handles.heartbeat_handle.take(),
+        &mut join_failures,
+    );
+    join_runtime_thread("tree", handles.tree_handle.take(), &mut join_failures);
+    join_runtime_thread("input", handles.input_handle.take(), &mut join_failures);
+    join_runtime_thread("backend", handles.backend_handle.take(), &mut join_failures);
 
     log_close_signal(close_signal_log, "nif_close", "shutdown end");
-    clear_global_caches();
     trim_process_allocator();
+
+    if join_failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "renderer thread join failures: {}",
+            join_failures.join(", ")
+        ))
+    }
+}
+
+fn join_runtime_thread(
+    name: &'static str,
+    handle: Option<thread::JoinHandle<()>>,
+    failures: &mut Vec<String>,
+) {
+    if let Some(handle) = handle
+        && let Err(panic) = handle.join()
+    {
+        let detail = panic
+            .downcast_ref::<&str>()
+            .map(|message| (*message).to_string())
+            .or_else(|| panic.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown panic payload".to_string());
+        failures.push(format!("{name}: {detail}"));
+    }
 }
 
 #[cfg_attr(
     not(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
+        all(feature = "wayland-core", target_os = "linux"),
+        all(feature = "drm-core", target_os = "linux")
     )),
     allow(dead_code)
 )]
 fn backend_stats_label(backend: BackendKind) -> &'static str {
+    backend.as_str()
+}
+
+impl BackendKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            #[cfg(feature = "macos")]
+            BackendKind::Macos => "macos",
+            #[cfg(all(feature = "wayland-core", target_os = "linux"))]
+            BackendKind::Wayland => "wayland",
+            #[cfg(all(feature = "drm-core", target_os = "linux"))]
+            BackendKind::Drm => "drm",
+            BackendKind::Headless => "headless",
+        }
+    }
+}
+
+impl RenderingApi {
+    fn as_str(self) -> &'static str {
+        match self {
+            RenderingApi::Auto => "auto",
+            RenderingApi::OpenGl => "opengl",
+            RenderingApi::Raster => "raster",
+            RenderingApi::Metal => "metal",
+            RenderingApi::Vulkan => "vulkan",
+        }
+    }
+
+    fn has_gpu(self) -> bool {
+        matches!(
+            self,
+            RenderingApi::OpenGl | RenderingApi::Metal | RenderingApi::Vulkan
+        )
+    }
+}
+
+impl RasterPresentKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            RasterPresentKind::Auto => "auto",
+            RasterPresentKind::GpuUpload => "gpu_upload",
+            RasterPresentKind::Cpu => "cpu",
+        }
+    }
+}
+
+impl RendererRuntimeInfo {
+    fn rendering_api_nif(&self) -> RenderingApiInfoNif {
+        RenderingApiInfoNif {
+            requested: self.requested_rendering_api.as_str().to_string(),
+            selected: self.selected_rendering_api.as_str().to_string(),
+        }
+    }
+
+    fn renderer_label(&self) -> String {
+        format!(
+            "{} ({})",
+            self.requested_rendering_api.as_str(),
+            self.selected_rendering_api.as_str()
+        )
+    }
+
+    fn to_nif(&self) -> RendererInfoNif {
+        let _requested_raster_present = self.raster_present.as_str();
+
+        RendererInfoNif {
+            backend: self.backend.as_str().to_string(),
+            rendering_api: self.rendering_api_nif(),
+            capabilities: RendererCapabilitiesNif {
+                gpu: self.selected_rendering_api.has_gpu(),
+                renderer_cache: self.renderer_cache.enabled,
+                screenshot: self.screenshot_supported,
+                raster_present: raster_present_capabilities(self.backend)
+                    .into_iter()
+                    .map(ToString::to_string)
+                    .collect(),
+                prime_video: self.prime_video_supported,
+                prime_video_formats: self.prime_video_formats.clone(),
+            },
+            #[cfg(feature = "vulkan")]
+            vulkan_device: self.vulkan_device.as_ref().map(VulkanDeviceInfoNif::from),
+            #[cfg(not(feature = "vulkan"))]
+            vulkan_device: None,
+        }
+    }
+}
+
+fn raster_present_capabilities(backend: BackendKind) -> Vec<&'static str> {
     match backend {
         #[cfg(feature = "macos")]
-        BackendKind::Macos => "macos",
-        #[cfg(all(feature = "wayland", target_os = "linux"))]
-        BackendKind::Wayland => "wayland",
-        #[cfg(all(feature = "drm", target_os = "linux"))]
-        BackendKind::Drm => "drm",
+        BackendKind::Macos => Vec::new(),
+        #[cfg(all(feature = "wayland-core", target_os = "linux"))]
+        BackendKind::Wayland => {
+            if cfg!(feature = "wayland") {
+                vec!["gpu_upload", "cpu"]
+            } else {
+                vec!["cpu"]
+            }
+        }
+        #[cfg(all(feature = "drm-core", target_os = "linux"))]
+        BackendKind::Drm => {
+            if cfg!(feature = "drm") {
+                vec!["gpu_upload"]
+            } else {
+                Vec::new()
+            }
+        }
+        BackendKind::Headless => Vec::new(),
+    }
+}
+
+#[cfg(any(
+    all(feature = "wayland-core", target_os = "linux"),
+    all(feature = "drm-core", target_os = "linux")
+))]
+fn selected_rendering_api_for_config(config: RenderingApiConfig) -> RenderingApi {
+    match config.kind {
+        RenderingApi::Auto => RenderingApi::OpenGl,
+        explicit => explicit,
+    }
+}
+
+fn renderer_cache_status(
+    selected_rendering_api: RenderingApi,
+    config: RendererCacheConfig,
+) -> RendererCacheStatus {
+    if config.enabled {
+        RendererCacheStatus::enabled()
+    } else if matches!(selected_rendering_api, RenderingApi::Raster) {
+        RendererCacheStatus::disabled("raster_renderer")
+    } else {
+        RendererCacheStatus::disabled("configured_disabled")
     }
 }
 
 #[cfg_attr(
     not(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
+        all(feature = "wayland-core", target_os = "linux"),
+        all(feature = "drm-core", target_os = "linux")
     )),
     allow(dead_code)
 )]
+fn try_take_renderer_stats_log_window(
+    stats: &RendererStatsCollector,
+) -> Option<Box<RendererStatsSnapshot>> {
+    match stats.try_take() {
+        RendererStatsWindowClose::Ready(snapshot) => Some(snapshot),
+        RendererStatsWindowClose::Draining { .. } => None,
+    }
+}
+
 fn spawn_running_heartbeat(
+    asset_context: AssetContext,
     running_flag: Arc<AtomicBool>,
     input_target: Arc<InputTargetRelay>,
     native_log: Arc<NativeLogRelay>,
     stats: Option<Arc<RendererStatsCollector>>,
     backend_label: &'static str,
+    rendering_api_label: String,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
+        let _asset_context_guard = asset_context.enter();
         let mut ticks = 0_u64;
+        let mut stats_log_due = false;
 
         while running_flag.load(Ordering::Relaxed) {
             input_target.send_running();
 
             if let Some(stats) = stats.as_ref() {
                 ticks = ticks.wrapping_add(1);
+                stats_log_due |= ticks.is_multiple_of(10);
 
-                if ticks.is_multiple_of(10) {
+                if stats_log_due && let Some(snapshot) = try_take_renderer_stats_log_window(stats) {
                     native_log.info(
                         "renderer_stats",
-                        stats::format_renderer_stats_log(backend_label, &stats.snapshot()),
+                        stats::format_renderer_stats_log(
+                            backend_label,
+                            &rendering_api_label,
+                            &snapshot,
+                            &renderer::asset_memory_stats_snapshot(),
+                        ),
                     );
+                    stats_log_due = false;
                 }
             }
 
@@ -796,103 +1866,173 @@ fn send_event(event_tx: &Sender<EventMsg>, msg: EventMsg, log_input: bool) {
 struct StartConfig {
     #[cfg_attr(
         not(any(
-            all(feature = "wayland", target_os = "linux"),
-            all(feature = "drm", target_os = "linux"),
+            all(feature = "wayland-core", target_os = "linux"),
+            all(feature = "drm-core", target_os = "linux"),
             feature = "macos"
         )),
         allow(dead_code)
     )]
     backend: BackendKind,
-    #[cfg_attr(not(all(feature = "wayland", target_os = "linux")), allow(dead_code))]
+    #[cfg_attr(
+        not(any(
+            all(feature = "wayland-core", target_os = "linux"),
+            all(feature = "drm-core", target_os = "linux"),
+            feature = "macos"
+        )),
+        allow(dead_code)
+    )]
+    rendering_api: RenderingApiConfig,
+    requested_rendering_api: RenderingApi,
+    #[cfg_attr(
+        not(all(feature = "wayland-core", target_os = "linux")),
+        allow(dead_code)
+    )]
     title: String,
     #[cfg_attr(
         not(any(
-            all(feature = "wayland", target_os = "linux"),
-            all(feature = "drm", target_os = "linux")
+            all(feature = "wayland-core", target_os = "linux"),
+            all(feature = "drm-core", target_os = "linux")
         )),
         allow(dead_code)
     )]
     width: u32,
     #[cfg_attr(
         not(any(
-            all(feature = "wayland", target_os = "linux"),
-            all(feature = "drm", target_os = "linux")
+            all(feature = "wayland-core", target_os = "linux"),
+            all(feature = "drm-core", target_os = "linux")
         )),
         allow(dead_code)
     )]
     height: u32,
     #[cfg_attr(
         not(any(
-            all(feature = "wayland", target_os = "linux"),
-            all(feature = "drm", target_os = "linux")
+            all(feature = "wayland-core", target_os = "linux"),
+            all(feature = "drm-core", target_os = "linux")
         )),
         allow(dead_code)
     )]
     scroll_line_pixels: f32,
-    #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
+    #[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
     asset_config: AssetConfig,
-    #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
+    #[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
     drm_card: Option<String>,
-    #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
+    #[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
+    vulkan_drm_node: Option<String>,
+    #[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
     drm_startup_retries: u32,
-    #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
+    #[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
     drm_retry_interval_ms: u32,
-    #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
+    #[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
     drm_force_gpu_finish: bool,
-    #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
+    #[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
     drm_hw_cursor: bool,
-    #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
+    #[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
     drm_cursor_overrides: Vec<DrmCursorOverrideConfig>,
-    #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
+    #[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
     drm_input_log: bool,
     #[cfg_attr(
         not(any(
-            all(feature = "wayland", target_os = "linux"),
-            all(feature = "drm", target_os = "linux")
+            all(feature = "wayland-core", target_os = "linux"),
+            all(feature = "drm-core", target_os = "linux")
         )),
         allow(dead_code)
     )]
     render_log: bool,
     #[cfg_attr(
         not(any(
-            all(feature = "wayland", target_os = "linux"),
-            all(feature = "drm", target_os = "linux")
+            all(feature = "wayland-core", target_os = "linux"),
+            all(feature = "drm-core", target_os = "linux")
         )),
         allow(dead_code)
     )]
     close_signal_log: bool,
     #[cfg_attr(
         not(any(
-            all(feature = "wayland", target_os = "linux"),
-            all(feature = "drm", target_os = "linux"),
+            all(feature = "wayland-core", target_os = "linux"),
+            all(feature = "drm-core", target_os = "linux"),
         )),
         allow(dead_code)
     )]
     stats_enabled: bool,
     #[cfg_attr(
         not(any(
-            all(feature = "wayland", target_os = "linux"),
-            all(feature = "drm", target_os = "linux"),
+            all(feature = "wayland-core", target_os = "linux"),
+            all(feature = "drm-core", target_os = "linux"),
         )),
         allow(dead_code)
     )]
     renderer_stats_log: bool,
     #[cfg_attr(
-        not(any(all(feature = "wayland", target_os = "linux"),)),
+        not(any(all(feature = "wayland-core", target_os = "linux"),)),
         allow(dead_code)
     )]
     renderer_animation_log: bool,
     #[cfg_attr(
         not(any(
-            all(feature = "wayland", target_os = "linux"),
-            all(feature = "drm", target_os = "linux"),
+            all(feature = "wayland-core", target_os = "linux"),
+            all(feature = "drm-core", target_os = "linux"),
         )),
         allow(dead_code)
     )]
     renderer_cache_config: RendererCacheConfig,
+    renderer_cache_enabled_configured: bool,
+    headless: HeadlessConfig,
 }
 
-#[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
+#[derive(Clone)]
+struct HeadlessConfig {
+    target: Option<LocalPid>,
+    mode: String,
+    pixel_format: String,
+    bw1_polarity: String,
+    dither: bool,
+    target_fps: Option<u32>,
+    frame_message: String,
+    prime: HeadlessPrimeConfig,
+}
+
+#[derive(Clone, Debug)]
+struct HeadlessPrimeConfig {
+    drm_node: Option<String>,
+    max_in_flight: u32,
+    on_backpressure: String,
+}
+
+impl std::fmt::Debug for HeadlessConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HeadlessConfig")
+            .field("target", &self.target.is_some())
+            .field("mode", &self.mode)
+            .field("pixel_format", &self.pixel_format)
+            .field("bw1_polarity", &self.bw1_polarity)
+            .field("dither", &self.dither)
+            .field("target_fps", &self.target_fps)
+            .field("frame_message", &self.frame_message)
+            .field("prime", &self.prime)
+            .finish()
+    }
+}
+
+impl Default for HeadlessConfig {
+    fn default() -> Self {
+        Self {
+            target: None,
+            mode: "binary".to_string(),
+            pixel_format: "rgba8888".to_string(),
+            bw1_polarity: "one_is_black".to_string(),
+            dither: false,
+            target_fps: None,
+            frame_message: "emerge_skia_frame".to_string(),
+            prime: HeadlessPrimeConfig {
+                drm_node: None,
+                max_in_flight: 2,
+                on_backpressure: "drop_new".to_string(),
+            },
+        }
+    }
+}
+
+#[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
 #[derive(Clone, Debug)]
 pub(crate) struct DrmCursorOverrideConfig {
     pub icon: CursorIcon,
@@ -903,17 +2043,23 @@ pub(crate) struct DrmCursorOverrideConfig {
 #[derive(rustler::NifMap)]
 struct StartOptsNif {
     backend: String,
+    rendering_api: RenderingApiConfigNif,
+    headless: HeadlessConfigNif,
     title: String,
     width: u32,
     height: u32,
     scroll_line_pixels: f32,
     drm_card: Option<String>,
+    vulkan_drm_node: Option<String>,
     asset_sources: Vec<String>,
     asset_runtime_enabled: bool,
     asset_allowlist: Vec<String>,
     asset_follow_symlinks: bool,
     asset_max_file_size: u64,
     asset_extensions: Vec<String>,
+    asset_cache_max_entries: u64,
+    asset_cache_max_bytes: u64,
+    asset_decode_at_size: bool,
     drm_cursor: Vec<DrmCursorOverrideNif>,
     drm_startup_retries: u32,
     drm_retry_interval_ms: u32,
@@ -928,9 +2074,36 @@ struct StartOptsNif {
     renderer_cache: RendererCacheConfigNif,
 }
 
+#[derive(Clone, Debug, rustler::NifMap)]
+struct RenderingApiConfigNif {
+    kind: String,
+    raster_present: String,
+    raster_present_configured: bool,
+}
+
+#[derive(Clone, rustler::NifMap)]
+struct HeadlessConfigNif {
+    target: Option<LocalPid>,
+    mode: String,
+    pixel_format: String,
+    bw1_polarity: String,
+    dither: bool,
+    target_fps: Option<u32>,
+    frame_message: String,
+    prime: HeadlessPrimeConfigNif,
+}
+
+#[derive(Clone, rustler::NifMap)]
+struct HeadlessPrimeConfigNif {
+    drm_node: Option<String>,
+    max_in_flight: u32,
+    on_backpressure: String,
+}
+
 #[derive(Clone, Copy, Debug, rustler::NifMap)]
 struct RendererCacheConfigNif {
     enabled: bool,
+    enabled_configured: bool,
     max_new_payloads_per_frame: u32,
     paint_layer: RendererPaintLayerCacheConfigNif,
 }
@@ -953,6 +2126,27 @@ struct DrmCursorOverrideNif {
 }
 
 #[derive(rustler::NifMap)]
+struct ConfigureAssetsOptsNif {
+    sources: Vec<String>,
+    runtime_enabled: bool,
+    allowlist: Vec<String>,
+    follow_symlinks: bool,
+    max_file_size: u64,
+    extensions: Vec<String>,
+    cache_max_entries: u64,
+    cache_max_bytes: u64,
+    decode_at_size: bool,
+}
+
+#[derive(rustler::NifMap)]
+struct OffscreenFontNif {
+    family: String,
+    path: String,
+    weight: u16,
+    italic: bool,
+}
+
+#[derive(rustler::NifMap)]
 struct RenderTreeOffscreenOptsNif {
     width: u32,
     height: u32,
@@ -963,14 +2157,49 @@ struct RenderTreeOffscreenOptsNif {
     follow_symlinks: bool,
     max_file_size: u64,
     extensions: Vec<String>,
+    cache_max_entries: u64,
+    cache_max_bytes: u64,
+    decode_at_size: bool,
     asset_mode: String,
     asset_timeout_ms: u64,
+    fonts: Vec<OffscreenFontNif>,
+}
+
+#[derive(Clone, Debug, rustler::NifMap)]
+struct ScreenshotOptsNif {
+    pixel_format: String,
+    scale: f32,
+    region_x: Option<u32>,
+    region_y: Option<u32>,
+    region_width: Option<u32>,
+    region_height: Option<u32>,
+    timeout_ms: u64,
+    background: String,
+    png_compression: String,
 }
 
 fn start_with_config(
     config: StartConfig,
     initial_log_target: Option<LocalPid>,
 ) -> NifResult<ResourceArc<RendererResource>> {
+    ensure_rendering_api_supported(config.backend, config.rendering_api)
+        .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
+    ensure_compiled_runner_dispatch(config.backend, config.rendering_api.kind)
+        .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
+    #[cfg(all(
+        target_os = "linux",
+        feature = "vulkan",
+        any(feature = "wayland-core", feature = "drm-core")
+    ))]
+    if matches!(config.rendering_api.kind, RenderingApi::Vulkan) {
+        video::ensure_vulkan_process_runtime_admission()
+            .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
+    }
+
+    if matches!(config.backend, BackendKind::Headless) {
+        return backend::headless::start_renderer_with_config(config, initial_log_target);
+    }
+
     #[cfg(feature = "macos")]
     if matches!(config.backend, BackendKind::Macos) {
         return Err(rustler::Error::Term(Box::new(
@@ -986,7 +2215,7 @@ fn renderer_cache_config_from_nif(
     config: RendererCacheConfigNif,
 ) -> Result<RendererCacheConfig, String> {
     let max_entries = usize::try_from(config.paint_layer.max_entries).map_err(|_| {
-        "renderer_cache.paint_layer.max_entries does not fit this platform".to_string()
+        "renderer_cache.paint_layer.max_entries does not fit this backend".to_string()
     })?;
 
     Ok(RendererCacheConfig {
@@ -1003,29 +2232,95 @@ fn renderer_cache_config_from_nif(
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(feature = "wayland-core", target_os = "linux"),
+    all(feature = "drm-core", target_os = "linux")
+))]
+fn auto_raster_fallback_config(config: &StartConfig) -> Option<StartConfig> {
+    if !uses_auto_raster_fallback(config.rendering_api.kind) {
+        return None;
+    }
+
+    let mut fallback = config.clone();
+    fallback.rendering_api.kind = RenderingApi::Raster;
+    if !fallback.renderer_cache_enabled_configured {
+        fallback.renderer_cache_config.enabled = false;
+    }
+    Some(fallback)
+}
+
+#[cfg(any(
+    all(feature = "wayland-core", target_os = "linux"),
+    all(feature = "drm-core", target_os = "linux")
+))]
+fn uses_auto_raster_fallback(rendering_api: RenderingApi) -> bool {
+    matches!(rendering_api, RenderingApi::Auto)
+}
+
+#[cfg(any(
+    all(feature = "wayland-core", target_os = "linux"),
+    all(feature = "drm-core", target_os = "linux")
+))]
+fn start_auto_raster_fallback_or_error(
+    fallback: Option<StartConfig>,
+    initial_log_target: Option<LocalPid>,
+    reason: String,
+) -> NifResult<ResourceArc<RendererResource>> {
+    match fallback {
+        Some(config) => {
+            eprintln!("OpenGL backend startup failed; falling back to raster: {reason}");
+            start_native_renderer_with_config(config, initial_log_target)
+        }
+        None => Err(rustler::Error::Term(Box::new(reason))),
+    }
+}
+
+#[cfg(any(
+    all(feature = "wayland-core", target_os = "linux"),
+    all(feature = "drm-core", target_os = "linux")
 ))]
 fn start_native_renderer_with_config(
     config: StartConfig,
     initial_log_target: Option<LocalPid>,
 ) -> NifResult<ResourceArc<RendererResource>> {
+    let auto_raster_fallback = auto_raster_fallback_config(&config);
+    let fallback_log_target = initial_log_target;
+    let asset_runtime = Arc::new(AssetRuntime::new());
     let running_flag = Arc::new(AtomicBool::new(true));
     let stop_flag = Arc::new(AtomicBool::new(false));
     let render_counter = Arc::new(AtomicU64::new(0));
     let input_target = Arc::new(InputTargetRelay::new(None));
     let native_log = Arc::new(NativeLogRelay::new(initial_log_target));
+    let latest_frame = Arc::new(LatestFrameStore::default());
 
-    #[cfg(all(feature = "drm", target_os = "linux"))]
+    #[cfg(all(feature = "drm-core", target_os = "linux"))]
     let log_input = matches!(config.backend, BackendKind::Drm) && config.drm_input_log;
-    #[cfg(not(all(feature = "drm", target_os = "linux")))]
+    #[cfg(not(all(feature = "drm-core", target_os = "linux")))]
     let log_input = false;
     let log_render = config.render_log;
     let close_signal_log = config.close_signal_log;
     let renderer_stats = (config.stats_enabled || config.renderer_stats_log)
         .then(|| Arc::new(RendererStatsCollector::new()));
     let backend_label = backend_stats_label(config.backend);
-    set_render_log_enabled(log_render);
+    let selected_rendering_api = selected_rendering_api_for_config(config.rendering_api);
+    let renderer_cache =
+        renderer_cache_status(selected_rendering_api, config.renderer_cache_config);
+    let rendering_api_label = RendererRuntimeInfo {
+        backend: config.backend,
+        requested_rendering_api: config.requested_rendering_api,
+        selected_rendering_api,
+        raster_present: config.rendering_api.raster_present,
+        renderer_cache,
+        screenshot_supported: true,
+        prime_video_supported: false,
+        prime_video_formats: Vec::new(),
+        #[cfg(feature = "vulkan")]
+        vulkan_device: None,
+    }
+    .renderer_label();
+    {
+        let _asset_context_guard = asset_runtime.enter();
+        set_render_log_enabled(log_render);
+    }
 
     let (tree_tx, tree_rx) = bounded(512);
     let (event_tx, event_rx) = bounded(4096);
@@ -1036,17 +2331,17 @@ fn start_native_renderer_with_config(
         log_render,
     };
     let (backend_cursor_tx, backend_cursor_rx) = unbounded();
-    #[cfg(all(feature = "drm", target_os = "linux"))]
+    #[cfg(all(feature = "drm-core", target_os = "linux"))]
     let drm_cursor_state = Arc::new(SharedCursorState::new(CursorState {
         pos: (0.0, 0.0),
         visible: false,
     }));
 
-    assets::start(tree_tx.clone(), log_render);
+    asset_runtime.start(tree_tx.clone(), log_render);
 
-    #[cfg(all(feature = "wayland", target_os = "linux"))]
+    #[cfg(all(feature = "wayland-core", target_os = "linux"))]
     let system_clipboard = matches!(config.backend, BackendKind::Wayland);
-    #[cfg(not(all(feature = "wayland", target_os = "linux")))]
+    #[cfg(not(all(feature = "wayland-core", target_os = "linux")))]
     let system_clipboard = false;
     let heartbeat_stats = if config.renderer_stats_log {
         renderer_stats.clone()
@@ -1055,35 +2350,43 @@ fn start_native_renderer_with_config(
     };
     let release_tx = video::spawn_release_worker()
         .map_err(|error| rustler::Error::Term(Box::new(error.to_string())))?;
+    let cleanup_dispatcher =
+        CleanupDispatcher::start().map_err(|error| rustler::Error::Term(Box::new(error)))?;
 
     let mut handles = RendererHandles {
         heartbeat_handle: Some(spawn_running_heartbeat(
+            asset_runtime.context(),
             Arc::clone(&running_flag),
             Arc::clone(&input_target),
             Arc::clone(&native_log),
             heartbeat_stats,
             backend_label,
+            rendering_api_label,
         )),
         ..RendererHandles::default()
     };
 
     let initial_width = config.width;
     let initial_height = config.height;
-    let video_registry = Arc::new(VideoRegistry::new(release_tx, renderer_stats.clone()));
+    let video_registry = Arc::new(VideoRegistry::new(
+        release_tx,
+        cleanup_dispatcher.clone(),
+        renderer_stats.clone(),
+    ));
     #[cfg(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
+        all(feature = "wayland-core", target_os = "linux"),
+        all(feature = "drm-core", target_os = "linux")
     ))]
     #[allow(unused_assignments)]
     let mut backend_wake = BackendWakeHandle::noop();
     #[cfg(not(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
+        all(feature = "wayland-core", target_os = "linux"),
+        all(feature = "drm-core", target_os = "linux")
     )))]
     let backend_wake = BackendWakeHandle::noop();
 
-    let backend = match config.backend {
-        #[cfg(all(feature = "wayland", target_os = "linux"))]
+    let backend_startup = match config.backend {
+        #[cfg(all(feature = "wayland-core", target_os = "linux"))]
         BackendKind::Wayland => {
             let (proxy_tx, proxy_rx) = std::sync::mpsc::channel();
             let running_flag_clone = Arc::clone(&running_flag);
@@ -1095,6 +2398,7 @@ fn start_native_renderer_with_config(
             let renderer_stats_log = config.renderer_stats_log;
             let renderer_animation_log = config.renderer_animation_log;
             let renderer_cache_config = config.renderer_cache_config;
+            let latest_frame_clone = Arc::clone(&latest_frame);
             let video_registry_clone = Arc::clone(&video_registry);
             let wayland_config = WaylandConfig {
                 title: config.title,
@@ -1102,7 +2406,9 @@ fn start_native_renderer_with_config(
                 height: config.height,
             };
 
+            let asset_context = asset_runtime.context();
             handles.backend_handle = Some(thread::spawn(move || {
+                let _asset_context_guard = asset_context.enter();
                 wayland::run(wayland::WaylandRunArgs {
                     config: wayland_config,
                     running_flag: running_flag_clone,
@@ -1114,7 +2420,10 @@ fn start_native_renderer_with_config(
                     stats: renderer_stats_clone,
                     renderer_stats_log,
                     renderer_animation_log,
+                    rendering_api: selected_rendering_api,
+                    raster_present: config.rendering_api.raster_present,
                     renderer_cache_config,
+                    latest_frame: latest_frame_clone,
                     native_log: native_log_clone,
                     render_rx,
                     cursor_icon_rx: backend_cursor_rx,
@@ -1126,8 +2435,9 @@ fn start_native_renderer_with_config(
             let startup = match proxy_rx.recv() {
                 Ok(Ok(startup)) => startup,
                 Ok(Err(reason)) => {
-                    shutdown_renderer_runtime(
+                    let _ = shutdown_renderer_runtime(
                         ShutdownRuntimeContext {
+                            asset_runtime: Arc::clone(&asset_runtime),
                             running_flag: Arc::clone(&running_flag),
                             backend_wake: backend_wake.clone(),
                             stop_flag: Arc::clone(&stop_flag),
@@ -1141,11 +2451,16 @@ fn start_native_renderer_with_config(
                         std::mem::take(&mut handles),
                     );
 
-                    return Err(rustler::Error::Term(Box::new(reason)));
+                    return start_auto_raster_fallback_or_error(
+                        auto_raster_fallback,
+                        fallback_log_target,
+                        reason,
+                    );
                 }
                 Err(_) => {
-                    shutdown_renderer_runtime(
+                    let _ = shutdown_renderer_runtime(
                         ShutdownRuntimeContext {
+                            asset_runtime: Arc::clone(&asset_runtime),
                             running_flag: Arc::clone(&running_flag),
                             backend_wake: backend_wake.clone(),
                             stop_flag: Arc::clone(&stop_flag),
@@ -1159,9 +2474,11 @@ fn start_native_renderer_with_config(
                         std::mem::take(&mut handles),
                     );
 
-                    return Err(rustler::Error::Term(Box::new(
-                        "failed to receive backend startup info",
-                    )));
+                    return start_auto_raster_fallback_or_error(
+                        auto_raster_fallback,
+                        fallback_log_target,
+                        "failed to receive backend startup info".to_string(),
+                    );
                 }
             };
 
@@ -1178,15 +2495,27 @@ fn start_native_renderer_with_config(
                     window_wake: startup.wake.clone(),
                     initial_width,
                     initial_height,
+                    asset_context: asset_runtime.context(),
                 },
             ));
 
+            let stream_requirements = matches!(selected_rendering_api, RenderingApi::Vulkan)
+                .then_some(video::PrimeStreamRequirements::Vulkan);
+            video_registry
+                .set_prime_stream_requirements(stream_requirements)
+                .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
             video_registry
                 .set_prime_video_available(startup.prime_video_supported)
                 .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
-            BackendKind::Wayland
+            NativeBackendStartupInfo {
+                backend: BackendKind::Wayland,
+                prime_video_supported: startup.prime_video_supported,
+                prime_video_formats: startup.prime_video_formats,
+                #[cfg(feature = "vulkan")]
+                vulkan_device: startup.vulkan_device,
+            }
         }
-        #[cfg(all(feature = "drm", target_os = "linux"))]
+        #[cfg(all(feature = "drm-core", target_os = "linux"))]
         BackendKind::Drm => {
             let presenter_wake = EventFd::new().map_err(|err| {
                 rustler::Error::Term(Box::new(format!(
@@ -1210,6 +2539,7 @@ fn start_native_renderer_with_config(
             let drm_input_size = (initial_width, initial_height);
             let backend_wake_for_input = backend_wake.clone();
             let input_wake_for_input = input_wake.clone();
+            let latest_frame_for_backend = Arc::clone(&latest_frame);
             let video_registry_clone = Arc::clone(&video_registry);
 
             handles.input_handle = Some(thread::spawn(move || {
@@ -1239,6 +2569,7 @@ fn start_native_renderer_with_config(
             let drm_config = drm::DrmRunConfig {
                 requested_size: Some((config.width, config.height)),
                 card_path: config.drm_card.clone(),
+                vulkan_drm_node: config.vulkan_drm_node.clone(),
                 asset_config: config.asset_config.clone(),
                 startup_retries: config.drm_startup_retries,
                 cursor_overrides: config.drm_cursor_overrides.clone(),
@@ -1247,10 +2578,14 @@ fn start_native_renderer_with_config(
                 hw_cursor: config.drm_hw_cursor,
                 render_log: log_render,
                 renderer_stats_log: config.renderer_stats_log,
+                rendering_api: selected_rendering_api,
+                raster_present: config.rendering_api.raster_present,
                 renderer_cache_config: config.renderer_cache_config,
             };
 
+            let asset_context = asset_runtime.context();
             handles.backend_handle = Some(thread::spawn(move || {
+                let _asset_context_guard = asset_context.enter();
                 drm::run(
                     drm::DrmRunContext {
                         startup_tx,
@@ -1267,17 +2602,19 @@ fn start_native_renderer_with_config(
                         render_counter: render_counter_clone,
                         native_log: native_log_for_backend,
                         stats: renderer_stats_for_backend,
+                        latest_frame: latest_frame_for_backend,
                         video_registry: video_registry_clone,
                     },
                     drm_config,
                 );
             }));
 
-            match startup_rx.recv() {
-                Ok(Ok(())) => {}
+            let drm_startup = match startup_rx.recv() {
+                Ok(Ok(startup)) => startup,
                 Ok(Err(reason)) => {
-                    shutdown_renderer_runtime(
+                    let _ = shutdown_renderer_runtime(
                         ShutdownRuntimeContext {
+                            asset_runtime: Arc::clone(&asset_runtime),
                             running_flag: Arc::clone(&running_flag),
                             backend_wake: backend_wake.clone(),
                             stop_flag: Arc::clone(&stop_flag),
@@ -1291,11 +2628,16 @@ fn start_native_renderer_with_config(
                         std::mem::take(&mut handles),
                     );
 
-                    return Err(rustler::Error::Term(Box::new(reason)));
+                    return start_auto_raster_fallback_or_error(
+                        auto_raster_fallback,
+                        fallback_log_target,
+                        reason,
+                    );
                 }
                 Err(_) => {
-                    shutdown_renderer_runtime(
+                    let _ = shutdown_renderer_runtime(
                         ShutdownRuntimeContext {
+                            asset_runtime: Arc::clone(&asset_runtime),
                             running_flag: Arc::clone(&running_flag),
                             backend_wake: backend_wake.clone(),
                             stop_flag: Arc::clone(&stop_flag),
@@ -1309,11 +2651,22 @@ fn start_native_renderer_with_config(
                         std::mem::take(&mut handles),
                     );
 
-                    return Err(rustler::Error::Term(Box::new(
-                        "failed to receive DRM backend startup info",
-                    )));
+                    return start_auto_raster_fallback_or_error(
+                        auto_raster_fallback,
+                        fallback_log_target,
+                        "failed to receive DRM backend startup info".to_string(),
+                    );
                 }
-            }
+            };
+
+            #[cfg(not(feature = "vulkan"))]
+            let _ = &drm_startup;
+
+            let stream_requirements = matches!(selected_rendering_api, RenderingApi::Vulkan)
+                .then_some(video::PrimeStreamRequirements::Vulkan);
+            video_registry
+                .set_prime_stream_requirements(stream_requirements)
+                .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
 
             handles.tree_handle = Some(runtime::tree_actor::spawn_tree_actor(
                 tree_rx,
@@ -1326,14 +2679,28 @@ fn start_native_renderer_with_config(
                     window_wake: backend_wake.clone(),
                     initial_width,
                     initial_height,
+                    asset_context: asset_runtime.context(),
                 },
             ));
 
-            BackendKind::Drm
+            NativeBackendStartupInfo {
+                backend: BackendKind::Drm,
+                prime_video_supported: drm_startup.prime_video_supported,
+                prime_video_formats: drm_startup.prime_video_formats,
+                #[cfg(feature = "vulkan")]
+                vulkan_device: drm_startup.vulkan_device,
+            }
         }
         #[cfg(feature = "macos")]
         BackendKind::Macos => unreachable!("macOS backend should return before runtime startup"),
+        BackendKind::Headless => {
+            unreachable!("headless backend should return before native startup")
+        }
     };
+
+    let backend = backend_startup.backend;
+    let prime_video_supported = backend_startup.prime_video_supported;
+    let prime_video_formats = backend_startup.prime_video_formats.clone();
 
     handles.event_handle = Some(spawn_event_actor(SpawnEventActorConfig {
         event_rx,
@@ -1345,27 +2712,29 @@ fn start_native_renderer_with_config(
         native_log: Arc::clone(&native_log),
         system_clipboard,
         stats: renderer_stats.clone(),
+        asset_context: asset_runtime.context(),
     }));
 
     #[cfg(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
+        all(feature = "wayland-core", target_os = "linux"),
+        all(feature = "drm-core", target_os = "linux")
     ))]
     let video_wake = match backend {
-        #[cfg(all(feature = "wayland", target_os = "linux"))]
+        #[cfg(all(feature = "wayland-core", target_os = "linux"))]
         BackendKind::Wayland => VideoWake::new(backend_wake.clone()),
-        #[cfg(all(feature = "drm", target_os = "linux"))]
+        #[cfg(all(feature = "drm-core", target_os = "linux"))]
         BackendKind::Drm => VideoWake::new(backend_wake.clone()),
         #[allow(unreachable_patterns)]
         _ => VideoWake::noop(),
     };
     #[cfg(not(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
+        all(feature = "wayland-core", target_os = "linux"),
+        all(feature = "drm-core", target_os = "linux")
     )))]
     let video_wake = VideoWake::noop();
 
     let resource = RendererResource {
+        asset_runtime,
         running_flag,
         backend_wake,
         stop_flag,
@@ -1375,11 +2744,27 @@ fn start_native_renderer_with_config(
         render_tx: render_sender,
         video_registry,
         video_wake,
+        #[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
+        direct_video_dispatcher: Arc::new(ReleaseDispatcherHandleResource::lazy()),
         native_log,
         stats: renderer_stats,
+        latest_frame,
+        info: RendererRuntimeInfo {
+            backend,
+            requested_rendering_api: config.requested_rendering_api,
+            selected_rendering_api,
+            raster_present: config.rendering_api.raster_present,
+            renderer_cache,
+            screenshot_supported: true,
+            prime_video_supported,
+            prime_video_formats,
+            #[cfg(feature = "vulkan")]
+            vulkan_device: backend_startup.vulkan_device,
+        },
         close_signal_log,
         log_render,
         log_input,
+        cleanup_dispatcher,
         handles: Mutex::new(Some(handles)),
     };
 
@@ -1387,8 +2772,8 @@ fn start_native_renderer_with_config(
 }
 
 #[cfg(not(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(feature = "wayland-core", target_os = "linux"),
+    all(feature = "drm-core", target_os = "linux")
 )))]
 fn start_native_renderer_with_config(
     config: StartConfig,
@@ -1408,17 +2793,20 @@ fn start(
     width: u32,
     height: u32,
 ) -> NifResult<ResourceArc<RendererResource>> {
-    #[cfg(all(feature = "wayland", target_os = "linux"))]
+    #[cfg(all(feature = "wayland-core", target_os = "linux"))]
     {
         start_with_config(
             StartConfig {
                 backend: BackendKind::Wayland,
+                rendering_api: RenderingApiConfig::default(),
+                requested_rendering_api: RenderingApi::Auto,
                 title,
                 width,
                 height,
                 scroll_line_pixels: input::SCROLL_LINE_PIXELS,
                 asset_config: AssetConfig::default(),
                 drm_card: None,
+                vulkan_drm_node: None,
                 drm_startup_retries: 40,
                 drm_retry_interval_ms: 250,
                 drm_force_gpu_finish: false,
@@ -1431,15 +2819,17 @@ fn start(
                 renderer_stats_log: false,
                 renderer_animation_log: false,
                 renderer_cache_config: RendererCacheConfig::default(),
+                renderer_cache_enabled_configured: false,
+                headless: HeadlessConfig::default(),
             },
             Some(env.pid()),
         )
     }
-    #[cfg(not(all(feature = "wayland", target_os = "linux")))]
+    #[cfg(not(all(feature = "wayland-core", target_os = "linux")))]
     {
         let _ = (env, title, width, height);
         Err(rustler::Error::Term(Box::new(
-            "Wayland backend not compiled; add :wayland to config :emerge, compiled_backends: [...]"
+            "Wayland backend is not compiled; add :wayland to config :emerge, compiled_backends: [...]"
                 .to_string(),
         )))
     }
@@ -1450,6 +2840,8 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
     let backend = opts.backend.to_lowercase();
     let backend =
         parse_backend_name(&backend).map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
+    let rendering_api = parse_rendering_api_config(opts.rendering_api)
+        .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
     let asset_config = AssetConfig {
         sources: opts.asset_sources,
         runtime_enabled: opts.asset_runtime_enabled,
@@ -1457,21 +2849,28 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
         runtime_follow_symlinks: opts.asset_follow_symlinks,
         runtime_max_file_size: opts.asset_max_file_size,
         runtime_extensions: opts.asset_extensions,
+        cache_max_entries: opts.asset_cache_max_entries,
+        cache_max_bytes: opts.asset_cache_max_bytes,
+        decode_at_size: opts.asset_decode_at_size,
     };
     let drm_cursor_overrides = parse_drm_cursor_overrides(opts.drm_cursor)
         .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
+    let renderer_cache_enabled_configured = opts.renderer_cache.enabled_configured;
     let renderer_cache_config = renderer_cache_config_from_nif(opts.renderer_cache)
         .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
 
     start_with_config(
         StartConfig {
             backend,
+            rendering_api,
+            requested_rendering_api: rendering_api.kind,
             title: opts.title,
             width: opts.width,
             height: opts.height,
             scroll_line_pixels: opts.scroll_line_pixels,
             asset_config,
             drm_card: opts.drm_card,
+            vulkan_drm_node: opts.vulkan_drm_node,
             drm_startup_retries: opts.drm_startup_retries,
             drm_retry_interval_ms: opts.drm_retry_interval_ms,
             drm_force_gpu_finish: opts.drm_force_gpu_finish,
@@ -1484,67 +2883,427 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
             renderer_stats_log: opts.renderer_stats_log,
             renderer_animation_log: opts.renderer_animation_log,
             renderer_cache_config,
+            renderer_cache_enabled_configured,
+            headless: HeadlessConfig {
+                target: opts.headless.target,
+                mode: opts.headless.mode,
+                pixel_format: opts.headless.pixel_format,
+                bw1_polarity: opts.headless.bw1_polarity,
+                dither: opts.headless.dither,
+                target_fps: opts.headless.target_fps,
+                frame_message: opts.headless.frame_message,
+                prime: HeadlessPrimeConfig {
+                    drm_node: opts.headless.prime.drm_node,
+                    max_in_flight: opts.headless.prime.max_in_flight,
+                    on_backpressure: opts.headless.prime.on_backpressure,
+                },
+            },
         },
         Some(env.pid()),
     )
 }
 
 #[rustler::nif(schedule = "DirtyIo")]
-fn stop(renderer: ResourceArc<RendererResource>) -> Atom {
-    renderer.stop();
-    atoms::ok()
-}
-
-#[cfg(test)]
-fn ensure_video_target_mode_supported(
-    prime_video_supported: bool,
-    mode: VideoMode,
-) -> Result<(), String> {
-    if matches!(mode, VideoMode::Prime) && !prime_video_supported {
-        Err(video::prime_video_unavailable_error())
-    } else {
-        Ok(())
-    }
-}
-
-#[rustler::nif]
-fn video_target_new(
-    renderer: ResourceArc<RendererResource>,
-    id: String,
-    width: u32,
-    height: u32,
-    mode: String,
-) -> Result<ResourceArc<VideoTargetResource>, String> {
-    let mode = VideoMode::parse(&mode)?;
-
-    let spec = video::VideoTargetSpec {
-        id: id.clone(),
-        width,
-        height,
-        mode,
-    };
-    renderer.video_registry.create_target_if_available(spec)?;
-
-    Ok(ResourceArc::new(VideoTargetResource {
-        id,
-        _width: width,
-        _height: height,
-        _mode: mode,
-        registry: Arc::clone(&renderer.video_registry),
-        wake: renderer.video_wake.clone(),
-    }))
+fn stop(renderer: ResourceArc<RendererResource>) -> Result<Atom, String> {
+    renderer.stop()?;
+    Ok(atoms::ok())
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
-fn video_target_submit_prime(
-    target: ResourceArc<VideoTargetResource>,
-    desc: video::PrimeDesc,
-) -> Result<bool, String> {
-    target
-        .registry
-        .submit_prime_if_available(&target.id, desc.into())?;
-    target.wake.notify();
-    Ok(true)
+fn video_frame_submit(
+    env: Env<'_>,
+    renderer: ResourceArc<RendererResource>,
+    target: String,
+    frame: Term<'_>,
+) -> Result<Atom, (Atom, String)> {
+    if let Ok(binary) = BinaryVideoFrame::decode(frame) {
+        validate_binary_video_lease(&binary).map_err(|reason| (atoms::caller_owned(), reason))?;
+        let target_active = renderer
+            .video_registry
+            .target_is_active(&target)
+            .map_err(|reason| (atoms::caller_owned(), reason))?;
+        if !target_active {
+            return Ok(atoms::released());
+        }
+
+        let frame = decode_binary_video_frame(env, binary)
+            .map_err(|reason| (atoms::caller_owned(), reason))?;
+        let submitted = renderer
+            .video_registry
+            .submit_cpu_frame(&target, frame)
+            .map_err(|reason| (atoms::caller_owned(), reason))?;
+        if matches!(submitted, VideoSubmitResult::Queued) {
+            renderer.video_wake.notify();
+            return Ok(atoms::transferred());
+        }
+        return Ok(atoms::released());
+    }
+
+    #[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
+    {
+        let frame = decode_video_frame(frame)?;
+        let target_active = renderer
+            .video_registry
+            .target_is_active(&target)
+            .map_err(|reason| (atoms::caller_owned(), reason))?;
+        if !target_active {
+            let dispatcher = renderer
+                .direct_video_dispatcher
+                .acquire_or_start("emerge_skia_direct_video_release")
+                .map_err(|reason| (atoms::caller_owned(), reason))?;
+            let prepared = frame
+                .prepare_cloexec(&dispatcher)
+                .map_err(|error| (atoms::caller_owned(), error.to_string()))?;
+            drop(prepared.claim());
+            return Ok(atoms::released());
+        }
+
+        let format = frame
+            .format
+            .clone()
+            .ok_or_else(|| {
+                (
+                    atoms::caller_owned(),
+                    "DMA-BUF direct submission requires frame.format".to_string(),
+                )
+            })
+            .and_then(|format| {
+                video::VideoStreamFormat::try_from(format)
+                    .map_err(|reason| (atoms::caller_owned(), reason))
+            })?;
+        let (incarnation, stream_id) = renderer
+            .video_registry
+            .ensure_direct_stream(&target, format)
+            .map_err(|reason| (atoms::caller_owned(), reason))?;
+        let dispatcher = renderer
+            .direct_video_dispatcher
+            .acquire_or_start("emerge_skia_direct_video_release")
+            .map_err(|reason| (atoms::caller_owned(), reason))?;
+        let prepared = frame
+            .prepare_cloexec(&dispatcher)
+            .map_err(|error| (atoms::caller_owned(), error.to_string()))?;
+        match renderer
+            .video_registry
+            .submit_canonical(&target, incarnation, stream_id, prepared)
+        {
+            Ok(VideoSubmitResult::Queued) => {
+                renderer.video_wake.notify();
+                Ok(atoms::transferred())
+            }
+            Ok(VideoSubmitResult::DroppedInactive) => Ok(atoms::released()),
+            Err(CanonicalSubmitError::CallerOwned(reason)) => Err((atoms::caller_owned(), reason)),
+            Err(CanonicalSubmitError::Transferred(reason)) => Err((atoms::transferred(), reason)),
+        }
+    }
+    #[cfg(not(any(feature = "video-interop-support", all(test, target_os = "linux"))))]
+    {
+        let _ = renderer;
+        let _ = target;
+        Err((
+            atoms::caller_owned(),
+            "unsupported video frame storage; this build accepts VideoInterop.Binary only"
+                .to_string(),
+        ))
+    }
+}
+
+fn validate_binary_video_lease(frame: &BinaryVideoFrame<'_>) -> Result<(), String> {
+    let lease = frame
+        .lease
+        .atom_to_string()
+        .map_err(|_| "binary video frame must not have a lease".to_string())?;
+    if lease == "nil" {
+        Ok(())
+    } else {
+        Err("binary video frame must not have a lease".to_string())
+    }
+}
+
+fn decode_binary_video_frame(
+    env: Env<'_>,
+    frame: BinaryVideoFrame<'_>,
+) -> Result<CpuVideoFrame, String> {
+    let acquire_sync = frame
+        .acquire_sync
+        .to_term(env)
+        .atom_to_string()
+        .map_err(|_| "binary frame acquire_sync must be an atom".to_string())?;
+    let format_acquire_sync = frame
+        .format
+        .acquire_sync
+        .to_term(env)
+        .atom_to_string()
+        .map_err(|_| "binary frame format acquire_sync must be an atom".to_string())?;
+    if acquire_sync != "implicit" || format_acquire_sync != "implicit" {
+        return Err("binary video frames require implicit synchronization".to_string());
+    }
+    if frame.format.width != frame.coded_width || frame.format.height != frame.coded_height {
+        return Err("binary frame format dimensions do not match coded dimensions".to_string());
+    }
+    let rect = frame.visible_rect;
+    let right = rect
+        .x
+        .checked_add(rect.width)
+        .ok_or_else(|| "binary frame visible rectangle overflowed".to_string())?;
+    let bottom = rect
+        .y
+        .checked_add(rect.height)
+        .ok_or_else(|| "binary frame visible rectangle overflowed".to_string())?;
+    if rect.width == 0
+        || rect.height == 0
+        || right > frame.coded_width
+        || bottom > frame.coded_height
+    {
+        return Err("binary frame visible rectangle is outside coded dimensions".to_string());
+    }
+    let [plane] = frame.storage.planes.as_slice() else {
+        return Err("binary frame requires exactly one plane".to_string());
+    };
+    let pixel_format = frame
+        .format
+        .storage
+        .pixel_format
+        .to_term(env)
+        .atom_to_string()
+        .map_err(|_| "binary frame pixel_format must be an atom".to_string())?;
+    let alpha_mode = frame
+        .format
+        .alpha_mode
+        .to_term(env)
+        .atom_to_string()
+        .map_err(|_| "binary frame alpha_mode must be an atom".to_string())?;
+    let polarity = frame
+        .format
+        .storage
+        .bw1_polarity
+        .map(|value| {
+            value
+                .to_term(env)
+                .atom_to_string()
+                .map_err(|_| "binary frame bw1_polarity must be an atom".to_string())
+        })
+        .transpose()?;
+    let minimum_stride = binary_video_minimum_stride(frame.coded_width, &pixel_format)?;
+    if plane.stride < minimum_stride {
+        return Err(format!(
+            "binary frame stride {} is smaller than required {minimum_stride}",
+            plane.stride
+        ));
+    }
+    let required = plane
+        .stride
+        .checked_mul(frame.coded_height.saturating_sub(1) as usize)
+        .and_then(|bytes| bytes.checked_add(minimum_stride))
+        .and_then(|bytes| plane.offset.checked_add(bytes))
+        .ok_or_else(|| "binary frame byte size overflowed".to_string())?;
+    if frame.storage.data.len() < required {
+        return Err(format!(
+            "binary frame has {} bytes but requires at least {required}",
+            frame.storage.data.len()
+        ));
+    }
+
+    let pixel_count = (rect.width as usize)
+        .checked_mul(rect.height as usize)
+        .ok_or_else(|| "binary frame visible size overflowed".to_string())?;
+    let mut rgba = vec![0_u8; pixel_count.saturating_mul(4)];
+    for output_y in 0..rect.height as usize {
+        let source_y = rect.y as usize + output_y;
+        let row_offset = plane.offset + source_y * plane.stride;
+        for output_x in 0..rect.width as usize {
+            let source_x = rect.x as usize + output_x;
+            let destination = (output_y * rect.width as usize + output_x) * 4;
+            let pixel = decode_binary_video_pixel(
+                &frame.storage.data,
+                row_offset,
+                source_x,
+                &pixel_format,
+                polarity.as_deref(),
+                &alpha_mode,
+            )?;
+            rgba[destination..destination + 4].copy_from_slice(&pixel);
+        }
+    }
+
+    Ok(CpuVideoFrame {
+        generation: 0,
+        width: rect.width,
+        height: rect.height,
+        rgba: Arc::from(rgba),
+    })
+}
+
+fn binary_video_minimum_stride(width: u32, pixel_format: &str) -> Result<usize, String> {
+    let width = width as usize;
+    match pixel_format {
+        "rgba8888" => width
+            .checked_mul(4)
+            .ok_or_else(|| "binary RGBA stride overflowed".to_string()),
+        "rgb888" => width
+            .checked_mul(3)
+            .ok_or_else(|| "binary RGB stride overflowed".to_string()),
+        "gray8" => Ok(width),
+        "gray2" => Ok(width.div_ceil(4)),
+        "bw1" => Ok(width.div_ceil(8)),
+        other => Err(format!("unsupported binary video pixel format: {other}")),
+    }
+}
+
+fn decode_binary_video_pixel(
+    data: &[u8],
+    row_offset: usize,
+    x: usize,
+    pixel_format: &str,
+    polarity: Option<&str>,
+    alpha_mode: &str,
+) -> Result<[u8; 4], String> {
+    match pixel_format {
+        "rgba8888" => {
+            let offset = row_offset + x * 4;
+            let [red, green, blue, alpha] = [
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
+            ];
+            match alpha_mode {
+                "premultiplied" => Ok([red, green, blue, alpha]),
+                "straight" => Ok([
+                    premultiply_video_channel(red, alpha),
+                    premultiply_video_channel(green, alpha),
+                    premultiply_video_channel(blue, alpha),
+                    alpha,
+                ]),
+                "opaque" => Ok([red, green, blue, 255]),
+                other => Err(format!("unsupported binary RGBA alpha mode: {other}")),
+            }
+        }
+        "rgb888" => {
+            if alpha_mode != "opaque" {
+                return Err("binary RGB frames require opaque alpha mode".to_string());
+            }
+            let offset = row_offset + x * 3;
+            Ok([data[offset], data[offset + 1], data[offset + 2], 255])
+        }
+        "gray8" => {
+            if alpha_mode != "opaque" {
+                return Err("binary grayscale frames require opaque alpha mode".to_string());
+            }
+            let gray = data[row_offset + x];
+            Ok([gray, gray, gray, 255])
+        }
+        "gray2" => {
+            if alpha_mode != "opaque" {
+                return Err("binary grayscale frames require opaque alpha mode".to_string());
+            }
+            let shift = 6 - (x % 4) * 2;
+            let gray = ((data[row_offset + x / 4] >> shift) & 0b11) * 85;
+            Ok([gray, gray, gray, 255])
+        }
+        "bw1" => {
+            if alpha_mode != "opaque" {
+                return Err("binary grayscale frames require opaque alpha mode".to_string());
+            }
+            let one = data[row_offset + x / 8] & (0x80 >> (x % 8)) != 0;
+            let gray = match polarity {
+                Some("one_is_white") => u8::from(one) * 255,
+                Some("one_is_black") => u8::from(!one) * 255,
+                _ => return Err("BW1 binary video requires an explicit polarity".to_string()),
+            };
+            Ok([gray, gray, gray, 255])
+        }
+        other => Err(format!("unsupported binary video pixel format: {other}")),
+    }
+}
+
+fn premultiply_video_channel(channel: u8, alpha: u8) -> u8 {
+    ((u16::from(channel) * u16::from(alpha) + 127) / 255) as u8
+}
+
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
+fn decode_video_frame(term: Term<'_>) -> Result<video_interop::Frame<'_>, (Atom, String)> {
+    video_interop::Frame::decode(term).map_err(|error| {
+        (
+            atoms::caller_owned(),
+            format!("invalid VideoInterop.Frame: {error:?}"),
+        )
+    })
+}
+
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
+fn start_video_release_dispatcher(name: &str) -> Result<ResourceArc<ReleaseDispatcher>, String> {
+    ReleaseDispatcher::start(name).map_err(|error| error.to_string())
+}
+
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
+#[rustler::nif(schedule = "DirtyIo")]
+fn headless_prime_release_dispatcher_new()
+-> Result<ResourceArc<ReleaseDispatcherHandleResource>, String> {
+    ReleaseDispatcherHandleResource::start("emerge_skia_headless_prime_release")
+        .map(ResourceArc::new)
+}
+
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
+#[rustler::nif(schedule = "DirtyIo")]
+fn headless_prime_release_dispatcher_close<'a>(
+    env: Env<'a>,
+    dispatcher: ResourceArc<ReleaseDispatcherHandleResource>,
+) -> Term<'a> {
+    encode_dispatcher_close_result(
+        env,
+        dispatcher.close_and_join(RELEASE_DISPATCHER_CLOSE_TIMEOUT),
+    )
+}
+
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
+#[rustler::nif(schedule = "DirtyIo")]
+fn headless_prime_release_dispatcher_close_with_timeout_for_test<'a>(
+    env: Env<'a>,
+    dispatcher: ResourceArc<ReleaseDispatcherHandleResource>,
+    timeout_ms: u64,
+) -> Term<'a> {
+    encode_dispatcher_close_result(
+        env,
+        dispatcher.close_and_join(Duration::from_millis(timeout_ms)),
+    )
+}
+
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
+fn encode_dispatcher_close_result<'a>(
+    env: Env<'a>,
+    result: Result<(), DispatcherCloseError>,
+) -> Term<'a> {
+    match result {
+        Ok(()) => atoms::ok().encode(env),
+        Err(reason) => (atoms::error(), reason).encode(env),
+    }
+}
+
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
+#[rustler::nif(schedule = "DirtyIo")]
+fn headless_prime_abandonment_guard_new<'a>(
+    owner: LocalPid,
+    token: Term<'a>,
+    holder: Reference<'a>,
+    dispatcher: ResourceArc<ReleaseDispatcherHandleResource>,
+) -> Result<ResourceArc<video_interop::AbandonmentGuard>, String> {
+    video_interop::new_abandonment_guard(dispatcher.acquire()?, owner, token, holder)
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
+#[rustler::nif(name = "video_interop_abandonment_guard?")]
+fn video_interop_abandonment_guard(resource: Term<'_>) -> bool {
+    video_interop::is_abandonment_guard_resource(resource)
+}
+
+#[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
+#[rustler::nif]
+fn headless_prime_release_backend_token(
+    backend_token: ResourceArc<backend::headless::HeadlessPrimeBackendToken>,
+) -> Atom {
+    backend::headless::release_backend_token(backend_token);
+    atoms::ok()
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
@@ -1589,29 +3348,42 @@ fn measure_text(text: String, font_size: f32) -> (f32, f32, f32, f32) {
 /// - `italic`: Whether this is an italic variant
 /// - `data`: Binary font data (TTF file contents)
 #[rustler::nif(schedule = "DirtyIo")]
-fn load_font_nif(name: String, weight: u32, italic: bool, data: Binary) -> Result<bool, String> {
-    services::load_font_bytes(&name, weight as u16, italic, data.as_slice())?;
+fn load_font_nif(
+    renderer: ResourceArc<RendererResource>,
+    name: String,
+    weight: u32,
+    italic: bool,
+    data: Binary,
+) -> Result<bool, String> {
+    services::load_font_bytes(
+        &renderer.asset_runtime,
+        &name,
+        weight as u16,
+        italic,
+        data.as_slice(),
+    )?;
     Ok(true)
 }
 
 #[rustler::nif(schedule = "DirtyIo")]
 fn configure_assets_nif(
-    _renderer: ResourceArc<RendererResource>,
-    sources: Vec<String>,
-    runtime_enabled: bool,
-    allowlist: Vec<String>,
-    follow_symlinks: bool,
-    max_file_size: u64,
-    extensions: Vec<String>,
+    renderer: ResourceArc<RendererResource>,
+    opts: ConfigureAssetsOptsNif,
 ) -> Atom {
-    services::configure_assets(AssetConfig {
-        sources,
-        runtime_enabled,
-        runtime_allowlist: allowlist,
-        runtime_follow_symlinks: follow_symlinks,
-        runtime_max_file_size: max_file_size,
-        runtime_extensions: extensions,
-    });
+    services::configure_assets(
+        &renderer.asset_runtime,
+        AssetConfig {
+            sources: opts.sources,
+            runtime_enabled: opts.runtime_enabled,
+            runtime_allowlist: opts.allowlist,
+            runtime_follow_symlinks: opts.follow_symlinks,
+            runtime_max_file_size: opts.max_file_size,
+            runtime_extensions: opts.extensions,
+            cache_max_entries: opts.cache_max_entries,
+            cache_max_bytes: opts.cache_max_bytes,
+            decode_at_size: opts.decode_at_size,
+        },
+    );
     atoms::ok()
 }
 
@@ -1676,6 +3448,82 @@ fn set_log_target(renderer: ResourceArc<RendererResource>, pid: Option<LocalPid>
     atoms::ok()
 }
 
+#[rustler::nif]
+fn renderer_info(renderer: ResourceArc<RendererResource>) -> Result<RendererInfoNif, String> {
+    Ok(renderer.info.to_nif())
+}
+
+#[rustler::nif(schedule = "DirtyIo")]
+fn renderer_capture_pixels<'a>(
+    env: Env<'a>,
+    renderer: ResourceArc<RendererResource>,
+    opts: ScreenshotOptsNif,
+) -> Result<Binary<'a>, String> {
+    if !renderer.info.screenshot_supported {
+        return Err("screenshot capture is not supported for headless PRIME output".to_string());
+    }
+    let capture = capture_renderer_frame(&renderer, &opts)?;
+    let pixels = convert_screenshot_pixels(&capture, &opts.pixel_format)?;
+    let mut binary = NewBinary::new(env, pixels.len());
+    binary.as_mut_slice().copy_from_slice(&pixels);
+    Ok(binary.into())
+}
+
+#[rustler::nif(schedule = "DirtyIo")]
+fn renderer_capture_png<'a>(
+    env: Env<'a>,
+    renderer: ResourceArc<RendererResource>,
+    opts: ScreenshotOptsNif,
+) -> Result<Binary<'a>, String> {
+    if !renderer.info.screenshot_supported {
+        return Err("screenshot capture is not supported for headless PRIME output".to_string());
+    }
+    let capture = capture_renderer_frame(&renderer, &opts)?;
+    let encoded = services::encode_rgba_png(capture.width, capture.height, &capture.pixels)?;
+    let mut binary = NewBinary::new(env, encoded.len());
+    binary.as_mut_slice().copy_from_slice(&encoded);
+    Ok(binary.into())
+}
+
+fn capture_renderer_frame(
+    renderer: &RendererResource,
+    opts: &ScreenshotOptsNif,
+) -> Result<LatestFrameSnapshot, String> {
+    let frame = if uses_on_demand_gpu_capture(&renderer.info) {
+        if !renderer.running_flag.load(Ordering::Acquire) {
+            return Err("renderer is not running".to_string());
+        }
+        let capture_generation = renderer.latest_frame.request_capture()?;
+        renderer.backend_wake.request_redraw();
+        Some(renderer.latest_frame.wait_for_capture(
+            capture_generation,
+            Duration::from_millis(opts.timeout_ms),
+            &renderer.running_flag,
+        )?)
+    } else {
+        renderer.latest_frame.latest()
+    };
+
+    capture_latest_frame(frame, opts)
+}
+
+fn uses_on_demand_gpu_capture(info: &RendererRuntimeInfo) -> bool {
+    if !matches!(
+        info.selected_rendering_api,
+        RenderingApi::OpenGl | RenderingApi::Vulkan
+    ) {
+        return false;
+    }
+
+    match info.backend {
+        #[cfg(all(feature = "wayland-core", target_os = "linux"))]
+        BackendKind::Wayland => true,
+        #[cfg(all(feature = "drm-core", target_os = "linux"))]
+        BackendKind::Drm => true,
+        _ => false,
+    }
+}
+
 #[rustler::nif(name = "stats", schedule = "DirtyCpu")]
 fn stats_nif<'a>(
     env: Env<'a>,
@@ -1702,22 +3550,147 @@ fn renderer_stats_snapshot<'a>(
         return Err("renderer stats are configured when the renderer starts".to_string());
     }
 
+    let snapshot = |enabled, reset_on_read, snapshot: RendererStatsSnapshot| {
+        StatsSnapshotNif::from_snapshot(
+            "renderer",
+            enabled,
+            reset_on_read,
+            Some(renderer.info.rendering_api_nif()),
+            renderer.info.renderer_cache,
+            &snapshot,
+        )
+        .encode(env)
+    };
+
     let Some(stats) = renderer.stats.as_ref() else {
-        return Ok(StatsSnapshotNif::disabled("renderer").encode(env));
+        return Ok(snapshot(false, false, RendererStatsSnapshot::default()));
     };
 
     match command {
-        StatsCommandNif::Peek => {
-            Ok(StatsSnapshotNif::from_snapshot("renderer", true, false, &stats.peek()).encode(env))
-        }
-        StatsCommandNif::Take => {
-            Ok(StatsSnapshotNif::from_snapshot("renderer", true, true, &stats.take()).encode(env))
-        }
-        StatsCommandNif::Reset => {
-            stats.reset();
-            Ok(StatsSnapshotNif::from_snapshot("renderer", true, false, &stats.peek()).encode(env))
-        }
+        StatsCommandNif::Peek => Ok(snapshot(true, false, stats.peek())),
+        StatsCommandNif::Take => match stats.try_take() {
+            RendererStatsWindowClose::Ready(closed) => Ok(snapshot(true, true, *closed)),
+            RendererStatsWindowClose::Draining {
+                pending_gpu_samples,
+            } => {
+                renderer.backend_wake.request_redraw();
+                Err(format!(
+                    "renderer stats window is draining {pending_gpu_samples} asynchronous GPU sample(s); retry :take"
+                ))
+            }
+        },
+        StatsCommandNif::Reset => match stats.try_reset() {
+            RendererStatsWindowClose::Ready(_) => Ok(snapshot(true, false, stats.peek())),
+            RendererStatsWindowClose::Draining {
+                pending_gpu_samples,
+            } => {
+                renderer.backend_wake.request_redraw();
+                Err(format!(
+                    "renderer stats window is draining {pending_gpu_samples} asynchronous GPU sample(s); retry :reset"
+                ))
+            }
+        },
         StatsCommandNif::Configure(_) => unreachable!(),
+    }
+}
+
+fn capture_latest_frame(
+    frame: Option<LatestFrameSnapshot>,
+    opts: &ScreenshotOptsNif,
+) -> Result<LatestFrameSnapshot, String> {
+    let _png_compression = opts.png_compression.as_str();
+
+    if opts.scale != 1.0 {
+        return Err("screenshot scale values other than 1.0 are not implemented yet".to_string());
+    }
+
+    if opts.background != "transparent" {
+        return Err("screenshot background currently only supports :transparent".to_string());
+    }
+
+    let frame = frame
+        .ok_or_else(|| "no presented frame is available yet".to_string())?
+        .into_rgba()?;
+    let _sequence = frame.sequence;
+    let _frame_scale = frame.scale;
+
+    crop_screenshot_frame(frame, opts)
+}
+
+fn crop_screenshot_frame(
+    frame: LatestFrameSnapshot,
+    opts: &ScreenshotOptsNif,
+) -> Result<LatestFrameSnapshot, String> {
+    let region = match (
+        opts.region_x,
+        opts.region_y,
+        opts.region_width,
+        opts.region_height,
+    ) {
+        (None, None, None, None) => return Ok(frame),
+        (Some(x), Some(y), Some(width), Some(height)) => (x, y, width, height),
+        _ => return Err("screenshot region must include x, y, width, and height".to_string()),
+    };
+
+    let (x, y, width, height) = region;
+    if width == 0 || height == 0 {
+        return Err("screenshot region width and height must be positive".to_string());
+    }
+    if x.checked_add(width).is_none_or(|right| right > frame.width)
+        || y.checked_add(height)
+            .is_none_or(|bottom| bottom > frame.height)
+    {
+        return Err("screenshot region is outside the latest frame".to_string());
+    }
+
+    let source_stride = usize::try_from(frame.width)
+        .ok()
+        .and_then(|width| width.checked_mul(4))
+        .ok_or_else(|| "latest frame dimensions are too large".to_string())?;
+    let dest_stride = usize::try_from(width)
+        .ok()
+        .and_then(|width| width.checked_mul(4))
+        .ok_or_else(|| "screenshot region dimensions are too large".to_string())?;
+    let x_offset = usize::try_from(x)
+        .ok()
+        .and_then(|x| x.checked_mul(4))
+        .ok_or_else(|| "screenshot region is too large".to_string())?;
+    let start_row = usize::try_from(y).map_err(|_| "screenshot region is too large".to_string())?;
+    let row_count =
+        usize::try_from(height).map_err(|_| "screenshot region is too large".to_string())?;
+
+    let pixels = (0..row_count)
+        .flat_map(|row| {
+            let start = (start_row + row) * source_stride + x_offset;
+            let end = start + dest_stride;
+            frame.pixels[start..end].to_vec()
+        })
+        .collect();
+
+    Ok(LatestFrameSnapshot {
+        width,
+        height,
+        pixels,
+        ..frame
+    })
+}
+
+fn convert_screenshot_pixels(
+    capture: &LatestFrameSnapshot,
+    pixel_format: &str,
+) -> Result<Vec<u8>, String> {
+    match pixel_format {
+        "rgba8888" => Ok(capture.pixels.clone()),
+        "rgb888" => Ok(capture
+            .pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|rgba| [rgba[0], rgba[1], rgba[2]])
+            .collect()),
+        other => Err(format!(
+            "screenshot pixel_format {other} is not implemented yet; supported formats are :rgba8888 and :rgb888"
+        )),
     }
 }
 
@@ -1726,6 +3699,18 @@ fn tree_stats_snapshot<'a>(
     tree_res: ResourceArc<TreeResource>,
     command: StatsCommandNif,
 ) -> Result<Term<'a>, String> {
+    let tree_snapshot = |enabled, reset_on_read, snapshot: RendererStatsSnapshot| {
+        StatsSnapshotNif::from_snapshot(
+            "tree",
+            enabled,
+            reset_on_read,
+            None,
+            RendererCacheStatus::disabled("tree_resource"),
+            &snapshot,
+        )
+        .encode(env)
+    };
+
     match command {
         StatsCommandNif::Configure(config) => {
             let next_stats = config
@@ -1749,9 +3734,13 @@ fn tree_stats_snapshot<'a>(
             }
 
             if let Some(stats) = next_stats {
-                Ok(StatsSnapshotNif::from_snapshot("tree", true, false, &stats.peek()).encode(env))
+                Ok(tree_snapshot(true, false, stats.peek()))
             } else {
-                Ok(StatsSnapshotNif::disabled("tree").encode(env))
+                Ok(tree_snapshot(
+                    false,
+                    false,
+                    RendererStatsSnapshot::default(),
+                ))
             }
         }
         StatsCommandNif::Peek | StatsCommandNif::Take | StatsCommandNif::Reset => {
@@ -1762,28 +3751,19 @@ fn tree_stats_snapshot<'a>(
                 .clone();
 
             let Some(stats) = stats else {
-                return Ok(StatsSnapshotNif::disabled("tree").encode(env));
+                return Ok(tree_snapshot(
+                    false,
+                    false,
+                    RendererStatsSnapshot::default(),
+                ));
             };
 
             match command {
-                StatsCommandNif::Peek => {
-                    Ok(
-                        StatsSnapshotNif::from_snapshot("tree", true, false, &stats.peek())
-                            .encode(env),
-                    )
-                }
-                StatsCommandNif::Take => {
-                    Ok(
-                        StatsSnapshotNif::from_snapshot("tree", true, true, &stats.take())
-                            .encode(env),
-                    )
-                }
+                StatsCommandNif::Peek => Ok(tree_snapshot(true, false, stats.peek())),
+                StatsCommandNif::Take => Ok(tree_snapshot(true, true, stats.take())),
                 StatsCommandNif::Reset => {
                     stats.reset();
-                    Ok(
-                        StatsSnapshotNif::from_snapshot("tree", true, false, &stats.peek())
-                            .encode(env),
-                    )
+                    Ok(tree_snapshot(true, false, stats.peek()))
                 }
                 StatsCommandNif::Configure(_) => unreachable!(),
             }
@@ -1838,7 +3818,20 @@ fn offscreen_opts_from_nif(opts: RenderTreeOffscreenOptsNif) -> services::Offscr
             runtime_follow_symlinks: opts.follow_symlinks,
             runtime_max_file_size: opts.max_file_size,
             runtime_extensions: opts.extensions,
+            cache_max_entries: opts.cache_max_entries,
+            cache_max_bytes: opts.cache_max_bytes,
+            decode_at_size: opts.decode_at_size,
         },
+        fonts: opts
+            .fonts
+            .into_iter()
+            .map(|font| services::OffscreenFont {
+                family: font.family,
+                path: font.path,
+                weight: font.weight,
+                italic: font.italic,
+            })
+            .collect(),
     }
 }
 
@@ -1894,6 +3887,7 @@ fn encode_layout_frames<'a>(env: Env<'a>, tree: &ElementTree) -> LayoutFrames<'a
 #[rustler::nif]
 fn tree_new() -> ResourceArc<TreeResource> {
     ResourceArc::new(TreeResource {
+        asset_runtime: AssetRuntime::new(),
         tree: Mutex::new(ElementTree::new()),
         stats: Mutex::new(None),
     })
@@ -1983,6 +3977,7 @@ fn tree_layout<'a>(
     height: f64,
     scale: f64,
 ) -> Result<LayoutFrames<'a>, String> {
+    let _asset_context_guard = tree_res.asset_runtime.enter();
     let stats = tree_res
         .stats
         .lock()
@@ -2018,6 +4013,7 @@ type HoverMsgList<'a> = Vec<HoverMsg<'a>>;
 
 #[rustler::nif(schedule = "DirtyIo")]
 fn test_harness_new(width: u32, height: u32) -> Result<ResourceArc<TestHarnessResource>, String> {
+    let asset_runtime = Arc::new(AssetRuntime::new());
     let (tree_tx, tree_rx_proxy) = bounded(512);
     let (tree_actor_tx, tree_actor_rx) = bounded(512);
     let (tree_tap_tx, tree_tap_rx) = bounded(4096);
@@ -2030,7 +4026,7 @@ fn test_harness_new(width: u32, height: u32) -> Result<ResourceArc<TestHarnessRe
     };
     let render_counter = Arc::new(AtomicU64::new(0));
 
-    assets::start(tree_tx.clone(), false);
+    asset_runtime.start(tree_tx.clone(), false);
 
     let proxy_handle = thread::spawn(move || {
         while let Ok(msg) = tree_rx_proxy.recv() {
@@ -2052,6 +4048,7 @@ fn test_harness_new(width: u32, height: u32) -> Result<ResourceArc<TestHarnessRe
         native_log: Arc::new(NativeLogRelay::default()),
         system_clipboard: false,
         stats: None,
+        asset_context: asset_runtime.context(),
     });
     let tree_handle = spawn_tree_actor_with_initial_tree(
         tree_actor_rx,
@@ -2064,16 +4061,21 @@ fn test_harness_new(width: u32, height: u32) -> Result<ResourceArc<TestHarnessRe
             window_wake: BackendWakeHandle::noop(),
             initial_width: width,
             initial_height: height,
+            asset_context: asset_runtime.context(),
         },
         ElementTree::new(),
     );
 
+    let cleanup_dispatcher = CleanupDispatcher::start()?;
+
     Ok(ResourceArc::new(TestHarnessResource {
+        asset_runtime,
         tree_tx,
         event_tx,
         render_rx,
         tree_tap_rx,
         base_instant: Mutex::new(Instant::now()),
+        cleanup_dispatcher,
         handles: Mutex::new(Some(TestHarnessHandles {
             proxy_handle,
             tree_handle,
@@ -2230,7 +4232,24 @@ mod tests {
     use crate::tree::element::NodeId;
     use crossbeam_channel::RecvTimeoutError;
 
+    #[test]
+    fn renderer_stats_log_waits_for_pending_gpu_samples_instead_of_logging_empty_window() {
+        let stats = RendererStatsCollector::new();
+        stats.record_frame_present();
+        let epoch = stats
+            .begin_gpu_render_elapsed_sample()
+            .expect("GPU sample should start");
+
+        assert!(try_take_renderer_stats_log_window(&stats).is_none());
+        stats.cancel_gpu_render_elapsed_sample(epoch);
+
+        let snapshot = try_take_renderer_stats_log_window(&stats)
+            .expect("closed stats window should become available after draining");
+        assert_eq!(snapshot.frame_count, 1);
+    }
+
     struct LiveActorHarness {
+        asset_runtime: Arc<AssetRuntime>,
         tree_tx: Sender<TreeMsg>,
         event_tx: Sender<EventMsg>,
         render_rx: Receiver<RenderMsg>,
@@ -2242,6 +4261,7 @@ mod tests {
 
     impl LiveActorHarness {
         fn new(width: u32, height: u32, initial_tree: ElementTree) -> Self {
+            let asset_runtime = Arc::new(AssetRuntime::new());
             let (tree_tx, tree_rx_proxy) = bounded(512);
             let (tree_actor_tx, tree_actor_rx) = bounded(512);
             let (tree_tap_tx, tree_tap_rx) = bounded(4096);
@@ -2254,7 +4274,7 @@ mod tests {
             };
             let render_counter = Arc::new(AtomicU64::new(0));
 
-            assets::start(tree_tx.clone(), false);
+            asset_runtime.start(tree_tx.clone(), false);
 
             let proxy_handle = thread::spawn(move || {
                 while let Ok(msg) = tree_rx_proxy.recv() {
@@ -2276,6 +4296,7 @@ mod tests {
                 native_log: Arc::new(NativeLogRelay::default()),
                 system_clipboard: false,
                 stats: None,
+                asset_context: asset_runtime.context(),
             });
             let tree_handle = spawn_tree_actor_with_initial_tree(
                 tree_actor_rx,
@@ -2288,11 +4309,13 @@ mod tests {
                     window_wake: BackendWakeHandle::noop(),
                     initial_width: width,
                     initial_height: height,
+                    asset_context: asset_runtime.context(),
                 },
                 initial_tree,
             );
 
             Self {
+                asset_runtime,
                 tree_tx,
                 event_tx,
                 render_rx,
@@ -2343,13 +4366,12 @@ mod tests {
         }
 
         fn stop(self) {
+            self.asset_runtime.stop();
             super::send_event(&self.event_tx, EventMsg::Stop, false);
             super::send_tree(&self.tree_tx, TreeMsg::Stop, false);
             let _ = self.proxy_handle.join();
             let _ = self.event_handle.join();
             let _ = self.tree_handle.join();
-            assets::stop();
-            clear_global_caches();
             trim_process_allocator();
         }
     }
@@ -2362,6 +4384,7 @@ mod tests {
 
     impl SpawnedEventActorHarness {
         fn new() -> Self {
+            let asset_runtime = AssetRuntime::new();
             let (event_tx, event_rx) = bounded(4096);
             let (tree_tx, tree_rx) = bounded(4096);
             let handle = spawn_event_actor(SpawnEventActorConfig {
@@ -2374,6 +4397,7 @@ mod tests {
                 native_log: Arc::new(NativeLogRelay::default()),
                 system_clipboard: false,
                 stats: None,
+                asset_context: asset_runtime.context(),
             });
 
             Self {
@@ -2412,6 +4436,160 @@ mod tests {
         }
 
         out
+    }
+
+    #[cfg(all(feature = "wayland-vulkan", target_os = "linux"))]
+    #[test]
+    fn wayland_vulkan_renderer_info_reports_gpu_capture_and_prime_video() {
+        let runtime = RendererRuntimeInfo {
+            backend: BackendKind::Wayland,
+            requested_rendering_api: RenderingApi::Vulkan,
+            selected_rendering_api: RenderingApi::Vulkan,
+            raster_present: RasterPresentKind::Auto,
+            renderer_cache: RendererCacheStatus::enabled(),
+            screenshot_supported: true,
+            prime_video_supported: true,
+            prime_video_formats: vec!["NV12".to_string(), "XRGB8888".to_string()],
+            vulkan_device: Some(backend::vulkan::VulkanRendererReport {
+                device: backend::vulkan::VulkanDeviceReport {
+                    physical_device_name: "test-vulkan-device".to_string(),
+                    driver_name: Some("test-driver".to_string()),
+                    driver_id: Some("MESA_V3DV".to_string()),
+                    software: false,
+                },
+                drm_node: Some(backend::vulkan::VulkanDrmNodeReport {
+                    path: "/dev/dri/renderD128".to_string(),
+                    match_field: "render",
+                    major: 226,
+                    minor: 128,
+                }),
+            }),
+        };
+        let info = runtime.to_nif();
+        assert_eq!(info.backend, "wayland");
+        assert_eq!(info.rendering_api.selected, "vulkan");
+        assert!(info.capabilities.gpu);
+        assert!(info.capabilities.screenshot);
+        assert!(info.capabilities.prime_video);
+        let device = info.vulkan_device.expect("selected Vulkan device report");
+        assert_eq!(device.physical_device_name, "test-vulkan-device");
+        assert_eq!(device.driver_name.as_deref(), Some("test-driver"));
+        assert_eq!(device.driver_id.as_deref(), Some("MESA_V3DV"));
+        assert!(!device.software);
+        let node = device.drm_node.expect("exact selected DRM node");
+        assert_eq!(node.path, "/dev/dri/renderD128");
+        assert_eq!(node.match_field, "render");
+        assert_eq!((node.major, node.minor), (226, 128));
+        assert!(uses_on_demand_gpu_capture(&runtime));
+    }
+
+    #[test]
+    fn non_vulkan_renderer_info_reports_no_vulkan_device() {
+        let runtime = RendererRuntimeInfo {
+            backend: BackendKind::Headless,
+            requested_rendering_api: RenderingApi::Raster,
+            selected_rendering_api: RenderingApi::Raster,
+            raster_present: RasterPresentKind::Cpu,
+            renderer_cache: RendererCacheStatus::disabled("test"),
+            screenshot_supported: true,
+            prime_video_supported: false,
+            prime_video_formats: Vec::new(),
+            #[cfg(feature = "vulkan")]
+            vulkan_device: None,
+        };
+
+        assert!(runtime.to_nif().vulkan_device.is_none());
+    }
+
+    #[test]
+    fn latest_frame_store_has_no_idle_capture_demand() {
+        let store = LatestFrameStore::default();
+        let capture_called = AtomicBool::new(false);
+
+        let captured = capture_requested_gpu_frame(&store, || {
+            capture_called.store(true, Ordering::Relaxed);
+            Some((1, 1, vec![1, 2, 3, 4]))
+        });
+
+        assert!(captured.is_none());
+        assert!(!capture_called.load(Ordering::Relaxed));
+        store.publish_rgba(1, 1, 1.0, vec![1, 2, 3, 4]);
+        assert_eq!(store.pending_capture_generation(), None);
+    }
+
+    #[test]
+    fn latest_frame_store_coalesces_capture_generations() {
+        let store = LatestFrameStore::default();
+        let running = AtomicBool::new(true);
+        let first = store.request_capture().expect("first request");
+        let second = store.request_capture().expect("second request");
+
+        assert!(second > first);
+        assert_eq!(store.pending_capture_generation(), Some(second));
+
+        store.publish_requested_capture(second, 1, 1, 1.0, vec![4, 3, 2, 1]);
+
+        assert_eq!(store.pending_capture_generation(), None);
+        assert_eq!(
+            store
+                .wait_for_capture(first, Duration::ZERO, &running)
+                .expect("coalesced first request")
+                .pixels,
+            vec![4, 3, 2, 1]
+        );
+        assert!(
+            store
+                .wait_for_capture(second, Duration::ZERO, &running)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn latest_frame_store_timeout_does_not_cancel_capture_generation() {
+        let store = LatestFrameStore::default();
+        let running = AtomicBool::new(true);
+        let request = store.request_capture().expect("capture request");
+
+        let error = store
+            .wait_for_capture(request, Duration::ZERO, &running)
+            .expect_err("capture should time out");
+        assert!(error.contains("timed out"));
+        assert_eq!(store.pending_capture_generation(), Some(request));
+
+        store.publish_requested_capture(request, 1, 1, 1.0, vec![9, 8, 7, 6]);
+        assert!(
+            store
+                .wait_for_capture(request, Duration::ZERO, &running)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn latest_frame_store_stop_wakes_capture_waiter() {
+        let store = Arc::new(LatestFrameStore::default());
+        let running = Arc::new(AtomicBool::new(true));
+        let request = store.request_capture().expect("capture request");
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let waiter_store = Arc::clone(&store);
+        let waiter_running = Arc::clone(&running);
+        let waiter = thread::spawn(move || {
+            let result =
+                waiter_store.wait_for_capture(request, Duration::from_secs(1), &waiter_running);
+            let _ = result_tx.send(result);
+        });
+
+        thread::sleep(Duration::from_millis(5));
+        store.stop();
+
+        let result = result_rx
+            .recv_timeout(Duration::from_millis(250))
+            .expect("stopped waiter should wake");
+        assert!(
+            result
+                .expect_err("stop must fail capture")
+                .contains("stopped")
+        );
+        waiter.join().expect("waiter exits");
     }
 
     #[test]
@@ -2479,6 +4657,7 @@ mod tests {
 
         shutdown_renderer_runtime(
             ShutdownRuntimeContext {
+                asset_runtime: Arc::new(AssetRuntime::new()),
                 running_flag: Arc::clone(&running_flag),
                 backend_wake: backend_wake.clone(),
                 stop_flag: Arc::clone(&stop_flag),
@@ -2496,7 +4675,8 @@ mod tests {
                 event_handle: Some(event_handle),
                 heartbeat_handle: None,
             },
-        );
+        )
+        .expect("runtime threads should join cleanly");
 
         assert!(!running_flag.load(Ordering::Relaxed));
         assert!(stop_flag.load(Ordering::Relaxed));
@@ -2504,6 +4684,58 @@ mod tests {
         assert!(event_stopped.load(Ordering::Relaxed));
         assert!(backend_stopped.load(Ordering::Relaxed));
         assert!(input_stopped.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn shutdown_renderer_runtime_reports_thread_panics() {
+        let running_flag = Arc::new(AtomicBool::new(false));
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let (tree_tx, _tree_rx) = bounded(1);
+        let (event_tx, _event_rx) = bounded(1);
+        let (render_tx, render_rx) = bounded(1);
+        let backend_handle = thread::spawn(|| panic!("forced backend panic"));
+
+        let error = shutdown_renderer_runtime(
+            ShutdownRuntimeContext {
+                asset_runtime: Arc::new(AssetRuntime::new()),
+                running_flag,
+                backend_wake: BackendWakeHandle::noop(),
+                stop_flag,
+                tree_tx,
+                event_tx,
+                render_tx: RenderSender {
+                    tx: render_tx,
+                    drop_rx: render_rx,
+                    log_render: false,
+                },
+                close_signal_log: false,
+                log_render: false,
+                log_input: false,
+            },
+            RendererHandles {
+                backend_handle: Some(backend_handle),
+                ..RendererHandles::default()
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.contains("backend: forced backend panic"));
+    }
+
+    #[test]
+    fn cleanup_dispatcher_uses_persistent_fallback_when_primary_is_closed() {
+        let (primary, primary_rx) = cleanup_channel::<CleanupTask>();
+        drop(primary_rx);
+        let fallback = CleanupDispatcher::start_worker("emerge_skia_cleanup_test_fallback")
+            .expect("fallback cleanup worker should start");
+        let dispatcher = CleanupDispatcher::from_senders(primary, fallback);
+        let (completed_tx, completed_rx) = std::sync::mpsc::channel();
+
+        dispatcher.dispatch(Box::new(move || {
+            let _ = completed_tx.send(());
+        }));
+
+        assert_eq!(completed_rx.recv_timeout(Duration::from_secs(1)), Ok(()));
     }
 
     #[test]
@@ -2560,7 +4792,9 @@ mod tests {
             })
         };
 
+        let cleanup_dispatcher = CleanupDispatcher::start().expect("start cleanup dispatcher");
         let resource = Arc::new(RendererResource {
+            asset_runtime: Arc::new(AssetRuntime::new()),
             running_flag: Arc::clone(&running_flag),
             backend_wake: backend_wake.clone(),
             stop_flag: Arc::clone(&stop_flag),
@@ -2568,13 +4802,33 @@ mod tests {
             event_tx,
             input_target: Arc::new(InputTargetRelay::default()),
             render_tx: render_sender,
-            video_registry: Arc::new(VideoRegistry::new(release_tx, None)),
+            video_registry: Arc::new(VideoRegistry::new(
+                release_tx,
+                cleanup_dispatcher.clone(),
+                None,
+            )),
             video_wake: VideoWake::noop(),
+            #[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
+            direct_video_dispatcher: Arc::new(ReleaseDispatcherHandleResource::lazy()),
             native_log: Arc::new(NativeLogRelay::default()),
             stats: None,
+            latest_frame: Arc::new(LatestFrameStore::default()),
+            info: RendererRuntimeInfo {
+                backend: BackendKind::Headless,
+                requested_rendering_api: RenderingApi::Auto,
+                selected_rendering_api: RenderingApi::OpenGl,
+                raster_present: RasterPresentKind::Auto,
+                renderer_cache: RendererCacheStatus::enabled(),
+                screenshot_supported: true,
+                prime_video_supported: false,
+                prime_video_formats: Vec::new(),
+                #[cfg(feature = "vulkan")]
+                vulkan_device: None,
+            },
             close_signal_log: false,
             log_render: false,
             log_input: false,
+            cleanup_dispatcher,
             handles: Mutex::new(Some(RendererHandles {
                 backend_handle: Some(backend_handle),
                 input_handle: None,
@@ -2589,7 +4843,7 @@ mod tests {
             let resource = Arc::clone(&resource);
 
             thread::spawn(move || {
-                resource.stop();
+                resource.stop().expect("renderer should stop cleanly");
                 let _ = stop_done_tx.send(());
             })
         };
@@ -2654,19 +4908,376 @@ mod tests {
     }
 
     #[test]
-    fn video_target_new_rejects_prime_for_non_prime_backends() {
-        let err = ensure_video_target_mode_supported(false, VideoMode::Prime)
-            .expect_err("prime target should be rejected");
-
+    fn straight_rgba_video_pixels_are_premultiplied_once() {
         assert_eq!(
-            err,
-            "prime video targets require runtime DMA-BUF and external-image support on the active backend"
+            decode_binary_video_pixel(&[255, 64, 0, 128], 0, 0, "rgba8888", None, "straight"),
+            Ok([128, 32, 0, 128])
+        );
+        assert_eq!(
+            decode_binary_video_pixel(&[128, 32, 0, 128], 0, 0, "rgba8888", None, "premultiplied"),
+            Ok([128, 32, 0, 128])
         );
     }
 
     #[test]
-    fn video_target_new_accepts_prime_for_prime_capable_wayland_renderer() {
-        assert!(ensure_video_target_mode_supported(true, VideoMode::Prime).is_ok());
+    fn parse_rendering_api_config_accepts_nested_raster_present() {
+        let config = parse_rendering_api_config(RenderingApiConfigNif {
+            kind: "raster".to_string(),
+            raster_present: "cpu".to_string(),
+            raster_present_configured: true,
+        })
+        .expect("valid backend renderer config");
+
+        assert_eq!(config.kind, RenderingApi::Raster);
+        assert_eq!(config.raster_present, RasterPresentKind::Cpu);
+        assert!(config.raster_present_configured);
+    }
+
+    #[test]
+    fn parse_rendering_api_config_rejects_unknown_present_mode() {
+        let err = parse_rendering_api_config(RenderingApiConfigNif {
+            kind: "raster".to_string(),
+            raster_present: "bogus".to_string(),
+            raster_present_configured: true,
+        })
+        .expect_err("unknown present mode should be rejected");
+
+        assert!(err.contains("unsupported rendering_api raster present mode"));
+    }
+
+    #[cfg(all(feature = "wayland", target_os = "linux"))]
+    #[test]
+    fn rendering_api_matrix_allows_wayland_auto_and_gl() {
+        assert!(
+            ensure_rendering_api_supported(BackendKind::Wayland, RenderingApiConfig::default())
+                .is_ok()
+        );
+        assert!(
+            ensure_rendering_api_supported(
+                BackendKind::Wayland,
+                RenderingApiConfig {
+                    kind: RenderingApi::OpenGl,
+                    raster_present: RasterPresentKind::Auto,
+                    raster_present_configured: false,
+                }
+            )
+            .is_ok()
+        );
+    }
+
+    #[cfg(all(
+        feature = "wayland-core",
+        not(feature = "wayland"),
+        target_os = "linux"
+    ))]
+    #[test]
+    fn vulkan_only_wayland_build_rejects_opengl_without_fallback() {
+        let error = ensure_rendering_api_supported(
+            BackendKind::Wayland,
+            RenderingApiConfig {
+                kind: RenderingApi::OpenGl,
+                raster_present: RasterPresentKind::Auto,
+                raster_present_configured: false,
+            },
+        )
+        .expect_err("Vulkan-only Wayland must not select OpenGL");
+        assert_eq!(
+            error,
+            "OpenGL Wayland rendering support is not available in this build"
+        );
+    }
+
+    #[cfg(all(feature = "wayland-core", target_os = "linux"))]
+    #[test]
+    fn rendering_api_matrix_allows_wayland_raster() {
+        assert!(
+            ensure_rendering_api_supported(
+                BackendKind::Wayland,
+                RenderingApiConfig {
+                    kind: RenderingApi::Raster,
+                    raster_present: RasterPresentKind::Cpu,
+                    raster_present_configured: true,
+                },
+            )
+            .is_ok()
+        );
+    }
+
+    #[cfg(all(
+        feature = "wayland-core",
+        not(feature = "wayland-vulkan"),
+        target_os = "linux"
+    ))]
+    #[test]
+    fn rendering_api_matrix_reports_unavailable_wayland_vulkan_build() {
+        let err = ensure_rendering_api_supported(
+            BackendKind::Wayland,
+            RenderingApiConfig {
+                kind: RenderingApi::Vulkan,
+                raster_present: RasterPresentKind::Auto,
+                raster_present_configured: false,
+            },
+        )
+        .expect_err("Wayland Vulkan should require its presenter build feature");
+
+        assert_eq!(
+            err,
+            "Vulkan rendering support is not available in this build"
+        );
+    }
+
+    #[cfg(all(feature = "wayland-vulkan", target_os = "linux"))]
+    #[test]
+    fn rendering_api_matrix_accepts_compiled_wayland_vulkan() {
+        let config = RenderingApiConfig {
+            kind: RenderingApi::Vulkan,
+            raster_present: RasterPresentKind::Auto,
+            raster_present_configured: false,
+        };
+        assert!(ensure_rendering_api_supported(BackendKind::Wayland, config).is_ok());
+        assert!(
+            ensure_compiled_runner_dispatch(BackendKind::Wayland, RenderingApi::Vulkan).is_ok()
+        );
+        assert!(
+            ensure_compiled_runner_dispatch(BackendKind::Wayland, RenderingApi::OpenGl).is_ok()
+        );
+    }
+
+    #[cfg(all(feature = "drm-core", target_os = "linux"))]
+    #[test]
+    fn rendering_api_matrix_rejects_metal_on_drm() {
+        let err = ensure_rendering_api_supported(
+            BackendKind::Drm,
+            RenderingApiConfig {
+                kind: RenderingApi::Metal,
+                raster_present: RasterPresentKind::Auto,
+                raster_present_configured: false,
+            },
+        )
+        .expect_err("metal should be rejected on drm");
+
+        assert_eq!(
+            err,
+            "rendering_api :metal is only supported with backend :macos"
+        );
+    }
+
+    #[cfg(all(feature = "drm-core", not(feature = "vulkan"), target_os = "linux"))]
+    #[test]
+    fn rendering_api_matrix_reports_unavailable_drm_vulkan_build() {
+        let err = ensure_rendering_api_supported(
+            BackendKind::Drm,
+            RenderingApiConfig {
+                kind: RenderingApi::Vulkan,
+                raster_present: RasterPresentKind::Auto,
+                raster_present_configured: false,
+            },
+        )
+        .expect_err("Vulkan should require its build feature");
+
+        assert_eq!(
+            err,
+            "Vulkan rendering support is not available in this build"
+        );
+    }
+
+    #[cfg(all(feature = "drm-core", feature = "vulkan", target_os = "linux"))]
+    #[test]
+    fn rendering_api_matrix_accepts_compiled_drm_vulkan() {
+        assert!(
+            ensure_rendering_api_supported(
+                BackendKind::Drm,
+                RenderingApiConfig {
+                    kind: RenderingApi::Vulkan,
+                    raster_present: RasterPresentKind::Auto,
+                    raster_present_configured: false,
+                },
+            )
+            .is_ok()
+        );
+    }
+
+    #[cfg(all(feature = "drm-vulkan", target_os = "linux"))]
+    #[test]
+    fn compiled_runner_dispatch_accepts_wired_drm_vulkan() {
+        assert!(ensure_compiled_runner_dispatch(BackendKind::Drm, RenderingApi::Vulkan).is_ok());
+    }
+
+    #[cfg(all(feature = "drm-vulkan", not(feature = "drm"), target_os = "linux"))]
+    #[test]
+    fn vulkan_only_drm_build_rejects_opengl_without_fallback() {
+        let error = ensure_rendering_api_supported(
+            BackendKind::Drm,
+            RenderingApiConfig {
+                kind: RenderingApi::OpenGl,
+                raster_present: RasterPresentKind::Auto,
+                raster_present_configured: false,
+            },
+        )
+        .expect_err("Vulkan-only DRM must not select OpenGL");
+        assert_eq!(
+            error,
+            "OpenGL DRM rendering support is not available in this build"
+        );
+    }
+
+    #[test]
+    fn rendering_api_matrix_allows_headless_auto_and_raster() {
+        assert!(
+            ensure_rendering_api_supported(BackendKind::Headless, RenderingApiConfig::default())
+                .is_ok()
+        );
+        assert!(
+            ensure_rendering_api_supported(
+                BackendKind::Headless,
+                RenderingApiConfig {
+                    kind: RenderingApi::Raster,
+                    raster_present: RasterPresentKind::Auto,
+                    raster_present_configured: false,
+                },
+            )
+            .is_ok()
+        );
+    }
+
+    #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
+    #[test]
+    fn rendering_api_matrix_allows_headless_gl_on_linux() {
+        assert!(
+            ensure_rendering_api_supported(
+                BackendKind::Headless,
+                RenderingApiConfig {
+                    kind: RenderingApi::OpenGl,
+                    raster_present: RasterPresentKind::Auto,
+                    raster_present_configured: false,
+                },
+            )
+            .is_ok()
+        );
+    }
+
+    #[cfg(not(all(target_os = "linux", feature = "headless-opengl")))]
+    #[test]
+    fn rendering_api_matrix_rejects_headless_gl_without_feature() {
+        let err = ensure_rendering_api_supported(
+            BackendKind::Headless,
+            RenderingApiConfig {
+                kind: RenderingApi::OpenGl,
+                raster_present: RasterPresentKind::Auto,
+                raster_present_configured: false,
+            },
+        )
+        .expect_err("headless OpenGL should require the headless-opengl feature");
+
+        assert!(err.contains("not available for backend :headless in this build"));
+    }
+
+    #[test]
+    fn rendering_api_matrix_rejects_headless_metal() {
+        let metal_err = ensure_rendering_api_supported(
+            BackendKind::Headless,
+            RenderingApiConfig {
+                kind: RenderingApi::Metal,
+                raster_present: RasterPresentKind::Auto,
+                raster_present_configured: false,
+            },
+        )
+        .expect_err("metal should be rejected on headless");
+        assert_eq!(
+            metal_err,
+            "rendering_api :metal is only supported with backend :macos"
+        );
+    }
+
+    #[cfg(not(all(target_os = "linux", feature = "headless-vulkan")))]
+    #[test]
+    fn rendering_api_matrix_reports_unavailable_headless_vulkan_build() {
+        let vulkan_err = ensure_rendering_api_supported(
+            BackendKind::Headless,
+            RenderingApiConfig {
+                kind: RenderingApi::Vulkan,
+                raster_present: RasterPresentKind::Auto,
+                raster_present_configured: false,
+            },
+        )
+        .expect_err("headless Vulkan should require the headless-vulkan feature");
+        assert_eq!(
+            vulkan_err,
+            "Vulkan rendering support is not available in this build"
+        );
+    }
+
+    #[cfg(all(target_os = "linux", feature = "headless-vulkan"))]
+    #[test]
+    fn rendering_api_matrix_allows_headless_vulkan_build() {
+        ensure_rendering_api_supported(
+            BackendKind::Headless,
+            RenderingApiConfig {
+                kind: RenderingApi::Vulkan,
+                raster_present: RasterPresentKind::Auto,
+                raster_present_configured: false,
+            },
+        )
+        .expect("headless Vulkan should be available when compiled");
+    }
+
+    #[cfg(all(
+        feature = "wayland-core",
+        not(feature = "wayland"),
+        target_os = "linux"
+    ))]
+    #[test]
+    fn vulkan_only_wayland_reports_only_cpu_raster_presentation() {
+        assert_eq!(raster_present_capabilities(BackendKind::Wayland), ["cpu"]);
+    }
+
+    #[cfg(all(feature = "drm-core", not(feature = "drm"), target_os = "linux"))]
+    #[test]
+    fn vulkan_only_drm_reports_no_raster_presentation() {
+        assert!(raster_present_capabilities(BackendKind::Drm).is_empty());
+    }
+
+    #[cfg(any(
+        all(feature = "wayland-core", target_os = "linux"),
+        all(feature = "drm-core", target_os = "linux")
+    ))]
+    #[test]
+    fn only_auto_rendering_api_uses_raster_startup_fallback() {
+        assert!(uses_auto_raster_fallback(RenderingApi::Auto));
+        assert!(!uses_auto_raster_fallback(RenderingApi::OpenGl));
+        assert!(!uses_auto_raster_fallback(RenderingApi::Vulkan));
+    }
+
+    #[cfg(feature = "macos")]
+    #[test]
+    fn rendering_api_matrix_rejects_gl_and_raster_present_on_macos() {
+        let gl_err = ensure_rendering_api_supported(
+            BackendKind::Macos,
+            RenderingApiConfig {
+                kind: RenderingApi::OpenGl,
+                raster_present: RasterPresentKind::Auto,
+                raster_present_configured: false,
+            },
+        )
+        .expect_err("gl should be rejected on macOS");
+        assert_eq!(
+            gl_err,
+            "rendering_api :opengl is not supported with backend :macos"
+        );
+
+        let raster_present_err = ensure_rendering_api_supported(
+            BackendKind::Macos,
+            RenderingApiConfig {
+                kind: RenderingApi::Raster,
+                raster_present: RasterPresentKind::Cpu,
+                raster_present_configured: true,
+            },
+        )
+        .expect_err("raster present options should be rejected on macOS");
+        assert_eq!(
+            raster_present_err,
+            "rendering_api raster present options are only supported with backend :wayland or :drm"
+        );
     }
 
     #[test]
@@ -2685,25 +5296,25 @@ mod tests {
         );
     }
 
-    #[cfg(not(feature = "drm"))]
+    #[cfg(not(feature = "drm-core"))]
     #[test]
     fn parse_backend_name_rejects_drm_when_not_compiled() {
         assert_eq!(
             parse_backend_name("drm"),
             Err(
-                "DRM backend not compiled; add :drm to config :emerge, compiled_backends: [...]"
+                "DRM backend is not compiled; add :drm to config :emerge, compiled_backends: [...]"
                     .to_string()
             )
         );
     }
 
-    #[cfg(not(feature = "wayland"))]
+    #[cfg(not(feature = "wayland-core"))]
     #[test]
     fn parse_backend_name_rejects_wayland_when_not_compiled() {
         assert_eq!(
             parse_backend_name("wayland"),
             Err(
-                "Wayland backend not compiled; add :wayland to config :emerge, compiled_backends: [...]"
+                "Wayland backend is not compiled; add :wayland to config :emerge, compiled_backends: [...]"
                     .to_string()
             )
         );
@@ -2874,27 +5485,169 @@ fn parse_cursor_icon_name(value: &str) -> Result<CursorIcon, String> {
     }
 }
 
+fn parse_rendering_api_config(config: RenderingApiConfigNif) -> Result<RenderingApiConfig, String> {
+    let kind = parse_rendering_api(&config.kind)?;
+    let raster_present = parse_raster_present_kind(&config.raster_present)?;
+
+    Ok(RenderingApiConfig {
+        kind,
+        raster_present,
+        raster_present_configured: config.raster_present_configured,
+    })
+}
+
+fn parse_rendering_api(value: &str) -> Result<RenderingApi, String> {
+    match value.to_ascii_lowercase().as_str() {
+        "auto" => Ok(RenderingApi::Auto),
+        "opengl" => Ok(RenderingApi::OpenGl),
+        "raster" => Ok(RenderingApi::Raster),
+        "metal" => Ok(RenderingApi::Metal),
+        "vulkan" => Ok(RenderingApi::Vulkan),
+        other => Err(format!(
+            "unsupported rendering_api kind: {other}; expected auto, opengl, raster, metal, or vulkan"
+        )),
+    }
+}
+
+fn parse_raster_present_kind(value: &str) -> Result<RasterPresentKind, String> {
+    match value.to_ascii_lowercase().as_str() {
+        "auto" => Ok(RasterPresentKind::Auto),
+        "gpu_upload" => Ok(RasterPresentKind::GpuUpload),
+        "cpu" => Ok(RasterPresentKind::Cpu),
+        other => Err(format!(
+            "unsupported rendering_api raster present mode: {other}; expected auto, gpu_upload, or cpu"
+        )),
+    }
+}
+
+fn ensure_rendering_api_supported(
+    backend: BackendKind,
+    config: RenderingApiConfig,
+) -> Result<(), String> {
+    let _raster_present = config.raster_present;
+
+    match backend {
+        #[cfg(feature = "macos")]
+        BackendKind::Macos => ensure_macos_rendering_api_supported(config),
+        #[cfg(all(feature = "wayland-core", target_os = "linux"))]
+        BackendKind::Wayland => ensure_wayland_rendering_api_supported(config),
+        #[cfg(all(feature = "drm-core", target_os = "linux"))]
+        BackendKind::Drm => ensure_drm_rendering_api_supported(config),
+        BackendKind::Headless => ensure_headless_rendering_api_supported(config),
+    }
+}
+
+fn ensure_compiled_runner_dispatch(
+    _backend: BackendKind,
+    _rendering_api: RenderingApi,
+) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(feature = "macos")]
+fn ensure_macos_rendering_api_supported(config: RenderingApiConfig) -> Result<(), String> {
+    match config.kind {
+        RenderingApi::Auto | RenderingApi::Metal | RenderingApi::Raster
+            if !config.raster_present_configured =>
+        {
+            Ok(())
+        }
+        RenderingApi::OpenGl => {
+            Err("rendering_api :opengl is not supported with backend :macos".to_string())
+        }
+        RenderingApi::Vulkan => {
+            Err("rendering_api :vulkan is not supported with backend :macos".to_string())
+        }
+        RenderingApi::Auto | RenderingApi::Metal | RenderingApi::Raster => Err(
+            "rendering_api raster present options are only supported with backend :wayland or :drm"
+                .to_string(),
+        ),
+    }
+}
+
+#[cfg(all(feature = "wayland-core", target_os = "linux"))]
+fn ensure_wayland_rendering_api_supported(config: RenderingApiConfig) -> Result<(), String> {
+    match config.kind {
+        RenderingApi::Auto | RenderingApi::OpenGl if cfg!(feature = "wayland") => Ok(()),
+        RenderingApi::Auto | RenderingApi::OpenGl => {
+            Err("OpenGL Wayland rendering support is not available in this build".to_string())
+        }
+        RenderingApi::Raster => Ok(()),
+        RenderingApi::Metal => {
+            Err("rendering_api :metal is only supported with backend :macos".to_string())
+        }
+        RenderingApi::Vulkan if cfg!(feature = "wayland-vulkan") => Ok(()),
+        RenderingApi::Vulkan => {
+            Err("Vulkan rendering support is not available in this build".to_string())
+        }
+    }
+}
+
+#[cfg(all(feature = "drm-core", target_os = "linux"))]
+fn ensure_drm_rendering_api_supported(config: RenderingApiConfig) -> Result<(), String> {
+    match config.kind {
+        RenderingApi::Auto | RenderingApi::OpenGl | RenderingApi::Raster
+            if cfg!(feature = "drm") =>
+        {
+            Ok(())
+        }
+        RenderingApi::Auto | RenderingApi::OpenGl | RenderingApi::Raster => {
+            Err("OpenGL DRM rendering support is not available in this build".to_string())
+        }
+        RenderingApi::Metal => {
+            Err("rendering_api :metal is only supported with backend :macos".to_string())
+        }
+        RenderingApi::Vulkan if cfg!(feature = "drm-vulkan") => Ok(()),
+        RenderingApi::Vulkan => {
+            Err("Vulkan rendering support is not available in this build".to_string())
+        }
+    }
+}
+
+fn ensure_headless_rendering_api_supported(config: RenderingApiConfig) -> Result<(), String> {
+    match config.kind {
+        RenderingApi::Auto | RenderingApi::Raster => Ok(()),
+        #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
+        RenderingApi::OpenGl => Ok(()),
+        #[cfg(not(all(target_os = "linux", feature = "headless-opengl")))]
+        RenderingApi::OpenGl => Err(
+            "rendering_api :opengl is not available for backend :headless in this build"
+                .to_string(),
+        ),
+        RenderingApi::Metal => {
+            Err("rendering_api :metal is only supported with backend :macos".to_string())
+        }
+        RenderingApi::Vulkan if cfg!(all(target_os = "linux", feature = "headless-vulkan")) => {
+            Ok(())
+        }
+        RenderingApi::Vulkan => {
+            Err("Vulkan rendering support is not available in this build".to_string())
+        }
+    }
+}
+
 fn parse_backend_name(value: &str) -> Result<BackendKind, String> {
     match value {
         #[cfg(feature = "macos")]
         "macos" => Ok(BackendKind::Macos),
         #[cfg(not(feature = "macos"))]
         "macos" => Err(
-            "macOS backend not compiled; add :macos to config :emerge, compiled_backends: [...]"
+            "macOS backend is not compiled; add :macos to config :emerge, compiled_backends: [...]"
                 .to_string(),
         ),
-        #[cfg(all(feature = "drm", target_os = "linux"))]
+        "headless" => Ok(BackendKind::Headless),
+        #[cfg(all(feature = "drm-core", target_os = "linux"))]
         "drm" => Ok(BackendKind::Drm),
-        #[cfg(not(all(feature = "drm", target_os = "linux")))]
+        #[cfg(not(all(feature = "drm-core", target_os = "linux")))]
         "drm" => Err(
-            "DRM backend not compiled; add :drm to config :emerge, compiled_backends: [...]"
+            "DRM backend is not compiled; add :drm to config :emerge, compiled_backends: [...]"
                 .to_string(),
         ),
-        #[cfg(all(feature = "wayland", target_os = "linux"))]
+        #[cfg(all(feature = "wayland-core", target_os = "linux"))]
         "wayland" => Ok(BackendKind::Wayland),
-        #[cfg(not(all(feature = "wayland", target_os = "linux")))]
+        #[cfg(not(all(feature = "wayland-core", target_os = "linux")))]
         "wayland" => Err(
-            "Wayland backend not compiled; add :wayland to config :emerge, compiled_backends: [...]"
+            "Wayland backend is not compiled; add :wayland to config :emerge, compiled_backends: [...]"
                 .to_string(),
         ),
         "wayland_legacy" => {

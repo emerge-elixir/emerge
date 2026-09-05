@@ -6,7 +6,6 @@ defmodule Emerge.UI.Internal.Validation do
   alias Emerge.Engine.Element
   alias Emerge.Engine.Tree.Attrs, as: TreeAttrs
   alias Emerge.UI.Event
-  alias EmergeSkia.VideoTarget
 
   @state_style_key_set AttrSchema.state_style_key_set()
 
@@ -205,12 +204,12 @@ defmodule Emerge.UI.Internal.Validation do
           "#{function_name} expects the second argument to be a binary string, got: #{inspect(other)}"
   end
 
-  @spec validate_video_target!(attrs_owner(), term()) :: VideoTarget.t()
-  def validate_video_target!(_function_name, %VideoTarget{} = target), do: target
+  @spec validate_video_target!(attrs_owner(), term()) :: atom()
+  def validate_video_target!(_function_name, target) when is_atom(target), do: target
 
   def validate_video_target!(function_name, other) do
     raise ArgumentError,
-          "#{function_name} expects the second argument to be an EmergeSkia.VideoTarget, got: #{inspect(other)}"
+          "#{function_name} expects the second argument to be an atom target, got: #{inspect(other)}"
   end
 
   @spec validate_image_source!(attrs_owner(), image_source()) :: image_source()

@@ -6,8 +6,8 @@ defmodule Emerge.Bench.Scenarios do
   alias Emerge.Engine
   alias Emerge.Engine.Element
   alias Emerge.Engine.Patch
-  alias EmergeSkia.VideoTarget
 
+  @video_targets 0..31 |> Enum.map(&String.to_atom("bench-video-#{&1}")) |> List.to_tuple()
   @default_sizes [500]
   @scenario_ids [
     :list_text,
@@ -775,15 +775,7 @@ defmodule Emerge.Bench.Scenarios do
     end)
   end
 
-  defp video_target(index) do
-    %VideoTarget{
-      id: "bench-video-#{index}",
-      width: 64 + rem(index, 3) * 16,
-      height: 36 + rem(index, 2) * 12,
-      mode: :prime,
-      ref: make_ref()
-    }
-  end
+  defp video_target(index), do: elem(@video_targets, rem(index, tuple_size(@video_targets)))
 
   defp animation_cards(count, opts) do
     count

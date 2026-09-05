@@ -14,57 +14,6 @@ fn assert_approx(actual: f32, expected: f32) {
     );
 }
 
-fn nodes_without_dynamic_paint_boundaries(
-    nodes: Vec<crate::render_scene::RenderNode>,
-) -> Vec<crate::render_scene::RenderNode> {
-    nodes
-        .into_iter()
-        .flat_map(|node| match node {
-            crate::render_scene::RenderNode::ShadowPass { children } => {
-                vec![crate::render_scene::RenderNode::ShadowPass {
-                    children: nodes_without_dynamic_paint_boundaries(children),
-                }]
-            }
-            crate::render_scene::RenderNode::Clip { clips, children } => {
-                vec![crate::render_scene::RenderNode::Clip {
-                    clips,
-                    children: nodes_without_dynamic_paint_boundaries(children),
-                }]
-            }
-            crate::render_scene::RenderNode::RelaxedClip { clips, children } => {
-                vec![crate::render_scene::RenderNode::RelaxedClip {
-                    clips,
-                    children: nodes_without_dynamic_paint_boundaries(children),
-                }]
-            }
-            crate::render_scene::RenderNode::Transform {
-                transform,
-                children,
-            } => vec![crate::render_scene::RenderNode::Transform {
-                transform,
-                children: nodes_without_dynamic_paint_boundaries(children),
-            }],
-            crate::render_scene::RenderNode::Alpha { alpha, children } => {
-                vec![crate::render_scene::RenderNode::Alpha {
-                    alpha,
-                    children: nodes_without_dynamic_paint_boundaries(children),
-                }]
-            }
-            crate::render_scene::RenderNode::PaintLayer(layer) => {
-                if layer.policy == crate::render_scene::PaintLayerPolicy::DynamicRedraw {
-                    nodes_without_dynamic_paint_boundaries(layer.content_nodes())
-                } else {
-                    let children = nodes_without_dynamic_paint_boundaries(layer.content_nodes());
-                    vec![crate::render_scene::RenderNode::PaintLayer(
-                        layer.with_children(children),
-                    )]
-                }
-            }
-            crate::render_scene::RenderNode::Primitive(_) => vec![node],
-        })
-        .collect()
-}
-
 fn fixed_attrs(width: f64, height: f64) -> Attrs {
     Attrs {
         width: Some(Length::Px(width)),
@@ -245,10 +194,7 @@ fn root_layout_scale_patch_matches_fresh_scaled_layout_and_render_scene() {
     let (mut fresh, _fresh_root_id) = scaled_shell_tree(Some(1.25));
     let fresh_output = layout_and_refresh_default(&mut fresh, Constraint::new(480.0, 320.0), 1.0);
 
-    assert_eq!(
-        nodes_without_dynamic_paint_boundaries(patched_output.scene.nodes),
-        nodes_without_dynamic_paint_boundaries(fresh_output.scene.nodes)
-    );
+    assert_eq!(patched_output.scene.nodes, fresh_output.scene.nodes);
 }
 
 #[test]
@@ -283,10 +229,7 @@ fn root_layout_rotate_patch_matches_fresh_rotated_layout_and_render_scene() {
         .layout_rotate = Some(90.0);
     let fresh_output = layout_and_refresh_default(&mut fresh, Constraint::new(480.0, 320.0), 1.0);
 
-    assert_eq!(
-        nodes_without_dynamic_paint_boundaries(patched_output.scene.nodes),
-        nodes_without_dynamic_paint_boundaries(fresh_output.scene.nodes)
-    );
+    assert_eq!(patched_output.scene.nodes, fresh_output.scene.nodes);
 }
 
 #[test]

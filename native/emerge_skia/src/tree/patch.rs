@@ -338,6 +338,7 @@ fn plain_single_child_wrapper_contains(
 fn plain_wrapper_attrs(attrs: &Attrs) -> bool {
     attrs.width.is_none()
         && attrs.height.is_none()
+        && attrs.align_x.unwrap_or(AlignX::Left) == AlignX::Left
         && attrs.layout_scale.is_none()
         && attrs.layout_rotate.is_none()
         && attrs.padding.is_none()
@@ -900,10 +901,6 @@ fn apply_patch(
                     .get_mut(&id)
                     .ok_or_else(|| "SetAttrs: node not found".to_string())?;
                 let before_attrs = before_declared_attrs.clone();
-                let before_patch_content = element.runtime.patch_content.clone();
-                let before_content_origin = element.runtime.text_input_content_origin;
-                let before_slider_patch_value = element.runtime.slider_patch_value;
-                let before_slider_value_origin = element.runtime.slider_value_origin;
 
                 element.spec.attrs_raw = attrs_raw;
                 let content_is_from_patch =
@@ -968,13 +965,6 @@ fn apply_patch(
                 }
                 let registry_refresh_dirty =
                     attrs_change_affects_registry_refresh(&before_attrs, &element.spec.declared);
-                if before_patch_content != element.runtime.patch_content
-                    || before_content_origin != element.runtime.text_input_content_origin
-                    || before_slider_patch_value != element.runtime.slider_patch_value
-                    || before_slider_value_origin != element.runtime.slider_value_origin
-                {
-                    invalidation.add(TreeInvalidation::Paint);
-                }
                 (
                     invalidation,
                     registry_refresh_dirty,
@@ -3155,6 +3145,65 @@ mod tests {
     }
 
     #[test]
+    fn test_apply_patches_relayouts_centered_column_text_label() {
+        let root_id = NodeId::from_term_bytes(vec![11]);
+        let wrapper_id = NodeId::from_term_bytes(vec![12]);
+        let text_id = NodeId::from_term_bytes(vec![13]);
+        let mut tree = ElementTree::new();
+        tree.set_root_id(root_id);
+        tree.insert(Element::with_attrs(
+            root_id,
+            ElementKind::Column,
+            Vec::new(),
+            Attrs {
+                width: Some(Length::Px(400.0)),
+                height: Some(Length::Px(200.0)),
+                padding: Some(Padding::Uniform(48.0)),
+                ..Attrs::default()
+            },
+        ));
+        tree.insert(Element::with_attrs(
+            wrapper_id,
+            ElementKind::El,
+            Vec::new(),
+            Attrs {
+                align_x: Some(AlignX::Center),
+                font_size: Some(48.0),
+                ..Attrs::default()
+            },
+        ));
+        tree.insert(Element::with_attrs(
+            text_id,
+            ElementKind::Text,
+            Vec::new(),
+            Attrs {
+                content: Some("Say intro here".to_string()),
+                ..Attrs::default()
+            },
+        ));
+        tree.set_children(&root_id, vec![wrapper_id]).unwrap();
+        tree.set_children(&wrapper_id, vec![text_id]).unwrap();
+        layout_tree_default(&mut tree, Constraint::new(400.0, 200.0), 1.0);
+        let before = tree.get(&wrapper_id).unwrap().layout.frame.unwrap();
+
+        let invalidation = apply_patches(
+            &mut tree,
+            vec![Patch::SetAttrs {
+                id: text_id,
+                attrs_raw: content_only_attrs_raw("Second slide notes"),
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(invalidation, TreeInvalidation::Measure);
+        layout_tree_default(&mut tree, Constraint::new(400.0, 200.0), 1.0);
+        let after = tree.get(&wrapper_id).unwrap().layout.frame.unwrap();
+        assert!(after.width > before.width);
+        assert!(after.x < before.x);
+        assert!((after.x + after.width / 2.0 - 200.0).abs() < 0.001);
+    }
+
+    #[test]
     fn test_apply_patches_keeps_row_text_label_content_as_measure() {
         let root_id = NodeId::from_term_bytes(vec![4]);
         let wrapper_id = NodeId::from_term_bytes(vec![5]);
@@ -3450,6 +3499,40 @@ mod tests {
         assert_eq!(updated.spec.declared.slider_value, Some(60.0));
         assert_eq!(updated.layout.effective.slider_value, Some(60.0));
         assert_eq!(updated.runtime.slider_patch_value, None);
+        assert_eq!(
+            updated.runtime.slider_value_origin,
+            SliderValueOrigin::Event
+        );
+    }
+
+    #[test]
+    fn test_runtime_owned_slider_delayed_patch_marker_is_not_paint_damage() {
+        let id = NodeId::from_term_bytes(vec![184]);
+        let attrs = Attrs {
+            slider_value: Some(60.0),
+            ..Attrs::default()
+        };
+        let mut element = Element::with_attrs(id, ElementKind::Slider, Vec::new(), attrs);
+        element.runtime.slider_value_origin = SliderValueOrigin::Event;
+
+        let mut tree = ElementTree::new();
+        tree.set_root_id(id);
+        tree.insert(element);
+
+        let invalidation = apply_patches(
+            &mut tree,
+            vec![Patch::SetAttrs {
+                id,
+                attrs_raw: slider_value_attrs_raw(40.0),
+            }],
+        )
+        .unwrap();
+
+        let updated = tree.get(&id).unwrap();
+        assert_eq!(invalidation, TreeInvalidation::None);
+        assert_eq!(updated.spec.declared.slider_value, Some(60.0));
+        assert_eq!(updated.layout.effective.slider_value, Some(60.0));
+        assert_eq!(updated.runtime.slider_patch_value, Some(40.0_f64.to_bits()));
         assert_eq!(
             updated.runtime.slider_value_origin,
             SliderValueOrigin::Event

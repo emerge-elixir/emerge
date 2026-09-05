@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.4.0] - 2026-09-03
+
+See the [0.4 migration guide](guides/migrations/0.4.md) for upgrade examples.
+
+### Added
+
+- Added a unified `rendering_api` option across macOS, Wayland, DRM, and headless renderers. Wayland and DRM now support raster presentation, and Vulkan is available for supported Wayland, DRM, and headless builds.
+- Added headless binary and Linux DMA-BUF PRIME output. Frames are delivered directly to the configured process as `%VideoInterop.Frame{}` values.
+- Added packed BW1 and Gray2 headless output with configurable BW1 polarity and deterministic Atkinson dithering that preserves crisp text, borders, and SVG content.
+- Added viewport-local atom video targets through `video(attrs, target)` and `Emerge.submit_video_frame/3`, supporting owned binary frames and leased DMA-BUF frames. Hidden targets consume and drop frames; visible targets retain only the latest frame.
+- Added Vulkan video composition for supported NV12 and XRGB8888 DMA-BUF streams, including explicit synchronization and linear or non-linear NV12 layouts.
+- Added bounded decoded-image caching, configurable target-sized raster decoding, and asset memory diagnostics. Defaults are 256 entries and 256 MiB per renderer.
+- Added `EmergeSkia.renderer_info/1` and expanded renderer statistics for rendering, caches, assets, and video.
+- Added precompiled minimal raster NIFs for x86_64, AArch64, and ARMv7 hard-float Linux, OpenGL for ARMv7 hard-float Linux, and combined or Vulkan-only builds for 64-bit Linux. `compiled_backends` now accepts a per-backend GPU API matrix such as `[drm: [:vulkan]]` or `[drm: :all]`.
+
+### Changed
+
+- **Breaking:** `render_to_pixels/2` and `render_to_png/2` now capture a renderer's latest retained frame. They no longer accept a tree and now return `{:ok, binary}` or `{:error, reason}`.
+- **Breaking:** the macOS `macos_backend` option was replaced by the cross-platform `rendering_api` option.
+- **Breaking:** video submission now uses atom targets and `Emerge.submit_video_frame/3`. Raw PRIME submission, direct connections, and renderer-owned target handles were removed; VideoInterop now defines frame ownership, leases, and synchronization.
+- **Breaking:** runtime font loading is now renderer-local and requires `EmergeSkia.load_font_file/5`, with the renderer as its first argument.
+- Asset workers, source policies, registered fonts, decoded caches, and diagnostics are now isolated per renderer. Starting, reconfiguring, or stopping one renderer does not affect another.
+- Renderer statistics use schema version 25, and the DRM `gpu_queue_completion` timing field was replaced by `gpu_render_elapsed`.
+
+### Fixed
+
+- Fixed centered text positioning after content changes alter the measured width.
+- Fixed touch-scroll ordering, sub-pixel fling movement, velocity sampling, and exact boundary clamping.
+- Fixed Wayland redraw starvation for scenes containing only video.
+- OpenGL video import now accepts supported non-linear DMA-BUF modifiers and fails safely when the required EGL extension or modifier support is unavailable.
+- Improved retained rendering-cache correctness for changing text, scrolling, animation, and interleaved static content.
+- Fixed native builds for newer Nerves toolchains.
+
+### Known limitations
+
+- Gray8 headless output remains outside the stable 0.4 output contract. Gray4 output is unsupported.
+
 ## [0.3.4] - 2026-07-31
 
 ### Fixed

@@ -1,151 +1,206 @@
 defmodule EmergeSkia do
   @moduledoc """
-  Minimal Skia renderer for the Emerge layout engine.
+  Low-level renderer API used by Emerge viewports.
 
-  This library renders retained Emerge trees through the native Rust layout,
-  event, and Skia pipeline.
+  Most applications should define a viewport with `use Emerge`. Use
+  `EmergeSkia` directly when integrating the renderer without the viewport
+  process or when using renderer-specific APIs such as capture, statistics, or
+  video targets.
 
   ## Example
 
-      # Start renderer
       {:ok, renderer} =
         EmergeSkia.start(
           otp_app: :my_app,
+          backend: :wayland,
           title: "My App",
           width: 800,
           height: 600
         )
 
-      import Emerge.UI
-      import Emerge.UI.Color
-      import Emerge.UI.Size
-      import Emerge.UI.Space
+      {_state, _assigned_tree} = EmergeSkia.upload_tree(renderer, tree)
+      :ok = EmergeSkia.stop(renderer)
 
-      tree =
-        el(
-          [
-            width(px(220)),
-            height(px(80)),
-            Emerge.UI.Background.color(color(:sky, 500)),
-            Emerge.UI.Border.rounded(10),
-            padding(16),
-            Emerge.UI.Font.color(color(:white)),
-            Emerge.UI.Font.size(24)
-          ],
-          text("Hello!")
-        )
+  `start/1` documents renderer and output options. `renderer_info/1` reports the
+  backend and rendering API actually selected. `stats/2` and the capture
+  functions provide on-demand diagnostics for a running renderer.
 
-      {_state, _assigned} = EmergeSkia.upload_tree(renderer, tree)
+  For UI colors, prefer `Emerge.UI.Color`. `rgb/3` and `rgba/4` return packed
+  unsigned `0xRRGGBBAA` values for low-level interfaces.
 
-      # Stop when done
-      EmergeSkia.stop(renderer)
-
-  ## Color Format
-
-  For `Emerge.UI` styling, prefer `Emerge.UI.Color.color/1..3`,
-  `Emerge.UI.Color.color_rgb/3`, and `Emerge.UI.Color.color_rgba/4`.
-
-  `EmergeSkia.rgb/3` and `EmergeSkia.rgba/4` are still available when you need
-  packed 32-bit unsigned integers in RGBA format: `0xRRGGBBAA`
-
-  - `0xFF0000FF` = Red (fully opaque)
-  - `0x00FF00FF` = Green (fully opaque)
-  - `0x0000FFFF` = Blue (fully opaque)
-  - `0x00000080` = Black at 50% opacity
-
-  When you register an input target with `set_input_target/2`, Wayland close
-  requests are delivered separately as
-  `{:emerge_skia_close, :window_close_requested}`. This lifecycle message
-  bypasses the input mask so higher-level runtimes can shut down promptly.
+  When an input target is registered with `set_input_target/2`, Wayland close
+  requests arrive as `{:emerge_skia_close, :window_close_requested}` and are
+  not filtered by the input mask.
   """
 
   alias EmergeSkia.Assets
+  alias EmergeSkia.HeadlessPrimeSession
   alias EmergeSkia.Macos.Renderer
   alias EmergeSkia.Native
   alias EmergeSkia.Options
   alias EmergeSkia.Transport
   alias EmergeSkia.TreeRenderer
-  alias EmergeSkia.VideoTarget
 
-  @type renderer :: reference() | Renderer.t()
+  @typedoc "Renderer handle returned by `start/1`."
+  @type renderer :: reference() | struct()
   @type color :: non_neg_integer()
-  @type video_target :: VideoTarget.t()
-
-  @default_asset_timeout_ms 30_000
 
   @doc """
-  Start a new renderer window.
+  Starts a renderer session.
+
+  `otp_app` is required and identifies the application whose `priv/` directory
+  contains logical assets.
+
+      {:ok, renderer} =
+        EmergeSkia.start(
+          otp_app: :my_app,
+          backend: :wayland,
+          rendering_api: :auto,
+          title: "My App",
+          width: 800,
+          height: 600
+        )
+
+  ## Backend and rendering API
+
+  | Backend/mode | Rendering APIs | Fallback | Capture | Video |
+  |---|---|---|---|---|
+  | macOS | `:auto`, `:metal`, `:raster` | `:auto` falls back from Metal to raster | No | No |
+  | Wayland | `:auto`, `:opengl`, `:raster`, `:vulkan` | `:auto` falls back from OpenGL to raster | Yes | OpenGL/Vulkan when supported |
+  | DRM | `:auto`, `:opengl`, `:raster`, `:vulkan` | `:auto` falls back from OpenGL to raster GPU upload | Yes | OpenGL/Vulkan when supported |
+  | headless binary | `:auto`, `:opengl`, `:raster` | `:auto` falls back from OpenGL to raster | Yes | No |
+  | headless PRIME | `:auto`, `:opengl`, `:vulkan` | None | No | Produces ABGR8888 DMA-BUF frames |
+
+  Explicit Vulkan never falls back. DRM Vulkan requires
+  `vulkan_drm_node` in addition to the KMS `drm_card`.
+
+  Raster presentation may be selected explicitly:
+
+      rendering_api: [raster: [present: :cpu]]
+      rendering_api: [raster: [present: :gpu_upload]]
+      rendering_api: [auto: [raster: [present: :cpu]]]
+
+  Wayland supports `:cpu` and `:gpu_upload`. DRM supports `:gpu_upload`.
+
+  Runtime backends and their GPU APIs must be compiled into the NIF:
+
+      config :emerge,
+        compiled_backends: [
+          wayland: [:opengl],
+          drm: [:opengl, :vulkan],
+          headless: [:vulkan]
+        ]
+
+  Use `:all` to compile every GPU API supported by one backend, for example
+  `[drm: :all]`. Use an exact list such as `[drm: [:vulkan]]` to omit OpenGL.
+  Atom entries remain the compatibility shorthand, selecting OpenGL on Linux
+  and Metal on macOS: `[:wayland, :drm]`. Headless raster rendering requires no
+  matrix entry.
 
   ## Options
 
-  - `otp_app` - OTP application used to resolve logical assets from its `priv` dir (**required**)
-   - `backend` - Backend selection (`:wayland`, `:drm`, or `:macos`). Defaults to `:wayland` for Linux desktop builds, `:macos` on Darwin, and `:drm` for Nerves-style builds. The requested backend must also be present in `config :emerge, compiled_backends: [...]`.
-   - `macos_backend` - macOS surface backend selection (`:auto`, `:metal`, or `:raster`). Defaults to `:auto` and is only supported with `backend: :macos`.
-  - `title` - Window title (default: "Emerge")
-  - `width` - Window width in pixels (default: 800)
-  - `height` - Window height in pixels (default: 600)
-  - `scroll_line_pixels` - Pixel distance used for each discrete mouse-wheel line step (default: `30.0`)
-  - `drm_card` - DRM device path (default: `/dev/dri/card0`)
-  - `drm_startup_retries` - Number of DRM device startup retries (default: `40`)
-  - `drm_retry_interval_ms` - Delay between DRM startup retries in milliseconds (default: `250`)
-  - `drm_force_gpu_finish` - Force synchronous GPU completion before and after DRM buffer swaps for diagnostics. This can reduce rendering performance (default: `false`)
-  - `hw_cursor` - Enable hardware cursor when available (default: true)
-  - `drm_cursor` - Optional DRM-only cursor overrides for `default`, `text`, and `pointer`
-  - `input_log` - Log DRM input devices on startup (default: false)
-  - `render_log` - Log native backend render/present diagnostics, including Wayland present
-    and event-runtime traces. On Wayland, also writes an out-of-band watchdog file to
-    `/tmp/emerge-wayland-watchdog-<pid>.log` (default: false)
-  - `close_signal_log` - Log detailed Wayland window-close diagnostics to stderr (default: false)
-  - `stats` - Enable renderer stats collection without periodic logging (default: false)
-  - `renderer_stats_log` - Enable renderer stats collection and log all current stat families every 5 seconds, including frame rate, split render timings, split patch-to-present pipeline timing, layout-cache counters, and renderer-cache counters. Slow Wayland render frames also include a scene primitive summary and per-frame renderer-cache counters. (default: false)
-  - `renderer_animation_log` - Log detailed Wayland animation cadence traces. This is intentionally separate from `renderer_stats_log` because continuous animations can produce very noisy frame-by-frame logs. (default: false)
-  - `renderer_cache` - Renderer cache limits (optional)
-  - `assets` - Asset runtime policy options (optional)
+  | Option | Default | Description |
+  |---|---|---|
+  | `otp_app` | required | Application used to resolve logical assets |
+  | `backend` | platform default | `:macos`, `:wayland`, `:drm`, or `:headless` |
+  | `rendering_api` | `:auto` | Renderer selection described above |
+  | `title` | `"Emerge"` | Window title |
+  | `width`, `height` | `800`, `600` | Initial window size or fixed headless size |
+  | `scroll_line_pixels` | `30.0` | Pixels for one discrete wheel step |
+  | `drm_card` | `/dev/dri/card0` | KMS primary-node path |
+  | `vulkan_drm_node` | none | Required Vulkan device node for DRM Vulkan |
+  | `drm_startup_retries` | `40` | DRM startup retry count |
+  | `drm_retry_interval_ms` | `250` | Delay between DRM retries |
+  | `drm_force_gpu_finish` | `false` | OpenGL-only DRM diagnostic |
+  | `hw_cursor` | `true` | Use a DRM hardware cursor when available |
+  | `drm_cursor` | built-in theme | DRM cursor source and hotspot overrides |
+  | `input_log` | `false` | Log DRM input-device discovery |
+  | `render_log` | `false` | Log detailed renderer and presentation messages |
+  | `close_signal_log` | `false` | Log detailed Wayland close handling |
+  | `stats` | `false` | Collect renderer stats |
+  | `renderer_stats_log` | `false` | Collect and log renderer stats every five seconds |
+  | `renderer_animation_log` | `false` | Log Wayland animation cadence |
+  | `renderer_cache` | enabled on GPU routes | Paint-layer cache settings |
+  | `assets` | restrictive defaults | Asset paths, fonts, decode, and raster cache settings |
+  | `headless` | binary defaults | Headless output settings |
 
-  Native renderer logs are delivered to the process that starts the renderer as
-  `{:emerge_skia_log, level, source, message}` messages. Call
-  `set_log_target/2` to redirect them.
+  `backend_renderer` and `:gl` remain deprecated aliases. `macos_backend` and
+  `dispatch_mode` were removed. See [Migrating to 0.4](0-4.html).
 
-  `assets` options:
-  - `runtime_paths.enabled` (default: `false`)
-  - `runtime_paths.allowlist` (default: `[]`)
-  - `runtime_paths.follow_symlinks` (default: `false`)
-  - `runtime_paths.max_file_size` (default: `25_000_000`)
-  - `runtime_paths.extensions` (default image/SVG extension allowlist)
-  - `fonts` (default: `[]`)
+  Asset options are documented in [Use assets](use_assets.html).
 
-  `renderer_cache` options:
-  - `enabled` (default: `true`, GPU backends only)
-  - `max_new_payloads_per_frame` (default: `16`)
-  - `paint_layer.max_entries` (default: `512`)
-  - `paint_layer.max_bytes` (default: `671_088_640`)
-  - `paint_layer.max_entry_bytes` (default: `268_435_456`)
-  - `paint_layer.min_visible_before_store` (default: `1`)
-  - `paint_layer.max_stale_frames` (default: `120`)
+  ## Headless options
 
-  Set a renderer-cache limit to `0` to prevent new stores for that dimension.
+  Both binary and PRIME modes require a live local `target` PID. The renderer
+  sends frames directly to that process.
 
-  Each `assets.fonts` entry supports:
-  - `family` (required)
-  - `source` (required, logical path under `<otp_app>/priv` or `%Emerge.Assets.Ref{}`)
-  - `weight` (default: `400`)
-  - `italic` (default: `false`)
+  | Option | Default | Description |
+  |---|---|---|
+  | `mode` | `:binary` | `:binary` or `:prime` |
+  | `target` | none | Required live local frame recipient PID |
+  | `pixel_format` | `:rgba8888` | Binary output format |
+  | `bw1_polarity` | `:one_is_black` | `:one_is_black` or `:one_is_white` |
+  | `dither` | `false` | Atkinson dithering for raster BW1/Gray2 |
+  | `target_fps` | none | Positive requested cadence |
+  | `frame_message` | `:emerge_skia_frame` | Frame tuple tag |
+  | `prime.drm_node` | none | Optional absolute DRM allocation node |
+  | `prime.max_in_flight` | `2` | Maximum unreleased PRIME frames |
+  | `prime.on_backpressure` | `:drop_new` | PRIME backpressure policy |
 
-  Each `drm_cursor` entry supports:
-  - `source` (required, `.png` or `.svg`; logical path under `<otp_app>/priv`, `%Emerge.Assets.Ref{}`, or an absolute runtime path allowed by `assets.runtime_paths`)
-  - `hotspot` (required `{x, y}` tuple; integers and floats are allowed)
+  The target receives `{message_tag, %VideoInterop.Frame{}}`. The default tag is
+  `:emerge_skia_frame`; custom tags are delivered as strings. Binary mode uses
+  `%VideoInterop.Binary{}` storage with no lease. PRIME mode uses DMA-BUF storage
+  with a lease that must be released after the recipient finishes with it.
 
-  DRM cursor overrides are applied only on the `:drm` backend. Missing icons fall back to
-  the built-in `mocu-black-right` theme.
+  Stable binary formats are:
 
-  The DRM backend explicitly requests OpenGL ES 2; no GLES compatibility option is needed.
-  GPU timer profiling and PRIME video import are enabled only when their required GL/EGL
-  extensions are available. Missing optional capabilities do not stop ordinary DRM UI
-  rendering, while unsupported PRIME video target operations return an error.
+  | Format | Stride | Data |
+  |---|---:|---|
+  | `:rgba8888` | `width * 4` | Premultiplied RGBA |
+  | `:rgb888` | `width * 3` | Premultiplied RGB components with alpha omitted |
+  | `:bw1` | `ceil(width / 8)` | Eight MSB-first pixels per byte |
+  | `:gray2` | `ceil(width / 4)` | Four MSB-first two-bit pixels per byte |
 
-  Compile-time backend selection is configured separately with
-  `config :emerge, compiled_backends: [...]`. If omitted, desktop builds assume
-  `[:wayland]` and Nerves-style builds assume `[:drm]`.
+  BW1 and Gray2 rows are packed independently. Unused low bits in the final byte
+  of each row are zero. Gray2 values are `0..3` from black to white. Gray4 is
+  unavailable; Gray8 is not a stable 0.4 output contract.
+
+  Grayscale output is composited over white before quantization. Dithering is
+  available only with headless raster binary BW1/Gray2. Text, SVG/vector
+  coverage, borders, and crisp generated UI are protected from error diffusion.
+
+  Validate each received frame before consuming it:
+
+      :ok = VideoInterop.validate(frame)
+
+  ## Renderer cache options
+
+  | Option | Default |
+  |---|---:|
+  | `enabled` | `true`; explicit raster defaults to `false` |
+  | `max_new_payloads_per_frame` | `16` |
+  | `paint_layer.max_entries` | `512` |
+  | `paint_layer.max_bytes` | `671_088_640` |
+  | `paint_layer.max_entry_bytes` | `268_435_456` |
+  | `paint_layer.min_visible_before_store` | `1` |
+  | `paint_layer.max_stale_frames` | `120` |
+
+  Set an entry or byte limit to zero to prevent new stores for that limit.
+
+  ## DRM cursor options
+
+  `drm_cursor` accepts `default`, `text`, and `pointer` entries:
+
+      drm_cursor: [
+        pointer: [source: "cursors/pointer.svg", hotspot: {3, 2}]
+      ]
+
+  `source` must be a `.png` or `.svg` logical path, `%Emerge.Assets.Ref{}`, or
+  an allowed absolute runtime path. `hotspot` is a pair of non-negative numbers.
+
+  Native logs are delivered to the process that starts the renderer as
+  `{:emerge_skia_log, level, source, message}`. Use `set_log_target/2` to change
+  the destination.
   """
   @spec start(keyword()) :: {:ok, renderer()} | {:error, term()}
   def start(opts) when is_list(opts) do
@@ -162,13 +217,15 @@ defmodule EmergeSkia do
       raise ArgumentError, "drm_cursor is only supported with backend: :drm"
     end
 
-    if Keyword.has_key?(opts, :macos_backend) and String.downcase(native_opts.backend) != "macos" do
-      raise ArgumentError, "macos_backend is only supported with backend: :macos"
-    end
+    case Options.rendering_api_start_error(native_opts) do
+      nil ->
+        native_opts.backend
+        |> Transport.for_backend()
+        |> apply(:start_session, [native_opts, asset_config])
 
-    native_opts.backend
-    |> Transport.for_backend()
-    |> apply(:start_session, [native_opts, asset_config])
+      reason ->
+        {:error, {:error, reason}}
+    end
   end
 
   @spec start(String.t()) :: no_return()
@@ -196,9 +253,14 @@ defmodule EmergeSkia do
   end
 
   @doc """
-  Stop the renderer and close the window.
+  Stop the renderer and close its window or output session.
+
+  Most sessions return `:ok`. A headless PRIME session returns
+  `{:error, reason}` when it cannot complete ownership-safe shutdown. Do not
+  treat an error as successful cleanup; stop native video use and cold-restart
+  before loading replacement native code.
   """
-  @spec stop(renderer()) :: :ok
+  @spec stop(renderer()) :: :ok | {:error, term()}
   def stop(renderer) do
     renderer
     |> Transport.for_renderer()
@@ -216,58 +278,57 @@ defmodule EmergeSkia do
   end
 
   @doc """
-  Create a renderer-owned video target.
+  Submits one VideoInterop frame to a renderer-local video target.
 
-  V1 supports fixed-size `:prime` targets only on Prime-capable backends
-  (`:wayland` and `:drm`).
+  The target is the atom passed to `Emerge.UI.video/2` in the renderer's tree.
+  Hidden targets consume and drop frames immediately. Visible targets retain
+  only the latest submitted frame.
+
+  This low-level function exposes ownership on errors:
+
+  - `:ok` means the frame was consumed.
+  - `{:error, {:caller_owned, reason}}` means submission did not consume the
+    frame; the caller must release borrowed storage.
+  - `{:error, {:transferred, reason}}` means ownership transferred before the
+    failure and the caller must not release the frame.
+
+  Applications submitting through a viewport should normally use
+  `Emerge.submit_video_frame/3`, which consumes the frame on every normal
+  return and hides these ownership receipts.
   """
-  @spec video_target(renderer(), keyword()) :: {:ok, video_target()} | {:error, term()}
-  def video_target(%Renderer{}, _opts) do
-    {:error, "video targets are not supported on the macOS backend for now"}
-  end
+  @spec submit_video_frame(renderer(), atom(), VideoInterop.Frame.t()) ::
+          :ok | {:error, {:caller_owned | :transferred, term()}}
+  def submit_video_frame(%Renderer{}, _target, %VideoInterop.Frame{}),
+    do: {:error, {:caller_owned, :video_submission_unsupported}}
 
-  def video_target(renderer, opts) when is_list(opts) do
-    opts = Keyword.new(opts)
-    id = Keyword.get_lazy(opts, :id, fn -> "video-#{System.unique_integer([:positive])}" end)
-    width = Keyword.fetch!(opts, :width)
-    height = Keyword.fetch!(opts, :height)
-    mode = Keyword.get(opts, :mode, :prime)
+  def submit_video_frame(
+        %HeadlessPrimeSession{} = renderer,
+        target,
+        %VideoInterop.Frame{} = frame
+      )
+      when is_atom(target),
+      do: submit_native_video_frame(renderer, target, frame)
 
-    if !is_binary(id) do
-      raise ArgumentError, "video target id must be a binary"
-    end
+  def submit_video_frame(renderer, target, %VideoInterop.Frame{} = frame)
+      when is_reference(renderer) and is_atom(target),
+      do: submit_native_video_frame(renderer, target, frame)
 
-    if !is_integer(width) or width <= 0 do
-      raise ArgumentError, "video target width must be a positive integer"
-    end
+  def submit_video_frame(_renderer, _target, %VideoInterop.Frame{}),
+    do: {:error, {:caller_owned, :video_submission_unsupported}}
 
-    if !is_integer(height) or height <= 0 do
-      raise ArgumentError, "video target height must be a positive integer"
-    end
+  defp submit_native_video_frame(renderer, target, frame) do
+    renderer = EmergeSkia.Transport.Native.native_renderer(renderer)
 
-    if mode != :prime do
-      raise ArgumentError, "video target mode must be :prime in v1"
-    end
+    case Native.video_frame_submit(renderer, Atom.to_string(target), frame) do
+      {:ok, _receipt} ->
+        :ok
 
-    case Native.video_target_new(renderer, id, width, height, Atom.to_string(mode)) do
-      {:ok, ref} when is_reference(ref) ->
-        {:ok, %VideoTarget{id: id, width: width, height: height, mode: mode, ref: ref}}
-
-      ref when is_reference(ref) ->
-        {:ok, %VideoTarget{id: id, width: width, height: height, mode: mode, ref: ref}}
+      {:error, {receipt, reason}} when receipt in [:caller_owned, :transferred] ->
+        {:error, {receipt, reason}}
 
       {:error, reason} ->
-        {:error, reason}
+        {:error, {:caller_owned, reason}}
     end
-  end
-
-  @doc """
-  Submit a DRM Prime descriptor to a video target.
-  """
-  @spec submit_prime(video_target(), map()) :: :ok | {:error, term()}
-  def submit_prime(%VideoTarget{mode: :prime, ref: ref}, desc) when is_map(desc) do
-    Native.video_target_submit_prime(ref, desc)
-    |> normalize_native_ok()
   end
 
   @doc """
@@ -318,7 +379,11 @@ defmodule EmergeSkia do
   The font is registered by name and can be used with `Font.family/1` in elements.
   Load different variants (bold, italic) with separate calls using appropriate weight/italic params.
 
+  The registration belongs only to `renderer` and does not change any other
+  renderer or offscreen render.
+
   ## Parameters
+  - `renderer` - Renderer returned by `start/1`
   - `name` - Font family name to register (e.g., "my-font")
   - `weight` - Font weight (100-900, 400=normal, 700=bold)
   - `italic` - Whether this is an italic variant
@@ -326,110 +391,109 @@ defmodule EmergeSkia do
 
   ## Example
 
-      # Load font variants
-      :ok = EmergeSkia.load_font_file("my-font", 400, false, "priv/fonts/MyFont-Regular.ttf")
-      :ok = EmergeSkia.load_font_file("my-font", 700, false, "priv/fonts/MyFont-Bold.ttf")
-      :ok = EmergeSkia.load_font_file("my-font", 400, true, "priv/fonts/MyFont-Italic.ttf")
+      # Load font variants into one renderer
+      :ok = EmergeSkia.load_font_file(renderer, "my-font", 400, false, "priv/fonts/MyFont-Regular.ttf")
+      :ok = EmergeSkia.load_font_file(renderer, "my-font", 700, false, "priv/fonts/MyFont-Bold.ttf")
+      :ok = EmergeSkia.load_font_file(renderer, "my-font", 400, true, "priv/fonts/MyFont-Italic.ttf")
 
       # Use in elements
       el([Font.family("my-font"), Font.size(16)], text("Hello"))
       el([Font.family("my-font"), Font.bold()], text("Bold text"))
   """
-  @spec load_font_file(String.t(), non_neg_integer(), boolean(), Path.t()) ::
+  @spec load_font_file(renderer(), String.t(), non_neg_integer(), boolean(), Path.t()) ::
           :ok | {:error, term()}
-  def load_font_file(name, weight, italic, path) do
-    Assets.load_font_file(name, weight, italic, path)
+  def load_font_file(renderer, name, weight, italic, path) do
+    Assets.load_font_file(renderer, name, weight, italic, path)
   end
 
   # ===========================================================================
-  # Raster Backend (Offscreen Rendering)
+  # Screenshot capture
   # ===========================================================================
 
   @doc """
-  Render a tree to an RGBA pixel buffer (synchronous, no window).
+  Return pixels from the renderer's latest already-presented frame.
 
-  This is useful for testing, headless rendering, and image generation.
-  Each call creates a fresh CPU surface, runs layout, renders the tree, and
-  returns the pixels.
+  This API captures retained renderer state. It no longer accepts an Emerge tree;
+  pass a renderer handle returned by `start/1`.
 
-  ## Options
-
-  - `otp_app` - OTP application used to resolve logical assets from its `priv` dir (**required**)
-  - `width` - Output width in pixels (**required**)
-  - `height` - Output height in pixels (**required**)
-  - `scale` - Layout scale factor (default: `1.0`)
-  - `assets` - Asset runtime policy options (same shape as `start/1`)
-  - `asset_mode` - `:await` to block for asset resolution, or `:snapshot` to capture the current placeholder state (default: `:await`)
-  - `asset_timeout_ms` - Maximum wait time for `asset_mode: :await` (default: `#{@default_asset_timeout_ms}`)
-
-  Returns a binary containing RGBA pixel data (4 bytes per pixel, row-major order).
-  The binary size is `width * height * 4` bytes.
-
-  ## Example
-
-      import Emerge.UI
-      import Emerge.UI.Color
-      import Emerge.UI.Size
-
-      pixels =
-        EmergeSkia.render_to_pixels(
-          el(
-            [width(px(100)), height(px(100)), Emerge.UI.Background.color(color(:red, 500))],
-            none()
-          ),
-          otp_app: :my_app,
-          width: 100,
-          height: 100
+      {:ok, pixels} =
+        EmergeSkia.render_to_pixels(renderer,
+          region: {0, 0, 320, 240},
+          pixel_format: :rgba8888,
+          timeout: 5_000
         )
 
-      # pixels is 100 * 100 * 4 = 40000 bytes
+  Supported options are `region: {x, y, width, height}`,
+  `pixel_format: :rgba8888 | :rgb888`, `timeout`, `scale: 1.0`, and
+  `background: :transparent`. macOS and headless PRIME do not support capture.
   """
-  @spec render_to_pixels(Emerge.tree(), keyword()) :: binary()
-  def render_to_pixels(tree, opts) when is_list(opts) do
-    TreeRenderer.render_to_pixels(tree, opts, @default_asset_timeout_ms)
+  @spec render_to_pixels(renderer(), keyword()) :: {:ok, binary()} | {:error, term()}
+  def render_to_pixels(renderer, opts \\ [])
+
+  def render_to_pixels(%Renderer{} = renderer, opts) when is_list(opts) do
+    capture_pixels(renderer, opts)
+  end
+
+  def render_to_pixels(%HeadlessPrimeSession{} = renderer, opts) when is_list(opts) do
+    capture_pixels(renderer, opts)
+  end
+
+  def render_to_pixels(renderer, opts) when is_reference(renderer) and is_list(opts) do
+    capture_pixels(renderer, opts)
+  end
+
+  def render_to_pixels(_tree, opts) when is_list(opts) do
+    raise ArgumentError,
+          "EmergeSkia.render_to_pixels/2 now expects a renderer handle; one-shot tree rendering was removed. Start a renderer, upload the tree, then call EmergeSkia.render_to_pixels(renderer, opts)."
   end
 
   @doc """
-  Render a tree to an encoded PNG binary (synchronous, no window).
+  Return an encoded PNG from the renderer's latest already-presented frame.
 
-  This is useful for generating screenshots and documentation assets.
-  Each call creates a fresh CPU surface, runs layout, renders the tree, and
-  returns PNG file bytes.
+  This API captures retained renderer state. It no longer accepts an Emerge tree;
+  pass a renderer handle returned by `start/1`.
 
-  ## Options
+      {:ok, png} = EmergeSkia.render_to_png(renderer, png: [compression: :default])
+      File.write!("capture.png", png)
 
-  - `otp_app` - OTP application used to resolve logical assets from its `priv` dir (**required**)
-  - `width` - Output width in pixels (**required**)
-  - `height` - Output height in pixels (**required**)
-  - `scale` - Layout scale factor (default: `1.0`)
-  - `assets` - Asset runtime policy options (same shape as `start/1`)
-  - `asset_mode` - `:await` to block for asset resolution, or `:snapshot` to capture the current placeholder state (default: `:await`)
-  - `asset_timeout_ms` - Maximum wait time for `asset_mode: :await` (default: `#{@default_asset_timeout_ms}`)
-
-  Returns a binary containing the full encoded PNG file.
-
-  ## Example
-
-      import Emerge.UI
-      import Emerge.UI.Color
-      import Emerge.UI.Size
-
-      png =
-        EmergeSkia.render_to_png(
-          el(
-            [width(px(100)), height(px(100)), Emerge.UI.Background.color(color(:red, 500))],
-            none()
-          ),
-          otp_app: :my_app,
-          width: 100,
-          height: 100
-        )
-
-      File.write!("preview.png", png)
+  PNG capture accepts the same region, timeout, scale, and background options
+  as `render_to_pixels/2`, plus `png: [compression: :default]`. macOS and
+  headless PRIME do not support capture.
   """
-  @spec render_to_png(Emerge.tree(), keyword()) :: binary()
-  def render_to_png(tree, opts) when is_list(opts) do
-    TreeRenderer.render_to_png(tree, opts, @default_asset_timeout_ms)
+  @spec render_to_png(renderer(), keyword()) :: {:ok, binary()} | {:error, term()}
+  def render_to_png(renderer, opts \\ [])
+
+  def render_to_png(%Renderer{} = renderer, opts) when is_list(opts) do
+    capture_png(renderer, opts)
+  end
+
+  def render_to_png(%HeadlessPrimeSession{} = renderer, opts) when is_list(opts) do
+    capture_png(renderer, opts)
+  end
+
+  def render_to_png(renderer, opts) when is_reference(renderer) and is_list(opts) do
+    capture_png(renderer, opts)
+  end
+
+  def render_to_png(_tree, opts) when is_list(opts) do
+    raise ArgumentError,
+          "EmergeSkia.render_to_png/2 now expects a renderer handle; one-shot tree rendering was removed. Start a renderer, upload the tree, then call EmergeSkia.render_to_png(renderer, opts)."
+  end
+
+  defp capture_pixels(renderer, opts) do
+    opts = Options.normalize_screenshot_opts!(opts)
+
+    renderer
+    |> Transport.for_renderer()
+    |> apply(:capture_pixels, [renderer, opts])
+  end
+
+  defp capture_png(renderer, opts) do
+    opts = Options.normalize_screenshot_opts!(opts)
+
+    renderer
+    |> Transport.for_renderer()
+    |> apply(:capture_png, [renderer, opts])
   end
 
   @doc """
@@ -650,8 +714,21 @@ defmodule EmergeSkia do
   Fetch renderer stats.
 
   Stats collection is disabled by default. Start the renderer with `stats: true`
-  or `renderer_stats_log: true` to collect renderer stats. Use `:take` to read
-  and reset the current stats window.
+  or `renderer_stats_log: true` to collect renderer stats.
+
+      {:ok, snapshot} = EmergeSkia.stats(renderer, :peek)
+      {:ok, closed_window} = EmergeSkia.stats(renderer, :take)
+
+  Commands are:
+
+  - `:peek` reads the current window without resetting it;
+  - `:take` returns and resets the current window;
+  - `:reset` discards the current window;
+  - `{:configure, %{enabled: boolean}}` changes collection at runtime.
+
+  `:take` reads and resets the current window. On DRM it may return a draining
+  error while asynchronous GPU samples finish; retry `:take` to receive the
+  exact closed snapshot. The 0.4 stats schema version is `25`.
   """
   @spec stats(renderer(), Native.stats_command()) ::
           {:ok, Native.stats_snapshot()} | {:error, term()}
@@ -661,6 +738,26 @@ defmodule EmergeSkia do
     |> apply(:stats, [renderer, command])
   end
 
-  defp normalize_native_ok({:ok, _}), do: :ok
-  defp normalize_native_ok({:error, reason}), do: {:error, reason}
+  @doc """
+  Fetch normalized renderer/backend information for a running renderer.
+
+      {:ok, info} = EmergeSkia.renderer_info(renderer)
+      info.rendering_api.selected
+      info.capabilities.screenshot
+
+  Explicit Vulkan renderers include the physical device that won startup
+  selection. When selection used an exact DRM node, `vulkan_device.drm_node`
+  contains its path, match field, and major/minor identity. The KMS card is not
+  reported as the Vulkan node on split-device systems. Non-Vulkan renderers
+  return `vulkan_device: nil`.
+
+  Use `capabilities` to check capture, raster presentation, and PRIME video
+  support before starting an optional operation.
+  """
+  @spec renderer_info(renderer()) :: {:ok, Native.renderer_info()} | {:error, term()}
+  def renderer_info(renderer) do
+    renderer
+    |> Transport.for_renderer()
+    |> apply(:renderer_info, [renderer])
+  end
 end

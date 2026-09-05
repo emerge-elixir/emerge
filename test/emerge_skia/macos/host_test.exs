@@ -67,7 +67,7 @@ defmodule EmergeSkia.Macos.HostTest do
 
     assert Protocol.encode_init_payload() ==
              <<byte_size("emerge_skia_macos")::unsigned-big-16, "emerge_skia_macos",
-               8::unsigned-big-16>>
+               10::unsigned-big-16>>
   end
 
   test "protocol decodes raw input payloads" do
@@ -88,6 +88,35 @@ defmodule EmergeSkia.Macos.HostTest do
 
     assert {:ok, {:text_preedit, {"compose", nil}}} =
              Protocol.decode_text_preedit_payload(<<7::unsigned-big-32, "compose", 0>>)
+  end
+
+  test "offscreen protocol carries asset cache and decode policy" do
+    payload =
+      Protocol.encode_offscreen_request(
+        "tree",
+        %{
+          width: 96,
+          height: 96,
+          scale: 1.0,
+          asset_mode: "await",
+          asset_timeout_ms: 30_000
+        },
+        %{
+          priv_dir: "/tmp/priv",
+          runtime_allowlist: [],
+          runtime_extensions: [".jpg"],
+          runtime_enabled: false,
+          runtime_follow_symlinks: false,
+          runtime_max_file_size: 25_000_000,
+          cache_max_entries: 17,
+          cache_max_bytes: 1_048_576,
+          decode_at_size: true,
+          fonts: []
+        }
+      )
+
+    assert binary_part(payload, byte_size(payload) - 21, 21) ==
+             <<17::unsigned-big-64, 1_048_576::unsigned-big-64, 1, 0::unsigned-big-32>>
   end
 
   test "protocol decodes canonical pointer button tags" do

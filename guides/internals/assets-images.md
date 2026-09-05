@@ -8,7 +8,9 @@ SVG text uses system font matching; relative subresources and external SVG fonts
 ## Design Goals
 
 - Keep UI APIs source-based (`~m"..."`, logical paths, runtime paths).
-- Keep runtime loading and decoding off the render-critical path.
+- Keep source I/O off the render-critical path.
+- Decode rasters at their fitted device-space size when requested.
+- Bound retained decoded pixels independently from encoded source records.
 - Resolve and cache assets in Rust asynchronously.
 - Never fail fast on missing runtime media: show loading/failed placeholders.
 
@@ -32,15 +34,21 @@ In EMRG v3 these are encoded as typed image sources:
 1. Elixir uploads/patches tree sources as-is (no Elixir-side file IO).
 2. Rust tree actor requests missing sources from `AssetManager` actor.
 3. `AssetManager` resolves logical paths from the configured OTP app `priv` root (or validates runtime paths) and reads files asynchronously.
-4. On success, raster bytes are decoded or SVGs are parsed into a cached vector tree.
-5. `AssetManager` notifies tree actor, which triggers relayout/rerender.
+4. Raster sources retain encoded metadata until drawing knows the fitted target;
+   SVGs are parsed into vector trees.
+5. During draw, raster lookup computes the fitted device-space dimensions. With
+   sized decode enabled, the codec produces the smallest non-undersized staging
+   image it supports and the renderer resamples once to the exact target.
+6. The final raster enters the entry/byte-bounded LRU. SVG drawing uses a
+   separate bounded rendered-variant cache.
+7. `AssetManager` notifies tree actor, which triggers relayout/rerender.
 
 Startup/config flow:
 
-- `EmergeSkia.start/1` requires `otp_app` and calls `configure_assets_nif` with `<otp_app>/priv` as the source root plus runtime-path policy.
+- `EmergeSkia.start/1` requires `otp_app` and calls `configure_assets_nif` with `<otp_app>/priv` as the source root, runtime-path policy, raster-cache limits, and sized-decode policy.
 - `EmergeSkia.start/1` preloads configured font assets (`assets.fonts`) from `<otp_app>/priv` and registers them in the native font cache.
-- Rust stores normalized config in `AssetManager` state.
-- Reconfiguration clears source-status cache so paths are revalidated under new policy.
+- Rust stores normalized config in the renderer's asset runtime and applies raster-cache limits to that renderer's decoded LRU.
+- Reconfiguration clears only that renderer's source-status cache so paths are revalidated under the new policy.
 
 Render behavior while waiting:
 
@@ -51,7 +59,7 @@ Render behavior while waiting:
 Source status state machine:
 
 - missing -> `pending` (request queued)
-- `pending` -> `ready` (decoded/parsed + cached)
+- `pending` -> `ready` (encoded raster metadata or a parsed vector is available)
 - `pending` -> `failed` (blocked, unreadable, decode error, or missing)
 
 There is no strict/lenient runtime mode and no fail-fast path for image load
@@ -103,6 +111,47 @@ Validation sequence for runtime paths:
 4. symlink/canonical path policy
 5. allowlist root check
 
+## Decoded Raster Retention
+
+`assets.cache.max_entries` and `assets.cache.max_bytes` default to 256 entries
+and 256 MiB. The cache accounts final Skia pixel storage. Encoded source bytes
+are tracked separately and are not charged to the decoded-byte limit.
+
+One content ID retains at most one raster. A retained raster is reused when both
+its dimensions are at least the requested target. A larger target replaces it
+with a larger decode. A smaller target does not create another variant.
+
+A zero entry limit, zero byte limit, or image larger than the byte limit skips
+retention without skipping the draw. Eviction is least-recently-used within the
+renderer's cache.
+
+Encoded source status and decoded retention have independent lifetimes. A
+retained raster can render while an evicted source record is hydrated again.
+Generation checks prevent reuse after source content changes.
+
+The rendered SVG cache is separate: 256 entries, 16 MiB total, and 1 MiB per
+variant. SVG parsing and CPU rendering are unconditional in embedded and desktop
+builds.
+
+Each native renderer owns its source worker/configuration, encoded source
+records, decoded raster LRU, rendered SVG variants, registered fonts, and cache
+generations. Renderer shutdown joins only that renderer's worker and clears only
+that renderer's asset state.
+
+## Memory Diagnostics
+
+`renderer_stats_log` includes:
+
+- retained encoded source count and bytes;
+- decoded raster entries, bytes, and configured limits;
+- rendered vector entries, bytes, and fixed limits;
+- original, codec, and final dimensions per retained raster;
+- decoded-to-source pixel ratio, decoded-to-file byte ratio, estimated peak
+  decode bytes, and whether the encoded source record is retained.
+
+The diagnostics are routed through `NativeLogRelay`, not emitted directly from
+the decode worker.
+
 ## Font Assets
 
 Font assets are configured at startup under `assets.fonts` and loaded synchronously.
@@ -122,6 +171,11 @@ Duplicate variants (`{family, weight, italic}`) are rejected at startup.
 EmergeSkia.start(
   otp_app: :my_app,
   assets: [
+    decode_at_size: true,
+    cache: [
+      max_entries: 32,
+      max_bytes: 32 * 1024 * 1024
+    ],
     fonts: [
       [family: "my-font", source: "fonts/MyFont-Regular.ttf", weight: 400],
       [family: "my-font", source: "fonts/MyFont-Bold.ttf", weight: 700],

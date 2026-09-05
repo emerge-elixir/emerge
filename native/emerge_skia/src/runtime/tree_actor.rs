@@ -12,6 +12,7 @@ use crossbeam_channel::{Receiver, Sender, TrySendError};
 use crate::{
     RenderSender,
     actors::{AnimationFrameTraceSeed, EventMsg, RenderMsg, TreeMsg},
+    assets::AssetContext,
     backend::wake::BackendWakeHandle,
     events,
     stats::{RendererStatsCollector, record_pipeline_layout_queued},
@@ -35,12 +36,13 @@ pub(crate) struct TreeActorConfig {
     pub(crate) window_wake: BackendWakeHandle,
     pub(crate) initial_width: u32,
     pub(crate) initial_height: u32,
+    pub(crate) asset_context: AssetContext,
 }
 
 #[cfg_attr(
     not(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
+        all(feature = "wayland-core", target_os = "linux"),
+        all(feature = "drm-core", target_os = "linux")
     )),
     allow(dead_code)
 )]
@@ -66,8 +68,10 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
             window_wake,
             initial_width,
             initial_height,
+            asset_context,
         } = config;
 
+        let _asset_context_guard = asset_context.enter();
         let mut engine = TreeUpdateEngine::new(initial_tree, initial_width, initial_height);
 
         loop {
@@ -168,7 +172,10 @@ fn publish_layout_output(
         pipeline_tree_started_at,
         Instant::now(),
     );
-    targets.render_sender.send_latest(RenderMsg::Scene {
+    if let Some(stats) = targets.stats {
+        stats.record_scene_constructed();
+    }
+    let queue_overwritten = targets.render_sender.send_latest(RenderMsg::Scene {
         scene: Box::new(output.scene),
         version,
         pipeline_submitted_at: pipeline.pipeline_submitted_at,
@@ -180,6 +187,9 @@ fn publish_layout_output(
         ime_cursor_area: output.ime_cursor_area,
         ime_text_state: Box::new(output.ime_text_state),
     });
+    if queue_overwritten && let Some(stats) = targets.stats {
+        stats.record_render_queue_overwrite();
+    }
 
     targets.window_wake.request_redraw();
 }
@@ -231,6 +241,7 @@ mod tests {
                     window_wake: BackendWakeHandle::noop(),
                     initial_width: width,
                     initial_height: height,
+                    asset_context: crate::assets::AssetRuntime::new().context(),
                 },
                 initial_tree,
             );
@@ -581,6 +592,50 @@ mod tests {
         let trace = assert_scene_trace(harness.recv_scene(), 31);
         assert_eq!(trace.sample_time, base + Duration::from_millis(16));
         harness.stop();
+    }
+
+    #[test]
+    fn publish_layout_output_records_constructed_and_overwritten_scenes() {
+        let (event_tx, _event_rx) = bounded(1);
+        let (render_tx, render_rx) = bounded(1);
+        let render_sender = RenderSender {
+            tx: render_tx,
+            drop_rx: render_rx.clone(),
+            log_render: false,
+        };
+        let render_counter = Arc::new(AtomicU64::new(0));
+        let window_wake = BackendWakeHandle::noop();
+        let stats = RendererStatsCollector::new();
+
+        for _ in 0..2 {
+            publish_layout_output(
+                LayoutOutputPublishTargets {
+                    event_tx: &event_tx,
+                    render_sender: &render_sender,
+                    render_counter: &render_counter,
+                    window_wake: &window_wake,
+                    stats: Some(&stats),
+                    log_input: false,
+                },
+                LayoutOutput {
+                    scene: RenderScene::default(),
+                    event_rebuild: RegistryRebuildPayload::default(),
+                    event_rebuild_changed: false,
+                    ime_enabled: false,
+                    ime_cursor_area: None,
+                    ime_text_state: None,
+                    animations_active: false,
+                },
+                None,
+                None,
+                None,
+            );
+        }
+
+        let snapshot = stats.peek();
+        assert_eq!(snapshot.pipeline.scenes_constructed, 2);
+        assert_eq!(snapshot.pipeline.render_queue_overwrites, 1);
+        assert_eq!(render_rx.len(), 1);
     }
 
     #[test]

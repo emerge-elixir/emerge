@@ -85,7 +85,7 @@ fn build_scroll_panel_with_cards(
     panel.children = child_ids.clone();
     tree.insert(panel);
 
-    for ((id_byte, attrs, frame), child_id) in cards.into_iter().zip(child_ids.into_iter()) {
+    for ((id_byte, attrs, frame), child_id) in cards.into_iter().zip(child_ids) {
         let mut child = Element::with_attrs(child_id, ElementKind::El, Vec::new(), attrs);
         child.layout.frame = Some(frame);
         tree.insert(child);
@@ -214,7 +214,7 @@ fn demo_inset_glow_dotted_card_attrs(with_glow: bool) -> Attrs {
 fn test_render_image_source_pending_emits_loading_placeholder() {
     let id = NodeId::from_term_bytes(vec![9]);
     let attrs = Attrs {
-        image_src: Some(ImageSource::Logical("images/photo.jpg".to_string())),
+        image_src: Some(ImageSource::Id("paint_pending_photo".to_string())),
         image_fit: Some(ImageFit::Contain),
         ..Attrs::default()
     };
@@ -408,7 +408,7 @@ fn test_render_image_cover_border_has_no_inner_gap_from_background() {
 fn test_render_nested_image_cover_has_no_inner_gap_from_parent_background() {
     let image_id = "paint_nested_image_cover_no_inner_gap";
     let mut src = vec![0u8; 24 * 16 * 4];
-    for px in src.chunks_exact_mut(4) {
+    for px in src.as_chunks_mut::<4>().0 {
         px[0] = 36;
         px[1] = 216;
         px[2] = 72;
@@ -571,7 +571,7 @@ fn test_render_nested_image_cover_has_no_inner_gap_from_parent_background() {
 fn test_render_nested_image_contain_has_no_right_gap_when_touching_horizontal_edges() {
     let image_id = "paint_nested_image_contain_no_right_gap";
     let mut src = vec![0u8; 24 * 16 * 4];
-    for px in src.chunks_exact_mut(4) {
+    for px in src.as_chunks_mut::<4>().0 {
         px[0] = 36;
         px[1] = 216;
         px[2] = 72;
@@ -711,7 +711,7 @@ fn test_render_nested_image_contain_has_no_right_gap_when_touching_horizontal_ed
 fn test_render_background_image_pending_uses_self_clip() {
     let attrs = Attrs {
         background: Some(Background::Image {
-            source: ImageSource::Logical("images/background_pending_clip.png".to_string()),
+            source: ImageSource::Id("paint_pending_background_clip".to_string()),
             fit: ImageFit::Cover,
         }),
         border_radius: Some(BorderRadius::Corners {
@@ -1620,7 +1620,7 @@ fn test_demo_like_nested_glow_cards_bleed_into_scroll_panel_padding_and_trailing
         tree.insert(glow_row);
         tree.insert(combined_row);
 
-        for (id, attrs, frame) in glow_cards.into_iter().chain(combined_cards.into_iter()) {
+        for (id, attrs, frame) in glow_cards.into_iter().chain(combined_cards) {
             let id = NodeId::from_term_bytes(vec![id]);
             let mut child = Element::with_attrs(id, ElementKind::El, Vec::new(), attrs);
             child.layout.frame = Some(frame);

@@ -1,6 +1,7 @@
 mod support;
 
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
+use emerge_skia::assets::AssetRuntime;
 use emerge_skia::events::{
     RegistryRebuildPayload,
     registry_builder::{
@@ -899,7 +900,7 @@ impl ShowcaseLayoutVisibleAnimationCase {
         );
         let initial_summary = warm.output.scene.summary();
         assert!(
-            initial_summary.dynamic_layers > 0
+            initial_summary.cacheable_layers > 0
                 && initial_summary.nodes >= 600
                 && initial_summary.texts >= 100,
             "showcase layout visible animation selected the wrong scene: \
@@ -1012,27 +1013,7 @@ fn print_showcase_paint_layers(nodes: &[emerge_skia::render_scene::RenderNode], 
     for node in nodes {
         match node {
             emerge_skia::render_scene::RenderNode::PaintLayer(layer) => {
-                let indent = "  ".repeat(depth);
-                eprintln!(
-                    "{indent}layer stable={} root={} reason={:?} policy={:?} bounds=({:.1},{:.1},{:.1},{:.1}) own_nodes={} own_primitives={} own_cost={} child_refs={} generation={}",
-                    layer.stable_id,
-                    layer.root_id,
-                    layer.reason,
-                    layer.policy,
-                    layer.bounds.x,
-                    layer.bounds.y,
-                    layer.bounds.width,
-                    layer.bounds.height,
-                    layer.own_nodes.len(),
-                    layer.metrics.own_primitive_count,
-                    layer.metrics.own_primitive_cost,
-                    layer.child_refs.len(),
-                    layer.content_generation
-                );
-                print_showcase_paint_layers(&layer.own_nodes, depth + 1);
-                for child_ref in layer.child_refs.iter() {
-                    print_showcase_paint_layers(&child_ref.nodes, depth + 1);
-                }
+                print_showcase_paint_layer(layer, depth)
             }
             emerge_skia::render_scene::RenderNode::Clip { children, .. }
             | emerge_skia::render_scene::RenderNode::RelaxedClip { children, .. }
@@ -1042,6 +1023,56 @@ fn print_showcase_paint_layers(nodes: &[emerge_skia::render_scene::RenderNode], 
                 print_showcase_paint_layers(children, depth);
             }
             emerge_skia::render_scene::RenderNode::Primitive(_) => {}
+        }
+    }
+}
+
+#[cfg(feature = "bench-diagnostics")]
+fn print_showcase_paint_layer(layer: &emerge_skia::render_scene::RenderPaintLayer, depth: usize) {
+    let indent = "  ".repeat(depth);
+    eprintln!(
+        "{indent}layer node_id={} reason={:?} policy={:?} bounds=({:.1},{:.1},{:.1},{:.1}) own_nodes={} own_primitives={} own_cost={} content_nodes={} generation={}",
+        layer.id.node_id,
+        layer.id.role,
+        layer.policy,
+        layer.bounds.x,
+        layer.bounds.y,
+        layer.bounds.width,
+        layer.bounds.height,
+        layer.metrics.own_node_count,
+        layer.metrics.own_primitive_count,
+        layer.metrics.own_primitive_cost,
+        layer.content.nodes.len(),
+        layer.content_generation
+    );
+    print_showcase_paint_layer_content(&layer.content.nodes, depth + 1);
+}
+
+#[cfg(feature = "bench-diagnostics")]
+fn print_showcase_paint_layer_content(
+    content: &[emerge_skia::render_scene::RenderPaintLayerContentNode],
+    depth: usize,
+) {
+    for node in content {
+        match node {
+            emerge_skia::render_scene::RenderPaintLayerContentNode::Own(run) => {
+                print_showcase_paint_layers(&run.nodes, depth)
+            }
+            emerge_skia::render_scene::RenderPaintLayerContentNode::Child(layer) => {
+                print_showcase_paint_layer(layer, depth)
+            }
+            emerge_skia::render_scene::RenderPaintLayerContentNode::ShadowPass { children }
+            | emerge_skia::render_scene::RenderPaintLayerContentNode::Clip { children, .. }
+            | emerge_skia::render_scene::RenderPaintLayerContentNode::RelaxedClip {
+                children,
+                ..
+            }
+            | emerge_skia::render_scene::RenderPaintLayerContentNode::Transform {
+                children, ..
+            }
+            | emerge_skia::render_scene::RenderPaintLayerContentNode::Alpha { children, .. } => {
+                print_showcase_paint_layer_content(children, depth)
+            }
         }
     }
 }
@@ -1093,7 +1124,7 @@ impl ShowcaseBordersHoverCase {
         assert!(
             initial_summary.nodes >= 500
                 && initial_summary.texts >= 100
-                && initial_summary.paint_layers >= 8,
+                && initial_summary.paint_layers >= 6,
             "Borders hover benchmark selected the wrong scene: \
              target={target:?}, summary={initial_summary:?}"
         );
@@ -1262,7 +1293,7 @@ impl ShowcaseBordersHeldNearbyCase {
         assert!(
             initial_summary.nodes >= 500
                 && initial_summary.texts >= 100
-                && initial_summary.paint_layers >= 8,
+                && initial_summary.paint_layers >= 6,
             "Borders held-nearby benchmark selected the wrong scene: \
              target={target:?}, summary={initial_summary:?}"
         );
@@ -1455,7 +1486,7 @@ impl ShowcaseInteractionVirtualKeyboardCase {
         let virtual_key_count = virtual_key_count(&tree);
         assert!(
             initial_summary.nodes >= 700
-                && initial_summary.texts >= 200
+                && initial_summary.texts >= 180
                 && virtual_key_count >= 30
                 && tree
                     .get(&target.text_input_id)
@@ -2039,6 +2070,7 @@ struct VirtualKeyFullLoopProfileState {
 }
 
 #[cfg(feature = "bench-diagnostics")]
+#[allow(clippy::too_many_arguments)]
 fn sample_showcase_interaction_virtual_key_full_loop_profile(
     tree: ElementTree,
     runtime: AnimationRuntime,
@@ -2224,6 +2256,7 @@ fn print_showcase_patch_summary(tree: &ElementTree, patches: &[Patch]) {
 }
 
 #[cfg(feature = "bench-diagnostics")]
+#[allow(clippy::type_complexity)]
 fn patch_target_parent_summary(
     tree: &ElementTree,
     id: &NodeId,
@@ -5013,26 +5046,30 @@ fn current_nearby_id(tree: &ElementTree, host_id: NodeId) -> NodeId {
         .id
 }
 
-criterion_group!(
-    benches,
-    bench_large_text_column,
-    bench_nested_card_grid,
-    bench_large_text_column_retained,
-    bench_nested_card_grid_retained,
-    bench_layout_aware_transform,
-    bench_layout_aware_transform_animation,
-    bench_animated_shadow_showcase,
-    bench_rich_borders_shadow_showcase,
-    bench_scrolling_animated_shadow_showcase,
-    bench_scrolling_rich_borders_shadow_showcase,
-    bench_emerge_demo_showcase_layout_refresh,
-    bench_scroll_viewport_culling,
-    bench_fixture_retained_layout_after_patch,
-    bench_fixture_retained_patch_layout,
-    bench_render_refresh_cache_regression,
-    bench_registry_refresh_cache_regression,
-    bench_macaw_viewport_refresh,
-    bench_sidepane_animation_smoothness,
-    bench_nearby_hover_toggle_refresh
-);
+fn bench_layout(c: &mut Criterion) {
+    let asset_runtime = AssetRuntime::new();
+    let _asset_context_guard = asset_runtime.enter();
+
+    bench_large_text_column(c);
+    bench_nested_card_grid(c);
+    bench_large_text_column_retained(c);
+    bench_nested_card_grid_retained(c);
+    bench_layout_aware_transform(c);
+    bench_layout_aware_transform_animation(c);
+    bench_animated_shadow_showcase(c);
+    bench_rich_borders_shadow_showcase(c);
+    bench_scrolling_animated_shadow_showcase(c);
+    bench_scrolling_rich_borders_shadow_showcase(c);
+    bench_emerge_demo_showcase_layout_refresh(c);
+    bench_scroll_viewport_culling(c);
+    bench_fixture_retained_layout_after_patch(c);
+    bench_fixture_retained_patch_layout(c);
+    bench_render_refresh_cache_regression(c);
+    bench_registry_refresh_cache_regression(c);
+    bench_macaw_viewport_refresh(c);
+    bench_sidepane_animation_smoothness(c);
+    bench_nearby_hover_toggle_refresh(c);
+}
+
+criterion_group!(benches, bench_layout);
 criterion_main!(benches);

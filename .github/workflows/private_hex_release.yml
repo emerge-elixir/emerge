@@ -4,9 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: Git ref to publish (tag or branch)
+        description: Exact v-prefixed release tag to publish
         required: true
-        default: main
   workflow_run:
     workflows: ["Build Release Artifacts"]
     types: [completed]
@@ -29,18 +28,25 @@ jobs:
         uses: actions/checkout@v5
         with:
           ref: ${{ inputs.ref }}
+          fetch-depth: 0
 
       - name: Checkout source code (after precompiled build)
         if: ${{ github.event_name == 'workflow_run' }}
         uses: actions/checkout@v5
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
 
       - name: Set up Elixir and OTP
         uses: erlef/setup-beam@v1
         with:
           elixir-version: "1.20.2"
-          otp-version: "29.0.4"
+          otp-version: "29.0.5"
+
+      - name: Set up supported Rust floor
+        uses: dtolnay/rust-toolchain@1.91.0
+        with:
+          components: rustfmt, clippy
 
       - name: Install Hex and Rebar
         run: |
@@ -62,19 +68,59 @@ jobs:
       - name: Install dependencies
         run: mix deps.get
 
-      - name: Extract project version
+      - name: Validate exact release tag and project version
         shell: bash
+        env:
+          MANUAL_REF: ${{ inputs.ref }}
         run: |
-          # Avoid custom Mix tasks here because they compile the project and can
-          # trigger a host NIF build before native packages are installed.
-          project_version="$(awk -F'"' '/^  @version "/ { print $2; exit }' mix.exs)"
+          set -euo pipefail
 
-          if [[ -z "$project_version" ]]; then
-            echo "Failed to resolve project version" >&2
+          project_version="$(awk -F'"' '/^  @version "/ { print $2; exit }' mix.exs)"
+          cargo_version="$(awk -F'"' '$0 == "[package]" { in_package=1; next } in_package && /^version = "/ { print $2; exit }' native/emerge_skia/Cargo.toml)"
+
+          if [[ -z "$project_version" || -z "$cargo_version" ]]; then
+            echo "Failed to resolve Mix/Cargo project versions" >&2
             exit 1
           fi
 
+          if [[ "$project_version" != "$cargo_version" ]]; then
+            echo "Mix version ${project_version} does not match Cargo version ${cargo_version}" >&2
+            exit 1
+          fi
+
+          expected_tag="v${project_version}"
+          if ! git tag --points-at HEAD | grep -Fx "$expected_tag" >/dev/null; then
+            echo "Checked-out commit is not exact release tag ${expected_tag}" >&2
+            exit 1
+          fi
+
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && "$MANUAL_REF" != "$expected_tag" ]]; then
+            echo "Manual ref ${MANUAL_REF} must equal ${expected_tag}" >&2
+            exit 1
+          fi
+
+          grep -Eq "^## \[$project_version\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$" CHANGELOG.md
+          git merge-base --is-ancestor v0.3.4 HEAD
           echo "PROJECT_VERSION=$project_version" >> "$GITHUB_ENV"
+
+      - name: Revalidate exact tagged source
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./ci-tests.sh all
+          mix test --include full_sweep --warnings-as-errors
+          EMERGE_INCLUDE_INTERNAL_DOCS=false mix docs --warnings-as-errors
+          package_dir="$RUNNER_TEMP/emerge-${PROJECT_VERSION}"
+          mix hex.build --unpack --output "$package_dir"
+          cargo check \
+            --manifest-path "$package_dir/native/emerge_skia/Cargo.toml" \
+            --locked \
+            --all-targets
+          cargo check \
+            --manifest-path "$package_dir/native/emerge_skia/Cargo.toml" \
+            --locked \
+            --no-default-features \
+            --features embedded-cpu
 
       - name: Verify macOS host release assets exist
         shell: bash

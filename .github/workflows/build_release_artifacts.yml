@@ -9,6 +9,9 @@ on:
 permissions:
   contents: write
 
+env:
+  EMERGE_SOURCE_REVISION: ${{ github.sha }}
+
 jobs:
   build_release:
     name: NIF ${{ matrix.nif }} - ${{ matrix.job.name }}
@@ -25,6 +28,13 @@ jobs:
             variant: ""
             cargo_args: "--no-default-features --features wayland"
             system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev"
+          - name: linux_wayland_vulkan
+            target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+            use_cross: false
+            variant: "wayland_vulkan"
+            cargo_args: "--no-default-features --features wayland-vulkan,embedded-freetype"
+            system_packages: "libdrm-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev"
           - name: linux_drm
             target: x86_64-unknown-linux-gnu
             os: ubuntu-24.04
@@ -32,12 +42,42 @@ jobs:
             variant: "drm"
             cargo_args: "--no-default-features --features drm"
             system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev libxkbcommon-dev"
+          - name: linux_drm_vulkan
+            target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+            use_cross: false
+            variant: "drm_vulkan"
+            cargo_args: "--no-default-features --features drm-vulkan,embedded-freetype"
+            system_packages: "libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev"
           - name: linux_drm_wayland
             target: x86_64-unknown-linux-gnu
             os: ubuntu-24.04
             use_cross: false
             variant: "drm_wayland"
             cargo_args: "--no-default-features --features wayland,drm"
+            system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev"
+          - name: linux_raster
+            target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+            use_cross: false
+            variant: "raster"
+            cargo_args: "--no-default-features --features embedded-cpu"
+            system_packages: ""
+            embedded_skia: true
+            raster_only: true
+          - name: linux_headless_vulkan
+            target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+            use_cross: false
+            variant: "headless_vulkan"
+            cargo_args: "--no-default-features --features headless-vulkan,embedded-freetype"
+            system_packages: "libfontconfig1-dev libfreetype6-dev"
+          - name: linux_vulkan
+            target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+            use_cross: false
+            variant: "vulkan"
+            cargo_args: "--no-default-features --features wayland-all,drm-all,headless-all,embedded-freetype"
             system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev"
           - name: linux_aarch64_wayland
             target: aarch64-unknown-linux-gnu
@@ -46,6 +86,13 @@ jobs:
             variant: ""
             cargo_args: "--no-default-features --features wayland"
             system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev"
+          - name: linux_aarch64_wayland_vulkan
+            target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            use_cross: false
+            variant: "wayland_vulkan"
+            cargo_args: "--no-default-features --features wayland-vulkan,embedded-freetype"
+            system_packages: "libdrm-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev"
           - name: linux_aarch64_drm
             target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
@@ -53,6 +100,13 @@ jobs:
             variant: "drm"
             cargo_args: "--no-default-features --features drm"
             system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev libxkbcommon-dev"
+          - name: linux_aarch64_drm_vulkan
+            target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            use_cross: false
+            variant: "drm_vulkan"
+            cargo_args: "--no-default-features --features drm-vulkan,embedded-freetype"
+            system_packages: "libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev"
           - name: linux_aarch64_drm_wayland
             target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
@@ -60,6 +114,47 @@ jobs:
             variant: "drm_wayland"
             cargo_args: "--no-default-features --features wayland,drm"
             system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev"
+          - name: linux_aarch64_raster
+            target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            use_cross: false
+            variant: "raster"
+            cargo_args: "--no-default-features --features embedded-cpu"
+            system_packages: ""
+            embedded_skia: true
+            raster_only: true
+          - name: linux_aarch64_headless_vulkan
+            target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            use_cross: false
+            variant: "headless_vulkan"
+            cargo_args: "--no-default-features --features headless-vulkan,embedded-freetype"
+            system_packages: "libfontconfig1-dev libfreetype6-dev"
+          - name: linux_aarch64_vulkan
+            target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            use_cross: false
+            variant: "vulkan"
+            cargo_args: "--no-default-features --features wayland-all,drm-all,headless-all,embedded-freetype"
+            system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev"
+          - name: linux_armv7_raster
+            target: armv7-unknown-linux-gnueabihf
+            os: ubuntu-24.04
+            use_cross: true
+            variant: ""
+            cargo_args: "--no-default-features --features embedded-cpu"
+            system_packages: ""
+            embedded_skia: true
+            raster_only: true
+          - name: linux_armv7_opengl
+            target: armv7-unknown-linux-gnueabihf
+            os: ubuntu-24.04
+            use_cross: true
+            variant: "opengl"
+            cargo_args: "--no-default-features --features drm,embedded-cpu"
+            system_packages: ""
+            embedded_skia: true
+            raster_only: false
 
     steps:
       - name: Checkout source code
@@ -74,7 +169,7 @@ jobs:
           ImageOS: ubuntu24
         with:
           elixir-version: "1.20.2"
-          otp-version: "29.0.4"
+          otp-version: "29.0.5"
 
       - name: Install dependencies
         run: mix deps.get
@@ -82,16 +177,22 @@ jobs:
       - name: Extract project version
         shell: bash
         run: |
-          # Avoid custom Mix tasks here because they compile the project and can
-          # trigger a host NIF build before this job installs native packages.
+          # Read both source manifests even on tag builds. Deriving the version
+          # from the tag and comparing it back to the same tag proves nothing.
           project_version="$(awk -F'"' '/^  @version "/ { print $2; exit }' mix.exs)"
+          cargo_version="$(awk -F'"' '$0 == "[package]" { in_package=1; next } in_package && /^version = "/ { print $2; exit }' native/emerge_skia/Cargo.toml)"
 
-          if [[ -z "$project_version" ]]; then
-            echo "Failed to resolve project version" >&2
+          if [[ -z "$project_version" || -z "$cargo_version" ]]; then
+            echo "Failed to resolve Mix/Cargo project versions" >&2
             exit 1
           fi
 
-          if [[ "${GITHUB_REF_TYPE}" == "tag" && "v${project_version}" != "${GITHUB_REF_NAME}" ]]; then
+          if [[ "$project_version" != "$cargo_version" ]]; then
+            echo "Mix version ${project_version} does not match Cargo version ${cargo_version}" >&2
+            exit 1
+          fi
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v* && "v${project_version}" != "${GITHUB_REF_NAME}" ]]; then
             echo "Tag ${GITHUB_REF_NAME} does not match project version ${project_version}" >&2
             exit 1
           fi
@@ -111,6 +212,39 @@ jobs:
           toolchain: stable
           target: ${{ matrix.job.target }}
 
+      - name: Configure ARMv7 cross toolchain
+        if: ${{ matrix.job.target == 'armv7-unknown-linux-gnueabihf' }}
+        shell: bash
+        run: |
+          sysroot=/usr/arm-linux-gnueabihf
+          clang_target="--target=armv7-unknown-linux-gnueabihf --sysroot=$sysroot"
+
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_LIBDIR=/usr/lib/arm-linux-gnueabihf/pkgconfig:/usr/share/pkgconfig" >> "$GITHUB_ENV"
+          echo "SDKTARGETSYSROOT=$sysroot" >> "$GITHUB_ENV"
+          echo "CLANGCC=clang $clang_target" >> "$GITHUB_ENV"
+          echo "CLANGCXX=clang++ $clang_target" >> "$GITHUB_ENV"
+          echo "HOST_CC=gcc" >> "$GITHUB_ENV"
+          echo "HOST_CXX=g++" >> "$GITHUB_ENV"
+
+      - name: Configure embedded Skia
+        if: ${{ matrix.job.embedded_skia == true }}
+        shell: bash
+        run: |
+          echo "FORCE_SKIA_BUILD=1" >> "$GITHUB_ENV"
+          echo "SKIA_GN_ARGS=skia_use_fontconfig=false skia_use_system_freetype2=false" >> "$GITHUB_ENV"
+          echo "RUSTFLAGS=-Lnative=support/embedded-linux-link-stubs" >> "$GITHUB_ENV"
+
+      - name: Verify Vulkan-only dependency closure
+        if: ${{ matrix.job.variant == 'wayland_vulkan' || matrix.job.variant == 'drm_vulkan' || matrix.job.variant == 'headless_vulkan' }}
+        shell: bash
+        run: |
+          dependency_tree="$(cargo tree --manifest-path native/emerge_skia/Cargo.toml ${{ matrix.job.cargo_args }} --edges features)"
+          if grep --extended-regexp ' gl v[0-9]|glutin|glutin_egl_sys|video-interop feature "egl"|skia-safe feature "gl"|emerge_skia feature "linux-opengl"' <<<"${dependency_tree}"; then
+            echo "Vulkan-only artifact enables an OpenGL dependency or feature" >&2
+            exit 1
+          fi
+
       - name: Build the project
         id: build-crate
         uses: philss/rustler-precompiled-action@v1.1.4
@@ -120,9 +254,54 @@ jobs:
           target: ${{ matrix.job.target }}
           nif-version: ${{ matrix.nif }}
           use-cross: ${{ matrix.job.use_cross && 'true' || '' }}
+          cross-version: "v0.2.5"
           project-dir: native/emerge_skia
           variant: ${{ matrix.job.variant }}
           cargo-args: ${{ matrix.job.cargo_args }}
+
+      - name: Verify embedded ABI and dependency closure
+        if: ${{ matrix.job.embedded_skia == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          artifact_dir="$RUNNER_TEMP/embedded-artifact"
+          rm -rf "$artifact_dir"
+          mkdir -p "$artifact_dir"
+          tar -xzf "${{ steps.build-crate.outputs.file-path }}" -C "$artifact_dir"
+          artifact="$(find "$artifact_dir" -maxdepth 1 -type f -name '*.so' -print -quit)"
+          test -n "$artifact"
+          dynamic_dependencies="$(readelf --dynamic "$artifact")"
+          undefined_symbols="$(nm --dynamic --undefined-only "$artifact")"
+
+          if [[ "${{ matrix.job.target }}" == "armv7-unknown-linux-gnueabihf" ]]; then
+            elf_header="$(readelf --file-header "$artifact")"
+            arm_attributes="$(readelf --arch-specific "$artifact")"
+            printf '%s\n%s\n' "$elf_header" "$arm_attributes"
+            if ! grep --extended-regexp 'Class: +ELF32' <<<"$elf_header" ||
+               ! grep --extended-regexp 'Machine: +ARM' <<<"$elf_header" ||
+               ! grep --extended-regexp 'Tag_CPU_arch: v7$' <<<"$arm_attributes" ||
+               ! grep --fixed-strings 'Tag_ABI_VFP_args: VFP registers' <<<"$arm_attributes"; then
+              echo "ARMv7 artifact is not an ELF32 ARMv7 hard-float library" >&2
+              exit 1
+            fi
+          fi
+
+          if grep --extended-regexp 'NEEDED.*(fontconfig|freetype)' <<<"$dynamic_dependencies"; then
+            echo "Embedded artifact depends on desktop fontconfig or FreeType" >&2
+            exit 1
+          fi
+
+          if grep --extended-regexp ' (Fc|FT_)' <<<"$undefined_symbols"; then
+            echo "Embedded artifact contains unresolved fontconfig or FreeType symbols" >&2
+            exit 1
+          fi
+
+          if [[ "${{ matrix.job.raster_only }}" == "true" ]] &&
+             grep --extended-regexp 'NEEDED.*(EGL|GLES|GL|gbm|drm|wayland)' <<<"$dynamic_dependencies"; then
+            echo "Raster-only artifact depends on a desktop or GPU library" >&2
+            exit 1
+          fi
 
       - name: Artifact upload
         uses: actions/upload-artifact@v6
@@ -131,7 +310,7 @@ jobs:
           path: ${{ steps.build-crate.outputs.file-path }}
 
       - name: Publish archives and packages
-        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ steps.build-crate.outputs.file-path }}
@@ -158,7 +337,7 @@ jobs:
         uses: erlef/setup-beam@v1
         with:
           elixir-version: "1.20.2"
-          otp-version: "29.0.4"
+          otp-version: "29.0.5"
 
       - name: Install dependencies
         run: mix deps.get
@@ -166,16 +345,20 @@ jobs:
       - name: Extract project version
         shell: bash
         run: |
-          # Avoid custom Mix tasks here because they compile the project and can
-          # trigger a host NIF build before this job installs native packages.
           project_version="$(awk -F'"' '/^  @version "/ { print $2; exit }' mix.exs)"
+          cargo_version="$(awk -F'"' '$0 == "[package]" { in_package=1; next } in_package && /^version = "/ { print $2; exit }' native/emerge_skia/Cargo.toml)"
 
-          if [[ -z "$project_version" ]]; then
-            echo "Failed to resolve project version" >&2
+          if [[ -z "$project_version" || -z "$cargo_version" ]]; then
+            echo "Failed to resolve Mix/Cargo project versions" >&2
             exit 1
           fi
 
-          if [[ "${GITHUB_REF_TYPE}" == "tag" && "v${project_version}" != "${GITHUB_REF_NAME}" ]]; then
+          if [[ "$project_version" != "$cargo_version" ]]; then
+            echo "Mix version ${project_version} does not match Cargo version ${cargo_version}" >&2
+            exit 1
+          fi
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v* && "v${project_version}" != "${GITHUB_REF_NAME}" ]]; then
             echo "Tag ${GITHUB_REF_NAME} does not match project version ${project_version}" >&2
             exit 1
           fi
@@ -216,7 +399,7 @@ jobs:
             ${{ env.ARCHIVE_NAME }}.sha256
 
       - name: Publish macos_host archives
-        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
         uses: softprops/action-gh-release@v2
         with:
           files: |
