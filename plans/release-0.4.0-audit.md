@@ -129,11 +129,12 @@ Required checks before tagging:
 
 ### 5. Exact-tag validation now gates artifacts and publication
 
-The artifact workflow now begins with a Rust-1.91 release validation job. It
-checks exact tag, Mix/Cargo version, dated changelog, and `v0.3.4` ancestry; runs
-the quality, test, full-sweep, Dialyzer, and warning-free documentation gates;
-and compiles all targets plus the embedded-CPU profile from the unpacked Hex
-package. NIF and macOS artifact jobs depend on that validation.
+Source validation lives in CI. The Rust-1.91 job checks the tag, Mix/Cargo
+version, dated changelog, and `v0.3.4` ancestry; runs the quality, test,
+full-sweep, Dialyzer, and warning-free documentation gates; and compiles all
+targets plus embedded CPU from the unpacked Hex package. Artifact jobs check
+Mix/Cargo/tag agreement and build-specific dependency closure independently,
+without duplicating the full source suite.
 
 The Hex workflow repeats the exact-tag metadata, full suite, docs, and unpacked
 package checks even on manual dispatch, then verifies required macOS assets

@@ -14,6 +14,10 @@ jobs:
   publish:
     name: Publish Hex package
     runs-on: ubuntu-24.04
+    environment: hex
+    concurrency:
+      group: emerge-hex-release
+      cancel-in-progress: false
     if: >
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'workflow_run' &&

@@ -9,15 +9,18 @@ Write native GUI directly from Elixir using a declarative API.
 
 ## Installation
 
-Add `:emerge` to your dependencies:
+To try the 0.4 beta, opt in explicitly:
 
 ```elixir
 defp deps do
   [
-    {:emerge, "~> 0.4.0"}
+    {:emerge, "== 0.4.0-beta.1"}
   ]
 end
 ```
+
+`0.3.4` remains the latest stable release. See the
+[0.4 migration guide](guides/migrations/0.4.md) for breaking changes.
 
 Then run:
 

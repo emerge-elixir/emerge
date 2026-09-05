@@ -1,6 +1,8 @@
 # Changelog
 
-## [0.4.0] - 2026-09-03
+## [0.4.0-beta.1] - 2026-09-05
+
+First beta of 0.4. Changes below are relative to the stable 0.3.4 release.
 
 See the [0.4 migration guide](guides/migrations/0.4.md) for upgrade examples.
 
@@ -36,6 +38,7 @@ See the [0.4 migration guide](guides/migrations/0.4.md) for upgrade examples.
 ### Known limitations
 
 - Gray8 headless output remains outside the stable 0.4 output contract. Gray4 output is unsupported.
+- Trellis and RPi5/V3DV hardware qualification remains ongoing.
 
 ## [0.3.4] - 2026-07-31
 

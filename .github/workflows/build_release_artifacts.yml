@@ -313,6 +313,8 @@ jobs:
         if: ${{ startsWith(github.ref, 'refs/tags/v') }}
         uses: softprops/action-gh-release@v2
         with:
+          prerelease: ${{ contains(env.PROJECT_VERSION, '-') }}
+          make_latest: ${{ contains(env.PROJECT_VERSION, '-') && 'false' || 'true' }}
           files: ${{ steps.build-crate.outputs.file-path }}
 
   build_macos_host:
@@ -402,6 +404,8 @@ jobs:
         if: ${{ startsWith(github.ref, 'refs/tags/v') }}
         uses: softprops/action-gh-release@v2
         with:
+          prerelease: ${{ contains(env.PROJECT_VERSION, '-') }}
+          make_latest: ${{ contains(env.PROJECT_VERSION, '-') && 'false' || 'true' }}
           files: |
             ${{ env.ARCHIVE_NAME }}
             ${{ env.ARCHIVE_NAME }}.sha256

@@ -8,6 +8,11 @@ or `guides/internals/`, not under an `active-` filename.
 
 ## Active implementation plans
 
+### `release-0.4.0-beta.1.md`
+
+Beta preparation on `headless-backend`, validation results, and exact-tag
+prerelease publication gates.
+
 ### `active-armv7-release-artifacts.md`
 
 ARMv7 cross-image and release-artifact qualification, with automatic Trellis
