@@ -12,6 +12,9 @@
 - Trellis uses Cortex-A7 and `armv7-nerves-linux-gnueabihf`. `mix.exs` already
   maps that compiler to `armv7-unknown-linux-gnueabihf` for source builds.
 - The legacy cross image has an obsolete host toolchain for a Skia source build.
+- Subsequent OpenGL logs identify `video-interop 0.1.0` assuming 64-bit
+  `libc::stat` fields. Reproduced with a local ARMv7 Cargo check. The upstream
+  0.1.1 patch uses `fstat64`/`lseek64` and adds an ARMv7 release gate.
 
 ## Changes
 
@@ -41,6 +44,8 @@
   ARMv7 hard-float passes; ARMv7 soft-float, ARMv6, and AArch64 fail.
   Force the C locale for stable `readelf` output. Scope environment-selection
   documentation to cross builds rather than native ARMv7 hosts.
+- [ ] Publish VideoInterop 0.1.1 through protected CI, then update Emerge's
+  Cargo dependency minimum and registry lock. Do not commit a local path patch.
 - [ ] Rerun both ARMv7 artifact jobs and inspect the produced dependency closure.
 - [ ] Qualify the resulting binaries on Trellis (CPU and glibc/libstdc++ ABI).
 
