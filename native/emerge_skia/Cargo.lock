@@ -2281,9 +2281,9 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "video-interop"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74c9b748ac35e4feb2d5a88043fd05dd277d0ac5ccf0883901550c8eea60ce49"
+checksum = "9bf74482d6a7c04fb2369f7fe76191ac0ef75059e2fa545eaab010a15ad44beb"
 dependencies = [
  "ash",
  "libc",

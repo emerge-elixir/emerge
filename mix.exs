@@ -70,7 +70,7 @@ defmodule Emerge.MixProject do
     [
       {:rustler, "~> 0.38.0", optional: true},
       {:rustler_precompiled, "~> 0.8.4"},
-      {:video_interop, "~> 0.1.0"},
+      {:video_interop, "~> 0.1.1"},
       {:jason, "~> 1.4"},
       {:benchee, "~> 1.3", only: :dev, runtime: false},
       {:ex_doc, "~> 0.35", only: :dev, runtime: false},

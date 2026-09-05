@@ -44,8 +44,11 @@
   ARMv7 hard-float passes; ARMv7 soft-float, ARMv6, and AArch64 fail.
   Force the C locale for stable `readelf` output. Scope environment-selection
   documentation to cross builds rather than native ARMv7 hosts.
-- [ ] Publish VideoInterop 0.1.1 through protected CI, then update Emerge's
-  Cargo dependency minimum and registry lock. Do not commit a local path patch.
+- [x] Consume published VideoInterop 0.1.1 from Hex and crates.io, updating
+  both dependency minimums and registry locks without a local path patch.
+  Full local CI passes against the registry packages. An isolated ARMv7 check
+  with EGL/Vulkan and Emerge's locked dependency versions also passes on Rust
+  1.91, with warning-denied Clippy.
 - [ ] Rerun both ARMv7 artifact jobs and inspect the produced dependency closure.
 - [ ] Qualify the resulting binaries on Trellis (CPU and glibc/libstdc++ ABI).
 

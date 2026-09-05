@@ -17,5 +17,5 @@
   "rustler": {:hex, :rustler, "0.38.0", "7a8906998ff0d28e3021c0a73264abcda719bda344b2e58307c6805b0f87c9b4", [:mix], [{:jason, "~> 1.0", [hex: :jason, repo: "hexpm", optional: false]}], "hexpm", "704c03c1bf66be12b031c5a389347b91c81c5cb819a24b068b0de36fe4a5652a"},
   "rustler_precompiled": {:hex, :rustler_precompiled, "0.8.4", "700a878312acfac79fb6c572bb8b57f5aae05fe1cf70d34b5974850bbf2c05bf", [:mix], [{:castore, "~> 0.1 or ~> 1.0", [hex: :castore, repo: "hexpm", optional: false]}, {:rustler, "~> 0.23", [hex: :rustler, repo: "hexpm", optional: true]}], "hexpm", "3b33d99b540b15f142ba47944f7a163a25069f6d608783c321029bc1ffb09514"},
   "statistex": {:hex, :statistex, "1.1.0", "7fec1eb2f580a0d2c1a05ed27396a084ab064a40cfc84246dbfb0c72a5c761e5", [:mix], [], "hexpm", "f5950ea26ad43246ba2cce54324ac394a4e7408fdcf98b8e230f503a0cba9cf5"},
-  "video_interop": {:hex, :video_interop, "0.1.0", "09d96389c29535a8fe6a994a3c12a3456119e6ede2f878b05711ea077f184deb", [:mix], [], "hexpm", "d9dc27530f9cf2b5aeac2f8b8c2fae32432b3cb76682a7547b60439db769dfe5"},
+  "video_interop": {:hex, :video_interop, "0.1.1", "9040c99f8244079243a0d912156aeec6b5be28aadc34862300d265b68f5f1745", [:mix], [], "hexpm", "89d99d90625d7f845fa508971130d508418852a06f2bbafad2e399e4697170c1"},
 }
