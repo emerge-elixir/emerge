@@ -1,49 +1,59 @@
 # Shared animation core: layout lengths and change transitions
 
-Status: unified implementation proposal; no implementation yet.
+Status: second design iteration; selected approach, not implemented.
 Branch: `plan/shared-animation-core`. Code baseline: `641d355`.
-The two predecessor documents are preserved in commit `e38f0b0`; this is their
-single replacement, not a third parallel plan.
+Predecessors are preserved in `e38f0b0`; the first consolidation is `5475831`.
+This remains the single implementation plan.
 
-## Goal and complexity
+## Decision: cached endpoint projections, not a layout-engine migration
 
-Support the full width/height length matrix and `Animation.change/3` through one
-animation core. Reuse timing, easing, compatible interpolation, real layout,
-refresh and hit geometry. Refactor the boundary that currently makes endpoint
-queries unsafe: **geometry evaluation versus committing live presentation**.
+Support the full width/height length matrix and `Animation.change/3` through the
+existing animation core. Add a lazy endpoint resolver with **one private, reusable
+layout tree**. Ordinary frames keep the existing effective-attrs → layout → refresh
+path. Both animation frontends use the same sampler and resolver.
 
-| Area | Scope |
-| --- | --- |
-| Shared frame inputs and update effects | Bounded changes across animation, layout preparation, patches and tree update |
-| Geometry query/commit boundary | Main structural work: native layout helpers, workspace/cache ownership and compatibility outputs |
-| Endpoint resolution and change admission | Small shared layer over those boundaries; correctness-sensitive source/context handling |
-| Public metadata | Animation helper, normalization, validation, native/Elixir attr codecs and format compatibility |
-| Rendering, input and backends | Preserve existing consumers/interfaces; integration and regression tests, not redesign |
+Remove the previous prerequisite to introduce `LayoutInputs`, `GeometryResult`,
+`commit_geometry` and migrate every layout mutation/consumer. Isolation is needed
+for endpoint queries; a universal live-state commit architecture is not needed to
+provide it. Preserve required old sources with sparse first-write captures instead.
 
-This is a native animation/layout refactor with targeted integration, not an engine
-replacement. It simplifies feature code but is more structural work than a one-off
-probe helper. Complexity is assessed by coupling and migration risk, not time units.
+### Alternatives investigated
 
-## Audit decisions that unify the predecessors
+| Approach | Structural/runtime trade-off | Decision |
+| --- | --- | --- |
+| Blend fill weights/bases inside the allocator | Few probes, but changes mixed interpolation; full wrapping/intrinsic cases still need real layout | Reject: different semantics |
+| FLIP or interpolate rendered boxes | Cheap motion but different wrapping, sibling allocation and hit/layout behavior | Reject: not layout animation |
+| Resolve one joint final tree, then freeze every endpoint | Small code/cache; different deadlines can cause terminal jumps | Reject as general semantics |
+| Full retained-tree clone for every query | Reuses layout but copies paint/registry payloads and repeats model allocation | Test oracle only |
+| Universal geometry evaluation/commit split | Strong long-term isolation; broad mutable-helper/cache/patch migration, without eliminating endpoint layouts | Defer, not a prerequisite |
+| Pure per-container allocation queries | Can be fast in definite independent cases; dependency/fallback machinery duplicates layout knowledge | Defer until profiling justifies a narrow extraction |
+| One reusable layout-only projection tree | Existing algorithms, no live rollback, amortized model copy; extra layout on genuine misses | **Choose** |
 
-| Tension / code finding | Unified decision |
-| --- | --- |
-| Incremental probe copies versus optional architectural investment | One staged route to query/commit isolation; a bounded layout-copy adapter may bridge migration, not become a separate animation engine |
-| Declared attrs already hold old targets | Use sparse applied-update effects; no persistent duplicate target-history registry |
-| `SetAttrs` and text patch fast paths overwrite presentation before sync | Keep committed output stable across model updates; transitional source captures must precede destructive writes |
-| `resolve_element` also mutates scroll, paint order and registry/cache state | Evaluation computes workspace results; only live commit publishes derived effects |
-| `Measure` can be caused by animation presence, not actual size-input changes | Separate endpoint-context changes from generic work invalidation |
-| Runtime-start hints ignore `SetAttrs` | Explicit change effects wake the runtime, including paint-only changes |
-| Sampling can inherit `latest_animation_sample_time` from an idle period | New runs use a fresh/presentation-aligned start; share existing anchoring mechanics |
-| Patches apply sequentially and can fail after a successful prefix | Report applied effects and errors; do not invent whole-batch rollback |
-| Pixel conversion and independent probes can change semantics | Preserve compatible interpolation and prove coherent symbolic endpoint projections |
-| Query isolation does not define asynchronous endpoint behavior | Treat concurrent context/retargeting as a correctness gate, not a solved optimization |
+The choice minimizes new ownership boundaries and repeated work, not just lines.
+It is not a claim of measured speed. A private tree costs additional memory, and
+asynchronous coupled tracks can still require endpoint layouts on every pulse.
 
-Evidence is in `tree/{element,animation,layout,patch,invalidation}.rs` and
-`runtime/tree_update.rs` under `native/emerge_skia/src/`. In particular,
-`NodeLayoutState` mixes outputs/workspace, `update_scroll_state` mutates offsets,
-`classify_attrs_change` conservatively marks animation-bearing attrs, and
-`patches_may_start_animation_runtime` currently ignores `SetAttrs`.
+### Code findings behind the choice
+
+Paths below are under `native/emerge_skia/src/`:
+
+- `tree/layout.rs::run_layout_passes` already separates measure/resolve from
+  refresh. Invoke that machinery on private state rather than redesigning it.
+- `Element::render_snapshot` is not a suitable layout copy: it retains render
+  fragments while dropping measurement caches. Construct the query tree explicitly.
+- Row/column planners already perform dependent child resolution. A separate
+  arithmetic evaluator is not a complete shortcut for intrinsic/cross-axis layout.
+- Layout has two `assets::ensure_source` sites plus a read in
+  `resolve_element_sizing`. Isolate these narrow resource lookups, not all layout
+  writes. `snapshot_tree_sources_for_offscreen` mutates asset state; it is not a
+  read-only metric snapshot.
+- `patch.rs` overwrites effective attrs and can resize frames before animation
+  sync. Capture preimages before those writes, including their affected wrappers.
+- `Measure` includes conservative animation invalidation; runtime-start hints
+  ignore `SetAttrs`. Neither is a sufficient change-trigger/context-validity signal.
+
+Complexity stays in source capture, endpoint-context correctness and lifecycle/codec
+integration. No allocator replacement, new scheduler or backend/render/event rewrite.
 
 ## Public contract
 
@@ -110,151 +120,145 @@ Reference arithmetic that must not change accidentally:
   jump under that existing contract. Removal cancels change runs; exit captures
   the common source presentation. Strip change policies from ghosts.
 
-## Target architecture
+## Implementation design
 
 ```text
-model/runtime updates → applied UpdateEffects
-                         │
-explicit keyframes ──────┼→ shared run admission, timeline and easing
-change/lifecycle triggers┘              │
-                                      ▼
-                       composed FrameInputs / endpoint projections
-                                      │
-                       lazy numeric endpoint resolution
-                                      │
-                       ordinary sampled effective attrs
-                                      │
-                 geometry evaluation when required (or reuse)
-                                      │
-                  commit live presentation → existing refresh
-                                      │
-                            RenderScene / registry
+explicit keyframes ───────┐
+patch-triggered change ───┼→ shared segment selection, easing and interpolation
+enter / exit ownership ──┘                  │
+                                  missing numeric endpoints?
+                                   no │             │ yes
+                                      │   cached resolver / private layout tree
+                                      └─────────────┘
+                                              │
+                                 ordinary effective-attr overlay
+                                              │
+                                existing live layout and refresh
 ```
 
-### 1. Shared frame composition and sparse update effects
+### 1. Sparse applied effects and source capture
 
-Extract a single composition operation used by full, active-only, dirty-subtree,
-endpoint and direct/headless paths. Preserve current order: raw animation overlay,
-normal scale preparation, then interaction styles. Separate runtime normalization
-and dirty marking from composition. Do not allocate full-tree attrs each pulse.
+Keep desired targets/policies in declared attrs. A first-write journal retains only
+pending old values/sources and the latest successfully applied targets; active runs
+retain their clock, optional presentation anchor and current segment endpoints.
+No persistent idle target-history registry, Elixir diff/clock or per-pulse discovery.
 
-Patch/update processing returns relevant old/new semantic values, policy/mount
-changes, actual layout-input changes and any partial error. Compare desired values,
-not changing effective samples. Use existing preimages and affected ids; do not
-introduce a parallel Elixir diff, native full-tree policy scan or idle history map.
+- Reuse patch preimages. Validate non-length pairs before accepting that node's
+  invalid target. Preserve successful-prefix effects even when later patches fail;
+  the journal must survive error returns until the next admission/frame.
+- Before patch geometry fast paths overwrite frames, save affected nodes' old
+  unrotated boxes and scale context once. Capture even if a policy is added later
+  in the same coalesced update. Scale/reparent edits must preserve affected sources
+  before changing their ancestry; do not reconstruct old units through new parents.
+- Preserve compatible logical samples too: a pixel box cannot reconstruct a
+  weighted-fill source. Never lay out old content against newly patched children
+  and call that the previous presentation.
+- Keep these hooks local to update/patch mutations; no universal presentation commit
+  adapter. Work is proportional to affected attrs/geometry, not all idle policies.
+- Start newly admitted runs with a fresh/presentation-aligned time, not a stale idle
+  `latest_animation_sample_time`. Paint-only change effects must wake the runtime.
 
-Validate synthesized non-length pairs before committing that node's invalid target.
-Keep effects from successfully applied prefixes when another patch fails. Model
-application and live-frame commit are distinct boundaries, not atomic transactions.
-During migration, preserve required sources before text/other fast paths mutate them.
+Create a once spec only for an actual change and use the ordinary sampler. Factor
+small segment-selection/start/completion helpers; do not rewrite owner maps into a
+track graph. Avoid per-tick keyframe generation, debug-string fingerprints and
+quadratic active-id collection. Completion exposes terminal/base attrs before
+pulses stop. Captured native presentation is not a GPU readback.
 
-### 2. Geometry evaluation independent of live commit
+### 2. One layout-only query workspace
 
-Introduce internal `LayoutInputs`, reusable workspace and `GeometryResult` concepts.
-These names are schematic; existing `LayoutOutput` remains the render/event refresh
-product, not the geometry result.
+The native tree's resolver lazily owns one reusable `ElementTree`-shaped workspace,
+shared by all endpoint requests, never one per run/cohort. Build it explicitly from
+model/topology, needed runtime/scroll seeds and layout state; omit raw EMRG bytes,
+registry/render fragments and renderer resources. Keep mutation private and retain
+only endpoint numbers/context on runs. Release workspace contents when no mixed
+segment needs them; do not create a global animation cache.
 
-- Inputs borrow model/topology and runtime context, with sparse frame overrides,
-  viewport/scale and available font/media metrics.
-- Evaluation uses the existing measure/resolve algorithms. It writes workspace
-  geometry, paragraph fragments, derived paint order, scroll proposals and
-  context-tagged cache updates—not live presentation or model state.
-- Queries read endpoint dimensions and discard temporary effects. Live commit
-  installs results/damage once, followed by the existing refresh/publication path.
-- Normal resource setup remains explicit. Endpoint evaluation reads metrics without
-  starting asset loads; direct/headless paths still perform normal resource setup.
-  Immutable fonts and correctly keyed measurement memoization may be shared.
-- Calculate scroll clamping/end-following in the workspace where needed; commit only
-  the live result. Simply omitting scroll behavior from queries is not equivalent.
-- Retain scale context and unrotated boxes. Convert endpoint/source geometry to
-  logical animation units once, not using newly patched ancestor scales.
-- Endpoint overrides dirty their real dependencies. Borrowed/copied clean flags do
-  not establish cache validity in another projection.
+- Initially copy on demand; refresh the model snapshot only after actual layout-model
+  changes. Use a coarse model epoch first, not another patch-replay/diff system.
+  Viewport, metric and sampled-overlay changes update query context, not the model
+  copy. Every snapshot refresh is visible in diagnostics.
+- Reuse the workspace across projections/pulses. Restore previously overridden attrs,
+  apply the new sparse projection, and use existing dependency dirtying and retained
+  layout caches. A→B→A queries must equal fresh evaluations. A clean flag from the
+  wrong context is never sufficient proof of reuse.
+- Seed mutable runtime inputs from the same live context for each query. A prior
+  query's scroll clamp/end-follow must not seed the next query. Restoring those inputs
+  must dirty affected cached work too. Count reset visits; avoid resetting every node
+  when only a few inputs changed. Frames/caches remain keyed results, not new inputs.
+- Use shared attr composition: supplied raw overlays → scale preparation → interaction
+  styles, retaining full/active/dirty modes. Thread viewport/scale and mutable resolver
+  access through these and direct entrypoints, not just the actor. Supply projections
+  directly; do not recurse into sampling or accidentally apply its first keyframe.
+- Run normal measure/resolve on the workspace, extract logical unrotated border-box
+  dimensions, then discard query effects. Live frames still run and publish normally.
+  No live rollback, new result/commit API or render/registry query pass.
+- Use a narrow read-only image-metrics input for the layout lookup sites. Normal asset
+  setup still runs for the real tree, including direct/headless paths; queries do not
+  enqueue loads, alter authorization or reuse the mutating offscreen snapshot helper.
+  Share immutable fonts/safely keyed text measurements, not asset locks across layout.
 
-Keep current `element.layout.effective`, frame and scroll fields as compatibility
-outputs initially. A commit adapter updates changed nodes and cache/damage state;
-render/event builders and backend `RenderScene` interfaces need not be rewritten.
-Patch-side geometry fast paths must feed pending output/the same commit path rather
-than overwrite the source presentation before a transition is admitted.
+This deliberately spends one tree-shaped workspace to avoid a large ownership
+refactor. Fresh isolated evaluation is the cache/isolation oracle. Reusing scroll,
+paragraph, Nearby and allocation state safely is a test obligation, not an assumed
+benefit of `Clone`.
 
-A temporary isolated layout-copy adapter can establish parity while helpers migrate
-away from broad `&mut ElementTree` access. Do not use live-tree layout plus frame-only
-rollback. Do not copy registry/render fragments or retain cloned scenes per run.
-Any remaining copy cost must be explicit and pass qualification, not hidden by the
-new API. Normal and endpoint paths must end up using the same layout calculations.
+### 3. Shared lazy endpoint resolver
 
-No mandatory persistent tree, ECS, global double buffer or full dependency graph.
-Reuse native dense storage where suitable; preserve sparse preparation/commit and
-paint-only geometry bypass. Moving fields between structs alone is not isolation.
+For each adjacent segment:
 
-### 3. Minimal shared runtime ownership
+1. Compatible pair: keep existing interpolation, including recursive compatibility.
+2. Where a transition requires its captured source, use that anchor in original units.
+3. Evaluate constant pixel/min/max expressions directly; reuse valid numeric endpoints.
+4. Only missing layout-dependent information runs a workspace projection.
 
-| Data | Owner / lifetime |
-| --- | --- |
-| Desired target and policy | Existing declared attrs |
-| Original semantic values and pending applied changes | Sparse update journal until admission/coalescing is resolved |
-| Source presentation | Stable committed native output, or explicit captured anchor during migration/handoff |
-| Clock/spec, optional anchor and endpoint results | Running/pending instance only |
+Resolve the complete expression and whole keyframe context, including both axes,
+insets, fonts, image aspect ratio and layout scale. Preserve terminal expressions.
+An arbitrary previous frame is not an explicit keyframe's endpoint. Convert units
+using the corresponding source/projection scale once, not a patched scale twice.
 
-Generate a once spec only on a real change. Reuse the current sampler and small
-start/completion helpers; do not introduce another interpolation engine or rewrite
-all owner maps into a general graph. Poll active entries, avoid quadratic id
-collection, and compute spec identity at admission rather than hashing debug strings
-or building keyframes on every tick.
+Cache by segment/projection identity and actual layout inputs: model epoch,
+viewport/scale, relevant metric versions and foreign layout samples. Exclude the
+projection's own sampled writes, policy-only changes and unchanged asset dimensions.
+Generic `Measure` is work classification, not an endpoint-cache key. Start with
+conservative invalidation for other layout animations; no dependency graph.
 
-A source frame alone cannot represent a weighted-fill sample. Preserve compatible
-logical sampled values as well as geometry when needed. Committed native output
-is not necessarily the last GPU-displayed scene; reuse existing timing/anchoring,
-not GPU readback or new renderer acknowledgments.
+### 4. Chosen concurrent rule: shared boundaries, frozen foreign samples
 
-Completion must emit the existing damage needed to expose the final symbolic/base
-state before pulses stop. Idle policies must not keep the runtime active.
+Mixed endpoints describe current layout context, not a prediction of future tracks.
+Use this deterministic, bounded rule for both frontends:
 
-### 4. Lazy endpoint resolution and cache validity
+1. Select all segments/owners at one sample time. Freeze peer samples from existing
+   endpoint caches before refreshing any endpoint. Cold entries use captured sources
+   or their symbolic source keyframe, not another query's newly produced result.
+2. For an endpoint boundary, project fields sharing that exact segment-boundary time
+   to the corresponding keyframe together. Other fields keep the frozen sample.
+   Group by actual boundary, not merely parent, patch batch or animation owner.
+3. Query each distinct missing projection once. Include compatible fields reaching
+   that boundary too; otherwise a sibling's final fill weight can be wrong.
+4. On context change, anchor at the current sample and retarget over the remaining
+   interval. Preserve the remaining easing-curve interval rather than restarting
+   ease-in every pulse. Do not feed refreshed endpoints recursively into peer queries.
+5. At boundaries/completion, apply normal owner/keyframe/ghost behavior and invalidate
+   affected peer contexts. Multi-segment and loop boundaries retain existing semantics;
+   a cohort is not a new persistent scheduling object.
 
-Use the same ordered lookup for explicit and generated runs:
+Track context per property/field group, not just node: another independently timed
+axis on the same node can affect layout. Evaluate whole projections and deduplicate
+identical inputs. Different deadlines can require different queries each frame.
 
-1. Compatible pair: existing interpolation, no endpoint query.
-2. Pixel-only expression: evaluate constants/min/max directly with normal units.
-3. Valid source anchor or adjacent endpoint in matching context: reuse it.
-4. Otherwise evaluate a symbolic endpoint projection through the geometry API.
+Why not cache one final tree? For two 40px → fill siblings in 600px, with durations
+1s and 2s, joint final endpoints are 300px. At 1s the slow sibling is 170px under
+that scheme; restoring the fast sibling to fill makes it **430px**, a **130px jump**.
 
-Evaluate the whole keyframe's relevant attrs and both axes together. Deduplicate
-identical projections, not merely requests with the same parent. Never substitute
-an arbitrary old frame for an explicit keyframe that was not laid out there.
+The chosen rule is selected, not yet proven for the full engine. A row-only linear
+arithmetic model preserved the synchronous 170px midpoint and simultaneous 300px
+finish. For unequal deadlines, fast completion was about 427.04/428.51/429.25px at
+30/60/120 samples per second: retargeting is sampling-dependent, not a closed-form
+future-layout solution. Test sparse/skipped pulses, curves and terminal continuity
+in native layout; do not claim frame-rate invariance or general correctness from
+this model. If reference cases fail, revise the rule, not the promised matrix.
 
-Typical extra work, excluding live layout: zero queries for compatible/constant
-pairs and captured symbolic→pixel changes; one unknown endpoint for pixel→symbolic;
-up to two for a cold symbolic→symbolic pair; zero for unchanged warm endpoints.
-These are conditional counts, not runtime performance claims or a global bound.
-
-Store only needed endpoint values/context on the active segment. Context derives
-from actual viewport, scale, layout attrs, topology, interactions, metric changes
-and relevant other animation samples—not generic `Measure`, policy-only updates,
-unchanged-dimension asset notices or the run's own pixel writes. Begin conservatively
-for external changes; refine locality only with evidence.
-
-A pure axis-allocation helper may avoid full queries for independently constrained
-rows/columns with valid measurements. Share existing planner arithmetic; fall back
-when wrapping, cross-axis reflow, intrinsic parents or stale measurements invalidate
-that shortcut. It is an optimization after parity, not a prerequisite framework.
-
-### 5. Concurrent endpoint context: explicit gate
-
-Neither predecessor resolved this fully, and the architecture does not solve it.
-Synchronized tracks sharing allocation need a coherent endpoint projection. Different
-phases/deadlines cannot all be treated as simultaneous terminal keyframes.
-
-Prototype deterministic frozen sampled contexts with bounded, at-most-once-per-frame
-retargeting and no recursive animation/layout fixed point. Verify asynchronous fill
-siblings, parent/child animations, mixed durations and final symbolic handoff.
-A stale numeric peer snapshot can be wrong when that peer completes.
-
-Document the chosen projection/retarget rule and prove its reference cases before
-general implementation is accepted. If it fails, revise this plan explicitly—do not
-silently narrow the matrix, introduce a solver, or claim two global queries suffice.
-
-### 6. Declarative metadata and compatibility
+### 5. Declarative metadata and compatibility
 
 Normalize wrappers to ordinary targets plus per-property policies, e.g.:
 
@@ -271,23 +275,39 @@ compatibility/documentation. Existing length tags stay unchanged. Do not duplica
 targets on the wire, serialize presentation history, overload `:animate`/`:on_change`,
 or add NIF entry points or per-frame BEAM calls. Keep BEAM collection work linear.
 
-## Implementation phases and stop conditions
+## Work budget and implementation order
 
-1. **Reference contract:** capture legacy interpolation/layout behavior, full-matrix
-   endpoint cases and the concurrent-context rule. Stop if semantics remain ambiguous.
-2. **Shared seams:** frame composition, applied effects and fresh clock admission;
-   preserve current pixels, patch-prefix behavior and incremental preparation.
-3. **Evaluation/commit migration:** establish the geometry API and compatibility
-   adapter, isolate resources/derived effects, migrate patch geometry fast paths.
-   Stop on cache/pixel/scroll divergence or unconditional full-tree warm-frame cost.
-4. **Shared endpoint and change runtime:** lazy resolution, source anchors, cache
-   context, sparse change admission, coalescing and lifecycle completion.
-5. **Public acceptance:** policy encoding/docs, complete matrix and owner coverage,
-   explicit/change differential tests, host/device qualification and measured tuning.
+Let `N` be model size, `R` active fields and `Q` distinct missing projections. Added
+retention is one layout workspace `O(N)` plus run-local endpoints `O(R)`, not
+`O(N × R)`. Extra work is projection preparation plus `Q` real layout evaluations;
+no claim that every layout is local or that `Q` is globally at most two.
 
-A copy adapter is a migration tool, not a competing feature path. A broader allocator
-or dependency refactor needs evidence and a plan revision; no separate architecture
-project is implicitly authorized by these phases.
+| Case, excluding ordinary live layout | Expected extra endpoint work |
+| --- | --- |
+| Compatible pairs / constant-only mixed expressions | No query or workspace allocation |
+| Captured symbolic → pixel change | No query |
+| Known source → unknown symbolic destination | Typically one projection |
+| Cold symbolic → different symbolic | Up to two for one coherent segment context |
+| Warm unchanged projection / synchronized group | No endpoint layout or model copy |
+| Asynchronous layout peers changing context | Up to one evaluation per missing projection per pulse; reuse the model copy |
+| Real layout-model edits while endpoints are needed | Coarse snapshot refresh can be `O(N)`; measure this cost explicitly |
+
+1. **Reference proof:** implement test/oracle cases for the full matrix, boundary rule,
+   numeric/symbolic box parity and interruption sources. Pixel substitution can change
+   parent fill discovery/intrinsic accounting; stop on divergence, not just wrong boxes.
+2. **Minimal shared core:** sparse first-write effects, fresh clocks, shared segment
+   selection/composition and change admission; preserve partial preparation/lifecycle.
+3. **Cached projection resolver:** one private workspace, narrow metric reads, shared
+   layout and cache reuse, plus direct/headless integration. Compare every optimized
+   query against fresh evaluation, including permuted query order.
+4. **Public/qualification:** metadata/codec/docs, all owners/segments and explicit/change
+   equivalence; measure cold starts, warm frames, model edits and asynchronous peers.
+
+Do not add a persistent-tree architecture, pure allocator or incremental shadow-tree
+patch engine speculatively. If model copying is the measured bottleneck, first copy
+known changed node inputs using existing applied effects; if layouts dominate, inspect
+cache validity/visited nodes before proposing allocator or dependency work. A failed
+memory/frame budget blocks acceptance; simplicity is not permission to ignore it.
 
 ## Acceptance and validation
 
@@ -303,11 +323,14 @@ project is implicitly authorized by these phases.
   successful patch prefixes followed by failure; no corrupted next transition.
 - Compare old/new geometry, pixels, clips, hits, nearby border-box alignment, wrapped
   text, image aspect ratio, intrinsic parents, insets, scroll end-following and rotation.
-- Prove query isolation and exactly-once live derived effects; no asset requests,
-  leaked probe frames, stale dependency flags or unqualified cross-projection reuse.
+- Prove query isolation and normal live derived effects; no asset requests, leaked
+  probe frames, stale dependency flags or cross-query scroll feedback. Compare A→B→A
+  and permuted projection orders with fresh layout, including failed/pending assets.
 - Confirm cold/warm query counts, zero endpoint work on compatible/compositor paths,
-  no idle discovery scans and no regenerated specs. Measure visited nodes, copied
-  bytes, workspace peak and retained-cache hits on small updates in large trees.
+  no idle discovery scans and no regenerated specs. Measure layout/input-reset visits,
+  model-copy count/bytes, retained/peak workspace memory and cache hits in large trees.
+  Include many asynchronous tracks and frequent unrelated content/model edits; report
+  cold-start and worst-frame costs separately rather than hiding them in averages.
 - Test shared `TreeUpdateEngine`, direct/headless helpers and macOS integration;
   backend orchestration remains unchanged. Use constrained-device evidence for
   performance acceptance, not code-reading estimates.
@@ -324,5 +347,5 @@ See also [layout/cache flow](../guides/internals/layout-refresh-render-flow.md),
 [layout caching roadmap](layout-caching-roadmap.md) and
 [platform orchestration](platform-runtime-architecture-differences.md).
 
-This consolidation audited code and design documents only. No implementation,
-Rust/Elixir tests or runtime benchmarks were performed.
+This iteration inspected code and ran a standalone rational-arithmetic row model.
+No implementation, Rust/Elixir tests or runtime benchmarks were performed.
