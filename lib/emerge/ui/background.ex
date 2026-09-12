@@ -13,8 +13,7 @@ defmodule Emerge.UI.Background do
 
   Use:
 
-  - `color/1` for solid fills
-  - `gradient/2` and `gradient/3` for linear gradients
+  - `color/1` for solid fills or linear gradients from `Emerge.UI.Color.gradient/2`
   - `image/1` and `image/2` for background images
 
   ## Background Images
@@ -56,16 +55,17 @@ defmodule Emerge.UI.Background do
 
   @type color_value :: Emerge.UI.Color.color() | Emerge.UI.Color.t()
   @type fit :: :contain | :cover | :repeat | :repeat_x | :repeat_y
-  @type gradient_background :: {:gradient, color_value(), color_value(), number()}
   @type image_background :: {:image, Emerge.UI.image_source(), fit()}
   @type image_options :: keyword()
-  @type t :: {:background, color_value() | gradient_background() | image_background()}
+  @type t :: {:background, color_value() | image_background()}
 
   @doc """
-  Set a solid background color.
+  Set a solid or gradient background color.
 
   Accepts plain named colors like `:black` and normalized color tuples from
-  `Emerge.UI.Color`.
+  `Emerge.UI.Color`, including `Emerge.UI.Color.gradient/2`.
+
+      Background.color(gradient([color(:sky, 400), color(:violet, 500)], 30))
 
   ## Example
 
@@ -85,32 +85,6 @@ defmodule Emerge.UI.Background do
   """
   @spec color(color_value()) :: t()
   def color(c), do: {:background, c}
-
-  @doc """
-  Set a linear background gradient.
-
-  `gradient/2` defaults to an angle of `0` degrees. `gradient/3` accepts an
-  explicit angle in degrees.
-
-  ## Example
-
-  This creates a decorative block where the gradient is the main visual content.
-
-  ```elixir
-  el(
-    [
-      width(px(320)),
-      height(px(160)),
-      Background.gradient(color(:violet, 500), color(:fuchsia, 700), 30),
-      Border.rounded(18)
-    ],
-    none()
-  )
-  ```
-  """
-  @spec gradient(color_value(), color_value()) :: t()
-  @spec gradient(color_value(), color_value(), number()) :: t()
-  def gradient(from, to, angle \\ 0), do: {:background, {:gradient, from, to, angle}}
 
   @doc """
   Set a background image on the element frame.

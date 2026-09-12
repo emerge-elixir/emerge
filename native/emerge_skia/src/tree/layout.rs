@@ -9,8 +9,10 @@ use super::animation::{
     AnimationFrameSamples, AnimationOverlayResult, AnimationRuntime, apply_sample_attrs,
     sample_animation_overlays, sample_animation_overlays_for_ids, scale_animation_spec,
 };
+#[cfg(test)]
+use super::attrs::Color;
 use super::attrs::{
-    AlignX, AlignY, Attrs, BorderWidth, Color, Font, Length, MouseOverAttrs, Padding, TextAlign,
+    AlignX, AlignY, Attrs, BorderWidth, Font, Length, MouseOverAttrs, Padding, TextAlign,
     TextFragment, effective_scrollbar_x, effective_scrollbar_y,
 };
 use super::element::{
@@ -22,7 +24,6 @@ use super::element::{
 };
 use super::geometry::Rect;
 use super::invalidation::TreeInvalidation;
-use super::render::DEFAULT_TEXT_COLOR;
 #[cfg(any(test, feature = "bench-diagnostics"))]
 use super::render::{
     reset_render_traversal_diagnostics_for_benchmark,
@@ -34,6 +35,7 @@ use crate::assets;
 use crate::events::registry_builder::{
     reset_registry_build_diagnostics_for_benchmark, take_registry_build_diagnostics_for_benchmark,
 };
+use crate::render_color::RenderColor;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -235,7 +237,7 @@ pub struct FontContext {
     pub font_weight: Option<u16>,
     pub font_italic: Option<bool>,
     pub font_size: Option<f32>,
-    pub font_color: Option<u32>,
+    pub font_color: Option<RenderColor>,
     pub font_underline: Option<bool>,
     pub font_strike: Option<bool>,
     pub font_letter_spacing: Option<f32>,
@@ -268,8 +270,8 @@ impl FontContext {
             font_color: attrs
                 .font_color
                 .as_ref()
-                .map(color_to_u32)
-                .or(self.font_color),
+                .map(|c| c.render(crate::tree::geometry::Rect::default()))
+                .or_else(|| self.font_color.clone()),
             font_underline: attrs.font_underline.or(self.font_underline),
             font_strike: attrs.font_strike.or(self.font_strike),
             font_letter_spacing: attrs
@@ -360,40 +362,6 @@ fn multiline_text_layout<M: TextMeasurer>(
                 .0
         },
     )
-}
-
-/// Convert a Color to u32 RGBA format.
-fn color_to_u32(color: &Color) -> u32 {
-    match color {
-        Color::Rgb { r, g, b } => {
-            ((*r as u32) << 24) | ((*g as u32) << 16) | ((*b as u32) << 8) | 0xFF
-        }
-        Color::Rgba { r, g, b, a } => {
-            ((*r as u32) << 24) | ((*g as u32) << 16) | ((*b as u32) << 8) | (*a as u32)
-        }
-        Color::Named(name) => named_color(name),
-    }
-}
-
-/// Map named colors to u32 RGBA values.
-fn named_color(name: &str) -> u32 {
-    match name {
-        "white" => 0xFFFFFFFF,
-        "black" => 0x000000FF,
-        "red" => 0xFF0000FF,
-        "green" => 0x00FF00FF,
-        "blue" => 0x0000FFFF,
-        "cyan" => 0x00FFFFFF,
-        "magenta" => 0xFF00FFFF,
-        "yellow" => 0xFFFF00FF,
-        "orange" => 0xFFA500FF,
-        "purple" => 0x800080FF,
-        "pink" => 0xFFC0CBFF,
-        "gray" | "grey" => 0x808080FF,
-        "navy" => 0x000080FF,
-        "teal" => 0x008080FF,
-        _ => 0xFFFFFFFF,
-    }
 }
 
 /// Parse font weight string to numeric value.
@@ -5691,7 +5659,10 @@ fn resolve_paragraph_children<M: TextMeasurer>(
             .unwrap_or_else(|| "default".to_string());
         let weight = font_ctx.font_weight.unwrap_or(400);
         let italic = font_ctx.font_italic.unwrap_or(false);
-        let color = font_ctx.font_color.unwrap_or(DEFAULT_TEXT_COLOR);
+        let color = font_ctx
+            .font_color
+            .clone()
+            .unwrap_or(RenderColor::Solid(0xff));
         let underline = font_ctx.font_underline.unwrap_or(false);
         let strike = font_ctx.font_strike.unwrap_or(false);
 
@@ -5785,7 +5756,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
                 y: cursor_y,
                 text: word.to_string(),
                 font_size,
-                color,
+                color: color.clone(),
                 family: family.clone(),
                 weight,
                 italic,

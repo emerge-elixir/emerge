@@ -8,7 +8,6 @@ mod paint;
 mod registry_walk;
 mod text;
 
-pub(crate) use self::color::DEFAULT_TEXT_COLOR;
 use self::paint::{
     build_background_nodes, collect_border_nodes, collect_box_shadow_nodes,
     collect_scrollbar_nodes, render_image_nodes, render_video_nodes,
@@ -880,15 +879,36 @@ fn offset_render_node(node: RenderNode, dx: f32, dy: f32) -> RenderNode {
 
 fn offset_draw_primitive(primitive: DrawPrimitive, dx: f32, dy: f32) -> DrawPrimitive {
     match primitive {
-        DrawPrimitive::Rect(x, y, w, h, color) => DrawPrimitive::Rect(x + dx, y + dy, w, h, color),
+        DrawPrimitive::Rect(x, y, w, h, color) => {
+            DrawPrimitive::Rect(x + dx, y + dy, w, h, color.translated(dx, dy))
+        }
         DrawPrimitive::RoundedRect(x, y, w, h, radius, color) => {
-            DrawPrimitive::RoundedRect(x + dx, y + dy, w, h, radius, color)
+            DrawPrimitive::RoundedRect(x + dx, y + dy, w, h, radius, color.translated(dx, dy))
         }
-        DrawPrimitive::Border(x, y, w, h, radius, width, color, style) => {
-            DrawPrimitive::Border(x + dx, y + dy, w, h, radius, width, color, style)
-        }
+        DrawPrimitive::Border(x, y, w, h, radius, width, color, style) => DrawPrimitive::Border(
+            x + dx,
+            y + dy,
+            w,
+            h,
+            radius,
+            width,
+            color.translated(dx, dy),
+            style,
+        ),
         DrawPrimitive::BorderCorners(x, y, w, h, tl, tr, br, bl, width, color, style) => {
-            DrawPrimitive::BorderCorners(x + dx, y + dy, w, h, tl, tr, br, bl, width, color, style)
+            DrawPrimitive::BorderCorners(
+                x + dx,
+                y + dy,
+                w,
+                h,
+                tl,
+                tr,
+                br,
+                bl,
+                width,
+                color.translated(dx, dy),
+                style,
+            )
         }
         DrawPrimitive::BorderEdges(x, y, w, h, radius, top, right, bottom, left, color, style) => {
             DrawPrimitive::BorderEdges(
@@ -901,25 +921,60 @@ fn offset_draw_primitive(primitive: DrawPrimitive, dx: f32, dy: f32) -> DrawPrim
                 right,
                 bottom,
                 left,
-                color,
+                color.translated(dx, dy),
                 style,
             )
         }
         DrawPrimitive::Shadow(x, y, w, h, ox, oy, blur, size, radius, color) => {
-            DrawPrimitive::Shadow(x + dx, y + dy, w, h, ox, oy, blur, size, radius, color)
+            DrawPrimitive::Shadow(
+                x + dx,
+                y + dy,
+                w,
+                h,
+                ox,
+                oy,
+                blur,
+                size,
+                radius,
+                color.translated(dx, dy),
+            )
         }
         DrawPrimitive::InsetShadow(x, y, w, h, ox, oy, blur, size, radius, color) => {
-            DrawPrimitive::InsetShadow(x + dx, y + dy, w, h, ox, oy, blur, size, radius, color)
+            DrawPrimitive::InsetShadow(
+                x + dx,
+                y + dy,
+                w,
+                h,
+                ox,
+                oy,
+                blur,
+                size,
+                radius,
+                color.translated(dx, dy),
+            )
         }
         DrawPrimitive::TextWithFont(x, y, text, size, fill, family, weight, italic) => {
-            DrawPrimitive::TextWithFont(x + dx, y + dy, text, size, fill, family, weight, italic)
+            DrawPrimitive::TextWithFont(
+                x + dx,
+                y + dy,
+                text,
+                size,
+                fill.translated(dx, dy),
+                family,
+                weight,
+                italic,
+            )
         }
-        DrawPrimitive::Gradient(x, y, w, h, from, to, angle) => {
-            DrawPrimitive::Gradient(x + dx, y + dy, w, h, from, to, angle)
-        }
-        DrawPrimitive::Image(x, y, w, h, id, fit, tint) => {
-            DrawPrimitive::Image(x + dx, y + dy, w, h, id, fit, tint)
-        }
+
+        DrawPrimitive::Image(x, y, w, h, id, fit, tint) => DrawPrimitive::Image(
+            x + dx,
+            y + dy,
+            w,
+            h,
+            id,
+            fit,
+            tint.map(|c| c.translated(dx, dy)),
+        ),
         DrawPrimitive::Video(x, y, w, h, target, fit) => {
             DrawPrimitive::Video(x + dx, y + dy, w, h, target, fit)
         }
@@ -1407,6 +1462,20 @@ fn build_paragraph_subtree<H: HostRegistryTraversalSink>(
     let mut fragment_nodes = Vec::new();
     if let Some(fragments) = &element.layout.paragraph_fragments {
         for frag in fragments {
+            let Some(frame) = scene_state
+                .as_ref()
+                .map(|s| s.adjusted_frame)
+                .or(element.layout.frame)
+            else {
+                continue;
+            };
+            let (x, y, width, height) = box_model::content_rect(frame, &element.layout.effective);
+            let color = frag.color.with_bounds(crate::tree::geometry::Rect {
+                x,
+                y,
+                width,
+                height,
+            });
             let x = frag.x + fragment_offset.0;
             let baseline_y = frag.y + fragment_offset.1 + frag.ascent;
             fragment_nodes.push(RenderNode::Primitive(DrawPrimitive::TextWithFont(
@@ -1414,7 +1483,7 @@ fn build_paragraph_subtree<H: HostRegistryTraversalSink>(
                 baseline_y,
                 frag.text.clone(),
                 frag.font_size,
-                frag.color,
+                color.clone(),
                 frag.family.clone(),
                 frag.weight,
                 frag.italic,
@@ -1430,7 +1499,7 @@ fn build_paragraph_subtree<H: HostRegistryTraversalSink>(
                     baseline_y,
                     width: word_width,
                     font_size: frag.font_size,
-                    color: frag.color,
+                    color: &color,
                     underline: frag.underline,
                     strike: frag.strike,
                 }));

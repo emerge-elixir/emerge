@@ -713,7 +713,7 @@ defmodule EmergeSkiaTest do
         [
           width(px(64)),
           height(px(36)),
-          Emerge.UI.Background.gradient(:black, :white)
+          Emerge.UI.Background.color(Emerge.UI.Color.gradient([:black, :white]))
         ],
         none()
       )

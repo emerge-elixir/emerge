@@ -2,13 +2,21 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `Emerge.UI.Color.gradient/1,2` for evenly spaced gradients with two or more colors, usable in all UI color slots: backgrounds, inherited/paragraph/input text, borders, shadows and SVG template tint. Animated solid endpoints are lifted to the gradient endpoint; gradient endpoints require matching stop counts.
+
 ### Changed
+
+- **Breaking:** removed `Background.gradient/2,3` and the old raw gradient tuple. Use `Background.color(gradient([from, to], angle))`; see the migration guide. EMRG is now v9 and the macOS host handshake is v13; upgrade native artifacts and re-encode stored trees/patches together.
 
 - Rasterized SVG size/fit variants now share the configured asset pixel-cache budget and LRU with raster images, instead of separate fixed SVG limits.
 - SVG font discovery and bounded parsed trees are reused across scenes and sizes. Added `assets.cache.svg_tree_max_entries` and `svg_tree_max_bytes`, plus parsed/pixel cache diagnostics.
-- Updated the macOS host protocol to version 11 for parsed SVG cache configuration.
+- Updated the macOS host protocol to version 13 for parsed SVG cache configuration and universal multi-color gradients.
 
 ### Fixed
+
+- SVG color attributes now validate their values before serialization, and gradient tint preserves source alpha in rendering and grayscale policy.
 
 - Centered responsive images now align with matching `in_front` overlays: content-sized `el` hosts finalize both growth and shrinkage before alignment, and columns center using resolved child heights.
 

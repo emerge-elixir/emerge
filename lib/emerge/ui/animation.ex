@@ -29,8 +29,9 @@ defmodule Emerge.UI.Animation do
 
   - `width(px(80))` can animate to `width(px(160))`, but not to `width(fill())`
   - `padding(8)` can animate to `padding(16)`, but not to `padding_each(8, 12, 8, 12)`
-  - `Background.color(...)` can animate to another color background, and
-    `Background.gradient(...)` can animate to another gradient background
+  - solid backgrounds can animate to other solid backgrounds
+  - `Background.color(gradient([...]))` can animate to another gradient background
+    with the same number of stops (colors and angle are interpolated)
   - image backgrounds must keep the same source and fit across keyframes
   - `Border.shadow/1` and `Border.glow/2` must keep the same shadow count in
     each keyframe

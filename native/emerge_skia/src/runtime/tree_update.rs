@@ -1096,7 +1096,8 @@ mod tests {
             let svg = format!(
                 r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}"><rect width="100%" height="100%" fill="red"/></svg>"#
             );
-            let vector = resvg::usvg::Tree::from_str(&svg, &resvg::usvg::Options::default()).unwrap();
+            let vector =
+                resvg::usvg::Tree::from_str(&svg, &resvg::usvg::Options::default()).unwrap();
             crate::renderer::insert_vector_asset("single-axis-svg", vector).unwrap();
             assets::ensure_source(&source);
             assert_eq!(assets::source_dimensions(&source), Some((width, height)));

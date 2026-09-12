@@ -7,7 +7,7 @@ defmodule Emerge.Engine.Serialization do
   alias Emerge.Engine.Reconcile
   alias Emerge.Engine.Tree.Nearby
 
-  @version 7
+  @version 9
 
   @type_tag %{
     row: 1,

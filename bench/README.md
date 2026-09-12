@@ -43,6 +43,13 @@ Update the tracked fixtures when scenario generation, serialization, patch
 encoding, mutation coverage, or fixture metadata changes. Empty patch binaries
 are valid fixtures for no-op mutations and should stay tracked when generated.
 
+Fixtures use EMRG v9 and shared color tag `3`. Background color variant `0`
+contains either a solid color or a gradient; background tags `1` and `3` are
+retired. External fixtures under `bench/external_fixtures/` use the same contract,
+including attribute patches and embedded subtree payloads. The v9 migration
+preserved decoded trees/patches and re-encoded their values; a header-only edit
+is not a valid migration. No runtime compatibility decoder is retained.
+
 After regenerating fixtures, run at least one Elixir retained-layout smoke and
 one Rust Criterion target that reads fixtures before committing the fixture
 diff.

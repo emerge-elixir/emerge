@@ -13,7 +13,7 @@ fn test_render_paragraph_emits_text_commands() {
                 y: 5.0,
                 text: "Hello".to_string(),
                 font_size: 16.0,
-                color: 0xFFFFFFFF,
+                color: crate::render_color::RenderColor::Solid(0xFFFFFFFF),
                 family: "default".to_string(),
                 weight: 400,
                 italic: false,
@@ -26,7 +26,7 @@ fn test_render_paragraph_emits_text_commands() {
                 y: 5.0,
                 text: "World".to_string(),
                 font_size: 16.0,
-                color: 0xFF0000FF,
+                color: crate::render_color::RenderColor::Solid(0xFF0000FF),
                 family: "default".to_string(),
                 weight: 700,
                 italic: false,
@@ -54,7 +54,13 @@ fn test_render_paragraph_emits_text_commands() {
         .iter()
         .filter_map(|draw| match &draw.primitive {
             DrawPrimitive::TextWithFont(x, y, text, _size, color, _family, weight, _italic) => {
-                Some((*x, *y, text.clone(), *color, *weight))
+                Some((
+                    *x,
+                    *y,
+                    text.clone(),
+                    color.solid().expect("solid color"),
+                    *weight,
+                ))
             }
             _ => None,
         })
@@ -89,7 +95,7 @@ fn test_render_paragraph_renders_float_child_and_fragments() {
             y: 8.0,
             text: "AA".to_string(),
             font_size: 16.0,
-            color: 0xFFFFFFFF,
+            color: crate::render_color::RenderColor::Solid(0xFFFFFFFF),
             family: "default".to_string(),
             weight: 400,
             italic: false,
@@ -137,7 +143,13 @@ fn test_render_paragraph_renders_float_child_and_fragments() {
     let float_draw = only_draw(&draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(0.0, 0.0, 20.0, 20.0, 0xFF0000FF)
+            DrawPrimitive::Rect(
+                0.0,
+                0.0,
+                20.0,
+                20.0,
+                crate::render_color::RenderColor::Solid(0xFF0000FF)
+            )
         )
     });
     let text_draw = only_draw(
@@ -162,7 +174,7 @@ fn test_render_paragraph_rebuild_keeps_float_before_inline_event_children() {
             y: 6.0,
             text: "AA".to_string(),
             font_size: 16.0,
-            color: 0xFFFFFFFF,
+            color: crate::render_color::RenderColor::Solid(0xFFFFFFFF),
             family: "default".to_string(),
             weight: 400,
             italic: false,
@@ -256,7 +268,7 @@ fn test_render_paragraph_underline_and_strike() {
             y: 5.0,
             text: "Decorated".to_string(),
             font_size: 18.0,
-            color: 0x010203FF,
+            color: crate::render_color::RenderColor::Solid(0x010203FF),
             family: "default".to_string(),
             weight: 400,
             italic: false,
@@ -287,7 +299,18 @@ fn test_render_paragraph_underline_and_strike() {
 
     let decoration_rects: Vec<_> = draws
         .iter()
-        .filter(|draw| matches!(draw.primitive, DrawPrimitive::Rect(_, _, _, _, 0x010203FF)))
+        .filter(|draw| {
+            matches!(
+                draw.primitive,
+                DrawPrimitive::Rect(
+                    _,
+                    _,
+                    _,
+                    _,
+                    crate::render_color::RenderColor::Solid(0x010203FF)
+                )
+            )
+        })
         .collect();
     assert_eq!(decoration_rects.len(), 2);
 }
@@ -329,7 +352,7 @@ fn test_render_paragraph_with_background() {
             y: 0.0,
             text: "Hi".to_string(),
             font_size: 16.0,
-            color: 0xFFFFFFFF,
+            color: crate::render_color::RenderColor::Solid(0xFFFFFFFF),
             family: "default".to_string(),
             weight: 400,
             italic: false,
@@ -355,7 +378,13 @@ fn test_render_paragraph_with_background() {
     let background = only_draw(&draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(_, _, 100.0, 20.0, 0x000080FF)
+            DrawPrimitive::Rect(
+                _,
+                _,
+                100.0,
+                20.0,
+                crate::render_color::RenderColor::Solid(0x000080FF)
+            )
         )
     });
     let text = only_draw(&draws, |draw| {

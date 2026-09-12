@@ -22,7 +22,7 @@ defmodule Emerge.Engine.AttrCodecTest do
       align_y: :bottom,
       scrollbar_y: true,
       scrollbar_x: false,
-      background: {:gradient, {:color_rgb, {10, 20, 30}}, {:color_rgb, {40, 50, 60}}, 45},
+      background: gradient([{:color_rgb, {10, 20, 30}}, {:color_rgb, {40, 50, 60}}], 45),
       border_radius: {2, 3, 4, 5},
       border_width: 1,
       border_color: {:color_rgba, {1, 2, 3, 255}},

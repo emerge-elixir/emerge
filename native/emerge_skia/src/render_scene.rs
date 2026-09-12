@@ -1,3 +1,4 @@
+use crate::render_color::RenderColor;
 use std::collections::HashSet;
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -259,6 +260,7 @@ impl RenderSceneSummary {
 
     fn record_primitive(&mut self, primitive: &DrawPrimitive) {
         self.primitives += 1;
+        self.gradients += usize::from(primitive.has_gradient());
 
         match primitive {
             DrawPrimitive::Rect(..) => self.rects += 1,
@@ -272,7 +274,7 @@ impl RenderSceneSummary {
                 self.texts += 1;
                 self.text_bytes += text.len();
             }
-            DrawPrimitive::Gradient(..) => self.gradients += 1,
+
             DrawPrimitive::Image(..) => self.images += 1,
             DrawPrimitive::Video(..) => self.videos += 1,
             DrawPrimitive::ImageLoading(..) => self.image_loading += 1,
@@ -964,7 +966,7 @@ fn render_node_metrics(node: &RenderNode) -> RenderNodeMetrics {
 }
 
 fn render_primitive_cost(primitive: &DrawPrimitive) -> u64 {
-    match primitive {
+    let cost = match primitive {
         DrawPrimitive::Rect(..) => 1,
         DrawPrimitive::RoundedRect(..) => 2,
         DrawPrimitive::Border(.., style)
@@ -975,11 +977,12 @@ fn render_primitive_cost(primitive: &DrawPrimitive) -> u64 {
         },
         DrawPrimitive::Shadow(..) | DrawPrimitive::InsetShadow(..) => 80,
         DrawPrimitive::TextWithFont(_, _, text, ..) => 32u64.saturating_add(text.len() as u64 / 2),
-        DrawPrimitive::Gradient(..) => 12,
+
         DrawPrimitive::Image(..) => 20,
         DrawPrimitive::Video(..) => 24,
         DrawPrimitive::ImageLoading(..) | DrawPrimitive::ImageFailed(..) => 4,
-    }
+    };
+    cost + if primitive.has_gradient() { 11 } else { 0 }
 }
 
 fn paint_layer_payload_pixels(bounds: Rect) -> u64 {
@@ -1046,7 +1049,6 @@ pub(crate) fn draw_primitive_visual_bounds(primitive: &DrawPrimitive) -> Rect {
     match primitive {
         DrawPrimitive::Rect(x, y, w, h, _)
         | DrawPrimitive::RoundedRect(x, y, w, h, _, _)
-        | DrawPrimitive::Gradient(x, y, w, h, _, _, _)
         | DrawPrimitive::Image(x, y, w, h, _, _, _)
         | DrawPrimitive::Video(x, y, w, h, _, _)
         | DrawPrimitive::ImageLoading(x, y, w, h)
@@ -1153,9 +1155,9 @@ pub enum PaintLayerReason {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum DrawPrimitive {
-    Rect(f32, f32, f32, f32, u32),
-    RoundedRect(f32, f32, f32, f32, f32, u32),
-    Border(f32, f32, f32, f32, f32, f32, u32, BorderStyle),
+    Rect(f32, f32, f32, f32, RenderColor),
+    RoundedRect(f32, f32, f32, f32, f32, RenderColor),
+    Border(f32, f32, f32, f32, f32, f32, RenderColor, BorderStyle),
     BorderCorners(
         f32,
         f32,
@@ -1166,7 +1168,7 @@ pub enum DrawPrimitive {
         f32,
         f32,
         f32,
-        u32,
+        RenderColor,
         BorderStyle,
     ),
     BorderEdges(
@@ -1179,17 +1181,37 @@ pub enum DrawPrimitive {
         f32,
         f32,
         f32,
-        u32,
+        RenderColor,
         BorderStyle,
     ),
-    Shadow(f32, f32, f32, f32, f32, f32, f32, f32, f32, u32),
-    InsetShadow(f32, f32, f32, f32, f32, f32, f32, f32, f32, u32),
-    TextWithFont(f32, f32, String, f32, u32, String, u16, bool),
-    Gradient(f32, f32, f32, f32, u32, u32, f32),
-    Image(f32, f32, f32, f32, String, ImageFit, Option<u32>),
+    Shadow(f32, f32, f32, f32, f32, f32, f32, f32, f32, RenderColor),
+    InsetShadow(f32, f32, f32, f32, f32, f32, f32, f32, f32, RenderColor),
+    TextWithFont(f32, f32, String, f32, RenderColor, String, u16, bool),
+    Image(f32, f32, f32, f32, String, ImageFit, Option<RenderColor>),
     Video(f32, f32, f32, f32, String, ImageFit),
     ImageLoading(f32, f32, f32, f32),
     ImageFailed(f32, f32, f32, f32),
+}
+
+impl DrawPrimitive {
+    pub fn color(&self) -> Option<&RenderColor> {
+        match self {
+            Self::Rect(_, _, _, _, c)
+            | Self::RoundedRect(_, _, _, _, _, c)
+            | Self::Border(_, _, _, _, _, _, c, _)
+            | Self::BorderCorners(_, _, _, _, _, _, _, _, _, c, _)
+            | Self::BorderEdges(_, _, _, _, _, _, _, _, _, c, _)
+            | Self::Shadow(_, _, _, _, _, _, _, _, _, c)
+            | Self::InsetShadow(_, _, _, _, _, _, _, _, _, c)
+            | Self::TextWithFont(_, _, _, _, c, _, _, _) => Some(c),
+            Self::Image(_, _, _, _, _, _, c) => c.as_ref(),
+            _ => None,
+        }
+    }
+
+    pub fn has_gradient(&self) -> bool {
+        matches!(self.color(), Some(RenderColor::Linear { .. }))
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1489,12 +1511,7 @@ pub(crate) fn hash_paint_layer_draw_primitive<H: Hasher>(
             weight.hash(hasher);
             italic.hash(hasher);
         }
-        DrawPrimitive::Gradient(x, y, w, h, from, to, angle) => {
-            8u8.hash(hasher);
-            hash_paint_layer_f32s(hasher, &[*x, *y, *w, *h, *angle], float);
-            from.hash(hasher);
-            to.hash(hasher);
-        }
+
         DrawPrimitive::Image(x, y, w, h, image_id, fit, tint) => {
             9u8.hash(hasher);
             hash_paint_layer_f32s(hasher, &[*x, *y, *w, *h], float);
@@ -1618,5 +1635,43 @@ mod tests {
         assert_eq!(summary.alphas, 1);
         assert_eq!(summary.videos, 2);
         assert!(RenderScene::default().video_target_ids().is_empty());
+    }
+
+    #[test]
+    fn gradient_hash_includes_middle_stops_order_count_and_angle() {
+        use std::hash::Hasher;
+        let fingerprint = |colors, angle| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            super::hash_paint_layer_draw_primitive(
+                &mut hasher,
+                &crate::render_scene::DrawPrimitive::Rect(
+                    0.0,
+                    0.0,
+                    100.0,
+                    50.0,
+                    crate::render_color::RenderColor::linear(
+                        colors,
+                        angle,
+                        crate::tree::geometry::Rect {
+                            x: 0.0,
+                            y: 0.0,
+                            width: 100.0,
+                            height: 50.0,
+                        },
+                    ),
+                ),
+                super::PaintLayerHashFloat::Exact,
+            );
+            hasher.finish()
+        };
+        let original = fingerprint(vec![1, 2, 3], 0.0);
+        for (colors, angle) in [
+            (vec![1, 4, 3], 0.0),
+            (vec![3, 2, 1], 0.0),
+            (vec![1, 2, 2, 3], 0.0),
+            (vec![1, 2, 3], 90.0),
+        ] {
+            assert_ne!(original, fingerprint(colors, angle));
+        }
     }
 }

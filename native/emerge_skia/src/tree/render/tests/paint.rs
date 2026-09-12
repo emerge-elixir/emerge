@@ -131,21 +131,26 @@ fn demo_glow_card_attrs_without_glow() -> Attrs {
 
 fn demo_combined_glow_card_attrs() -> Attrs {
     Attrs {
-        background: Some(Background::Gradient {
-            from: Color::Rgba {
-                r: 67,
-                g: 97,
-                b: 238,
-                a: 255,
-            },
-            to: Color::Rgba {
-                r: 114,
-                g: 9,
-                b: 183,
-                a: 255,
-            },
+        background: Some(Background::Color(crate::tree::attrs::Color::Gradient {
+            colors: (vec![
+                Color::Rgba {
+                    r: 67,
+                    g: 97,
+                    b: 238,
+                    a: 255,
+                },
+                Color::Rgba {
+                    r: 114,
+                    g: 9,
+                    b: 183,
+                    a: 255,
+                },
+            ])
+            .into_iter()
+            .map(|c| c.try_into().expect("solid stop"))
+            .collect(),
             angle: 135.0,
-        }),
+        })),
         border_radius: Some(BorderRadius::Uniform(10.0)),
         border_width: Some(BorderWidth::Uniform(2.0)),
         border_color: Some(Color::Named("cyan".to_string())),
@@ -840,7 +845,7 @@ fn test_render_svg_source_with_color_emits_tinted_image_command() {
     assert!(draws.iter().any(|draw| {
         matches!(
             &draw.primitive,
-            DrawPrimitive::Image(_, _, _, _, asset_id, ImageFit::Contain, Some(0xFFFFFFFF)) if asset_id == image_id
+            DrawPrimitive::Image(_, _, _, _, asset_id, ImageFit::Contain, Some(crate::render_color::RenderColor::Solid(0xFFFFFFFF))) if asset_id == image_id
         )
     }));
 }
@@ -906,13 +911,26 @@ fn test_render_scrollbar_y_thumb() {
     let background = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
+            DrawPrimitive::Rect(
+                0.0,
+                0.0,
+                100.0,
+                50.0,
+                crate::render_color::RenderColor::Solid(0x000000FF)
+            )
         )
     });
     let thumb = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::RoundedRect(95.0, 13.0, 5.0, 24.0, 2.5, SCROLLBAR_COLOR)
+            DrawPrimitive::RoundedRect(
+                95.0,
+                13.0,
+                5.0,
+                24.0,
+                2.5,
+                crate::render_color::RenderColor::Solid(SCROLLBAR_COLOR)
+            )
         )
     });
 
@@ -972,14 +990,27 @@ fn test_render_scrollbar_x_thumb() {
     let background = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(0.0, 0.0, 80.0, 40.0, 0x000000FF)
+            DrawPrimitive::Rect(
+                0.0,
+                0.0,
+                80.0,
+                40.0,
+                crate::render_color::RenderColor::Solid(0x000000FF)
+            )
         )
     });
 
     let thumb = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::RoundedRect(15.0, 35.0, 40.0, 5.0, 2.5, SCROLLBAR_COLOR)
+            DrawPrimitive::RoundedRect(
+                15.0,
+                35.0,
+                40.0,
+                5.0,
+                2.5,
+                crate::render_color::RenderColor::Solid(SCROLLBAR_COLOR)
+            )
         )
     });
     let expected_clip = ClipShape {
@@ -1030,7 +1061,14 @@ fn test_render_scrollbar_hover_uses_wider_thumb() {
     only_draw(&draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::RoundedRect(93.0, 13.0, 7.0, 24.0, 3.5, SCROLLBAR_COLOR)
+            DrawPrimitive::RoundedRect(
+                93.0,
+                13.0,
+                7.0,
+                24.0,
+                3.5,
+                crate::render_color::RenderColor::Solid(SCROLLBAR_COLOR)
+            )
         )
     });
 }
@@ -1050,7 +1088,16 @@ fn test_render_border_uniform_emits_border_cmd() {
     only_draw(&draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Border(_, _, _, _, 4.0, 2.0, 0xFF0000FF, BorderStyle::Solid)
+            DrawPrimitive::Border(
+                _,
+                _,
+                _,
+                _,
+                4.0,
+                2.0,
+                crate::render_color::RenderColor::Solid(0xFF0000FF),
+                BorderStyle::Solid
+            )
         )
     });
 }
@@ -1084,7 +1131,7 @@ fn test_render_border_edges_emits_border_edges_cmd() {
                 2.0,
                 3.0,
                 4.0,
-                0xFF0000FF,
+                crate::render_color::RenderColor::Solid(0xFF0000FF),
                 BorderStyle::Solid
             )
         )
@@ -1106,7 +1153,16 @@ fn test_render_border_dashed_passes_style() {
     only_draw(&draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Border(_, _, _, _, _, 2.0, 0xFFFFFFFF, BorderStyle::Dashed)
+            DrawPrimitive::Border(
+                _,
+                _,
+                _,
+                _,
+                _,
+                2.0,
+                crate::render_color::RenderColor::Solid(0xFFFFFFFF),
+                BorderStyle::Dashed
+            )
         )
     });
 }
@@ -1703,19 +1759,24 @@ fn test_render_no_border_without_color() {
 #[test]
 fn test_render_gradient_with_rounded_corners_uses_self_clip() {
     let attrs = Attrs {
-        background: Some(Background::Gradient {
-            from: Color::Rgb {
-                r: 67,
-                g: 97,
-                b: 238,
-            },
-            to: Color::Rgb {
-                r: 114,
-                g: 9,
-                b: 183,
-            },
+        background: Some(Background::Color(crate::tree::attrs::Color::Gradient {
+            colors: (vec![
+                Color::Rgb {
+                    r: 67,
+                    g: 97,
+                    b: 238,
+                },
+                Color::Rgb {
+                    r: 114,
+                    g: 9,
+                    b: 183,
+                },
+            ])
+            .into_iter()
+            .map(|c| c.try_into().expect("solid stop"))
+            .collect(),
             angle: 135.0,
-        }),
+        })),
         border_radius: Some(BorderRadius::Uniform(10.0)),
         ..Attrs::default()
     };
@@ -1724,7 +1785,10 @@ fn test_render_gradient_with_rounded_corners_uses_self_clip() {
     let draws = observe_tree(&tree);
 
     let gradient = only_draw(&draws, |draw| {
-        matches!(draw.primitive, DrawPrimitive::Gradient(..))
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(_, _, _, _, crate::render_color::RenderColor::Linear { .. })
+        )
     });
 
     assert_eq!(gradient.clips.len(), 1);
@@ -1750,15 +1814,20 @@ fn test_render_gradient_with_rounded_corners_uses_self_clip() {
 #[test]
 fn test_render_gradient_without_radius_has_no_self_clip() {
     let attrs = Attrs {
-        background: Some(Background::Gradient {
-            from: Color::Rgb { r: 0, g: 0, b: 0 },
-            to: Color::Rgb {
-                r: 255,
-                g: 255,
-                b: 255,
-            },
+        background: Some(Background::Color(crate::tree::attrs::Color::Gradient {
+            colors: (vec![
+                Color::Rgb { r: 0, g: 0, b: 0 },
+                Color::Rgb {
+                    r: 255,
+                    g: 255,
+                    b: 255,
+                },
+            ])
+            .into_iter()
+            .map(|c| c.try_into().expect("solid stop"))
+            .collect(),
             angle: 90.0,
-        }),
+        })),
         ..Attrs::default()
     };
     // No border_radius set
@@ -1767,7 +1836,10 @@ fn test_render_gradient_without_radius_has_no_self_clip() {
     let draws = observe_tree(&tree);
 
     let gradient = only_draw(&draws, |draw| {
-        matches!(draw.primitive, DrawPrimitive::Gradient(..))
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(_, _, _, _, crate::render_color::RenderColor::Linear { .. })
+        )
     });
 
     assert!(gradient.clips.is_empty());
@@ -1776,15 +1848,20 @@ fn test_render_gradient_without_radius_has_no_self_clip() {
 #[test]
 fn test_render_gradient_with_per_corner_radius_uses_self_clip() {
     let attrs = Attrs {
-        background: Some(Background::Gradient {
-            from: Color::Rgb { r: 0, g: 0, b: 0 },
-            to: Color::Rgb {
-                r: 255,
-                g: 255,
-                b: 255,
-            },
+        background: Some(Background::Color(crate::tree::attrs::Color::Gradient {
+            colors: (vec![
+                Color::Rgb { r: 0, g: 0, b: 0 },
+                Color::Rgb {
+                    r: 255,
+                    g: 255,
+                    b: 255,
+                },
+            ])
+            .into_iter()
+            .map(|c| c.try_into().expect("solid stop"))
+            .collect(),
             angle: 0.0,
-        }),
+        })),
         border_radius: Some(BorderRadius::Corners {
             tl: 10.0,
             tr: 5.0,
@@ -1798,7 +1875,10 @@ fn test_render_gradient_with_per_corner_radius_uses_self_clip() {
     let draws = observe_tree(&tree);
 
     let gradient = only_draw(&draws, |draw| {
-        matches!(draw.primitive, DrawPrimitive::Gradient(..))
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(_, _, _, _, crate::render_color::RenderColor::Linear { .. })
+        )
     });
 
     assert_eq!(gradient.clips.len(), 1);
@@ -1824,15 +1904,20 @@ fn test_render_gradient_with_per_corner_radius_uses_self_clip() {
 #[test]
 fn test_render_gradient_with_per_corner_radius_clips_corner_pixels() {
     let attrs = Attrs {
-        background: Some(Background::Gradient {
-            from: Color::Rgb { r: 0, g: 0, b: 0 },
-            to: Color::Rgb {
-                r: 255,
-                g: 255,
-                b: 255,
-            },
+        background: Some(Background::Color(crate::tree::attrs::Color::Gradient {
+            colors: (vec![
+                Color::Rgb { r: 0, g: 0, b: 0 },
+                Color::Rgb {
+                    r: 255,
+                    g: 255,
+                    b: 255,
+                },
+            ])
+            .into_iter()
+            .map(|c| c.try_into().expect("solid stop"))
+            .collect(),
             angle: 0.0,
-        }),
+        })),
         border_radius: Some(BorderRadius::Corners {
             tl: 10.0,
             tr: 5.0,
@@ -2054,9 +2139,71 @@ fn test_render_border_edges_with_style() {
                 2.0,
                 2.0,
                 2.0,
-                0xFFFFFFFF,
+                crate::render_color::RenderColor::Solid(0xFFFFFFFF),
                 BorderStyle::Dashed
             )
         )
     });
+}
+
+#[test]
+fn multicolor_gradient_paints_middle_stop_and_keeps_clip_and_large_angle() {
+    let attrs = |middle, angle| Attrs {
+        background: Some(Background::Color(crate::tree::attrs::Color::Gradient {
+            colors: (vec![
+                Color::Named("red".into()),
+                Color::Named(middle),
+                Color::Named("blue".into()),
+            ])
+            .into_iter()
+            .map(|c| c.try_into().expect("solid stop"))
+            .collect(),
+            angle,
+        })),
+        border_radius: Some(BorderRadius::Corners {
+            tl: 10.0,
+            tr: 5.0,
+            br: 10.0,
+            bl: 5.0,
+        }),
+        ..Attrs::default()
+    };
+    let tree = build_tree_with_attrs(attrs("green".into(), 0.0));
+    let (_, pixels) = render_tree_to_pixels(100, 50, &tree);
+    let (r, g, b, a) = rgba_at(&pixels, 100, 50, 25);
+    assert!(
+        g > 245 && r < 10 && b < 10 && a == 255,
+        "middle: {r},{g},{b},{a}"
+    );
+    assert_eq!(rgba_at(&pixels, 100, 0, 0).3, 0);
+    let (_, other) =
+        render_tree_to_pixels(100, 50, &build_tree_with_attrs(attrs("white".into(), 0.0)));
+    assert_ne!(pixels, other);
+    for angle in [-450.0, 90.0, 1.0e300] {
+        let tree = build_tree_with_attrs(attrs("green".into(), angle));
+        let draws = observe_tree(&tree);
+        let gradient = only_draw(&draws, |draw| {
+            matches!(
+                draw.primitive,
+                DrawPrimitive::Rect(_, _, _, _, crate::render_color::RenderColor::Linear { .. })
+            )
+        });
+        let DrawPrimitive::Rect(
+            _,
+            _,
+            _,
+            _,
+            crate::render_color::RenderColor::Linear {
+                colors,
+                angle: native_angle,
+                ..
+            },
+        ) = &gradient.primitive
+        else {
+            unreachable!()
+        };
+        assert_eq!(colors.as_ref(), &[0xff0000ff, 0x00ff00ff, 0x0000ffff]);
+        assert_eq!(*native_angle, (angle % 360.0) as f32);
+        assert_eq!(gradient.clips.len(), 1);
+    }
 }

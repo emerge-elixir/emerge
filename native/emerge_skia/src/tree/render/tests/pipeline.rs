@@ -549,7 +549,13 @@ fn test_render_skips_child_fully_outside_inherited_clip() {
     assert_eq!(
         matching_draws(&draws, |draw| matches!(
             draw.primitive,
-            DrawPrimitive::Rect(0.0, 80.0, 20.0, 10.0, 0xFF0000FF)
+            DrawPrimitive::Rect(
+                0.0,
+                80.0,
+                20.0,
+                10.0,
+                crate::render_color::RenderColor::Solid(0xFF0000FF)
+            )
         ))
         .len(),
         0,
@@ -594,7 +600,18 @@ fn test_render_keeps_shadow_overflow_that_reaches_inherited_clip() {
     only_draw(&draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Shadow(0.0, 60.0, 20.0, 10.0, 0.0, -20.0, 0.0, 0.0, 0.0, 0xFF0000FF)
+            DrawPrimitive::Shadow(
+                0.0,
+                60.0,
+                20.0,
+                10.0,
+                0.0,
+                -20.0,
+                0.0,
+                0.0,
+                0.0,
+                crate::render_color::RenderColor::Solid(0xFF0000FF)
+            )
         )
     });
 }
@@ -629,7 +646,13 @@ fn test_render_keeps_transformed_child_that_reaches_inherited_clip() {
     let child = only_draw(&draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(0.0, 80.0, 20.0, 10.0, 0x00FF00FF)
+            DrawPrimitive::Rect(
+                0.0,
+                80.0,
+                20.0,
+                10.0,
+                crate::render_color::RenderColor::Solid(0x00FF00FF)
+            )
         )
     });
     assert_eq!(child.cumulative_transform, Affine2::translation(0.0, -40.0));
@@ -904,13 +927,25 @@ fn test_render_transformed_children_stay_inside_parent_host_clip() {
     let left_draw = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(0.0, 0.0, 104.0, 60.0, 0x32465AFF)
+            DrawPrimitive::Rect(
+                0.0,
+                0.0,
+                104.0,
+                60.0,
+                crate::render_color::RenderColor::Solid(0x32465AFF)
+            )
         )
     });
     let right_draw = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(116.0, 0.0, 104.0, 60.0, 0x463C5AFF)
+            DrawPrimitive::Rect(
+                116.0,
+                0.0,
+                104.0,
+                60.0,
+                crate::render_color::RenderColor::Solid(0x463C5AFF)
+            )
         )
     });
 
@@ -1000,7 +1035,13 @@ fn test_render_rounded_parent_clips_child_background_corners() {
     let child_rect = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(0.0, 0.0, 365.0, 80.0, 0xF0EDF8FF)
+            DrawPrimitive::Rect(
+                0.0,
+                0.0,
+                365.0,
+                80.0,
+                crate::render_color::RenderColor::Solid(0xF0EDF8FF)
+            )
         )
     });
 
@@ -1142,7 +1183,13 @@ fn test_render_emits_translate_for_move() {
     let draw = only_draw(draws, |resolved| {
         matches!(
             resolved.primitive,
-            DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
+            DrawPrimitive::Rect(
+                0.0,
+                0.0,
+                100.0,
+                50.0,
+                crate::render_color::RenderColor::Solid(0x000000FF)
+            )
         )
     });
     assert_eq!(draw.cumulative_transform, expected_transform);
@@ -1172,7 +1219,13 @@ fn test_render_emits_rotate_for_rotation() {
     let draw = only_draw(draws, |resolved| {
         matches!(
             resolved.primitive,
-            DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
+            DrawPrimitive::Rect(
+                0.0,
+                0.0,
+                100.0,
+                50.0,
+                crate::render_color::RenderColor::Solid(0x000000FF)
+            )
         )
     });
     assert_eq!(draw.cumulative_transform, expected_transform);
@@ -1202,7 +1255,13 @@ fn test_render_emits_scale_for_scale() {
     let draw = only_draw(draws, |resolved| {
         matches!(
             resolved.primitive,
-            DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
+            DrawPrimitive::Rect(
+                0.0,
+                0.0,
+                100.0,
+                50.0,
+                crate::render_color::RenderColor::Solid(0x000000FF)
+            )
         )
     });
     assert_eq!(draw.cumulative_transform, expected_transform);
@@ -1221,7 +1280,13 @@ fn test_render_emits_alpha_layer() {
     let draw = only_draw(draws, |resolved| {
         matches!(
             resolved.primitive,
-            DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
+            DrawPrimitive::Rect(
+                0.0,
+                0.0,
+                100.0,
+                50.0,
+                crate::render_color::RenderColor::Solid(0x000000FF)
+            )
         )
     });
     let alpha_scopes = alpha_scope_chain(&trace, draw);
@@ -1290,7 +1355,13 @@ fn test_alpha_shadow_keeps_shadow_visible_and_alpha_reduced_inside_parent_clip()
     let body_draw = only_draw(&draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(20.0, 15.0, 30.0, 15.0, 0xFFFFFFFF)
+            DrawPrimitive::Rect(
+                20.0,
+                15.0,
+                30.0,
+                15.0,
+                crate::render_color::RenderColor::Solid(0xFFFFFFFF)
+            )
         )
     });
 
@@ -1969,7 +2040,13 @@ fn test_render_skips_transform_when_default() {
     let draw = only_draw(draws, |resolved| {
         matches!(
             resolved.primitive,
-            DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
+            DrawPrimitive::Rect(
+                0.0,
+                0.0,
+                100.0,
+                50.0,
+                crate::render_color::RenderColor::Solid(0x000000FF)
+            )
         )
     });
     assert_eq!(draw.cumulative_transform, Affine2::identity());
@@ -2032,19 +2109,37 @@ fn test_render_nearby_behind_and_in_front_order() {
     let background = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
+            DrawPrimitive::Rect(
+                0.0,
+                0.0,
+                100.0,
+                50.0,
+                crate::render_color::RenderColor::Solid(0x000000FF)
+            )
         )
     });
     let behind = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(0.0, 0.0, 20.0, 10.0, 0xFF0000FF)
+            DrawPrimitive::Rect(
+                0.0,
+                0.0,
+                20.0,
+                10.0,
+                crate::render_color::RenderColor::Solid(0xFF0000FF)
+            )
         )
     });
     let front = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(0.0, 0.0, 20.0, 10.0, 0x0000FFFF)
+            DrawPrimitive::Rect(
+                0.0,
+                0.0,
+                20.0,
+                10.0,
+                crate::render_color::RenderColor::Solid(0x0000FFFF)
+            )
         )
     });
 
@@ -2110,19 +2205,37 @@ fn test_render_behind_between_background_and_children() {
     let background = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
+            DrawPrimitive::Rect(
+                0.0,
+                0.0,
+                100.0,
+                50.0,
+                crate::render_color::RenderColor::Solid(0x000000FF)
+            )
         )
     });
     let behind = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(0.0, 0.0, 20.0, 10.0, 0xFF0000FF)
+            DrawPrimitive::Rect(
+                0.0,
+                0.0,
+                20.0,
+                10.0,
+                crate::render_color::RenderColor::Solid(0xFF0000FF)
+            )
         )
     });
     let child = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(10.0, 12.0, 30.0, 15.0, 0x00FF00FF)
+            DrawPrimitive::Rect(
+                10.0,
+                12.0,
+                30.0,
+                15.0,
+                crate::render_color::RenderColor::Solid(0x00FF00FF)
+            )
         )
     });
 
@@ -2197,13 +2310,25 @@ fn test_render_behind_inside_host_clip() {
     let behind = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0xFF0000FF)
+            DrawPrimitive::Rect(
+                0.0,
+                0.0,
+                100.0,
+                50.0,
+                crate::render_color::RenderColor::Solid(0xFF0000FF)
+            )
         )
     });
     let child = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(10.0, 10.0, 20.0, 10.0, 0x00FF00FF)
+            DrawPrimitive::Rect(
+                10.0,
+                10.0,
+                20.0,
+                10.0,
+                crate::render_color::RenderColor::Solid(0x00FF00FF)
+            )
         )
     });
 
@@ -2420,19 +2545,37 @@ fn test_render_nearby_above_below_order_after_parent() {
     let background = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
+            DrawPrimitive::Rect(
+                0.0,
+                0.0,
+                100.0,
+                50.0,
+                crate::render_color::RenderColor::Solid(0x000000FF)
+            )
         )
     });
     let above = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(0.0, -10.0, 20.0, 10.0, 0x00FF00FF)
+            DrawPrimitive::Rect(
+                0.0,
+                -10.0,
+                20.0,
+                10.0,
+                crate::render_color::RenderColor::Solid(0x00FF00FF)
+            )
         )
     });
     let below = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(0.0, 50.0, 20.0, 10.0, 0xFFFF00FF)
+            DrawPrimitive::Rect(
+                0.0,
+                50.0,
+                20.0,
+                10.0,
+                crate::render_color::RenderColor::Solid(0xFFFF00FF)
+            )
         )
     });
 
@@ -2499,13 +2642,25 @@ fn test_render_front_nearby_escapes_ancestor_host_clip() {
     let child = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(10.0, 10.0, 20.0, 10.0, 0x00FF00FF)
+            DrawPrimitive::Rect(
+                10.0,
+                10.0,
+                20.0,
+                10.0,
+                crate::render_color::RenderColor::Solid(0x00FF00FF)
+            )
         )
     });
     let nearby = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(10.0, -10.0, 20.0, 10.0, 0xFF0000FF)
+            DrawPrimitive::Rect(
+                10.0,
+                -10.0,
+                20.0,
+                10.0,
+                crate::render_color::RenderColor::Solid(0xFF0000FF)
+            )
         )
     });
 
@@ -2572,13 +2727,25 @@ fn test_render_same_host_escape_nearby_uses_definition_order_across_slots() {
     let first = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(10.0, 10.0, 20.0, 20.0, 0xFF0000FF)
+            DrawPrimitive::Rect(
+                10.0,
+                10.0,
+                20.0,
+                20.0,
+                crate::render_color::RenderColor::Solid(0xFF0000FF)
+            )
         )
     });
     let second = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(10.0, 10.0, 20.0, 20.0, 0x00FF00FF)
+            DrawPrimitive::Rect(
+                10.0,
+                10.0,
+                20.0,
+                20.0,
+                crate::render_color::RenderColor::Solid(0x00FF00FF)
+            )
         )
     });
 
@@ -3161,13 +3328,25 @@ fn test_render_earlier_child_escape_paints_after_later_normal_sibling() {
     let blue = only_draw(&trace.draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(0.0, 48.0, 220.0, 40.0, 0x0000FFFF)
+            DrawPrimitive::Rect(
+                0.0,
+                48.0,
+                220.0,
+                40.0,
+                crate::render_color::RenderColor::Solid(0x0000FFFF)
+            )
         )
     });
     let red = only_draw(&trace.draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(100.0, 48.0, 60.0, 40.0, 0xFF0000FF)
+            DrawPrimitive::Rect(
+                100.0,
+                48.0,
+                60.0,
+                40.0,
+                crate::render_color::RenderColor::Solid(0xFF0000FF)
+            )
         )
     });
 
@@ -3246,13 +3425,25 @@ fn test_render_ancestor_in_front_beats_descendant_below() {
     let red = only_draw(&trace.draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(80.0, 48.0, 60.0, 40.0, 0xFF0000FF)
+            DrawPrimitive::Rect(
+                80.0,
+                48.0,
+                60.0,
+                40.0,
+                crate::render_color::RenderColor::Solid(0xFF0000FF)
+            )
         )
     });
     let green = only_draw(&trace.draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(80.0, 48.0, 60.0, 40.0, 0x00FF00FF)
+            DrawPrimitive::Rect(
+                80.0,
+                48.0,
+                60.0,
+                40.0,
+                crate::render_color::RenderColor::Solid(0x00FF00FF)
+            )
         )
     });
 
@@ -3328,13 +3519,25 @@ fn test_render_later_sibling_escape_beats_earlier_sibling_escape() {
     let red = only_draw(&trace.draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(80.0, 20.0, 60.0, 40.0, 0xFF0000FF)
+            DrawPrimitive::Rect(
+                80.0,
+                20.0,
+                60.0,
+                40.0,
+                crate::render_color::RenderColor::Solid(0xFF0000FF)
+            )
         )
     });
     let green = only_draw(&trace.draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(80.0, 20.0, 60.0, 40.0, 0x00FF00FF)
+            DrawPrimitive::Rect(
+                80.0,
+                20.0,
+                60.0,
+                40.0,
+                crate::render_color::RenderColor::Solid(0x00FF00FF)
+            )
         )
     });
 
@@ -3471,13 +3674,25 @@ fn test_render_nested_escape_submenu_paints_after_parent_menu() {
     let menu_draw = only_draw(&trace.draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(80.0, 40.0, 80.0, 60.0, 0xFFFFFFFF)
+            DrawPrimitive::Rect(
+                80.0,
+                40.0,
+                80.0,
+                60.0,
+                crate::render_color::RenderColor::Solid(0xFFFFFFFF)
+            )
         )
     });
     let submenu_draw = only_draw(&trace.draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(130.0, 50.0, 60.0, 40.0, 0xFFFF00FF)
+            DrawPrimitive::Rect(
+                130.0,
+                50.0,
+                60.0,
+                40.0,
+                crate::render_color::RenderColor::Solid(0xFFFF00FF)
+            )
         )
     });
 
@@ -3525,13 +3740,25 @@ fn test_render_in_front_fill_uses_parent_border_box_slot() {
     let background = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
+            DrawPrimitive::Rect(
+                0.0,
+                0.0,
+                100.0,
+                50.0,
+                crate::render_color::RenderColor::Solid(0x000000FF)
+            )
         )
     });
     let front = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0xFF0000FF)
+            DrawPrimitive::Rect(
+                0.0,
+                0.0,
+                100.0,
+                50.0,
+                crate::render_color::RenderColor::Solid(0xFF0000FF)
+            )
         )
     });
 
@@ -3580,7 +3807,13 @@ fn test_render_in_front_explicit_size_can_overflow_slot_with_alignment() {
     only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(-30.0, -30.0, 160.0, 80.0, 0xFF0000FF)
+            DrawPrimitive::Rect(
+                -30.0,
+                -30.0,
+                160.0,
+                80.0,
+                crate::render_color::RenderColor::Solid(0xFF0000FF)
+            )
         )
     });
 }
@@ -3626,7 +3859,13 @@ fn test_render_above_fill_width_uses_parent_slot() {
     only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(0.0, -10.0, 100.0, 10.0, 0xFF0000FF)
+            DrawPrimitive::Rect(
+                0.0,
+                -10.0,
+                100.0,
+                10.0,
+                crate::render_color::RenderColor::Solid(0xFF0000FF)
+            )
         )
     });
 }
@@ -3672,7 +3911,13 @@ fn test_render_on_right_fill_height_uses_parent_slot() {
     only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(100.0, 0.0, 20.0, 50.0, 0xFF0000FF)
+            DrawPrimitive::Rect(
+                100.0,
+                0.0,
+                20.0,
+                50.0,
+                crate::render_color::RenderColor::Solid(0xFF0000FF)
+            )
         )
     });
 }
@@ -3719,7 +3964,13 @@ fn test_render_in_front_ignores_host_clip() {
     let front = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0xFF0000FF)
+            DrawPrimitive::Rect(
+                0.0,
+                0.0,
+                100.0,
+                50.0,
+                crate::render_color::RenderColor::Solid(0xFF0000FF)
+            )
         )
     });
     assert!(front.clips.is_empty());
@@ -3770,7 +4021,13 @@ fn test_outer_shadow_escapes_non_scrollable_ancestor_clip() {
     let body = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(10.0, 12.0, 30.0, 15.0, 0xFFFFFFFF)
+            DrawPrimitive::Rect(
+                10.0,
+                12.0,
+                30.0,
+                15.0,
+                crate::render_color::RenderColor::Solid(0xFFFFFFFF)
+            )
         )
     });
 
@@ -4288,7 +4545,13 @@ fn test_outer_shadow_clips_only_on_vertical_scroll_axis() {
     let body = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(50.0, 30.0, 30.0, 15.0, 0xFFFFFFFF)
+            DrawPrimitive::Rect(
+                50.0,
+                30.0,
+                30.0,
+                15.0,
+                crate::render_color::RenderColor::Solid(0xFFFFFFFF)
+            )
         )
     });
 
@@ -4377,7 +4640,13 @@ fn test_outer_shadow_clips_only_on_horizontal_scroll_axis() {
     let body = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(50.0, 30.0, 30.0, 15.0, 0xFFFFFFFF)
+            DrawPrimitive::Rect(
+                50.0,
+                30.0,
+                30.0,
+                15.0,
+                crate::render_color::RenderColor::Solid(0xFFFFFFFF)
+            )
         )
     });
 
@@ -4468,7 +4737,13 @@ fn test_outer_shadow_reuses_full_rounded_clip_when_both_scroll_axes_enabled() {
     let body = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(50.0, 30.0, 30.0, 15.0, 0xFFFFFFFF)
+            DrawPrimitive::Rect(
+                50.0,
+                30.0,
+                30.0,
+                15.0,
+                crate::render_color::RenderColor::Solid(0xFFFFFFFF)
+            )
         )
     });
     let expected_clip = ClipShape {
@@ -4584,7 +4859,13 @@ fn test_scrollable_shadowed_child_uses_one_composition_translation() {
     let child_c = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(_, _, 100.0, 20.0, 0x0000FFFF)
+            DrawPrimitive::Rect(
+                _,
+                _,
+                100.0,
+                20.0,
+                crate::render_color::RenderColor::Solid(0x0000FFFF)
+            )
         )
     });
 
@@ -4816,7 +5097,13 @@ fn test_border_renders_after_host_clip_pops() {
     let child_draw = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(10.0, 10.0, 20.0, 10.0, 0xFFFFFFFF)
+            DrawPrimitive::Rect(
+                10.0,
+                10.0,
+                20.0,
+                10.0,
+                crate::render_color::RenderColor::Solid(0xFFFFFFFF)
+            )
         )
     });
     let border_draw = only_draw(draws, |draw| {
@@ -4860,7 +5147,13 @@ fn test_render_uses_only_background_self_clip_when_nothing_else_is_clipped() {
     let background = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
+            DrawPrimitive::Rect(
+                0.0,
+                0.0,
+                100.0,
+                50.0,
+                crate::render_color::RenderColor::Solid(0x000000FF)
+            )
         )
     });
 

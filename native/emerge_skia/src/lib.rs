@@ -44,6 +44,7 @@ pub mod keys;
 mod linux_wait;
 mod native_log;
 pub mod paint_layer_payload_cache;
+pub mod render_color;
 pub mod render_scene;
 pub mod renderer;
 pub mod runtime;

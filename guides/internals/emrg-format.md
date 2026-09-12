@@ -8,7 +8,7 @@ This document specifies the EMRG binary format used by
 EMRG is a compact, self-contained encoding of a retained `Emerge.tree()` value.
 It stores all nodes in a flat list and rebuilds edges by id.
 
-Current format version is `6`.
+Current format version is `9`.
 
 ## Header
 
@@ -23,15 +23,14 @@ node_count        # 4 bytes unsigned, big-endian
 Each node is encoded as:
 
 ```text
-id_len            # 4 bytes unsigned
-id_bin            # id_len bytes (erlang term_to_binary)
+id                # 8 bytes unsigned, big-endian
 type_tag          # 1 byte unsigned
 attrs_len         # 4 bytes unsigned
 attrs_bin         # attrs_len bytes (attribute block)
 child_count       # 2 bytes unsigned
-children...       # repeated child ids (length-prefixed)
+children...       # repeated child ids (8 bytes each)
 nearby_count      # 2 bytes unsigned
-nearby...         # repeated mounted nearby refs: slot_tag + length-prefixed id
+nearby...         # repeated mounted nearby refs: slot_tag + 8-byte id
 ```
 
 Nearby slot tags use the following fixed mapping:
@@ -69,6 +68,7 @@ image       -> 9
 text_input  -> 10
 video       -> 11
 multiline   -> 12
+slider      -> 13
 ```
 
 ## Attribute Tags
@@ -95,7 +95,39 @@ mouse_over, focused, mouse_down
 snap_layout, snap_text_metrics, space_evenly
 ```
 
+## Background and Gradient Payloads
+
+Attribute blocks start with a `u16` big-endian attribute count. Each attribute
+starts with a one-byte tag; background uses tag `12` followed by:
+
+| Variant | Payload |
+| --- | --- |
+| `0` | color (solid or gradient) |
+| `1` | retired; rejected |
+| `2` | image source and fit (unchanged) |
+| `3` | retired background-only gradient; rejected |
+
+Solid colors use variant `0` followed by three RGB bytes, variant `1` followed by
+four RGBA bytes, or variant `2` followed by a `u16` BE UTF-8 name length and name.
+Color variant `3` contains a `u32` BE stop count, ordered solid-color payloads,
+and a finite `f64` BE angle in degrees. Gradients contain at least two solid
+colors, never nested gradients. All color slots use this encoding: backgrounds,
+fonts, borders, shadows and SVG tint. Background gradients therefore begin with
+background variant `0`, then color variant `3`. Stops are evenly spaced.
+
+Gradient values decode in Elixir as `{:color_gradient, colors, angle}`. Attribute
+blocks (including keyframe blocks) must be consumed completely. Bad counts,
+truncation, retired variants, and non-finite gradient angles are rejected.
+
 ## Compatibility Note
 
-Rust still accepts EMRG v5 and early v3 during decode for compatibility with
-older tests, but all new Elixir serialization uses v6.
+Elixir and Rust accept only EMRG v9. Re-encode persisted trees and fixtures;
+changing only the header is not sufficient for old gradient payloads. Rust's
+round-trip serializer preserves raw attr bytes, so byte round-trip tests do not
+substitute for decoded-model and render tests.
+
+Standalone `set_attrs` patches have no EMRG header. Their background tags use the
+same definitions above: retired background tags `1` and `3` are rejected, so
+incompatible patches fail rather than silently changing meaning. Inserted
+subtrees contain complete v9 EMRG trees. Upgrade Elixir, the native library,
+and the macOS host (handshake v13) together.

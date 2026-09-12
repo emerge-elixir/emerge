@@ -4,7 +4,7 @@ defmodule EmergeSkia.Macos.Protocol do
   import Bitwise
 
   @protocol_name "emerge_skia_macos"
-  @protocol_version 12
+  @protocol_version 13
 
   @log_level_debug 0
   @log_level_info 1

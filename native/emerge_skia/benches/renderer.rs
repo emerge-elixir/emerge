@@ -874,6 +874,22 @@ fn render_cases() -> Vec<RenderCase> {
 
     vec![
         RenderCase {
+            name: "gradient_text",
+            scene: universal_gradient_scene(0),
+        },
+        RenderCase {
+            name: "gradient_borders",
+            scene: universal_gradient_scene(1),
+        },
+        RenderCase {
+            name: "gradient_shadows",
+            scene: universal_gradient_scene(2),
+        },
+        RenderCase {
+            name: "gradient_svg_tint",
+            scene: universal_gradient_scene(3),
+        },
+        RenderCase {
             name: "text_heavy",
             scene: text_heavy_scene(),
         },
@@ -930,12 +946,73 @@ fn render_cases() -> Vec<RenderCase> {
 
 fn ensure_benchmark_assets() {
     BENCH_ASSETS.call_once(|| {
+        let tree = resvg::usvg::Tree::from_data(
+            include_bytes!("../../../priv/test_assets/gradient_mask.svg"),
+            &resvg::usvg::Options::default(),
+        )
+        .expect("gradient SVG");
+        emerge_skia::renderer::insert_vector_asset("renderer_bench_gradient_svg", tree)
+            .expect("gradient SVG asset");
         insert_raster_asset(
             BENCH_IMAGE_ID,
             include_bytes!("../../../priv/sample_assets/static.jpg"),
         )
         .expect("renderer benchmark raster asset should decode");
     });
+}
+
+fn universal_gradient_scene(kind: u8) -> RenderScene {
+    let stops: std::sync::Arc<[u32]> = [0xff0000a0, 0x00ff00ff, 0x0000ff80].into();
+    RenderScene {
+        nodes: (0..120)
+            .map(|index| {
+                let x = 14.0 + (index % 8) as f32 * 116.0;
+                let y = 16.0 + (index / 8) as f32 * 44.0;
+                let color = emerge_skia::render_color::RenderColor::linear(
+                    stops.clone(),
+                    30.0,
+                    Rect {
+                        x,
+                        y,
+                        width: 94.0,
+                        height: 30.0,
+                    },
+                );
+                RenderNode::Primitive(match kind {
+                    0 => DrawPrimitive::TextWithFont(
+                        x,
+                        y + 22.0,
+                        "Gradient".into(),
+                        20.0,
+                        color,
+                        "default".into(),
+                        400,
+                        false,
+                    ),
+                    1 => DrawPrimitive::Border(
+                        x,
+                        y,
+                        94.0,
+                        30.0,
+                        6.0,
+                        4.0,
+                        color,
+                        BorderStyle::Dashed,
+                    ),
+                    2 => DrawPrimitive::Shadow(x, y, 94.0, 30.0, 0.0, 3.0, 6.0, 2.0, 6.0, color),
+                    _ => DrawPrimitive::Image(
+                        x,
+                        y,
+                        94.0,
+                        30.0,
+                        "renderer_bench_gradient_svg".into(),
+                        ImageFit::Cover,
+                        Some(color),
+                    ),
+                })
+            })
+            .collect(),
+    }
 }
 
 fn text_heavy_scene() -> RenderScene {
@@ -951,7 +1028,7 @@ fn text_heavy_scene() -> RenderScene {
                     y,
                     format!("Renderer cache benchmark row {index:03}"),
                     13.0,
-                    0x18202AFF,
+                    (0x18202AFFu32).into(),
                     "default".to_string(),
                     if index % 7 == 0 { 700 } else { 400 },
                     index % 11 == 0,
@@ -976,7 +1053,7 @@ fn solid_uniform_borders_scene() -> RenderScene {
                     28.0,
                     if index % 3 == 0 { 0.0 } else { 8.0 },
                     1.0 + (index % 3) as f32,
-                    0x526071FF,
+                    (0x526071FFu32).into(),
                     BorderStyle::Solid,
                 ))
             })
@@ -1009,7 +1086,7 @@ fn solid_edge_borders_scene() -> RenderScene {
                     right,
                     bottom,
                     left,
-                    0x3E536CFF,
+                    (0x3E536CFFu32).into(),
                     BorderStyle::Solid,
                 ))
             })
@@ -1032,7 +1109,7 @@ fn dashed_borders_scene() -> RenderScene {
                     30.0,
                     if index % 2 == 0 { 0.0 } else { 9.0 },
                     1.5 + (index % 3) as f32,
-                    0x5E6E82FF,
+                    (0x5E6E82FFu32).into(),
                     if index % 2 == 0 {
                         BorderStyle::Dashed
                     } else {
@@ -1072,11 +1149,12 @@ fn border_clip_heavy_scene() -> RenderScene {
                             y,
                             rect.width,
                             rect.height,
-                            if index % 2 == 0 {
+                            (if index % 2 == 0 {
                                 0xF6F8FAFF
                             } else {
                                 0xEEF3F7FF
-                            },
+                            })
+                            .into(),
                         )),
                         RenderNode::Primitive(DrawPrimitive::Border(
                             x + 0.5,
@@ -1085,7 +1163,7 @@ fn border_clip_heavy_scene() -> RenderScene {
                             rect.height - 1.0,
                             8.0,
                             1.5 + (index % 3) as f32,
-                            0x596579FF,
+                            (0x596579FFu32).into(),
                             match index % 5 {
                                 0 => BorderStyle::Dashed,
                                 1 => BorderStyle::Dotted,
@@ -1124,7 +1202,7 @@ fn image_grid_scene(tint: Option<u32>) -> RenderScene {
                     } else {
                         ImageFit::Contain
                     },
-                    tint,
+                    (tint).map(Into::into),
                 ))
             })
             .collect(),
@@ -1145,7 +1223,7 @@ fn alpha_single_primitive_scene() -> RenderScene {
                         86.0,
                         28.0,
                         7.0,
-                        0x246B9FFF,
+                        (0x246B9FFFu32).into(),
                     ))],
                 }
             })
@@ -1165,7 +1243,12 @@ fn alpha_group_overlap_scene() -> RenderScene {
                     alpha: 0.62,
                     children: vec![
                         RenderNode::Primitive(DrawPrimitive::RoundedRect(
-                            x, y, 64.0, 34.0, 8.0, 0x1E6A8DFF,
+                            x,
+                            y,
+                            64.0,
+                            34.0,
+                            8.0,
+                            (0x1E6A8DFFu32).into(),
                         )),
                         RenderNode::Primitive(DrawPrimitive::RoundedRect(
                             x + 28.0,
@@ -1173,7 +1256,7 @@ fn alpha_group_overlap_scene() -> RenderScene {
                             64.0,
                             34.0,
                             8.0,
-                            0xC85252FF,
+                            (0xC85252FFu32).into(),
                         )),
                     ],
                 }
@@ -1204,16 +1287,23 @@ fn shadow_mask_filter_scene() -> RenderScene {
                             20.0 + (index % 4) as f32 * 2.0,
                             0.0,
                             14.0,
-                            0x1B243040,
+                            (0x1B243040u32).into(),
                         ))],
                     },
-                    RenderNode::Primitive(DrawPrimitive::RoundedRect(x, y, w, h, 14.0, 0xFFFFFFFF)),
+                    RenderNode::Primitive(DrawPrimitive::RoundedRect(
+                        x,
+                        y,
+                        w,
+                        h,
+                        14.0,
+                        (0xFFFFFFFFu32).into(),
+                    )),
                     RenderNode::Primitive(DrawPrimitive::TextWithFont(
                         x + 14.0,
                         y + 34.0,
                         format!("Card {index}"),
                         15.0,
-                        0x202936FF,
+                        (0x202936FFu32).into(),
                         "default".to_string(),
                         700,
                         false,
@@ -1230,14 +1320,21 @@ fn gradient_rects_scene() -> RenderScene {
             .map(|index| {
                 let col = index % 8;
                 let row = index / 8;
-                RenderNode::Primitive(DrawPrimitive::Gradient(
+                RenderNode::Primitive(emerge_skia::render_scene::DrawPrimitive::Rect(
                     14.0 + col as f32 * 116.0,
                     16.0 + row as f32 * 44.0,
                     94.0,
                     30.0,
-                    0xDDEBFFFF,
-                    0x557AA6FF,
-                    (index % 12) as f32 * 15.0,
+                    emerge_skia::render_color::RenderColor::linear(
+                        vec![0xDDEBFFFF, 0x557AA6FF],
+                        ((index % 12) as f32 * 15.0) as f64,
+                        emerge_skia::tree::geometry::Rect {
+                            x: 14.0 + col as f32 * 116.0,
+                            y: 16.0 + row as f32 * 44.0,
+                            width: 94.0,
+                            height: 30.0,
+                        },
+                    ),
                 ))
             })
             .collect(),
@@ -1267,15 +1364,24 @@ fn clip_rect_vs_rrect_scene() -> RenderScene {
                             bl: 8.0,
                         }),
                     }],
-                    children: vec![RenderNode::Primitive(DrawPrimitive::Gradient(
-                        x - 6.0,
-                        y - 4.0,
-                        106.0,
-                        38.0,
-                        0xEEF6FFFF,
-                        0x496B9AFF,
-                        45.0,
-                    ))],
+                    children: vec![RenderNode::Primitive(
+                        emerge_skia::render_scene::DrawPrimitive::Rect(
+                            x - 6.0,
+                            y - 4.0,
+                            106.0,
+                            38.0,
+                            emerge_skia::render_color::RenderColor::linear(
+                                [0xEEF6FFFF, 0x496B9AFF],
+                                45.0_f64,
+                                emerge_skia::tree::geometry::Rect {
+                                    x: x - 6.0,
+                                    y: y - 4.0,
+                                    width: 106.0,
+                                    height: 38.0,
+                                },
+                            ),
+                        ),
+                    )],
                 }
             })
             .collect(),
@@ -1289,16 +1395,23 @@ fn mixed_ui_scene() -> RenderScene {
             0.0,
             WIDTH as f32,
             HEIGHT as f32,
-            0xF4F7FAFF,
+            (0xF4F7FAFFu32).into(),
         )),
-        RenderNode::Primitive(DrawPrimitive::Gradient(
+        RenderNode::Primitive(emerge_skia::render_scene::DrawPrimitive::Rect(
             0.0,
             0.0,
             WIDTH as f32,
             120.0,
-            0xEAF2FFFF,
-            0xF4F7FAFF,
-            90.0,
+            emerge_skia::render_color::RenderColor::linear(
+                [0xEAF2FFFF, 0xF4F7FAFF],
+                90.0_f64,
+                emerge_skia::tree::geometry::Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: WIDTH as f32,
+                    height: 120.0,
+                },
+            ),
         )),
     ];
 
@@ -1312,7 +1425,16 @@ fn mixed_ui_scene() -> RenderScene {
         vec![
             RenderNode::ShadowPass {
                 children: vec![RenderNode::Primitive(DrawPrimitive::Shadow(
-                    x, y, w, h, 0.0, 6.0, 14.0, 0.0, 10.0, 0x11182726,
+                    x,
+                    y,
+                    w,
+                    h,
+                    0.0,
+                    6.0,
+                    14.0,
+                    0.0,
+                    10.0,
+                    (0x11182726u32).into(),
                 ))],
             },
             RenderNode::Clip {
@@ -1331,7 +1453,14 @@ fn mixed_ui_scene() -> RenderScene {
                     }),
                 }],
                 children: vec![
-                    RenderNode::Primitive(DrawPrimitive::RoundedRect(x, y, w, h, 10.0, 0xFFFFFFFF)),
+                    RenderNode::Primitive(DrawPrimitive::RoundedRect(
+                        x,
+                        y,
+                        w,
+                        h,
+                        10.0,
+                        (0xFFFFFFFFu32).into(),
+                    )),
                     RenderNode::Primitive(DrawPrimitive::Border(
                         x + 0.5,
                         y + 0.5,
@@ -1339,7 +1468,7 @@ fn mixed_ui_scene() -> RenderScene {
                         h - 1.0,
                         10.0,
                         1.0,
-                        0xD2D8E0FF,
+                        (0xD2D8E0FFu32).into(),
                         BorderStyle::Solid,
                     )),
                     RenderNode::Primitive(DrawPrimitive::TextWithFont(
@@ -1347,7 +1476,7 @@ fn mixed_ui_scene() -> RenderScene {
                         y + 32.0,
                         format!("Metric {index}"),
                         15.0,
-                        0x2F3744FF,
+                        (0x2F3744FFu32).into(),
                         "default".to_string(),
                         700,
                         false,
@@ -1357,7 +1486,7 @@ fn mixed_ui_scene() -> RenderScene {
                         y + 58.0,
                         "stable renderer baseline".to_string(),
                         13.0,
-                        0x677385FF,
+                        (0x677385FFu32).into(),
                         "default".to_string(),
                         400,
                         false,
@@ -1374,7 +1503,12 @@ fn mixed_ui_scene() -> RenderScene {
             children: vec![RenderNode::Alpha {
                 alpha: 0.72,
                 children: vec![RenderNode::Primitive(DrawPrimitive::RoundedRect(
-                    0.0, 0.0, 42.0, 22.0, 6.0, 0x375F9AFF,
+                    0.0,
+                    0.0,
+                    42.0,
+                    22.0,
+                    6.0,
+                    (0x375F9AFFu32).into(),
                 ))],
             }],
         }
@@ -3039,7 +3173,7 @@ fn large_simple_paint_layer_scene() -> RenderScene {
                     0.0,
                     WIDTH as f32,
                     HEIGHT as f32,
-                    0xF6F8FBFF,
+                    (0xF6F8FBFFu32).into(),
                 )),
                 RenderNode::Primitive(DrawPrimitive::RoundedRect(
                     64.0,
@@ -3047,7 +3181,7 @@ fn large_simple_paint_layer_scene() -> RenderScene {
                     WIDTH as f32 - 128.0,
                     HEIGHT as f32 - 144.0,
                     18.0,
-                    0xFFFFFFFF,
+                    (0xFFFFFFFFu32).into(),
                 )),
                 RenderNode::Primitive(DrawPrimitive::Border(
                     64.5,
@@ -3056,7 +3190,7 @@ fn large_simple_paint_layer_scene() -> RenderScene {
                     HEIGHT as f32 - 145.0,
                     18.0,
                     1.0,
-                    0xD7DEE8FF,
+                    (0xD7DEE8FFu32).into(),
                     BorderStyle::Solid,
                 )),
             ],
@@ -3090,7 +3224,7 @@ fn text_heavy_paint_layer_scene() -> RenderScene {
                 WIDTH as f32 - 116.0,
                 HEIGHT as f32 - 92.0,
                 16.0,
-                0xFFFFFFFF,
+                (0xFFFFFFFFu32).into(),
             )))
             .chain((0..96).map(|index| {
                 let col = index % 4;
@@ -3100,7 +3234,7 @@ fn text_heavy_paint_layer_scene() -> RenderScene {
                     88.0 + row as f32 * 22.0,
                     format!("Cached text group {index:03}"),
                     14.0,
-                    0x172033FF,
+                    (0x172033FFu32).into(),
                     "default".to_string(),
                     if index % 5 == 0 { 700 } else { 400 },
                     false,
@@ -3199,7 +3333,7 @@ fn scrolling_direct_scene(offset_y: f32) -> RenderScene {
                 0.0,
                 WIDTH as f32,
                 HEIGHT as f32,
-                0xF3F6FAFF,
+                (0xF3F6FAFFu32).into(),
             )),
             RenderNode::Transform {
                 transform: Affine2::translation(60.0, 54.0 - offset_y),
@@ -3218,7 +3352,7 @@ fn scrolling_paint_layer_scene(offset_y: f32) -> RenderScene {
                 0.0,
                 WIDTH as f32,
                 HEIGHT as f32,
-                0xF3F6FAFF,
+                (0xF3F6FAFFu32).into(),
             )),
             RenderNode::Transform {
                 transform: Affine2::translation(60.0, 54.0 - offset_y),
@@ -3257,18 +3391,41 @@ fn scrolling_paint_layer_content() -> Vec<RenderNode> {
             vec![
                 RenderNode::ShadowPass {
                     children: vec![RenderNode::Primitive(DrawPrimitive::Shadow(
-                        x, y, 94.0, 34.0, 0.0, 4.0, 9.0, 0.0, 8.0, 0x1720331F,
+                        x,
+                        y,
+                        94.0,
+                        34.0,
+                        0.0,
+                        4.0,
+                        9.0,
+                        0.0,
+                        8.0,
+                        (0x1720331Fu32).into(),
                     ))],
                 },
-                RenderNode::Primitive(DrawPrimitive::RoundedRect(x, y, 94.0, 34.0, 8.0, fill)),
-                RenderNode::Primitive(DrawPrimitive::Gradient(
+                RenderNode::Primitive(DrawPrimitive::RoundedRect(
+                    x,
+                    y,
+                    94.0,
+                    34.0,
+                    8.0,
+                    (fill).into(),
+                )),
+                RenderNode::Primitive(emerge_skia::render_scene::DrawPrimitive::Rect(
                     x + 10.0,
                     y + 9.0,
                     52.0,
                     7.0,
-                    0x6CA9E6FF,
-                    0x3D6F96FF,
-                    0.0,
+                    emerge_skia::render_color::RenderColor::linear(
+                        [0x6CA9E6FF, 0x3D6F96FF],
+                        0.0_f64,
+                        emerge_skia::tree::geometry::Rect {
+                            x: x + 10.0,
+                            y: y + 9.0,
+                            width: 52.0,
+                            height: 7.0,
+                        },
+                    ),
                 )),
                 RenderNode::Primitive(DrawPrimitive::Border(
                     x + 0.5,
@@ -3277,7 +3434,7 @@ fn scrolling_paint_layer_content() -> Vec<RenderNode> {
                     33.0,
                     8.0,
                     1.0,
-                    0xC5CEDAFF,
+                    (0xC5CEDAFFu32).into(),
                     BorderStyle::Solid,
                 )),
             ]
@@ -3354,16 +3511,23 @@ fn animated_static_before() -> Vec<RenderNode> {
             0.0,
             WIDTH as f32,
             HEIGHT as f32,
-            0xF5F7FAFF,
+            (0xF5F7FAFFu32).into(),
         )),
-        RenderNode::Primitive(DrawPrimitive::Gradient(
+        RenderNode::Primitive(emerge_skia::render_scene::DrawPrimitive::Rect(
             0.0,
             0.0,
             WIDTH as f32,
             132.0,
-            0xE6EEF8FF,
-            0xF5F7FAFF,
-            90.0,
+            emerge_skia::render_color::RenderColor::linear(
+                [0xE6EEF8FF, 0xF5F7FAFF],
+                90.0_f64,
+                emerge_skia::tree::geometry::Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: WIDTH as f32,
+                    height: 132.0,
+                },
+            ),
         )),
     ];
     let cards = (0..30).flat_map(|index| {
@@ -3374,11 +3538,25 @@ fn animated_static_before() -> Vec<RenderNode> {
         vec![
             RenderNode::ShadowPass {
                 children: vec![RenderNode::Primitive(DrawPrimitive::Shadow(
-                    x, y, 142.0, 58.0, 0.0, 5.0, 12.0, 0.0, 10.0, 0x17203321,
+                    x,
+                    y,
+                    142.0,
+                    58.0,
+                    0.0,
+                    5.0,
+                    12.0,
+                    0.0,
+                    10.0,
+                    (0x17203321u32).into(),
                 ))],
             },
             RenderNode::Primitive(DrawPrimitive::RoundedRect(
-                x, y, 142.0, 58.0, 10.0, 0xFFFFFFFF,
+                x,
+                y,
+                142.0,
+                58.0,
+                10.0,
+                (0xFFFFFFFFu32).into(),
             )),
             RenderNode::Primitive(DrawPrimitive::Border(
                 x + 0.5,
@@ -3387,7 +3565,7 @@ fn animated_static_before() -> Vec<RenderNode> {
                 57.0,
                 10.0,
                 1.0,
-                0xD3DAE5FF,
+                (0xD3DAE5FFu32).into(),
                 BorderStyle::Solid,
             )),
         ]
@@ -3405,11 +3583,25 @@ fn animated_dynamic_nodes(phase: usize) -> Vec<RenderNode> {
     vec![
         RenderNode::ShadowPass {
             children: vec![RenderNode::Primitive(DrawPrimitive::Shadow(
-                x, 278.0, 138.0, 52.0, 0.0, 7.0, 16.0, 0.0, 14.0, 0x11182738,
+                x,
+                278.0,
+                138.0,
+                52.0,
+                0.0,
+                7.0,
+                16.0,
+                0.0,
+                14.0,
+                (0x11182738u32).into(),
             ))],
         },
         RenderNode::Primitive(DrawPrimitive::RoundedRect(
-            x, 278.0, 138.0, 52.0, 14.0, fill,
+            x,
+            278.0,
+            138.0,
+            52.0,
+            14.0,
+            (fill).into(),
         )),
         RenderNode::Primitive(DrawPrimitive::RoundedRect(
             x + 18.0,
@@ -3417,7 +3609,7 @@ fn animated_dynamic_nodes(phase: usize) -> Vec<RenderNode> {
             78.0,
             10.0,
             5.0,
-            0xFFFFFFFF,
+            (0xFFFFFFFFu32).into(),
         )),
     ]
 }
@@ -3434,11 +3626,12 @@ fn animated_static_after() -> Vec<RenderNode> {
                 76.0,
                 5.0,
                 2.5,
-                if index % 3 == 0 {
+                (if index % 3 == 0 {
                     0x6D7B8DFF
                 } else {
                     0xCBD4E0FF
-                },
+                })
+                .into(),
             ))
         })
         .collect()
@@ -3453,7 +3646,7 @@ fn offscreen_layout_animation_scene(phase: usize) -> RenderScene {
                 0.0,
                 WIDTH as f32,
                 HEIGHT as f32,
-                0xF5F7FAFF,
+                (0xF5F7FAFFu32).into(),
             )),
             RenderNode::PaintLayer(RenderPaintLayer::from_children(
                 8_200,
@@ -3530,18 +3723,41 @@ fn offscreen_visible_layout_row_nodes(index: u64, y: f32) -> Vec<RenderNode> {
     vec![
         RenderNode::ShadowPass {
             children: vec![RenderNode::Primitive(DrawPrimitive::Shadow(
-                78.0, y, 776.0, 42.0, 0.0, 4.0, 9.0, 0.0, 8.0, 0x1720331F,
+                78.0,
+                y,
+                776.0,
+                42.0,
+                0.0,
+                4.0,
+                9.0,
+                0.0,
+                8.0,
+                (0x1720331Fu32).into(),
             ))],
         },
-        RenderNode::Primitive(DrawPrimitive::RoundedRect(78.0, y, 776.0, 42.0, 8.0, fill)),
-        RenderNode::Primitive(DrawPrimitive::Gradient(
+        RenderNode::Primitive(DrawPrimitive::RoundedRect(
+            78.0,
+            y,
+            776.0,
+            42.0,
+            8.0,
+            (fill).into(),
+        )),
+        RenderNode::Primitive(emerge_skia::render_scene::DrawPrimitive::Rect(
             102.0,
             y + 14.0,
             180.0,
             9.0,
-            0x7CB7E6FF,
-            0x3D6F96FF,
-            0.0,
+            emerge_skia::render_color::RenderColor::linear(
+                [0x7CB7E6FF, 0x3D6F96FF],
+                0.0_f64,
+                emerge_skia::tree::geometry::Rect {
+                    x: 102.0,
+                    y: y + 14.0,
+                    width: 180.0,
+                    height: 9.0,
+                },
+            ),
         )),
         RenderNode::Primitive(DrawPrimitive::Border(
             78.5,
@@ -3550,7 +3766,7 @@ fn offscreen_visible_layout_row_nodes(index: u64, y: f32) -> Vec<RenderNode> {
             41.0,
             8.0,
             1.0,
-            0xC5CEDAFF,
+            (0xC5CEDAFFu32).into(),
             BorderStyle::Solid,
         )),
     ]
@@ -3564,11 +3780,25 @@ fn offscreen_animated_layout_row(phase: usize) -> Vec<RenderNode> {
     vec![
         RenderNode::ShadowPass {
             children: vec![RenderNode::Primitive(DrawPrimitive::Shadow(
-                x, 828.0, width, 64.0, 0.0, 7.0, 16.0, 0.0, 14.0, 0x11182738,
+                x,
+                828.0,
+                width,
+                64.0,
+                0.0,
+                7.0,
+                16.0,
+                0.0,
+                14.0,
+                (0x11182738u32).into(),
             ))],
         },
         RenderNode::Primitive(DrawPrimitive::RoundedRect(
-            x, 828.0, width, 64.0, 14.0, 0xD94F70FF,
+            x,
+            828.0,
+            width,
+            64.0,
+            14.0,
+            (0xD94F70FFu32).into(),
         )),
         RenderNode::Primitive(DrawPrimitive::RoundedRect(
             x + 28.0,
@@ -3576,7 +3806,7 @@ fn offscreen_animated_layout_row(phase: usize) -> Vec<RenderNode> {
             190.0,
             10.0,
             5.0,
-            0xFFFFFFFF,
+            (0xFFFFFFFFu32).into(),
         )),
     ]
 }
@@ -3597,7 +3827,7 @@ fn offscreen_static_rows_after_animation(phase: usize) -> Vec<RenderNode> {
                 row_width,
                 8.0,
                 4.0,
-                0xCBD4E0FF,
+                (0xCBD4E0FFu32).into(),
             ))
         })
         .collect()
@@ -3612,7 +3842,7 @@ fn stable_descendant_layout_animation_scene(phase: usize) -> RenderScene {
                 0.0,
                 WIDTH as f32,
                 HEIGHT as f32,
-                0xF5F7FAFF,
+                (0xF5F7FAFFu32).into(),
             )),
             RenderNode::PaintLayer(RenderPaintLayer::from_children(
                 8_400,
@@ -3647,7 +3877,12 @@ fn stable_descendant_layout_animation_children(phase: usize) -> Vec<RenderNode> 
         }],
         children: vec![
             RenderNode::Primitive(DrawPrimitive::RoundedRect(
-                52.0, 44.0, 856.0, 360.0, 12.0, 0xFFFFFFFF,
+                52.0,
+                44.0,
+                856.0,
+                360.0,
+                12.0,
+                (0xFFFFFFFFu32).into(),
             )),
             stable_descendant_layer(8_401, 78.0, 70.0, 776.0, 58.0, 0xEEF7F5FF),
             stable_descendant_layer(8_402, 78.0, 146.0, 776.0, 58.0, 0xF7F3FFFF),
@@ -3704,18 +3939,41 @@ fn stable_descendant_layer(
         vec![
             RenderNode::ShadowPass {
                 children: vec![RenderNode::Primitive(DrawPrimitive::Shadow(
-                    x, y, width, height, 0.0, 4.0, 9.0, 0.0, 8.0, 0x1720331F,
+                    x,
+                    y,
+                    width,
+                    height,
+                    0.0,
+                    4.0,
+                    9.0,
+                    0.0,
+                    8.0,
+                    (0x1720331Fu32).into(),
                 ))],
             },
-            RenderNode::Primitive(DrawPrimitive::RoundedRect(x, y, width, height, 8.0, fill)),
-            RenderNode::Primitive(DrawPrimitive::Gradient(
+            RenderNode::Primitive(DrawPrimitive::RoundedRect(
+                x,
+                y,
+                width,
+                height,
+                8.0,
+                (fill).into(),
+            )),
+            RenderNode::Primitive(emerge_skia::render_scene::DrawPrimitive::Rect(
                 x + 24.0,
                 y + height * 0.5 - 5.0,
                 180.0,
                 10.0,
-                0x7CB7E6FF,
-                0x3D6F96FF,
-                0.0,
+                emerge_skia::render_color::RenderColor::linear(
+                    [0x7CB7E6FF, 0x3D6F96FF],
+                    0.0_f64,
+                    emerge_skia::tree::geometry::Rect {
+                        x: x + 24.0,
+                        y: y + height * 0.5 - 5.0,
+                        width: 180.0,
+                        height: 10.0,
+                    },
+                ),
             )),
             RenderNode::Primitive(DrawPrimitive::Border(
                 x + 0.5,
@@ -3724,7 +3982,7 @@ fn stable_descendant_layer(
                 height - 1.0,
                 8.0,
                 1.0,
-                0xC5CEDAFF,
+                (0xC5CEDAFFu32).into(),
                 BorderStyle::Solid,
             )),
         ],
@@ -3738,11 +3996,25 @@ fn stable_descendant_animated_row(phase: usize) -> Vec<RenderNode> {
     vec![
         RenderNode::ShadowPass {
             children: vec![RenderNode::Primitive(DrawPrimitive::Shadow(
-                x, 430.0, width, 70.0, 0.0, 7.0, 16.0, 0.0, 14.0, 0x11182738,
+                x,
+                430.0,
+                width,
+                70.0,
+                0.0,
+                7.0,
+                16.0,
+                0.0,
+                14.0,
+                (0x11182738u32).into(),
             ))],
         },
         RenderNode::Primitive(DrawPrimitive::RoundedRect(
-            x, 430.0, width, 70.0, 14.0, 0xD94F70FF,
+            x,
+            430.0,
+            width,
+            70.0,
+            14.0,
+            (0xD94F70FFu32).into(),
         )),
         RenderNode::Primitive(DrawPrimitive::RoundedRect(
             x + 28.0,
@@ -3750,7 +4022,7 @@ fn stable_descendant_animated_row(phase: usize) -> Vec<RenderNode> {
             190.0,
             10.0,
             5.0,
-            0xFFFFFFFF,
+            (0xFFFFFFFFu32).into(),
         )),
     ]
 }
@@ -3794,7 +4066,7 @@ fn scroll_return_scene(scroll_y: f32) -> RenderScene {
                 0.0,
                 WIDTH as f32,
                 HEIGHT as f32,
-                0xF3F6FAFF,
+                (0xF3F6FAFFu32).into(),
             )),
             RenderNode::Clip {
                 clips: vec![ClipShape {
@@ -3833,14 +4105,41 @@ fn scroll_return_layer_content() -> Vec<RenderNode> {
     vec![
         RenderNode::ShadowPass {
             children: vec![RenderNode::Primitive(DrawPrimitive::Shadow(
-                0.0, 0.0, 260.0, 54.0, 0.0, 5.0, 12.0, 0.0, 10.0, 0x17203321,
+                0.0,
+                0.0,
+                260.0,
+                54.0,
+                0.0,
+                5.0,
+                12.0,
+                0.0,
+                10.0,
+                (0x17203321u32).into(),
             ))],
         },
         RenderNode::Primitive(DrawPrimitive::RoundedRect(
-            0.0, 0.0, 260.0, 54.0, 10.0, 0xFFFFFFFF,
+            0.0,
+            0.0,
+            260.0,
+            54.0,
+            10.0,
+            (0xFFFFFFFFu32).into(),
         )),
-        RenderNode::Primitive(DrawPrimitive::Gradient(
-            22.0, 21.0, 132.0, 9.0, 0x6CA9E6FF, 0x3D6F96FF, 0.0,
+        RenderNode::Primitive(emerge_skia::render_scene::DrawPrimitive::Rect(
+            22.0,
+            21.0,
+            132.0,
+            9.0,
+            emerge_skia::render_color::RenderColor::linear(
+                [0x6CA9E6FF, 0x3D6F96FF],
+                0.0_f64,
+                emerge_skia::tree::geometry::Rect {
+                    x: 22.0,
+                    y: 21.0,
+                    width: 132.0,
+                    height: 9.0,
+                },
+            ),
         )),
         RenderNode::Primitive(DrawPrimitive::Border(
             0.5,
@@ -3849,7 +4148,7 @@ fn scroll_return_layer_content() -> Vec<RenderNode> {
             53.0,
             10.0,
             1.0,
-            0xC5CEDAFF,
+            (0xC5CEDAFFu32).into(),
             BorderStyle::Solid,
         )),
     ]

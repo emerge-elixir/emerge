@@ -242,6 +242,7 @@ defmodule Emerge.MixProject do
       "guides/internals/macos-backend.md",
       "guides/internals/feature-roadmap.md",
       "guides/internals/emrg-format.md",
+      "guides/internals/gradient-colors.md",
       "guides/internals/events.md",
       "guides/internals/layout-refresh-render-flow.md",
       "guides/internals/nearby-semantics.md",

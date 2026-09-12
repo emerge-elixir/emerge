@@ -67,7 +67,19 @@ defmodule EmergeSkia.Macos.HostTest do
 
     assert Protocol.encode_init_payload() ==
              <<byte_size("emerge_skia_macos")::unsigned-big-16, "emerge_skia_macos",
-               12::unsigned-big-16>>
+               13::unsigned-big-16>>
+  end
+
+  test "protocol rejects a pre-universal-gradient v12 host handshake" do
+    reply = fn version ->
+      <<byte_size("emerge_skia_macos")::unsigned-big-16, "emerge_skia_macos",
+        version::unsigned-big-16, 123::unsigned-big-64, 456::unsigned-big-32>>
+    end
+
+    assert {:ok, %{host_id: 123, host_pid: 456}} = Protocol.decode_init_ok_payload(reply.(13))
+
+    assert {:error, "unsupported macOS host init response"} =
+             Protocol.decode_init_ok_payload(reply.(12))
   end
 
   test "protocol decodes raw input payloads" do

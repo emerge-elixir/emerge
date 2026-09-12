@@ -1012,7 +1012,7 @@ fn primitive_colors(nodes: &[RenderNode]) -> BTreeSet<u32> {
     visit_primitives(nodes, &mut |primitive| match primitive {
         DrawPrimitive::Rect(_, _, _, _, color)
         | DrawPrimitive::RoundedRect(_, _, _, _, _, color) => {
-            colors.insert(*color);
+            colors.insert(color.solid().expect("solid test color"));
         }
         _ => {}
     });

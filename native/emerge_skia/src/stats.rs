@@ -2851,7 +2851,7 @@ fn format_shadow_draw_detail(index: usize, shadow: &RenderShadowDrawProfile) -> 
     format!(
         concat!(
             "  shadow[{}]: path={:?} rect={:.1},{:.1} {:.1}x{:.1} offset={:.1},{:.1} ",
-            "blur={:.1} size={:.1} radius={:.1} color=0x{:08X} total={:.3} ms ",
+            "blur={:.1} size={:.1} radius={:.1} color={} total={:.3} ms ",
             "prepare={:.3} ms clip={:.3} ms draw={:.3} ms"
         ),
         index,
@@ -3888,14 +3888,23 @@ mod tests {
                         0.0,
                         "slow".to_string(),
                         14.0,
-                        0xFFFFFFFF,
+                        (0xFFFFFFFFu32).into(),
                         "default".to_string(),
                         400,
                         false,
                     ))],
                 },
                 RenderNode::Primitive(DrawPrimitive::Shadow(
-                    0.0, 0.0, 10.0, 10.0, 0.0, 1.0, 8.0, 0.0, 4.0, 0x00000080,
+                    0.0,
+                    0.0,
+                    10.0,
+                    10.0,
+                    0.0,
+                    1.0,
+                    8.0,
+                    0.0,
+                    4.0,
+                    (0x00000080u32).into(),
                 )),
             ],
         };
@@ -3942,7 +3951,7 @@ mod tests {
                     blur: 8.0,
                     size: 0.0,
                     radius: 4.0,
-                    color: 0x00000080,
+                    color: crate::render_color::RenderColor::Solid(0x00000080),
                     total: Duration::from_micros(100),
                     prepare: Duration::from_micros(10),
                     clip: Duration::from_micros(20),
@@ -4019,7 +4028,11 @@ mod tests {
     fn slow_render_frame_log_includes_renderer_cache_frame_stats() {
         let scene = RenderScene {
             nodes: vec![RenderNode::Primitive(DrawPrimitive::Rect(
-                0.0, 0.0, 10.0, 10.0, 0xFFFFFFFF,
+                0.0,
+                0.0,
+                10.0,
+                10.0,
+                (0xFFFFFFFFu32).into(),
             ))],
         };
         let timings = RenderTimings {
@@ -4062,7 +4075,11 @@ mod tests {
     fn slow_present_frame_log_includes_present_duration_and_scene_summary() {
         let scene = RenderScene {
             nodes: vec![RenderNode::Primitive(DrawPrimitive::Rect(
-                0.0, 0.0, 10.0, 10.0, 0xFFFFFFFF,
+                0.0,
+                0.0,
+                10.0,
+                10.0,
+                (0xFFFFFFFFu32).into(),
             ))],
         };
 

@@ -500,7 +500,12 @@ defmodule Emerge.Bench.Scenarios do
           width(px(170)),
           height(px(88)),
           padding(10),
-          Background.gradient(color(:sky, 100 + rem(index, 5) * 100), color(:violet, 200), 18),
+          Background.color(
+            Emerge.UI.Color.gradient(
+              [color(:sky, 100 + rem(index, 5) * 100), color(:violet, 200)],
+              18
+            )
+          ),
           Border.rounded_each(10, 16, 10 + rem(index, 4), 14),
           Border.width(1),
           Border.color(if(rem(index, 2) == 0, do: color(:sky, 300), else: color(:violet, 300))),

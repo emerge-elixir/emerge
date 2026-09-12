@@ -189,6 +189,24 @@ defmodule Emerge.Engine.AttrValidation do
       end)
     end)
 
+    _gradient_counts =
+      normalized
+      |> Enum.with_index(1)
+      |> Enum.reduce(%{}, fn {attrs, index}, counts ->
+        attrs
+        |> Enum.flat_map(&gradient_stop_counts/1)
+        |> Enum.reduce(counts, fn {slot, count}, counts ->
+          case Map.fetch(counts, slot) do
+            {:ok, previous} when previous != count ->
+              raise ArgumentError,
+                    "#{owner_name} keyframe #{index} must keep #{inspect(slot)} gradient stop counts compatible"
+
+            _ ->
+              Map.put(counts, slot, count)
+          end
+        end)
+      end)
+
     normalized
   end
 
@@ -196,6 +214,18 @@ defmodule Emerge.Engine.AttrValidation do
     raise ArgumentError,
           "#{owner_name} expects :keyframes to be a list of keyframe attr lists/maps, got: #{inspect(other)}"
   end
+
+  defp gradient_stop_counts({key, {:color_gradient, colors, _}}), do: [{key, length(colors)}]
+
+  defp gradient_stop_counts({:box_shadow, shadows}) do
+    shadows
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {shadow, index} ->
+      gradient_stop_counts({{:box_shadow, index}, shadow.color})
+    end)
+  end
+
+  defp gradient_stop_counts(_), do: []
 
   defp normalize_animation_keyframe!(owner_name, attrs, index) when is_list(attrs) do
     Enum.reduce(attrs, %{}, fn attr, acc ->
@@ -358,10 +388,21 @@ defmodule Emerge.Engine.AttrValidation do
     end
   end
 
-  defp validate_animation_compatibility!(owner_name, :box_shadow, first, other, index) do
-    if length(first) != length(other) do
+  defp validate_animation_compatibility!(owner, key, first, other, index)
+       when key in [:font_color, :border_color, :svg_color] do
+    unless compatible_color?(first, other) do
       raise ArgumentError,
-            "#{owner_name} keyframe #{index} must keep :box_shadow list length the same as keyframe 1"
+            "#{owner} keyframe #{index} must keep #{inspect(key)} gradient stop counts compatible"
+    end
+  end
+
+  defp validate_animation_compatibility!(owner_name, :box_shadow, first, other, index) do
+    if length(first) != length(other) or
+         not Enum.all?(Enum.zip(first, other), fn {a, b} ->
+           compatible_color?(a.color, b.color)
+         end) do
+      raise ArgumentError,
+            "#{owner_name} keyframe #{index} must keep :box_shadow list length and gradient stop counts compatible with keyframe 1"
     end
   end
 
@@ -424,16 +465,17 @@ defmodule Emerge.Engine.AttrValidation do
 
   defp compatible_length?(_first, _other), do: false
 
-  defp compatible_background?(
-         {:gradient, _from_a, _to_a, _angle_a},
-         {:gradient, _from_b, _to_b, _angle_b}
-       ),
-       do: true
-
   defp compatible_background?({:image, source_a, fit_a}, {:image, source_b, fit_b}),
     do: source_a == source_b and fit_a == fit_b
 
-  defp compatible_background?(first, other), do: valid_color?(first) and valid_color?(other)
+  defp compatible_background?(first, other), do: compatible_color?(first, other)
+
+  defp compatible_color?({:color_gradient, a, _}, {:color_gradient, b, _}),
+    do: length(a) == length(b)
+
+  defp compatible_color?({:color_gradient, _, _}, solid), do: valid_color?(solid)
+  defp compatible_color?(solid, {:color_gradient, _, _}), do: valid_color?(solid)
+  defp compatible_color?(a, b), do: valid_color?(a) and valid_color?(b)
 
   defp normalize_padding({vertical, horizontal}), do: {vertical, horizontal, vertical, horizontal}
   defp normalize_padding(value), do: value
@@ -497,6 +539,15 @@ defmodule Emerge.Engine.AttrValidation do
           "#{attrs_owner} expects :layout_rotate to be a finite number of degrees, got: #{inspect(value)}"
   end
 
+  defp validate_color_attr!(owner, key, {:color_gradient, _, _} = gradient) do
+    Emerge.UI.Color.validate_gradient!(gradient)
+  rescue
+    error in ArgumentError ->
+      reraise ArgumentError,
+              [message: "#{owner} invalid #{inspect(key)}: #{Exception.message(error)}"],
+              __STACKTRACE__
+  end
+
   defp validate_color_attr!(attrs_owner, key, value) do
     case valid_color?(value) do
       true ->
@@ -535,11 +586,6 @@ defmodule Emerge.Engine.AttrValidation do
   defp validate_border_style!(attrs_owner, value) do
     raise ArgumentError,
           "#{attrs_owner} expects :border_style to be :solid, :dashed, or :dotted, got: #{inspect(value)}"
-  end
-
-  defp validate_background!(attrs_owner, {:gradient, from, to, angle}) when is_number(angle) do
-    validate_color_attr!(attrs_owner, :background, from)
-    validate_color_attr!(attrs_owner, :background, to)
   end
 
   defp validate_background!(attrs_owner, {:image, source, fit}) do

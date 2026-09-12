@@ -4278,10 +4278,17 @@ fn translate_primitive(
 ) -> crate::render_scene::DrawPrimitive {
     match primitive {
         crate::render_scene::DrawPrimitive::Rect(x, y, w, h, fill) => {
-            crate::render_scene::DrawPrimitive::Rect(x + dx, y + dy, w, h, fill)
+            crate::render_scene::DrawPrimitive::Rect(x + dx, y + dy, w, h, fill.translated(dx, dy))
         }
         crate::render_scene::DrawPrimitive::RoundedRect(x, y, w, h, radius, fill) => {
-            crate::render_scene::DrawPrimitive::RoundedRect(x + dx, y + dy, w, h, radius, fill)
+            crate::render_scene::DrawPrimitive::RoundedRect(
+                x + dx,
+                y + dy,
+                w,
+                h,
+                radius,
+                fill.translated(dx, dy),
+            )
         }
         crate::render_scene::DrawPrimitive::Border(x, y, w, h, radius, width, color, style) => {
             crate::render_scene::DrawPrimitive::Border(
@@ -4291,7 +4298,7 @@ fn translate_primitive(
                 h,
                 radius,
                 width,
-                color,
+                color.translated(dx, dy),
                 style,
             )
         }
@@ -4317,7 +4324,7 @@ fn translate_primitive(
             bottom_right,
             bottom_left,
             width,
-            color,
+            color.translated(dx, dy),
             style,
         ),
         crate::render_scene::DrawPrimitive::BorderEdges(
@@ -4342,7 +4349,7 @@ fn translate_primitive(
             right,
             bottom,
             left,
-            color,
+            color.translated(dx, dy),
             style,
         ),
         crate::render_scene::DrawPrimitive::Shadow(
@@ -4366,7 +4373,7 @@ fn translate_primitive(
             blur,
             size,
             radius,
-            color,
+            color.translated(dx, dy),
         ),
         crate::render_scene::DrawPrimitive::InsetShadow(
             x,
@@ -4389,7 +4396,7 @@ fn translate_primitive(
             blur,
             size,
             radius,
-            color,
+            color.translated(dx, dy),
         ),
         crate::render_scene::DrawPrimitive::TextWithFont(
             x,
@@ -4405,16 +4412,22 @@ fn translate_primitive(
             y + dy,
             text,
             font_size,
-            fill,
+            fill.translated(dx, dy),
             family,
             weight,
             italic,
         ),
-        crate::render_scene::DrawPrimitive::Gradient(x, y, w, h, from, to, angle) => {
-            crate::render_scene::DrawPrimitive::Gradient(x + dx, y + dy, w, h, from, to, angle)
-        }
+
         crate::render_scene::DrawPrimitive::Image(x, y, w, h, image_id, fit, tint) => {
-            crate::render_scene::DrawPrimitive::Image(x + dx, y + dy, w, h, image_id, fit, tint)
+            crate::render_scene::DrawPrimitive::Image(
+                x + dx,
+                y + dy,
+                w,
+                h,
+                image_id,
+                fit,
+                tint.as_ref().map(|c| c.translated(dx, dy)),
+            )
         }
         crate::render_scene::DrawPrimitive::Video(x, y, w, h, target, fit) => {
             crate::render_scene::DrawPrimitive::Video(x + dx, y + dy, w, h, target, fit)
@@ -4508,5 +4521,64 @@ fn test_single_axis_image_patches_and_clean_cache_match_fresh_layout() {
                 expected_width
             );
         }
+    }
+}
+
+#[test]
+fn gradient_patch_invalidates_paint_without_remeasuring_text() {
+    for tag in [12, 17] {
+        let attrs_raw = |middle: [u8; 3]| {
+            [
+                [
+                    vec![0, 2, tag],
+                    if tag == 12 { vec![0] } else { vec![] },
+                    vec![3, 0, 0, 0, 3, 0, 255, 0, 0, 0],
+                ]
+                .concat(),
+                middle.to_vec(),
+                vec![0, 0, 0, 255],
+                0.0_f64.to_be_bytes().to_vec(),
+                vec![21, 0, 5, b'H', b'e', b'l', b'l', b'o'],
+            ]
+            .concat()
+        };
+        let mut tree = ElementTree::new();
+        let raw = attrs_raw([0, 255, 0]);
+        let attrs = crate::tree::attrs::decode_attrs(&raw).unwrap();
+        let text = make_element("gradient-text", ElementKind::Text, attrs);
+        let id = text.id;
+        tree.set_root_id(id);
+        tree.insert(text);
+        let measurer = CountingTextMeasurer::default();
+        let constraint = Constraint::new(800.0, 600.0);
+        layout_tree(&mut tree, constraint, 1.0, &measurer);
+        let calls = measurer.total_calls();
+        let before = render_tree_scene(&tree).scene;
+        let frame = tree.get(&id).unwrap().layout.frame;
+        let invalidation = apply_patches(
+            &mut tree,
+            vec![Patch::SetAttrs {
+                id,
+                attrs_raw: attrs_raw([255, 255, 255]),
+            }],
+        )
+        .unwrap();
+        assert_eq!(invalidation, TreeInvalidation::Paint);
+        layout_tree(&mut tree, constraint, 1.0, &measurer);
+        assert_eq!(measurer.total_calls(), calls);
+        assert_eq!(tree.get(&id).unwrap().layout.frame, frame);
+        assert_ne!(render_tree_scene(&tree).scene, before);
+        let valid = tree.get(&id).unwrap().spec.declared.background.clone();
+        assert!(
+            apply_patches(
+                &mut tree,
+                vec![Patch::SetAttrs {
+                    id,
+                    attrs_raw: vec![0, 1, 12, 1]
+                }]
+            )
+            .is_err()
+        );
+        assert_eq!(tree.get(&id).unwrap().spec.declared.background, valid);
     }
 }

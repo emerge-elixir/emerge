@@ -1164,22 +1164,6 @@ fn interpolate_background(from: &Background, to: &Background, t: f64) -> Backgro
             Background::Color(interpolate_color(from, to, t))
         }
         (
-            Background::Gradient {
-                from: from_start,
-                to: from_end,
-                angle: from_angle,
-            },
-            Background::Gradient {
-                from: to_start,
-                to: to_end,
-                angle: to_angle,
-            },
-        ) => Background::Gradient {
-            from: interpolate_color(from_start, to_start, t),
-            to: interpolate_color(from_end, to_end, t),
-            angle: lerp_f64(*from_angle, *to_angle, t),
-        },
-        (
             Background::Image {
                 source: from_source,
                 fit: from_fit,
@@ -1208,22 +1192,87 @@ fn interpolate_box_shadows(from: &[BoxShadow], to: &[BoxShadow], t: f64) -> Vec<
 }
 
 fn interpolate_color(from: &Color, to: &Color, t: f64) -> Color {
-    let (from_r, from_g, from_b, from_a) = color_to_rgba(from);
-    let (to_r, to_g, to_b, to_a) = color_to_rgba(to);
-
-    Color::Rgba {
-        r: lerp_channel(from_r, to_r, t),
-        g: lerp_channel(from_g, to_g, t),
-        b: lerp_channel(from_b, to_b, t),
-        a: lerp_channel(from_a, to_a, t),
+    use crate::tree::attrs::SolidColor;
+    match (from, to) {
+        (
+            Color::Gradient {
+                colors: a,
+                angle: aa,
+            },
+            Color::Gradient {
+                colors: b,
+                angle: ba,
+            },
+        ) => {
+            if a.len() != b.len() {
+                return if t >= 1.0 { to.clone() } else { from.clone() };
+            }
+            Color::Gradient {
+                colors: a
+                    .iter()
+                    .zip(b.iter())
+                    .map(|(a, b)| interpolate_stop(a, b, t))
+                    .collect(),
+                angle: (1.0 - t) * aa + t * ba,
+            }
+        }
+        (Color::Gradient { colors, angle }, solid) => {
+            let Ok(solid) = SolidColor::try_from(solid.clone()) else {
+                return from.clone();
+            };
+            Color::Gradient {
+                colors: colors
+                    .iter()
+                    .map(|c| interpolate_stop(c, &solid, t))
+                    .collect(),
+                angle: *angle,
+            }
+        }
+        (solid, Color::Gradient { colors, angle }) => {
+            let Ok(solid) = SolidColor::try_from(solid.clone()) else {
+                return from.clone();
+            };
+            Color::Gradient {
+                colors: colors
+                    .iter()
+                    .map(|c| interpolate_stop(&solid, c, t))
+                    .collect(),
+                angle: *angle,
+            }
+        }
+        _ => {
+            match (
+                SolidColor::try_from(from.clone()),
+                SolidColor::try_from(to.clone()),
+            ) {
+                (Ok(a), Ok(b)) => interpolate_stop(&a, &b, t).into(),
+                _ => from.clone(),
+            }
+        }
     }
 }
 
-fn color_to_rgba(color: &Color) -> (u8, u8, u8, u8) {
+fn interpolate_stop(
+    from: &crate::tree::attrs::SolidColor,
+    to: &crate::tree::attrs::SolidColor,
+    t: f64,
+) -> crate::tree::attrs::SolidColor {
+    let from = color_to_rgba(from);
+    let to = color_to_rgba(to);
+    crate::tree::attrs::SolidColor::Rgba {
+        r: lerp_channel(from.0, to.0, t),
+        g: lerp_channel(from.1, to.1, t),
+        b: lerp_channel(from.2, to.2, t),
+        a: lerp_channel(from.3, to.3, t),
+    }
+}
+
+fn color_to_rgba(color: &crate::tree::attrs::SolidColor) -> (u8, u8, u8, u8) {
+    use crate::tree::attrs::SolidColor;
     match color {
-        Color::Rgb { r, g, b } => (*r, *g, *b, 255),
-        Color::Rgba { r, g, b, a } => (*r, *g, *b, *a),
-        Color::Named(name) => named_color_rgba(name),
+        SolidColor::Rgb { r, g, b } => (*r, *g, *b, 255),
+        SolidColor::Rgba { r, g, b, a } => (*r, *g, *b, *a),
+        SolidColor::Named(n) => named_color_rgba(n),
     }
 }
 
@@ -1772,5 +1821,179 @@ mod tests {
         assert!(tree.get(&ghost_id).is_none());
         assert!(runtime.exit_entry(&ghost_id).is_none());
         assert!(tree.get(&root_id).unwrap().children.is_empty());
+    }
+
+    #[test]
+    fn gradient_interpolation_keeps_all_stops_and_rejects_native_count_mismatch() {
+        let from = Background::Color(crate::tree::attrs::Color::Gradient {
+            colors: (vec![
+                Color::Named("black".into()),
+                Color::Rgba {
+                    r: 20,
+                    g: 40,
+                    b: 60,
+                    a: 0,
+                },
+                Color::Named("red".into()),
+            ])
+            .into_iter()
+            .map(|c| c.try_into().expect("solid stop"))
+            .collect(),
+            angle: -90.0,
+        });
+        let to = Background::Color(crate::tree::attrs::Color::Gradient {
+            colors: (vec![
+                Color::Named("white".into()),
+                Color::Rgba {
+                    r: 40,
+                    g: 80,
+                    b: 120,
+                    a: 200,
+                },
+                Color::Named("blue".into()),
+            ])
+            .into_iter()
+            .map(|c| c.try_into().expect("solid stop"))
+            .collect(),
+            angle: 450.0,
+        });
+        assert_eq!(
+            interpolate_background(&from, &to, 0.5),
+            Background::Color(crate::tree::attrs::Color::Gradient {
+                colors: ([
+                    Color::Rgba {
+                        r: 128,
+                        g: 128,
+                        b: 128,
+                        a: 255
+                    },
+                    Color::Rgba {
+                        r: 30,
+                        g: 60,
+                        b: 90,
+                        a: 100
+                    },
+                    Color::Rgba {
+                        r: 128,
+                        g: 0,
+                        b: 128,
+                        a: 255
+                    }
+                ])
+                .into_iter()
+                .map(|c| c.try_into().expect("solid stop"))
+                .collect(),
+                angle: 180.0
+            })
+        );
+        for (t, source) in [(0.0, &from), (1.0, &to)] {
+            let Background::Color(Color::Gradient { colors, angle }) =
+                interpolate_background(&from, &to, t)
+            else {
+                panic!("expected gradient")
+            };
+            let Background::Color(Color::Gradient {
+                colors: expected,
+                angle: expected_angle,
+            }) = source
+            else {
+                unreachable!()
+            };
+            assert_eq!(angle, *expected_angle);
+            assert_eq!(
+                colors.iter().map(color_to_rgba).collect::<Vec<_>>(),
+                expected.iter().map(color_to_rgba).collect::<Vec<_>>()
+            );
+        }
+        let mismatch = Background::Color(crate::tree::attrs::Color::Gradient {
+            colors: (vec![Color::Named("black".into()); 2])
+                .into_iter()
+                .map(|c| c.try_into().expect("solid stop"))
+                .collect(),
+            angle: 0.0,
+        });
+        assert_eq!(interpolate_background(&from, &mismatch, 0.5), from);
+        let huge = |angle| {
+            Background::Color(crate::tree::attrs::Color::Gradient {
+                colors: (vec![Color::Named("black".into()); 2])
+                    .into_iter()
+                    .map(|c| c.try_into().expect("solid stop"))
+                    .collect(),
+                angle,
+            })
+        };
+        let Background::Color(Color::Gradient { angle, .. }) =
+            interpolate_background(&huge(-f64::MAX), &huge(f64::MAX), 0.5)
+        else {
+            unreachable!()
+        };
+        assert_eq!(angle, 0.0);
+    }
+    #[test]
+    fn universal_color_animation_lifts_solids_and_interpolates_every_shadow() {
+        use crate::tree::attrs::SolidColor;
+        let solid = Color::Named("black".into());
+        let gradient = Color::Gradient {
+            colors: [
+                SolidColor::Named("red".into()),
+                SolidColor::Rgba {
+                    r: 0,
+                    g: 255,
+                    b: 0,
+                    a: 128,
+                },
+                SolidColor::Rgba {
+                    r: 0,
+                    g: 0,
+                    b: 255,
+                    a: 0,
+                },
+            ]
+            .into(),
+            angle: 90.0,
+        };
+        let bounds = crate::tree::geometry::Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 50.0,
+        };
+        for (from, to) in [(&solid, &gradient), (&gradient, &solid)] {
+            assert_eq!(
+                interpolate_color(from, to, 0.0).render(bounds),
+                from.render(bounds)
+            );
+            assert_eq!(
+                interpolate_color(from, to, 1.0).render(bounds),
+                to.render(bounds)
+            );
+            let Color::Gradient { colors, angle } = interpolate_color(from, to, 0.5) else {
+                panic!("gradient")
+            };
+            assert_eq!(angle, 90.0);
+            assert_eq!(
+                colors.iter().map(color_to_rgba).collect::<Vec<_>>(),
+                [(128, 0, 0, 255), (0, 128, 0, 192), (0, 0, 128, 128)]
+            );
+        }
+        let shadow = |color| BoxShadow {
+            offset_x: 0.0,
+            offset_y: 0.0,
+            blur: 4.0,
+            size: 2.0,
+            inset: false,
+            color,
+        };
+        let a = [shadow(solid.clone()), shadow(gradient.clone())];
+        let b = [shadow(gradient.clone()), shadow(solid.clone())];
+        let result = interpolate_box_shadows(&a, &b, 0.5);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].color, result[1].color);
+        let mismatch = Color::Gradient {
+            colors: [SolidColor::Named("white".into()); 1].into(),
+            angle: 0.0,
+        };
+        assert_eq!(interpolate_color(&gradient, &mismatch, 0.5), gradient);
+        assert_eq!(interpolate_color(&gradient, &mismatch, 1.0), mismatch);
     }
 }

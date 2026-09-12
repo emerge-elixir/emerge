@@ -56,6 +56,13 @@ Authoritative pinned-RPi5 Camera plan. It combines production NV12 validation,
 the XRGB candidate decision, active-scene GPU work reduction, exact ownership,
 and the 60 FPS / 30% headroom gates.
 
+### `active-universal-gradient-colors.md`
+
+Remaining macOS host/Metal and constrained-device performance qualification for
+the implemented universal gradient colors. The shared color/brush model, every
+UI consumer, SVG alpha/validation, animation and EMRG v9 migration are complete.
+Tracks the independently reproduced borders-showcase benchmark failure.
+
 ## Durable references
 
 ### `release-0.4.0-audit.md`

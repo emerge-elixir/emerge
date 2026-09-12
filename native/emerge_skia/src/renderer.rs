@@ -6,6 +6,7 @@
 //! - `SceneRenderer` that executes scene nodes on backend-provided Skia surfaces
 //! - Font cache for text rendering
 
+use crate::render_color::RenderColor;
 use std::collections::{HashMap, HashSet, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 #[cfg(test)]
@@ -19,14 +20,8 @@ use skia_safe::{
     AlphaType, BlendMode, BlurStyle, Color, ColorType, FilterMode, Font, FontHinting, FontMgr,
     ISize, Image, ImageInfo, MaskFilter, Matrix, MipmapMode, Paint, PaintStyle, PathBuilder,
     PathFillType, PixelGeometry, Point, RRect, Rect, SamplingOptions, Surface, SurfaceProps,
-    SurfacePropsFlags, TileMode, Typeface,
-    canvas::{SaveLayerRec, SrcRectConstraint},
-    codec::Codec,
-    color_filters, dash_path_effect,
-    font::Edging as FontEdging,
-    gpu,
-    gradient::{Colors as GradientColors, Gradient, Interpolation},
-    shaders, surfaces,
+    SurfacePropsFlags, TileMode, Typeface, canvas::SrcRectConstraint, codec::Codec, color_filters,
+    dash_path_effect, font::Edging as FontEdging, gpu, surfaces,
 };
 use skia_safe::{Data, images};
 
@@ -238,6 +233,7 @@ impl RenderDrawTimings {
 
     fn record_primitive(&mut self, primitive: &DrawPrimitive, duration: Duration) {
         match primitive {
+            DrawPrimitive::Rect(..) if primitive.has_gradient() => self.gradients += duration,
             DrawPrimitive::Rect(..) => self.rects += duration,
             DrawPrimitive::RoundedRect(..) => self.rounded_rects += duration,
             DrawPrimitive::Border(_, _, w, h, radius, width, _, style) => {
@@ -270,7 +266,7 @@ impl RenderDrawTimings {
             DrawPrimitive::Shadow(..) => self.shadows += duration,
             DrawPrimitive::InsetShadow(..) => self.inset_shadows += duration,
             DrawPrimitive::TextWithFont(..) => self.texts += duration,
-            DrawPrimitive::Gradient(..) => self.gradients += duration,
+
             DrawPrimitive::Image(..) => self.images += duration,
             DrawPrimitive::Video(..) => self.videos += duration,
             DrawPrimitive::ImageLoading(..) | DrawPrimitive::ImageFailed(..) => {
@@ -443,7 +439,7 @@ pub struct RenderShadowDrawProfile {
     pub blur: f32,
     pub size: f32,
     pub radius: f32,
-    pub color: u32,
+    pub color: RenderColor,
     pub total: Duration,
     pub prepare: Duration,
     pub clip: Duration,
@@ -462,7 +458,7 @@ impl RenderShadowDrawProfile {
             blur: spec.blur,
             size: spec.size,
             radius: spec.radius,
-            color: spec.color,
+            color: spec.color.clone(),
             ..Self::default()
         }
     }
@@ -2592,8 +2588,7 @@ fn render_primitive_resource_generation(primitive: &DrawPrimitive) -> Option<u64
         | DrawPrimitive::BorderCorners(..)
         | DrawPrimitive::BorderEdges(..)
         | DrawPrimitive::Shadow(..)
-        | DrawPrimitive::InsetShadow(..)
-        | DrawPrimitive::Gradient(..) => Some(0),
+        | DrawPrimitive::InsetShadow(..) => Some(0),
     }
 }
 
@@ -4219,7 +4214,7 @@ impl SceneRenderer {
             DrawPrimitive::Rect(_, _, _, _, fill)
             | DrawPrimitive::RoundedRect(_, _, _, _, _, fill) => {
                 pass == GrayscalePolicyPass::Dither
-                    && (color_alpha(*fill) < 255 || inherited_alpha < 1.0)
+                    && (fill.is_translucent() || inherited_alpha < 1.0)
             }
             DrawPrimitive::Border(..)
             | DrawPrimitive::BorderCorners(..)
@@ -4229,7 +4224,6 @@ impl SceneRenderer {
             | DrawPrimitive::ImageFailed(..) => pass == GrayscalePolicyPass::HardProtect,
             DrawPrimitive::Shadow(..)
             | DrawPrimitive::InsetShadow(..)
-            | DrawPrimitive::Gradient(..)
             | DrawPrimitive::Video(..) => pass == GrayscalePolicyPass::Dither,
             DrawPrimitive::Image(_, _, _, _, image_id, _, _) => match asset_kind(image_id) {
                 Some(AssetKind::Raster) => pass == GrayscalePolicyPass::Dither,
@@ -4239,7 +4233,11 @@ impl SceneRenderer {
         };
 
         match primitive {
-            DrawPrimitive::Image(x, y, w, h, image_id, fit, _) => {
+            DrawPrimitive::Image(x, y, w, h, image_id, fit, tint) => {
+                let tint = tint
+                    .as_ref()
+                    .map(|c| c.policy(white))
+                    .unwrap_or_else(|| RenderColor::Solid(if white { 0xffffffff } else { 0xff }));
                 if asset_kind(image_id).is_some() {
                     draw_cached_asset_with_fit(
                         canvas,
@@ -4252,7 +4250,7 @@ impl SceneRenderer {
                             },
                             image_id,
                             fit: *fit,
-                            svg_tint: Some(if white { 0xffff_ffff } else { 0x0000_00ff }),
+                            svg_tint: Some(&tint),
                         },
                         0.0,
                     );
@@ -5824,7 +5822,7 @@ impl SceneRenderer {
                             blur: *blur,
                             size: *size,
                             radius: *radius,
-                            color: *color,
+                            color,
                         },
                     );
                     instrumentation.record_shadow_profile(profile);
@@ -5841,7 +5839,7 @@ impl SceneRenderer {
                             },
                             image_id,
                             fit: *fit,
-                            svg_tint: *svg_tint,
+                            svg_tint: svg_tint.as_ref(),
                         },
                         options.image_bleed_device_outset,
                     );
@@ -5880,8 +5878,7 @@ impl SceneRenderer {
         match primitive {
             DrawPrimitive::Rect(x, y, w, h, fill) => {
                 let rect = Rect::from_xywh(*x, *y, *w, *h);
-                let mut paint = Paint::default();
-                paint.set_color(color_from_u32(*fill));
+                let mut paint = fill.paint();
                 paint.set_anti_alias(true);
                 canvas.draw_rect(rect, &paint);
             }
@@ -5889,8 +5886,7 @@ impl SceneRenderer {
             DrawPrimitive::RoundedRect(x, y, w, h, radius, fill) => {
                 let rect = Rect::from_xywh(*x, *y, *w, *h);
                 let rrect = corner_rrect(rect, [*radius; 4]);
-                let mut paint = Paint::default();
-                paint.set_color(color_from_u32(*fill));
+                let mut paint = fill.paint();
                 paint.set_anti_alias(true);
                 canvas.draw_rrect(rrect, &paint);
             }
@@ -5907,7 +5903,7 @@ impl SceneRenderer {
                         },
                         corners: [*radius, *radius, *radius, *radius],
                         insets: EdgeInsets::uniform(*width),
-                        color: *color,
+                        color,
                         style: *style,
                     },
                     solid_border_fast_paths,
@@ -5926,7 +5922,7 @@ impl SceneRenderer {
                         },
                         corners: [*tl, *tr, *br, *bl],
                         insets: EdgeInsets::uniform(*width),
-                        color: *color,
+                        color,
                         style: *style,
                     },
                     solid_border_fast_paths,
@@ -5962,7 +5958,7 @@ impl SceneRenderer {
                             bottom: *bottom,
                             left: *left,
                         },
-                        color: *color,
+                        color,
                         style: *style,
                     },
                     solid_border_fast_paths,
@@ -5984,7 +5980,7 @@ impl SceneRenderer {
                         blur: *blur,
                         size: *size,
                         radius: *radius,
-                        color: *color,
+                        color,
                     },
                 );
             }
@@ -6037,8 +6033,7 @@ impl SceneRenderer {
                 builder.add_rrect(inner_rrect, None, None);
                 let path = builder.detach();
 
-                let mut paint = Paint::default();
-                paint.set_color(color_from_u32(*color));
+                let mut paint = color.paint();
                 paint.set_anti_alias(true);
 
                 if *blur > 0.0 {
@@ -6054,40 +6049,9 @@ impl SceneRenderer {
 
             DrawPrimitive::TextWithFont(x, y, text, font_size, fill, family, weight, italic) => {
                 let font = make_font_with_style(family, *weight, *italic, *font_size);
-                let mut paint = Paint::default();
-                paint.set_color(color_from_u32(*fill));
+                let mut paint = fill.paint();
                 paint.set_anti_alias(true);
                 canvas.draw_str(text, (*x, *y), &font, &paint);
-            }
-
-            DrawPrimitive::Gradient(x, y, w, h, from, to, angle) => {
-                let rect = Rect::from_xywh(*x, *y, *w, *h);
-
-                let radians = angle.to_radians();
-                let cx = x + w / 2.0;
-                let cy = y + h / 2.0;
-                let half_diag = (w * w + h * h).sqrt() / 2.0;
-
-                let start = (
-                    cx - radians.cos() * half_diag,
-                    cy - radians.sin() * half_diag,
-                );
-                let end = (
-                    cx + radians.cos() * half_diag,
-                    cy + radians.sin() * half_diag,
-                );
-
-                let colors = [color_from_u32(*from).into(), color_from_u32(*to).into()];
-                let gradient_colors =
-                    GradientColors::new_evenly_spaced(&colors, TileMode::Clamp, None);
-                let gradient = Gradient::new(gradient_colors, Interpolation::default());
-
-                if let Some(shader) = shaders::linear_gradient((start, end), &gradient, None) {
-                    let mut paint = Paint::default();
-                    paint.set_shader(shader);
-                    paint.set_anti_alias(true);
-                    canvas.draw_rect(rect, &paint);
-                }
             }
 
             DrawPrimitive::Image(x, y, w, h, image_id, fit, svg_tint) => {
@@ -6102,7 +6066,7 @@ impl SceneRenderer {
                         },
                         image_id,
                         fit: *fit,
-                        svg_tint: *svg_tint,
+                        svg_tint: svg_tint.as_ref(),
                     },
                     image_bleed_device_outset,
                 );
@@ -6196,8 +6160,8 @@ impl SceneRenderer {
         match primitive {
             DrawPrimitive::Rect(x, y, w, h, fill) => {
                 let rect = Rect::from_xywh(*x, *y, *w, *h);
-                let mut paint = Paint::default();
-                paint.set_color(color_from_u32(color_with_multiplied_alpha(*fill, alpha)));
+                let mut paint = fill.paint();
+                paint.set_alpha_f(paint.alpha_f() * alpha);
                 paint.set_anti_alias(true);
                 canvas.draw_rect(rect, &paint);
                 true
@@ -6205,16 +6169,16 @@ impl SceneRenderer {
             DrawPrimitive::RoundedRect(x, y, w, h, radius, fill) => {
                 let rect = Rect::from_xywh(*x, *y, *w, *h);
                 let rrect = corner_rrect(rect, [*radius; 4]);
-                let mut paint = Paint::default();
-                paint.set_color(color_from_u32(color_with_multiplied_alpha(*fill, alpha)));
+                let mut paint = fill.paint();
+                paint.set_alpha_f(paint.alpha_f() * alpha);
                 paint.set_anti_alias(true);
                 canvas.draw_rrect(rrect, &paint);
                 true
             }
             DrawPrimitive::TextWithFont(x, y, text, font_size, fill, family, weight, italic) => {
                 let font = make_font_with_style(family, *weight, *italic, *font_size);
-                let mut paint = Paint::default();
-                paint.set_color(color_from_u32(color_with_multiplied_alpha(*fill, alpha)));
+                let mut paint = fill.paint();
+                paint.set_alpha_f(paint.alpha_f() * alpha);
                 paint.set_anti_alias(true);
                 canvas.draw_str(text, (*x, *y), &font, &paint);
                 true
@@ -6224,7 +6188,6 @@ impl SceneRenderer {
             | DrawPrimitive::BorderEdges(..)
             | DrawPrimitive::Shadow(..)
             | DrawPrimitive::InsetShadow(..)
-            | DrawPrimitive::Gradient(..)
             | DrawPrimitive::Image(..)
             | DrawPrimitive::Video(..)
             | DrawPrimitive::ImageLoading(..)
@@ -6431,27 +6394,27 @@ struct ImageDrawSpec<'a> {
     rect: RectSpec,
     image_id: &'a str,
     fit: ImageFit,
-    svg_tint: Option<u32>,
+    svg_tint: Option<&'a RenderColor>,
 }
 
 #[derive(Clone, Copy, Debug)]
-struct BorderDrawSpec {
+struct BorderDrawSpec<'a> {
     rect: RectSpec,
     corners: [f32; 4],
     insets: EdgeInsets,
-    color: u32,
+    color: &'a RenderColor,
     style: BorderStyle,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct ShadowDrawSpec {
+struct ShadowDrawSpec<'a> {
     rect: RectSpec,
     offset_x: f32,
     offset_y: f32,
     blur: f32,
     size: f32,
     radius: f32,
-    color: u32,
+    color: &'a RenderColor,
 }
 
 struct PreparedOuterShadow {
@@ -7049,7 +7012,7 @@ fn draw_image_fill_rect_tinted(
     y: f32,
     w: f32,
     h: f32,
-    tint: Option<u32>,
+    tint: Option<&RenderColor>,
 ) -> bool {
     if w <= 0.0 || h <= 0.0 {
         return false;
@@ -7083,7 +7046,7 @@ fn draw_image_rect_with_optional_template_tint(
     dst_rect: Rect,
     sampling: SamplingOptions,
     paint: &Paint,
-    tint: Option<u32>,
+    tint: Option<&RenderColor>,
 ) {
     if let Some(tint) = tint {
         draw_image_rect_with_template_tint_direct(
@@ -7101,7 +7064,7 @@ fn draw_image_rect_with_template_tint_direct(
     dst_rect: Rect,
     sampling: SamplingOptions,
     paint: &Paint,
-    tint: u32,
+    tint: &RenderColor,
 ) -> bool {
     if let Some(tinted_paint) = paint_with_template_tint(paint, tint) {
         canvas.draw_image_rect_with_sampling_options(image, src, dst_rect, sampling, &tinted_paint);
@@ -7188,23 +7151,15 @@ fn maybe_expand_draw_rect_axes(
     )
 }
 
-fn draw_with_template_tint<F>(canvas: &skia_safe::Canvas, bounds: Rect, tint: u32, draw: F)
+fn draw_with_template_tint<F>(canvas: &skia_safe::Canvas, bounds: Rect, tint: &RenderColor, draw: F)
 where
     F: FnOnce(&skia_safe::Canvas),
 {
-    let layer_rec = SaveLayerRec::default().bounds(&bounds);
-    canvas.save_layer(&layer_rec);
-    draw(canvas);
-
-    let mut tint_paint = Paint::default();
-    tint_paint.set_color(color_from_u32(tint));
-    tint_paint.set_blend_mode(BlendMode::SrcIn);
-    canvas.draw_rect(bounds, &tint_paint);
-    canvas.restore();
+    tint.tint(canvas, bounds, draw);
 }
 
-fn paint_with_template_tint(paint: &Paint, tint: u32) -> Option<Paint> {
-    let filter = color_filters::blend(color_from_u32(tint), BlendMode::SrcIn)?;
+fn paint_with_template_tint(paint: &Paint, tint: &RenderColor) -> Option<Paint> {
+    let filter = color_filters::blend(color_from_u32(tint.solid()?), BlendMode::SrcIn)?;
     let mut tinted = paint.clone();
     tinted.set_color_filter(filter);
     Some(tinted)
@@ -7591,7 +7546,7 @@ fn draw_tiled_image(
     image: &Image,
     bounds: Rect,
     fit: ImageFit,
-    tint: Option<u32>,
+    tint: Option<&RenderColor>,
 ) -> bool {
     let Some(tile_modes) = tile_modes_for_fit(fit) else {
         return false;
@@ -7609,9 +7564,8 @@ fn draw_tiled_image(
 
     let dst_rect = bounds;
     if let Some(tint) = tint {
-        if let Some(filter) = color_filters::blend(color_from_u32(tint), BlendMode::SrcIn) {
-            paint.set_color_filter(filter);
-            canvas.draw_rect(dst_rect, &paint);
+        if let Some(tinted) = paint_with_template_tint(&paint, tint) {
+            canvas.draw_rect(dst_rect, &tinted);
             false
         } else {
             draw_with_template_tint(canvas, dst_rect, tint, |canvas| {
@@ -8060,8 +8014,7 @@ fn prepare_outer_shadow(spec: ShadowDrawSpec) -> PreparedOuterShadow {
     );
     let bounds_rrect = corner_rrect(Rect::from_xywh(x, y, w, h), [spec.radius; 4]);
 
-    let mut paint = Paint::default();
-    paint.set_color(color_from_u32(spec.color));
+    let mut paint = spec.color.paint();
     paint.set_anti_alias(true);
 
     if spec.blur > 0.0 {
@@ -8237,8 +8190,7 @@ fn draw_border_with_fast_path(
         }
         BorderStyle::Dashed | BorderStyle::Dotted => {
             let band_path = border_band_path(outer_rrect, inner_rrect);
-            let mut stroke_paint = Paint::default();
-            stroke_paint.set_color(color_from_u32(color));
+            let mut stroke_paint = color.paint();
             stroke_paint.set_style(PaintStyle::Stroke);
             stroke_paint.set_anti_alias(true);
 
@@ -8278,9 +8230,8 @@ fn draw_border_with_fast_path(
     }
 }
 
-fn solid_border_paint(color: u32) -> Paint {
-    let mut paint = Paint::default();
-    paint.set_color(color_from_u32(color));
+fn solid_border_paint(color: &RenderColor) -> Paint {
+    let mut paint = color.paint();
     paint.set_anti_alias(true);
     paint
 }
@@ -8355,10 +8306,12 @@ fn apply_border_style(paint: &mut Paint, style: BorderStyle, stroke_width: f32) 
     }
 }
 
+#[cfg(test)]
 fn color_alpha(color: u32) -> u8 {
     (color & 0xff) as u8
 }
 
+#[cfg(test)]
 fn policy_color(color: u32, white: bool) -> u32 {
     if white {
         0xffff_ff00 | u32::from(color_alpha(color))
@@ -8387,10 +8340,10 @@ fn draw_policy_rect(
 fn recolor_policy_primitive(primitive: &DrawPrimitive, white: bool) -> DrawPrimitive {
     match primitive {
         DrawPrimitive::Rect(x, y, w, h, color) => {
-            DrawPrimitive::Rect(*x, *y, *w, *h, policy_color(*color, white))
+            DrawPrimitive::Rect(*x, *y, *w, *h, (color.policy(white)).clone())
         }
         DrawPrimitive::RoundedRect(x, y, w, h, radius, color) => {
-            DrawPrimitive::RoundedRect(*x, *y, *w, *h, *radius, policy_color(*color, white))
+            DrawPrimitive::RoundedRect(*x, *y, *w, *h, *radius, (color.policy(white)).clone())
         }
         DrawPrimitive::Border(x, y, w, h, radius, width, color, style) => DrawPrimitive::Border(
             *x,
@@ -8399,7 +8352,7 @@ fn recolor_policy_primitive(primitive: &DrawPrimitive, white: bool) -> DrawPrimi
             *h,
             *radius,
             *width,
-            policy_color(*color, white),
+            (color.policy(white)).clone(),
             *style,
         ),
         DrawPrimitive::BorderCorners(x, y, w, h, tl, tr, br, bl, width, color, style) => {
@@ -8413,7 +8366,7 @@ fn recolor_policy_primitive(primitive: &DrawPrimitive, white: bool) -> DrawPrimi
                 *br,
                 *bl,
                 *width,
-                policy_color(*color, white),
+                (color.policy(white)).clone(),
                 *style,
             )
         }
@@ -8428,7 +8381,7 @@ fn recolor_policy_primitive(primitive: &DrawPrimitive, white: bool) -> DrawPrimi
                 *right,
                 *bottom,
                 *left,
-                policy_color(*color, white),
+                (color.policy(white)).clone(),
                 *style,
             )
         }
@@ -8443,7 +8396,7 @@ fn recolor_policy_primitive(primitive: &DrawPrimitive, white: bool) -> DrawPrimi
                 *blur,
                 *size,
                 *radius,
-                policy_color(*color, white),
+                (color.policy(white)).clone(),
             )
         }
         DrawPrimitive::InsetShadow(x, y, w, h, ox, oy, blur, size, radius, color) => {
@@ -8457,7 +8410,7 @@ fn recolor_policy_primitive(primitive: &DrawPrimitive, white: bool) -> DrawPrimi
                 *blur,
                 *size,
                 *radius,
-                policy_color(*color, white),
+                (color.policy(white)).clone(),
             )
         }
         DrawPrimitive::TextWithFont(x, y, text, size, color, family, weight, italic) => {
@@ -8466,23 +8419,15 @@ fn recolor_policy_primitive(primitive: &DrawPrimitive, white: bool) -> DrawPrimi
                 *y,
                 text.clone(),
                 *size,
-                policy_color(*color, white),
+                (color.policy(white)).clone(),
                 family.clone(),
                 *weight,
                 *italic,
             )
         }
-        DrawPrimitive::Gradient(x, y, w, h, from, to, angle) => DrawPrimitive::Gradient(
-            *x,
-            *y,
-            *w,
-            *h,
-            policy_color(*from, white),
-            policy_color(*to, white),
-            *angle,
-        ),
+
         DrawPrimitive::Image(x, y, w, h, id, fit, tint) => {
-            DrawPrimitive::Image(*x, *y, *w, *h, id.clone(), *fit, *tint)
+            DrawPrimitive::Image(*x, *y, *w, *h, id.clone(), *fit, (*tint).clone())
         }
         DrawPrimitive::Video(x, y, w, h, id, fit) => {
             DrawPrimitive::Video(*x, *y, *w, *h, id.clone(), *fit)
@@ -8499,13 +8444,6 @@ pub fn color_from_u32(c: u32) -> Color {
     let b = ((c >> 8) & 0xFF) as u8;
     let a = (c & 0xFF) as u8;
     Color::from_argb(a, r, g, b)
-}
-
-fn color_with_multiplied_alpha(c: u32, alpha: f32) -> u32 {
-    let rgb = c & 0xFFFF_FF00;
-    let source_alpha = (c & 0xFF) as f32;
-    let alpha = (source_alpha * alpha.clamp(0.0, 1.0)).round() as u32;
-    rgb | alpha.min(0xFF)
 }
 
 /// Compute the four clip polygons used by `BorderEdges` rendering.
@@ -8779,7 +8717,7 @@ mod tests {
         true
     }
 
-    fn render_commands_to_pixels(
+    pub(super) fn render_commands_to_pixels(
         width: u32,
         height: u32,
         primitives: Vec<DrawPrimitive>,
@@ -8871,7 +8809,13 @@ mod tests {
             },
             radii: None,
         };
-        let fill = RenderNode::Primitive(DrawPrimitive::Rect(0.0, 0.0, 24.0, 16.0, 0x3366CCFF));
+        let fill = RenderNode::Primitive(DrawPrimitive::Rect(
+            0.0,
+            0.0,
+            24.0,
+            16.0,
+            (0x3366CCFFu32).into(),
+        ));
 
         let single_clip_scene = RenderScene {
             nodes: vec![RenderNode::Clip {
@@ -8911,7 +8855,13 @@ mod tests {
                 bl: 4.0,
             }),
         };
-        let fill = RenderNode::Primitive(DrawPrimitive::Rect(0.0, 0.0, 24.0, 16.0, 0x3366CCFF));
+        let fill = RenderNode::Primitive(DrawPrimitive::Rect(
+            0.0,
+            0.0,
+            24.0,
+            16.0,
+            (0x3366CCFFu32).into(),
+        ));
 
         let single_clip_scene = RenderScene {
             nodes: vec![RenderNode::Clip {
@@ -8950,7 +8900,11 @@ mod tests {
             PaintLayerReason::Nearby,
             1,
             vec![RenderNode::Primitive(DrawPrimitive::Rect(
-                0.0, 20.0, 80.0, 20.0, 0x00FF00FF,
+                0.0,
+                20.0,
+                80.0,
+                20.0,
+                (0x00FF00FFu32).into(),
             ))],
         );
         let parent_layer = RenderPaintLayer::from_children(
@@ -8966,9 +8920,21 @@ mod tests {
             PaintLayerReason::Nearby,
             1,
             vec![
-                RenderNode::Primitive(DrawPrimitive::Rect(0.0, 0.0, 80.0, 20.0, 0xFF0000FF)),
+                RenderNode::Primitive(DrawPrimitive::Rect(
+                    0.0,
+                    0.0,
+                    80.0,
+                    20.0,
+                    (0xFF0000FFu32).into(),
+                )),
                 RenderNode::PaintLayer(nested_layer),
-                RenderNode::Primitive(DrawPrimitive::Rect(0.0, 40.0, 80.0, 20.0, 0x0000FFFF)),
+                RenderNode::Primitive(DrawPrimitive::Rect(
+                    0.0,
+                    40.0,
+                    80.0,
+                    20.0,
+                    (0x0000FFFFu32).into(),
+                )),
             ],
         );
         assert!(matches!(
@@ -9011,9 +8977,27 @@ mod tests {
         };
         let expected_scene = RenderScene {
             nodes: vec![
-                RenderNode::Primitive(DrawPrimitive::Rect(0.0, 0.0, 80.0, 20.0, 0xFF0000FF)),
-                RenderNode::Primitive(DrawPrimitive::Rect(0.0, 20.0, 80.0, 20.0, 0x00FF00FF)),
-                RenderNode::Primitive(DrawPrimitive::Rect(0.0, 40.0, 80.0, 20.0, 0x0000FFFF)),
+                RenderNode::Primitive(DrawPrimitive::Rect(
+                    0.0,
+                    0.0,
+                    80.0,
+                    20.0,
+                    (0xFF0000FFu32).into(),
+                )),
+                RenderNode::Primitive(DrawPrimitive::Rect(
+                    0.0,
+                    20.0,
+                    80.0,
+                    20.0,
+                    (0x00FF00FFu32).into(),
+                )),
+                RenderNode::Primitive(DrawPrimitive::Rect(
+                    0.0,
+                    40.0,
+                    80.0,
+                    20.0,
+                    (0x0000FFFFu32).into(),
+                )),
             ],
         };
         let expected = render_scene_graph_to_pixels(80, 60, expected_scene);
@@ -9047,11 +9031,15 @@ mod tests {
                 PaintLayerReason::SliderValue,
                 1,
                 vec![RenderNode::Primitive(DrawPrimitive::Rect(
-                    0.0, 20.0, 80.0, 20.0, 0x00FF00FF,
+                    0.0,
+                    20.0,
+                    80.0,
+                    20.0,
+                    (0x00FF00FFu32).into(),
                 ))],
             )
         };
-        let scene = |generation, first_color| RenderScene {
+        let scene = |generation, first_color: u32| RenderScene {
             nodes: vec![RenderNode::PaintLayer(RenderPaintLayer::from_children(
                 41,
                 GeometryRect {
@@ -9065,9 +9053,21 @@ mod tests {
                 PaintLayerReason::Nearby,
                 generation,
                 vec![
-                    RenderNode::Primitive(DrawPrimitive::Rect(0.0, 0.0, 80.0, 20.0, first_color)),
+                    RenderNode::Primitive(DrawPrimitive::Rect(
+                        0.0,
+                        0.0,
+                        80.0,
+                        20.0,
+                        (first_color).into(),
+                    )),
                     RenderNode::PaintLayer(child()),
-                    RenderNode::Primitive(DrawPrimitive::Rect(0.0, 40.0, 80.0, 20.0, 0x0000FFFF)),
+                    RenderNode::Primitive(DrawPrimitive::Rect(
+                        0.0,
+                        40.0,
+                        80.0,
+                        20.0,
+                        (0x0000FFFFu32).into(),
+                    )),
                 ],
             ))],
         };
@@ -9076,9 +9076,27 @@ mod tests {
             60,
             RenderScene {
                 nodes: vec![
-                    RenderNode::Primitive(DrawPrimitive::Rect(0.0, 0.0, 80.0, 20.0, 0xFFFF00FF)),
-                    RenderNode::Primitive(DrawPrimitive::Rect(0.0, 20.0, 80.0, 20.0, 0x00FF00FF)),
-                    RenderNode::Primitive(DrawPrimitive::Rect(0.0, 40.0, 80.0, 20.0, 0x0000FFFF)),
+                    RenderNode::Primitive(DrawPrimitive::Rect(
+                        0.0,
+                        0.0,
+                        80.0,
+                        20.0,
+                        (0xFFFF00FFu32).into(),
+                    )),
+                    RenderNode::Primitive(DrawPrimitive::Rect(
+                        0.0,
+                        20.0,
+                        80.0,
+                        20.0,
+                        (0x00FF00FFu32).into(),
+                    )),
+                    RenderNode::Primitive(DrawPrimitive::Rect(
+                        0.0,
+                        40.0,
+                        80.0,
+                        20.0,
+                        (0x0000FFFFu32).into(),
+                    )),
                 ],
             },
         );
@@ -9165,7 +9183,7 @@ mod tests {
                     30.0,
                     "WWW".to_string(),
                     18.0,
-                    0xFFFFFFFF,
+                    (0xFFFFFFFFu32).into(),
                     "default".to_string(),
                     400,
                     true,
@@ -9262,7 +9280,11 @@ mod tests {
                 PaintLayerReason::DirectMedia,
                 1,
                 vec![RenderNode::Primitive(DrawPrimitive::Rect(
-                    0.0, 0.0, 1.0, 1.0, 0x000000FF,
+                    0.0,
+                    0.0,
+                    1.0,
+                    1.0,
+                    (0x000000FFu32).into(),
                 ))],
             ));
             let children = vec![image, direct_child];
@@ -9372,7 +9394,13 @@ mod tests {
             width: 60.0,
             height: 40.0,
         };
-        let before = RenderNode::Primitive(DrawPrimitive::Rect(0.0, 0.0, 60.0, 40.0, 0xFF0000FF));
+        let before = RenderNode::Primitive(DrawPrimitive::Rect(
+            0.0,
+            0.0,
+            60.0,
+            40.0,
+            (0xFF0000FFu32).into(),
+        ));
         let child = RenderPaintLayer::from_children(
             22,
             bounds,
@@ -9381,10 +9409,20 @@ mod tests {
             PaintLayerReason::Nearby,
             1,
             vec![RenderNode::Primitive(DrawPrimitive::Rect(
-                10.0, 0.0, 40.0, 40.0, 0x00FF00FF,
+                10.0,
+                0.0,
+                40.0,
+                40.0,
+                (0x00FF00FFu32).into(),
             ))],
         );
-        let after = RenderNode::Primitive(DrawPrimitive::Rect(30.0, 0.0, 30.0, 40.0, 0x0000FFFF));
+        let after = RenderNode::Primitive(DrawPrimitive::Rect(
+            30.0,
+            0.0,
+            30.0,
+            40.0,
+            (0x0000FFFFu32).into(),
+        ));
         let parent = RenderPaintLayer::from_children(
             21,
             bounds,
@@ -9419,7 +9457,11 @@ mod tests {
                     children: vec![
                         before,
                         RenderNode::Primitive(DrawPrimitive::Rect(
-                            10.0, 0.0, 40.0, 40.0, 0x00FF00FF,
+                            10.0,
+                            0.0,
+                            40.0,
+                            40.0,
+                            (0x00FF00FFu32).into(),
                         )),
                         after,
                     ],
@@ -9466,8 +9508,20 @@ mod tests {
             width: 40.0,
             height: 40.0,
         };
-        let red = RenderNode::Primitive(DrawPrimitive::Rect(0.0, 0.0, 40.0, 40.0, 0xFF0000FF));
-        let blue = RenderNode::Primitive(DrawPrimitive::Rect(0.0, 0.0, 40.0, 40.0, 0x0000FFFF));
+        let red = RenderNode::Primitive(DrawPrimitive::Rect(
+            0.0,
+            0.0,
+            40.0,
+            40.0,
+            (0xFF0000FFu32).into(),
+        ));
+        let blue = RenderNode::Primitive(DrawPrimitive::Rect(
+            0.0,
+            0.0,
+            40.0,
+            40.0,
+            (0x0000FFFFu32).into(),
+        ));
         let before = RenderScene {
             nodes: vec![RenderNode::PaintLayer(RenderPaintLayer::from_children(
                 31,
@@ -9490,7 +9544,11 @@ mod tests {
             PaintLayerReason::SliderValue,
             1,
             vec![RenderNode::Primitive(DrawPrimitive::Rect(
-                0.0, 0.0, 40.0, 40.0, 0x00FF00FF,
+                0.0,
+                0.0,
+                40.0,
+                40.0,
+                (0x00FF00FFu32).into(),
             ))],
         );
         let after = RenderScene {
@@ -9516,7 +9574,11 @@ mod tests {
                     children: vec![
                         red,
                         RenderNode::Primitive(DrawPrimitive::Rect(
-                            0.0, 0.0, 40.0, 40.0, 0x00FF00FF,
+                            0.0,
+                            0.0,
+                            40.0,
+                            40.0,
+                            (0x00FF00FFu32).into(),
                         )),
                         blue,
                     ],
@@ -9558,7 +9620,7 @@ mod tests {
                 20.0,
                 "Up: 0".to_string(),
                 14.0,
-                0xFFFFFFFF,
+                (0xFFFFFFFFu32).into(),
                 "default".to_string(),
                 400,
                 false,
@@ -9630,7 +9692,11 @@ mod tests {
         );
     }
 
-    fn render_scene_graph_profiled(width: u32, height: u32, scene: RenderScene) -> RenderTimings {
+    pub(super) fn render_scene_graph_profiled(
+        width: u32,
+        height: u32,
+        scene: RenderScene,
+    ) -> RenderTimings {
         let info = skia_safe::ImageInfo::new(
             (width as i32, height as i32),
             skia_safe::ColorType::RGBA8888,
@@ -9653,7 +9719,11 @@ mod tests {
                 false,
                 RenderScene {
                     nodes: vec![RenderNode::Primitive(DrawPrimitive::Rect(
-                        0.0, 0.0, 8.0, 8.0, 0xFFFFFFFF,
+                        0.0,
+                        0.0,
+                        8.0,
+                        8.0,
+                        (0xFFFFFFFFu32).into(),
                     ))],
                 },
             ),
@@ -10408,7 +10478,11 @@ mod tests {
             16,
             RenderScene {
                 nodes: vec![RenderNode::Primitive(DrawPrimitive::Rect(
-                    0.0, 0.0, 8.0, 8.0, 0xFF0000FF,
+                    0.0,
+                    0.0,
+                    8.0,
+                    8.0,
+                    (0xFF0000FFu32).into(),
                 ))],
             },
         );
@@ -10435,14 +10509,19 @@ mod tests {
             }],
             children: vec![
                 RenderNode::Primitive(DrawPrimitive::RoundedRect(
-                    2.0, 2.0, 18.0, 14.0, 4.0, 0x2F80EDFF,
+                    2.0,
+                    2.0,
+                    18.0,
+                    14.0,
+                    4.0,
+                    (0x2F80EDFFu32).into(),
                 )),
                 RenderNode::Primitive(DrawPrimitive::TextWithFont(
                     5.0,
                     11.0,
                     "cache".to_string(),
                     8.0,
-                    0xFFFFFFFF,
+                    (0xFFFFFFFFu32).into(),
                     "default".to_string(),
                     700,
                     false,
@@ -10481,7 +10560,11 @@ mod tests {
     #[test]
     fn cache_tracking_renders_child_layer_when_direct_parent_bounds_are_clipped() {
         let child_nodes = vec![RenderNode::Primitive(DrawPrimitive::Rect(
-            4.0, 4.0, 12.0, 10.0, 0x2F80EDFF,
+            4.0,
+            4.0,
+            12.0,
+            10.0,
+            (0x2F80EDFFu32).into(),
         ))];
         let child_layer = RenderPaintLayer::from_children(
             202,
@@ -10536,18 +10619,34 @@ mod tests {
 
     fn moving_paint_layer_payload_test_children() -> Vec<RenderNode> {
         vec![
-            RenderNode::Primitive(DrawPrimitive::Rect(0.0, 0.0, 22.0, 16.0, 0x2F80EDFF)),
+            RenderNode::Primitive(DrawPrimitive::Rect(
+                0.0,
+                0.0,
+                22.0,
+                16.0,
+                (0x2F80EDFFu32).into(),
+            )),
             RenderNode::Primitive(DrawPrimitive::RoundedRect(
-                4.0, 4.0, 14.0, 8.0, 3.0, 0xFFFFFFFF,
+                4.0,
+                4.0,
+                14.0,
+                8.0,
+                3.0,
+                (0xFFFFFFFFu32).into(),
             )),
         ]
     }
 
     fn animation_nodes(color: u32) -> Vec<RenderNode> {
         vec![
-            RenderNode::Primitive(DrawPrimitive::Rect(0.0, 0.0, 22.0, 16.0, color)),
+            RenderNode::Primitive(DrawPrimitive::Rect(0.0, 0.0, 22.0, 16.0, (color).into())),
             RenderNode::Primitive(DrawPrimitive::RoundedRect(
-                4.0, 4.0, 14.0, 8.0, 3.0, 0xFFFFFFFF,
+                4.0,
+                4.0,
+                14.0,
+                8.0,
+                3.0,
+                (0xFFFFFFFFu32).into(),
             )),
         ]
     }
@@ -10586,7 +10685,7 @@ mod tests {
                     4.0,
                     4.0,
                     16.0,
-                    color,
+                    (color).into(),
                 ))
             })
             .collect();
@@ -11022,7 +11121,7 @@ mod tests {
             )
         }
 
-        let parent_scene = |content_generation, color| RenderScene {
+        let parent_scene = |content_generation, color: u32| RenderScene {
             nodes: vec![RenderNode::Transform {
                 transform: Affine2::translation(8.0, 5.0),
                 children: vec![moving_paint_layer_node(
@@ -11035,7 +11134,13 @@ mod tests {
                         height: 22.0,
                     },
                     vec![
-                        RenderNode::Primitive(DrawPrimitive::Rect(0.0, 0.0, 34.0, 22.0, color)),
+                        RenderNode::Primitive(DrawPrimitive::Rect(
+                            0.0,
+                            0.0,
+                            34.0,
+                            22.0,
+                            (color).into(),
+                        )),
                         RenderNode::Transform {
                             transform: Affine2::translation(4.0, 3.0),
                             children: vec![RenderNode::PaintLayer(child_candidate())],
@@ -11213,7 +11318,11 @@ mod tests {
                     children: vec![RenderNode::PaintLayer(
                         moving_paint_layer_payload_test_candidate_with_generation(
                             vec![RenderNode::Primitive(DrawPrimitive::Rect(
-                                0.0, 0.0, 22.0, 16.0, 0xFF0000FF,
+                                0.0,
+                                0.0,
+                                22.0,
+                                16.0,
+                                (0xFF0000FFu32).into(),
                             ))],
                             4,
                         ),
@@ -11402,7 +11511,11 @@ mod tests {
                     }),
                 }],
                 children: vec![RenderNode::Primitive(DrawPrimitive::Rect(
-                    0.0, 0.0, 22.0, 16.0, 0xFF0000FF,
+                    0.0,
+                    0.0,
+                    22.0,
+                    16.0,
+                    (0xFF0000FFu32).into(),
                 ))],
             });
             scene
@@ -11422,8 +11535,20 @@ mod tests {
 
     #[test]
     fn dynamic_candidate_fingerprint_tracks_direct_alpha_group_boundaries() {
-        let red = RenderNode::Primitive(DrawPrimitive::Rect(0.0, 0.0, 18.0, 16.0, 0xFF0000FF));
-        let blue = RenderNode::Primitive(DrawPrimitive::Rect(4.0, 0.0, 18.0, 16.0, 0x0000FFFF));
+        let red = RenderNode::Primitive(DrawPrimitive::Rect(
+            0.0,
+            0.0,
+            18.0,
+            16.0,
+            (0xFF0000FFu32).into(),
+        ));
+        let blue = RenderNode::Primitive(DrawPrimitive::Rect(
+            4.0,
+            0.0,
+            18.0,
+            16.0,
+            (0x0000FFFFu32).into(),
+        ));
         let grouped = || {
             let mut scene = animation_scene(208, 10, 0x2F80EDFF);
             scene.nodes.push(RenderNode::Alpha {
@@ -12066,7 +12191,7 @@ mod tests {
             .expect("test image should insert into the raster asset cache");
     }
 
-    fn cache_test_svg_asset(id: &str, width: u32, height: u32, svg: &str) {
+    pub(super) fn cache_test_svg_asset(id: &str, width: u32, height: u32, svg: &str) {
         let mut options = usvg::Options::default();
         options.fontdb_mut().load_system_fonts();
 
@@ -12078,12 +12203,12 @@ mod tests {
         insert_vector_asset(id, tree).expect("test SVG should insert into asset cache");
     }
 
-    fn reset_vector_cache_test_state() {
+    pub(super) fn reset_vector_cache_test_state() {
         clear_rendered_vector_cache();
         reset_vector_rasterization_count();
     }
 
-    fn vector_cache_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    pub(super) fn vector_cache_test_lock() -> std::sync::MutexGuard<'static, ()> {
         static VECTOR_CACHE_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
         VECTOR_CACHE_TEST_LOCK
@@ -12131,10 +12256,20 @@ mod tests {
                             radii: None,
                         }],
                         children: vec![RenderNode::Primitive(DrawPrimitive::Rect(
-                            0.0, 0.0, 10.0, 10.0, 0xFF0000FF,
+                            0.0,
+                            0.0,
+                            10.0,
+                            10.0,
+                            (0xFF0000FFu32).into(),
                         ))],
                     },
-                    RenderNode::Primitive(DrawPrimitive::Rect(20.0, 0.0, 10.0, 10.0, 0x0000FFFF)),
+                    RenderNode::Primitive(DrawPrimitive::Rect(
+                        20.0,
+                        0.0,
+                        10.0,
+                        10.0,
+                        (0x0000FFFFu32).into(),
+                    )),
                 ],
             },
         );
@@ -12153,10 +12288,20 @@ mod tests {
                     RenderNode::Transform {
                         transform: Affine2::translation(10.0, 0.0),
                         children: vec![RenderNode::Primitive(DrawPrimitive::Rect(
-                            0.0, 0.0, 10.0, 10.0, 0xFF0000FF,
+                            0.0,
+                            0.0,
+                            10.0,
+                            10.0,
+                            (0xFF0000FFu32).into(),
                         ))],
                     },
-                    RenderNode::Primitive(DrawPrimitive::Rect(20.0, 0.0, 10.0, 10.0, 0x0000FFFF)),
+                    RenderNode::Primitive(DrawPrimitive::Rect(
+                        20.0,
+                        0.0,
+                        10.0,
+                        10.0,
+                        (0x0000FFFFu32).into(),
+                    )),
                 ],
             },
         );
@@ -12176,10 +12321,20 @@ mod tests {
                     RenderNode::Alpha {
                         alpha: 0.5,
                         children: vec![RenderNode::Primitive(DrawPrimitive::Rect(
-                            0.0, 0.0, 10.0, 10.0, 0xFF0000FF,
+                            0.0,
+                            0.0,
+                            10.0,
+                            10.0,
+                            (0xFF0000FFu32).into(),
                         ))],
                     },
-                    RenderNode::Primitive(DrawPrimitive::Rect(20.0, 0.0, 10.0, 10.0, 0x0000FFFF)),
+                    RenderNode::Primitive(DrawPrimitive::Rect(
+                        20.0,
+                        0.0,
+                        10.0,
+                        10.0,
+                        (0x0000FFFFu32).into(),
+                    )),
                 ],
             },
         );
@@ -12200,7 +12355,12 @@ mod tests {
                 nodes: vec![RenderNode::Alpha {
                     alpha: 0.5,
                     children: vec![RenderNode::Primitive(DrawPrimitive::RoundedRect(
-                        4.0, 4.0, 24.0, 12.0, 4.0, 0x336699FF,
+                        4.0,
+                        4.0,
+                        24.0,
+                        12.0,
+                        4.0,
+                        (0x336699FFu32).into(),
                     ))],
                 }],
             },
@@ -12226,7 +12386,7 @@ mod tests {
                         20.0,
                         "alpha text".to_string(),
                         16.0,
-                        0x203040FF,
+                        (0x203040FFu32).into(),
                         "default".to_string(),
                         400,
                         false,
@@ -12252,10 +12412,18 @@ mod tests {
                     alpha: 0.5,
                     children: vec![
                         RenderNode::Primitive(DrawPrimitive::Rect(
-                            4.0, 4.0, 24.0, 20.0, 0x336699FF,
+                            4.0,
+                            4.0,
+                            24.0,
+                            20.0,
+                            (0x336699FFu32).into(),
                         )),
                         RenderNode::Primitive(DrawPrimitive::Rect(
-                            16.0, 8.0, 24.0, 20.0, 0xCC5544FF,
+                            16.0,
+                            8.0,
+                            24.0,
+                            20.0,
+                            (0xCC5544FFu32).into(),
                         )),
                     ],
                 }],
@@ -12318,7 +12486,11 @@ mod tests {
                 children: vec![RenderNode::Alpha {
                     alpha: 0.5,
                     children: vec![RenderNode::Primitive(DrawPrimitive::Rect(
-                        0.0, 0.0, 16.0, 16.0, 0xFF0000FF,
+                        0.0,
+                        0.0,
+                        16.0,
+                        16.0,
+                        (0xFF0000FFu32).into(),
                     ))],
                 }],
             }],
@@ -12357,12 +12529,22 @@ mod tests {
                             children: vec![RenderNode::Alpha {
                                 alpha: 0.5,
                                 children: vec![RenderNode::Primitive(DrawPrimitive::Rect(
-                                    0.0, 0.0, 10.0, 10.0, 0xFF0000FF,
+                                    0.0,
+                                    0.0,
+                                    10.0,
+                                    10.0,
+                                    (0xFF0000FFu32).into(),
                                 ))],
                             }],
                         }],
                     },
-                    RenderNode::Primitive(DrawPrimitive::Rect(30.0, 0.0, 10.0, 10.0, 0x0000FFFF)),
+                    RenderNode::Primitive(DrawPrimitive::Rect(
+                        30.0,
+                        0.0,
+                        10.0,
+                        10.0,
+                        (0x0000FFFFu32).into(),
+                    )),
                 ],
             },
         );
@@ -12499,7 +12681,18 @@ mod tests {
         let pixels = render_single_command_to_pixels(
             48,
             48,
-            DrawPrimitive::Shadow(12.0, 12.0, 24.0, 24.0, 0.0, 0.0, 6.0, 2.0, 0.0, 0xC75A5AFF),
+            DrawPrimitive::Shadow(
+                12.0,
+                12.0,
+                24.0,
+                24.0,
+                0.0,
+                0.0,
+                6.0,
+                2.0,
+                0.0,
+                (0xC75A5AFFu32).into(),
+            ),
         );
 
         assert_eq!(max_alpha_in_region(&pixels, 48, 20, 20, 27, 27), 0);
@@ -12514,7 +12707,18 @@ mod tests {
         let pixels = render_single_command_to_pixels(
             48,
             48,
-            DrawPrimitive::Shadow(12.0, 12.0, 24.0, 24.0, 0.0, 0.0, 6.0, 2.0, 8.0, 0xC75A5AFF),
+            DrawPrimitive::Shadow(
+                12.0,
+                12.0,
+                24.0,
+                24.0,
+                0.0,
+                0.0,
+                6.0,
+                2.0,
+                8.0,
+                (0xC75A5AFFu32).into(),
+            ),
         );
 
         assert_eq!(max_alpha_in_region(&pixels, 48, 20, 20, 27, 27), 0);
@@ -12882,7 +13086,7 @@ mod tests {
                 8.0,
                 image_id.to_string(),
                 ImageFit::Cover,
-                Some(0xFFFFFFFF),
+                Some(Into::into(0xFFFFFFFFu32)),
             )],
         );
 
@@ -12919,7 +13123,7 @@ mod tests {
                 8.0,
                 image_id.to_string(),
                 ImageFit::Repeat,
-                Some(0x00FFFFFF),
+                Some(Into::into(0x00FFFFFFu32)),
             )],
         );
 
@@ -12956,7 +13160,7 @@ mod tests {
                 2.0,
                 image_id.to_string(),
                 ImageFit::Cover,
-                Some(0x112233FF),
+                Some(Into::into(0x112233FFu32)),
             )],
         );
 
@@ -12994,7 +13198,7 @@ mod tests {
                     4.0,
                     image_id.to_string(),
                     ImageFit::Cover,
-                    Some(0x336699FF),
+                    Some(Into::into(0x336699FFu32)),
                 ))],
             },
         );
@@ -13387,7 +13591,7 @@ mod tests {
                         },
                         corners: [radius, radius, radius, radius],
                         insets: EdgeInsets::uniform(border),
-                        color: 0xD6DCECDD,
+                        color: &crate::render_color::RenderColor::Solid(0xD6DCECDD),
                         style: BorderStyle::Solid,
                     },
                 );
@@ -13628,7 +13832,7 @@ mod tests {
                 1.0,
                 4.0,
                 1.0,
-                0x78C8A0FF,
+                (0x78C8A0FFu32).into(),
                 BorderStyle::Solid,
             ),
         );
@@ -13665,7 +13869,7 @@ mod tests {
                 3.0,
                 0.0,
                 0.0,
-                0x335577FF,
+                (0x335577FFu32).into(),
                 BorderStyle::Solid,
             ),
         );
@@ -13688,7 +13892,7 @@ mod tests {
                 24.0,
                 0.0,
                 4.0,
-                0x33669980,
+                (0x33669980u32).into(),
                 BorderStyle::Solid,
             ),
         );
@@ -13715,7 +13919,17 @@ mod tests {
                 180,
                 120,
                 DrawPrimitive::BorderEdges(
-                    20.0, 20.0, 100.0, 40.0, 8.0, 4.0, 1.0, 4.0, 1.0, 0x78C8A0FF, style,
+                    20.0,
+                    20.0,
+                    100.0,
+                    40.0,
+                    8.0,
+                    4.0,
+                    1.0,
+                    4.0,
+                    1.0,
+                    (0x78C8A0FFu32).into(),
+                    style,
                 ),
             );
 
@@ -13754,14 +13968,19 @@ mod tests {
                 alpha: 0.5,
                 children: vec![
                     RenderNode::Primitive(DrawPrimitive::RoundedRect(
-                        4.0, 4.0, 56.0, 28.0, 4.0, 0x000000ff,
+                        4.0,
+                        4.0,
+                        56.0,
+                        28.0,
+                        4.0,
+                        (0x000000ffu32).into(),
                     )),
                     RenderNode::Primitive(DrawPrimitive::TextWithFont(
                         10.0,
                         28.0,
                         "O".to_string(),
                         26.0,
-                        0xffffffff,
+                        (0xffffffffu32).into(),
                         "sans-serif".to_string(),
                         400,
                         false,
@@ -13820,14 +14039,21 @@ mod tests {
         let height = 32;
         let scene = RenderScene {
             nodes: vec![
-                RenderNode::Primitive(DrawPrimitive::Gradient(
+                RenderNode::Primitive(crate::render_scene::DrawPrimitive::Rect(
                     0.0,
                     0.0,
                     width as f32,
                     height as f32,
-                    0x202020ff,
-                    0xe0e0e0ff,
-                    0.0,
+                    crate::render_color::RenderColor::linear(
+                        [0x202020ff, 0xe0e0e0ff],
+                        0.0_f64,
+                        crate::tree::geometry::Rect {
+                            x: 0.0,
+                            y: 0.0,
+                            width: width as f32,
+                            height: height as f32,
+                        },
+                    ),
                 )),
                 RenderNode::Primitive(DrawPrimitive::Image(
                     8.0,
@@ -13871,21 +14097,28 @@ mod tests {
         let height = 36;
         let scene = RenderScene {
             nodes: vec![
-                RenderNode::Primitive(DrawPrimitive::Gradient(
+                RenderNode::Primitive(crate::render_scene::DrawPrimitive::Rect(
                     0.0,
                     0.0,
                     width as f32,
                     height as f32,
-                    0x202020ff,
-                    0xe0e0e0ff,
-                    0.0,
+                    crate::render_color::RenderColor::linear(
+                        [0x202020ff, 0xe0e0e0ff],
+                        0.0_f64,
+                        crate::tree::geometry::Rect {
+                            x: 0.0,
+                            y: 0.0,
+                            width: width as f32,
+                            height: height as f32,
+                        },
+                    ),
                 )),
                 RenderNode::Primitive(DrawPrimitive::TextWithFont(
                     10.0,
                     28.0,
                     "O".to_string(),
                     26.0,
-                    0x000000ff,
+                    (0x000000ffu32).into(),
                     "sans-serif".to_string(),
                     400,
                     false,
@@ -13926,8 +14159,166 @@ mod tests {
             "expected the background and O counter to remain ditherable"
         );
     }
+
+    #[test]
+    fn gradient_policy_recolors_every_stop_preserving_alpha() {
+        let colors = vec![0xff000000, 0x00ff0080, 0x0000ffff, 0xffffffff];
+        let primitive = crate::render_scene::DrawPrimitive::Rect(
+            1.0,
+            2.0,
+            30.0,
+            40.0,
+            crate::render_color::RenderColor::linear(
+                colors.clone(),
+                90.0_f64,
+                crate::tree::geometry::Rect {
+                    x: 1.0,
+                    y: 2.0,
+                    width: 30.0,
+                    height: 40.0,
+                },
+            ),
+        );
+        for white in [false, true] {
+            assert_eq!(
+                recolor_policy_primitive(&primitive, white),
+                crate::render_scene::DrawPrimitive::Rect(
+                    1.0,
+                    2.0,
+                    30.0,
+                    40.0,
+                    crate::render_color::RenderColor::linear(
+                        colors
+                            .iter()
+                            .map(|c| policy_color(*c, white))
+                            .collect::<Vec<_>>(),
+                        90.0_f64,
+                        crate::tree::geometry::Rect {
+                            x: 1.0,
+                            y: 2.0,
+                            width: 30.0,
+                            height: 40.0
+                        }
+                    )
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_native_gradients_do_not_reach_skia() {
+        for (colors, angle) in [
+            (vec![], 0.0),
+            (vec![0xff0000ff], 0.0),
+            (vec![0xff0000ff, 0x0000ffff], f32::NAN),
+        ] {
+            let pixels = render_scene_graph_to_pixels(
+                10,
+                10,
+                RenderScene {
+                    nodes: vec![RenderNode::Primitive(
+                        crate::render_scene::DrawPrimitive::Rect(
+                            0.0,
+                            0.0,
+                            10.0,
+                            10.0,
+                            crate::render_color::RenderColor::linear(
+                                colors,
+                                (angle) as f64,
+                                crate::tree::geometry::Rect {
+                                    x: 0.0,
+                                    y: 0.0,
+                                    width: 10.0,
+                                    height: 10.0,
+                                },
+                            ),
+                        ),
+                    )],
+                },
+            );
+            assert!(pixels.chunks_exact(4).all(|pixel| pixel[3] == 0));
+        }
+    }
+    #[test]
+    fn gradient_middle_stop_changes_cached_layer_pixels() {
+        let mut cached = SceneRenderer::new();
+        let mut direct = SceneRenderer::with_cache_config(RendererCacheConfig {
+            enabled: false,
+            ..RendererCacheConfig::default()
+        });
+        let scene = |middle, generation| RenderScene {
+            nodes: vec![RenderNode::PaintLayer(moving_paint_layer(
+                901,
+                generation,
+                GeometryRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 100.0,
+                    height: 50.0,
+                },
+                // Enough paint work to exercise payload admission rather than the
+                // cheap-single-primitive bypass. Opaque repetitions have identical pixels.
+                (0..8)
+                    .map(|_| {
+                        RenderNode::Primitive(crate::render_scene::DrawPrimitive::Rect(
+                            0.0,
+                            0.0,
+                            100.0,
+                            50.0,
+                            crate::render_color::RenderColor::linear(
+                                [0xff0000ff, middle, 0x0000ffff],
+                                0.0_f64,
+                                crate::tree::geometry::Rect {
+                                    x: 0.0,
+                                    y: 0.0,
+                                    width: 100.0,
+                                    height: 50.0,
+                                },
+                            ),
+                        ))
+                    })
+                    .collect(),
+            ))],
+        };
+        let samples: Vec<_> = [
+            (0x00ff00ff, 1),
+            (0x00ff00ff, 1),
+            (0xffffffff, 2),
+            (0xffffffff, 2),
+        ]
+        .into_iter()
+        .map(|(middle, generation)| {
+            let scene = scene(middle, generation);
+            let (pixels, timings) = render_scene_graph_to_pixels_and_timings_with_renderer(
+                &mut cached,
+                100,
+                50,
+                scene.clone(),
+            );
+            let (expected, _) =
+                render_scene_graph_to_pixels_and_timings_with_renderer(&mut direct, 100, 50, scene);
+            assert_eq!(pixels, expected);
+            (
+                pixels,
+                timings
+                    .renderer_cache
+                    .expect("cache diagnostics")
+                    .paint_layer,
+            )
+        })
+        .collect();
+        assert_eq!(samples[0].0, samples[1].0);
+        assert_ne!(samples[1].0, samples[2].0);
+        assert_eq!(samples[2].0, samples[3].0);
+        assert!(samples.iter().any(|(_, stats)| stats.stores > 0));
+        assert!(samples.iter().any(|(_, stats)| stats.hits > 0));
+    }
 }
 
 #[cfg(test)]
 #[path = "renderer_svg_cache_tests.rs"]
 mod svg_cache_tests;
+
+#[cfg(test)]
+#[path = "renderer_gradient_tests.rs"]
+mod gradient_tests;

@@ -290,6 +290,12 @@ defmodule Emerge.UI.Internal.Validation do
       key == :virtual_key ->
         skip_nil_or(value, fn -> {key, Event.normalize_virtual_key!(value)} end)
 
+      key == :svg_color and MapSet.member?(extra_public_attr_keys, key) ->
+        skip_nil_or(value, fn ->
+          validate_public_attr_value!(attrs_owner, key, value)
+          {key, value}
+        end)
+
       MapSet.member?(extra_public_attr_keys, key) ->
         skip_nil_or(value, fn -> {key, value} end)
 

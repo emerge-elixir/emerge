@@ -120,7 +120,7 @@ defmodule Emerge.UI do
 
   The rest of the API is organized by concern:
 
-  - `Emerge.UI.Color` for named and explicit colors
+  - `Emerge.UI.Color` for named colors, explicit colors, and background gradients
   - `Emerge.UI.Size` for width, height, and length helpers
   - `Emerge.UI.Space` for padding and spacing
   - `Emerge.UI.Scroll` for scroll-related attrs

@@ -4,9 +4,9 @@ defmodule EmergeSkia.TreeTest do
   alias Emerge.Engine.NodeId
   alias EmergeSkia.Native
 
-  # Helper to build EMRG header (version 7)
+  # Helper to build EMRG header (version 9)
   defp make_header(node_count) do
-    "EMRG" <> <<7, node_count::unsigned-32>>
+    "EMRG" <> <<9, node_count::unsigned-32>>
   end
 
   defp encode_node(id, type_tag, attrs, child_ids \\ [], nearby \\ []) do

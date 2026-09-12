@@ -4,7 +4,8 @@ defmodule Emerge.UI.Color do
 
   These helpers return the tuple formats accepted by `Emerge.UI` color
   attributes such as `Background.color/1`, `Border.color/1`, `Font.color/1`,
-  and `Svg.color/1`.
+  and `Svg.color/1`. Gradient values from `gradient/2` work in all color
+  attributes, including shadow colors.
 
   Tailwind palette values are derived from the official v4.2 OKLCH tokens and
   converted to stable sRGB byte tuples.
@@ -64,7 +65,11 @@ defmodule Emerge.UI.Color do
   @typedoc "Tuple accepted by `Emerge.UI` color attributes."
   @type rgb_tuple :: {:color_rgb, {channel(), channel(), channel()}}
   @type rgba_tuple :: {:color_rgba, {channel(), channel(), channel(), channel()}}
-  @type t :: rgb_tuple() | rgba_tuple()
+  @type solid :: rgb_tuple() | rgba_tuple()
+  @type solid_input :: atom() | solid()
+  @typedoc "An evenly spaced linear gradient with at least two solid stops."
+  @type gradient :: {:color_gradient, [solid_input()], number()}
+  @type t :: solid() | gradient()
 
   @default_shade 400
   @shades [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950]
@@ -443,9 +448,9 @@ defmodule Emerge.UI.Color do
       iex> Emerge.UI.Color.color(:black, 400, 0.5)
       {:color_rgba, {0, 0, 0, 128}}
   """
-  @spec color(color()) :: t()
-  @spec color(color(), shade()) :: t()
-  @spec color(color(), shade(), number()) :: t()
+  @spec color(color()) :: solid()
+  @spec color(color(), shade()) :: solid()
+  @spec color(color(), shade(), number()) :: solid()
   def color(name, shade \\ @default_shade, alpha \\ 1.0) do
     name = validate_name!(name)
     shade = validate_shade!(shade)
@@ -485,6 +490,101 @@ defmodule Emerge.UI.Color do
     {:color_rgba,
      {validate_channel!(r, :r, "color_rgba/4"), validate_channel!(g, :g, "color_rgba/4"),
       validate_channel!(b, :b, "color_rgba/4"), alpha_byte!(alpha, "color_rgba/4")}}
+  end
+
+  @doc """
+  Construct a linear gradient from at least two solid colors.
+
+  Stops are evenly spaced, in list order, and retain their alpha. `angle` is in
+  degrees: `0` points right and `90` points down. The gradient axis spans the
+  frame diagonal through its center; endpoints need not coincide with its edges.
+
+  Use the value anywhere a UI color is accepted: backgrounds, fonts, borders,
+  shadows and SVG tint. Nested gradients are not supported.
+
+  Backgrounds, borders and shadows use the element's border box as the gradient
+  reference. Text and SVGs use their content box. Paragraph/flow fragments share
+  the paragraph's content box, and multiline text shares one box across lines;
+  gradients do not restart at each glyph, word, border edge or SVG tile. Clips
+  crop coverage without changing this reference. Transforms move the gradient
+  with the element. SVG tint replaces source RGB while preserving source alpha.
+
+  Animated gradients require matching stop counts across keyframes. A solid
+  endpoint is interpolated as identical stops at the other endpoint's angle.
+
+  Named atoms keep the renderer's existing named-color meaning; for Tailwind
+  palette colors use `color/1`, `color/2`, or `color/3` instead of bare atoms.
+
+  ## Examples
+
+      iex> Emerge.UI.Color.gradient([:black, :white])
+      {:color_gradient, [:black, :white], 0}
+
+      iex> Emerge.UI.Color.gradient([:red, :green, :blue], 90)
+      {:color_gradient, [:red, :green, :blue], 90}
+  """
+  @spec gradient([solid_input()], number()) :: gradient()
+  def gradient(colors, angle \\ 0) do
+    value = {:color_gradient, colors, angle}
+    validate_gradient!(value)
+    value
+  end
+
+  @doc false
+  @spec validate_gradient!(term()) :: non_neg_integer()
+  def validate_gradient!({:color_gradient, colors, angle}) do
+    count = validate_gradient_stops!(colors, 0)
+
+    if count < 2 or count > 0xFFFFFFFF do
+      raise ArgumentError, "gradient expects between 2 and 4294967295 solid colors"
+    end
+
+    validate_gradient_angle!(angle)
+    count
+  end
+
+  def validate_gradient!(value) do
+    raise ArgumentError, "invalid gradient color: #{inspect(value)}"
+  end
+
+  defp validate_gradient_stops!([], count), do: count
+
+  defp validate_gradient_stops!([color | rest], count) when is_atom(color),
+    do: validate_gradient_stops!(rest, count + 1)
+
+  defp validate_gradient_stops!([{:color_rgb, {r, g, b}} | rest], count) do
+    validate_channel!(r, :r, "gradient/2")
+    validate_channel!(g, :g, "gradient/2")
+    validate_channel!(b, :b, "gradient/2")
+    validate_gradient_stops!(rest, count + 1)
+  end
+
+  defp validate_gradient_stops!([{:color_rgba, {r, g, b, a}} | rest], count) do
+    validate_channel!(r, :r, "gradient/2")
+    validate_channel!(g, :g, "gradient/2")
+    validate_channel!(b, :b, "gradient/2")
+    validate_channel!(a, :a, "gradient/2")
+    validate_gradient_stops!(rest, count + 1)
+  end
+
+  defp validate_gradient_stops!(other, _count) do
+    raise ArgumentError,
+          "gradient expects a proper list of solid colors (no nested gradients), got: #{inspect(other)}"
+  end
+
+  defp validate_gradient_angle!(angle) when is_number(angle) do
+    # BEAM floats are finite, but arbitrary-size integers may not fit f64.
+    _ = angle * 1.0
+    :ok
+  rescue
+    ArithmeticError -> invalid_gradient_angle!(angle)
+  end
+
+  defp validate_gradient_angle!(angle), do: invalid_gradient_angle!(angle)
+
+  defp invalid_gradient_angle!(angle) do
+    raise ArgumentError,
+          "gradient expects angle to be a finite number of degrees representable as f64, got: #{inspect(angle)}"
   end
 
   defp validate_name!(name) when is_atom(name) and name in @all_color_names, do: name
