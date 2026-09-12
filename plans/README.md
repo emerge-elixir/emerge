@@ -43,11 +43,11 @@ DRM/Vulkan target proof, and Vulkan-only dependency cleanup.
 
 This is the sole plan for general backend/Vulkan/headless PRIME qualification.
 
-### `active-layout-resolved-animation-lengths.md`
+### `active-shared-animation-core.md`
 
-Audited full-matrix layout animation and `Animation.change/3` on one shared core.
-Uses sparse patch-triggered transitions and lazy endpoint resolution, avoiding
-redundant history/probes; records correctness risks and semantic alternatives.
+Unified plan for full-matrix layout lengths and `Animation.change/3`: one sampler,
+sparse update effects, lazy endpoints and staged geometry evaluation/commit isolation.
+Supersedes the separate feature plan and architecture investigation.
 
 ### `active-low-resource-animation-smoothness.md`
 
@@ -70,12 +70,6 @@ UI consumer, SVG alpha/validation, animation and EMRG v9 migration are complete.
 Tracks the independently reproduced renderer benchmark qualification issues.
 
 ## Durable references
-
-### `animation-architecture-refactor-investigation.md`
-
-Separate investigation of frame-input/update-effect seams and geometry evaluation
-versus live-state commit as a simpler animation foundation. Compares refactor
-scope, migration risks and performance hypotheses without replacing the active plan.
 
 ### `borders-cache-benchmark-investigation.md`
 
