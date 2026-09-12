@@ -1,9 +1,48 @@
 # Shared animation core: layout lengths and change transitions
 
-Status: second design iteration; selected approach, not implemented.
+Status: implementation started; blocked at the native endpoint-parity gate.
+Reference tests are implemented; the resolver and `Animation.change/3` are not.
 Branch: `plan/shared-animation-core`. Code baseline: `641d355`.
 Predecessors are preserved in `e38f0b0`; the first consolidation is `5475831`.
 This remains the single implementation plan.
+
+## Implementation gate: resolved boxes lose allocation information
+
+Native reference tests in
+[`animation_endpoints.rs`](../native/emerge_skia/src/tree/layout/tests/animation_endpoints.rs)
+reproduced a blocking counterexample, not just an arithmetic hypothesis:
+
+| First child's length in a 600px row | First box | Equal-fill sibling |
+| --- | --- | --- |
+| `fill` | 300px | 300px |
+| `px(300)` | 300px | 300px |
+| `min(px(50), fill_weighted(1))` | 50px | 300px |
+| `px(50)` | 50px | 550px |
+| `min(px(50), fill_weighted(3))` | 50px | 150px |
+
+The planner reserves weighted space before applying a child's bound. Equal visible
+box sizes therefore do not imply equivalent allocation. A 40px → bounded-fill
+transition lowered to pixels approaches a 50px box beside a 550px sibling; restoring
+the symbolic destination jumps the sibling to 300px. This is also reproduced for
+columns/heights, global scales 0.5/1/2 and a recursively bounded expression.
+Compatible bounded-weight animation already changes the sibling through weight
+interpolation while the first box remains 50px; preserve that behavior too.
+
+**Stop condition triggered:** a box-size-only numeric overlay cannot satisfy the
+full-matrix/terminal-handoff contract. More endpoint queries, cache invalidation or
+query/commit isolation cannot recover information discarded by that overlay.
+No public validation was relaxed and no partial `change` API was exposed.
+
+The private workspace remains a viable isolation approach, but the sampled-length
+representation must be revised before continuing. At minimum it must retain the
+parent's allocation reservation separately from visible size, including source
+capture on interruption. Prove intrinsic sizing, wrapping and implicit parent fill
+discovery too; two numbers are not yet established as sufficient. Do not silently
+change ordinary bounded-fill allocation, existing weighted interpolation, or narrow
+the length matrix to bypass this gate.
+
+The design below is the pre-gate proposal, **not ready for production implementation**
+until that representation is specified and its native parity tests pass.
 
 ## Decision: cached endpoint projections, not a layout-engine migration
 
@@ -347,5 +386,13 @@ See also [layout/cache flow](../guides/internals/layout-refresh-render-flow.md),
 [layout caching roadmap](layout-caching-roadmap.md) and
 [platform orchestration](platform-runtime-architecture-differences.md).
 
-This iteration inspected code and ran a standalone rational-arithmetic row model.
-No implementation, Rust/Elixir tests or runtime benchmarks were performed.
+The planning iteration used a standalone rational-arithmetic row model. The first
+implementation step adds six native layout/sampler characterization tests for
+endpoint substitution and records the blocker above. Runtime code and the public
+API remain unchanged. Validation in `/workspace/emerge-animation` passed:
+
+- `cargo test`: 1059 unit tests and 14 integration tests.
+- `EMERGE_SKIA_BUILD=1 mix test`: 483 tests/doctests passed, 8 excluded.
+- `cargo clippy --tests -- -D warnings`, `cargo fmt -- --check`, `git diff --check`.
+
+No performance benchmark or constrained-device qualification has been run.

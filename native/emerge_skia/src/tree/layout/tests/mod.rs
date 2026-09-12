@@ -1,3 +1,4 @@
+mod animation_endpoints;
 mod border_box;
 mod cache;
 mod common;

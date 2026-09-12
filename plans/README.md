@@ -45,9 +45,9 @@ This is the sole plan for general backend/Vulkan/headless PRIME qualification.
 
 ### `active-shared-animation-core.md`
 
-Full-matrix layout lengths and `Animation.change/3` on one sampler and cached
-endpoint resolver. Chooses a reusable private layout tree over a broad geometry
-commit refactor; includes alternatives, concurrency rules and work-budget gates.
+Full-matrix layout lengths and `Animation.change/3` on one shared core. Native
+reference tests currently block pixel-only endpoint lowering: bounded fill reserves
+space that its visible box does not describe. Records the required representation fix.
 
 ### `active-low-resource-animation-smoothness.md`
 
