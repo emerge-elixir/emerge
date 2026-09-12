@@ -45,9 +45,9 @@ This is the sole plan for general backend/Vulkan/headless PRIME qualification.
 
 ### `active-shared-animation-core.md`
 
-Full-matrix layout lengths and `Animation.change/3` on one shared core. Native
-reference tests currently block pixel-only endpoint lowering: bounded fill reserves
-space that its visible box does not describe. Records the required representation fix.
+Full-matrix layout lengths and `Animation.change/3` on one shared core. Plans an
+allocation-aware footprint repair for the native parity gate: separate visible size,
+budget charge, intrinsic/basis data and layout policy, with staged proof before API work.
 
 ### `active-low-resource-animation-smoothness.md`
 
