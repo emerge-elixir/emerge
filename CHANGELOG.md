@@ -2,7 +2,17 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Rasterized SVG size/fit variants now share the configured asset pixel-cache budget and LRU with raster images, instead of separate fixed SVG limits.
+- SVG font discovery and bounded parsed trees are reused across scenes and sizes. Added `assets.cache.svg_tree_max_entries` and `svg_tree_max_bytes`, plus parsed/pixel cache diagnostics.
+- Updated the macOS host protocol to version 11 for parsed SVG cache configuration.
+
 ### Fixed
+
+- Centered responsive images now align with matching `in_front` overlays: content-sized `el` hosts finalize both growth and shrinkage before alignment, and columns center using resolved child heights.
+
+- Images and SVGs with one fill-based dimension now grow or shrink the automatic opposite dimension proportionally, honoring explicit limits on either axis. Content-width parents and row allocation account for height-driven image widths.
 
 - SVG and raster images now preserve their intrinsic aspect ratio when one dimension is pixel-sized and the other is omitted or content-sized (#74). Asset dimension changes also invalidate retained image and ancestor measurements.
 

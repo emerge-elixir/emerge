@@ -21,6 +21,15 @@ asset memory use.
 - Enable `renderer_stats_log` in the name-badge picture application; keep the
   library default disabled.
 
+## SVG cache hardware qualification
+
+Shared raster/SVG pixels and renderer-local font/parsed-tree caching are implemented.
+Use `priv/test_assets/cache_complex.svg` at 24px, 68px, and 200px across scene
+switches on Trellis. Check work counters, first-frame output, shared pixel totals,
+parsed-tree/font estimates, and RSS/peak memory. Calibrate the initial parsed-tree
+defaults (64 entries / 16 MiB estimated storage) against the device budget. Linux
+native/headless regressions pass; device memory calibration remains outstanding.
+
 ## Acceptance
 
 - Multiple photographs render correctly in BW1 and Gray2.

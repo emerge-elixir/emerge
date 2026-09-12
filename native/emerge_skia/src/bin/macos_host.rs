@@ -469,6 +469,8 @@ mod app {
         runtime_extensions: Vec<String>,
         cache_max_entries: u64,
         cache_max_bytes: u64,
+        svg_tree_max_entries: u64,
+        svg_tree_max_bytes: u64,
         decode_at_size: bool,
         fonts: Vec<HostFontSpec>,
     }
@@ -901,6 +903,8 @@ mod app {
             runtime_extensions: asset_config.runtime_extensions.clone(),
             cache_max_entries: asset_config.cache_max_entries,
             cache_max_bytes: asset_config.cache_max_bytes,
+            svg_tree_max_entries: asset_config.svg_tree_max_entries,
+            svg_tree_max_bytes: asset_config.svg_tree_max_bytes,
             decode_at_size: asset_config.decode_at_size,
         });
         load_host_fonts(asset_runtime, &asset_config.fonts)
@@ -3810,6 +3814,8 @@ mod app {
                 runtime_extensions: asset_config.runtime_extensions,
                 cache_max_entries: asset_config.cache_max_entries,
                 cache_max_bytes: asset_config.cache_max_bytes,
+                svg_tree_max_entries: asset_config.svg_tree_max_entries,
+                svg_tree_max_bytes: asset_config.svg_tree_max_bytes,
                 decode_at_size: asset_config.decode_at_size,
                 fonts,
             },
@@ -3881,6 +3887,8 @@ mod app {
             runtime_extensions: decode_string_list(payload, cursor)?,
             cache_max_entries: decode_u64(payload, cursor)?,
             cache_max_bytes: decode_u64(payload, cursor)?,
+            svg_tree_max_entries: decode_u64(payload, cursor)?,
+            svg_tree_max_bytes: decode_u64(payload, cursor)?,
             decode_at_size: decode_u8(payload, cursor)? != 0,
         })
     }

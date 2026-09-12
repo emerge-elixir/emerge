@@ -23,6 +23,8 @@ defmodule EmergeSkia.Assets do
           runtime_extensions: [String.t()],
           cache_max_entries: non_neg_integer(),
           cache_max_bytes: non_neg_integer(),
+          svg_tree_max_entries: non_neg_integer(),
+          svg_tree_max_bytes: non_neg_integer(),
           decode_at_size: boolean(),
           fonts: [font()]
         }
@@ -90,6 +92,16 @@ defmodule EmergeSkia.Assets do
       |> Keyword.get(:max_bytes, @default_cache_max_bytes)
       |> Options.normalize_non_negative_integer!("assets.cache.max_bytes")
 
+    svg_tree_max_entries =
+      cache_opts
+      |> Keyword.get(:svg_tree_max_entries, 64)
+      |> Options.normalize_non_negative_integer!("assets.cache.svg_tree_max_entries")
+
+    svg_tree_max_bytes =
+      cache_opts
+      |> Keyword.get(:svg_tree_max_bytes, 16 * 1024 * 1024)
+      |> Options.normalize_non_negative_integer!("assets.cache.svg_tree_max_bytes")
+
     decode_at_size =
       assets_opts
       |> Keyword.get(:decode_at_size, Keyword.get(defaults, :decode_at_size, false))
@@ -120,6 +132,8 @@ defmodule EmergeSkia.Assets do
       runtime_extensions: runtime_extensions,
       cache_max_entries: cache_max_entries,
       cache_max_bytes: cache_max_bytes,
+      svg_tree_max_entries: svg_tree_max_entries,
+      svg_tree_max_bytes: svg_tree_max_bytes,
       decode_at_size: decode_at_size,
       fonts: fonts
     }
@@ -145,6 +159,8 @@ defmodule EmergeSkia.Assets do
       asset_extensions: asset_config.runtime_extensions,
       asset_cache_max_entries: asset_config.cache_max_entries,
       asset_cache_max_bytes: asset_config.cache_max_bytes,
+      asset_svg_tree_max_entries: asset_config.svg_tree_max_entries,
+      asset_svg_tree_max_bytes: asset_config.svg_tree_max_bytes,
       asset_decode_at_size: asset_config.decode_at_size
     }
   end

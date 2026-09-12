@@ -13,10 +13,14 @@ use sha2::{Digest, Sha256};
 use skia_safe::{Data, codec::Codec};
 
 use crate::actors::TreeMsg;
-use crate::renderer::insert_vector_asset;
-use crate::renderer::{configure_asset_cache, insert_raster_asset_with_policy};
+use crate::renderer::configure_asset_cache;
+
 use crate::tree::attrs::{Background, ImageSource};
 use crate::tree::element::ElementTree;
+
+mod svg_cache;
+pub use svg_cache::SvgCacheStats;
+use svg_cache::{SvgTreeCache, estimated_font_bytes, estimated_tree_bytes};
 
 #[derive(Clone, Debug)]
 pub struct AssetConfig {
@@ -28,6 +32,8 @@ pub struct AssetConfig {
     pub runtime_extensions: Vec<String>,
     pub cache_max_entries: u64,
     pub cache_max_bytes: u64,
+    pub svg_tree_max_entries: u64,
+    pub svg_tree_max_bytes: u64,
     pub decode_at_size: bool,
 }
 
@@ -50,6 +56,8 @@ impl Default for AssetConfig {
             ],
             cache_max_entries: 256,
             cache_max_bytes: 256 * 1024 * 1024,
+            svg_tree_max_entries: 64,
+            svg_tree_max_bytes: 16 * 1024 * 1024,
             decode_at_size: false,
         }
     }
@@ -69,6 +77,8 @@ pub(crate) struct AssetRecord {
     pub height: u32,
     pub encoded_bytes: u64,
     pub generation: u64,
+    pub render_revision: Arc<AtomicU64>,
+    pub epoch: u64,
     pub decode_at_size: bool,
     pub kind: AssetRecordKind,
 }
@@ -94,6 +104,11 @@ struct AssetState {
     records: HashMap<String, Arc<AssetRecord>>,
     pending_count: usize,
     status_generation: u64,
+    epoch: u64,
+    request_clock: u64,
+    requests: HashMap<ImageSource, u64>,
+    source_links: HashMap<ImageSource, (ResolvedAsset, u64)>,
+    svg_cache: SvgTreeCache,
 }
 
 impl AssetState {
@@ -102,8 +117,9 @@ impl AssetState {
             self.status_generation = self.status_generation.wrapping_add(1);
         }
         self.sources.clear();
-        #[cfg(not(test))]
         self.records.clear();
+        self.requests.clear();
+        self.source_links.clear();
         self.pending_count = 0;
     }
 
@@ -112,9 +128,41 @@ impl AssetState {
             return;
         }
 
-        self.sources.insert(source, status);
+        if let AssetStatus::Ready(asset) = &status {
+            self.request_clock = self.request_clock.wrapping_add(1);
+            self.source_links
+                .insert(source.clone(), (asset.clone(), self.request_clock));
+            let limit = self
+                .config
+                .cache_max_entries
+                .saturating_add(self.config.svg_tree_max_entries)
+                .max(1);
+            while self.source_links.len() as u64 > limit {
+                let Some(oldest) = self
+                    .source_links
+                    .iter()
+                    .min_by_key(|(_, (_, used))| used)
+                    .map(|(source, _)| source.clone())
+                else {
+                    break;
+                };
+                self.source_links.remove(&oldest);
+            }
+        }
+        if let Some(AssetStatus::Ready(previous)) = self.sources.insert(source, status)
+            && !self.sources.values().any(
+                |status| matches!(status, AssetStatus::Ready(asset) if asset.id == previous.id),
+            )
+        {
+            self.records.remove(&previous.id);
+        }
         self.status_generation = self.status_generation.wrapping_add(1);
     }
+}
+
+struct SvgFontEnvironment {
+    epoch: u64,
+    fonts: Arc<usvg::fontdb::Database>,
 }
 
 #[derive(Clone)]
@@ -123,6 +171,9 @@ pub struct AssetContext {
     tx: Arc<Mutex<Option<Sender<AssetMsg>>>>,
     renderer: Arc<crate::renderer::RendererAssetContext>,
     generation: Arc<AtomicU64>,
+    // Serializes source parsing, not rendering or source-status lookups.
+    svg_loader: Arc<Mutex<()>>,
+    svg_fonts: Arc<Mutex<Option<SvgFontEnvironment>>>,
 }
 
 impl Default for AssetContext {
@@ -132,6 +183,8 @@ impl Default for AssetContext {
             tx: Arc::new(Mutex::new(None)),
             renderer: Arc::new(crate::renderer::RendererAssetContext::default()),
             generation: Arc::new(AtomicU64::new(1)),
+            svg_loader: Arc::new(Mutex::new(())),
+            svg_fonts: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -187,10 +240,7 @@ impl AssetRuntime {
             while let Ok(msg) = rx.recv() {
                 match msg {
                     AssetMsg::Stop => break,
-                    AssetMsg::Ensure(source) => worker.handle_ensure(source),
-                    AssetMsg::HydrateCached(source, cached_id) => {
-                        worker.handle_hydrate_cached(source, &cached_id);
-                    }
+                    AssetMsg::Load(request) => worker.handle_load(request),
                 }
             }
         });
@@ -205,6 +255,11 @@ impl AssetRuntime {
         let _context_guard = self.enter();
         if let Ok(mut state) = self.context.state.lock() {
             state.clear_sources();
+            state.epoch = state.epoch.wrapping_add(1);
+            state.svg_cache = SvgTreeCache::default();
+        }
+        if let Ok(mut fonts) = self.context.svg_fonts.lock() {
+            *fonts = None;
         }
         crate::renderer::clear_renderer_asset_context();
     }
@@ -283,9 +338,16 @@ pub(crate) fn current_renderer_context() -> Arc<crate::renderer::RendererAssetCo
 }
 
 enum AssetMsg {
-    Ensure(ImageSource),
-    HydrateCached(ImageSource, String),
+    Load(LoadRequest),
     Stop,
+}
+
+struct LoadRequest {
+    source: ImageSource,
+    epoch: u64,
+    token: u64,
+    config: AssetConfig,
+    require_record: bool,
 }
 
 struct Worker {
@@ -295,92 +357,90 @@ struct Worker {
 }
 
 pub fn configure(config: AssetConfig) {
-    configure_asset_cache(config.cache_max_entries, config.cache_max_bytes);
-
     let context = current_context();
+    let config = normalize_config(config);
     if let Ok(mut state) = context.state.lock() {
-        state.config = normalize_config(config);
         state.clear_sources();
+        state.epoch = state.epoch.wrapping_add(1);
+        state.svg_cache = SvgTreeCache::default();
+        state
+            .svg_cache
+            .configure(config.svg_tree_max_entries, config.svg_tree_max_bytes);
+        state.svg_cache.stats.font_environment_generation = state.epoch;
+        state.config = config.clone();
         state.status_generation = state.status_generation.wrapping_add(1);
     }
+    crate::renderer::clear_cached_svg_pixels();
+    configure_asset_cache(config.cache_max_entries, config.cache_max_bytes);
 }
 
 pub fn ensure_tree_sources(tree: &ElementTree) {
     let sources = collect_tree_sources(tree);
     let active_sources = sources.iter().cloned().collect::<HashSet<_>>();
     let context = current_context();
-
     if let Ok(mut state) = context.state.lock() {
-        let removed_ids = state
+        let removed_ids: HashSet<_> = state
             .sources
             .iter()
             .filter(|(source, _)| !active_sources.contains(*source))
             .filter_map(|(_, status)| match status {
                 AssetStatus::Ready(asset) => Some(asset.id.clone()),
-                AssetStatus::Pending | AssetStatus::Failed => None,
+                _ => None,
             })
-            .collect::<HashSet<_>>();
-
+            .collect();
+        let removed = state.sources.len();
         state
             .sources
             .retain(|source, _| active_sources.contains(source));
+        state
+            .requests
+            .retain(|source, _| active_sources.contains(source));
+        if removed != state.sources.len() {
+            state.status_generation = state.status_generation.wrapping_add(1);
+        }
+        let retained_ids: HashSet<_> = state
+            .sources
+            .values()
+            .filter_map(|status| match status {
+                AssetStatus::Ready(asset) => Some(asset.id.clone()),
+                _ => None,
+            })
+            .collect();
+        for id in removed_ids.difference(&retained_ids) {
+            state.records.remove(id);
+        }
         state.pending_count = state
             .sources
             .values()
             .filter(|status| matches!(status, AssetStatus::Pending))
             .count();
-
-        #[cfg(not(test))]
-        {
-            let retained_ids = state
-                .sources
-                .values()
-                .filter_map(|status| match status {
-                    AssetStatus::Ready(asset) => Some(asset.id.clone()),
-                    AssetStatus::Pending | AssetStatus::Failed => None,
-                })
-                .collect::<HashSet<_>>();
-            removed_ids
-                .iter()
-                .filter(|id| !retained_ids.contains(*id))
-                .for_each(|id| {
-                    state.records.remove(id);
-                });
-        }
-        #[cfg(test)]
-        let _ = removed_ids;
     }
-
     sources.iter().for_each(ensure_source);
 }
 
 pub fn snapshot_tree_sources(tree: &ElementTree) {
-    let sources = collect_tree_sources(tree);
     let context = current_context();
-    let worker_running = context.tx.lock().is_ok_and(|tx| tx.is_some());
-
-    if worker_running {
-        sources.iter().for_each(ensure_source);
-        return;
-    }
-
-    if let Ok(mut state) = context.state.lock() {
-        state.pending_count = 0;
-        sources.iter().for_each(|source| {
-            state.set_source_status(source.clone(), snapshot_status_for_source(source))
-        });
+    if context.tx.lock().is_ok_and(|tx| tx.is_some()) {
+        collect_tree_sources(tree).iter().for_each(ensure_source);
+    } else {
+        snapshot_tree_sources_for_offscreen(tree);
     }
 }
 
 pub fn snapshot_tree_sources_for_offscreen(tree: &ElementTree) {
-    let sources = collect_tree_sources(tree);
-    let context = current_context();
-
-    if let Ok(mut state) = context.state.lock() {
+    // Metadata lookup may acquire asset state; resolve before taking that lock.
+    let statuses: Vec<_> = collect_tree_sources(tree)
+        .into_iter()
+        .map(|source| {
+            let status = snapshot_status_for_source(&source);
+            (source, status)
+        })
+        .collect();
+    if let Ok(mut state) = current_context().state.lock() {
         state.pending_count = 0;
-        sources.iter().for_each(|source| {
-            state.set_source_status(source.clone(), snapshot_status_for_source(source))
-        });
+        for (source, status) in statuses {
+            state.set_source_status(source, status);
+        }
     }
 }
 
@@ -393,22 +453,27 @@ pub fn resolve_tree_sources_sync(
     let context = current_context();
     let state = Arc::clone(&context.state);
 
-    let config = state
-        .lock()
-        .map_err(|_| "failed to lock asset state".to_string())?
-        .config
-        .clone();
+    let (config, epoch) = {
+        let state = state
+            .lock()
+            .map_err(|_| "failed to lock asset state".to_string())?;
+        (state.config.clone(), state.epoch)
+    };
 
     let deadline = timeout.map(|duration| Instant::now() + duration);
 
     for source in sources {
         ensure_deadline(deadline)?;
-        let status = blocking_status_for_source(&source, &config);
+        let status = load_source_in_epoch(&source, &config, epoch, true)
+            .map_or(AssetStatus::Failed, AssetStatus::Ready);
         ensure_deadline(deadline)?;
 
         let mut state = state
             .lock()
             .map_err(|_| "failed to lock asset state".to_string())?;
+        if state.epoch != epoch {
+            return Err("asset configuration changed during load".into());
+        }
         state.set_source_status(source, status);
         state.pending_count = 0;
     }
@@ -419,93 +484,200 @@ pub fn resolve_tree_sources_sync(
 pub fn ensure_source(source: &ImageSource) {
     let context = current_context();
     if let ImageSource::Id(id) = source {
-        let dimensions = asset_dimensions(id);
+        let dimensions = asset_dimensions(id)
+            .or_else(|| crate::renderer::retained_asset_metadata(id).map(|m| (m.width, m.height)));
         if let Ok(mut state) = context.state.lock() {
-            match dimensions {
-                Some((width, height)) => {
-                    if matches!(state.sources.get(source), Some(AssetStatus::Pending))
-                        && state.pending_count > 0
-                    {
-                        state.pending_count -= 1;
-                    }
-                    state.set_source_status(
-                        source.clone(),
-                        AssetStatus::Ready(ResolvedAsset {
-                            id: id.clone(),
-                            width,
-                            height,
-                        }),
-                    );
+            if let Some((width, height)) = dimensions {
+                if matches!(state.sources.get(source), Some(AssetStatus::Pending)) {
+                    state.pending_count = state.pending_count.saturating_sub(1);
                 }
-                None if !state.sources.contains_key(source) => {
-                    state.set_source_status(source.clone(), AssetStatus::Pending);
-                    state.pending_count = state.pending_count.saturating_add(1);
-                }
-                None => {}
+                state.set_source_status(
+                    source.clone(),
+                    AssetStatus::Ready(ResolvedAsset {
+                        id: id.clone(),
+                        width,
+                        height,
+                    }),
+                );
+            } else if !state.sources.contains_key(source) {
+                state.set_source_status(source.clone(), AssetStatus::Pending);
+                state.pending_count += 1;
             }
         }
         return;
     }
-
-    let mut queued_msg = None;
-
-    if let Ok(mut state) = context.state.lock() {
-        match state.sources.get(source) {
-            Some(AssetStatus::Pending)
-            | Some(AssetStatus::Ready(_))
-            | Some(AssetStatus::Failed) => {}
-            None => {
-                if let Some(asset) = resolved_asset_from_raster_cache(source, &state.config) {
-                    let cached_id = asset.id.clone();
-                    state.set_source_status(source.clone(), AssetStatus::Ready(asset));
-                    queued_msg = Some(AssetMsg::HydrateCached(source.clone(), cached_id));
-                } else {
-                    state.set_source_status(source.clone(), AssetStatus::Pending);
-                    state.pending_count = state.pending_count.saturating_add(1);
-                    queued_msg = Some(AssetMsg::Ensure(source.clone()));
-                }
-            }
+    let (config, epoch, linked) = {
+        let Ok(state) = context.state.lock() else {
+            return;
+        };
+        if state.sources.contains_key(source) {
+            return;
         }
-    }
-
-    let Some(msg) = queued_msg else {
-        return;
+        (
+            state.config.clone(),
+            state.epoch,
+            state
+                .source_links
+                .get(source)
+                .map(|(asset, _)| asset.clone()),
+        )
     };
-
-    let tx = context.tx.lock().ok().and_then(|tx| tx.clone());
-    if let Some(tx) = tx {
-        match tx.try_send(msg) {
-            Ok(()) => {}
-            Err(TrySendError::Full(msg)) => {
-                let _ = tx.send(msg);
-            }
-            Err(TrySendError::Disconnected(AssetMsg::Ensure(_))) => {
-                if let Ok(mut state) = context.state.lock()
-                    && matches!(state.sources.get(source), Some(AssetStatus::Pending))
-                {
-                    if state.pending_count > 0 {
-                        state.pending_count -= 1;
+    // Validate the requested path under the current policy, even on cache hits.
+    let cached = resolved_source_path(source, &config).ok().and_then(|path| {
+        linked
+            .and_then(|asset| {
+                asset_dimensions(&asset.id)
+                    .map(|(width, height)| ResolvedAsset {
+                        width,
+                        height,
+                        ..asset.clone()
+                    })
+                    .or_else(|| {
+                        crate::renderer::retained_asset_metadata(&asset.id).map(|m| ResolvedAsset {
+                            id: m.id,
+                            width: m.width,
+                            height: m.height,
+                        })
+                    })
+            })
+            .or_else(|| {
+                context
+                    .state
+                    .lock()
+                    .ok()?
+                    .svg_cache
+                    .get_for_source(&path.display().to_string())
+                    .map(|record| ResolvedAsset {
+                        id: record.id.clone(),
+                        width: record.width,
+                        height: record.height,
+                    })
+            })
+            .or_else(|| {
+                crate::renderer::cached_asset_for_source(&path.display().to_string()).map(|m| {
+                    ResolvedAsset {
+                        id: m.id,
+                        width: m.width,
+                        height: m.height,
                     }
-                    state.set_source_status(source.clone(), AssetStatus::Failed);
-                }
-            }
-            Err(TrySendError::Disconnected(AssetMsg::HydrateCached(_, _) | AssetMsg::Stop)) => {}
+                })
+            })
+    });
+    let request = {
+        let Ok(mut state) = context.state.lock() else {
+            return;
+        };
+        if state.epoch != epoch || state.sources.contains_key(source) {
+            return;
         }
+        let require_record = cached.is_none();
+        state.set_source_status(
+            source.clone(),
+            cached.map_or(AssetStatus::Pending, AssetStatus::Ready),
+        );
+        if require_record {
+            state.pending_count += 1;
+        }
+        new_load_request(&mut state, source.clone(), require_record)
+    };
+    send_load_request(&context, request);
+}
+
+fn new_load_request(
+    state: &mut AssetState,
+    source: ImageSource,
+    require_record: bool,
+) -> LoadRequest {
+    state.request_clock = state.request_clock.wrapping_add(1);
+    let token = state.request_clock;
+    state.requests.insert(source.clone(), token);
+    LoadRequest {
+        source,
+        token,
+        require_record,
+        epoch: state.epoch,
+        config: state.config.clone(),
     }
 }
 
-fn resolved_asset_from_raster_cache(
-    source: &ImageSource,
-    config: &AssetConfig,
-) -> Option<ResolvedAsset> {
-    let path = match source {
-        ImageSource::Logical(logical) => resolve_logical_path(logical, config).ok()?,
-        ImageSource::RuntimePath(path) => resolve_runtime_path(path, config).ok()?,
-        ImageSource::Id(_) => return None,
+fn send_load_request(context: &AssetContext, request: LoadRequest) {
+    let tx = context.tx.lock().ok().and_then(|tx| tx.clone());
+    if let Some(tx) = tx {
+        // Asset I/O remains on the worker. Status/cache locks are not held here.
+        if let Err(error) = tx.send(AssetMsg::Load(request))
+            && let AssetMsg::Load(request) = error.0
+            && let Ok(mut state) = context.state.lock()
+            && state.requests.get(&request.source) == Some(&request.token)
+        {
+            state.requests.remove(&request.source);
+            state.pending_count = state.pending_count.saturating_sub(usize::from(matches!(
+                state.sources.get(&request.source),
+                Some(AssetStatus::Pending)
+            )));
+            state.set_source_status(request.source, AssetStatus::Failed);
+        }
+    } else if let Ok(mut state) = context.state.lock() {
+        state.requests.remove(&request.source);
+    }
+}
+
+/// A retained pixel-only source needs parsing only if a requested variant misses.
+pub(crate) fn request_asset_hydration(id: &str) {
+    let context = current_context();
+    let request = {
+        let Ok(mut state) = context.state.lock() else {
+            return;
+        };
+        let source = state.sources.iter().find_map(|(source, status)| {
+            matches!(status, AssetStatus::Ready(asset) if asset.id == id).then(|| source.clone())
+        });
+        let Some(source) = source else {
+            return;
+        };
+        if state.requests.contains_key(&source) {
+            return;
+        }
+        new_load_request(&mut state, source, true)
     };
-    let (id, width, height) =
-        crate::renderer::cached_raster_asset_for_source(&path.display().to_string())?;
-    Some(ResolvedAsset { id, width, height })
+    crate::renderer::invalidate_asset_render_revision(id);
+    send_load_request(&context, request);
+}
+
+fn resolved_source_path(source: &ImageSource, config: &AssetConfig) -> Result<PathBuf, String> {
+    match source {
+        ImageSource::Logical(path) => resolve_logical_path(path, config),
+        ImageSource::RuntimePath(path) => resolve_runtime_path(path, config),
+        ImageSource::Id(_) => Err("preloaded asset has no path".into()),
+    }
+}
+
+pub(crate) fn current_epoch() -> u64 {
+    current_context()
+        .state
+        .lock()
+        .map(|state| state.epoch)
+        .unwrap_or(0)
+}
+
+pub fn svg_cache_stats() -> SvgCacheStats {
+    current_context()
+        .state
+        .lock()
+        .map(|state| state.svg_cache.stats.clone())
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+pub(crate) fn reset_svg_rasterization_count() {
+    if let Ok(mut state) = current_context().state.lock() {
+        state.svg_cache.stats.rasterizations = 0;
+    }
+}
+
+pub(crate) fn record_svg_rasterization() {
+    if let Ok(mut state) = current_context().state.lock() {
+        state.svg_cache.stats.rasterizations += 1;
+    }
 }
 
 pub fn source_status(source: &ImageSource) -> Option<AssetStatus> {
@@ -532,8 +704,12 @@ pub fn source_status_generation() -> u64 {
 
 pub(crate) fn asset_record(id: &str) -> Option<Arc<AssetRecord>> {
     let context = current_context();
-    let state = context.state.lock().ok()?;
-    state.records.get(id).cloned()
+    let mut state = context.state.lock().ok()?;
+    state
+        .records
+        .get(id)
+        .cloned()
+        .or_else(|| state.svg_cache.get(id))
 }
 
 pub(crate) fn asset_dimensions(id: &str) -> Option<(u32, u32)> {
@@ -548,7 +724,10 @@ pub(crate) fn source_memory_snapshot() -> (usize, u64) {
     let bytes = state
         .records
         .values()
-        .map(|record| record.encoded_bytes)
+        .filter_map(|record| match &record.kind {
+            AssetRecordKind::Raster(data) => Some(data.len() as u64),
+            AssetRecordKind::Vector(_) => None,
+        })
         .fold(0_u64, u64::saturating_add);
     (state.records.len(), bytes)
 }
@@ -558,6 +737,16 @@ pub(crate) fn register_raster_asset(
     source: &str,
     bytes: &[u8],
     decode_at_size: bool,
+) -> Result<Arc<AssetRecord>, String> {
+    register_raster_asset_in_epoch(id, source, bytes, decode_at_size, current_epoch())
+}
+
+fn register_raster_asset_in_epoch(
+    id: &str,
+    source: &str,
+    bytes: &[u8],
+    decode_at_size: bool,
+    epoch: u64,
 ) -> Result<Arc<AssetRecord>, String> {
     let data = Data::new_copy(bytes);
     let codec = Codec::from_data(data.clone())
@@ -579,6 +768,8 @@ pub(crate) fn register_raster_asset(
         height,
         encoded_bytes: bytes.len() as u64,
         generation: generation_for_id(id),
+        render_revision: Arc::new(AtomicU64::new(next_render_revision())),
+        epoch,
         decode_at_size,
         kind: AssetRecordKind::Raster(data),
     })
@@ -588,38 +779,59 @@ pub(crate) fn register_vector_asset(
     id: &str,
     tree: usvg::Tree,
 ) -> Result<Arc<AssetRecord>, String> {
-    let width = tree.size().width().ceil().max(1.0) as u32;
-    let height = tree.size().height().ceil().max(1.0) as u32;
+    register_vector_asset_in_epoch(id, id, tree, 0, current_epoch(), generation_for_id(id))
+}
 
+fn register_vector_asset_in_epoch(
+    id: &str,
+    source: &str,
+    tree: usvg::Tree,
+    encoded_bytes: u64,
+    epoch: u64,
+    generation: u64,
+) -> Result<Arc<AssetRecord>, String> {
     register_asset_record(AssetRecord {
         id: id.to_string(),
-        source: id.to_string(),
-        width,
-        height,
-        encoded_bytes: 0,
-        generation: generation_for_id(id),
+        source: source.to_string(),
+        width: tree.size().width().ceil().max(1.0) as u32,
+        height: tree.size().height().ceil().max(1.0) as u32,
+        encoded_bytes,
+        generation,
+        render_revision: crate::renderer::retained_asset_metadata(id)
+            .filter(|metadata| metadata.generation == generation)
+            .and_then(|metadata| metadata.render_revision)
+            .unwrap_or_else(|| Arc::new(AtomicU64::new(next_render_revision()))),
+        epoch,
         decode_at_size: false,
         kind: AssetRecordKind::Vector(Arc::new(tree)),
     })
 }
 
 fn register_asset_record(record: AssetRecord) -> Result<Arc<AssetRecord>, String> {
+    let charge = estimated_tree_bytes(&record);
     let record = Arc::new(record);
     let context = current_context();
     let mut state = context
         .state
         .lock()
         .map_err(|_| "failed to lock asset state".to_string())?;
+    if record.epoch != state.epoch {
+        return Err("asset configuration changed during load".into());
+    }
+    state.svg_cache.remove(&record.id);
+    if matches!(record.kind, AssetRecordKind::Vector(_)) {
+        state.svg_cache.insert(Arc::clone(&record), charge);
+    }
     state.records.insert(record.id.clone(), Arc::clone(&record));
     Ok(record)
 }
 
-fn generation_for_id(id: &str) -> u64 {
-    id.strip_prefix("img_")
-        .and_then(|hex| hex.get(..16))
-        .and_then(|hex| u64::from_str_radix(hex, 16).ok())
-        .filter(|generation| *generation != 0)
-        .unwrap_or_else(|| current_context().generation.fetch_add(1, Ordering::Relaxed) + 1)
+pub(crate) fn next_render_revision() -> u64 {
+    current_context().generation.fetch_add(1, Ordering::Relaxed) + 1
+}
+
+fn generation_for_id(_id: &str) -> u64 {
+    next_render_revision()
 }
 
 #[cfg(test)]
@@ -627,104 +839,66 @@ pub(crate) fn remove_asset_record(id: &str) {
     let context = current_context();
     if let Ok(mut state) = context.state.lock() {
         state.records.remove(id);
+        state.svg_cache.remove(id);
     }
 }
 
 impl Worker {
-    fn handle_ensure(&mut self, source: ImageSource) {
-        let config = match self.state.lock() {
-            Ok(state) => state.config.clone(),
-            Err(_) => return,
-        };
+    fn handle_load(&mut self, request: LoadRequest) {
+        if !self.state.lock().is_ok_and(|state| {
+            state.epoch == request.epoch
+                && state.requests.get(&request.source) == Some(&request.token)
+        }) {
+            return;
+        }
+        let result = load_source_in_epoch(
+            &request.source,
+            &request.config,
+            request.epoch,
+            request.require_record,
+        );
+        self.complete_load(request, result);
+    }
 
-        let result = self.load_source(&source, &config);
-
+    fn complete_load(&mut self, request: LoadRequest, result: Result<ResolvedAsset, String>) {
         let updated = if let Ok(mut state) = self.state.lock() {
-            let was_pending = matches!(state.sources.get(&source), Some(AssetStatus::Pending));
-            if !was_pending {
-                if let Ok(asset) = result {
-                    let still_referenced = state.sources.values().any(|status| {
-                        matches!(status, AssetStatus::Ready(ready) if ready.id == asset.id)
-                    });
-                    if !still_referenced {
-                        state.records.remove(&asset.id);
-                    }
-                }
+            if state.epoch != request.epoch {
+                return;
+            }
+            if state.requests.get(&request.source) != Some(&request.token) {
+                if let Ok(asset) = result
+                    && !state.sources.values().any(|status| matches!(status, AssetStatus::Ready(ready) if ready.id == asset.id))
+                { state.records.remove(&asset.id); }
                 false
             } else {
-                if state.pending_count > 0 {
-                    state.pending_count -= 1;
+                state.requests.remove(&request.source);
+                if matches!(
+                    state.sources.get(&request.source),
+                    Some(AssetStatus::Pending)
+                ) {
+                    state.pending_count = state.pending_count.saturating_sub(1);
                 }
-
-                match result {
-                    Ok(asset) => {
-                        state.set_source_status(source.clone(), AssetStatus::Ready(asset));
-                    }
-                    Err(reason) => {
+                let status = result.map_or_else(
+                    |reason| {
                         if self.log_render {
-                            eprintln!("asset load failed source={source:?} reason={reason}");
+                            eprintln!(
+                                "asset load failed source={:?} reason={reason}",
+                                request.source
+                            );
                         }
-                        state.set_source_status(source.clone(), AssetStatus::Failed);
-                    }
-                }
-                true
+                        AssetStatus::Failed
+                    },
+                    AssetStatus::Ready,
+                );
+                state.set_source_status(request.source, status);
+                true // record hydration can change drawing even when status did not change
             }
         } else {
             false
         };
-
         if updated {
             send_tree_update(&self.tree_tx, self.log_render);
         }
-    }
-
-    fn handle_hydrate_cached(&mut self, source: ImageSource, cached_id: &str) {
-        let config = match self.state.lock() {
-            Ok(state) => state.config.clone(),
-            Err(_) => return,
-        };
-        let result = self.load_source(&source, &config);
-
-        let updated = if let Ok(mut state) = self.state.lock() {
-            let still_using_cached = matches!(
-                state.sources.get(&source),
-                Some(AssetStatus::Ready(asset)) if asset.id == cached_id
-            );
-
-            match (still_using_cached, result) {
-                (true, Ok(asset)) => {
-                    if asset.id != cached_id {
-                        state.set_source_status(source.clone(), AssetStatus::Ready(asset));
-                    }
-                    true
-                }
-                (true, Err(_)) => false,
-                (false, Ok(asset)) => {
-                    let still_referenced = state.sources.values().any(|status| {
-                        matches!(status, AssetStatus::Ready(ready) if ready.id == asset.id)
-                    });
-                    if !still_referenced {
-                        state.records.remove(&asset.id);
-                    }
-                    false
-                }
-                (false, Err(_)) => false,
-            }
-        } else {
-            false
-        };
-
-        if updated {
-            send_tree_update(&self.tree_tx, self.log_render);
-        }
-    }
-
-    fn load_source(
-        &mut self,
-        source: &ImageSource,
-        config: &AssetConfig,
-    ) -> Result<ResolvedAsset, String> {
-        load_source(source, config)
     }
 }
 
@@ -782,10 +956,6 @@ fn snapshot_status_for_source(source: &ImageSource) -> AssetStatus {
     }
 }
 
-fn blocking_status_for_source(source: &ImageSource, config: &AssetConfig) -> AssetStatus {
-    load_source(source, config).map_or(AssetStatus::Failed, AssetStatus::Ready)
-}
-
 fn ensure_deadline(deadline: Option<Instant>) -> Result<(), String> {
     if let Some(deadline) = deadline
         && Instant::now() > deadline
@@ -796,71 +966,129 @@ fn ensure_deadline(deadline: Option<Instant>) -> Result<(), String> {
     Ok(())
 }
 
-fn load_source(source: &ImageSource, config: &AssetConfig) -> Result<ResolvedAsset, String> {
-    match source {
-        ImageSource::Id(id) => {
-            let (width, height) =
-                asset_dimensions(id).ok_or_else(|| format!("unknown image id: {id}"))?;
-            Ok(ResolvedAsset {
-                id: id.clone(),
-                width,
-                height,
-            })
-        }
-        ImageSource::Logical(logical) => {
-            let path = resolve_logical_path(logical, config)?;
-            load_path(&path, config)
-        }
-        ImageSource::RuntimePath(path) => {
-            let resolved = resolve_runtime_path(path, config)?;
-            load_path(&resolved, config)
-        }
+fn load_source_in_epoch(
+    source: &ImageSource,
+    config: &AssetConfig,
+    epoch: u64,
+    require_record: bool,
+) -> Result<ResolvedAsset, String> {
+    let context = current_context();
+    let _loader = context
+        .svg_loader
+        .lock()
+        .map_err(|_| "asset loader poisoned")?;
+    if current_epoch() != epoch {
+        return Err("asset configuration changed".into());
     }
-}
-
-fn load_path(path: &Path, config: &AssetConfig) -> Result<ResolvedAsset, String> {
+    if let ImageSource::Id(id) = source {
+        let (width, height) =
+            asset_dimensions(id).ok_or_else(|| format!("unknown image id: {id}"))?;
+        return Ok(ResolvedAsset {
+            id: id.clone(),
+            width,
+            height,
+        });
+    }
+    let path = resolved_source_path(source, config)?;
     let bytes =
-        fs::read(path).map_err(|err| format!("failed to read {}: {err}", path.display()))?;
-
+        fs::read(&path).map_err(|err| format!("failed to read {}: {err}", path.display()))?;
     let id = canonical_asset_id(&bytes);
-
-    let (width, height) = match asset_dimensions(&id) {
-        Some((w, h)) => (w, h),
-        None if path_is_svg(path) => load_svg_asset(path, &id, &bytes)?,
-        None => insert_raster_asset_with_policy(
+    if let Some(record) = asset_record(&id) {
+        // A parsed-cache hit is also an active source reference once published.
+        let mut state = context.state.lock().map_err(|_| "asset state poisoned")?;
+        if state.epoch != epoch {
+            return Err("asset configuration changed".into());
+        }
+        state.records.insert(id.clone(), Arc::clone(&record));
+        return Ok(ResolvedAsset {
+            id,
+            width: record.width,
+            height: record.height,
+        });
+    }
+    let retained = crate::renderer::retained_asset_metadata(&id);
+    if !require_record && let Some(metadata) = retained.as_ref() {
+        return Ok(ResolvedAsset {
+            id,
+            width: metadata.width,
+            height: metadata.height,
+        });
+    }
+    let record = if path_is_svg(&path) {
+        let fonts = svg_fonts(&context, epoch)?;
+        let options = usvg::Options {
+            fontdb: fonts,
+            ..usvg::Options::default()
+        };
+        let tree = usvg::Tree::from_data_nested(&bytes, &options)
+            .map_err(|err| format!("failed to parse SVG {}: {err}", path.display()))?;
+        if let Ok(mut state) = context.state.lock()
+            && state.epoch == epoch
+        {
+            state.svg_cache.stats.parses += 1;
+        }
+        let generation = retained
+            .map(|metadata| metadata.generation)
+            .unwrap_or_else(|| generation_for_id(&id));
+        register_vector_asset_in_epoch(
+            &id,
+            &path.display().to_string(),
+            tree,
+            bytes.len() as u64,
+            epoch,
+            generation,
+        )?
+    } else {
+        let record = register_raster_asset_in_epoch(
             &id,
             &path.display().to_string(),
             &bytes,
             config.decode_at_size,
-        )?,
+            epoch,
+        )?;
+        if !config.decode_at_size {
+            crate::renderer::preload_raster_asset_original(&id)?;
+        }
+        record
     };
-
-    Ok(ResolvedAsset { id, width, height })
+    Ok(ResolvedAsset {
+        id,
+        width: record.width,
+        height: record.height,
+    })
 }
 
-fn load_svg_asset(path: &Path, id: &str, bytes: &[u8]) -> Result<(u32, u32), String> {
-    let mut options = usvg::Options::default();
-    options.fontdb_mut().load_system_fonts();
-
-    let tree = usvg::Tree::from_data_nested(bytes, &options)
-        .map_err(|err| format!("failed to parse SVG {}: {err}", path.display()))?;
-
-    let (width, height) = svg_dimensions(&tree).unwrap_or((64, 64));
-    insert_vector_asset(id, tree)
-        .map(|_| (width, height))
-        .map_err(|reason| format!("failed to cache SVG {}: {reason}", path.display()))
-}
-
-fn svg_dimensions(tree: &usvg::Tree) -> Option<(u32, u32)> {
-    positive_dimensions(tree.size().width(), tree.size().height())
-}
-
-fn positive_dimensions(width: f32, height: f32) -> Option<(u32, u32)> {
-    if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
-        return None;
+fn svg_fonts(context: &AssetContext, epoch: u64) -> Result<Arc<usvg::fontdb::Database>, String> {
+    if let Some(environment) = context
+        .svg_fonts
+        .lock()
+        .map_err(|_| "SVG font cache poisoned")?
+        .as_ref()
+        && environment.epoch == epoch
+    {
+        return Ok(Arc::clone(&environment.fonts));
     }
-
-    Some((width.ceil().max(1.0) as u32, height.ceil().max(1.0) as u32))
+    // Caller holds the load serializer, never a cache/state lock during discovery.
+    let mut fonts = usvg::fontdb::Database::new();
+    fonts.load_system_fonts();
+    let fonts = Arc::new(fonts);
+    let font_faces = fonts.faces().count() as u64;
+    let font_estimated_bytes = estimated_font_bytes(&fonts);
+    let mut state = context.state.lock().map_err(|_| "asset state poisoned")?;
+    if state.epoch != epoch {
+        return Err("asset configuration changed".into());
+    }
+    state.svg_cache.stats.font_discoveries += 1;
+    state.svg_cache.stats.font_faces = font_faces;
+    state.svg_cache.stats.font_estimated_bytes = font_estimated_bytes;
+    *context
+        .svg_fonts
+        .lock()
+        .map_err(|_| "SVG font cache poisoned")? = Some(SvgFontEnvironment {
+        epoch,
+        fonts: Arc::clone(&fonts),
+    });
+    Ok(fonts)
 }
 
 fn path_is_svg(path: &Path) -> bool {
@@ -1091,3 +1319,6 @@ pub(crate) fn resolve_configured_path(path: &str, config: &AssetConfig) -> Resul
         resolve_logical_path(path, config)
     }
 }
+
+#[cfg(test)]
+mod tests;

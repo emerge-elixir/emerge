@@ -67,7 +67,7 @@ defmodule EmergeSkia.Macos.HostTest do
 
     assert Protocol.encode_init_payload() ==
              <<byte_size("emerge_skia_macos")::unsigned-big-16, "emerge_skia_macos",
-               10::unsigned-big-16>>
+               12::unsigned-big-16>>
   end
 
   test "protocol decodes raw input payloads" do
@@ -110,13 +110,16 @@ defmodule EmergeSkia.Macos.HostTest do
           runtime_max_file_size: 25_000_000,
           cache_max_entries: 17,
           cache_max_bytes: 1_048_576,
+          svg_tree_max_entries: 5,
+          svg_tree_max_bytes: 2_097_152,
           decode_at_size: true,
           fonts: []
         }
       )
 
-    assert binary_part(payload, byte_size(payload) - 21, 21) ==
-             <<17::unsigned-big-64, 1_048_576::unsigned-big-64, 1, 0::unsigned-big-32>>
+    assert binary_part(payload, byte_size(payload) - 37, 37) ==
+             <<17::unsigned-big-64, 1_048_576::unsigned-big-64, 5::unsigned-big-64,
+               2_097_152::unsigned-big-64, 1, 0::unsigned-big-32>>
   end
 
   test "protocol decodes canonical pointer button tags" do

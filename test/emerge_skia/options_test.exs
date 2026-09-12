@@ -8,6 +8,39 @@ defmodule EmergeSkia.OptionsTest do
   alias EmergeSkia.BuildConfig
   alias EmergeSkia.Options
 
+  test "asset cache normalizes independent parsed SVG budgets" do
+    config = Assets.normalize_asset_config!(otp_app: :emerge)
+    assert config.svg_tree_max_entries == 64
+    assert config.svg_tree_max_bytes == 16 * 1024 * 1024
+
+    config =
+      Assets.normalize_asset_config!(
+        otp_app: :emerge,
+        assets: [
+          cache: [
+            max_entries: 3,
+            max_bytes: 4096,
+            svg_tree_max_entries: 0,
+            svg_tree_max_bytes: 0
+          ]
+        ]
+      )
+
+    assert config.cache_max_entries == 3
+    assert config.cache_max_bytes == 4096
+    assert config.svg_tree_max_entries == 0
+    assert config.svg_tree_max_bytes == 0
+
+    assert %{asset_svg_tree_max_entries: 0, asset_svg_tree_max_bytes: 0} =
+             Assets.native_start_asset_config(config)
+
+    for key <- [:svg_tree_max_entries, :svg_tree_max_bytes], value <- [-1, 1.5, "64"] do
+      assert_raise ArgumentError, fn ->
+        Assets.normalize_asset_config!(otp_app: :emerge, assets: [cache: [{key, value}]])
+      end
+    end
+  end
+
   test "build_start_native_opts! defaults backend from build config" do
     expected_backend = Atom.to_string(BuildConfig.default_runtime_backend())
 

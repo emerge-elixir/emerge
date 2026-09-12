@@ -2059,6 +2059,8 @@ struct StartOptsNif {
     asset_extensions: Vec<String>,
     asset_cache_max_entries: u64,
     asset_cache_max_bytes: u64,
+    asset_svg_tree_max_entries: u64,
+    asset_svg_tree_max_bytes: u64,
     asset_decode_at_size: bool,
     drm_cursor: Vec<DrmCursorOverrideNif>,
     drm_startup_retries: u32,
@@ -2135,6 +2137,8 @@ struct ConfigureAssetsOptsNif {
     extensions: Vec<String>,
     cache_max_entries: u64,
     cache_max_bytes: u64,
+    svg_tree_max_entries: u64,
+    svg_tree_max_bytes: u64,
     decode_at_size: bool,
 }
 
@@ -2159,6 +2163,8 @@ struct RenderTreeOffscreenOptsNif {
     extensions: Vec<String>,
     cache_max_entries: u64,
     cache_max_bytes: u64,
+    svg_tree_max_entries: u64,
+    svg_tree_max_bytes: u64,
     decode_at_size: bool,
     asset_mode: String,
     asset_timeout_ms: u64,
@@ -2851,6 +2857,8 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
         runtime_extensions: opts.asset_extensions,
         cache_max_entries: opts.asset_cache_max_entries,
         cache_max_bytes: opts.asset_cache_max_bytes,
+        svg_tree_max_entries: opts.asset_svg_tree_max_entries,
+        svg_tree_max_bytes: opts.asset_svg_tree_max_bytes,
         decode_at_size: opts.asset_decode_at_size,
     };
     let drm_cursor_overrides = parse_drm_cursor_overrides(opts.drm_cursor)
@@ -3381,6 +3389,8 @@ fn configure_assets_nif(
             runtime_extensions: opts.extensions,
             cache_max_entries: opts.cache_max_entries,
             cache_max_bytes: opts.cache_max_bytes,
+            svg_tree_max_entries: opts.svg_tree_max_entries,
+            svg_tree_max_bytes: opts.svg_tree_max_bytes,
             decode_at_size: opts.decode_at_size,
         },
     );
@@ -3820,6 +3830,8 @@ fn offscreen_opts_from_nif(opts: RenderTreeOffscreenOptsNif) -> services::Offscr
             runtime_extensions: opts.extensions,
             cache_max_entries: opts.cache_max_entries,
             cache_max_bytes: opts.cache_max_bytes,
+            svg_tree_max_entries: opts.svg_tree_max_entries,
+            svg_tree_max_bytes: opts.svg_tree_max_bytes,
             decode_at_size: opts.decode_at_size,
         },
         fonts: opts

@@ -10,8 +10,6 @@ use std::collections::{HashMap, HashSet, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 #[cfg(test)]
 use std::sync::OnceLock;
-#[cfg(test)]
-use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -957,7 +955,21 @@ pub struct AssetMemoryRasterVariantStats {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AssetMemoryVectorVariantStats {
+    pub source: String,
+    pub id: String,
+    pub width: u32,
+    pub height: u32,
+    pub bytes: u64,
+    pub kind: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AssetMemoryStatsSnapshot {
+    pub pixel_cache_entries: u64,
+    pub pixel_cache_bytes: u64,
+    pub svg_trees: crate::assets::SvgCacheStats,
+    pub vector_variants: Vec<AssetMemoryVectorVariantStats>,
     pub source_entries: u64,
     pub source_bytes: u64,
     pub raster_cache_entries: u64,
@@ -988,8 +1000,10 @@ struct DecodedRaster {
     source_generation: u64,
 }
 
-struct AssetRasterCache {
+struct AssetPixelCache {
     entries: HashMap<String, DecodedRaster>,
+    vectors: HashMap<RenderedVectorKey, RenderedVectorVariant>,
+    epoch: u64,
     total_bytes: u64,
     access_clock: u64,
     max_entries: u64,
@@ -999,12 +1013,14 @@ struct AssetRasterCache {
 const ASSET_RASTER_CACHE_MAX_ENTRIES: u64 = 256;
 const ASSET_RASTER_CACHE_MAX_BYTES: u64 = 256 * 1024 * 1024;
 
-impl Default for AssetRasterCache {
+impl Default for AssetPixelCache {
     fn default() -> Self {
         Self {
             entries: HashMap::new(),
             total_bytes: 0,
             access_clock: 0,
+            vectors: HashMap::new(),
+            epoch: 0,
             max_entries: ASSET_RASTER_CACHE_MAX_ENTRIES,
             max_bytes: ASSET_RASTER_CACHE_MAX_BYTES,
         }
@@ -1014,6 +1030,7 @@ impl Default for AssetRasterCache {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct RenderedVectorKey {
     asset_id: String,
+    generation: u64,
     width: u32,
     height: u32,
     kind: RenderedVectorVariantKind,
@@ -1028,32 +1045,20 @@ enum RenderedVectorVariantKind {
 #[derive(Clone)]
 struct RenderedVectorVariant {
     image: Image,
-    bytes: usize,
+    metadata: CachedAssetMetadata,
+    bytes: u64,
     last_used: u64,
 }
 
-struct RenderedVectorCache {
-    entries: HashMap<RenderedVectorKey, RenderedVectorVariant>,
-    total_bytes: usize,
-    access_clock: u64,
-    max_entries: usize,
-    max_bytes: usize,
-}
-
-const RENDERED_VECTOR_CACHE_MAX_ENTRIES: usize = 256;
-const RENDERED_VECTOR_CACHE_MAX_BYTES: usize = 16 * 1024 * 1024;
-const RENDERED_VECTOR_CACHE_MAX_VARIANT_BYTES: usize = 1024 * 1024;
-
-impl Default for RenderedVectorCache {
-    fn default() -> Self {
-        Self {
-            entries: HashMap::new(),
-            total_bytes: 0,
-            access_clock: 0,
-            max_entries: RENDERED_VECTOR_CACHE_MAX_ENTRIES,
-            max_bytes: RENDERED_VECTOR_CACHE_MAX_BYTES,
-        }
-    }
+#[derive(Clone)]
+pub(crate) struct CachedAssetMetadata {
+    pub id: String,
+    pub source: String,
+    pub width: u32,
+    pub height: u32,
+    pub generation: u64,
+    pub render_revision: Option<Arc<AtomicU64>>,
+    pub kind: AssetKind,
 }
 
 pub(crate) struct RendererAssetContext {
@@ -1062,8 +1067,7 @@ pub(crate) struct RendererAssetContext {
     render_log_enabled: AtomicBool,
     font_cache_generation: AtomicU64,
     text_visual_metrics_cache: Mutex<TextVisualMetricsCache>,
-    raster_cache: Mutex<AssetRasterCache>,
-    vector_cache: Mutex<RenderedVectorCache>,
+    pixel_cache: Mutex<AssetPixelCache>,
 }
 
 impl Default for RendererAssetContext {
@@ -1074,14 +1078,10 @@ impl Default for RendererAssetContext {
             render_log_enabled: AtomicBool::new(false),
             font_cache_generation: AtomicU64::new(1),
             text_visual_metrics_cache: Mutex::new(TextVisualMetricsCache::default()),
-            raster_cache: Mutex::new(AssetRasterCache::default()),
-            vector_cache: Mutex::new(RenderedVectorCache::default()),
+            pixel_cache: Mutex::new(AssetPixelCache::default()),
         }
     }
 }
-
-#[cfg(test)]
-static VECTOR_RASTERIZATION_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 fn font_cache_generation() -> u64 {
     asset_context()
@@ -1104,11 +1104,8 @@ pub fn clear_renderer_asset_context() {
     if let Ok(mut cache) = context.synthetic_logged.lock() {
         cache.clear();
     }
-    if let Ok(mut cache) = context.raster_cache.lock() {
-        *cache = AssetRasterCache::default();
-    }
-    if let Ok(mut cache) = context.vector_cache.lock() {
-        *cache = RenderedVectorCache::default();
+    if let Ok(mut cache) = context.pixel_cache.lock() {
+        *cache = AssetPixelCache::default();
     }
     if let Ok(mut cache) = context.text_visual_metrics_cache.lock() {
         cache.clear();
@@ -1117,8 +1114,10 @@ pub fn clear_renderer_asset_context() {
 }
 
 pub fn configure_asset_cache(max_entries: u64, max_bytes: u64) {
+    let epoch = crate::assets::current_epoch();
     let context = asset_context();
-    if let Ok(mut cache) = context.raster_cache.lock() {
+    if let Ok(mut cache) = context.pixel_cache.lock() {
+        cache.epoch = epoch;
         cache.max_entries = max_entries;
         cache.max_bytes = max_bytes;
         evict_asset_rasters_if_needed(&mut cache);
@@ -1135,35 +1134,91 @@ pub fn asset_kind(id: &str) -> Option<AssetKind> {
             crate::assets::AssetRecordKind::Raster(_) => AssetKind::Raster,
             crate::assets::AssetRecordKind::Vector(_) => AssetKind::Vector,
         })
-        .or_else(|| cached_raster_contains(id).then_some(AssetKind::Raster))
+        .or_else(|| retained_asset_metadata(id).map(|metadata| metadata.kind))
 }
 
-pub(crate) fn cached_raster_asset_for_source(source: &str) -> Option<(String, u32, u32)> {
+pub(crate) fn cached_asset_for_source(source: &str) -> Option<CachedAssetMetadata> {
     let context = asset_context();
-    let mut cache = context.raster_cache.lock().ok()?;
-    let id = cache
+    let cache = context.pixel_cache.lock().ok()?;
+    cache
         .entries
         .iter()
         .find(|(_, entry)| entry.source == source)
-        .map(|(id, _)| id.clone())?;
-    let stamp = next_asset_raster_access_stamp(&mut cache);
-    let entry = cache.entries.get_mut(&id)?;
-    entry.last_used = stamp;
-    Some((id, entry.source_width, entry.source_height))
+        .map(|(id, entry)| raster_metadata(id, entry))
+        .or_else(|| {
+            cache
+                .vectors
+                .values()
+                .find(|entry| entry.metadata.source == source)
+                .map(|entry| entry.metadata.clone())
+        })
 }
 
-fn cached_raster_contains(id: &str) -> bool {
-    asset_context()
-        .raster_cache
-        .lock()
-        .is_ok_and(|cache| cache.entries.contains_key(id))
+fn raster_metadata(id: &str, entry: &DecodedRaster) -> CachedAssetMetadata {
+    CachedAssetMetadata {
+        id: id.to_string(),
+        source: entry.source.clone(),
+        width: entry.source_width,
+        height: entry.source_height,
+        generation: entry.source_generation,
+        render_revision: None,
+        kind: AssetKind::Raster,
+    }
+}
+
+pub(crate) fn retained_asset_metadata(id: &str) -> Option<CachedAssetMetadata> {
+    let context = asset_context();
+    let cache = context.pixel_cache.lock().ok()?;
+    cache
+        .entries
+        .get(id)
+        .map(|entry| raster_metadata(id, entry))
+        .or_else(|| {
+            cache
+                .vectors
+                .values()
+                .find(|entry| entry.metadata.id == id)
+                .map(|entry| entry.metadata.clone())
+        })
 }
 
 fn asset_generation(id: &str) -> Option<u64> {
-    crate::assets::asset_record(id).map(|record| record.generation)
+    crate::assets::asset_record(id)
+        .map(|record| record.generation)
+        .or_else(|| retained_asset_metadata(id).map(|metadata| metadata.generation))
 }
 
-fn next_asset_raster_access_stamp(cache: &mut AssetRasterCache) -> u64 {
+pub(crate) fn invalidate_asset_render_revision(id: &str) {
+    if let Some(revision) =
+        retained_asset_metadata(id).and_then(|metadata| metadata.render_revision)
+    {
+        revision.store(crate::assets::next_render_revision(), Ordering::Relaxed);
+    }
+}
+
+fn asset_render_generation(id: &str) -> Option<u64> {
+    let record = crate::assets::asset_record(id);
+    let (generation, revision) = match &record {
+        Some(record) => (
+            record.generation,
+            record.render_revision.load(Ordering::Relaxed),
+        ),
+        None => {
+            let metadata = retained_asset_metadata(id)?;
+            (
+                metadata.generation,
+                metadata
+                    .render_revision
+                    .map_or(0, |revision| revision.load(Ordering::Relaxed)),
+            )
+        }
+    };
+    let mut hasher = DefaultHasher::new();
+    (generation, record.is_some(), revision).hash(&mut hasher);
+    Some(hasher.finish())
+}
+
+fn next_asset_raster_access_stamp(cache: &mut AssetPixelCache) -> u64 {
     cache.access_clock = cache.access_clock.wrapping_add(1);
     cache.access_clock
 }
@@ -1175,7 +1230,7 @@ fn lookup_asset_raster(
     required_height: u32,
 ) -> Option<Image> {
     let context = asset_context();
-    let mut cache = context.raster_cache.lock().ok()?;
+    let mut cache = context.pixel_cache.lock().ok()?;
     let stamp = next_asset_raster_access_stamp(&mut cache);
     let entry = cache.entries.get_mut(id)?;
     if entry.source_generation != source_generation
@@ -1191,7 +1246,7 @@ fn lookup_asset_raster(
 
 fn lookup_retained_asset_raster(id: &str) -> Option<(Image, u32, u32)> {
     let context = asset_context();
-    let mut cache = context.raster_cache.lock().ok()?;
+    let mut cache = context.pixel_cache.lock().ok()?;
     let stamp = next_asset_raster_access_stamp(&mut cache);
     let entry = cache.entries.get_mut(id)?;
     entry.last_used = stamp;
@@ -1212,7 +1267,7 @@ fn store_asset_raster(record: &crate::assets::AssetRecord, decoded: RasterDecode
     };
 
     let context = asset_context();
-    let Ok(mut cache) = context.raster_cache.lock() else {
+    let Ok(mut cache) = context.pixel_cache.lock() else {
         return image;
     };
 
@@ -1276,17 +1331,25 @@ fn image_pixel_bytes(image: &Image) -> Option<u64> {
 
 pub fn asset_memory_stats_snapshot() -> AssetMemoryStatsSnapshot {
     let (source_entries, source_bytes) = crate::assets::source_memory_snapshot();
-
-    let (
-        raster_cache_entries,
-        raster_cache_bytes,
-        raster_cache_max_entries,
-        raster_cache_max_bytes,
-        mut raster_variants,
-    ) = asset_context().raster_cache.lock().map_or_else(
-        |_| (0, 0, 0, 0, Vec::new()),
-        |cache| {
-            let variants = cache
+    // Snapshot both pixel kinds atomically; never acquire source-state locks
+    // while holding the pixel-cache lock.
+    let mut stats = asset_context()
+        .pixel_cache
+        .lock()
+        .map(|cache| AssetMemoryStatsSnapshot {
+            source_entries: source_entries as u64,
+            source_bytes,
+            pixel_cache_entries: (cache.entries.len() + cache.vectors.len()) as u64,
+            pixel_cache_bytes: cache.total_bytes,
+            raster_cache_entries: cache.entries.len() as u64,
+            raster_cache_bytes: cache.entries.values().map(|entry| entry.bytes).sum(),
+            raster_cache_max_entries: cache.max_entries,
+            raster_cache_max_bytes: cache.max_bytes,
+            vector_cache_entries: cache.vectors.len() as u64,
+            vector_cache_bytes: cache.vectors.values().map(|entry| entry.bytes).sum(),
+            vector_cache_max_entries: cache.max_entries,
+            vector_cache_max_bytes: cache.max_bytes,
+            raster_variants: cache
                 .entries
                 .iter()
                 .map(|(id, entry)| AssetMemoryRasterVariantStats {
@@ -1303,78 +1366,77 @@ pub fn asset_memory_stats_snapshot() -> AssetMemoryStatsSnapshot {
                     decoded_bytes: entry.bytes,
                     source_retained: false,
                 })
-                .collect();
-            (
-                u64::try_from(cache.entries.len()).unwrap_or(u64::MAX),
-                cache.total_bytes,
-                cache.max_entries,
-                cache.max_bytes,
-                variants,
-            )
-        },
-    );
-    raster_variants.iter_mut().for_each(|variant| {
+                .collect(),
+            vector_variants: cache
+                .vectors
+                .iter()
+                .map(|(key, entry)| AssetMemoryVectorVariantStats {
+                    source: entry.metadata.source.clone(),
+                    id: key.asset_id.clone(),
+                    width: key.width,
+                    height: key.height,
+                    bytes: entry.bytes,
+                    kind: format!("{:?}", key.kind),
+                })
+                .collect(),
+            ..AssetMemoryStatsSnapshot::default()
+        })
+        .unwrap_or_default();
+    stats.svg_trees = crate::assets::svg_cache_stats();
+    stats.raster_variants.iter_mut().for_each(|variant| {
         variant.source_retained = crate::assets::asset_record(&variant.id).is_some();
     });
-    raster_variants
-        .sort_by(|left, right| left.source.cmp(&right.source).then(left.id.cmp(&right.id)));
-
-    let (
-        vector_cache_entries,
-        vector_cache_bytes,
-        vector_cache_max_entries,
-        vector_cache_max_bytes,
-    ) = asset_context()
-        .vector_cache
-        .lock()
-        .map_or((0, 0, 0, 0), |cache| {
-            (
-                u64::try_from(cache.entries.len()).unwrap_or(u64::MAX),
-                u64::try_from(cache.total_bytes).unwrap_or(u64::MAX),
-                u64::try_from(cache.max_entries).unwrap_or(u64::MAX),
-                u64::try_from(cache.max_bytes).unwrap_or(u64::MAX),
-            )
-        });
-
-    AssetMemoryStatsSnapshot {
-        source_entries: u64::try_from(source_entries).unwrap_or(u64::MAX),
-        source_bytes,
-        raster_cache_entries,
-        raster_cache_bytes,
-        raster_cache_max_entries,
-        raster_cache_max_bytes,
-        vector_cache_entries,
-        vector_cache_bytes,
-        vector_cache_max_entries,
-        vector_cache_max_bytes,
-        raster_variants,
-    }
+    stats
+        .raster_variants
+        .sort_by(|a, b| a.source.cmp(&b.source).then(a.id.cmp(&b.id)));
+    stats.vector_variants.sort_by(|a, b| {
+        a.source
+            .cmp(&b.source)
+            .then(a.id.cmp(&b.id))
+            .then(a.width.cmp(&b.width))
+            .then(a.height.cmp(&b.height))
+            .then(a.kind.cmp(&b.kind))
+    });
+    stats
 }
 
-fn evict_asset_rasters_if_needed(cache: &mut AssetRasterCache) {
-    while u64::try_from(cache.entries.len()).unwrap_or(u64::MAX) > cache.max_entries
+fn evict_asset_rasters_if_needed(cache: &mut AssetPixelCache) {
+    while (cache.entries.len() + cache.vectors.len()) as u64 > cache.max_entries
         || cache.total_bytes > cache.max_bytes
     {
-        let Some(oldest_id) = cache
+        let raster = cache
             .entries
             .iter()
             .min_by_key(|(_, entry)| entry.last_used)
-            .map(|(id, _)| id.clone())
-        else {
-            break;
+            .map(|(id, entry)| (id.clone(), entry.last_used));
+        let vector = cache
+            .vectors
+            .iter()
+            .min_by_key(|(_, entry)| entry.last_used)
+            .map(|(key, entry)| (key.clone(), entry.last_used));
+        let bytes = match (raster, vector) {
+            (Some((id, stamp)), Some((_, vector_stamp))) if stamp <= vector_stamp => {
+                cache.entries.remove(&id).map(|entry| entry.bytes)
+            }
+            (_, Some((key, _))) => cache.vectors.remove(&key).map(|entry| entry.bytes),
+            (Some((id, _)), None) => cache.entries.remove(&id).map(|entry| entry.bytes),
+            (None, None) => break,
         };
+        cache.total_bytes = cache.total_bytes.saturating_sub(bytes.unwrap_or(0));
+    }
+}
 
-        if let Some(entry) = cache.entries.remove(&oldest_id) {
-            cache.total_bytes = cache.total_bytes.saturating_sub(entry.bytes);
-        }
+pub(crate) fn clear_cached_svg_pixels() {
+    if let Ok(mut cache) = asset_context().pixel_cache.lock() {
+        let bytes: u64 = cache.vectors.values().map(|entry| entry.bytes).sum();
+        cache.vectors.clear();
+        cache.total_bytes = cache.total_bytes.saturating_sub(bytes);
     }
 }
 
 #[cfg(test)]
 fn clear_rendered_vector_cache() {
-    if let Ok(mut cache) = asset_context().vector_cache.lock() {
-        *cache = RenderedVectorCache::default();
-    }
+    clear_cached_svg_pixels();
 }
 
 fn rendered_vector_key(
@@ -1385,27 +1447,11 @@ fn rendered_vector_key(
 ) -> RenderedVectorKey {
     RenderedVectorKey {
         asset_id: asset_id.to_string(),
+        generation: asset_generation(asset_id).unwrap_or(0),
         width,
         height,
         kind,
     }
-}
-
-fn rendered_variant_bytes(width: u32, height: u32) -> Option<usize> {
-    (width as usize)
-        .checked_mul(height as usize)?
-        .checked_mul(4)
-}
-
-fn should_cache_rendered_variant(width: u32, height: u32) -> bool {
-    rendered_variant_bytes(width, height)
-        .map(|bytes| bytes <= RENDERED_VECTOR_CACHE_MAX_VARIANT_BYTES)
-        .unwrap_or(false)
-}
-
-fn next_rendered_vector_access_stamp(cache: &mut RenderedVectorCache) -> u64 {
-    cache.access_clock = cache.access_clock.wrapping_add(1);
-    cache.access_clock
 }
 
 fn lookup_rendered_vector_variant(
@@ -1414,30 +1460,14 @@ fn lookup_rendered_vector_variant(
     height: u32,
     kind: RenderedVectorVariantKind,
 ) -> Option<Image> {
-    let context = asset_context();
-    let mut cache = context.vector_cache.lock().ok()?;
+    // Resolve generation before acquiring the pixel-cache lock.
     let key = rendered_vector_key(asset_id, width, height, kind);
-    let stamp = next_rendered_vector_access_stamp(&mut cache);
-    let variant = cache.entries.get_mut(&key)?;
+    let context = asset_context();
+    let mut cache = context.pixel_cache.lock().ok()?;
+    let stamp = next_asset_raster_access_stamp(&mut cache);
+    let variant = cache.vectors.get_mut(&key)?;
     variant.last_used = stamp;
     Some(variant.image.clone())
-}
-
-fn evict_rendered_vector_variants_if_needed(cache: &mut RenderedVectorCache) {
-    while cache.entries.len() > cache.max_entries || cache.total_bytes > cache.max_bytes {
-        let Some(oldest_key) = cache
-            .entries
-            .iter()
-            .min_by_key(|(_, variant)| variant.last_used)
-            .map(|(key, _)| key.clone())
-        else {
-            break;
-        };
-
-        if let Some(variant) = cache.entries.remove(&oldest_key) {
-            cache.total_bytes = cache.total_bytes.saturating_sub(variant.bytes);
-        }
-    }
 }
 
 fn store_rendered_vector_variant(
@@ -1447,57 +1477,63 @@ fn store_rendered_vector_variant(
     kind: RenderedVectorVariantKind,
     image: &Image,
 ) {
-    if !should_cache_rendered_variant(width, height) {
+    let Some(record) = crate::assets::asset_record(asset_id) else {
+        return;
+    };
+    let Some(bytes) = image_pixel_bytes(image) else {
+        return;
+    };
+    let key = rendered_vector_key(asset_id, width, height, kind);
+    let context = asset_context();
+    let Ok(mut cache) = context.pixel_cache.lock() else {
+        return;
+    };
+    if record.epoch != cache.epoch || cache.max_entries == 0 || bytes > cache.max_bytes {
         return;
     }
-
-    let Some(bytes) = rendered_variant_bytes(width, height) else {
-        return;
-    };
-
-    let context = asset_context();
-    let Ok(mut cache) = context.vector_cache.lock() else {
-        return;
-    };
-
-    let key = rendered_vector_key(asset_id, width, height, kind);
-    if let Some(existing) = cache.entries.remove(&key) {
+    if let Some(existing) = cache.vectors.remove(&key) {
         cache.total_bytes = cache.total_bytes.saturating_sub(existing.bytes);
     }
-
-    let stamp = next_rendered_vector_access_stamp(&mut cache);
-    cache.entries.insert(
+    let stamp = next_asset_raster_access_stamp(&mut cache);
+    cache.vectors.insert(
         key,
         RenderedVectorVariant {
             image: image.clone(),
             bytes,
             last_used: stamp,
+            metadata: CachedAssetMetadata {
+                id: record.id.clone(),
+                source: record.source.clone(),
+                width: record.width,
+                height: record.height,
+                generation: record.generation,
+                render_revision: Some(Arc::clone(&record.render_revision)),
+                kind: AssetKind::Vector,
+            },
         },
     );
+    // Shared by the tree and every pixel variant, even after leaving the scene.
+    // A formerly missing variant must not reuse a cached loading paint layer.
+    record
+        .render_revision
+        .store(crate::assets::next_render_revision(), Ordering::Relaxed);
     cache.total_bytes = cache.total_bytes.saturating_add(bytes);
-    evict_rendered_vector_variants_if_needed(&mut cache);
+    evict_asset_rasters_if_needed(&mut cache);
 }
 
-fn clear_rendered_vector_variants(asset_id: &str) {
+pub(crate) fn clear_rendered_vector_variants(asset_id: &str) {
     let context = asset_context();
-    let Ok(mut cache) = context.vector_cache.lock() else {
+    let Ok(mut cache) = context.pixel_cache.lock() else {
         return;
     };
-
-    let mut retained = HashMap::with_capacity(cache.entries.len());
-    let mut total_bytes = 0usize;
-
-    for (key, variant) in cache.entries.drain() {
-        if key.asset_id == asset_id {
-            continue;
-        }
-
-        total_bytes = total_bytes.saturating_add(variant.bytes);
-        retained.insert(key, variant);
-    }
-
-    cache.entries = retained;
-    cache.total_bytes = total_bytes;
+    let removed_bytes: u64 = cache
+        .vectors
+        .iter()
+        .filter(|(key, _)| key.asset_id == asset_id)
+        .map(|(_, entry)| entry.bytes)
+        .sum();
+    cache.vectors.retain(|key, _| key.asset_id != asset_id);
+    cache.total_bytes = cache.total_bytes.saturating_sub(removed_bytes);
 }
 
 pub fn insert_raster_asset(id: &str, data: &[u8]) -> Result<(u32, u32), String> {
@@ -1665,7 +1701,7 @@ fn raster_image_from_rgba(width: u32, height: u32, rgba_pixels: &[u8]) -> Option
 }
 
 fn remove_asset_raster(id: &str) {
-    if let Ok(mut cache) = asset_context().raster_cache.lock()
+    if let Ok(mut cache) = asset_context().pixel_cache.lock()
         && let Some(entry) = cache.entries.remove(id)
     {
         cache.total_bytes = cache.total_bytes.saturating_sub(entry.bytes);
@@ -2549,7 +2585,7 @@ fn render_primitive_resource_generation(primitive: &DrawPrimitive) -> Option<u64
         | DrawPrimitive::ImageLoading(..)
         | DrawPrimitive::ImageFailed(..) => None,
         DrawPrimitive::TextWithFont(..) => Some(font_cache_generation()),
-        DrawPrimitive::Image(_, _, _, _, image_id, _, _) => asset_generation(image_id),
+        DrawPrimitive::Image(_, _, _, _, image_id, _, _) => asset_render_generation(image_id),
         DrawPrimitive::Rect(..)
         | DrawPrimitive::RoundedRect(..)
         | DrawPrimitive::Border(..)
@@ -6566,13 +6602,25 @@ fn draw_cached_asset_with_fit(
             crate::assets::AssetRecordKind::Vector(tree) => draw_vector_asset_with_fit(
                 canvas,
                 spec.image_id,
-                tree,
+                Some(tree),
                 record.width,
                 record.height,
                 spec,
                 image_bleed_device_outset,
             ),
         }
+    } else if let Some(metadata) = retained_asset_metadata(spec.image_id)
+        && metadata.kind == AssetKind::Vector
+    {
+        draw_vector_asset_with_fit(
+            canvas,
+            spec.image_id,
+            None,
+            metadata.width,
+            metadata.height,
+            spec,
+            image_bleed_device_outset,
+        );
     } else if let Some((image, source_width, source_height)) =
         lookup_retained_asset_raster(spec.image_id)
     {
@@ -6584,6 +6632,10 @@ fn draw_cached_asset_with_fit(
             spec,
             image_bleed_device_outset,
         );
+    } else {
+        crate::assets::request_asset_hydration(spec.image_id);
+        let RectSpec { x, y, w, h } = spec.rect;
+        draw_image_loading(canvas, x, y, w, h);
     }
 }
 
@@ -6629,7 +6681,7 @@ fn draw_cached_asset_with_fit_profiled(
                     profile.kind = RenderImageAssetKind::Vector;
                     draw_vector_asset_with_fit_profiled(
                         canvas,
-                        tree,
+                        Some(tree),
                         record.width,
                         record.height,
                         spec,
@@ -6638,6 +6690,22 @@ fn draw_cached_asset_with_fit_profiled(
                     );
                 }
             }
+        } else if let Some(metadata) = retained_asset_metadata(spec.image_id)
+            && metadata.kind == AssetKind::Vector
+        {
+            profile.asset_lookup = lookup_started_at.elapsed();
+            profile.kind = RenderImageAssetKind::Vector;
+            profile.source_width = metadata.width;
+            profile.source_height = metadata.height;
+            draw_vector_asset_with_fit_profiled(
+                canvas,
+                None,
+                metadata.width,
+                metadata.height,
+                spec,
+                image_bleed_device_outset,
+                &mut profile,
+            );
         } else if let Some((image, source_width, source_height)) =
             lookup_retained_asset_raster(spec.image_id)
         {
@@ -6656,6 +6724,9 @@ fn draw_cached_asset_with_fit_profiled(
             );
         } else {
             profile.asset_lookup = lookup_started_at.elapsed();
+            crate::assets::request_asset_hydration(spec.image_id);
+            let RectSpec { x, y, w, h } = spec.rect;
+            draw_image_loading(canvas, x, y, w, h);
         }
     }
 
@@ -7141,7 +7212,7 @@ fn paint_with_template_tint(paint: &Paint, tint: u32) -> Option<Paint> {
 
 fn get_or_rasterize_vector_variant(
     asset_id: &str,
-    tree: &usvg::Tree,
+    tree: Option<&usvg::Tree>,
     width: u32,
     height: u32,
 ) -> Option<Image> {
@@ -7151,6 +7222,10 @@ fn get_or_rasterize_vector_variant(
         return Some(image);
     }
 
+    let tree = tree.or_else(|| {
+        crate::assets::request_asset_hydration(asset_id);
+        None
+    })?;
     let image = rasterize_vector_tree(tree, width, height)?;
     store_rendered_vector_variant(
         asset_id,
@@ -7164,7 +7239,7 @@ fn get_or_rasterize_vector_variant(
 
 fn get_or_rasterize_vector_cover_viewport_variant(
     asset_id: &str,
-    tree: &usvg::Tree,
+    tree: Option<&usvg::Tree>,
     width: u32,
     height: u32,
 ) -> Option<Image> {
@@ -7177,6 +7252,10 @@ fn get_or_rasterize_vector_cover_viewport_variant(
         return Some(image);
     }
 
+    let tree = tree.or_else(|| {
+        crate::assets::request_asset_hydration(asset_id);
+        None
+    })?;
     let image = rasterize_vector_tree_cover_viewport(tree, width, height)?;
     store_rendered_vector_variant(
         asset_id,
@@ -7190,7 +7269,7 @@ fn get_or_rasterize_vector_cover_viewport_variant(
 
 fn get_or_rasterize_vector_variant_profiled(
     asset_id: &str,
-    tree: &usvg::Tree,
+    tree: Option<&usvg::Tree>,
     width: u32,
     height: u32,
     profile: &mut RenderImageDrawProfile,
@@ -7206,6 +7285,10 @@ fn get_or_rasterize_vector_variant_profiled(
     }
 
     profile.vector_cache_hit = Some(false);
+    let tree = tree.or_else(|| {
+        crate::assets::request_asset_hydration(asset_id);
+        None
+    })?;
     let rasterize_started_at = Instant::now();
     let image = rasterize_vector_tree(tree, width, height);
     profile.vector_rasterize += rasterize_started_at.elapsed();
@@ -7225,7 +7308,7 @@ fn get_or_rasterize_vector_variant_profiled(
 
 fn get_or_rasterize_vector_cover_viewport_variant_profiled(
     asset_id: &str,
-    tree: &usvg::Tree,
+    tree: Option<&usvg::Tree>,
     width: u32,
     height: u32,
     profile: &mut RenderImageDrawProfile,
@@ -7245,6 +7328,10 @@ fn get_or_rasterize_vector_cover_viewport_variant_profiled(
     }
 
     profile.vector_cache_hit = Some(false);
+    let tree = tree.or_else(|| {
+        crate::assets::request_asset_hydration(asset_id);
+        None
+    })?;
     let rasterize_started_at = Instant::now();
     let image = rasterize_vector_tree_cover_viewport(tree, width, height);
     profile.vector_rasterize += rasterize_started_at.elapsed();
@@ -7265,7 +7352,7 @@ fn get_or_rasterize_vector_cover_viewport_variant_profiled(
 fn draw_vector_asset_with_fit(
     canvas: &skia_safe::Canvas,
     asset_id: &str,
-    tree: &usvg::Tree,
+    tree: Option<&usvg::Tree>,
     asset_width: u32,
     asset_height: u32,
     spec: ImageDrawSpec<'_>,
@@ -7289,6 +7376,7 @@ fn draw_vector_asset_with_fit(
                 raster_width,
                 raster_height,
             ) else {
+                draw_image_loading(canvas, x, y, w, h);
                 return;
             };
 
@@ -7315,6 +7403,7 @@ fn draw_vector_asset_with_fit(
             let Some((draw_x, draw_y, draw_w, draw_h)) =
                 compute_vector_fit_rect(src_w, src_h, x, y, w, h, spec.fit)
             else {
+                draw_image_loading(canvas, x, y, w, h);
                 return;
             };
 
@@ -7331,6 +7420,7 @@ fn draw_vector_asset_with_fit(
             let Some(image) =
                 get_or_rasterize_vector_variant(asset_id, tree, raster_width, raster_height)
             else {
+                draw_image_loading(canvas, x, y, w, h);
                 return;
             };
 
@@ -7348,6 +7438,7 @@ fn draw_vector_asset_with_fit(
             let Some(image) =
                 get_or_rasterize_vector_variant(asset_id, tree, asset_width, asset_height)
             else {
+                draw_image_loading(canvas, x, y, w, h);
                 return;
             };
 
@@ -7364,7 +7455,7 @@ fn draw_vector_asset_with_fit(
 
 fn draw_vector_asset_with_fit_profiled(
     canvas: &skia_safe::Canvas,
-    tree: &usvg::Tree,
+    tree: Option<&usvg::Tree>,
     asset_width: u32,
     asset_height: u32,
     spec: ImageDrawSpec<'_>,
@@ -7394,6 +7485,7 @@ fn draw_vector_asset_with_fit_profiled(
                 raster_height,
                 profile,
             ) else {
+                draw_image_loading(canvas, x, y, w, h);
                 return;
             };
 
@@ -7448,6 +7540,7 @@ fn draw_vector_asset_with_fit_profiled(
                 raster_height,
                 profile,
             ) else {
+                draw_image_loading(canvas, x, y, w, h);
                 return;
             };
 
@@ -7476,6 +7569,7 @@ fn draw_vector_asset_with_fit_profiled(
                 asset_height,
                 profile,
             ) else {
+                draw_image_loading(canvas, x, y, w, h);
                 return;
             };
 
@@ -7579,9 +7673,7 @@ fn rasterize_vector_tree_with_transform(
         return None;
     }
 
-    #[cfg(test)]
-    VECTOR_RASTERIZATION_COUNT.fetch_add(1, Ordering::Relaxed);
-
+    crate::assets::record_svg_rasterization();
     let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)?;
     let mut pixmap_mut = pixmap.as_mut();
     resvg::render(tree, transform, &mut pixmap_mut);
@@ -7592,20 +7684,20 @@ fn rasterize_vector_tree_with_transform(
 #[cfg(test)]
 fn rendered_vector_cache_entry_count() -> usize {
     asset_context()
-        .vector_cache
+        .pixel_cache
         .lock()
-        .map(|cache| cache.entries.len())
+        .map(|cache| cache.vectors.len())
         .unwrap_or(0)
 }
 
 #[cfg(test)]
 fn reset_vector_rasterization_count() {
-    VECTOR_RASTERIZATION_COUNT.store(0, Ordering::Relaxed);
+    crate::assets::reset_svg_rasterization_count();
 }
 
 #[cfg(test)]
 fn vector_rasterization_count() -> usize {
-    VECTOR_RASTERIZATION_COUNT.load(Ordering::Relaxed)
+    crate::assets::svg_cache_stats().rasterizations as usize
 }
 
 fn compute_vector_fit_rect(
@@ -8489,10 +8581,10 @@ mod tests {
     #[test]
     fn asset_raster_lru_enforces_entry_and_byte_limits() {
         let image = raster_image_from_rgba(1, 1, &[255, 0, 0, 255]).expect("test image");
-        let mut cache = AssetRasterCache {
+        let mut cache = AssetPixelCache {
             max_entries: 1,
             max_bytes: 8,
-            ..AssetRasterCache::default()
+            ..AssetPixelCache::default()
         };
         cache.entries.insert(
             "older".to_string(),
@@ -8552,6 +8644,8 @@ mod tests {
             height: 2000,
             encoded_bytes: 0,
             generation: 1,
+            render_revision: Arc::new(AtomicU64::new(0)),
+            epoch: crate::assets::current_epoch(),
             decode_at_size: true,
             kind: crate::assets::AssetRecordKind::Raster(Data::new_empty()),
         };
@@ -8608,7 +8702,7 @@ mod tests {
         let cached = store_asset_raster(&record, decoded);
         assert_eq!((cached.width(), cached.height()), (96, 96));
         let context = asset_context();
-        let cache = context.raster_cache.lock().expect("raster cache");
+        let cache = context.pixel_cache.lock().expect("raster cache");
         let entry = cache.entries.get(id).expect("retained exact-size image");
         assert_eq!((entry.width, entry.height), (96, 96));
         assert_eq!(entry.bytes, 96 * 96 * 4);
@@ -8626,7 +8720,7 @@ mod tests {
         assert_eq!((variant.decoded_width, variant.decoded_height), (96, 96));
         assert_eq!(variant.decoded_bytes, 96 * 96 * 4);
         assert_eq!(
-            cached_raster_asset_for_source(id),
+            cached_asset_for_source(id).map(|m| (m.id, m.width, m.height)),
             Some((id.to_string(), 3000, 3000))
         );
 
@@ -13170,9 +13264,9 @@ mod tests {
     }
 
     #[test]
-    fn test_svg_large_variant_skips_render_cache() {
+    fn test_svg_large_variant_uses_shared_cache_budget() {
         let _guard = vector_cache_test_lock();
-        let image_id = "test_svg_large_variant_skips_render_cache";
+        let image_id = "test_svg_large_variant_uses_shared_cache_budget";
         let svg = r##"
             <svg xmlns="http://www.w3.org/2000/svg" width="513" height="513" viewBox="0 0 513 513">
                 <rect x="0" y="0" width="513" height="513" fill="#ff5500"/>
@@ -13209,8 +13303,8 @@ mod tests {
             )],
         );
 
-        assert_eq!(vector_rasterization_count(), 2);
-        assert_eq!(rendered_vector_cache_entry_count(), 0);
+        assert_eq!(vector_rasterization_count(), 1);
+        assert_eq!(rendered_vector_cache_entry_count(), 1);
 
         remove_asset(image_id);
     }
@@ -13833,3 +13927,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "renderer_svg_cache_tests.rs"]
+mod svg_cache_tests;

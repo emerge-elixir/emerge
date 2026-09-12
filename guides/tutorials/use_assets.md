@@ -151,6 +151,14 @@ svg([height(px(68))], "logos/logo.svg")
 A 200×200 SVG then occupies a 68×68 frame; a 200×100 SVG occupies 136×68.
 This also works with `image/2` and with a fixed width instead of height. Padding
 and borders are included in pixel sizes; the aspect ratio applies inside them.
+For responsive sizing, `image([width(fill())], source)` and
+`svg([width(fill()), height(content())], source)` derive height from the allocated
+width, even when it exceeds the source width. This is symmetric:
+`image([height(fill())], source)` and `svg([height(fill()), width(content())], source)`
+derive width from the allocated height. Explicit dimensions and min/max limits
+take precedence; fixed parent frames remain fixed, with overflow available for
+scrolling.
+
 Once both dimensions are set, they determine the frame and `image_fit(:contain)`
 or `image_fit(:cover)` determines how the source is drawn within it.
 
@@ -314,8 +322,10 @@ assets: [
 | Option | Default | Purpose |
 |---|---|---|
 | `assets.decode_at_size` | `false` | Decode/resample rasters to their fitted device-space draw size. |
-| `assets.cache.max_entries` | `256` | Maximum retained decoded raster content IDs. |
-| `assets.cache.max_bytes` | `268_435_456` | Maximum retained decoded pixel bytes. |
+| `assets.cache.max_entries` | `256` | Maximum retained raster images and SVG size/fit variants, combined. |
+| `assets.cache.max_bytes` | `268_435_456` | Shared raster/SVG decoded-pixel byte limit. |
+| `assets.cache.svg_tree_max_entries` | `64` | Maximum retained parsed SVG trees. |
+| `assets.cache.svg_tree_max_bytes` | `16_777_216` | Estimated parsed-tree storage limit, separate from pixels/fonts. |
 | `assets.fonts` | `[]` | Font family/source/weight/italic registrations loaded at startup. |
 | `assets.runtime_paths.enabled` | `false` | Permit `{:path, absolute_path}` sources. |
 | `assets.runtime_paths.allowlist` | `[]` | Absolute roots allowed for runtime paths. |
@@ -332,14 +342,14 @@ path policies, fonts, and cache limits.
 
 Runtime file-size limits do not bound decoded dimensions or pixels. Validate
 asset dimensions before making untrusted files available to the renderer. The
-raster-cache limits bound retained decoded pixels, not peak decode allocation.
+shared pixel-cache limits bound retained decoded pixels, not peak decode allocation.
 
-## Bound decoded raster memory
+## Bound decoded-pixel memory
 
 Raster source files are compressed, but decoded pixels normally use four bytes
 per pixel. Cache limits apply independently to each renderer, so process-wide
 retention can reach the sum of all running renderers' limits. Configure
-decoded-raster retention independently from runtime file limits:
+shared raster/SVG pixel retention independently from runtime file limits:
 
 ```elixir
 assets: [
@@ -351,16 +361,34 @@ assets: [
 ]
 ```
 
-Defaults are 256 entries and 256 MiB across renderers in the same BEAM
-instance:
+Defaults are 256 entries and 256 MiB **per renderer**:
 
-- `max_entries` limits how many decoded raster images stay available for reuse.
+- `max_entries` counts decoded raster images and each exact-size SVG variant.
 - `max_bytes` limits retained decoded pixels, not compressed file size.
-- Setting either limit to `0` disables retained raster reuse for that limit.
+- Setting either limit to `0` disables retained pixel reuse for that limit.
   Images still decode and draw when requested.
 
 SVG rendering is always available, including embedded builds; there is no
 optional SVG feature to enable.
+
+## Reuse SVGs across scenes and sizes
+
+Font discovery and parsed SVG trees are cached separately from rasterized pixels.
+A parsed tree is retained immediately, even if the scene closes before it is
+first drawn. With sufficient budgets, one SVG used at 24px, 68px, and 200px
+requires one font discovery, one parse, and three independent rasterizations.
+Reopening those scenes reuses the corresponding pixels; a new size uses the
+vector tree directly, never an enlarged smaller bitmap.
+
+Parsed-tree limits are `svg_tree_max_entries` and `svg_tree_max_bytes` under
+`assets.cache`. Bytes are an estimated tree-owned storage charge, not exact RSS;
+shared font-database storage is estimated separately once. Zero limits disable
+parsed-tree retention without disabling font reuse. Tree and pixel eviction are
+independent, and scene removal does not clear either cache. A new size can still
+take time to rasterize, but a retained tree does not transition to a placeholder.
+
+See [Asset/image internals](assets-images.html) for ownership,
+revalidation, and accounting details.
 
 ## Decode raster images at draw size
 
@@ -388,13 +416,17 @@ summary:
 ```text
 asset memory
   sources: entries=4 encoded_bytes=430561
-  raster cache: entries=1 bytes=120960 limits=entries:8 bytes:2097152
-  vector cache: entries=2 bytes=32768 limits=entries:256 bytes:16777216
+  shared pixel cache: entries=3 bytes=153728 limits=entries:8 bytes:2097152
+    raster cache: entries=1 bytes=120960
+    vector cache: entries=2 bytes=32768
+  parsed SVG cache: entries=2 estimated_bytes=40960 limits=entries:64 estimated_bytes:16777216 hits=10 misses=2 evictions=0
   raster variants
     source="images/photo.jpg" source_dimensions=1581x1333 decoded_dimensions=189x160 decoded_bytes=120960
 ```
 
-Use `raster cache` to see retained decoded memory and compare
+Use `shared pixel cache` for the combined retained-pixel budget, with separate
+raster/SVG breakdowns. Parsed-tree and shared-font estimates are additional
+storage, not extra pixel pools. Compare
 `source_dimensions` with `decoded_dimensions` to confirm that
 `decode_at_size: true` is reducing image size. Set cache limits from the memory
 available to your device rather than from compressed file sizes.

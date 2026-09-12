@@ -240,6 +240,148 @@ defmodule EmergeSkiaTest do
     end
   end
 
+  test "fill-axis SVGs and raster images grow the automatic dimension and move the next sibling" do
+    for {build, source} <- [
+          {&svg/2, "test_assets/single_axis_wide.svg"},
+          {&image/2, "test_assets/single_axis_wide.svg"},
+          {&image/2, "test_assets/single_axis_wide.png"}
+        ],
+        available_width <- [80, 300],
+        explicit_content <- [false, true],
+        axis <- [:width, :height],
+        scale <- [1, 2] do
+      {container, parent_attrs, image_attrs} =
+        if axis == :width do
+          {&column/2, [width(px(available_width))],
+           [width(fill())] ++ if(explicit_content, do: [height(content())], else: [])}
+        else
+          {&row/2, [height(px(div(available_width, 2)))],
+           [height(fill())] ++ if(explicit_content, do: [width(content())], else: [])}
+        end
+
+      tree =
+        container.(parent_attrs, [
+          build.([image_fit(:contain) | image_attrs], source),
+          el([width(px(8)), height(px(8)), Emerge.UI.Background.color(:blue)], none())
+        ])
+
+      pixels =
+        render_tree_to_pixels(tree, otp_app: :emerge, width: 640, height: 360, scale: scale)
+
+      right = available_width * scale
+      bottom = div(right, 2)
+      assert rgba_at(pixels, 640, 1, 1) == {255, 0, 0, 255}
+      assert rgba_at(pixels, 640, right - 1, bottom - 1) == {255, 0, 0, 255}
+      {sibling_x, sibling_y} = if axis == :width, do: {1, bottom}, else: {right, 1}
+      assert rgba_at(pixels, 640, sibling_x, sibling_y) == {0, 0, 255, 255}
+      assert rgba_at(pixels, 640, right - 1, bottom + 2) == {0, 0, 0, 0}
+    end
+  end
+
+  test "a centered responsive SVG and its in_front tint occupy the same frame" do
+    for viewport_width <- [160, 400], scale <- [1, 2] do
+      source = "test_assets/single_axis_wide.svg"
+
+      tree =
+        column([width(fill()), height(fill()), padding(48), Background.color(:black)], [
+          el([width(px(80)), height(px(20))], none()),
+          el(
+            [
+              center_x(),
+              center_y(),
+              width(fill()),
+              Nearby.in_front(svg([Svg.color(:white), width(fill())], source))
+            ],
+            svg([width(fill())], source)
+          ),
+          el([align_bottom(), width(px(80)), height(px(20))], none())
+        ])
+
+      width = viewport_width * scale
+      height = 640 * scale
+
+      pixels =
+        render_tree_to_pixels(tree, otp_app: :emerge, width: width, height: height, scale: scale)
+
+      left = 48 * scale
+      right = width - left
+      image_height = div(right - left, 2)
+      top = div(height - image_height, 2)
+      bottom = top + image_height
+
+      # A displaced overlay either leaves red content exposed or paints white
+      # outside the correctly centered image. Ignore the one-pixel draw bleed.
+      assert rgba_at(pixels, width, left + 3, top + 3) == {255, 255, 255, 255}
+      assert rgba_at(pixels, width, right - 3, bottom - 3) == {255, 255, 255, 255}
+      assert rgba_at(pixels, width, left + 3, top - 3) == {0, 0, 0, 255}
+      assert rgba_at(pixels, width, left + 3, bottom + 3) == {0, 0, 0, 255}
+    end
+  end
+
+  test "a live renderer reuses parsed SVGs and exact-size pixels across scenes without placeholders" do
+    {:ok, renderer} =
+      EmergeSkia.start(
+        otp_app: :emerge,
+        backend: :headless,
+        rendering_api: :raster,
+        width: 240,
+        height: 220,
+        headless: [target: self(), pixel_format: :rgb888]
+      )
+
+    on_exit(fn -> EmergeSkia.stop(renderer) end)
+
+    reference = fn tree ->
+      rgba = render_tree_to_pixels(tree, otp_app: :emerge, width: 240, height: 220)
+      for <<r, g, b, _a <- rgba>>, into: <<>>, do: <<r, g, b>>
+    end
+
+    scene = fn size, color ->
+      row([], [
+        svg([width(px(size)), height(px(size))], "test_assets/cache_complex.svg"),
+        el([width(px(8)), height(px(8)), Emerge.UI.Background.color(color)], none())
+      ])
+    end
+
+    # The cold load may show a placeholder. Wait for its completed image first.
+    initial = scene.(24, :blue)
+    expected = reference.(initial)
+    EmergeSkia.upload_tree(renderer, initial)
+    await_svg_cache_frame(fn data -> data == expected end)
+
+    blank = el([width(px(240)), height(px(220)), Emerge.UI.Background.color(:green)], none())
+    blank_pixels = reference.(blank)
+
+    for size <- [68, 200, 24, 68, 200] do
+      EmergeSkia.upload_tree(renderer, blank)
+      await_svg_cache_frame(fn data -> data == blank_pixels end)
+      tree = scene.(size, :blue)
+      expected = reference.(tree)
+      EmergeSkia.upload_tree(renderer, tree)
+      # Find the first frame of the new scene by its blue sibling, not by
+      # whether the SVG has finished loading. A placeholder must fail here.
+      data =
+        await_svg_cache_frame(fn data ->
+          offset = (240 + size) * 3
+          binary_part(data, offset, 3) == <<0, 0, 255>>
+        end)
+
+      assert data == expected
+    end
+  end
+
+  defp await_svg_cache_frame(predicate, deadline \\ nil) do
+    deadline = deadline || System.monotonic_time(:millisecond) + 5_000
+    remaining = Kernel.max(deadline - System.monotonic_time(:millisecond), 0)
+
+    receive do
+      {:emerge_skia_frame, %Frame{storage: %Binary{data: data}}} ->
+        if predicate.(data), do: data, else: await_svg_cache_frame(predicate, deadline)
+    after
+      remaining -> flunk("timed out waiting for SVG cache frame")
+    end
+  end
+
   test "render_to_pixels svg/2 applies template tint when Svg.color is set" do
     tree =
       svg(

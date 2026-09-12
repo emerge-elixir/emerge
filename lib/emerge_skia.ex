@@ -121,8 +121,15 @@ defmodule EmergeSkia do
   | `renderer_stats_log` | `false` | Collect and log renderer stats every five seconds |
   | `renderer_animation_log` | `false` | Log Wayland animation cadence |
   | `renderer_cache` | enabled on GPU routes | Paint-layer cache settings |
-  | `assets` | restrictive defaults | Asset paths, fonts, decode, and raster cache settings |
+  | `assets` | restrictive defaults | Asset paths, fonts, decode, and shared raster/SVG cache settings |
   | `headless` | binary defaults | Headless output settings |
+
+  `assets.cache.max_entries` (256) and `max_bytes` (256 MiB) share one pixel
+  budget across raster images and rasterized SVG size/fit variants. SVGs also
+  retain parsed trees across scenes: `assets.cache.svg_tree_max_entries` (64)
+  and `svg_tree_max_bytes` (16 MiB of estimated tree storage) control this
+  independent cache. Font discovery is shared per renderer asset configuration.
+  Zero limits disable the corresponding retention; active draws still work.
 
   `backend_renderer` and `:gl` remain deprecated aliases. `macos_backend` and
   `dispatch_mode` were removed. See [Migrating to 0.4](0-4.html).

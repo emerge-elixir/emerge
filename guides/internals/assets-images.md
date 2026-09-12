@@ -48,7 +48,7 @@ Startup/config flow:
 - `EmergeSkia.start/1` requires `otp_app` and calls `configure_assets_nif` with `<otp_app>/priv` as the source root, runtime-path policy, raster-cache limits, and sized-decode policy.
 - `EmergeSkia.start/1` preloads configured font assets (`assets.fonts`) from `<otp_app>/priv` and registers them in the native font cache.
 - Rust stores normalized config in the renderer's asset runtime and applies raster-cache limits to that renderer's decoded LRU.
-- Reconfiguration clears only that renderer's source-status cache so paths are revalidated under the new policy.
+- Reconfiguration clears that renderer's source state and SVG caches so paths and SVG parsing are revalidated under the new policy. Other renderers are unaffected.
 
 Render behavior while waiting:
 
@@ -111,11 +111,13 @@ Validation sequence for runtime paths:
 4. symlink/canonical path policy
 5. allowlist root check
 
-## Decoded Raster Retention
+## Shared decoded-pixel retention
 
 `assets.cache.max_entries` and `assets.cache.max_bytes` default to 256 entries
-and 256 MiB. The cache accounts final Skia pixel storage. Encoded source bytes
-are tracked separately and are not charged to the decoded-byte limit.
+and 256 MiB. Raster images and rasterized SVG variants share **one LRU and one
+budget**. Each SVG size/fit variant counts as an entry; all retained Skia pixel
+storage contributes to the byte total. Encoded raster source bytes, parsed SVG
+trees, and SVG font discovery are tracked separately.
 
 One content ID retains at most one raster. A retained raster is reused when both
 its dimensions are at least the requested target. A larger target replaces it
@@ -129,9 +131,49 @@ Encoded source status and decoded retention have independent lifetimes. A
 retained raster can render while an evicted source record is hydrated again.
 Generation checks prevent reuse after source content changes.
 
-The rendered SVG cache is separate: 256 entries, 16 MiB total, and 1 MiB per
-variant. SVG parsing and CPU rendering are unconditional in embedded and desktop
-builds.
+### SVG font, tree, and pixel caches
+
+SVG loading has three independent renderer-local cache stages:
+
+- **Font discovery:** one immutable system-font database per asset configuration
+  generation, shared across SVG documents and parsed trees. This preserves the
+  existing system-font matching behavior; it is not the Skia registered-font cache.
+- **Parsed trees:** an `Arc<usvg::Tree>` is cached immediately after parsing, before
+  any rasterization. `assets.cache.svg_tree_max_entries` (default 64) and
+  `assets.cache.svg_tree_max_bytes` (default 16 MiB) bound this LRU separately.
+  Bytes are an estimated tree-owned heap charge, including structure, path/text
+  buffers, definitions, and embedded image bytes, with shared subobjects deduplicated.
+  Private usvg fields receive an allowance; this is not an exact RSS measurement.
+  The shared font database is estimated separately once, not charged once per tree.
+  That estimate covers database metadata and deduplicated retained binary/mapped
+  buffers, not unloaded font-file contents or an exact resident-memory total.
+- **Rasterized pixels:** each exact size/fit variant is retained in the shared
+  decoded-pixel LRU above. There is no separate SVG pixel budget or 1 MiB
+  per-variant cap. Tint is applied during drawing and does not duplicate variants.
+
+Removing an SVG from the scene releases active references, not retained trees or
+pixels. Reopening at the same cached size requires no discovery, parsing, or
+rasterization. A new size is rasterized directly from a retained tree for full
+quality; it does not enlarge a smaller bitmap or show a loading placeholder.
+A complex new rasterization can still take time on the render thread.
+
+Tree and pixel eviction are independent. A pixel hit works without a retained
+tree; a tree hit works without retained pixels. Only a miss in both requires
+asynchronous loading and a placeholder. Zero tree-cache limits disable tree
+retention without disabling font-database reuse. Oversized trees remain usable
+by active draws but are not retained after use.
+
+Remounted path sources are validated against the current source policy and
+revalidated asynchronously. Authorized cached content can be displayed while
+revalidation runs. Unchanged content preserves trees and pixels; changed bytes
+publish a new content ID. Deletion/read failure publishes the failed placeholder.
+Reconfiguration invalidates SVG trees, pixels, source mappings, and the SVG font
+environment generation. Renderer recreation is a cold start.
+
+Cache limits bound cache-owned storage, not active/in-flight references or all
+process memory. Parsed-tree estimates and font data are not included in the
+shared pixel budget. SVG parsing and CPU rasterization remain available on both
+embedded and desktop builds.
 
 Each native renderer owns its source worker/configuration, encoded source
 records, decoded raster LRU, rendered SVG variants, registered fonts, and cache
@@ -144,7 +186,10 @@ that renderer's asset state.
 
 - retained encoded source count and bytes;
 - decoded raster entries, bytes, and configured limits;
-- rendered vector entries, bytes, and fixed limits;
+- shared pixel-cache entries, bytes, and configured limits, with raster/SVG breakdowns;
+- SVG variant source IDs, fit variant, rasterized dimensions, and retained bytes;
+- parsed SVG cache entries, estimated bytes/limits, hits, misses, and evictions;
+- SVG font-environment generation, face count, separate estimated storage, and discovery/parse/rasterization counts;
 - original, codec, and final dimensions per retained raster;
 - decoded-to-source pixel ratio, decoded-to-file byte ratio, estimated peak
   decode bytes, and whether the encoded source record is retained.
@@ -174,7 +219,9 @@ EmergeSkia.start(
     decode_at_size: true,
     cache: [
       max_entries: 32,
-      max_bytes: 32 * 1024 * 1024
+      max_bytes: 32 * 1024 * 1024,
+      svg_tree_max_entries: 32,
+      svg_tree_max_bytes: 8 * 1024 * 1024
     ],
     fonts: [
       [family: "my-font", source: "fonts/MyFont-Regular.ttf", weight: 400],

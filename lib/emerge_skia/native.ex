@@ -137,6 +137,8 @@ defmodule EmergeSkia.Native do
           required(:asset_extensions) => [String.t()],
           required(:asset_cache_max_entries) => non_neg_integer(),
           required(:asset_cache_max_bytes) => non_neg_integer(),
+          required(:asset_svg_tree_max_entries) => non_neg_integer(),
+          required(:asset_svg_tree_max_bytes) => non_neg_integer(),
           required(:asset_decode_at_size) => boolean(),
           required(:drm_cursor) => [
             %{

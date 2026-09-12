@@ -391,7 +391,10 @@ defmodule Emerge.UI do
 
   When one dimension is pixel-sized and the other is omitted or `content()`,
   the content-sized dimension follows the source's intrinsic aspect ratio.
-  Pixel sizes include padding and borders; the ratio applies to the inner content.
+  With `width(fill())`, an omitted or `content()` height follows the resolved
+  width. With `height(fill())`, an automatic width follows the resolved height.
+  Both grow or shrink proportionally, subject to explicit dimensions and min/max
+  limits. Sizes include padding and borders; the ratio applies to the inner content.
 
   Use `image_fit/1` to choose between `:contain` and `:cover`. Setting both
   dimensions fixes the frame; the fit mode controls how the image fills it.
@@ -424,7 +427,10 @@ defmodule Emerge.UI do
   Like `image/2`, a pixel-sized dimension determines an omitted or `content()`
   dimension from the source's intrinsic aspect ratio. For example, a 200×200 SVG
   with only `height(px(68))` occupies 68×68 pixels without padding or borders.
-  Setting both dimensions fixes the frame, with `image_fit/1` controlling the fit.
+  `width(fill())` derives an automatic height from the allocated width, and
+  `height(fill())` derives an automatic width from the allocated height, including
+  enlargement beyond the source dimensions. Setting both dimensions
+  fixes the frame, with `image_fit/1` controlling the fit.
 
   ## Example
 
