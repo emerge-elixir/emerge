@@ -52,7 +52,7 @@ use std::{
     ptr,
 };
 #[cfg(target_os = "linux")]
-use support::scrollable_rich_borders_shadow_showcase;
+use support::{borders_cache, scrollable_rich_borders_shadow_showcase};
 
 const WIDTH: u32 = 960;
 const HEIGHT: u32 = 720;
@@ -105,8 +105,6 @@ const EMERGE_DEMO_SHOWCASE_BORDERS_FRAME_MS: [u64; 8] = [0, 16, 32, 48, 64, 80, 
 const EMERGE_DEMO_SHOWCASE_BORDERS_SCROLL_STEP: f32 = 8.0;
 #[cfg(target_os = "linux")]
 const RICH_BORDERS_SHOWCASE_FRAME_MS: [u64; 8] = [0, 16, 32, 48, 64, 80, 96, 112];
-#[cfg(target_os = "linux")]
-const RICH_BORDERS_SHOWCASE_SCROLL_STEP: f32 = 8.0;
 #[cfg(target_os = "linux")]
 const EMERGE_DEMO_SHOWCASE_BORDERS_SCREENSHOT_WIDTH: u32 = 1909;
 #[cfg(target_os = "linux")]
@@ -604,20 +602,34 @@ fn bench_renderer_paint_layer_cache(c: &mut Criterion) {
     let borders = rich_borders_showcase_benchmark();
     group.throughput(Throughput::Elements(borders.summary.nodes as u64));
     group.bench_function("rich_borders_showcase/cache_steady_hits", |b| {
-        let mut state_index = 2usize;
         let mut surface = EglBenchSurface::new((borders.width, borders.height))
             .expect("EGL surfaceless setup should stay available after probe");
-        let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+        let config = RendererCacheConfig {
             enabled: true,
             ..RendererCacheConfig::default()
-        });
-        assert_rich_borders_showcase_cache_hits(&mut renderer, &mut surface, &borders);
-
+        };
+        // An uncached control rules out cache warm-up itself supplying a false
+        // animation signal. Both controls/readbacks are outside Criterion timing.
+        let mut direct = SceneRenderer::with_cache_config(RendererCacheConfig::default());
+        assert_rich_borders_coverage(&mut direct, &mut surface, &borders, false, 0);
+        let mut renderer = SceneRenderer::with_cache_config(config);
+        let mut state_index = assert_rich_borders_showcase_cache_hits(
+            &mut renderer,
+            &mut surface,
+            &borders,
+            config.max_new_payloads_per_frame,
+        );
+        unsafe { gl::Finish() };
         b.iter(|| {
             let state = &borders.states[state_index];
             state_index = (state_index + 1) % borders.states.len();
-            let mut frame = surface.frame();
-            black_box(renderer.render(&mut frame, state));
+            let timings = {
+                let mut frame = surface.frame();
+                renderer.render(&mut frame, state)
+            };
+            // Surfaceless EGL has no presentation throttle: include GPU completion.
+            unsafe { gl::Finish() };
+            black_box(timings);
         });
     });
 
@@ -2568,7 +2580,7 @@ struct RichBordersShowcaseBenchmark {
     states: Vec<RenderState>,
     width: u32,
     height: u32,
-    scroll_y: f32,
+    viewport: borders_cache::Viewport,
     summary: RenderSceneSummary,
 }
 
@@ -2578,9 +2590,7 @@ struct RichBordersShowcaseTarget {
     width: u32,
     height: u32,
     scroll_id: NodeId,
-    scroll_y: f32,
-    summary: RenderSceneSummary,
-    score: usize,
+    viewport: borders_cache::Viewport,
 }
 
 #[cfg(target_os = "linux")]
@@ -2589,39 +2599,18 @@ fn rich_borders_showcase_benchmark() -> RichBordersShowcaseBenchmark {
     let tree = scrollable_rich_borders_shadow_showcase();
     let mut runtime = AnimationRuntime::default();
     runtime.sync_with_tree(&tree, started_at);
-
     let target = rich_borders_showcase_target(&tree, &runtime, started_at);
     let states = rich_borders_showcase_states(&tree, &runtime, started_at, target);
     let summary = states
         .first()
-        .expect("rich borders showcase benchmark should build states")
+        .expect("rich borders states missing")
         .scene
         .summary();
-
-    assert!(
-        summary.nodes >= 500 && summary.primitives >= 150 && summary.texts >= 100,
-        "rich borders benchmark did not select the expected rich viewport: \
-         size={}x{}, scroll_y={}, score={}, summary={summary:?}",
-        target.width,
-        target.height,
-        target.scroll_y,
-        target.score
-    );
-    assert!(
-        summary.cacheable_layers > 0,
-        "rich borders benchmark should select the animated-shadow viewport: \
-         size={}x{}, scroll_y={}, score={}, summary={summary:?}",
-        target.width,
-        target.height,
-        target.scroll_y,
-        target.score
-    );
-
     RichBordersShowcaseBenchmark {
         states,
         width: target.width,
         height: target.height,
-        scroll_y: target.scroll_y,
+        viewport: target.viewport,
         summary,
     }
 }
@@ -2641,7 +2630,7 @@ fn rich_borders_showcase_states(
         runtime,
         started_at,
     );
-    tree.apply_scroll_y(&target.scroll_id, -target.scroll_y);
+    tree.apply_scroll_y(&target.scroll_id, -target.viewport.scroll_y);
 
     RICH_BORDERS_SHOWCASE_FRAME_MS
         .iter()
@@ -2679,97 +2668,16 @@ fn rich_borders_showcase_target(
     );
     let scroll_id = largest_vertical_scroll_node(&layout_tree)
         .expect("rich borders showcase should have a vertical scroll container");
-    let (scroll_y, summary, score) = rich_borders_showcase_target_scroll_y(
-        &layout_tree,
-        scroll_id,
-        runtime,
-        started_at,
-        width,
-        height,
-    );
-    let target = RichBordersShowcaseTarget {
-        width,
-        height,
-        scroll_id,
-        scroll_y,
-        summary,
-        score,
-    };
-
+    let viewport = borders_cache::select_viewport(&layout_tree, scroll_id, width, height);
     if emerge_bench_diagnostics_enabled() {
-        eprintln!(
-            "rich borders showcase selected target: size={}x{} scroll_y={} score={} summary={:?}",
-            target.width, target.height, target.scroll_y, target.score, target.summary
-        );
+        eprintln!("rich borders geometry-selected viewport: {viewport:?}");
     }
-
-    target
-}
-
-#[cfg(target_os = "linux")]
-fn rich_borders_showcase_target_scroll_y(
-    tree: &ElementTree,
-    scroll_id: NodeId,
-    runtime: &AnimationRuntime,
-    started_at: Instant,
-    width: u32,
-    height: u32,
-) -> (f32, RenderSceneSummary, usize) {
-    let max_y = tree
-        .get(&scroll_id)
-        .map(|element| element.layout.scroll_y_max.max(0.0))
-        .unwrap_or(0.0);
-    let sample_count = (max_y / RICH_BORDERS_SHOWCASE_SCROLL_STEP).ceil() as usize;
-
-    (0..=sample_count)
-        .map(|sample| {
-            let scroll_y = (sample as f32 * RICH_BORDERS_SHOWCASE_SCROLL_STEP).min(max_y);
-            let summary = rich_borders_showcase_summary_at_scroll(
-                tree, scroll_id, runtime, started_at, scroll_y, width, height,
-            );
-            (
-                rich_borders_showcase_target_score(summary),
-                scroll_y,
-                summary,
-            )
-        })
-        .min_by_key(|(score, _, _)| *score)
-        .map(|(score, scroll_y, summary)| (scroll_y, summary, score))
-        .unwrap_or((0.0, RenderSceneSummary::default(), usize::MAX))
-}
-
-#[cfg(target_os = "linux")]
-fn rich_borders_showcase_summary_at_scroll(
-    tree: &ElementTree,
-    scroll_id: NodeId,
-    runtime: &AnimationRuntime,
-    started_at: Instant,
-    scroll_y: f32,
-    width: u32,
-    height: u32,
-) -> RenderSceneSummary {
-    let mut frame_tree = tree.clone();
-    frame_tree.apply_scroll_y(&scroll_id, -scroll_y);
-    layout_and_refresh_default_with_animation(
-        &mut frame_tree,
-        rich_borders_showcase_constraint(width, height),
-        1.0,
-        runtime,
-        started_at,
-    )
-    .scene
-    .summary()
-}
-
-#[cfg(target_os = "linux")]
-fn rich_borders_showcase_target_score(summary: RenderSceneSummary) -> usize {
-    summary.nodes.abs_diff(750)
-        + summary.primitives.abs_diff(281) * 8
-        + summary.texts.abs_diff(201) * 4
-        + summary.shadows.abs_diff(14) * 8
-        + summary.borders.abs_diff(18) * 4
-        + summary.paint_layers.abs_diff(12) * 12
-        + summary.moving_layers.abs_diff(7) * 6
+    RichBordersShowcaseTarget {
+        width,
+        height,
+        scroll_id,
+        viewport,
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -2782,67 +2690,72 @@ fn assert_rich_borders_showcase_cache_hits(
     renderer: &mut SceneRenderer,
     surface: &mut EglBenchSurface,
     page: &RichBordersShowcaseBenchmark,
-) {
-    let warm_stats = render_paint_layer_cache_stats(renderer, surface, &page.states[0]);
-    assert!(
-        warm_stats.stores > 0,
-        "rich borders showcase did not warm paint-layer payloads: \
-         scroll_y={}, summary={:?}, stats={warm_stats:?}",
-        page.scroll_y,
-        page.summary
-    );
-
-    let second_warm_stats = render_paint_layer_cache_stats(renderer, surface, &page.states[1]);
-    let steady_stats = render_paint_layer_cache_stats(renderer, surface, &page.states[2]);
-    assert!(
-        steady_paint_layer_coverage(steady_stats) > 0,
-        "rich borders showcase lost warmed cache-hit coverage: \
-         scroll_y={}, summary={:?}, stats={steady_stats:?}",
-        page.scroll_y,
-        page.summary
-    );
-    assert!(steady_stats.misses <= 2, "{steady_stats:?}");
-    assert!(steady_stats.stores <= 2, "{steady_stats:?}");
-    assert_eq!(steady_stats.evictions, 0, "{steady_stats:?}");
-    assert_eq!(steady_stats.stale_evictions, 0, "{steady_stats:?}");
-
-    let mut total = Duration::ZERO;
-    let mut draw = Duration::ZERO;
-    let mut flush = Duration::ZERO;
-    let mut count = 0u32;
-    for state in page.states.iter().skip(3) {
-        let timings = {
-            let mut frame = surface.frame();
-            renderer.render(&mut frame, state)
-        };
-        let stats = timings
-            .renderer_cache
-            .as_ref()
-            .expect("steady rich borders frame should produce cache stats")
-            .paint_layer;
-        assert!(steady_paint_layer_coverage(stats) > 0, "{stats:?}");
-        assert!(stats.misses <= 2, "{stats:?}");
-        assert!(stats.stores <= 2, "{stats:?}");
-        assert_eq!(stats.evictions, 0, "{stats:?}");
-        assert_eq!(stats.stale_evictions, 0, "{stats:?}");
-        total += timings.total;
-        draw += timings.draw;
-        flush += timings.flush;
-        count += 1;
-    }
+    budget: u32,
+) -> usize {
+    let first = render_paint_layer_cache_stats(renderer, surface, &page.states[0]);
+    let next = borders_cache::warm_cache(first, budget, page.states.len(), |index| {
+        let stats = render_paint_layer_cache_stats(renderer, surface, &page.states[index]);
+        if emerge_bench_diagnostics_enabled() {
+            eprintln!("rich borders warm-up: state={index}, stats={stats:?}");
+        }
+        stats
+    });
+    // Check an additional entire cycle, including the wrap to state zero, without
+    // warm-up exemptions. Validate both the live shadows and static recipe pixels.
+    assert_rich_borders_coverage(renderer, surface, page, true, next);
     if emerge_bench_diagnostics_enabled() {
         eprintln!(
-            "rich borders showcase: scroll_y={}, summary={:?}, warm={:?}, second_warm={:?}, steady={:?}, steady_total_avg={:?}, steady_draw_avg={:?}, steady_flush_avg={:?}",
-            page.scroll_y,
-            page.summary,
-            warm_stats,
-            second_warm_stats,
-            steady_stats,
-            total / count,
-            draw / count,
-            flush / count
+            "rich borders warmed: next_state={next}, viewport={:?}, summary={:?}",
+            page.viewport, page.summary
         );
     }
+    next
+}
+
+#[cfg(target_os = "linux")]
+fn assert_rich_borders_coverage(
+    renderer: &mut SceneRenderer,
+    surface: &mut EglBenchSurface,
+    page: &RichBordersShowcaseBenchmark,
+    steady: bool,
+    start: usize,
+) {
+    let samples: Vec<_> = (0..page.states.len())
+        .filter_map(|step| {
+            let index = (start + step) % page.states.len();
+            let state = &page.states[index];
+            if steady {
+                let stats = render_paint_layer_cache_stats(renderer, surface, state);
+                assert!(
+                    borders_cache::is_steady(stats),
+                    "borders steady state {index}: {stats:?}"
+                );
+            } else {
+                // Scroll-moving payloads opt into tracking even with config.enabled=false.
+                // Force the direct traversal for this validation-only control.
+                let mut direct = RenderState::new(
+                    state.scene.clone(),
+                    state.clear_color,
+                    state.render_version,
+                    state.animate,
+                );
+                direct.has_cacheable_paint_layers = false;
+                let timings = renderer.render(&mut surface.frame(), &direct);
+                assert!(
+                    timings.renderer_cache.is_none(),
+                    "coverage control must be uncached"
+                );
+            }
+            (index == 0 || index == page.states.len() - 1)
+                .then(|| borders_cache::read_coverage(surface.frame().surface_mut(), page.viewport))
+        })
+        .collect();
+    assert_eq!(
+        samples.len(),
+        2,
+        "borders benchmark must have distinct animation states"
+    );
+    borders_cache::assert_coverage(&samples[0], &samples[1]);
 }
 
 #[cfg(target_os = "linux")]

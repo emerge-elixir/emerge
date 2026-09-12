@@ -61,9 +61,15 @@ and the 60 FPS / 30% headroom gates.
 Remaining macOS host/Metal and constrained-device performance qualification for
 the implemented universal gradient colors. The shared color/brush model, every
 UI consumer, SVG alpha/validation, animation and EMRG v9 migration are complete.
-Tracks the independently reproduced borders-showcase benchmark failure.
+Tracks the independently reproduced renderer benchmark qualification issues.
 
 ## Durable references
+
+### `borders-cache-benchmark-investigation.md`
+
+Good/bad commit reproduction for the borders cache benchmark: ordered paint-run
+payloads outgrew its warm-up assumption, and topology-based viewport selection
+lost visible animation coverage. Includes controls and a scoped correction.
 
 ### `release-0.4.0-audit.md`
 

@@ -140,6 +140,27 @@ cargo bench --manifest-path native/emerge_skia/Cargo.toml --bench renderer --fea
 cargo bench --manifest-path native/emerge_skia/Cargo.toml --bench renderer --features bench-diagnostics -- --baseline drawing_opt_before
 ```
 
+### Rich borders cache workload
+
+`rich_borders_showcase/cache_steady_hits` selects its viewport from the three
+animated fixture cards' layout geometry, with a static recipe also visible.
+Setup checks pixel changes around every animated card and unchanged painted
+static detail, using both forced-direct and warmed-cache rendering. A finite
+budget-derived warm-up requires a full consecutive steady animation cycle,
+followed by another strictly checked cycle; it does not increase the production
+payload budget or relax the two-miss/two-store limits. Setup and pixel readbacks
+are outside timing; timed iterations include GPU completion.
+
+```bash
+scripts/performance-lock.sh exclusive cargo bench --manifest-path native/emerge_skia/Cargo.toml --bench renderer --features bench-diagnostics -- rich_borders_showcase/cache_steady_hits --test
+```
+
+CPU contract and raster coverage regressions run in `cargo test` through
+`tests/borders_cache_benchmark.rs`. Re-baseline this corrected workload: historical
+results could sample an offscreen-animation/static viewport and only enqueue GPU
+work. See `plans/borders-cache-benchmark-investigation.md` for the history and the
+separate, still-failing large screenshot benchmark assertion.
+
 ## Naming
 
 Benchmark names use this shape:

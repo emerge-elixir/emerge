@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+pub mod borders_cache;
+
 use emerge_skia::tree::animation::{AnimationCurve, AnimationRepeat, AnimationSpec};
 use emerge_skia::tree::attrs::{
     Attrs, Background, BorderRadius, BorderWidth, BoxShadow, Color, Length, Padding,

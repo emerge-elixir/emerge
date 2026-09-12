@@ -21,13 +21,17 @@ This file retains only open qualification work, not an implementation log.
   claim. Follow the shared/exclusive locking in `bench/README.md` and record an
   immutable source identity for measurements.
 
-## Known independent benchmark failure
+## Independent renderer benchmark qualification
 
-`rich_borders_showcase/cache_steady_hits` still fails its cache-budget assertion:
-18 misses, 16 stores, 32 hits and 2 payload-budget rejections during warmup. The
-same failure and counters were reproduced on a clean pre-gradient baseline.
-Do not weaken that assertion or attribute it to gradients without new evidence.
-General renderer/cache qualification should resolve it separately.
+`rich_borders_showcase/cache_steady_hits` is corrected: geometry-selected visible
+animation, direct/cached pixel checks and bounded budget-aware warm-up now pass.
+The full renderer suite next reaches a separate failure in
+`emerge_demo_showcase_borders/screenshot_1909x2148_scale_1_5/cache_steady_hits`.
+That assertion also fails on the unmodified `d10d294` baseline (25 misses,
+16 stores, 29 hits, 9 budget rejections). It remains unchanged; resolving it must
+not silently loosen coverage assertions or change production cache budgets.
+See [`borders-cache-benchmark-investigation.md`](borders-cache-benchmark-investigation.md)
+for the history, correction and baseline evidence.
 
 ## Constraints
 
