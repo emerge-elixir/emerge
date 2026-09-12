@@ -4436,3 +4436,77 @@ fn push_align_x_attr(data: &mut Vec<u8>, align_x: AlignX) {
         AlignX::Right => 2,
     });
 }
+
+#[test]
+fn test_single_axis_image_patches_and_clean_cache_match_fresh_layout() {
+    fn attrs_raw(height: f64, source: (f64, f64)) -> Vec<u8> {
+        [
+            vec![0, 2, 2, 2], // two attributes: height(Px), image_size
+            height.to_be_bytes().to_vec(),
+            vec![55],
+            source.0.to_be_bytes().to_vec(),
+            source.1.to_be_bytes().to_vec(),
+        ]
+        .concat()
+    }
+
+    fn image_row(height: f64, source: (f64, f64)) -> ElementTree {
+        let parent = make_element("parent", ElementKind::Row, Attrs::default());
+        let image = make_element(
+            "image",
+            ElementKind::Image,
+            crate::tree::attrs::decode_attrs(&attrs_raw(height, source)).unwrap(),
+        );
+        let sibling = make_element("sibling", ElementKind::El, fixed_box_attrs(10.0, 10.0));
+        let (parent_id, image_id, sibling_id) = (parent.id, image.id, sibling.id);
+        let mut tree = ElementTree::new();
+        tree.set_root_id(parent_id);
+        for element in [parent, image, sibling] {
+            tree.insert(element);
+        }
+        tree.set_children(&parent_id, vec![image_id, sibling_id])
+            .unwrap();
+        tree
+    }
+
+    let constraint = Constraint::new(800.0, 600.0);
+    let mut cached = image_row(68.0, (200.0, 200.0));
+    let parent_id = cached.root_id().unwrap();
+    let image_id = cached.child_ids(&parent_id)[0];
+    let sibling_id = cached.child_ids(&parent_id)[1];
+    layout_tree(&mut cached, constraint, 1.0, &MockTextMeasurer);
+
+    for (height, source, expected_width) in [
+        (34.0, (200.0, 200.0), 34.0),
+        (34.0, (200.0, 100.0), 68.0),
+        (68.0, (100.0, 200.0), 34.0),
+    ] {
+        let invalidation = apply_patches(
+            &mut cached,
+            vec![Patch::SetAttrs {
+                id: image_id,
+                attrs_raw: attrs_raw(height, source),
+            }],
+        )
+        .unwrap();
+        assert_eq!(invalidation, TreeInvalidation::Measure);
+        let mut fresh = image_row(height, source);
+        layout_tree(&mut fresh, constraint, 1.0, &MockTextMeasurer);
+        for _ in 0..2 {
+            layout_tree(&mut cached, constraint, 1.0, &MockTextMeasurer);
+            assert_layout_matches(&cached, &fresh);
+            assert_eq!(
+                cached.get(&image_id).unwrap().layout.measured_frame,
+                fresh.get(&image_id).unwrap().layout.measured_frame
+            );
+            assert_eq!(
+                cached.get(&parent_id).unwrap().layout.frame.unwrap().width,
+                expected_width + 10.0
+            );
+            assert_eq!(
+                cached.get(&sibling_id).unwrap().layout.frame.unwrap().x,
+                expected_width
+            );
+        }
+    }
+}

@@ -389,7 +389,12 @@ defmodule Emerge.UI do
   `source` can be a verified `~m"..."` reference, logical asset path,
   runtime file path, or `{:id, image_id}`.
 
-  Use `image_fit/1` to choose between `:contain` and `:cover`.
+  When one dimension is pixel-sized and the other is omitted or `content()`,
+  the content-sized dimension follows the source's intrinsic aspect ratio.
+  Pixel sizes include padding and borders; the ratio applies to the inner content.
+
+  Use `image_fit/1` to choose between `:contain` and `:cover`. Setting both
+  dimensions fixes the frame; the fit mode controls how the image fills it.
 
   ## Example
 
@@ -416,10 +421,15 @@ defmodule Emerge.UI do
   Preserves the SVG's original colors by default. Use `Svg.color/1` to apply
   template tinting to all visible pixels.
 
+  Like `image/2`, a pixel-sized dimension determines an omitted or `content()`
+  dimension from the source's intrinsic aspect ratio. For example, a 200×200 SVG
+  with only `height(px(68))` occupies 68×68 pixels without padding or borders.
+  Setting both dimensions fixes the frame, with `image_fit/1` controlling the fit.
+
   ## Example
 
   ```elixir
-  svg([width(px(24)), height(px(24))], "icons/check.svg")
+  svg([height(px(24))], "icons/check.svg")
   ```
   """
   @spec svg(attrs(), image_source()) :: t()

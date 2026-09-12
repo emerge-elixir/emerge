@@ -211,6 +211,35 @@ defmodule EmergeSkiaTest do
     assert rgba_at(pixels, 8, 6, 6) == {255, 255, 0, 255}
   end
 
+  test "single-axis SVG sizing places the next sibling immediately after the image" do
+    for build <- [&svg/2, &image/2],
+        {source, attrs, expected_width, expected_height} <- [
+          {"test_assets/single_axis_square.svg", [height(px(68))], 68, 68},
+          {"test_assets/single_axis_wide.svg", [height(px(68))], 136, 68},
+          {"test_assets/single_axis_wide.svg", [width(px(68)), height(content())], 68, 34}
+        ],
+        scale <- [1, 2] do
+      tree =
+        row([], [
+          build.(attrs, source),
+          el([width(px(8)), height(px(8)), Emerge.UI.Background.color(:blue)], none())
+        ])
+
+      pixels =
+        render_tree_to_pixels(tree, otp_app: :emerge, width: 320, height: 200, scale: scale)
+
+      right = expected_width * scale
+      bottom = expected_height * scale
+      assert byte_size(pixels) == 320 * 200 * 4
+      assert rgba_at(pixels, 320, 1, 1) == {255, 0, 0, 255}
+      assert rgba_at(pixels, 320, right - 1, bottom - 1) == {255, 0, 0, 255}
+      assert rgba_at(pixels, 320, right, 1) == {0, 0, 255, 255}
+      assert rgba_at(pixels, 320, right + 8 * scale, 1) == {0, 0, 0, 0}
+      # Relaxed image drawing intentionally bleeds by one device pixel.
+      assert rgba_at(pixels, 320, 1, bottom + 2) == {0, 0, 0, 0}
+    end
+  end
+
   test "render_to_pixels svg/2 applies template tint when Svg.color is set" do
     tree =
       svg(

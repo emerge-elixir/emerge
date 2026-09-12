@@ -11,7 +11,7 @@ use crate::{
     stats::{RendererStatsCollector, earliest_pipeline_instant},
     tree::{
         animation::AnimationRuntime,
-        element::{ElementTree, NodeId},
+        element::{ElementTree, IntrinsicMeasureCacheKey, NodeId},
         invalidation::{
             RefreshAvailability, RefreshDecision, TreeInvalidation, decide_refresh_action,
         },
@@ -360,6 +360,29 @@ impl TreeUpdateEngine {
                     registry_requested = true;
                 }
                 TreeMsg::AssetStateChanged => {
+                    // Requesting a layout pass alone does not invalidate retained
+                    // subtree measurements. Dirty only paths whose media size changed.
+                    let changed_ids: Vec<_> = self
+                        .tree
+                        .iter_node_pairs()
+                        .filter_map(|(id, element)| {
+                            let cache = element.layout.intrinsic_measure_cache.as_ref()?;
+                            match &cache.key {
+                                IntrinsicMeasureCacheKey::Media {
+                                    image_src: Some(source),
+                                    image_size: None,
+                                    resolved_source_size,
+                                    ..
+                                } if *resolved_source_size != assets::source_dimensions(source) => {
+                                    Some(id)
+                                }
+                                _ => None,
+                            }
+                        })
+                        .collect();
+                    for id in changed_ids {
+                        self.tree.mark_measure_dirty(&id);
+                    }
                     invalidation.add(TreeInvalidation::Measure);
                 }
             }
@@ -1002,6 +1025,135 @@ mod tests {
         element::{Element, ElementKind, Frame, NearbySlot, SliderValueOrigin},
         serialize::encode_tree,
     };
+
+    #[test]
+    fn asset_state_change_remeasures_single_axis_image_and_sibling() {
+        use crate::input::InputEvent;
+        use crate::tree::attrs::ImageSource;
+
+        let runtime = assets::AssetRuntime::new();
+        let _guard = runtime.enter();
+        let source = ImageSource::Id("single-axis-svg".to_string());
+        let parent_id = NodeId::from_u64(74_000);
+        let image_id = NodeId::from_u64(74_001);
+        let sibling_id = NodeId::from_u64(74_002);
+        let mut tree = ElementTree::new();
+        for (id, kind, attrs) in [
+            (parent_id, ElementKind::Row, Attrs::default()),
+            (
+                image_id,
+                ElementKind::Image,
+                Attrs {
+                    image_src: Some(source.clone()),
+                    height: Some(Length::Px(68.0)),
+                    on_mouse_move: Some(true),
+                    ..Attrs::default()
+                },
+            ),
+            (
+                sibling_id,
+                ElementKind::El,
+                Attrs {
+                    width: Some(Length::Px(10.0)),
+                    height: Some(Length::Px(10.0)),
+                    on_mouse_move: Some(true),
+                    ..Attrs::default()
+                },
+            ),
+        ] {
+            tree.insert(Element::with_attrs(id, kind, Vec::new(), attrs));
+        }
+        tree.set_root_id(parent_id);
+        tree.set_children(&parent_id, vec![image_id, sibling_id])
+            .unwrap();
+        let mut engine = TreeUpdateEngine::new(tree, 800, 600);
+        let _ = layout_output(
+            engine
+                .process_messages(
+                    vec![TreeMsg::RebuildRegistry],
+                    TreeUpdateOptions::new(None, TreeUpdateDecodePolicy::ReturnErr),
+                )
+                .unwrap(),
+        );
+        assert_eq!(
+            assets::source_status(&source),
+            Some(assets::AssetStatus::Pending)
+        );
+        // Unknown dimensions retain the existing 64px placeholder width.
+        assert_eq!(
+            engine
+                .tree()
+                .get(&image_id)
+                .unwrap()
+                .layout
+                .frame
+                .unwrap()
+                .width,
+            64.0
+        );
+
+        for (width, height, expected_width) in [(200, 100, 136.0), (100, 200, 34.0)] {
+            let svg = format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}"><rect width="100%" height="100%" fill="red"/></svg>"#
+            );
+            let vector = resvg::usvg::Tree::from_str(&svg, &resvg::usvg::Options::default()).unwrap();
+            crate::renderer::insert_vector_asset("single-axis-svg", vector).unwrap();
+            assets::ensure_source(&source);
+            assert_eq!(assets::source_dimensions(&source), Some((width, height)));
+
+            let output = layout_output(
+                engine
+                    .process_messages(
+                        vec![TreeMsg::AssetStateChanged],
+                        TreeUpdateOptions::new(None, TreeUpdateDecodePolicy::ReturnErr),
+                    )
+                    .unwrap(),
+            );
+            let image = engine.tree().get(&image_id).unwrap();
+            for frame in [image.layout.measured_frame, image.layout.frame] {
+                let frame = frame.unwrap();
+                assert_eq!((frame.width, frame.height), (expected_width, 68.0));
+            }
+            assert_eq!(
+                engine
+                    .tree()
+                    .get(&parent_id)
+                    .unwrap()
+                    .layout
+                    .frame
+                    .unwrap()
+                    .width,
+                expected_width + 10.0
+            );
+            assert_eq!(
+                engine
+                    .tree()
+                    .get(&sibling_id)
+                    .unwrap()
+                    .layout
+                    .frame
+                    .unwrap()
+                    .x,
+                expected_width
+            );
+            let hit = |id, x| {
+                output
+                    .event_rebuild
+                    .base_registry
+                    .view()
+                    .find_precedence(|listener| {
+                        listener.element_id == Some(id)
+                            && listener
+                                .matcher
+                                .matches(&InputEvent::CursorPos { x, y: 5.0 })
+                    })
+                    .is_some()
+            };
+            assert!(hit(image_id, expected_width - 1.0));
+            assert!(!hit(image_id, expected_width + 1.0));
+            assert!(hit(sibling_id, expected_width + 1.0));
+        }
+    }
 
     fn enter_move_x_spec(from_x: f64, to_x: f64, duration_ms: f64) -> AnimationSpec {
         AnimationSpec {

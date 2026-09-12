@@ -1662,30 +1662,39 @@ fn measure_element<M: TextMeasurer>(
         }
 
         ElementKind::Image | ElementKind::Video => {
-            let (image_width, image_height) = if let Some((w, h)) = attrs.image_size {
-                (w, h)
-            } else if let Some(source) = attrs.image_src.as_ref() {
-                assets::ensure_source(source);
-                match assets::source_dimensions(source) {
-                    Some((w, h)) => (w as f64, h as f64),
-                    None => (64.0, 64.0),
-                }
+            let source_size = attrs.image_size.or_else(|| {
+                attrs.image_src.as_ref().and_then(|source| {
+                    assets::ensure_source(source);
+                    assets::source_dimensions(source).map(|(w, h)| (w as f64, h as f64))
+                })
+            });
+            let aspect_size = if kind == ElementKind::Image {
+                image_aspect_ratio_size(&attrs, source_size, insets)
             } else {
-                (0.0, 0.0)
+                None
             };
 
-            IntrinsicSize {
-                width: resolve_outer_intrinsic_length(
-                    attrs.width.as_ref(),
-                    image_width as f32,
-                    insets.horizontal(),
-                ),
-                height: resolve_outer_intrinsic_length(
-                    attrs.height.as_ref(),
-                    image_height as f32,
-                    insets.vertical(),
-                ),
-            }
+            aspect_size.unwrap_or_else(|| {
+                let (image_width, image_height) = source_size.unwrap_or_else(|| {
+                    if attrs.image_src.is_some() {
+                        (64.0, 64.0)
+                    } else {
+                        (0.0, 0.0)
+                    }
+                });
+                IntrinsicSize {
+                    width: resolve_outer_intrinsic_length(
+                        attrs.width.as_ref(),
+                        image_width as f32,
+                        insets.horizontal(),
+                    ),
+                    height: resolve_outer_intrinsic_length(
+                        attrs.height.as_ref(),
+                        image_height as f32,
+                        insets.vertical(),
+                    ),
+                }
+            })
         }
 
         ElementKind::El | ElementKind::None | ElementKind::Slider => {
@@ -2046,6 +2055,42 @@ fn try_reuse_intrinsic_measure_cache(
         width: frame.width,
         height: frame.height,
     })
+}
+
+/// Infer only a content-sized image axis from a fixed pixel axis. Fit modes
+/// affect painting, not measurement; unknown placeholder sizes have no ratio.
+fn image_aspect_ratio_size(
+    attrs: &Attrs,
+    source_size: Option<(f64, f64)>,
+    insets: LayoutInsets,
+) -> Option<IntrinsicSize> {
+    let (source_width, source_height) = source_size?;
+    if !source_width.is_finite()
+        || !source_height.is_finite()
+        || source_width <= 0.0
+        || source_height <= 0.0
+    {
+        return None;
+    }
+
+    // Px is a border-box length. Apply the source ratio to the content box,
+    // then restore the inferred axis's padding and border.
+    let horizontal = f64::from(insets.horizontal());
+    let vertical = f64::from(insets.vertical());
+    let size = match (attrs.width.as_ref(), attrs.height.as_ref()) {
+        (None | Some(Length::Content), Some(Length::Px(height))) => IntrinsicSize {
+            width: ((height - vertical).max(0.0) * source_width / source_height + horizontal)
+                as f32,
+            height: *height as f32,
+        },
+        (Some(Length::Px(width)), None | Some(Length::Content)) => IntrinsicSize {
+            width: *width as f32,
+            height: ((width - horizontal).max(0.0) * source_height / source_width + vertical)
+                as f32,
+        },
+        _ => return None,
+    };
+    (size.width.is_finite() && size.height.is_finite()).then_some(size)
 }
 
 /// Resolve intrinsic length from attribute.

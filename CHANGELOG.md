@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- SVG and raster images now preserve their intrinsic aspect ratio when one dimension is pixel-sized and the other is omitted or content-sized (#74). Asset dimension changes also invalidate retained image and ancestor measurements.
+
 ## [0.4.0] - 2026-09-03
 
 See the [0.4 migration guide](guides/migrations/0.4.md) for upgrade examples.

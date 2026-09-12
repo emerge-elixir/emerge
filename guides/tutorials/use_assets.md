@@ -141,7 +141,20 @@ column(
 
 ## Use SVG files
 
-Use `svg/2` when the source is an SVG:
+Use `svg/2` when the source is an SVG. For proportional sizing, set one pixel
+dimension and leave the other omitted (or use `content()`):
+
+```elixir
+svg([height(px(68))], "logos/logo.svg")
+```
+
+A 200×200 SVG then occupies a 68×68 frame; a 200×100 SVG occupies 136×68.
+This also works with `image/2` and with a fixed width instead of height. Padding
+and borders are included in pixel sizes; the aspect ratio applies inside them.
+Once both dimensions are set, they determine the frame and `image_fit(:contain)`
+or `image_fit(:cover)` determines how the source is drawn within it.
+
+For a fixed-size icon frame:
 
 ```elixir
 row(

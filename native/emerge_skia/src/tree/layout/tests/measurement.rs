@@ -1,5 +1,6 @@
 use super::super::*;
 use super::common::*;
+use crate::tree::attrs::ImageFit;
 
 #[test]
 fn test_layout_text() {
@@ -423,4 +424,263 @@ fn test_content_size_image_intrinsic_includes_padding_and_border() {
     assert_eq!(frame.height, 34.0);
     assert_eq!(frame.content_width, 44.0);
     assert_eq!(frame.content_height, 34.0);
+}
+
+#[test]
+fn test_image_single_pixel_axis_preserves_intrinsic_aspect_ratio() {
+    for (source, fixed, expected) in [
+        ((200.0, 200.0), 68.0, (68.0, 68.0)),
+        ((200.0, 100.0), 68.0, (136.0, 68.0)),
+        ((100.0, 200.0), 68.0, (34.0, 68.0)),
+        ((200.0, 100.0), 300.0, (600.0, 300.0)),
+        ((200.0, 100.0), 0.0, (0.0, 0.0)),
+    ] {
+        for transpose in [false, true] {
+            for content in [None, Some(Length::Content)] {
+                for fit in [None, Some(ImageFit::Contain), Some(ImageFit::Cover)] {
+                    for scale in [1.0, 2.0] {
+                        let (source, width, height, expected) = if transpose {
+                            (
+                                (source.1, source.0),
+                                Some(Length::Px(fixed)),
+                                content.clone(),
+                                (expected.1, expected.0),
+                            )
+                        } else {
+                            (source, content.clone(), Some(Length::Px(fixed)), expected)
+                        };
+                        let image = make_element(
+                            "image",
+                            ElementKind::Image,
+                            Attrs {
+                                image_size: Some(source),
+                                image_fit: fit,
+                                width,
+                                height,
+                                ..Attrs::default()
+                            },
+                        );
+                        let id = image.id;
+                        let mut tree = ElementTree::new();
+                        tree.set_root_id(id);
+                        tree.insert(image);
+                        layout_tree(
+                            &mut tree,
+                            Constraint::new(2000.0, 2000.0),
+                            scale,
+                            &MockTextMeasurer,
+                        );
+                        let image = tree.get(&id).unwrap();
+                        for frame in [image.layout.measured_frame, image.layout.frame] {
+                            let frame = frame.unwrap();
+                            assert_eq!(
+                                (frame.width, frame.height),
+                                (expected.0 * scale, expected.1 * scale),
+                                "source={source:?}, transpose={transpose}, fit={fit:?}, scale={scale}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_image_single_pixel_axis_sizes_parent_and_positions_sibling() {
+    for kind in [ElementKind::Row, ElementKind::Column] {
+        let parent = make_element("parent", kind, Attrs::default());
+        let parent_id = parent.id;
+        let image = make_element(
+            "image",
+            ElementKind::Image,
+            Attrs {
+                image_size: Some((200.0, 200.0)),
+                height: Some(Length::Px(68.0)),
+                ..Attrs::default()
+            },
+        );
+        let image_id = image.id;
+        let sibling = make_element("sibling", ElementKind::El, fixed_box_attrs(10.0, 10.0));
+        let sibling_id = sibling.id;
+        let mut tree = ElementTree::new();
+        tree.set_root_id(parent_id);
+        for element in [parent, image, sibling] {
+            tree.insert(element);
+        }
+        tree.set_children(&parent_id, vec![image_id, sibling_id])
+            .unwrap();
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
+
+        let parent = tree.get(&parent_id).unwrap();
+        let sibling = tree.get(&sibling_id).unwrap().layout.frame.unwrap();
+        let (expected_size, expected_position) = if kind == ElementKind::Row {
+            ((78.0, 68.0), (68.0, 0.0))
+        } else {
+            ((68.0, 78.0), (0.0, 68.0))
+        };
+        for frame in [parent.layout.measured_frame, parent.layout.frame] {
+            let frame = frame.unwrap();
+            assert_eq!((frame.width, frame.height), expected_size);
+        }
+        assert_eq!((sibling.x, sibling.y), expected_position);
+    }
+}
+
+#[test]
+fn test_image_single_pixel_axis_applies_ratio_inside_padding_and_border() {
+    // Horizontal insets = 3 + 7 + 2*2 = 14; vertical = 4 + 8 + 2*2 = 16.
+    for (width, height, expected) in [
+        (None, Some(Length::Px(68.0)), (118.0, 68.0)),
+        (Some(Length::Px(118.0)), None, (118.0, 68.0)),
+        (None, Some(Length::Px(10.0)), (14.0, 10.0)),
+        (Some(Length::Px(10.0)), None, (10.0, 16.0)),
+    ] {
+        for scale in [1.0, 2.0] {
+            let image = make_element(
+                "image",
+                ElementKind::Image,
+                Attrs {
+                    image_size: Some((200.0, 100.0)),
+                    width: width.clone(),
+                    height: height.clone(),
+                    padding: Some(Padding::Sides {
+                        top: 4.0,
+                        right: 3.0,
+                        bottom: 8.0,
+                        left: 7.0,
+                    }),
+                    border_width: Some(BorderWidth::Uniform(2.0)),
+                    ..Attrs::default()
+                },
+            );
+            let id = image.id;
+            let mut tree = ElementTree::new();
+            tree.set_root_id(id);
+            tree.insert(image);
+            layout_tree(
+                &mut tree,
+                Constraint::new(800.0, 600.0),
+                scale,
+                &MockTextMeasurer,
+            );
+            let image = tree.get(&id).unwrap();
+            for frame in [image.layout.measured_frame, image.layout.frame] {
+                let frame = frame.unwrap();
+                assert_eq!(
+                    (frame.width, frame.height),
+                    (expected.0 * scale, expected.1 * scale)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_image_aspect_ratio_inference_rejects_unknown_or_invalid_dimensions() {
+    let attrs = fixed_height_attrs(68.0);
+    for source in [
+        None,
+        Some((0.0, 200.0)),
+        Some((200.0, 0.0)),
+        Some((-1.0, 200.0)),
+        Some((f64::NAN, 200.0)),
+        Some((200.0, f64::INFINITY)),
+        Some((f64::MAX, f64::MIN_POSITIVE)),
+    ] {
+        assert!(image_aspect_ratio_size(&attrs, source, LayoutInsets::default()).is_none());
+    }
+    for fixed in [f64::NAN, f64::INFINITY, f64::MAX] {
+        assert!(
+            image_aspect_ratio_size(
+                &fixed_height_attrs(fixed),
+                Some((200.0, 100.0)),
+                LayoutInsets::default(),
+            )
+            .is_none()
+        );
+    }
+}
+
+#[test]
+fn test_media_sizing_outside_single_pixel_axis_is_unchanged() {
+    for (kind, width, height, expected) in [
+        (ElementKind::Image, None, None, (200.0, 100.0)),
+        (
+            ElementKind::Image,
+            Some(Length::Px(80.0)),
+            Some(Length::Px(68.0)),
+            (80.0, 68.0),
+        ),
+        (
+            ElementKind::Image,
+            Some(Length::Content),
+            Some(Length::Content),
+            (200.0, 100.0),
+        ),
+        (
+            ElementKind::Image,
+            Some(Length::Fill),
+            Some(Length::Px(68.0)),
+            (800.0, 68.0),
+        ),
+        (
+            ElementKind::Image,
+            None,
+            Some(Length::FillWeighted(2.0)),
+            (200.0, 600.0),
+        ),
+        (
+            ElementKind::Image,
+            None,
+            Some(Length::Min(
+                Box::new(Length::Px(68.0)),
+                Box::new(Length::Content),
+            )),
+            (200.0, 68.0),
+        ),
+        (
+            ElementKind::Image,
+            Some(Length::Max(
+                Box::new(Length::Px(68.0)),
+                Box::new(Length::Content),
+            )),
+            None,
+            (200.0, 100.0),
+        ),
+        (
+            ElementKind::Video,
+            None,
+            Some(Length::Px(68.0)),
+            (200.0, 68.0),
+        ),
+    ] {
+        let image = make_element(
+            "media",
+            kind,
+            Attrs {
+                image_size: Some((200.0, 100.0)),
+                width,
+                height,
+                ..Attrs::default()
+            },
+        );
+        let id = image.id;
+        let mut tree = ElementTree::new();
+        tree.set_root_id(id);
+        tree.insert(image);
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
+        let frame = tree.get(&id).unwrap().layout.frame.unwrap();
+        assert_eq!((frame.width, frame.height), expected);
+    }
 }
