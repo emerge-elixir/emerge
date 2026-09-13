@@ -8,6 +8,8 @@
 
 ### Changed
 
+- **Visual change:** `Border.shadow` and `Border.glow` now paint the full box-shaped shadow behind backgrounds and content, including text. Transparent interiors reveal the shadow instead of cutting it out; opaque backgrounds still cover it. Applies to ordinary elements and inline paragraph wrappers; inset shadows are unchanged.
+
 - **Breaking:** removed `Background.gradient/2,3` and the old raw gradient tuple. Use `Background.color(gradient([from, to], angle))`; see the migration guide. EMRG is now v9 and the macOS host handshake is v13; upgrade native artifacts and re-encode stored trees/patches together.
 
 - Raised the default renderer cache creation budget from 16 to 64 payloads per frame. Total/per-entry byte limits and cache admission policy are unchanged; explicit count-budget overrides remain supported.
@@ -16,6 +18,8 @@
 - Updated the macOS host protocol to version 13 for parsed SVG cache configuration and universal multi-color gradients.
 
 ### Fixed
+
+- Inline paragraph wrappers now paint explicit solid/gradient backgrounds, all border styles, outer/inner shadows and glow per wrapped-line segment. Opaque backgrounds hide interior shadows; absent backgrounds emit no background draw. Border/padding insets participate in wrapping; shadows remain paint-only. Per-edge borders and shadows now preserve independent corner radii on ordinary boxes too.
 
 - Paragraph `center_x()` and `align_right()` now align each wrapped text line, including the last line. Explicit `Font` text alignment takes precedence; inherited font-alignment changes invalidate retained paragraph positions correctly.
 - SVG color attributes now validate their values before serialization, and gradient tint preserves source alpha in rendering and grayscale policy.

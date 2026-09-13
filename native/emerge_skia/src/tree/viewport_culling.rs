@@ -77,9 +77,34 @@ pub(crate) fn should_skip_resolved_viewport_subtree(
     };
 
     let inherited_transform = scene_ctx.interaction_transform;
-    let visual_bounds = inherited_transform
-        .then(transform)
-        .map_rect_aabb(element_visual_bounds(frame, attrs));
+    // Inline owners do not render as independent subtrees. Their fragment
+    // shadows must participate in the paragraph's pre-render culling bounds.
+    let own_bounds = element_visual_bounds(frame, attrs);
+    let bounds = tree.get_ix(ix).map_or(own_bounds, |element| {
+        let origin = element
+            .layout
+            .render_frame
+            .or(element.layout.frame)
+            .unwrap_or(frame);
+        element
+            .layout
+            .paragraph_boxes
+            .iter()
+            .fold(own_bounds, |bounds, b| {
+                tree.get(&b.owner).map_or(bounds, |owner| {
+                    let fragment = Frame {
+                        x: b.frame.x + frame.x - origin.x,
+                        y: b.frame.y + frame.y - origin.y,
+                        ..b.frame
+                    };
+                    union_rect(
+                        bounds,
+                        element_visual_bounds(fragment, &owner.layout.effective),
+                    )
+                })
+            })
+    });
+    let visual_bounds = inherited_transform.then(transform).map_rect_aabb(bounds);
     let clip_bounds = inherited_transform.map_rect_aabb(clip.rect);
 
     visual_bounds.intersect(clip_bounds).is_none() && !tree.has_nearby_mounts_ix(ix)

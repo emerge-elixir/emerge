@@ -1,4 +1,4 @@
-use super::box_model::{border_radius_uniform, content_rect};
+use super::box_model::{border_radii, content_rect};
 use crate::assets::{self, AssetStatus};
 use crate::render_color::RenderColor;
 use crate::render_scene::{DrawPrimitive, RenderNode};
@@ -22,7 +22,7 @@ pub(super) fn collect_box_shadow_nodes(
     };
 
     let rect = Rect::from_frame(frame);
-    let radius = border_radius_uniform(radius);
+    let radius = border_radii(radius);
 
     shadows
         .iter()
@@ -324,7 +324,7 @@ pub(super) fn collect_border_nodes(frame: Frame, attrs: &Attrs) -> Vec<RenderNod
             frame.y,
             frame.width,
             frame.height,
-            border_radius_uniform(radius),
+            border_radii(radius),
             *top as f32,
             *right as f32,
             *bottom as f32,

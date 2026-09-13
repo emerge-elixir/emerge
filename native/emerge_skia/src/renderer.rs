@@ -258,7 +258,7 @@ impl RenderDrawTimings {
                 self.borders += duration;
                 self.border_detail.record(
                     *style,
-                    [*radius; 4],
+                    *radius,
                     [*top, *right, *bottom, *left],
                     (*w).max(0.0) * (*h).max(0.0),
                 );
@@ -438,7 +438,7 @@ pub struct RenderShadowDrawProfile {
     pub offset_y: f32,
     pub blur: f32,
     pub size: f32,
-    pub radius: f32,
+    pub radius: [f32; 4],
     pub color: RenderColor,
     pub total: Duration,
     pub prepare: Duration,
@@ -5951,7 +5951,7 @@ impl SceneRenderer {
                             w: *w,
                             h: *h,
                         },
-                        corners: [*radius, *radius, *radius, *radius],
+                        corners: *radius,
                         insets: EdgeInsets {
                             top: *top,
                             right: *right,
@@ -5998,11 +5998,7 @@ impl SceneRenderer {
                 color,
             ) => {
                 let bounds_rect = Rect::from_xywh(*x, *y, *w, *h);
-                let bounds_rrect = if *radius > 0.0 {
-                    RRect::new_rect_xy(bounds_rect, *radius, *radius)
-                } else {
-                    RRect::new_rect(bounds_rect)
-                };
+                let bounds_rrect = corner_rrect(bounds_rect, *radius);
 
                 canvas.save();
                 canvas.clip_rrect(bounds_rrect, skia_safe::ClipOp::Intersect, true);
@@ -6011,15 +6007,11 @@ impl SceneRenderer {
                 let inset_y = *y + *offset_y + *size;
                 let inset_w = *w - *size * 2.0;
                 let inset_h = *h - *size * 2.0;
-                let inset_radius = (*radius - *size).max(0.0);
+                let inset_radius = radius.map(|r| (r - *size).max(0.0));
 
                 let inner_rect =
                     Rect::from_xywh(inset_x, inset_y, inset_w.max(0.0), inset_h.max(0.0));
-                let inner_rrect = if inset_radius > 0.0 {
-                    RRect::new_rect_xy(inner_rect, inset_radius, inset_radius)
-                } else {
-                    RRect::new_rect(inner_rect)
-                };
+                let inner_rrect = corner_rrect(inner_rect, inset_radius);
 
                 let margin = (*blur + *size) * 4.0 + 100.0;
                 let outer_rect = Rect::from_xywh(
@@ -6413,13 +6405,12 @@ struct ShadowDrawSpec<'a> {
     offset_y: f32,
     blur: f32,
     size: f32,
-    radius: f32,
+    radius: [f32; 4],
     color: &'a RenderColor,
 }
 
 struct PreparedOuterShadow {
     shadow_rrect: RRect,
-    bounds_rrect: RRect,
     paint: Paint,
 }
 
@@ -8006,14 +7997,12 @@ fn prepare_outer_shadow(spec: ShadowDrawSpec) -> PreparedOuterShadow {
     let shadow_y = y + spec.offset_y - spec.size;
     let shadow_w = w + spec.size * 2.0;
     let shadow_h = h + spec.size * 2.0;
-    let shadow_radius = (spec.radius + spec.size).max(0.0);
+    let shadow_radius = spec.radius.map(|r| (r + spec.size).max(0.0));
 
     let shadow_rrect = corner_rrect(
         Rect::from_xywh(shadow_x, shadow_y, shadow_w, shadow_h),
-        [shadow_radius; 4],
+        shadow_radius,
     );
-    let bounds_rrect = corner_rrect(Rect::from_xywh(x, y, w, h), [spec.radius; 4]);
-
     let mut paint = spec.color.paint();
     paint.set_anti_alias(true);
 
@@ -8026,20 +8015,15 @@ fn prepare_outer_shadow(spec: ShadowDrawSpec) -> PreparedOuterShadow {
 
     PreparedOuterShadow {
         shadow_rrect,
-        bounds_rrect,
         paint,
     }
 }
 
 fn draw_prepared_outer_shadow(canvas: &skia_safe::Canvas, prepared: &PreparedOuterShadow) {
-    // `Canvas::draw_shadow` was kept as a benchmark-only candidate. It did not
-    // beat this mask-filter path in `native/renderer/direct_candidates` and is
-    // not a semantic match for Emerge's CSS-like spread/transparent-center
-    // shadow model, so the renderer keeps the simpler proven implementation.
-    canvas.save();
-    canvas.clip_rrect(prepared.bounds_rrect, skia_safe::ClipOp::Difference, true);
+    // Paint the full blurred box behind its content. Backgrounds painted later
+    // provide occlusion; transparent areas must not punch a hole in the shadow.
+    // Ancestor and scroll clips are already applied by scene traversal.
     canvas.draw_rrect(prepared.shadow_rrect, &prepared.paint);
-    canvas.restore();
 }
 
 fn draw_outer_shadow(canvas: &skia_safe::Canvas, spec: ShadowDrawSpec) {
@@ -8058,18 +8042,11 @@ fn draw_outer_shadow_profiled(
     let prepared = prepare_outer_shadow(spec);
     profile.prepare = prepare_started_at.elapsed();
 
-    let clip_started_at = Instant::now();
-    canvas.save();
-    canvas.clip_rrect(prepared.bounds_rrect, skia_safe::ClipOp::Difference, true);
-    profile.clip += clip_started_at.elapsed();
-
+    // Keep the clip timing field for diagnostics compatibility. Full-box shadows
+    // require no shadow-local clipping, so it remains zero.
     let draw_started_at = Instant::now();
-    canvas.draw_rrect(prepared.shadow_rrect, &prepared.paint);
+    draw_prepared_outer_shadow(canvas, &prepared);
     profile.draw = draw_started_at.elapsed();
-
-    let clip_started_at = Instant::now();
-    canvas.restore();
-    profile.clip += clip_started_at.elapsed();
 
     profile.total = total_started_at.elapsed();
     profile
@@ -12735,7 +12712,88 @@ mod tests {
     }
 
     #[test]
-    fn test_outer_shadow_on_transparent_rect_keeps_center_transparent() {
+    fn full_box_shadows_match_profiled_drawing_with_gradient_alpha_and_corners() {
+        let color = RenderColor::linear(
+            [0x0000FF80, 0xFF000080, 0x00FF0080],
+            25.0,
+            GeometryRect {
+                x: 12.0,
+                y: 12.0,
+                width: 40.0,
+                height: 28.0,
+            },
+        );
+        for radius in [[0.0; 4], [12.0, 0.0, 4.0, 8.0]] {
+            for (offset_x, offset_y) in [(0.0, 0.0), (3.0, -2.0)] {
+                for blur in [0.0, 6.0] {
+                    let spec = ShadowDrawSpec {
+                        rect: RectSpec {
+                            x: 12.0,
+                            y: 12.0,
+                            w: 40.0,
+                            h: 28.0,
+                        },
+                        offset_x,
+                        offset_y,
+                        blur,
+                        size: 2.0,
+                        radius,
+                        color: &color,
+                    };
+                    let direct = render_with_canvas_to_pixels(64, 64, |canvas| {
+                        draw_outer_shadow(canvas, spec)
+                    });
+                    let profiled = render_with_canvas_to_pixels(64, 64, |canvas| {
+                        let profile = draw_outer_shadow_profiled(canvas, spec);
+                        assert_eq!(profile.clip, Duration::ZERO);
+                    });
+                    assert_eq!(direct, profiled);
+                    let alpha = rgba_at(&direct, 64, 32, 26).3;
+                    assert!(
+                        (120..=128).contains(&alpha),
+                        "interior shadow alpha must be applied once: {alpha}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn full_box_shadow_stacks_composite_once_and_preserve_draw_order() {
+        let blue = DrawPrimitive::Shadow(
+            12.0,
+            12.0,
+            24.0,
+            24.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            [0.0; 4],
+            RenderColor::Solid(0x0000FF80),
+        );
+        let red = DrawPrimitive::Shadow(
+            12.0,
+            12.0,
+            24.0,
+            24.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            [0.0; 4],
+            RenderColor::Solid(0xFF000080),
+        );
+        let stacked = render_commands_to_pixels(48, 48, vec![blue.clone(), blue.clone()]);
+        assert_eq!(rgba_at(&stacked, 48, 24, 24), (0, 0, 192, 192));
+        let forward = render_commands_to_pixels(48, 48, vec![blue.clone(), red.clone()]);
+        let reverse = render_commands_to_pixels(48, 48, vec![red, blue]);
+        assert_eq!(rgba_at(&forward, 48, 24, 24), (128, 0, 64, 192));
+        assert_eq!(rgba_at(&reverse, 48, 24, 24), (64, 0, 128, 192));
+    }
+
+    #[test]
+    fn test_outer_shadow_on_transparent_rect_fills_center() {
         let pixels = render_single_command_to_pixels(
             48,
             48,
@@ -12748,12 +12806,15 @@ mod tests {
                 0.0,
                 6.0,
                 2.0,
-                0.0,
+                [0.0; 4],
                 (0xC75A5AFFu32).into(),
             ),
         );
 
-        assert_eq!(max_alpha_in_region(&pixels, 48, 20, 20, 27, 27), 0);
+        assert!(
+            (20..=27).all(|x| (20..=27).all(|y| rgba_at(&pixels, 48, x, y).3 > 240)),
+            "the full box shadow must remain visible through its transparent interior"
+        );
         assert!(
             max_alpha_in_region(&pixels, 48, 7, 20, 10, 27) > 0,
             "expected shadow halo outside the rect"
@@ -12761,7 +12822,7 @@ mod tests {
     }
 
     #[test]
-    fn test_outer_shadow_on_transparent_rounded_rect_keeps_center_transparent() {
+    fn test_outer_shadow_on_transparent_rounded_rect_fills_center() {
         let pixels = render_single_command_to_pixels(
             48,
             48,
@@ -12774,12 +12835,15 @@ mod tests {
                 0.0,
                 6.0,
                 2.0,
-                8.0,
+                [8.0; 4],
                 (0xC75A5AFFu32).into(),
             ),
         );
 
-        assert_eq!(max_alpha_in_region(&pixels, 48, 20, 20, 27, 27), 0);
+        assert!(
+            (20..=27).all(|x| (20..=27).all(|y| rgba_at(&pixels, 48, x, y).3 > 240)),
+            "the full box shadow must remain visible through its transparent interior"
+        );
         assert!(
             max_alpha_in_region(&pixels, 48, 7, 20, 10, 27) > 0,
             "expected rounded shadow halo outside the rect"
@@ -13874,6 +13938,67 @@ mod tests {
     }
 
     #[test]
+    fn asymmetric_corners_reach_border_and_shadow_raster_paths() {
+        let color = RenderColor::Solid(0xFFFFFFFF);
+        for primitive in [
+            DrawPrimitive::BorderEdges(
+                20.0,
+                20.0,
+                80.0,
+                40.0,
+                [12.0, 0.0, 0.0, 0.0],
+                4.0,
+                5.0,
+                6.0,
+                7.0,
+                color.clone(),
+                BorderStyle::Solid,
+            ),
+            DrawPrimitive::InsetShadow(
+                20.0,
+                20.0,
+                80.0,
+                40.0,
+                0.0,
+                0.0,
+                0.0,
+                4.0,
+                [12.0, 0.0, 0.0, 0.0],
+                color.clone(),
+            ),
+        ] {
+            let pixels = render_single_command_to_pixels(120, 80, primitive);
+            assert_eq!(
+                pixels[((21 * 120 + 21) * 4 + 3) as usize],
+                0,
+                "rounded TL must be empty"
+            );
+            assert!(
+                pixels[((21 * 120 + 97) * 4 + 3) as usize] > 240,
+                "square TR must be painted"
+            );
+        }
+        let pixels = render_single_command_to_pixels(
+            120,
+            80,
+            DrawPrimitive::Shadow(
+                20.0,
+                20.0,
+                80.0,
+                40.0,
+                0.0,
+                0.0,
+                0.0,
+                4.0,
+                [12.0, 0.0, 0.0, 0.0],
+                color,
+            ),
+        );
+        assert_eq!(pixels[((19 * 120 + 19) * 4 + 3) as usize], 0);
+        assert!(pixels[((18 * 120 + 102) * 4 + 3) as usize] > 240);
+    }
+
+    #[test]
     fn test_solid_border_edges_asymmetric_keeps_top_right_corner_covered() {
         // Regression: with top=4 and right=1 on rounded corners, a point near
         // the outer top-right arc should remain filled (no corner gap).
@@ -13885,7 +14010,7 @@ mod tests {
                 20.0,
                 100.0,
                 40.0,
-                8.0,
+                [8.0; 4],
                 4.0,
                 1.0,
                 4.0,
@@ -13922,7 +14047,7 @@ mod tests {
                 10.0,
                 40.0,
                 24.0,
-                0.0,
+                [0.0; 4],
                 0.0,
                 3.0,
                 0.0,
@@ -13981,7 +14106,7 @@ mod tests {
                     20.0,
                     100.0,
                     40.0,
-                    8.0,
+                    [8.0; 4],
                     4.0,
                     1.0,
                     4.0,
@@ -14297,6 +14422,152 @@ mod tests {
             assert!(pixels.chunks_exact(4).all(|pixel| pixel[3] == 0));
         }
     }
+    #[test]
+    fn inline_decorations_cache_hits_match_direct_after_shadow_and_border_changes() {
+        use crate::tree::attrs::{
+            Attrs, BorderRadius, BorderWidth, BoxShadow, Color, Length, Padding,
+        };
+        use crate::tree::element::{Element, ElementKind, ElementTree, NodeId};
+        use crate::tree::layout::{Constraint, layout_and_refresh_default};
+        fn without_layers(nodes: Vec<RenderNode>) -> Vec<RenderNode> {
+            nodes
+                .into_iter()
+                .flat_map(|node| match node {
+                    RenderNode::PaintLayer(layer) => without_layers(layer.content_nodes()),
+                    RenderNode::ShadowPass { children } => vec![RenderNode::ShadowPass {
+                        children: without_layers(children),
+                    }],
+                    RenderNode::Clip { clips, children } => vec![RenderNode::Clip {
+                        clips,
+                        children: without_layers(children),
+                    }],
+                    RenderNode::RelaxedClip { clips, children } => vec![RenderNode::RelaxedClip {
+                        clips,
+                        children: without_layers(children),
+                    }],
+                    RenderNode::Transform {
+                        transform,
+                        children,
+                    } => vec![RenderNode::Transform {
+                        transform,
+                        children: without_layers(children),
+                    }],
+                    RenderNode::Alpha { alpha, children } => vec![RenderNode::Alpha {
+                        alpha,
+                        children: without_layers(children),
+                    }],
+                    primitive => vec![primitive],
+                })
+                .collect()
+        }
+        let scene = |offset: f64, generation| {
+            let mut tree = ElementTree::new();
+            let paragraph = NodeId::from_u64(1);
+            let owner = NodeId::from_u64(2);
+            let text = NodeId::from_u64(3);
+            tree.insert(Element::with_attrs(
+                paragraph,
+                ElementKind::Paragraph,
+                vec![],
+                Attrs {
+                    width: Some(Length::Px(180.0)),
+                    padding: Some(Padding::Uniform(20.0)),
+                    ..Attrs::default()
+                },
+            ));
+            tree.insert(Element::with_attrs(
+                owner,
+                ElementKind::El,
+                vec![],
+                Attrs {
+                    border_width: Some(BorderWidth::Uniform(2.0)),
+                    border_color: Some(Color::Named(
+                        if offset > 0.0 { "red" } else { "blue" }.into(),
+                    )),
+                    border_radius: Some(BorderRadius::Corners {
+                        tl: 12.0,
+                        tr: 0.0,
+                        br: 3.0,
+                        bl: 6.0,
+                    }),
+                    box_shadows: Some(vec![BoxShadow {
+                        offset_x: offset,
+                        offset_y: 4.0,
+                        blur: 4.0,
+                        size: 3.0,
+                        color: Color::Named("blue".into()),
+                        inset: false,
+                    }]),
+                    ..Attrs::default()
+                },
+            ));
+            tree.insert(Element::with_attrs(
+                text,
+                ElementKind::Text,
+                vec![],
+                Attrs {
+                    content: Some("AA BB CC DD EE FF GG HH II JJ KK LL".into()),
+                    ..Attrs::default()
+                },
+            ));
+            tree.set_root_id(paragraph);
+            tree.set_children(&paragraph, vec![owner]).unwrap();
+            tree.set_children(&owner, vec![text]).unwrap();
+            let nodes = layout_and_refresh_default(&mut tree, Constraint::new(240.0, 200.0), 1.0)
+                .scene
+                .nodes;
+            RenderScene {
+                nodes: vec![RenderNode::PaintLayer(moving_paint_layer(
+                    902,
+                    generation,
+                    GeometryRect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 240.0,
+                        height: 200.0,
+                    },
+                    without_layers(nodes),
+                ))],
+            }
+        };
+        let mut cached = SceneRenderer::new();
+        let mut direct = SceneRenderer::with_cache_config(RendererCacheConfig {
+            enabled: false,
+            ..RendererCacheConfig::default()
+        });
+        let samples: Vec<_> = [(0.0, 1), (0.0, 1), (6.0, 2), (6.0, 2)]
+            .into_iter()
+            .map(|(offset, generation)| {
+                let scene = scene(offset, generation);
+                let (pixels, timings) = render_scene_graph_to_pixels_and_timings_with_renderer(
+                    &mut cached,
+                    240,
+                    200,
+                    scene.clone(),
+                );
+                let (expected, _) = render_scene_graph_to_pixels_and_timings_with_renderer(
+                    &mut direct,
+                    240,
+                    200,
+                    scene,
+                );
+                assert_eq!(pixels, expected);
+                (
+                    pixels,
+                    timings
+                        .renderer_cache
+                        .expect("cache diagnostics")
+                        .paint_layer,
+                )
+            })
+            .collect();
+        assert_eq!(samples[0].0, samples[1].0);
+        assert_ne!(samples[1].0, samples[2].0);
+        assert_eq!(samples[2].0, samples[3].0);
+        assert!(samples.iter().any(|(_, stats)| stats.stores > 0));
+        assert!(samples.iter().any(|(_, stats)| stats.hits > 0));
+    }
+
     #[test]
     fn gradient_middle_stop_changes_cached_layer_pixels() {
         let mut cached = SceneRenderer::new();

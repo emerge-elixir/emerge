@@ -35,8 +35,13 @@ f32 conversion; axis arithmetic uses f64 and rejects invalid shader coordinates.
 - Text uses the text owner's content box. Paragraph fragments (including inline
   overrides) share the paragraph content box; multiline text shares one content
   box across lines. Glyphs, words and decorations do not restart the gradient.
-- Shadows use the casting border box before offset, spread and blur. Existing
-  blur coverage, transparent centers and inset clipping are unchanged.
+- Shadows use the casting border box before offset, spread and blur. Outer
+  shadows paint the full blurred box behind backgrounds/content: transparent
+  interiors reveal them rather than being punched out. Inset clipping is unchanged.
+- Inline paragraph wrappers clone their decoration box at each wrapped line.
+  Color-background and border gradients span that fragment's outer box; shadow gradients use its
+  casting box before offset/spread/blur. Neither restarts between words within
+  a fragment. The paragraph content box still owns all inline text gradients.
 - SVG tint uses the element's content box. Fit changes coverage, not the gradient
   reference. Repeats tile the source mask, not the gradient. Public `image_fit/1`
   retains its contain/cover contract; native repeat paths also support brushes.

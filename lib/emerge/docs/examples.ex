@@ -29,6 +29,7 @@ defmodule Emerge.Docs.Examples do
     %{id: "ui-scroll-horizontal", file: "ui-scroll-horizontal.exs", width: 360, height: 84},
     %{id: "ui-scroll-both", file: "ui-scroll-both.exs", width: 320, height: 180},
     %{id: "ui-border-radius-width", file: "ui-border-radius-width.exs", width: 332, height: 106},
+    %{id: "ui-inline-decorations", file: "ui-inline-decorations.exs", width: 360, height: 240},
     %{id: "ui-border-shadows", file: "ui-border-shadows.exs", width: 420, height: 154},
     %{id: "ui-font-overview", file: "ui-font-overview.exs", width: 320, height: 216},
     %{

@@ -609,7 +609,7 @@ fn test_render_keeps_shadow_overflow_that_reaches_inherited_clip() {
                 -20.0,
                 0.0,
                 0.0,
-                0.0,
+                [0.0, 0.0, 0.0, 0.0],
                 crate::render_color::RenderColor::Solid(0xFF0000FF)
             )
         )
@@ -1457,7 +1457,7 @@ fn nested_alpha_shadow_body_keeps_non_nearest_rounded_ancestor_clip() {
 }
 
 #[test]
-fn test_outer_shadow_on_transparent_rounded_element_keeps_center_transparent() {
+fn test_outer_shadow_on_transparent_rounded_element_reveals_center() {
     let parent_id = NodeId::from_term_bytes(vec![12]);
     let child_id = NodeId::from_term_bytes(vec![13]);
 
@@ -1514,9 +1514,9 @@ fn test_outer_shadow_on_transparent_rounded_element_keeps_center_transparent() {
         halo.3 > 0,
         "shadow halo should remain visible outside the element"
     );
-    assert_eq!(
-        center.3, 0,
-        "transparent element center should not be filled by the outer shadow"
+    assert!(
+        center.3 > 240,
+        "transparent background must reveal the full outer shadow"
     );
 }
 

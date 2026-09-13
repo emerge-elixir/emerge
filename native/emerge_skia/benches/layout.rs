@@ -5046,10 +5046,94 @@ fn current_nearby_id(tree: &ElementTree, host_id: NodeId) -> NodeId {
         .id
 }
 
+fn bench_inline_paragraph(c: &mut Criterion) {
+    use emerge_skia::tree::attrs::BorderWidth;
+    for count in [32, 512] {
+        for variant in ["plain", "border", "shadows"] {
+            let mut tree = ElementTree::new();
+            let root = NodeId::from_u64(1);
+            tree.insert(Element::with_attrs(
+                root,
+                ElementKind::Paragraph,
+                vec![],
+                Attrs {
+                    width: Some(Length::Px(800.0)),
+                    font_size: Some(18.0),
+                    ..Attrs::default()
+                },
+            ));
+            let owners = (0..count)
+                .map(|i| {
+                    let owner = NodeId::from_u64(i * 2 + 2);
+                    let text = NodeId::from_u64(i * 2 + 3);
+                    let attrs = if variant == "plain" {
+                        Attrs::default()
+                    } else {
+                        Attrs {
+                            border_width: Some(BorderWidth::Uniform(1.0)),
+                            border_color: Some(Color::Named("blue".into())),
+                            border_radius: Some(BorderRadius::Corners {
+                                tl: 6.0,
+                                tr: 0.0,
+                                br: 3.0,
+                                bl: 1.0,
+                            }),
+                            box_shadows: (variant == "shadows").then(|| {
+                                (0..3)
+                                    .map(|i| BoxShadow {
+                                        offset_x: i as f64,
+                                        offset_y: 2.0,
+                                        blur: 4.0,
+                                        size: 2.0,
+                                        color: Color::Named("blue".into()),
+                                        inset: i == 2,
+                                    })
+                                    .collect()
+                            }),
+                            ..Attrs::default()
+                        }
+                    };
+                    tree.insert(Element::with_attrs(owner, ElementKind::El, vec![], attrs));
+                    tree.insert(Element::with_attrs(
+                        text,
+                        ElementKind::Text,
+                        vec![],
+                        Attrs {
+                            content: Some("inline wrapper words ".into()),
+                            ..Attrs::default()
+                        },
+                    ));
+                    tree.set_children(&owner, vec![text]).unwrap();
+                    owner
+                })
+                .collect();
+            tree.set_children(&root, owners).unwrap();
+            tree.set_root_id(root);
+            let constraint = Constraint::new(800.0, 100_000.0);
+            let mut group =
+                c.benchmark_group(format!("native/layout/inline_paragraph/{variant}/{count}"));
+            group.bench_function("cold_layout", |b| {
+                b.iter_batched(
+                    || tree.clone(),
+                    |mut tree| {
+                        layout_tree_default(&mut tree, constraint, 1.0);
+                        black_box(tree);
+                    },
+                    BatchSize::SmallInput,
+                )
+            });
+            layout_and_refresh_default(&mut tree, constraint, 1.0);
+            group.bench_function("warm_refresh", |b| b.iter(|| black_box(refresh(&mut tree))));
+            group.finish();
+        }
+    }
+}
+
 fn bench_layout(c: &mut Criterion) {
     let asset_runtime = AssetRuntime::new();
     let _asset_context_guard = asset_runtime.enter();
 
+    bench_inline_paragraph(c);
     bench_large_text_column(c);
     bench_nested_card_grid(c);
     bench_large_text_column_retained(c);

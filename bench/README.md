@@ -178,3 +178,12 @@ native/patch/list_text_500/decode_apply/paint_attr
 native/emrg/list_text_500/decode_encode
 native/renderer/raster_direct/shadow_mask_filter
 ```
+
+### Inline paragraph decoration workload
+
+The layout benchmark's `inline_paragraph` cases compare 32/512 plain wrappers,
+bordered wrappers and wrappers with three stacked shadows. `cold_layout` excludes
+source-tree cloning; `warm_refresh` measures retained scene/registry refresh, not
+GPU draw time. The same words are used in each variant. Run under the exclusive
+performance lock with an immutable source identity; do not interpret these host
+measurements as constrained-device or blurred-shadow GPU qualification.

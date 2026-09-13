@@ -353,6 +353,13 @@ defmodule Emerge.UI do
   inherited font text alignment applies; otherwise lines are left-aligned.
   The paragraph's width and placement in its parent still follow normal layout.
 
+  Inline `el` wrappers support `Background.color/1`, every `Border` variant,
+  outer/inner shadows and glow. No implicit background is painted. A wrapped
+  phrase gets one complete decoration box per line, including
+  spaces between its words, rather than a border around each word. Padding and
+  border widths participate in wrapping; shadows/glow do not affect layout.
+  See `Emerge.UI.Border` for continuation and gradient behavior.
+
   ## Example
 
   ```elixir

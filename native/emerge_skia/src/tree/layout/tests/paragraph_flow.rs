@@ -1143,3 +1143,262 @@ fn test_paragraph_left_and_right_floats_constrain_first_line_bounds() {
         );
     }
 }
+
+#[test]
+fn inline_border_insets_wrap_and_align_the_outer_line_box() {
+    let (mut tree, id, children) = build_paragraph(
+        Attrs {
+            align_x: Some(AlignX::Center),
+            ..fixed_width_attrs(50.0)
+        },
+        vec![(
+            "inline",
+            ElementKind::El,
+            Attrs {
+                border_width: Some(BorderWidth::Uniform(2.0)),
+                ..Attrs::default()
+            },
+        )],
+    );
+    let text = make_element("inline_text", ElementKind::Text, text_attrs("AA BB CC"));
+    let text_id = text.id;
+    tree.insert(text);
+    tree.set_children(&children[0], vec![text_id]).unwrap();
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    assert_eq!(
+        paragraph_positions(&tree, id),
+        vec![(5.0, 2.0), (29.0, 2.0), (17.0, 22.0)]
+    );
+    assert_eq!(tree.get(&id).unwrap().layout.frame.unwrap().height, 40.0);
+}
+
+fn inline_paragraph(attrs: Attrs, width: f64, content: &str) -> (ElementTree, NodeId, NodeId) {
+    let (mut tree, paragraph, children) = build_paragraph(
+        Attrs {
+            align_x: Some(AlignX::Center),
+            ..fixed_width_attrs(width)
+        },
+        vec![("wrapper", ElementKind::El, attrs)],
+    );
+    let text = make_element("inline_body", ElementKind::Text, text_attrs(content));
+    let text_id = text.id;
+    tree.insert(text);
+    tree.set_children(&children[0], vec![text_id]).unwrap();
+    (tree, paragraph, children[0])
+}
+
+#[test]
+fn inline_boxes_clone_insets_without_per_word_seams() {
+    let (mut tree, paragraph, owner) = inline_paragraph(
+        Attrs {
+            border_width: Some(BorderWidth::Sides {
+                top: 1.0,
+                right: 2.0,
+                bottom: 3.0,
+                left: 4.0,
+            }),
+            padding: Some(Padding::Uniform(1.0)),
+            ..Attrs::default()
+        },
+        50.0,
+        "AA BB CC",
+    );
+    layout_tree(
+        &mut tree,
+        Constraint::new(200.0, 200.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    let boxes = &tree.get(&paragraph).unwrap().layout.paragraph_boxes;
+    assert_eq!(boxes.len(), 2);
+    assert_eq!(boxes[0].owner, owner);
+    assert_eq!(boxes[0].text_range, 0..2);
+    assert_eq!(boxes[1].text_range, 2..3);
+    assert_eq!(
+        (
+            boxes[0].frame.x,
+            boxes[0].frame.width,
+            boxes[0].frame.height
+        ),
+        (1.0, 48.0, 22.0)
+    );
+    assert_eq!(
+        (boxes[1].frame.x, boxes[1].frame.y, boxes[1].frame.width),
+        (13.0, 22.0, 24.0)
+    );
+    assert_eq!(
+        paragraph_positions(&tree, paragraph),
+        vec![(6.0, 2.0), (30.0, 2.0), (18.0, 24.0)]
+    );
+}
+
+#[test]
+fn inline_empty_and_oversized_boxes_terminate_and_keep_minimum_insets() {
+    for (content, expected_width, expected_height) in
+        [("", 8.0, 8.0), ("   ", 8.0, 8.0), ("AAAAAAA", 64.0, 24.0)]
+    {
+        let (mut tree, paragraph, _) = inline_paragraph(
+            Attrs {
+                border_width: Some(BorderWidth::Uniform(4.0)),
+                ..Attrs::default()
+            },
+            20.0,
+            content,
+        );
+        layout_tree(
+            &mut tree,
+            Constraint::new(200.0, 200.0),
+            1.0,
+            &MockTextMeasurer,
+        );
+        let boxes = &tree.get(&paragraph).unwrap().layout.paragraph_boxes;
+        assert_eq!(boxes.len(), 1);
+        assert_eq!(boxes[0].frame.width, expected_width);
+        assert_eq!(boxes[0].frame.height, expected_height);
+        assert!(boxes[0].frame.x >= 0.0);
+    }
+}
+
+#[test]
+fn inline_shadow_geometry_is_layout_neutral_and_retained_even_before_paint() {
+    use crate::tree::attrs::{BoxShadow, Color};
+    let (mut tree, paragraph, owner) = inline_paragraph(Attrs::default(), 50.0, "AA BB CC");
+    let measurer = CountingTextMeasurer::default();
+    layout_tree(&mut tree, Constraint::new(200.0, 200.0), 1.0, &measurer);
+    let calls = measurer.total_calls();
+    let positions = paragraph_positions(&tree, paragraph);
+    let boxes = tree.get(&paragraph).unwrap().layout.paragraph_boxes.clone();
+    assert_eq!(boxes.len(), 2);
+    tree.get_mut(&owner).unwrap().spec.declared.box_shadows = Some(vec![BoxShadow {
+        offset_x: -5.0,
+        offset_y: 7.0,
+        blur: 20.0,
+        size: 10.0,
+        color: Color::Named("blue".into()),
+        inset: false,
+    }]);
+    tree.mark_measure_dirty_for_invalidation(
+        &owner,
+        crate::tree::invalidation::TreeInvalidation::Paint,
+    );
+    layout_tree(&mut tree, Constraint::new(200.0, 200.0), 1.0, &measurer);
+    assert_eq!(measurer.total_calls(), calls);
+    assert_eq!(paragraph_positions(&tree, paragraph), positions);
+    assert_eq!(
+        tree.get(&paragraph)
+            .unwrap()
+            .layout
+            .paragraph_boxes
+            .iter()
+            .map(|b| b.frame)
+            .collect::<Vec<_>>(),
+        boxes.iter().map(|b| b.frame).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn inline_borders_use_identical_local_and_shared_float_exclusions() {
+    let build = |shared| {
+        let (mut tree, paragraph, _) = inline_paragraph(
+            Attrs {
+                border_width: Some(BorderWidth::Uniform(2.0)),
+                ..Attrs::default()
+            },
+            80.0,
+            "AA BB CC DD",
+        );
+        let float = make_element(
+            "inline_float",
+            ElementKind::El,
+            Attrs {
+                align_x: Some(AlignX::Left),
+                ..fixed_box_attrs(24.0, 20.0)
+            },
+        );
+        let float_id = float.id;
+        tree.insert(float);
+        if shared {
+            let root = make_element(
+                "inline_column",
+                ElementKind::TextColumn,
+                fixed_width_attrs(80.0),
+            );
+            let root_id = root.id;
+            tree.insert(root);
+            tree.set_root_id(root_id);
+            tree.set_children(&root_id, vec![float_id, paragraph])
+                .unwrap();
+        } else {
+            let children = std::iter::once(float_id)
+                .chain(tree.child_ids(&paragraph))
+                .collect();
+            tree.set_children(&paragraph, children).unwrap();
+        }
+        layout_tree(
+            &mut tree,
+            Constraint::new(200.0, 200.0),
+            1.0,
+            &MockTextMeasurer,
+        );
+        let positions = paragraph_positions(&tree, paragraph);
+        assert!(positions[0].0 >= 24.0);
+        assert!(positions[2].0 < 24.0);
+        positions
+    };
+    assert_eq!(build(false), build(true));
+}
+
+#[test]
+fn inline_trailing_space_counts_closing_border_once_and_keeps_completed_height() {
+    let (mut tree, paragraph, _) = inline_paragraph(
+        Attrs {
+            border_width: Some(BorderWidth::Uniform(2.0)),
+            ..Attrs::default()
+        },
+        29.0,
+        "AA ",
+    );
+    layout_tree(
+        &mut tree,
+        Constraint::new(200.0, 200.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    let layout = &tree.get(&paragraph).unwrap().layout;
+    assert_eq!(layout.paragraph_boxes[0].frame.width, 28.0);
+    assert_eq!(layout.frame.unwrap().height, 20.0);
+    for wrapped in [false, true] {
+        let (mut tree, paragraph) = if wrapped {
+            let (tree, paragraph, _) = inline_paragraph(
+                Attrs {
+                    border_width: Some(BorderWidth::Uniform(2.0)),
+                    ..Attrs::default()
+                },
+                20.0,
+                "AA ",
+            );
+            (tree, paragraph)
+        } else {
+            let (tree, paragraph, _) = build_paragraph(
+                fixed_width_attrs(20.0),
+                vec![("text", ElementKind::Text, text_attrs("AA "))],
+            );
+            (tree, paragraph)
+        };
+        layout_tree(
+            &mut tree,
+            Constraint::new(200.0, 200.0),
+            1.0,
+            &MockTextMeasurer,
+        );
+        assert_eq!(
+            tree.get(&paragraph).unwrap().layout.frame.unwrap().height,
+            if wrapped { 20.0 } else { 16.0 }
+        );
+    }
+}

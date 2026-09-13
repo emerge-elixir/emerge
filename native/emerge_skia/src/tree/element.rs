@@ -686,6 +686,15 @@ impl NodeRefreshState {
     }
 }
 
+/// A wrapper's cloned decoration box on one paragraph line. Text ranges preserve
+/// document order without rescanning all words for each wrapper during paint.
+#[derive(Clone, Debug)]
+pub struct InlineBox {
+    pub owner: NodeId,
+    pub frame: Frame,
+    pub text_range: std::ops::Range<usize>,
+}
+
 #[derive(Clone, Debug)]
 pub struct NodeLayoutState {
     /// Scaled attributes (populated by layout pass, used by render).
@@ -709,6 +718,7 @@ pub struct NodeLayoutState {
     pub scroll_x_max: f32,
     pub scroll_y_max: f32,
     pub paragraph_fragments: Option<Vec<TextFragment>>,
+    pub paragraph_boxes: Vec<InlineBox>,
     pub topology_versions: LayoutTopologyVersions,
     pub intrinsic_measure_cache: Option<IntrinsicMeasureCache>,
     pub subtree_measure_cache: Option<SubtreeMeasureCache>,
@@ -732,6 +742,7 @@ impl Default for NodeLayoutState {
             scroll_x_max: 0.0,
             scroll_y_max: 0.0,
             paragraph_fragments: None,
+            paragraph_boxes: Vec::new(),
             topology_versions: LayoutTopologyVersions::default(),
             intrinsic_measure_cache: None,
             subtree_measure_cache: None,
@@ -851,6 +862,7 @@ impl Element {
                 paragraph_fragments: attrs.paragraph_fragments.clone(),
                 #[cfg(not(test))]
                 paragraph_fragments: None,
+                paragraph_boxes: Vec::new(),
                 topology_versions: LayoutTopologyVersions::default(),
                 effective: attrs,
                 frame: None,
@@ -899,6 +911,7 @@ impl Element {
                 scroll_x_max: self.layout.scroll_x_max,
                 scroll_y_max: self.layout.scroll_y_max,
                 paragraph_fragments: self.layout.paragraph_fragments.clone(),
+                paragraph_boxes: self.layout.paragraph_boxes.clone(),
                 topology_versions: self.layout.topology_versions,
                 intrinsic_measure_cache: None,
                 subtree_measure_cache: None,

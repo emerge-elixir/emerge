@@ -1176,7 +1176,7 @@ pub enum DrawPrimitive {
         f32,
         f32,
         f32,
-        f32,
+        [f32; 4],
         f32,
         f32,
         f32,
@@ -1184,8 +1184,30 @@ pub enum DrawPrimitive {
         RenderColor,
         BorderStyle,
     ),
-    Shadow(f32, f32, f32, f32, f32, f32, f32, f32, f32, RenderColor),
-    InsetShadow(f32, f32, f32, f32, f32, f32, f32, f32, f32, RenderColor),
+    Shadow(
+        f32,
+        f32,
+        f32,
+        f32,
+        f32,
+        f32,
+        f32,
+        f32,
+        [f32; 4],
+        RenderColor,
+    ),
+    InsetShadow(
+        f32,
+        f32,
+        f32,
+        f32,
+        f32,
+        f32,
+        f32,
+        f32,
+        [f32; 4],
+        RenderColor,
+    ),
     TextWithFont(f32, f32, String, f32, RenderColor, String, u16, bool),
     Image(f32, f32, f32, f32, String, ImageFit, Option<RenderColor>),
     Video(f32, f32, f32, f32, String, ImageFit),
@@ -1478,9 +1500,10 @@ pub(crate) fn hash_paint_layer_draw_primitive<H: Hasher>(
             4u8.hash(hasher);
             hash_paint_layer_f32s(
                 hasher,
-                &[*x, *y, *w, *h, *radius, *top, *right, *bottom, *left],
+                &[*x, *y, *w, *h, *top, *right, *bottom, *left],
                 float,
             );
+            hash_paint_layer_f32s(hasher, radius, float);
             color.hash(hasher);
             hash_paint_layer_border_style(hasher, *style);
         }
@@ -1488,18 +1511,20 @@ pub(crate) fn hash_paint_layer_draw_primitive<H: Hasher>(
             5u8.hash(hasher);
             hash_paint_layer_f32s(
                 hasher,
-                &[*x, *y, *w, *h, *offset_x, *offset_y, *blur, *size, *radius],
+                &[*x, *y, *w, *h, *offset_x, *offset_y, *blur, *size],
                 float,
             );
+            hash_paint_layer_f32s(hasher, radius, float);
             color.hash(hasher);
         }
         DrawPrimitive::InsetShadow(x, y, w, h, offset_x, offset_y, blur, size, radius, color) => {
             6u8.hash(hasher);
             hash_paint_layer_f32s(
                 hasher,
-                &[*x, *y, *w, *h, *offset_x, *offset_y, *blur, *size, *radius],
+                &[*x, *y, *w, *h, *offset_x, *offset_y, *blur, *size],
                 float,
             );
+            hash_paint_layer_f32s(hasher, radius, float);
             color.hash(hasher);
         }
         DrawPrimitive::TextWithFont(x, y, text, font_size, fill, family, weight, italic) => {

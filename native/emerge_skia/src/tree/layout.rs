@@ -16,11 +16,11 @@ use super::attrs::{
     TextFragment, effective_scrollbar_x, effective_scrollbar_y,
 };
 use super::element::{
-    Element, ElementKind, ElementTree, Frame, InheritedMeasureFontKey, IntrinsicMeasureCache,
-    IntrinsicMeasureCacheKey, NearbyConstraintKind, NearbyMount, NearbySlot, NodeId, NodeIx,
-    ResolveAttrs, ResolveAvailableSpaceKey, ResolveCache, ResolveCacheKey, ResolveConstraintKey,
-    ResolveExtent, SubtreeMeasureAttrs, SubtreeMeasureCache, SubtreeMeasureCacheKey,
-    TopologyDependencyKey,
+    Element, ElementKind, ElementTree, Frame, InheritedMeasureFontKey, InlineBox,
+    IntrinsicMeasureCache, IntrinsicMeasureCacheKey, NearbyConstraintKind, NearbyMount, NearbySlot,
+    NodeId, NodeIx, ResolveAttrs, ResolveAvailableSpaceKey, ResolveCache, ResolveCacheKey,
+    ResolveConstraintKey, ResolveExtent, SubtreeMeasureAttrs, SubtreeMeasureCache,
+    SubtreeMeasureCacheKey, TopologyDependencyKey,
 };
 use super::geometry::Rect;
 use super::invalidation::TreeInvalidation;
@@ -2774,7 +2774,7 @@ fn resolve_paragraph_kind<M: TextMeasurer>(
     measurer: &M,
 ) {
     let mut paragraph_floats = Vec::new();
-    let (fragments, actual_content_height) = resolve_paragraph_children(
+    let (fragments, boxes, actual_content_height) = resolve_paragraph_children(
         tree,
         params.child_ids,
         TextFlowLayoutContext {
@@ -2791,6 +2791,7 @@ fn resolve_paragraph_kind<M: TextMeasurer>(
 
     if let Some(element) = tree.get_mut(params.id) {
         element.layout.paragraph_fragments = Some(fragments);
+        element.layout.paragraph_boxes = boxes;
     }
 
     if actual_content_height > params.content.height
@@ -5234,7 +5235,7 @@ fn resolve_paragraph_with_flow<M: TextMeasurer>(
     let is_scrollable = attrs.scrollbar_x.unwrap_or(false) || attrs.scrollbar_y.unwrap_or(false);
     let element_context = layout.inherited.merge_with_attrs(&attrs);
 
-    let (fragments, actual_content_height) = resolve_paragraph_children(
+    let (fragments, boxes, actual_content_height) = resolve_paragraph_children(
         tree,
         &child_ids,
         TextFlowLayoutContext {
@@ -5256,6 +5257,7 @@ fn resolve_paragraph_with_flow<M: TextMeasurer>(
 
     if let Some(element) = tree.get_mut(child_id) {
         element.layout.paragraph_fragments = Some(fragments);
+        element.layout.paragraph_boxes = boxes;
     }
 
     if actual_content_height > content_height && !is_scrollable {
@@ -5587,6 +5589,9 @@ struct ParagraphFragments {
     fragments: Vec<TextFragment>,
     alignment: TextAlign,
     line_start: usize,
+    boxes: Vec<InlineBox>,
+    line_box_start: usize,
+    line_y: Option<f32>,
     line_right: f32,
     text_right: f32,
 }
@@ -5597,25 +5602,53 @@ impl ParagraphFragments {
             fragments: Vec::new(),
             alignment,
             line_start: 0,
+            boxes: Vec::new(),
+            line_box_start: 0,
+            line_y: None,
             line_right: 0.0,
             text_right: 0.0,
         }
     }
 
-    fn push(&mut self, fragment: TextFragment, word_width: f32, line_right: f32) {
-        if self.alignment != TextAlign::Left {
-            if self
-                .fragments
-                .last()
-                .is_some_and(|last| last.y != fragment.y)
-            {
-                self.finish_line();
-            }
-            self.line_right = line_right;
-            // Deliberately exclude trailing inter-word whitespace.
-            self.text_right = fragment.x + word_width;
+    fn push(&mut self, fragment: TextFragment, word_width: f32, line_right: f32, line_y: f32) {
+        if self.line_y.is_some_and(|y| y != line_y) {
+            self.finish_line();
         }
+        self.line_y = Some(line_y);
+        self.line_right = line_right;
+        // Exclude unused inter-word whitespace, but include the closing border.
+        self.text_right = fragment.x + word_width;
         self.fragments.push(fragment);
+    }
+
+    fn continues_inline(&self, owner: NodeId, y: f32) -> bool {
+        self.boxes
+            .last()
+            .is_some_and(|b| b.owner == owner && b.frame.y == y)
+    }
+
+    fn inline_box(&mut self, owner: NodeId, x: f32, y: f32, right: f32, height: f32) {
+        let end = self.fragments.len();
+        if self.continues_inline(owner, y) {
+            let b = self.boxes.last_mut().expect("existing inline box");
+            b.frame.width = right - b.frame.x;
+            b.frame.content_width = b.frame.width;
+            b.text_range.end = end;
+        } else {
+            self.boxes.push(InlineBox {
+                owner,
+                frame: Frame {
+                    x,
+                    y,
+                    width: right - x,
+                    height,
+                    content_width: right - x,
+                    content_height: height,
+                },
+                text_range: end - 1..end,
+            });
+        }
+        self.text_right = right;
     }
 
     fn finish_line(&mut self) {
@@ -5630,17 +5663,21 @@ impl ParagraphFragments {
                 fragment.x += dx;
             }
         }
+        for b in &mut self.boxes[self.line_box_start..] {
+            b.frame.x += dx;
+        }
         self.line_start = self.fragments.len();
+        self.line_box_start = self.boxes.len();
     }
 
-    fn finish(mut self) -> Vec<TextFragment> {
+    fn finish(mut self) -> (Vec<TextFragment>, Vec<InlineBox>) {
         self.finish_line();
-        self.fragments
+        (self.fragments, self.boxes)
     }
 }
 
 /// Resolve paragraph children by word-wrapping text content.
-/// Returns (fragments, total_content_height).
+/// Returns (text fragments, inline boxes, total content height).
 fn resolve_paragraph_children<M: TextMeasurer>(
     tree: &mut ElementTree,
     child_ids: &[NodeId],
@@ -5649,7 +5686,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
     active_floats: &mut Vec<FlowFloat>,
     use_resolve_cache: bool,
     alignment: TextAlign,
-) -> (Vec<TextFragment>, f32) {
+) -> (Vec<TextFragment>, Vec<InlineBox>, f32) {
     let content_x = layout.content.x;
     let content_y = layout.content.y;
     let content_width = layout.content.width;
@@ -5662,6 +5699,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
     let mut cursor_y = content_y;
     let mut local_float_bottom = content_y;
     let mut line_height: f32 = 0.0;
+    let mut text_bottom = content_y;
 
     prune_flow_floats(active_floats, cursor_y);
     let (mut line_left, _) = flow_line_bounds(
@@ -5736,7 +5774,16 @@ fn resolve_paragraph_children<M: TextMeasurer>(
             continue;
         };
 
-        if content.is_empty() {
+        // Retain all direct inline wrappers, including currently undecorated
+        // ones: a later paint-only shadow/color patch must not require reflow.
+        let inline = tree
+            .get(child_id)
+            .filter(|child| child.spec.kind == ElementKind::El);
+        let owner = inline.map(|child| child.id);
+        let insets = inline
+            .map(|child| LayoutInsets::from_attrs(&child.layout.effective))
+            .unwrap_or_default();
+        if content.is_empty() && owner.is_none() {
             continue;
         }
 
@@ -5754,16 +5801,24 @@ fn resolve_paragraph_children<M: TextMeasurer>(
         let underline = font_ctx.font_underline.unwrap_or(false);
         let strike = font_ctx.font_strike.unwrap_or(false);
 
-        let (_, text_height) = measurer.measure_with_font("Hg", font_size, &family, weight, italic);
+        let (_, measured_height) =
+            measurer.measure_with_font("Hg", font_size, &family, weight, italic);
         let (ascent, _descent) = measurer.font_metrics(font_size, &family, weight, italic);
 
         let space_width =
             measurer.measure_visual_width_with_font(" ", font_size, &family, weight, italic);
 
         // Split content into words
-        let words: Vec<&str> = content.split_whitespace().collect();
-        let starts_with_space = content.starts_with(char::is_whitespace);
-        let ends_with_space = content.ends_with(char::is_whitespace);
+        let has_words = content.split_whitespace().next().is_some();
+        let words: Vec<&str> = if !has_words && owner.is_some() {
+            vec![""]
+        } else {
+            content.split_whitespace().collect()
+        };
+        let text_height = if has_words { measured_height } else { 0.0 };
+        let outer_height = text_height + insets.vertical();
+        let starts_with_space = has_words && content.starts_with(char::is_whitespace);
+        let ends_with_space = has_words && content.ends_with(char::is_whitespace);
 
         // Add leading space if content starts with whitespace
         if starts_with_space && !words.is_empty() {
@@ -5771,7 +5826,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
                 content_x,
                 content_width,
                 cursor_y,
-                line_height.max(text_height).max(1.0),
+                line_height.max(outer_height).max(1.0),
                 spacing_x,
                 active_floats,
             );
@@ -5779,7 +5834,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
             if cursor_x < line_left {
                 cursor_x = line_left;
             }
-            if cursor_x > line_left + 0.001 && cursor_x + space_width > line_right {
+            if cursor_x > line_left + 0.001 && cursor_x + space_width + insets.right > line_right {
                 cursor_y += line_height + spacing_y;
                 line_height = 0.0;
                 prune_flow_floats(active_floats, cursor_y);
@@ -5797,6 +5852,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
             cursor_x += space_width;
         }
 
+        let leading_origin = starts_with_space.then_some((cursor_x - space_width, cursor_y));
         for (i, word) in words.iter().enumerate() {
             let word_width =
                 measurer.measure_visual_width_with_font(word, font_size, &family, weight, italic);
@@ -5807,7 +5863,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
                     content_x,
                     content_width,
                     cursor_y,
-                    line_height.max(text_height).max(1.0),
+                    line_height.max(outer_height).max(1.0),
                     spacing_x,
                     active_floats,
                 );
@@ -5829,7 +5885,14 @@ fn resolve_paragraph_children<M: TextMeasurer>(
                 }
 
                 // Wrap if word doesn't fit and we're not at line start
-                if cursor_x > line_left + 0.001 && cursor_x + word_width > line_right {
+                let opening = if owner.is_some_and(|id| fragments.continues_inline(id, cursor_y)) {
+                    0.0
+                } else {
+                    insets.left
+                };
+                if cursor_x > line_left + 0.001
+                    && cursor_x + opening + word_width + insets.right > line_right
+                {
                     cursor_y += line_height + spacing_y;
                     line_height = 0.0;
                     cursor_x = content_x;
@@ -5839,10 +5902,22 @@ fn resolve_paragraph_children<M: TextMeasurer>(
                 break line_right;
             };
 
+            let starts_segment = owner.is_some_and(|id| !fragments.continues_inline(id, cursor_y));
+            let box_x = if i == 0 {
+                leading_origin
+                    .filter(|(_, y)| *y == cursor_y)
+                    .map(|(x, _)| x)
+                    .unwrap_or(cursor_x)
+            } else {
+                cursor_x
+            };
+            if starts_segment {
+                cursor_x += insets.left;
+            }
             fragments.push(
                 TextFragment {
                     x: cursor_x,
-                    y: cursor_y,
+                    y: cursor_y + insets.top,
                     text: word.to_string(),
                     font_size,
                     color: color.clone(),
@@ -5853,12 +5928,23 @@ fn resolve_paragraph_children<M: TextMeasurer>(
                     strike,
                     ascent,
                 },
-                word_width,
+                word_width + insets.right,
                 line_right,
+                cursor_y,
             );
 
             cursor_x += word_width;
-            line_height = line_height.max(text_height);
+            if let Some(owner) = owner {
+                fragments.inline_box(
+                    owner,
+                    box_x,
+                    cursor_y,
+                    cursor_x + insets.right,
+                    outer_height,
+                );
+            }
+            line_height = line_height.max(outer_height);
+            text_bottom = text_bottom.max(cursor_y + outer_height);
 
             // Add space after word (unless last word)
             if i < words.len() - 1 {
@@ -5876,7 +5962,9 @@ fn resolve_paragraph_children<M: TextMeasurer>(
                     cursor_x = line_left;
                 }
 
-                if cursor_x > line_left + 0.001 && cursor_x + space_width > line_right {
+                if cursor_x > line_left + 0.001
+                    && cursor_x + space_width + insets.right > line_right
+                {
                     cursor_y += line_height + spacing_y;
                     line_height = 0.0;
                     prune_flow_floats(active_floats, cursor_y);
@@ -5896,6 +5984,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
             }
         }
 
+        cursor_x += insets.right;
         // Add trailing space if content ends with whitespace
         if ends_with_space && !words.is_empty() {
             let (next_line_left, line_right) = flow_line_bounds(
@@ -5927,6 +6016,9 @@ fn resolve_paragraph_children<M: TextMeasurer>(
                 cursor_x = line_left;
             }
             cursor_x += space_width;
+            if let Some(owner) = owner.filter(|id| fragments.continues_inline(*id, cursor_y)) {
+                fragments.inline_box(owner, cursor_x, cursor_y, cursor_x, outer_height);
+            }
         }
     }
 
@@ -5936,14 +6028,10 @@ fn resolve_paragraph_children<M: TextMeasurer>(
         }
     }
 
-    let text_bottom = if line_height > 0.0 {
-        cursor_y + line_height
-    } else {
-        content_y
-    };
     let total_height = (text_bottom.max(local_float_bottom) - content_y).max(0.0);
 
-    (fragments.finish(), total_height)
+    let (text, boxes) = fragments.finish();
+    (text, boxes, total_height)
 }
 
 // =============================================================================
@@ -6259,6 +6347,10 @@ fn shift_subtree(tree: &mut ElementTree, id: &NodeId, dx: f32, dy: f32) {
         if let Some(frame) = &mut element.layout.render_frame {
             frame.x += dx;
             frame.y += dy;
+        }
+        for b in &mut element.layout.paragraph_boxes {
+            b.frame.x += dx;
+            b.frame.y += dy;
         }
         if let Some(fragments) = &mut element.layout.paragraph_fragments {
             for frag in fragments.iter_mut() {

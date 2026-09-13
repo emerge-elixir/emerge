@@ -16,6 +16,18 @@ defmodule Emerge.UI.Background do
   - `color/1` for solid fills or linear gradients from `Emerge.UI.Color.gradient/2`
   - `image/1` and `image/2` for background images
 
+  ## Inline paragraph wrappers
+
+  `color/1` also paints inline `el(attrs, text(...))` wrappers in paragraphs,
+  including solid, translucent and gradient fills. Each wrapped line segment
+  gets its own background, clipped to its border radius, behind text and inset
+  shadows but over outer shadows/glow. Opaque black hides the interior shadow;
+  a transparent fill reveals it.
+
+  Backgrounds are not inherited. A wrapper without an explicit color background
+  emits no background draw, whether or not it has a shadow. Inline background
+  images are not supported.
+
   ## Background Images
 
   `Background.image/2` decorates an existing element frame. It does not create

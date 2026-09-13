@@ -2851,7 +2851,7 @@ fn format_shadow_draw_detail(index: usize, shadow: &RenderShadowDrawProfile) -> 
     format!(
         concat!(
             "  shadow[{}]: path={:?} rect={:.1},{:.1} {:.1}x{:.1} offset={:.1},{:.1} ",
-            "blur={:.1} size={:.1} radius={:.1} color={} total={:.3} ms ",
+            "blur={:.1} size={:.1} radius={:?} color={} total={:.3} ms ",
             "prepare={:.3} ms clip={:.3} ms draw={:.3} ms"
         ),
         index,
@@ -3903,7 +3903,7 @@ mod tests {
                     1.0,
                     8.0,
                     0.0,
-                    4.0,
+                    [4.0; 4],
                     (0x00000080u32).into(),
                 )),
             ],
@@ -3950,7 +3950,7 @@ mod tests {
                     offset_y: 1.0,
                     blur: 8.0,
                     size: 0.0,
-                    radius: 4.0,
+                    radius: [4.0; 4],
                     color: crate::render_color::RenderColor::Solid(0x00000080),
                     total: Duration::from_micros(100),
                     prepare: Duration::from_micros(10),
@@ -4013,7 +4013,7 @@ mod tests {
             "layer detail: alpha_layers=1 alpha_children=2 max_alpha_children=2 tint_layers=1 tint_area_px=2304 max_tint_area_px=2304"
         ));
         assert!(message.contains(
-            "shadow[0]: path=MaskFilter rect=0.0,0.0 10.0x10.0 offset=0.0,1.0 blur=8.0 size=0.0 radius=4.0 color=0x00000080"
+            "shadow[0]: path=MaskFilter rect=0.0,0.0 10.0x10.0 offset=0.0,1.0 blur=8.0 size=0.0 radius=[4.0, 4.0, 4.0, 4.0] color=0x00000080"
         ));
         assert!(message.contains("prepare=0.010 ms clip=0.020 ms draw=0.070 ms"));
         assert!(message.contains(

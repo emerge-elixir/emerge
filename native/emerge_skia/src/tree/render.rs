@@ -1459,17 +1459,85 @@ fn build_paragraph_subtree<H: HostRegistryTraversalSink>(
         }
     });
 
-    let mut fragment_nodes = Vec::new();
     if let Some(fragments) = &element.layout.paragraph_fragments {
-        for frag in fragments {
-            let Some(frame) = scene_state
-                .as_ref()
-                .map(|s| s.adjusted_frame)
-                .or(element.layout.frame)
+        let Some(frame) = scene_state
+            .as_ref()
+            .map(|s| s.adjusted_frame)
+            .or(element.layout.frame)
+        else {
+            return subtree;
+        };
+        let text_bounds = box_model::content_rect(frame, &element.layout.effective);
+        let boxes = &element.layout.paragraph_boxes;
+        let tail = boxes.last().map_or(0, |b| b.text_range.end);
+        let mut cursor = 0;
+        let groups = boxes
+            .iter()
+            .flat_map(|b| {
+                let before = cursor..b.text_range.start;
+                cursor = b.text_range.end;
+                [(before, None), (b.text_range.clone(), Some(b))]
+            })
+            .chain(std::iter::once((tail..fragments.len(), None)));
+        subtree.local.extend(groups.flat_map(|(range, inline)| {
+            let text = paragraph_text_nodes(&fragments[range], text_bounds, fragment_offset);
+            let Some((inline, owner)) =
+                inline.and_then(|b| tree.get(&b.owner).map(|owner| (b, owner)))
             else {
-                continue;
+                return wrap_with_host_clip(text, current_host_clip);
             };
-            let (x, y, width, height) = box_model::content_rect(frame, &element.layout.effective);
+            let attrs = &owner.layout.effective;
+            let frame = Frame {
+                x: inline.frame.x + fragment_offset.0,
+                y: inline.frame.y + fragment_offset.1,
+                ..inline.frame
+            };
+            let outer = wrap_outer_shadow_nodes(
+                collect_box_shadow_nodes(frame, attrs, attrs.border_radius.as_ref(), false),
+                crate::tree::transform::Affine2::identity(),
+                traversal.render_ctx,
+            );
+            // No implicit background for plain or shadow-only wrappers. Resolve
+            // only an explicitly supplied color (including active styles/animation).
+            // Inline image backgrounds are not part of the text-flow contract.
+            let background = match attrs.background {
+                Some(super::attrs::Background::Color(_)) => build_background_nodes(frame, attrs),
+                _ => Vec::new(),
+            };
+            let normal = background
+                .into_iter()
+                .chain(collect_box_shadow_nodes(
+                    frame,
+                    attrs,
+                    attrs.border_radius.as_ref(),
+                    true,
+                ))
+                .chain(text)
+                .chain(collect_border_nodes(frame, attrs))
+                .collect();
+            wrap_with_alpha(
+                outer
+                    .into_iter()
+                    .chain(wrap_with_host_clip(normal, current_host_clip))
+                    .collect(),
+                attrs.alpha.unwrap_or(1.0) as f32,
+            )
+        }));
+    }
+
+    subtree
+}
+
+fn paragraph_text_nodes(
+    fragments: &[super::attrs::TextFragment],
+    bounds: (f32, f32, f32, f32),
+    fragment_offset: (f32, f32),
+) -> Vec<RenderNode> {
+    let (x, y, width, height) = bounds;
+    fragments
+        .iter()
+        .filter(|frag| !frag.text.is_empty())
+        .flat_map(|frag| {
             let color = frag.color.with_bounds(crate::tree::geometry::Rect {
                 x,
                 y,
@@ -1478,7 +1546,7 @@ fn build_paragraph_subtree<H: HostRegistryTraversalSink>(
             });
             let x = frag.x + fragment_offset.0;
             let baseline_y = frag.y + fragment_offset.1 + frag.ascent;
-            fragment_nodes.push(RenderNode::Primitive(DrawPrimitive::TextWithFont(
+            let text = RenderNode::Primitive(DrawPrimitive::TextWithFont(
                 x,
                 baseline_y,
                 frag.text.clone(),
@@ -1487,14 +1555,14 @@ fn build_paragraph_subtree<H: HostRegistryTraversalSink>(
                 frag.family.clone(),
                 frag.weight,
                 frag.italic,
-            )));
+            ));
 
-            if frag.underline || frag.strike {
+            let decorations = if frag.underline || frag.strike {
                 let font =
                     make_font_with_style(&frag.family, frag.weight, frag.italic, frag.font_size);
                 let word_width =
                     measure_text_visual_metrics_with_font(&font, &frag.text).visual_width;
-                fragment_nodes.extend(text_decoration_items(TextDecorationSpec {
+                text_decoration_items(TextDecorationSpec {
                     x,
                     baseline_y,
                     width: word_width,
@@ -1502,15 +1570,13 @@ fn build_paragraph_subtree<H: HostRegistryTraversalSink>(
                     color: &color,
                     underline: frag.underline,
                     strike: frag.strike,
-                }));
-            }
-        }
-    }
-    subtree
-        .local
-        .extend(wrap_with_host_clip(fragment_nodes, current_host_clip));
-
-    subtree
+                })
+            } else {
+                Vec::new()
+            };
+            std::iter::once(text).chain(decorations)
+        })
+        .collect()
 }
 
 fn build_own_content_nodes(

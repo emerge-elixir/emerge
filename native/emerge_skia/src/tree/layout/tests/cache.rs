@@ -4667,3 +4667,108 @@ fn gradient_patch_invalidates_paint_without_remeasuring_text() {
         assert_eq!(tree.get(&id).unwrap().spec.declared.background, valid);
     }
 }
+
+fn decorated_animation_tree(attrs: Attrs) -> (ElementTree, NodeId, NodeId) {
+    let mut tree = ElementTree::new();
+    let paragraph = make_element(
+        "decorated_paragraph",
+        ElementKind::Paragraph,
+        Attrs {
+            align_x: Some(AlignX::Center),
+            padding: Some(Padding::Uniform(20.0)),
+            font_size: Some(24.0),
+            ..fixed_width_attrs(180.0)
+        },
+    );
+    let paragraph_id = paragraph.id;
+    let owner = make_element("decorated_owner", ElementKind::El, attrs);
+    let owner_id = owner.id;
+    let text = make_element(
+        "decorated_text",
+        ElementKind::Text,
+        text_attrs("AA BB CC DD EE FF"),
+    );
+    let text_id = text.id;
+    tree.insert(paragraph);
+    tree.insert(owner);
+    tree.insert(text);
+    tree.set_root_id(paragraph_id);
+    tree.set_children(&paragraph_id, vec![owner_id]).unwrap();
+    tree.set_children(&owner_id, vec![text_id]).unwrap();
+    (tree, paragraph_id, owner_id)
+}
+
+#[test]
+fn inline_decoration_animation_matches_fresh_frames_and_only_width_reflows() {
+    use crate::tree::attrs::{BorderRadius, BorderWidth};
+    let keyframe = |end: bool, width_animation: bool| Attrs {
+        border_width: width_animation.then_some(BorderWidth::Uniform(if end { 6.0 } else { 1.0 })),
+        background: Some(Background::Color(Color::Rgba {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: if end { 255 } else { 0 },
+        })),
+        border_radius: Some(BorderRadius::Corners {
+            tl: if end { 12.0 } else { 0.0 },
+            tr: 2.0,
+            br: 6.0,
+            bl: 0.0,
+        }),
+        box_shadows: Some(vec![test_shadow(if end { 12.0 } else { -4.0 }, 3.0)]),
+        ..Attrs::default()
+    };
+    for width_animation in [false, true] {
+        let attrs = Attrs {
+            border_width: Some(BorderWidth::Uniform(2.0)),
+            border_color: Some(Color::Named("blue".into())),
+            animate: Some(AnimationSpec {
+                keyframes: vec![
+                    keyframe(false, width_animation),
+                    keyframe(true, width_animation),
+                ],
+                duration_ms: 100.0,
+                curve: AnimationCurve::Linear,
+                repeat: AnimationRepeat::Loop,
+            }),
+            ..Attrs::default()
+        };
+        let (mut tree, paragraph, owner) = decorated_animation_tree(attrs);
+        let start = Instant::now();
+        let mut runtime = AnimationRuntime::default();
+        runtime.sync_with_tree(&tree, start);
+        let constraint = Constraint::new(800.0, 600.0);
+        let frames: Vec<_> = [0, 25, 50, 75, 125]
+            .into_iter()
+            .map(|ms| {
+                let result = layout_or_refresh_default_with_animation(
+                    &mut tree,
+                    constraint,
+                    1.0,
+                    &runtime,
+                    start + Duration::from_millis(ms),
+                );
+                if ms > 0 {
+                    assert_eq!(result.layout_performed, width_animation);
+                }
+                let mut sampled = tree.get(&owner).unwrap().layout.effective.clone();
+                sampled.animate = None;
+                let (mut fresh, _, _) = decorated_animation_tree(sampled);
+                layout_tree_default(&mut fresh, constraint, 1.0);
+                assert_eq!(
+                    fragment_snapshot(&tree, &paragraph),
+                    fragment_snapshot(&fresh, &paragraph)
+                );
+                assert_render_scenes_equivalent(
+                    result.output.scene.clone(),
+                    render_tree_scene(&fresh).scene,
+                );
+                render_scene_to_pixels(240, 200, result.output.scene)
+            })
+            .collect();
+        assert_ne!(
+            frames[0], frames[1],
+            "animation must visibly change decoration"
+        );
+    }
+}

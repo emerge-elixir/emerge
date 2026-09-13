@@ -1695,7 +1695,18 @@ fn test_demo_like_nested_glow_cards_bleed_into_scroll_panel_padding_and_trailing
     let first_left_glow = only_draw(&with_glow_trace.draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Shadow(36.0, 120.0, 300.0, 110.0, 0.0, 0.0, 4.0, 2.0, 8.0, _)
+            DrawPrimitive::Shadow(
+                36.0,
+                120.0,
+                300.0,
+                110.0,
+                0.0,
+                0.0,
+                4.0,
+                2.0,
+                [8.0, 8.0, 8.0, 8.0],
+                _
+            )
         )
     });
     assert!(
@@ -2065,7 +2076,7 @@ fn test_render_border_edges_asymmetric_widths() {
             assert_eq!(right, 1.0);
             assert_eq!(bottom, 4.0);
             assert_eq!(left, 1.0);
-            assert_eq!(radius, 8.0, "border radius should be passed through");
+            assert_eq!(radius, [8.0; 4], "border radius should be passed through");
         }
         _ => unreachable!(),
     }
@@ -2102,7 +2113,7 @@ fn test_render_border_edges_bottom_only() {
             assert_eq!(right, 0.0);
             assert_eq!(bottom, 3.0);
             assert_eq!(left, 0.0);
-            assert_eq!(radius, 0.0, "no border radius set");
+            assert_eq!(radius, [0.0; 4], "no border radius set");
         }
         _ => unreachable!(),
     }
