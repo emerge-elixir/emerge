@@ -10,12 +10,14 @@
 
 - **Breaking:** removed `Background.gradient/2,3` and the old raw gradient tuple. Use `Background.color(gradient([from, to], angle))`; see the migration guide. EMRG is now v9 and the macOS host handshake is v13; upgrade native artifacts and re-encode stored trees/patches together.
 
+- Raised the default renderer cache creation budget from 16 to 64 payloads per frame. Total/per-entry byte limits and cache admission policy are unchanged; explicit count-budget overrides remain supported.
 - Rasterized SVG size/fit variants now share the configured asset pixel-cache budget and LRU with raster images, instead of separate fixed SVG limits.
 - SVG font discovery and bounded parsed trees are reused across scenes and sizes. Added `assets.cache.svg_tree_max_entries` and `svg_tree_max_bytes`, plus parsed/pixel cache diagnostics.
 - Updated the macOS host protocol to version 13 for parsed SVG cache configuration and universal multi-color gradients.
 
 ### Fixed
 
+- Paragraph `center_x()` and `align_right()` now align each wrapped text line, including the last line. Explicit `Font` text alignment takes precedence; inherited font-alignment changes invalidate retained paragraph positions correctly.
 - SVG color attributes now validate their values before serialization, and gradient tint preserves source alpha in rendering and grayscale policy.
 
 - Centered responsive images now align with matching `in_front` overlays: content-sized `el` hosts finalize both growth and shrinkage before alignment, and columns center using resolved child heights.

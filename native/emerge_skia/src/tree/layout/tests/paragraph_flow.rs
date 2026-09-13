@@ -26,6 +26,335 @@ fn build_paragraph(
     (tree, para_id, child_ids)
 }
 
+fn paragraph_positions(tree: &ElementTree, id: NodeId) -> Vec<(f32, f32)> {
+    tree.get(&id)
+        .unwrap()
+        .layout
+        .paragraph_fragments
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|fragment| (fragment.x, fragment.y))
+        .collect()
+}
+
+#[test]
+fn paragraph_alignment_positions_each_wrapped_line() {
+    for (alignment, expected) in [
+        (AlignX::Left, vec![(0.0, 0.0), (24.0, 0.0), (0.0, 16.0)]),
+        (AlignX::Center, vec![(5.0, 0.0), (29.0, 0.0), (17.0, 16.0)]),
+        (AlignX::Right, vec![(10.0, 0.0), (34.0, 0.0), (34.0, 16.0)]),
+    ] {
+        let (mut tree, id, _) = build_paragraph(
+            Attrs {
+                align_x: Some(alignment),
+                ..fixed_width_attrs(50.0)
+            },
+            vec![("text", ElementKind::Text, text_attrs("AA BB CC"))],
+        );
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
+        assert_eq!(paragraph_positions(&tree, id), expected, "{alignment:?}");
+    }
+}
+
+#[test]
+fn paragraph_alignment_handles_empty_single_and_oversized_lines() {
+    for (text, center_x, right_x) in [("", 0.0, 0.0), ("AA", 17.0, 34.0), ("AAAAAAA", 0.0, 0.0)] {
+        for (alignment, x) in [(AlignX::Center, center_x), (AlignX::Right, right_x)] {
+            let (mut tree, id, _) = build_paragraph(
+                Attrs {
+                    align_x: Some(alignment),
+                    ..fixed_width_attrs(50.0)
+                },
+                vec![("text", ElementKind::Text, text_attrs(text))],
+            );
+            layout_tree(
+                &mut tree,
+                Constraint::new(800.0, 600.0),
+                1.0,
+                &MockTextMeasurer,
+            );
+            let expected = if text.is_empty() {
+                vec![]
+            } else {
+                vec![(x, 0.0)]
+            };
+            assert_eq!(
+                paragraph_positions(&tree, id),
+                expected,
+                "{alignment:?}: {text}"
+            );
+        }
+    }
+}
+
+#[test]
+fn paragraph_alignment_preserves_inline_spacing_and_ignores_trailing_spaces() {
+    let (mut tree, id, _) = build_paragraph(
+        Attrs {
+            align_x: Some(AlignX::Center),
+            ..fixed_width_attrs(50.0)
+        },
+        vec![
+            ("a", ElementKind::Text, text_attrs("AA")),
+            (
+                "b",
+                ElementKind::Text,
+                Attrs {
+                    font_size: Some(24.0),
+                    text_align: Some(TextAlign::Right),
+                    ..text_attrs(" BB")
+                },
+            ),
+            ("c", ElementKind::Text, text_attrs(" CC ")),
+        ],
+    );
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    assert_eq!(
+        paragraph_positions(&tree, id),
+        vec![(5.0, 0.0), (29.0, 0.0), (17.0, 24.0)]
+    );
+
+    // Leading whitespace stays in the line; a trailing space that wraps does not
+    // count towards the line's alignment or prevent that line from finalizing.
+    let (mut tree, id, _) = build_paragraph(
+        Attrs {
+            align_x: Some(AlignX::Center),
+            ..fixed_width_attrs(50.0)
+        },
+        vec![("text", ElementKind::Text, text_attrs(" AA BB "))],
+    );
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    assert_eq!(
+        paragraph_positions(&tree, id),
+        vec![(9.0, 0.0), (33.0, 0.0)]
+    );
+}
+
+#[test]
+fn paragraph_alignment_uses_content_insets_and_line_spacing() {
+    let (mut tree, id, _) = build_paragraph(
+        Attrs {
+            align_x: Some(AlignX::Right),
+            padding: Some(Padding::Uniform(7.0)),
+            border_width: Some(BorderWidth::Uniform(3.0)),
+            spacing_y: Some(5.0),
+            ..fixed_width_attrs(70.0)
+        },
+        vec![("text", ElementKind::Text, text_attrs("AA BB CC"))],
+    );
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    assert_eq!(
+        paragraph_positions(&tree, id),
+        vec![(20.0, 10.0), (44.0, 10.0), (44.0, 31.0)]
+    );
+}
+
+#[test]
+fn paragraph_alignment_tracks_float_bounds_before_and_after_expiry() {
+    for (alignment, first_x, released_x) in
+        [(AlignX::Center, 30.0, 6.0), (AlignX::Right, 40.0, 12.0)]
+    {
+        let (mut tree, id, floats) = build_paragraph(
+            Attrs {
+                align_x: Some(alignment),
+                ..fixed_width_attrs(100.0)
+            },
+            vec![
+                (
+                    "left",
+                    ElementKind::El,
+                    Attrs {
+                        align_x: Some(AlignX::Left),
+                        ..fixed_box_attrs(20.0, 20.0)
+                    },
+                ),
+                (
+                    "right",
+                    ElementKind::El,
+                    Attrs {
+                        align_x: Some(AlignX::Right),
+                        ..fixed_box_attrs(20.0, 20.0)
+                    },
+                ),
+                (
+                    "text",
+                    ElementKind::Text,
+                    text_attrs("AA BB CC DD EE FF GG HH"),
+                ),
+            ],
+        );
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
+        assert_eq!(
+            paragraph_positions(&tree, id),
+            vec![
+                (first_x, 0.0),
+                (first_x + 24.0, 0.0),
+                (first_x, 16.0),
+                (first_x + 24.0, 16.0),
+                (released_x, 32.0),
+                (released_x + 24.0, 32.0),
+                (released_x + 48.0, 32.0),
+                (released_x + 72.0, 32.0),
+            ]
+        );
+        assert_eq!(tree.get(&floats[0]).unwrap().layout.frame.unwrap().x, 0.0);
+        assert_eq!(tree.get(&floats[1]).unwrap().layout.frame.unwrap().x, 80.0);
+    }
+}
+
+#[test]
+fn paragraph_alignment_finalizes_a_line_before_a_new_float() {
+    let (mut tree, id, _) = build_paragraph(
+        Attrs {
+            align_x: Some(AlignX::Center),
+            ..fixed_width_attrs(100.0)
+        },
+        vec![
+            ("before", ElementKind::Text, text_attrs("AA BB")),
+            (
+                "float",
+                ElementKind::El,
+                Attrs {
+                    align_x: Some(AlignX::Left),
+                    ..fixed_box_attrs(24.0, 16.0)
+                },
+            ),
+            ("after", ElementKind::Text, text_attrs("CC")),
+        ],
+    );
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    assert_eq!(
+        paragraph_positions(&tree, id),
+        vec![(30.0, 0.0), (54.0, 0.0), (54.0, 16.0)]
+    );
+}
+
+#[test]
+fn paragraph_alignment_precedence_is_local_font_then_local_align_then_inherited_font() {
+    for parent_kind in [
+        ElementKind::El,
+        ElementKind::Column,
+        ElementKind::TextColumn,
+    ] {
+        for (align_x, text_align, inherited_align, expected_x) in [
+            (None, None, None, 0.0),
+            (None, None, Some(TextAlign::Center), 17.0),
+            (None, None, Some(TextAlign::Right), 34.0),
+            (Some(AlignX::Left), None, Some(TextAlign::Center), 0.0),
+            (Some(AlignX::Center), None, Some(TextAlign::Right), 17.0),
+            (
+                Some(AlignX::Right),
+                Some(TextAlign::Center),
+                Some(TextAlign::Left),
+                17.0,
+            ),
+            (
+                Some(AlignX::Center),
+                Some(TextAlign::Left),
+                Some(TextAlign::Right),
+                0.0,
+            ),
+        ] {
+            let (mut tree, id, _) = build_paragraph(
+                Attrs {
+                    align_x,
+                    text_align,
+                    ..fixed_width_attrs(50.0)
+                },
+                vec![("text", ElementKind::Text, text_attrs("AA"))],
+            );
+            let mut parent = make_element(
+                "parent",
+                parent_kind,
+                Attrs {
+                    text_align: inherited_align,
+                    ..fixed_width_attrs(50.0)
+                },
+            );
+            parent.children = vec![id];
+            tree.set_root_id(parent.id);
+            tree.insert(parent);
+            layout_tree(
+                &mut tree,
+                Constraint::new(800.0, 600.0),
+                1.0,
+                &MockTextMeasurer,
+            );
+            assert_eq!(
+                paragraph_positions(&tree, id),
+                vec![(expected_x, 0.0)],
+                "{parent_kind:?}: local={align_x:?}/{text_align:?} inherited={inherited_align:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn paragraph_alignment_shared_floats_use_the_final_paragraph_box_position() {
+    let (mut tree, id, _) = build_paragraph(
+        Attrs {
+            align_x: Some(AlignX::Center),
+            ..fixed_width_attrs(100.0)
+        },
+        vec![("text", ElementKind::Text, text_attrs("AA BB CC"))],
+    );
+    let right_float = make_element(
+        "right",
+        ElementKind::El,
+        Attrs {
+            align_x: Some(AlignX::Right),
+            ..fixed_box_attrs(100.0, 32.0)
+        },
+    );
+    let mut parent = make_element("parent", ElementKind::TextColumn, fixed_width_attrs(200.0));
+    parent.children = vec![right_float.id, id];
+    tree.set_root_id(parent.id);
+    tree.insert(parent);
+    tree.insert(right_float);
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    assert_eq!(tree.get(&id).unwrap().layout.frame.unwrap().x, 50.0);
+    assert_eq!(
+        paragraph_positions(&tree, id),
+        vec![(55.0, 0.0), (79.0, 0.0), (67.0, 16.0)]
+    );
+}
+
 #[test]
 fn test_line_spacing_row_pushes_following_heading() {
     let mut tree = ElementTree::new();

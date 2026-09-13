@@ -1839,7 +1839,7 @@ fn flush_render_frame(
     frame.flush()
 }
 
-const RENDERER_CACHE_DEFAULT_NEW_PAYLOADS_PER_FRAME: u32 = 16;
+const RENDERER_CACHE_DEFAULT_NEW_PAYLOADS_PER_FRAME: u32 = 64;
 const MOVING_PAINT_LAYER_PAYLOAD_CACHE_MIN_VISIBLE_BEFORE_STORE: u64 = 1;
 const GPU_PAINT_LAYER_REPLACEMENT_MIN_VISIBLE_FRAMES: u64 = 30;
 const GPU_PAINT_LAYER_REPLACEMENT_STORES_PER_FRAME: u32 = 1;
@@ -9794,6 +9794,64 @@ mod tests {
         };
 
         assert!(scene.has_payload_cache_candidate_layers());
+    }
+
+    #[test]
+    fn renderer_cache_default_allows_64_small_payloads_per_frame() {
+        let mut cache = RendererCacheManager::default();
+        let config = cache.payloads.config();
+        assert_eq!(config.max_new_payloads_per_frame, 64);
+        assert_eq!(config.max_entries, 512);
+        assert_eq!(config.max_bytes, 640 * 1024 * 1024);
+        assert_eq!(config.max_entry_bytes, 256 * 1024 * 1024);
+        assert_eq!(
+            config.max_new_payloads_per_frame,
+            PaintLayerPayloadCacheConfig::default().max_new_payloads_per_frame
+        );
+        let key = |node_id| {
+            RendererCacheManager::payload_key_for_moving_layer(PaintLayerMovingPayloadKey {
+                id: crate::render_scene::PaintLayerId::new(node_id, PaintLayerReason::Nearby),
+                slot: 0,
+                content_generation: 1,
+                width_px: 8,
+                height_px: 4,
+                scale_bits: 1.0f32.to_bits(),
+                subpixel_phase_x: 0,
+                subpixel_phase_y: 0,
+                resource_generation: 0,
+            })
+        };
+
+        for first_id in [1, 65] {
+            let frame = cache.begin_frame();
+            for node_id in first_id..first_id + 64 {
+                assert_eq!(
+                    cache.payloads.try_store(
+                        key(node_id),
+                        PaintLayerPayload::Image(None),
+                        128,
+                        PaintLayerPayloadStorage::Gpu,
+                    ),
+                    Ok(vec![])
+                );
+            }
+            assert_eq!(
+                cache.payloads.try_reserve_store(key(first_id + 64), 128),
+                Err(PaintLayerPayloadStoreRejection::PayloadBudget)
+            );
+            cache.end_frame(frame);
+        }
+        assert_eq!(cache.payloads.stats().entries, 128);
+        assert_eq!(cache.payloads.stats().bytes, 128 * 128);
+
+        let frame = cache.begin_frame();
+        assert_eq!(
+            cache
+                .payloads
+                .try_reserve_store(key(129), config.max_entry_bytes + 1),
+            Err(PaintLayerPayloadStoreRejection::OversizedEntry)
+        );
+        cache.end_frame(frame);
     }
 
     #[test]

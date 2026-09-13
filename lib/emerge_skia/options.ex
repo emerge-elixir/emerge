@@ -278,7 +278,7 @@ defmodule EmergeSkia.Options do
       enabled_configured: Keyword.has_key?(opts, :enabled),
       max_new_payloads_per_frame:
         opts
-        |> Keyword.get(:max_new_payloads_per_frame, 16)
+        |> Keyword.get(:max_new_payloads_per_frame, 64)
         |> normalize_non_negative_integer!(":renderer_cache.max_new_payloads_per_frame"),
       paint_layer: %{
         max_entries:

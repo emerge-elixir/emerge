@@ -465,7 +465,7 @@ defmodule EmergeSkia.OptionsTest do
     assert %{
              renderer_cache: %{
                enabled: true,
-               max_new_payloads_per_frame: 16,
+               max_new_payloads_per_frame: 64,
                paint_layer: %{
                  max_entries: 512,
                  max_bytes: 671_088_640,
@@ -512,8 +512,13 @@ defmodule EmergeSkia.OptionsTest do
                  end
   end
 
+  test "build_start_native_opts! preserves an explicit smaller payload count budget" do
+    assert %{renderer_cache: %{max_new_payloads_per_frame: 16}} =
+             Options.build_start_native_opts!(renderer_cache: %{max_new_payloads_per_frame: 16})
+  end
+
   test "build_start_native_opts! disables renderer cache by default for raster renderer" do
-    assert %{renderer_cache: %{enabled: false}} =
+    assert %{renderer_cache: %{enabled: false, max_new_payloads_per_frame: 64}} =
              Options.build_start_native_opts!(rendering_api: :raster)
 
     assert %{renderer_cache: %{enabled: true}} =

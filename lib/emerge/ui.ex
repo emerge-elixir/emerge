@@ -343,7 +343,15 @@ defmodule Emerge.UI do
   A paragraph lays out inline text children with word wrapping.
 
   Children should be `text/1` elements or `el/2`-wrapped text elements.
-  Words flow left-to-right and wrap at the container width.
+  Words flow left-to-right and wrap at the container width. `center_x/0`,
+  `align_right/0`, and `align_left/0` on the paragraph also align each wrapped
+  line within its content area, including the last line. Padding, borders, and
+  floating children reduce the available line width.
+
+  Explicit `Font.center/0`, `Font.align_right/0`, or `Font.align_left/0` on the
+  paragraph takes precedence over its horizontal alignment helper. Without either,
+  inherited font text alignment applies; otherwise lines are left-aligned.
+  The paragraph's width and placement in its parent still follow normal layout.
 
   ## Example
 

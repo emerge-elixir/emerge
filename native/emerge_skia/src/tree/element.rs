@@ -173,6 +173,7 @@ pub struct ResolveCacheKey {
     pub kind: ElementKind,
     pub attrs: ResolveAttrs,
     pub inherited: InheritedMeasureFontKey,
+    pub inherited_text_align: Option<TextAlign>,
     pub measured_frame: Option<Frame>,
     pub constraint: ResolveConstraintKey,
     pub topology: TopologyDependencyKey,

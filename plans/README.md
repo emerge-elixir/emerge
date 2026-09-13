@@ -71,6 +71,12 @@ Good/bad commit reproduction for the borders cache benchmark: ordered paint-run
 payloads outgrew its warm-up assumption, and topology-based viewport selection
 lost visible animation coverage. Includes controls and a scoped correction.
 
+### `screenshot-cache-benchmark-investigation.md`
+
+Large Borders screenshot failure: bounded cold fill plus intentional direct
+animated-shadow admission fallback omitted by the coverage assertion. Includes
+an adjacent good/bad commit pair, pause/frozen controls and pixel-quality findings.
+
 ### `release-0.4.0-audit.md`
 
 Commit-range and release-readiness audit from `v0.3.4` through the packed

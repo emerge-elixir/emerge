@@ -2786,6 +2786,7 @@ fn resolve_paragraph_kind<M: TextMeasurer>(
         measurer,
         &mut paragraph_floats,
         params.use_resolve_cache,
+        paragraph_text_alignment(params.attrs, element_context),
     );
 
     if let Some(element) = tree.get_mut(params.id) {
@@ -3103,6 +3104,7 @@ fn resolve_cache_key(
         kind,
         attrs: resolve_attrs(attrs),
         inherited: inherited_measure_font_key(inherited),
+        inherited_text_align: inherited.text_align,
         measured_frame,
         constraint: resolve_constraint_key(constraint),
         topology,
@@ -3428,6 +3430,7 @@ fn resolve_cache_key_matches_with_nearby_boundary(
     cached.kind == current.kind
         && cached.attrs == current.attrs
         && cached.inherited == current.inherited
+        && cached.inherited_text_align == current.inherited_text_align
         && cached.measured_frame == current.measured_frame
         && cached.constraint == current.constraint
         && cached.topology.children_version == current.topology.children_version
@@ -5198,6 +5201,17 @@ fn resolve_paragraph_with_flow<M: TextMeasurer>(
         measurer,
     );
 
+    // Shared floats remain in the text column's coordinates. Position the box
+    // before computing its exclusions, rather than shifting wrapped text into
+    // a sibling float afterwards.
+    let align_x = child_align_x(tree, child_id);
+    apply_horizontal_alignment(
+        tree,
+        child_id,
+        layout.content.x,
+        layout.content.width,
+        align_x,
+    );
     let (child_ids, attrs, frame) = {
         let Some(child) = tree.get(child_id) else {
             return;
@@ -5237,6 +5251,7 @@ fn resolve_paragraph_with_flow<M: TextMeasurer>(
         measurer,
         active_floats,
         use_resolve_cache,
+        paragraph_text_alignment(&attrs, &element_context),
     );
 
     if let Some(element) = tree.get_mut(child_id) {
@@ -5552,6 +5567,78 @@ fn extract_inline_text(
     }
 }
 
+fn paragraph_text_alignment(attrs: &Attrs, inherited: &FontContext) -> TextAlign {
+    attrs
+        .text_align
+        .or_else(|| {
+            attrs.align_x.map(|align| match align {
+                AlignX::Left => TextAlign::Left,
+                AlignX::Center => TextAlign::Center,
+                AlignX::Right => TextAlign::Right,
+            })
+        })
+        .or(inherited.text_align)
+        .unwrap_or_default()
+}
+
+/// Own the fragments so completed lines can be aligned once without cloning or
+/// remeasuring words. Remember their bounds before expired floats are pruned.
+struct ParagraphFragments {
+    fragments: Vec<TextFragment>,
+    alignment: TextAlign,
+    line_start: usize,
+    line_right: f32,
+    text_right: f32,
+}
+
+impl ParagraphFragments {
+    fn new(alignment: TextAlign) -> Self {
+        Self {
+            fragments: Vec::new(),
+            alignment,
+            line_start: 0,
+            line_right: 0.0,
+            text_right: 0.0,
+        }
+    }
+
+    fn push(&mut self, fragment: TextFragment, word_width: f32, line_right: f32) {
+        if self.alignment != TextAlign::Left {
+            if self
+                .fragments
+                .last()
+                .is_some_and(|last| last.y != fragment.y)
+            {
+                self.finish_line();
+            }
+            self.line_right = line_right;
+            // Deliberately exclude trailing inter-word whitespace.
+            self.text_right = fragment.x + word_width;
+        }
+        self.fragments.push(fragment);
+    }
+
+    fn finish_line(&mut self) {
+        let remaining = (self.line_right - self.text_right).max(0.0);
+        let dx = match self.alignment {
+            TextAlign::Left => 0.0,
+            TextAlign::Center => remaining / 2.0,
+            TextAlign::Right => remaining,
+        };
+        if dx > 0.0 {
+            for fragment in &mut self.fragments[self.line_start..] {
+                fragment.x += dx;
+            }
+        }
+        self.line_start = self.fragments.len();
+    }
+
+    fn finish(mut self) -> Vec<TextFragment> {
+        self.finish_line();
+        self.fragments
+    }
+}
+
 /// Resolve paragraph children by word-wrapping text content.
 /// Returns (fragments, total_content_height).
 fn resolve_paragraph_children<M: TextMeasurer>(
@@ -5561,6 +5648,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
     measurer: &M,
     active_floats: &mut Vec<FlowFloat>,
     use_resolve_cache: bool,
+    alignment: TextAlign,
 ) -> (Vec<TextFragment>, f32) {
     let content_x = layout.content.x;
     let content_y = layout.content.y;
@@ -5570,7 +5658,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
     let inherited = layout.inherited;
 
     let incoming_float_count = active_floats.len();
-    let mut fragments = Vec::new();
+    let mut fragments = ParagraphFragments::new(alignment);
     let mut cursor_y = content_y;
     let mut local_float_bottom = content_y;
     let mut line_height: f32 = 0.0;
@@ -5713,7 +5801,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
             let word_width =
                 measurer.measure_visual_width_with_font(word, font_size, &family, weight, italic);
 
-            loop {
+            let line_right = loop {
                 prune_flow_floats(active_floats, cursor_y);
                 let (next_line_left, line_right) = flow_line_bounds(
                     content_x,
@@ -5748,22 +5836,26 @@ fn resolve_paragraph_children<M: TextMeasurer>(
                     continue;
                 }
 
-                break;
-            }
+                break line_right;
+            };
 
-            fragments.push(TextFragment {
-                x: cursor_x,
-                y: cursor_y,
-                text: word.to_string(),
-                font_size,
-                color: color.clone(),
-                family: family.clone(),
-                weight,
-                italic,
-                underline,
-                strike,
-                ascent,
-            });
+            fragments.push(
+                TextFragment {
+                    x: cursor_x,
+                    y: cursor_y,
+                    text: word.to_string(),
+                    font_size,
+                    color: color.clone(),
+                    family: family.clone(),
+                    weight,
+                    italic,
+                    underline,
+                    strike,
+                    ascent,
+                },
+                word_width,
+                line_right,
+            );
 
             cursor_x += word_width;
             line_height = line_height.max(text_height);
@@ -5851,7 +5943,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
     };
     let total_height = (text_bottom.max(local_float_bottom) - content_y).max(0.0);
 
-    (fragments, total_height)
+    (fragments.finish(), total_height)
 }
 
 // =============================================================================

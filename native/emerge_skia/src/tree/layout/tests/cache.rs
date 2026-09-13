@@ -2737,6 +2737,91 @@ fn test_wrapped_row_resolve_cache_hits_and_width_change_misses() {
 }
 
 #[test]
+fn paragraph_alignment_patches_and_inherited_changes_match_fresh_layout() {
+    let raw_attrs = |width: f64, align: Option<AlignX>, text_align: Option<TextAlign>| {
+        let count = 1 + u16::from(align.is_some()) + u16::from(text_align.is_some());
+        count
+            .to_be_bytes()
+            .into_iter()
+            .chain([1, 2])
+            .chain(width.to_be_bytes())
+            .chain(align.into_iter().flat_map(|value| [5, value as u8]))
+            .chain(text_align.into_iter().flat_map(|value| [30, value as u8]))
+            .collect::<Vec<_>>()
+    };
+    let mut cached = aligned_paragraph_tree(AlignX::Left);
+    let root_id = cached.root_id().unwrap();
+    let paragraph_id = cached.child_ids(&root_id)[0];
+    cached.set_layout_cache_stats_enabled(true);
+
+    for (parent_width, inherited_align, align, text_align, width) in [
+        (100.0, TextAlign::Left, Some(AlignX::Left), None, 50.0),
+        (100.0, TextAlign::Left, Some(AlignX::Center), None, 50.0),
+        (100.0, TextAlign::Left, Some(AlignX::Right), None, 50.0),
+        (100.0, TextAlign::Left, Some(AlignX::Left), None, 50.0),
+        (100.0, TextAlign::Center, None, None, 50.0),
+        (100.0, TextAlign::Right, None, None, 50.0),
+        (100.0, TextAlign::Left, None, None, 50.0),
+        (160.0, TextAlign::Right, Some(AlignX::Center), None, 40.0),
+        (200.0, TextAlign::Right, Some(AlignX::Center), None, 40.0),
+        (
+            100.0,
+            TextAlign::Right,
+            Some(AlignX::Center),
+            Some(TextAlign::Left),
+            50.0,
+        ),
+    ] {
+        let patches = || {
+            vec![
+                Patch::SetAttrs {
+                    id: root_id,
+                    attrs_raw: raw_attrs(parent_width, None, Some(inherited_align)),
+                },
+                Patch::SetAttrs {
+                    id: paragraph_id,
+                    attrs_raw: raw_attrs(width, align, text_align),
+                },
+            ]
+        };
+        let had_measure_cache = cached
+            .get(&paragraph_id)
+            .unwrap()
+            .layout
+            .subtree_measure_cache
+            .is_some();
+        apply_patches(&mut cached, patches()).unwrap();
+        let mut fresh = aligned_paragraph_tree(AlignX::Left);
+        apply_patches(&mut fresh, patches()).unwrap();
+        layout_tree(
+            &mut fresh,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
+
+        for _ in 0..3 {
+            layout_tree(
+                &mut cached,
+                Constraint::new(800.0, 600.0),
+                1.0,
+                &MockTextMeasurer,
+            );
+            if had_measure_cache {
+                let stats = cached.layout_cache_stats();
+                assert!(stats.subtree_measure_hits + stats.intrinsic_measure_hits > 0);
+            }
+            assert_layout_matches(&cached, &fresh);
+            assert_render_scenes_equivalent(
+                render_tree_scene(&cached).scene,
+                render_tree_scene(&fresh).scene,
+            );
+        }
+        assert!(cached.layout_cache_stats().resolve_hits > 0);
+    }
+}
+
+#[test]
 fn test_paragraph_resolve_cache_shifts_fragments_after_parent_alignment_change() {
     let mut cached = aligned_paragraph_tree(AlignX::Left);
     cached.set_layout_cache_stats_enabled(true);

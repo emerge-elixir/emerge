@@ -44,6 +44,12 @@ defmodule Emerge.UI.Font do
   element's content box after padding and border insets are applied. They do not
   change where the element itself is placed in a `row/2` or `column/2`.
 
+  On a paragraph, these helpers align every wrapped line, including the last
+  line. Explicit font alignment on the paragraph overrides `center_x/0`,
+  `align_left/0`, or `align_right/0` from `Emerge.UI.Align` for line alignment only.
+  Inherited font alignment applies when the paragraph sets neither kind of
+  alignment itself.
+
   ## Font Weights
 
   Use `weight/1` for the full `100..900` range in `100` steps, or use the named

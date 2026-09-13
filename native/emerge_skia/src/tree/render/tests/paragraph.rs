@@ -3,6 +3,92 @@ use super::*;
 use crate::events::registry_builder;
 
 #[test]
+fn aligned_paragraph_text_and_decorations_share_positions_and_owner_paint() {
+    use crate::tree::attrs::{AlignX, Length, Padding, SolidColor};
+    use crate::tree::layout::{Constraint, layout_tree_default};
+
+    for color in [
+        Color::Rgb {
+            r: 30,
+            g: 80,
+            b: 140,
+        },
+        Color::Gradient {
+            colors: vec![
+                SolidColor::Rgb { r: 255, g: 0, b: 0 },
+                SolidColor::Rgb { r: 0, g: 0, b: 255 },
+            ]
+            .into(),
+            angle: 0.0,
+        },
+    ] {
+        for alignment in [AlignX::Center, AlignX::Right] {
+            let id = NodeId::from_u64(801);
+            let text_id = NodeId::from_u64(802);
+            let mut tree = ElementTree::new();
+            tree.set_root_id(id);
+            tree.insert(Element::with_attrs(
+                id,
+                ElementKind::Paragraph,
+                vec![],
+                Attrs {
+                    width: Some(Length::Px(70.0)),
+                    padding: Some(Padding::Uniform(5.0)),
+                    align_x: Some(alignment),
+                    font_size: Some(20.0),
+                    font_color: Some(color.clone()),
+                    font_underline: Some(true),
+                    font_strike: Some(true),
+                    on_mouse_down: Some(true),
+                    ..Attrs::default()
+                },
+            ));
+            tree.insert(Element::with_attrs(
+                text_id,
+                ElementKind::Text,
+                vec![],
+                Attrs {
+                    content: Some("AA BB CC".to_string()),
+                    ..Attrs::default()
+                },
+            ));
+            tree.set_children(&id, vec![text_id]).unwrap();
+            layout_tree_default(&mut tree, Constraint::new(200.0, 200.0), 1.0);
+            let paragraph = tree.get(&id).unwrap();
+            let frame = paragraph.layout.frame.unwrap();
+            let fragments = paragraph.layout.paragraph_fragments.as_ref().unwrap();
+            assert_eq!(fragments.len(), 3);
+            assert!(fragments[2].y > fragments[0].y);
+            assert!(fragments[0].x > 5.0);
+            let expected_paint = color.render(crate::tree::geometry::Rect {
+                x: frame.x + 5.0,
+                y: frame.y + 5.0,
+                width: frame.width - 10.0,
+                height: frame.height - 10.0,
+            });
+            let draws = observe_tree(&tree);
+            assert_eq!(draws.len(), fragments.len() * 3);
+            for (fragment, group) in fragments.iter().zip(draws.chunks_exact(3)) {
+                let DrawPrimitive::TextWithFont(x, y, text, _, paint, ..) = &group[0].primitive
+                else {
+                    panic!("expected text before its decorations");
+                };
+                assert_eq!((*x, *y), (fragment.x, fragment.y + fragment.ascent));
+                assert_eq!(text, &fragment.text);
+                assert_eq!(paint, &expected_paint);
+                for decoration in &group[1..] {
+                    let DrawPrimitive::Rect(x, _, _, _, paint) = &decoration.primitive else {
+                        panic!("expected decoration rectangle");
+                    };
+                    assert_eq!(*x, fragment.x);
+                    assert_eq!(paint, &expected_paint);
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn test_render_paragraph_emits_text_commands() {
     use crate::tree::attrs::TextFragment;
 

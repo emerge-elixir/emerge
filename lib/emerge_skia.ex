@@ -185,13 +185,15 @@ defmodule EmergeSkia do
   | Option | Default |
   |---|---:|
   | `enabled` | `true`; explicit raster defaults to `false` |
-  | `max_new_payloads_per_frame` | `16` |
+  | `max_new_payloads_per_frame` | `64` |
   | `paint_layer.max_entries` | `512` |
   | `paint_layer.max_bytes` | `671_088_640` |
   | `paint_layer.max_entry_bytes` | `268_435_456` |
   | `paint_layer.min_visible_before_store` | `1` |
   | `paint_layer.max_stale_frames` | `120` |
 
+  `max_new_payloads_per_frame` limits new cache payloads per frame independently
+  of the total and per-entry byte limits. Existing cache hits do not consume it.
   Set an entry or byte limit to zero to prevent new stores for that limit.
 
   ## DRM cursor options

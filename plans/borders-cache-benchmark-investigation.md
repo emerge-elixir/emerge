@@ -13,6 +13,11 @@ Two benchmark assumptions needed repair. The investigation phase left code
 unchanged; the correction described below now fixes the original benchmark
 without changing production renderer code or cache limits.
 
+Subsequent user-directed policy change: the default count budget is now **64**,
+with byte limits and admission policy unchanged. The measurements below retain
+their original 16-payload configuration; bounded benchmark warm-up continues to
+use the configured budget rather than assume any particular default.
+
 ## 1. Payload granularity changed, warm-up did not
 
 `f08d80b` replaced separate own-node/child collections with ordered semantic
@@ -137,7 +142,11 @@ An independently rebuilt archive of unmodified `d10d294` reproduces it exactly:
 hit/bypass coverage of all 123 candidates and zero misses/stores after two
 warm-up frames. This screenshot case was not modified by the correction and
 requires separate qualification rather than silently weakening its assertions.
-Baseline evidence: `/tmp/borders-screenshot-baseline.log`.
+Baseline evidence: `/tmp/borders-screenshot-baseline.log`. Subsequent investigation
+identified intentional direct shadow admission fallback missing from the coverage
+formula, in addition to cold fill. See
+[`screenshot-cache-benchmark-investigation.md`](screenshot-cache-benchmark-investigation.md)
+for the earlier good/bad boundary and controls.
 
 ## Reproduction and evidence
 

@@ -27,11 +27,14 @@ This file retains only open qualification work, not an implementation log.
 animation, direct/cached pixel checks and bounded budget-aware warm-up now pass.
 The full renderer suite next reaches a separate failure in
 `emerge_demo_showcase_borders/screenshot_1909x2148_scale_1_5/cache_steady_hits`.
-That assertion also fails on the unmodified `d10d294` baseline (25 misses,
-16 stores, 29 hits, 9 budget rejections). It remains unchanged; resolving it must
-not silently loosen coverage assertions or change production cache budgets.
-See [`borders-cache-benchmark-investigation.md`](borders-cache-benchmark-investigation.md)
-for the history, correction and baseline evidence.
+That assertion predates gradients: `9c3364f` expanded dynamic-layer candidates
+without accounting for intentional direct admission fallback; ordered runs later
+outgrew the fixed warm-up. It remains unchanged. A correction must validate the
+specific changing shadow runs, not count arbitrary rejections as cache coverage.
+See [`screenshot-cache-benchmark-investigation.md`](screenshot-cache-benchmark-investigation.md)
+for the good/bad boundary, convergence controls and separate pixel-quality findings;
+[`borders-cache-benchmark-investigation.md`](borders-cache-benchmark-investigation.md)
+records the already-corrected synthetic case.
 
 ## Constraints
 
