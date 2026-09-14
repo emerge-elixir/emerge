@@ -799,6 +799,7 @@ defmodule Emerge.Engine.Reconcile do
       new_filtered = TreeAttrs.strip_runtime_attrs(new_attrs)
 
       if old_filtered != new_filtered do
+        Emerge.Engine.AttrValidation.validate_change_update!(old_filtered, new_filtered)
         [{:set_attrs, id, new_filtered} | patches]
       else
         patches

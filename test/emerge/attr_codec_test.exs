@@ -426,17 +426,17 @@ defmodule Emerge.Engine.AttrCodecTest do
     assert normalize_attrs(decoded) == normalize_attrs(attrs)
   end
 
-  test "animate encoding rejects incompatible keyframes" do
-    assert_raise ArgumentError, ~r/same length variant/, fn ->
-      AttrCodec.encode_attrs(%{
-        animate: %{
-          keyframes: [%{width: :fill}, %{width: {:px, 120}}],
-          duration: 200,
-          curve: :linear,
-          repeat: :once
-        }
-      })
-    end
+  test "animate encoding accepts mixed length keyframes" do
+    attrs = %{
+      animate: %{
+        keyframes: [%{width: :fill}, %{width: {:px, 120}}],
+        duration: 200,
+        curve: :linear,
+        repeat: :once
+      }
+    }
+
+    assert attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs() == attrs
   end
 
   test "animate_exit encoding rejects non-once repeats" do

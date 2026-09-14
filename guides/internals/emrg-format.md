@@ -87,6 +87,7 @@ font, font_size, font_color, font_weight, font_style
 font_underline, font_strike, font_letter_spacing, font_word_spacing
 content
 move_x, move_y, rotate, scale, alpha
+animate, animate_enter, animate_exit, animate_change
 image_src, image_fit, image_size
 video_target
 on_click, on_press, on_mouse_down, on_mouse_up, on_mouse_enter,
@@ -119,6 +120,31 @@ Gradient values decode in Elixir as `{:color_gradient, colors, angle}`. Attribut
 blocks (including keyframe blocks) must be consumed completely. Bad counts,
 truncation, retired variants, and non-finite gradient angles are rejected.
 
+## Animation Policies
+
+Regular, enter and exit specs use tags `65`, `66` and `67`. Animated width/height
+endpoints accept pixels, content, fill and weighted fill in any pairing. `min` and
+`max` remain supported as static layout lengths, but are rejected in animation
+keyframes and change policies. Other animated properties retain their existing
+shape-compatibility checks.
+
+Tag `84` encodes `animate_change`, separate from the ordinary target attributes:
+
+```text
+payload_len       # u32 BE byte length of the following payload
+policy_count      # u16 BE
+policies...       # field: u16 BE UTF-8 byte length + bytes
+                  # duration_ms: f64 BE, finite and positive
+                  # curve: u16 BE UTF-8 byte length + bytes
+```
+
+Curves are `linear`, `ease_in`, `ease_out`, or `ease_in_out`. Fields use their
+ordinary attribute names. Spacing and spacing_xy refer to the same native field.
+Targets remain in the surrounding attribute block; no source geometry, clocks,
+groups, or history are serialized. Duplicate/conflicting policies, missing targets,
+regular-animation ownership conflicts, and trailing payload data are rejected.
+An absent policy removes it. First mount does not start an implicit change run.
+
 ## Compatibility Note
 
 Elixir and Rust accept only EMRG v9. Re-encode persisted trees and fixtures;
@@ -130,4 +156,4 @@ Standalone `set_attrs` patches have no EMRG header. Their background tags use th
 same definitions above: retired background tags `1` and `3` are rejected, so
 incompatible patches fail rather than silently changing meaning. Inserted
 subtrees contain complete v9 EMRG trees. Upgrade Elixir, the native library,
-and the macOS host (handshake v13) together.
+and the macOS host (handshake v14) together.
