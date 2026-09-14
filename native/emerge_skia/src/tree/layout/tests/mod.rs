@@ -1,7 +1,10 @@
 mod animation_endpoints;
+mod animation_groups;
+mod animation_transaction;
 mod border_box;
 mod cache;
 mod common;
+mod dimension_samples;
 mod font;
 mod layout_transform;
 mod measurement;

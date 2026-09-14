@@ -976,6 +976,8 @@ fn ensure_benchmark_assets() {
 fn universal_gradient_scene(kind: u8) -> RenderScene {
     let stops: std::sync::Arc<[u32]> = [0xff0000a0, 0x00ff00ff, 0x0000ff80].into();
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: (0..120)
             .map(|index| {
                 let x = 14.0 + (index % 8) as f32 * 116.0;
@@ -1031,6 +1033,8 @@ fn universal_gradient_scene(kind: u8) -> RenderScene {
 
 fn text_heavy_scene() -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: (0..144)
             .map(|index| {
                 let col = index % 3;
@@ -1054,6 +1058,8 @@ fn text_heavy_scene() -> RenderScene {
 
 fn solid_uniform_borders_scene() -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: (0..144)
             .map(|index| {
                 let col = index % 9;
@@ -1077,6 +1083,8 @@ fn solid_uniform_borders_scene() -> RenderScene {
 
 fn solid_edge_borders_scene() -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: (0..144)
             .map(|index| {
                 let col = index % 9;
@@ -1110,6 +1118,8 @@ fn solid_edge_borders_scene() -> RenderScene {
 
 fn dashed_borders_scene() -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: (0..120)
             .map(|index| {
                 let col = index % 8;
@@ -1137,6 +1147,8 @@ fn dashed_borders_scene() -> RenderScene {
 
 fn border_clip_heavy_scene() -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: (0..84)
             .map(|index| {
                 let col = index % 7;
@@ -1201,6 +1213,8 @@ fn raster_images_scene() -> RenderScene {
 
 fn image_grid_scene(tint: Option<u32>) -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: (0..96)
             .map(|index| {
                 let col = index % 8;
@@ -1225,6 +1239,8 @@ fn image_grid_scene(tint: Option<u32>) -> RenderScene {
 
 fn alpha_single_primitive_scene() -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: (0..144)
             .map(|index| {
                 let col = index % 9;
@@ -1247,6 +1263,8 @@ fn alpha_single_primitive_scene() -> RenderScene {
 
 fn alpha_group_overlap_scene() -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: (0..80)
             .map(|index| {
                 let col = index % 8;
@@ -1281,6 +1299,8 @@ fn alpha_group_overlap_scene() -> RenderScene {
 
 fn shadow_mask_filter_scene() -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: (0..24)
             .flat_map(|index| {
                 let col = index % 6;
@@ -1330,6 +1350,8 @@ fn shadow_mask_filter_scene() -> RenderScene {
 
 fn gradient_rects_scene() -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: (0..120)
             .map(|index| {
                 let col = index % 8;
@@ -1357,6 +1379,8 @@ fn gradient_rects_scene() -> RenderScene {
 
 fn clip_rect_vs_rrect_scene() -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: (0..120)
             .map(|index| {
                 let col = index % 8;
@@ -1529,6 +1553,8 @@ fn mixed_ui_scene() -> RenderScene {
     });
 
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: background
             .into_iter()
             .chain(cards)
@@ -1625,8 +1651,8 @@ fn emerge_demo_showcase_layout_page_benchmark() -> EmergeDemoShowcaseLayoutPageB
     let mut runtime = AnimationRuntime::default();
     runtime.sync_with_tree(&tree, started_at);
 
-    let target = emerge_demo_showcase_layout_target(&tree, &runtime, started_at);
-    let states = emerge_demo_showcase_layout_states(&tree, &runtime, started_at, target);
+    let target = emerge_demo_showcase_layout_target(&tree, &mut runtime, started_at);
+    let states = emerge_demo_showcase_layout_states(&tree, &mut runtime, started_at, target);
     let summary = states
         .first()
         .expect("emerge_demo showcase layout benchmark should build states")
@@ -1664,7 +1690,7 @@ fn emerge_demo_showcase_layout_page_benchmark() -> EmergeDemoShowcaseLayoutPageB
 #[cfg(target_os = "linux")]
 fn emerge_demo_showcase_layout_states(
     tree: &ElementTree,
-    runtime: &AnimationRuntime,
+    runtime: &mut AnimationRuntime,
     started_at: Instant,
     target: EmergeDemoShowcaseLayoutTarget,
 ) -> Vec<RenderState> {
@@ -1675,7 +1701,8 @@ fn emerge_demo_showcase_layout_states(
         1.0,
         runtime,
         started_at,
-    );
+    )
+    .unwrap();
     tree.apply_scroll_y(&target.scroll_id, -target.scroll_y);
 
     EMERGE_DEMO_SHOWCASE_LAYOUT_FRAME_MS
@@ -1690,7 +1717,8 @@ fn emerge_demo_showcase_layout_states(
                     runtime,
                     started_at + Duration::from_millis(*frame_ms),
                     Some(&initial.event_rebuild),
-                );
+                )
+                .unwrap();
             RenderState::new(update.output.scene, Color::WHITE, index as u64 + 1, false)
         })
         .collect()
@@ -1819,8 +1847,8 @@ fn emerge_demo_showcase_borders_benchmark() -> EmergeDemoShowcaseBordersBenchmar
     let mut runtime = AnimationRuntime::default();
     runtime.sync_with_tree(&tree, started_at);
 
-    let target = emerge_demo_showcase_borders_target(&tree, &runtime, started_at);
-    let states = emerge_demo_showcase_borders_states(&tree, &runtime, started_at, target);
+    let target = emerge_demo_showcase_borders_target(&tree, &mut runtime, started_at);
+    let states = emerge_demo_showcase_borders_states(&tree, &mut runtime, started_at, target);
     let summary = states
         .first()
         .expect("emerge_demo showcase Borders benchmark should build states")
@@ -1866,13 +1894,13 @@ fn emerge_demo_showcase_borders_screenshot_benchmark() -> EmergeDemoShowcaseBord
 
     let target = emerge_demo_showcase_borders_exact_target(
         &tree,
-        &runtime,
+        &mut runtime,
         started_at,
         EMERGE_DEMO_SHOWCASE_BORDERS_SCREENSHOT_WIDTH,
         EMERGE_DEMO_SHOWCASE_BORDERS_SCREENSHOT_HEIGHT,
         EMERGE_DEMO_SHOWCASE_BORDERS_SCREENSHOT_SCALE,
     );
-    let states = emerge_demo_showcase_borders_states(&tree, &runtime, started_at, target);
+    let states = emerge_demo_showcase_borders_states(&tree, &mut runtime, started_at, target);
     let summary = states
         .first()
         .expect("emerge_demo showcase Borders screenshot benchmark should build states")
@@ -1930,10 +1958,11 @@ impl EmergeDemoShowcaseBordersRefreshBenchmark {
             &mut self.tree,
             emerge_demo_showcase_borders_constraint(self.width, self.height),
             self.scale,
-            &self.runtime,
+            &mut self.runtime,
             self.started_at + Duration::from_millis(self.next_frame.saturating_mul(16)),
             Some(&self.cached_rebuild),
-        );
+        )
+        .unwrap();
 
         (update.layout_performed, update.output.scene.nodes.len())
     }
@@ -1972,7 +2001,7 @@ fn emerge_demo_showcase_borders_screenshot_hover_replay() -> EmergeDemoShowcaseB
     runtime.sync_with_tree(&tree, started_at);
     let target = emerge_demo_showcase_borders_exact_target(
         &tree,
-        &runtime,
+        &mut runtime,
         started_at,
         EMERGE_DEMO_SHOWCASE_BORDERS_SCREENSHOT_WIDTH,
         EMERGE_DEMO_SHOWCASE_BORDERS_SCREENSHOT_HEIGHT,
@@ -1985,18 +2014,20 @@ fn emerge_demo_showcase_borders_screenshot_hover_replay() -> EmergeDemoShowcaseB
         &mut tree,
         constraint,
         target.scale,
-        &runtime,
+        &mut runtime,
         started_at,
-    );
+    )
+    .unwrap();
     tree.apply_scroll_y(&target.scroll_id, -target.scroll_y);
     let warm = layout_or_refresh_default_with_animation_reusing_clean_registry_for_benchmark(
         &mut tree,
         constraint,
         target.scale,
-        &runtime,
+        &mut runtime,
         started_at,
         Some(&initial.event_rebuild),
-    );
+    )
+    .unwrap();
     let mut cached_rebuild = if warm.output.event_rebuild_changed {
         warm.output.event_rebuild
     } else {
@@ -2049,11 +2080,11 @@ fn emerge_demo_showcase_borders_screenshot_hover_replay() -> EmergeDemoShowcaseB
                 &mut tree,
                 constraint,
                 target.scale,
-                &runtime,
+                &mut runtime,
                 started_at + Duration::from_millis((index as u64 + 1).saturating_mul(16)),
                 invalidation,
                 Some(&cached_rebuild),
-            );
+            ).unwrap();
             if update.output.event_rebuild_changed {
                 cached_rebuild = update.output.event_rebuild.clone();
             }
@@ -2150,7 +2181,7 @@ fn emerge_demo_showcase_borders_screenshot_refresh_benchmark()
     runtime.sync_with_tree(&tree, started_at);
     let target = emerge_demo_showcase_borders_exact_target(
         &tree,
-        &runtime,
+        &mut runtime,
         started_at,
         EMERGE_DEMO_SHOWCASE_BORDERS_SCREENSHOT_WIDTH,
         EMERGE_DEMO_SHOWCASE_BORDERS_SCREENSHOT_HEIGHT,
@@ -2162,18 +2193,20 @@ fn emerge_demo_showcase_borders_screenshot_refresh_benchmark()
         &mut tree,
         emerge_demo_showcase_borders_constraint(target.width, target.height),
         target.scale,
-        &runtime,
+        &mut runtime,
         started_at,
-    );
+    )
+    .unwrap();
     tree.apply_scroll_y(&target.scroll_id, -target.scroll_y);
     let warm = layout_or_refresh_default_with_animation_reusing_clean_registry_for_benchmark(
         &mut tree,
         emerge_demo_showcase_borders_constraint(target.width, target.height),
         target.scale,
-        &runtime,
+        &mut runtime,
         started_at,
         Some(&initial.event_rebuild),
-    );
+    )
+    .unwrap();
     let cached_rebuild = if warm.output.event_rebuild_changed {
         warm.output.event_rebuild
     } else {
@@ -2183,10 +2216,11 @@ fn emerge_demo_showcase_borders_screenshot_refresh_benchmark()
         &mut tree,
         emerge_demo_showcase_borders_constraint(target.width, target.height),
         target.scale,
-        &runtime,
+        &mut runtime,
         started_at + Duration::from_millis(16),
         Some(&cached_rebuild),
-    );
+    )
+    .unwrap();
     assert!(
         !second.layout_performed,
         "emerge_demo showcase Borders screenshot refresh benchmark should stay refresh-only: \
@@ -2222,7 +2256,7 @@ fn emerge_demo_showcase_borders_screenshot_refresh_benchmark()
 #[cfg(target_os = "linux")]
 fn emerge_demo_showcase_borders_states(
     tree: &ElementTree,
-    runtime: &AnimationRuntime,
+    runtime: &mut AnimationRuntime,
     started_at: Instant,
     target: EmergeDemoShowcaseBordersTarget,
 ) -> Vec<RenderState> {
@@ -2233,7 +2267,8 @@ fn emerge_demo_showcase_borders_states(
         target.scale,
         runtime,
         started_at,
-    );
+    )
+    .unwrap();
     tree.apply_scroll_y(&target.scroll_id, -target.scroll_y);
 
     EMERGE_DEMO_SHOWCASE_BORDERS_FRAME_MS
@@ -2248,7 +2283,8 @@ fn emerge_demo_showcase_borders_states(
                     runtime,
                     started_at + Duration::from_millis(*frame_ms),
                     Some(&initial.event_rebuild),
-                );
+                )
+                .unwrap();
             RenderState::new(update.output.scene, Color::WHITE, index as u64 + 1, false)
         })
         .collect()
@@ -2257,7 +2293,7 @@ fn emerge_demo_showcase_borders_states(
 #[cfg(target_os = "linux")]
 fn emerge_demo_showcase_borders_target(
     tree: &ElementTree,
-    runtime: &AnimationRuntime,
+    runtime: &mut AnimationRuntime,
     started_at: Instant,
 ) -> EmergeDemoShowcaseBordersTarget {
     let target = EMERGE_DEMO_SHOWCASE_BORDERS_VIEWPORTS
@@ -2270,7 +2306,8 @@ fn emerge_demo_showcase_borders_target(
                 1.0,
                 runtime,
                 started_at,
-            );
+            )
+            .unwrap();
             let scroll_id = largest_vertical_scroll_node(&layout_tree)?;
             let (scroll_y, summary, score) = emerge_demo_showcase_borders_target_scroll_y(
                 &layout_tree,
@@ -2310,7 +2347,7 @@ fn emerge_demo_showcase_borders_target(
 #[cfg(target_os = "linux")]
 fn emerge_demo_showcase_borders_exact_target(
     tree: &ElementTree,
-    runtime: &AnimationRuntime,
+    runtime: &mut AnimationRuntime,
     started_at: Instant,
     width: u32,
     height: u32,
@@ -2323,7 +2360,8 @@ fn emerge_demo_showcase_borders_exact_target(
         scale,
         runtime,
         started_at,
-    );
+    )
+    .unwrap();
     let scroll_id = largest_vertical_scroll_node(&layout_tree)
         .expect("emerge_demo showcase Borders page should have a vertical scroll container");
     let (scroll_y, summary, score) = emerge_demo_showcase_borders_target_scroll_y(
@@ -2366,7 +2404,7 @@ fn emerge_demo_showcase_borders_exact_target(
 fn emerge_demo_showcase_borders_target_scroll_y(
     tree: &ElementTree,
     scroll_id: NodeId,
-    runtime: &AnimationRuntime,
+    runtime: &mut AnimationRuntime,
     started_at: Instant,
     viewport: EmergeDemoShowcaseBordersViewport,
 ) -> (f32, RenderSceneSummary, usize) {
@@ -2397,7 +2435,7 @@ fn emerge_demo_showcase_borders_target_scroll_y(
 fn emerge_demo_showcase_borders_summary_at_scroll(
     tree: &ElementTree,
     scroll_id: NodeId,
-    runtime: &AnimationRuntime,
+    runtime: &mut AnimationRuntime,
     started_at: Instant,
     scroll_y: f32,
     viewport: EmergeDemoShowcaseBordersViewport,
@@ -2411,6 +2449,7 @@ fn emerge_demo_showcase_borders_summary_at_scroll(
         runtime,
         started_at,
     )
+    .unwrap()
     .scene
     .summary()
 }
@@ -2601,8 +2640,8 @@ fn rich_borders_showcase_benchmark() -> RichBordersShowcaseBenchmark {
     let tree = scrollable_rich_borders_shadow_showcase();
     let mut runtime = AnimationRuntime::default();
     runtime.sync_with_tree(&tree, started_at);
-    let target = rich_borders_showcase_target(&tree, &runtime, started_at);
-    let states = rich_borders_showcase_states(&tree, &runtime, started_at, target);
+    let target = rich_borders_showcase_target(&tree, &mut runtime, started_at);
+    let states = rich_borders_showcase_states(&tree, &mut runtime, started_at, target);
     let summary = states
         .first()
         .expect("rich borders states missing")
@@ -2620,7 +2659,7 @@ fn rich_borders_showcase_benchmark() -> RichBordersShowcaseBenchmark {
 #[cfg(target_os = "linux")]
 fn rich_borders_showcase_states(
     tree: &ElementTree,
-    runtime: &AnimationRuntime,
+    runtime: &mut AnimationRuntime,
     started_at: Instant,
     target: RichBordersShowcaseTarget,
 ) -> Vec<RenderState> {
@@ -2631,7 +2670,8 @@ fn rich_borders_showcase_states(
         1.0,
         runtime,
         started_at,
-    );
+    )
+    .unwrap();
     tree.apply_scroll_y(&target.scroll_id, -target.viewport.scroll_y);
 
     RICH_BORDERS_SHOWCASE_FRAME_MS
@@ -2646,7 +2686,8 @@ fn rich_borders_showcase_states(
                     runtime,
                     started_at + Duration::from_millis(*frame_ms),
                     Some(&initial.event_rebuild),
-                );
+                )
+                .unwrap();
             RenderState::new(update.output.scene, Color::WHITE, index as u64 + 1, false)
         })
         .collect()
@@ -2655,7 +2696,7 @@ fn rich_borders_showcase_states(
 #[cfg(target_os = "linux")]
 fn rich_borders_showcase_target(
     tree: &ElementTree,
-    runtime: &AnimationRuntime,
+    runtime: &mut AnimationRuntime,
     started_at: Instant,
 ) -> RichBordersShowcaseTarget {
     let width = 960;
@@ -2667,7 +2708,8 @@ fn rich_borders_showcase_target(
         1.0,
         runtime,
         started_at,
-    );
+    )
+    .unwrap();
     let scroll_id = largest_vertical_scroll_node(&layout_tree)
         .expect("rich borders showcase should have a vertical scroll container");
     let viewport = borders_cache::select_viewport(&layout_tree, scroll_id, width, height);
@@ -2768,7 +2810,7 @@ fn emerge_bench_diagnostics_enabled() -> bool {
 #[cfg(target_os = "linux")]
 fn emerge_demo_showcase_layout_target(
     tree: &ElementTree,
-    runtime: &AnimationRuntime,
+    runtime: &mut AnimationRuntime,
     started_at: Instant,
 ) -> EmergeDemoShowcaseLayoutTarget {
     let target = EMERGE_DEMO_SHOWCASE_LAYOUT_VIEWPORTS
@@ -2781,7 +2823,8 @@ fn emerge_demo_showcase_layout_target(
                 1.0,
                 runtime,
                 started_at,
-            );
+            )
+            .unwrap();
             let scroll_id = largest_vertical_scroll_node(&layout_tree)?;
             let (scroll_y, summary, score) = emerge_demo_showcase_layout_target_scroll_y(
                 &layout_tree,
@@ -2830,7 +2873,7 @@ fn largest_vertical_scroll_node(tree: &ElementTree) -> Option<NodeId> {
 fn emerge_demo_showcase_layout_target_scroll_y(
     tree: &ElementTree,
     scroll_id: NodeId,
-    runtime: &AnimationRuntime,
+    runtime: &mut AnimationRuntime,
     started_at: Instant,
     width: u32,
     height: u32,
@@ -2866,7 +2909,7 @@ fn emerge_demo_showcase_layout_target_scroll_y(
 fn emerge_demo_showcase_layout_summary_at_scroll(
     tree: &ElementTree,
     scroll_id: NodeId,
-    runtime: &AnimationRuntime,
+    runtime: &mut AnimationRuntime,
     started_at: Instant,
     scroll_y: f32,
     width: u32,
@@ -2881,6 +2924,7 @@ fn emerge_demo_showcase_layout_summary_at_scroll(
         runtime,
         started_at,
     )
+    .unwrap()
     .scene
     .summary()
 }
@@ -3070,6 +3114,8 @@ fn large_simple_paint_layer_state() -> RenderState {
 #[cfg(target_os = "linux")]
 fn large_simple_paint_layer_scene() -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: vec![RenderNode::PaintLayer(RenderPaintLayer::from_children(
             9_100,
             Rect {
@@ -3121,6 +3167,8 @@ fn text_heavy_paint_layer_state() -> RenderState {
 #[cfg(target_os = "linux")]
 fn text_heavy_paint_layer_scene() -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: vec![RenderNode::PaintLayer(RenderPaintLayer::from_children(
             9_200,
             Rect {
@@ -3242,6 +3290,8 @@ fn paint_layer_cache_states<T: Copy>(
 #[cfg(target_os = "linux")]
 fn scrolling_direct_scene(offset_y: f32) -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: vec![
             RenderNode::Primitive(DrawPrimitive::Rect(
                 0.0,
@@ -3261,6 +3311,8 @@ fn scrolling_direct_scene(offset_y: f32) -> RenderScene {
 #[cfg(target_os = "linux")]
 fn scrolling_paint_layer_scene(offset_y: f32) -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: vec![
             RenderNode::Primitive(DrawPrimitive::Rect(
                 0.0,
@@ -3360,6 +3412,8 @@ fn scrolling_paint_layer_content() -> Vec<RenderNode> {
 #[cfg(target_os = "linux")]
 fn animated_direct_scene(phase: usize) -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: animated_static_before()
             .into_iter()
             .chain(animated_dynamic_nodes(phase))
@@ -3371,6 +3425,8 @@ fn animated_direct_scene(phase: usize) -> RenderScene {
 #[cfg(target_os = "linux")]
 fn animated_paint_layer_scene(phase: usize) -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: vec![
             RenderNode::PaintLayer(RenderPaintLayer::from_children(
                 5_200,
@@ -3555,6 +3611,8 @@ fn animated_static_after() -> Vec<RenderNode> {
 #[cfg(target_os = "linux")]
 fn offscreen_layout_animation_scene(phase: usize) -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: vec![
             RenderNode::Primitive(DrawPrimitive::Rect(
                 0.0,
@@ -3751,6 +3809,8 @@ fn offscreen_static_rows_after_animation(phase: usize) -> Vec<RenderNode> {
 #[cfg(target_os = "linux")]
 fn stable_descendant_layout_animation_scene(phase: usize) -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: vec![
             RenderNode::Primitive(DrawPrimitive::Rect(
                 0.0,
@@ -3975,6 +4035,8 @@ fn scroll_return_state(scroll_y: f32) -> RenderState {
 #[cfg(target_os = "linux")]
 fn scroll_return_scene(scroll_y: f32) -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: vec![
             RenderNode::Primitive(DrawPrimitive::Rect(
                 0.0,

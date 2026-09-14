@@ -7,14 +7,13 @@ use std::{
     time::Instant,
 };
 
-use crossbeam_channel::{Receiver, Sender, TrySendError};
+use crossbeam_channel::{Receiver, Sender};
 
 use crate::{
     RenderSender,
     actors::{AnimationFrameTraceSeed, EventMsg, RenderMsg, TreeMsg},
     assets::AssetContext,
     backend::wake::BackendWakeHandle,
-    events,
     stats::{RendererStatsCollector, record_pipeline_layout_queued},
     tree::{element::ElementTree, layout::LayoutOutput},
 };
@@ -74,16 +73,35 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
         let _asset_context_guard = asset_context.enter();
         let mut engine = TreeUpdateEngine::new(initial_tree, initial_width, initial_height);
 
+        // At most one unsent full registry and one latest scene. Continue
+        // processing input while the event consumer is blocked, especially Stop.
+        let mut pending_registry = None;
+        let mut pending_layout: Option<PendingLayout> = None;
+        let targets = || LayoutOutputPublishTargets {
+            render_sender: &render_sender,
+            render_counter: &render_counter,
+            window_wake: &window_wake,
+            stats: stats.as_deref(),
+        };
         loop {
-            let msg = match tree_rx.recv() {
-                Ok(msg) => msg,
-                Err(_) => return,
+            let message = if let Some(rebuild) = pending_registry.take() {
+                crossbeam_channel::select! {
+                    send(event_tx,EventMsg::RegistryUpdate {rebuild}) -> _ => {
+                        if let Some(layout)=pending_layout.take() {layout.publish(targets());}
+                        continue;
+                    }
+                    recv(tree_rx) -> message => {pending_registry=Some(rebuild);message}
+                }
+            } else {
+                tree_rx.recv()
             };
-            let mut messages = vec![msg];
-            while let Ok(next) = tree_rx.try_recv() {
-                messages.push(next);
-            }
-
+            let Ok(message) = message else {
+                return;
+            };
+            // Bound a batch even when producers continuously replenish the queue.
+            let messages = std::iter::once(message)
+                .chain(tree_rx.try_iter().take(63))
+                .collect();
             match engine.process_messages(
                 messages,
                 TreeUpdateOptions::new(stats.as_ref(), TreeUpdateDecodePolicy::LogAndContinue),
@@ -91,78 +109,103 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                 Ok(TreeUpdateEffect::Stop) => return,
                 Ok(TreeUpdateEffect::Skip) => {}
                 Ok(TreeUpdateEffect::RegistryUpdate { rebuild }) => {
-                    send_registry_update(&event_tx, rebuild, log_input);
+                    pending_registry = Some(coalesce_registry(
+                        engine.tree(),
+                        pending_registry.take(),
+                        rebuild,
+                    ));
                 }
                 Ok(TreeUpdateEffect::Layout {
-                    output,
+                    mut output,
                     pipeline_submitted_at,
                     tree_batch_started_at,
                     animation_trace,
                 }) => {
-                    publish_layout_output(
-                        LayoutOutputPublishTargets {
-                            event_tx: &event_tx,
-                            render_sender: &render_sender,
-                            render_counter: &render_counter,
-                            window_wake: &window_wake,
-                            stats: stats.as_deref(),
-                            log_input,
-                        },
-                        *output,
+                    if let Some(stats) = stats.as_ref() {
+                        stats.record_scene_constructed();
+                    }
+                    if output.event_rebuild_changed {
+                        if log_input && pending_registry.is_some() {
+                            eprintln!("event channel busy, coalescing latest registry and scene");
+                        }
+                        pending_registry = Some(coalesce_registry(
+                            engine.tree(),
+                            pending_registry.take(),
+                            std::mem::take(&mut output.event_rebuild),
+                        ));
+                        output.event_rebuild_changed = false;
+                    }
+                    let layout = PendingLayout {
+                        output,
                         pipeline_submitted_at,
-                        pipeline_submitted_at.map(|_| tree_batch_started_at),
+                        tree_batch_started_at,
                         animation_trace,
-                    );
+                    };
+                    if pending_registry.is_some() {
+                        pending_layout = Some(layout);
+                    } else {
+                        layout.publish(targets());
+                    }
                 }
-                Err(err) => {
-                    eprintln!("tree update failed: {err}");
-                }
+                Err(err) => eprintln!("tree update failed: {err}"),
             }
         }
     })
 }
 
-pub(crate) fn send_registry_update(
-    event_tx: &Sender<EventMsg>,
-    rebuild: events::RegistryRebuildPayload,
-    log_input: bool,
-) {
-    match event_tx.try_send(EventMsg::RegistryUpdate { rebuild }) {
-        Ok(()) => {}
-        Err(TrySendError::Full(msg)) => {
-            if log_input {
-                eprintln!("event channel full, blocking registry update send");
-            }
-            crate::debug_trace::hover_trace!(
-                "event_channel",
-                "event channel full, blocking registry update send"
-            );
-            let _ = event_tx.send(msg);
-        }
-        Err(TrySendError::Disconnected(_)) => {}
+fn coalesce_registry(
+    tree: &ElementTree,
+    previous: Option<crate::events::RegistryRebuildPayload>,
+    mut next: crate::events::RegistryRebuildPayload,
+) -> crate::events::RegistryRebuildPayload {
+    if next.focus_on_mount.is_none() {
+        next.focus_on_mount = previous
+            .filter(|old| next.focused_id.is_none() || old.focused_id == next.focused_id)
+            .and_then(|old| old.focus_on_mount)
+            .and_then(|pending| {
+                crate::events::registry_builder::rebind_pending_mount_focus(
+                    tree,
+                    &next.base_registry,
+                    pending,
+                )
+            });
+    }
+    next
+}
+
+struct PendingLayout {
+    output: Box<LayoutOutput>,
+    pipeline_submitted_at: Option<Instant>,
+    tree_batch_started_at: Instant,
+    animation_trace: Option<AnimationFrameTraceSeed>,
+}
+impl PendingLayout {
+    fn publish(self, targets: LayoutOutputPublishTargets<'_>) {
+        queue_layout_output(
+            targets,
+            *self.output,
+            self.pipeline_submitted_at,
+            self.pipeline_submitted_at
+                .map(|_| self.tree_batch_started_at),
+            self.animation_trace,
+        );
     }
 }
 
 struct LayoutOutputPublishTargets<'a> {
-    event_tx: &'a Sender<EventMsg>,
     render_sender: &'a RenderSender,
     render_counter: &'a Arc<AtomicU64>,
     window_wake: &'a BackendWakeHandle,
     stats: Option<&'a RendererStatsCollector>,
-    log_input: bool,
 }
 
-fn publish_layout_output(
+fn queue_layout_output(
     targets: LayoutOutputPublishTargets<'_>,
     output: LayoutOutput,
     pipeline_submitted_at: Option<Instant>,
     pipeline_tree_started_at: Option<Instant>,
     animation_trace: Option<AnimationFrameTraceSeed>,
 ) {
-    if output.event_rebuild_changed {
-        send_registry_update(targets.event_tx, output.event_rebuild, targets.log_input);
-    }
-
     let version = targets.render_counter.fetch_add(1, Ordering::Relaxed) + 1;
     let pipeline = record_pipeline_layout_queued(
         targets.stats,
@@ -172,9 +215,6 @@ fn publish_layout_output(
         pipeline_tree_started_at,
         Instant::now(),
     );
-    if let Some(stats) = targets.stats {
-        stats.record_scene_constructed();
-    }
     let queue_overwritten = targets.render_sender.send_latest(RenderMsg::Scene {
         scene: Box::new(output.scene),
         version,
@@ -212,6 +252,8 @@ mod tests {
     use crossbeam_channel::{Receiver, bounded};
     use std::sync::{Arc, atomic::AtomicU64};
     use std::time::Duration;
+
+    mod backpressure;
 
     struct TreeActorHarness {
         tree_tx: Sender<TreeMsg>,
@@ -595,8 +637,7 @@ mod tests {
     }
 
     #[test]
-    fn publish_layout_output_records_constructed_and_overwritten_scenes() {
-        let (event_tx, _event_rx) = bounded(1);
+    fn queue_layout_output_counts_actual_render_queue_overwrites() {
         let (render_tx, render_rx) = bounded(1);
         let render_sender = RenderSender {
             tx: render_tx,
@@ -608,14 +649,12 @@ mod tests {
         let stats = RendererStatsCollector::new();
 
         for _ in 0..2 {
-            publish_layout_output(
+            queue_layout_output(
                 LayoutOutputPublishTargets {
-                    event_tx: &event_tx,
                     render_sender: &render_sender,
                     render_counter: &render_counter,
                     window_wake: &window_wake,
                     stats: Some(&stats),
-                    log_input: false,
                 },
                 LayoutOutput {
                     scene: RenderScene::default(),
@@ -633,63 +672,182 @@ mod tests {
         }
 
         let snapshot = stats.peek();
-        assert_eq!(snapshot.pipeline.scenes_constructed, 2);
+        assert_eq!(snapshot.pipeline.scenes_constructed, 0); // construction is recorded by the actor, not queued twice
         assert_eq!(snapshot.pipeline.render_queue_overwrites, 1);
         assert_eq!(render_rx.len(), 1);
     }
 
-    #[test]
-    fn publish_layout_output_skips_registry_send_when_output_is_clean() {
-        let (event_tx, event_rx) = bounded(1);
-        let (render_tx, render_rx) = bounded(1);
-        let render_sender = RenderSender {
-            tx: render_tx,
-            drop_rx: render_rx.clone(),
-            log_render: false,
-        };
-        let render_counter = Arc::new(AtomicU64::new(0));
-        let window_wake = BackendWakeHandle::noop();
+    fn coupled_publication_tree(ghost: bool) -> ElementTree {
+        use crate::tree::animation::{AnimationCurve, AnimationRepeat, AnimationSpec};
+        let mut tree = ElementTree::new();
+        tree.insert(Element::with_attrs(
+            NodeId(1),
+            ElementKind::Row,
+            vec![],
+            Attrs {
+                width: Some(Length::Fill),
+                height: Some(Length::Fill),
+                ..Default::default()
+            },
+        ));
+        for (id, from, duration, color) in [
+            (NodeId(2), 40.0, 1000.0, Color::Rgb { r: 255, g: 0, b: 0 }),
+            (NodeId(3), 200.0, 2000.0, Color::Rgb { r: 0, g: 0, b: 255 }),
+        ] {
+            let spec = AnimationSpec {
+                keyframes: vec![
+                    Attrs {
+                        width: Some(Length::Px(from)),
+                        ..Default::default()
+                    },
+                    Attrs {
+                        width: Some(Length::Fill),
+                        ..Default::default()
+                    },
+                ],
+                duration_ms: duration,
+                curve: AnimationCurve::Linear,
+                repeat: if id == NodeId(3) {
+                    AnimationRepeat::Loop
+                } else {
+                    AnimationRepeat::Once
+                },
+            };
+            let mut attrs = Attrs {
+                width: Some(Length::Px(from)),
+                height: Some(Length::Fill),
+                on_mouse_move: Some(true),
+                background: Some(Background::Color(color)),
+                ..Default::default()
+            };
+            if ghost && id == NodeId(2) {
+                attrs.animate_exit = Some(spec);
+            } else {
+                attrs.animate = Some(spec);
+            }
+            tree.insert(Element::with_attrs(id, ElementKind::El, vec![], attrs));
+        }
+        tree.set_children(&NodeId(1), vec![NodeId(2), NodeId(3)])
+            .unwrap();
+        tree.set_root_id(NodeId(1));
+        tree
+    }
 
-        publish_layout_output(
-            LayoutOutputPublishTargets {
-                event_tx: &event_tx,
-                render_sender: &render_sender,
-                render_counter: &render_counter,
-                window_wake: &window_wake,
-                stats: None,
-                log_input: false,
-            },
-            LayoutOutput {
-                scene: RenderScene::default(),
-                event_rebuild: RegistryRebuildPayload::default(),
-                event_rebuild_changed: false,
-                ime_enabled: false,
-                ime_cursor_area: None,
-                ime_text_state: None,
-                animations_active: false,
-            },
-            Some(Instant::now()),
-            Some(Instant::now()),
+    fn scene_pixels(
+        renderer: &mut crate::renderer::SceneRenderer,
+        scene: RenderScene,
+        version: u64,
+    ) -> Vec<u8> {
+        let info = skia_safe::ImageInfo::new(
+            (600, 60),
+            skia_safe::ColorType::RGBA8888,
+            skia_safe::AlphaType::Premul,
             None,
         );
-
-        assert!(event_rx.try_recv().is_err());
-
-        match render_rx
-            .try_recv()
-            .expect("scene should still be published")
-        {
-            RenderMsg::Scene {
+        let mut surface = skia_safe::surfaces::raster(&info, None, None).unwrap();
+        renderer.render(
+            &mut crate::renderer::RenderFrame::new(&mut surface, None),
+            &crate::renderer::RenderState::new(
+                scene,
+                skia_safe::Color::TRANSPARENT,
                 version,
-                pipeline_submitted_at,
-                pipeline_render_queued_at,
-                ..
-            } => {
-                assert_eq!(version, 1);
-                assert!(pipeline_submitted_at.is_some());
-                assert!(pipeline_render_queued_at.is_some());
+                false,
+            ),
+        );
+        let mut bytes = vec![0; 600 * 60 * 4];
+        assert!(surface.read_pixels(&info, &mut bytes, 600 * 4, (0, 0)));
+        bytes
+    }
+
+    #[test]
+    fn coupled_frames_ghost_cleanup_and_final_hits_match_direct_engine() {
+        use crate::events::registry_builder::assert_registry_rebuild_payloads_equivalent;
+        use crate::renderer::SceneRenderer;
+        let assets = crate::assets::AssetRuntime::new();
+        let _assets = assets.enter();
+        for ghost in [false, true] {
+            let tree = coupled_publication_tree(ghost);
+            let mut direct = TreeUpdateEngine::new(tree.clone(), 600, 60);
+            let actor = TreeActorHarness::new(tree, 600, 60);
+            let start = Instant::now();
+            let options = || TreeUpdateOptions::new(None, TreeUpdateDecodePolicy::ReturnErr);
+            let mut a = SceneRenderer::new();
+            let mut b = SceneRenderer::new();
+            let mut prior = None;
+            // Acknowledge the first ghost presentation at t=0 before advancing
+            // time; transient starts are anchored to presentation, not wall time.
+            for (step, us) in [0, 0, 0, 500_000, 1_100_000, 1_100_001, 1_200_000]
+                .into_iter()
+                .enumerate()
+            {
+                if (step == 1 || step == 2) && !ghost {
+                    continue;
+                }
+                let at = start + Duration::from_micros(us);
+                let patch = if step == 1 {
+                    Some([vec![4], NodeId(2).to_wire_u64().to_be_bytes().to_vec()].concat())
+                } else if step == 6 {
+                    // Plain width/height Fill, blue background, move handler; no loop.
+                    Some(encode_set_attrs_patch(
+                        NodeId(3),
+                        vec![0, 4, 1, 0, 2, 0, 12, 0, 1, 0, 0, 255, 255, 45, 1],
+                    ))
+                } else {
+                    None
+                };
+                let messages = || {
+                    patch
+                        .iter()
+                        .map(|bytes| TreeMsg::PatchTree {
+                            bytes: bytes.clone(),
+                            submitted_at: None,
+                        })
+                        .chain(std::iter::once(TreeMsg::AnimationPulse {
+                            presented_at: at,
+                            predicted_next_present_at: at,
+                            trace: None,
+                        }))
+                        .collect::<Vec<_>>()
+                };
+                let TreeUpdateEffect::Layout { output, .. } =
+                    direct.process_messages(messages(), options()).unwrap()
+                else {
+                    panic!("expected layout {ghost}/{step}");
+                };
+                actor.send(TreeMsg::Batch(messages()));
+                if output.event_rebuild_changed {
+                    assert_registry_rebuild_payloads_equivalent(
+                        &output.event_rebuild,
+                        &actor.recv_registry_update(),
+                    );
+                }
+                let RenderMsg::Scene {
+                    scene,
+                    version,
+                    animate,
+                    ..
+                } = actor.recv_scene()
+                else {
+                    panic!("expected scene");
+                };
+                assert_eq!(animate, output.animations_active);
+                let actual = scene_pixels(&mut a, *scene, version);
+                assert_eq!(actual, scene_pixels(&mut b, output.scene.clone(), version));
+                if step == 3 {
+                    prior = Some((output.scene.clone(), actual));
+                }
+                if step == 6 {
+                    assert!(!animate, "ghost={ghost} step={step}");
+                    assert!(direct.tree().length_runtime.is_none());
+                    let (old, pixels) = prior.take().unwrap();
+                    assert_eq!(pixels, scene_pixels(&mut b, old, version + 1));
+                    assert!(matches!(
+                        direct.process_messages(vec![], options()).unwrap(),
+                        TreeUpdateEffect::Skip
+                    ));
+                }
             }
-            RenderMsg::Stop => panic!("expected scene render message"),
+            actor.stop();
         }
     }
 }

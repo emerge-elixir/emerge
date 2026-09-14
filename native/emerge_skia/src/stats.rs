@@ -3880,6 +3880,8 @@ mod tests {
     #[test]
     fn slow_render_frame_log_includes_timing_split_and_scene_summary() {
         let scene = RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![
                 RenderNode::Clip {
                     clips: Vec::new(),
@@ -4027,6 +4029,8 @@ mod tests {
     #[test]
     fn slow_render_frame_log_includes_renderer_cache_frame_stats() {
         let scene = RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::Primitive(DrawPrimitive::Rect(
                 0.0,
                 0.0,
@@ -4074,6 +4078,8 @@ mod tests {
     #[test]
     fn slow_present_frame_log_includes_present_duration_and_scene_summary() {
         let scene = RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::Primitive(DrawPrimitive::Rect(
                 0.0,
                 0.0,

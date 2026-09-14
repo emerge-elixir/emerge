@@ -129,6 +129,9 @@ pub enum TreeMsg {
     Batch(Vec<TreeMsg>),
     RebuildRegistry,
     AssetStateChanged,
+    FontMetricsChanged {
+        generation: u64,
+    },
     Stop,
 }
 
@@ -163,7 +166,8 @@ impl TreeMsg {
             | Self::SetTextInputContent { .. }
             | Self::SetSliderValue { .. }
             | Self::RebuildRegistry
-            | Self::AssetStateChanged => true,
+            | Self::AssetStateChanged
+            | Self::FontMetricsChanged { .. } => true,
         }
     }
 }

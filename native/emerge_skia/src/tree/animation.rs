@@ -1,5 +1,21 @@
-use std::collections::{HashMap, hash_map::DefaultHasher};
+mod admission;
+pub mod change;
+mod content;
+mod fields;
+pub(crate) mod frame;
+use frame::{RuntimeAuthority, RuntimeIdentity};
+pub(crate) mod groups;
+pub mod lengths;
+mod regular;
+pub mod source;
+pub(crate) mod timing;
+
+use super::layout::projection::ProjectionError;
+use admission::AdmissionMap;
+use groups::RunGeneration;
+use std::collections::{HashMap, HashSet, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 use std::time::Instant;
 
 use super::attrs::{
@@ -8,7 +24,7 @@ use super::attrs::{
 use super::element::{ElementTree, NodeId};
 use super::invalidation::{TreeInvalidation, animation_attrs_affect_registry_refresh};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum AnimationCurve {
     Linear,
     EaseIn,
@@ -16,14 +32,14 @@ pub enum AnimationCurve {
     EaseInOut,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum AnimationRepeat {
     Once,
     Times(u32),
     Loop,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct AnimationSpec {
     pub keyframes: Vec<Attrs>,
     pub duration_ms: f64,
@@ -38,26 +54,78 @@ pub struct AnimationRuntimeEntry {
 }
 
 #[derive(Clone, Debug)]
+struct OwnedAnimationEntry {
+    spec: Arc<AnimationSpec>,
+    source: Option<Arc<source::PresentationSource>>,
+    pending: fields::FieldMask,
+    handoffs: Vec<Arc<regular::SelectedFields>>,
+    fields: fields::FieldMask,
+    mount: u64,
+    clock: AnimationRuntimeEntry,
+    generation: RunGeneration,
+}
+
+#[derive(Clone, Debug)]
 pub struct EnterAnimationRuntimeEntry {
-    pub spec: AnimationSpec,
+    mount: u64,
+    pub(crate) generation: RunGeneration,
+    fields: fields::FieldMask,
+    pub spec: Arc<AnimationSpec>,
     pub started_at: Instant,
     pub presentation_anchor_pending: bool,
 }
 
 #[derive(Clone, Debug)]
 pub struct ExitAnimationRuntimeEntry {
-    pub spec: AnimationSpec,
+    mount: u64,
+    source: Option<Arc<source::PresentationSource>>,
+    fields: fields::FieldMask,
+    pub(crate) generation: RunGeneration,
+    pub spec: Arc<AnimationSpec>,
     pub started_at: Instant,
     pub capture_scale: f32,
     pub presentation_anchor_pending: bool,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub struct AnimationRuntime {
-    animate_entries: HashMap<NodeId, AnimationRuntimeEntry>,
-    enter_entries: HashMap<NodeId, EnterAnimationRuntimeEntry>,
-    exit_entries: HashMap<NodeId, ExitAnimationRuntimeEntry>,
+    identity: Option<RuntimeAuthority>,
+    last_generation: u64,
+    synced_sample_time: Option<Instant>,
+    admission_error: Option<ProjectionError>,
+    groups: groups::GroupLedger,
+    animate_entries: AdmissionMap<NodeId, OwnedAnimationEntry>,
+    enter_entries: AdmissionMap<NodeId, EnterAnimationRuntimeEntry>,
+    exit_entries: AdmissionMap<NodeId, ExitAnimationRuntimeEntry>,
+    changes: AdmissionMap<(NodeId, change::Field), change::ChangeEntry>,
+    content_nodes: HashSet<NodeId>,
     last_seen_revision: u64,
+    synced: bool,
+    last_root: Option<(NodeId, u64)>,
+    #[cfg(test)]
+    sync_node_visits: usize,
+}
+
+impl Clone for AnimationRuntime {
+    fn clone(&self) -> Self {
+        Self {
+            identity: self.identity.as_ref().map(|_| RuntimeAuthority::default()),
+            last_generation: self.last_generation,
+            synced_sample_time: self.synced_sample_time,
+            admission_error: self.admission_error.clone(),
+            groups: self.groups.clone(),
+            animate_entries: self.animate_entries.clone(),
+            enter_entries: self.enter_entries.clone(),
+            exit_entries: self.exit_entries.clone(),
+            changes: self.changes.clone(),
+            content_nodes: self.content_nodes.clone(),
+            last_seen_revision: self.last_seen_revision,
+            synced: self.synced,
+            last_root: self.last_root,
+            #[cfg(test)]
+            sync_node_visits: self.sync_node_visits,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -77,6 +145,7 @@ pub struct AnimationLayoutEffect {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AnimationOverlayResult {
+    pub(crate) preparation_error: Option<super::layout::projection::ProjectionError>,
     pub active: bool,
     pub invalidation: TreeInvalidation,
     pub effects: Vec<AnimationLayoutEffect>,
@@ -87,8 +156,9 @@ pub struct AnimationSyncResult {
     pub completed: AnimationOverlayResult,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub(crate) struct AnimationFrameSamples {
+    pub(crate) geometry: Option<lengths::GeometryDelta>,
     pub(crate) samples: HashMap<NodeId, AnimationSample>,
     pub(crate) result: AnimationOverlayResult,
 }
@@ -119,43 +189,334 @@ impl AnimationSyncResult {
 }
 
 impl AnimationRuntime {
+    fn admission_versions(&self) -> [admission::Version; 6] {
+        let [groups, owners] = self.groups.versions();
+        [
+            self.animate_entries.version(),
+            self.enter_entries.version(),
+            self.exit_entries.version(),
+            self.changes.version(),
+            groups,
+            owners,
+        ]
+    }
+
     pub fn sync_with_tree(
         &mut self,
         tree: &ElementTree,
         started_at: Instant,
     ) -> AnimationSyncResult {
-        if !self.animate_entries.is_empty()
-            && self.last_seen_revision == tree.revision()
-            && !self.has_transient_entries()
+        let before_epoch = (
+            self.synced_sample_time,
+            self.last_seen_revision,
+            self.last_root,
+            self.last_generation,
+            self.admission_error.clone(),
+        );
+        let before_counts = (
+            self.animate_entries.len(),
+            self.enter_entries.len(),
+            self.exit_entries.len(),
+            self.changes.len(),
+        );
+        self.synced_sample_time = Some(started_at);
+        let result = self.try_sync_with_tree(tree, started_at);
+        if before_counts
+            != (
+                self.animate_entries.len(),
+                self.enter_entries.len(),
+                self.exit_entries.len(),
+                self.changes.len(),
+            )
+            || before_epoch
+                != (
+                    self.synced_sample_time,
+                    self.last_seen_revision,
+                    self.last_root,
+                    self.last_generation,
+                    result.as_ref().err().cloned(),
+                )
+            || self.identity.is_none()
         {
-            return AnimationSyncResult::default();
+            self.rotate_identity();
         }
+        self.admission_error = result.as_ref().err().cloned();
+        result.unwrap_or_else(|error| AnimationSyncResult {
+            completed: AnimationOverlayResult {
+                preparation_error: Some(error),
+                ..Default::default()
+            },
+        })
+    }
 
-        self.animate_entries.retain(|id, _| {
-            tree.get(id)
-                .is_some_and(|element| element.is_live() && element.spec.declared.animate.is_some())
-        });
+    fn rotate_identity(&mut self) {
+        self.identity = Some(RuntimeAuthority::default());
+    }
+    fn allocate_generation(&mut self) -> Result<RunGeneration, ProjectionError> {
+        let next = self
+            .last_generation
+            .checked_add(1)
+            .ok_or(ProjectionError::GenerationExhausted)?;
+        self.last_generation = next;
+        Ok(RunGeneration(next))
+    }
+
+    fn retained_group(
+        &self,
+        node: NodeId,
+        kind: groups::Owner,
+        started: Instant,
+        tree: &ElementTree,
+    ) -> Option<groups::GroupKey> {
+        let generation = match kind {
+            groups::Owner::Regular => self.animate_entries.get(&node).map(|e| e.generation),
+            groups::Owner::Enter => self.enter_entries.get(&node).map(|e| e.generation),
+            groups::Owner::Exit => self.exit_entries.get(&node).map(|e| e.generation),
+            groups::Owner::Change(field) => self.changes.get(&(node, field)).map(|e| e.generation),
+        };
+        generation.zip(tree.get(&node)).and_then(|(generation, n)| {
+            self.groups.group(groups::OwnerKey {
+                node,
+                mount: n.lifecycle.mounted_at_revision,
+                kind,
+                generation,
+                started,
+            })
+        })
+    }
+
+    fn retains_geometry(
+        &self,
+        node: NodeId,
+        kind: groups::Owner,
+        started: Instant,
+        tree: &ElementTree,
+    ) -> bool {
+        self.retained_group(node, kind, started, tree).is_some()
+    }
+
+    fn owner_phases(
+        &self,
+        owner: groups::OwnerKey,
+        fields: fields::FieldMask,
+        active: bool,
+        now: Option<Instant>,
+        blocked: fields::FieldMask,
+    ) -> fields::PhaseMasks {
+        let group = self.groups.group(owner);
+        fields::PhaseMasks::new(
+            fields,
+            active,
+            group.is_some(),
+            group
+                .and_then(|key| self.groups.barrier(key))
+                .zip(now)
+                .is_some_and(|(deadline, now)| deadline <= now),
+            blocked,
+        )
+    }
+    fn change_phases(
+        &self,
+        key: (NodeId, change::Field),
+        entry: &change::ChangeEntry,
+        active: bool,
+        now: Option<Instant>,
+    ) -> fields::PhaseMasks {
+        let field = fields::FieldMask::field(key.1);
+        self.owner_phases(
+            groups::OwnerKey {
+                node: key.0,
+                mount: entry.mount,
+                kind: groups::Owner::Change(key.1),
+                generation: entry.generation,
+                started: entry.started_at,
+            },
+            field,
+            active,
+            now,
+            if entry.pending {
+                field
+            } else {
+                fields::FieldMask::default()
+            },
+        )
+    }
+
+    fn enter_phases(
+        &self,
+        tree: &ElementTree,
+        node: NodeId,
+        entry: &EnterAnimationRuntimeEntry,
+        now: Instant,
+    ) -> fields::PhaseMasks {
+        debug_assert!(
+            tree.get(&node)
+                .is_some_and(|node| node.lifecycle.mounted_at_revision == entry.mount)
+        );
+        self.owner_phases(
+            groups::OwnerKey {
+                node,
+                mount: entry.mount,
+                kind: groups::Owner::Enter,
+                generation: entry.generation,
+                started: entry.started_at,
+            },
+            entry.fields,
+            entry_is_active(&entry.spec, entry.started_at, now),
+            Some(now),
+            fields::FieldMask::default(),
+        )
+    }
+
+    fn completed_enter_ids(
+        &self,
+        tree: &ElementTree,
+        now: Instant,
+        releasing: &HashSet<groups::GroupKey>,
+    ) -> Vec<NodeId> {
         self.enter_entries
-            .retain(|id, _| tree.get(id).is_some_and(|element| element.is_live()));
-        self.exit_entries.retain(|id, _| {
+            .iter()
+            .filter_map(|(id, entry)| {
+                let retained = self
+                    .retained_group(*id, groups::Owner::Enter, entry.started_at, tree)
+                    .is_some_and(|key| !releasing.contains(&key));
+                (!tree.get(id).is_some_and(|node| node.is_live())
+                    || (!entry_is_active(&entry.spec, entry.started_at, now) && !retained))
+                    .then_some(*id)
+            })
+            .collect()
+    }
+    fn check_enter_handoff_capacity(
+        &self,
+        tree: &ElementTree,
+        completed: &[NodeId],
+    ) -> Result<(), ProjectionError> {
+        let needed = completed
+            .iter()
+            .filter(|id| {
+                tree.get(id).is_some_and(|node| {
+                    node.is_live() && self.regular_handoff_needs_generation(node)
+                })
+            })
+            .count();
+        self.last_generation
+            .checked_add(needed as u64)
+            .ok_or(ProjectionError::GenerationExhausted)?;
+        Ok(())
+    }
+
+    fn try_sync_with_tree(
+        &mut self,
+        tree: &ElementTree,
+        started_at: Instant,
+    ) -> Result<AnimationSyncResult, ProjectionError> {
+        self.animate_entries.retain(|id, entry| {
             tree.get(id).is_some_and(|element| {
-                element.is_ghost_root() && element.lifecycle.ghost_exit_animation.is_some()
+                element.is_live()
+                    && element.spec.declared.animate.is_some()
+                    && element.lifecycle.mounted_at_revision == entry.mount
+            })
+        });
+        self.enter_entries.retain(|id, entry| {
+            tree.get(id).is_some_and(|element| {
+                element.is_live() && element.lifecycle.mounted_at_revision == entry.mount
+            })
+        });
+        self.exit_entries.retain(|id, entry| {
+            tree.get(id).is_some_and(|element| {
+                element.is_ghost_root()
+                    && element.lifecycle.ghost_exit_animation.is_some()
+                    && element.lifecycle.mounted_at_revision == entry.mount
             })
         });
 
+        let mut change_effects = self.sync_changes(tree, started_at)?;
+        self.sync_groups(tree, started_at);
+        self.handoff_completed_enter_paint(tree, started_at);
+        for effect in self.finish_unheld_changes(tree, started_at) {
+            change_effects.record_effect(effect);
+        }
+        let root = tree.root_id().and_then(|id| {
+            tree.get(&id)
+                .map(|node| (id, node.lifecycle.mounted_at_revision))
+        });
+        if self.synced && self.last_seen_revision == tree.revision() && self.last_root == root {
+            let mut result = self.finish_active_enters(tree, started_at)?;
+            for effect in change_effects.effects {
+                result.completed.record_effect(effect);
+            }
+            self.sync_regular_handoffs(tree, started_at)?;
+            self.sync_groups(tree, started_at);
+            return Ok(result);
+        }
+
         let mut sync_result = AnimationSyncResult::default();
 
+        self.content_nodes.clear();
         for (id, element) in tree.iter_node_pairs() {
+            if element.is_live() && content::has_policy(&element.spec.declared) {
+                self.content_nodes.insert(id);
+            }
+            #[cfg(test)]
+            {
+                self.sync_node_visits += 1;
+            }
+            change::validate_policies(&element.spec.declared)
+                .map_err(|_| ProjectionError::InvalidOwnership(id))?;
+            for spec in [
+                element.spec.declared.animate.as_ref(),
+                element.spec.declared.animate_enter.as_ref(),
+                element.spec.declared.animate_exit.as_ref(),
+                element.lifecycle.ghost_exit_animation.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                validate_animation_lengths(spec)
+                    .map_err(|_| ProjectionError::UnsupportedLength(id))?;
+                if !timing::valid_duration(spec.duration_ms, &spec.repeat, started_at) {
+                    return Err(ProjectionError::InvalidTiming(id));
+                }
+            }
             if element.is_ghost_root() {
-                if let Some(spec) = element.lifecycle.ghost_exit_animation.as_ref() {
-                    self.exit_entries
-                        .entry(id)
-                        .or_insert_with(|| ExitAnimationRuntimeEntry {
-                            spec: spec.clone(),
+                if let Some(spec) = element.lifecycle.ghost_exit_animation.as_ref()
+                    && !self.exit_entries.contains_key(&id)
+                {
+                    let generation = self.allocate_generation()?;
+                    let fields = fields::FieldMask::from_spec(spec);
+                    let frame = element.layout.render_frame.or(element.layout.frame);
+                    let preserve=[
+                        (change::Field::Width,super::layout::dimensions::Axis::Width,element.spec.declared.width.as_ref(),frame.map(|frame|frame.width)),
+                        (change::Field::Height,super::layout::dimensions::Axis::Height,element.spec.declared.height.as_ref(),frame.map(|frame|frame.height)),
+                    ].map(|(field,axis,length,visible)| {
+                        fields.intersects(fields::FieldMask::field(field)) && (
+                            element.layout.dimension_samples.as_ref().and_then(|samples|samples.get(axis)).is_some()
+                            || !matches!(length,Some(super::attrs::Length::Px(px)) if visible==Some(*px as f32))
+                        )
+                    });
+                    let source = if preserve.into_iter().any(|preserve| preserve) {
+                        source::PresentationSource::capture(tree, &id).map(|mut source| {
+                            for (sampled, preserve) in source.sampled.iter_mut().zip(preserve) {
+                                *sampled |= preserve;
+                            }
+                            Arc::new(source)
+                        })
+                    } else {
+                        None
+                    };
+                    self.exit_entries.insert(
+                        id,
+                        ExitAnimationRuntimeEntry {
+                            mount: element.lifecycle.mounted_at_revision,
+                            source,
+                            fields,
+                            generation,
+                            spec: Arc::new(spec.clone()),
                             started_at,
                             capture_scale: element.lifecycle.ghost_capture_scale.unwrap_or(1.0),
                             presentation_anchor_pending: true,
-                        });
+                        },
+                    );
                 }
                 continue;
             }
@@ -164,14 +525,27 @@ impl AnimationRuntime {
                 continue;
             }
 
-            if tree.was_mounted_after(&id, self.last_seen_revision) {
+            if tree.was_mounted_after(&id, self.last_seen_revision)
+                && self
+                    .enter_entries
+                    .get(&id)
+                    .is_none_or(|entry| entry.mount != element.lifecycle.mounted_at_revision)
+                && self
+                    .animate_entries
+                    .get(&id)
+                    .is_none_or(|entry| entry.mount != element.lifecycle.mounted_at_revision)
+            {
                 self.animate_entries.remove(&id);
 
                 if let Some(spec) = element.spec.declared.animate_enter.as_ref() {
+                    let generation = self.allocate_generation()?;
                     self.enter_entries.insert(
                         id,
                         EnterAnimationRuntimeEntry {
-                            spec: spec.clone(),
+                            mount: element.lifecycle.mounted_at_revision,
+                            generation,
+                            fields: fields::FieldMask::from_spec(spec),
+                            spec: Arc::new(spec.clone()),
                             started_at,
                             presentation_anchor_pending: true,
                         },
@@ -181,66 +555,221 @@ impl AnimationRuntime {
                 }
             }
 
-            let enter_active = self.enter_entries.get(&id).cloned().is_some_and(|entry| {
-                let sample = sample_enter_animation_spec(&entry, Some(started_at), 1.0);
-                if sample.active {
-                    self.animate_entries.remove(&id);
-                    true
-                } else {
-                    self.enter_entries.remove(&id);
-                    sync_result.record_completed_enter(id, &entry.spec);
-                    false
-                }
-            });
-
-            if enter_active {
-                continue;
-            }
-
-            let Some(spec) = element.spec.declared.animate.as_ref() else {
-                self.animate_entries.remove(&id);
-                continue;
-            };
-            let spec_hash = spec_fingerprint(spec);
-
-            match self.animate_entries.get(&id) {
-                Some(entry) if entry.spec_hash == spec_hash => {}
-                _ => {
-                    self.animate_entries.insert(
-                        id,
-                        AnimationRuntimeEntry {
-                            spec_hash,
-                            started_at,
-                        },
-                    );
-                }
-            }
+            self.sync_regular_node(tree, id, started_at)?;
         }
 
+        let completed = self.finish_active_enters(tree, started_at)?;
+        for effect in completed.completed.effects {
+            sync_result.completed.record_effect(effect);
+        }
+        for effect in change_effects.effects {
+            sync_result.completed.record_effect(effect);
+        }
+        self.sync_groups(tree, started_at);
         self.last_seen_revision = tree.revision();
-        sync_result
+        self.synced = true;
+        self.last_root = root;
+        Ok(sync_result)
+    }
+
+    fn finish_active_enters(
+        &mut self,
+        tree: &ElementTree,
+        now: Instant,
+    ) -> Result<AnimationSyncResult, ProjectionError> {
+        let completed = self.completed_enter_ids(tree, now, &HashSet::new());
+        self.check_enter_handoff_capacity(tree, &completed)?;
+        completed
+            .into_iter()
+            .try_fold(AnimationSyncResult::default(), |mut result, id| {
+                if let Some(entry) = self.enter_entries.remove(&id)
+                    && let Some(node) = tree.get(&id).filter(|node| node.is_live())
+                {
+                    result.record_completed_enter(id, &entry.spec);
+                    self.handoff_changes(tree, id, &entry.spec, now);
+                    let _ = node;
+                    self.sync_regular_node_from(tree, id, now, Some(&entry.spec))?;
+                }
+                Ok(result)
+            })
+    }
+
+    pub(super) fn preflight_commit(&self, tree: &ElementTree) -> Result<(), ProjectionError> {
+        if let Some(error) = &self.admission_error {
+            return Err(error.clone());
+        }
+        if let Some(now) = self.synced_sample_time {
+            let ready = self.groups.ready(now);
+            self.check_enter_handoff_capacity(tree, &self.completed_enter_ids(tree, now, &ready))?;
+        }
+        Ok(())
+    }
+    /// Commit only after a successfully prepared live layout. Enter handoffs get
+    /// a follow-up frame, so terminal-symbol release and intentional base/regular
+    /// handoff are distinct publications, with the terminal footprint as source.
+    pub(crate) fn finish_prepared_frame(
+        &mut self,
+        tree: &mut ElementTree,
+    ) -> Result<bool, ProjectionError> {
+        if let Some(error) = &self.admission_error {
+            return Err(error.clone());
+        }
+        if let Some(token) = tree.applied_animation_frame.0.as_ref() {
+            token.validate(tree)?;
+            token.validate_owner(Some(self))?;
+        } else {
+            return if tree
+                .length_runtime
+                .as_ref()
+                .is_some_and(|s| s.release().is_some())
+            {
+                Err(ProjectionError::StalePreparation)
+            } else {
+                Ok(false)
+            };
+        }
+        let Some(state) = tree.length_runtime.as_ref() else {
+            self.commit_admissions();
+            tree.finish_patch_frame();
+            return Ok(self.commit_ghost_cleanup(tree));
+        };
+        state.validate_delta()?;
+        let Some(receipt) = state.release() else {
+            if let Some(state) = tree.length_runtime.as_mut() {
+                state.commit_delta();
+            }
+            if tree
+                .length_runtime
+                .as_ref()
+                .is_some_and(|state| state.is_empty())
+                && self.groups.is_empty()
+            {
+                tree.clear_length_runtime();
+            }
+            self.commit_admissions();
+            tree.finish_patch_frame();
+            return Ok(self.commit_ghost_cleanup(tree));
+        };
+        state.validate_release(tree, self)?;
+        let completed = self.completed_enter_ids(tree, receipt.sample_time, &receipt.groups);
+        self.check_enter_handoff_capacity(tree, &completed)?;
+        if let Some(state) = tree.length_runtime.as_mut() {
+            state.commit_delta();
+        }
+        let released = tree
+            .length_runtime
+            .as_mut()
+            .and_then(|state| state.take_release());
+        let Some(released) = released else {
+            self.commit_admissions();
+            tree.finish_patch_frame();
+            return Ok(self.commit_ghost_cleanup(tree));
+        };
+        tree.finish_patch_frame();
+        let now = released.sample_time;
+        self.groups.commit(&released.groups);
+        let _ = self.finish_unheld_changes(tree, now);
+        let handoffs = self.finish_active_enters(tree, now)?;
+        tree.pending_patch_effects
+            .invalidation
+            .add(handoffs.completed.invalidation);
+        for effect in &handoffs.completed.effects {
+            tree.mark_layout_dirty_for_invalidation(&effect.id, effect.invalidation);
+        }
+        self.sync_groups(tree, now);
+        if let Some(state) = tree.length_runtime.as_mut() {
+            state.finish_release(&released);
+        }
+        if tree
+            .length_runtime
+            .as_ref()
+            .is_some_and(|state| state.is_empty())
+            && self.groups.is_empty()
+        {
+            tree.clear_length_runtime();
+        }
+        self.commit_admissions();
+        Ok(self.commit_ghost_cleanup(tree) || !handoffs.completed.effects.is_empty())
+    }
+
+    fn commit_ghost_cleanup(&mut self, tree: &mut ElementTree) -> bool {
+        self.compact_regular_sources();
+        self.commit_admissions();
+        let ghosts = tree
+            .applied_animation_frame
+            .0
+            .take()
+            .map(|token| token.ghosts)
+            .unwrap_or_default();
+        if self.retire_ghosts(tree, ghosts) {
+            tree.pending_patch_effects
+                .invalidation
+                .add(TreeInvalidation::Structure);
+            self.commit_admissions();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn has_pending_admissions(&self) -> bool {
+        self.animate_entries.has_staged()
+            || self.enter_entries.has_staged()
+            || self.exit_entries.has_staged()
+            || self.changes.has_staged()
+            || self.groups.has_staged()
+    }
+    fn commit_admissions(&mut self) {
+        self.animate_entries.commit();
+        self.enter_entries.commit();
+        self.exit_entries.commit();
+        self.changes.commit();
+        self.groups.commit_admissions();
     }
 
     pub fn is_empty(&self) -> bool {
         self.animate_entries.is_empty()
             && self.enter_entries.is_empty()
             && self.exit_entries.is_empty()
+            && self.changes.is_empty()
     }
 
     pub fn anchor_pending_transient_entries_to_present(&mut self, presented_at: Instant) {
-        self.enter_entries.values_mut().for_each(|entry| {
-            if entry.presentation_anchor_pending {
-                entry.started_at = presented_at;
-                entry.presentation_anchor_pending = false;
-            }
+        let enters: Vec<_> = self
+            .enter_entries
+            .iter()
+            .filter_map(|(id, e)| e.presentation_anchor_pending.then_some(*id))
+            .collect();
+        let exits: Vec<_> = self
+            .exit_entries
+            .iter()
+            .filter_map(|(id, e)| e.presentation_anchor_pending.then_some(*id))
+            .collect();
+        let anchor = |started: &mut Instant, pending: &mut bool| {
+            let changed = *started != presented_at;
+            *started = presented_at;
+            *pending = false;
+            changed
+        };
+        let enter_changed = enters.into_iter().fold(false, |changed, id| {
+            self.enter_entries.get_mut(&id).is_some_and(|entry| {
+                anchor(
+                    &mut entry.started_at,
+                    &mut entry.presentation_anchor_pending,
+                )
+            }) || changed
         });
-
-        self.exit_entries.values_mut().for_each(|entry| {
-            if entry.presentation_anchor_pending {
-                entry.started_at = presented_at;
-                entry.presentation_anchor_pending = false;
-            }
+        let exit_changed = exits.into_iter().fold(false, |changed, id| {
+            self.exit_entries.get_mut(&id).is_some_and(|entry| {
+                anchor(
+                    &mut entry.started_at,
+                    &mut entry.presentation_anchor_pending,
+                )
+            }) || changed
         });
+        if (enter_changed || exit_changed) && self.identity.is_some() {
+            self.rotate_identity();
+        }
     }
 
     pub fn has_transient_entries(&self) -> bool {
@@ -248,22 +777,22 @@ impl AnimationRuntime {
     }
 
     pub fn active_node_ids(&self) -> Vec<NodeId> {
-        let mut ids = Vec::new();
-        for id in self
-            .animate_entries
+        let mut seen = HashSet::new();
+        self.animate_entries
             .keys()
             .chain(self.enter_entries.keys())
             .chain(self.exit_entries.keys())
-        {
-            if !ids.contains(id) {
-                ids.push(*id);
-            }
-        }
-        ids
+            .chain(self.changes.keys().map(|(id, _)| id))
+            .copied()
+            .filter(|id| seen.insert(*id))
+            .collect()
     }
 
     pub fn animate_entry(&self, id: &NodeId) -> Option<&AnimationRuntimeEntry> {
-        self.animate_entries.get(id)
+        self.animate_entries
+            .get(id)
+            .filter(|entry| !entry.fields.is_empty())
+            .map(|entry| &entry.clock)
     }
 
     pub fn enter_entry(&self, id: &NodeId) -> Option<&EnterAnimationRuntimeEntry> {
@@ -274,31 +803,70 @@ impl AnimationRuntime {
         self.exit_entries.get(id)
     }
 
-    pub fn prune_completed_exit_ghosts(
+    fn ghost_retirements(&self, tree: &ElementTree) -> Vec<groups::OwnerKey> {
+        let Some(now) = self.synced_sample_time else {
+            return Vec::new();
+        };
+        self.exit_entries
+            .iter()
+            .filter_map(|(id, entry)| {
+                let group = self.retained_group(*id, groups::Owner::Exit, entry.started_at, tree);
+                (!entry_is_active(&entry.spec, entry.started_at, now)
+                    && group.is_none_or(|key| {
+                        self.groups
+                            .barrier(key)
+                            .is_some_and(|deadline| deadline <= now)
+                    }))
+                .then_some(groups::OwnerKey {
+                    node: *id,
+                    mount: entry.mount,
+                    kind: groups::Owner::Exit,
+                    generation: entry.generation,
+                    started: entry.started_at,
+                })
+            })
+            .collect()
+    }
+    fn retire_ghosts(&mut self, tree: &mut ElementTree, ghosts: Vec<groups::OwnerKey>) -> bool {
+        if ghosts.is_empty() {
+            return false;
+        }
+        self.rotate_identity();
+        for ghost in ghosts {
+            assert!(
+                self.exit_entries
+                    .get(&ghost.node)
+                    .is_some_and(|entry| entry.mount == ghost.mount
+                        && entry.generation == ghost.generation
+                        && entry.started_at == ghost.started)
+                    && tree
+                        .get(&ghost.node)
+                        .is_some_and(|node| node.is_ghost_root()
+                            && node.lifecycle.mounted_at_revision == ghost.mount),
+                "preflighted ghost identity under exclusive access"
+            );
+            self.exit_entries.remove(&ghost.node);
+            crate::tree::patch::remove_subtree(tree, &ghost.node);
+        }
+        true
+    }
+    #[cfg(test)]
+    fn prune_completed_exit_ghosts(
         &mut self,
         tree: &mut ElementTree,
         sample_time: Option<Instant>,
     ) -> bool {
-        let completed_ids: Vec<NodeId> = self
-            .exit_entries
-            .iter()
-            .filter_map(|(id, entry)| {
-                let sample = sample_exit_animation_spec(entry, sample_time, tree.current_scale());
-                (!sample.active).then_some(*id)
-            })
-            .collect();
-
-        if completed_ids.is_empty() {
-            return false;
-        }
-
-        for id in completed_ids {
-            self.exit_entries.remove(&id);
-            crate::tree::patch::remove_subtree(tree, &id);
-        }
-
-        true
+        self.synced_sample_time = sample_time;
+        self.retire_ghosts(tree, self.ghost_retirements(tree))
     }
+}
+
+fn entry_is_active(spec: &AnimationSpec, started_at: Instant, now: Instant) -> bool {
+    let entry = AnimationRuntimeEntry {
+        spec_hash: 0,
+        started_at,
+    };
+    timing::position(spec, Some(&entry), Some(now)).is_some_and(|p| p.active)
 }
 
 pub fn spec_fingerprint(spec: &AnimationSpec) -> u64 {
@@ -386,6 +954,16 @@ pub(crate) fn sample_animation_overlays(
     runtime: Option<&AnimationRuntime>,
     sample_time: Option<Instant>,
 ) -> AnimationFrameSamples {
+    if let Some(error) = runtime.and_then(|runtime| runtime.admission_error.clone()) {
+        return AnimationFrameSamples {
+            result: AnimationOverlayResult {
+                preparation_error: Some(error),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+    }
+
     tree.iter_node_pairs().fold(
         AnimationFrameSamples::default(),
         |mut frame_samples, (id, element)| {
@@ -405,6 +983,16 @@ pub(crate) fn sample_animation_overlays_for_ids(
     ids: &[NodeId],
     sample_time: Option<Instant>,
 ) -> AnimationFrameSamples {
+    if let Some(error) = runtime.admission_error.clone() {
+        return AnimationFrameSamples {
+            result: AnimationOverlayResult {
+                preparation_error: Some(error),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+    }
+
     ids.iter()
         .fold(AnimationFrameSamples::default(), |mut frame_samples, id| {
             if let Some(element) = tree.get(id)
@@ -424,31 +1012,140 @@ fn sample_animation_for_element(
     runtime: Option<&AnimationRuntime>,
     sample_time: Option<Instant>,
 ) -> Option<AnimationSample> {
-    if let Some(sample) = runtime
-        .and_then(|state| state.exit_entry(&element.id))
-        .map(|entry| sample_exit_animation_spec_raw(entry, sample_time))
-        .filter(|sample| sample.active)
-    {
-        return Some(sample);
-    }
-
-    if let Some(sample) = runtime
-        .and_then(|state| state.enter_entry(&element.id))
-        .map(|entry| sample_enter_animation_spec_raw(entry, sample_time))
-        .filter(|sample| sample.active)
-    {
-        return Some(sample);
-    }
-
-    element.spec.declared.animate.as_ref().map(|spec| {
-        sample_animation_spec(
-            spec,
-            runtime.and_then(|state| state.animate_entry(&element.id)),
-            sample_time,
-        )
-    })
+    let Some(runtime) = runtime else {
+        return element
+            .spec
+            .declared
+            .animate
+            .as_ref()
+            .map(|spec| sample_animation_spec(spec, None, sample_time));
+    };
+    selected_runs(element, Some(runtime), sample_time, false)
+        .into_iter()
+        .fold(None, |result, run| {
+            let clock = AnimationRuntimeEntry {
+                spec_hash: run.revision,
+                started_at: run.started,
+            };
+            let mut sample = sample_animation_spec(run.spec, Some(&clock), sample_time);
+            let phases = if let groups::Owner::Change(field) = run.owner {
+                runtime.change_phases(
+                    (element.id, field),
+                    runtime
+                        .changes
+                        .get(&(element.id, field))
+                        .expect("selected change"),
+                    sample.active,
+                    sample_time,
+                )
+            } else {
+                runtime.owner_phases(
+                    run.owner_key(element),
+                    run.fields,
+                    sample.active,
+                    sample_time,
+                    fields::FieldMask::default(),
+                )
+            };
+            let mask = if matches!(run.owner, groups::Owner::Regular | groups::Owner::Exit) {
+                run.fields
+            } else {
+                phases.writes()
+            };
+            if mask.is_empty() {
+                return result;
+            }
+            sample.attrs = mask.select(&sample.attrs);
+            let mut result = result.unwrap_or_default();
+            apply_sample_attrs(&mut result.attrs, &sample.attrs);
+            result.active |= sample.active;
+            Some(result)
+        })
 }
 
+fn runs_for_element<'a>(
+    element: &'a super::element::Element,
+    runtime: Option<&'a AnimationRuntime>,
+    now: Option<Instant>,
+) -> Vec<lengths::RunRef<'a>> {
+    selected_runs(element, runtime, now, false)
+}
+fn runs_for_element_including_finished<'a>(
+    element: &'a super::element::Element,
+    runtime: Option<&'a AnimationRuntime>,
+    now: Option<Instant>,
+) -> Vec<lengths::RunRef<'a>> {
+    selected_runs(element, runtime, now, true)
+}
+fn selected_runs<'a>(
+    element: &'a super::element::Element,
+    runtime: Option<&'a AnimationRuntime>,
+    now: Option<Instant>,
+    include_finished: bool,
+) -> Vec<lengths::RunRef<'a>> {
+    let Some(runtime) = runtime else {
+        return Vec::new();
+    };
+    let now = now.unwrap_or_else(Instant::now);
+    let primary = if let Some(entry) = runtime.exit_entry(&element.id) {
+        Some(lengths::RunRef {
+            fields: entry.fields,
+            spec: &entry.spec,
+            started: entry.started_at,
+            owner: groups::Owner::Exit,
+            revision: 0,
+            generation: entry.generation,
+            source: entry.source.as_deref(),
+        })
+    } else {
+        runtime
+            .enter_entry(&element.id)
+            .filter(|e| {
+                include_finished
+                    || entry_is_active(&e.spec, e.started_at, now)
+                    || runtime
+                        .groups
+                        .group(groups::OwnerKey {
+                            node: element.id,
+                            mount: element.lifecycle.mounted_at_revision,
+                            kind: groups::Owner::Enter,
+                            started: e.started_at,
+                            generation: e.generation,
+                        })
+                        .is_some()
+            })
+            .map(|entry| lengths::RunRef {
+                fields: entry.fields,
+                spec: &entry.spec,
+                started: entry.started_at,
+                owner: groups::Owner::Enter,
+                revision: 0,
+                generation: entry.generation,
+                source: None,
+            })
+    };
+    primary
+        .into_iter()
+        .chain(runtime.regular_runs(element, now))
+        .chain(change::Field::ALL.into_iter().filter_map(|field| {
+            runtime
+                .changes
+                .get(&(element.id, field))
+                .filter(|e| !e.pending)
+                .map(|e| lengths::RunRef {
+                    fields: fields::FieldMask::field(field),
+                    spec: &e.spec,
+                    started: e.started_at,
+                    owner: groups::Owner::Change(field),
+                    revision: 0,
+                    generation: e.generation,
+                    source: Some(&e.source),
+                })
+        }))
+        .collect()
+}
+
+#[cfg(test)]
 pub fn apply_animation_overlays(
     tree: &mut ElementTree,
     runtime: Option<&AnimationRuntime>,
@@ -462,6 +1159,7 @@ pub fn apply_animation_overlays(
         })
 }
 
+#[cfg(test)]
 pub fn apply_animation_overlays_to_active(
     tree: &mut ElementTree,
     runtime: &AnimationRuntime,
@@ -485,6 +1183,7 @@ pub fn apply_animation_overlays_to_active(
     )
 }
 
+#[cfg(test)]
 fn apply_animation_overlay_to_element(
     result: &mut AnimationOverlayResult,
     element: &mut super::element::Element,
@@ -648,6 +1347,7 @@ pub fn classify_animation_sample_attrs(attrs: &Attrs) -> TreeInvalidation {
     invalidation
 }
 
+#[cfg(test)]
 fn sample_enter_animation_spec(
     entry: &EnterAnimationRuntimeEntry,
     sample_time: Option<Instant>,
@@ -662,18 +1362,7 @@ fn sample_enter_animation_spec(
     sample_animation_spec(&scaled_spec, Some(&runtime_entry), sample_time)
 }
 
-fn sample_enter_animation_spec_raw(
-    entry: &EnterAnimationRuntimeEntry,
-    sample_time: Option<Instant>,
-) -> AnimationSample {
-    let runtime_entry = AnimationRuntimeEntry {
-        spec_hash: 0,
-        started_at: entry.started_at,
-    };
-
-    sample_animation_spec(&entry.spec, Some(&runtime_entry), sample_time)
-}
-
+#[cfg(test)]
 fn sample_exit_animation_spec(
     entry: &ExitAnimationRuntimeEntry,
     sample_time: Option<Instant>,
@@ -691,106 +1380,26 @@ fn sample_exit_animation_spec(
     sample_animation_spec(&scaled_spec, Some(&runtime_entry), sample_time)
 }
 
-fn sample_exit_animation_spec_raw(
-    entry: &ExitAnimationRuntimeEntry,
-    sample_time: Option<Instant>,
-) -> AnimationSample {
-    let runtime_entry = AnimationRuntimeEntry {
-        spec_hash: 0,
-        started_at: entry.started_at,
-    };
-
-    sample_animation_spec(&entry.spec, Some(&runtime_entry), sample_time)
-}
-
 pub fn sample_animation_spec(
     spec: &AnimationSpec,
     entry: Option<&AnimationRuntimeEntry>,
     sample_time: Option<Instant>,
 ) -> AnimationSample {
-    if spec.keyframes.is_empty() {
+    let Some(position) = timing::position(spec, entry, sample_time) else {
         return AnimationSample::default();
-    }
-
-    if spec.keyframes.len() == 1 {
-        return AnimationSample {
-            attrs: spec.keyframes[0].clone(),
-            active: false,
-        };
-    }
-
-    let elapsed_ms = entry
-        .zip(sample_time)
-        .map(|(entry, sample_time)| {
-            if sample_time > entry.started_at {
-                sample_time.duration_since(entry.started_at).as_secs_f64() * 1000.0
-            } else {
-                0.0
-            }
-        })
-        .unwrap_or(0.0);
-
-    let duration_ms = spec.duration_ms.max(f64::EPSILON);
-
-    let (local_ms, active) = match spec.repeat {
-        AnimationRepeat::Once => {
-            if elapsed_ms >= duration_ms {
-                (duration_ms, false)
-            } else {
-                (elapsed_ms, true)
-            }
-        }
-        AnimationRepeat::Times(count) => {
-            let total_ms = duration_ms * count.max(1) as f64;
-            if elapsed_ms >= total_ms {
-                (duration_ms, false)
-            } else {
-                (elapsed_ms % duration_ms, true)
-            }
-        }
-        AnimationRepeat::Loop => (elapsed_ms % duration_ms, true),
     };
-
-    if !active && local_ms >= duration_ms {
-        return AnimationSample {
-            attrs: spec.keyframes.last().cloned().unwrap_or_default(),
-            active,
-        };
-    }
-
-    let segments = spec.keyframes.len() - 1;
-    let normalized = (local_ms / duration_ms).clamp(0.0, 1.0);
-    let segment_position = normalized * segments as f64;
-    let mut segment_index = segment_position.floor() as usize;
-    let mut segment_t = segment_position - segment_index as f64;
-
-    if segment_index >= segments {
-        segment_index = segments - 1;
-        segment_t = 1.0;
-    }
-
-    let eased_t = apply_curve(&spec.curve, segment_t);
-    let attrs = interpolate_attrs(
-        &spec.keyframes[segment_index],
-        &spec.keyframes[segment_index + 1],
-        eased_t,
-    );
-
-    AnimationSample { attrs, active }
-}
-
-fn apply_curve(curve: &AnimationCurve, t: f64) -> f64 {
-    match curve {
-        AnimationCurve::Linear => t,
-        AnimationCurve::EaseIn => t * t * t,
-        AnimationCurve::EaseOut => 1.0 - (1.0 - t).powi(3),
-        AnimationCurve::EaseInOut => {
-            if t < 0.5 {
-                4.0 * t * t * t
-            } else {
-                1.0 - (-2.0 * t + 2.0).powi(3) / 2.0
-            }
-        }
+    let attrs = if !position.active {
+        spec.keyframes.last().cloned().unwrap_or_default()
+    } else {
+        interpolate_attrs(
+            &spec.keyframes[position.index],
+            &spec.keyframes[position.index + 1],
+            position.eased,
+        )
+    };
+    AnimationSample {
+        attrs,
+        active: position.active,
     }
 }
 
@@ -1056,6 +1665,23 @@ fn lerp_f64(from: f64, to: f64, t: f64) -> f64 {
     from + (to - from) * t
 }
 
+pub(crate) fn validate_animated_length(length: &Length) -> Result<(), String> {
+    if matches!(length, Length::Min(..) | Length::Max(..)) {
+        Err(
+            "cannot animate min/max length expressions; use pixels, content, fill or weighted fill"
+                .into(),
+        )
+    } else {
+        Ok(())
+    }
+}
+pub(crate) fn validate_animation_lengths(spec: &AnimationSpec) -> Result<(), String> {
+    spec.keyframes
+        .iter()
+        .flat_map(|frame| frame.width.iter().chain(frame.height.iter()))
+        .try_for_each(validate_animated_length)
+}
+
 fn interpolate_length(from: &Length, to: &Length, t: f64) -> Length {
     match (from, to) {
         (Length::Fill, Length::Fill) => Length::Fill,
@@ -1064,14 +1690,6 @@ fn interpolate_length(from: &Length, to: &Length, t: f64) -> Length {
         (Length::FillWeighted(from), Length::FillWeighted(to)) => {
             Length::FillWeighted(lerp_f64(*from, *to, t))
         }
-        (Length::Min(from_left, from_right), Length::Min(to_left, to_right)) => Length::Min(
-            Box::new(interpolate_length(from_left, to_left, t)),
-            Box::new(interpolate_length(from_right, to_right, t)),
-        ),
-        (Length::Max(from_left, from_right), Length::Max(to_left, to_right)) => Length::Max(
-            Box::new(interpolate_length(from_left, to_left, t)),
-            Box::new(interpolate_length(from_right, to_right, t)),
-        ),
         _ => from.clone(),
     }
 }
@@ -1802,6 +2420,153 @@ mod tests {
     }
 
     #[test]
+    fn rejected_publication_cannot_prune_an_expired_ghost_and_cleanup_drains() {
+        use crate::tree::layout::{
+            Constraint, layout_and_refresh_default_with_animation, prepare_frame_attrs_for_update,
+        };
+        let (mut tree, _, ghost) = tree_with_exit_ghost();
+        let mut runtime = AnimationRuntime::default();
+        let start = Instant::now();
+        let constraint = Constraint::new(600.0, 600.0);
+        layout_and_refresh_default_with_animation(&mut tree, constraint, 1.0, &mut runtime, start)
+            .unwrap();
+        let before = tree.get(&ghost).unwrap().layout.frame;
+        let generation = runtime.exit_entries.committed(&ghost).unwrap().generation;
+        let now = start + std::time::Duration::from_millis(100);
+        runtime.sync_with_tree(&tree, now);
+        let mut rejected =
+            prepare_frame_attrs_for_update(&mut tree, 1.0, Some(&mut runtime), Some(now));
+        rejected.animation_result.preparation_error = Some(ProjectionError::InvalidContext);
+        assert!(
+            rejected
+                .publish(&mut tree, &mut runtime, constraint, true, None)
+                .is_err()
+        );
+        assert_eq!(before, tree.get(&ghost).unwrap().layout.frame);
+        assert_eq!(
+            generation,
+            runtime.exit_entries.committed(&ghost).unwrap().generation
+        );
+        let terminal = layout_and_refresh_default_with_animation(
+            &mut tree,
+            constraint,
+            1.0,
+            &mut runtime,
+            now,
+        )
+        .unwrap();
+        assert!(
+            terminal.animations_active,
+            "cleanup needs a final publication"
+        );
+        assert!(tree.get(&ghost).is_none());
+        assert!(runtime.exit_entries.is_empty());
+        assert_eq!(
+            tree.pending_patch_effects.invalidation,
+            TreeInvalidation::Structure
+        );
+        let cleanup = layout_and_refresh_default_with_animation(
+            &mut tree,
+            constraint,
+            1.0,
+            &mut runtime,
+            now,
+        )
+        .unwrap();
+        assert!(!cleanup.animations_active);
+        assert!(tree.pending_patch_effects.invalidation.is_none());
+        assert!(tree.pending_patch_effects.sources.is_empty());
+    }
+
+    #[test]
+    fn failed_admission_retry_preserves_already_admitted_enter_clock_and_spec() {
+        let attrs = Attrs {
+            animate_enter: Some(alpha_spec(0.0, 1.0, 100.0)),
+            ..Default::default()
+        };
+        let (mut tree, first) = tree_with_element(attrs.clone(), 1, 1);
+        let second = NodeId(9000);
+        let mut node = Element::with_attrs(second, ElementKind::El, vec![], attrs);
+        node.lifecycle.mounted_at_revision = 1;
+        tree.insert(node);
+        tree.set_children(&first, vec![second]).unwrap();
+        let start = Instant::now();
+        let mut runtime = AnimationRuntime {
+            last_generation: u64::MAX - 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            runtime
+                .sync_with_tree(&tree, start)
+                .completed
+                .preparation_error,
+            Some(ProjectionError::GenerationExhausted)
+        );
+        let admitted = runtime.enter_entries.get(&first).unwrap().clone();
+        assert_eq!(
+            runtime
+                .sync_with_tree(&tree, start + std::time::Duration::from_millis(10))
+                .completed
+                .preparation_error,
+            Some(ProjectionError::GenerationExhausted)
+        );
+        let retry = runtime.enter_entries.get(&first).unwrap();
+        assert_eq!(admitted.generation, retry.generation);
+        assert_eq!(admitted.started_at, retry.started_at);
+        assert!(Arc::ptr_eq(&admitted.spec, &retry.spec));
+        assert!(runtime.enter_entries.committed(&first).is_none());
+    }
+
+    #[test]
+    fn remounted_enter_and_exit_ids_never_keep_the_old_mount_clock() {
+        for exiting in [false, true] {
+            let (mut tree, node) = if exiting {
+                let (tree, _, ghost) = tree_with_exit_ghost();
+                (tree, ghost)
+            } else {
+                tree_with_element(
+                    Attrs {
+                        animate_enter: Some(alpha_spec(0.0, 1.0, 100.0)),
+                        ..Default::default()
+                    },
+                    1,
+                    1,
+                )
+            };
+            let start = Instant::now();
+            let mut runtime = AnimationRuntime::default();
+            runtime.sync_with_tree(&tree, start);
+            runtime.commit_admissions();
+            let generation = if exiting {
+                runtime.exit_entries.get(&node).unwrap().generation
+            } else {
+                runtime.enter_entries.get(&node).unwrap().generation
+            };
+            tree.get_mut(&node).unwrap().lifecycle.mounted_at_revision = 2;
+            tree.set_revision(2);
+            let now = start + std::time::Duration::from_millis(25);
+            assert!(
+                runtime
+                    .sync_with_tree(&tree, now)
+                    .completed
+                    .preparation_error
+                    .is_none()
+            );
+            if exiting {
+                let next = runtime.exit_entries.get(&node).unwrap();
+                assert_ne!(next.generation, generation);
+                assert_eq!(next.started_at, now);
+                assert_eq!(next.mount, 2);
+            } else {
+                let next = runtime.enter_entries.get(&node).unwrap();
+                assert_ne!(next.generation, generation);
+                assert_eq!(next.started_at, now);
+                assert_eq!(next.mount, 2);
+            }
+        }
+    }
+
+    #[test]
     fn prune_completed_exit_ghosts_removes_finished_ghost_subtree() {
         let (mut tree, root_id, ghost_id) = tree_with_exit_ghost();
         let start = Instant::now();
@@ -1995,5 +2760,57 @@ mod tests {
         };
         assert_eq!(interpolate_color(&gradient, &mismatch, 0.5), gradient);
         assert_eq!(interpolate_color(&gradient, &mismatch, 1.0), mismatch);
+    }
+    #[test]
+    fn transient_pulses_visit_owners_not_the_static_model() {
+        let (mut tree, id) = tree_with_element(
+            Attrs {
+                animate_enter: Some(alpha_spec(0.0, 1.0, 100.0)),
+                animate: Some(alpha_spec(0.5, 1.0, 200.0)),
+                ..Attrs::default()
+            },
+            1,
+            1,
+        );
+        for n in 100..1100 {
+            tree.insert(Element::with_attrs(
+                NodeId::from_wire_u64(n),
+                ElementKind::El,
+                Vec::new(),
+                Attrs::default(),
+            ));
+        }
+        let start = Instant::now();
+        let mut runtime = AnimationRuntime::default();
+        runtime.sync_with_tree(&tree, start);
+        assert_eq!(runtime.sync_node_visits, 1001);
+        for ms in [10, 20, 70, 99] {
+            runtime.sync_with_tree(&tree, start + std::time::Duration::from_millis(ms));
+            assert!(runtime.enter_entry(&id).is_some());
+        }
+        let end = start + std::time::Duration::from_millis(100);
+        let handoff = runtime.sync_with_tree(&tree, end);
+        assert!(handoff.completed.invalidation.is_dirty());
+        assert!(runtime.enter_entry(&id).is_none());
+        assert_eq!(runtime.animate_entry(&id).unwrap().started_at, end);
+        assert_eq!(runtime.sync_node_visits, 1001);
+        tree.bump_revision();
+        runtime.sync_with_tree(&tree, end);
+        assert_eq!(runtime.sync_node_visits, 2002);
+    }
+
+    #[test]
+    fn empty_runtime_does_not_rescan_an_unchanged_model() {
+        let (mut tree, _) = tree_with_element(Attrs::default(), 1, 1);
+        let mut runtime = AnimationRuntime::default();
+        let now = Instant::now();
+        for _ in 0..10 {
+            runtime.sync_with_tree(&tree, now);
+        }
+        assert_eq!(runtime.sync_node_visits, 1);
+        // A newly mounted root is an O(1) identity change, even for direct callers.
+        tree.stamp_all_mounted_at_revision(2);
+        runtime.sync_with_tree(&tree, now);
+        assert_eq!(runtime.sync_node_visits, 2);
     }
 }

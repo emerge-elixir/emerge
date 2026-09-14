@@ -6,7 +6,9 @@
 //! - `SceneRenderer` that executes scene nodes on backend-provided Skia surfaces
 //! - Font cache for text rendering
 
+pub(crate) mod scene_images;
 use crate::render_color::RenderColor;
+pub use scene_images::{ImageSnapshot, ImageSnapshotRetention};
 use std::collections::{HashMap, HashSet, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 #[cfg(test)]
@@ -625,6 +627,67 @@ fn default_font_cache() -> HashMap<FontKey, Arc<Typeface>> {
     cache
 }
 
+/// Immutable renderer-local font facts. Snapshots retain typefaces and the bounded
+/// text metrics cache, not the renderer's raster cache or asset worker.
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct FontSnapshot {
+    fonts: Arc<HashMap<FontKey, Arc<Typeface>>>,
+    generation: u64,
+    metrics: Arc<Mutex<TextVisualMetricsCache>>,
+}
+impl PartialEq for FontSnapshot {
+    fn eq(&self, other: &Self) -> bool {
+        self.generation == other.generation
+            && Arc::ptr_eq(&self.fonts, &other.fonts)
+            && Arc::ptr_eq(&self.metrics, &other.metrics)
+    }
+}
+impl std::fmt::Debug for FontSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FontSnapshot")
+            .field("generation", &self.generation)
+            .field("fonts", &self.fonts.len())
+            .finish()
+    }
+}
+thread_local! {static FRAME_FONTS:std::cell::RefCell<Option<FontSnapshot>>=const {std::cell::RefCell::new(None)};}
+pub(crate) struct FontSnapshotGuard {
+    previous: Option<FontSnapshot>,
+    _thread: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+impl Drop for FontSnapshotGuard {
+    fn drop(&mut self) {
+        FRAME_FONTS.with(|slot| *slot.borrow_mut() = self.previous.take());
+    }
+}
+impl FontSnapshot {
+    pub(crate) fn matches_current_context(&self) -> bool {
+        Arc::ptr_eq(&self.metrics, &asset_context().text_visual_metrics_cache)
+    }
+    pub(crate) fn enter(&self) -> FontSnapshotGuard {
+        FontSnapshotGuard {
+            previous: FRAME_FONTS.with(|slot| slot.replace(Some(self.clone()))),
+            _thread: std::marker::PhantomData,
+        }
+    }
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+}
+pub(crate) fn capture_font_snapshot() -> Option<FontSnapshot> {
+    if let Some(snapshot) = FRAME_FONTS.with(|slot| slot.borrow().clone()) {
+        return Some(snapshot);
+    }
+    let context = asset_context();
+    let fonts = context.font_cache.lock().ok()?;
+    Some(FontSnapshot {
+        fonts: Arc::clone(&fonts),
+        generation: context.font_cache_generation.load(Ordering::Relaxed),
+        metrics: Arc::clone(&context.text_visual_metrics_cache),
+    })
+}
+
 fn asset_context() -> Arc<RendererAssetContext> {
     crate::assets::current_renderer_context()
 }
@@ -637,6 +700,13 @@ pub fn set_render_log_enabled(enabled: bool) {
 
 /// Get a typeface from the renderer-local cache by key.
 pub fn get_typeface(key: &FontKey) -> Option<Arc<Typeface>> {
+    if let Some(result) = FRAME_FONTS.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .map(|snapshot| snapshot.fonts.get(key).cloned())
+    }) {
+        return result;
+    }
     let context = asset_context();
     let cache = context.font_cache.lock().ok()?;
     cache.get(key).cloned()
@@ -853,8 +923,14 @@ pub(crate) fn measure_text_visual_metrics_cached_with_font(
     };
     let hash = text_visual_metrics_cache_hash(&lookup);
 
-    let context = asset_context();
-    let Ok(mut cache) = context.text_visual_metrics_cache.lock() else {
+    let cache = FRAME_FONTS
+        .with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .map(|snapshot| Arc::clone(&snapshot.metrics))
+        })
+        .unwrap_or_else(|| Arc::clone(&asset_context().text_visual_metrics_cache));
+    let Ok(mut cache) = cache.lock() else {
         return measure_text_visual_metrics_with_font(font, text);
     };
     if let Some(metrics) = cache.get(hash, &lookup) {
@@ -903,7 +979,7 @@ pub fn load_font(family: &str, weight: u16, italic: bool, data: &[u8]) -> Result
         .lock()
         .map_err(|_| "Font cache lock poisoned")?;
 
-    cache.insert(FontKey::new(family, weight, italic), Arc::new(typeface));
+    Arc::make_mut(&mut cache).insert(FontKey::new(family, weight, italic), Arc::new(typeface));
     bump_font_cache_generation();
 
     Ok(())
@@ -994,6 +1070,7 @@ struct DecodedRaster {
     bytes: u64,
     last_used: u64,
     source_generation: u64,
+    source_identity: Arc<AtomicU64>,
 }
 
 struct AssetPixelCache {
@@ -1027,6 +1104,7 @@ impl Default for AssetPixelCache {
 struct RenderedVectorKey {
     asset_id: String,
     generation: u64,
+    source_identity: usize,
     width: u32,
     height: u32,
     kind: RenderedVectorVariantKind,
@@ -1058,28 +1136,59 @@ pub(crate) struct CachedAssetMetadata {
 }
 
 pub(crate) struct RendererAssetContext {
-    font_cache: Mutex<HashMap<FontKey, Arc<Typeface>>>,
+    font_cache: Mutex<Arc<HashMap<FontKey, Arc<Typeface>>>>,
     synthetic_logged: Mutex<HashSet<FontKey>>,
     render_log_enabled: AtomicBool,
     font_cache_generation: AtomicU64,
-    text_visual_metrics_cache: Mutex<TextVisualMetricsCache>,
+    text_visual_metrics_cache: Arc<Mutex<TextVisualMetricsCache>>,
     pixel_cache: Mutex<AssetPixelCache>,
 }
 
 impl Default for RendererAssetContext {
     fn default() -> Self {
         Self {
-            font_cache: Mutex::new(default_font_cache()),
+            font_cache: Mutex::new(Arc::new(default_font_cache())),
             synthetic_logged: Mutex::new(HashSet::new()),
             render_log_enabled: AtomicBool::new(false),
             font_cache_generation: AtomicU64::new(1),
-            text_visual_metrics_cache: Mutex::new(TextVisualMetricsCache::default()),
+            text_visual_metrics_cache: Arc::new(Mutex::new(TextVisualMetricsCache::default())),
             pixel_cache: Mutex::new(AssetPixelCache::default()),
         }
     }
 }
 
+pub(crate) fn live_font_cache_generation() -> u64 {
+    asset_context()
+        .font_cache_generation
+        .load(Ordering::Relaxed)
+}
+fn font_render_generation() -> u64 {
+    let context = FRAME_FONTS
+        .with(|slot| {
+            slot.borrow().as_ref().map(|snapshot| {
+                (
+                    std::sync::Arc::as_ptr(&snapshot.metrics) as usize,
+                    snapshot.generation,
+                )
+            })
+        })
+        .unwrap_or_else(|| {
+            let context = asset_context();
+            (
+                std::sync::Arc::as_ptr(&context.text_visual_metrics_cache) as usize,
+                context.font_cache_generation.load(Ordering::Relaxed),
+            )
+        });
+    let mut hash = DefaultHasher::new();
+    context.hash(&mut hash);
+    hash.finish()
+}
 fn font_cache_generation() -> u64 {
+    if let Some(generation) =
+        FRAME_FONTS.with(|slot| slot.borrow().as_ref().map(|snapshot| snapshot.generation))
+    {
+        return generation;
+    }
     asset_context()
         .font_cache_generation
         .load(Ordering::Relaxed)
@@ -1095,7 +1204,10 @@ fn bump_font_cache_generation() -> u64 {
 pub fn clear_renderer_asset_context() {
     let context = asset_context();
     if let Ok(mut cache) = context.font_cache.lock() {
-        *cache = default_font_cache();
+        *cache = Arc::new(default_font_cache());
+        context
+            .font_cache_generation
+            .fetch_add(1, Ordering::Relaxed);
     }
     if let Ok(mut cache) = context.synthetic_logged.lock() {
         cache.clear();
@@ -1106,7 +1218,6 @@ pub fn clear_renderer_asset_context() {
     if let Ok(mut cache) = context.text_visual_metrics_cache.lock() {
         cache.clear();
     }
-    bump_font_cache_generation();
 }
 
 pub fn configure_asset_cache(max_entries: u64, max_bytes: u64) {
@@ -1125,12 +1236,12 @@ pub fn asset_dimensions(id: &str) -> Option<(u32, u32)> {
 }
 
 pub fn asset_kind(id: &str) -> Option<AssetKind> {
-    crate::assets::asset_record(id)
+    scene_images::record(id)
         .map(|record| match &record.kind {
             crate::assets::AssetRecordKind::Raster(_) => AssetKind::Raster,
             crate::assets::AssetRecordKind::Vector(_) => AssetKind::Vector,
         })
-        .or_else(|| retained_asset_metadata(id).map(|metadata| metadata.kind))
+        .or_else(|| scene_images::metadata(id).map(|metadata| metadata.kind))
 }
 
 pub(crate) fn cached_asset_for_source(source: &str) -> Option<CachedAssetMetadata> {
@@ -1139,15 +1250,16 @@ pub(crate) fn cached_asset_for_source(source: &str) -> Option<CachedAssetMetadat
     cache
         .entries
         .iter()
-        .find(|(_, entry)| entry.source == source)
+        .filter(|(_, entry)| entry.source == source)
         .map(|(id, entry)| raster_metadata(id, entry))
-        .or_else(|| {
+        .chain(
             cache
                 .vectors
                 .values()
-                .find(|entry| entry.metadata.source == source)
-                .map(|entry| entry.metadata.clone())
-        })
+                .filter(|entry| entry.metadata.source == source)
+                .map(|entry| entry.metadata.clone()),
+        )
+        .max_by_key(|metadata| metadata.generation)
 }
 
 fn raster_metadata(id: &str, entry: &DecodedRaster) -> CachedAssetMetadata {
@@ -1157,7 +1269,7 @@ fn raster_metadata(id: &str, entry: &DecodedRaster) -> CachedAssetMetadata {
         width: entry.source_width,
         height: entry.source_height,
         generation: entry.source_generation,
-        render_revision: None,
+        render_revision: Some(Arc::clone(&entry.source_identity)),
         kind: AssetKind::Raster,
     }
 }
@@ -1169,19 +1281,21 @@ pub(crate) fn retained_asset_metadata(id: &str) -> Option<CachedAssetMetadata> {
         .entries
         .get(id)
         .map(|entry| raster_metadata(id, entry))
-        .or_else(|| {
+        .into_iter()
+        .chain(
             cache
                 .vectors
                 .values()
-                .find(|entry| entry.metadata.id == id)
-                .map(|entry| entry.metadata.clone())
-        })
+                .filter(|entry| entry.metadata.id == id)
+                .map(|entry| entry.metadata.clone()),
+        )
+        .max_by_key(|metadata| metadata.generation)
 }
 
 fn asset_generation(id: &str) -> Option<u64> {
-    crate::assets::asset_record(id)
+    scene_images::record(id)
         .map(|record| record.generation)
-        .or_else(|| retained_asset_metadata(id).map(|metadata| metadata.generation))
+        .or_else(|| scene_images::metadata(id).map(|metadata| metadata.generation))
 }
 
 pub(crate) fn invalidate_asset_render_revision(id: &str) {
@@ -1193,14 +1307,14 @@ pub(crate) fn invalidate_asset_render_revision(id: &str) {
 }
 
 fn asset_render_generation(id: &str) -> Option<u64> {
-    let record = crate::assets::asset_record(id);
+    let record = scene_images::record(id);
     let (generation, revision) = match &record {
         Some(record) => (
             record.generation,
             record.render_revision.load(Ordering::Relaxed),
         ),
         None => {
-            let metadata = retained_asset_metadata(id)?;
+            let metadata = scene_images::metadata(id)?;
             (
                 metadata.generation,
                 metadata
@@ -1210,7 +1324,21 @@ fn asset_render_generation(id: &str) -> Option<u64> {
         }
     };
     let mut hasher = DefaultHasher::new();
-    (generation, record.is_some(), revision).hash(&mut hasher);
+    let identity = record
+        .as_ref()
+        .map(|r| Arc::as_ptr(&r.render_revision) as usize)
+        .or_else(|| {
+            scene_images::metadata(id)
+                .and_then(|m| m.render_revision)
+                .map(|r| Arc::as_ptr(&r) as usize)
+        });
+    (
+        generation,
+        record.is_some(),
+        scene_images::revision(id).unwrap_or(revision),
+        identity,
+    )
+        .hash(&mut hasher);
     Some(hasher.finish())
 }
 
@@ -1222,6 +1350,7 @@ fn next_asset_raster_access_stamp(cache: &mut AssetPixelCache) -> u64 {
 fn lookup_asset_raster(
     id: &str,
     source_generation: u64,
+    source_identity: &Arc<AtomicU64>,
     required_width: u32,
     required_height: u32,
 ) -> Option<Image> {
@@ -1230,6 +1359,7 @@ fn lookup_asset_raster(
     let stamp = next_asset_raster_access_stamp(&mut cache);
     let entry = cache.entries.get_mut(id)?;
     if entry.source_generation != source_generation
+        || !Arc::ptr_eq(&entry.source_identity, source_identity)
         || entry.width < required_width
         || entry.height < required_height
     {
@@ -1241,6 +1371,9 @@ fn lookup_asset_raster(
 }
 
 fn lookup_retained_asset_raster(id: &str) -> Option<(Image, u32, u32)> {
+    if let Some(value) = scene_images::raster(id) {
+        return value;
+    }
     let context = asset_context();
     let mut cache = context.pixel_cache.lock().ok()?;
     let stamp = next_asset_raster_access_stamp(&mut cache);
@@ -1249,7 +1382,27 @@ fn lookup_retained_asset_raster(id: &str) -> Option<(Image, u32, u32)> {
     Some((entry.image.clone(), entry.source_width, entry.source_height))
 }
 
+// Painting a retained/foreign scene may decode its immutable source, but must
+// not republish old source metadata into the current renderer's live asset cache.
+fn record_is_current_for_cache(record: &crate::assets::AssetRecord) -> bool {
+    if !crate::assets::record_belongs_to_current(record)
+        || record.epoch != crate::assets::current_epoch()
+    {
+        return false;
+    }
+    crate::assets::asset_record(&record.id)
+        .map(|current| Arc::ptr_eq(&current.render_revision, &record.render_revision))
+        .unwrap_or_else(|| {
+            retained_asset_metadata(&record.id)
+                .and_then(|m| m.render_revision)
+                .is_some_and(|token| Arc::ptr_eq(&token, &record.render_revision))
+        })
+}
+
 fn store_asset_raster(record: &crate::assets::AssetRecord, decoded: RasterDecode) -> Image {
+    if !record_is_current_for_cache(record) {
+        return decoded.image;
+    }
     let RasterDecode {
         image,
         codec_width,
@@ -1270,6 +1423,7 @@ fn store_asset_raster(record: &crate::assets::AssetRecord, decoded: RasterDecode
     let existing_stamp = next_asset_raster_access_stamp(&mut cache);
     let existing_image = cache.entries.get_mut(&record.id).and_then(|existing| {
         if existing.source_generation == record.generation
+            && Arc::ptr_eq(&existing.source_identity, &record.render_revision)
             && existing.width >= width
             && existing.height >= height
         {
@@ -1283,7 +1437,7 @@ fn store_asset_raster(record: &crate::assets::AssetRecord, decoded: RasterDecode
         return existing_image;
     }
 
-    if cache.max_entries == 0 || bytes > cache.max_bytes {
+    if record.epoch != cache.epoch || cache.max_entries == 0 || bytes > cache.max_bytes {
         return image;
     }
 
@@ -1308,6 +1462,7 @@ fn store_asset_raster(record: &crate::assets::AssetRecord, decoded: RasterDecode
             bytes,
             last_used: stamp,
             source_generation: record.generation,
+            source_identity: Arc::clone(&record.render_revision),
         },
     );
     cache.total_bytes = cache.total_bytes.saturating_add(bytes);
@@ -1444,6 +1599,14 @@ fn rendered_vector_key(
     RenderedVectorKey {
         asset_id: asset_id.to_string(),
         generation: asset_generation(asset_id).unwrap_or(0),
+        source_identity: scene_images::record(asset_id)
+            .map(|r| Arc::as_ptr(&r.render_revision) as usize)
+            .or_else(|| {
+                scene_images::metadata(asset_id)
+                    .and_then(|m| m.render_revision)
+                    .map(|r| Arc::as_ptr(&r) as usize)
+            })
+            .unwrap_or(0),
         width,
         height,
         kind,
@@ -1458,6 +1621,9 @@ fn lookup_rendered_vector_variant(
 ) -> Option<Image> {
     // Resolve generation before acquiring the pixel-cache lock.
     let key = rendered_vector_key(asset_id, width, height, kind);
+    if let Some(image) = scene_images::vector(&key) {
+        return Some(image);
+    }
     let context = asset_context();
     let mut cache = context.pixel_cache.lock().ok()?;
     let stamp = next_asset_raster_access_stamp(&mut cache);
@@ -1473,9 +1639,12 @@ fn store_rendered_vector_variant(
     kind: RenderedVectorVariantKind,
     image: &Image,
 ) {
-    let Some(record) = crate::assets::asset_record(asset_id) else {
+    let Some(record) = scene_images::record(asset_id) else {
         return;
     };
+    if !record_is_current_for_cache(&record) {
+        return;
+    }
     let Some(bytes) = image_pixel_bytes(image) else {
         return;
     };
@@ -2580,7 +2749,7 @@ fn render_primitive_resource_generation(primitive: &DrawPrimitive) -> Option<u64
         DrawPrimitive::Video(..)
         | DrawPrimitive::ImageLoading(..)
         | DrawPrimitive::ImageFailed(..) => None,
-        DrawPrimitive::TextWithFont(..) => Some(font_cache_generation()),
+        DrawPrimitive::TextWithFont(..) => Some(font_render_generation()),
         DrawPrimitive::Image(_, _, _, _, image_id, _, _) => asset_render_generation(image_id),
         DrawPrimitive::Rect(..)
         | DrawPrimitive::RoundedRect(..)
@@ -4000,6 +4169,8 @@ impl SceneRenderer {
         height: u32,
         state: &RenderState,
     ) -> Result<Vec<u8>, String> {
+        let _fonts = state.scene.fonts.as_ref().map(|fonts| fonts.enter());
+        let _images = scene_images::enter(state.scene.images.as_ref());
         let width_i32 = i32::try_from(width).map_err(|_| "policy width is too large")?;
         let height_i32 = i32::try_from(height).map_err(|_| "policy height is too large")?;
         let info = ImageInfo::new(
@@ -4420,6 +4591,8 @@ impl SceneRenderer {
         state: &RenderState,
         surface_dimensions: (u32, u32),
     ) -> Option<u64> {
+        let _fonts = state.scene.fonts.as_ref().map(|fonts| fonts.enter());
+        let _images = scene_images::enter(state.scene.images.as_ref());
         let surface_clip = PaintLayerDeviceRect {
             x: 0,
             y: 0,
@@ -4483,6 +4656,8 @@ impl SceneRenderer {
         profile_draw: bool,
         mut before_flush: Option<&mut dyn FnMut(&mut skia_safe::Surface)>,
     ) -> RenderTimings {
+        let _fonts = state.scene.fonts.as_ref().map(|fonts| fonts.enter());
+        let _images = scene_images::enter(state.scene.images.as_ref());
         let started_at = Instant::now();
         let draw_started_at = Instant::now();
         let root_eligibility = moving_layer_root_eligibility_for_surface(frame.surface);
@@ -6536,7 +6711,7 @@ fn draw_cached_asset_with_fit(
         return;
     }
 
-    if let Some(record) = crate::assets::asset_record(spec.image_id) {
+    if let Some(record) = scene_images::record(spec.image_id) {
         match &record.kind {
             crate::assets::AssetRecordKind::Raster(_) => {
                 if let Some(image) = raster_image_for_draw(canvas, &record, spec) {
@@ -6563,7 +6738,7 @@ fn draw_cached_asset_with_fit(
                 image_bleed_device_outset,
             ),
         }
-    } else if let Some(metadata) = retained_asset_metadata(spec.image_id)
+    } else if let Some(metadata) = scene_images::metadata(spec.image_id)
         && metadata.kind == AssetKind::Vector
     {
         draw_vector_asset_with_fit(
@@ -6587,7 +6762,7 @@ fn draw_cached_asset_with_fit(
             image_bleed_device_outset,
         );
     } else {
-        crate::assets::request_asset_hydration(spec.image_id);
+        scene_images::request_hydration(spec.image_id);
         let RectSpec { x, y, w, h } = spec.rect;
         draw_image_loading(canvas, x, y, w, h);
     }
@@ -6604,7 +6779,7 @@ fn draw_cached_asset_with_fit_profiled(
 
     if w > 0.0 && h > 0.0 {
         let lookup_started_at = Instant::now();
-        let record = crate::assets::asset_record(spec.image_id);
+        let record = scene_images::record(spec.image_id);
 
         if let Some(record) = record {
             profile.source_width = record.width;
@@ -6644,7 +6819,7 @@ fn draw_cached_asset_with_fit_profiled(
                     );
                 }
             }
-        } else if let Some(metadata) = retained_asset_metadata(spec.image_id)
+        } else if let Some(metadata) = scene_images::metadata(spec.image_id)
             && metadata.kind == AssetKind::Vector
         {
             profile.asset_lookup = lookup_started_at.elapsed();
@@ -6678,7 +6853,7 @@ fn draw_cached_asset_with_fit_profiled(
             );
         } else {
             profile.asset_lookup = lookup_started_at.elapsed();
-            crate::assets::request_asset_hydration(spec.image_id);
+            scene_images::request_hydration(spec.image_id);
             let RectSpec { x, y, w, h } = spec.rect;
             draw_image_loading(canvas, x, y, w, h);
         }
@@ -6694,7 +6869,14 @@ fn raster_image_for_draw(
     spec: ImageDrawSpec<'_>,
 ) -> Option<Image> {
     let (target_width, target_height) = raster_target_dimensions(canvas, record, spec)?;
-    lookup_asset_raster(&record.id, record.generation, target_width, target_height).or_else(|| {
+    lookup_asset_raster(
+        &record.id,
+        record.generation,
+        &record.render_revision,
+        target_width,
+        target_height,
+    )
+    .or_else(|| {
         decode_raster_record(record, target_width, target_height)
             .ok()
             .map(|image| store_asset_raster(record, image))
@@ -7169,7 +7351,7 @@ fn get_or_rasterize_vector_variant(
     }
 
     let tree = tree.or_else(|| {
-        crate::assets::request_asset_hydration(asset_id);
+        scene_images::request_hydration(asset_id);
         None
     })?;
     let image = rasterize_vector_tree(tree, width, height)?;
@@ -7199,7 +7381,7 @@ fn get_or_rasterize_vector_cover_viewport_variant(
     }
 
     let tree = tree.or_else(|| {
-        crate::assets::request_asset_hydration(asset_id);
+        scene_images::request_hydration(asset_id);
         None
     })?;
     let image = rasterize_vector_tree_cover_viewport(tree, width, height)?;
@@ -7232,7 +7414,7 @@ fn get_or_rasterize_vector_variant_profiled(
 
     profile.vector_cache_hit = Some(false);
     let tree = tree.or_else(|| {
-        crate::assets::request_asset_hydration(asset_id);
+        scene_images::request_hydration(asset_id);
         None
     })?;
     let rasterize_started_at = Instant::now();
@@ -7275,7 +7457,7 @@ fn get_or_rasterize_vector_cover_viewport_variant_profiled(
 
     profile.vector_cache_hit = Some(false);
     let tree = tree.or_else(|| {
-        crate::assets::request_asset_hydration(asset_id);
+        scene_images::request_hydration(asset_id);
         None
     })?;
     let rasterize_started_at = Instant::now();
@@ -8517,6 +8699,7 @@ mod tests {
                 bytes: 4,
                 last_used: 1,
                 source_generation: 1,
+                source_identity: Arc::new(AtomicU64::new(1)),
             },
         );
         cache.entries.insert(
@@ -8535,6 +8718,7 @@ mod tests {
                 bytes: 4,
                 last_used: 2,
                 source_generation: 2,
+                source_identity: Arc::new(AtomicU64::new(2)),
             },
         );
         cache.total_bytes = 8;
@@ -8552,18 +8736,11 @@ mod tests {
 
     #[test]
     fn cover_decode_target_accounts_for_the_full_cropped_image() {
-        let record = crate::assets::AssetRecord {
-            id: "cover_decode_target".to_string(),
-            source: "cover_decode_target".to_string(),
-            width: 3000,
-            height: 2000,
-            encoded_bytes: 0,
-            generation: 1,
-            render_revision: Arc::new(AtomicU64::new(0)),
-            epoch: crate::assets::current_epoch(),
-            decode_at_size: true,
-            kind: crate::assets::AssetRecordKind::Raster(Data::new_empty()),
-        };
+        insert_test_raster_asset_rgba("cover_decode_target", 1, 1, &[255, 0, 0, 255]).unwrap();
+        let mut record = (*crate::assets::asset_record("cover_decode_target").unwrap()).clone();
+        record.width = 3000;
+        record.height = 2000;
+        record.decode_at_size = true;
         let mut surface = skia_safe::surfaces::raster_n32_premul((96, 96)).expect("test surface");
         let spec = ImageDrawSpec {
             rect: RectSpec {
@@ -8703,6 +8880,8 @@ mod tests {
             width,
             height,
             RenderScene {
+                fonts: None,
+                images: None,
                 nodes: primitives.into_iter().map(RenderNode::Primitive).collect(),
             },
         )
@@ -8776,6 +8955,65 @@ mod tests {
     }
 
     #[test]
+    fn deferred_native_text_paint_uses_its_measured_font_snapshot_after_loading() {
+        use crate::tree::{
+            attrs::{Attrs, Font},
+            element::{Element, ElementKind, ElementTree, NodeId},
+            layout::{Constraint, layout_and_refresh_default},
+        };
+        let assets = crate::assets::AssetRuntime::new();
+        let _assets = assets.enter();
+        let mut tree = ElementTree::new();
+        let id = NodeId(901);
+        tree.insert(Element::with_attrs(
+            id,
+            ElementKind::Text,
+            vec![],
+            Attrs {
+                font: Some(Font::String("deferred-font".into())),
+                font_size: Some(28.0),
+                content: Some("Frozen painting 123".into()),
+                ..Default::default()
+            },
+        ));
+        tree.set_root_id(id);
+        let constraint = Constraint::new(500.0, 80.0);
+        let old = layout_and_refresh_default(&mut tree, constraint, 1.0).scene;
+        assert!(old.fonts.is_some());
+        let mut renderer = SceneRenderer::new();
+        let before = render_scene_graph_to_pixels_and_timings_with_renderer(
+            &mut renderer,
+            500,
+            80,
+            old.clone(),
+        )
+        .0;
+        let bytes = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../priv/test_assets/Lobster-Regular.ttf"),
+        )
+        .unwrap();
+        crate::services::load_font_bytes(&assets, "deferred-font", 400, false, &bytes).unwrap();
+        let delayed = render_scene_graph_to_pixels_and_timings_with_renderer(
+            &mut renderer,
+            500,
+            80,
+            old.clone(),
+        )
+        .0;
+        assert_eq!(before, delayed);
+        let new = layout_and_refresh_default(&mut tree, constraint, 1.0).scene;
+        assert_ne!(old.fonts, new.fonts);
+        let after =
+            render_scene_graph_to_pixels_and_timings_with_renderer(&mut renderer, 500, 80, new).0;
+        assert_ne!(before, after);
+        assert_eq!(
+            before,
+            render_scene_graph_to_pixels_and_timings_with_renderer(&mut renderer, 500, 80, old).0
+        );
+    }
+
+    #[test]
     fn rectangular_clip_is_idempotent_at_fractional_edges() {
         let clip = ClipShape {
             rect: GeometryRect {
@@ -8795,12 +9033,16 @@ mod tests {
         ));
 
         let single_clip_scene = RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::Clip {
                 clips: vec![clip],
                 children: vec![fill.clone()],
             }],
         };
         let repeated_clip_scene = RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::Clip {
                 clips: vec![clip],
                 children: vec![RenderNode::Clip {
@@ -8841,12 +9083,16 @@ mod tests {
         ));
 
         let single_clip_scene = RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::Clip {
                 clips: vec![clip],
                 children: vec![fill.clone()],
             }],
         };
         let repeated_clip_scene = RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::Clip {
                 clips: vec![clip],
                 children: vec![RenderNode::Clip {
@@ -8950,9 +9196,13 @@ mod tests {
         );
 
         let candidate_scene = RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::PaintLayer(parent_layer)],
         };
         let expected_scene = RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![
                 RenderNode::Primitive(DrawPrimitive::Rect(
                     0.0,
@@ -9017,6 +9267,8 @@ mod tests {
             )
         };
         let scene = |generation, first_color: u32| RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::PaintLayer(RenderPaintLayer::from_children(
                 41,
                 GeometryRect {
@@ -9052,6 +9304,8 @@ mod tests {
             80,
             60,
             RenderScene {
+                fonts: None,
+                images: None,
                 nodes: vec![
                     RenderNode::Primitive(DrawPrimitive::Rect(
                         0.0,
@@ -9143,6 +9397,8 @@ mod tests {
     #[test]
     fn isolated_wide_italic_text_cache_preserves_direct_visual_extent() {
         let scene = || RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::PaintLayer(RenderPaintLayer::from_children(
                 142,
                 GeometryRect {
@@ -9321,9 +9577,13 @@ mod tests {
         );
 
         let relaxed_scene = RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::PaintLayer(relaxed_layer)],
         };
         let ordinary_scene = RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::PaintLayer(ordinary_layer)],
         };
         let expected = render_scene_graph_to_pixels(24, 16, ordinary_scene.clone());
@@ -9429,6 +9689,8 @@ mod tests {
             60,
             40,
             RenderScene {
+                fonts: None,
+                images: None,
                 nodes: vec![RenderNode::Alpha {
                     alpha: 0.5,
                     children: vec![
@@ -9446,6 +9708,8 @@ mod tests {
             },
         );
         let scene = RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::PaintLayer(parent)],
         };
         let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
@@ -9500,6 +9764,8 @@ mod tests {
             (0x0000FFFFu32).into(),
         ));
         let before = RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::PaintLayer(RenderPaintLayer::from_children(
                 31,
                 bounds,
@@ -9529,6 +9795,8 @@ mod tests {
             ))],
         );
         let after = RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::PaintLayer(RenderPaintLayer::from_children(
                 31,
                 bounds,
@@ -9546,6 +9814,8 @@ mod tests {
             40,
             40,
             RenderScene {
+                fonts: None,
+                images: None,
                 nodes: vec![RenderNode::Alpha {
                     alpha: 0.5,
                     children: vec![
@@ -9695,6 +9965,8 @@ mod tests {
             (
                 false,
                 RenderScene {
+                    fonts: None,
+                    images: None,
                     nodes: vec![RenderNode::Primitive(DrawPrimitive::Rect(
                         0.0,
                         0.0,
@@ -9767,6 +10039,8 @@ mod tests {
             vec![dynamic_child],
         );
         let scene = RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::PaintLayer(direct_parent)],
         };
 
@@ -10512,6 +10786,8 @@ mod tests {
             16,
             16,
             RenderScene {
+                fonts: None,
+                images: None,
                 nodes: vec![RenderNode::Primitive(DrawPrimitive::Rect(
                     0.0,
                     0.0,
@@ -10568,6 +10844,8 @@ mod tests {
             28,
             22,
             RenderScene {
+                fonts: None,
+                images: None,
                 nodes: children.clone(),
             },
         );
@@ -10575,6 +10853,8 @@ mod tests {
             28,
             22,
             RenderScene {
+                fonts: None,
+                images: None,
                 nodes: vec![moving_paint_layer_node(
                     42,
                     7,
@@ -10630,7 +10910,15 @@ mod tests {
             vec![RenderNode::PaintLayer(child_layer)],
         );
 
-        let expected = render_scene_graph_to_pixels(32, 24, RenderScene { nodes: child_nodes });
+        let expected = render_scene_graph_to_pixels(
+            32,
+            24,
+            RenderScene {
+                fonts: None,
+                images: None,
+                nodes: child_nodes,
+            },
+        );
         let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
             enabled: true,
             ..RendererCacheConfig::default()
@@ -10640,6 +10928,8 @@ mod tests {
             32,
             24,
             RenderScene {
+                fonts: None,
+                images: None,
                 nodes: vec![RenderNode::PaintLayer(parent_layer)],
             },
         );
@@ -10688,6 +10978,8 @@ mod tests {
 
     fn animation_scene(stable_id: u64, content_generation: u64, color: u32) -> RenderScene {
         RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::PaintLayer(RenderPaintLayer::from_children(
                 stable_id,
                 GeometryRect {
@@ -10724,7 +11016,11 @@ mod tests {
                 ))
             })
             .collect();
-        RenderScene { nodes }
+        RenderScene {
+            fonts: None,
+            images: None,
+            nodes,
+        }
     }
 
     fn moving_paint_layer(
@@ -10789,6 +11085,8 @@ mod tests {
             width,
             height,
             RenderScene {
+                fonts: None,
+                images: None,
                 nodes: vec![direct_node],
             },
         );
@@ -10796,6 +11094,8 @@ mod tests {
             width,
             height,
             RenderScene {
+                fonts: None,
+                images: None,
                 nodes: vec![candidate_node],
             },
         );
@@ -10806,6 +11106,8 @@ mod tests {
 
     fn translated_candidate_scene(content_generation: u64) -> RenderScene {
         RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::Transform {
                 transform: Affine2::translation(8.0, 5.0),
                 children: vec![RenderNode::PaintLayer(
@@ -10820,6 +11122,8 @@ mod tests {
 
     fn translated_direct_scene() -> RenderScene {
         RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::Transform {
                 transform: Affine2::translation(8.0, 5.0),
                 children: moving_paint_layer_payload_test_children(),
@@ -10976,12 +11280,16 @@ mod tests {
     #[test]
     fn moving_paint_layer_payload_cache_reuses_payload_across_root_alpha_changes() {
         let direct_scene = |alpha| RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::Alpha {
                 alpha,
                 children: moving_paint_layer_payload_test_children(),
             }],
         };
         let candidate_scene = |alpha| RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::Alpha {
                 alpha,
                 children: vec![RenderNode::PaintLayer(
@@ -11059,12 +11367,16 @@ mod tests {
         }
 
         let child_scene = || RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::Transform {
                 transform: Affine2::translation(8.0, 5.0),
                 children: vec![RenderNode::PaintLayer(child_candidate())],
             }],
         };
         let parent_scene = || RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::Transform {
                 transform: Affine2::translation(8.0, 5.0),
                 children: vec![moving_paint_layer_node(
@@ -11157,6 +11469,8 @@ mod tests {
         }
 
         let parent_scene = |content_generation, color: u32| RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::Transform {
                 transform: Affine2::translation(8.0, 5.0),
                 children: vec![moving_paint_layer_node(
@@ -11348,6 +11662,8 @@ mod tests {
 
         let changed = RenderState::new(
             RenderScene {
+                fonts: None,
+                images: None,
                 nodes: vec![RenderNode::Transform {
                     transform: Affine2::translation(8.0, 5.0),
                     children: vec![RenderNode::PaintLayer(
@@ -11622,6 +11938,8 @@ mod tests {
     #[test]
     fn visible_frame_fingerprint_ignores_offscreen_dynamic_layer_changes() {
         let scene = |generation: u64| RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![
                 RenderNode::PaintLayer(moving_paint_layer_payload_test_candidate(
                     moving_paint_layer_payload_test_children(),
@@ -11658,6 +11976,8 @@ mod tests {
     #[test]
     fn moving_paint_layer_payload_cache_reuses_payload_after_integer_scroll_translation() {
         let candidate_scene = |scroll_y: f32| RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::Transform {
                 transform: Affine2::translation(8.0, 5.0 - scroll_y),
                 children: vec![RenderNode::PaintLayer(
@@ -11668,6 +11988,8 @@ mod tests {
             }],
         };
         let direct_scene = |scroll_y: f32| RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::Transform {
                 transform: Affine2::translation(8.0, 5.0 - scroll_y),
                 children: moving_paint_layer_payload_test_children(),
@@ -11711,6 +12033,8 @@ mod tests {
     #[test]
     fn moving_paint_layer_payload_cache_reuses_exact_run_across_layer_generation_change() {
         let candidate_scene = |content_generation: u64, y: f32| RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::Transform {
                 transform: Affine2::translation(8.0, y),
                 children: vec![RenderNode::PaintLayer(
@@ -11748,6 +12072,8 @@ mod tests {
     #[test]
     fn moving_paint_layer_payload_cache_reuses_payload_after_nested_scroll_translation() {
         let candidate_scene = |scroll_y: f32| RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::Transform {
                 transform: Affine2::translation(4.0, 6.0 - scroll_y),
                 children: vec![RenderNode::Transform {
@@ -11761,6 +12087,8 @@ mod tests {
             }],
         };
         let direct_scene = |scroll_y: f32| RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::Transform {
                 transform: Affine2::translation(4.0, 6.0 - scroll_y),
                 children: vec![RenderNode::Transform {
@@ -11814,6 +12142,8 @@ mod tests {
             radii: None,
         };
         let candidate_scene = |scroll_y: f32| RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::Clip {
                 clips: vec![clip],
                 children: vec![RenderNode::Transform {
@@ -11827,6 +12157,8 @@ mod tests {
             }],
         };
         let direct_scene = |scroll_y: f32| RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::Clip {
                 clips: vec![clip],
                 children: vec![RenderNode::Transform {
@@ -11921,6 +12253,8 @@ mod tests {
             radii: None,
         };
         let candidate_scene = |scroll_y: f32| RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::Clip {
                 clips: vec![clip],
                 children: vec![RenderNode::Transform {
@@ -11934,6 +12268,8 @@ mod tests {
             }],
         };
         let direct_scene = RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::Clip {
                 clips: vec![clip],
                 children: vec![RenderNode::Transform {
@@ -12093,6 +12429,8 @@ mod tests {
             ))]
         };
         let image_scene = || RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::PaintLayer(
                 moving_paint_layer_payload_test_candidate_with_generation(image_children(), 7),
             )],
@@ -12279,6 +12617,8 @@ mod tests {
             40,
             10,
             RenderScene {
+                fonts: None,
+                images: None,
                 nodes: vec![
                     RenderNode::Clip {
                         clips: vec![ClipShape {
@@ -12319,6 +12659,8 @@ mod tests {
             50,
             10,
             RenderScene {
+                fonts: None,
+                images: None,
                 nodes: vec![
                     RenderNode::Transform {
                         transform: Affine2::translation(10.0, 0.0),
@@ -12352,6 +12694,8 @@ mod tests {
             40,
             10,
             RenderScene {
+                fonts: None,
+                images: None,
                 nodes: vec![
                     RenderNode::Alpha {
                         alpha: 0.5,
@@ -12387,6 +12731,8 @@ mod tests {
             40,
             24,
             RenderScene {
+                fonts: None,
+                images: None,
                 nodes: vec![RenderNode::Alpha {
                     alpha: 0.5,
                     children: vec![RenderNode::Primitive(DrawPrimitive::RoundedRect(
@@ -12414,6 +12760,8 @@ mod tests {
             120,
             32,
             RenderScene {
+                fonts: None,
+                images: None,
                 nodes: vec![RenderNode::Alpha {
                     alpha: 0.5,
                     children: vec![RenderNode::Primitive(DrawPrimitive::TextWithFont(
@@ -12443,6 +12791,8 @@ mod tests {
             48,
             32,
             RenderScene {
+                fonts: None,
+                images: None,
                 nodes: vec![RenderNode::Alpha {
                     alpha: 0.5,
                     children: vec![
@@ -12481,6 +12831,8 @@ mod tests {
             16,
             16,
             RenderScene {
+                fonts: None,
+                images: None,
                 nodes: vec![RenderNode::Alpha {
                     alpha: 0.5,
                     children: vec![RenderNode::Primitive(DrawPrimitive::Image(
@@ -12508,6 +12860,8 @@ mod tests {
     #[test]
     fn test_clipped_single_primitive_alpha_preserves_clip_without_layer() {
         let scene = RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::Clip {
                 clips: vec![ClipShape {
                     rect: crate::tree::geometry::Rect {
@@ -12548,6 +12902,8 @@ mod tests {
             60,
             10,
             RenderScene {
+                fonts: None,
+                images: None,
                 nodes: vec![
                     RenderNode::Clip {
                         clips: vec![ClipShape {
@@ -12600,6 +12956,40 @@ mod tests {
         assert!(font.is_baseline_snap());
         assert_eq!(font.edging(), FontEdging::SubpixelAntiAlias);
         assert_eq!(font.hinting(), FontHinting::Normal);
+    }
+
+    #[test]
+    fn frozen_font_maps_share_until_load_survive_reset_and_release_without_asset_locks() {
+        let runtime = crate::assets::AssetRuntime::new();
+        let _runtime = runtime.enter();
+        let context = asset_context();
+        let first = capture_font_snapshot().unwrap();
+        let second = capture_font_snapshot().unwrap();
+        assert!(Arc::ptr_eq(&first.fonts, &second.fonts));
+        drop(second);
+        assert!(context.font_cache.try_lock().is_ok());
+        let old = Arc::downgrade(&first.fonts);
+        let bytes = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../priv/test_assets/Lobster-Regular.ttf"),
+        )
+        .unwrap();
+        load_font("after-freeze", 400, false, &bytes).unwrap();
+        let current = font_cache_generation();
+        assert_ne!(first.generation, current);
+        let key = FontKey::new("after-freeze", 400, false);
+        assert!(get_typeface(&key).is_some());
+        {
+            let _frozen = first.enter();
+            assert_eq!(first.generation, font_cache_generation());
+            assert!(get_typeface(&key).is_none());
+            clear_renderer_asset_context();
+            assert_eq!(first.generation, font_cache_generation());
+            assert!(context.font_cache.try_lock().is_ok());
+        }
+        assert!(font_cache_generation() > current);
+        drop(first);
+        assert!(old.upgrade().is_none());
     }
 
     #[test]
@@ -13313,6 +13703,8 @@ mod tests {
             4,
             4,
             RenderScene {
+                fonts: None,
+                images: None,
                 nodes: vec![RenderNode::Primitive(DrawPrimitive::Image(
                     0.0,
                     0.0,
@@ -13398,6 +13790,8 @@ mod tests {
         cache_test_svg_asset(image_id, 2, 2, svg);
 
         let scene = || RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::Primitive(DrawPrimitive::Image(
                 0.0,
                 0.0,
@@ -14147,6 +14541,8 @@ mod tests {
         let width = 64;
         let height = 36;
         let scene = RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::Alpha {
                 alpha: 0.5,
                 children: vec![
@@ -14221,6 +14617,8 @@ mod tests {
         let width = 32;
         let height = 32;
         let scene = RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![
                 RenderNode::Primitive(crate::render_scene::DrawPrimitive::Rect(
                     0.0,
@@ -14279,6 +14677,8 @@ mod tests {
         let width = 64;
         let height = 36;
         let scene = RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![
                 RenderNode::Primitive(crate::render_scene::DrawPrimitive::Rect(
                     0.0,
@@ -14399,6 +14799,8 @@ mod tests {
                 10,
                 10,
                 RenderScene {
+                    fonts: None,
+                    images: None,
                     nodes: vec![RenderNode::Primitive(
                         crate::render_scene::DrawPrimitive::Rect(
                             0.0,
@@ -14513,10 +14915,11 @@ mod tests {
             tree.set_root_id(paragraph);
             tree.set_children(&paragraph, vec![owner]).unwrap();
             tree.set_children(&owner, vec![text]).unwrap();
-            let nodes = layout_and_refresh_default(&mut tree, Constraint::new(240.0, 200.0), 1.0)
-                .scene
-                .nodes;
+            let scene =
+                layout_and_refresh_default(&mut tree, Constraint::new(240.0, 200.0), 1.0).scene;
             RenderScene {
+                fonts: scene.fonts,
+                images: scene.images,
                 nodes: vec![RenderNode::PaintLayer(moving_paint_layer(
                     902,
                     generation,
@@ -14526,7 +14929,7 @@ mod tests {
                         width: 240.0,
                         height: 200.0,
                     },
-                    without_layers(nodes),
+                    without_layers(scene.nodes),
                 ))],
             }
         };
@@ -14576,6 +14979,8 @@ mod tests {
             ..RendererCacheConfig::default()
         });
         let scene = |middle, generation| RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::PaintLayer(moving_paint_layer(
                 901,
                 generation,

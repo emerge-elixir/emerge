@@ -234,7 +234,7 @@ pub struct MouseOverAttrs {
 }
 
 /// A positioned text fragment within a paragraph, computed during layout.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TextFragment {
     pub x: f32,
     pub y: f32,
@@ -293,7 +293,7 @@ pub struct VirtualKeySpec {
 }
 
 /// All decoded attributes for an element.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Attrs {
     pub width: Option<Length>,
     pub height: Option<Length>,
@@ -391,6 +391,7 @@ pub struct Attrs {
     pub scale: Option<f64>,
     pub alpha: Option<f64>,
     pub animate: Option<AnimationSpec>,
+    pub animate_change: Option<std::sync::Arc<Vec<super::animation::change::ChangePolicy>>>,
     pub animate_enter: Option<AnimationSpec>,
     pub animate_exit: Option<AnimationSpec>,
     pub space_evenly: Option<bool>,
@@ -491,6 +492,7 @@ const TAG_SLIDER_MIN: u8 = 80;
 const TAG_SLIDER_MAX: u8 = 81;
 const TAG_SLIDER_VALUE: u8 = 82;
 const TAG_SLIDER_STEP: u8 = 83;
+const TAG_ANIMATE_CHANGE: u8 = 84;
 
 // =============================================================================
 // Decoder
@@ -583,6 +585,7 @@ pub fn decode_attrs(data: &[u8]) -> Result<Attrs, DecodeError> {
             cursor.remaining()
         )));
     }
+    super::animation::change::validate_policies(&attrs).map_err(DecodeError::InvalidStructure)?;
     Ok(attrs)
 }
 
@@ -670,6 +673,9 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
             attrs.image_size = Some((width, height));
         }
         TAG_VIDEO_TARGET => attrs.video_target = Some(cursor.read_string_u16()?),
+        TAG_ANIMATE_CHANGE => {
+            attrs.animate_change = Some(std::sync::Arc::new(decode_change_policies(cursor)?))
+        }
         TAG_ANIMATE => attrs.animate = Some(decode_animation_spec(cursor)?),
         TAG_ANIMATE_ENTER => attrs.animate_enter = Some(decode_animation_spec(cursor)?),
         TAG_ANIMATE_EXIT => attrs.animate_exit = Some(decode_exit_animation_spec(cursor)?),
@@ -742,6 +748,46 @@ fn decode_decorative_style_attrs(
     Ok(out)
 }
 
+fn decode_change_policies(
+    cursor: &mut AttrCursor,
+) -> Result<Vec<super::animation::change::ChangePolicy>, DecodeError> {
+    use super::animation::change::{ChangePolicy, Field};
+    let data = cursor.read_bytes_u32()?;
+    let mut nested = AttrCursor::new(&data);
+    let count = nested.read_u16_be()?;
+    let policies = (0..count)
+        .map(|_| {
+            let name = nested.read_string_u16()?;
+            let field = Field::from_name(&name).ok_or_else(|| {
+                DecodeError::InvalidStructure(format!("invalid animate_change field: {name}"))
+            })?;
+            let duration_ms = nested.read_f64()?;
+            let curve = match nested.read_string_u16()?.as_str() {
+                "linear" => AnimationCurve::Linear,
+                "ease_in" => AnimationCurve::EaseIn,
+                "ease_out" => AnimationCurve::EaseOut,
+                "ease_in_out" => AnimationCurve::EaseInOut,
+                _ => {
+                    return Err(DecodeError::InvalidStructure(
+                        "invalid animate_change curve".into(),
+                    ));
+                }
+            };
+            Ok(ChangePolicy {
+                field,
+                duration_ms,
+                curve,
+            })
+        })
+        .collect::<Result<Vec<_>, DecodeError>>()?;
+    if nested.remaining() != 0 {
+        return Err(DecodeError::InvalidStructure(
+            "animate_change trailing bytes".into(),
+        ));
+    }
+    Ok(policies)
+}
+
 fn decode_animation_spec(cursor: &mut AttrCursor) -> Result<AnimationSpec, DecodeError> {
     let data = cursor.read_bytes_u32()?;
     let mut nested = AttrCursor::new(&data);
@@ -806,12 +852,14 @@ fn decode_animation_spec(cursor: &mut AttrCursor) -> Result<AnimationSpec, Decod
         )));
     }
 
-    Ok(AnimationSpec {
+    let spec = AnimationSpec {
         keyframes,
         duration_ms,
         curve,
         repeat,
-    })
+    };
+    super::animation::validate_animation_lengths(&spec).map_err(DecodeError::InvalidStructure)?;
+    Ok(spec)
 }
 
 fn decode_exit_animation_spec(cursor: &mut AttrCursor) -> Result<AnimationSpec, DecodeError> {
@@ -1496,6 +1544,62 @@ mod tests {
         data.extend_from_slice(&0.5_f64.to_be_bytes());
         let attrs = decode_attrs(&data).unwrap();
         assert_eq!(attrs.alpha, Some(0.5));
+    }
+
+    #[test]
+    fn min_max_lengths_decode_statically_but_not_in_animation_payloads() {
+        for axis in [TAG_WIDTH, TAG_HEIGHT] {
+            for bound in [4, 5] {
+                let frame = vec![0, 1, axis, bound, 0, 1];
+                assert!(decode_attrs(&frame).is_ok());
+                for owner in [TAG_ANIMATE, TAG_ANIMATE_ENTER, TAG_ANIMATE_EXIT] {
+                    let payload: Vec<u8> = [0, 2]
+                        .into_iter()
+                        .chain((0..2).flat_map(|_| {
+                            (frame.len() as u32)
+                                .to_be_bytes()
+                                .into_iter()
+                                .chain(frame.iter().copied())
+                        }))
+                        .chain(1000.0_f64.to_be_bytes())
+                        .chain([0, 6])
+                        .chain(*b"linear")
+                        .chain([0])
+                        .collect();
+                    let data: Vec<u8> = [0, 1, owner]
+                        .into_iter()
+                        .chain((payload.len() as u32).to_be_bytes())
+                        .chain(payload)
+                        .collect();
+                    assert!(
+                        decode_attrs(&data)
+                            .unwrap_err()
+                            .to_string()
+                            .contains("min/max")
+                    );
+                }
+                let name = if axis == TAG_WIDTH { "width" } else { "height" };
+                let policy: Vec<u8> = [0, 1]
+                    .into_iter()
+                    .chain((name.len() as u16).to_be_bytes())
+                    .chain(name.bytes())
+                    .chain(1000.0_f64.to_be_bytes())
+                    .chain([0, 6])
+                    .chain(*b"linear")
+                    .collect();
+                let data: Vec<u8> = [0, 2, axis, bound, 0, 1, TAG_ANIMATE_CHANGE]
+                    .into_iter()
+                    .chain((policy.len() as u32).to_be_bytes())
+                    .chain(policy)
+                    .collect();
+                assert!(
+                    decode_attrs(&data)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("min/max")
+                );
+            }
+        }
     }
 
     #[test]

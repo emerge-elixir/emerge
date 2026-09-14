@@ -83,6 +83,8 @@ fn gradient_svg_profiles_a_bounded_layer_and_preserves_grayscale_holes() {
     };
     let gradient = RenderColor::linear([0xff0000ff, 0x0000ff00], 0.0, bounds);
     let scene = RenderScene {
+        fonts: None,
+        images: None,
         nodes: vec![
             RenderNode::Primitive(DrawPrimitive::Rect(
                 0.0,
@@ -132,6 +134,8 @@ fn gradient_text_and_border_brushes_remain_in_their_grayscale_roles() {
     };
     let color = RenderColor::linear([0xff0000ff, 0x0000ffff], 0.0, bounds);
     let scene = RenderScene {
+        fonts: None,
+        images: None,
         nodes: vec![
             RenderNode::Primitive(DrawPrimitive::Rect(
                 0.0,
