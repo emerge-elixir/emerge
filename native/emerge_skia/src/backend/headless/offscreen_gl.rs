@@ -1679,12 +1679,27 @@ mod tests {
         let mut fence = Some(unsafe { OwnedFd::from_raw_fd(raw) });
         let write = unsafe { OwnedFd::from_raw_fd(fds[1]) };
 
+        let assert_reader_closed = || {
+            // The closed raw number can be reused by another test thread. Poll
+            // the still-owned writer instead: POLLERR means its pipe has no reader.
+            let mut status = libc::pollfd {
+                fd: write.as_raw_fd(),
+                events: libc::POLLOUT,
+                revents: 0,
+            };
+            assert_eq!(unsafe { libc::poll(&mut status, 1, 0) }, 1);
+            assert_ne!(status.revents & libc::POLLERR, 0);
+        };
         close_slot_acquire_fence(&mut fence);
         assert!(fence.is_none());
-        assert_eq!(unsafe { libc::fcntl(raw, libc::F_GETFD) }, -1);
+        assert_reader_closed();
         close_slot_acquire_fence(&mut fence);
         assert!(fence.is_none());
-        assert!(write.as_raw_fd() >= 0);
+        assert_reader_closed();
+        assert_eq!(
+            unsafe { libc::fcntl(write.as_raw_fd(), libc::F_GETFD) },
+            libc::FD_CLOEXEC
+        );
     }
 
     #[test]
