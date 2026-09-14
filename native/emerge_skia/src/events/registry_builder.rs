@@ -6245,6 +6245,40 @@ fn focus_build_state_from_entries(entries: &[FocusEntry]) -> FocusBuildState {
     }
 }
 
+/// Rebind an unsent one-shot request to the latest native registry geometry.
+/// A removed/remounted/nonfocusable target has no matching current action.
+pub(crate) fn rebind_pending_mount_focus(
+    tree: &ElementTree,
+    registry: &Registry,
+    pending: FocusOnMountTarget,
+) -> Option<FocusOnMountTarget> {
+    let node = tree.get(&pending.element_id)?;
+    if node.lifecycle.mounted_at_revision != pending.mounted_at_revision
+        || !node.layout.effective.focus_on_mount.unwrap_or(false)
+    {
+        return None;
+    }
+    registry.view().iter_precedence().find_map(|listener| {
+        let actions = match &listener.compute {
+            ListenerCompute::Static { actions }
+            | ListenerCompute::StaticWithLeftPressRuntimeAugment { actions, .. }
+            | ListenerCompute::StaticWithTextInputCursorRuntime { actions, .. }
+            | ListenerCompute::StaticWithSliderValueRuntime { actions, .. } => actions,
+            _ => return None,
+        };
+        actions.iter().find_map(|action| match action {
+            ListenerAction::Semantic(SemanticAction::FocusTo {
+                next: Some(id),
+                reveal_scrolls,
+            }) if *id == pending.element_id => Some(FocusOnMountTarget {
+                reveal_scrolls: reveal_scrolls.clone(),
+                ..pending.clone()
+            }),
+            _ => None,
+        })
+    })
+}
+
 fn consider_focus_on_mount_candidate(
     acc: &mut RegistryBuildAcc,
     element: &Element,
@@ -9401,9 +9435,10 @@ mod tests {
             &mut tree,
             Constraint::new(128.0, 82.0),
             1.0,
-            &runtime,
+            &mut runtime,
             start + Duration::from_millis(sample_ms),
-        );
+        )
+        .unwrap();
 
         let elements: Vec<_> = tree.iter_nodes().cloned().collect();
         registry_for_elements(&elements)
@@ -9452,9 +9487,10 @@ mod tests {
             &mut tree,
             Constraint::new(128.0, 82.0),
             1.0,
-            &runtime,
+            &mut runtime,
             start + Duration::from_millis(sample_ms),
         )
+        .unwrap()
         .event_rebuild
         .base_registry
     }

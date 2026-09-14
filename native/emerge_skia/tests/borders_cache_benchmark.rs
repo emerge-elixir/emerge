@@ -240,7 +240,8 @@ fn selected_fixture_has_real_animated_pixels_and_static_detail() {
     let mut runtime = AnimationRuntime::default();
     runtime.sync_with_tree(&tree, started);
     let constraint = Constraint::new(960.0, 900.0);
-    layout_and_refresh_default_with_animation(&mut tree, constraint, 1.0, &runtime, started);
+    layout_and_refresh_default_with_animation(&mut tree, constraint, 1.0, &mut runtime, started)
+        .unwrap();
     let root = tree.root_id().unwrap();
     let viewport = borders_cache::select_viewport(&tree, root, 960, 900);
     tree.apply_scroll_y(&root, -viewport.scroll_y);
@@ -252,9 +253,10 @@ fn selected_fixture_has_real_animated_pixels_and_static_detail() {
             &mut tree,
             constraint,
             1.0,
-            &runtime,
+            &mut runtime,
             started + Duration::from_millis(ms),
         )
+        .unwrap()
         .scene;
         let mut state = RenderState::new(scene, skia_safe::Color::WHITE, ms + 1, false);
         state.has_cacheable_paint_layers = false;

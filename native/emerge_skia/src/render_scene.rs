@@ -11,6 +11,13 @@ use crate::tree::transform::Affine2;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RenderScene {
+    /// Frozen native font facts used when this retained scene is painted later.
+    #[doc(hidden)]
+    pub fonts: Option<crate::renderer::FontSnapshot>,
+    /// Immutable image bindings for native tree publication; None keeps manual
+    /// low-level scenes' live-ID behavior.
+    #[doc(hidden)]
+    pub images: Option<crate::renderer::ImageSnapshot>,
     pub nodes: Vec<RenderNode>,
 }
 
@@ -1648,6 +1655,8 @@ mod tests {
             }],
         );
         let scene = RenderScene {
+            fonts: None,
+            images: None,
             nodes: vec![RenderNode::PaintLayer(parent)],
         };
 

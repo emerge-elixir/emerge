@@ -462,6 +462,7 @@ fn build_refresh_output_with_semantic_layers(
     tree: &ElementTree,
     registry_mode: RefreshRegistryMode,
 ) -> RefreshBuildOutput {
+    let _asset_guard = tree.frame_assets.as_ref().map(|assets| assets.enter());
     let mut registry_collector = match registry_mode {
         RefreshRegistryMode::Rebuild => Some(RegistryRefreshCollector::for_tree(tree)),
         RefreshRegistryMode::ReuseClean => None,
@@ -515,7 +516,14 @@ fn build_refresh_output_with_semantic_layers(
 
     let nodes = wrap_with_root_paint_layer(subtree.into_nodes(), tree.get_ix(root_ix));
     RefreshBuildOutput {
-        scene: RenderScene { nodes },
+        scene: RenderScene {
+            fonts: tree.frame_fonts.clone(),
+            images: Some(tree.frame_assets.as_ref().map_or_else(
+                || crate::renderer::ImageSnapshot::capture(&nodes),
+                |assets| assets.images.referenced(&nodes),
+            )),
+            nodes,
+        },
         registry: registry_collector
             .map(|collector| RefreshRegistryOutput::Rebuilt(collector.finish(tree)))
             .unwrap_or(RefreshRegistryOutput::ReusedClean),

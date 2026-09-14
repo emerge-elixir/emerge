@@ -670,6 +670,7 @@ fn tree_msg_label(msg: &TreeMsg) -> &'static str {
         TreeMsg::Batch(_) => "batch",
         TreeMsg::RebuildRegistry => "rebuild_registry",
         TreeMsg::AssetStateChanged => "asset_state_changed",
+        TreeMsg::FontMetricsChanged { .. } => "font_metrics_changed",
         TreeMsg::Stop => "stop",
     }
 }
@@ -3666,9 +3667,10 @@ mod tests {
             &mut tree,
             Constraint::new(128.0, 82.0),
             1.0,
-            &runtime,
+            &mut runtime,
             start + Duration::from_millis(sample_ms),
         )
+        .unwrap()
         .event_rebuild
     }
 

@@ -184,6 +184,7 @@ fn root_layout_scale_patch_matches_fresh_scaled_layout_and_render_scene() {
     assert_eq!(invalidation, TreeInvalidation::Measure);
 
     let preparation = prepare_frame_attrs_for_update(&mut patched, 1.0, None, None);
+    let preparation = preparation.apply(&mut patched, None).unwrap();
     let patched_output = layout_and_refresh_prepared_default(
         &mut patched,
         Constraint::new(480.0, 320.0),
@@ -213,6 +214,7 @@ fn root_layout_rotate_patch_matches_fresh_rotated_layout_and_render_scene() {
     assert_eq!(invalidation, TreeInvalidation::Measure);
 
     let preparation = prepare_frame_attrs_for_update(&mut patched, 1.0, None, None);
+    let preparation = preparation.apply(&mut patched, None).unwrap();
     let patched_output = layout_and_refresh_prepared_default(
         &mut patched,
         Constraint::new(480.0, 320.0),
@@ -294,16 +296,18 @@ fn root_layout_scale_animation_scales_descendant_attrs() {
         &mut tree,
         Constraint::new(800.0, 600.0),
         1.0,
-        &runtime,
+        &mut runtime,
         start,
-    );
+    )
+    .unwrap();
     let update = layout_or_refresh_default_with_animation(
         &mut tree,
         Constraint::new(800.0, 600.0),
         1.0,
-        &runtime,
+        &mut runtime,
         start + Duration::from_millis(50),
-    );
+    )
+    .unwrap();
 
     assert!(update.layout_performed);
     let child = tree.get(&child_id).unwrap();
@@ -357,16 +361,18 @@ fn layout_scale_animation_scales_same_frame_pixel_keyframes() {
         &mut tree,
         Constraint::new(800.0, 600.0),
         1.0,
-        &runtime,
+        &mut runtime,
         start,
-    );
+    )
+    .unwrap();
     let update = layout_or_refresh_default_with_animation(
         &mut tree,
         Constraint::new(800.0, 600.0),
         1.0,
-        &runtime,
+        &mut runtime,
         start + Duration::from_millis(50),
-    );
+    )
+    .unwrap();
 
     assert!(update.layout_performed);
     let child = tree.get(&child_id).unwrap();
@@ -413,16 +419,18 @@ fn layout_rotate_animation_reserves_sampled_aabb() {
         &mut tree,
         Constraint::new(300.0, 300.0),
         1.0,
-        &runtime,
+        &mut runtime,
         start,
-    );
+    )
+    .unwrap();
     let update = layout_or_refresh_default_with_animation(
         &mut tree,
         Constraint::new(300.0, 300.0),
         1.0,
-        &runtime,
+        &mut runtime,
         start + Duration::from_millis(50),
-    );
+    )
+    .unwrap();
 
     assert!(update.layout_performed);
     let child = tree.get(&child_id).unwrap();
@@ -453,32 +461,36 @@ fn layout_transform_animation_resizes_parent_row_after_cached_initial_layout() {
         &mut cached,
         Constraint::new(600.0, 400.0),
         1.0,
-        &cached_runtime,
+        &mut cached_runtime,
         start,
-    );
+    )
+    .unwrap();
     layout_or_refresh_default_with_animation(
         &mut uncached,
         Constraint::new(600.0, 400.0),
         1.0,
-        &uncached_runtime,
+        &mut uncached_runtime,
         start,
-    );
+    )
+    .unwrap();
 
     let update_at = start + Duration::from_millis(50);
     let cached_update = layout_or_refresh_default_with_animation(
         &mut cached,
         Constraint::new(600.0, 400.0),
         1.0,
-        &cached_runtime,
+        &mut cached_runtime,
         update_at,
-    );
+    )
+    .unwrap();
     let uncached_update = layout_or_refresh_default_with_animation(
         &mut uncached,
         Constraint::new(600.0, 400.0),
         1.0,
-        &uncached_runtime,
+        &mut uncached_runtime,
         update_at,
-    );
+    )
+    .unwrap();
 
     assert!(cached_update.layout_performed);
     assert!(uncached_update.layout_performed);
