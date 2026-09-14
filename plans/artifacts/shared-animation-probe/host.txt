@@ -1,0 +1,6 @@
+Linux 7.2.3-arch1-3 x86_64 GNU/Linux
+Architecture:                            x86_64
+CPU(s):                                  32
+Model name:                              AMD Ryzen 9 7950X 16-Core Processor
+NUMA node0 CPU(s):                       0-31
+rustc 1.93.1 (01f6ddf75 2026-02-11)

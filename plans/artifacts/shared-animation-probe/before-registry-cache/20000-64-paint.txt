@@ -1,0 +1,6 @@
+nodes=20000 owners=64 case=paint baseline VmHWM:	   14316 kB VmRSS:	   14112 kB
+model VmHWM:	  165016 kB VmRSS:	  165016 kB
+cold_us=51631 VmHWM:	  168748 kB VmRSS:	  168336 kB workspace=false tracks=0 projections=0 projection_slots=0
+warm_p50_us=1824 warm_p95_us=2145 warm_max_us=2571 VmHWM:	  168748 kB VmRSS:	  168336 kB workspace=false tracks=0 projections=0 projection_slots=0
+release_us=1892 VmHWM:	  168748 kB VmRSS:	  168336 kB workspace=false tracks=0 projections=0 projection_slots=0
+publication_only=true raster_timing=false allocator_retained_pages_are_not_live_record_counts=true

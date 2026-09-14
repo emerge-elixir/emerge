@@ -1,0 +1,6 @@
+nodes=5000 owners=1 case=length baseline VmHWM:	   14472 kB VmRSS:	   14472 kB
+model VmHWM:	   52732 kB VmRSS:	   52732 kB
+cold_us=37191 VmHWM:	   92392 kB VmRSS:	   92392 kB workspace=true tracks=1 projections=2 projection_slots=2 queries=ProjectionStats { model_copies: 1, copied_nodes: 5000, source_slots: 5000, layout_queries: 2, cache_hits: 0, seed_reset_visits: 1, metric_invalidations: 0 }
+warm_p50_us=616 warm_p95_us=753 warm_max_us=785 VmHWM:	   92392 kB VmRSS:	   92392 kB workspace=true tracks=1 projections=2 projection_slots=2 queries=ProjectionStats { model_copies: 1, copied_nodes: 5000, source_slots: 5000, layout_queries: 2, cache_hits: 0, seed_reset_visits: 1, metric_invalidations: 0 }
+release_us=3930 VmHWM:	   91316 kB VmRSS:	   55044 kB workspace=false tracks=0 projections=0 projection_slots=0
+publication_only=true raster_timing=false allocator_retained_pages_are_not_live_record_counts=true

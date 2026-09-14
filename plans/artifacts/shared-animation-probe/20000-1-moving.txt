@@ -1,0 +1,6 @@
+nodes=20000 owners=1 case=moving baseline VmHWM:	   14360 kB VmRSS:	   14320 kB
+model VmHWM:	  165408 kB VmRSS:	  165408 kB
+cold_us=168350 VmHWM:	  320492 kB VmRSS:	  320492 kB workspace=true tracks=1 projections=2 projection_slots=4 queries=ProjectionStats { model_copies: 1, copied_nodes: 20000, source_slots: 20000, layout_queries: 2, cache_hits: 0, seed_reset_visits: 2, metric_invalidations: 0 } registry_affects_visits=20000
+warm_p50_us=1619 warm_p95_us=2147 warm_max_us=2840 VmHWM:	  320556 kB VmRSS:	  320556 kB workspace=true tracks=1 projections=2 projection_slots=4 queries=ProjectionStats { model_copies: 1, copied_nodes: 20000, source_slots: 20000, layout_queries: 240, cache_hits: 0, seed_reset_visits: 478, metric_invalidations: 0 } registry_affects_visits=20000
+release_us=15543 VmHWM:	  320364 kB VmRSS:	  170628 kB workspace=false tracks=0 projections=0 projection_slots=0 registry_affects_visits=20000
+publication_only=true raster_timing=false allocator_retained_pages_are_not_live_record_counts=true

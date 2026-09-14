@@ -40,6 +40,11 @@ required-features = ["bench-diagnostics"]
 name = "stats"
 harness = false
 
+[[bench]]
+name = "shared_animation"
+harness = false
+required-features = ["bench-diagnostics"]
+
 [features]
 default = ["wayland"]
 bench-diagnostics = []

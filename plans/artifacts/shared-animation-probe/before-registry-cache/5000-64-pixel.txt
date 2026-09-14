@@ -1,0 +1,6 @@
+nodes=5000 owners=64 case=pixel baseline VmHWM:	   14340 kB VmRSS:	   14340 kB
+model VmHWM:	   52624 kB VmRSS:	   52624 kB
+cold_us=12156 VmHWM:	   54884 kB VmRSS:	   54884 kB workspace=false tracks=0 projections=0 projection_slots=0
+warm_p50_us=1152 warm_p95_us=1172 warm_max_us=1390 VmHWM:	   55008 kB VmRSS:	   55008 kB workspace=false tracks=0 projections=0 projection_slots=0
+release_us=913 VmHWM:	   55008 kB VmRSS:	   55008 kB workspace=false tracks=0 projections=0 projection_slots=0
+publication_only=true raster_timing=false allocator_retained_pages_are_not_live_record_counts=true
