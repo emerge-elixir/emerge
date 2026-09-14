@@ -71,6 +71,7 @@ pub(crate) enum AssetRecordKind {
 
 #[derive(Clone)]
 pub(crate) struct AssetRecord {
+    owner: std::sync::Weak<Mutex<AssetState>>,
     pub id: String,
     pub source: String,
     pub width: u32,
@@ -190,6 +191,7 @@ impl Default for AssetContext {
 }
 
 pub struct AssetRuntime {
+    tree_tx: Mutex<Option<Sender<TreeMsg>>>,
     context: AssetContext,
     worker: Mutex<Option<JoinHandle<()>>>,
 }
@@ -203,6 +205,7 @@ impl Default for AssetRuntime {
 impl AssetRuntime {
     pub fn new() -> Self {
         Self {
+            tree_tx: Mutex::new(None),
             context: AssetContext::default(),
             worker: Mutex::new(None),
         }
@@ -218,6 +221,9 @@ impl AssetRuntime {
 
     pub fn start(&self, tree_tx: Sender<TreeMsg>, log_render: bool) {
         self.stop_worker();
+        if let Ok(mut target) = self.tree_tx.lock() {
+            *target = Some(tree_tx.clone());
+        }
         let (tx, rx) = bounded(4096);
 
         if let Ok(mut state) = self.context.state.lock() {
@@ -269,7 +275,22 @@ impl AssetRuntime {
         configure(config);
     }
 
+    pub(crate) fn notify_font_metrics_changed(&self) {
+        let target = self.tree_tx.lock().ok().and_then(|target| target.clone());
+        if let Some(target) = target {
+            let _context = self.enter();
+            let msg = TreeMsg::FontMetricsChanged {
+                generation: crate::renderer::live_font_cache_generation(),
+            };
+            if let Err(crossbeam_channel::TrySendError::Full(msg)) = target.try_send(msg) {
+                let _ = target.send(msg);
+            }
+        }
+    }
     fn stop_worker(&self) {
+        if let Ok(mut target) = self.tree_tx.lock() {
+            *target = None;
+        }
         if let Ok(mut tx) = self.context.tx.lock()
             && let Some(tx) = tx.take()
         {
@@ -482,6 +503,19 @@ pub fn resolve_tree_sources_sync(
 }
 
 pub fn ensure_source(source: &ImageSource) {
+    if FRAME_ASSETS.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .is_some_and(|frame| frame.matches_current())
+    }) {
+        return;
+    }
+    ensure_live_source(source);
+}
+
+// Only preparation/explicit live callers register inputs. Frozen frame lookups
+// must not enqueue loads or repopulate source state after an epoch reset.
+pub(crate) fn ensure_live_source(source: &ImageSource) {
     let context = current_context();
     if let ImageSource::Id(id) = source {
         let dimensions = asset_dimensions(id)
@@ -681,6 +715,9 @@ pub(crate) fn record_svg_rasterization() {
 }
 
 pub fn source_status(source: &ImageSource) -> Option<AssetStatus> {
+    if let Some(status) = frame_source_status(source) {
+        return status;
+    }
     let context = current_context();
     let state = context.state.lock().ok()?;
     state.sources.get(source).cloned()
@@ -694,12 +731,34 @@ pub fn source_dimensions(source: &ImageSource) -> Option<(u32, u32)> {
 }
 
 pub fn source_status_generation() -> u64 {
+    if let Some(generation) = FRAME_ASSETS.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .filter(|frame| frame.matches_current())
+            .map(|frame| frame.status_generation)
+    }) {
+        return generation;
+    }
     let context = current_context();
     let Ok(state) = context.state.lock() else {
         return 0;
     };
 
     state.status_generation
+}
+
+pub(crate) fn has_scene_image_sources() -> bool {
+    current_context()
+        .state
+        .lock()
+        .map(|state| !state.records.is_empty() || state.svg_cache.stats.entries != 0)
+        .unwrap_or(true)
+}
+
+pub(crate) fn record_belongs_to_current(record: &AssetRecord) -> bool {
+    record
+        .owner
+        .ptr_eq(&Arc::downgrade(&current_context().state))
 }
 
 pub(crate) fn asset_record(id: &str) -> Option<Arc<AssetRecord>> {
@@ -762,6 +821,7 @@ fn register_raster_asset_in_epoch(
         .ok_or_else(|| "invalid raster image height".to_string())?;
 
     register_asset_record(AssetRecord {
+        owner: Arc::downgrade(&current_context().state),
         id: id.to_string(),
         source: source.to_string(),
         width,
@@ -791,6 +851,7 @@ fn register_vector_asset_in_epoch(
     generation: u64,
 ) -> Result<Arc<AssetRecord>, String> {
     register_asset_record(AssetRecord {
+        owner: Arc::downgrade(&current_context().state),
         id: id.to_string(),
         source: source.to_string(),
         width: tree.size().width().ceil().max(1.0) as u32,
@@ -902,36 +963,66 @@ impl Worker {
     }
 }
 
-fn collect_tree_sources(tree: &ElementTree) -> Vec<ImageSource> {
-    tree.iter_nodes()
-        .flat_map(|element| {
-            element
-                .spec
-                .declared
-                .image_src
-                .iter()
-                .cloned()
-                .chain(
-                    element
-                        .spec
-                        .declared
-                        .background
-                        .iter()
-                        .filter_map(background_image_source),
-                )
-                .chain(
-                    element
-                        .spec
-                        .declared
-                        .mouse_over
-                        .iter()
-                        .filter_map(|mouse_over| mouse_over.background.as_ref())
-                        .filter_map(background_image_source),
-                )
-        })
+pub(crate) fn collect_tree_sources(tree: &ElementTree) -> Vec<ImageSource> {
+    tree_source_refs(tree)
+        .map(|(source, _)| source)
         .collect::<HashSet<_>>()
         .into_iter()
         .collect()
+}
+fn tree_source_refs(
+    tree: &ElementTree,
+) -> impl Iterator<Item = (ImageSource, Option<crate::tree::element::NodeId>)> + '_ {
+    tree.iter_nodes().flat_map(|element| {
+        let attrs = &element.spec.declared;
+        attrs
+            .image_src
+            .iter()
+            .cloned()
+            .map(move |source| {
+                (
+                    source,
+                    (element.spec.kind == crate::tree::element::ElementKind::Image)
+                        .then_some(element.id),
+                )
+            })
+            .chain(
+                attrs
+                    .background
+                    .iter()
+                    .chain(
+                        attrs
+                            .mouse_over
+                            .iter()
+                            .chain(attrs.mouse_down.iter())
+                            .chain(attrs.focused.iter())
+                            .filter_map(|style| style.background.as_ref()),
+                    )
+                    .filter_map(background_image_source)
+                    .map(|source| (source, None)),
+            )
+    })
+}
+#[derive(Clone, Debug)]
+pub(crate) struct FrameSourceList {
+    pub(crate) all: Vec<ImageSource>,
+    pub(crate) measured: Vec<(crate::tree::element::NodeId, ImageSource)>,
+}
+impl FrameSourceList {
+    pub(crate) fn capture(tree: &ElementTree) -> Self {
+        let refs = tree_source_refs(tree).collect::<Vec<_>>();
+        let all = refs
+            .iter()
+            .map(|(source, _)| source.clone())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        let measured = refs
+            .into_iter()
+            .filter_map(|(source, id)| id.map(|id| (id, source)))
+            .collect();
+        Self { all, measured }
+    }
 }
 
 fn background_image_source(background: &Background) -> Option<ImageSource> {
@@ -1322,3 +1413,145 @@ pub(crate) fn resolve_configured_path(path: &str, config: &AssetConfig) -> Resul
 
 #[cfg(test)]
 mod tests;
+
+/// One preparation's media facts. It owns no runtime and performs no hydration.
+#[derive(Clone, Debug)]
+pub(crate) struct FrameAssets {
+    owner: std::sync::Weak<Mutex<AssetState>>,
+    pub(crate) images: crate::renderer::ImageSnapshot,
+    sources: HashMap<ImageSource, AssetStatus>,
+    status_generation: u64,
+    measured: HashMap<crate::tree::element::NodeId, Option<(u32, u32)>>,
+}
+impl FrameAssets {
+    pub(crate) fn capture(sources: &FrameSourceList) -> Self {
+        let context = current_context();
+        if sources.all.is_empty() {
+            return Self {
+                owner: Arc::downgrade(&context.state),
+                images: Default::default(),
+                sources: HashMap::new(),
+                measured: HashMap::new(),
+                status_generation: 0,
+            };
+        }
+        let state = context.state.lock().ok();
+        let statuses: HashMap<_, _> = sources
+            .all
+            .iter()
+            .map(|source| {
+                let status = state
+                    .as_ref()
+                    .and_then(|state| state.sources.get(source))
+                    .cloned()
+                    .unwrap_or(AssetStatus::Pending);
+                (source.clone(), status)
+            })
+            .collect();
+        let records = statuses
+            .iter()
+            .filter_map(|(source, status)| {
+                let id = match source {
+                    ImageSource::Id(id) => Some(id),
+                    _ => match status {
+                        AssetStatus::Ready(asset) => Some(&asset.id),
+                        _ => None,
+                    },
+                }?;
+                let record = state.as_ref().and_then(|state| {
+                    state
+                        .records
+                        .get(id)
+                        .cloned()
+                        .or_else(|| state.svg_cache.peek(id))
+                });
+                Some((id.clone(), record))
+            })
+            .collect();
+        let images = crate::renderer::ImageSnapshot::capture_records(
+            records,
+            state.as_ref().map(|state| state.epoch),
+            0,
+        );
+        let statuses: HashMap<_, _> = statuses
+            .into_iter()
+            .map(|(source, status)| {
+                let id = match &source {
+                    ImageSource::Id(id) => Some(id),
+                    _ => match &status {
+                        AssetStatus::Ready(asset) => Some(&asset.id),
+                        _ => None,
+                    },
+                };
+                let status = id
+                    .and_then(|id| {
+                        images.dimensions(id).map(|(width, height)| {
+                            AssetStatus::Ready(ResolvedAsset {
+                                id: id.clone(),
+                                width,
+                                height,
+                            })
+                        })
+                    })
+                    .unwrap_or(status);
+                (source, status)
+            })
+            .collect();
+        Self {
+            owner: Arc::downgrade(&context.state),
+            status_generation: state.as_ref().map_or(0, |state| state.status_generation),
+            images,
+            measured: sources
+                .measured
+                .iter()
+                .map(|(id, source)| {
+                    (
+                        *id,
+                        match statuses.get(source) {
+                            Some(AssetStatus::Ready(asset)) => Some((asset.width, asset.height)),
+                            _ => None,
+                        },
+                    )
+                })
+                .collect(),
+            sources: statuses,
+        }
+    }
+    pub(crate) fn matches_current(&self) -> bool {
+        self.owner.ptr_eq(&Arc::downgrade(&current_context().state))
+    }
+    pub(crate) fn measure_invalidations(
+        &self,
+        other: Option<&Self>,
+    ) -> Vec<crate::tree::element::NodeId> {
+        self.measured
+            .iter()
+            .filter(|(id, size)| other.is_some_and(|old| old.measured.get(id) != Some(*size)))
+            .map(|(id, _)| *id)
+            .collect()
+    }
+    pub(crate) fn enter(self: &Arc<Self>) -> FrameAssetsGuard {
+        FrameAssetsGuard {
+            previous: FRAME_ASSETS.with(|slot| slot.replace(Some(Arc::clone(self)))),
+            _images: self.images.enter(),
+        }
+    }
+}
+thread_local! {static FRAME_ASSETS:RefCell<Option<Arc<FrameAssets>>>=const {RefCell::new(None)};}
+pub(crate) struct FrameAssetsGuard {
+    previous: Option<Arc<FrameAssets>>,
+    _images: crate::renderer::scene_images::ImageGuard,
+}
+impl Drop for FrameAssetsGuard {
+    fn drop(&mut self) {
+        FRAME_ASSETS.with(|slot| slot.replace(self.previous.take()));
+    }
+}
+fn frame_source_status(source: &ImageSource) -> Option<Option<AssetStatus>> {
+    FRAME_ASSETS.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .filter(|frame| frame.matches_current())
+            .map(|frame| frame.sources.get(source).cloned())
+    })
+}

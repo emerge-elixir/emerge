@@ -446,9 +446,10 @@ fn bench_layout_aware_transform_animation(c: &mut Criterion) {
                 &mut tree,
                 case.constraint,
                 1.0,
-                &runtime,
+                &mut runtime,
                 start,
-            );
+            )
+            .unwrap();
             let mut tick = 0_u64;
 
             b.iter(|| {
@@ -457,9 +458,10 @@ fn bench_layout_aware_transform_animation(c: &mut Criterion) {
                     &mut tree,
                     case.constraint,
                     1.0,
-                    &runtime,
+                    &mut runtime,
                     start + Duration::from_millis(tick),
-                );
+                )
+                .unwrap();
                 consume_layout_update_output(update)
             });
         });
@@ -713,9 +715,10 @@ fn bench_animation_paint_only_showcase(
         &mut full_tree,
         constraint,
         1.0,
-        &full_runtime,
+        &mut full_runtime,
         start,
-    );
+    )
+    .unwrap();
     let mut full_tick = 0_u64;
     group.bench_function("full_layout_plus_refresh_each_frame", |b| {
         b.iter(|| {
@@ -724,9 +727,10 @@ fn bench_animation_paint_only_showcase(
                 &mut full_tree,
                 constraint,
                 1.0,
-                &full_runtime,
+                &mut full_runtime,
                 start + Duration::from_millis(full_tick),
-            );
+            )
+            .unwrap();
             black_box((
                 output.scene.nodes.len(),
                 output.event_rebuild.text_inputs.len(),
@@ -742,9 +746,10 @@ fn bench_animation_paint_only_showcase(
         &mut refresh_tree,
         constraint,
         1.0,
-        &refresh_runtime,
+        &mut refresh_runtime,
         start,
-    );
+    )
+    .unwrap();
     let mut refresh_tick = 0_u64;
     group.bench_function("paint_only_refresh_each_frame", |b| {
         b.iter(|| {
@@ -753,9 +758,10 @@ fn bench_animation_paint_only_showcase(
                 &mut refresh_tree,
                 constraint,
                 1.0,
-                &refresh_runtime,
+                &mut refresh_runtime,
                 start + Duration::from_millis(refresh_tick),
-            );
+            )
+            .unwrap();
             black_box((
                 update.output.scene.nodes.len(),
                 update.output.event_rebuild.text_inputs.len(),
@@ -882,18 +888,23 @@ impl ShowcaseLayoutVisibleAnimationCase {
         let constraint = Constraint::new(target.width as f32, target.height as f32);
         let mut tree = tree.clone();
         let initial = layout_and_refresh_default_with_animation(
-            &mut tree, constraint, 1.0, &runtime, started_at,
-        );
+            &mut tree,
+            constraint,
+            1.0,
+            &mut runtime,
+            started_at,
+        )
+        .unwrap();
         tree.apply_scroll_y(&target.scroll_id, -target.scroll_y);
         let warm = layout_or_refresh_default_with_animation_and_invalidation_reusing_clean_registry_for_benchmark(
             &mut tree,
             constraint,
             1.0,
-            &runtime,
+            &mut runtime,
             started_at,
             TreeInvalidation::None,
             Some(&initial.event_rebuild),
-        );
+        ).unwrap();
         assert!(
             warm.layout_performed,
             "showcase layout visible animation should require layout: target={target:?}"
@@ -940,11 +951,11 @@ impl ShowcaseLayoutVisibleAnimationCase {
             &mut self.tree,
             Constraint::new(self.target.width as f32, self.target.height as f32),
             1.0,
-            &self.runtime,
+            &mut self.runtime,
             self.started_at + Duration::from_millis(self.next_frame.saturating_mul(SHOWCASE_FRAME_MS)),
             TreeInvalidation::None,
             Some(&self.cached_rebuild),
-        );
+        ).unwrap();
 
         if update.output.event_rebuild_changed {
             self.cached_rebuild = update.output.event_rebuild.clone();
@@ -957,7 +968,7 @@ impl ShowcaseLayoutVisibleAnimationCase {
 #[cfg(feature = "bench-diagnostics")]
 fn sample_showcase_layout_profile(
     mut tree: ElementTree,
-    runtime: AnimationRuntime,
+    mut runtime: AnimationRuntime,
     mut cached_rebuild: RegistryRebuildPayload,
     started_at: Instant,
     target: ShowcaseLayoutTarget,
@@ -969,11 +980,12 @@ fn sample_showcase_layout_profile(
                 &mut tree,
                 constraint,
                 1.0,
-                &runtime,
+                &mut runtime,
                 started_at + Duration::from_millis(frame.saturating_mul(SHOWCASE_FRAME_MS)),
                 TreeInvalidation::None,
                 Some(&cached_rebuild),
-            );
+            )
+            .unwrap();
         if update.output.event_rebuild_changed {
             cached_rebuild = update.output.event_rebuild;
         }
@@ -1107,19 +1119,20 @@ impl ShowcaseBordersHoverCase {
             &mut tree,
             constraint,
             target.scale,
-            &runtime,
+            &mut runtime,
             started_at,
-        );
+        )
+        .unwrap();
         tree.apply_scroll_y(&target.scroll_id, -target.scroll_y);
         let warm = layout_or_refresh_default_with_animation_and_invalidation_reusing_clean_registry_for_benchmark(
             &mut tree,
             constraint,
             target.scale,
-            &runtime,
+            &mut runtime,
             started_at,
             TreeInvalidation::None,
             Some(&initial.event_rebuild),
-        );
+        ).unwrap();
         let initial_summary = warm.output.scene.summary();
         assert!(
             initial_summary.nodes >= 500
@@ -1190,12 +1203,12 @@ impl ShowcaseBordersHoverCase {
             &mut self.tree,
             self.target.constraint(),
             self.target.scale,
-            &self.runtime,
+            &mut self.runtime,
             self.started_at + Duration::from_millis(self.next_frame.saturating_mul(SHOWCASE_FRAME_MS)),
             invalidation,
             &dirty_ids,
             Some(&self.cached_rebuild),
-        );
+        ).unwrap();
 
         if update.output.event_rebuild_changed {
             self.cached_rebuild = update.output.event_rebuild.clone();
@@ -1229,19 +1242,20 @@ impl ShowcaseBordersHeldNearbyCase {
             &mut tree,
             constraint,
             target.scale,
-            &runtime,
+            &mut runtime,
             started_at,
-        );
+        )
+        .unwrap();
         tree.apply_scroll_y(&target.scroll_id, -target.scroll_y);
         let warm = layout_or_refresh_default_with_animation_and_invalidation_reusing_clean_registry_for_benchmark(
             &mut tree,
             constraint,
             target.scale,
-            &runtime,
+            &mut runtime,
             started_at,
             TreeInvalidation::None,
             Some(&initial.event_rebuild),
-        );
+        ).unwrap();
         let mut cached_rebuild = if warm.output.event_rebuild_changed {
             warm.output.event_rebuild
         } else {
@@ -1266,11 +1280,11 @@ impl ShowcaseBordersHeldNearbyCase {
             &mut tree,
             constraint,
             target.scale,
-            &runtime,
+            &mut runtime,
             started_at + Duration::from_millis(SHOWCASE_FRAME_MS),
             invalidation,
             Some(&cached_rebuild),
-        );
+        ).unwrap();
         cached_rebuild = if mounted.output.event_rebuild_changed {
             mounted.output.event_rebuild
         } else {
@@ -1280,11 +1294,11 @@ impl ShowcaseBordersHeldNearbyCase {
             &mut tree,
             constraint,
             target.scale,
-            &runtime,
+            &mut runtime,
             started_at + Duration::from_millis(SHOWCASE_FRAME_MS * 2),
             TreeInvalidation::None,
             Some(&cached_rebuild),
-        );
+        ).unwrap();
         if warm_held.output.event_rebuild_changed {
             cached_rebuild = warm_held.output.event_rebuild;
         }
@@ -1315,11 +1329,11 @@ impl ShowcaseBordersHeldNearbyCase {
             &mut self.tree,
             self.target.constraint(),
             self.target.scale,
-            &self.runtime,
+            &mut self.runtime,
             self.started_at + Duration::from_millis(self.next_frame.saturating_mul(SHOWCASE_FRAME_MS)),
             TreeInvalidation::None,
             Some(&self.cached_rebuild),
-        );
+        ).unwrap();
 
         if update.output.event_rebuild_changed {
             self.cached_rebuild = update.output.event_rebuild.clone();
@@ -1365,7 +1379,7 @@ fn sample_showcase_borders_hover_profile(
 fn sample_showcase_borders_steady_profile(
     label: &str,
     mut tree: ElementTree,
-    runtime: AnimationRuntime,
+    mut runtime: AnimationRuntime,
     mut cached_rebuild: RegistryRebuildPayload,
     started_at: Instant,
     target: ShowcaseBordersTarget,
@@ -1382,11 +1396,12 @@ fn sample_showcase_borders_steady_profile(
                 &mut tree,
                 target.constraint(),
                 target.scale,
-                &runtime,
+                &mut runtime,
                 started_at + Duration::from_millis(frame.saturating_mul(SHOWCASE_FRAME_MS)),
                 invalidation,
                 Some(&cached_rebuild),
-            );
+            )
+            .unwrap();
         if update.output.event_rebuild_changed {
             cached_rebuild = update.output.event_rebuild;
         }
@@ -1443,8 +1458,13 @@ impl ShowcaseInteractionVirtualKeyboardCase {
         );
         let mut tree = tree.clone();
         let initial = layout_and_refresh_default_with_animation(
-            &mut tree, constraint, 1.0, &runtime, started_at,
-        );
+            &mut tree,
+            constraint,
+            1.0,
+            &mut runtime,
+            started_at,
+        )
+        .unwrap();
         let target = ShowcaseInteractionTarget::from_laid_out_tree(
             &tree,
             SHOWCASE_INTERACTION_WIDTH,
@@ -1477,11 +1497,11 @@ impl ShowcaseInteractionVirtualKeyboardCase {
                 &mut tree,
                 constraint,
                 1.0,
-                &runtime,
+                &mut runtime,
                 started_at,
                 warm_invalidation,
                 Some(&initial.event_rebuild),
-            );
+            ).unwrap();
         let initial_summary = warm.output.scene.summary();
         let virtual_key_count = virtual_key_count(&tree);
         assert!(
@@ -1584,13 +1604,13 @@ impl ShowcaseInteractionVirtualKeyboardCase {
                     SHOWCASE_INTERACTION_HEIGHT as f32,
                 ),
                 1.0,
-                &self.runtime,
+                &mut self.runtime,
                 self.started_at
                     + Duration::from_millis(self.next_frame.saturating_mul(SHOWCASE_FRAME_MS)),
                 invalidation,
                 &dirty_ids,
                 Some(&self.cached_rebuild),
-            );
+            ).unwrap();
 
         if update.output.event_rebuild_changed {
             self.cached_rebuild = update.output.event_rebuild.clone();
@@ -1629,8 +1649,13 @@ impl ShowcaseInteractionVirtualKeyFullLoopCase {
         );
         let mut tree = tree.clone();
         let initial = layout_and_refresh_default_with_animation(
-            &mut tree, constraint, 1.0, &runtime, started_at,
-        );
+            &mut tree,
+            constraint,
+            1.0,
+            &mut runtime,
+            started_at,
+        )
+        .unwrap();
         let target = ShowcaseInteractionTarget::from_laid_out_tree(
             &tree,
             SHOWCASE_INTERACTION_WIDTH,
@@ -1650,11 +1675,11 @@ impl ShowcaseInteractionVirtualKeyFullLoopCase {
                 &mut tree,
                 constraint,
                 1.0,
-                &runtime,
+                &mut runtime,
                 started_at,
                 warm_invalidation,
                 Some(&initial.event_rebuild),
-            );
+            ).unwrap();
         let initial_summary = warm.output.scene.summary();
         let virtual_key_id = visible_virtual_key_id(
             &tree,
@@ -1784,13 +1809,13 @@ impl ShowcaseInteractionVirtualKeyFullLoopCase {
                     SHOWCASE_INTERACTION_HEIGHT as f32,
                 ),
                 1.0,
-                &self.runtime,
+                &mut self.runtime,
                 self.started_at
                     + Duration::from_millis(self.next_frame.saturating_mul(SHOWCASE_FRAME_MS)),
                 invalidation,
                 &dirty_ids,
                 Some(&self.cached_rebuild),
-            );
+            ).unwrap();
 
         if update.output.event_rebuild_changed {
             self.cached_rebuild = update.output.event_rebuild.clone();
@@ -1824,8 +1849,13 @@ impl ShowcaseInteractionScrollCase {
         );
         let mut tree = tree.clone();
         let initial = layout_and_refresh_default_with_animation(
-            &mut tree, constraint, 1.0, &runtime, started_at,
-        );
+            &mut tree,
+            constraint,
+            1.0,
+            &mut runtime,
+            started_at,
+        )
+        .unwrap();
         let target = ShowcaseInteractionTarget::from_laid_out_tree(
             &tree,
             SHOWCASE_INTERACTION_WIDTH,
@@ -1837,11 +1867,11 @@ impl ShowcaseInteractionScrollCase {
                 &mut tree,
                 constraint,
                 1.0,
-                &runtime,
+                &mut runtime,
                 started_at,
                 warm_invalidation,
                 Some(&initial.event_rebuild),
-        );
+        ).unwrap();
         let initial_summary = warm.output.scene.summary();
         if std::env::var_os("EMERGE_BENCH_DIAGNOSTICS").is_some() {
             eprintln!(
@@ -1899,13 +1929,13 @@ impl ShowcaseInteractionScrollCase {
                     SHOWCASE_INTERACTION_HEIGHT as f32,
                 ),
                 1.0,
-                &self.runtime,
+                &mut self.runtime,
                 self.started_at
                     + Duration::from_millis(self.next_frame.saturating_mul(SHOWCASE_FRAME_MS)),
                 invalidation,
                 &[],
                 Some(&self.cached_rebuild),
-            );
+            ).unwrap();
 
         if update.output.event_rebuild_changed {
             self.cached_rebuild = update.output.event_rebuild.clone();
@@ -1918,7 +1948,7 @@ impl ShowcaseInteractionScrollCase {
 #[cfg(feature = "bench-diagnostics")]
 fn sample_showcase_interaction_scroll_profile(
     mut tree: ElementTree,
-    runtime: AnimationRuntime,
+    mut runtime: AnimationRuntime,
     mut cached_rebuild: RegistryRebuildPayload,
     started_at: Instant,
     target: ShowcaseInteractionTarget,
@@ -1936,11 +1966,12 @@ fn sample_showcase_interaction_scroll_profile(
                     SHOWCASE_INTERACTION_HEIGHT as f32,
                 ),
                 1.0,
-                &runtime,
+                &mut runtime,
                 started_at + Duration::from_millis(frame.saturating_mul(SHOWCASE_FRAME_MS)),
                 invalidation,
                 Some(&cached_rebuild),
-            );
+            )
+            .unwrap();
         if update.output.event_rebuild_changed {
             cached_rebuild = update.output.event_rebuild;
         }
@@ -1974,7 +2005,7 @@ fn sample_showcase_interaction_scroll_profile(
 #[cfg(feature = "bench-diagnostics")]
 fn sample_showcase_interaction_profile(
     mut tree: ElementTree,
-    runtime: AnimationRuntime,
+    mut runtime: AnimationRuntime,
     mut cached_rebuild: RegistryRebuildPayload,
     started_at: Instant,
     target: ShowcaseInteractionTarget,
@@ -2013,11 +2044,12 @@ fn sample_showcase_interaction_profile(
                     SHOWCASE_INTERACTION_HEIGHT as f32,
                 ),
                 1.0,
-                &runtime,
+                &mut runtime,
                 started_at + Duration::from_millis(frame.saturating_mul(SHOWCASE_FRAME_MS)),
                 invalidation,
                 Some(&cached_rebuild),
-            );
+            )
+            .unwrap();
         if update.output.event_rebuild_changed {
             cached_rebuild = update.output.event_rebuild;
         }
@@ -2112,11 +2144,12 @@ fn sample_showcase_interaction_virtual_key_full_loop_profile(
                     SHOWCASE_INTERACTION_HEIGHT as f32,
                 ),
                 1.0,
-                &state.runtime,
+                &mut state.runtime,
                 state.started_at + Duration::from_millis(frame.saturating_mul(SHOWCASE_FRAME_MS)),
                 invalidation,
                 Some(&state.cached_rebuild),
-            );
+            )
+            .unwrap();
         if update.output.event_rebuild_changed {
             state.cached_rebuild = update.output.event_rebuild;
         }
@@ -2491,9 +2524,10 @@ fn bench_scrolling_animation_paint_only_showcase(
         &mut full_tree,
         constraint,
         1.0,
-        &full_runtime,
+        &mut full_runtime,
         start,
-    );
+    )
+    .unwrap();
     let mut full_tick = 0_u64;
     group.bench_function("full_layout_plus_refresh_scroll_frame", |b| {
         b.iter(|| {
@@ -2508,9 +2542,10 @@ fn bench_scrolling_animation_paint_only_showcase(
                 &mut full_tree,
                 constraint,
                 1.0,
-                &full_runtime,
+                &mut full_runtime,
                 start + Duration::from_millis(full_tick),
-            );
+            )
+            .unwrap();
             black_box((
                 output.scene.nodes.len(),
                 output.event_rebuild.text_inputs.len(),
@@ -2529,9 +2564,10 @@ fn bench_scrolling_animation_paint_only_showcase(
         &mut refresh_tree,
         constraint,
         1.0,
-        &refresh_runtime,
+        &mut refresh_runtime,
         start,
-    );
+    )
+    .unwrap();
     let mut refresh_tick = 0_u64;
     group.bench_function("paint_only_refresh_scroll_frame", |b| {
         b.iter(|| {
@@ -2546,9 +2582,10 @@ fn bench_scrolling_animation_paint_only_showcase(
                 &mut refresh_tree,
                 constraint,
                 1.0,
-                &refresh_runtime,
+                &mut refresh_runtime,
                 start + Duration::from_millis(refresh_tick),
-            );
+            )
+            .unwrap();
             black_box((
                 update.output.scene.nodes.len(),
                 update.output.event_rebuild.text_inputs.len(),
@@ -3063,9 +3100,10 @@ fn bench_animation_refresh_regression(
         &mut cached_tree,
         constraint,
         1.0,
-        &cached_runtime,
+        &mut cached_runtime,
         start,
-    );
+    )
+    .unwrap();
     let mut cached_tick = 0_u64;
     group.bench_function(format!("{case}/cached_refresh"), move |b| {
         b.iter(|| {
@@ -3084,9 +3122,10 @@ fn bench_animation_refresh_regression(
                 &mut cached_tree,
                 constraint,
                 1.0,
-                &cached_runtime,
+                &mut cached_runtime,
                 start + Duration::from_millis(cached_tick),
-            );
+            )
+            .unwrap();
             consume_layout_update_output(update)
         });
     });
@@ -3398,11 +3437,11 @@ fn bench_macaw_viewport_refresh(c: &mut Criterion) {
                     &mut tree,
                     constraint,
                     1.0,
-                    &runtime,
+                    &mut runtime,
                     started_at,
                     invalidation,
                     Some(&cached_rebuild),
-                );
+                ).unwrap();
                 consume_layout_update_output(update)
             },
             BatchSize::SmallInput,
@@ -3423,11 +3462,11 @@ fn bench_macaw_viewport_refresh(c: &mut Criterion) {
                     &mut tree,
                     constraint,
                     1.0,
-                    &runtime,
+                    &mut runtime,
                     started_at,
                     invalidation,
                     Some(&cached_rebuild),
-                );
+                ).unwrap();
                 consume_layout_update_output(update)
             },
             BatchSize::SmallInput,
@@ -3460,11 +3499,11 @@ fn bench_macaw_viewport_refresh(c: &mut Criterion) {
                     &mut tree,
                     constraint,
                     1.0,
-                    &runtime,
+                    &mut runtime,
                     started_at,
                     invalidation,
                     Some(&cached_rebuild),
-                );
+                ).unwrap();
                 consume_layout_update_output(update)
             },
             BatchSize::SmallInput,
@@ -3559,19 +3598,24 @@ impl MacawViewportTransientEnterPulseState {
         let mut runtime = AnimationRuntime::default();
         runtime.sync_with_tree(&tree, started_at);
         let output = layout_and_refresh_default_with_animation(
-            &mut tree, constraint, 1.0, &runtime, started_at,
-        );
+            &mut tree,
+            constraint,
+            1.0,
+            &mut runtime,
+            started_at,
+        )
+        .unwrap();
         let mut cached_rebuild = output.event_rebuild;
 
         let warm = layout_or_refresh_default_with_animation_and_invalidation_reusing_clean_registry_for_benchmark(
             &mut tree,
             constraint,
             1.0,
-            &runtime,
+            &mut runtime,
             started_at + Duration::from_millis(SHOWCASE_FRAME_MS),
             TreeInvalidation::None,
             Some(&cached_rebuild),
-        );
+        ).unwrap();
         if warm.output.event_rebuild_changed {
             cached_rebuild = warm.output.event_rebuild;
         }
@@ -3594,11 +3638,11 @@ impl MacawViewportTransientEnterPulseState {
             &mut self.tree,
             macaw_viewport_constraint(),
             1.0,
-            &self.runtime,
+            &mut self.runtime,
             sample_time,
             TreeInvalidation::None,
             Some(&self.cached_rebuild),
-        );
+        ).unwrap();
         if update.output.event_rebuild_changed {
             self.cached_rebuild = update.output.event_rebuild.clone();
         }
@@ -3628,19 +3672,24 @@ impl MacawViewportPulseState {
         let mut runtime = AnimationRuntime::default();
         runtime.sync_with_tree(&tree, started_at);
         let output = layout_and_refresh_default_with_animation(
-            &mut tree, constraint, 1.0, &runtime, started_at,
-        );
+            &mut tree,
+            constraint,
+            1.0,
+            &mut runtime,
+            started_at,
+        )
+        .unwrap();
         let mut cached_rebuild = output.event_rebuild;
 
         let warm = layout_or_refresh_default_with_animation_and_invalidation_reusing_clean_registry_for_benchmark(
             &mut tree,
             constraint,
             1.0,
-            &runtime,
+            &mut runtime,
             started_at + Duration::from_millis(SHOWCASE_FRAME_MS),
             TreeInvalidation::None,
             Some(&cached_rebuild),
-        );
+        ).unwrap();
         if warm.output.event_rebuild_changed {
             cached_rebuild = warm.output.event_rebuild;
         }
@@ -3671,11 +3720,11 @@ impl MacawViewportPulseState {
             &mut self.tree,
             macaw_viewport_constraint(),
             1.0,
-            &self.runtime,
+            &mut self.runtime,
             sample_time,
             invalidation,
             Some(&self.cached_rebuild),
-        );
+        ).unwrap();
         if update.output.event_rebuild_changed {
             self.cached_rebuild = update.output.event_rebuild.clone();
         }
@@ -3730,26 +3779,22 @@ fn prepared_macaw_closed_after_exit_tree(
         &mut tree,
         constraint,
         1.0,
-        &runtime,
+        &mut runtime,
         started_at,
         invalidation,
         Some(&cached_rebuild),
-    );
+    ).unwrap();
     if close.output.event_rebuild_changed {
         cached_rebuild = close.output.event_rebuild;
     }
 
     let final_time = started_at + Duration::from_millis(200);
-    if runtime.prune_completed_exit_ghosts(&mut tree, Some(final_time)) {
+    // Terminal publication commits the retirement; the following publication
+    // drains cleanup damage through the same native coordinator as the actor.
+    for invalidation in [TreeInvalidation::None, TreeInvalidation::Structure] {
         let pruned = layout_or_refresh_default_with_animation_and_invalidation_reusing_clean_registry_for_benchmark(
-            &mut tree,
-            constraint,
-            1.0,
-            &runtime,
-            final_time,
-            TreeInvalidation::Structure,
-            Some(&cached_rebuild),
-        );
+            &mut tree,constraint,1.0,&mut runtime,final_time,invalidation,Some(&cached_rebuild),
+        ).unwrap();
         if pruned.output.event_rebuild_changed {
             cached_rebuild = pruned.output.event_rebuild;
         }
@@ -4225,11 +4270,12 @@ fn sample_macaw_viewport_profiles() {
             &mut tree,
             constraint,
             1.0,
-            &runtime,
+            &mut runtime,
             started_at,
             invalidation,
             Some(&cached_rebuild),
-        );
+        )
+        .unwrap();
     if update.output.event_rebuild_changed {
         cached_rebuild = update.output.event_rebuild;
     }
@@ -4265,11 +4311,12 @@ fn sample_macaw_viewport_profiles() {
                 &mut tree,
                 constraint,
                 1.0,
-                &runtime,
+                &mut runtime,
                 sample_time,
                 TreeInvalidation::None,
                 Some(&cached_rebuild),
-            );
+            )
+            .unwrap();
         if update.output.event_rebuild_changed {
             cached_rebuild = update.output.event_rebuild;
         }
@@ -4329,11 +4376,11 @@ fn bench_sidepane_animation_smoothness(c: &mut Criterion) {
                     &mut tree,
                     constraint,
                     1.0,
-                    &runtime,
+                    &mut runtime,
                     started_at,
                     invalidation,
                     Some(&cached_rebuild),
-                );
+                ).unwrap();
                 consume_layout_update_output(update)
             },
             BatchSize::SmallInput,
@@ -4378,8 +4425,13 @@ impl SidepaneAnimationPulseState {
         let mut runtime = AnimationRuntime::default();
         runtime.sync_with_tree(&tree, started_at);
         let output = layout_and_refresh_default_with_animation(
-            &mut tree, constraint, 1.0, &runtime, started_at,
-        );
+            &mut tree,
+            constraint,
+            1.0,
+            &mut runtime,
+            started_at,
+        )
+        .unwrap();
         let mut cached_rebuild = output.event_rebuild;
 
         // Warm one clean pulse so the retained moving payload cache is populated
@@ -4388,11 +4440,11 @@ impl SidepaneAnimationPulseState {
             &mut tree,
             constraint,
             1.0,
-            &runtime,
+            &mut runtime,
             started_at + Duration::from_millis(16),
             TreeInvalidation::None,
             Some(&cached_rebuild),
-        );
+        ).unwrap();
         if warm.output.event_rebuild_changed {
             cached_rebuild = warm.output.event_rebuild;
         }
@@ -4423,11 +4475,11 @@ impl SidepaneAnimationPulseState {
             &mut self.tree,
             sidepane_animation_constraint(),
             1.0,
-            &self.runtime,
+            &mut self.runtime,
             sample_time,
             invalidation,
             Some(&self.cached_rebuild),
-        );
+        ).unwrap();
         if update.output.event_rebuild_changed {
             self.cached_rebuild = update.output.event_rebuild.clone();
         }

@@ -70,7 +70,9 @@ pub fn load_font_bytes(
     data: &[u8],
 ) -> Result<(), String> {
     let _asset_context_guard = asset_runtime.enter();
-    load_font(family, weight, italic, data)
+    load_font(family, weight, italic, data)?;
+    asset_runtime.notify_font_metrics_changed();
+    Ok(())
 }
 
 pub fn configure_assets(asset_runtime: &AssetRuntime, asset_config: AssetConfig) {

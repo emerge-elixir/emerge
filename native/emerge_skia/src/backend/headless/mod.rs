@@ -1270,6 +1270,7 @@ fn current_wall_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod animation;
 
     #[test]
     fn renderer_redraw_wake_does_not_feed_back_into_the_tree_actor() {

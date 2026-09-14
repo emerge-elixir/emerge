@@ -17,12 +17,9 @@ use crate::{
         },
         layout::{
             FrameAttrsPreparation, LayoutOutput, layout_and_refresh_default,
-            layout_and_refresh_prepared_default_reusing_clean_registry,
-            layout_and_refresh_prepared_default_reusing_clean_registry_timed,
             mark_animation_effects_dirty_for_update, prepare_animation_frame_attrs_for_update,
             prepare_dirty_frame_attrs_with_subtrees_for_update, prepare_frame_attrs_for_update,
-            prepared_root_has_frame, refresh_prepared_default_reusing_clean_registry,
-            refresh_reusing_clean_registry,
+            prepared_root_has_frame, refresh_reusing_clean_registry,
         },
         patch::Patch,
     },
@@ -65,6 +62,29 @@ pub enum TreeUpdateEffect {
     },
 }
 
+/// Scheduling only: never changes an animation's admitted start or duration.
+/// One immediate retry handles transient failures; persistent automatic pulses
+/// back off to four attempts/second without retaining an error/input history.
+#[derive(Default)]
+struct AnimationRetry {
+    failures: u8,
+    next: Option<Instant>,
+}
+impl AnimationRetry {
+    fn failed(&mut self, now: Instant) {
+        self.failures = self.failures.saturating_add(1).min(6);
+        let ms = if self.failures == 1 {
+            0
+        } else {
+            (16u64 << (self.failures - 2)).min(250)
+        };
+        self.next = Some(now.checked_add(Duration::from_millis(ms)).unwrap_or(now));
+    }
+    fn waiting(&self, now: Instant) -> bool {
+        self.next.is_some_and(|next| now < next)
+    }
+}
+
 pub struct TreeUpdateEngine {
     tree: ElementTree,
     width: f32,
@@ -73,6 +93,7 @@ pub struct TreeUpdateEngine {
     cached_rebuild: Option<RegistryRebuildPayload>,
     animation_runtime: AnimationRuntime,
     latest_animation_sample_time: Option<Instant>,
+    animation_retry: AnimationRetry,
 }
 
 impl TreeUpdateEngine {
@@ -85,6 +106,7 @@ impl TreeUpdateEngine {
             cached_rebuild: None,
             animation_runtime: AnimationRuntime::default(),
             latest_animation_sample_time: None,
+            animation_retry: AnimationRetry::default(),
         }
     }
 
@@ -114,11 +136,29 @@ impl TreeUpdateEngine {
             .into_iter()
             .for_each(|msg| push_tree_message_flat(msg, &mut flat));
 
-        if flat.is_empty() {
+        if flat.is_empty() && !self.tree.pending_patch_effects.invalidation.is_dirty() {
             return Ok(TreeUpdateEffect::Skip);
         }
 
         let tree_batch_started_at = Instant::now();
+        let pulse_only = !flat.is_empty()
+            && flat
+                .iter()
+                .all(|msg| matches!(msg, TreeMsg::AnimationPulse { .. }));
+        let attempt_at = flat
+            .iter()
+            .filter_map(|msg| match msg {
+                TreeMsg::AnimationPulse { presented_at, .. } => Some(*presented_at),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(tree_batch_started_at);
+        if !pulse_only {
+            self.animation_retry = AnimationRetry::default();
+        } else if self.animation_retry.waiting(attempt_at) {
+            return Ok(TreeUpdateEffect::Skip);
+        }
+
         let mut scroll_acc = HashMap::new();
         let mut thumb_drag_x_acc = HashMap::new();
         let mut thumb_drag_y_acc = HashMap::new();
@@ -129,12 +169,13 @@ impl TreeUpdateEngine {
         let mut focused_active_state = HashMap::new();
         let mut frame_attr_dirty_ids = Vec::new();
         let mut frame_attr_dirty_subtree_roots = Vec::new();
-        let mut frame_attr_dirty_ids_complete = true;
+        let mut frame_attr_dirty_ids_complete =
+            !self.tree.pending_patch_effects.invalidation.is_dirty();
         let mut patch_processing_started_ats = Vec::new();
         let mut patch_decode_durations = Vec::new();
         let mut patch_apply_durations = Vec::new();
         let mut pipeline_submitted_at = None;
-        let mut invalidation = TreeInvalidation::None;
+        let mut invalidation = self.tree.pending_patch_effects.invalidation;
         let mut registry_requested = false;
         let mut animation_sample_time = self.latest_animation_sample_time;
         let mut animation_trace_previous_sample_time = animation_sample_time;
@@ -200,6 +241,21 @@ impl TreeUpdateEngine {
                     let apply_started_at = Instant::now();
                     let apply_result = crate::tree::patch::apply_patches(&mut self.tree, patches);
                     patch_apply_durations.push(apply_started_at.elapsed());
+                    animation_sync_requested |=
+                        self.tree
+                            .pending_patch_effects
+                            .sources
+                            .iter()
+                            .any(|(id, source)| {
+                                source.declared.animate_change.is_some()
+                                    || self
+                                        .tree
+                                        .get(id)
+                                        .is_some_and(|n| n.spec.declared.animate_change.is_some())
+                            });
+                    if animation_sync_requested && self.animation_runtime.is_empty() {
+                        animation_sample_time = None;
+                    }
                     match apply_result {
                         Ok(patch_invalidation) => {
                             invalidation.add(patch_invalidation);
@@ -217,6 +273,8 @@ impl TreeUpdateEngine {
                             }
                         }
                         Err(err) => {
+                            invalidation.add(self.tree.pending_patch_effects.invalidation);
+                            frame_attr_dirty_ids_complete = false;
                             record_patch_process_stat(options.stats, patch_started_at);
                             handle_message_error(
                                 options.decode_policy,
@@ -359,6 +417,16 @@ impl TreeUpdateEngine {
                 TreeMsg::RebuildRegistry => {
                     registry_requested = true;
                 }
+                TreeMsg::FontMetricsChanged { generation } => {
+                    if self
+                        .tree
+                        .frame_metrics_epoch
+                        .is_none_or(|current| generation > current)
+                    {
+                        invalidation.add(TreeInvalidation::Measure);
+                        frame_attr_dirty_ids_complete = false;
+                    }
+                }
                 TreeMsg::AssetStateChanged => {
                     // Requesting a layout pass alone does not invalidate retained
                     // subtree measurements. Dirty only paths whose media size changed.
@@ -427,6 +495,10 @@ impl TreeUpdateEngine {
             invalidation.add(TreeInvalidation::Measure);
         }
 
+        self.tree.animation_constraint = Some(crate::tree::layout::Constraint::new(
+            self.width,
+            self.height,
+        ));
         let update_started_at = Instant::now();
         let patch_frame_active = !patch_processing_started_ats.is_empty();
         let mut patch_animation_sync_duration = None;
@@ -462,22 +534,25 @@ impl TreeUpdateEngine {
             let animation_sync = self
                 .animation_runtime
                 .sync_with_tree(&self.tree, sample_time);
+            if let Some(error) = &animation_sync.completed.preparation_error {
+                return self.failed_animation_attempt(
+                    format!("animation admission failed: {error:?}"),
+                    options.decode_policy,
+                    attempt_at,
+                );
+            }
             if animation_sync.completed.invalidation.is_dirty() {
                 mark_animation_effects_dirty_for_update(&mut self.tree, &animation_sync.completed);
                 plan.invalidation.add(animation_sync.completed.invalidation);
-            }
-            if self
-                .animation_runtime
-                .prune_completed_exit_ghosts(&mut self.tree, Some(sample_time))
-            {
-                plan.invalidation.add(TreeInvalidation::Structure);
             }
             if let Some(started_at) = animation_sync_started_at {
                 patch_animation_sync_duration = Some(started_at.elapsed());
             }
         }
 
-        let should_prepare_frame = plan.invalidation.requires_recompute()
+        let should_prepare_frame = self.animation_runtime.has_pending_admissions()
+            || !self.tree.pending_patch_effects.sources.is_empty()
+            || plan.invalidation.requires_recompute()
             || animation_sample_requested
             || !self.animation_runtime.is_empty()
             || (!frame_attr_dirty_ids.is_empty() && plan.invalidation.can_refresh_only())
@@ -485,6 +560,7 @@ impl TreeUpdateEngine {
             || (!frame_attr_dirty_ids_complete && plan.invalidation.can_refresh_only());
 
         if should_prepare_frame {
+            assets::ensure_tree_sources(&self.tree);
             self.tree.set_layout_cache_stats_enabled(
                 options
                     .stats
@@ -507,14 +583,14 @@ impl TreeUpdateEngine {
                 prepare_animation_frame_attrs_for_update(
                     &mut self.tree,
                     self.scale,
-                    &self.animation_runtime,
+                    &mut self.animation_runtime,
                     sample_time,
                 )
             } else if can_prepare_dirty_incrementally || can_prepare_patch_recompute_incrementally {
                 prepare_dirty_frame_attrs_with_subtrees_for_update(
                     &mut self.tree,
                     self.scale,
-                    (!self.animation_runtime.is_empty()).then_some(&self.animation_runtime),
+                    Some(&mut self.animation_runtime),
                     sample_time,
                     &frame_attr_dirty_ids,
                     &frame_attr_dirty_subtree_roots,
@@ -523,16 +599,26 @@ impl TreeUpdateEngine {
                 prepare_frame_attrs_for_update(
                     &mut self.tree,
                     self.scale,
-                    (!self.animation_runtime.is_empty()).then_some(&self.animation_runtime),
+                    Some(&mut self.animation_runtime),
                     sample_time,
                 )
             };
             if let Some(started_at) = prepare_started_at {
                 patch_prepare_duration = Some(started_at.elapsed());
             }
+            if let Some(error) = &preparation.animation_result.preparation_error {
+                return self.failed_animation_attempt(
+                    format!("animation frame prepare failed: {error:?}"),
+                    options.decode_policy,
+                    attempt_at,
+                );
+            }
             let dynamic_invalidation = preparation.animation_result.invalidation;
             plan.animations_active = preparation.animation_result.active;
             plan.invalidation.add(dynamic_invalidation);
+            if preparation.requires_layout(&self.tree) {
+                plan.invalidation.add(TreeInvalidation::Measure);
+            }
 
             plan.preparation = Some(preparation);
         }
@@ -548,6 +634,19 @@ impl TreeUpdateEngine {
                 ),
             },
         );
+        // Even an unchanged/empty scene needs a publication boundary to acknowledge
+        // successful sources, cancellation and metadata-only admission.
+        if matches!(
+            plan.action,
+            RefreshDecision::Skip | RefreshDecision::UseCachedRebuild
+        ) && plan.preparation.as_ref().is_some_and(|p| p.commit_required)
+        {
+            plan.action = if tree_has_root_frame(&self.tree) {
+                RefreshDecision::RefreshOnly
+            } else {
+                RefreshDecision::Recompute
+            };
+        }
         let animation_trace = sample_time
             .filter(|_| plan.animations_active || animation_sample_requested)
             .map(|sample_time| {
@@ -602,14 +701,27 @@ impl TreeUpdateEngine {
                     })
             }
             RefreshDecision::RefreshOnly => {
-                assets::ensure_tree_sources(&self.tree);
+                if plan.preparation.is_none() {
+                    assets::ensure_tree_sources(&self.tree);
+                }
                 let refresh_started_at = patch_frame_active.then(Instant::now);
                 let update = if let Some(preparation) = plan.preparation {
-                    refresh_prepared_default_reusing_clean_registry(
+                    match preparation.publish(
                         &mut self.tree,
-                        preparation,
+                        &mut self.animation_runtime,
+                        crate::tree::layout::Constraint::new(self.width, self.height),
+                        false,
                         self.cached_rebuild.as_ref(),
-                    )
+                    ) {
+                        Ok((update, _)) => update,
+                        Err(error) => {
+                            return self.failed_animation_attempt(
+                                format!("animation frame apply failed: {error:?}"),
+                                options.decode_policy,
+                                attempt_at,
+                            );
+                        }
+                    }
                 } else {
                     self.tree.set_layout_cache_stats_enabled(
                         options
@@ -641,32 +753,31 @@ impl TreeUpdateEngine {
                     pipeline_submitted_at,
                     tree_batch_started_at,
                     animation_trace,
-                )
+                    options.decode_policy,
+                )?
             }
             RefreshDecision::Recompute => {
-                assets::ensure_tree_sources(&self.tree);
+                if plan.preparation.is_none() {
+                    assets::ensure_tree_sources(&self.tree);
+                }
 
                 let constraint = crate::tree::layout::Constraint::new(self.width, self.height);
                 let (update, timed_layout) = if let Some(preparation) = plan.preparation {
-                    if options.stats.is_some() {
-                        let (update, timing) =
-                            layout_and_refresh_prepared_default_reusing_clean_registry_timed(
-                                &mut self.tree,
-                                constraint,
-                                preparation,
-                                self.cached_rebuild.as_ref(),
+                    match preparation.publish(
+                        &mut self.tree,
+                        &mut self.animation_runtime,
+                        constraint,
+                        true,
+                        self.cached_rebuild.as_ref(),
+                    ) {
+                        Ok((update, timing)) => (update, options.stats.map(|_| timing)),
+                        Err(error) => {
+                            return self.failed_animation_attempt(
+                                format!("animation frame apply failed: {error:?}"),
+                                options.decode_policy,
+                                attempt_at,
                             );
-                        (update, Some(timing))
-                    } else {
-                        (
-                            layout_and_refresh_prepared_default_reusing_clean_registry(
-                                &mut self.tree,
-                                constraint,
-                                preparation,
-                                self.cached_rebuild.as_ref(),
-                            ),
-                            None,
-                        )
+                        }
                     }
                 } else {
                     self.tree.set_layout_cache_stats_enabled(
@@ -713,7 +824,8 @@ impl TreeUpdateEngine {
                     pipeline_submitted_at,
                     tree_batch_started_at,
                     animation_trace,
-                )
+                    options.decode_policy,
+                )?
             }
         };
 
@@ -731,7 +843,23 @@ impl TreeUpdateEngine {
                 refresh_registry_post: patch_refresh_registry_post_duration,
             },
         );
+        self.animation_retry = AnimationRetry::default();
         Ok(effect)
+    }
+
+    fn failed_animation_attempt(
+        &mut self,
+        error: String,
+        policy: TreeUpdateDecodePolicy,
+        at: Instant,
+    ) -> Result<TreeUpdateEffect, String> {
+        self.tree
+            .pending_patch_effects
+            .invalidation
+            .add(TreeInvalidation::Measure);
+        self.animation_retry.failed(at);
+        handle_message_error(policy, error)?;
+        Ok(TreeUpdateEffect::Skip)
     }
 
     fn layout_effect(
@@ -740,19 +868,24 @@ impl TreeUpdateEngine {
         pipeline_submitted_at: Option<Instant>,
         tree_batch_started_at: Instant,
         animation_trace: Option<AnimationFrameTraceSeed>,
-    ) -> TreeUpdateEffect {
+        _policy: TreeUpdateDecodePolicy,
+    ) -> Result<TreeUpdateEffect, String> {
+        let animation_trace = animation_trace.map(|mut trace| {
+            trace.animations_active = output.animations_active;
+            trace
+        });
         let animations_active = output.animations_active;
         if output.event_rebuild_changed {
             self.cached_rebuild.replace(output.event_rebuild.clone());
         }
         trace_tree_snapshots(&self.tree);
         self.clear_latest_sample_time_if_inactive(animations_active);
-        TreeUpdateEffect::Layout {
+        Ok(TreeUpdateEffect::Layout {
             output: Box::new(output),
             pipeline_submitted_at,
             tree_batch_started_at,
             animation_trace,
-        }
+        })
     }
 
     fn force_cached_registry_publish_if_requested(
@@ -1818,5 +1951,581 @@ mod tests {
             effect,
             Ok(TreeUpdateEffect::RegistryUpdate { .. })
         ));
+    }
+    #[test]
+    fn successful_patch_prefix_is_published_after_either_error_policy() {
+        let id = NodeId::from_wire_u64(990);
+        for policy in [
+            TreeUpdateDecodePolicy::ReturnErr,
+            TreeUpdateDecodePolicy::LogAndContinue,
+        ] {
+            let mut tree = ElementTree::new();
+            tree.set_root_id(id);
+            tree.insert(Element::with_attrs(
+                id,
+                ElementKind::El,
+                Vec::new(),
+                Attrs {
+                    width: Some(Length::Px(40.0)),
+                    height: Some(Length::Px(20.0)),
+                    ..Attrs::default()
+                },
+            ));
+            let mut engine = TreeUpdateEngine::new(tree, 600, 200);
+            engine
+                .process_messages(
+                    vec![TreeMsg::RebuildRegistry],
+                    TreeUpdateOptions::new(None, policy),
+                )
+                .unwrap();
+            let bytes = [encoded_size_attrs_raw(100.0, 20.0), vec![255]]
+                .into_iter()
+                .flat_map(|attrs| {
+                    [
+                        vec![1],
+                        id.to_wire_u64().to_be_bytes().to_vec(),
+                        (attrs.len() as u32).to_be_bytes().to_vec(),
+                        attrs,
+                    ]
+                    .concat()
+                })
+                .collect();
+            let result = engine.process_messages(
+                vec![TreeMsg::PatchTree {
+                    bytes,
+                    submitted_at: None,
+                }],
+                TreeUpdateOptions::new(None, policy),
+            );
+            if policy == TreeUpdateDecodePolicy::ReturnErr {
+                assert!(result.is_err());
+                assert_eq!(
+                    engine.tree.pending_patch_effects.sources[&id].dimensions[0]
+                        .unwrap()
+                        .visible,
+                    40.0
+                );
+                assert!(matches!(
+                    engine
+                        .process_messages(vec![], TreeUpdateOptions::new(None, policy))
+                        .unwrap(),
+                    TreeUpdateEffect::Layout { .. }
+                ));
+            } else {
+                assert!(matches!(result.unwrap(), TreeUpdateEffect::Layout { .. }));
+            }
+            assert_eq!(
+                engine.tree.get(&id).unwrap().layout.frame.unwrap().width,
+                100.0
+            );
+            assert!(engine.tree.pending_patch_effects.sources.is_empty());
+            assert!(!engine.tree.pending_patch_effects.invalidation.is_dirty());
+        }
+    }
+    #[test]
+    fn successful_font_load_notifies_and_remeasures_an_idle_tree() {
+        use crate::tree::{
+            attrs::{Attrs, Font},
+            element::{Element, ElementKind, NodeId},
+        };
+        let assets = assets::AssetRuntime::new();
+        let _assets = assets.enter();
+        let (tx, rx) = crossbeam_channel::bounded(8);
+        assets.start(tx, false);
+        let node = NodeId(601);
+        let mut tree = ElementTree::new();
+        tree.insert(Element::with_attrs(
+            node,
+            ElementKind::Text,
+            vec![],
+            Attrs {
+                font: Some(Font::String("notice-font".into())),
+                font_size: Some(24.0),
+                content: Some("Idle font remeasurement 123".into()),
+                ..Default::default()
+            },
+        ));
+        tree.set_root_id(node);
+        let mut engine = TreeUpdateEngine::new(tree, 800, 100);
+        layout_output(
+            engine
+                .process_messages(
+                    vec![TreeMsg::Resize {
+                        width: 800.0,
+                        height: 100.0,
+                        scale: 1.0,
+                    }],
+                    TreeUpdateOptions::new(None, TreeUpdateDecodePolicy::ReturnErr),
+                )
+                .unwrap(),
+        );
+        let before = engine.tree.get(&node).unwrap().layout.frame.unwrap();
+        assert!(
+            crate::services::load_font_bytes(&assets, "notice-font", 400, false, b"bad font")
+                .is_err()
+        );
+        assert!(rx.try_recv().is_err());
+        let bytes = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../priv/test_assets/Lobster-Regular.ttf"),
+        )
+        .unwrap();
+        crate::services::load_font_bytes(&assets, "notice-font", 400, false, &bytes).unwrap();
+        let notice = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let TreeMsg::FontMetricsChanged { generation } = notice else {
+            panic!("expected font notice")
+        };
+        let output = layout_output(
+            engine
+                .process_messages(
+                    vec![notice],
+                    TreeUpdateOptions::new(None, TreeUpdateDecodePolicy::ReturnErr),
+                )
+                .unwrap(),
+        );
+        assert!(!output.animations_active);
+        assert_eq!(engine.tree.frame_metrics_epoch, Some(generation));
+        assert_ne!(
+            before.width,
+            engine.tree.get(&node).unwrap().layout.frame.unwrap().width
+        );
+        assets.stop();
+    }
+
+    #[test]
+    fn viewport_resize_at_change_completion_publishes_native_geometry_and_drains() {
+        use crate::tree::{
+            animation::{
+                AnimationCurve,
+                change::{ChangePolicy, Field},
+            },
+            attrs::{Attrs, Length},
+            element::{Element, ElementKind, NodeId},
+        };
+        let root = NodeId(501);
+        let child = NodeId(502);
+        let peer = NodeId(503);
+        let mut tree = ElementTree::new();
+        tree.insert(Element::with_attrs(
+            root,
+            ElementKind::Row,
+            vec![],
+            Attrs {
+                width: Some(Length::Fill),
+                height: Some(Length::Fill),
+                ..Default::default()
+            },
+        ));
+        tree.insert(Element::with_attrs(
+            child,
+            ElementKind::El,
+            vec![],
+            Attrs {
+                width: Some(Length::FillWeighted(1.0)),
+                height: Some(Length::Fill),
+                on_click: Some(true),
+                animate_change: Some(Arc::new(vec![ChangePolicy {
+                    field: Field::Width,
+                    duration_ms: 1000.0,
+                    curve: AnimationCurve::Linear,
+                }])),
+                ..Default::default()
+            },
+        ));
+        tree.insert(Element::with_attrs(
+            peer,
+            ElementKind::El,
+            vec![],
+            Attrs {
+                width: Some(Length::Fill),
+                height: Some(Length::Fill),
+                ..Default::default()
+            },
+        ));
+        tree.set_children(&root, vec![child, peer]).unwrap();
+        tree.set_root_id(root);
+        tree.set_revision(1);
+        tree.stamp_all_mounted_at_revision(1);
+        let mut engine = TreeUpdateEngine::new(tree, 600, 100);
+        let options = || TreeUpdateOptions::new(None, TreeUpdateDecodePolicy::ReturnErr);
+        layout_output(
+            engine
+                .process_messages(
+                    vec![TreeMsg::Resize {
+                        width: 600.0,
+                        height: 100.0,
+                        scale: 1.0,
+                    }],
+                    options(),
+                )
+                .unwrap(),
+        );
+        let start = Instant::now();
+        let pulse = |at| TreeMsg::AnimationPulse {
+            presented_at: at,
+            predicted_next_present_at: at,
+            trace: None,
+        };
+        engine.tree.capture_animation_source(&child);
+        engine.tree.get_mut(&child).unwrap().spec.declared.width = Some(Length::FillWeighted(3.0));
+        engine.tree.bump_revision();
+        engine.tree.layout_model_epoch += 1;
+        engine.tree.mark_measure_dirty(&child);
+        layout_output(
+            engine
+                .process_messages(vec![pulse(start)], options())
+                .unwrap(),
+        );
+        layout_output(
+            engine
+                .process_messages(
+                    vec![pulse(start + Duration::from_micros(999_999))],
+                    options(),
+                )
+                .unwrap(),
+        );
+        let output = layout_output(
+            engine
+                .process_messages(
+                    vec![
+                        TreeMsg::Resize {
+                            width: 800.0,
+                            height: 100.0,
+                            scale: 1.0,
+                        },
+                        pulse(start + Duration::from_secs(1)),
+                    ],
+                    options(),
+                )
+                .unwrap(),
+        );
+        assert!(!output.animations_active);
+        assert_eq!(
+            engine.tree.get(&child).unwrap().layout.frame.unwrap().width,
+            600.0
+        );
+        assert_eq!(
+            engine.tree.get(&peer).unwrap().layout.frame.unwrap().width,
+            200.0
+        );
+        assert!(engine.tree.length_runtime.is_none());
+        assert!(engine.tree.pending_patch_effects.sources.is_empty());
+        assert!(matches!(
+            engine.process_messages(vec![], options()).unwrap(),
+            TreeUpdateEffect::Skip
+        ));
+    }
+
+    #[test]
+    fn group_release_failure_does_not_publish_or_consume_sources_and_empty_retry_recovers() {
+        release_failure_case(false, 0);
+    }
+    #[test]
+    fn expired_ghost_survives_actor_query_failure_under_both_error_policies() {
+        release_failure_case(true, 0);
+    }
+    #[test]
+    fn persistent_animation_failures_bound_pulse_work_and_recover_without_losing_cleanup() {
+        for retry in [1, 2, 3] {
+            release_failure_case(true, retry);
+        }
+    }
+    fn release_failure_case(with_ghost: bool, retry: u8) {
+        use crate::tree::animation::{
+            AnimationCurve,
+            change::{ChangePolicy, Field},
+        };
+        for policy in [
+            TreeUpdateDecodePolicy::ReturnErr,
+            TreeUpdateDecodePolicy::LogAndContinue,
+        ] {
+            let root = NodeId::from_wire_u64(401);
+            let child = NodeId::from_wire_u64(402);
+            let peer = NodeId::from_wire_u64(403);
+            let mut tree = ElementTree::new();
+            tree.set_root_id(root);
+            tree.insert(Element::with_attrs(
+                root,
+                ElementKind::Row,
+                vec![],
+                Attrs {
+                    width: Some(Length::Px(600.0)),
+                    height: Some(Length::Px(100.0)),
+                    ..Attrs::default()
+                },
+            ));
+            tree.insert(Element::with_attrs(
+                child,
+                ElementKind::El,
+                vec![],
+                Attrs {
+                    width: Some(Length::FillWeighted(1.0)),
+                    ..Attrs::default()
+                },
+            ));
+            tree.insert(Element::with_attrs(
+                peer,
+                ElementKind::El,
+                vec![],
+                Attrs {
+                    width: Some(Length::Fill),
+                    ..Attrs::default()
+                },
+            ));
+            tree.set_children(&root, vec![child, peer]).unwrap();
+            let ghost = NodeId::from_wire_u64(404);
+            if with_ghost {
+                use crate::tree::{
+                    animation::{AnimationRepeat, AnimationSpec},
+                    attrs::{Background, Color},
+                    element::{GhostAttachment, NearbyMount, NearbySlot, NodeResidency},
+                };
+                let mut node = Element::with_attrs(
+                    ghost,
+                    ElementKind::El,
+                    vec![],
+                    Attrs {
+                        width: Some(Length::Px(20.0)),
+                        height: Some(Length::Px(20.0)),
+                        background: Some(Background::Color(Color::Rgba {
+                            r: 255,
+                            g: 0,
+                            b: 0,
+                            a: 255,
+                        })),
+                        ..Default::default()
+                    },
+                );
+                node.lifecycle.residency = NodeResidency::Ghost;
+                node.lifecycle.ghost_capture_scale = Some(1.0);
+                node.lifecycle.ghost_attachment = Some(GhostAttachment::Nearby {
+                    host_id: root,
+                    mount_index: 0,
+                    slot: NearbySlot::InFront,
+                    seq: 0,
+                });
+                node.lifecycle.ghost_exit_animation = Some(AnimationSpec {
+                    keyframes: vec![
+                        Attrs {
+                            alpha: Some(1.0),
+                            ..Default::default()
+                        },
+                        Attrs {
+                            alpha: Some(0.5),
+                            ..Default::default()
+                        },
+                    ],
+                    duration_ms: 1000.0,
+                    curve: AnimationCurve::Linear,
+                    repeat: AnimationRepeat::Once,
+                });
+                tree.insert(node);
+                tree.set_nearby_mounts(
+                    &root,
+                    vec![NearbyMount {
+                        id: ghost,
+                        slot: NearbySlot::InFront,
+                    }],
+                )
+                .unwrap();
+            }
+            tree.set_revision(1);
+            tree.stamp_all_mounted_at_revision(1);
+            let mut engine = TreeUpdateEngine::new(tree, 600, 100);
+            let pulse = |time| {
+                vec![TreeMsg::AnimationPulse {
+                    presented_at: time,
+                    predicted_next_present_at: time,
+                    trace: None,
+                }]
+            };
+            layout_output(
+                engine
+                    .process_messages(
+                        vec![TreeMsg::Resize {
+                            width: 600.0,
+                            height: 100.0,
+                            scale: 1.0,
+                        }],
+                        TreeUpdateOptions::new(None, policy),
+                    )
+                    .unwrap(),
+            );
+            let start = Instant::now();
+            engine.tree.capture_animation_source(&child);
+            let attrs = &mut engine.tree.get_mut(&child).unwrap().spec.declared;
+            attrs.width = Some(Length::FillWeighted(3.0));
+            attrs.animate_change = Some(Arc::new(vec![ChangePolicy {
+                field: Field::Width,
+                duration_ms: 1000.0,
+                curve: AnimationCurve::Linear,
+            }]));
+            engine.tree.layout_model_epoch += 1;
+            engine.tree.set_revision(2);
+            engine.tree.mark_measure_dirty(&child);
+            layout_output(
+                engine
+                    .process_messages(pulse(start), TreeUpdateOptions::new(None, policy))
+                    .unwrap(),
+            );
+            layout_output(
+                engine
+                    .process_messages(
+                        pulse(start + Duration::from_millis(500)),
+                        TreeUpdateOptions::new(None, policy),
+                    )
+                    .unwrap(),
+            );
+            assert_eq!(
+                engine.tree.get(&child).unwrap().layout.frame.unwrap().width,
+                375.0
+            );
+            layout_output(
+                engine
+                    .process_messages(
+                        pulse(start + Duration::from_micros(999999)),
+                        TreeUpdateOptions::new(None, policy),
+                    )
+                    .unwrap(),
+            );
+            let ghost_before = engine
+                .tree
+                .get(&ghost)
+                .map(|node| (node.layout.frame, node.layout.effective.clone()));
+            let registry_before = engine.cached_rebuild.clone().unwrap();
+            let before = engine.tree.get(&child).unwrap().layout.frame;
+            let before_sample = engine
+                .tree
+                .get(&child)
+                .unwrap()
+                .layout
+                .dimension_samples
+                .clone();
+            engine.tree.capture_animation_source(&root);
+            engine.tree.get_mut(&root).unwrap().spec.declared.width = Some(Length::Px(800.0));
+            engine.tree.layout_model_epoch += 1;
+            engine.tree.set_revision(3);
+            engine.tree.mark_measure_dirty(&root);
+            engine.tree.animation_inspection = Some(Default::default());
+            engine
+                .tree
+                .animation_inspection
+                .as_ref()
+                .unwrap()
+                .borrow_mut()
+                .fail_query =
+                Some(crate::tree::animation::lengths::inspection::QueryKind::PreviousModel);
+            let failed = engine.process_messages(
+                pulse(start + Duration::from_secs(1)),
+                TreeUpdateOptions::new(None, policy),
+            );
+            match policy {
+                TreeUpdateDecodePolicy::ReturnErr => {
+                    assert!(matches!(failed,Err(ref e) if e.contains("InjectedQuery")))
+                }
+                TreeUpdateDecodePolicy::LogAndContinue => {
+                    assert!(matches!(failed, Ok(TreeUpdateEffect::Skip)))
+                }
+            }
+            assert_eq!(engine.tree.get(&child).unwrap().layout.frame, before);
+            assert_eq!(
+                engine.tree.get(&child).unwrap().layout.dimension_samples,
+                before_sample
+            );
+            if with_ghost {
+                assert_eq!(
+                    ghost_before,
+                    engine
+                        .tree
+                        .get(&ghost)
+                        .map(|node| (node.layout.frame, node.layout.effective.clone()))
+                );
+            }
+            crate::events::registry_builder::assert_registry_rebuild_payloads_equivalent(
+                &registry_before,
+                engine.cached_rebuild.as_ref().unwrap(),
+            );
+            assert!(!engine.animation_runtime_is_empty());
+            assert!(!engine.tree.pending_patch_effects.sources.is_empty());
+            if retry != 0 {
+                let attempts = (0..1000)
+                    .filter(|ms| {
+                        let previous_deadline = engine.animation_retry.next;
+                        let previous_sample = engine.latest_animation_sample_time;
+                        let result = engine.process_messages(
+                            pulse(start + Duration::from_millis(1000 + ms)),
+                            TreeUpdateOptions::new(None, policy),
+                        );
+                        assert!(result.is_err() || matches!(result, Ok(TreeUpdateEffect::Skip)));
+                        assert_eq!(engine.tree.get(&child).unwrap().layout.frame, before);
+                        if previous_deadline == engine.animation_retry.next {
+                            assert_eq!(engine.latest_animation_sample_time, previous_sample);
+                            false
+                        } else {
+                            true
+                        }
+                    })
+                    .count();
+                assert_eq!(
+                    attempts, 8,
+                    "one immediate retry, exponential ramp, then four/second"
+                );
+                assert_eq!(engine.animation_retry.failures, 6);
+                assert!(!engine.tree.pending_patch_effects.sources.is_empty());
+                crate::events::registry_builder::assert_registry_rebuild_payloads_equivalent(
+                    &registry_before,
+                    engine.cached_rebuild.as_ref().unwrap(),
+                );
+            }
+            // Retry the same desired model, without reverting the container edit.
+            engine
+                .tree
+                .animation_inspection
+                .as_ref()
+                .unwrap()
+                .borrow_mut()
+                .fail_query = None;
+            let recovery_messages = match retry {
+                2 => vec![TreeMsg::RebuildRegistry],
+                3 => pulse(engine.animation_retry.next.unwrap()),
+                _ => vec![],
+            };
+            let recovered = layout_output(
+                engine
+                    .process_messages(recovery_messages, TreeUpdateOptions::new(None, policy))
+                    .unwrap(),
+            );
+            assert_eq!(engine.animation_retry.failures, 0);
+            assert_eq!(recovered.animations_active, with_ghost);
+            if with_ghost {
+                assert!(engine.tree.get(&ghost).is_none());
+                let cleanup = layout_output(
+                    engine
+                        .process_messages(vec![], TreeUpdateOptions::new(None, policy))
+                        .unwrap(),
+                );
+                assert!(!cleanup.animations_active);
+                assert_ne!(
+                    recovered.scene, cleanup.scene,
+                    "terminal and cleanup are distinct outputs"
+                );
+            }
+            assert!(engine.animation_runtime_is_empty());
+            assert!(engine.tree.length_runtime.is_none());
+            assert!(engine.tree.pending_patch_effects.sources.is_empty());
+            assert_eq!(
+                engine.tree.get(&child).unwrap().layout.frame.unwrap().width,
+                600.0
+            );
+            assert!(matches!(
+                engine
+                    .process_messages(
+                        pulse(start + Duration::from_secs(10)),
+                        TreeUpdateOptions::new(None, policy)
+                    )
+                    .unwrap(),
+                TreeUpdateEffect::Skip
+            ));
+        }
     }
 }

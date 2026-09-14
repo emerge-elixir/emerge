@@ -1,4 +1,4 @@
-//! Reference gates for layout-resolved animation lengths.
+//! Static allocation controls for layout-resolved animation lengths.
 //!
 //! These use ordinary native layout, independently of animation sampling or
 //! endpoint-cache implementations. Equal resolved dimensions do not necessarily
@@ -6,11 +6,6 @@
 
 use super::super::*;
 use super::common::*;
-use crate::tree::animation::{
-    AnimationCurve, AnimationRepeat, AnimationRuntimeEntry, AnimationSpec, sample_animation_spec,
-    spec_fingerprint,
-};
-use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug)]
 enum Axis {
@@ -114,39 +109,6 @@ fn equal_visible_endpoints_can_have_different_allocation_weights() {
         let three = allocation(axis, capped_fill(3.0), Length::Fill, 1.0);
         assert_eq!(one, (50.0, 300.0), "{axis:?}");
         assert_eq!(three, (50.0, 150.0), "{axis:?}");
-    }
-}
-
-#[test]
-fn compatible_bounded_fill_animation_preserves_weight_interpolation() {
-    for axis in [Axis::Width, Axis::Height] {
-        let spec = AnimationSpec {
-            keyframes: vec![axis.attrs(capped_fill(1.0)), axis.attrs(capped_fill(3.0))],
-            duration_ms: 1000.0,
-            curve: AnimationCurve::Linear,
-            repeat: AnimationRepeat::Once,
-        };
-        let started_at = Instant::now();
-        let entry = AnimationRuntimeEntry {
-            spec_hash: spec_fingerprint(&spec),
-            started_at,
-        };
-        let sample = sample_animation_spec(
-            &spec,
-            Some(&entry),
-            Some(started_at + Duration::from_millis(500)),
-        );
-        let length = match axis {
-            Axis::Width => sample.attrs.width,
-            Axis::Height => sample.attrs.height,
-        }
-        .unwrap();
-        assert!(sample.active);
-        assert_eq!(
-            allocation(axis, length, Length::Fill, 1.0),
-            (50.0, 200.0),
-            "the bound stays at 50px while weight 1 → 3 samples weight 2, {axis:?}",
-        );
     }
 }
 

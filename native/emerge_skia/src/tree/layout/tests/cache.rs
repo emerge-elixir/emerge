@@ -4,7 +4,6 @@ use crate::events::registry_builder::{
     assert_registry_rebuild_payloads_equivalent, build_registry_rebuild,
     build_registry_rebuild_cached,
 };
-use crate::renderer::{RenderFrame, RenderState, SceneRenderer};
 use crate::tree::animation::{AnimationCurve, AnimationRepeat, AnimationRuntime, AnimationSpec};
 use crate::tree::attrs::{Background, BoxShadow};
 use crate::tree::invalidation::{
@@ -694,9 +693,10 @@ fn test_layout_cache_stats_report_layout_affecting_animation_cache_misses() {
         1.0,
         &MockTextMeasurer,
         &FontContext::default(),
-        Some(&runtime),
+        Some(&mut runtime),
         Some(start + Duration::from_millis(1)),
-    );
+    )
+    .unwrap();
     let stats = tree.layout_cache_stats();
 
     assert!(animations_active);
@@ -741,27 +741,33 @@ fn test_measure_affecting_animation_preserves_unrelated_sibling_cache_reuse() {
     let mut runtime = AnimationRuntime::default();
     runtime.sync_with_tree(&tree, start);
 
-    assert!(layout_tree_with_context_and_animation(
-        &mut tree,
-        Constraint::new(800.0, 600.0),
-        1.0,
-        &measurer,
-        &FontContext::default(),
-        Some(&runtime),
-        Some(start),
-    ));
+    assert!(
+        layout_tree_with_context_and_animation(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &measurer,
+            &FontContext::default(),
+            Some(&mut runtime),
+            Some(start),
+        )
+        .unwrap()
+    );
     let first_calls = measurer.total_calls();
     assert!(first_calls > 0);
 
-    assert!(layout_tree_with_context_and_animation(
-        &mut tree,
-        Constraint::new(800.0, 600.0),
-        1.0,
-        &measurer,
-        &FontContext::default(),
-        Some(&runtime),
-        Some(start + Duration::from_millis(25)),
-    ));
+    assert!(
+        layout_tree_with_context_and_animation(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &measurer,
+            &FontContext::default(),
+            Some(&mut runtime),
+            Some(start + Duration::from_millis(25)),
+        )
+        .unwrap()
+    );
     let stats = tree.layout_cache_stats();
 
     assert_eq!(measurer.total_calls(), first_calls);
@@ -807,27 +813,33 @@ fn test_resolve_affecting_animation_does_not_remeasure_text() {
     let mut runtime = AnimationRuntime::default();
     runtime.sync_with_tree(&tree, start);
 
-    assert!(layout_tree_with_context_and_animation(
-        &mut tree,
-        Constraint::new(800.0, 600.0),
-        1.0,
-        &measurer,
-        &FontContext::default(),
-        Some(&runtime),
-        Some(start),
-    ));
+    assert!(
+        layout_tree_with_context_and_animation(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &measurer,
+            &FontContext::default(),
+            Some(&mut runtime),
+            Some(start),
+        )
+        .unwrap()
+    );
     let first_calls = measurer.total_calls();
     assert!(first_calls > 0);
 
-    assert!(layout_tree_with_context_and_animation(
-        &mut tree,
-        Constraint::new(800.0, 600.0),
-        1.0,
-        &measurer,
-        &FontContext::default(),
-        Some(&runtime),
-        Some(start + Duration::from_millis(75)),
-    ));
+    assert!(
+        layout_tree_with_context_and_animation(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &measurer,
+            &FontContext::default(),
+            Some(&mut runtime),
+            Some(start + Duration::from_millis(75)),
+        )
+        .unwrap()
+    );
     let stats = tree.layout_cache_stats();
 
     assert_eq!(measurer.total_calls(), first_calls);
@@ -874,9 +886,10 @@ fn test_paint_only_shadow_animation_refresh_skips_layout_after_warm_frame() {
         &mut tree,
         Constraint::new(800.0, 600.0),
         1.0,
-        &runtime,
+        &mut runtime,
         start,
-    );
+    )
+    .unwrap();
     assert!(initial.layout_performed);
     let initial_frame = tree.get(&root_id).unwrap().layout.frame.unwrap();
 
@@ -884,9 +897,10 @@ fn test_paint_only_shadow_animation_refresh_skips_layout_after_warm_frame() {
         &mut tree,
         Constraint::new(800.0, 600.0),
         1.0,
-        &runtime,
+        &mut runtime,
         start + Duration::from_millis(25),
-    );
+    )
+    .unwrap();
 
     assert!(update.output.animations_active);
     assert!(!update.layout_performed);
@@ -958,9 +972,10 @@ fn test_scroll_with_paint_only_animation_refresh_skips_layout() {
         &mut tree,
         Constraint::new(800.0, 600.0),
         1.0,
-        &runtime,
+        &mut runtime,
         start,
-    );
+    )
+    .unwrap();
     assert!(initial.layout_performed);
     assert_eq!(tree.get(&root_id).unwrap().layout.scroll_y_max, 136.0);
 
@@ -971,9 +986,10 @@ fn test_scroll_with_paint_only_animation_refresh_skips_layout() {
         &mut tree,
         Constraint::new(800.0, 600.0),
         1.0,
-        &runtime,
+        &mut runtime,
         start + Duration::from_millis(25),
-    );
+    )
+    .unwrap();
 
     assert!(update.output.animations_active);
     assert!(!update.layout_performed);
@@ -1045,7 +1061,8 @@ fn test_paint_only_shadow_patch_refresh_skips_layout() {
         RefreshDecision::RefreshOnly
     );
 
-    let update = refresh_prepared_default(&mut tree, preparation);
+    let applied = preparation.apply(&mut tree, None).unwrap();
+    let update = refresh_prepared_default(&mut tree, applied);
 
     assert!(!update.layout_performed);
     assert_eq!(
@@ -1502,9 +1519,10 @@ fn test_paint_only_patch_and_paint_only_animation_refresh_skip_layout() {
         &mut tree,
         Constraint::new(800.0, 600.0),
         1.0,
-        &runtime,
+        &mut runtime,
         start,
-    );
+    )
+    .unwrap();
     assert!(initial.layout_performed);
     let initial_child_frame = tree.get(&child_id).unwrap().layout.frame.unwrap();
 
@@ -1521,7 +1539,7 @@ fn test_paint_only_patch_and_paint_only_animation_refresh_skip_layout() {
     let preparation = prepare_frame_attrs_for_update(
         &mut tree,
         1.0,
-        Some(&runtime),
+        Some(&mut runtime),
         Some(start + Duration::from_millis(25)),
     );
     let combined_invalidation = patch_invalidation.join(preparation.animation_result.invalidation);
@@ -1538,7 +1556,8 @@ fn test_paint_only_patch_and_paint_only_animation_refresh_skip_layout() {
         RefreshDecision::RefreshOnly
     );
 
-    let update = refresh_prepared_default(&mut tree, preparation);
+    let applied = preparation.apply(&mut tree, Some(&runtime)).unwrap();
+    let update = refresh_prepared_default(&mut tree, applied);
 
     assert!(update.output.animations_active);
     assert!(!update.layout_performed);
@@ -1602,18 +1621,20 @@ fn test_layout_affecting_animation_refresh_still_runs_layout() {
         &mut tree,
         Constraint::new(800.0, 600.0),
         1.0,
-        &runtime,
+        &mut runtime,
         start,
-    );
+    )
+    .unwrap();
     assert!(initial.layout_performed);
 
     let update = layout_or_refresh_default_with_animation(
         &mut tree,
         Constraint::new(800.0, 600.0),
         1.0,
-        &runtime,
+        &mut runtime,
         start + Duration::from_millis(25),
-    );
+    )
+    .unwrap();
     let stats = tree.layout_cache_stats();
 
     assert!(update.output.animations_active);
@@ -2484,25 +2505,31 @@ fn test_measure_affecting_animation_inside_fixed_size_el_reuses_parent_measure_c
     let mut runtime = AnimationRuntime::default();
     runtime.sync_with_tree(&tree, start);
 
-    assert!(layout_tree_with_context_and_animation(
-        &mut tree,
-        Constraint::new(800.0, 600.0),
-        1.0,
-        &MockTextMeasurer,
-        &FontContext::default(),
-        Some(&runtime),
-        Some(start),
-    ));
+    assert!(
+        layout_tree_with_context_and_animation(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+            &FontContext::default(),
+            Some(&mut runtime),
+            Some(start),
+        )
+        .unwrap()
+    );
 
-    assert!(layout_tree_with_context_and_animation(
-        &mut tree,
-        Constraint::new(800.0, 600.0),
-        1.0,
-        &MockTextMeasurer,
-        &FontContext::default(),
-        Some(&runtime),
-        Some(start + Duration::from_millis(50)),
-    ));
+    assert!(
+        layout_tree_with_context_and_animation(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+            &FontContext::default(),
+            Some(&mut runtime),
+            Some(start + Duration::from_millis(50)),
+        )
+        .unwrap()
+    );
     let stats = tree.layout_cache_stats();
 
     assert!(stats.subtree_measure_hits > 0);
@@ -3021,16 +3048,18 @@ fn assert_paint_only_inherited_text_animation_matches_uncached(use_nearby: bool)
         &mut cached,
         Constraint::new(800.0, 600.0),
         1.0,
-        &cached_runtime,
+        &mut cached_runtime,
         start,
-    );
+    )
+    .unwrap();
     let initial_uncached = layout_or_refresh_default_with_animation(
         &mut uncached,
         Constraint::new(800.0, 600.0),
         1.0,
-        &uncached_runtime,
+        &mut uncached_runtime,
         start,
-    );
+    )
+    .unwrap();
 
     assert!(initial_cached.layout_performed);
     assert!(initial_uncached.layout_performed);
@@ -3039,16 +3068,18 @@ fn assert_paint_only_inherited_text_animation_matches_uncached(use_nearby: bool)
         &mut cached,
         Constraint::new(800.0, 600.0),
         1.0,
-        &cached_runtime,
+        &mut cached_runtime,
         start + Duration::from_millis(25),
-    );
+    )
+    .unwrap();
     let uncached_update = layout_or_refresh_default_with_animation(
         &mut uncached,
         Constraint::new(800.0, 600.0),
         1.0,
-        &uncached_runtime,
+        &mut uncached_runtime,
         start + Duration::from_millis(25),
-    );
+    )
+    .unwrap();
 
     assert!(cached_update.output.animations_active);
     assert!(uncached_update.output.animations_active);
@@ -4141,34 +4172,12 @@ fn assert_render_scenes_equivalent(
     }
 }
 
-fn render_scene_to_pixels(
-    width: u32,
-    height: u32,
-    scene: crate::render_scene::RenderScene,
-) -> Vec<u8> {
-    let info = skia_safe::ImageInfo::new(
-        (width as i32, height as i32),
-        skia_safe::ColorType::RGBA8888,
-        skia_safe::AlphaType::Premul,
-        None,
-    );
-    let mut surface = skia_safe::surfaces::raster(&info, None, None)
-        .expect("raster surface should be created for render equivalence test");
-    let state = RenderState::new(scene, skia_safe::Color::TRANSPARENT, 1, false);
-    {
-        let mut frame = RenderFrame::new(&mut surface, None);
-        SceneRenderer::new().render(&mut frame, &state);
-    }
-
-    let mut pixels = vec![0u8; (width * height * 4) as usize];
-    surface.read_pixels(&info, pixels.as_mut_slice(), (width * 4) as usize, (0, 0));
-    pixels
-}
-
 fn scene_without_moving_paint_layers(
     scene: crate::render_scene::RenderScene,
 ) -> crate::render_scene::RenderScene {
     crate::render_scene::RenderScene {
+        fonts: None,
+        images: None,
         nodes: nodes_without_moving_paint_layers(scene.nodes),
     }
 }
@@ -4745,9 +4754,10 @@ fn inline_decoration_animation_matches_fresh_frames_and_only_width_reflows() {
                     &mut tree,
                     constraint,
                     1.0,
-                    &runtime,
+                    &mut runtime,
                     start + Duration::from_millis(ms),
-                );
+                )
+                .unwrap();
                 if ms > 0 {
                     assert_eq!(result.layout_performed, width_animation);
                 }

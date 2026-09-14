@@ -48,6 +48,10 @@ impl Default for SvgTreeCache {
 }
 
 impl SvgTreeCache {
+    pub fn peek(&self, id: &str) -> Option<Arc<AssetRecord>> {
+        self.entries.get(id).map(|entry| Arc::clone(&entry.record))
+    }
+
     pub fn get(&mut self, id: &str) -> Option<Arc<AssetRecord>> {
         self.clock = self.clock.wrapping_add(1);
         if let Some(entry) = self.entries.get_mut(id) {

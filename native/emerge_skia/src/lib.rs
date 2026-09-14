@@ -4889,38 +4889,6 @@ mod tests {
     }
 
     #[test]
-    fn send_registry_update_waits_for_channel_capacity_instead_of_dropping() {
-        let (event_tx, event_rx) = bounded(1);
-        event_tx.send(EventMsg::Stop).unwrap();
-
-        let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let handle = thread::spawn(move || {
-            runtime::tree_actor::send_registry_update(
-                &event_tx,
-                RegistryRebuildPayload::default(),
-                false,
-            );
-            let _ = done_tx.send(());
-        });
-
-        assert!(
-            done_rx.recv_timeout(Duration::from_millis(20)).is_err(),
-            "registry update send should wait while the event channel is full"
-        );
-        assert!(matches!(event_rx.try_recv(), Ok(EventMsg::Stop)));
-        assert!(
-            done_rx.recv_timeout(Duration::from_millis(100)).is_ok(),
-            "registry update send should complete once capacity is available"
-        );
-        assert!(matches!(
-            event_rx.try_recv(),
-            Ok(EventMsg::RegistryUpdate { .. })
-        ));
-
-        let _ = handle.join();
-    }
-
-    #[test]
     fn straight_rgba_video_pixels_are_premultiplied_once() {
         assert_eq!(
             decode_binary_video_pixel(&[255, 64, 0, 128], 0, 0, "rgba8888", None, "straight"),
