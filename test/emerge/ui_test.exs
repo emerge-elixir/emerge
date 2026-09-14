@@ -541,9 +541,12 @@ defmodule Emerge.UITest do
     end
   end
 
-  test "animate rejects incompatible width variants" do
-    assert_raise ArgumentError, ~r/same length variant/, fn ->
-      el([Animation.animate([[width(fill())], [width(px(120))]], 200, :linear)], text("bad"))
+  test "animate accepts mixed width and height variants" do
+    for field <- [:width, :height],
+        a <- [:fill, :content, {:px, 40}, {:fill, 3}],
+        b <- [:fill, :content, {:px, 120}, {:fill, 2}] do
+      node = el([Animation.animate([[{field, a}], [{field, b}]], 200, :linear)], text("mixed"))
+      assert node.attrs.animate.keyframes == [%{field => a}, %{field => b}]
     end
   end
 

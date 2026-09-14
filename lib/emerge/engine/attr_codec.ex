@@ -66,6 +66,7 @@ defmodule Emerge.Engine.AttrCodec do
     video_target: 62,
     svg_color: 63,
     svg_expected: 64,
+    animate_change: 84,
     animate: 65,
     animate_enter: 66,
     animate_exit: 67,
@@ -92,6 +93,7 @@ defmodule Emerge.Engine.AttrCodec do
     attrs
     |> TreeAttrs.strip_runtime_attrs()
     |> Nearby.strip_nearby_attrs()
+    |> AttrValidation.validate_change_attrs!()
     |> Map.to_list()
     |> Enum.map(fn {key, value} ->
       tag = Map.fetch!(@type_tag, key)
@@ -110,7 +112,7 @@ defmodule Emerge.Engine.AttrCodec do
   @spec decode_attrs(binary()) :: map()
   def decode_attrs(<<count::unsigned-16, rest::binary>>) do
     {attrs, <<>>} = decode_pairs(rest, count, [])
-    Map.new(attrs)
+    attrs |> Map.new() |> AttrValidation.validate_change_attrs!()
   end
 
   defp decode_pairs(rest, 0, acc), do: {Enum.reverse(acc), rest}
@@ -183,6 +185,7 @@ defmodule Emerge.Engine.AttrCodec do
   defp encode_value(:svg_color, value), do: encode_color(value, :svg_color)
   defp encode_value(:svg_expected, value), do: encode_bool(value)
   defp encode_value(:video_target, value), do: encode_string(value)
+  defp encode_value(:animate_change, value), do: encode_change(value)
   defp encode_value(:animate, value), do: encode_animation(value, :animate)
   defp encode_value(:animate_enter, value), do: encode_animation(value, :animate_enter)
   defp encode_value(:animate_exit, value), do: encode_animation(value, :animate_exit)
@@ -258,6 +261,7 @@ defmodule Emerge.Engine.AttrCodec do
   defp decode_value(:svg_color, rest), do: decode_color(rest)
   defp decode_value(:svg_expected, rest), do: decode_bool(rest)
   defp decode_value(:video_target, rest), do: decode_string(rest)
+  defp decode_value(:animate_change, rest), do: decode_change(rest)
   defp decode_value(:animate, rest), do: decode_animation(rest, :animate)
   defp decode_value(:animate_enter, rest), do: decode_animation(rest, :animate_enter)
   defp decode_value(:animate_exit, rest), do: decode_animation(rest, :animate_exit)
@@ -291,6 +295,39 @@ defmodule Emerge.Engine.AttrCodec do
   defp decode_state_style(<<len::unsigned-32, rest::binary>>) do
     <<attrs_bin::binary-size(^len), rest::binary>> = rest
     {decode_attrs(attrs_bin), rest}
+  end
+
+  defp encode_change(value) do
+    policies = AttrValidation.normalize_change_policies!(value)
+
+    entries =
+      Enum.map(Enum.sort(policies), fn {field, %{duration: duration, curve: curve}} ->
+        [encode_atom(field), encode_f64(duration), encode_atom(curve)]
+      end)
+
+    payload = [<<map_size(policies)::unsigned-16>>, entries]
+    [<<IO.iodata_length(payload)::unsigned-32>>, payload]
+  end
+
+  defp decode_change(<<len::unsigned-32, payload::binary-size(len), rest::binary>>) do
+    <<count::unsigned-16, entries::binary>> = payload
+    {policies, <<>>} = decode_change_entries(entries, count, %{})
+    {AttrValidation.normalize_change_policies!(policies), rest}
+  end
+
+  defp decode_change_entries(rest, 0, acc), do: {acc, rest}
+
+  defp decode_change_entries(rest, count, acc) do
+    {field, rest} = decode_atom(rest)
+    {duration, rest} = decode_f64(rest)
+    {curve, rest} = decode_atom(rest)
+    if Map.has_key?(acc, field), do: raise(ArgumentError, "duplicate change field")
+
+    decode_change_entries(
+      rest,
+      count - 1,
+      Map.put(acc, field, %{duration: duration, curve: curve})
+    )
   end
 
   defp encode_animation(value, owner) do

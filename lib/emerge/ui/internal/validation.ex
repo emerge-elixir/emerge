@@ -42,6 +42,7 @@ defmodule Emerge.UI.Internal.Validation do
                       :rotate,
                       :scale,
                       :alpha,
+                      :animate_change,
                       :animate,
                       :animate_enter,
                       :animate_exit,
@@ -129,14 +130,24 @@ defmodule Emerge.UI.Internal.Validation do
 
           {key, value} ->
             case key do
+              :animate_change ->
+                acc =
+                  Enum.reduce(value, acc, fn {field, target, policy}, acc ->
+                    acc = put_attr(clear_change_policy(acc, field), field, target, warn_overrides)
+                    policies = Map.put(Map.get(acc, :animate_change, %{}), field, policy)
+                    Map.put(acc, :animate_change, policies)
+                  end)
+
+                {acc, nearby}
+
               :box_shadow ->
-                {put_attr(acc, key, value, false), nearby}
+                {put_attr(clear_change_policy(acc, key), key, value, false), nearby}
 
               key when key in [:above, :below, :on_left, :on_right, :in_front, :behind] ->
                 {acc, nearby ++ [{key, value}]}
 
               _ ->
-                {put_attr(acc, key, value, warn_overrides), nearby}
+                {put_attr(clear_change_policy(acc, key), key, value, warn_overrides), nearby}
             end
         end
       end)
@@ -227,6 +238,21 @@ defmodule Emerge.UI.Internal.Validation do
           "#{attrs_owner} expects an image source to be a binary, atom, ~m reference, {:id, id}, or {:path, path}, got: #{inspect(other)}"
   end
 
+  defp clear_change_policy(acc, key) do
+    case Map.get(acc, :animate_change) do
+      nil ->
+        acc
+
+      policies ->
+        keys = if key in [:spacing, :spacing_xy], do: [:spacing, :spacing_xy], else: [key]
+        policies = Map.drop(policies, keys)
+
+        if map_size(policies) == 0,
+          do: Map.delete(acc, :animate_change),
+          else: Map.put(acc, :animate_change, policies)
+    end
+  end
+
   defp put_attr(acc, :box_shadow, value, _warn_overrides) do
     existing = Map.get(acc, :box_shadow, [])
     Map.put(acc, :box_shadow, existing ++ List.wrap(value))
@@ -239,6 +265,13 @@ defmodule Emerge.UI.Internal.Validation do
   end
 
   defp put_attr(acc, key, value, warn_overrides) do
+    acc =
+      case key do
+        :spacing -> Map.delete(acc, :spacing_xy)
+        :spacing_xy -> Map.delete(acc, :spacing)
+        _ -> acc
+      end
+
     if warn_overrides do
       maybe_warn_override(acc, key, value)
     end
@@ -280,6 +313,15 @@ defmodule Emerge.UI.Internal.Validation do
 
       MapSet.member?(@state_style_key_set, key) ->
         skip_nil_or(value, fn -> {key, AttrValidation.normalize_state_style!(key, value)} end)
+
+      key == :animate_change ->
+        case value do
+          {attrs, duration, curve} ->
+            {:animate_change, AttrValidation.normalize_change!(attrs, duration, curve)}
+
+          _ ->
+            raise ArgumentError, "change expects an attribute list, duration and curve"
+        end
 
       key in [:animate, :animate_enter, :animate_exit] ->
         skip_nil_or(value, fn -> {key, AttrValidation.normalize_animation!(key, value)} end)
@@ -594,6 +636,8 @@ defmodule Emerge.UI.Internal.Validation do
   end
 
   defp validate_attr_conflicts!(attrs, attrs_owner) do
+    AttrValidation.validate_change_attrs!(attrs)
+
     if Map.has_key?(attrs, :virtual_key) and
          (Map.has_key?(attrs, :on_click) or Map.has_key?(attrs, :on_press)) do
       raise ArgumentError,
