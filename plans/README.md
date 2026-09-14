@@ -45,9 +45,16 @@ This is the sole plan for general backend/Vulkan/headless PRIME qualification.
 
 ### `active-shared-animation-core.md`
 
-Full-matrix layout lengths and `Animation.change/3` on one shared core. Plans an
-allocation-aware footprint repair for the native parity gate: separate visible size,
-budget charge, intrinsic/basis data and layout policy, with staged proof before API work.
+Implement pixel/content/fill/weighted-fill animations and `Animation.change/3` through one native
+core in `/workspace/emerge-animation`. Public API and native execution are enabled
+on that branch; no separate enablement phase. The short checklist tracks remaining
+context, lifecycle, integration, documentation and validation work. Detailed earlier
+oracles are retained as historical reference, not additional planning stages.
+The [remaining implementation plan](shared-animation-remaining-implementation.md)
+expands every open item into ordered work packages, native proof requirements,
+regressions, performance targets and platform qualification gates. D11 adds atomic
+prepared image inputs, nonblocking actor output and directed structural/coupling/
+input validation; broad matrix, memory/performance and platform gates remain open.
 
 ### `active-low-resource-animation-smoothness.md`
 

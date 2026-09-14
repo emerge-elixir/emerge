@@ -1,536 +1,324 @@
-# Shared animation core: layout lengths and change transitions
+# Shared animation implementation
 
-Status: allocation-aware gate repair planned; native parity proof pending.
-The six reference tests are implemented; the repair, resolver and `Animation.change/3` are not.
-Branch: `plan/shared-animation-core`. Code baseline: `641d355`.
-Predecessors are preserved in `e38f0b0`; the first consolidation is `5475831`.
-This remains the single implementation plan.
+Worktree: `/workspace/emerge-animation`, branch `plan/shared-animation-core`.
 
-## Implementation gate: resolved boxes lose allocation information
+Implement the feature directly on this branch. No feature flag, test-only runtime,
+or separate public-enablement phase. The historical design and detailed numeric
+oracles are in [design history](artifacts/shared-animation-design-history.md).
 
-Native reference tests in
-[`animation_endpoints.rs`](../native/emerge_skia/src/tree/layout/tests/animation_endpoints.rs)
-reproduced a blocking counterexample, not just an arithmetic hypothesis:
-
-| First child's length in a 600px row | First box | Equal-fill sibling |
-| --- | --- | --- |
-| `fill` | 300px | 300px |
-| `px(300)` | 300px | 300px |
-| `min(px(50), fill_weighted(1))` | 50px | 300px |
-| `px(50)` | 50px | 550px |
-| `min(px(50), fill_weighted(3))` | 50px | 150px |
-
-The planner reserves weighted space before applying a child's bound. Equal visible
-box sizes therefore do not imply equivalent allocation. A 40px → bounded-fill
-transition lowered to pixels approaches a 50px box beside a 550px sibling; restoring
-the symbolic destination jumps the sibling to 300px. This is also reproduced for
-columns/heights, global scales 0.5/1/2 and a recursively bounded expression.
-Compatible bounded-weight animation already changes the sibling through weight
-interpolation while the first box remains 50px; preserve that behavior too.
-
-**Stop condition triggered:** a box-size-only numeric overlay cannot satisfy the
-full-matrix/terminal-handoff contract. More endpoint queries, cache invalidation or
-query/commit isolation cannot recover information discarded by that overlay.
-No public validation was relaxed and no partial `change` API was exposed.
-
-## Gate repair: allocation-aware layout samples
-
-Keep the private workspace and shared sampler. Replace **pixel-only lowering** with
-an internal per-axis layout sample: visible dimensions plus the layout contributions
-and policies that produced them. Do not change ordinary bounded-fill allocation,
-redistribute its unused space, insert spacer nodes, or narrow the matrix.
-
-### A. Preserve the parent's allocation charge
-
-In the existing row/column planners, record each child's contribution to the space
-budget **before bounds are applied**:
-
-- A pooled fill child's charge is `fill_weight × fill_unit`.
-- A fixed/non-pooled child's charge is the amount actually included in the planner's
-  fixed sum, after its existing dependent-measure/reflow handling.
-- Other layout roles carry their own context; a wrapped row is not a shared-fill
-  pool. Do not apply a row reservation to an `el`, float, Nearby slot or another axis.
-
-For a mixed segment, interpolate visible box size and charge independently using
-one eased progress. In its matching pool, remove the sampled child from the fill
-weight total and include its sampled charge in the fixed budget instead. Use its
-visible size for placement, alignment, wrapping, extents, clips and hits.
-
-For the failing 600px-row case:
-
-| Progress | Visible box | Budget charge | Fill sibling |
-| --- | --- | --- | --- |
-| 0 | 40px | 40px | 560px |
-| 0.5 | 45px | 170px | 430px |
-| 1 | 50px | 300px | 300px |
-
-At completion the remaining fill unit is unchanged: removing weight `w` and charging
-`w × u` from a pool with unit `u` leaves that same unit for the other fill children.
-This also works for a jointly projected subset, including all fill children. Subtract
-spacing once as today; do not add padding/borders again to border-box charges.
-
-A charge is **not** `max(visible, reserved)` or a positive hidden margin. For example,
-`max(px(700), fill)` can reserve 300px while drawing 700px beside a 300px sibling.
-Preserve overflow and use visible totals for center/space-evenly alignment.
-
-This fixes the demonstrated allocation loss without basis/weight blending: ordinary
-40px → fill still has a 170px midpoint. Compatible weighted/min-max animations keep
-the existing symbolic sampler, including the bounded-weight midpoint `(50, 200)`.
-
-### B. Preserve the other layout roles, not just two numbers
-
-Introduce a small native dimension-input view used by layout helpers:
-`Declared(length)` or `Sampled(footprint)`. Store samples alongside effective attrs,
-not in serialized `Length` tags. Retain original expression provenance; a convenient
-pixel attr must not become the source of truth for semantic predicates.
-
-Schematic endpoint footprint, captured from the **same native layout evaluation**:
-
-```text
-AxisFootprint
-  intrinsic_outer          // contribution returned to bottom-up measurement
-  initial_box              // pre-child-resolution sizing basis
-  final_box                // unrotated visible border-box size
-  parent_charge + scope    // parent/mount, planner role and axis
-  policy                   // intrinsic/definite mode, fill demand, growth, aspect rules
-  coordinate_context       // node-box and parent-planner units, layout generation
-```
-
-The initial basis and final box can differ after content reflow. Keep them distinct;
-forcing a final box before child resolution can itself change the endpoint's children.
-Intrinsic contribution is not generally the visible size either: native fill preserves
-intrinsic content during measurement, even though it expands/shrinks during resolution.
-
-Route the existing length-dependent decisions through the view, without reimplementing
-measurement or introducing an allocation solver:
-
-| Consumer in `tree/layout.rs` | Sample behavior |
-| --- | --- |
-| `resolve_intrinsic_length`, outer measurement and child measured-size reads | Use the sampled intrinsic contribution; keep normal live measurement for unowned axes |
-| `resolve_element_sizing`, content finalization/alignment | Use the initial basis for descendant resolution and the final box at normal finalization, not a paint transform |
-| `build_row_layout_plan`, `build_column_layout_plan` | Separate budget charge from visible child extent; keep existing arithmetic and reflow inputs |
-| `container_prefers_fill_*`, `length_requests_fill` | Preserve parent-facing fill demand; do not infer it from a pixel surrogate |
-| `available_*`, fill-enabled planning, `length_allows_content_expansion` | Preserve descendant allocation/growth policy instead of switching intrinsic layout to definite layout accidentally |
-| Image inference, wrapped rows, text-flow/float planning, `force_child_width` | Respect the actual role and parent-imposed constraints; do not blindly replay a shared-pool charge |
-
-**Policy interpolation must also be explicit.** For mixed samples, numeric channels
-use the same eased progress. Predicates that choose different sizing behavior become
-typed policy blends, not `t > 0` / `t >= 0.5` boolean switches:
-
-- Implicit parent fill demand blends from 0 to 1; multiple child demands combine as
-  `max`, preserving ordinary `any` behavior at the endpoints. Blend the finite intrinsic
-  and fill-sizing candidates before resolving children, rather than snapping the parent.
-- Intrinsic→definite child allocation blends the ordinary unpooled/pooled planner
-  results from shared seeds. An explicitly sampled child still uses its own box/charge;
-  do not interpolate it twice. Keep native 0/1 fast paths and normal final placement.
-  Reuse prepared reflow inputs, never run two mutating live branches. Any missing
-  dependent geometry must be an explicit private-workspace query, counted in `Q`.
-  Queries consume frozen inputs; no recursive resolver or hidden fixed-point loop.
-- Content-growth and image-inference choices blend their ordinary numeric candidates
-  in the appropriate layout stage. Preserve normal reflow; do not blend paragraph
-  fragments, freeze descendant frames, or make an owned final axis grow past its sample.
-- Do not interpolate `MaxContent` as infinity. Retain the available-space policy and
-  blend finite sizing candidates. Preserve existing paragraph and axis-specific rules.
-
-These are **new mixed-length semantics**, not changes to compatible/static lengths.
-A small dimension-policy extraction is now required; the former "ordinary pixel
-attrs need no allocator changes" assumption is withdrawn. The exact footprint fields
-must earn their place through the native equivalence tests below, not a generic graph
-of every layout operation. Policy blends are specified here but not yet validated.
-
-### C. Capture, interruption and cache integration
-
-- Record the last live planner charge while the planner has it, including cache-hit
-  restoration. Existing frames cannot reconstruct it. Reuse measured/cache data for
-  other facts where valid; measure the cost of any additional per-node result fields.
-  This is current layout output, not an idle target-history map.
-- The first-write journal captures the **whole footprint** before patch/scale/topology
-  writes. Interruption and context retargeting re-anchor every channel over the existing
-  timing/remaining-curve rules. Do not construct a fresh pixel source that loses charge.
-- A captured mixed sample remains a mixed footprint even when its visible source and
-  new destination are both pixels. Only genuinely compatible semantic sources use the
-  legacy interpolation path. Capture flat values/policy coefficients, not recursively
-  nested prior animations or unbounded source-expression history.
-- Charges belong to a parent allocation scope and its coordinates, not to a rotated
-  visible AABB. Preserve original source scale context. A reparent/role change releases
-  the old reservation as ordinary topology work; establish the source's new-scope charge
-  from layout of its captured box there, not by transporting an old pool's debit.
-- Ghosts retain the captured footprint as their baseline even when exit animates only
-  alpha. Strip change policies/runs, not the geometry/allocation footprint; an exit
-  that owns the dimension uses it as its shared-core source. Pruning releases it.
-- Foreign mixed peers in endpoint projections carry their full frozen footprints.
-  Replacing a peer with a symbolic boundary keyframe clears that field's sample override.
-  Changes in charge, intrinsic contribution or policy invalidate context even when the
-  visible box is unchanged. Update measure/resolve cache keys and completion dirtying.
-
-### D. Native proof required before public acceptance
-
-1. Keep the six pixel-substitution tests as negative controls. Add footprint replay
-   tests on both axes: native symbolic endpoint versus sampled endpoint at progress
-   0 and 1 **with the sample override still installed**. Compare all affected boxes,
-   intrinsic contributions, positions, content extents, clips/hits and scroll geometry.
-2. Exercise 0.25/0.5/0.75 and values approaching both endpoints. Stable wrapping/context
-   must not jump when metadata is removed. An actual line break may remain discrete;
-   that is not a waiver for allocation or implicit-fill discontinuities.
-3. Cover min and max bounds, recursive expressions, nonempty intrinsic children,
-   multiple/simultaneous sampled children, fractional/large weights and rounding,
-   exhausted/no remaining fill pools, center/space-evenly alignment, overflow and scrolling.
-4. Include two policy traps before integration: an automatic parent's fill preference
-   changed by a bounded-fill child, and a content-sized row/column whose numeric width/
-   height would enable fill distribution. Also cover image syntax-dependent aspect
-   inference, wrapped rows/floats, rotation/scales and parent-imposed sizing.
-5. Then prove interruption from a mid-sample, policy removal, reparent/ghost handoff,
-   different deadlines, cache replay/permuted queries and explicit/change equivalence.
-   Ordinary/static and compatible-animation baselines must remain unchanged.
-
-The reservation algebra is established for definite shared pools, not the full repair.
-This gate closes only after the footprint **and policy** native tests pass; returning
-raw symbols at the last instant cannot conceal a discontinuous sampled limit.
-
-## Decision: cached endpoint projections, not a layout-engine migration
-
-Support the full width/height length matrix and `Animation.change/3` through the
-existing animation core. Add a lazy endpoint resolver with **one private, reusable
-layout tree**. Ordinary frames keep the existing effective-attrs → layout → refresh
-path. Both animation frontends use the same sampler and resolver.
-
-Remove the previous prerequisite to introduce `LayoutInputs`, `GeometryResult`,
-`commit_geometry` and migrate every layout mutation/consumer. Isolation is needed
-for endpoint queries; a universal live-state commit architecture is not needed to
-provide it. Use sparse first-write captures and the allocation-aware dimension view
-above; only that layout-semantic seam grows in scope.
-
-Earlier alternatives are preserved in `7c3825c`: FLIP and basis/weight blending
-change semantics; static final-tree endpoints fail different deadlines; per-query
-render-tree clones waste work; a universal commit split adds unnecessary scope.
-The reusable workspace stays selected, with measured—not assumed—performance.
-
-`tree/layout.rs::run_layout_passes` already separates measure/resolve from refresh.
-Use it on explicitly constructed private state: `Element::render_snapshot` retains
-render fragments and drops measurement caches, so it is not a layout-copy helper.
-Preserve existing resource, patch-prefix and incremental-preparation boundaries.
-
-Complexity stays in the dimension-policy/planner-input seam, source capture, cache
-validity and lifecycle/codec integration. No allocator replacement, new scheduler or
-backend/render/event rewrite. Policy blending and whole-layout parity are the main risks.
-
-## Public contract
+## Feature
 
 ```elixir
 Animation.animate([[width(px(40))], [width(fill())]], 1000, :linear)
-
-# First tree for an element:
-Animation.change(width(px(40)), 1000, :linear)
-# Later retained update of that element:
-Animation.change(width(fill()), 1000, :linear)
+Animation.change([width(fill()), height(content())], 1000, :linear)
 ```
 
-The change update creates the equivalent two-keyframe run in the same core.
-The only difference is admission/source selection: explicit keyframes versus a
-retained target change. No separate interpolation or layout implementation.
+- Both axes: pixels, content, fill and weighted fill. Min/max expressions remain
+  static-only; they are not animation endpoints or change sources.
+- One native animation core for regular, enter, exit and change animations.
+- Automatic direct-child groups: joint resolved destinations, individual clocks,
+  complete allocation-footprint holds, and joint release. Static weighting is unchanged.
+- `Animation.change/3` takes a list of attributes sharing duration/curve, with
+  independent per-field policies and last-write ordering. Empty lists are no-ops.
+- First change-policy mount is immediate. Identical resolved targets and timing-only
+  changes do not restart. Interruptions use the published source; plain attributes
+  clear their own policy.
+- Detect resolved content width/height changes even when the declared
+  length remains `content()`, including changes originating in descendants.
+- Real layout/reflow, including descendants, images, scroll, clipping and input.
+  No paint scaling substitute, frozen subtree or second layout engine.
+- Preserve successful patch prefixes and published presentation on failed attempts.
+  Keep sources and candidate metadata bounded; acknowledge only successful output.
+- Use one renderer-local query workspace. Queries do not hydrate assets or mutate
+  published layout, scroll, clocks, scenes or event registries.
+- Same input and schedule must replay consistently. Do not hide release jumps by
+  weakening footprint validation or restoring the old external context.
 
-### Complete length matrix
+## Implementation checklist
 
-Accept every ordered pair of valid length expressions: pixels, fill, content,
-weighted fill and recursive min/max, including differing expression shapes.
-Cover both axes, reverse/multiple segments, regular/enter/exit and change triggers.
-No pixel-first, owner-specific or reduced-matrix release.
+- [x] Shared timing, field selection, automatic groups and full-footprint queries.
+- [x] Bounded admission deltas, regular field handoffs and source lifetime controls.
+- [x] Exclusive prepare/layout/output commit; stale-attempt rejection and ghost
+  retirement intents. Publication eligibility excludes cached unpublished mounts.
+- [x] Remove test-only runtime gates and restore the public API/codec implementation.
+- [x] Public validation, policy codec, macOS protocol 14 and initial native/actor integration tests.
+- [x] List-based `Animation.change/3`: shared timing, independent field policies,
+  ordered overrides, validation and unchanged policy wire format.
+- [x] Detect changes in resolved content width (and symmetric content height), not
+  just differences in declared length expressions. Track affected policy-bearing
+  ancestors when text/children or intrinsic font/image facts change, even without
+  an attribute patch on the owner. An index maintained by existing admission traversal
+  and native dirty paths select candidates; there is no per-frame BEAM geometry traffic.
+  Native queries still use the existing workspace and can evaluate/copy the full model.
+- [x] Resolve the new native destination without the owner's current animation
+  sample feeding back into it. Compare against the last admitted resolved target;
+  unchanged destinations and animation's own reflow must not restart the clock.
+  Animate the complete published footprint over the policy duration; interrupt from
+  the currently published pose on a new destination. Preserve first-mount, retry,
+  successful-output acknowledgement and joint hold/release semantics. Tests cover text
+  growth/shrink, both axes/scales, descendant replacement, metric/image changes,
+  independent nested content clocks, identical destinations, timing-only changes,
+  interruption/reversal, query/output failures and actor hit geometry. Pending input
+  timestamps survive query failures. Cold/idle watchers do not force layout queries;
+  inactive workspaces are released when their policies are removed.
+  Broader mixed-context/scope transport remains in the unchecked items below.
+- [x] Reject min/max animation endpoints in Elixir, native decoding and runtime admission.
+- [x] Freeze font facts through native layout and deferred painting; notify idle trees after font loads.
+- [x] Deadline input replay uses frozen font/image facts and old interaction/scroll
+  seeds, without restoring live inputs. Seed membership must match; opaque changed
+  metric epochs without replayable snapshots are rejected. Hover/font/image changes,
+  opposite-axis image reflow, initially empty scroll containers and query retries are covered.
+- [x] Rendered input checks cover same-size font and image changes, retained/fresh
+  raster agreement, and combined font/model/viewport/scale completion changes.
+  Failed native witnesses preserve the old raster and registry; old font snapshots
+  replay unchanged after a successful new-font output.
+- [ ] Finish broader runtime/media/scroll provenance and combined-cause coverage.
+- [x] Viewport/scale changes at completion: validate the combined release against
+  native layout in the previous viewport, then publish the new native geometry.
+  Bad charges/policies still fail; rejected queries retry without reverting the viewport.
+  Scale changes promote active/dirty preparation to full preparation for static siblings.
+- [x] Declared-container completion edits: sparse first-write declaration preimages
+  in the existing workspace, with published model/topology identity and full combined
+  release checks. Both axes, all preparation modes, scales .5/1/2, absent properties,
+  query-order isolation, corruption and failed-query retry are covered.
+- [x] Active/dirty retries include unacknowledged ancestor edits and local-scale
+  subtrees; failed publication no longer loses the caller's ancestor preparation.
+- [x] Continuous regular pixel-sized parent contexts preserve original curve anchors
+  and established held intervals. Native prior-target witnesses retain corruption
+  checks; both axes, four curves, 30/60/120Hz and failed-query retries are covered.
+- [x] Later pixel segments in mixed regular specifications preserve dependent curve
+  anchors. Retained full samples must match native pixel footprints and dependent
+  targets on both sides; no published sample is replaced by a pixel declaration.
+  Both axes, full/active/dirty, four curves, 30/60/120Hz, global/local scales .5/1/2,
+  scoped charges, policy corruption and query/output failure retries are covered.
+  Thousand-cycle skips reset segment clocks without replay; these fixtures use at
+  most four queries per attempt, including native witnesses in the same workspace.
+  Eligibility is conservative: canonical unrotated/unimposed pixel footprints.
+  One model copy per unchanged-model run is asserted; query evaluation can still
+  cover the whole model. This does not qualify general mixed-foreign continuation.
+- [x] Resolved mixed ancestor clocks preserve dependent anchors using native foreign
+  destination and full-sample witnesses, not pixel lowering. Both axes, four curves,
+  30/60/120Hz, scales .5/1/2, corruption and failed-output retries are covered.
+  Mixed-clock ancestry eligibility is checked per consumer, outside shared proof caches.
+- [x] Pixel loop wrappers can drive both ancestor intrinsic size and descendant
+  allocations in the same finite group. Joint release, intrinsic corruption and
+  query/output retries are covered in all preparation modes, within three queries.
+- [x] Ordinary scalar pixel parents can cross segment/cycle boundaries at finite
+  dependent release. Native prior-target checks permit the new clock input without
+  rewinding it. Both axes/modes/scales, loops/finite repeats, thousand-cycle skips,
+  corruption and query/output retries are covered within two queries. The exception
+  is release-only: moving anchors still retarget across resets. Retained mixed
+  samples use the separate full-footprint boundary witnesses below.
+- [x] Mixed ancestor segment/repeat boundaries resolve the current full foreign
+  sample before dependent release, retaining ordinary frozen owner endpoints.
+  Native old/new foreign destinations and dependent targets remain checked; no
+  pixel lowering or nonrelease anchor preservation across resets. Both axes,
+  simultaneous axes, four curves, scales/modes, late/thousand-cycle skips, content,
+  weighted parent-pool charges and retained pixel intervals are covered. Query and
+  output retries preserve publication. A 72-case raster/hit matrix covers regular,
+  enter, change and exit consumers, old-scene replay and fresh renderer agreement.
+  One changed ancestor uses at most 8 queries (12 for both axes) and one unchanged-
+  model copy in these fixtures. Selection scans retained ancestry; this is not a
+  claim of group-local query evaluation or general feedback/topology transport.
+- [x] Independent mixed panels preserve finite motion through native original/hybrid
+  target checks, consumer-relative cohort batching and current combined-release
+  validation. Both axes/modes/scales/curves, query-order controls, corruption and
+  retries pass; 64 owners share at most 8 queries in the fixture. The rendered
+  boundary matrix now has 144 cases, including 72 independent-panel variants.
+  Shared-pool/upward deadline support is recorded separately below.
+- [x] Covered shared-pool/upward mixed-loop deadlines release with native forecast,
+  retained-driver and boundary witnesses. Query clock inputs are leaf-only, not a
+  retained history; actual feedback samples and joint native release are checked.
+  Both axes/modes/scales/curves, resets/large skips, multiple weighted drivers,
+  owner/raster/hit cases and corrupt-source/query/output retries pass. Single-driver
+  fixtures use at most 12 queries; two-driver fixtures at most 20, one model copy.
+  General continuous feedback, self-axis and combined input causes remain open.
+- [ ] Finish broader continuous-context retargeting and other deadline changes:
+  mixed foreign dimensions, combined causes, segment/repeat resets and runtime/media
+  inputs. The pixel-clock case does not complete nested/context-dependent behavior.
+  Topology changes deliberately cannot use the declaration-only release witness.
+- [x] Cancellation preserves an admitted hold interval; arriving siblings do not
+  extend unchanged hold work. Full/active/dirty and failed-query retries are covered.
+- [x] Animated content/fill/weighted-fill parents share intrinsic destinations with
+  finite dependent children, including pixel and other layout fields. Links cross
+  static content/fill wrappers, stop at fixed-axis and Nearby host boundaries, and
+  account for cross-axis layout. Independent deadlines and failed-release retries
+  are covered. Loops remain outside finite barriers. Upward links are bounded,
+  path-compressed, and actual metadata visits are counted.
+- [x] Exit captures remap sampled descendant allocation scopes and bake captured
+  pixel units, including parent-local charges. Dimension exits preserve the published
+  mixed footprint; latest declarations supply exit policies. Validate endpoints before
+  capturing pixels. Both axes/scales and pixel/paint-only zero-workspace paths are covered.
+- [ ] Complete skipped segments/repeats, broader cancellation/arrival and dependent
+  scope phase changes, terminal field sources, full ghost baseline qualification and
+  removal/reparent/wrap/float/Nearby transport.
+- [x] Persistent automatic pulse failures back off from an immediate retry to a
+  250ms cap, retaining no error history and never advancing samples during skipped
+  attempts. Both decode policies cover 1,000 pulses, preserved sources/registry,
+  recovery via external input or explicit retry, ghost cleanup and final idle Skip.
+- [ ] Finish remaining actor/direct/headless and final-damage qualification.
+  Ghost terminal/cleanup deliberately use separate outputs.
+- [x] Raster/hit-region matrix covers all 16 supported length pairs, four owners,
+  both axes, three preparation modes and scales .5/1/2: 1,152 cases, five clock
+  samples each, plus retained-renderer replay and fresh-renderer comparisons.
+  Scroll viewport tests check actual clipping, offsets/ranges and descendant hits.
+  Broader scope/lifecycle cases remain above; this is not platform qualification.
+- [x] Cache registry-subtree eligibility across native geometry pulses, preserving
+  ordinary mutation/attempt invalidation and rebuilding after external/runtime/
+  topology edits. Actual cold visits remain 5k/20k through warm frames; handler and
+  Nearby changes plus the raster/hit matrix guard correctness. Empty-registry trees
+  avoid empty geometry-snapshot scans. Remaining full-model costs are not hidden.
+- [x] Add a reproducible release publication/RSS probe for 5k/20k nodes and 1/64
+  owners, with paint/pixel baselines and static/moving native targets. Actual retained
+  projections include workspace Arcs; query counters expose full model copies.
+  [Raw results and method](artifacts/shared-animation-probe/README.md) show bounded
+  records but costly full-model memory and 20k-node release work above 12ms.
+- [x] Preserve normal runtime-retirement query/destruction statistics without
+  retaining the workspace, and count continuation ancestry lookups. A locked
+  72-process matrix includes mixed boundaries and independent panels, immutable
+  source/build identities, raw warm samples and subsequent loop cancellation.
+  [Evidence and remaining gaps](artifacts/shared-animation-remaining/coverage.md)
+  keep full-model memory, 20k release and ~31–33ms cancellation/settle costs open.
+- [ ] Complete performance optimization and available platform checks; macOS and
+  constrained-device qualification remain unavailable here. User docs/changelog and
+  the covered Linux test/CI checks are updated, not a claim of overall completion.
 
-- Keep same-attribute-set validation for explicit keyframes and existing rules
-  for other attr families. Omission is not an implicit content keyframe.
-- Preserve compatible interpolation: pixel numbers, weighted-fill weights and
-  recursively compatible min/max. Choose compatibility per adjacent segment.
-- Incompatible lengths resolve complete expressions to allocation-aware footprints,
-  then interpolate their visible sizes, contributions and policies. Do not silently
-  hold mismatched leaves or discard fill reservations.
-- Restore the original destination expression at completion. Settled symbolic
-  dimensions remain responsive; no cached pixel value replaces the declaration.
-- This animates real layout, not FLIP/paint scaling. Wrapping can remain discrete.
+## Current execution
 
-Reference arithmetic that must not change accidentally:
+Follow the [detailed remaining implementation plan](shared-animation-remaining-implementation.md).
+It maps every unchecked item to P1–P9, with dependencies, implementation tasks,
+native proof requirements, test matrices, performance accounting and closure gates.
+P1's ledger, ordinary retirement receipt and first locked matrix are recorded;
+P2.1's independent-context proof is implemented for the covered matrix. Next close
+P1's remaining phase/lifecycle evidence gaps and P2's broader continuous/coupled
+and composed-input cases, then P3 provenance before P4 transport and P5 lifecycle. Integration
+fixtures and profiling can begin early; final performance/platform qualification
+follows those correctness gates. The registry eligibility optimization does not
+resolve the remaining full-model memory/release costs.
+Native independent-input witnesses supplement the ancestor clock proof; coupled finite motion/holds/releases additionally use leaf forecast evidence. Self-axis,
+combined model/clock provenance and arbitrary reparenting remain unfinished. Pixel clocks have native substitution witnesses when needed.
+No broad feature-completion or unavailable-device claim follows from green CI.
 
-- 600px row: 40px → fill beside one equal-fill sibling targets 300px; linear
-  resolved-box midpoint is **170px**. A basis/weight blend gives **213⅓px** instead.
-- Two simultaneous 40px → fill siblings target **300px each**. Independent probes
-  leaving the peer at 40px incorrectly yield **560px each**.
-- Existing weighted fill 1 → 3 beside weight 1 has midpoint **400px**, not the
-  **375px** produced by always interpolating resolved endpoint widths.
+## Essential regression cases
 
-### Change and lifecycle rules
+- Resolved-content behavior: update
+  `el([Animation.change([width(content())], 1000, :linear)], text("S"))`
+  to the same retained element containing `text("Something")`. Width must animate
+  for 1s despite the unchanged `content()` declaration. With native measured widths
+  `w0` and `w1`, expect `w0 + (w1 - w0) * t` at t=0/.25/.5/.75/1 under a fixed
+  non-wrapping context, with real layout/clip/input updates and no release jump.
+  Also cover shrinking, mid-flight text replacement, same measured size/no restart,
+  timing-only edits, unchanged first mount, descendant-only edits, content height,
+  both-axis policies, and failed-query retries in full/active/dirty/actor paths.
 
-- First mount applies the target immediately. Same element means existing
-  `NodeId` plus mount identity; preserve reconciliation rules. Remount/full upload
-  resets ownership even when numeric ids are reused.
-- A different normalized target starts once using the incoming duration/curve.
-  Identical-target rerenders do not restart. Timing-only edits affect the next run.
-- A new target interrupts from the current native presentation sample over the new
-  duration. An environmental endpoint change instead uses the remaining interval.
-- Adding a policy to an existing node uses a valid old value/frame when available,
-  otherwise seeds immediately. Removing it cancels that property's run and applies
-  the ordinary declaration. A later plain attr clears the earlier policy too.
-- Coalesce applied updates before the next live frame: first source, latest target,
-  no intermediate queue. A→B→A must preserve an original active run when appropriate.
-- One ordinary animatable attr per `change` call; multiple properties can have
-  different timings. Non-length pairs retain existing compatibility restrictions.
-- Keep explicit exit > enter > regular precedence and ordinary restart behavior.
-  Merge change on disjoint fields; reject regular/change overlap. Enter-owned
-  fields keep at most one latest pending change, starting from the handoff sample;
-  an unchanged mount baseline does not create a post-enter transition.
-- Enter still restores base attrs/starts regular animation. A mismatched base may
-  jump under that existing contract. Removal cancels change runs; exit captures
-  the common source presentation. Strip change policies from ghosts.
+- Static allocation control in a 600px row: `min(px(50), fill)` draws 50 but charges 300; weighted-fill(3)
+  charges 450. A fixed-pixel substitution must not give the peer the wrong pool.
+- Two 40→fill siblings lasting 1s/2s: 300/170 at 1s, 300/235 at 1.5s,
+  300/300 at 2s. Do not release the first child early to 430.
+- Parent `[fill, px(400), px(800)]` and child `[px(40), px(40), fill]`, both
+  2s/linear: parent/child 400/40 at 1s, 600/170 at 1.5s, 800/400 at 2s.
+  The old 600/120 midpoint chases an obsolete target and is incorrect.
+- Weight 1→3 beside weight 1: 300→450 with a linear midpoint of 375.
+- Min/max animate/enter/exit/change endpoints are rejected; static min/max layout remains supported.
+- Deadline resize 600→800 must finish at native 600/200, while bad-charge corruption still fails.
+- A 200→content parent with a 40→fill child must not stall at 120/120 and fail
+  release. Joint native destinations are 0/0; the 1s/2s case holds the parent at 0
+  while the child passes 20 and 10 before joint release.
+- A weight-1→3 node removed at its 375px midpoint exits from 375, not its old
+  literal keyframe. A 1s exit to 0 passes 187.5 with its sibling at 412.5.
+- Failed B followed by A restores A's committed clock/source; retrying B does not
+  reset its admitted clock. No failed-attempt history chain.
+- Enter paint can hand off while geometry stays held; delayed regular/change fields
+  keep independent admitted timing without duplicating specifications per field.
 
-## Implementation design
+## Validation
 
-```text
-explicit keyframes ───────┐
-patch-triggered change ───┼→ shared segment selection, easing and interpolation
-enter / exit ownership ──┘                  │
-                                   missing layout endpoints?
-                                   no │             │ yes
-                                      │   cached resolver / private layout tree
-                                      └─────────────┘
-                                              │
-                           effective attrs + native dimension samples
-                                              │
-                                existing live layout and refresh
-```
+After code changes run `cargo test` and `mix test`; use `./ci-tests.sh all` for full
+local coverage. Also check Rust formatting, Clippy and benchmark compilation.
+Current checks: 1324 Rust unit tests plus 14 integration tests; 494 standalone
+Elixir tests/doctests; full CI 499 tests/doctests and zero Dialyzer errors.
+Rust formatting, Clippy with warnings denied, benchmark compilation and diff checks
+pass. Rust tests passed standalone and through the full CI runner.
+Latest checks: `/tmp/shared-final-{cargo,mix,ci,clippy,bench}.log`.
+Focused raster checks: `/tmp/rendered-{matrix,scroll,font,image}.log`;
+wrapper/continuation checks: `/tmp/pixel-wrapper.log`,
+`/tmp/continuation-owner-cache.log`, `/tmp/continuation-cache-direction.log`,
+`/tmp/pixel-boundary.log` and `/tmp/pixel-boundary-scales.log`;
+registry-cache checks: `/tmp/registry-eligibility-focused.log`.
+The first full CI attempt exposed the existing closed-FD-number reuse race in a
+headless test. Its assertion now polls the still-owned pipe writer instead; the
+rerun passes without changing production fence handling.
+These results do not mark the remaining feature work complete.
 
-### 1. Sparse applied effects and source capture
+Mixed boundary checks: `/tmp/mixed-boundary-{expanded,curves,rendered,weighted,both}.log`.
+The initial failure is retained in `/tmp/mixed-boundary-repro.log`.
 
-Keep desired targets/policies in declared attrs. A first-write journal retains only
-pending old values/sources and the latest successfully applied targets; active runs
-retain their clock, optional presentation anchor and current segment endpoints.
-No persistent idle target-history registry, Elixir diff/clock or per-pulse discovery.
+Remaining-plan first-slice evidence: [coverage](artifacts/shared-animation-remaining/coverage.md),
+[decisions](artifacts/shared-animation-remaining/decisions.md),
+[locked measurements](artifacts/shared-animation-remaining/performance/README.md).
+Raw full CI logs and an immutable source archive survive outside `/tmp`. Platform
+inventory confirms an available Wayland socket and AMD Vulkan devices; it does not
+qualify animation presentation. macOS and constrained targets remain untested.
 
-- Reuse patch preimages. Validate non-length pairs before accepting that node's
-  invalid target. Preserve successful-prefix effects even when later patches fail;
-  the journal must survive error returns until the next admission/frame.
-- Use gate C's full-footprint first-write capture, including affected wrappers and
-  policies added later in a coalesced batch. Never resolve old content against newly
-  patched children and call it the previous presentation. Work is proportional to
-  affected attrs/geometry; no universal commit adapter or idle-policy scan.
-- Start newly admitted runs with a fresh/presentation-aligned time, not a stale idle
-  `latest_animation_sample_time`. Paint-only change effects must wake the runtime.
+Coupled-slice logs: `plans/artifacts/shared-animation-remaining/validation/coupled/`.
+[96-process coupled baseline](artifacts/shared-animation-remaining/performance/README-02.md)
+adds actual forecast/projection retention and exposes the 64-loop upward cost
+(~107ms warm / ~86ms release / ~398MiB RSS at 20k), not a passed performance gate.
 
-Create a once spec only for an actual change and use the ordinary sampler. Factor
-small segment-selection/start/completion helpers; do not rewrite owner maps into a
-track graph. Avoid per-tick keyframe generation, debug-string fingerprints and
-quadratic active-id collection. Completion exposes terminal/base attrs before
-pulses stop. Captured native presentation is not a GPU readback.
 
-### 2. One layout-only query workspace
+Ongoing-slice logs: `plans/artifacts/shared-animation-remaining/validation/continuous/`.
+[96-process baseline 03](artifacts/shared-animation-remaining/performance/README-03.md)
+counts 194 steady upward native queries versus 257 previously, but ~76ms warm /
+~87ms release / ~377MiB RSS at 20k/64 remains a failure. D7 records combined-model
+cancellation and first change/ghost admission gaps, not completion of P3.
 
-The native tree's resolver lazily owns one reusable `ElementTree`-shaped workspace,
-shared by all endpoint requests, never one per run/cohort. Build it explicitly from
-model/topology, needed runtime/scroll seeds and layout state; omit raw EMRG bytes,
-registry/render fragments and renderer resources. Keep mutation private and retain
-only compact endpoint footprints/context on runs. Release workspace contents when no mixed
-segment needs them; do not create a global animation cache.
 
-- Initially copy on demand; refresh the model snapshot only after actual layout-model
-  changes. Use a coarse model epoch first, not another patch-replay/diff system.
-  Viewport, metric and sampled-overlay changes update query context, not the model
-  copy. Every snapshot refresh is visible in diagnostics.
-- Reuse the workspace across projections/pulses. Restore previously overridden attrs,
-  apply the new sparse projection, and use existing dependency dirtying and retained
-  layout caches. A→B→A queries must equal fresh evaluations. A clean flag from the
-  wrong context is never sufficient proof of reuse.
-- Seed mutable runtime inputs from the same live context for each query. A prior
-  query's scroll clamp/end-follow must not seed the next query. Restoring those inputs
-  must dirty affected cached work too. Count reset visits; avoid resetting every node
-  when only a few inputs changed. Frames/caches remain keyed results, not new inputs.
-- Use shared attr composition: supplied raw overlays → scale preparation → interaction
-  styles, retaining full/active/dirty modes. Thread viewport/scale and mutable resolver
-  access through these and direct entrypoints, not just the actor. Supply projections
-  directly; do not recurse into sampling or accidentally apply its first keyframe.
-- Run normal measure/resolve on the workspace, collect footprints at their actual
-  measurement/planning/finalization stages, then discard query effects. Live frames
-  still use the same dimension view and layout algorithms and publish normally.
-  No live rollback, new result/commit API or render/registry query pass.
-- Use a narrow read-only image-metrics input for the layout lookup sites. Normal asset
-  setup still runs for the real tree, including direct/headless paths; queries do not
-  enqueue loads, alter authorization or reuse the mutating offscreen snapshot helper.
-  Share immutable fonts/safely keyed text measurements, not asset locks across layout.
+Latest D8 slice: native historical goal receipts fix D7 first change/ghost and
+model-plus-cancellation failures. Field-composed self-axis/numeric/mixed witnesses
+have wrapping/rotation/imposed-size tests; original-query context replay covers
+joint model/viewport/scale/reset and seed membership. Real actor/direct ghost
+lifecycle and capacity-one publication tests pass. Logs/functional source identity:
+`plans/artifacts/shared-animation-remaining/validation/provenance-fields/`.
+General topology/role/unit transport and complete P2/P3/P5/P6 matrices remain open.
+Baseline 03 predates receipt storage; its timings are not current qualification.
 
-This deliberately spends one tree-shaped workspace to avoid a large ownership
-refactor. Fresh isolated evaluation is the cache/isolation oracle. Reusing scroll,
-paragraph, Nearby and allocation state safely is a test obligation, not an assumed
-benefit of `Clone`.
+### D9 checkpoint — directed native structural transport
 
-### 3. Shared lazy endpoint resolver
+Native source transport now covers directed reparent/role/unit/root/remount cases,
+including numeric fast-path promotion, both-axis and coupled motion, first-write
+retries, hold migration, incoming change ownership and ghost cleanup. Added 270
+role/unit/curve cases and 24 joint font/image/runtime/scroll/scale traces. See
+[coverage](artifacts/shared-animation-remaining/coverage.md) and decisions D9.
+Broad P2–P5 qualification and performance remain open; same-ID image primitives
+still have mutable render-time bindings. No package is closed by this checkpoint.
 
-For each adjacent segment:
+### D10 checkpoint — retained image bindings
 
-1. Genuinely compatible semantic pair: keep existing interpolation. A captured mixed
-   footprint is not made compatible merely by its visible pixel value.
-2. Use a valid full source footprint in its original coordinate/scope context.
-3. Derive context-independent footprint fields directly; reuse valid captured/cached
-   fields. A constant visible size alone does not prove the complete endpoint known.
-4. Only missing layout-dependent information runs a workspace projection.
+The D9 same-ID image replay gap is fixed for captured native scenes, including
+cached-only assets, replacement before first paint, source/cache reset, raster/SVG
+fits, grayscale policy and renderer-local generation collisions. Loader stale
+completion is now exercised with real tree-update animation publication under
+both decode policies. See decisions D10 and `validation/image-bindings/`.
+Atomic layout/scene asset provenance, broader lifecycle/input matrices, retention
+budgets and performance/platform qualification remain open.
 
-Resolve the complete expression and whole keyframe context, including both axes,
-insets, fonts, image aspect ratio and layout scale. Preserve terminal expressions.
-An arbitrary previous frame is not an explicit keyframe's endpoint. Convert units
-using the corresponding source/projection scale once, not a patched scale twice.
 
-Cache by segment/projection identity and actual layout inputs: model epoch,
-viewport/scale, allocation scope, relevant metric versions and full foreign samples.
-Include footprint/policy differences, not only visible sizes. Exclude the
-projection's own sampled writes, policy-only changes and unchanged asset dimensions.
-Generic `Measure` is work classification, not an endpoint-cache key. Start with
-conservative invalidation for other layout animations; no dependency graph.
+### D11 checkpoint — atomic frames and bounded actor output
 
-### 4. Chosen concurrent rule: shared boundaries, frozen foreign samples
+Prepared image inputs now bind dimensions and paint atomically across controlled
+replacement/epoch races. Broader orphan/root, noncanonical self-/cross-axis and
+complex ghost/hold traces exposed and fixed root source loss and Slider intrinsic
+width leakage. A full event channel no longer prevents actor Stop; latest registry/
+scene coalescing and native input/raster/damage parity have directed tests. See D11
+in decisions/coverage and `validation/atomic-publication/`. Full cross-product,
+performance/memory and platform gates remain open; no package closure.
 
-Mixed endpoints describe current layout context, not a prediction of future tracks.
-Use this deterministic, bounded rule for both frontends:
+### Post-D11 rebase checkpoint
 
-1. Select all segments/owners at one sample time. Freeze full peer samples from existing
-   endpoint caches before refreshing any endpoint. Cold entries use captured sources
-   or their symbolic source keyframe, not another query's newly produced result.
-2. For an endpoint boundary, project fields sharing that exact segment-boundary time
-   to the corresponding keyframe together. Other fields keep the frozen sample.
-   Group by actual boundary, not merely parent, patch batch or animation owner.
-3. Query each distinct missing projection once, collecting all required footprint
-   fields together. Include compatible fields reaching that boundary too; otherwise
-   a sibling's final fill weight can be wrong.
-4. On context change, anchor at the current sample and retarget over the remaining
-   interval. Preserve the remaining easing-curve interval rather than restarting
-   ease-in every pulse. Do not feed refreshed endpoints recursively into peer queries.
-5. At boundaries/completion, apply normal owner/keyframe/ghost behavior and invalidate
-   affected peer contexts. Multi-segment and loop boundaries retain existing semantics;
-   a cohort is not a new persistent scheduling object.
-
-Track context per property/field group, not just node: another independently timed
-axis on the same node can affect layout. Evaluate whole projections and deduplicate
-identical inputs. Different deadlines can require different queries each frame.
-
-Why not cache one final tree? For two 40px → fill siblings in 600px, with durations
-1s and 2s, joint final endpoints are 300px. At 1s the slow sibling is 170px under
-that scheme; restoring the fast sibling to fill makes it **430px**, a **130px jump**.
-
-The chosen rule is not yet proven for the full engine. The earlier row-only model
-showed sampling-dependent retargeting, not a closed-form future-layout solution.
-Test sparse/skipped pulses, curves and continuity in native layout. If reference
-cases fail, revise the rule, not the promised matrix.
-
-### 5. Declarative metadata and compatibility
-
-Normalize wrappers to ordinary targets plus per-property policies, e.g.:
-
-```elixir
-%{width: :fill, animate_change: %{width: %{duration: 1000, curve: :linear}}}
-```
-
-Merge policies per canonical property/field group and retain them in normal attr
-hashing/equality. Reuse duration/curve/attr validation. Remove only width/height
-cross-variant rejection; validate other old/new pairs through shared rules.
-
-Add one policy attribute to native/Elixir codecs and update EMRG/macOS host
-compatibility/documentation. Existing length tags stay unchanged; footprints/policy
-blends are native-only. Do not duplicate
-targets on the wire, serialize presentation history, overload `:animate`/`:on_change`,
-or add NIF entry points or per-frame BEAM calls. Keep BEAM collection work linear.
-
-## Work budget and implementation order
-
-Let `N` be model size, `R` active fields and `Q` distinct missing projections. Added
-retention is one layout workspace `O(N)`, run-local footprints `O(R)` and compact
-last-layout facts where existing node/cache output is insufficient—not `O(N × R)`.
-Measure actual bytes, including idle-node result storage. Extra work is projection
-preparation, `Q` layout evaluations and local policy arithmetic over existing planner
-seeds. Keep plain/compatible fast paths; do not automatically run a full-tree query
-for every policy. Count any dependent-policy query in `Q` as well. No claim that every
-layout is local or that `Q` is globally at most two.
-
-| Case, excluding ordinary live layout | Expected extra endpoint work |
-| --- | --- |
-| Genuinely compatible semantic pairs | No query or workspace allocation |
-| Complete footprints provably context-independent | No query |
-| Full captured source → fully derivable destination in the same role | No query |
-| Known source footprint → unknown destination footprint | Typically one projection |
-| Both footprints unknown | Up to two for one coherent segment context |
-| Warm unchanged footprints and available policy inputs | No endpoint/policy query or model copy |
-| Asynchronous peers or missing dependent policy inputs | Up to one evaluation per distinct missing projection per pulse; reuse the model copy |
-| Real layout-model edits while endpoints are needed | Coarse snapshot refresh can be `O(N)`; measure this cost explicitly |
-
-A pixel value alone no longer earns a zero-query claim: role, intrinsic/basis facts
-and policy must also be known. This corrects the pre-gate work estimate.
-
-1. **Dimension view and observation:** extract the existing length-dependent operations,
-   preserving ordinary behavior. Record missing live planner/basis facts and expose a
-   test-only footprint collector; run all existing tests before adding mixed behavior.
-2. **Charge repair:** replay endpoints with internal samples and implement independent
-   visible/charge interpolation. Pass gate A, including all/subsets of sampled fills,
-   overflow and visible-total alignment; retain the six negative controls unchanged.
-3. **Role/policy repair:** add intrinsic/initial/final channels and the typed policy
-   bridges. Pass the full gate D matrix and near-endpoint tests, not just the 600px row.
-   If a consumer still reads surrogate pixel semantics, migrate it before proceeding.
-4. **Shared runtime/resolver:** connect full source capture, common sampler, one cached
-   workspace, peer footprints, lifecycle and direct/headless paths. Compare cache hits
-   and every optimized projection with fresh evaluation and different query order.
-5. **Public acceptance and qualification:** only then relax width/height validation,
-   add change metadata/codecs/docs and qualify all owners, segments and API equivalence.
-   Measure cold starts, warm frames, model edits, policy blends and asynchronous peers.
-
-No persistent-tree architecture, separate allocation solver or shadow-tree patch engine.
-Small pure calculations over the existing planner seeds are justified by the policy
-bridge; a second endpoint-layout algorithm is not. If copying dominates, copy known
-changed inputs from existing effects. If layouts dominate, inspect cache validity and
-visited nodes first. A failed memory/frame budget still blocks acceptance.
-
-## Acceptance and validation
-
-- Close gate D with full-footprint/scene parity, including unchanged visible sizes
-  with changing allocation, intrinsic contribution or policy.
-- Generate representative length Cartesian products on both axes/all owners,
-  including recursive bounds, reversals and multiple segments. Compare explicit
-  `animate([A,B])` with settled `change(A) → change(B)` at matching times/context.
-- Preserve numeric/weighted/min-max baselines, curves, finite repeats/loops and
-  segment joins. Non-length malformed/incompatible inputs must fail clearly.
-- Verify initial/identical/policy-only updates, idle start, A→B→A coalescing,
-  interruption/reversal, per-property timing, keyed/unkeyed identity, remount/full
-  upload, owner conflicts, enter/base handoff and exit/ghost cleanup.
-- Verify old semantic/source data through text fast paths, scale/topology edits and
-  successful patch prefixes followed by failure; no corrupted next transition.
-- Compare old/new geometry, pixels, clips, hits, nearby border-box alignment, wrapped
-  text, image aspect ratio, intrinsic parents, insets, scroll end-following and rotation.
-- Prove query isolation and normal live derived effects; no asset requests, leaked
-  probe frames, stale dependency flags or cross-query scroll feedback. Compare A→B→A
-  and permuted projection orders with fresh layout, including failed/pending assets.
-- Confirm cold/warm query counts, zero endpoint work on compatible/compositor paths,
-  no idle discovery scans and no regenerated specs. Measure layout/input-reset visits,
-  model-copy count/bytes, retained/peak workspace memory and cache hits in large trees.
-  Include many asynchronous tracks and frequent unrelated content/model edits; report
-  cold-start and worst-frame costs separately rather than hiding them in averages.
-- Test shared `TreeUpdateEngine`, direct/headless helpers and macOS integration;
-  backend orchestration remains unchanged. Use constrained-device evidence for
-  performance acceptance, not code-reading estimates.
-
-```bash
-cargo test --manifest-path native/emerge_skia/Cargo.toml
-EMERGE_SKIA_BUILD=1 mix test
-EMERGE_SKIA_BUILD=1 ./ci-tests.sh
-```
-
-Respect the performance lock in [animation smoothness](active-low-resource-animation-smoothness.md).
-That existing device/performance plan is not superseded by this feature plan.
-See also [layout/cache flow](../guides/internals/layout-refresh-render-flow.md),
-[layout caching roadmap](layout-caching-roadmap.md) and
-[platform orchestration](platform-runtime-architecture-differences.md).
-
-The planning iteration used a standalone rational-arithmetic row model. The first
-implementation step adds six native layout/sampler characterization tests for
-endpoint substitution and records the blocker above. Runtime code and the public
-API remain unchanged. Validation in `/workspace/emerge-animation` passed:
-
-- `cargo test`: 1059 unit tests and 14 integration tests.
-- `EMERGE_SKIA_BUILD=1 mix test`: 483 tests/doctests passed, 8 excluded.
-- `cargo clippy --tests -- -D warnings`, `cargo fmt -- --check`, `git diff --check`.
-
-Gate-repair planning re-audited the native length consumers and checked a rational
-budget model across 504 pool/subset cases plus the quarter/mid/three-quarter samples
-above. The six unchanged native reference tests were re-run and passed. This establishes
-the charge algebra and existing behavior only—not repair/policy parity. No repair
-implementation, performance benchmark or constrained-device qualification has been run.
+Rebased onto `headless-backend` `39997f0`; the rebase checkpoint's planning HEAD
+was `84906f7`. Implementation subsequently landed in the
+[commit sequence](animation-commit-sequence.md). See [collision review](animation-headless-rebase.md)
+and `validation/headless-rebase/`: 1392 Rust units + 14 integration, full CI 526
+Elixir tests/doctests, Dialyzer 0. Paragraph decoration/animation integration has
+18 new directed traces. Old benchmark identities remain historical; cache-budget
+and node-storage changes require fresh measurement. No P1–P9 closure.
