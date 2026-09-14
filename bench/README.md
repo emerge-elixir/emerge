@@ -187,3 +187,20 @@ source-tree cloning; `warm_refresh` measures retained scene/registry refresh, no
 GPU draw time. The same words are used in each variant. Run under the exclusive
 performance lock with an immutable source identity; do not interpret these host
 measurements as constrained-device or blurred-shadow GPU qualification.
+
+## Shared-animation publication probe
+
+The native `shared_animation` benchmark and its runners measure native layout/
+publication and synchronous retirement, not raster/GPU/BEAM/display latency.
+Use a **new output directory outside the repository**. The runner records immutable
+source/build identities, raw samples and repeated separate processes. Do not run
+builds or tests concurrently with measurements.
+
+```bash
+./scripts/performance-lock.sh --source-revision snapshot-created-under-lock exclusive \
+  python3 scripts/benchmarks/shared-animation/run.py /tmp/emerge-animation-results
+python3 scripts/benchmarks/shared-animation/summarize.py /tmp/emerge-animation-results
+```
+
+The full matrix uses 5k/20k nodes and 1/64 owners. Preserve paint/pixel controls;
+RSS is not exact live heap, and desktop timings do not qualify constrained devices.
