@@ -137,6 +137,34 @@ jobs:
             variant: "vulkan"
             cargo_args: "--no-default-features --features wayland-all,drm-all,headless-all,embedded-freetype"
             system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev"
+          - name: linux_musl_raster
+            target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+            container: musl
+            profile: raster
+            variant: ""
+            system_packages: ""
+          - name: linux_musl_opengl
+            target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+            container: musl
+            profile: opengl
+            variant: "opengl"
+            system_packages: ""
+          - name: linux_riscv64_raster
+            target: riscv64gc-unknown-linux-gnu
+            os: ubuntu-24.04
+            container: riscv64
+            profile: raster
+            variant: ""
+            system_packages: ""
+          - name: linux_riscv64_opengl
+            target: riscv64gc-unknown-linux-gnu
+            os: ubuntu-24.04
+            container: riscv64
+            profile: opengl
+            variant: "opengl"
+            system_packages: ""
           - name: linux_armv7_raster
             target: armv7-unknown-linux-gnueabihf
             os: ubuntu-24.04
@@ -245,7 +273,31 @@ jobs:
             exit 1
           fi
 
+      - name: Build embedded musl and RISC-V artifacts
+        if: ${{ matrix.job.container != '' }}
+        id: build-container
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build -t emerge-embedded \
+            -f native/emerge_skia/support/release/Dockerfile.${{ matrix.job.container }} \
+            native/emerge_skia/support/release
+          artifact_dir="$RUNNER_TEMP/embedded-artifacts"
+          mkdir -p "$artifact_dir"
+          docker run --rm --env EMERGE_SOURCE_REVISION \
+            --mount "type=bind,source=$GITHUB_WORKSPACE,target=/source,readonly" \
+            --mount "type=bind,source=$artifact_dir,target=/artifacts" \
+            emerge-embedded '${{ matrix.job.target }}' '${{ matrix.job.profile }}' \
+            "$PROJECT_VERSION" '${{ matrix.nif }}'
+          suffix='${{ matrix.job.variant }}'
+          if [[ -n "$suffix" ]]; then suffix="--$suffix"; fi
+          name="libemerge_skia-v$PROJECT_VERSION-nif-${{ matrix.nif }}-${{ matrix.job.target }}$suffix.so.tar.gz"
+          test -s "$artifact_dir/$name"
+          echo "file-name=$name" >> "$GITHUB_OUTPUT"
+          echo "file-path=$artifact_dir/$name" >> "$GITHUB_OUTPUT"
+
       - name: Build the project
+        if: ${{ matrix.job.container == '' }}
         id: build-crate
         uses: philss/rustler-precompiled-action@v1.1.4
         with:
@@ -306,14 +358,14 @@ jobs:
       - name: Artifact upload
         uses: actions/upload-artifact@v6
         with:
-          name: ${{ steps.build-crate.outputs.file-name }}
-          path: ${{ steps.build-crate.outputs.file-path }}
+          name: ${{ steps.build-crate.outputs.file-name || steps.build-container.outputs.file-name }}
+          path: ${{ steps.build-crate.outputs.file-path || steps.build-container.outputs.file-path }}
 
       - name: Publish archives and packages
         if: ${{ startsWith(github.ref, 'refs/tags/v') }}
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ steps.build-crate.outputs.file-path }}
+          files: ${{ steps.build-crate.outputs.file-path || steps.build-container.outputs.file-path }}
 
   build_macos_host:
     name: macos_host - ${{ matrix.job.name }}

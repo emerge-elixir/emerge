@@ -46,6 +46,8 @@ defmodule EmergeSkia.ChecksumMetadataTest do
              "libemerge_skia-v#{version}-nif-2.15-aarch64-unknown-linux-gnu.so.tar.gz",
              "libemerge_skia-v#{version}-nif-2.15-armv7-unknown-linux-gnueabihf--opengl.so.tar.gz",
              "libemerge_skia-v#{version}-nif-2.15-armv7-unknown-linux-gnueabihf.so.tar.gz",
+             "libemerge_skia-v#{version}-nif-2.15-riscv64gc-unknown-linux-gnu--opengl.so.tar.gz",
+             "libemerge_skia-v#{version}-nif-2.15-riscv64gc-unknown-linux-gnu.so.tar.gz",
              "libemerge_skia-v#{version}-nif-2.15-x86_64-unknown-linux-gnu--drm.so.tar.gz",
              "libemerge_skia-v#{version}-nif-2.15-x86_64-unknown-linux-gnu--drm_vulkan.so.tar.gz",
              "libemerge_skia-v#{version}-nif-2.15-x86_64-unknown-linux-gnu--drm_wayland.so.tar.gz",
@@ -53,7 +55,9 @@ defmodule EmergeSkia.ChecksumMetadataTest do
              "libemerge_skia-v#{version}-nif-2.15-x86_64-unknown-linux-gnu--raster.so.tar.gz",
              "libemerge_skia-v#{version}-nif-2.15-x86_64-unknown-linux-gnu--vulkan.so.tar.gz",
              "libemerge_skia-v#{version}-nif-2.15-x86_64-unknown-linux-gnu--wayland_vulkan.so.tar.gz",
-             "libemerge_skia-v#{version}-nif-2.15-x86_64-unknown-linux-gnu.so.tar.gz"
+             "libemerge_skia-v#{version}-nif-2.15-x86_64-unknown-linux-gnu.so.tar.gz",
+             "libemerge_skia-v#{version}-nif-2.15-x86_64-unknown-linux-musl--opengl.so.tar.gz",
+             "libemerge_skia-v#{version}-nif-2.15-x86_64-unknown-linux-musl.so.tar.gz"
            ]
 
     on_exit(fn -> File.rm_rf!(cache_path) end)

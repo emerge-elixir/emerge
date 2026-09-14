@@ -1,6 +1,10 @@
 defmodule EmergeSkia.BuildConfig do
   @moduledoc false
 
+  @targets_path Path.expand("../../mix/targets.exs", __DIR__)
+  @external_resource @targets_path
+  @nerves_compilers elem(Code.eval_file(@targets_path), 0)
+
   @version Mix.Project.config()[:version]
   @force_precompiled_build_env_key "EMERGE_SKIA_BUILD"
   @load_macos_nif_env_key "EMERGE_SKIA_LOAD_MACOS_NIF"
@@ -13,9 +17,13 @@ defmodule EmergeSkia.BuildConfig do
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu"
   ]
-  @linux_armv7_precompiled_target "armv7-unknown-linux-gnueabihf"
+  @linux_embedded_precompiled_targets [
+    "armv7-unknown-linux-gnueabihf",
+    "x86_64-unknown-linux-musl",
+    "riscv64gc-unknown-linux-gnu"
+  ]
   @linux_precompiled_backend_profiles [[], [:wayland], [:drm], [:wayland, :drm]]
-  @precompiled_targets @linux_64_precompiled_targets ++ [@linux_armv7_precompiled_target]
+  @precompiled_targets @linux_64_precompiled_targets ++ @linux_embedded_precompiled_targets
   @macos_host_targets ["aarch64-apple-darwin", "x86_64-apple-darwin"]
   @precompiled_nif_versions ["2.15"]
   @valid_backends [:wayland, :drm, :macos]
@@ -72,12 +80,7 @@ defmodule EmergeSkia.BuildConfig do
 
                                if Map.get(env, "NERVES_SDK_SYSROOT") not in [nil, ""] or
                                     has_mix_target? or
-                                    cc_prefix in [
-                                      "armv6-nerves-linux-gnueabihf",
-                                      "armv7-nerves-linux-gnueabihf",
-                                      "aarch64-nerves-linux-gnu",
-                                      "x86_64-nerves-linux-musl"
-                                    ] or has_target_env? do
+                                    Map.has_key?(@nerves_compilers, cc_prefix) or has_target_env? do
                                  [:drm]
                                else
                                  case Map.get(env, "TARGET_OS") do
@@ -439,9 +442,13 @@ defmodule EmergeSkia.BuildConfig do
           :wayland_vulkan,
           :drm_vulkan,
           :headless_vulkan
-        ]),
-      @linux_armv7_precompiled_target => variants_for.(@linux_armv7_precompiled_target, [:opengl])
+        ])
     }
+    |> Map.merge(
+      Map.new(@linux_embedded_precompiled_targets, fn target ->
+        {target, variants_for.(target, [:opengl])}
+      end)
+    )
   end
 
   @doc false
@@ -502,14 +509,14 @@ defmodule EmergeSkia.BuildConfig do
           compiled_vulkan_backends == [] and compiled_opengl_backends == [] ->
           {:ok, :raster}
 
-        target == @linux_armv7_precompiled_target and compiled_vulkan_backends != [] ->
+        target in @linux_embedded_precompiled_targets and compiled_vulkan_backends != [] ->
           :error
 
-        target == @linux_armv7_precompiled_target and compiled_backends == [] and
+        target in @linux_embedded_precompiled_targets and compiled_backends == [] and
             compiled_opengl_backends == [] ->
           {:ok, nil}
 
-        target == @linux_armv7_precompiled_target and compiled_backends == [:drm] and
+        target in @linux_embedded_precompiled_targets and compiled_backends == [:drm] and
             compiled_opengl_backends == [:drm] ->
           {:ok, :opengl}
 
@@ -658,16 +665,7 @@ defmodule EmergeSkia.BuildConfig do
   end
 
   defp nerves_compiler?(nil), do: false
-
-  defp nerves_compiler?(compiler) do
-    case compiler_prefix(compiler) do
-      "armv6-nerves-linux-gnueabihf" -> true
-      "armv7-nerves-linux-gnueabihf" -> true
-      "aarch64-nerves-linux-gnu" -> true
-      "x86_64-nerves-linux-musl" -> true
-      _other -> false
-    end
-  end
+  defp nerves_compiler?(compiler), do: Map.has_key?(@nerves_compilers, compiler_prefix(compiler))
 
   defp mix_target?(env) do
     case Map.get(env, "MIX_TARGET") do

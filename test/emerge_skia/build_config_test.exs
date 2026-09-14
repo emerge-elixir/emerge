@@ -227,8 +227,30 @@ defmodule EmergeSkia.BuildConfigTest do
     assert BuildConfig.precompiled_targets() == [
              "x86_64-unknown-linux-gnu",
              "aarch64-unknown-linux-gnu",
-             "armv7-unknown-linux-gnueabihf"
+             "armv7-unknown-linux-gnueabihf",
+             "x86_64-unknown-linux-musl",
+             "riscv64gc-unknown-linux-gnu"
            ]
+  end
+
+  test "embedded musl and RISC-V targets only select published profiles" do
+    for {compiler, target} <- [
+          {"x86_64-nerves-linux-musl-gcc", "x86_64-unknown-linux-musl"},
+          {"riscv64-nerves-linux-gnu-gcc", "riscv64gc-unknown-linux-gnu"}
+        ] do
+      assert BuildConfig.default_compiled_backends(%{"CC" => compiler}) == [:drm]
+      assert {:ok, %{variant: nil}} = BuildConfig.precompiled_profile(%{}, [], target)
+      assert {:ok, %{variant: :opengl}} = BuildConfig.precompiled_profile(%{}, [:drm], target)
+
+      assert {:error, :unsupported_profile} =
+               BuildConfig.precompiled_profile(%{}, [:wayland], target)
+
+      assert {:error, :unsupported_profile} =
+               BuildConfig.precompiled_profile(%{}, [:drm], [:drm], [], target)
+
+      assert BuildConfig.precompiled_variants(%{}, [:drm])[target][:opengl].(%{})
+      refute BuildConfig.precompiled_variants(%{}, [])[target][:opengl].(%{})
+    end
   end
 
   test "explicit ARMv7 environment resolves the ARMv7 precompiled target" do

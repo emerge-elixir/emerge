@@ -4,9 +4,13 @@
 
 ### Added
 
+- Add release builds for x86_64 musl and RISC-V64 GNU (raster and DRM/OpenGL), Nerves compiler detection for MangoPi, and dynamic-CRT flags for musl NIF source builds. New artifacts require publication with matching package checksums.
+
 - Added `Emerge.UI.Color.gradient/1,2` for evenly spaced gradients with two or more colors, usable in all UI color slots: backgrounds, inherited/paragraph/input text, borders, shadows and SVG template tint. Animated solid endpoints are lifted to the gradient endpoint; gradient endpoints require matching stop counts.
 
 ### Changed
+
+- Split Mix configuration into build-only native, packaging and documentation helpers, sharing compiler target data while preserving SDK setup and precompiled selection.
 
 - **Visual change:** `Border.shadow` and `Border.glow` now paint the full box-shaped shadow behind backgrounds and content, including text. Transparent interiors reveal the shadow instead of cutting it out; opaque backgrounds still cover it. Applies to ordinary elements and inline paragraph wrappers; inset shadows are unchanged.
 
@@ -18,6 +22,8 @@
 - Updated the macOS host protocol to version 13 for parsed SVG cache configuration and universal multi-color gradients.
 
 ### Fixed
+
+- Use libc's platform-specific ioctl request type for DMA-BUF CPU synchronization, fixing DRM/OpenGL compilation against musl.
 
 - Inline paragraph wrappers now paint explicit solid/gradient backgrounds, all border styles, outer/inner shadows and glow per wrapped-line segment. Opaque backgrounds hide interior shadows; absent backgrounds emit no background draw. Border/padding insets participate in wrapping; shadows remain paint-only. Per-edge borders and shadows now preserve independent corner radii on ordinary boxes too.
 

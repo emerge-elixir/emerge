@@ -173,7 +173,8 @@ const DRM_FORMAT_XRGB8888: u32 = fourcc(b'X', b'R', b'2', b'4');
     all(feature = "wayland", target_os = "linux"),
     all(feature = "drm", target_os = "linux")
 ))]
-const DMA_BUF_IOCTL_SYNC: libc::c_ulong = 0x4008_6200;
+// musl's ioctl request is c_int; glibc's is c_ulong. Let libc select the ABI.
+const DMA_BUF_IOCTL_SYNC: libc::Ioctl = 0x4008_6200;
 #[cfg(any(
     all(feature = "wayland", target_os = "linux"),
     all(feature = "drm", target_os = "linux")
@@ -6994,6 +6995,22 @@ impl RendererVideoState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(all(target_os = "linux", any(feature = "wayland", feature = "drm")))]
+    #[test]
+    fn dma_buf_sync_request_matches_the_libc_ioctl_abi() {
+        assert_eq!(DMA_BUF_IOCTL_SYNC, libc::_IOW::<u64>(u32::from(b'b'), 0));
+        let mut flags = DMA_BUF_SYNC_READ;
+        // Invalid fd: exercise the native signature without touching a device.
+        assert_eq!(
+            unsafe { libc::ioctl(-1, DMA_BUF_IOCTL_SYNC, &mut flags) },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EBADF)
+        );
+    }
     #[cfg(all(
         target_os = "linux",
         feature = "vulkan",

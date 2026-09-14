@@ -1,0 +1,10 @@
+# Native musl compiler and libraries: never link GNU libraries into this NIF.
+FROM alpine:3.22.3
+RUN apk add --no-cache bash build-base clang clang-dev llvm-dev linux-headers python3 \
+    ninja pkgconf curl git binutils gcompat mesa-dev libdrm-dev
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo
+ENV PATH=/opt/cargo/bin:$PATH
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- \
+    -y --profile minimal --default-toolchain 1.91.0
+WORKDIR /source/native/emerge_skia
+ENTRYPOINT ["bash", "support/release/build.sh"]

@@ -1,7 +1,8 @@
 # Build the native renderer
 
 Emerge normally downloads a precompiled Linux NIF or the matching macOS host.
-Precompiled Linux artifacts cover x86_64, AArch64, and ARMv7 hard-float. A
+The release matrix covers x86_64 GNU/musl, AArch64 GNU, ARMv7 hard-float,
+and RISC-V64 GNU. A
 source build is required only for unsupported targets or custom backend
 combinations.
 
@@ -18,6 +19,13 @@ The crate declares Rust 1.91 as its minimum and CI tests that version as well as
 current stable Rust.
 
 ## Force a source build
+
+A consuming application that builds from source must explicitly depend on
+Rustler (Emerge's Rustler dependency is optional):
+
+```elixir
+{:rustler, "~> 0.38.0", runtime: false}
+```
 
 Set the build-only variable before fetching or compiling dependencies:
 
@@ -66,6 +74,8 @@ The release artifact profiles are:
 | `x86_64-unknown-linux-gnu` | Wayland/OpenGL | DRM/OpenGL, combined Wayland/DRM, minimal raster, Vulkan-only Wayland/DRM/headless, combined Vulkan/OpenGL |
 | `aarch64-unknown-linux-gnu` | Wayland/OpenGL | DRM/OpenGL, combined Wayland/DRM, minimal raster, Vulkan-only Wayland/DRM/headless, combined Vulkan/OpenGL |
 | `armv7-unknown-linux-gnueabihf` | Minimal raster | DRM/headless OpenGL |
+| `x86_64-unknown-linux-musl` | Minimal raster | DRM/headless OpenGL |
+| `riscv64gc-unknown-linux-gnu` | Minimal raster | DRM/headless OpenGL |
 
 The ARMv7 artifact uses the hard-float ABI of the
 `armv7-nerves-linux-gnueabihf` toolchain used by Cortex-A7 systems such as
@@ -76,6 +86,18 @@ already resolved from the Nerves compiler in `CC`, so
 `armv7-nerves-linux-gnueabihf-gcc` selects `armv7-unknown-linux-gnueabihf`
 even though Nerves exposes `TARGET_ARCH=arm`. No environment override is needed.
 
+Nerves x86_64 selects the **musl**, not GNU/glibc, artifact. MangoPi MQ Pro
+uses `riscv64gc-unknown-linux-gnu`: the `riscv64-nerves-linux-gnu` compiler and
+`TARGET_ARCH=riscv64` are normalized to Rust's `riscv64gc` target. Both default
+to the DRM/OpenGL variant in Nerves; Wayland and Vulkan profiles on these two
+targets still require source builds. The artifacts use embedded FreeType and
+no desktop fontconfig. GPU profiles still require suitable target EGL/GBM/DRM
+libraries and drivers; compiling a package does not qualify GPU support on a board.
+
+These new targets require a release containing the matching binaries and
+checksum manifest. `0.4.0-beta.1` does **not** contain either target; adding
+Rustler alone does not supply a missing precompiled artifact.
+
 A renderer-only embedded application selects the minimal raster artifact with:
 
 ```elixir
@@ -85,7 +107,7 @@ config :emerge,
 
 This is the NameBadge profile. It contains CPU raster rendering, registered
 fonts, image decoding, and SVG rendering without desktop or video dependencies.
-On ARMv7, `compiled_backends: [drm: [:opengl]]` selects the OpenGL artifact,
+On ARMv7, x86_64 musl and RISC-V64, `compiled_backends: [drm: [:opengl]]` selects the OpenGL artifact,
 which also supports headless OpenGL rendering.
 
 Use an exact API list to exclude the other GPU API. For example, an RPi5 DRM
@@ -160,3 +182,20 @@ cargo clippy --manifest-path native/emerge_skia/Cargo.toml -- -D warnings
 
 Release validation must also compile the unpacked Hex package so missing native
 sources, benchmarks, support files, or guides are detected before publication.
+
+## Maintaining build configuration
+
+`mix.exs` keeps project metadata, dependencies and commands. Build-only helpers
+in `mix/native.exs`, `mix/package.exs` and `mix/docs.exs` own SDK preparation,
+package contents and documentation settings. They load before dependencies and
+are included in the Hex package.
+
+`mix/targets.exs` contains the shared Nerves compiler mapping. The runtime
+BuildConfig embeds this data at compilation; runtime code does not load Mix
+helpers. Native/BuildConfig track the relevant helper/data files as external
+resources so subsequent Mix runs recompile affected modules when those inputs
+change. Preserve these bootstrap and invalidation rules when editing helpers.
+
+`test/mix_project_test.exs` covers cold project loading and SDK behavior.
+`mix test test/mix_package_test.exs --include full_sweep` additionally checks an
+unpacked, offline consumer without Rustler and incremental recompilation.

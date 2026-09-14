@@ -3,6 +3,10 @@ defmodule EmergeSkia.Native do
   NIF bindings for the Skia renderer.
   """
 
+  # Mix helpers are not normal lib modules; changes must still invalidate this NIF wrapper.
+  @external_resource Path.expand("../../mix/native.exs", __DIR__)
+  @external_resource Path.expand("../../mix/targets.exs", __DIR__)
+
   @behaviour VideoInterop.AbandonmentGuard
 
   @checksum_only EmergeSkia.BuildConfig.checksum_only_mode?()
