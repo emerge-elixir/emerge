@@ -1,0 +1,19 @@
+   Compiling emerge_skia v0.4.0 (/workspace/emerge-animation/native/emerge_skia)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.57s
+     Running unittests src/lib.rs (native/emerge_skia/target/debug/deps/emerge_skia-fd4f0b51952a2096)
+
+running 1 test
+
+thread 'assets::tests::frozen_frame_lookups_do_not_resurrect_sources_after_epoch_reset' (24693) panicked at src/assets/tests.rs:854:13:
+paint/query lookup must not write a new-epoch source
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test assets::tests::frozen_frame_lookups_do_not_resurrect_sources_after_epoch_reset ... FAILED
+
+failures:
+
+failures:
+    assets::tests::frozen_frame_lookups_do_not_resurrect_sources_after_epoch_reset
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1361 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--lib`

@@ -1,0 +1,5 @@
+1:  e38f0b0 = 1:  671405b Preserve animation planning on dedicated branch
+2:  5475831 = 2:  ac30a4e Unify animation features and architecture into one plan
+3:  7c3825c = 3:  4f85ff2 Simplify animation plan with cached layout projections
+4:  5d9d64e = 4:  98ad9d8 Add native endpoint parity gates and record allocation blocker
+5:  592c2fe = 5:  84906f7 Plan allocation-aware samples to repair endpoint parity

@@ -1,0 +1,19 @@
+   Compiling emerge_skia v0.4.0 (/workspace/emerge-animation/native/emerge_skia)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.25s
+     Running unittests src/lib.rs (native/emerge_skia/target/debug/deps/emerge_skia-fd4f0b51952a2096)
+
+running 1 test
+
+thread 'tree::animation::lengths::tests::continuation::noncanonical_self_axis_repeats_interruptions_and_failures_preserve_admission_clocks' (3284) panicked at src/tree/animation/lengths/tests/continuation.rs:2916:37:
+Slider Full Linear 0.5 250000: Err(Native(ReleaseMismatch(NodeId(2), Width)))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test tree::animation::lengths::tests::continuation::noncanonical_self_axis_repeats_interruptions_and_failures_preserve_admission_clocks ... FAILED
+
+failures:
+
+failures:
+    tree::animation::lengths::tests::continuation::noncanonical_self_axis_repeats_interruptions_and_failures_preserve_admission_clocks
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1356 filtered out; finished in 5.84s
+
+error: test failed, to rerun pass `--lib`

@@ -1,0 +1,12 @@
+{
+  "source": "source-sha256:aab1a31e9e1e611b98c2ab057b4dcfc089de2db7c56c428d4edd2ff6b57edf3f",
+  "head_for_reference_only": "592c2febc53a79ada96dbdc429ec057d78954c55",
+  "scope": "Functional validation only; no D9 benchmark or device presentation qualification. Manifest includes native/Elixir code and tests, build configuration and test assets.",
+  "rustc": "rustc 1.93.1 (01f6ddf75 2026-02-11)\nbinary: rustc\ncommit-hash: 01f6ddf7588f42ae2d7eb0a2f21d44e8e96674cf\ncommit-date: 2026-02-11\nhost: x86_64-unknown-linux-gnu\nrelease: 1.93.1\nLLVM version: 21.1.8",
+  "commands": [
+    "cargo test --manifest-path native/emerge_skia/Cargo.toml",
+    "cargo clippy --manifest-path native/emerge_skia/Cargo.toml --benches --tests --features bench-diagnostics -- -D warnings",
+    "EMERGE_SKIA_BUILD=1 CARGO_TARGET_DIR=/workspace/emerge-animation/native/emerge_skia/target mix test",
+    "EMERGE_SKIA_BUILD=1 CARGO_TARGET_DIR=/workspace/emerge-animation/native/emerge_skia/target ./ci-tests.sh all"
+  ]
+}

@@ -1,0 +1,64 @@
+   Compiling emerge_skia v0.4.0 (/workspace/emerge-animation/native/emerge_skia)
+error[E0063]: missing fields `fonts` and `images` in initializer of `render_scene::RenderScene`
+     --> src/renderer.rs:14921:13
+      |
+14921 |             RenderScene {
+      |             ^^^^^^^^^^^ missing `fonts` and `images`
+
+error[E0308]: mismatched types
+    --> src/tree/layout/tests/cache.rs:4757:21
+     |
+4753 |                 let result = layout_or_refresh_default_with_animation(
+     |                              ---------------------------------------- arguments to this function are incorrect
+...
+4757 |                     &runtime,
+     |                     ^^^^^^^^ types differ in mutability
+     |
+     = note: expected mutable reference `&mut tree::animation::AnimationRuntime`
+                        found reference `&tree::animation::AnimationRuntime`
+note: function defined here
+    --> src/tree/layout.rs:7469:8
+     |
+7469 | pub fn layout_or_refresh_default_with_animation(
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+7473 |     runtime: &mut AnimationRuntime,
+     |     ------------------------------
+
+error[E0609]: no field `layout_performed` on type `std::result::Result<LayoutUpdateOutput, projection::ProjectionError>`
+    --> src/tree/layout/tests/cache.rs:4761:39
+     |
+4761 |                     assert_eq!(result.layout_performed, width_animation);
+     |                                       ^^^^^^^^^^^^^^^^ unknown field
+     |
+help: one of the expressions' fields has a field of the same name
+     |
+4761 |                     assert_eq!(result.unwrap().layout_performed, width_animation);
+     |                                       +++++++++
+
+error[E0609]: no field `output` on type `std::result::Result<LayoutUpdateOutput, projection::ProjectionError>`
+    --> src/tree/layout/tests/cache.rs:4772:28
+     |
+4772 |                     result.output.scene.clone(),
+     |                            ^^^^^^ unknown field
+     |
+help: one of the expressions' fields has a field of the same name
+     |
+4772 |                     result.unwrap().output.scene.clone(),
+     |                            +++++++++
+
+error[E0609]: no field `output` on type `std::result::Result<LayoutUpdateOutput, projection::ProjectionError>`
+    --> src/tree/layout/tests/cache.rs:4775:57
+     |
+4775 |                 render_scene_to_pixels(240, 200, result.output.scene)
+     |                                                         ^^^^^^ unknown field
+     |
+help: one of the expressions' fields has a field of the same name
+     |
+4775 |                 render_scene_to_pixels(240, 200, result.unwrap().output.scene)
+     |                                                         +++++++++
+
+Some errors have detailed explanations: E0063, E0308, E0609.
+For more information about an error, try `rustc --explain E0063`.
+error: could not compile `emerge_skia` (lib test) due to 5 previous errors
+warning: build failed, waiting for other jobs to finish...

@@ -1,0 +1,10 @@
+   Compiling emerge_skia v0.4.0 (/workspace/emerge-animation/native/emerge_skia)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.10s
+     Running unittests src/lib.rs (native/emerge_skia/target/debug/deps/emerge_skia-fd4f0b51952a2096)
+
+running 1 test
+
+thread 'tree::animation::lengths::tests::transport::transport_replays_joint_asset_runtime_scroll_viewport_and_scale_inputs' (849126) panicked at src/tree/animation/lengths/tests/transport.rs:662:21:
+assertion `left == right` failed
+
+The same-ID SVG replacement changed replay of the retained scene. Full raw pixel dump omitted; query receipts and published source geometry are separate from render-time asset lookup. This render-binding gap remains open.

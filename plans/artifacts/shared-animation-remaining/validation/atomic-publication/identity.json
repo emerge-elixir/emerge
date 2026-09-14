@@ -1,0 +1,14 @@
+{
+  "source": "source-sha256:f60614ecc898495d7e36241764ebeccd3689ea1d49952e02348d1d419106b96a",
+  "head_for_reference_only": "592c2febc53a79ada96dbdc429ec057d78954c55",
+  "scope": "D11 functional validation; no benchmark, device presentation, or broad package closure.",
+  "rustc": "rustc 1.93.1 (01f6ddf75 2026-02-11)\nbinary: rustc\ncommit-hash: 01f6ddf7588f42ae2d7eb0a2f21d44e8e96674cf\ncommit-date: 2026-02-11\nhost: x86_64-unknown-linux-gnu\nrelease: 1.93.1\nLLVM version: 21.1.8",
+  "commands": [
+    "cargo fmt --manifest-path native/emerge_skia/Cargo.toml -- --check",
+    "cargo test --manifest-path native/emerge_skia/Cargo.toml",
+    "cargo clippy --manifest-path native/emerge_skia/Cargo.toml --benches --tests --features bench-diagnostics -- -D warnings",
+    "EMERGE_SKIA_BUILD=1 CARGO_TARGET_DIR=/workspace/emerge-animation/native/emerge_skia/target mix test",
+    "EMERGE_SKIA_BUILD=1 CARGO_TARGET_DIR=/workspace/emerge-animation/native/emerge_skia/target ./ci-tests.sh all",
+    "git diff --check"
+  ]
+}

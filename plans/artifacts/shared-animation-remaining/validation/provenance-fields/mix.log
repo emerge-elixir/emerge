@@ -1,0 +1,32 @@
+Compiling 2 files (.ex)
+Compiling crate emerge_skia in release mode (/workspace/emerge-animation/native/emerge_skia)
+Compiling lib/emerge_skia/native.ex (it's taking more than 10s)
+Copying /workspace/emerge-animation/native/emerge_skia/target/release/libemerge_skia.so to priv/native/emerge_skia.so
+Running ExUnit with seed: 331635, max_cases: 64
+Excluding tags: [full_sweep: true, headless_prime_hardware: true]
+
+................................................................................................................................................................................................................................................................................................................................................................
+13:01:58.659 [info] Using global cache for rustler precompiled artifacts. Path: /tmp/emerge-rustler-precompiled-12546
+................................................................
+13:02:06.268 [error] Emerge viewport rerender failed for Emerge.ViewportTest.RecoveringViewport:
+** (RuntimeError) render boom
+    test/emerge/viewport_test.exs:479: Emerge.ViewportTest.RecoveringViewport.render/1
+    (emerge 0.4.0) lib/emerge/runtime/viewport.ex:772: Emerge.Runtime.Viewport.safe_invoke/1
+    (emerge 0.4.0) lib/emerge/runtime/viewport.ex:651: Emerge.Runtime.Viewport.render_frame/2
+    (emerge 0.4.0) lib/emerge/runtime/viewport.ex:416: Emerge.Runtime.Viewport.handle_flush/1
+    (stdlib 8.0.3) gen_server.erl:2460: :gen_server.try_handle_cast/3
+    (stdlib 8.0.3) gen_server.erl:2418: :gen_server.handle_msg/3
+    (stdlib 8.0.3) proc_lib.erl:333: :proc_lib.init_p_do_apply/3
+
+.....
+13:02:06.308 [info] Emerge viewport window closed for Emerge.ViewportTest.CloseAwareViewport
+......
+13:02:06.319 [info] Emerge viewport window closed for Emerge.ViewportTest.LivenessViewport
+........
+13:02:06.435 [info] close: terminate_viewport stopping renderer module=Emerge.ViewportTest.CloseSignalLogViewport
+
+13:02:06.435 [info] close: terminate_viewport renderer stop returned module=Emerge.ViewportTest.CloseSignalLogViewport
+...........................................................
+Finished in 20.3 seconds (4.2s async, 16.0s sync)
+
+Result: 494 passed (15 doctests, 479 tests), 8 excluded

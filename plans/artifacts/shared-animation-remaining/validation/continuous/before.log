@@ -1,0 +1,19 @@
+   Compiling emerge_skia v0.4.0 (/workspace/emerge-animation/native/emerge_skia)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.69s
+     Running unittests src/lib.rs (native/emerge_skia/target/debug/deps/emerge_skia-fd4f0b51952a2096)
+
+running 1 test
+
+thread 'tree::animation::lengths::tests::continuation::ongoing_mixed_feedback_preserves_the_finite_curve_and_frozen_driver' (782325) panicked at src/tree/animation/lengths/tests/continuation.rs:2140:13:
+assertion failed: track.from.release_matches(initial)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test tree::animation::lengths::tests::continuation::ongoing_mixed_feedback_preserves_the_finite_curve_and_frozen_driver ... FAILED
+
+failures:
+
+failures:
+    tree::animation::lengths::tests::continuation::ongoing_mixed_feedback_preserves_the_finite_curve_and_frozen_driver
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1309 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--lib`

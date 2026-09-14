@@ -1,0 +1,5 @@
+{
+  "source": "source-sha256:8c620913b2e4d0b9d05dabccd9312f1c0a276015eea59b1ea02bae1c73022fe5",
+  "scope": "functional validation only; no new benchmark",
+  "head_for_reference_only": "592c2febc53a79ada96dbdc429ec057d78954c55"
+}

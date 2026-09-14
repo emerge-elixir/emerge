@@ -1,0 +1,25 @@
+   Compiling emerge_skia v0.4.0 (/workspace/emerge-animation/native/emerge_skia)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.46s
+     Running unittests src/lib.rs (native/emerge_skia/target/debug/deps/emerge_skia-fd4f0b51952a2096)
+
+running 1 test
+coupled_deadline axis=Width upward=false result=Err(Native(ReleaseMismatch(NodeId(2), Width)))
+coupled_deadline axis=Width upward=true result=Err(Native(ReleaseMismatch(NodeId(1), Width)))
+coupled_deadline axis=Height upward=false result=Err(Native(ReleaseMismatch(NodeId(2), Height)))
+coupled_deadline axis=Height upward=true result=Err(Native(ReleaseMismatch(NodeId(1), Height)))
+test tree::animation::lengths::tests::continuation::coupled_mixed_deadlines_are_not_authorized_as_independent_contexts ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1303 filtered out; finished in 0.02s
+
+     Running tests/benchmark_fixtures.rs (native/emerge_skia/target/debug/deps/benchmark_fixtures-90a31c0b32ca0000)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/borders_cache_benchmark.rs (native/emerge_skia/target/debug/deps/borders_cache_benchmark-810198a8489a881c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+

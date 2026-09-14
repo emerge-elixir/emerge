@@ -1,0 +1,18 @@
+Linux arch-ai 7.2.3-arch1-3 #1 SMP PREEMPT_DYNAMIC Sun, 06 Sep 2026 13:01:04 +0000 x86_64 GNU/Linux
+rustc 1.93.1 (01f6ddf75 2026-02-11)
+binary: rustc
+commit-hash: 01f6ddf7588f42ae2d7eb0a2f21d44e8e96674cf
+commit-date: 2026-02-11
+host: x86_64-unknown-linux-gnu
+release: 1.93.1
+LLVM version: 21.1.8
+WAYLAND_DISPLAY=wayland-1
+DISPLAY=
+XDG_RUNTIME_DIR=/wayland-runtime
+total 0
+drwxr-xr-x  2 root root         120 Sep 12 09:39 by-path
+crw-rw----+ 1 root storage 226,   0 Sep 12 09:40 card0
+crw-rw----+ 1 root storage 226,   1 Sep 14 10:13 card1
+crw-rw-rw-  1 root lp      226, 128 Sep 12 09:39 renderD128
+crw-rw-rw-  1 root lp      226, 129 Sep 12 09:39 renderD129
+wayland_socket=present
