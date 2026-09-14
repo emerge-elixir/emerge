@@ -111,6 +111,52 @@ Validation sequence for runtime paths:
 4. symlink/canonical path policy
 5. allowlist root check
 
+## Retained scene image bindings
+
+Native frame preparation captures source statuses, dimensions, status generation
+and immutable image bindings together. Referenced data is cloned under the existing
+source-state → pixel-cache lock order with matching configuration epochs, then both
+locks are released. Preparation, native layout and scene assembly use that same
+input even if a loader finishes, an ID is replaced or configuration resets between
+them. The tree keeps it across split layout/refresh calls; failed preparation does
+not replace the previously published frame input. Historical endpoint queries keep
+dimensions, not full asset snapshots.
+
+The declared-source index includes inactive interaction backgrounds and is cached
+by model/revision, with unknown mutable access invalidating it. Background-only
+changes do not invalidate intrinsic measurement; changed image dimensions dirty
+image nodes and their native dependency paths. Frames with no image references
+skip asset-cache locking. Lookups during a frozen frame do not register sources or
+queue new loads; a new preparation registers live references before capture.
+
+Native tree publication retains the image IDs referenced by its render graph.
+Each scene shares immutable encoded/parsed source records, or pins existing cached
+pixels when the source record is unavailable. Re-registering an ID, evicting a
+cache entry or resetting the renderer's live asset state does not replace the
+image inside an already-captured scene. Absent bindings do not fall through to a
+new registration. A newly published scene captures the new image.
+
+Capture performs no file I/O, hydration, decoding or rasterization. Painting uses
+short lookup locks only; no asset lock is held across decoding or Skia drawing.
+Cached pixels include source identity as well as renderer-local generation. Old
+or foreign scene records can be drawn without publishing their metadata back
+into the current renderer's asset cache.
+
+Scene references can outlive cache eviction. `ImageSnapshot::retention()` reports
+per-snapshot record counts, encoded-byte charges and pinned cached-pixel charges;
+these are not globally deduplicated live heap/GPU bytes, and parsed SVG memory is
+not included in the encoded-byte count. `capture_node_visits()` reports actual
+render-graph traversal work. Prepared scenes with no declared image references
+skip that traversal; standalone capture also skips it when no source records or
+cached pixels exist. Otherwise capture walks the render graph. Per-scene charges
+do not include the tree's declared-source index, frame-status maps or image-node
+measurement index. These costs have not been benchmark-qualified.
+
+This contract covers prepared native frames. Broader combined-input schedules and
+platform presentation remain under qualification; it is not a global transaction
+across independent font and asset registries. Manually constructed low-level Rust
+scenes with `images: None` preserve their existing live-ID rendering behavior.
+
 ## Shared decoded-pixel retention
 
 `assets.cache.max_entries` and `assets.cache.max_bytes` default to 256 entries

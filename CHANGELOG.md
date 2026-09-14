@@ -5,6 +5,7 @@
 ### Added
 
 - Add release builds for x86_64 musl and RISC-V64 GNU (raster and DRM/OpenGL), Nerves compiler detection for MangoPi, and dynamic-CRT flags for musl NIF source builds. New artifacts require publication with matching package checksums.
+- Added `Emerge.UI.Animation.change/3` for native retained-value transitions, with per-field timing, current-presentation interruption, and automatic sibling geometry holds. Explicit and change animations support pixel/content/fill/weighted-fill width and height transitions.
 
 - Added `Emerge.UI.Color.gradient/1,2` for evenly spaced gradients with two or more colors, usable in all UI color slots: backgrounds, inherited/paragraph/input text, borders, shadows and SVG template tint. Animated solid endpoints are lifted to the gradient endpoint; gradient endpoints require matching stop counts.
 
@@ -14,12 +15,22 @@
 
 - **Visual change:** `Border.shadow` and `Border.glow` now paint the full box-shaped shadow behind backgrounds and content, including text. Transparent interiors reveal the shadow instead of cutting it out; opaque backgrounds still cover it. Applies to ordinary elements and inline paragraph wrappers; inset shadows are unchanged.
 
-- **Breaking:** removed `Background.gradient/2,3` and the old raw gradient tuple. Use `Background.color(gradient([from, to], angle))`; see the migration guide. EMRG is now v9 and the macOS host handshake is v13; upgrade native artifacts and re-encode stored trees/patches together.
+- Add native allocation-source transport for covered same-mount reparent, role and
+  scale changes, preserving published geometry and existing animation clocks;
+  extend structural, coupled-input, hold and ghost retry coverage. This is not
+  complete topology/platform qualification.
+
+- `Emerge.UI.Animation.change/3` now takes an attribute list, for example `Animation.change([width(fill()), height(px(60))], 1000, :linear)`, instead of a single attribute. Each field receives the shared timing; ordered overrides and per-field policy removal are preserved.
+
+- Animated width/height no longer accept `min`/`max` expressions. These remain available for static layout. Change sources using these expressions are rejected as well.
+- Added EMRG attribute tag 84 for change policies; macOS host compatibility is now version 14. Upgrade native artifacts with the Elixir code.
+
+- **Breaking:** removed `Background.gradient/2,3` and the old raw gradient tuple. Use `Background.color(gradient([from, to], angle))`; see the migration guide. EMRG is now v9 and the macOS host handshake is v14; upgrade native artifacts and re-encode stored trees/patches together.
 
 - Raised the default renderer cache creation budget from 16 to 64 payloads per frame. Total/per-entry byte limits and cache admission policy are unchanged; explicit count-budget overrides remain supported.
 - Rasterized SVG size/fit variants now share the configured asset pixel-cache budget and LRU with raster images, instead of separate fixed SVG limits.
 - SVG font discovery and bounded parsed trees are reused across scenes and sizes. Added `assets.cache.svg_tree_max_entries` and `svg_tree_max_bytes`, plus parsed/pixel cache diagnostics.
-- Updated the macOS host protocol to version 13 for parsed SVG cache configuration and universal multi-color gradients.
+- Parsed SVG cache configuration and universal multi-color gradients are included in the v14 macOS host protocol.
 
 ### Fixed
 
@@ -28,6 +39,44 @@
 - Inline paragraph wrappers now paint explicit solid/gradient backgrounds, all border styles, outer/inner shadows and glow per wrapped-line segment. Opaque backgrounds hide interior shadows; absent backgrounds emit no background draw. Border/padding insets participate in wrapping; shadows remain paint-only. Per-edge borders and shadows now preserve independent corner radii on ordinary boxes too.
 
 - Paragraph `center_x()` and `align_right()` now align each wrapped text line, including the last line. Explicit `Font` text alignment takes precedence; inherited font-alignment changes invalidate retained paragraph positions correctly.
+- Prepared native frames freeze image layout facts and scene bindings together across
+  replacement, stale completions and configuration resets. Decorative image edits
+  retain the paint-only path.
+- Tree actors coalesce blocked registry/scene output while continuing to receive
+  input and Stop; pending mount focus is rebound to current native geometry.
+- Slider-imposed widths no longer leak into later intrinsic queries. Clearing or
+  reattaching orphan roots preserves published animation sources and clocks.
+  Expanded noncanonical coupling, complex ghost, input and retained-damage tests.
+
+- Native retained scenes keep their raster/SVG image bindings when the same asset
+  ID is replaced or cache state is reset. Image cache identity now distinguishes
+  renderer-local generation collisions; stale loader completion and animation
+  replay coverage is expanded.
+
+- Native dimension-clock evidence now composes per axis, including self-node feedback and numeric/mixed drivers. Historical native goal receipts preserve first change/exit motion and coupled cancellation across model changes; combined context releases use original clock inputs rather than mixing old environment with new loop phase.
+
+- Ongoing finite shared-pool and Content-parent animations preserve their curve against mixed looping peers/children when native same-context clock evidence is available. Feedback loops keep their clocks and frozen presentations; exact forecast destinations remain validated. Combined historical model/clock inputs remain under qualification.
+
+- Finite shared-pool and Content-parent dimension animations can release against mixed looping peers/children, including loop boundaries. Native forecast/destination checks preserve query provenance, retry safety and independent clocks without retaining a history chain.
+
+- Unrelated mixed-length animation inputs no longer restart dependent easing or block finite completion when native layout proves independence. Original targets, joint allocation and actual release-frame samples remain validated.
+
+- Finite dimension animations finish correctly when a mixed-length parent crosses a segment or repeat boundary, including late/skipped frames. Native full-allocation checks and retry/publication safety remain enforced.
+
+- Unchanged native animation frames reuse registry-subtree eligibility instead of repeatedly walking the entire tree. External/runtime/topology edits still invalidate it, and empty-registry layouts skip empty geometry-snapshot scans.
+
+- Persistent native animation failures now back off automatic pulse retries while preserving the last published layout, input registry and admitted clocks; external updates and explicit retries remain immediate.
+- Mixed ancestor dimensions use native clock witnesses for dependent motion. Finite intrinsic dependencies cross static fill/content wrappers, while pixel loop wrappers can update ancestor and descendant members without delaying finite release.
+
+- Finite dimension releases handle ordinary pixel-parent segment/repeat boundaries, including skipped cycles, without rewinding the parent's clock or bypassing native footprint checks.
+
+- Pixel-sized parent animation segments now preserve dependent child motion after earlier content/fill segments, with native footprint validation across segment transitions.
+
+- `Animation.change([width(content())], duration, curve)` now animates resolved size changes from text/descendant and intrinsic metric updates without changing the `content()` declaration. Content height works symmetrically, with published-pose interruption, retry-safe clocks and joint holds for nested content policies.
+
+- Exit animations use the latest exit policy and the published layout footprint, including interrupted fill animations. Captured descendants preserve allocation scope and scale without retaining event handlers.
+- Content-parent/fill-child animation scopes share native targets rather than sustaining each other's intermediate sizes. Admitted hold intervals survive sibling cancellation and arrival.
+
 - SVG color attributes now validate their values before serialization, and gradient tint preserves source alpha in rendering and grayscale policy.
 
 - Centered responsive images now align with matching `in_front` overlays: content-sized `el` hosts finalize both growth and shrinkage before alignment, and columns center using resolved child heights.
