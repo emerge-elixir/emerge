@@ -51,6 +51,7 @@ The event actor:
   - scrollbar drag trackers
   - text-drag trackers
 - buffers listener-lane input while listener data is stale
+- retains unsent operation packets and selects send readiness alongside input/control/timers
 - installs fresh registry rebuilds from the tree actor
 - rebuilds overlay listeners from runtime state after registry changes
 
@@ -214,7 +215,82 @@ If a matched listener emits Elixir events but no tree messages, the event actor
 adds `TreeMsg::RebuildRegistry` so the tree actor will still send a fresh
 `RegistryUpdate`.
 
-`EventMsg::RegistryUpdate` is the freshness signal. Installing it:
+A registry update is not automatically a response to the latest listener action:
+an animation frame may already have been queued before that action. The shared
+actor/host driver sends an opaque native `ListenerBarrier` after each dispatch that
+marks the listener lane stale. The tree engine includes that receipt only in a
+successful output covering the request; a valid cached no-op response also carries
+it without constructing a scene. Failed preparation does not acknowledge it.
+
+The stale listener lane owns a FIFO. Enqueue coalesces only its adjacent tail:
+latest cursor position/resize or summed scroll; keys, commits, composition events and
+button edges remain ordering barriers. Replay pops from the front and transfers an
+untouched remainder when another receipt becomes necessary, rather than rescanning
+and rebuilding it. Each registry installation replays at most 64 top-level inputs.
+If work remains without another action already making the lane stale, it explicitly
+requests a rebuild and yields through the existing causal receipt gate. A cached
+no-op response can continue replay without constructing a scene. New raw input stays
+behind the retained tail; a previous response cannot acknowledge a later yield.
+Replay diagnostics preview only the first 16 labels.
+
+Host text commands, edits and replacement ranges use this same ordered queue;
+previously they could bypass a pending raw click/focus decision. While waiting,
+acceptance returns `true` to prevent a platform responder fallback, but text,
+selection, clipboard effects and callbacks are not applied until dispatch. Host
+operations are coalescing boundaries and count toward the same 64-item quantum;
+they are not forwarded as additional raw observer events. A replacement range is
+bound to the queried mount and an opaque text/focus context: a remount, focus
+away/back, intervening content/preedit change or accepted external replacement
+cancels the old range. Later ordinary input still resolves against current focus.
+
+This is an ordering prerequisite, **not yet asynchronous local editing**. Per-edit
+tree waits and value/TTL-based callback echo matching still exist; removing those
+waits requires versioned edit/echo authority and batched publication. See
+`plans/active-async-input-editing.md`. Input/output queues remain unbounded.
+
+Fresh cursor-channel draining also stops after 64 messages, including the initial
+input, and never crosses a control message. The host feedback pump processes at most
+eight batches per invocation and leaves the next request queued for the next call.
+It must not drain that request before checking its budget. These limits count work
+items/rounds, not elapsed time, callback work or total retained bytes.
+
+This queue is **not memory-bounded**. Once admitted to it, noncoalescible input remains
+lossless and its storage grows with the burst. This is **not end-to-end ingress
+qualification**: the current Wayland full-channel sender discards events before this
+FIFO, including semantic input. Other backends have different pressure behavior;
+see the proposed contract in `plans/shared-animation-pressure-contract.md`. Spare FIFO capacity persists during partial replay and
+is released synchronously on full drain or runtime destruction; coalescing alone is
+not an overflow policy. A hard limit requires explicit backpressure/overflow semantics
+that preserve control/Stop independently, not silent input eviction.
+
+The event driver also owns an outgoing FIFO when the tree channel is full. It does
+not block inside dispatch or split/coalesce operation envelopes: source mounts and
+receipts stay attached until delivery. New packets cannot bypass an older deferred
+packet. The actor selects output readiness alongside input/control and due timers;
+Stop can be consumed without a free outbound slot or registry acknowledgment. A
+pending send discovering tree disconnection terminates the event actor. Full drain,
+Stop and disconnection dispose owned queue storage synchronously.
+
+The host runtime drains already-queued packets before its outgoing FIFO, at most
+512 packets per call (the former host channel capacity). The eight-round feedback
+budget still leaves subsequent work queued. These are work quanta, not memory caps.
+Outgoing pressure now consumes retained memory rather than blocking dispatch; it
+can increase peak retention and does not bound input, callback or BEAM queues.
+
+Renderer shutdown signals render Stop and backend wake before waiting on actor
+channel slots. Tree/event Stop sends are selected independently, so one full actor
+channel does not withhold the other actor's Stop. Test-harness shutdown uses the
+same actor signaling helper. Completion still waits for delivery/disconnection and
+thread joins: callbacks, asset teardown and blocked native driver calls are not
+preempted. This is not a hard shutdown-latency guarantee.
+
+While awaiting a receipt, older/unrelated rebuilds cannot replace listener state or
+release buffered input. A matching rebuild may replay an edit which makes the lane
+stale again; that edit gets a new receipt. Receipts are ownership identities, not
+reusable counters, and never cross the BEAM or macOS wire protocol. Initial,
+unsolicited rebuilds remain installable when no request is outstanding.
+
+Installing an eligible `EventMsg::RegistryUpdate`:
 
 - replaces `base_registry`
 - updates retained scrollbar/text rebuild state
@@ -222,29 +298,76 @@ adds `TreeMsg::RebuildRegistry` so the tree actor will still send a fresh
 - replays buffered input if reconciliation did not immediately stale the lane
   again
 
+Event-side registry draining is also capped at 64 rebuilds and never crosses an
+intervening input/control message. Coalescing and causal waits preserve at most one
+pending mount-focus request. Native metadata rebinds it to the same still-eligible
+mount and current reveal geometry; removal, remount, loss of eligibility or a later
+explicit focus choice invalidates it. Eligible-target metadata is immutable/shared
+and absent when there are no such declarations. Stop does not wait for a receipt.
+
+Pointer captures and local edit state belong to a mount, not a reusable numeric
+node ID. Native registries carry shared mount metadata for listener sources and
+retained input/scroll state and focused nodes, built during the existing registry walk. Before
+reconciling an accepted rebuild, the runtime discards old-mount captures, hover
+state and pending text/slider edits. A buffered release cannot click a replacement,
+and old selection/value anchors cannot transfer to a newly mounted input. Same-mount
+captures continue using the accepted native geometry and transforms.
+
+Obsolete registry crossings skipped during a causal wait do not generate historical
+hover callbacks. After a matching response, stationary hover is revalidated against
+accepted geometry when no pointer capture is active. Ordinary fresh crossings still
+emit enter/leave, and buffered motion remains ordered before its release. Raw
+observers are not called again by revalidation/replay. Fresh cursor batching can
+coalesce intermediate positions before observer forwarding.
+
+This is event-request causality, not a renderer/compositor installation
+acknowledgment. Scene enqueue-before-render ordering still does not prove that input
+and physically displayed pixels are synchronized. The existing buffered-input queue
+and prolonged failure behavior need separate retention/latency qualification.
+
+Binary headless draw/readback failures retain only the newest failed render state.
+Autonomous retries back off from 16 ms to a 250 ms cap; a new scene can be attempted
+immediately and synchronously replaces the pending one. Successful drawing resumes
+normal native animation pulses without restarting admission clocks. Static/terminal
+recovery needs no tree pulse. Stop/disconnection remain selectable between attempts.
+Registry receipts and input may progress while output is failing: none of this is a
+display acknowledgment. Persistent backend errors can remain pending until success
+or Stop; this does not reconstruct a lost GPU context. PRIME terminal synchronization,
+packed conversion/delivery failures and blocked native driver calls are separate
+contracts, not newly qualified by binary draw/readback retry tests.
+
 ## Tree Message Batching
 
-The event actor groups tree messages emitted by one listener dispatch.
+The shared actor/host driver collects tree effects from one dispatch, including its
+response fence. Operations with node targets travel in a native `EventBatch` with
+sorted, deduplicated `(node ID, source mount)` evidence from the installed registry.
+Packets retain only target evidence and commands, not a registry or tree snapshot.
+Control-only operations use ordinary `Batch` messages.
 
-- one tree message is sent directly
-- multiple tree messages are sent as `TreeMsg::Batch(Vec<TreeMsg>)`
+The tree actor drains at most 64 channel messages per batch, including while
+registry output is blocked. Ordinary nested batches flatten; event envelopes remain
+intact until the tree engine reaches their position in the message sequence.
 
-The tree actor then:
-
-- receives one message
-- drains everything currently queued
-- flattens any nested `Batch(...)`
-- processes one flat message list
+At consumption, every target must still be live with the recorded mount. Missing
+source evidence or one stale target rejects all node mutations of that operation,
+so an obsolete focus destination cannot partially blur a still-valid source. Resize,
+rebuild, response-fence and Stop controls remain deliverable. Rejection requests a
+current registry; only successful output acknowledges the fence, as usual. Same-mount
+work remains valid across unrelated revision changes. This internal protocol does
+not undo element callbacks already emitted to Elixir or the host.
 
 Tree-side coalescing happens before refresh:
 
-- `ScrollRequest` values accumulate per element
-- scrollbar thumb drag deltas accumulate per element
-- hover and active state messages are last-write-wins per element
-- text content/runtime updates are applied in message order
+- scroll requests and scrollbar thumb deltas accumulate per `(element, mount)`
+- hover/active states are last-write-wins per `(element, mount)`
+- deferred writes recheck that mount after later topology edits in the same batch
+- text content/runtime and slider updates apply in message order
 
-This is why one listener producing several tree-side actions normally causes one
-tree refresh, not one refresh per message.
+Thus an earlier scroll/style command cannot mutate a replacement even when its
+remount occurs later in the same tree batch. One dispatch still normally causes one
+refresh, not one refresh per command. Diagnostic command views may inspect envelopes,
+but delivery must never strip their mount evidence. Collection, target sorting/checks,
+queue retention and synchronous disposal still require cost qualification.
 
 ### Cached Registry Rebuilds
 

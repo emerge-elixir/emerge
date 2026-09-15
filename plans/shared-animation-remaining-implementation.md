@@ -1,16 +1,19 @@
-# Shared animation: remaining implementation plan
+# Shared animation: previous P1–P9 plan
 
-Status: in progress; P1–P6 partially implemented, including field-composed coupling,
-native historical goal receipts and actor/direct lifecycle cases. No package is complete.
-[Coverage and remaining gaps](artifacts/shared-animation-remaining/coverage.md),
-[proof decisions](artifacts/shared-animation-remaining/decisions.md) and
-[locked cost baseline](artifacts/shared-animation-remaining/performance/README.md)
-record implementation slices and remaining gaps. Covered coupled mixed deadlines
-and ongoing unchanged-context motion now pass; self-axis and broader inputs remain open. No remaining
-gate is satisfied merely by documenting it.
+**Status: superseded as an execution plan and completion contract.**
+Follow [minimal closeout](shared-animation-closeout.md).
+[Later work](later-animation-runtime-qualification.md) explicitly transfers every
+P1–P9 category not needed for functional closeout. Do not execute the old ordering,
+exhaustive qualification gates or “next approved work” paragraphs below.
+
+The original tasks/checkpoints are retained as historical rationale and evidence,
+not a fresh assertion that their implementation is missing. In particular, D8/D11
+cover self-axis behavior and D11 atomic image provenance despite older open wording.
+[Coverage](artifacts/shared-animation-remaining/coverage.md),
+[decisions](artifacts/shared-animation-remaining/decisions.md) and historical
+[measurements](artifacts/shared-animation-remaining/performance/README.md) remain
+references. No old source identity or test result is relabelled as current validation.
 Worktree: `/workspace/emerge-animation`, branch `plan/shared-animation-core`.
-This is the execution detail for [the active checklist](active-shared-animation-core.md),
-not another feature, approval stage, or public-enablement plan.
 
 ## 1. Scope, baseline and completion contract
 
@@ -465,6 +468,120 @@ D8 adds real actor/direct coupled regular/ghost traces (registry/raster equality
 terminal/cleanup/cancellation/idle and old-scene replay), plus capacity-one
 publication backpressure and latest-scene overwrite. These directed tests do not
 close headless parity, permanently blocked stop, all input modes or device damage.
+
+D12 closes the reproduced pre-request-frame acknowledgment and coalesced-focus
+loss defects. Shared native receipts gate buffered-input replay, eligible-mount
+metadata preserves only the current mount, and event draining is capped. New tests
+include real event-actor recovery/Stop and delayed 1/8/32-registry native headless
+traces with independent actor/direct request identities. See decisions D12 and
+`validation/causal-registry/`. P6 remains unchecked: broader topology/input races,
+renderer failure/recovery, stationary-hover/drag transitions across skipped obsolete
+registries, long failure retention and actual display synchronization are not
+qualified. No P1–P9 package closes.
+
+D13 adds mount-safe capture/local-state reconciliation after reproducing remounted
+click and text-drag failures. Directed current-geometry hover, click/text/scroll/thumb/
+slider and delayed actor/headless traces pass; obsolete crossings are not replayed
+as historical callbacks. See decisions D13 and `validation/pointer-recovery/`.
+D14 qualifies the reversed cross-producer order with sparse mount-scoped dispatch
+packets and mount-keyed deferred accumulators. Nine new units cover text/selection,
+slider, scroll/thumb/style/focus, grouped rejection/controls, same-mount revisions,
+missing evidence and real actor/headless paths. Full CI passes (1420 + 14 Rust,
+526 Elixir, Dialyzer 0); see `validation/inflight-commands/` and decisions D14.
+Remaining P6 priorities: broader combined interaction/topology/virtual-key/inertia
+histories, renderer failure/recovery, long-stall retention and physical presentation
+synchronization. Already-emitted callbacks are not withdrawn by native rejection.
+Source-index/state scans, dispatch collection/sorting, target checks, queue retention
+and synchronous disposal remain P1/P7 work, not inferred savings.
+
+D15 extracts the existing production binary headless loop and reproduces stranded
+terminal output on draw/readback failure. Newest-state retry, bounded autonomous
+backoff, independent Stop and synchronous supersession now pass six new units,
+including 12 combined interaction/remount/native raster-fault traces. Registry/input
+progress is explicitly separate from successful output. See decisions D15 and
+`validation/render-recovery/` (1426 + 14 Rust; full CI 526; Dialyzer 0).
+
+Still unqualified: real GPU failure/context reconstruction, PRIME terminal behavior,
+packed conversion/BEAM-delivery failure, ghost-cleanup/fault combinations and broader
+virtual-key/inertia histories. Prolonged blocked-input retention, retry work/cost and
+whole-runtime live/peak/disposal attribution remain next P1/P6/P7 work. No device,
+performance or package closure follows from these controlled CPU-raster faults.
+
+D16 measures finite stalled-input bursts and fixes two queue-work defects: repeated
+full-history coalescing on enqueue and untouched-tail reinsertion on each receipt.
+An owned FIFO incrementally coalesces its tail and transfers paused replay storage.
+Seven new units cover boundaries, separate slot/string capacity charges, normal
+receipt recovery, remount/raw observers and native actor burst recovery/Stop.
+See `validation/stalled-input/` (1433 + 14 Rust; full CI 526; Dialyzer 0).
+
+**Still open:** the lossless noncoalescible queue is unbounded. Choose an explicit
+upstream backpressure/overflow contract while keeping control/Stop reachable; do not
+silently drop keys, composition, commits or button edges. One FIFO's requested
+capacity is not allocator/RSS/GPU usage or whole-runtime retention. Its spare capacity
+persists during partial replay. End-to-end burst latency, long-duration/resource/TTL
+histories, other queues and a device memory budget remain P1/P6/P7 qualification.
+
+D17 bounds non-staling replay and fresh cursor draining to 64 top-level inputs.
+Remaining replay explicitly requests a cached registry response, preserving input
+order and control opportunities with the existing receipt gate. The extracted host
+feedback pump fixes the macOS loop's loss of the next request at its eight-round cap.
+Eight new native units pass (1441 + 14 Rust; full CI 526; Dialyzer 0); see
+`validation/replay-yield/`. Shared helper execution is not macOS platform execution.
+
+The work-count gap is reduced, but callbacks, nested synthetic work, reconciliation
+and blocked sends remain outside a hard latency bound. Additional yield receipts/
+feedback work need cost attribution. The lossless input queue still has no hard
+memory cap: explicit backpressure/overflow semantics remain the next policy task.
+
+D18 removes the event driver's blocking-send fallback: an owned outgoing FIFO keeps
+complete mount/receipt envelopes and the actor selects output readiness with
+input/control/timers. Native host drains remain capped at 512 packets; the eight-round
+feedback budget preserves later work. Renderer shutdown also reproduced withholding
+other Stop signals behind a full actor channel; it now signals render/backend first
+and selects tree/event Stop sends independently. The test harness shares that helper.
+
+Nine new units pass (**1450 + 14 Rust**, full CI **526**, Dialyzer **0**); evidence:
+`validation/outbound-pressure/`. The outgoing FIFO moves pressure into retained memory
+and can increase it; input/callback/BEAM queues remain separate unbounded obligations.
+Hard backpressure/overflow semantics remain the next policy decision. Shutdown still
+waits for actor delivery/disconnection and joins; no preemption of callbacks, asset
+teardown or blocked driver calls, whole-latency bound or platform qualification.
+
+D19 supplies `shared-animation-pressure-contract.md`: a **proposal**, not enabled
+policy. It recommends explicit terminal overflow, credits retained across all managed
+ownership/transient construction, and independently progressing control/response
+paths. Numerical limits/default compatibility and public failure behavior still need
+approval; terminal-status propagation and native allocation/admission integration
+follow. Do not describe existing actor FIFOs as end-to-end losslessness: the audit
+found Wayland currently discards full-channel input before those FIFOs.
+
+Nine abstract-model tests and depth-12 checks (45,476 states / 318,533 transitions)
+exercise declared-credit and terminal rules; nonempty frontiers remain. No runtime
+cap, Rust/Elixir API change, allocator/whole-memory proof or new benchmark. Evidence:
+`pressure-contract/`. Existing runtime remains D18; all qualification gates stay open.
+
+D20 measures the user's separate-event-thread hypothesis instead of enabling a cap:
+`plans/artifacts/event-pressure-probe/README.md`. Across 90 isolated release processes,
+normal-rate input kept ingress nearly empty, including 125 edits/sec and 8k pointer
+updates/sec on the 20k-node fixture. At 1k edits/sec the large tree built an internal
+causal backlog despite an ingress peak of one. Forced event-thread pauses and
+millisecond programmatic floods—not ordinary test input—filled 4096 ingress slots.
+This does not justify arbitrary tight caps or establish app/device memory budgets;
+BEAM callbacks, GPU, long text, animations and sustained-duration behavior are outside
+this experiment. Native animation performance gates remain unrequalified.
+
+**Next approved implementation:** `active-async-input-editing.md`. Remove unnecessary
+per-edit publication waits using local edit authority and versioned asynchronous
+updates. Preserve one ordered semantic stream and coalesce arrivals during genuine
+geometry/focus waits. Resolve controlled-value conflicts and stale acknowledgments
+before enabling the fast path; re-run the existing isolated measurement. This takes
+priority over D19 budget machinery and does not approve its terminal-failure policy.
+
+D22 implements only the ordered-host prerequisite: shared semantic FIFO, no bypass
+of queued focus/geometry work, scoped delayed replacement ranges and 11 regressions.
+See `validation/ordered-host/` in the shared-animation evidence directory. Rust
+1461 + 14 / CI 526 pass. Per-edit waits, causal controlled-value metadata and batched
+publication remain open; this is not a fix for the measured large-tree edit backlog.
 
 ## P7. Reduce full-model memory and cold/release work
 

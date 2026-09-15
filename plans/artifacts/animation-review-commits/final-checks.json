@@ -1,0 +1,19 @@
+{
+  "source_manifest_sha256": "bf4c131c8da7882991cdfcbd4058102476abcd36435041c951e5c17a4e66fdff",
+  "functional_source_unchanged": true,
+  "code_commit": "0394ff6ce6ca6415c4e07460c8d8d239287ba164",
+  "mix": "520 passed, 9 excluded",
+  "ci": "1461 Rust units + 14 integration; 526 Elixir checks, 3 excluded; Dialyzer 0",
+  "docs": "public and internal pass",
+  "code_boundaries": "all six cargo test and strict Clippy pass",
+  "environment": {
+    "EMERGE_SKIA_BUILD": "1",
+    "CARGO_TARGET_DIR": "/workspace/emerge-animation/native/emerge_skia/target"
+  },
+  "commands": [
+    "mix test",
+    "./ci-tests.sh all",
+    "mix docs",
+    "EMERGE_INCLUDE_INTERNAL_DOCS=1 mix docs"
+  ]
+}

@@ -1,5 +1,8 @@
 # Shared animation commit sequence — completed
 
+The later D12–D22 runtime fixes and bounded closeout are committed separately in
+the [follow-up review sequence](animation-followup-commit-sequence.md).
+
 Commit the already validated, rebased implementation without changing its source
 bytes. Keep dependency-coupled native layout, clocks, assets and actor publication
 in one atomic commit rather than manufacturing non-building intermediate layers.
@@ -29,7 +32,7 @@ record outcomes here before the final documentation commit.
 - `53bc9b7` — Expose list-based retained-value animation transitions.
 - `b7829b8` — Add reproducible shared animation performance benchmarks.
 - `f8dea1a` — Preserve animation validation and platform evidence.
-- Final documentation commit — contracts, decisions, rebase review and remaining gates.
+- `33ee559` — contracts, decisions, rebase review and remaining gates.
 
 Native core alone passed in an isolated worktree: 1392 Rust units + 14 integration,
 509 Elixir tests/doctests (9 excluded). Public API commit independently passed 520

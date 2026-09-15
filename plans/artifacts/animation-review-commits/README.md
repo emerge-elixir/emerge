@@ -28,3 +28,11 @@ Historical D12–D22 validation and pressure measurements retain their original
 identities. No pressure benchmark or animation performance rerun is claimed here.
 Final Mix/CI/docs checks are recorded in the
 [commit-sequence report](../../animation-followup-commit-sequence.md).
+
+## Final working-source checks
+
+Standalone Mix: 520 passed / 9 excluded. Full CI: 1461 Rust units plus 14
+integration, 526 Elixir checks / 3 excluded, Dialyzer zero. Public and internal
+ExDoc builds passed. See `final-*.log` and `final-checks.json`. The full closeout
+source manifest still matches; the pre-existing working files are unchanged
+except for bookkeeping links in the plan index and commit/closeout records.

@@ -1,6 +1,6 @@
 # Historical animation design notes
 
-Superseded by `../active-shared-animation-core.md`. Retained for allocation oracles
+Superseded by `../shared-animation-implementation-history.md`. Retained for allocation oracles
 and investigation details, not as an active phase or enablement policy. The current feature excludes animated
 min/max expressions; references below to supporting them are superseded.
 

@@ -101,30 +101,76 @@ registry or rebuilds it if registry damage exists.
 
 `Recompute` runs layout passes, then does the same refresh work.
 
+## Shared Animation Contract
+
+Regular, enter, exit and retained-value changes use one native animation core:
+
+```elixir
+Animation.animate([[width(px(40))], [width(fill())]], 1000, :linear)
+Animation.change([width(content()), height(content())], 1000, :linear)
+```
+
+Width/height support pixels, content, fill and weighted fill on both axes. Static
+`min`/`max` expressions still work, but are not animation endpoints or change
+sources. A change call takes a list with shared timing; fields keep independent
+policies and ordered overrides. Empty lists validate timing/curve then do nothing.
+A later plain attribute clears only that field's policy.
+
+First change-policy mount is immediate. A descendant text/child or intrinsic
+font/image change can animate a retained `content()` dimension without changing
+its declaration. Equal resolved targets and timing-only edits do not restart.
+Interruptions start from the last successfully published presentation, not an
+unpublished attempted frame.
+
+Related finite layout owners resolve joint destinations but retain individual
+clocks. An early finisher holds its complete allocation until joint release;
+loops and paint-only fields do not become finite waiters. Allocation includes
+intrinsic size, pool charges and parent obligations, not just the visible box.
+Text wrapping, descendants, clipping, scroll ranges and hits use real layout.
+
+Same-mount reparenting transports the published source with its original clock,
+converts scale units and derives destination-role allocation obligations. Remounts
+cannot inherit the removed mount's clocks or captures. This does not introduce
+implicit position/FLIP animation. Exit ghosts capture published geometry, lose
+handlers immediately, and have distinct terminal and structural-cleanup outputs.
+An output may be superseded in transport; native publication is not proof that
+every intermediate frame reached a display.
+
+Continuous context changes and segment/repeat resets use native clock/footprint
+witnesses. Identical input and sampling schedules replay consistently regardless
+of query order; different context-dependent frame schedules need not converge to
+the same intermediate trajectory. Failed attempts preserve published output and
+first-write sources, including successful patch prefixes. Automatic pulse-only
+retries back off to 250ms; external updates are not throttled.
+
 ## Frame Attribute Preparation
 
-Before layout or refresh, the tree has to expose the attributes for the current
-frame in `element.layout.effective`.
-
-The preparation path is:
+Preparation returns an exclusive `FrameAttrsPreparation`; it does not apply
+candidate attrs to the published presentation. All three selection modes enter
+the same transaction:
 
 ```text
 prepare_frame_attrs_for_update
 or prepare_animation_frame_attrs_for_update
 or prepare_dirty_frame_attrs_for_update
-  -> prepare_frame_attrs
-     -> ensure_topology
-     -> set_current_scale
-     -> sample_animation_overlays
-     -> prepare_all_attrs_for_frame, active-node preparation, or dirty-id preparation
-     -> mark_animation_refresh_effects_dirty
-     -> apply_interaction_styles
+  -> capture immutable fonts/assets and prepare native samples
+  -> FrameAttrsPreparation.publish
+     -> validate tree/runtime/attempt/context and preflight commit
+     -> apply geometry and full/active/dirty effective attrs
+     -> native layout/refresh: scene plus event registry
+     -> commit clocks/sources/releases and ghost follow-up activity
 ```
 
-The normal preparation traversal is a flat traversal over all nodes. It copies
-declared frame attributes from `element.spec.declared`, overlays animation
-samples, scales them into `layout.effective`, and normalizes extracted runtime
-state.
+Queries share one renderer-local workspace and do not hydrate assets or publish
+output. Captured image layout facts and scene bindings agree; accepted scenes pin
+their font/image inputs through deferred paint. Asset/font locks are not held
+across layout or painting. Recoverable validation failures occur before candidate
+presentation writes; native scene publication remains distinct from renderer
+installation or compositor acknowledgment.
+
+After preflight, the normal application traversal copies declared frame attributes
+from `element.spec.declared`, overlays samples, scales them into
+`layout.effective`, and normalizes extracted runtime state.
 
 The incremental animation preparation path is used for steady animation pulses
 when the tree already has frames and no transient animation entries require a
@@ -148,6 +194,20 @@ Preparation marks refresh damage separately from layout damage:
 - Effects that alter layout mark layout dirty and also mark refresh dirty.
 - Registry refresh is only marked when the changed subtree can affect the event
   registry.
+
+### Performance and Platform Limits
+
+Paint/pixel fast paths avoid the dimension-query workspace where native geometry
+does not require it. Resolved-length queries can still copy and evaluate the full
+private model; sparse animation records do not imply sparse layout work or low
+memory use. Large coupled/upward workloads have measured high costs. Functional
+animation support is not a low-resource frame-time or memory-budget guarantee.
+
+Linux native/raster integration tests do not qualify physical Wayland/DRM cadence,
+GPU fault recovery, macOS execution or constrained devices. Native/Elixir artifacts
+must agree on EMRG9 and the macOS14 handshake; incompatible hosts are rejected.
+Input throughput/overflow policy and asynchronous local-edit redesign are separate
+runtime work, not part of this animation contract.
 
 ## Layout Recompute
 

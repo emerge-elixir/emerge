@@ -43,19 +43,6 @@ DRM/Vulkan target proof, and Vulkan-only dependency cleanup.
 
 This is the sole plan for general backend/Vulkan/headless PRIME qualification.
 
-### `active-shared-animation-core.md`
-
-Implement pixel/content/fill/weighted-fill animations and `Animation.change/3` through one native
-core in `/workspace/emerge-animation`. Public API and native execution are enabled
-on that branch; no separate enablement phase. The short checklist tracks remaining
-context, lifecycle, integration, documentation and validation work. Detailed earlier
-oracles are retained as historical reference, not additional planning stages.
-The [remaining implementation plan](shared-animation-remaining-implementation.md)
-expands every open item into ordered work packages, native proof requirements,
-regressions, performance targets and platform qualification gates. D11 adds atomic
-prepared image inputs, nonblocking actor output and directed structural/coupling/
-input validation; broad matrix, memory/performance and platform gates remain open.
-
 ### `active-low-resource-animation-smoothness.md`
 
 Remaining constrained-device work after animation correctness, transform-only
@@ -76,7 +63,40 @@ the implemented universal gradient colors. The shared color/brush model, every
 UI consumer, SVG alpha/validation, animation and EMRG v9 migration are complete.
 Tracks the independently reproduced renderer benchmark qualification issues.
 
+## Deferred follow-up work
+
+### `later-animation-runtime-qualification.md`
+
+Owns every transferred P1–P9 category: async-input consistency, pressure policy,
+full-model/performance accounting and optimization, broader robustness campaigns,
+physical platform/GPU recovery and external release-artifact qualification.
+Not a dependency of shared animation implementation closeout; packages resume
+separately. Existing measured costs and unavailable-platform limitations remain open.
+
+`active-async-input-editing.md` is a paused design reference despite its legacy
+filename. D22 is validated; D23 is unfinished/failing and has been preserved outside
+the closeout source. Its dispatch/geometry policy needs review before resumption.
+`shared-animation-pressure-contract.md` remains a deferred, unapproved proposal.
+D20's isolated input measurements remain at `artifacts/event-pressure-probe/`;
+they neither justify arbitrary input caps nor qualify animation performance.
+
 ## Durable references
+
+### `shared-animation-closeout.md`
+
+**Shared animation implementation complete.** The bounded closeout preserved and
+separated unfinished D23, reused existing ten-contract regression coverage, and
+passed final CI/docs plus an 18-process locked performance disclosure snapshot.
+[Final evidence](artifacts/shared-animation-closeout/README.md): Rust 1461 + 14,
+Mix 520 / CI 526, Dialyzer 0, strict Clippy/fmt. The subsequent
+[reviewable commit sequence](animation-followup-commit-sequence.md) preserves the
+validated source; no push or release is implied.
+
+Large-tree release/upward costs remain high; physical macOS/constrained-device/GPU
+qualification is not claimed. Those and broader runtime work belong to
+`later-animation-runtime-qualification.md`, not an open animation implementation
+section. Earlier checklists survive as `shared-animation-implementation-history.md`
+and the superseded `shared-animation-remaining-implementation.md`.
 
 ### `borders-cache-benchmark-investigation.md`
 

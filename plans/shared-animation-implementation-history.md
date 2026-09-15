@@ -1,4 +1,14 @@
-# Shared animation implementation
+# Shared animation implementation history
+
+**Implementation closed by [minimal closeout](shared-animation-closeout.md).**
+See [final evidence](artifacts/shared-animation-closeout/README.md). Historical
+unchecked entries below are not active completion gates; remaining qualification
+and optimization belong to the later plan.
+The feature contract and accumulated evidence below remain reference material;
+old unchecked items and “next work” paragraphs are not additional completion gates.
+[Later work](later-animation-runtime-qualification.md) owns broader qualification,
+optimization and runtime work. D23 was preserved and separated from the closeout source, not completed as an
+animation prerequisite.
 
 Worktree: `/workspace/emerge-animation`, branch `plan/shared-animation-core`.
 
@@ -322,3 +332,140 @@ and `validation/headless-rebase/`: 1392 Rust units + 14 integration, full CI 526
 Elixir tests/doctests, Dialyzer 0. Paragraph decoration/animation integration has
 18 new directed traces. Old benchmark identities remain historical; cache-budget
 and node-storage changes require fresh measurement. No P1–P9 closure.
+
+### D12 checkpoint — causal event-registry installation
+
+Older queued animation rebuilds no longer acknowledge newer listener requests.
+Native receipts preserve buffered keyboard/IME input; native eligible-mount metadata
+preserves deferred focus without transferring it to a remount. Both coalescers share
+the eligibility rule, and event-side draining is bounded. Real event-actor and delayed
+tree-actor/direct/headless tests pass. See D12 in decisions/coverage and
+`validation/causal-registry/`: 1400 Rust units + 14 integration, standalone Mix 520,
+full CI 526, Dialyzer 0. This is event causality, not physical presentation sync;
+broader P6, retention/cost and device gates remain open. Changes are uncommitted.
+
+### D13 checkpoint — mount-safe pointer recovery
+
+Delayed release/selection regressions exposed numeric-ID capture reuse after remount.
+Native registry source mounts now qualify local-state continuation before replay.
+Directed hover, click/text/scroll/thumb/slider drag and actor/headless damage cases
+pass without weakening D12 receipts or inventing historical hover callbacks. See
+D13 in decisions/coverage and `validation/pointer-recovery/`: 1411 Rust units + 14
+integration, standalone Mix 520, full CI 526, Dialyzer 0. Broader interaction histories,
+renderer failure, exact costs and physical presentation remain open. Uncommitted.
+
+### D14 checkpoint — in-flight event commands
+
+Reversed producer-order tests reproduced old commands mutating a same-ID input.
+Sparse mount-scoped dispatch packets now qualify every target at consumption;
+stale operations cannot partially blur valid focus sources. Controls/receipts remain
+deliverable and deferred accumulators recheck mounts after later same-batch edits.
+Nine added units include native host/event actor/tree actor/headless paths.
+See `validation/inflight-commands/`: 1420 Rust units + 14 integration, standalone Mix
+520, full CI 526, Dialyzer 0. Broader combined input/failure histories, prolonged
+buffering, live/peak/disposal accounting and physical presentation remain open.
+D12–D14 remain uncommitted; no package closure or performance claim.
+
+### D15 checkpoint — binary renderer failure/recovery
+
+The extracted production binary loop reproduced a failed terminal frame stranded
+without a future tree message. It now retains only the newest failed state, retries
+at 16–250 ms backoff, disposes superseded state synchronously and resumes native
+pulses only after successful drawing. Static retry invents no animation pulse.
+Six new units include 12 actor/direct/headless interaction/remount schedules with
+injected pre/post CPU-raster draw failure. See `validation/render-recovery/`:
+1426 Rust units + 14 integration, standalone Mix 520, full CI 526, Dialyzer 0.
+Headless-all compile check passes with an existing Vulkan dead-code warning.
+No real GPU-fault/context recovery, physical presentation, exact memory budget or
+performance gate is qualified. Broader failure histories and prolonged buffering
+remain open. D12–D15 remain uncommitted; no package closes.
+
+### D16 checkpoint — stalled-input retention and work
+
+Before counters recorded 2,001,000 coalescer visits for 2,000 retained commits and
+341,376 tail-reinsertion visits for 128 replayed commits. Incremental FIFO coalescing
+and ownership transfer reduce these to 2,000 and zero, without dropping input.
+Seven new units cover ordered boundaries, capacity/payload charges, successive
+receipts, remount/raw-observer recovery and real event-actor burst recovery/Stop.
+See `validation/stalled-input/`: 1433 Rust units + 14 integration, standalone Mix
+520, full CI 526, Dialyzer 0. These are work counters/finite capacity charges, not
+locked timing results, exact heap usage or a hard input bound. The FIFO retains spare
+capacity during partial replay and releases it on full drain; this is not a general
+memory-reduction claim. Backpressure/overflow semantics and end-to-end retention/
+latency remain open. D12–D16 remain uncommitted; no package closes.
+
+### D17 checkpoint — bounded replay and lossless host feedback
+
+Replay and fresh cursor draining now stop at 64 top-level inputs. Yield uses the
+existing ordered cached-response gate, not a new scheduler or animation pulse.
+The extracted macOS host feedback loop also reproduced loss of the ninth request;
+the shared pump now leaves it queued after eight rounds. Eight new native units
+cover cached progress, ordering, composition/release/remount, error/Stop and real
+actor recovery. See `validation/replay-yield/`: 1441 Rust units + 14 integration,
+standalone Mix 520, full CI 526, Dialyzer 0. macOS execution remains unqualified.
+These are work-count limits, not hard latency or memory bounds. Backpressure/overflow
+semantics and broader resource/performance/device gates remain open. Uncommitted.
+
+### D18 checkpoint — outbound pressure and shutdown signaling
+
+The event driver's full-channel send and renderer shutdown's sequential Stop sends
+both reproduced control stalls. Unsent event packets now remain in an owned FIFO;
+the actor selects sends/input/control/timers without stripping mount/receipt proof.
+Host drains preserve the 512-packet work quantum and eight-round pump budget.
+Shutdown signals render/backend before independently selecting tree/event Stop sends.
+
+Nine new units cover channel pressure, order/receipts/remount, one-shot timer, peer
+loss, ownership release and both host budgets. **1450 Rust units + 14 integration**,
+standalone Mix **520**, full CI **526**, Dialyzer **0**, strict Clippy/fmt pass;
+see `validation/outbound-pressure/`. No package closes. Pressure is retained in
+memory rather than blocking dispatch: no hard memory/overflow policy, measured
+speedup, full shutdown latency or macOS/device qualification. Uncommitted/no push.
+
+### D19 checkpoint — pressure contract proposal and bounded model
+
+`shared-animation-pressure-contract.md` proposes explicit terminal overflow instead
+of silent eviction or another queue. Credits follow storage across admission,
+construction and delivery; controls/receipts require independent progress. The audit
+found Wayland currently drops full-channel semantic input before the actor FIFO;
+D16–D18 lossless retention is therefore not end-to-end ingress qualification.
+
+Nine model tests and depth-12 exploration cover 45,476 states / 318,533 transitions.
+They prove neither native allocation bounds nor arbitrary histories. Runtime sources
+remain D18; no cap/API/default is enabled. Public failure behavior, numerical limits
+and release compatibility need approval before implementation. See
+`artifacts/shared-animation-remaining/pressure-contract/`. No package closes.
+
+### D20 checkpoint — isolated event pressure measurement
+
+At the user's request, measured the existing native event/tree paths rather than
+implementing D19 policy. See `artifacts/event-pressure-probe/README.md`: 90 release
+processes under exclusive lock with source/binary identity. Both test trees (1/20k
+nodes) handled 125 edits/sec and 8k pointer updates/sec without meaningful backlog.
+At 20k nodes, 1k edits/sec built 736–812 buffered inputs while ingress peaked at one.
+A one-second event-thread pause at 8k/sec filled 4096 slots/rejected 3904 records;
+synthetic unpaced floods also filled ingress. A tree-only pause did not fill ingress.
+
+These short static native runs exclude BEAM callbacks/GPU/long text and do not set a
+safe device budget or qualify whole-runtime performance. No evidence here warrants
+an aggressive normal-input cap. Test-only instrumentation; no policy/default change.
+Default Rust 1450 + 14 and full CI 526 Elixir tests/doctests pass; strict Clippy/fmt
+and Dialyzer 0. No P1–P9 closure, commit or push.
+
+### Next approved work — asynchronous local editing
+
+See `active-async-input-editing.md`. Keep receiving/coalescing during dependency
+waits, remove unnecessary per-edit tree round trips, preserve local/mount authority
+and ordered callbacks, and batch native publication without stale-state rollback.
+A blocked focus/pointer decision still fences subsequent typing. The plan includes
+conflict semantics, failure paths, public/host integration and the same locked
+measurement baseline. Planning only; D19 overflow policy remains unapproved.
+
+### D22 checkpoint — ordered-host prerequisite, not async completion
+
+`active-async-input-editing.md` is now in progress. Host commands/edits/ranges share
+raw input's FIFO instead of bypassing pending geometry/focus decisions. Deferred
+ranges carry mount + opaque text/focus identity, including ABA/reset invalidation.
+Eleven new regressions; Rust 1461 + 14 / CI 526 pass, strict Clippy/fmt, Dialyzer 0.
+Evidence: `artifacts/shared-animation-remaining/validation/ordered-host/`.
+Local edits still wait per publication; controlled-value provenance and batched
+publication remain to implement. No speedup, pressure-policy or package-closure claim.
