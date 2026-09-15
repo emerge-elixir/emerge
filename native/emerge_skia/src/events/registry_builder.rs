@@ -232,6 +232,9 @@ fn record_registry_cache_miss() {}
 #[derive(Clone, Debug, Default)]
 pub struct Registry {
     listeners: Arc<Vec<Listener>>,
+    // Native source identity for listeners and retained input/scroll state.
+    // Empty/window-only and transient overlay registries allocate no mount map.
+    mounts: Option<Arc<HashMap<NodeId, u64>>>,
 }
 
 impl Registry {
@@ -260,6 +263,24 @@ impl Registry {
 
     fn extend_storage_from(&mut self, other: &Registry) {
         Arc::make_mut(&mut self.listeners).extend(other.listeners.iter().cloned());
+        if let Some(incoming) = &other.mounts {
+            if let Some(mounts) = &mut self.mounts {
+                Arc::make_mut(mounts).extend(incoming.iter().map(|(id, mount)| (*id, *mount)));
+            } else {
+                self.mounts = Some(incoming.clone());
+            }
+        }
+    }
+
+    pub(crate) fn source_mount(&self, id: &NodeId) -> Option<u64> {
+        self.mounts
+            .as_ref()
+            .and_then(|mounts| mounts.get(id))
+            .copied()
+    }
+
+    pub(crate) fn same_mount(&self, previous: &Registry, id: &NodeId) -> bool {
+        self.source_mount(id) == previous.source_mount(id)
     }
 
     #[cfg(test)]
@@ -696,6 +717,7 @@ struct ElementFocusMeta {
 #[derive(Clone, Debug)]
 struct FocusEntry {
     element_id: NodeId,
+    focus_on_mount_revision: Option<u64>,
     is_currently_focused: bool,
     self_reveal_scrolls: Vec<FocusRevealScroll>,
 }
@@ -717,6 +739,7 @@ pub struct KeyPressTracker {
 #[derive(Clone, Debug, PartialEq)]
 struct RegistrySubtreeKey {
     kind: ElementKind,
+    mounted_at_revision: u64,
     attrs_hash: u64,
     runtime_hash: u64,
     frame_hash: u64,
@@ -6245,40 +6268,6 @@ fn focus_build_state_from_entries(entries: &[FocusEntry]) -> FocusBuildState {
     }
 }
 
-/// Rebind an unsent one-shot request to the latest native registry geometry.
-/// A removed/remounted/nonfocusable target has no matching current action.
-pub(crate) fn rebind_pending_mount_focus(
-    tree: &ElementTree,
-    registry: &Registry,
-    pending: FocusOnMountTarget,
-) -> Option<FocusOnMountTarget> {
-    let node = tree.get(&pending.element_id)?;
-    if node.lifecycle.mounted_at_revision != pending.mounted_at_revision
-        || !node.layout.effective.focus_on_mount.unwrap_or(false)
-    {
-        return None;
-    }
-    registry.view().iter_precedence().find_map(|listener| {
-        let actions = match &listener.compute {
-            ListenerCompute::Static { actions }
-            | ListenerCompute::StaticWithLeftPressRuntimeAugment { actions, .. }
-            | ListenerCompute::StaticWithTextInputCursorRuntime { actions, .. }
-            | ListenerCompute::StaticWithSliderValueRuntime { actions, .. } => actions,
-            _ => return None,
-        };
-        actions.iter().find_map(|action| match action {
-            ListenerAction::Semantic(SemanticAction::FocusTo {
-                next: Some(id),
-                reveal_scrolls,
-            }) if *id == pending.element_id => Some(FocusOnMountTarget {
-                reveal_scrolls: reveal_scrolls.clone(),
-                ..pending.clone()
-            }),
-            _ => None,
-        })
-    })
-}
-
 fn consider_focus_on_mount_candidate(
     acc: &mut RegistryBuildAcc,
     element: &Element,
@@ -6435,6 +6424,12 @@ pub(crate) fn accumulate_element_rebuild(
     if let Some(focus_meta) = local_focus_meta.as_ref() {
         acc.focus_entries.push(FocusEntry {
             element_id: element.id,
+            focus_on_mount_revision: element
+                .layout
+                .effective
+                .focus_on_mount
+                .unwrap_or(false)
+                .then_some(element.lifecycle.mounted_at_revision),
             is_currently_focused: focus_meta.is_currently_focused,
             self_reveal_scrolls: focus_meta.self_reveal_scrolls.clone(),
         });
@@ -6452,6 +6447,7 @@ pub(crate) fn accumulate_element_rebuild(
         })
         .unwrap_or_else(|| hover_stack.to_vec());
 
+    let listener_start = acc.registry.listeners.len();
     acc.registry.in_precedence_order(|out| {
         emit_element_listeners_with_focus_meta(
             element,
@@ -6462,6 +6458,21 @@ pub(crate) fn accumulate_element_rebuild(
         )
     });
 
+    let retains_runtime_state = state.is_some()
+        && (element.spec.kind.is_text_input_family()
+            || element.spec.kind == ElementKind::Slider
+            || element.layout.effective.scrollbar_x.unwrap_or(false)
+            || element.layout.effective.scrollbar_y.unwrap_or(false));
+    if acc.registry.listeners.len() != listener_start
+        || retains_runtime_state
+        || element.runtime.focused_active
+    {
+        let mounts = acc
+            .registry
+            .mounts
+            .get_or_insert_with(|| Arc::new(HashMap::new()));
+        Arc::make_mut(mounts).insert(element.id, element.lifecycle.mounted_at_revision);
+    }
     (next_scroll_contexts, next_hover_stack)
 }
 
@@ -6874,6 +6885,7 @@ fn registry_subtree_key(
 ) -> RegistrySubtreeKey {
     RegistrySubtreeKey {
         kind: element.spec.kind,
+        mounted_at_revision: element.lifecycle.mounted_at_revision,
         attrs_hash: registry_attrs_hash(element),
         runtime_hash: hash_value(&element.runtime),
         frame_hash: registry_frame_hash(element),
@@ -7202,6 +7214,24 @@ pub(crate) fn assert_registry_rebuild_payloads_equivalent(
         .collect();
 
     assert_eq!(left_listeners, right_listeners);
+    assert_eq!(left.base_registry.mounts, right.base_registry.mounts);
+    assert_eq!(
+        left.mount_focus_targets.as_ref().map(|m| m.len()),
+        right.mount_focus_targets.as_ref().map(|m| m.len())
+    );
+    if let Some(targets) = &left.mount_focus_targets {
+        for (id, target) in targets.iter() {
+            assert_eq!(
+                format!("{target:?}"),
+                format!(
+                    "{:?}",
+                    right.mount_focus_targets.as_ref().unwrap().get(id).unwrap()
+                )
+            );
+        }
+    }
+    // Receipt identity is local to each event/tree pair, not comparable across
+    // independent actor/direct or freshly built native reference registries.
     assert_eq!(left.text_inputs, right.text_inputs);
     assert_eq!(left.sliders, right.sliders);
     assert_eq!(left.scrollbars, right.scrollbars);
@@ -7322,7 +7352,25 @@ pub(crate) fn finalize_registry_rebuild(acc: RegistryBuildAcc) -> RegistryRebuil
     low_registry.extend_storage_from(&acc.registry);
     low_registry.extend_storage_from(&high_registry);
 
+    let mount_focus_targets = acc
+        .focus_entries
+        .iter()
+        .filter_map(|entry| {
+            entry.focus_on_mount_revision.map(|mounted_at_revision| {
+                (
+                    entry.element_id,
+                    FocusOnMountTarget {
+                        element_id: entry.element_id,
+                        mounted_at_revision,
+                        reveal_scrolls: entry.self_reveal_scrolls.clone(),
+                    },
+                )
+            })
+        })
+        .collect::<HashMap<_, _>>();
     RegistryRebuildPayload {
+        listener_barrier: None,
+        mount_focus_targets: (!mount_focus_targets.is_empty()).then(|| mount_focus_targets.into()),
         base_registry: low_registry,
         text_inputs: acc.text_inputs,
         sliders: acc.sliders,
@@ -8800,6 +8848,48 @@ mod scroll_wheel {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_listener_mount_index_is_sparse_shared_and_released() {
+        use crate::tree::layout::{Constraint, layout_and_refresh_default};
+        let assets = crate::assets::AssetRuntime::new();
+        let _assets = assets.enter();
+        let mut tree = ElementTree::new();
+        tree.set_revision(1);
+        tree.insert(Element::with_attrs(
+            NodeId(1),
+            ElementKind::El,
+            vec![],
+            Attrs {
+                width: Some(Length::Px(100.0)),
+                height: Some(Length::Px(30.0)),
+                ..Default::default()
+            },
+        ));
+        tree.set_root_id(NodeId(1));
+        tree.stamp_all_mounted_at_revision(1);
+        let plain =
+            layout_and_refresh_default(&mut tree, Constraint::new(100.0, 30.0), 1.0).event_rebuild;
+        assert!(plain.base_registry.mounts.is_none());
+        tree.get_mut(&NodeId(1)).unwrap().spec.declared.on_click = Some(true);
+        tree.mark_measure_dirty(&NodeId(1));
+        let first =
+            layout_and_refresh_default(&mut tree, Constraint::new(100.0, 30.0), 1.0).event_rebuild;
+        let second = first.clone();
+        let map = first.base_registry.mounts.as_ref().unwrap();
+        assert_eq!(map.len(), 1);
+        assert_eq!(map[&NodeId(1)], 1);
+        assert!(Arc::ptr_eq(
+            map,
+            second.base_registry.mounts.as_ref().unwrap()
+        ));
+        let weak = Arc::downgrade(map);
+        drop(tree);
+        drop(first);
+        assert!(weak.upgrade().is_some());
+        drop(second);
+        assert!(weak.upgrade().is_none());
+    }
+
     use std::collections::HashMap;
     use std::sync::Arc;
 

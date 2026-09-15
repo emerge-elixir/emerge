@@ -67,8 +67,37 @@ pub trait HostEventSink: Send + Sync {
     );
 }
 
+/// Dispatch-local collection keeps all native effects of an operation together.
+/// Production drivers add source evidence before handing this packet to a channel.
+trait TreeSink {
+    fn emit(&self, message: TreeMsg, log_render: bool);
+}
+impl TreeSink for Sender<TreeMsg> {
+    fn emit(&self, msg: TreeMsg, log_render: bool) {
+        match self.try_send(msg) {
+            Ok(()) => {}
+            Err(TrySendError::Full(msg)) => {
+                if log_render {
+                    eprintln!("tree channel full, blocking send");
+                }
+                let _ = self.send(msg);
+            }
+            Err(TrySendError::Disconnected(_)) => {}
+        }
+    }
+}
+#[derive(Default)]
+struct EventCommands(std::cell::RefCell<Vec<TreeMsg>>);
+impl TreeSink for EventCommands {
+    fn emit(&self, msg: TreeMsg, _: bool) {
+        crate::runtime::tree_update::push_tree_message_flat(msg, &mut self.0.borrow_mut());
+    }
+}
+
 struct EventRuntimeDriver {
     runtime: DirectEventRuntime,
+    awaiting_registry: Option<crate::actors::ListenerBarrier>,
+    pending_mount_focus: Option<(super::FocusOnMountTarget, Option<NodeId>)>,
     tree_tx: Sender<TreeMsg>,
     log_render: bool,
     native_log: Arc<NativeLogRelay>,
@@ -85,6 +114,8 @@ impl EventRuntimeDriver {
         stats: Option<Arc<RendererStatsCollector>>,
     ) -> Self {
         Self {
+            awaiting_registry: None,
+            pending_mount_focus: None,
             runtime: DirectEventRuntime::new_with_backend_cursor(
                 system_clipboard,
                 backend_cursor_tx,
@@ -116,27 +147,72 @@ impl EventRuntimeDriver {
         self.runtime.set_input_target(target);
     }
 
-    fn handle_input(&mut self, event: InputEvent) {
-        self.runtime
-            .handle_input_event(event, &self.tree_tx, self.log_render);
+    fn dispatch<R>(
+        &mut self,
+        operation: impl FnOnce(&mut DirectEventRuntime, &dyn TreeSink, bool) -> R,
+    ) -> R {
+        let commands = EventCommands::default();
+        let result = operation(&mut self.runtime, &commands, self.log_render);
+        let mut messages = commands.0.into_inner();
+        if std::mem::take(&mut self.runtime.listener_lane.needs_barrier) {
+            let barrier = crate::actors::ListenerBarrier::default();
+            self.awaiting_registry = Some(barrier.clone());
+            messages.push(TreeMsg::ListenerBarrier(barrier));
+        }
+        if !messages.is_empty() {
+            let mut targets: Vec<_> = messages.iter().filter_map(TreeMsg::target_id).collect();
+            targets.sort_unstable_by_key(|id| id.0);
+            targets.dedup();
+            let packet = if targets.is_empty() {
+                TreeMsg::Batch(messages)
+            } else {
+                TreeMsg::EventBatch {
+                    target_mounts: targets
+                        .into_iter()
+                        .map(|id| (id, self.runtime.base_registry.source_mount(&id)))
+                        .collect(),
+                    messages,
+                }
+            };
+            send_tree(&self.tree_tx, packet, self.log_render);
+        }
+        result
     }
 
-    fn install_rebuild(&mut self, rebuild: RegistryRebuildPayload) {
-        self.runtime
-            .handle_registry_update(rebuild, &self.tree_tx, self.log_render);
+    fn handle_input(&mut self, event: InputEvent) {
+        self.dispatch(|runtime, tx, log| runtime.handle_input_event(event, tx, log));
+    }
+
+    fn install_rebuild(&mut self, mut rebuild: RegistryRebuildPayload) {
+        rebuild.focus_on_mount = rebuild.focus_on_mount.take().filter(|target| {
+            target.mounted_at_revision > self.runtime.last_focus_on_mount_revision
+        });
+        if let Some((target, previous_focused)) = self.pending_mount_focus.take() {
+            rebuild.carry_mount_focus(Some(target), previous_focused);
+        }
+        if self.awaiting_registry.as_ref().is_some_and(|pending| {
+            !rebuild
+                .listener_barrier
+                .as_ref()
+                .is_some_and(|ack| pending.matches(ack))
+        }) {
+            self.pending_mount_focus = rebuild
+                .focus_on_mount
+                .map(|target| (target, rebuild.focused_id));
+            return;
+        }
+        self.awaiting_registry = None;
+        self.dispatch(|runtime, tx, log| runtime.handle_registry_update(rebuild, tx, log));
     }
 
     fn handle_timers(&mut self) {
-        self.runtime.handle_timers(&self.tree_tx, self.log_render);
+        self.dispatch(|runtime, tx, log| runtime.handle_timers(tx, log));
     }
 
     fn handle_present_timing(&mut self, presented_at: Instant, predicted_next_present_at: Instant) {
-        self.runtime.handle_present_timing(
-            presented_at,
-            predicted_next_present_at,
-            &self.tree_tx,
-            self.log_render,
-        );
+        self.dispatch(|runtime, tx, log| {
+            runtime.handle_present_timing(presented_at, predicted_next_present_at, tx, log)
+        });
     }
 
     fn focused_text_state(&self) -> Option<TextInputState> {
@@ -144,13 +220,11 @@ impl EventRuntimeDriver {
     }
 
     fn handle_text_input_command(&mut self, request: TextInputCommandRequest) -> bool {
-        self.runtime
-            .handle_text_input_command(request, &self.tree_tx, self.log_render)
+        self.dispatch(|runtime, tx, log| runtime.handle_text_input_command(request, tx, log))
     }
 
     fn handle_text_input_edit(&mut self, request: TextInputEditRequest) -> bool {
-        self.runtime
-            .handle_text_input_edit(request, &self.tree_tx, self.log_render)
+        self.dispatch(|runtime, tx, log| runtime.handle_text_input_edit(request, tx, log))
     }
 
     fn prepare_text_input_replacement_range(
@@ -295,6 +369,8 @@ impl HostEventRuntime {
         let (tree_tx, tree_rx) = crossbeam_channel::bounded(512);
         let native_log = Arc::new(NativeLogRelay::default());
         let mut driver = EventRuntimeDriver {
+            awaiting_registry: None,
+            pending_mount_focus: None,
             runtime: DirectEventRuntime::new_with_host_sink(
                 system_clipboard,
                 backend_cursor_tx,
@@ -551,7 +627,7 @@ impl PendingDispatchEffects {
     fn flush(
         mut self,
         runtime: &mut DirectEventRuntime,
-        tree_tx: &Sender<TreeMsg>,
+        tree_tx: &dyn TreeSink,
         log_render: bool,
         dispatch_mode: DispatchMode,
     ) {
@@ -668,7 +744,9 @@ fn tree_msg_label(msg: &TreeMsg) -> &'static str {
         TreeMsg::SetSliderValue { .. } => "set_slider_value",
         TreeMsg::AnimationPulse { .. } => "animation_pulse",
         TreeMsg::Batch(_) => "batch",
+        TreeMsg::EventBatch { .. } => "event_batch",
         TreeMsg::RebuildRegistry => "rebuild_registry",
+        TreeMsg::ListenerBarrier(_) => "listener_barrier",
         TreeMsg::AssetStateChanged => "asset_state_changed",
         TreeMsg::FontMetricsChanged { .. } => "font_metrics_changed",
         TreeMsg::Stop => "stop",
@@ -775,6 +853,7 @@ impl ListenerComputeCtx for RuntimeListenerComputeCtx<'_> {
 #[derive(Clone, Debug, Default)]
 struct ListenerLaneState {
     stale: bool,
+    needs_barrier: bool,
     buffered_inputs: Vec<InputEvent>,
 }
 
@@ -782,6 +861,7 @@ impl ListenerLaneState {
     fn initially_stale() -> Self {
         Self {
             stale: true,
+            needs_barrier: false,
             buffered_inputs: Vec::new(),
         }
     }
@@ -792,6 +872,7 @@ impl ListenerLaneState {
 
     fn mark_stale(&mut self) {
         self.stale = true;
+        self.needs_barrier = true;
     }
 
     fn buffer_input(&mut self, event: InputEvent) {
@@ -1191,7 +1272,7 @@ impl DirectEventRuntime {
         self.backend_wake.request_redraw();
     }
 
-    fn step_inertial_scroll(&mut self, now: Instant, tree_tx: &Sender<TreeMsg>, log_render: bool) {
+    fn step_inertial_scroll(&mut self, now: Instant, tree_tx: &dyn TreeSink, log_render: bool) {
         let Some(mut inertia) = self.inertial_scroll.take() else {
             return;
         };
@@ -1261,12 +1342,7 @@ impl DirectEventRuntime {
             .min()
     }
 
-    fn handle_input_event(
-        &mut self,
-        event: InputEvent,
-        tree_tx: &Sender<TreeMsg>,
-        log_render: bool,
-    ) {
+    fn handle_input_event(&mut self, event: InputEvent, tree_tx: &dyn TreeSink, log_render: bool) {
         let event = event.normalize_scroll_with_line_pixels(self.scroll_line_pixels);
         let label = input_event_label(&event);
         self.log_event_diagnostic(log_render, || {
@@ -1317,7 +1393,7 @@ impl DirectEventRuntime {
     fn handle_text_input_command(
         &mut self,
         request: TextInputCommandRequest,
-        tree_tx: &Sender<TreeMsg>,
+        tree_tx: &dyn TreeSink,
         log_render: bool,
     ) -> bool {
         let Some(element_id) = self
@@ -1356,7 +1432,7 @@ impl DirectEventRuntime {
     fn handle_text_input_edit(
         &mut self,
         request: TextInputEditRequest,
-        tree_tx: &Sender<TreeMsg>,
+        tree_tx: &dyn TreeSink,
         log_render: bool,
     ) -> bool {
         let Some(element_id) = self
@@ -1415,7 +1491,7 @@ impl DirectEventRuntime {
     fn inject_synthetic_inputs(
         &mut self,
         events: Vec<InputEvent>,
-        tree_tx: &Sender<TreeMsg>,
+        tree_tx: &dyn TreeSink,
         log_render: bool,
     ) {
         for event in events {
@@ -1426,7 +1502,7 @@ impl DirectEventRuntime {
     fn handle_registry_update(
         &mut self,
         rebuild: RegistryRebuildPayload,
-        tree_tx: &Sender<TreeMsg>,
+        tree_tx: &dyn TreeSink,
         log_render: bool,
     ) {
         let stale_before_install = self.listener_lane.is_stale();
@@ -1475,10 +1551,12 @@ impl DirectEventRuntime {
     fn install_rebuild(
         &mut self,
         rebuild: RegistryRebuildPayload,
-        tree_tx: &Sender<TreeMsg>,
+        tree_tx: &dyn TreeSink,
         log_render: bool,
     ) {
         let RegistryRebuildPayload {
+            listener_barrier: _,
+            mount_focus_targets: _,
             base_registry,
             text_inputs,
             sliders,
@@ -1493,10 +1571,10 @@ impl DirectEventRuntime {
 
         self.prune_expired_pending_text_patches();
         self.prune_expired_pending_slider_patches();
-        self.base_registry = base_registry;
+        let previous_registry = std::mem::replace(&mut self.base_registry, base_registry);
         self.scrollbar_nodes = scrollbars;
 
-        self.reconcile_runtime_overlay(&text_inputs, &sliders);
+        self.reconcile_runtime_overlay(&previous_registry, &text_inputs, &sliders);
         self.recompose_overlay_registry();
         self.focused_id = focused_id;
         self.text_commit_suppressions.retain(|suppression| {
@@ -1571,7 +1649,7 @@ impl DirectEventRuntime {
     fn replay_buffered(
         &mut self,
         events: Vec<InputEvent>,
-        tree_tx: &Sender<TreeMsg>,
+        tree_tx: &dyn TreeSink,
         log_render: bool,
     ) {
         let event_count = events.len();
@@ -1624,7 +1702,7 @@ impl DirectEventRuntime {
         })
     }
 
-    fn handle_timers(&mut self, tree_tx: &Sender<TreeMsg>, log_render: bool) {
+    fn handle_timers(&mut self, tree_tx: &dyn TreeSink, log_render: bool) {
         let now = Instant::now();
         self.log_event_diagnostic(log_render, || {
             format!("timers begin\n  {}", self.diagnostic_summary())
@@ -1655,7 +1733,7 @@ impl DirectEventRuntime {
         &mut self,
         presented_at: Instant,
         predicted_next_present_at: Instant,
-        tree_tx: &Sender<TreeMsg>,
+        tree_tx: &dyn TreeSink,
         log_render: bool,
     ) {
         self.note_present_timing(presented_at, predicted_next_present_at);
@@ -1666,7 +1744,7 @@ impl DirectEventRuntime {
         self.step_inertial_scroll(presented_at, tree_tx, log_render);
     }
 
-    fn handle_virtual_key_timer(&mut self, tree_tx: &Sender<TreeMsg>, log_render: bool) {
+    fn handle_virtual_key_timer(&mut self, tree_tx: &dyn TreeSink, log_render: bool) {
         let Some(tracker) = self.runtime_overlay.virtual_key.clone() else {
             self.virtual_key_deadline = None;
             return;
@@ -1744,7 +1822,7 @@ impl DirectEventRuntime {
         }
     }
 
-    fn redispatch_last_cursor_pos(&mut self, tree_tx: &Sender<TreeMsg>, log_render: bool) {
+    fn redispatch_last_cursor_pos(&mut self, tree_tx: &dyn TreeSink, log_render: bool) {
         if !self.cursor_in_window {
             return;
         }
@@ -1795,7 +1873,7 @@ impl DirectEventRuntime {
     fn dispatch_event(
         &mut self,
         event: InputEvent,
-        tree_tx: &Sender<TreeMsg>,
+        tree_tx: &dyn TreeSink,
         log_render: bool,
         dispatch_mode: DispatchMode,
     ) {
@@ -1837,7 +1915,7 @@ impl DirectEventRuntime {
     fn apply_listener_actions(
         &mut self,
         actions: Vec<ListenerAction>,
-        tree_tx: &Sender<TreeMsg>,
+        tree_tx: &dyn TreeSink,
         log_render: bool,
         dispatch_mode: DispatchMode,
     ) {
@@ -2138,25 +2216,45 @@ impl DirectEventRuntime {
 
     fn reconcile_runtime_overlay(
         &mut self,
+        previous: &registry_builder::Registry,
         text_inputs: &HashMap<NodeId, TextInputState>,
         sliders: &HashMap<NodeId, SliderState>,
     ) {
+        let base = &self.base_registry;
+        let same_mount = |id: &NodeId| base.same_mount(previous, id);
+        let has_source =
+            |id: &NodeId, kind| same_mount(id) && base_has_source_listener(base, id, kind);
+        // Local edits, anchors and hover belong to a mount, not its reusable ID.
+        // Drop old-mount state before incoming native state is reconciled/replayed.
+        self.text_states.retain(|id, _| same_mount(id));
+        self.slider_states.retain(|id, _| same_mount(id));
+        self.pending_text_patches.retain(|id, _| same_mount(id));
+        self.pending_slider_patches.retain(|id, _| same_mount(id));
+        self.text_commit_suppressions
+            .retain(|suppression| same_mount(&suppression.element_id));
+        self.hover_stack
+            .retain(|tracker| same_mount(&tracker.element_id));
         if let Some(click_press) = self.runtime_overlay.click_press.as_ref()
-            && !base_has_source_listener(
-                &self.base_registry,
-                &click_press.element_id,
-                click_press.matcher_kind,
-            )
+            && !has_source(&click_press.element_id, click_press.matcher_kind)
         {
             self.runtime_overlay.click_press = None;
         }
 
+        if self
+            .runtime_overlay
+            .virtual_key
+            .as_ref()
+            .is_some_and(|tracker| !same_mount(&tracker.element_id))
+        {
+            self.runtime_overlay.virtual_key = None;
+        }
         if self.runtime_overlay.virtual_key.is_none() {
             self.virtual_key_deadline = None;
         }
 
         self.runtime_overlay.key_presses.retain(|tracker| {
-            registry_builder::base_has_key_press_source(&self.base_registry, tracker)
+            tracker.source_element_id.as_ref().is_none_or(same_mount)
+                && registry_builder::base_has_key_press_source(base, tracker)
         });
 
         match self.runtime_overlay.drag {
@@ -2171,7 +2269,7 @@ impl DirectEventRuntime {
                 matcher_kind,
                 ..
             } => {
-                if !base_has_source_listener(&self.base_registry, element_id, matcher_kind) {
+                if !has_source(element_id, matcher_kind) {
                     self.runtime_overlay.drag = registry_builder::DragTrackerState::Inactive;
                     self.drag_motion = None;
                 }
@@ -2179,8 +2277,7 @@ impl DirectEventRuntime {
         }
 
         if self.drag_motion.as_ref().is_some_and(|motion| {
-            !base_has_source_listener(
-                &self.base_registry,
+            !has_source(
                 &motion.element_id,
                 ListenerMatcherKind::CursorButtonLeftPressInside,
             )
@@ -2189,26 +2286,33 @@ impl DirectEventRuntime {
         }
 
         if let Some(swipe) = self.runtime_overlay.swipe.as_ref()
-            && !base_has_source_listener(&self.base_registry, &swipe.element_id, swipe.matcher_kind)
+            && !has_source(&swipe.element_id, swipe.matcher_kind)
         {
             self.runtime_overlay.swipe = None;
         }
 
         if let Some(text_drag) = self.runtime_overlay.text_drag.as_ref()
-            && !text_inputs.contains_key(&text_drag.element_id)
+            && (!same_mount(&text_drag.element_id)
+                || !text_inputs.contains_key(&text_drag.element_id))
         {
             self.runtime_overlay.text_drag = None;
         }
 
         if let Some(slider_drag) = self.runtime_overlay.slider_drag.as_ref()
-            && !sliders.contains_key(&slider_drag.element_id)
+            && (!same_mount(&slider_drag.element_id)
+                || !sliders.contains_key(&slider_drag.element_id))
         {
             self.runtime_overlay.slider_drag = None;
         }
 
         if let Some(ref mut tracker) = self.runtime_overlay.scrollbar {
             let key = scrollbar_key(&tracker.element_id, tracker.axis);
-            if let Some(node) = self.scrollbar_nodes.get(&key).copied() {
+            if let Some(node) = self
+                .scrollbar_nodes
+                .get(&key)
+                .copied()
+                .filter(|_| same_mount(&tracker.element_id))
+            {
                 tracker.track_start = node.track_start;
                 tracker.track_len = node.track_len;
                 tracker.thumb_len = node.thumb_len;
@@ -2222,9 +2326,10 @@ impl DirectEventRuntime {
         }
 
         if self.inertial_scroll.as_ref().is_some_and(|inertia| {
-            !self
-                .scrollbar_nodes
-                .contains_key(&scrollbar_key(&inertia.element_id, inertia.axis))
+            !same_mount(&inertia.element_id)
+                || !self
+                    .scrollbar_nodes
+                    .contains_key(&scrollbar_key(&inertia.element_id, inertia.axis))
         }) {
             self.inertial_scroll = None;
         }
@@ -2248,20 +2353,11 @@ fn scrollbar_key(element_id: &NodeId, axis: ScrollbarAxis) -> (NodeId, Scrollbar
     (*element_id, axis)
 }
 
-fn send_tree(tree_tx: &Sender<TreeMsg>, msg: TreeMsg, log_render: bool) {
-    match tree_tx.try_send(msg) {
-        Ok(()) => {}
-        Err(TrySendError::Full(msg)) => {
-            if log_render {
-                eprintln!("tree channel full, blocking send");
-            }
-            let _ = tree_tx.send(msg);
-        }
-        Err(TrySendError::Disconnected(_)) => {}
-    }
+fn send_tree(tree_tx: &dyn TreeSink, msg: TreeMsg, log_render: bool) {
+    tree_tx.emit(msg, log_render);
 }
 
-fn send_tree_messages(tree_tx: &Sender<TreeMsg>, msgs: Vec<TreeMsg>, log_render: bool) {
+fn send_tree_messages(tree_tx: &dyn TreeSink, msgs: Vec<TreeMsg>, log_render: bool) {
     match msgs.len() {
         0 => {}
         1 => send_tree(tree_tx, msgs.into_iter().next().unwrap(), log_render),
@@ -2316,7 +2412,7 @@ fn event_kind_to_atom(kind: ElementEventKind) -> rustler::Atom {
 }
 
 fn send_runtime_update(
-    tree_tx: &Sender<TreeMsg>,
+    tree_tx: &dyn TreeSink,
     log_render: bool,
     element_id: &NodeId,
     state: &TextInputState,
@@ -2340,7 +2436,7 @@ fn send_runtime_update(
 }
 
 fn send_pending_content_update(
-    tree_tx: &Sender<TreeMsg>,
+    tree_tx: &dyn TreeSink,
     log_render: bool,
     pending_text_patches: &mut HashMap<NodeId, VecDeque<PendingTextPatch>>,
     pending_text_patch_ttl: Duration,
@@ -2367,7 +2463,7 @@ fn send_pending_content_update(
 }
 
 fn send_content_update(
-    tree_tx: &Sender<TreeMsg>,
+    tree_tx: &dyn TreeSink,
     log_render: bool,
     element_id: &NodeId,
     content: String,
@@ -2384,7 +2480,7 @@ fn send_content_update(
 }
 
 fn send_slider_value_update(
-    tree_tx: &Sender<TreeMsg>,
+    tree_tx: &dyn TreeSink,
     log_render: bool,
     element_id: &NodeId,
     value: f64,
@@ -2531,7 +2627,7 @@ fn consume_pending_slider_patch_match(
 struct FocusedTextInputReconcileContext<'a> {
     pending_text_patches: &'a mut HashMap<NodeId, VecDeque<PendingTextPatch>>,
     pending_text_patch_ttl: Duration,
-    tree_tx: &'a Sender<TreeMsg>,
+    tree_tx: &'a dyn TreeSink,
     log_render: bool,
 }
 
@@ -2541,7 +2637,7 @@ fn reconcile_text_input_states(
     pending_text_patches: &mut HashMap<NodeId, VecDeque<PendingTextPatch>>,
     pending_text_patch_ttl: Duration,
     focused: &Option<NodeId>,
-    tree_tx: &Sender<TreeMsg>,
+    tree_tx: &dyn TreeSink,
     log_render: bool,
 ) -> bool {
     fn text_input_runtime_mismatch(rebuild: &TextInputState, state: &TextInputState) -> bool {
@@ -2721,14 +2817,14 @@ fn reconcile_slider_states(
     sliders: &HashMap<NodeId, SliderState>,
     states: &mut HashMap<NodeId, SliderState>,
     pending_slider_patches: &mut HashMap<NodeId, VecDeque<PendingSliderPatch>>,
-    tree_tx: &Sender<TreeMsg>,
+    tree_tx: &dyn TreeSink,
     log_render: bool,
 ) -> bool {
     fn preserve_runtime_slider(
         element_id: &NodeId,
         rebuild_state: &SliderState,
         state: &mut SliderState,
-        tree_tx: &Sender<TreeMsg>,
+        tree_tx: &dyn TreeSink,
         log_render: bool,
     ) -> bool {
         state.copy_rebuild_metadata_from(rebuild_state);
@@ -2749,7 +2845,7 @@ fn reconcile_slider_states(
         rebuild_state: &SliderState,
         state: &mut SliderState,
         patch_value: f64,
-        tree_tx: &Sender<TreeMsg>,
+        tree_tx: &dyn TreeSink,
         log_render: bool,
     ) -> bool {
         state.copy_rebuild_metadata_from(rebuild_state);
@@ -2794,7 +2890,7 @@ struct FocusApplyContext<'a> {
     host_event_sink: Option<&'a dyn HostEventSink>,
     states: &'a mut HashMap<NodeId, TextInputState>,
     pending_text_patches: &'a mut HashMap<NodeId, VecDeque<PendingTextPatch>>,
-    tree_tx: &'a Sender<TreeMsg>,
+    tree_tx: &'a dyn TreeSink,
     log_render: bool,
 }
 
@@ -3070,40 +3166,44 @@ pub(crate) fn spawn_event_actor(config: SpawnEventActorConfig) -> thread::JoinHa
                 driver.runtime.diagnostic_summary(),
             )
         });
-        let mut pending_message: Option<EventMsg> = None;
-
-        loop {
-            let message = match pending_message.take() {
-                Some(message) => Some(message),
-                None => match driver.next_event_timeout() {
-                    Some(timeout) => match event_rx.recv_timeout(timeout) {
-                        Ok(message) => Some(message),
-                        Err(RecvTimeoutError::Timeout) => None,
-                        Err(RecvTimeoutError::Disconnected) => return,
-                    },
-                    None => match event_rx.recv() {
-                        Ok(message) => Some(message),
-                        Err(_) => return,
-                    },
-                },
-            };
-
-            let Some(message) = message else {
-                driver.log_event_diagnostic(|| {
-                    format!(
-                        "event actor timer wake\n  {}",
-                        driver.runtime.diagnostic_summary(),
-                    )
-                });
-                driver.handle_timers();
-                continue;
-            };
-
-            if !driver.handle_actor_message(message, &event_rx, &mut pending_message) {
-                return;
-            }
-        }
+        run_event_actor(driver, event_rx);
     })
+}
+
+fn run_event_actor(mut driver: EventRuntimeDriver, event_rx: Receiver<EventMsg>) {
+    let mut pending_message: Option<EventMsg> = None;
+
+    loop {
+        let message = match pending_message.take() {
+            Some(message) => Some(message),
+            None => match driver.next_event_timeout() {
+                Some(timeout) => match event_rx.recv_timeout(timeout) {
+                    Ok(message) => Some(message),
+                    Err(RecvTimeoutError::Timeout) => None,
+                    Err(RecvTimeoutError::Disconnected) => return,
+                },
+                None => match event_rx.recv() {
+                    Ok(message) => Some(message),
+                    Err(_) => return,
+                },
+            },
+        };
+
+        let Some(message) = message else {
+            driver.log_event_diagnostic(|| {
+                format!(
+                    "event actor timer wake\n  {}",
+                    driver.runtime.diagnostic_summary(),
+                )
+            });
+            driver.handle_timers();
+            continue;
+        };
+
+        if !driver.handle_actor_message(message, &event_rx, &mut pending_message) {
+            return;
+        }
+    }
 }
 
 fn coalesce_registry_updates(
@@ -3112,11 +3212,15 @@ fn coalesce_registry_updates(
     pending_message: &mut Option<EventMsg>,
 ) -> (RegistryRebuildPayload, usize) {
     let mut coalesced_count = 0;
-    while let Ok(message) = event_rx.try_recv() {
+    while coalesced_count < 63 {
+        let Ok(message) = event_rx.try_recv() else {
+            break;
+        };
         match message {
             EventMsg::RegistryUpdate {
-                rebuild: newer_rebuild,
+                rebuild: mut newer_rebuild,
             } => {
+                newer_rebuild.carry_mount_focus(rebuild.focus_on_mount.take(), rebuild.focused_id);
                 rebuild = newer_rebuild;
                 coalesced_count += 1;
             }
@@ -3132,6 +3236,7 @@ fn coalesce_registry_updates(
 
 #[cfg(test)]
 mod tests {
+    pub(super) mod delayed;
     use std::collections::{HashMap, VecDeque};
     use std::sync::Mutex;
 
@@ -3240,6 +3345,8 @@ mod tests {
         focused_id: Option<NodeId>,
     ) -> RegistryRebuildPayload {
         RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::Registry::default(),
             text_inputs: HashMap::from([(input_id, state)]),
             sliders: HashMap::new(),
@@ -3748,6 +3855,8 @@ mod tests {
         };
         let element = with_interaction(make_element(219, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -3804,7 +3913,7 @@ mod tests {
             registry_builder::DragTrackerState::Active { .. }
         ));
         assert!(matches!(
-            runtime.listener_lane.buffered_inputs.as_slice(),
+            runtime.listener_lane.buffered_inputs.as_mut_slice(),
             [InputEvent::CursorButton { action, .. }]
                 if *action == crate::input::ACTION_RELEASE
         ));
@@ -3877,6 +3986,7 @@ mod tests {
         assert!(
             tree_messages
                 .iter()
+                .flat_map(TreeMsg::commands)
                 .any(|message| matches!(message, TreeMsg::RebuildRegistry))
         );
 
@@ -4189,6 +4299,8 @@ mod tests {
         let descriptor = make_text_input_state("hello", 2, None, true);
         let base_registry = registry_builder::Registry::default();
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry,
             text_inputs: HashMap::from([(input_id, descriptor.clone())]),
             sliders: HashMap::new(),
@@ -4315,6 +4427,8 @@ mod tests {
         let attrs = mouse_down_style_attrs();
         let element = with_interaction(make_element(20, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -4378,6 +4492,8 @@ mod tests {
         };
         let element = with_interaction(make_element(23, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -4460,6 +4576,8 @@ mod tests {
         };
         let element = with_interaction(make_element(22, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -4522,6 +4640,8 @@ mod tests {
         };
         let element = with_interaction(make_element(21, ElementKind::El, attrs.clone()));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -4559,6 +4679,8 @@ mod tests {
         active_attrs.focused_active = Some(true);
         let active_element = with_interaction(make_element(21, ElementKind::El, active_attrs));
         let active_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[active_element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -4603,6 +4725,8 @@ mod tests {
         let second = with_interaction(make_element(31, ElementKind::El, second_attrs));
 
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[first, second]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -4649,6 +4773,8 @@ mod tests {
         };
         let element = with_interaction(make_element(40, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -4683,6 +4809,8 @@ mod tests {
         };
         let element = with_interaction(make_element(44, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -4752,6 +4880,8 @@ mod tests {
         };
         let element = with_interaction(make_element(43, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -4809,6 +4939,8 @@ mod tests {
         };
         let element = with_interaction(make_element(89, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -4870,6 +5002,8 @@ mod tests {
         };
         let element = with_interaction(make_element(90, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -4939,6 +5073,8 @@ mod tests {
             },
         );
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -5237,6 +5373,7 @@ mod tests {
         let first_dx = runtime
             .drain_tree_messages()
             .iter()
+            .flat_map(TreeMsg::commands)
             .find_map(|msg| match msg {
                 TreeMsg::ScrollRequest {
                     element_id: id,
@@ -5256,6 +5393,7 @@ mod tests {
         let second_dx = runtime
             .drain_tree_messages()
             .iter()
+            .flat_map(TreeMsg::commands)
             .find_map(|msg| match msg {
                 TreeMsg::ScrollRequest {
                     element_id: id,
@@ -5408,6 +5546,8 @@ mod tests {
         let child = with_interaction(make_element(74, ElementKind::El, child_attrs));
 
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[parent, child]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -5467,6 +5607,8 @@ mod tests {
         let child = with_interaction(make_element(76, ElementKind::El, child_attrs));
 
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[parent, child]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -5511,6 +5653,8 @@ mod tests {
         };
         let element = with_interaction(make_element(88, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -5580,6 +5724,8 @@ mod tests {
         let child = with_interaction(make_element(78, ElementKind::El, child_attrs));
 
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[parent, child]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -5689,6 +5835,8 @@ mod tests {
         };
         let element = with_interaction(make_element(41, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -5751,6 +5899,8 @@ mod tests {
         let attrs = on_mouse_move_attrs();
         let element = with_interaction(make_element(42, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -5784,6 +5934,8 @@ mod tests {
         };
         let element = with_interaction(make_element(50, ElementKind::TextInput, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::from([(
                 NodeId::from_term_bytes(vec![50]),
@@ -5873,6 +6025,8 @@ mod tests {
         };
         let element = with_interaction(make_element(158, ElementKind::TextInput, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::from([(input_id, make_text_input_state("abcd", 0, None, true))]),
             sliders: HashMap::new(),
@@ -5941,6 +6095,8 @@ mod tests {
             .insert(input_id, make_text_input_state("abcd", 3, Some(0), true));
 
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::Registry::default(),
             text_inputs: HashMap::from([(input_id, make_text_input_state("abcd", 1, None, true))]),
             sliders: HashMap::new(),
@@ -6108,6 +6264,8 @@ mod tests {
         };
         let element = with_interaction(make_element(150, ElementKind::TextInput, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::from([(
                 NodeId::from_term_bytes(vec![150]),
@@ -6184,6 +6342,8 @@ mod tests {
         let mut state = make_text_input_state("ab", 2, None, true);
         state.multiline = true;
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::from([(NodeId::from_term_bytes(vec![151]), state)]),
             sliders: HashMap::new(),
@@ -6229,6 +6389,8 @@ mod tests {
         state.multiline = true;
         let element_id = NodeId::from_term_bytes(vec![153]);
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::from([(element_id, state)]),
             sliders: HashMap::new(),
@@ -6293,6 +6455,8 @@ mod tests {
         let mut state = make_text_input_state("ab", 2, None, true);
         state.multiline = true;
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::from([(NodeId::from_term_bytes(vec![152]), state)]),
             sliders: HashMap::new(),
@@ -6344,6 +6508,8 @@ mod tests {
         };
         let element = with_interaction(make_element(154, ElementKind::TextInput, attrs));
         let initial_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(std::slice::from_ref(&element)),
             text_inputs: HashMap::from([(input_id, make_text_input_state("task", 4, None, true))]),
             sliders: HashMap::new(),
@@ -6352,6 +6518,8 @@ mod tests {
             focus_on_mount: None,
         };
         let reset_patch_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(std::slice::from_ref(&element)),
             text_inputs: HashMap::from([(
                 input_id,
@@ -6376,6 +6544,8 @@ mod tests {
         let cleared_element =
             with_interaction(make_element(154, ElementKind::TextInput, cleared_attrs));
         let reset_applied_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[cleared_element]),
             text_inputs: HashMap::from([(
                 input_id,
@@ -6463,6 +6633,8 @@ mod tests {
         );
 
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[text_input, soft_key]),
             text_inputs: HashMap::from([(
                 NodeId::from_term_bytes(vec![80]),
@@ -6559,6 +6731,8 @@ mod tests {
         );
 
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[text_input, soft_key]),
             text_inputs: HashMap::from([(
                 NodeId::from_term_bytes(vec![180]),
@@ -6645,6 +6819,8 @@ mod tests {
         );
 
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[
                 text_input.clone(),
                 soft_key.clone(),
@@ -6704,6 +6880,8 @@ mod tests {
         )));
 
         let repeat_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[text_input, soft_key]),
             text_inputs: HashMap::from([(
                 NodeId::from_term_bytes(vec![82]),
@@ -6762,6 +6940,8 @@ mod tests {
         };
         let element = with_interaction(make_element(51, ElementKind::TextInput, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::from([(
                 NodeId::from_term_bytes(vec![51]),
@@ -6817,6 +6997,8 @@ mod tests {
         let element = with_interaction(make_element(53, ElementKind::TextInput, attrs));
 
         let rebuild_ab = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(std::slice::from_ref(&element)),
             text_inputs: HashMap::from([(input_id, make_text_input_state("ab", 2, None, true))]),
             sliders: HashMap::new(),
@@ -6826,6 +7008,8 @@ mod tests {
         };
 
         let rebuild_abc = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::from([(input_id, make_text_input_state("abc", 3, None, true))]),
             sliders: HashMap::new(),
@@ -7114,6 +7298,8 @@ mod tests {
     fn slider_tree_patch_matching_pending_value_preserves_runtime_value() {
         let slider_id = NodeId::from_term_bytes(vec![58]);
         let rebuild_echo = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::Registry::default(),
             text_inputs: HashMap::new(),
             sliders: HashMap::from([(
@@ -7162,6 +7348,8 @@ mod tests {
         )));
 
         let corrected = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::Registry::default(),
             text_inputs: HashMap::new(),
             sliders: HashMap::from([(
@@ -7188,6 +7376,8 @@ mod tests {
     fn slider_tree_patch_matching_current_value_does_not_echo_back_to_tree() {
         let slider_id = NodeId::from_term_bytes(vec![60]);
         let rebuild_echo = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::Registry::default(),
             text_inputs: HashMap::new(),
             sliders: HashMap::from([(
@@ -7236,6 +7426,8 @@ mod tests {
     fn slider_tree_patch_non_pending_value_is_accepted() {
         let slider_id = NodeId::from_term_bytes(vec![59]);
         let rebuild_remote = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::Registry::default(),
             text_inputs: HashMap::new(),
             sliders: HashMap::from([(
@@ -7289,6 +7481,8 @@ mod tests {
     fn unfocused_rebuild_clears_pending_text_patches() {
         let input_id = NodeId::from_term_bytes(vec![58]);
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::Registry::default(),
             text_inputs: HashMap::from([(
                 input_id,
@@ -7332,6 +7526,8 @@ mod tests {
         };
         let element = with_interaction(make_element(54, ElementKind::TextInput, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::from([(
                 NodeId::from_term_bytes(vec![54]),
@@ -7382,6 +7578,8 @@ mod tests {
         };
         let element = with_interaction(make_element(52, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -7426,6 +7624,8 @@ mod tests {
         };
         let element = with_interaction(make_element(53, ElementKind::El, attrs.clone()));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -7461,6 +7661,8 @@ mod tests {
 
         let patched_before_hover_state = with_interaction(make_element(53, ElementKind::El, attrs));
         let patch_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[patched_before_hover_state]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -7506,6 +7708,8 @@ mod tests {
         let child = with_interaction(make_element(63, ElementKind::El, child_attrs));
 
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[parent, child]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -7556,6 +7760,8 @@ mod tests {
         let child = with_interaction(make_element(65, ElementKind::El, child_attrs));
 
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[parent, child]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -7611,6 +7817,8 @@ mod tests {
         );
 
         let initial_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[
                 parent.clone(),
                 child.clone(),
@@ -7684,6 +7892,8 @@ mod tests {
         );
 
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[parent, child]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -7730,6 +7940,8 @@ mod tests {
             40.0,
         );
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[initial]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -7746,6 +7958,8 @@ mod tests {
             40.0,
         );
         let moved_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[moved]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -7801,6 +8015,8 @@ mod tests {
         );
 
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[
                 text_input,
                 pressable,
@@ -7849,6 +8065,8 @@ mod tests {
         );
 
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[text_input]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -7900,6 +8118,8 @@ mod tests {
         );
 
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[pressable]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -7944,6 +8164,8 @@ mod tests {
             40.0,
         );
         let initial_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[initial]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -7965,6 +8187,8 @@ mod tests {
             40.0,
         );
         let moved_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[moved]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -8006,6 +8230,8 @@ mod tests {
             40.0,
         );
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -8036,6 +8262,8 @@ mod tests {
             40.0,
         );
         let active_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[active_element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -8055,6 +8283,8 @@ mod tests {
             40.0,
         );
         let moved_away_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[moved_away]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -8265,6 +8495,8 @@ mod tests {
             40.0,
         );
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -8290,6 +8522,8 @@ mod tests {
             40.0,
         );
         let active_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[active_element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -8319,6 +8553,8 @@ mod tests {
             40.0,
         );
         let inactive_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[inactive_element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -8350,6 +8586,8 @@ mod tests {
             40.0,
         );
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[initial]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -8366,6 +8604,8 @@ mod tests {
             40.0,
         );
         let moved_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[moved]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -8406,6 +8646,8 @@ mod tests {
             40.0,
         );
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[initial]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -8422,6 +8664,8 @@ mod tests {
             40.0,
         );
         let moved_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[moved]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -8456,6 +8700,8 @@ mod tests {
             40.0,
         );
         let hovered_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[hovered]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -8518,6 +8764,8 @@ mod tests {
         );
 
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[menu, plain, scrollable]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),

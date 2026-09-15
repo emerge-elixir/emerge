@@ -243,7 +243,7 @@ fn coalesced_mount_focus_survives_revision_changes_but_not_remount_or_removal() 
     )
     .event_rebuild;
     assert!(next.focus_on_mount.is_none());
-    let merged = coalesce_registry(&tree, Some(first), next);
+    let merged = coalesce_registry(Some(first), next);
     assert!(merged.focus_on_mount.is_some());
     let pending = merged.clone();
     let mut previously_focused = merged.clone();
@@ -252,7 +252,7 @@ fn coalesced_mount_focus_survives_revision_changes_but_not_remount_or_removal() 
     lost_focus.focused_id = None;
     lost_focus.focus_on_mount = None;
     assert!(
-        coalesce_registry(&tree, Some(previously_focused), lost_focus)
+        coalesce_registry(Some(previously_focused), lost_focus)
             .focus_on_mount
             .is_some(),
         "removing an unrelated focused node must not lose the eligible pending mount"
@@ -261,13 +261,13 @@ fn coalesced_mount_focus_survives_revision_changes_but_not_remount_or_removal() 
     explicitly_focused.focus_on_mount = None;
     explicitly_focused.focused_id = Some(NodeId(2));
     assert!(
-        coalesce_registry(&tree, Some(merged.clone()), explicitly_focused)
+        coalesce_registry(Some(merged.clone()), explicitly_focused)
             .focus_on_mount
             .is_none(),
         "a later explicit focus choice supersedes the unsent mount request"
     );
     tree.remove_node(&NodeId(1));
-    let absent = coalesce_registry(&tree, Some(merged), RegistryRebuildPayload::default());
+    let absent = coalesce_registry(Some(merged), RegistryRebuildPayload::default());
     assert!(absent.focus_on_mount.is_none());
     tree.insert(Element::with_attrs(
         NodeId(1),
@@ -289,7 +289,7 @@ fn coalesced_mount_focus_survives_revision_changes_but_not_remount_or_removal() 
     )
     .event_rebuild;
     assert!(
-        coalesce_registry(&tree, Some(pending), remounted)
+        coalesce_registry(Some(pending), remounted)
             .focus_on_mount
             .is_none()
     );
