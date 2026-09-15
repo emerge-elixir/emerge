@@ -205,6 +205,10 @@ python3 scripts/benchmarks/shared-animation/summarize.py /tmp/emerge-animation-r
 The full matrix uses 5k/20k nodes and 1/64 owners. Preserve paint/pixel controls;
 RSS is not exact live heap, and desktop timings do not qualify constrained devices.
 
+Add `--closeout` to the runner for the compact 20k-node/64-owner matrix: paint,
+pixel, length, moving, mixed and upward, each in three separate processes (18 total).
+The flag selects a measurement preset, not a product completion or budget gate.
+
 ## Native event-pressure probe
 
 This test-only probe uses real event/tree loops with 4096-event / 512-tree channel

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Summarize stored three-process trials; does not run or time benchmarks."""
+import json
 import re
 import statistics
 import sys
@@ -9,10 +10,16 @@ root = Path(sys.argv[1])
 median = statistics.median
 print("| Nodes | Owners / loops¹ | Case | Warm p50 / p95 (ms) | Release median [min–max] (ms) | Settle median (ms) | Warm RSS MiB |")
 print("|---:|---:|---|---:|---:|---:|---:|")
-for nodes in [5000, 20000]:
-    for owners in [1, 64]:
-        for case in ["paint", "pixel", "length", "moving", "mixed", "independent", "coupled", "upward"]:
-            texts = [(root / f"{nodes}-{owners}-{case}-{trial}.txt").read_text() for trial in [1, 2, 3]]
+matrix_path = root / "matrix.json"
+matrix = json.loads(matrix_path.read_text()) if matrix_path.exists() else {
+    "nodes": [5000, 20000], "owners": [1, 64], "trials": 3,
+    "cases": ["paint", "pixel", "length", "moving", "mixed", "independent", "coupled", "upward"],
+}
+for nodes in matrix["nodes"]:
+    for owners in matrix["owners"]:
+        for case in matrix["cases"]:
+            texts = [(root / f"{nodes}-{owners}-{case}-{trial}.txt").read_text()
+                     for trial in range(1, matrix["trials"] + 1)]
 
             def values(key):
                 return [float(re.search(rf"\b{key}=(\d+)", text)[1]) / 1000 for text in texts]
