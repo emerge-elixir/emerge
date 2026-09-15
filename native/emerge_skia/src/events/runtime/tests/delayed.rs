@@ -357,3 +357,6 @@ pub(crate) mod stalled;
 mod yielding;
 
 mod outbound;
+
+#[cfg(feature = "bench-diagnostics")]
+pub(crate) mod pressure_probe;
