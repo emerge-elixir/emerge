@@ -1,6 +1,6 @@
 # Historical animation design notes
 
-Superseded by `../shared-animation-implementation-history.md`. Retained for allocation oracles
+Implemented contracts are documented in [layout/refresh flow](../../guides/internals/layout-refresh-render-flow.md); [closeout evidence](shared-animation-closeout/README.md) records completion. Retained for allocation oracles
 and investigation details, not as an active phase or enablement policy. The current feature excludes animated
 min/max expressions; references below to supporting them are superseded.
 

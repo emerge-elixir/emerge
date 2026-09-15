@@ -1,37 +1,29 @@
 # Later work: animation performance, runtime and platform qualification
 
 **Status: deferred; not a dependency of shared animation implementation closeout.**
-The user prioritized [minimal animation closeout](shared-animation-closeout.md).
-Animation implementation is now closed; see
-[final evidence](artifacts/shared-animation-closeout/README.md). This plan owns the
-remainder of the old P1–P9 backlog. Do not start these packages
-as an automatic continuation of closeout; choose a focused package separately.
-Existing completed fixes/evidence remain preserved. Deferred does not mean solved,
-unimportant, safe to ship on every target, or approved for implementation.
+Animation implementation is complete; [final evidence](artifacts/shared-animation-closeout/README.md)
+is the completion record, not another plan. This is the **sole deferred backlog**
+for async editing, pressure policy, animation optimization and broader qualification.
+Select a focused package before resuming work; deferred does not mean approved,
+solved, or safe to ship on every target.
 
-## Scope transfer from the old plan
+The separate [active low-resource plan](active-low-resource-animation-smoothness.md)
+owns existing constrained-device transform/patch budgets and cadence work. Do not
+create duplicate target gates here. General GPU and asset qualification retain their
+existing owners in L5.
 
-| Old package | Minimal closeout retains | Later work owns |
-|---|---|---|
-| P1: baseline/accounting | Existing contract evidence and small current benchmark snapshot | Complete phase attribution, exact live/peak allocation and disposal accounting; expanded workload baselines |
-| P2: dependency/continuation | Audit implemented clocks/coupling; fix demonstrated supported defects | Additional owner/layout/curve/rate permutations, randomized feedback histories and proof-work optimization |
-| P3: provenance | Audit existing immutable inputs and combined-cause regressions | Expanded media/scroll/font concurrency schedules, broader pairwise/soak coverage and provenance cost analysis |
-| P4: transport | Audit implemented roles/units/remount/first-source behavior | Randomized topology/churn, broader role/order combinations and capture/replay representation optimization |
-| P5: lifecycle | Audit handoffs/holds/terminal/ghost cleanup and release | Long-running lifecycle/resource churn and remaining baseline/phase combinations |
-| P6: runtime/input/damage | Existing animated geometry, actor/direct publication and terminal-output regressions | General input throughput, pressure, virtual-key/inertia/IME histories, sustained failure and whole-runtime progress work |
-| P7: model/performance | Preserve fast paths; disclose current costs | Full-model copying/storage, COW experiments, scans, ancestry/query batching, release/cancellation cost and target budgets |
-| P8: platforms | Available basic build/compatibility checks; explicit exclusions | Physical Wayland/DRM/headless GPU/macOS/constrained-device execution, cadence, faults, synchronization and artifacts |
-| P9: audit/docs | Changed animation API/caller/Rustler seams, docs and final CI | Broader unchanged-runtime audit and external platform/release-artifact qualification |
-
-Any old unchecked item not required by the closeout's ten contracts belongs here,
-not to an implicit extra completion gate. If later work demonstrates a supported
-animation correctness bug, report/fix it as such; do not hide it under qualification.
-Use risk-based/factor coverage, not an exhaustive cross-product without a stopping rule.
+Completed implementation, rebase and commit checklists were removed from `plans/`;
+Git history through `6b2c4aa` preserves their full text and the earlier async/pressure
+drafts. Raw evidence, source archives, manifests and the D23 patch stay in place.
+This consolidation changes no runtime contract, approval or measured result.
+All old P1–P9 follow-ups are covered by L1–L5; none is an implicit implementation
+completion gate. Promote demonstrated supported correctness failures to regressions;
+use bounded risk-based campaigns, not exhaustive permutations without a stopping rule.
 
 ## L1. Async input editing and consistency — deferred
 
-Reference: [async-input draft](active-async-input-editing.md), D20 measurement evidence
-in `artifacts/event-pressure-probe/`, and the [preserved D23 prototype](artifacts/shared-animation-closeout/deferred-d23.patch).
+Evidence: [isolated input measurements](artifacts/event-pressure-probe/README.md)
+and the [preserved D23 prototype](artifacts/shared-animation-closeout/deferred-d23.patch).
 D23 is no longer in the active runtime; the patch includes its source and tests.
 
 - [ ] Revisit the contract before code: latest-installed-snapshot dispatch versus
@@ -51,9 +43,52 @@ D23 is no longer in the active runtime; the patch includes its source and tests.
   BEAM/reconciliation and sustained input cases. Measure local completion separately
   from native publication/display; no speedup claim from moving a backlog.
 
+### Contract decisions and candidate implementation
+
+D22 already orders raw input, host commands/edits and replacement ranges; keep its
+mount/generation checks, 64-item replay and bounded host feedback. Content edits
+still wait for registry publication. D23 is a failing native-only experiment, not
+an approved fast path. The previous draft's direction was:
+
+- Advance eligible local text/cursor/selection/preedit immediately, then publish
+  accumulated state asynchronously in the same runtime and ordered input queue.
+- Retain current state, one in-flight publication and one latest dirty state, not
+  a text snapshot per keystroke. Flush at bounded work boundaries even under
+  continuous arrivals. Native publication coalescing must preserve every callback.
+- Never let typing bypass an earlier unresolved click/Tab/focus/binding action.
+  A fixed covering edit watermark was proposed to prevent later input starving a
+  geometry wait; this policy still needs review. Visual navigation, selection hits
+  and IME rectangles require coherent accepted geometry, not new offsets on old layout.
+- Keep raw, host, clipboard and synthetic input consistent. An operation's complete
+  effects determine eligibility; its key/callback name is not a safety proof.
+
+Review an explicit authority table before implementing:
+
+| Update | Required distinction |
+|---|---|
+| Older own native publication | Acknowledge covered work without restoring older local text/cursor/preedit |
+| Proven application echo | Distinguish causal origin from equality of text or TTL history |
+| Untagged write / transformation / reset | Specify authoritative replacement and ordering; do not guess an echo or merge |
+| Remount, removal, focus/binding change | Invalidate old ownership; no old packet/range targets a replacement |
+| Failed attempt | Free delivery bookkeeping if appropriate, but never certify geometry readiness |
+
+The existing value-history/TTL echo heuristic cannot distinguish an intentional
+reset to an earlier value from a delayed echo. Public callback arguments must remain
+compatible; review internal reconciliation/codec/host metadata and matching protocol
+artifacts if a solution needs them. Native receipts do not acknowledge BEAM callback
+completion, renderer installation or display.
+
+Validate held-tree bursts, typing→click/Tab→typing, Unicode/graphemes/IME, echo/reset
+ABA, failure with newer edits, both patch-decode policies, remounts, asset/viewport/
+scroll changes and real actor/shared-host/public paths. Keep successful patch
+prefixes and transactional publication. Count construction, copies and synchronous
+disposal; no new thread, second geometry engine or overflow policy by implication.
+After an agreed implementation, run Rust/Mix/full CI, fmt and strict Clippy including
+benches/tests/`bench-diagnostics`, plus the controlled measurements above.
+
 ## L2. Input pressure and whole-runtime progress — approval required
 
-Reference: [D19 proposal](shared-animation-pressure-contract.md).
+Evidence: [D19 source audit and bounded model](artifacts/shared-animation-remaining/pressure-contract/README.md).
 
 - [ ] Decide admission/backpressure/overflow behavior and numerical defaults with
   the user. Terminal renderer failure and proposed limits remain **unapproved**.
@@ -66,14 +101,53 @@ Reference: [D19 proposal](shared-animation-pressure-contract.md).
   disconnection, callback stalls and shutdown. No claimed preemption of blocked
   drivers/assets/callbacks/joins; no alternate scheduler by default.
 
-D16–D18 improvements already landed in the dirty implementation; this package does
-not require rewriting them before it has a measured problem and an agreed policy.
+D16–D18 improvements are committed; do not rewrite them without a measured problem
+and agreed policy. D22 closed the old host admission bypass, but did not bound memory.
+
+### Unapproved D19 proposal retained for review
+
+D19 proposed an explicit, sticky **terminal failure of the affected renderer** when
+noncoalescible input cannot fit finite configured record, owned-capacity and input-size
+limits. That behavior and all defaults remain unapproved; zero/unset must not silently
+be reinterpreted as a safe bound. The alternative is proven producer backpressure
+with bounded upstream storage and independent control/ack paths—not blocking a
+Wayland callback or adding another unlimited queue.
+
+If that proposal is selected, its essential requirements are:
+
+- Reserve credits before acceptance, copying, wire/clipboard decoding and effect
+  construction. Include expansion, nested payloads, spare capacity and old/new
+  coexistence. Tiny edits can copy large text; input-size limits alone are insufficient.
+- Credits travel with storage until actual last-owner disposal or an accounted
+  persistent-state handoff. Sending, dequeueing or receiving an acknowledgment does
+  not free live capacity. Allocation arithmetic must be checked.
+- Cover producers, raw/host/clipboard/synthetic/replay paths, scratch packets, outbox,
+  channels and receiving batches. Audit macOS peer-declared lengths before allocation.
+  The initial scope is managed native interaction transport/construction, **not**
+  persistent models, SDK/kernel queues, BEAM mailboxes, GPU, allocator overhead or RSS.
+- Preserve semantic edges, callback order, mount proofs and causal receipts. Once an
+  operation has emitted callbacks, rejecting its packet cannot retract them.
+- A fault would latch a fixed-size reason, close admission, request independent Stop,
+  and expose both notification and queryable terminal status. Neither notification
+  delivery nor data credit may be required for stopping. Do not return ordinary
+  unhandled-input `false` and trigger Cocoa fallback for a terminal failure.
+- Do not publish a newly failed partial packet. Already admitted work may finish
+  until quiescence; terminal failure is not rollback or preemption of blocked native
+  calls. Restart would create a new renderer/mount lifetime.
+- Agree public error/status and host protocol changes before enabling anything.
+  Then test boundary/oversize allocation, mid-dispatch failure, callback/Stop races,
+  remounts, delayed peers and disposal through native, host and public paths.
+
+The nine Python model tests and depth-12 exploration (45,476 states / 318,533
+transitions) check a declared-credit model, not native allocation or liveness. No
+numerical budget, native concurrency proof or whole-runtime bound follows.
 
 ## L3. Animation cost and retention optimization — measurement driven
 
-References: `artifacts/shared-animation-remaining/performance/`,
-[low-resource smoothness](active-low-resource-animation-smoothness.md), and the
-closeout's current snapshot.
+References: `artifacts/shared-animation-remaining/performance/` and the closeout's
+current snapshot. Existing transform/patch target work stays exclusively in
+[low-resource smoothness](active-low-resource-animation-smoothness.md); this section
+owns broader geometry-animation cost/retention work, not a duplicate checklist.
 
 - [ ] Profile private-model construction, queries/ancestry, live layout, registry/
   scene construction, commit and synchronous workspace/ghost disposal separately.

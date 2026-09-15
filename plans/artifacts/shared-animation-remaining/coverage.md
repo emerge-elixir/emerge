@@ -5,7 +5,7 @@
 D23 separation, full source-built validation and current performance disclosure.
 Functional closure does not close deferred performance/platform/runtime work.
 
-**Current scope:** [minimal closeout](../../shared-animation-closeout.md)
+**Current scope:** [completed closeout evidence](../shared-animation-closeout/README.md)
 replaces the old package-wide completion gates. Broader matrices, accounting,
 input/runtime work and platform qualification are assigned to
 [later work](../../later-animation-runtime-qualification.md).
@@ -184,7 +184,7 @@ pass after adapting two upstream test call sites to transactional runtime/snapsh
 APIs. An additional 18-case paragraph decoration/alignment/transport/ghost regression
 passes. Rust 1392 units + 14 integration; standalone Mix 520 (9 excluded), full CI
 526 (3 excluded), Dialyzer 0. See `validation/headless-rebase/` and
-`plans/animation-headless-rebase.md`. Cache budget 16→64 and new inline-box storage
+`plans/artifacts/shared-animation-remaining/validation/headless-rebase/README.md`. Cache budget 16→64 and new inline-box storage
 remain unbenchmarked with animation; new architecture/device targets are unqualified.
 
 ## D12 checkpoint — causal installation
@@ -389,7 +389,7 @@ not preempted. Native helper tests do not qualify macOS execution or GPU present
 
 ## D19 checkpoint — pressure-contract design/model only
 
-Proposal: `plans/shared-animation-pressure-contract.md`. Prefer explicit terminal
+Proposal: L2 in `plans/later-animation-runtime-qualification.md`. Prefer explicit terminal
 renderer failure to silently losing semantic input under a claimed finite budget.
 Admission precedes managed allocation; transfer/ack does not refund live storage;
 construction overlap and spare capacity count; stop/fault and bounded responses

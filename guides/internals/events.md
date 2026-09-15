@@ -246,7 +246,8 @@ cancels the old range. Later ordinary input still resolves against current focus
 This is an ordering prerequisite, **not yet asynchronous local editing**. Per-edit
 tree waits and value/TTL-based callback echo matching still exist; removing those
 waits requires versioned edit/echo authority and batched publication. See
-`plans/active-async-input-editing.md`. Input/output queues remain unbounded.
+L1 in `plans/later-animation-runtime-qualification.md`. Input/output queues remain
+unbounded.
 
 Fresh cursor-channel draining also stops after 64 messages, including the initial
 input, and never crosses a control message. The host feedback pump processes at most
@@ -258,8 +259,9 @@ This queue is **not memory-bounded**. Once admitted to it, noncoalescible input 
 lossless and its storage grows with the burst. This is **not end-to-end ingress
 qualification**: the current Wayland full-channel sender discards events before this
 FIFO, including semantic input. Other backends have different pressure behavior;
-see the proposed contract in `plans/shared-animation-pressure-contract.md`. Spare FIFO capacity persists during partial replay and
-is released synchronously on full drain or runtime destruction; coalescing alone is
+see the unapproved proposal in L2 of `plans/later-animation-runtime-qualification.md`.
+Spare FIFO capacity persists during partial replay and is released synchronously on
+full drain or runtime destruction; coalescing alone is
 not an overflow policy. A hard limit requires explicit backpressure/overflow semantics
 that preserve control/Stop independently, not silent input eviction.
 

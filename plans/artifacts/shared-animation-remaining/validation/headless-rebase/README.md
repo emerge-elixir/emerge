@@ -20,5 +20,23 @@ animation, inherited alignment changes, reparenting, failed publication/retry,
 ghost owner remapping before reflow, terminal/cleanup and cached/fresh/old raster
 replay. Existing upstream paragraph and animation tests are both retained.
 
-See `plans/animation-headless-rebase.md` for the collision review. No performance,
-new release-target or physical presentation claim follows from these results.
+No performance, new release-target or physical presentation claim follows from
+these historical results. The original rebase checklist remains in Git at `6b2c4aa`.
+
+## Collisions and review
+
+| Area | Result |
+|---|---|
+| Changelog | Only textual conflict. Retained both branches' entries and animation's macOS protocol 14, not upstream's historical 13. |
+| Upstream inline-animation test | Compile collision: animation API now needs mutable runtime access and returns a fallible transaction. Updated the test to the current API; retained its paint-only versus reflow assertions. |
+| Upstream renderer test | Compile collision: scene wrapper omitted animation's `fonts` and `images`. Preserved both snapshots from the source scene rather than replacing them with live bindings. |
+| Paragraph alignment | Upstream inherited-text-alignment resolve key remains intact; animation contexts already carry full inherited font/alignment state. Combined suites and directed alignment/transport tests pass. |
+| Inline decoration layout/ghosts | New `paragraph_boxes` reset with cold native layout state and remap owners during ghost cloning. Added 18 schedules across Full/Active/Dirty, two scales and three alignments, exercising animation/reparent/retry/terminal cleanup and retained raster replay. No additional functional collision reproduced. |
+| Borders/shadows/render hashing | Retained upstream per-corner radii, full interior shadow painting and matching hashes/bounds. Existing upstream raster/cache tests and animation replay tests pass together. This visual change is intentional, not rolled back. |
+| Mix/native packaging | Retained split helpers, target mapping, musl flags, external-resource invalidation and recursive native source packaging. Source-built NIF, package/config tests and CI pass; no animation API/tag was overwritten. |
+
+
+Upstream also changed the default payload budget from 16 to 64 and added inline-box
+storage; pre-rebase performance results do not qualify the combined tree. Later
+[closeout measurements](../../../shared-animation-closeout/performance/table.md)
+provide a new disclosure, not a controlled speedup or physical-platform pass.

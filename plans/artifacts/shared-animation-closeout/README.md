@@ -6,7 +6,7 @@ explicitly deferred. No supported animation correctness blocker was found.
 Worktree `/workspace/emerge-animation`, branch `plan/shared-animation-core`, reference
 HEAD `33ee559`. The implementation includes uncommitted D12–D22 changes; HEAD alone
 is not its source identity. This report records the pre-commit closeout checkpoint.
-The subsequent [reviewable commit sequence](../../animation-followup-commit-sequence.md)
+The subsequent [reviewable commit sequence](../animation-review-commits/README.md#completed-history)
 commits the same implementation bytes; no push or release is implied.
 
 Final source identity:

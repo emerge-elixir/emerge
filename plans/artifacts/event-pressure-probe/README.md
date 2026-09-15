@@ -120,3 +120,17 @@ temporary path. Old source identities intentionally describe their own snapshots
 No pressure policy, API/default or production behavior changed. Instrumentation is
 compiled only for tests with `bench-diagnostics`; the probe is ignored by default.
 No P1–P9 closure, physical platform qualification or new animation performance gate.
+
+## Measurement specification location
+
+The completed root-level measurement plan was consolidated here. Use real native
+event/tree loops at production 4096-event / 512-tree channel capacities; retain
+small/20k-node paced edit/pointer/composition cases, bursts, gated tree progress and
+paused event-thread controls. Report offered/accepted/rejected input, FIFO/outbox
+peaks, requested slot storage, settling and shutdown—not RSS/GPU/BEAM bounds.
+Keep test-only instrumentation, warm-up, forwarding-gate/counter overhead, exclusive
+performance lock, immutable source/build identity, three separate processes per case
+and raw results. Never measure alongside builds/tests; validate Rust/Mix afterward.
+
+Future runs snapshot this README instead of the removed root plan. Existing run
+manifests and archives remain unchanged and keep their original historical paths.

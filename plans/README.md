@@ -1,6 +1,6 @@
 # Plans
 
-Last updated: 2026-09-01.
+Last updated: 2026-09-15.
 
 This directory contains only open implementation plans and durable design/research
 notes. Completed implementation logs belong in Git history, the changelog, tests,
@@ -67,36 +67,25 @@ Tracks the independently reproduced renderer benchmark qualification issues.
 
 ### `later-animation-runtime-qualification.md`
 
-Owns every transferred P1–P9 category: async-input consistency, pressure policy,
-full-model/performance accounting and optimization, broader robustness campaigns,
-physical platform/GPU recovery and external release-artifact qualification.
-Not a dependency of shared animation implementation closeout; packages resume
-separately. Existing measured costs and unavailable-platform limitations remain open.
-
-`active-async-input-editing.md` is a paused design reference despite its legacy
-filename. D22 is validated; D23 is unfinished/failing and has been preserved outside
-the closeout source. Its dispatch/geometry policy needs review before resumption.
-`shared-animation-pressure-contract.md` remains a deferred, unapproved proposal.
-D20's isolated input measurements remain at `artifacts/event-pressure-probe/`;
-they neither justify arbitrary input caps nor qualify animation performance.
+The sole deferred animation/runtime backlog: async editing, pressure-policy
+approval, geometry-animation cost/retention, broader robustness and platform
+coordination. No automatic continuation of the completed animation implementation.
+Existing constrained-device transform/patch work stays in the active low-resource
+plan above; neither plan duplicates general Linux GPU qualification.
 
 ## Durable references
 
-### `shared-animation-closeout.md`
+### Animation evidence (implementation complete)
 
-**Shared animation implementation complete.** The bounded closeout preserved and
-separated unfinished D23, reused existing ten-contract regression coverage, and
-passed final CI/docs plus an 18-process locked performance disclosure snapshot.
-[Final evidence](artifacts/shared-animation-closeout/README.md): Rust 1461 + 14,
-Mix 520 / CI 526, Dialyzer 0, strict Clippy/fmt. The subsequent
-[reviewable commit sequence](animation-followup-commit-sequence.md) preserves the
-validated source; no push or release is implied.
+- [Closeout, supported-contract audit and performance disclosure](artifacts/shared-animation-closeout/README.md).
+- [Commit sequence and per-commit validation](artifacts/animation-review-commits/README.md).
+- [Preserved async-input prototype](artifacts/shared-animation-closeout/deferred-d23.patch)
+  and [its known failure](artifacts/shared-animation-closeout/deferred-d23-before.log).
+- [Isolated input-pressure measurements](artifacts/event-pressure-probe/README.md)
+  and [unapproved pressure-model evidence](artifacts/shared-animation-remaining/pressure-contract/README.md).
 
-Large-tree release/upward costs remain high; physical macOS/constrained-device/GPU
-qualification is not claimed. Those and broader runtime work belong to
-`later-animation-runtime-qualification.md`, not an open animation implementation
-section. Earlier checklists survive as `shared-animation-implementation-history.md`
-and the superseded `shared-animation-remaining-implementation.md`.
+The async prototype is not compiled or enabled. Raw evidence remains in place;
+completed/superseded plans are available in Git history, not as live checklists.
 
 ### `borders-cache-benchmark-investigation.md`
 
@@ -177,6 +166,12 @@ The following overlapping Camera plans were consolidated into
 
 Implemented details remain discoverable through Git history, tests,
 `CHANGELOG.md`, and `guides/internals/`.
+
+Animation cleanup removed nine overlapping/completed root plans: the implementation
+history and P1–P9 checklist, closeout checklist, two commit checklists, rebase log,
+async draft, pressure proposal and measurement plan. Their useful navigation and
+remaining decisions are consolidated into the two owners above and existing artifact
+READMEs. Full prior text is available at `6b2c4aa`; no raw evidence was deleted.
 
 ## Maintenance rules
 

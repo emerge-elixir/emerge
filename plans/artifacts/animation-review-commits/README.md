@@ -26,8 +26,7 @@ operations and adapts queue/transport instrumentation without enabling D23.
 
 Historical D12–D22 validation and pressure measurements retain their original
 identities. No pressure benchmark or animation performance rerun is claimed here.
-Final Mix/CI/docs checks are recorded in the
-[commit-sequence report](../../animation-followup-commit-sequence.md).
+Final Mix/CI/docs checks are recorded below.
 
 ## Final working-source checks
 
@@ -36,3 +35,18 @@ integration, 526 Elixir checks / 3 excluded, Dialyzer zero. Public and internal
 ExDoc builds passed. See `final-*.log` and `final-checks.json`. The full closeout
 source manifest still matches; the pre-existing working files are unchanged
 except for bookkeeping links in the plan index and commit/closeout records.
+
+## Completed history
+
+The original implementation sequence is `73925bb` (headless fence test), `a760420`
+(native core), `53bc9b7` (public API), `b7829b8` (benchmarks), `f8dea1a` (evidence),
+and `33ee559` (contracts/docs). The six code commits in the table above were followed
+by `03dfe27` (runtime evidence), `5ad077b` (deferred proposals/prototype), `459430a`
+(closeout benchmark/evidence), and `6b2c4aa` (closure/docs).
+
+The implementation bytes were preserved through that sequence; all commits were
+local, with no push/release performed by that work. Completed root-level checklists
+were later removed rather than kept as plans. Their exact text remains in Git at
+`6b2c4aa`. Recovery archive/index/patch and detached test snapshots remain at
+`/workspace/animation-commits-recovery-20260915-170758`, with starting revision held
+by `backup/animation-before-review-commits-20260915-170758`.

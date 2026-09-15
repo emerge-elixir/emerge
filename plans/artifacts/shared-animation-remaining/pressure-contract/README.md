@@ -1,6 +1,9 @@
 # D19 pressure-contract design/model evidence
 
-Proposal: `plans/shared-animation-pressure-contract.md` (repository-root path).
+Policy review and the consolidated proposal: [later work L2](../../../later-animation-runtime-qualification.md#l2-input-pressure-and-whole-runtime-progress--approval-required).
+This evidence describes the original D19 checkpoint, not current runtime state.
+Its manifests retain their historical paths; the original proposal is in Git at `6b2c4aa`.
+D22 subsequently fixed the host admission bypass, without adding memory bounds.
 **Not runtime enforcement. No default budgets or API changes approved here.**
 
 ## Audit

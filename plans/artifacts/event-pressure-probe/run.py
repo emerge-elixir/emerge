@@ -27,7 +27,7 @@ names = subprocess.check_output([
     "git", "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--",
     "native/emerge_skia", "lib", "priv/test_assets", "config", ".cargo", "mix.exs",
     "mix.lock", "rust-toolchain.toml", "scripts/performance-lock.sh",
-    "plans/isolated-event-pressure.md", str(Path(__file__).resolve().relative_to(ROOT)),
+    "plans/artifacts/event-pressure-probe/README.md", str(Path(__file__).resolve().relative_to(ROOT)),
 ]).split(b"\0")
 paths = sorted({Path(os.fsdecode(name)) for name in names if name and Path(os.fsdecode(name)).is_file()})
 

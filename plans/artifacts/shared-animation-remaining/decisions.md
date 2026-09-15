@@ -838,7 +838,7 @@ stash and D18-start backup preserved; no commit/push.
 
 ## D19. Pressure-contract proposal, not an enabled policy
 
-Write the contract before another buffer/cap. `plans/shared-animation-pressure-contract.md`
+Write the contract before another buffer/cap. L2 in `plans/later-animation-runtime-qualification.md`
 recommends **explicit terminal renderer failure** when semantic input/effect admission
 cannot fit finite configured limits. No silent eviction, automatic retry after a
 partially observed operation, or resumption of the failed mount lifetime. Public
@@ -900,7 +900,7 @@ strict Clippy/fmt and Dialyzer 0. No package closure, commit or push.
 
 The user approved planning local editing with asynchronous tree updates, while
 continuing to receive and safely coalesce input during genuine geometry waits.
-Implementation plan: `plans/active-async-input-editing.md`. No runtime changes here.
+Implementation plan: L1 in `plans/later-animation-runtime-qualification.md`. No runtime changes here.
 
 Keep one ordered semantic stream: local edits can pass an outstanding publication
 of earlier edits, not an unresolved earlier click/focus decision. Preserve callbacks
@@ -949,14 +949,15 @@ charges/probe sampling use the real pending-item type (40B on this build).
 **Partial implementation only.** Native local typing still waits for tree publication;
 callback echoes still use value/TTL matching. Versioned local/native authority,
 controlled-value provenance, batching, full public/host integration and the benchmark
-repeat remain next in `plans/active-async-input-editing.md`. No claimed improvement
+repeat are deferred to L1 in `plans/later-animation-runtime-qualification.md`. No claimed improvement
 to the D20 20k/1k-edit backlog, no D19 policy approval, no P1–P9 closure or commit/push.
 
 ## D24. Minimal animation closeout; defer the broader backlog
 
 The user requested a minimal plan to finish animation soon, with all other work
-assigned to a later plan. `plans/shared-animation-closeout.md` now controls
-completion; `plans/later-animation-runtime-qualification.md` transfers P1–P9 scope.
+assigned to a later plan. The bounded closeout replaced earlier completion gates;
+its outcome is recorded in `plans/artifacts/shared-animation-closeout/README.md`.
+`plans/later-animation-runtime-qualification.md` transfers P1–P9 scope.
 Older “no package closes”, exhaustive matrix and “next work” text is historical,
 not an extra gate. Existing evidence is reused, not silently marked missing.
 
@@ -981,7 +982,7 @@ its failure, close animation, approve overflow defaults, commit or push anything
 
 ## D25. Shared animation implementation closed under the bounded plan
 
-Executed `plans/shared-animation-closeout.md` (retired from its active filename).
+Executed the bounded closeout; its completed checklist is now retained in Git history.
 Final report: `plans/artifacts/shared-animation-closeout/README.md`.
 
 - Preserved and verified the dirty worktree outside the repository. Original D23
