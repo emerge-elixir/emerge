@@ -670,3 +670,5 @@ fn queued_old_mount_edit_matches_actor_and_headless_after_replacement() {
         pixels
     );
 }
+
+mod recovery;

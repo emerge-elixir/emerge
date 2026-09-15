@@ -38,6 +38,7 @@ use crate::{
     video::{self, VideoRegistry},
 };
 
+mod binary;
 #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
 mod offscreen_gl;
 mod output;
@@ -409,6 +410,93 @@ fn run_render_loop(
         .target_fps
         .map(|fps| Duration::from_secs_f64(1.0 / f64::from(fps.max(1))))
         .unwrap_or_else(|| Duration::from_millis(16));
+    if mode == HeadlessMode::Binary {
+        binary::run_binary_loop(
+            &render_rx,
+            &tree_tx,
+            &running_flag,
+            &headless.pixel_format,
+            frame_interval,
+            |state, render_started_at| {
+                sync_headless_video(&mut renderer, state, &video_registry);
+                let frame = renderer.render_binary(state)?;
+                record_render_stats(
+                    stats.as_deref(),
+                    render_started_at,
+                    &frame.timings,
+                    state.pipeline_submitted_at,
+                    frame_interval,
+                );
+                let sequence = state.render_version.wrapping_add(1);
+                let packed_bits = match headless.pixel_format.as_str() {
+                    "bw1" => Some(1),
+                    "gray2" => Some(2),
+                    _ => None,
+                };
+                let converted = if let Some(bits) = packed_bits {
+                    let policy = if headless.dither {
+                        renderer.render_grayscale_dither_policy(state).map(Some)
+                    } else {
+                        Ok(None)
+                    };
+                    policy.and_then(|policy| {
+                        let mut data =
+                            vec![0_u8; packed_gray_output_len(frame.width, frame.height, bits,)?];
+                        let stride = convert_packed_gray_into(
+                            FrameSource {
+                                data: &frame.data,
+                                width: frame.width,
+                                height: frame.height,
+                                row_bytes: frame.row_bytes,
+                                format: frame.pixel_format,
+                            },
+                            bits,
+                            &headless.bw1_polarity,
+                            policy.as_deref(),
+                            &mut data,
+                        )?;
+                        Ok((data, stride))
+                    })
+                } else if frame.pixel_format == FramePixelFormat::Rgba8888Premul {
+                    convert_frame(
+                        &frame.data,
+                        frame.width,
+                        &headless.pixel_format,
+                        &headless.bw1_polarity,
+                    )
+                } else {
+                    Err("non-packed output unexpectedly received Gray8 pixels".to_string())
+                };
+
+                match frame.pixel_format {
+                    FramePixelFormat::Rgba8888Premul => {
+                        latest_frame.publish_rgba(frame.width, frame.height, 1.0, frame.data)
+                    }
+                    FramePixelFormat::Gray8Opaque => {
+                        latest_frame.publish_gray8(frame.width, frame.height, 1.0, frame.data)
+                    }
+                }
+
+                match converted {
+                    Ok((data, stride_bytes)) => send_binary_frame(
+                        target,
+                        &headless.frame_message,
+                        sequence,
+                        frame.width,
+                        frame.height,
+                        &headless.pixel_format,
+                        &headless.bw1_polarity,
+                        stride_bytes,
+                        data,
+                    ),
+                    Err(err) => eprintln!("headless frame conversion failed: {err}"),
+                }
+                Ok(())
+            },
+        );
+        running_flag.store(false, Ordering::Relaxed);
+        return;
+    }
     let mut animation_tick = never();
     let prime_completion_rx = renderer.prime_completion_receiver();
     let mut next_animation_at = None;
@@ -477,108 +565,8 @@ fn run_render_loop(
                             Color::TRANSPARENT
                         };
                         let state = RenderState::new(*scene, clear_color, sequence, animate);
-                        if let Err(error) = video_registry.set_active_targets(&state.video_target_ids) {
-                            eprintln!("headless video target visibility update failed: {error}");
-                        }
-                        if let Err(error) = renderer.sync_cpu_video_frames(&video_registry) {
-                            eprintln!("headless binary video sync failed: {error}");
-                        }
-                        match mode {
-                            HeadlessMode::Binary => match renderer.render_binary(&state) {
-                                Ok(frame) => {
-                                    record_render_stats(
-                                        stats.as_deref(),
-                                        render_started_at,
-                                        &frame.timings,
-                                        pipeline_submitted_at,
-                                        frame_interval,
-                                    );
-                                    sequence = sequence.wrapping_add(1);
-                                    let packed_bits = match headless.pixel_format.as_str() {
-                                        "bw1" => Some(1),
-                                        "gray2" => Some(2),
-                                        _ => None,
-                                    };
-                                    let converted = if let Some(bits) = packed_bits {
-                                        let policy = if headless.dither {
-                                            renderer.render_grayscale_dither_policy(&state).map(Some)
-                                        } else {
-                                            Ok(None)
-                                        };
-                                        policy.and_then(|policy| {
-                                            let mut data = vec![
-                                                0_u8;
-                                                packed_gray_output_len(
-                                                    frame.width,
-                                                    frame.height,
-                                                    bits,
-                                                )?
-                                            ];
-                                            let stride = convert_packed_gray_into(
-                                                FrameSource {
-                                                    data: &frame.data,
-                                                    width: frame.width,
-                                                    height: frame.height,
-                                                    row_bytes: frame.row_bytes,
-                                                    format: frame.pixel_format,
-                                                },
-                                                bits,
-                                                &headless.bw1_polarity,
-                                                policy.as_deref(),
-                                                &mut data,
-                                            )?;
-                                            Ok((data, stride))
-                                        })
-                                    } else if frame.pixel_format == FramePixelFormat::Rgba8888Premul {
-                                        convert_frame(
-                                            &frame.data,
-                                            frame.width,
-                                            &headless.pixel_format,
-                                            &headless.bw1_polarity,
-                                        )
-                                    } else {
-                                        Err("non-packed output unexpectedly received Gray8 pixels".to_string())
-                                    };
-
-                                    match frame.pixel_format {
-                                        FramePixelFormat::Rgba8888Premul => latest_frame.publish_rgba(
-                                            frame.width,
-                                            frame.height,
-                                            1.0,
-                                            frame.data,
-                                        ),
-                                        FramePixelFormat::Gray8Opaque => latest_frame.publish_gray8(
-                                            frame.width,
-                                            frame.height,
-                                            1.0,
-                                            frame.data,
-                                        ),
-                                    }
-
-                                    match converted {
-                                        Ok((data, stride_bytes)) => send_binary_frame(
-                                            target,
-                                            &headless.frame_message,
-                                            sequence,
-                                            frame.width,
-                                            frame.height,
-                                            &headless.pixel_format,
-                                            &headless.bw1_polarity,
-                                            stride_bytes,
-                                            data,
-                                        ),
-                                        Err(err) => eprintln!("headless frame conversion failed: {err}"),
-                                    }
-                                    animation_tick = animation_tick_receiver(
-                                        animate,
-                                        frame_interval,
-                                        Instant::now(),
-                                        &mut next_animation_at,
-                                    );
-                                }
-                                Err(err) => eprintln!("headless render failed: {err}"),
-                            },
-                            HeadlessMode::Prime => match renderer.render_prime(&state) {
+                        sync_headless_video(&mut renderer,&state,&video_registry);
+                        match renderer.render_prime(&state) {
                                 Ok(Some(frame)) => {
                                     record_render_stats(
                                         stats.as_deref(),
@@ -625,7 +613,6 @@ fn run_render_loop(
                                         break;
                                     }
                                 }
-                            },
                         }
                     }
                     RenderMsg::Stop => break,
@@ -635,6 +622,19 @@ fn run_render_loop(
     }
 
     running_flag.store(false, Ordering::Relaxed);
+}
+
+fn sync_headless_video(
+    renderer: &mut HeadlessRenderer,
+    state: &RenderState,
+    video_registry: &Arc<VideoRegistry>,
+) {
+    if let Err(error) = video_registry.set_active_targets(&state.video_target_ids) {
+        eprintln!("headless video target visibility update failed: {error}");
+    }
+    if let Err(error) = renderer.sync_cpu_video_frames(video_registry) {
+        eprintln!("headless binary video sync failed: {error}");
+    }
 }
 
 fn record_render_stats(
