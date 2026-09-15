@@ -204,3 +204,22 @@ python3 scripts/benchmarks/shared-animation/summarize.py /tmp/emerge-animation-r
 
 The full matrix uses 5k/20k nodes and 1/64 owners. Preserve paint/pixel controls;
 RSS is not exact live heap, and desktop timings do not qualify constrained devices.
+
+## Native event-pressure probe
+
+This test-only probe uses real event/tree loops with 4096-event / 512-tree channel
+capacities, small/20k-node trees, paced edits/pointer/IME, bursts and controlled
+consumer stalls. It separates ingress rejection from causal tree-response backlog;
+it does not qualify BEAM subscribers, physical input, RSS or GPU behavior.
+
+```bash
+./scripts/performance-lock.sh --source-revision snapshot-created-under-lock exclusive \
+  python3 scripts/benchmarks/event-pressure/run.py /tmp/emerge-event-pressure-results
+python3 scripts/benchmarks/event-pressure/summarize.py /tmp/emerge-event-pressure-results
+```
+
+Requires Linux `/proc`, `flock`, `lscpu` and `/usr/bin/time`. Keep production queue
+capacities, warm-up and instrumentation overhead consistent across comparisons.
+The runner performs 30 cases with three rotated separate-process repeats. Retain
+raw output externally and distinguish local editing, publication and display.
+Do not infer an overflow policy or whole-runtime memory bound from these results.
