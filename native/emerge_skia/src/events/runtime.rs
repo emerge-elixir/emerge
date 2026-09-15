@@ -72,6 +72,7 @@ pub trait HostEventSink: Send + Sync {
 trait TreeSink {
     fn emit(&self, message: TreeMsg, log_render: bool);
 }
+#[cfg(test)]
 impl TreeSink for Sender<TreeMsg> {
     fn emit(&self, msg: TreeMsg, log_render: bool) {
         match self.try_send(msg) {
@@ -96,12 +97,14 @@ impl TreeSink for EventCommands {
 
 // Work quantum, not an input-retention bound or a wall-clock latency promise.
 const INPUT_BATCH_LIMIT: usize = 64;
+const HOST_TREE_BATCH_LIMIT: usize = 512;
 
 struct EventRuntimeDriver {
     runtime: DirectEventRuntime,
     awaiting_registry: Option<crate::actors::ListenerBarrier>,
     pending_mount_focus: Option<(super::FocusOnMountTarget, Option<NodeId>)>,
     tree_tx: Sender<TreeMsg>,
+    outbox: VecDeque<TreeMsg>,
     log_render: bool,
     native_log: Arc<NativeLogRelay>,
 }
@@ -127,6 +130,7 @@ impl EventRuntimeDriver {
                 stats,
             ),
             tree_tx,
+            outbox: VecDeque::new(),
             log_render,
             native_log,
         }
@@ -177,9 +181,24 @@ impl EventRuntimeDriver {
                     messages,
                 }
             };
-            send_tree(&self.tree_tx, packet, self.log_render);
+            self.queue_tree_packet(packet);
         }
         result
+    }
+
+    fn queue_tree_packet(&mut self, packet: TreeMsg) {
+        // Once a packet is deferred, new operations must not overtake it even
+        // when a slot happens to become available during this dispatch.
+        if self.outbox.is_empty() {
+            match self.tree_tx.try_send(packet) {
+                Ok(()) => {}
+                Err(TrySendError::Full(packet) | TrySendError::Disconnected(packet)) => {
+                    self.outbox.push_back(packet)
+                }
+            }
+        } else {
+            self.outbox.push_back(packet);
+        }
     }
 
     fn handle_input(&mut self, event: InputEvent) {
@@ -369,7 +388,7 @@ impl HostEventRuntime {
         stats: Option<Arc<RendererStatsCollector>>,
         backend_cursor_tx: Option<Sender<CursorIcon>>,
     ) -> Self {
-        let (tree_tx, tree_rx) = crossbeam_channel::bounded(512);
+        let (tree_tx, tree_rx) = crossbeam_channel::bounded(HOST_TREE_BATCH_LIMIT);
         let native_log = Arc::new(NativeLogRelay::default());
         let mut driver = EventRuntimeDriver {
             awaiting_registry: None,
@@ -383,6 +402,7 @@ impl HostEventRuntime {
                 stats,
             ),
             tree_tx: tree_tx.clone(),
+            outbox: VecDeque::new(),
             log_render,
             native_log,
         };
@@ -436,13 +456,18 @@ impl HostEventRuntime {
             .prepare_text_input_replacement_range(replacement_range)
     }
 
-    pub fn drain_tree_messages(&self) -> Vec<TreeMsg> {
-        let mut messages = Vec::new();
-
-        while let Ok(msg) = self.tree_rx.try_recv() {
-            messages.push(msg);
+    pub fn drain_tree_messages(&mut self) -> Vec<TreeMsg> {
+        // Successfully queued packets precede the single host producer's deferred
+        // FIFO. Preserve the former channel-capacity quantum, not a memory cap.
+        let messages = self
+            .tree_rx
+            .try_iter()
+            .chain(std::iter::from_fn(|| self.driver.outbox.pop_front()))
+            .take(HOST_TREE_BATCH_LIMIT)
+            .collect();
+        if self.driver.outbox.is_empty() {
+            self.driver.outbox = VecDeque::new();
         }
-
         messages
     }
 }
@@ -3204,11 +3229,34 @@ pub(crate) fn spawn_event_actor(config: SpawnEventActorConfig) -> thread::JoinHa
 }
 
 fn run_event_actor(mut driver: EventRuntimeDriver, event_rx: Receiver<EventMsg>) {
+    let send_ready = driver.tree_tx.clone();
     let mut pending_message: Option<EventMsg> = None;
 
     loop {
         let message = match pending_message.take() {
             Some(message) => Some(message),
+            None if !driver.outbox.is_empty() => {
+                let timer = driver
+                    .next_event_timeout()
+                    .map(crossbeam_channel::after)
+                    .unwrap_or_else(crossbeam_channel::never);
+                crossbeam_channel::select! {
+                    send(send_ready, driver.outbox.pop_front().expect("selected nonempty outbox")) -> sent => {
+                        if sent.is_err() {
+                            return;
+                        }
+                        if driver.outbox.is_empty() {
+                            driver.outbox = VecDeque::new();
+                        }
+                        continue;
+                    }
+                    recv(event_rx) -> message => match message {
+                        Ok(message) => Some(message),
+                        Err(_) => return,
+                    },
+                    recv(timer) -> _ => None,
+                }
+            }
             None => match driver.next_event_timeout() {
                 Some(timeout) => match event_rx.recv_timeout(timeout) {
                     Ok(message) => Some(message),

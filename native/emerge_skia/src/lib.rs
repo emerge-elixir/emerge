@@ -1492,8 +1492,7 @@ fn stop_test_harness_runtime(
     handles: TestHarnessHandles,
 ) {
     asset_runtime.stop();
-    send_event(&event_tx, EventMsg::Stop, false);
-    send_tree(&tree_tx, TreeMsg::Stop, false);
+    send_actor_stops(&tree_tx, &event_tx, false, false);
 
     let _ = handles.proxy_handle.join();
     let _ = handles.event_handle.join();
@@ -1574,11 +1573,9 @@ fn shutdown_renderer_runtime(
     log_close_signal(close_signal_log, "nif_close", "shutdown begin");
     running_flag.store(false, Ordering::Relaxed);
     stop_flag.store(true, Ordering::Relaxed);
-    send_tree(&tree_tx, TreeMsg::Stop, log_render);
-    send_event(&event_tx, EventMsg::Stop, log_input);
     render_tx.send_latest(RenderMsg::Stop);
-
     backend_wake.request_stop();
+    send_actor_stops(&tree_tx, &event_tx, log_render, log_input);
 
     let mut join_failures = Vec::new();
     join_runtime_thread("event", handles.event_handle.take(), &mut join_failures);
@@ -1830,6 +1827,39 @@ fn trim_process_allocator() {
 
 #[cfg(any(test, not(all(target_os = "linux", target_env = "gnu"))))]
 fn trim_process_allocator() {}
+
+// Shutdown must not wait on one actor's full channel before signaling the other.
+// Completion still requires channel progress/disconnection and subsequent joins.
+fn send_actor_stops(
+    tree_tx: &Sender<TreeMsg>,
+    event_tx: &Sender<EventMsg>,
+    log_render: bool,
+    log_input: bool,
+) {
+    if log_render && tree_tx.is_full() {
+        eprintln!("tree channel full, selecting stop delivery");
+    }
+    if log_input && event_tx.is_full() {
+        eprintln!("event channel full, selecting stop delivery");
+    }
+    let mut tree_pending = true;
+    let mut event_pending = true;
+    while tree_pending || event_pending {
+        let mut selector = crossbeam_channel::Select::new();
+        let tree_index = tree_pending.then(|| selector.send(tree_tx));
+        if event_pending {
+            selector.send(event_tx);
+        }
+        let operation = selector.select();
+        if tree_index == Some(operation.index()) {
+            let _ = operation.send(tree_tx, TreeMsg::Stop);
+            tree_pending = false;
+        } else {
+            let _ = operation.send(event_tx, EventMsg::Stop);
+            event_pending = false;
+        }
+    }
+}
 
 fn send_tree(tree_tx: &Sender<TreeMsg>, msg: TreeMsg, log_render: bool) {
     match tree_tx.try_send(msg) {
@@ -4605,6 +4635,83 @@ mod tests {
                 .contains("stopped")
         );
         waiter.join().expect("waiter exits");
+    }
+
+    #[test]
+    fn shutdown_signals_other_peers_before_waiting_for_a_full_actor_channel() {
+        for mode in 0..3 {
+            let (tree_tx, tree_rx) = bounded(1);
+            let (event_tx, event_rx) = bounded(1);
+            if mode != 1 {
+                tree_tx.send(TreeMsg::RebuildRegistry).unwrap();
+            }
+            if mode != 0 {
+                event_tx.send(EventMsg::SetInputMask(0)).unwrap();
+            }
+            let (render_tx, render_rx) = bounded(1);
+            let render_sender = RenderSender {
+                tx: render_tx,
+                drop_rx: render_rx.clone(),
+                log_render: false,
+            };
+            let handle = thread::spawn(move || {
+                shutdown_renderer_runtime(
+                    ShutdownRuntimeContext {
+                        asset_runtime: Arc::new(AssetRuntime::new()),
+                        running_flag: Arc::new(AtomicBool::new(true)),
+                        backend_wake: BackendWakeHandle::noop(),
+                        stop_flag: Arc::new(AtomicBool::new(false)),
+                        tree_tx,
+                        event_tx,
+                        render_tx: render_sender,
+                        close_signal_log: false,
+                        log_render: false,
+                        log_input: false,
+                    },
+                    RendererHandles {
+                        backend_handle: None,
+                        input_handle: None,
+                        tree_handle: None,
+                        event_handle: None,
+                        heartbeat_handle: None,
+                    },
+                )
+            });
+            let rendered = matches!(
+                render_rx.recv_timeout(Duration::from_secs(5)),
+                Ok(RenderMsg::Stop)
+            );
+            let independent = if rendered {
+                if mode == 1 {
+                    matches!(
+                        tree_rx.recv_timeout(Duration::from_secs(5)),
+                        Ok(TreeMsg::Stop)
+                    )
+                } else {
+                    if mode == 2 {
+                        assert!(matches!(event_rx.recv(), Ok(EventMsg::SetInputMask(0))));
+                    }
+                    matches!(
+                        event_rx.recv_timeout(Duration::from_secs(5)),
+                        Ok(EventMsg::Stop)
+                    )
+                }
+            } else {
+                false
+            };
+            // Also unblocks the old sequential sender before failing the test.
+            drop(tree_rx);
+            drop(event_rx);
+            handle.join().unwrap().unwrap();
+            assert!(
+                rendered,
+                "render Stop must not wait for an actor channel slot"
+            );
+            assert!(
+                independent,
+                "one full actor channel must not withhold the other actor's Stop"
+            );
+        }
     }
 
     #[test]
