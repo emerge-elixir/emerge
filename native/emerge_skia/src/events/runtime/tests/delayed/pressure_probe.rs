@@ -53,7 +53,7 @@ pub(in crate::events::runtime) fn sample(driver: &EventRuntimeDriver, rx: &Recei
             .buffered_peak
             .fetch_max(lane.buffered_inputs.len(), Ordering::Relaxed);
         probe.slot_peak.fetch_max(
-            lane.buffered_inputs.capacity() * std::mem::size_of::<InputEvent>(),
+            lane.buffered_inputs.capacity() * std::mem::size_of::<PendingInput>(),
             Ordering::Relaxed,
         );
         probe

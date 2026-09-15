@@ -440,14 +440,20 @@ impl HostEventRuntime {
         self.driver.focused_text_state()
     }
 
+    /// True means handled now or retained for ordered dispatch. A queued request
+    /// must not trigger a platform responder fallback; it is not a tree ack.
     pub fn handle_text_input_command(&mut self, request: TextInputCommandRequest) -> bool {
         self.driver.handle_text_input_command(request)
     }
 
+    /// Shares the raw input dependency queue. Accepted deferred edits are not
+    /// reflected in `focused_text_state` until they can be dispatched safely.
     pub fn handle_text_input_edit(&mut self, request: TextInputEditRequest) -> bool {
         self.driver.handle_text_input_edit(request)
     }
 
+    /// A deferred range addresses the queried mount/text context. It is cancelled
+    /// if focus or that context changes before replay, never retargeted by id.
     pub fn prepare_text_input_replacement_range(
         &mut self,
         replacement_range: Option<(u32, u32)>,
@@ -878,11 +884,62 @@ impl ListenerComputeCtx for RuntimeListenerComputeCtx<'_> {
 /// While stale, listener input is buffered and coalesced until a fresh
 /// `RegistryUpdate` is installed. Raw observer input forwarding continues
 /// independently.
+/// One ordered semantic stream. Host commands are not raw observer input, but
+/// must not overtake a queued click/focus decision or a registry dependency.
+#[derive(Clone, Debug, PartialEq)]
+enum PendingInput {
+    Raw(InputEvent),
+    Command(TextInputCommandRequest),
+    Edit(TextInputEditRequest),
+    ReplacementRange {
+        start: u32,
+        end: u32,
+        element_id: NodeId,
+        mount: u64,
+        generation: RangeGeneration,
+    },
+}
+
+/// Identity of the text/focus context queried by the host. Only ranges retain
+/// this token; ordinary input does not allocate a token on each edit.
+#[derive(Clone, Debug, Default)]
+struct RangeGeneration(Arc<()>);
+impl PartialEq for RangeGeneration {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for RangeGeneration {}
+impl RangeGeneration {
+    fn invalidate(&mut self) {
+        if Arc::strong_count(&self.0) > 1 {
+            *self = Self::default();
+        }
+    }
+}
+
+impl PendingInput {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Raw(event) => input_event_label(event),
+            Self::Command(_) => "text_command",
+            Self::Edit(_) => "text_edit",
+            Self::ReplacementRange { .. } => "text_replacement_range",
+        }
+    }
+}
+
+impl From<InputEvent> for PendingInput {
+    fn from(event: InputEvent) -> Self {
+        Self::Raw(event)
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 struct ListenerLaneState {
     stale: bool,
     needs_barrier: bool,
-    buffered_inputs: VecDeque<InputEvent>,
+    buffered_inputs: VecDeque<PendingInput>,
 }
 
 impl ListenerLaneState {
@@ -904,17 +961,21 @@ impl ListenerLaneState {
     }
 
     fn buffer_input(&mut self, event: InputEvent) {
-        if let Some(event) = coalesce_with_previous(self.buffered_inputs.back_mut(), event) {
+        self.buffer_pending(event.into());
+    }
+
+    fn buffer_pending(&mut self, event: PendingInput) {
+        if let Some(event) = coalesce_pending_input(self.buffered_inputs.back_mut(), event) {
             self.buffered_inputs.push_back(event);
         }
     }
 
-    fn mark_fresh_and_take_buffered(&mut self) -> VecDeque<InputEvent> {
+    fn mark_fresh_and_take_buffered(&mut self) -> VecDeque<PendingInput> {
         self.stale = false;
         std::mem::take(&mut self.buffered_inputs)
     }
 
-    fn restore_replay_tail(&mut self, mut remaining: VecDeque<InputEvent>) {
+    fn restore_replay_tail(&mut self, mut remaining: VecDeque<PendingInput>) {
         // An empty drained deque drops its peak-capacity storage here, not on a
         // deferred-free queue. The normal paused path transfers ownership in O(1).
         if remaining.is_empty() {
@@ -928,7 +989,7 @@ impl ListenerLaneState {
             // Prepend that new prefix rather than reinserting the old remainder.
             let mut prefix = std::mem::take(&mut self.buffered_inputs);
             if let Some(first) = remaining.pop_front()
-                && let Some(first) = coalesce_with_previous(prefix.back_mut(), first)
+                && let Some(first) = coalesce_pending_input(prefix.back_mut(), first)
             {
                 remaining.push_front(first);
             }
@@ -955,6 +1016,7 @@ struct DirectEventRuntime {
     overlay_registry: registry_builder::Registry,
     listener_lane: ListenerLaneState,
     last_focus_on_mount_revision: u64,
+    range_generation: RangeGeneration,
     focused_id: Option<NodeId>,
     text_states: HashMap<NodeId, TextInputState>,
     slider_states: HashMap<NodeId, SliderState>,
@@ -1012,6 +1074,7 @@ impl DirectEventRuntime {
             overlay_registry,
             listener_lane: ListenerLaneState::initially_stale(),
             last_focus_on_mount_revision: 0,
+            range_generation: RangeGeneration::default(),
             focused_id: None,
             text_states: HashMap::new(),
             slider_states: HashMap::new(),
@@ -1450,6 +1513,21 @@ impl DirectEventRuntime {
         tree_tx: &dyn TreeSink,
         log_render: bool,
     ) -> bool {
+        if self.listener_lane.is_stale() {
+            self.listener_lane
+                .buffer_pending(PendingInput::Command(request));
+            // Accepted for ordered dispatch, not a request for a Cocoa fallback.
+            return true;
+        }
+        self.dispatch_text_input_command(request, tree_tx, log_render)
+    }
+
+    fn dispatch_text_input_command(
+        &mut self,
+        request: TextInputCommandRequest,
+        tree_tx: &dyn TreeSink,
+        log_render: bool,
+    ) -> bool {
         let Some(element_id) = self
             .focused_id
             .filter(|element_id| self.text_states.contains_key(element_id))
@@ -1484,6 +1562,20 @@ impl DirectEventRuntime {
     }
 
     fn handle_text_input_edit(
+        &mut self,
+        request: TextInputEditRequest,
+        tree_tx: &dyn TreeSink,
+        log_render: bool,
+    ) -> bool {
+        if self.listener_lane.is_stale() {
+            self.listener_lane
+                .buffer_pending(PendingInput::Edit(request));
+            return true;
+        }
+        self.dispatch_text_input_edit(request, tree_tx, log_render)
+    }
+
+    fn dispatch_text_input_edit(
         &mut self,
         request: TextInputEditRequest,
         tree_tx: &dyn TreeSink,
@@ -1536,6 +1628,22 @@ impl DirectEventRuntime {
         else {
             return false;
         };
+
+        if self.listener_lane.is_stale() {
+            let Some(mount) = self.base_registry.source_mount(&element_id) else {
+                // A delayed range needs genuine source ownership.
+                return false;
+            };
+            self.listener_lane
+                .buffer_pending(PendingInput::ReplacementRange {
+                    start,
+                    end,
+                    element_id,
+                    mount,
+                    generation: self.range_generation.clone(),
+                });
+            return true;
+        }
 
         self.text_states
             .get_mut(&element_id)
@@ -1630,6 +1738,9 @@ impl DirectEventRuntime {
 
         self.reconcile_runtime_overlay(&previous_registry, &text_inputs, &sliders);
         self.recompose_overlay_registry();
+        if self.focused_id != focused_id {
+            self.range_generation.invalidate();
+        }
         self.focused_id = focused_id;
         self.text_commit_suppressions.retain(|suppression| {
             self.focused_id
@@ -1638,7 +1749,7 @@ impl DirectEventRuntime {
         });
 
         let pending_text_patch_ttl = self.pending_text_patch_ttl();
-        let mut changed_tree = reconcile_text_input_states(
+        let (mut changed_tree, accepted_tree_patch) = reconcile_text_input_states(
             &text_inputs,
             &mut self.text_states,
             &mut self.pending_text_patches,
@@ -1647,6 +1758,9 @@ impl DirectEventRuntime {
             tree_tx,
             log_render,
         );
+        if accepted_tree_patch {
+            self.range_generation.invalidate();
+        }
         changed_tree |= reconcile_slider_states(
             &sliders,
             &mut self.slider_states,
@@ -1667,6 +1781,9 @@ impl DirectEventRuntime {
                 tree_tx,
                 log_render,
             };
+            if self.focused_id != Some(target.element_id) {
+                self.range_generation.invalidate();
+            }
             changed_tree |= apply_focus_to(
                 Some(target.element_id),
                 &target.reveal_scrolls,
@@ -1702,7 +1819,7 @@ impl DirectEventRuntime {
 
     fn replay_buffered(
         &mut self,
-        mut events: VecDeque<InputEvent>,
+        mut events: VecDeque<PendingInput>,
         tree_tx: &dyn TreeSink,
         log_render: bool,
     ) {
@@ -1713,7 +1830,7 @@ impl DirectEventRuntime {
                 events
                     .iter()
                     .take(16)
-                    .map(input_event_label)
+                    .map(PendingInput::label)
                     .collect::<Vec<_>>()
                     .join(","),
                 self.diagnostic_summary(),
@@ -1726,11 +1843,39 @@ impl DirectEventRuntime {
             let Some(event) = events.pop_front() else {
                 break;
             };
-            let dispatch_mode = match event {
-                InputEvent::CursorPos { .. } => DispatchMode::CursorRevalidate,
-                _ => DispatchMode::Normal,
-            };
-            self.dispatch_event(event, tree_tx, log_render, dispatch_mode);
+            match event {
+                PendingInput::Raw(event) => {
+                    let dispatch_mode = match event {
+                        InputEvent::CursorPos { .. } => DispatchMode::CursorRevalidate,
+                        _ => DispatchMode::Normal,
+                    };
+                    self.dispatch_event(event, tree_tx, log_render, dispatch_mode);
+                }
+                PendingInput::Command(request) => {
+                    self.dispatch_text_input_command(request, tree_tx, log_render);
+                }
+                PendingInput::Edit(request) => {
+                    self.dispatch_text_input_edit(request, tree_tx, log_render);
+                }
+                PendingInput::ReplacementRange {
+                    start,
+                    end,
+                    element_id,
+                    mount,
+                    generation,
+                } => {
+                    // A range addresses the text queried from one particular
+                    // mount. Unlike a key, it cannot be retargeted after focus
+                    // moves, or applied to a replacement reusing the numeric id.
+                    if self.focused_id == Some(element_id)
+                        && generation == self.range_generation
+                        && self.base_registry.source_mount(&element_id) == Some(mount)
+                        && let Some(state) = self.text_states.get_mut(&element_id)
+                    {
+                        state.set_selection_range(start, end);
+                    }
+                }
+            }
         }
         self.listener_lane.restore_replay_tail(events);
         if !self.listener_lane.is_stale() && !self.listener_lane.buffered_inputs.is_empty() {
@@ -2212,6 +2357,16 @@ impl DirectEventRuntime {
     }
 
     fn apply_text_input_state(&mut self, element_id: &NodeId, state: TextInputState) {
+        if self.focused_id == Some(*element_id)
+            && Arc::strong_count(&self.range_generation.0) > 1
+            && self.text_states.get(element_id).is_some_and(|previous| {
+                previous.content != state.content
+                    || previous.preedit != state.preedit
+                    || (previous.preedit.is_some() && previous.cursor != state.cursor)
+            })
+        {
+            self.range_generation.invalidate();
+        }
         self.text_states.insert(*element_id, state);
     }
 
@@ -2682,6 +2837,7 @@ fn consume_pending_slider_patch_match(
 }
 
 struct FocusedTextInputReconcileContext<'a> {
+    accepted_tree_patch: &'a mut bool,
     pending_text_patches: &'a mut HashMap<NodeId, VecDeque<PendingTextPatch>>,
     pending_text_patch_ttl: Duration,
     tree_tx: &'a dyn TreeSink,
@@ -2696,7 +2852,7 @@ fn reconcile_text_input_states(
     focused: &Option<NodeId>,
     tree_tx: &dyn TreeSink,
     log_render: bool,
-) -> bool {
+) -> (bool, bool) {
     fn text_input_runtime_mismatch(rebuild: &TextInputState, state: &TextInputState) -> bool {
         rebuild.focused != state.focused
             || rebuild.cursor != state.cursor
@@ -2767,6 +2923,7 @@ fn reconcile_text_input_states(
             patch_content: String,
             context: &mut FocusedTextInputReconcileContext<'_>,
         ) -> bool {
+            *context.accepted_tree_patch = true;
             state.copy_rebuild_metadata_from(rebuild_state);
             state.set_content(patch_content.clone());
             state.content_origin = TextInputContentOrigin::Event;
@@ -2841,6 +2998,7 @@ fn reconcile_text_input_states(
     }
 
     let mut changed_tree = false;
+    let mut accepted_tree_patch = false;
 
     for (id, rebuild_state) in text_inputs {
         let id = *id;
@@ -2850,6 +3008,7 @@ fn reconcile_text_input_states(
 
         if should_focus {
             let mut context = FocusedTextInputReconcileContext {
+                accepted_tree_patch: &mut accepted_tree_patch,
                 pending_text_patches,
                 pending_text_patch_ttl,
                 tree_tx,
@@ -2867,7 +3026,7 @@ fn reconcile_text_input_states(
             && focused.as_ref().is_some_and(|focused_id| focused_id == id)
             && !queue.is_empty()
     });
-    changed_tree
+    (changed_tree, accepted_tree_patch)
 }
 
 fn reconcile_slider_states(
@@ -3093,6 +3252,22 @@ fn apply_focus_to(
     changed_tree |= emit_reveal_scroll_requests(reveal_scrolls, context);
 
     changed_tree
+}
+
+fn coalesce_pending_input(
+    previous: Option<&mut PendingInput>,
+    event: PendingInput,
+) -> Option<PendingInput> {
+    match event {
+        PendingInput::Raw(event) => {
+            let previous = match previous {
+                Some(PendingInput::Raw(previous)) => Some(previous),
+                _ => None,
+            };
+            coalesce_with_previous(previous, event).map(PendingInput::Raw)
+        }
+        event => Some(event),
+    }
 }
 
 /// Only adjacent compatible events coalesce. Commits, keys, composition and
@@ -3885,11 +4060,11 @@ mod tests {
         let buffered = lane.mark_fresh_and_take_buffered();
         assert_eq!(buffered.len(), 2);
         assert!(
-            matches!(buffered[0], InputEvent::CursorPos { x, y } if (x - 3.0).abs() < f32::EPSILON && (y - 4.0).abs() < f32::EPSILON)
+            matches!(buffered[0], PendingInput::Raw(InputEvent::CursorPos { x, y }) if (x - 3.0).abs() < f32::EPSILON && (y - 4.0).abs() < f32::EPSILON)
         );
         assert!(matches!(
             buffered[1],
-            InputEvent::CursorScroll { dx, dy, x, y }
+            PendingInput::Raw(InputEvent::CursorScroll { dx, dy, x, y })
                 if (dx - 3.0).abs() < f32::EPSILON
                     && (dy + 1.0).abs() < f32::EPSILON
                     && (x - 5.0).abs() < f32::EPSILON
@@ -3914,12 +4089,12 @@ mod tests {
         assert_eq!(buffered.len(), 2);
         assert!(matches!(
             buffered[0],
-            InputEvent::CursorPos { x, y }
+            PendingInput::Raw(InputEvent::CursorPos { x, y })
                 if (x - 10.0).abs() < f32::EPSILON && (y - 120.0).abs() < f32::EPSILON
         ));
         assert!(matches!(
             &buffered[1],
-            InputEvent::CursorButton { button, action, x, y, .. }
+            PendingInput::Raw(InputEvent::CursorButton { button, action, x, y, .. })
                 if button == "left"
                     && *action == crate::input::ACTION_RELEASE
                     && (*x - 10.0).abs() < f32::EPSILON
@@ -3997,7 +4172,7 @@ mod tests {
         ));
         assert!(matches!(
             runtime.listener_lane.buffered_inputs.make_contiguous(),
-            [InputEvent::CursorButton { action, .. }]
+            [PendingInput::Raw(InputEvent::CursorButton { action, .. })]
                 if *action == crate::input::ACTION_RELEASE
         ));
 
@@ -4028,15 +4203,15 @@ mod tests {
         assert_eq!(buffered.len(), 2);
         assert!(matches!(
             buffered[0],
-            InputEvent::Resized {
+            PendingInput::Raw(InputEvent::Resized {
                 width: 640,
                 height: 360,
                 scale_factor
-            } if (scale_factor - 1.5).abs() < f32::EPSILON
+            }) if (scale_factor - 1.5).abs() < f32::EPSILON
         ));
         assert!(matches!(
             buffered[1],
-            InputEvent::CursorPos { x, y }
+            PendingInput::Raw(InputEvent::CursorPos { x, y })
                 if (x - 10.0).abs() < f32::EPSILON && (y - 20.0).abs() < f32::EPSILON
         ));
     }
@@ -6071,6 +6246,8 @@ mod tests {
         let input_id = NodeId::from_term_bytes(vec![58]);
         let (tree_tx, tree_rx) = bounded(64);
         let mut runtime = DirectEventRuntime::new(false);
+        // This fixture manually supplies a ready text session.
+        runtime.listener_lane.stale = false;
         runtime.focused_id = Some(input_id);
         runtime
             .text_states
@@ -6204,6 +6381,8 @@ mod tests {
         let input_id = NodeId::from_term_bytes(vec![59]);
         let (tree_tx, tree_rx) = bounded(64);
         let mut runtime = DirectEventRuntime::new(false);
+        // This fixture manually supplies a ready text session.
+        runtime.listener_lane.stale = false;
         runtime.focused_id = Some(input_id);
         runtime
             .text_states
@@ -6229,6 +6408,8 @@ mod tests {
         let input_id = NodeId::from_term_bytes(vec![60]);
         let (tree_tx, tree_rx) = bounded(64);
         let mut runtime = DirectEventRuntime::new(false);
+        // This fixture manually supplies a ready text session.
+        runtime.listener_lane.stale = false;
         runtime.focused_id = Some(input_id);
         runtime
             .text_states
@@ -6256,6 +6437,8 @@ mod tests {
         let input_id = NodeId::from_term_bytes(vec![61]);
         let (tree_tx, tree_rx) = bounded(64);
         let mut runtime = DirectEventRuntime::new(false);
+        // This fixture manually supplies a ready text session.
+        runtime.listener_lane.stale = false;
         runtime.focused_id = Some(input_id);
         runtime.text_states.insert(
             input_id,
@@ -6285,6 +6468,8 @@ mod tests {
         let input_id = NodeId::from_term_bytes(vec![62]);
         let (tree_tx, tree_rx) = bounded(64);
         let mut runtime = DirectEventRuntime::new(false);
+        // This fixture manually supplies a ready text session.
+        runtime.listener_lane.stale = false;
         runtime.focused_id = Some(input_id);
         runtime
             .text_states
@@ -6313,6 +6498,8 @@ mod tests {
         let input_id = NodeId::from_term_bytes(vec![63]);
         let (tree_tx, tree_rx) = bounded(64);
         let mut runtime = DirectEventRuntime::new(false);
+        // This fixture manually supplies a ready text session.
+        runtime.listener_lane.stale = false;
         runtime.focused_id = Some(input_id);
         runtime.text_states.insert(
             input_id,

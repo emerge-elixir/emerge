@@ -360,3 +360,5 @@ mod outbound;
 
 #[cfg(feature = "bench-diagnostics")]
 pub(crate) mod pressure_probe;
+
+mod ordered_host;
