@@ -72,6 +72,15 @@ fn barrier(packet: &TreeMsg) -> &crate::actors::ListenerBarrier {
         .unwrap()
 }
 
+// These transport tests intentionally supply already-resolved effects. Real host
+// admission now queues behind stale geometry (covered by ordered_host tests);
+// it must not be used to fabricate thousands of independently ready operations.
+fn queue_prepared_edit(host: &mut HostEventRuntime, text: &str) -> bool {
+    host.driver.dispatch(|runtime, tx, log| {
+        runtime.dispatch_text_input_edit(TextInputEditRequest::Insert(text.into()), tx, log)
+    })
+}
+
 #[test]
 fn host_drains_channel_then_deferred_operations_without_clones_or_overtaking() {
     let assets = crate::assets::AssetRuntime::new();
@@ -85,11 +94,7 @@ fn host_drains_channel_then_deferred_operations_without_clones_or_overtaking() {
         let mut host = host();
         host.install_rebuild(initial);
         for _ in 0..1280 {
-            assert!(
-                host.handle_text_input_edit(crate::events::TextInputEditRequest::Insert(
-                    "X".into()
-                ))
-            );
+            assert!(queue_prepared_edit(&mut host, "X"));
         }
         assert_eq!(host.tree_rx.len(), 512);
         assert_eq!(host.driver.outbox.len(), 768);
@@ -115,9 +120,7 @@ fn host_drains_channel_then_deferred_operations_without_clones_or_overtaking() {
         );
         // Free a channel slot, but a newer operation must still join the tail.
         let prefix = host.tree_rx.recv().unwrap();
-        assert!(
-            host.handle_text_input_edit(crate::events::TextInputEditRequest::Insert("Y".into()))
-        );
+        assert!(queue_prepared_edit(&mut host, "Y"));
         assert_eq!(host.tree_rx.len(), 511);
         assert_eq!(host.driver.outbox.len(), 769);
         let batches: Vec<_> = (0..3).map(|_| host.drain_tree_messages()).collect();
@@ -533,9 +536,7 @@ fn host_feedback_preserves_deferred_work_across_both_budgets_and_keeps_new_input
     let mut host = host();
     host.install_rebuild(initial);
     for index in 0..4097 {
-        assert!(
-            host.handle_text_input_edit(crate::events::TextInputEditRequest::Insert("X".into()))
-        );
+        assert!(queue_prepared_edit(&mut host, "X"));
         if index == 0 {
             assert_eq!(
                 host.driver.outbox.capacity(),
