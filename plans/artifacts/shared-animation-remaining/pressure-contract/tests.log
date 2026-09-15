@@ -1,0 +1,14 @@
+test_bounded_reachable_states (test_model.AdmissionContract.test_bounded_reachable_states) ... ok
+test_control_progress_at_full_budget_without_forging_receipts (test_model.AdmissionContract.test_control_progress_at_full_budget_without_forging_receipts) ... ok
+test_count_cap_does_not_replace_capacity_cap (test_model.AdmissionContract.test_count_cap_does_not_replace_capacity_cap) ... ok
+test_fifo_bypass_and_healthy_eviction_are_rejected (test_model.AdmissionContract.test_fifo_bypass_and_healthy_eviction_are_rejected) ... ok
+test_invalid_limits_and_charges_are_not_unlimited_sentinels (test_model.AdmissionContract.test_invalid_limits_and_charges_are_not_unlimited_sentinels) ... ok
+test_replacement_requires_peak_not_net_reservation (test_model.AdmissionContract.test_replacement_requires_peak_not_net_reservation) ... ok
+test_terminal_reason_persists_until_cleanup_and_cannot_resume (test_model.AdmissionContract.test_terminal_reason_persists_until_cleanup_and_cannot_resume) ... ok
+test_transfer_and_ack_do_not_refund_live_capacity (test_model.AdmissionContract.test_transfer_and_ack_do_not_refund_live_capacity) ... ok
+test_unbounded_stall_cannot_be_finite_lossless_and_always_accepting (test_model.AdmissionContract.test_unbounded_stall_cannot_be_finite_lossless_and_always_accepting) ... ok
+
+----------------------------------------------------------------------
+Ran 9 tests in 0.021s
+
+OK

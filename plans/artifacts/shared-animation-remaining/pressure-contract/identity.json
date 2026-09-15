@@ -1,0 +1,12 @@
+{
+  "artifact": "design-sha256:fe008d827a1d1e7f10e837294635fc858bd624077a703a61c4ba6c2b8b81ac23",
+  "runtime_source": "source-sha256:e98b67da5aa6ddf42f947be3dcef2b2a86fb35336d3e1ed082c77e9dd415032c",
+  "head": "33ee559caafed7d845b5727a0ac0ad4f5285f68e",
+  "scope": "D19 proposal/model only; native runtime unchanged; no approved limits/default/failure policy or runtime enforcement",
+  "python": "Python 3.14.7",
+  "model_tests": 9,
+  "states": 45476,
+  "transitions": 318533,
+  "max_depth": 12,
+  "qualification": "bounded symbolic model with remaining frontiers; not allocation, concurrency, liveness or device proof"
+}

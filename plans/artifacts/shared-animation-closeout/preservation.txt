@@ -1,0 +1,8 @@
+Verified full worktree recovery artifact: /workspace/animation-closeout-recovery-20260915-162634
+Original /tmp D23 backup was unavailable. Durable D22 archive verified before comparison.
+Reviewed all 1757 lines of the D22-to-current diff: D23-only authority, dispatch/reconcile, fixture, host geometry and two new modules.
+Reversed the reviewed hunk patch after git apply --reverse --check; no whole-file restore.
+All 306 D22 manifest inputs match byte-for-byte after separation.
+D23 failure reproduced before separation; 8 pass / 1 fail. No assertion was weakened.
+Forward patch includes both deferred source/test modules. Apply only to a compatible disposable worktree after review.
+Roundtrip verification: applied deferred-d23.patch only in an isolated recovery tree containing D22 input files; all ten outputs exactly match the pre-closeout worktree archive, including both new modules.

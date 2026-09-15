@@ -1,0 +1,31 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.24s
+     Running unittests src/lib.rs (native/emerge_skia/target/debug/deps/emerge_skia-fd4f0b51952a2096)
+
+running 9 tests
+test events::runtime::tests::delayed::native_local::failed_native_batch_keeps_newer_local_state_until_recovery_without_old_receipt_replay ... ok
+test events::runtime::tests::delayed::native_local::equal_final_content_still_publishes_latest_cursor_and_composition_before_replay ... ok
+test events::runtime::tests::delayed::native_local::callback_controlled_inputs_retain_ordered_callbacks_and_the_existing_barrier ... ok
+test events::runtime::tests::delayed::native_local::replayed_or_foreign_native_publications_cannot_overwrite_a_newer_value ... ok
+test events::runtime::tests::delayed::native_local::an_earlier_geometry_action_fences_later_native_and_host_typing ... ok
+test events::runtime::tests::delayed::native_local::authoritative_reset_rejects_old_scope_but_geometry_only_patch_preserves_it ... FAILED
+test events::runtime::tests::delayed::native_local::held_tree_does_not_block_native_edits_and_publishes_only_the_latest_tail ... ok
+test events::runtime::tests::delayed::native_local::real_event_actor_accepts_a_native_burst_while_the_tree_consumer_is_held ... ok
+test events::runtime::tests::delayed::native_local::continuous_native_editing_has_no_ttl_value_history_and_keeps_geometry_unavailable ... ok
+
+failures:
+
+---- events::runtime::tests::delayed::native_local::authoritative_reset_rejects_old_scope_but_geometry_only_patch_preserves_it stdout ----
+
+thread 'events::runtime::tests::delayed::native_local::authoritative_reset_rejects_old_scope_but_geometry_only_patch_preserves_it' (842) panicked at src/events/runtime/tests/delayed/native_local.rs:273:17:
+assertion `left == right` failed
+  left: ""
+ right: "abcXY"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    events::runtime::tests::delayed::native_local::authoritative_reset_rejects_old_scope_but_geometry_only_patch_preserves_it
+
+test result: FAILED. 8 passed; 1 failed; 0 ignored; 0 measured; 1461 filtered out; finished in 0.12s
+
+error: test failed, to rerun pass `--lib`

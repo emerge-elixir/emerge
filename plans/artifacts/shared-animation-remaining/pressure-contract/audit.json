@@ -1,0 +1,51 @@
+[
+  {
+    "path": "native/emerge_skia/src/backend/wayland/runtime.rs",
+    "source_sha256": "92c6f1c76e5522347489c824f217160352ad4140812618f0160b4c0361b8f7f1",
+    "start_line": 502,
+    "end_line": 506,
+    "excerpt": "fn try_send_wayland_event(event_tx: &crossbeam_channel::Sender<EventMsg>, msg: EventMsg) {\n    match event_tx.try_send(msg) {\n        Ok(()) | Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {}\n    }\n}\n"
+  },
+  {
+    "path": "native/emerge_skia/src/drm_input.rs",
+    "source_sha256": "7ce40e7fa813ac4017faa7d09cc7a439b8c63a15eb1fc89046451243dc9b38d0",
+    "start_line": 510,
+    "end_line": 536,
+    "excerpt": "    fn push_input_blocking(&self, event: InputEvent) {\n        let mut msg = EventMsg::InputEvent(event);\n        loop {\n            match self.event_tx.try_send(msg) {\n                Ok(()) | Err(TrySendError::Disconnected(_)) => break,\n                Err(TrySendError::Full(returned_msg)) => {\n                    msg = returned_msg;\n                }\n            }\n\n            if self.stop.load(Ordering::Relaxed) {\n                break;\n            }\n\n            if self.log_enabled {\n                eprintln!(\"event channel full, waiting to send\");\n            }\n\n            match self.event_tx.send_timeout(msg, Duration::from_millis(10)) {\n                Ok(()) => break,\n                Err(SendTimeoutError::Timeout(returned_msg)) => {\n                    msg = returned_msg;\n                }\n                Err(SendTimeoutError::Disconnected(_)) => break,\n            }\n        }\n    }\n"
+  },
+  {
+    "path": "native/emerge_skia/src/events/runtime.rs",
+    "source_sha256": "c29b639c018061af7f8d0f1d763b4c415cfedc162a476ffd7a0522544f37312d",
+    "start_line": 1399,
+    "end_line": 1445,
+    "excerpt": "    fn handle_input_event(&mut self, event: InputEvent, tree_tx: &dyn TreeSink, log_render: bool) {\n        let event = event.normalize_scroll_with_line_pixels(self.scroll_line_pixels);\n        let label = input_event_label(&event);\n        self.log_event_diagnostic(log_render, || {\n            format!(\n                \"input begin\\n  event: {label}\\n  {}\",\n                self.diagnostic_summary(),\n            )\n        });\n        self.record_pointer_snapshot(&event);\n        self.cancel_inertial_scroll_for_input(&event);\n        crate::debug_trace::hover_trace!(\n            \"event_input\",\n            \"event={:?} stale={} buffered={}\",\n            event,\n            self.listener_lane.is_stale(),\n            self.listener_lane.buffered_inputs.len()\n        );\n        forward_observer_input(\n            &event,\n            &self.input_handler,\n            &self.input_target,\n            self.host_event_sink.as_deref(),\n        );\n        self.clear_text_commit_suppressions_for_event(&event);\n\n        if self.listener_lane.is_stale() {\n            let buffered_before = self.listener_lane.buffered_inputs.len();\n            self.listener_lane.buffer_input(event);\n            self.log_event_diagnostic(log_render, || {\n                format!(\n                    \"input buffered while listener lane stale\\n  event: {label}\\n  buffered_before: {buffered_before}\\n  buffered_after: {}\\n  {}\",\n                    self.listener_lane.buffered_inputs.len(),\n                    self.diagnostic_summary(),\n                )\n            });\n            return;\n        }\n\n        self.dispatch_event(event, tree_tx, log_render, DispatchMode::Normal);\n        self.log_event_diagnostic(log_render, || {\n            format!(\n                \"input end\\n  event: {label}\\n  {}\",\n                self.diagnostic_summary(),\n            )\n        });\n    }\n"
+  },
+  {
+    "path": "native/emerge_skia/src/events/runtime.rs",
+    "source_sha256": "c29b639c018061af7f8d0f1d763b4c415cfedc162a476ffd7a0522544f37312d",
+    "start_line": 157,
+    "end_line": 187,
+    "excerpt": "    fn dispatch<R>(\n        &mut self,\n        operation: impl FnOnce(&mut DirectEventRuntime, &dyn TreeSink, bool) -> R,\n    ) -> R {\n        let commands = EventCommands::default();\n        let result = operation(&mut self.runtime, &commands, self.log_render);\n        let mut messages = commands.0.into_inner();\n        if std::mem::take(&mut self.runtime.listener_lane.needs_barrier) {\n            let barrier = crate::actors::ListenerBarrier::default();\n            self.awaiting_registry = Some(barrier.clone());\n            messages.push(TreeMsg::ListenerBarrier(barrier));\n        }\n        if !messages.is_empty() {\n            let mut targets: Vec<_> = messages.iter().filter_map(TreeMsg::target_id).collect();\n            targets.sort_unstable_by_key(|id| id.0);\n            targets.dedup();\n            let packet = if targets.is_empty() {\n                TreeMsg::Batch(messages)\n            } else {\n                TreeMsg::EventBatch {\n                    target_mounts: targets\n                        .into_iter()\n                        .map(|id| (id, self.runtime.base_registry.source_mount(&id)))\n                        .collect(),\n                    messages,\n                }\n            };\n            self.queue_tree_packet(packet);\n        }\n        result\n    }\n"
+  },
+  {
+    "path": "native/emerge_skia/src/events/runtime.rs",
+    "source_sha256": "c29b639c018061af7f8d0f1d763b4c415cfedc162a476ffd7a0522544f37312d",
+    "start_line": 189,
+    "end_line": 202,
+    "excerpt": "    fn queue_tree_packet(&mut self, packet: TreeMsg) {\n        // Once a packet is deferred, new operations must not overtake it even\n        // when a slot happens to become available during this dispatch.\n        if self.outbox.is_empty() {\n            match self.tree_tx.try_send(packet) {\n                Ok(()) => {}\n                Err(TrySendError::Full(packet) | TrySendError::Disconnected(packet)) => {\n                    self.outbox.push_back(packet)\n                }\n            }\n        } else {\n            self.outbox.push_back(packet);\n        }\n    }\n"
+  },
+  {
+    "path": "native/emerge_skia/src/bin/macos_host.rs",
+    "source_sha256": "cb23b710cfef1d4ac6d06f0081f666359e0d6e8cae54de474ed1039a29573a56",
+    "start_line": 4006,
+    "end_line": 4013,
+    "excerpt": "    fn read_frame(stream: &mut UnixStream) -> io::Result<Vec<u8>> {\n        let mut len_buf = [0_u8; 4];\n        stream.read_exact(&mut len_buf)?;\n        let len = u32::from_be_bytes(len_buf) as usize;\n        let mut payload = vec![0_u8; len];\n        stream.read_exact(&mut payload)?;\n        Ok(payload)\n    }\n"
+  },
+  {
+    "path": "native/emerge_skia/src/events.rs",
+    "source_sha256": "13b1bfa1c93bc1535a7b4e917741a72e284627e87c5b2144829aa9dcedf40d9c",
+    "start_line": 1394,
+    "end_line": 1399,
+    "excerpt": "pub(crate) fn send_input_event(pid: LocalPid, event: &InputEvent) {\n    let mut env = OwnedEnv::new();\n    let _ = env.send_and_clear(&pid, |inner_env| {\n        (emerge_skia_event(), event).encode(inner_env)\n    });\n}\n"
+  }
+]

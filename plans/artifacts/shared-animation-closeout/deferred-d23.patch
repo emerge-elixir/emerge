@@ -1,0 +1,1757 @@
+--- a/native/emerge_skia/src/actors.rs
++++ b/native/emerge_skia/src/actors.rs
+@@ -120,6 +120,7 @@
+         element_id: NodeId,
+         active: bool,
+     },
++    PublishLocalText(Box<crate::runtime::local_edit::LocalTextUpdate>),
+     SetTextInputContent {
+         element_id: NodeId,
+         content: String,
+@@ -170,6 +171,7 @@
+ 
+     pub(crate) fn target_id(&self) -> Option<NodeId> {
+         match self {
++            Self::PublishLocalText(update) => Some(update.publication.scope.element_id()),
+             Self::ScrollRequest { element_id, .. }
+             | Self::ScrollbarThumbDragX { element_id, .. }
+             | Self::ScrollbarThumbDragY { element_id, .. }
+@@ -220,7 +222,8 @@
+             Self::Batch(messages) | Self::EventBatch { messages, .. } => messages
+                 .iter()
+                 .any(Self::requires_listener_registry_response),
+-            Self::UploadTree { .. }
++            Self::PublishLocalText(_)
++            | Self::UploadTree { .. }
+             | Self::PatchTree { .. }
+             | Self::Resize { .. }
+             | Self::ScrollRequest { .. }
+--- a/native/emerge_skia/src/bin/macos_host.rs
++++ b/native/emerge_skia/src/bin/macos_host.rs
+@@ -1009,6 +1009,14 @@
+             let ui_state = ui_state.borrow();
+             let session = ui_state.sessions.get(&session_id)?;
+             session.runtime.event_runtime.focused_text_state()
++        }
++
++        fn focused_text_geometry_state(&self) -> Option<TextInputState> {
++            let session_id = self.ivars().session_id.get();
++            let ui_state = self.ivars().ui_state.borrow().upgrade()?;
++            let ui_state = ui_state.borrow();
++            let session = ui_state.sessions.get(&session_id)?;
++            session.runtime.event_runtime.focused_text_geometry_state()
+         }
+     }
+ 
+@@ -1420,11 +1428,11 @@
+     ) -> NSRect {
+         unsafe {
+             if !actual_range.is_null() {
+-                *actual_range = range;
+-            }
+-        }
+-
+-        let Some(state) = view.focused_text_state() else {
++                *actual_range = invalid_text_range();
++            }
++        }
++
++        let Some(state) = view.focused_text_geometry_state() else {
+             return zero_rect();
+         };
+ 
+@@ -1433,6 +1441,11 @@
+         else {
+             return zero_rect();
+         };
++        unsafe {
++            if !actual_range.is_null() {
++                *actual_range = range;
++            }
++        }
+         let super_view = view.as_super();
+         let scale_factor = super_view
+             .window()
+@@ -1459,8 +1472,8 @@
+     }
+ 
+     fn host_input_view_character_index_for_point(view: &HostInputView, point: NSPoint) -> usize {
+-        let Some(state) = view.focused_text_state() else {
+-            return 0;
++        let Some(state) = view.focused_text_geometry_state() else {
++            return usize::MAX;
+         };
+         let super_view = view.as_super();
+         let Some(window) = super_view.window() else {
+--- a/native/emerge_skia/src/events/registry_builder.rs
++++ b/native/emerge_skia/src/events/registry_builder.rs
+@@ -7370,6 +7370,7 @@
+         .collect::<HashMap<_, _>>();
+     RegistryRebuildPayload {
+         listener_barrier: None,
++        local_edit: None,
+         mount_focus_targets: (!mount_focus_targets.is_empty()).then(|| mount_focus_targets.into()),
+         base_registry: low_registry,
+         text_inputs: acc.text_inputs,
+--- a/native/emerge_skia/src/events/runtime/tests/delayed.rs
++++ b/native/emerge_skia/src/events/runtime/tests/delayed.rs
+@@ -362,3 +362,5 @@
+ pub(crate) mod pressure_probe;
+ 
+ mod ordered_host;
++
++mod native_local;
+--- a/native/emerge_skia/src/events/runtime.rs
++++ b/native/emerge_skia/src/events/runtime.rs
+@@ -102,6 +102,7 @@
+ struct EventRuntimeDriver {
+     runtime: DirectEventRuntime,
+     awaiting_registry: Option<crate::actors::ListenerBarrier>,
++    native_edit: Option<Arc<crate::runtime::local_edit::LocalEditPublication>>,
+     pending_mount_focus: Option<(super::FocusOnMountTarget, Option<NodeId>)>,
+     tree_tx: Sender<TreeMsg>,
+     outbox: VecDeque<TreeMsg>,
+@@ -121,6 +122,7 @@
+     ) -> Self {
+         Self {
+             awaiting_registry: None,
++            native_edit: None,
+             pending_mount_focus: None,
+             runtime: DirectEventRuntime::new_with_backend_cursor(
+                 system_clipboard,
+@@ -161,6 +163,10 @@
+         let commands = EventCommands::default();
+         let result = operation(&mut self.runtime, &commands, self.log_render);
+         let mut messages = commands.0.into_inner();
++        if !messages.is_empty() {
++            self.runtime.native_local_owner = None;
++        }
++        self.lower_native_edit(&mut messages);
+         if std::mem::take(&mut self.runtime.listener_lane.needs_barrier) {
+             let barrier = crate::actors::ListenerBarrier::default();
+             self.awaiting_registry = Some(barrier.clone());
+@@ -186,6 +192,32 @@
+         result
+     }
+ 
++    fn lower_native_edit(&mut self, messages: &mut Vec<TreeMsg>) {
++        let forced = std::mem::take(&mut self.runtime.force_local_publication);
++        let Some(binding) = self.native_edit.as_ref() else {
++            return;
++        };
++        let id = binding.scope.element_id();
++        let Some(state) = self.runtime.text_states.get(&id).filter(|state| {
++            state.focused && !state.emit_change && self.runtime.focused_id == Some(id)
++        }) else {
++            return;
++        };
++        if (!forced && !messages.iter().any(|msg| matches!(msg, TreeMsg::SetTextInputContent { element_id, .. } if *element_id == id)))
++            || !messages.iter().all(|msg| match msg {
++                TreeMsg::SetTextInputContent { element_id, .. } | TreeMsg::SetTextInputRuntime { element_id, .. } => *element_id == id,
++                TreeMsg::RebuildRegistry => true,
++                _ => false,
++            }) { return; }
++        let Some(update) = binding.next(state) else {
++            return;
++        };
++        self.runtime.native_local_owner = (update.publication.version < u64::MAX).then_some(id);
++        self.runtime.deferred_local_edit = false;
++        self.native_edit = Some(update.publication.clone());
++        *messages = vec![TreeMsg::PublishLocalText(Box::new(update))];
++    }
++
+     fn queue_tree_packet(&mut self, packet: TreeMsg) {
+         // Once a packet is deferred, new operations must not overtake it even
+         // when a slot happens to become available during this dispatch.
+@@ -223,6 +255,23 @@
+                 .map(|target| (target, rebuild.focused_id));
+             return;
+         }
++        let changed_scope = self.native_edit.as_ref().is_some_and(|old| {
++            rebuild
++                .local_edit
++                .as_ref()
++                .is_none_or(|new| !old.scope.matches(&new.scope))
++        });
++        if changed_scope && let Some(old) = self.native_edit.as_ref() {
++            let id = old.scope.element_id();
++            self.runtime.text_states.remove(&id);
++            self.runtime.pending_text_patches.remove(&id);
++            self.runtime.range_generation.invalidate();
++        }
++        if changed_scope {
++            self.runtime.deferred_local_edit = false;
++            self.runtime.native_local_owner = None;
++        }
++        self.native_edit = rebuild.local_edit.clone();
+         self.awaiting_registry = None;
+         self.dispatch(|runtime, tx, log| runtime.handle_registry_update(rebuild, tx, log));
+     }
+@@ -392,6 +441,7 @@
+         let native_log = Arc::new(NativeLogRelay::default());
+         let mut driver = EventRuntimeDriver {
+             awaiting_registry: None,
++            native_edit: None,
+             pending_mount_focus: None,
+             runtime: DirectEventRuntime::new_with_host_sink(
+                 system_clipboard,
+@@ -438,6 +488,16 @@
+ 
+     pub fn focused_text_state(&self) -> Option<TextInputState> {
+         self.driver.focused_text_state()
++    }
++
++    /// Geometry-dependent host queries must not combine unpublished local text
++    /// with older native layout metadata. No geometry is offered while fenced.
++    pub fn focused_text_geometry_state(&self) -> Option<TextInputState> {
++        if self.driver.runtime.listener_lane.is_stale() {
++            None
++        } else {
++            self.focused_text_state()
++        }
+     }
+ 
+     /// True means handled now or retained for ordered dispatch. A queued request
+@@ -773,6 +833,7 @@
+         TreeMsg::SetMouseOverActive { .. } => "set_mouse_over_active",
+         TreeMsg::SetMouseDownActive { .. } => "set_mouse_down_active",
+         TreeMsg::SetFocusedActive { .. } => "set_focused_active",
++        TreeMsg::PublishLocalText(_) => "publish_local_text",
+         TreeMsg::SetTextInputContent { .. } => "set_text_input_content",
+         TreeMsg::SetTextInputRuntime { .. } => "set_text_input_runtime",
+         TreeMsg::SetSliderValue { .. } => "set_slider_value",
+@@ -1017,6 +1078,9 @@
+     listener_lane: ListenerLaneState,
+     last_focus_on_mount_revision: u64,
+     range_generation: RangeGeneration,
++    native_local_owner: Option<NodeId>,
++    deferred_local_edit: bool,
++    force_local_publication: bool,
+     focused_id: Option<NodeId>,
+     text_states: HashMap<NodeId, TextInputState>,
+     slider_states: HashMap<NodeId, SliderState>,
+@@ -1075,6 +1139,9 @@
+             listener_lane: ListenerLaneState::initially_stale(),
+             last_focus_on_mount_revision: 0,
+             range_generation: RangeGeneration::default(),
++            native_local_owner: None,
++            deferred_local_edit: false,
++            force_local_publication: false,
+             focused_id: None,
+             text_states: HashMap::new(),
+             slider_states: HashMap::new(),
+@@ -1459,6 +1526,111 @@
+             .min()
+     }
+ 
++    fn can_dispatch_local_text(&self) -> bool {
++        self.native_local_owner.is_some_and(|id| {
++            self.focused_id == Some(id)
++                && self
++                    .text_states
++                    .get(&id)
++                    .is_some_and(|state| state.focused && !state.emit_change)
++        }) && self.listener_lane.buffered_inputs.is_empty()
++            && !self.has_active_pointer_overlay()
++            && self.text_commit_suppressions.is_empty()
++    }
++
++    fn try_local_raw_input(
++        &mut self,
++        event: InputEvent,
++        tree_tx: &dyn TreeSink,
++        log_render: bool,
++    ) -> Result<(), InputEvent> {
++        let logical = match &event {
++            InputEvent::TextCommit { mods: 0, .. }
++            | InputEvent::TextPreedit { .. }
++            | InputEvent::TextPreeditClear
++            | InputEvent::DeleteSurrounding { .. } => true,
++            InputEvent::Key { key, mods: 0, .. } => !matches!(
++                key,
++                CanonicalKey::Tab
++                    | CanonicalKey::Enter
++                    | CanonicalKey::Home
++                    | CanonicalKey::End
++                    | CanonicalKey::PageUp
++                    | CanonicalKey::PageDown
++                    | CanonicalKey::ArrowUp
++                    | CanonicalKey::ArrowDown
++                    | CanonicalKey::ArrowLeft
++                    | CanonicalKey::ArrowRight
++            ),
++            _ => false,
++        };
++        if !logical || !self.can_dispatch_local_text() {
++            return Err(event);
++        }
++        let input = ListenerInput::Raw(event);
++        let actions = {
++            let mut ctx = RuntimeListenerComputeCtx {
++                base_registry: &self.base_registry,
++                overlay_registry: &self.overlay_registry,
++                focused_id: self.focused_id.as_ref(),
++                hover_stack: &self.hover_stack,
++                text_states: &self.text_states,
++                slider_states: &self.slider_states,
++                text_commit_suppressions: &mut self.text_commit_suppressions,
++                clipboard: &mut self.clipboard,
++            };
++            registry_builder::LayeredRegistryView::new(&self.overlay_registry, &self.base_registry)
++                .first_match(&input, &[], &mut ctx)
++        };
++        if self.apply_local_text_actions(actions, tree_tx, log_render) {
++            Ok(())
++        } else {
++            let ListenerInput::Raw(event) = input else {
++                unreachable!()
++            };
++            Err(event)
++        }
++    }
++
++    fn apply_local_text_actions(
++        &mut self,
++        actions: Vec<ListenerAction>,
++        tree_tx: &dyn TreeSink,
++        log_render: bool,
++    ) -> bool {
++        let Some(id) = self.native_local_owner else {
++            return false;
++        };
++        if !actions.iter().all(|action| match action {
++            ListenerAction::TreeMsg(TreeMsg::SetTextInputContent { element_id, .. }) => {
++                *element_id == id
++            }
++            ListenerAction::TreeMsg(TreeMsg::SetTextInputRuntime {
++                element_id,
++                focused,
++                ..
++            }) => *element_id == id && *focused,
++            ListenerAction::RuntimeChange(RuntimeChange::SetTextInputState {
++                element_id,
++                state,
++            }) => *element_id == id && state.focused && !state.emit_change,
++            _ => false,
++        }) {
++            return false;
++        }
++        if !actions.is_empty() {
++            self.deferred_local_edit = true;
++            // Only current local state is retained. No per-edit outbound packet
++            // or full-value history; all nonlocal/callback effects fail closed.
++            let local = actions
++                .into_iter()
++                .filter(|action| !matches!(action, ListenerAction::TreeMsg(_)))
++                .collect();
++            self.apply_listener_actions(local, tree_tx, log_render, DispatchMode::Normal);
++        }
++        true
++    }
++
+     fn handle_input_event(&mut self, event: InputEvent, tree_tx: &dyn TreeSink, log_render: bool) {
+         let event = event.normalize_scroll_with_line_pixels(self.scroll_line_pixels);
+         let label = input_event_label(&event);
+@@ -1486,6 +1658,10 @@
+         self.clear_text_commit_suppressions_for_event(&event);
+ 
+         if self.listener_lane.is_stale() {
++            let event = match self.try_local_raw_input(event, tree_tx, log_render) {
++                Ok(()) => return,
++                Err(event) => event,
++            };
+             let buffered_before = self.listener_lane.buffered_inputs.len();
+             self.listener_lane.buffer_input(event);
+             self.log_event_diagnostic(log_render, || {
+@@ -1568,6 +1744,35 @@
+         log_render: bool,
+     ) -> bool {
+         if self.listener_lane.is_stale() {
++            if self.can_dispatch_local_text()
++                && matches!(
++                    &request,
++                    TextInputEditRequest::Insert(_)
++                        | TextInputEditRequest::Backspace
++                        | TextInputEditRequest::Delete
++                        | TextInputEditRequest::DeleteSurrounding { .. }
++                )
++            {
++                let mut ctx = RuntimeListenerComputeCtx {
++                    base_registry: &self.base_registry,
++                    overlay_registry: &self.overlay_registry,
++                    focused_id: self.focused_id.as_ref(),
++                    hover_stack: &self.hover_stack,
++                    text_states: &self.text_states,
++                    slider_states: &self.slider_states,
++                    text_commit_suppressions: &mut self.text_commit_suppressions,
++                    clipboard: &mut self.clipboard,
++                };
++                let id = self.native_local_owner.expect("checked local owner");
++                let actions = registry_builder::resolve_text_input_edit_actions(
++                    &id,
++                    request.clone(),
++                    &mut ctx,
++                );
++                if self.apply_local_text_actions(actions, tree_tx, log_render) {
++                    return true;
++                }
++            }
+             self.listener_lane
+                 .buffer_pending(PendingInput::Edit(request));
+             return true;
+@@ -1677,6 +1882,13 @@
+         });
+         self.listener_lane.stale = false;
+         self.install_rebuild(rebuild, tree_tx, log_render);
++        if std::mem::take(&mut self.deferred_local_edit) {
++            self.force_local_publication = true;
++            self.listener_lane.mark_stale();
++            send_tree(tree_tx, TreeMsg::RebuildRegistry, log_render);
++        } else if !self.listener_lane.is_stale() {
++            self.native_local_owner = None;
++        }
+         let stale_after_install = self.listener_lane.is_stale();
+         self.log_event_diagnostic(log_render, || {
+             format!(
+@@ -1718,6 +1930,7 @@
+     ) {
+         let RegistryRebuildPayload {
+             listener_barrier: _,
++            local_edit,
+             mount_focus_targets: _,
+             base_registry,
+             text_inputs,
+@@ -1754,7 +1967,12 @@
+             &mut self.text_states,
+             &mut self.pending_text_patches,
+             pending_text_patch_ttl,
+-            &self.focused_id,
++            TextInputReconcileFocus {
++                current: self.focused_id,
++                native_owner: local_edit
++                    .as_ref()
++                    .map(|binding| binding.scope.element_id()),
++            },
+             tree_tx,
+             log_render,
+         );
+@@ -2837,6 +3055,7 @@
+ }
+ 
+ struct FocusedTextInputReconcileContext<'a> {
++    native_owned: bool,
+     accepted_tree_patch: &'a mut bool,
+     pending_text_patches: &'a mut HashMap<NodeId, VecDeque<PendingTextPatch>>,
+     pending_text_patch_ttl: Duration,
+@@ -2844,12 +3063,17 @@
+     log_render: bool,
+ }
+ 
++struct TextInputReconcileFocus {
++    current: Option<NodeId>,
++    native_owner: Option<NodeId>,
++}
++
+ fn reconcile_text_input_states(
+     text_inputs: &HashMap<NodeId, TextInputState>,
+     states: &mut HashMap<NodeId, TextInputState>,
+     pending_text_patches: &mut HashMap<NodeId, VecDeque<PendingTextPatch>>,
+     pending_text_patch_ttl: Duration,
+-    focused: &Option<NodeId>,
++    focus: TextInputReconcileFocus,
+     tree_tx: &dyn TreeSink,
+     log_render: bool,
+ ) -> (bool, bool) {
+@@ -2895,14 +3119,25 @@
+             if (state.content != rebuild_state.content || had_patch_content)
+                 && !patch_content_matches_runtime
+             {
+-                changed_tree |= send_pending_content_update(
+-                    context.tree_tx,
+-                    context.log_render,
+-                    context.pending_text_patches,
+-                    context.pending_text_patch_ttl,
+-                    element_id,
+-                    state.content.clone(),
+-                );
++                changed_tree |= if context.native_owned {
++                    // Native versioned publication has no application echo to
++                    // recognize. Do not accumulate a value/TTL history here.
++                    send_content_update(
++                        context.tree_tx,
++                        context.log_render,
++                        element_id,
++                        state.content.clone(),
++                    )
++                } else {
++                    send_pending_content_update(
++                        context.tree_tx,
++                        context.log_render,
++                        context.pending_text_patches,
++                        context.pending_text_patch_ttl,
++                        element_id,
++                        state.content.clone(),
++                    )
++                };
+             }
+ 
+             state.focused = true;
+@@ -2997,6 +3232,7 @@
+         );
+     }
+ 
++    let focused = &focus.current;
+     let mut changed_tree = false;
+     let mut accepted_tree_patch = false;
+ 
+@@ -3008,6 +3244,7 @@
+ 
+         if should_focus {
+             let mut context = FocusedTextInputReconcileContext {
++                native_owned: focus.native_owner == Some(id),
+                 accepted_tree_patch: &mut accepted_tree_patch,
+                 pending_text_patches,
+                 pending_text_patch_ttl,
+@@ -3604,6 +3841,7 @@
+     ) -> RegistryRebuildPayload {
+         RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::Registry::default(),
+             text_inputs: HashMap::from([(input_id, state)]),
+@@ -4114,6 +4352,7 @@
+         let element = with_interaction(make_element(219, ElementKind::El, attrs));
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[element]),
+             text_inputs: HashMap::new(),
+@@ -4558,6 +4797,7 @@
+         let base_registry = registry_builder::Registry::default();
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry,
+             text_inputs: HashMap::from([(input_id, descriptor.clone())]),
+@@ -4686,6 +4926,7 @@
+         let element = with_interaction(make_element(20, ElementKind::El, attrs));
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[element]),
+             text_inputs: HashMap::new(),
+@@ -4751,6 +4992,7 @@
+         let element = with_interaction(make_element(23, ElementKind::El, attrs));
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[element]),
+             text_inputs: HashMap::new(),
+@@ -4835,6 +5077,7 @@
+         let element = with_interaction(make_element(22, ElementKind::El, attrs));
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[element]),
+             text_inputs: HashMap::new(),
+@@ -4899,6 +5142,7 @@
+         let element = with_interaction(make_element(21, ElementKind::El, attrs.clone()));
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[element]),
+             text_inputs: HashMap::new(),
+@@ -4938,6 +5182,7 @@
+         let active_element = with_interaction(make_element(21, ElementKind::El, active_attrs));
+         let active_rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[active_element]),
+             text_inputs: HashMap::new(),
+@@ -4984,6 +5229,7 @@
+ 
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[first, second]),
+             text_inputs: HashMap::new(),
+@@ -5032,6 +5278,7 @@
+         let element = with_interaction(make_element(40, ElementKind::El, attrs));
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[element]),
+             text_inputs: HashMap::new(),
+@@ -5068,6 +5315,7 @@
+         let element = with_interaction(make_element(44, ElementKind::El, attrs));
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[element]),
+             text_inputs: HashMap::new(),
+@@ -5139,6 +5387,7 @@
+         let element = with_interaction(make_element(43, ElementKind::El, attrs));
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[element]),
+             text_inputs: HashMap::new(),
+@@ -5198,6 +5447,7 @@
+         let element = with_interaction(make_element(89, ElementKind::El, attrs));
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[element]),
+             text_inputs: HashMap::new(),
+@@ -5261,6 +5511,7 @@
+         let element = with_interaction(make_element(90, ElementKind::El, attrs));
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[element]),
+             text_inputs: HashMap::new(),
+@@ -5332,6 +5583,7 @@
+         );
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[element]),
+             text_inputs: HashMap::new(),
+@@ -5805,6 +6057,7 @@
+ 
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[parent, child]),
+             text_inputs: HashMap::new(),
+@@ -5866,6 +6119,7 @@
+ 
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[parent, child]),
+             text_inputs: HashMap::new(),
+@@ -5912,6 +6166,7 @@
+         let element = with_interaction(make_element(88, ElementKind::El, attrs));
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[element]),
+             text_inputs: HashMap::new(),
+@@ -5983,6 +6238,7 @@
+ 
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[parent, child]),
+             text_inputs: HashMap::new(),
+@@ -6094,6 +6350,7 @@
+         let element = with_interaction(make_element(41, ElementKind::El, attrs));
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[element]),
+             text_inputs: HashMap::new(),
+@@ -6158,6 +6415,7 @@
+         let element = with_interaction(make_element(42, ElementKind::El, attrs));
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[element]),
+             text_inputs: HashMap::new(),
+@@ -6193,6 +6451,7 @@
+         let element = with_interaction(make_element(50, ElementKind::TextInput, attrs));
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[element]),
+             text_inputs: HashMap::from([(
+@@ -6286,6 +6545,7 @@
+         let element = with_interaction(make_element(158, ElementKind::TextInput, attrs));
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[element]),
+             text_inputs: HashMap::from([(input_id, make_text_input_state("abcd", 0, None, true))]),
+@@ -6356,6 +6616,7 @@
+ 
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::Registry::default(),
+             text_inputs: HashMap::from([(input_id, make_text_input_state("abcd", 1, None, true))]),
+@@ -6535,6 +6796,7 @@
+         let element = with_interaction(make_element(150, ElementKind::TextInput, attrs));
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[element]),
+             text_inputs: HashMap::from([(
+@@ -6613,6 +6875,7 @@
+         state.multiline = true;
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[element]),
+             text_inputs: HashMap::from([(NodeId::from_term_bytes(vec![151]), state)]),
+@@ -6660,6 +6923,7 @@
+         let element_id = NodeId::from_term_bytes(vec![153]);
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[element]),
+             text_inputs: HashMap::from([(element_id, state)]),
+@@ -6726,6 +6990,7 @@
+         state.multiline = true;
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[element]),
+             text_inputs: HashMap::from([(NodeId::from_term_bytes(vec![152]), state)]),
+@@ -6779,6 +7044,7 @@
+         let element = with_interaction(make_element(154, ElementKind::TextInput, attrs));
+         let initial_rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(std::slice::from_ref(&element)),
+             text_inputs: HashMap::from([(input_id, make_text_input_state("task", 4, None, true))]),
+@@ -6789,6 +7055,7 @@
+         };
+         let reset_patch_rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(std::slice::from_ref(&element)),
+             text_inputs: HashMap::from([(
+@@ -6815,6 +7082,7 @@
+             with_interaction(make_element(154, ElementKind::TextInput, cleared_attrs));
+         let reset_applied_rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[cleared_element]),
+             text_inputs: HashMap::from([(
+@@ -6904,6 +7172,7 @@
+ 
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[text_input, soft_key]),
+             text_inputs: HashMap::from([(
+@@ -7002,6 +7271,7 @@
+ 
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[text_input, soft_key]),
+             text_inputs: HashMap::from([(
+@@ -7090,6 +7360,7 @@
+ 
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[
+                 text_input.clone(),
+@@ -7151,6 +7422,7 @@
+ 
+         let repeat_rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[text_input, soft_key]),
+             text_inputs: HashMap::from([(
+@@ -7211,6 +7483,7 @@
+         let element = with_interaction(make_element(51, ElementKind::TextInput, attrs));
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[element]),
+             text_inputs: HashMap::from([(
+@@ -7268,6 +7541,7 @@
+ 
+         let rebuild_ab = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(std::slice::from_ref(&element)),
+             text_inputs: HashMap::from([(input_id, make_text_input_state("ab", 2, None, true))]),
+@@ -7279,6 +7553,7 @@
+ 
+         let rebuild_abc = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[element]),
+             text_inputs: HashMap::from([(input_id, make_text_input_state("abc", 3, None, true))]),
+@@ -7569,6 +7844,7 @@
+         let slider_id = NodeId::from_term_bytes(vec![58]);
+         let rebuild_echo = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::Registry::default(),
+             text_inputs: HashMap::new(),
+@@ -7619,6 +7895,7 @@
+ 
+         let corrected = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::Registry::default(),
+             text_inputs: HashMap::new(),
+@@ -7647,6 +7924,7 @@
+         let slider_id = NodeId::from_term_bytes(vec![60]);
+         let rebuild_echo = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::Registry::default(),
+             text_inputs: HashMap::new(),
+@@ -7697,6 +7975,7 @@
+         let slider_id = NodeId::from_term_bytes(vec![59]);
+         let rebuild_remote = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::Registry::default(),
+             text_inputs: HashMap::new(),
+@@ -7752,6 +8031,7 @@
+         let input_id = NodeId::from_term_bytes(vec![58]);
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::Registry::default(),
+             text_inputs: HashMap::from([(
+@@ -7797,6 +8077,7 @@
+         let element = with_interaction(make_element(54, ElementKind::TextInput, attrs));
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[element]),
+             text_inputs: HashMap::from([(
+@@ -7849,6 +8130,7 @@
+         let element = with_interaction(make_element(52, ElementKind::El, attrs));
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[element]),
+             text_inputs: HashMap::new(),
+@@ -7895,6 +8177,7 @@
+         let element = with_interaction(make_element(53, ElementKind::El, attrs.clone()));
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[element]),
+             text_inputs: HashMap::new(),
+@@ -7932,6 +8215,7 @@
+         let patched_before_hover_state = with_interaction(make_element(53, ElementKind::El, attrs));
+         let patch_rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[patched_before_hover_state]),
+             text_inputs: HashMap::new(),
+@@ -7979,6 +8263,7 @@
+ 
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[parent, child]),
+             text_inputs: HashMap::new(),
+@@ -8031,6 +8316,7 @@
+ 
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[parent, child]),
+             text_inputs: HashMap::new(),
+@@ -8088,6 +8374,7 @@
+ 
+         let initial_rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[
+                 parent.clone(),
+@@ -8163,6 +8450,7 @@
+ 
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[parent, child]),
+             text_inputs: HashMap::new(),
+@@ -8211,6 +8499,7 @@
+         );
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[initial]),
+             text_inputs: HashMap::new(),
+@@ -8229,6 +8518,7 @@
+         );
+         let moved_rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[moved]),
+             text_inputs: HashMap::new(),
+@@ -8286,6 +8576,7 @@
+ 
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[
+                 text_input,
+@@ -8336,6 +8627,7 @@
+ 
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[text_input]),
+             text_inputs: HashMap::new(),
+@@ -8389,6 +8681,7 @@
+ 
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[pressable]),
+             text_inputs: HashMap::new(),
+@@ -8435,6 +8728,7 @@
+         );
+         let initial_rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[initial]),
+             text_inputs: HashMap::new(),
+@@ -8458,6 +8752,7 @@
+         );
+         let moved_rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[moved]),
+             text_inputs: HashMap::new(),
+@@ -8501,6 +8796,7 @@
+         );
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[element]),
+             text_inputs: HashMap::new(),
+@@ -8533,6 +8829,7 @@
+         );
+         let active_rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[active_element]),
+             text_inputs: HashMap::new(),
+@@ -8554,6 +8851,7 @@
+         );
+         let moved_away_rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[moved_away]),
+             text_inputs: HashMap::new(),
+@@ -8766,6 +9064,7 @@
+         );
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[element]),
+             text_inputs: HashMap::new(),
+@@ -8793,6 +9092,7 @@
+         );
+         let active_rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[active_element]),
+             text_inputs: HashMap::new(),
+@@ -8824,6 +9124,7 @@
+         );
+         let inactive_rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[inactive_element]),
+             text_inputs: HashMap::new(),
+@@ -8857,6 +9158,7 @@
+         );
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[initial]),
+             text_inputs: HashMap::new(),
+@@ -8875,6 +9177,7 @@
+         );
+         let moved_rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[moved]),
+             text_inputs: HashMap::new(),
+@@ -8917,6 +9220,7 @@
+         );
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[initial]),
+             text_inputs: HashMap::new(),
+@@ -8935,6 +9239,7 @@
+         );
+         let moved_rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[moved]),
+             text_inputs: HashMap::new(),
+@@ -8971,6 +9276,7 @@
+         );
+         let hovered_rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[hovered]),
+             text_inputs: HashMap::new(),
+@@ -9035,6 +9341,7 @@
+ 
+         let rebuild = RegistryRebuildPayload {
+             listener_barrier: None,
++            local_edit: None,
+             mount_focus_targets: Default::default(),
+             base_registry: registry_builder::registry_for_elements(&[menu, plain, scrollable]),
+             text_inputs: HashMap::new(),
+--- a/native/emerge_skia/src/events.rs
++++ b/native/emerge_skia/src/events.rs
+@@ -1142,6 +1142,8 @@
+ pub struct RegistryRebuildPayload {
+     /// Latest event request fence covered by this successful tree output.
+     pub listener_barrier: Option<crate::actors::ListenerBarrier>,
++    /// Native focused-edit authority; not an application callback echo receipt.
++    pub local_edit: Option<std::sync::Arc<crate::runtime::local_edit::LocalEditPublication>>,
+     /// Eligible mounts with current native focus-reveal geometry, including old
+     /// revisions whose one-shot request may still be waiting in a channel.
+     pub mount_focus_targets: Option<std::sync::Arc<HashMap<NodeId, FocusOnMountTarget>>>,
+--- a/native/emerge_skia/src/runtime/mod.rs
++++ b/native/emerge_skia/src/runtime/mod.rs
+@@ -2,3 +2,5 @@
+ pub mod tree_update;
+ 
+ pub mod host_feedback;
++
++pub mod local_edit;
+--- a/native/emerge_skia/src/runtime/tree_update.rs
++++ b/native/emerge_skia/src/runtime/tree_update.rs
+@@ -95,6 +95,7 @@
+     latest_animation_sample_time: Option<Instant>,
+     animation_retry: AnimationRetry,
+     listener_barrier: Option<crate::actors::ListenerBarrier>,
++    local_edit: Option<Arc<super::local_edit::LocalEditPublication>>,
+ }
+ 
+ impl TreeUpdateEngine {
+@@ -109,6 +110,7 @@
+             latest_animation_sample_time: None,
+             animation_retry: AnimationRetry::default(),
+             listener_barrier: None,
++            local_edit: None,
+         }
+     }
+ 
+@@ -237,6 +239,7 @@
+                         earliest_pipeline_instant(pipeline_submitted_at, submitted_at);
+                     match crate::tree::deserialize::decode_tree(&bytes) {
+                         Ok(decoded) => {
++                            self.local_edit = None;
+                             self.tree.replace_with_uploaded(decoded);
+                             invalidation.add(TreeInvalidation::Structure);
+                         }
+@@ -273,6 +276,14 @@
+                     };
+                     animation_sync_requested |=
+                         patches_may_start_animation_runtime(&self.tree, &patches);
++                    if self.local_edit.as_ref().is_some_and(|binding| {
++                        patches.iter().any(|patch| {
++                            self.patch_changes_edit_binding(patch, binding.scope.element_id())
++                        })
++                    }) {
++                        self.local_edit = None;
++                        registry_requested = true;
++                    }
+                     let patch_frame_attr_dirty = patch_frame_attr_dirty_hints(&self.tree, &patches);
+                     let apply_started_at = Instant::now();
+                     let apply_result = crate::tree::patch::apply_patches(&mut self.tree, patches);
+@@ -378,12 +389,59 @@
+                     mouse_down_active_state.insert((element_id, mount), active);
+                 }
+                 TreeMsg::SetFocusedActive { element_id, active } => {
++                    if self.local_edit.as_ref().is_some_and(|binding| {
++                        (binding.scope.element_id() == element_id && !active)
++                            || (binding.scope.element_id() != element_id && active)
++                    }) {
++                        self.local_edit = None;
++                    }
+                     focused_active_state.insert((element_id, mount), active);
++                }
++                TreeMsg::PublishLocalText(update) => {
++                    // The envelope's mount proof is necessary but not sufficient:
++                    // an application reset can change a same-mount binding.
++                    let requested = &update.publication;
++                    let valid = self.local_edit.as_ref().is_some_and(|current| {
++                        current.scope.matches(&requested.scope)
++                            && requested.version > current.version
++                    }) && self.tree.get(&requested.scope.element_id()).is_some_and(
++                        |node| {
++                            node.is_live()
++                                && node.lifecycle.mounted_at_revision == requested.scope.mount()
++                                && node.spec.kind.is_text_input_family()
++                                && node.runtime.text_input_focused
++                                && node.runtime.patch_content.is_none()
++                                && !node.spec.declared.on_change.unwrap_or(false)
++                        },
++                    );
++                    registry_requested = true;
++                    if valid {
++                        let id = requested.scope.element_id();
++                        let mut dirty = self.tree.set_text_input_content(&id, update.content);
++                        dirty.add(self.tree.set_text_input_runtime(
++                            &id,
++                            true,
++                            Some(update.cursor),
++                            update.selection_anchor,
++                            update.preedit,
++                            update.preedit_cursor,
++                        ));
++                        record_frame_attr_dirty_id(&mut frame_attr_dirty_ids, id, dirty);
++                        invalidation.add(dirty);
++                        self.local_edit = Some(update.publication);
++                    }
+                 }
+                 TreeMsg::SetTextInputContent {
+                     element_id,
+                     content,
+                 } => {
++                    if self
++                        .local_edit
++                        .as_ref()
++                        .is_some_and(|binding| binding.scope.element_id() == element_id)
++                    {
++                        self.local_edit = None;
++                    }
+                     let update_invalidation =
+                         self.tree.set_text_input_content(&element_id, content);
+                     record_frame_attr_dirty_id(
+@@ -919,15 +977,60 @@
+         // the event lane stale until a later valid rebuild/explicit retry.
+         match &mut effect {
+             TreeUpdateEffect::Layout { output, .. } => {
+-                output.event_rebuild.listener_barrier = self.listener_barrier.clone()
++                output.event_rebuild.listener_barrier = self.listener_barrier.clone();
++                self.attach_local_edit_authority(&mut output.event_rebuild);
+             }
+             TreeUpdateEffect::RegistryUpdate { rebuild } => {
+-                rebuild.listener_barrier = self.listener_barrier.clone()
++                rebuild.listener_barrier = self.listener_barrier.clone();
++                self.attach_local_edit_authority(rebuild);
+             }
+             _ => {}
+         }
+         self.animation_retry = AnimationRetry::default();
+         Ok(effect)
++    }
++
++    fn attach_local_edit_authority(&mut self, rebuild: &mut RegistryRebuildPayload) {
++        let owner = rebuild.focused_id.and_then(|id| {
++            let state = rebuild.text_inputs.get(&id)?;
++            (!state.emit_change && state.patch_content.is_none()).then_some(())?;
++            Some((id, rebuild.base_registry.source_mount(&id)?))
++        });
++        match owner {
++            Some((id, mount)) => {
++                if self.local_edit.as_ref().is_none_or(|binding| {
++                    binding.scope.element_id() != id || binding.scope.mount() != mount
++                }) {
++                    self.local_edit = Some(Arc::new(
++                        super::local_edit::LocalEditPublication::initial(id, mount),
++                    ));
++                }
++            }
++            None => self.local_edit = None,
++        }
++        rebuild.local_edit = self.local_edit.clone();
++    }
++
++    fn patch_changes_edit_binding(&self, patch: &Patch, owner: NodeId) -> bool {
++        let Patch::SetAttrs { id, attrs_raw } = patch else {
++            return false;
++        };
++        if *id != owner {
++            return false;
++        }
++        let Some(node) = self.tree.get(id) else {
++            return true;
++        };
++        let Ok(next) = crate::tree::attrs::decode_attrs(attrs_raw) else {
++            return true;
++        };
++        let previous = &node.spec.declared;
++        next.content.is_some()
++            || next.on_change != previous.on_change
++            || next.on_key_down != previous.on_key_down
++            || next.on_key_up != previous.on_key_up
++            || next.on_key_press != previous.on_key_press
++            || next.focus_on_mount != previous.focus_on_mount
+     }
+ 
+     fn is_current_mount(&self, id: &NodeId, mount: Option<u64>) -> bool {
+--- /dev/null
++++ b/native/emerge_skia/src/runtime/local_edit.rs
+@@ -0,0 +1,66 @@
++//! Native-only authority for focused text publication. Neither a BEAM echo token
++//! nor a renderer-install/presentation acknowledgment.
++use std::sync::Arc;
++
++use crate::{events::TextInputState, tree::element::NodeId};
++
++#[derive(Debug)]
++struct Binding {
++    element_id: NodeId,
++    mount: u64,
++}
++
++#[derive(Clone, Debug)]
++pub struct LocalEditScope(Arc<Binding>);
++impl LocalEditScope {
++    pub(crate) fn new(element_id: NodeId, mount: u64) -> Self {
++        Self(Arc::new(Binding { element_id, mount }))
++    }
++    pub(crate) fn element_id(&self) -> NodeId {
++        self.0.element_id
++    }
++    pub(crate) fn mount(&self) -> u64 {
++        self.0.mount
++    }
++    pub(crate) fn matches(&self, other: &Self) -> bool {
++        Arc::ptr_eq(&self.0, &other.0)
++    }
++}
++
++#[derive(Clone, Debug)]
++pub struct LocalEditPublication {
++    pub(crate) scope: LocalEditScope,
++    pub(crate) version: u64,
++}
++impl LocalEditPublication {
++    pub(crate) fn initial(element_id: NodeId, mount: u64) -> Self {
++        Self {
++            scope: LocalEditScope::new(element_id, mount),
++            version: 0,
++        }
++    }
++    pub(crate) fn next(&self, state: &TextInputState) -> Option<LocalTextUpdate> {
++        Some(LocalTextUpdate {
++            publication: Arc::new(Self {
++                scope: self.scope.clone(),
++                version: self.version.checked_add(1)?,
++            }),
++            content: state.content.clone(),
++            cursor: state.cursor,
++            selection_anchor: state.selection_anchor,
++            preedit: state.preedit.clone(),
++            preedit_cursor: state.preedit_cursor,
++        })
++    }
++}
++
++/// One coherent text/runtime snapshot, validated as a whole at consumption.
++#[derive(Clone, Debug)]
++pub struct LocalTextUpdate {
++    pub(crate) publication: Arc<LocalEditPublication>,
++    pub(crate) content: String,
++    pub(crate) cursor: u32,
++    pub(crate) selection_anchor: Option<u32>,
++    pub(crate) preedit: Option<String>,
++    pub(crate) preedit_cursor: Option<(u32, u32)>,
++}
+--- /dev/null
++++ b/native/emerge_skia/src/events/runtime/tests/delayed/native_local.rs
+@@ -0,0 +1,428 @@
++use super::*;
++use crate::runtime::local_edit::LocalTextUpdate;
++
++fn ready() -> (TreeUpdateEngine, HostEventRuntime) {
++    let mut tree = editable_tree(false);
++    tree.get_mut(&NodeId(9)).unwrap().spec.declared.on_change = None;
++    let mut engine = TreeUpdateEngine::new(tree, 200, 30);
++    let mut host = host();
++    host.install_rebuild(response(
++        &mut engine,
++        vec![TreeMsg::RebuildRegistry],
++        TreeUpdateDecodePolicy::ReturnErr,
++    ));
++    assert!(host.driver.native_edit.is_some());
++    (engine, host)
++}
++fn commit(host: &mut HostEventRuntime, text: &str) {
++    host.handle_input(InputEvent::TextCommit {
++        text: text.into(),
++        mods: 0,
++    });
++}
++fn settle(engine: &mut TreeUpdateEngine, host: &mut HostEventRuntime) -> usize {
++    for rounds in 0..64 {
++        let messages = host.drain_tree_messages();
++        if messages.is_empty() {
++            assert!(!host.driver.runtime.listener_lane.is_stale());
++            assert!(host.driver.runtime.listener_lane.buffered_inputs.is_empty());
++            return rounds;
++        }
++        host.install_rebuild(response(
++            engine,
++            messages,
++            TreeUpdateDecodePolicy::ReturnErr,
++        ));
++    }
++    panic!("did not settle");
++}
++fn update(packet: &TreeMsg) -> &LocalTextUpdate {
++    packet
++        .commands()
++        .into_iter()
++        .find_map(|message| match message {
++            TreeMsg::PublishLocalText(update) => Some(update.as_ref()),
++            _ => None,
++        })
++        .expect("versioned native update")
++}
++
++#[test]
++fn held_tree_does_not_block_native_edits_and_publishes_only_the_latest_tail() {
++    let assets = crate::assets::AssetRuntime::new();
++    let _assets = assets.enter();
++    let (mut engine, mut host) = ready();
++    let recorder = Arc::new(pointer::Recorder::default());
++    host.driver.runtime.host_event_sink = Some(recorder.clone());
++    commit(&mut host, "X");
++    let first = host.drain_tree_messages();
++    assert_eq!(first.len(), 1);
++    assert_eq!(update(&first[0]).publication.version, 1);
++    for _ in 0..1000 {
++        commit(&mut host, "Y");
++    }
++    assert_eq!(
++        host.focused_text_state().unwrap().content,
++        format!("abcX{}", "Y".repeat(1000))
++    );
++    assert!(host.driver.runtime.listener_lane.buffered_inputs.is_empty());
++    assert!(host.driver.runtime.pending_text_patches.is_empty());
++    assert!(
++        host.drain_tree_messages().is_empty(),
++        "no packet per locally accepted edit"
++    );
++    let first_reply = response(&mut engine, first, TreeUpdateDecodePolicy::ReturnErr);
++    host.install_rebuild(first_reply.clone());
++    let latest = host.drain_tree_messages();
++    assert_eq!(latest.len(), 1);
++    assert_eq!(update(&latest[0]).publication.version, 2);
++    assert_eq!(
++        update(&latest[0]).content,
++        host.focused_text_state().unwrap().content
++    );
++    host.install_rebuild(first_reply);
++    assert!(
++        host.driver.awaiting_registry.is_some(),
++        "old reply cannot cover latest state"
++    );
++    host.install_rebuild(response(
++        &mut engine,
++        latest,
++        TreeUpdateDecodePolicy::ReturnErr,
++    ));
++    assert_eq!(settle(&mut engine, &mut host), 0);
++    assert_eq!(recorder.raw.lock().unwrap().len(), 1001);
++    assert!(
++        recorder.events.lock().unwrap().is_empty(),
++        "this input has no callback binding"
++    );
++}
++
++#[test]
++fn an_earlier_geometry_action_fences_later_native_and_host_typing() {
++    let assets = crate::assets::AssetRuntime::new();
++    let _assets = assets.enter();
++    let (mut engine, mut host) = ready();
++    commit(&mut host, "X");
++    commit(&mut host, "Y");
++    host.handle_input(pointer::button(ACTION_PRESS, 199.0, 15.0));
++    commit(&mut host, "Z");
++    assert!(host.handle_text_input_edit(TextInputEditRequest::Insert("W".into())));
++    assert_eq!(host.focused_text_state().unwrap().content, "abcXY");
++    assert_eq!(host.driver.runtime.listener_lane.buffered_inputs.len(), 3);
++    let first = host.drain_tree_messages();
++    host.install_rebuild(response(
++        &mut engine,
++        first,
++        TreeUpdateDecodePolicy::ReturnErr,
++    ));
++    assert_eq!(
++        host.driver.runtime.listener_lane.buffered_inputs.len(),
++        3,
++        "old geometry cannot replay the click"
++    );
++    settle(&mut engine, &mut host);
++    assert_eq!(host.focused_text_state().unwrap().content, "abcXYZW");
++}
++
++#[test]
++fn equal_final_content_still_publishes_latest_cursor_and_composition_before_replay() {
++    let assets = crate::assets::AssetRuntime::new();
++    let _assets = assets.enter();
++    let (mut engine, mut host) = ready();
++    commit(&mut host, "X");
++    commit(&mut host, "Y");
++    assert!(host.handle_text_input_edit(TextInputEditRequest::Backspace));
++    host.handle_input(InputEvent::TextPreedit {
++        text: "界".into(),
++        cursor: Some((0, 1)),
++    });
++    assert_eq!(host.focused_text_state().unwrap().content, "abcX");
++    let first = host.drain_tree_messages();
++    host.install_rebuild(response(
++        &mut engine,
++        first,
++        TreeUpdateDecodePolicy::ReturnErr,
++    ));
++    assert!(host.driver.runtime.listener_lane.is_stale());
++    assert_eq!(settle(&mut engine, &mut host), 1);
++    let state = host.focused_text_state().unwrap();
++    assert_eq!(state.preedit.as_deref(), Some("界"));
++    assert_eq!(state.cursor, 4);
++}
++
++#[test]
++fn replayed_or_foreign_native_publications_cannot_overwrite_a_newer_value() {
++    let assets = crate::assets::AssetRuntime::new();
++    let _assets = assets.enter();
++    let (mut engine, mut host) = ready();
++    commit(&mut host, "X");
++    let first = host.drain_tree_messages();
++    let old = first.clone();
++    host.install_rebuild(response(
++        &mut engine,
++        first,
++        TreeUpdateDecodePolicy::ReturnErr,
++    ));
++    commit(&mut host, "Y");
++    settle(&mut engine, &mut host);
++    response(&mut engine, old, TreeUpdateDecodePolicy::ReturnErr);
++    assert_eq!(
++        engine
++            .tree()
++            .get(&NodeId(9))
++            .unwrap()
++            .spec
++            .declared
++            .content
++            .as_deref(),
++        Some("abcXY")
++    );
++    let (_, mut foreign) = ready();
++    commit(&mut foreign, "foreign");
++    response(
++        &mut engine,
++        foreign.drain_tree_messages(),
++        TreeUpdateDecodePolicy::ReturnErr,
++    );
++    assert_eq!(
++        engine
++            .tree()
++            .get(&NodeId(9))
++            .unwrap()
++            .spec
++            .declared
++            .content
++            .as_deref(),
++        Some("abcXY")
++    );
++}
++
++#[test]
++fn callback_controlled_inputs_retain_ordered_callbacks_and_the_existing_barrier() {
++    let assets = crate::assets::AssetRuntime::new();
++    let _assets = assets.enter();
++    let mut engine = TreeUpdateEngine::new(editable_tree(false), 200, 30);
++    let mut host = host();
++    host.install_rebuild(response(
++        &mut engine,
++        vec![TreeMsg::RebuildRegistry],
++        TreeUpdateDecodePolicy::ReturnErr,
++    ));
++    assert!(host.driver.native_edit.is_none());
++    commit(&mut host, "X");
++    commit(&mut host, "Y");
++    assert_eq!(host.focused_text_state().unwrap().content, "abcX");
++    assert_eq!(host.driver.runtime.listener_lane.buffered_inputs.len(), 1);
++    assert_eq!(settle(&mut engine, &mut host), 2);
++}
++
++fn attrs_patch(content: Option<&str>) -> TreeMsg {
++    let attrs: Vec<u8> = (2u16 + u16::from(content.is_some()))
++        .to_be_bytes()
++        .into_iter()
++        .chain([1, 0, 2, 2])
++        .chain(30f64.to_be_bytes())
++        .chain(content.into_iter().flat_map(|text| {
++            std::iter::once(21)
++                .chain((text.len() as u16).to_be_bytes())
++                .chain(text.bytes())
++        }))
++        .collect();
++    TreeMsg::PatchTree {
++        bytes: std::iter::once(1)
++            .chain(9u64.to_be_bytes())
++            .chain((attrs.len() as u32).to_be_bytes())
++            .chain(attrs)
++            .collect(),
++        submitted_at: None,
++    }
++}
++
++#[test]
++fn authoritative_reset_rejects_old_scope_but_geometry_only_patch_preserves_it() {
++    let assets = crate::assets::AssetRuntime::new();
++    let _assets = assets.enter();
++    for reset in [None, Some("reset")] {
++        for patch_first in [false, true] {
++            let (mut engine, mut host) = ready();
++            commit(&mut host, "X");
++            commit(&mut host, "Y");
++            let first = host.drain_tree_messages();
++            let original = update(&first[0]).publication.scope.clone();
++            let messages = if patch_first {
++                std::iter::once(attrs_patch(reset)).chain(first).collect()
++            } else {
++                first.into_iter().chain([attrs_patch(reset)]).collect()
++            };
++            host.install_rebuild(response(
++                &mut engine,
++                messages,
++                TreeUpdateDecodePolicy::ReturnErr,
++            ));
++            settle(&mut engine, &mut host);
++            if reset.is_some() {
++                assert_eq!(host.focused_text_state().unwrap().content, "reset");
++                assert!(
++                    host.driver
++                        .native_edit
++                        .as_ref()
++                        .is_none_or(|current| !current.scope.matches(&original))
++                );
++            } else {
++                assert_eq!(host.focused_text_state().unwrap().content, "abcXY");
++                assert!(
++                    host.driver
++                        .native_edit
++                        .as_ref()
++                        .unwrap()
++                        .scope
++                        .matches(&original)
++                );
++            }
++        }
++    }
++}
++
++#[test]
++fn continuous_native_editing_has_no_ttl_value_history_and_keeps_geometry_unavailable() {
++    let assets = crate::assets::AssetRuntime::new();
++    let _assets = assets.enter();
++    let (mut engine, mut host) = ready();
++    assert!(host.focused_text_geometry_state().is_some());
++    commit(&mut host, "X");
++    for round in 0..20 {
++        let first = host.drain_tree_messages();
++        for _ in 0..50 {
++            commit(&mut host, "界é");
++        }
++        assert!(host.focused_text_geometry_state().is_none());
++        assert!(host.driver.runtime.listener_lane.buffered_inputs.is_empty());
++        host.install_rebuild(response(
++            &mut engine,
++            first,
++            TreeUpdateDecodePolicy::ReturnErr,
++        ));
++        assert!(
++            host.driver.runtime.pending_text_patches.is_empty(),
++            "round {round}: native receipts need no string history"
++        );
++        assert!(host.focused_text_geometry_state().is_none());
++    }
++    assert_eq!(settle(&mut engine, &mut host), 1);
++    assert_eq!(
++        host.focused_text_geometry_state()
++            .unwrap()
++            .content
++            .matches("界é")
++            .count(),
++        1000
++    );
++}
++
++#[test]
++fn failed_native_batch_keeps_newer_local_state_until_recovery_without_old_receipt_replay() {
++    let assets = crate::assets::AssetRuntime::new();
++    let _assets = assets.enter();
++    let (mut engine, mut host) = ready();
++    commit(&mut host, "X");
++    let first = host.drain_tree_messages();
++    commit(&mut host, "Y");
++    let messages = first
++        .into_iter()
++        .chain([TreeMsg::PatchTree {
++            bytes: vec![1],
++            submitted_at: None,
++        }])
++        .collect();
++    assert!(
++        engine
++            .process_messages(
++                messages,
++                TreeUpdateOptions::new(None, TreeUpdateDecodePolicy::ReturnErr)
++            )
++            .is_err()
++    );
++    commit(&mut host, "Z");
++    assert_eq!(host.focused_text_state().unwrap().content, "abcXYZ");
++    assert!(host.drain_tree_messages().is_empty());
++    assert!(host.focused_text_geometry_state().is_none());
++    host.install_rebuild(response(
++        &mut engine,
++        vec![TreeMsg::RebuildRegistry],
++        TreeUpdateDecodePolicy::ReturnErr,
++    ));
++    assert_eq!(settle(&mut engine, &mut host), 1);
++    assert_eq!(host.focused_text_state().unwrap().content, "abcXYZ");
++}
++
++#[test]
++fn real_event_actor_accepts_a_native_burst_while_the_tree_consumer_is_held() {
++    use crossbeam_channel::bounded;
++    struct Seen(crossbeam_channel::Sender<()>);
++    impl HostEventSink for Seen {
++        fn send_raw_input(&self, event: &InputEvent) {
++            if matches!(event, InputEvent::CursorPos { .. }) {
++                self.0.send(()).unwrap();
++            }
++        }
++        fn send_element_event(
++            &self,
++            _: &NodeId,
++            _: ElementEventKind,
++            _: Option<&registry_builder::ElixirEventPayload>,
++        ) {
++        }
++    }
++    let assets = crate::assets::AssetRuntime::new();
++    let _assets = assets.enter();
++    let (mut engine, host) = ready();
++    let HostEventRuntime {
++        mut driver,
++        tree_rx: old_rx,
++    } = host;
++    drop(old_rx);
++    let (tree_tx, tree_rx) = bounded(1);
++    let (event_tx, event_rx) = bounded(2048);
++    let (seen_tx, seen_rx) = bounded(1);
++    driver.tree_tx = tree_tx;
++    driver.runtime.host_event_sink = Some(Arc::new(Seen(seen_tx)));
++    let context = assets.context();
++    let thread = std::thread::spawn(move || {
++        let _assets = context.enter();
++        run_event_actor(driver, event_rx);
++    });
++    for _ in 0..1000 {
++        event_tx
++            .send(EventMsg::InputEvent(InputEvent::TextCommit {
++                text: "X".into(),
++                mods: 0,
++            }))
++            .unwrap();
++    }
++    event_tx
++        .send(EventMsg::InputEvent(InputEvent::CursorPos {
++            x: 199.0,
++            y: 15.0,
++        }))
++        .unwrap();
++    seen_rx.recv_timeout(Duration::from_secs(5)).unwrap();
++    let first = tree_rx.recv_timeout(Duration::from_secs(5)).unwrap();
++    assert_eq!(update(&first).content, "abcX");
++    assert!(tree_rx.is_empty());
++    event_tx
++        .send(EventMsg::RegistryUpdate {
++            rebuild: response(&mut engine, vec![first], TreeUpdateDecodePolicy::ReturnErr),
++        })
++        .unwrap();
++    let latest = tree_rx.recv_timeout(Duration::from_secs(5)).unwrap();
++    assert_eq!(update(&latest).content.matches('X').count(), 1000);
++    assert_eq!(update(&latest).publication.version, 2);
++    event_tx
++        .send(EventMsg::RegistryUpdate {
++            rebuild: response(&mut engine, vec![latest], TreeUpdateDecodePolicy::ReturnErr),
++        })
++        .unwrap();
++    event_tx.send(EventMsg::Stop).unwrap();
++    thread.join().unwrap();
++}

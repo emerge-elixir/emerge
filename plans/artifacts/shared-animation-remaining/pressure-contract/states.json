@@ -1,0 +1,32 @@
+[
+  {
+    "capacity_units": 2,
+    "records": 1,
+    "max_admitted_tokens": 2,
+    "max_depth": 12,
+    "states": 534,
+    "transitions": 3351,
+    "remaining_frontier": 85,
+    "scope": "abstract declared-charge safety, not native bytes, liveness or clocks"
+  },
+  {
+    "capacity_units": 3,
+    "records": 2,
+    "max_admitted_tokens": 2,
+    "max_depth": 12,
+    "states": 3121,
+    "transitions": 17517,
+    "remaining_frontier": 605,
+    "scope": "abstract declared-charge safety, not native bytes, liveness or clocks"
+  },
+  {
+    "capacity_units": 5,
+    "records": 3,
+    "max_admitted_tokens": 3,
+    "max_depth": 12,
+    "states": 41821,
+    "transitions": 297665,
+    "remaining_frontier": 11041,
+    "scope": "abstract declared-charge safety, not native bytes, liveness or clocks"
+  }
+]
