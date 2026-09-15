@@ -78,26 +78,32 @@ struct QueueCharge {
 }
 fn charge(lane: &ListenerLaneState) -> QueueCharge {
     QueueCharge {
-        inline_queue_bytes: std::mem::size_of::<VecDeque<InputEvent>>(),
+        inline_queue_bytes: std::mem::size_of::<VecDeque<PendingInput>>(),
         records: lane.buffered_inputs.len(),
-        slot_bytes: lane.buffered_inputs.capacity() * std::mem::size_of::<InputEvent>(),
+        slot_bytes: lane.buffered_inputs.capacity() * std::mem::size_of::<PendingInput>(),
         string_capacity_bytes: lane
             .buffered_inputs
             .iter()
             .map(|event| match event {
-                InputEvent::TextCommit { text, .. } | InputEvent::TextPreedit { text, .. } => {
-                    text.capacity()
-                }
-                InputEvent::CursorButton { button, .. } => button.capacity(),
-                InputEvent::CursorPos { .. }
-                | InputEvent::CursorScroll { .. }
-                | InputEvent::CursorScrollLines { .. }
-                | InputEvent::Key { .. }
-                | InputEvent::TextPreeditClear
-                | InputEvent::DeleteSurrounding { .. }
-                | InputEvent::CursorEntered { .. }
-                | InputEvent::Resized { .. }
-                | InputEvent::Focused { .. } => 0,
+                PendingInput::Edit(TextInputEditRequest::Insert(text)) => text.capacity(),
+                PendingInput::Command(_)
+                | PendingInput::Edit(_)
+                | PendingInput::ReplacementRange { .. } => 0,
+                PendingInput::Raw(event) => match event {
+                    InputEvent::TextCommit { text, .. } | InputEvent::TextPreedit { text, .. } => {
+                        text.capacity()
+                    }
+                    InputEvent::CursorButton { button, .. } => button.capacity(),
+                    InputEvent::CursorPos { .. }
+                    | InputEvent::CursorScroll { .. }
+                    | InputEvent::CursorScrollLines { .. }
+                    | InputEvent::Key { .. }
+                    | InputEvent::TextPreeditClear
+                    | InputEvent::DeleteSurrounding { .. }
+                    | InputEvent::CursorEntered { .. }
+                    | InputEvent::Resized { .. }
+                    | InputEvent::Focused { .. } => 0,
+                },
             })
             .sum(),
     }
@@ -117,11 +123,11 @@ fn finite_burst_charges_distinguish_coalescing_from_lossless_payload_retention()
     println!("pointer_burst=100000 {pointer:?} visits={}", work());
     assert_eq!(
         pointer.inline_queue_bytes,
-        std::mem::size_of::<VecDeque<InputEvent>>()
+        std::mem::size_of::<VecDeque<PendingInput>>()
     );
     assert_eq!(pointer.records, 1);
     assert_eq!(pointer.string_capacity_bytes, 0);
-    assert!(pointer.slot_bytes <= 8 * std::mem::size_of::<InputEvent>());
+    assert!(pointer.slot_bytes <= 8 * std::mem::size_of::<PendingInput>());
     drop(lane.mark_fresh_and_take_buffered());
     assert_eq!(charge(&lane).slot_bytes, 0);
     lane.mark_stale();
@@ -142,7 +148,8 @@ fn finite_burst_charges_distinguish_coalescing_from_lossless_payload_retention()
     assert_eq!(work(), 4096);
     let mut queue = lane.mark_fresh_and_take_buffered();
     for pointer in &pointers[..4095] {
-        let InputEvent::TextCommit { text, .. } = queue.pop_front().unwrap() else {
+        let PendingInput::Raw(InputEvent::TextCommit { text, .. }) = queue.pop_front().unwrap()
+        else {
             panic!("commit");
         };
         assert_eq!(
@@ -222,7 +229,16 @@ fn adjacent_coalescing_preserves_key_composition_button_and_resize_boundaries() 
     for event in source {
         lane.buffer_input(event);
     }
-    let actual: Vec<_> = lane.mark_fresh_and_take_buffered().into_iter().collect();
+    let actual: Vec<_> = lane
+        .mark_fresh_and_take_buffered()
+        .into_iter()
+        .map(|event| {
+            let PendingInput::Raw(event) = event else {
+                panic!("expected raw input");
+            };
+            event
+        })
+        .collect();
     assert_eq!(
         actual,
         vec![
@@ -264,14 +280,14 @@ fn replay_tail_join_coalesces_only_the_boundary_and_preserves_existing_order() {
         tail.pop_front();
     }
     for _ in 0..48 {
-        tail.push_back(InputEvent::Key {
+        tail.push_back(PendingInput::Raw(InputEvent::Key {
             key: CanonicalKey::B,
             action: ACTION_PRESS,
             mods: 0,
-        });
+        }));
     }
     let expected: Vec<_> = tail.iter().cloned().collect();
-    tail.push_front(InputEvent::CursorPos { x: 9.0, y: 9.0 });
+    tail.push_front(PendingInput::Raw(InputEvent::CursorPos { x: 9.0, y: 9.0 }));
     lane.buffer_input(InputEvent::CursorPos { x: 1.0, y: 1.0 });
     reset_work();
     lane.restore_replay_tail(tail);
@@ -279,7 +295,7 @@ fn replay_tail_join_coalesces_only_the_boundary_and_preserves_existing_order() {
     let queue = lane.mark_fresh_and_take_buffered();
     assert_eq!(
         queue.front(),
-        Some(&InputEvent::CursorPos { x: 9.0, y: 9.0 })
+        Some(&PendingInput::Raw(InputEvent::CursorPos { x: 9.0, y: 9.0 }))
     );
     assert_eq!(queue.into_iter().skip(1).collect::<Vec<_>>(), expected);
 }

@@ -1,9 +1,9 @@
 use super::*;
 
 #[derive(Default)]
-struct Recorder {
-    events: Mutex<Vec<(NodeId, ElementEventKind)>>,
-    raw: Mutex<Vec<InputEvent>>,
+pub(super) struct Recorder {
+    pub(super) events: Mutex<Vec<(NodeId, ElementEventKind)>>,
+    pub(super) raw: Mutex<Vec<InputEvent>>,
 }
 impl HostEventSink for Recorder {
     fn send_raw_input(&self, event: &InputEvent) {
@@ -24,7 +24,7 @@ fn recorded_host() -> (HostEventRuntime, Arc<Recorder>) {
     host.set_input_mask(u32::MAX);
     (host, recorder)
 }
-fn button(action: u8, x: f32, y: f32) -> InputEvent {
+pub(super) fn button(action: u8, x: f32, y: f32) -> InputEvent {
     InputEvent::CursorButton {
         button: "left".into(),
         action,
