@@ -351,3 +351,7 @@ fn mount_focus_metadata_is_shared_and_released_with_its_native_owners() {
 }
 
 mod pointer;
+
+pub(crate) mod stalled;
+
+mod yielding;
