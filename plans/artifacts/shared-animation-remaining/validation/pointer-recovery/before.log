@@ -1,0 +1,24 @@
+   Compiling emerge_skia v0.4.0 (/workspace/emerge-animation/native/emerge_skia)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.24s
+     Running unittests src/lib.rs (native/emerge_skia/target/debug/deps/emerge_skia-fd4f0b51952a2096)
+
+running 2 tests
+
+thread 'events::runtime::tests::delayed::pointer::buffered_release_cannot_click_a_replacement_with_the_same_numeric_id' (81357) panicked at src/events/runtime/tests/delayed/pointer.rs:102:9:
+a release must not activate the new mount
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'events::runtime::tests::delayed::pointer::text_drag_does_not_transfer_to_a_replacement_during_a_causal_wait' (81358) panicked at src/events/runtime/tests/delayed/pointer.rs:147:5:
+the old anchor cannot select the new mount
+test events::runtime::tests::delayed::pointer::text_drag_does_not_transfer_to_a_replacement_during_a_causal_wait ... FAILED
+test events::runtime::tests::delayed::pointer::buffered_release_cannot_click_a_replacement_with_the_same_numeric_id ... FAILED
+
+failures:
+
+failures:
+    events::runtime::tests::delayed::pointer::buffered_release_cannot_click_a_replacement_with_the_same_numeric_id
+    events::runtime::tests::delayed::pointer::text_drag_does_not_transfer_to_a_replacement_during_a_causal_wait
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 1400 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--lib`

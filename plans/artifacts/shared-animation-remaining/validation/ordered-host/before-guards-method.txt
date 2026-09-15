@@ -1,0 +1,2 @@
+Controlled reproduction against the final 11-test source: disables only the three new stale-lane host admission guards. This is not an old HEAD build. before-guards.diff is diagnostic only.
+Runtime variant sha256: f5a1dd78e69d14e835e22b728a2300ee7ba2b50d383d008d40f38afbe97afebb

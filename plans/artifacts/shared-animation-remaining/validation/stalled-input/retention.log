@@ -1,0 +1,30 @@
+   Compiling emerge_skia v0.4.0 (/workspace/emerge-animation/native/emerge_skia)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.31s
+     Running unittests src/lib.rs (native/emerge_skia/target/debug/deps/emerge_skia-fd4f0b51952a2096)
+
+running 7 tests
+test events::runtime::tests::delayed::stalled::adjacent_coalescing_preserves_key_composition_button_and_resize_boundaries ... ok
+test events::runtime::tests::delayed::stalled::replay_tail_join_coalesces_only_the_boundary_and_preserves_existing_order ... ok
+test events::runtime::tests::delayed::stalled::stalled_enqueue_only_visits_the_new_record_not_the_retained_history ... ok
+pointer_burst=100000 QueueCharge { inline_queue_bytes: 32, records: 1, slot_bytes: 160, string_capacity_bytes: 0 } visits=100000
+commit_burst=4096 QueueCharge { inline_queue_bytes: 32, records: 4096, slot_bytes: 163840, string_capacity_bytes: 1048576 } visits=4096
+remaining_tail QueueCharge { inline_queue_bytes: 32, records: 1, slot_bytes: 163840, string_capacity_bytes: 256 }
+test events::runtime::tests::delayed::stalled::finite_burst_charges_distinguish_coalescing_from_lossless_payload_retention ... ok
+test events::runtime::tests::delayed::stalled::large_stall_keeps_raw_observers_once_and_remount_recovery_releases_the_fifo ... ok
+test events::runtime::tests::delayed::stalled::successive_receipts_do_not_reinsert_the_untouched_replay_tail ... ok
+test events::runtime::tests::delayed::stalled::real_event_actor_handles_burst_recovery_or_stop_without_a_registry_ack ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 1426 filtered out; finished in 0.11s
+
+     Running tests/benchmark_fixtures.rs (native/emerge_skia/target/debug/deps/benchmark_fixtures-90a31c0b32ca0000)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/borders_cache_benchmark.rs (native/emerge_skia/target/debug/deps/borders_cache_benchmark-810198a8489a881c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+

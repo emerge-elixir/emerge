@@ -1,0 +1,40 @@
+   Compiling emerge_skia v0.4.0 (/workspace/emerge-animation/native/emerge_skia)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.80s
+     Running unittests src/lib.rs (native/emerge_skia/target/debug/deps/emerge_skia-fd4f0b51952a2096)
+
+running 6 tests
+test events::runtime::tests::delayed::ordered_host::host_operations_are_coalescing_boundaries_and_replay_tail_moves_in_order ... ok
+
+thread 'events::runtime::tests::delayed::ordered_host::a_long_host_command_queue_yields_with_the_existing_native_quantum' (214338) panicked at src/events/runtime/tests/delayed/ordered_host.rs:254:9:
+assertion failed: host.handle_text_input_command(TextInputCommandRequest::Copy)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'events::runtime::tests::delayed::ordered_host::host_edit_does_not_overtake_raw_input_or_replace_its_receipt' (214341) panicked at src/events/runtime/tests/delayed/ordered_host.rs:51:5:
+assertion `left == right` failed: a host edit must not overtake the raw edit waiting for geometry
+  left: "abcXZ"
+ right: "abcX"
+
+thread 'events::runtime::tests::delayed::ordered_host::host_edit_after_a_queued_click_uses_the_focus_decided_by_that_click' (214340) panicked at src/events/runtime/tests/delayed/ordered_host.rs:158:5:
+assertion failed: !host.focused_text_state().unwrap().content.contains('B')
+
+thread 'events::runtime::tests::delayed::ordered_host::host_selection_and_insert_are_deferred_as_an_ordered_pair' (214343) panicked at src/events/runtime/tests/delayed/ordered_host.rs:100:5:
+assertion `left == right` failed: selection and insertion must wait, not mutate the old text immediately
+  left: TextInputState { content: "Y", patch_content: None, content_origin: Event, content_len: 1, cursor: 1, selection_anchor: None, preedit: None, preedit_cursor: None, focused: true, emit_change: true, multiline: false, frame_x: 0.0, frame_y: 0.0, frame_width: 200.0, frame_height: 30.0, inset_top: 0.0, inset_left: 0.0, inset_bottom: 0.0, inset_right: 0.0, screen_to_local: Some(Affine2 { xx: 1.0, yx: -0.0, xy: -0.0, yy: 1.0, tx: -0.0, ty: -0.0 }), text_align: Left, font_family: "default", font_size: 16.0, font_weight: 400, font_italic: false, letter_spacing: 0.0, word_spacing: 0.0 }
+ right: TextInputState { content: "abcX", patch_content: None, content_origin: Event, content_len: 4, cursor: 4, selection_anchor: None, preedit: None, preedit_cursor: None, focused: true, emit_change: true, multiline: false, frame_x: 0.0, frame_y: 0.0, frame_width: 200.0, frame_height: 30.0, inset_top: 0.0, inset_left: 0.0, inset_bottom: 0.0, inset_right: 0.0, screen_to_local: Some(Affine2 { xx: 1.0, yx: -0.0, xy: -0.0, yy: 1.0, tx: -0.0, ty: -0.0 }), text_align: Left, font_family: "default", font_size: 16.0, font_weight: 400, font_italic: false, letter_spacing: 0.0, word_spacing: 0.0 }
+test events::runtime::tests::delayed::ordered_host::a_long_host_command_queue_yields_with_the_existing_native_quantum ... FAILED
+test events::runtime::tests::delayed::ordered_host::host_selection_and_insert_are_deferred_as_an_ordered_pair ... FAILED
+test events::runtime::tests::delayed::ordered_host::host_edit_after_a_queued_click_uses_the_focus_decided_by_that_click ... FAILED
+test events::runtime::tests::delayed::ordered_host::host_edit_does_not_overtake_raw_input_or_replace_its_receipt ... FAILED
+test events::runtime::tests::delayed::ordered_host::deferred_replacement_range_is_mount_scoped_but_a_later_key_uses_current_focus ... ok
+
+failures:
+
+failures:
+    events::runtime::tests::delayed::ordered_host::a_long_host_command_queue_yields_with_the_existing_native_quantum
+    events::runtime::tests::delayed::ordered_host::host_edit_after_a_queued_click_uses_the_focus_decided_by_that_click
+    events::runtime::tests::delayed::ordered_host::host_edit_does_not_overtake_raw_input_or_replace_its_receipt
+    events::runtime::tests::delayed::ordered_host::host_selection_and_insert_are_deferred_as_an_ordered_pair
+
+test result: FAILED. 2 passed; 4 failed; 0 ignored; 0 measured; 1450 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--lib`

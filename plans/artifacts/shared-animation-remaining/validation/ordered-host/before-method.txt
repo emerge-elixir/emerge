@@ -1,0 +1,2 @@
+Controlled before-behavior reproduction: only the three new host stale-lane admission guards are disabled. Queue type/test migrations stay compiled. This is not an old-HEAD build.
+Runtime variant sha256: 2a432f6e0ff2a850fc776af14281663ea835e0868c25e0c10a19e26acb560aff

@@ -1,0 +1,7 @@
+
+running 1 test
+test events::runtime::tests::delayed::pressure_probe::isolated_event_pressure_probe ... PROBE {"nodes":1,"kind":"edit","rate":0,"count":20000,"stall":"none","stall_ms":0,"accepted":10139,"full":9861,"produce_seconds":0.003085724,"raw":10139,"callbacks":10043,"event_queue_peak":4096,"buffered_peak":10135,"buffered_slots_bytes_peak":655360,"outbox_peak":0,"buffered_at_producer_end":6038,"settled":true,"settle_seconds":0.162134435,"buffered_at_recovery_cutoff":0,"shutdown_seconds":0.00009203}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1450 filtered out; finished in 0.18s
+

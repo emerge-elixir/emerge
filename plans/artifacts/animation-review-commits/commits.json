@@ -1,0 +1,74 @@
+[
+  {
+    "stage": 1,
+    "commit": "4372108b3ee675abec091846181b6b1a60919055",
+    "title": "Keep animation registry replies and input mutations causal and mount-safe",
+    "cargo": [
+      "test result: ok. 1420 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 42.60s",
+      "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s",
+      "test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s",
+      "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+    ],
+    "clippy": "pass"
+  },
+  {
+    "stage": 2,
+    "commit": "16979277011451591cf5485bcc1ed033968755ea",
+    "title": "Coalesce buffered input incrementally and bound replay work",
+    "cargo": [
+      "test result: ok. 1435 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 42.18s",
+      "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s",
+      "test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s",
+      "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+    ],
+    "clippy": "pass"
+  },
+  {
+    "stage": 3,
+    "commit": "f23af26fcf6f82b9f0b1340d2769168ee5ec5aae",
+    "title": "Keep event delivery and shutdown responsive under backpressure",
+    "cargo": [
+      "test result: ok. 1444 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 42.57s",
+      "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s",
+      "test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s",
+      "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+    ],
+    "clippy": "pass"
+  },
+  {
+    "stage": 4,
+    "commit": "2ef2721f95a9d8519c0bdd1c2a08000b1e984829",
+    "title": "Retry terminal headless frames after transient render failures",
+    "cargo": [
+      "test result: ok. 1450 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 44.35s",
+      "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s",
+      "test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s",
+      "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+    ],
+    "clippy": "pass"
+  },
+  {
+    "stage": 5,
+    "commit": "4c0a89b96979fed44b49404eda01f9c2bc1c48bc",
+    "title": "Add an isolated native input-pressure benchmark",
+    "cargo": [
+      "test result: ok. 1450 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 42.51s",
+      "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s",
+      "test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s",
+      "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+    ],
+    "clippy": "pass"
+  },
+  {
+    "stage": 6,
+    "commit": "0394ff6ce6ca6415c4e07460c8d8d239287ba164",
+    "title": "Order host text commands and replacement ranges with raw input",
+    "cargo": [
+      "test result: ok. 1461 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 42.24s",
+      "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s",
+      "test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s",
+      "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+    ],
+    "clippy": "pass"
+  }
+]

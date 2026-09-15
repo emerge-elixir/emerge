@@ -1,0 +1,29 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running unittests src/lib.rs (native/emerge_skia/target/debug/deps/emerge_skia-fd4f0b51952a2096)
+
+running 8 tests
+test events::runtime::tests::delayed::outbound::due_virtual_key_timer_and_stop_remain_selectable_while_output_is_full ... ok
+test events::runtime::tests::delayed::outbound::full_outbound_tree_channel_does_not_prevent_event_actor_stop ... ok
+test events::runtime::tests::delayed::outbound::queued_packet_receipt_cannot_be_acknowledged_before_delivery ... ok
+test events::runtime::tests::delayed::outbound::real_actor_sends_a_nonstaling_outbox_fifo_without_overtaking_or_replaying_raw_input ... ok
+test events::runtime::tests::delayed::outbound::stop_and_both_peer_disconnections_drop_pending_packets_and_input_synchronously ... ok
+test events::runtime::tests::delayed::outbound::real_outbound_recovery_preserves_input_order_and_rejects_old_mount_packets ... ok
+host packets: channel=512 outbox=768 outbox_slot_capacity=1024 slot_bytes=65536 (excludes nested allocations/allocator overhead)
+host packets: channel=512 outbox=768 outbox_slot_capacity=1024 slot_bytes=65536 (excludes nested allocations/allocator overhead)
+test events::runtime::tests::delayed::outbound::host_drains_channel_then_deferred_operations_without_clones_or_overtaking ... ok
+test events::runtime::tests::delayed::outbound::host_feedback_preserves_deferred_work_across_both_budgets_and_keeps_new_input_behind_it ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 1442 filtered out; finished in 0.42s
+
+     Running tests/benchmark_fixtures.rs (native/emerge_skia/target/debug/deps/benchmark_fixtures-90a31c0b32ca0000)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/borders_cache_benchmark.rs (native/emerge_skia/target/debug/deps/borders_cache_benchmark-810198a8489a881c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+

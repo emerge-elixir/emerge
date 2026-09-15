@@ -1,0 +1,23 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (native/emerge_skia/target/debug/deps/emerge_skia-fd4f0b51952a2096)
+
+running 1 test
+pointer_burst=100000 QueueCharge { inline_queue_bytes: 32, records: 1, slot_bytes: 160, string_capacity_bytes: 0 } visits=100000
+commit_burst=4096 QueueCharge { inline_queue_bytes: 32, records: 4096, slot_bytes: 163840, string_capacity_bytes: 1048576 } visits=4096
+remaining_tail QueueCharge { inline_queue_bytes: 32, records: 1, slot_bytes: 163840, string_capacity_bytes: 256 }
+test events::runtime::tests::delayed::stalled::finite_burst_charges_distinguish_coalescing_from_lossless_payload_retention ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1460 filtered out; finished in 0.01s
+
+     Running tests/benchmark_fixtures.rs (native/emerge_skia/target/debug/deps/benchmark_fixtures-90a31c0b32ca0000)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/borders_cache_benchmark.rs (native/emerge_skia/target/debug/deps/borders_cache_benchmark-810198a8489a881c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+

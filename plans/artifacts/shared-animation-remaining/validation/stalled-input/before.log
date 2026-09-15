@@ -1,0 +1,21 @@
+   Compiling emerge_skia v0.4.0 (/workspace/emerge-animation/native/emerge_skia)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.09s
+     Running unittests src/lib.rs (native/emerge_skia/target/debug/deps/emerge_skia-fd4f0b51952a2096)
+
+running 1 test
+
+thread 'events::runtime::tests::delayed::stalled::stalled_enqueue_only_visits_the_new_record_not_the_retained_history' (131443) panicked at src/events/runtime/tests/delayed/stalled.rs:24:5:
+assertion `left == right` failed: enqueue must not rescan the stalled history
+  left: 2001000
+ right: 2000
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test events::runtime::tests::delayed::stalled::stalled_enqueue_only_visits_the_new_record_not_the_retained_history ... FAILED
+
+failures:
+
+failures:
+    events::runtime::tests::delayed::stalled::stalled_enqueue_only_visits_the_new_record_not_the_retained_history
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1426 filtered out; finished in 0.11s
+
+error: test failed, to rerun pass `--lib`

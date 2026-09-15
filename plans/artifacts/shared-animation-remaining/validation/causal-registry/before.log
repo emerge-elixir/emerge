@@ -1,0 +1,26 @@
+   Compiling emerge_skia v0.4.0 (/workspace/emerge-animation/native/emerge_skia)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.44s
+     Running unittests src/lib.rs (native/emerge_skia/target/debug/deps/emerge_skia-fd4f0b51952a2096)
+
+running 2 tests
+
+thread 'events::runtime::tests::delayed::event_coalescing_does_not_drop_a_queued_mount_focus_transition' (62132) panicked at src/events/runtime/tests/delayed.rs:70:5:
+accepted one-shot focus is a semantic transition, not replaceable geometry
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test events::runtime::tests::delayed::event_coalescing_does_not_drop_a_queued_mount_focus_transition ... FAILED
+
+thread 'events::runtime::tests::delayed::queued_pre_edit_registry_does_not_release_buffered_keyboard_input' (62133) panicked at src/events/runtime/tests/delayed.rs:50:5:
+assertion `left == right` failed: a frame queued before the edit cannot acknowledge it or replay Y
+  left: 0
+ right: 1
+test events::runtime::tests::delayed::queued_pre_edit_registry_does_not_release_buffered_keyboard_input ... FAILED
+
+failures:
+
+failures:
+    events::runtime::tests::delayed::event_coalescing_does_not_drop_a_queued_mount_focus_transition
+    events::runtime::tests::delayed::queued_pre_edit_registry_does_not_release_buffered_keyboard_input
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 1392 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--lib`

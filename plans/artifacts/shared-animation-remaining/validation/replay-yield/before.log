@@ -1,0 +1,26 @@
+   Compiling emerge_skia v0.4.0 (/workspace/emerge-animation/native/emerge_skia)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.87s
+     Running unittests src/lib.rs (native/emerge_skia/target/debug/deps/emerge_skia-fd4f0b51952a2096)
+
+running 2 tests
+
+thread 'events::runtime::tests::delayed::yielding::one_registry_replay_yields_before_consuming_an_entire_nonstaling_burst' (143601) panicked at src/events/runtime/tests/delayed/yielding.rs:18:5:
+assertion `left == right` failed: one registry install must yield after 64 replayed inputs
+  left: 0
+ right: 64
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test events::runtime::tests::delayed::yielding::one_registry_replay_yields_before_consuming_an_entire_nonstaling_burst ... FAILED
+
+thread 'events::runtime::tests::delayed::yielding::host_feedback_budget_must_not_drain_the_request_for_the_next_tick' (143600) panicked at src/events/runtime/tests/delayed/yielding.rs:86:5:
+the ninth request must remain queued, not disappear at the budget boundary
+test events::runtime::tests::delayed::yielding::host_feedback_budget_must_not_drain_the_request_for_the_next_tick ... FAILED
+
+failures:
+
+failures:
+    events::runtime::tests::delayed::yielding::host_feedback_budget_must_not_drain_the_request_for_the_next_tick
+    events::runtime::tests::delayed::yielding::one_registry_replay_yields_before_consuming_an_entire_nonstaling_burst
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 1433 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--lib`

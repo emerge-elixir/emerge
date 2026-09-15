@@ -1,0 +1,23 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src/lib.rs (native/emerge_skia/target/debug/deps/emerge_skia-fd4f0b51952a2096)
+
+running 4 tests
+test backend::headless::offscreen_gl::tests::terminal_shutdown_waits_for_every_in_flight_lease ... ok
+test tests::shutdown_renderer_runtime_reports_thread_panics ... ok
+test tests::shutdown_renderer_runtime_stops_and_joins_threads ... ok
+test tests::shutdown_signals_other_peers_before_waiting_for_a_full_actor_channel ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1446 filtered out; finished in 0.03s
+
+     Running tests/benchmark_fixtures.rs (native/emerge_skia/target/debug/deps/benchmark_fixtures-90a31c0b32ca0000)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/borders_cache_benchmark.rs (native/emerge_skia/target/debug/deps/borders_cache_benchmark-810198a8489a881c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+

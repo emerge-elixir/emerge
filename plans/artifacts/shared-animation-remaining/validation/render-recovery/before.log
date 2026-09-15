@@ -1,0 +1,20 @@
+   Compiling emerge_skia v0.4.0 (/workspace/emerge-animation/native/emerge_skia)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.41s
+     Running unittests src/lib.rs (native/emerge_skia/target/debug/deps/emerge_skia-fd4f0b51952a2096)
+
+running 1 test
+headless render failed: controlled readback failure
+
+thread 'backend::headless::binary::tests::failed_terminal_binary_frame_recovers_without_another_tree_message' (116134) panicked at src/backend/headless/binary.rs:92:9:
+a failed terminal frame must retry without a new tree message
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test backend::headless::binary::tests::failed_terminal_binary_frame_recovers_without_another_tree_message ... FAILED
+
+failures:
+
+failures:
+    backend::headless::binary::tests::failed_terminal_binary_frame_recovers_without_another_tree_message
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1420 filtered out; finished in 0.60s
+
+error: test failed, to rerun pass `--lib`

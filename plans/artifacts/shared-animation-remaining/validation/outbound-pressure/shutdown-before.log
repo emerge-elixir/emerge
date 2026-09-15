@@ -1,0 +1,19 @@
+   Compiling emerge_skia v0.4.0 (/workspace/emerge-animation/native/emerge_skia)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.03s
+     Running unittests src/lib.rs (native/emerge_skia/target/debug/deps/emerge_skia-fd4f0b51952a2096)
+
+running 1 test
+
+thread 'tests::shutdown_signals_other_peers_before_waiting_for_a_full_actor_channel' (177944) panicked at src/lib.rs:4676:13:
+render Stop must not wait for an actor channel slot
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test tests::shutdown_signals_other_peers_before_waiting_for_a_full_actor_channel ... FAILED
+
+failures:
+
+failures:
+    tests::shutdown_signals_other_peers_before_waiting_for_a_full_actor_channel
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1449 filtered out; finished in 0.50s
+
+error: test failed, to rerun pass `--lib`

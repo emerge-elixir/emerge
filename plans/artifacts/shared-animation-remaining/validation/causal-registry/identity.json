@@ -1,0 +1,9 @@
+{
+  "source": "source-sha256:50f673402e7bac56ac463470c4caf0e77095ca6c290c50221496c8bd7102db21",
+  "head": "33ee559caafed7d845b5727a0ac0ad4f5285f68e",
+  "status": "uncommitted D12 implementation on plan/shared-animation-core",
+  "previous_source": "source-sha256:8cfca2fac4d83c3573e6496e46aff586cc21f7ee59efd126a37d3e6f52221626",
+  "rustc": "rustc 1.93.1 (01f6ddf75 2026-02-11)\nbinary: rustc\ncommit-hash: 01f6ddf7588f42ae2d7eb0a2f21d44e8e96674cf\ncommit-date: 2026-02-11\nhost: x86_64-unknown-linux-gnu\nrelease: 1.93.1\nLLVM version: 21.1.8",
+  "scope": "Directed causal event-registry installation and full functional CI; not performance/device/presentation qualification.",
+  "source_selection": "Headless-rebase functional/build/test inputs plus the new native delayed-registry test module; documentation and logs excluded."
+}

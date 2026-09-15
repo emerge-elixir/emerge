@@ -1,0 +1,21 @@
+   Compiling emerge_skia v0.4.0 (/workspace/emerge-animation/native/emerge_skia)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.27s
+     Running unittests src/lib.rs (native/emerge_skia/target/debug/deps/emerge_skia-fd4f0b51952a2096)
+
+running 1 test
+
+thread 'events::runtime::tests::delayed::pointer::inflight::queued_text_and_selection_commands_cannot_modify_a_replacement' (98073) panicked at src/events/runtime/tests/delayed/pointer/inflight.rs:34:13:
+assertion `left == right` failed: old event commands must not mutate the new mount (edit=false)
+  left: TextInputState { content: "", patch_content: None, content_origin: TreePatch, content_len: 0, cursor: 0, selection_anchor: None, preedit: None, preedit_cursor: None, focused: true, emit_change: true, multiline: false, frame_x: 0.0, frame_y: 0.0, frame_width: 200.0, frame_height: 30.0, inset_top: 0.0, inset_left: 0.0, inset_bottom: 0.0, inset_right: 0.0, screen_to_local: Some(Affine2 { xx: 1.0, yx: -0.0, xy: -0.0, yy: 1.0, tx: -0.0, ty: -0.0 }), text_align: Left, font_family: "default", font_size: 16.0, font_weight: 400, font_italic: false, letter_spacing: 0.0, word_spacing: 0.0 }
+ right: TextInputState { content: "", patch_content: None, content_origin: TreePatch, content_len: 0, cursor: 0, selection_anchor: None, preedit: None, preedit_cursor: None, focused: false, emit_change: true, multiline: false, frame_x: 0.0, frame_y: 0.0, frame_width: 200.0, frame_height: 30.0, inset_top: 0.0, inset_left: 0.0, inset_bottom: 0.0, inset_right: 0.0, screen_to_local: Some(Affine2 { xx: 1.0, yx: -0.0, xy: -0.0, yy: 1.0, tx: -0.0, ty: -0.0 }), text_align: Left, font_family: "default", font_size: 16.0, font_weight: 400, font_italic: false, letter_spacing: 0.0, word_spacing: 0.0 }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test events::runtime::tests::delayed::pointer::inflight::queued_text_and_selection_commands_cannot_modify_a_replacement ... FAILED
+
+failures:
+
+failures:
+    events::runtime::tests::delayed::pointer::inflight::queued_text_and_selection_commands_cannot_modify_a_replacement
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1411 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--lib`

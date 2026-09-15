@@ -1,0 +1,9 @@
+{
+  "source": "source-sha256:e98b67da5aa6ddf42f947be3dcef2b2a86fb35336d3e1ed082c77e9dd415032c",
+  "head": "33ee559caafed7d845b5727a0ac0ad4f5285f68e",
+  "status": "uncommitted D12 through D18 on plan/shared-animation-core",
+  "previous_source": "source-sha256:a898887d8d19aa26031e1a3e5c804c5990cdf10597e2ba7aa9a7d307380d7bce",
+  "rustc": "rustc 1.93.1 (01f6ddf75 2026-02-11)\nbinary: rustc\ncommit-hash: 01f6ddf7588f42ae2d7eb0a2f21d44e8e96674cf\ncommit-date: 2026-02-11\nhost: x86_64-unknown-linux-gnu\nrelease: 1.93.1\nLLVM version: 21.1.8",
+  "scope": "Nonblocking event-driver outgoing FIFO, selectable send/control/timer progress, bounded host drains and independent shutdown stop signaling; not hard memory/latency, macOS execution or device qualification.",
+  "source_selection": "D17 functional/build/test inputs plus outbound-pressure test module; docs and evidence excluded."
+}

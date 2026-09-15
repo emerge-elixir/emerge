@@ -1,0 +1,79 @@
+   Compiling emerge_skia v0.4.0 (/workspace/emerge-animation/native/emerge_skia)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.95s
+     Running unittests src/lib.rs (native/emerge_skia/target/debug/deps/emerge_skia-fd4f0b51952a2096)
+
+running 11 tests
+test events::runtime::tests::delayed::ordered_host::host_operations_are_coalescing_boundaries_and_replay_tail_moves_in_order ... ok
+
+thread 'events::runtime::tests::delayed::ordered_host::host_input_before_initial_registry_is_accepted_without_requesting_fallback' (218307) panicked at src/events/runtime/tests/delayed/ordered_host.rs:299:5:
+assertion failed: host.handle_text_input_edit(TextInputEditRequest::Insert("X".into()))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test events::runtime::tests::delayed::ordered_host::host_input_before_initial_registry_is_accepted_without_requesting_fallback ... FAILED
+
+thread 'events::runtime::tests::delayed::ordered_host::a_long_host_command_queue_yields_with_the_existing_native_quantum' (218299) panicked at src/events/runtime/tests/delayed/ordered_host.rs:273:9:
+assertion failed: host.handle_text_input_command(TextInputCommandRequest::Copy)
+
+thread 'events::runtime::tests::delayed::ordered_host::host_edit_does_not_overtake_raw_input_or_replace_its_receipt' (218306) panicked at src/events/runtime/tests/delayed/ordered_host.rs:89:5:
+assertion `left == right` failed: a host edit must not overtake the raw edit waiting for geometry
+  left: "abcXZ"
+ right: "abcX"
+
+thread 'events::runtime::tests::delayed::ordered_host::host_edit_after_a_queued_click_uses_the_focus_decided_by_that_click' (218305) panicked at src/events/runtime/tests/delayed/ordered_host.rs:172:5:
+assertion failed: !host.focused_text_state().unwrap().content.contains('B')
+
+thread 'events::runtime::tests::delayed::ordered_host::failed_tree_update_does_not_dispatch_host_input_until_successful_recovery' (218304) panicked at src/events/runtime/tests/delayed/ordered_host.rs:335:5:
+assertion `left == right` failed
+  left: "abcXY"
+ right: "abcX"
+
+thread 'events::runtime::tests::delayed::ordered_host::host_selection_and_insert_are_deferred_as_an_ordered_pair' (218309) panicked at src/events/runtime/tests/delayed/ordered_host.rs:146:5:
+assertion `left == right` failed: selection and insertion must wait, not mutate the old text immediately
+  left: TextInputState { content: "Y", patch_content: None, content_origin: Event, content_len: 1, cursor: 1, selection_anchor: None, preedit: None, preedit_cursor: None, focused: true, emit_change: true, multiline: false, frame_x: 0.0, frame_y: 0.0, frame_width: 200.0, frame_height: 30.0, inset_top: 0.0, inset_left: 0.0, inset_bottom: 0.0, inset_right: 0.0, screen_to_local: Some(Affine2 { xx: 1.0, yx: -0.0, xy: -0.0, yy: 1.0, tx: -0.0, ty: -0.0 }), text_align: Left, font_family: "default", font_size: 16.0, font_weight: 400, font_italic: false, letter_spacing: 0.0, word_spacing: 0.0 }
+ right: TextInputState { content: "abcX", patch_content: None, content_origin: Event, content_len: 4, cursor: 4, selection_anchor: None, preedit: None, preedit_cursor: None, focused: true, emit_change: true, multiline: false, frame_x: 0.0, frame_y: 0.0, frame_width: 200.0, frame_height: 30.0, inset_top: 0.0, inset_left: 0.0, inset_bottom: 0.0, inset_right: 0.0, screen_to_local: Some(Affine2 { xx: 1.0, yx: -0.0, xy: -0.0, yy: 1.0, tx: -0.0, ty: -0.0 }), text_align: Left, font_family: "default", font_size: 16.0, font_weight: 400, font_italic: false, letter_spacing: 0.0, word_spacing: 0.0 }
+test events::runtime::tests::delayed::ordered_host::host_edit_does_not_overtake_raw_input_or_replace_its_receipt ... FAILED
+
+thread 'events::runtime::tests::delayed::ordered_host::accepted_external_value_invalidates_old_range_and_destruction_releases_tokens' (218300) panicked at src/events/runtime/tests/delayed/ordered_host.rs:398:5:
+assertion `left == right` failed
+  left: "bcX"
+ right: "reset"
+test events::runtime::tests::delayed::ordered_host::a_long_host_command_queue_yields_with_the_existing_native_quantum ... FAILED
+test events::runtime::tests::delayed::ordered_host::host_edit_after_a_queued_click_uses_the_focus_decided_by_that_click ... FAILED
+thread 'events::runtime::tests::delayed::ordered_host::delayed_range_cannot_address_text_changed_by_an_earlier_queued_edit' (218302) panicked at src/events/runtime/tests/delayed/ordered_host.rs:356:5:
+assertion `left == right` failed
+  left: "ZYbcX"
+ right: "abcXYZ"
+
+test events::runtime::tests::delayed::ordered_host::failed_tree_update_does_not_dispatch_host_input_until_successful_recovery ... FAILED
+test events::runtime::tests::delayed::ordered_host::host_selection_and_insert_are_deferred_as_an_ordered_pair ... FAILED
+test events::runtime::tests::delayed::ordered_host::accepted_external_value_invalidates_old_range_and_destruction_releases_tokens ... FAILED
+test events::runtime::tests::delayed::ordered_host::delayed_range_cannot_address_text_changed_by_an_earlier_queued_edit ... FAILED
+
+thread 'events::runtime::tests::delayed::ordered_host::deferred_replacement_range_is_mount_scoped_but_a_later_key_uses_current_focus' (218301) panicked at src/events/runtime/tests/delayed/ordered_host.rs:204:9:
+assertion `left == right` failed: the queued insertion must run once
+  left: 0
+ right: 1
+
+thread 'events::runtime::tests::delayed::ordered_host::delayed_range_does_not_survive_focus_away_and_back_to_the_same_mount' (218303) panicked at src/events/runtime/tests/delayed/ordered_host.rs:373:5:
+assertion `left == right` failed
+  left: "ZbcX"
+ right: "abcXZ"
+test events::runtime::tests::delayed::ordered_host::deferred_replacement_range_is_mount_scoped_but_a_later_key_uses_current_focus ... FAILED
+test events::runtime::tests::delayed::ordered_host::delayed_range_does_not_survive_focus_away_and_back_to_the_same_mount ... FAILED
+
+failures:
+
+failures:
+    events::runtime::tests::delayed::ordered_host::a_long_host_command_queue_yields_with_the_existing_native_quantum
+    events::runtime::tests::delayed::ordered_host::accepted_external_value_invalidates_old_range_and_destruction_releases_tokens
+    events::runtime::tests::delayed::ordered_host::deferred_replacement_range_is_mount_scoped_but_a_later_key_uses_current_focus
+    events::runtime::tests::delayed::ordered_host::delayed_range_cannot_address_text_changed_by_an_earlier_queued_edit
+    events::runtime::tests::delayed::ordered_host::delayed_range_does_not_survive_focus_away_and_back_to_the_same_mount
+    events::runtime::tests::delayed::ordered_host::failed_tree_update_does_not_dispatch_host_input_until_successful_recovery
+    events::runtime::tests::delayed::ordered_host::host_edit_after_a_queued_click_uses_the_focus_decided_by_that_click
+    events::runtime::tests::delayed::ordered_host::host_edit_does_not_overtake_raw_input_or_replace_its_receipt
+    events::runtime::tests::delayed::ordered_host::host_input_before_initial_registry_is_accepted_without_requesting_fallback
+    events::runtime::tests::delayed::ordered_host::host_selection_and_insert_are_deferred_as_an_ordered_pair
+
+test result: FAILED. 1 passed; 10 failed; 0 ignored; 0 measured; 1450 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--lib`

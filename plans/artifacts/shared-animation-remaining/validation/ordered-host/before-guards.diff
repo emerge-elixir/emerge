@@ -1,0 +1,29 @@
+--- native/emerge_skia/src/events/runtime.rs
++++ native/emerge_skia/src/events/runtime.rs
+@@ -1513,7 +1513,7 @@
+         tree_tx: &dyn TreeSink,
+         log_render: bool,
+     ) -> bool {
+-        if self.listener_lane.is_stale() {
++        if false { // Controlled reproduction: former host admission bypass.
+             self.listener_lane
+                 .buffer_pending(PendingInput::Command(request));
+             // Accepted for ordered dispatch, not a request for a Cocoa fallback.
+@@ -1567,7 +1567,7 @@
+         tree_tx: &dyn TreeSink,
+         log_render: bool,
+     ) -> bool {
+-        if self.listener_lane.is_stale() {
++        if false { // Controlled reproduction: former host admission bypass.
+             self.listener_lane
+                 .buffer_pending(PendingInput::Edit(request));
+             return true;
+@@ -1629,7 +1629,7 @@
+             return false;
+         };
+ 
+-        if self.listener_lane.is_stale() {
++        if false { // Controlled reproduction: former range admission bypass.
+             let Some(mount) = self.base_registry.source_mount(&element_id) else {
+                 // A delayed range needs genuine source ownership.
+                 return false;

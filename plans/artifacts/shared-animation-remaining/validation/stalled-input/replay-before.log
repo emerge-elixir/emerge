@@ -1,0 +1,21 @@
+   Compiling emerge_skia v0.4.0 (/workspace/emerge-animation/native/emerge_skia)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.46s
+     Running unittests src/lib.rs (native/emerge_skia/target/debug/deps/emerge_skia-fd4f0b51952a2096)
+
+running 1 test
+
+thread 'events::runtime::tests::delayed::stalled::successive_receipts_do_not_reinsert_the_untouched_replay_tail' (131869) panicked at src/events/runtime/tests/delayed/stalled.rs:65:5:
+assertion `left == right` failed: the already coalesced tail must transfer without reinsertion
+  left: 341376
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test events::runtime::tests::delayed::stalled::successive_receipts_do_not_reinsert_the_untouched_replay_tail ... FAILED
+
+failures:
+
+failures:
+    events::runtime::tests::delayed::stalled::successive_receipts_do_not_reinsert_the_untouched_replay_tail
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1427 filtered out; finished in 0.06s
+
+error: test failed, to rerun pass `--lib`

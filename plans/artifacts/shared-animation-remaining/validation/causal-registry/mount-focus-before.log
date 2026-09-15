@@ -1,0 +1,28 @@
+   Compiling emerge_skia v0.4.0 (/workspace/emerge-animation/native/emerge_skia)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.44s
+     Running unittests src/lib.rs (native/emerge_skia/target/debug/deps/emerge_skia-fd4f0b51952a2096)
+
+running 5 tests
+test events::runtime::tests::delayed::event_registry_draining_is_bounded_and_stop_does_not_wait_for_a_receipt ... ok
+test events::runtime::tests::delayed::cached_registry_acknowledges_noop_requests_without_constructing_a_scene ... ok
+test events::runtime::tests::delayed::event_coalescing_rebinds_pending_mount_focus_only_to_the_same_eligible_mount ... FAILED
+test events::runtime::tests::delayed::deferred_mount_focus_survives_a_causal_wait_but_not_remount_or_removal ... ok
+test events::runtime::tests::delayed::queued_pre_edit_registry_does_not_release_buffered_keyboard_input ... ok
+
+failures:
+
+---- events::runtime::tests::delayed::event_coalescing_rebinds_pending_mount_focus_only_to_the_same_eligible_mount stdout ----
+
+thread 'events::runtime::tests::delayed::event_coalescing_rebinds_pending_mount_focus_only_to_the_same_eligible_mount' (66128) panicked at src/events/runtime/tests/delayed.rs:143:9:
+assertion `left == right` failed: change 0
+  left: false
+ right: true
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    events::runtime::tests::delayed::event_coalescing_rebinds_pending_mount_focus_only_to_the_same_eligible_mount
+
+test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 1392 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--lib`

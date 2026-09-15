@@ -1,0 +1,21 @@
+Compiling 2 files (.ex)
+Compiling crate emerge_skia in release mode (/workspace/emerge-animation/native/emerge_skia)
+Compiling lib/emerge_skia/native.ex (it's taking more than 10s)
+Copying /workspace/emerge-animation/native/emerge_skia/target/release/libemerge_skia.so to priv/native/emerge_skia.so
+Running ExUnit with seed: 536921, max_cases: 64
+Excluding tags: [full_sweep: true, headless_prime_hardware: true]
+
+...............................................................................................................................................................................................................................................................................................................................................................................
+07:55:31.030 [info] Using global cache for rustler precompiled artifacts. Path: /tmp/emerge-rustler-precompiled-4611
+............................................................
+07:55:40.039 [info] close: terminate_viewport stopping renderer module=Emerge.ViewportTest.CloseSignalLogViewport
+
+07:55:40.039 [info] close: terminate_viewport renderer stop returned module=Emerge.ViewportTest.CloseSignalLogViewport
+..
+07:55:40.039 [info] Emerge viewport window closed for Emerge.ViewportTest.CloseAwareViewport
+..........
+07:55:40.166 [info] Emerge viewport window closed for Emerge.ViewportTest.LivenessViewport
+.................................................................................
+Finished in 29.9 seconds (12.4s async, 17.5s sync)
+
+Result: 520 passed (15 doctests, 505 tests), 9 excluded
