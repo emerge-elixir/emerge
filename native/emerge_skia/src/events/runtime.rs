@@ -3233,6 +3233,8 @@ fn run_event_actor(mut driver: EventRuntimeDriver, event_rx: Receiver<EventMsg>)
     let mut pending_message: Option<EventMsg> = None;
 
     loop {
+        #[cfg(all(test, feature = "bench-diagnostics"))]
+        tests::delayed::pressure_probe::sample(&driver, &event_rx);
         let message = match pending_message.take() {
             Some(message) => Some(message),
             None if !driver.outbox.is_empty() => {
