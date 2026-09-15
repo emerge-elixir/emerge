@@ -62,6 +62,11 @@ impl AnimationFrameTraceSeed {
 #[derive(Clone, Debug, Default)]
 pub struct ListenerBarrier(std::sync::Arc<()>);
 impl ListenerBarrier {
+    #[cfg(test)]
+    pub(crate) fn weak_identity(&self) -> std::sync::Weak<()> {
+        std::sync::Arc::downgrade(&self.0)
+    }
+
     pub(crate) fn matches(&self, other: &Self) -> bool {
         std::sync::Arc::ptr_eq(&self.0, &other.0)
     }
