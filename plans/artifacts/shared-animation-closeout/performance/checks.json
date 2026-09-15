@@ -1,0 +1,115 @@
+{
+  "processes": 18,
+  "warm_samples_each": 119,
+  "workspace_checks": "pass",
+  "rows": [
+    {
+      "file": "20000-64-length-1.txt",
+      "case": "length",
+      "cold_us": 176970,
+      "warm_max_us": 3158
+    },
+    {
+      "file": "20000-64-length-2.txt",
+      "case": "length",
+      "cold_us": 167401,
+      "warm_max_us": 2769
+    },
+    {
+      "file": "20000-64-length-3.txt",
+      "case": "length",
+      "cold_us": 163928,
+      "warm_max_us": 2876
+    },
+    {
+      "file": "20000-64-mixed-1.txt",
+      "case": "mixed",
+      "cold_us": 168328,
+      "warm_max_us": 5210
+    },
+    {
+      "file": "20000-64-mixed-2.txt",
+      "case": "mixed",
+      "cold_us": 164543,
+      "warm_max_us": 5189
+    },
+    {
+      "file": "20000-64-mixed-3.txt",
+      "case": "mixed",
+      "cold_us": 160192,
+      "warm_max_us": 4664
+    },
+    {
+      "file": "20000-64-moving-1.txt",
+      "case": "moving",
+      "cold_us": 168406,
+      "warm_max_us": 4588
+    },
+    {
+      "file": "20000-64-moving-2.txt",
+      "case": "moving",
+      "cold_us": 165814,
+      "warm_max_us": 3675
+    },
+    {
+      "file": "20000-64-moving-3.txt",
+      "case": "moving",
+      "cold_us": 162632,
+      "warm_max_us": 4026
+    },
+    {
+      "file": "20000-64-paint-1.txt",
+      "case": "paint",
+      "cold_us": 55586,
+      "warm_max_us": 3289
+    },
+    {
+      "file": "20000-64-paint-2.txt",
+      "case": "paint",
+      "cold_us": 54282,
+      "warm_max_us": 2118
+    },
+    {
+      "file": "20000-64-paint-3.txt",
+      "case": "paint",
+      "cold_us": 53736,
+      "warm_max_us": 2084
+    },
+    {
+      "file": "20000-64-pixel-1.txt",
+      "case": "pixel",
+      "cold_us": 60934,
+      "warm_max_us": 4401
+    },
+    {
+      "file": "20000-64-pixel-2.txt",
+      "case": "pixel",
+      "cold_us": 56937,
+      "warm_max_us": 2933
+    },
+    {
+      "file": "20000-64-pixel-3.txt",
+      "case": "pixel",
+      "cold_us": 53542,
+      "warm_max_us": 2628
+    },
+    {
+      "file": "20000-64-upward-1.txt",
+      "case": "upward",
+      "cold_us": 212470,
+      "warm_max_us": 87814
+    },
+    {
+      "file": "20000-64-upward-2.txt",
+      "case": "upward",
+      "cold_us": 200351,
+      "warm_max_us": 93619
+    },
+    {
+      "file": "20000-64-upward-3.txt",
+      "case": "upward",
+      "cold_us": 194329,
+      "warm_max_us": 85164
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+Running ExUnit with seed: 235867, max_cases: 64
+Excluding tags: [full_sweep: true, headless_prime_hardware: true]
+
+...............................................................................................................................................................................................................................................................................................................................................................................
+16:29:11.846 [info] Using global cache for rustler precompiled artifacts. Path: /tmp/emerge-rustler-precompiled-2691
+.................................................................................................
+16:29:21.152 [info] close: terminate_viewport stopping renderer module=Emerge.ViewportTest.CloseSignalLogViewport
+
+16:29:21.152 [info] close: terminate_viewport renderer stop returned module=Emerge.ViewportTest.CloseSignalLogViewport
+......
+16:29:21.181 [info] Emerge viewport window closed for Emerge.ViewportTest.LivenessViewport
+...
+16:29:21.181 [info] Emerge viewport window closed for Emerge.ViewportTest.CloseAwareViewport
+...............................................
+Finished in 30.0 seconds (12.5s async, 17.5s sync)
+
+Result: 520 passed (15 doctests, 505 tests), 9 excluded

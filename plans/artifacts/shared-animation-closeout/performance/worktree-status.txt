@@ -1,0 +1,42 @@
+M CHANGELOG.md
+ M guides/internals/events.md
+ M guides/internals/layout-refresh-render-flow.md
+ M native/emerge_skia/src/actors.rs
+ M native/emerge_skia/src/backend/headless/mod.rs
+ M native/emerge_skia/src/backend/headless/tests/animation.rs
+ M native/emerge_skia/src/bin/macos_host.rs
+ M native/emerge_skia/src/events.rs
+ M native/emerge_skia/src/events/registry_builder.rs
+ M native/emerge_skia/src/events/runtime.rs
+ M native/emerge_skia/src/lib.rs
+ M native/emerge_skia/src/runtime/mod.rs
+ M native/emerge_skia/src/runtime/tree_actor.rs
+ M native/emerge_skia/src/runtime/tree_actor/tests/backpressure.rs
+ M native/emerge_skia/src/runtime/tree_update.rs
+ M plans/README.md
+ M plans/active-shared-animation-core.md
+ M plans/artifacts/shared-animation-remaining/coverage.md
+ M plans/artifacts/shared-animation-remaining/decisions.md
+ M plans/artifacts/shared-animation-remaining/performance/run.py
+ M plans/artifacts/shared-animation-remaining/performance/summarize.py
+ M plans/shared-animation-remaining-implementation.md
+?? native/emerge_skia/src/backend/headless/binary.rs
+?? native/emerge_skia/src/backend/headless/tests/animation/
+?? native/emerge_skia/src/events/runtime/
+?? native/emerge_skia/src/runtime/host_feedback.rs
+?? plans/active-async-input-editing.md
+?? plans/active-shared-animation-closeout.md
+?? plans/artifacts/event-pressure-probe/
+?? plans/artifacts/shared-animation-closeout/
+?? plans/artifacts/shared-animation-remaining/pressure-contract/
+?? plans/artifacts/shared-animation-remaining/validation/causal-registry/
+?? plans/artifacts/shared-animation-remaining/validation/inflight-commands/
+?? plans/artifacts/shared-animation-remaining/validation/ordered-host/
+?? plans/artifacts/shared-animation-remaining/validation/outbound-pressure/
+?? plans/artifacts/shared-animation-remaining/validation/pointer-recovery/
+?? plans/artifacts/shared-animation-remaining/validation/render-recovery/
+?? plans/artifacts/shared-animation-remaining/validation/replay-yield/
+?? plans/artifacts/shared-animation-remaining/validation/stalled-input/
+?? plans/isolated-event-pressure.md
+?? plans/later-animation-runtime-qualification.md
+?? plans/shared-animation-pressure-contract.md

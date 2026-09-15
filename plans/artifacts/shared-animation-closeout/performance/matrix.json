@@ -1,0 +1,18 @@
+{
+  "cases": [
+    "paint",
+    "pixel",
+    "length",
+    "moving",
+    "mixed",
+    "upward"
+  ],
+  "nodes": [
+    20000
+  ],
+  "owners": [
+    64
+  ],
+  "trials": 3,
+  "closeout": true
+}

@@ -1,0 +1,5 @@
+Final manifest verified: source-sha256:bf4c131c8da7882991cdfcbd4058102476abcd36435041c951e5c17a4e66fdff
+D22 functional manifest still matches.
+D23 forward patch roundtrip matches preserved original files.
+21 named native audit regressions verified as passing in cargo.log; public ExUnit files are included in full Mix/CI execution.
+No runtime source changes after validation or measurements.

@@ -1,0 +1,21 @@
+    Checking emerge_skia v0.4.0 (/workspace/emerge-animation/native/emerge_skia)
+warning: methods `rgba_linear_supported`, `bgra_import_supported`, and `supported_format_names` are never used
+    --> src/video.rs:3086:19
+     |
+2943 | impl VulkanVideoImportContext {
+     | ----------------------------- methods in this implementation
+...
+3086 |     pub(crate) fn rgba_linear_supported(&self) -> bool {
+     |                   ^^^^^^^^^^^^^^^^^^^^^
+...
+3090 |     pub(crate) fn bgra_import_supported(&self) -> bool {
+     |                   ^^^^^^^^^^^^^^^^^^^^^
+...
+3100 |     pub(crate) fn supported_format_names(&self) -> Vec<&'static str> {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `emerge_skia` (lib) generated 1 warning
+warning: `emerge_skia` (lib test) generated 1 warning (1 duplicate)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.04s

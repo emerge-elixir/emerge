@@ -1,0 +1,1 @@
+["cargo", "build", "--release", "--manifest-path", "native/emerge_skia/Cargo.toml", "--bench", "shared_animation", "--features", "bench-diagnostics", "--message-format=json"]
