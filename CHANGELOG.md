@@ -15,10 +15,11 @@
 
 - **Visual change:** `Border.shadow` and `Border.glow` now paint the full box-shaped shadow behind backgrounds and content, including text. Transparent interiors reveal the shadow instead of cutting it out; opaque backgrounds still cover it. Applies to ordinary elements and inline paragraph wrappers; inset shadows are unchanged.
 
-- Add native allocation-source transport for covered same-mount reparent, role and
-  scale changes, preserving published geometry and existing animation clocks;
-  extend structural, coupled-input, hold and ghost retry coverage. This is not
-  complete topology/platform qualification.
+- Add native allocation-source transport for same-mount reparent, role and scale
+  changes, preserving published geometry and existing animation clocks; remounts
+  do not inherit old sources. Structural, coupled-input, hold and ghost retries
+  have native regression coverage. Large-tree performance optimization and physical
+  platform/constrained-device qualification remain separate follow-up work.
 
 - `Emerge.UI.Animation.change/3` now takes an attribute list, for example `Animation.change([width(fill()), height(px(60))], 1000, :linear)`, instead of a single attribute. Each field receives the shared timing; ordered overrides and per-field policy removal are preserved.
 
@@ -33,6 +34,37 @@
 - Parsed SVG cache configuration and universal multi-color gradients are included in the v14 macOS host protocol.
 
 ### Fixed
+
+- A full tree channel no longer blocks the event actor from receiving Stop. Unsent
+  native operation packets retain FIFO order and mount/receipt authority; host
+  drains remain bounded. Renderer shutdown signals actors independently and wakes
+  rendering before waiting on full actor channels. This does not impose a memory cap.
+
+- Native input replay and fresh cursor draining now yield after 64 top-level inputs.
+  The macOS host feedback loop no longer drains and loses the next request at its
+  eight-round budget boundary; queued work remains available for the next call.
+
+- Stalled native input no longer rescans/reallocates its full history on every
+  enqueue or reinserts untouched tails after each replayed edit. FIFO recovery
+  preserves adjacent coalescing and event order; full drain releases queue storage.
+  Noncoalescible input already admitted to that FIFO is retained without a new
+  memory cap; this does not fix Wayland full-ingress-channel drops.
+
+- Failed binary headless draws/readbacks no longer strand terminal frames. The
+  newest failed scene retries with bounded backoff; replacement and Stop remain
+  responsive between attempts, without restarting native animation clocks.
+
+- In-flight native input commands no longer edit, focus, scroll or restyle a
+  replacement widget reusing the same ID. Mount-scoped event packets preserve
+  grouped effects and response controls; deferred writes also recheck their mount.
+
+- Buffered pointer releases and drag anchors no longer transfer to replacement
+  widgets reusing the same ID. Native mount checks also reset old hover and pending
+  edit state; delayed hover/drag and actor/headless damage coverage is expanded.
+
+- Older queued animation registries no longer release newer buffered input.
+  Native response fences preserve keyboard/IME replay through delayed installation;
+  event-side coalescing retains only still-eligible mount focus and drains bounded batches.
 
 - Use libc's platform-specific ioctl request type for DMA-BUF CPU synchronization, fixing DRM/OpenGL compilation against musl.
 
@@ -55,7 +87,7 @@
 
 - Native dimension-clock evidence now composes per axis, including self-node feedback and numeric/mixed drivers. Historical native goal receipts preserve first change/exit motion and coupled cancellation across model changes; combined context releases use original clock inputs rather than mixing old environment with new loop phase.
 
-- Ongoing finite shared-pool and Content-parent animations preserve their curve against mixed looping peers/children when native same-context clock evidence is available. Feedback loops keep their clocks and frozen presentations; exact forecast destinations remain validated. Combined historical model/clock inputs remain under qualification.
+- Ongoing finite shared-pool and Content-parent animations preserve their curve against mixed looping peers/children using native clock evidence. Feedback loops keep their clocks and frozen presentations; exact forecast destinations and combined historical model/clock inputs remain validated.
 
 - Finite shared-pool and Content-parent dimension animations can release against mixed looping peers/children, including loop boundaries. Native forecast/destination checks preserve query provenance, retry safety and independent clocks without retaining a history chain.
 
