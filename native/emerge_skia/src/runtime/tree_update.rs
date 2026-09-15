@@ -94,6 +94,7 @@ pub struct TreeUpdateEngine {
     animation_runtime: AnimationRuntime,
     latest_animation_sample_time: Option<Instant>,
     animation_retry: AnimationRetry,
+    listener_barrier: Option<crate::actors::ListenerBarrier>,
 }
 
 impl TreeUpdateEngine {
@@ -107,6 +108,7 @@ impl TreeUpdateEngine {
             animation_runtime: AnimationRuntime::default(),
             latest_animation_sample_time: None,
             animation_retry: AnimationRetry::default(),
+            listener_barrier: None,
         }
     }
 
@@ -185,12 +187,46 @@ impl TreeUpdateEngine {
         let mut animation_sample_requested = false;
         let mut animation_sync_requested = false;
 
-        for message in flat {
+        // Stack expansion preserves packet/control ordering while validating an
+        // event operation against the tree at its actual consumption point.
+        flat.reverse();
+        while let Some(message) = flat.pop() {
             registry_requested |= message.requires_listener_registry_response();
-
+            if let TreeMsg::EventBatch {
+                target_mounts,
+                messages,
+            } = message
+            {
+                let valid = target_mounts
+                    .iter()
+                    .all(|(id, mount)| self.is_current_mount(id, *mount))
+                    && messages.iter().all(|message| {
+                        message.target_id().map_or_else(
+                            || message.is_event_control(),
+                            |id| {
+                                target_mounts
+                                    .binary_search_by_key(&id.0, |(target, _)| target.0)
+                                    .is_ok()
+                            },
+                        )
+                    });
+                registry_requested |= !valid;
+                flat.extend(
+                    messages
+                        .into_iter()
+                        .rev()
+                        .filter(|message| valid || message.is_event_control()),
+                );
+                continue;
+            }
+            let mount = message
+                .target_id()
+                .and_then(|id| self.tree.get(&id))
+                .filter(|node| node.is_live())
+                .map(|node| node.lifecycle.mounted_at_revision);
             match message {
                 TreeMsg::Stop => return Ok(TreeUpdateEffect::Stop),
-                TreeMsg::Batch(_) => {
+                TreeMsg::Batch(_) | TreeMsg::EventBatch { .. } => {
                     unreachable!("tree batches must be flattened before processing")
                 }
                 TreeMsg::UploadTree {
@@ -305,29 +341,29 @@ impl TreeUpdateEngine {
                     }
                 }
                 TreeMsg::ScrollRequest { element_id, dx, dy } => {
-                    let entry = scroll_acc.entry(element_id).or_insert((0.0, 0.0));
+                    let entry = scroll_acc.entry((element_id, mount)).or_insert((0.0, 0.0));
                     entry.0 += dx;
                     entry.1 += dy;
                 }
                 TreeMsg::ScrollbarThumbDragX { element_id, dx } => {
-                    let entry = thumb_drag_x_acc.entry(element_id).or_insert(0.0);
+                    let entry = thumb_drag_x_acc.entry((element_id, mount)).or_insert(0.0);
                     *entry += dx;
                 }
                 TreeMsg::ScrollbarThumbDragY { element_id, dy } => {
-                    let entry = thumb_drag_y_acc.entry(element_id).or_insert(0.0);
+                    let entry = thumb_drag_y_acc.entry((element_id, mount)).or_insert(0.0);
                     *entry += dy;
                 }
                 TreeMsg::SetScrollbarXHover {
                     element_id,
                     hovered,
                 } => {
-                    hover_x_state.insert(element_id, hovered);
+                    hover_x_state.insert((element_id, mount), hovered);
                 }
                 TreeMsg::SetScrollbarYHover {
                     element_id,
                     hovered,
                 } => {
-                    hover_y_state.insert(element_id, hovered);
+                    hover_y_state.insert((element_id, mount), hovered);
                 }
                 TreeMsg::SetMouseOverActive { element_id, active } => {
                     crate::debug_trace::hover_trace!(
@@ -336,13 +372,13 @@ impl TreeUpdateEngine {
                         element_id.0,
                         active
                     );
-                    mouse_over_active_state.insert(element_id, active);
+                    mouse_over_active_state.insert((element_id, mount), active);
                 }
                 TreeMsg::SetMouseDownActive { element_id, active } => {
-                    mouse_down_active_state.insert(element_id, active);
+                    mouse_down_active_state.insert((element_id, mount), active);
                 }
                 TreeMsg::SetFocusedActive { element_id, active } => {
-                    focused_active_state.insert(element_id, active);
+                    focused_active_state.insert((element_id, mount), active);
                 }
                 TreeMsg::SetTextInputContent {
                     element_id,
@@ -414,6 +450,10 @@ impl TreeUpdateEngine {
                     animation_predicted_next_present_at = Some(predicted_next_present_at);
                     animation_sample_requested = true;
                 }
+                TreeMsg::ListenerBarrier(barrier) => {
+                    self.listener_barrier = Some(barrier);
+                    registry_requested = true;
+                }
                 TreeMsg::RebuildRegistry => {
                     registry_requested = true;
                 }
@@ -460,32 +500,64 @@ impl TreeUpdateEngine {
             stats.record_pipeline_submit_to_tree_start(submitted_at, tree_batch_started_at);
         }
 
-        for (id, (dx, dy)) in scroll_acc {
+        for ((id, mount), (dx, dy)) in scroll_acc {
+            if !self.is_current_mount(&id, mount) {
+                registry_requested = true;
+                continue;
+            }
             invalidation.add(self.tree.apply_scroll(&id, dx, dy));
         }
-        for (id, dx) in thumb_drag_x_acc {
+        for ((id, mount), dx) in thumb_drag_x_acc {
+            if !self.is_current_mount(&id, mount) {
+                registry_requested = true;
+                continue;
+            }
             invalidation.add(self.tree.apply_scroll_x(&id, dx));
         }
-        for (id, dy) in thumb_drag_y_acc {
+        for ((id, mount), dy) in thumb_drag_y_acc {
+            if !self.is_current_mount(&id, mount) {
+                registry_requested = true;
+                continue;
+            }
             invalidation.add(self.tree.apply_scroll_y(&id, dy));
         }
-        for (id, hovered) in hover_x_state {
+        for ((id, mount), hovered) in hover_x_state {
+            if !self.is_current_mount(&id, mount) {
+                registry_requested = true;
+                continue;
+            }
             invalidation.add(self.tree.set_scrollbar_x_hover(&id, hovered));
         }
-        for (id, hovered) in hover_y_state {
+        for ((id, mount), hovered) in hover_y_state {
+            if !self.is_current_mount(&id, mount) {
+                registry_requested = true;
+                continue;
+            }
             invalidation.add(self.tree.set_scrollbar_y_hover(&id, hovered));
         }
-        for (id, active) in &mouse_over_active_state {
+        for ((id, mount), active) in &mouse_over_active_state {
+            if !self.is_current_mount(id, *mount) {
+                registry_requested = true;
+                continue;
+            }
             let update_invalidation = self.tree.set_mouse_over_active(id, *active);
             record_frame_attr_dirty_id(&mut frame_attr_dirty_ids, *id, update_invalidation);
             invalidation.add(update_invalidation);
         }
-        for (id, active) in mouse_down_active_state {
+        for ((id, mount), active) in mouse_down_active_state {
+            if !self.is_current_mount(&id, mount) {
+                registry_requested = true;
+                continue;
+            }
             let update_invalidation = self.tree.set_mouse_down_active(&id, active);
             record_frame_attr_dirty_id(&mut frame_attr_dirty_ids, id, update_invalidation);
             invalidation.add(update_invalidation);
         }
-        for (id, active) in focused_active_state {
+        for ((id, mount), active) in focused_active_state {
+            if !self.is_current_mount(&id, mount) {
+                registry_requested = true;
+                continue;
+            }
             let update_invalidation = self.tree.set_focused_active(&id, active);
             record_frame_attr_dirty_id(&mut frame_attr_dirty_ids, id, update_invalidation);
             invalidation.add(update_invalidation);
@@ -679,7 +751,7 @@ impl TreeUpdateEngine {
                 }
             });
 
-        let effect = match plan.action {
+        let mut effect = match plan.action {
             RefreshDecision::Skip => {
                 self.clear_latest_sample_time_if_inactive(plan.animations_active);
                 TreeUpdateEffect::Skip
@@ -843,8 +915,27 @@ impl TreeUpdateEngine {
                 refresh_registry_post: patch_refresh_registry_post_duration,
             },
         );
+        // Only successful output carries the fence. Failed preparation leaves
+        // the event lane stale until a later valid rebuild/explicit retry.
+        match &mut effect {
+            TreeUpdateEffect::Layout { output, .. } => {
+                output.event_rebuild.listener_barrier = self.listener_barrier.clone()
+            }
+            TreeUpdateEffect::RegistryUpdate { rebuild } => {
+                rebuild.listener_barrier = self.listener_barrier.clone()
+            }
+            _ => {}
+        }
         self.animation_retry = AnimationRetry::default();
         Ok(effect)
+    }
+
+    fn is_current_mount(&self, id: &NodeId, mount: Option<u64>) -> bool {
+        mount.is_some_and(|mount| {
+            self.tree
+                .get(id)
+                .is_some_and(|node| node.is_live() && node.lifecycle.mounted_at_revision == mount)
+        })
     }
 
     fn failed_animation_attempt(
@@ -2415,10 +2506,12 @@ mod tests {
                 .borrow_mut()
                 .fail_query =
                 Some(crate::tree::animation::lengths::inspection::QueryKind::PreviousModel);
-            let failed = engine.process_messages(
-                pulse(start + Duration::from_secs(1)),
-                TreeUpdateOptions::new(None, policy),
-            );
+            let barrier = crate::actors::ListenerBarrier::default();
+            let messages = pulse(start + Duration::from_secs(1))
+                .into_iter()
+                .chain([TreeMsg::ListenerBarrier(barrier.clone())])
+                .collect();
+            let failed = engine.process_messages(messages, TreeUpdateOptions::new(None, policy));
             match policy {
                 TreeUpdateDecodePolicy::ReturnErr => {
                     assert!(matches!(failed,Err(ref e) if e.contains("InjectedQuery")))
@@ -2495,6 +2588,7 @@ mod tests {
                     .process_messages(recovery_messages, TreeUpdateOptions::new(None, policy))
                     .unwrap(),
             );
+            assert!(barrier.matches(recovered.event_rebuild.listener_barrier.as_ref().unwrap()));
             assert_eq!(engine.animation_retry.failures, 0);
             assert_eq!(recovered.animations_active, with_ghost);
             if with_ghost {

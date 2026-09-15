@@ -4206,10 +4206,11 @@ fn test_harness_drain_mouse_over_msgs<'a>(
         }
     }
 
-    flat.into_iter()
+    flat.iter()
+        .flat_map(TreeMsg::commands)
         .filter_map(|msg| match msg {
             TreeMsg::SetMouseOverActive { element_id, active } => {
-                Some(encode_hover_msg(env, &element_id, active))
+                Some(encode_hover_msg(env, element_id, *active))
             }
             _ => None,
         })
@@ -4367,12 +4368,13 @@ mod tests {
                 runtime::tree_actor::push_tree_message_flat(msg, &mut msgs);
             }
 
-            msgs.into_iter()
+            msgs.iter()
+                .flat_map(TreeMsg::commands)
                 .filter_map(|msg| match msg {
                     TreeMsg::SetMouseOverActive {
                         element_id: id,
                         active,
-                    } if &id == element_id => Some(active),
+                    } if id == element_id => Some(*active),
                     _ => None,
                 })
                 .collect()
@@ -4448,7 +4450,7 @@ mod tests {
             }
         }
 
-        out
+        out.iter().flat_map(TreeMsg::commands).cloned().collect()
     }
 
     #[cfg(all(feature = "wayland-vulkan", target_os = "linux"))]

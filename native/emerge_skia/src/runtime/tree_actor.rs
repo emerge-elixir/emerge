@@ -109,11 +109,7 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                 Ok(TreeUpdateEffect::Stop) => return,
                 Ok(TreeUpdateEffect::Skip) => {}
                 Ok(TreeUpdateEffect::RegistryUpdate { rebuild }) => {
-                    pending_registry = Some(coalesce_registry(
-                        engine.tree(),
-                        pending_registry.take(),
-                        rebuild,
-                    ));
+                    pending_registry = Some(coalesce_registry(pending_registry.take(), rebuild));
                 }
                 Ok(TreeUpdateEffect::Layout {
                     mut output,
@@ -129,7 +125,6 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                             eprintln!("event channel busy, coalescing latest registry and scene");
                         }
                         pending_registry = Some(coalesce_registry(
-                            engine.tree(),
                             pending_registry.take(),
                             std::mem::take(&mut output.event_rebuild),
                         ));
@@ -154,21 +149,11 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
 }
 
 fn coalesce_registry(
-    tree: &ElementTree,
     previous: Option<crate::events::RegistryRebuildPayload>,
     mut next: crate::events::RegistryRebuildPayload,
 ) -> crate::events::RegistryRebuildPayload {
-    if next.focus_on_mount.is_none() {
-        next.focus_on_mount = previous
-            .filter(|old| next.focused_id.is_none() || old.focused_id == next.focused_id)
-            .and_then(|old| old.focus_on_mount)
-            .and_then(|pending| {
-                crate::events::registry_builder::rebind_pending_mount_focus(
-                    tree,
-                    &next.base_registry,
-                    pending,
-                )
-            });
+    if let Some(old) = previous {
+        next.carry_mount_focus(old.focus_on_mount, old.focused_id);
     }
     next
 }

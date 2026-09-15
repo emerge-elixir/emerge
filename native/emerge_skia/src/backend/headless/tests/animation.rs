@@ -21,9 +21,14 @@ use crate::{
 use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
-struct Sink(Mutex<Vec<(NodeId, ElementEventKind)>>);
+struct Sink(
+    Mutex<Vec<(NodeId, ElementEventKind)>>,
+    Mutex<Vec<InputEvent>>,
+);
 impl HostEventSink for Sink {
-    fn send_raw_input(&self, _: &InputEvent) {}
+    fn send_raw_input(&self, event: &InputEvent) {
+        self.1.lock().unwrap().push(event.clone());
+    }
     fn send_element_event(
         &self,
         id: &NodeId,
@@ -138,6 +143,13 @@ struct Harness {
     actor_raster: RasterHeadlessRenderer,
     retained: Option<(crate::render_scene::RenderScene, Vec<u8>)>,
     frames: usize,
+    render_tap: Option<Sender<RenderMsg>>,
+    last_pixels: Vec<u8>,
+    defer_install: bool,
+    deferred: std::collections::VecDeque<(
+        crate::events::RegistryRebuildPayload,
+        crate::events::RegistryRebuildPayload,
+    )>,
 }
 fn raster() -> RasterHeadlessRenderer {
     RasterHeadlessRenderer::new(
@@ -187,6 +199,10 @@ impl Harness {
             actor_raster: raster(),
             retained: None,
             frames: 0,
+            render_tap: None,
+            last_pixels: Vec::new(),
+            defer_install: false,
+            deferred: Default::default(),
         }
     }
     fn registry(&mut self, rebuild: crate::events::RegistryRebuildPayload) {
@@ -196,10 +212,33 @@ impl Harness {
             panic!("registry");
         };
         assert_registry_rebuild_payloads_equivalent(&rebuild, &other);
-        self.direct_events.install_rebuild(rebuild);
-        self.actor_events.install_rebuild(other);
+        if self.defer_install {
+            self.deferred.push_back((rebuild, other));
+        } else {
+            self.direct_events.install_rebuild(rebuild);
+            self.actor_events.install_rebuild(other);
+        }
     }
-    fn round_trip(&mut self, mut messages: Vec<TreeMsg>) {
+    fn flush_deferred(&mut self) {
+        for _ in 0..128 {
+            let Some((a, b)) = self.deferred.pop_front() else {
+                return;
+            };
+            self.direct_events.install_rebuild(a);
+            self.actor_events.install_rebuild(b);
+            let messages = self.direct_events.drain_tree_messages();
+            let other = self.actor_events.drain_tree_messages();
+            assert_eq!(format!("{messages:?}"), format!("{other:?}"));
+            if !messages.is_empty() {
+                self.round_trip_pair(messages, other);
+            }
+        }
+        panic!("deferred registry feedback did not settle");
+    }
+    fn round_trip(&mut self, messages: Vec<TreeMsg>) {
+        self.round_trip_pair(messages.clone(), messages);
+    }
+    fn round_trip_pair(&mut self, mut messages: Vec<TreeMsg>, mut other: Vec<TreeMsg>) {
         for _ in 0..16 {
             let effect = self
                 .engine
@@ -208,7 +247,7 @@ impl Harness {
                     TreeUpdateOptions::new(None, TreeUpdateDecodePolicy::ReturnErr),
                 )
                 .unwrap();
-            self.tx.send(TreeMsg::Batch(messages)).unwrap();
+            self.tx.send(TreeMsg::Batch(other)).unwrap();
             match effect {
                 TreeUpdateEffect::RegistryUpdate { rebuild } => self.registry(rebuild),
                 TreeUpdateEffect::Layout { output, .. } => {
@@ -227,6 +266,20 @@ impl Harness {
                     else {
                         panic!("scene");
                     };
+                    if let Some(tap) = &self.render_tap {
+                        tap.send(RenderMsg::Scene {
+                            scene: scene.clone(),
+                            version,
+                            animate,
+                            ime_enabled,
+                            ime_cursor_area,
+                            ime_text_state: ime_text_state.clone(),
+                            pipeline_submitted_at: None,
+                            pipeline_render_queued_at: None,
+                            animation_trace: None,
+                        })
+                        .unwrap();
+                    }
                     assert_eq!(animate, output.animations_active);
                     assert_eq!(ime_enabled, output.ime_enabled);
                     assert_eq!(ime_cursor_area, output.ime_cursor_area);
@@ -247,6 +300,9 @@ impl Harness {
                         raster().render(&expected).data,
                         "retained damage must match a fresh raster surface"
                     );
+                    if self.render_tap.is_some() {
+                        self.last_pixels = a.data.clone();
+                    }
                     if self.retained.is_none() {
                         self.retained = Some((output.scene, a.data));
                     }
@@ -256,7 +312,7 @@ impl Harness {
                 TreeUpdateEffect::Stop => panic!("unexpected stop"),
             }
             messages = self.direct_events.drain_tree_messages();
-            let other = self.actor_events.drain_tree_messages();
+            other = self.actor_events.drain_tree_messages();
             assert_eq!(format!("{messages:?}"), format!("{other:?}"));
             if messages.is_empty() {
                 return;
@@ -271,7 +327,7 @@ impl Harness {
         let other = self.actor_events.drain_tree_messages();
         assert_eq!(format!("{messages:?}"), format!("{other:?}"));
         if !messages.is_empty() {
-            self.round_trip(messages);
+            self.round_trip_pair(messages, other);
         }
         assert_eq!(
             *self.sinks[0].0.lock().unwrap(),
@@ -386,5 +442,231 @@ fn actor_direct_and_raster_headless_match_focus_ime_drag_wheel_nearby_and_final_
         h.actor_raster
             .render(&RenderState::new(scene, Color::TRANSPARENT, 10_000, false))
             .data
+    );
+}
+
+#[test]
+fn delayed_registry_install_replays_keyboard_ime_and_wheel_during_animation_without_losing_input() {
+    let assets = assets::AssetRuntime::new();
+    let _assets = assets.enter();
+    for queued in [1, 8, 32] {
+        let mut h = Harness::new(assets.context());
+        let start = Instant::now();
+        let pulse = |us| TreeMsg::AnimationPulse {
+            presented_at: start + Duration::from_micros(us),
+            predicted_next_present_at: start + Duration::from_micros(us),
+            trace: None,
+        };
+        h.round_trip(vec![pulse(0)]);
+        let initial = h.direct_events.focused_text_state().unwrap().content;
+        h.defer_install = true;
+        for index in 1..=queued {
+            h.round_trip(vec![pulse(index * 10000)]);
+        }
+        h.input(InputEvent::TextCommit {
+            text: "X".into(),
+            mods: 0,
+        });
+        h.input(InputEvent::TextPreedit {
+            text: "ime".into(),
+            cursor: Some((1, 1)),
+        });
+        h.input(InputEvent::TextCommit {
+            text: "Y".into(),
+            mods: 0,
+        });
+        h.input(InputEvent::CursorScroll {
+            dx: 0.0,
+            dy: -40.0,
+            x: 10.0,
+            y: 40.0,
+        });
+        h.round_trip(vec![pulse(500000)]);
+        h.flush_deferred();
+        let final_state = h.direct_events.focused_text_state().unwrap();
+        assert!(final_state.content.contains("XY"), "{final_state:?}");
+        assert_eq!(final_state.content.replace("XY", ""), initial);
+        assert!(final_state.preedit.is_none());
+        assert_eq!(h.actor_events.focused_text_state(), Some(final_state));
+        assert!(h.engine.tree().get(&NodeId(2)).unwrap().layout.scroll_y > 0.0);
+        h.defer_install = false;
+        h.round_trip(vec![pulse(1000000)]);
+        h.round_trip(vec![pulse(1100000)]);
+        assert!(
+            h.engine
+                .tree()
+                .get(&NodeId(2))
+                .unwrap()
+                .layout
+                .dimension_samples
+                .is_none()
+        );
+        assert_eq!(*h.sinks[0].0.lock().unwrap(), *h.sinks[1].0.lock().unwrap());
+        assert!(h.events.is_empty());
+        assert!(h.deferred.is_empty());
+        let (scene, old_pixels) = h.retained.take().unwrap();
+        let retained = RenderState::new(scene, Color::TRANSPARENT, 0, false);
+        assert_eq!(raster().render(&retained).data, old_pixels);
+    }
+}
+
+#[test]
+fn delayed_pointer_release_and_nearby_hover_match_actor_and_headless_damage() {
+    let assets = assets::AssetRuntime::new();
+    let _assets = assets.enter();
+    for queued in [1, 8, 32] {
+        let mut h = Harness::new(assets.context());
+        h.direct_events.set_input_mask(u32::MAX);
+        h.actor_events.set_input_mask(u32::MAX);
+        let start = Instant::now();
+        let pulse = |us| TreeMsg::AnimationPulse {
+            presented_at: start + Duration::from_micros(us),
+            predicted_next_present_at: start + Duration::from_micros(us),
+            trace: None,
+        };
+        h.round_trip(vec![pulse(0)]);
+        h.input(InputEvent::CursorEntered { entered: true });
+        h.input(InputEvent::CursorPos { x: 410.0, y: 10.0 });
+        h.input(InputEvent::CursorButton {
+            button: "left".into(),
+            action: 1,
+            mods: 0,
+            x: 10.0,
+            y: 10.0,
+        });
+        h.defer_install = true;
+        for index in 1..=queued {
+            h.round_trip(vec![pulse(index * 10000)]);
+        }
+        h.input(InputEvent::TextCommit {
+            text: "X".into(),
+            mods: 0,
+        });
+        h.input(InputEvent::CursorPos { x: 150.0, y: 10.0 });
+        h.input(InputEvent::CursorPos { x: 70.0, y: 10.0 });
+        h.input(InputEvent::CursorButton {
+            button: "left".into(),
+            action: 0,
+            mods: 0,
+            x: 70.0,
+            y: 10.0,
+        });
+        h.input(InputEvent::CursorPos { x: 410.0, y: 10.0 });
+        h.round_trip(vec![pulse(500000)]);
+        h.flush_deferred();
+        h.defer_install = false;
+        let selected = h.direct_events.focused_text_state().unwrap();
+        assert!(selected.selection_anchor.is_some());
+        assert!(selected.cursor > 0);
+        h.input(InputEvent::CursorPos { x: 0.0, y: 10.0 });
+        assert_eq!(
+            h.direct_events.focused_text_state(),
+            Some(selected),
+            "motion after release must not keep changing selection"
+        );
+        assert!(
+            !h.engine
+                .tree()
+                .get(&NodeId(5))
+                .unwrap()
+                .runtime
+                .mouse_over_active
+        );
+        let events = h.sinks[0].0.lock().unwrap();
+        assert!(events.contains(&(NodeId(5), ElementEventKind::MouseEnter)));
+        assert!(events.contains(&(NodeId(5), ElementEventKind::MouseLeave)));
+        drop(events);
+        assert_eq!(*h.sinks[0].1.lock().unwrap(), *h.sinks[1].1.lock().unwrap());
+        assert_eq!(
+            h.sinks[0].1.lock().unwrap().len(),
+            9,
+            "buffered replay and synthetic cursor checks do not duplicate observer input"
+        );
+        h.round_trip(vec![pulse(1000000)]);
+        h.round_trip(vec![pulse(1100000)]);
+        assert!(
+            h.engine
+                .tree()
+                .get(&NodeId(2))
+                .unwrap()
+                .layout
+                .dimension_samples
+                .is_none()
+        );
+        let (scene, pixels) = h.retained.take().unwrap();
+        assert_eq!(
+            raster()
+                .render(&RenderState::new(scene, Color::TRANSPARENT, 0, false))
+                .data,
+            pixels
+        );
+    }
+}
+
+#[test]
+fn queued_old_mount_edit_matches_actor_and_headless_after_replacement() {
+    let assets = assets::AssetRuntime::new();
+    let _assets = assets.enter();
+    let mut h = Harness::new(assets.context());
+    let now = Instant::now();
+    h.round_trip(vec![TreeMsg::AnimationPulse {
+        presented_at: now,
+        predicted_next_present_at: now,
+        trace: None,
+    }]);
+    assert!(h.direct_events.focused_text_state().is_some());
+    let input = InputEvent::TextCommit {
+        text: "X".into(),
+        mods: 0,
+    };
+    h.direct_events.handle_input(input.clone());
+    h.actor_events.handle_input(input);
+    let queued = h.direct_events.drain_tree_messages();
+    let other = h.actor_events.drain_tree_messages();
+    assert!(!queued.is_empty());
+    let raw: Vec<_> = 3u16
+        .to_be_bytes()
+        .into_iter()
+        .chain([1, 2])
+        .chain(200f64.to_be_bytes())
+        .chain([2, 2])
+        .chain(30f64.to_be_bytes())
+        .chain([56, 1])
+        .collect();
+    let attrs = crate::tree::attrs::decode_attrs(&raw).unwrap();
+    let mut replacement = ElementTree::new();
+    replacement.insert(Element::with_attrs(
+        NodeId(3),
+        ElementKind::TextInput,
+        raw,
+        attrs,
+    ));
+    replacement.set_root_id(NodeId(3));
+    h.round_trip(vec![TreeMsg::UploadTree {
+        bytes: crate::tree::serialize::encode_tree(&replacement),
+        submitted_at: None,
+    }]);
+    h.round_trip_pair(queued, other);
+    assert_eq!(
+        h.engine
+            .tree()
+            .get(&NodeId(3))
+            .unwrap()
+            .spec
+            .declared
+            .content
+            .as_deref()
+            .unwrap_or_default(),
+        ""
+    );
+    assert!(h.direct_events.focused_text_state().is_none());
+    assert!(h.actor_events.focused_text_state().is_none());
+    assert_eq!(*h.sinks[0].0.lock().unwrap(), *h.sinks[1].0.lock().unwrap());
+    let (scene, pixels) = h.retained.take().unwrap();
+    assert_eq!(
+        raster()
+            .render(&RenderState::new(scene, Color::TRANSPARENT, 0, false))
+            .data,
+        pixels
     );
 }

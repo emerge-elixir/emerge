@@ -1140,12 +1140,36 @@ pub struct FocusOnMountTarget {
 /// - `focus_on_mount` for one-shot mount-time focus requests
 #[derive(Default)]
 pub struct RegistryRebuildPayload {
+    /// Latest event request fence covered by this successful tree output.
+    pub listener_barrier: Option<crate::actors::ListenerBarrier>,
+    /// Eligible mounts with current native focus-reveal geometry, including old
+    /// revisions whose one-shot request may still be waiting in a channel.
+    pub mount_focus_targets: Option<std::sync::Arc<HashMap<NodeId, FocusOnMountTarget>>>,
     pub base_registry: registry_builder::Registry,
     pub text_inputs: HashMap<NodeId, TextInputState>,
     pub sliders: HashMap<NodeId, SliderState>,
     pub scrollbars: HashMap<(NodeId, ScrollbarAxis), ScrollbarNode>,
     pub focused_id: Option<NodeId>,
     pub focus_on_mount: Option<FocusOnMountTarget>,
+}
+impl RegistryRebuildPayload {
+    pub(crate) fn carry_mount_focus(
+        &mut self,
+        pending: Option<FocusOnMountTarget>,
+        previous_focused: Option<NodeId>,
+    ) {
+        if self.focus_on_mount.is_none()
+            && (self.focused_id.is_none() || self.focused_id == previous_focused)
+        {
+            self.focus_on_mount = pending.and_then(|pending| {
+                self.mount_focus_targets
+                    .as_ref()?
+                    .get(&pending.element_id)
+                    .filter(|current| current.mounted_at_revision == pending.mounted_at_revision)
+                    .cloned()
+            });
+        }
+    }
 }
 
 fn text_input_state(
