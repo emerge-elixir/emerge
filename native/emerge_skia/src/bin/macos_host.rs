@@ -739,30 +739,22 @@ mod app {
             }])
         }
 
-        fn process_tree_messages(&mut self, mut messages: Vec<TreeMsg>) -> Result<(), String> {
-            let mut iterations = 0;
-
-            loop {
-                let effect = self.tree_engine.process_messages(
-                    messages,
-                    TreeUpdateOptions::new(self.stats.as_ref(), TreeUpdateDecodePolicy::ReturnErr),
-                )?;
-
-                if !self.apply_tree_update_effect(effect) {
-                    return Ok(());
-                }
-
-                let runtime_messages = self.event_runtime.drain_tree_messages();
-                if runtime_messages.is_empty() {
-                    return Ok(());
-                }
-
-                messages = runtime_messages;
-                iterations += 1;
-                if iterations >= 8 {
-                    return Ok(());
-                }
-            }
+        fn process_tree_messages(&mut self, messages: Vec<TreeMsg>) -> Result<(), String> {
+            emerge_skia::runtime::host_feedback::process_host_feedback(
+                self,
+                messages,
+                |session, messages| {
+                    let effect = session.tree_engine.process_messages(
+                        messages,
+                        TreeUpdateOptions::new(
+                            session.stats.as_ref(),
+                            TreeUpdateDecodePolicy::ReturnErr,
+                        ),
+                    )?;
+                    Ok(session.apply_tree_update_effect(effect))
+                },
+                |session| session.event_runtime.drain_tree_messages(),
+            )
         }
 
         fn apply_tree_update_effect(&mut self, effect: TreeUpdateEffect) -> bool {

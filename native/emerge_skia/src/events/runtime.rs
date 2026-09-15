@@ -94,6 +94,9 @@ impl TreeSink for EventCommands {
     }
 }
 
+// Work quantum, not an input-retention bound or a wall-clock latency promise.
+const INPUT_BATCH_LIMIT: usize = 64;
+
 struct EventRuntimeDriver {
     runtime: DirectEventRuntime,
     awaiting_registry: Option<crate::actors::ListenerBarrier>,
@@ -854,7 +857,7 @@ impl ListenerComputeCtx for RuntimeListenerComputeCtx<'_> {
 struct ListenerLaneState {
     stale: bool,
     needs_barrier: bool,
-    buffered_inputs: Vec<InputEvent>,
+    buffered_inputs: VecDeque<InputEvent>,
 }
 
 impl ListenerLaneState {
@@ -862,7 +865,7 @@ impl ListenerLaneState {
         Self {
             stale: true,
             needs_barrier: false,
-            buffered_inputs: Vec::new(),
+            buffered_inputs: VecDeque::new(),
         }
     }
 
@@ -876,14 +879,40 @@ impl ListenerLaneState {
     }
 
     fn buffer_input(&mut self, event: InputEvent) {
-        self.buffered_inputs.push(event);
-        let mut buffered = std::mem::take(&mut self.buffered_inputs);
-        self.buffered_inputs = coalesce_input_events(&mut buffered);
+        if let Some(event) = coalesce_with_previous(self.buffered_inputs.back_mut(), event) {
+            self.buffered_inputs.push_back(event);
+        }
     }
 
-    fn mark_fresh_and_take_buffered(&mut self) -> Vec<InputEvent> {
+    fn mark_fresh_and_take_buffered(&mut self) -> VecDeque<InputEvent> {
         self.stale = false;
         std::mem::take(&mut self.buffered_inputs)
+    }
+
+    fn restore_replay_tail(&mut self, mut remaining: VecDeque<InputEvent>) {
+        // An empty drained deque drops its peak-capacity storage here, not on a
+        // deferred-free queue. The normal paused path transfers ownership in O(1).
+        if remaining.is_empty() {
+            return;
+        }
+        if self.buffered_inputs.is_empty() {
+            self.buffered_inputs = remaining;
+        } else {
+            // Nested dispatch may already have buffered input. Preserve its prior
+            // ordering and coalesce only the join; both interiors are normalized.
+            // Prepend that new prefix rather than reinserting the old remainder.
+            let mut prefix = std::mem::take(&mut self.buffered_inputs);
+            if let Some(first) = remaining.pop_front()
+                && let Some(first) = coalesce_with_previous(prefix.back_mut(), first)
+            {
+                remaining.push_front(first);
+            }
+            prefix
+                .into_iter()
+                .rev()
+                .for_each(|event| remaining.push_front(event));
+            self.buffered_inputs = remaining;
+        }
     }
 }
 
@@ -1648,39 +1677,42 @@ impl DirectEventRuntime {
 
     fn replay_buffered(
         &mut self,
-        events: Vec<InputEvent>,
+        mut events: VecDeque<InputEvent>,
         tree_tx: &dyn TreeSink,
         log_render: bool,
     ) {
         let event_count = events.len();
         self.log_event_diagnostic(log_render, || {
             format!(
-                "buffered replay begin\n  count: {event_count}\n  labels: {}\n  {}",
+                "buffered replay begin\n  count: {event_count}\n  labels (first 16): {}\n  {}",
                 events
                     .iter()
+                    .take(16)
                     .map(input_event_label)
                     .collect::<Vec<_>>()
                     .join(","),
                 self.diagnostic_summary(),
             )
         });
-        for event in events {
+        for _ in 0..INPUT_BATCH_LIMIT {
             if self.listener_lane.is_stale() {
-                self.log_event_diagnostic(log_render, || {
-                    format!(
-                        "buffered replay paused because lane became stale\n  event: {}\n  {}",
-                        input_event_label(&event),
-                        self.diagnostic_summary(),
-                    )
-                });
-                self.listener_lane.buffer_input(event);
-                continue;
+                break;
             }
+            let Some(event) = events.pop_front() else {
+                break;
+            };
             let dispatch_mode = match event {
                 InputEvent::CursorPos { .. } => DispatchMode::CursorRevalidate,
                 _ => DispatchMode::Normal,
             };
             self.dispatch_event(event, tree_tx, log_render, dispatch_mode);
+        }
+        self.listener_lane.restore_replay_tail(events);
+        if !self.listener_lane.is_stale() && !self.listener_lane.buffered_inputs.is_empty() {
+            // A finite continuation request reuses the existing ordered receipt
+            // gate. No extra scheduler/queue or fabricated animation pulse.
+            self.listener_lane.mark_stale();
+            send_tree(tree_tx, TreeMsg::RebuildRegistry, log_render);
         }
         self.log_event_diagnostic(log_render, || {
             format!("buffered replay end\n  {}", self.diagnostic_summary(),)
@@ -3038,47 +3070,45 @@ fn apply_focus_to(
     changed_tree
 }
 
+/// Only adjacent compatible events coalesce. Commits, keys, composition and
+/// button edges remain lossless ordering barriers.
+fn coalesce_with_previous(
+    previous: Option<&mut InputEvent>,
+    event: InputEvent,
+) -> Option<InputEvent> {
+    #[cfg(test)]
+    tests::delayed::stalled::visit();
+    match (previous, event.normalize_scroll()) {
+        (Some(previous @ InputEvent::CursorPos { .. }), event @ InputEvent::CursorPos { .. })
+        | (Some(previous @ InputEvent::Resized { .. }), event @ InputEvent::Resized { .. }) => {
+            *previous = event;
+            None
+        }
+        (
+            Some(InputEvent::CursorScroll {
+                dx: acc_dx,
+                dy: acc_dy,
+                x: acc_x,
+                y: acc_y,
+            }),
+            InputEvent::CursorScroll { dx, dy, x, y },
+        ) => {
+            *acc_dx += dx;
+            *acc_dy += dy;
+            *acc_x = x;
+            *acc_y = y;
+            None
+        }
+        (_, event) => Some(event),
+    }
+}
 fn coalesce_input_events(events: &mut Vec<InputEvent>) -> Vec<InputEvent> {
-    events
-        .drain(..)
-        .map(InputEvent::normalize_scroll)
-        .fold(Vec::new(), |mut coalesced, event| {
-            match event {
-                InputEvent::CursorPos { .. } => {
-                    if let Some(last @ InputEvent::CursorPos { .. }) = coalesced.last_mut() {
-                        *last = event;
-                    } else {
-                        coalesced.push(event);
-                    }
-                }
-                InputEvent::CursorScroll { dx, dy, x, y } => {
-                    if let Some(InputEvent::CursorScroll {
-                        dx: acc_dx,
-                        dy: acc_dy,
-                        x: acc_x,
-                        y: acc_y,
-                    }) = coalesced.last_mut()
-                    {
-                        *acc_dx += dx;
-                        *acc_dy += dy;
-                        *acc_x = x;
-                        *acc_y = y;
-                    } else {
-                        coalesced.push(InputEvent::CursorScroll { dx, dy, x, y });
-                    }
-                }
-                InputEvent::Resized { .. } => {
-                    if let Some(last @ InputEvent::Resized { .. }) = coalesced.last_mut() {
-                        *last = event;
-                    } else {
-                        coalesced.push(event);
-                    }
-                }
-                other => coalesced.push(other),
-            }
-
-            coalesced
-        })
+    events.drain(..).fold(Vec::new(), |mut coalesced, event| {
+        if let Some(event) = coalesce_with_previous(coalesced.last_mut(), event) {
+            coalesced.push(event);
+        }
+        coalesced
+    })
 }
 
 fn drain_fresh_input_events(
@@ -3091,7 +3121,10 @@ fn drain_fresh_input_events(
     }
 
     let mut events = vec![initial_event];
-    while let Ok(message) = event_rx.try_recv() {
+    for _ in 1..INPUT_BATCH_LIMIT {
+        let Ok(message) = event_rx.try_recv() else {
+            break;
+        };
         match message {
             EventMsg::InputEvent(event @ InputEvent::CursorPos { .. }) => events.push(event),
             other => {
@@ -3913,7 +3946,7 @@ mod tests {
             registry_builder::DragTrackerState::Active { .. }
         ));
         assert!(matches!(
-            runtime.listener_lane.buffered_inputs.as_mut_slice(),
+            runtime.listener_lane.buffered_inputs.make_contiguous(),
             [InputEvent::CursorButton { action, .. }]
                 if *action == crate::input::ACTION_RELEASE
         ));
