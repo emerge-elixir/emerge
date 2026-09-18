@@ -37,6 +37,8 @@
 
 ### Fixed
 
+- Paragraph layout now treats U+200B anchors as zero-width instead of measuring/rendering font glyphs for them. This fixes inflated indentation and spaces in Makeup-highlighted code, while retaining blank-line height.
+
 - Replace the invalid bundled Inter Bold Italic HTML download with the genuine v4.0 TTF, matching the other embedded Inter faces. Bold italic text now uses its real face instead of synthetic styling.
 
 - A full tree channel no longer blocks the event actor from receiving Stop. Unsent
