@@ -6569,8 +6569,13 @@ fn resolve_paragraph_children<M: TextMeasurer>(
 
         let leading_origin = starts_with_space.then_some((cursor_x - space_width, cursor_y));
         for (i, word) in words.iter().enumerate() {
+            // U+200B keeps whitespace-only spans/blank lines in paragraph flow,
+            // but is not a glyph. Font::measure_str does not shape default-ignorable
+            // characters and some fonts assign it a full advance. Strip it only
+            // after splitting, so each authored space still separates two words.
+            let word = word.replace('\u{200b}', "");
             let word_width =
-                measurer.measure_visual_width_with_font(word, font_size, &family, weight, italic);
+                measurer.measure_visual_width_with_font(&word, font_size, &family, weight, italic);
 
             let line_right = loop {
                 prune_flow_floats(active_floats, cursor_y);
@@ -6633,7 +6638,7 @@ fn resolve_paragraph_children<M: TextMeasurer>(
                 TextFragment {
                     x: cursor_x,
                     y: cursor_y + insets.top,
-                    text: word.to_string(),
+                    text: word,
                     font_size,
                     color: color.clone(),
                     family: family.clone(),

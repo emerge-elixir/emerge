@@ -39,6 +39,60 @@ fn paragraph_positions(tree: &ElementTree, id: NodeId) -> Vec<(f32, f32)> {
 }
 
 #[test]
+fn paragraph_zero_width_anchors_preserve_spaces_without_glyph_advances() {
+    for width in [24.0, 200.0] {
+        let (mut tree, id, _) = build_paragraph(
+            fixed_width_attrs(width),
+            vec![
+                (
+                    "indent",
+                    ElementKind::Text,
+                    text_attrs("\u{200b} \u{200b}\u{200b} \u{200b}"),
+                ),
+                ("word", ElementKind::Text, text_attrs("X\u{200b}")),
+            ],
+        );
+        layout_tree(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
+        let fragments = tree
+            .get(&id)
+            .unwrap()
+            .layout
+            .paragraph_fragments
+            .as_ref()
+            .unwrap();
+        let visible: Vec<_> = fragments.iter().filter(|f| !f.text.is_empty()).collect();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].text, "X");
+        assert_eq!((visible[0].x, visible[0].y), (16.0, 0.0));
+        assert!(fragments.iter().all(|f| !f.text.contains('\u{200b}')));
+    }
+}
+
+#[test]
+fn paragraph_zero_width_anchor_keeps_blank_line_height() {
+    let (mut tree, id, _) = build_paragraph(
+        fixed_width_attrs(200.0),
+        vec![("blank", ElementKind::Text, text_attrs("\u{200b}"))],
+    );
+    layout_tree(
+        &mut tree,
+        Constraint::new(800.0, 600.0),
+        1.0,
+        &MockTextMeasurer,
+    );
+    let paragraph = tree.get(&id).unwrap();
+    let fragments = paragraph.layout.paragraph_fragments.as_ref().unwrap();
+    assert_eq!(fragments.len(), 1);
+    assert!(fragments[0].text.is_empty());
+    assert_eq!(paragraph.layout.frame.unwrap().height, 16.0);
+}
+
+#[test]
 fn paragraph_alignment_positions_each_wrapped_line() {
     for (alignment, expected) in [
         (AlignX::Left, vec![(0.0, 0.0), (24.0, 0.0), (0.0, 16.0)]),
