@@ -149,7 +149,7 @@ pub fn assert_coverage(first: &CoverageSamples, last: &CoverageSamples) {
     );
     let pixels = &first.static_paint;
     assert!(
-        pixels.len() >= 8 && pixels.chunks_exact(4).any(|p| p != &pixels[..4]),
+        pixels.len() >= 8 && pixels.as_chunks::<4>().0.iter().any(|p| p != &pixels[..4]),
         "static recipe must contain painted detail, not a blank backdrop"
     );
 }
