@@ -12547,8 +12547,10 @@ mod tests {
             assert_eq!(pixels, render_single_command_to_pixels(200, 120, primitive));
             let blank = render_commands_to_pixels(200, 120, vec![]);
             let changed: Vec<_> = pixels
-                .chunks_exact(4)
-                .zip(blank.chunks_exact(4))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(blank.as_chunks::<4>().0.iter())
                 .enumerate()
                 .filter(|(_, (a, b))| a != b)
                 .map(|(i, _)| ((i % 200) as f32 + 0.5, (i / 200) as f32 + 0.5))
@@ -14847,7 +14849,7 @@ mod tests {
                     )],
                 },
             );
-            assert!(pixels.chunks_exact(4).all(|pixel| pixel[3] == 0));
+            assert!(pixels.as_chunks::<4>().0.iter().all(|pixel| pixel[3] == 0));
         }
     }
     #[test]

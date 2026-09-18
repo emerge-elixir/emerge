@@ -31,9 +31,11 @@ fn svg_gradient_tint_multiplies_source_alpha_and_reuses_untinted_variants() {
         let mask = render(image(None));
         let actual = render(image(Some(gradient.clone())));
         for ((actual, paint), mask) in actual
-            .chunks_exact(4)
-            .zip(paint.chunks_exact(4))
-            .zip(mask.chunks_exact(4))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(paint.as_chunks::<4>().0.iter())
+            .zip(mask.as_chunks::<4>().0.iter())
         {
             for channel in 0..4 {
                 let expected = (u16::from(paint[channel]) * u16::from(mask[3]) + 127) / 255;

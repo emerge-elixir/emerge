@@ -71,7 +71,7 @@ fn aligned_paragraph_text_and_decorations_share_positions_and_owner_paint() {
             });
             let draws = observe_tree(&tree);
             assert_eq!(draws.len(), fragments.len() * 3);
-            for (fragment, group) in fragments.iter().zip(draws.chunks_exact(3)) {
+            for (fragment, group) in fragments.iter().zip(draws.as_chunks::<3>().0.iter()) {
                 let DrawPrimitive::TextWithFont(x, y, text, _, paint, ..) = &group[0].primitive
                 else {
                     panic!("expected text before its decorations");
@@ -627,7 +627,7 @@ fn inline_decoration_matrix_reuses_complete_shared_box_paint() {
                 }
                 // Exercise the composed raster path as well as primitive emission.
                 let pixels = render_scene_to_pixels(200, 240, render_output(&tree).scene);
-                assert!(pixels.chunks_exact(4).any(|p| p[3] > 0));
+                assert!(pixels.as_chunks::<4>().0.iter().any(|p| p[3] > 0));
             }
         }
     }

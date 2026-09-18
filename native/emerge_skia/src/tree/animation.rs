@@ -751,13 +751,14 @@ impl AnimationRuntime {
             *pending = false;
             changed
         };
+        // Non-short-circuit OR: every pending entry must be anchored.
         let enter_changed = enters.into_iter().fold(false, |changed, id| {
             self.enter_entries.get_mut(&id).is_some_and(|entry| {
                 anchor(
                     &mut entry.started_at,
                     &mut entry.presentation_anchor_pending,
                 )
-            }) || changed
+            }) | changed
         });
         let exit_changed = exits.into_iter().fold(false, |changed, id| {
             self.exit_entries.get_mut(&id).is_some_and(|entry| {
@@ -765,7 +766,7 @@ impl AnimationRuntime {
                     &mut entry.started_at,
                     &mut entry.presentation_anchor_pending,
                 )
-            }) || changed
+            }) | changed
         });
         if (enter_changed || exit_changed) && self.identity.is_some() {
             self.rotate_identity();
@@ -2271,6 +2272,56 @@ mod tests {
             1.0,
         );
         assert_eq!(sample.attrs.alpha, Some(0.5));
+    }
+
+    #[test]
+    fn presentation_anchoring_visits_every_pending_enter_and_exit() {
+        let started_at = Instant::now();
+        let presented_at = started_at + std::time::Duration::from_millis(24);
+        let (enter_tree, enter_id) = tree_with_element(
+            Attrs {
+                animate_enter: Some(alpha_spec(0.0, 1.0, 100.0)),
+                ..Attrs::default()
+            },
+            1,
+            1,
+        );
+        let mut runtime = AnimationRuntime::default();
+        runtime.sync_with_tree(&enter_tree, started_at);
+        let enter = runtime.enter_entry(&enter_id).unwrap().clone();
+        let (exit_tree, _, exit_id) = tree_with_exit_ghost();
+        let mut exits = AnimationRuntime::default();
+        exits.sync_with_tree(&exit_tree, started_at);
+        let exit = exits.exit_entry(&exit_id).unwrap().clone();
+        for id in 100..104 {
+            runtime.enter_entries.insert(NodeId(id), enter.clone());
+            runtime.exit_entries.insert(NodeId(id + 100), exit.clone());
+        }
+        // Clearing pending is still required when the timestamp already matches.
+        runtime
+            .enter_entries
+            .get_mut(&NodeId(100))
+            .unwrap()
+            .started_at = presented_at;
+        runtime
+            .exit_entries
+            .get_mut(&NodeId(200))
+            .unwrap()
+            .started_at = presented_at;
+        runtime.anchor_pending_transient_entries_to_present(presented_at);
+        runtime.anchor_pending_transient_entries_to_present(
+            presented_at + std::time::Duration::from_millis(16),
+        );
+        assert_eq!(runtime.enter_entries.len(), 5);
+        assert_eq!(runtime.exit_entries.len(), 4);
+        for (_, entry) in runtime.enter_entries.iter() {
+            assert_eq!(entry.started_at, presented_at);
+            assert!(!entry.presentation_anchor_pending);
+        }
+        for (_, entry) in runtime.exit_entries.iter() {
+            assert_eq!(entry.started_at, presented_at);
+            assert!(!entry.presentation_anchor_pending);
+        }
     }
 
     #[test]
