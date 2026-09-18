@@ -98,10 +98,15 @@ pub enum AssetStatus {
     Failed,
 }
 
+const LOADING_INDICATOR_DELAY: Duration = Duration::from_millis(100);
+
 #[derive(Default)]
 struct AssetState {
     config: AssetConfig,
     sources: HashMap<ImageSource, AssetStatus>,
+    // Some(deadline) is the silent grace period; None is a visible indicator.
+    // Entries belong to active pending sources, not retained cache records.
+    loading_indicators: HashMap<ImageSource, Option<Instant>>,
     records: HashMap<String, Arc<AssetRecord>>,
     pending_count: usize,
     status_generation: u64,
@@ -118,6 +123,7 @@ impl AssetState {
             self.status_generation = self.status_generation.wrapping_add(1);
         }
         self.sources.clear();
+        self.loading_indicators.clear();
         self.records.clear();
         self.requests.clear();
         self.source_links.clear();
@@ -127,6 +133,15 @@ impl AssetState {
     fn set_source_status(&mut self, source: ImageSource, status: AssetStatus) {
         if self.sources.get(&source) == Some(&status) {
             return;
+        }
+
+        if matches!(status, AssetStatus::Pending) {
+            self.loading_indicators.insert(
+                source.clone(),
+                Some(Instant::now() + LOADING_INDICATOR_DELAY),
+            );
+        } else {
+            self.loading_indicators.remove(&source);
         }
 
         if let AssetStatus::Ready(asset) = &status {
@@ -415,6 +430,9 @@ pub fn ensure_tree_sources(tree: &ElementTree) {
             .retain(|source, _| active_sources.contains(source));
         state
             .requests
+            .retain(|source, _| active_sources.contains(source));
+        state
+            .loading_indicators
             .retain(|source, _| active_sources.contains(source));
         if removed != state.sources.len() {
             state.status_generation = state.status_generation.wrapping_add(1);
@@ -712,6 +730,56 @@ pub(crate) fn record_svg_rasterization() {
     if let Ok(mut state) = current_context().state.lock() {
         state.svg_cache.stats.rasterizations += 1;
     }
+}
+
+/// One-shot paint deadline, serviced by the tree actor or the existing host tick.
+/// Asset loading itself is never delayed and does not wait for this deadline.
+pub fn next_loading_indicator_deadline() -> Option<Instant> {
+    current_context()
+        .state
+        .lock()
+        .ok()?
+        .loading_indicators
+        .values()
+        .filter_map(|deadline| *deadline)
+        .min()
+}
+
+pub(crate) fn advance_loading_indicators(now: Instant) -> bool {
+    let context = current_context();
+    let Ok(mut state) = context.state.lock() else {
+        return false;
+    };
+    let changed = state
+        .loading_indicators
+        .values_mut()
+        .fold(false, |changed, deadline| {
+            if deadline.is_some_and(|at| at <= now) {
+                *deadline = None;
+                true
+            } else {
+                changed
+            }
+        });
+    if changed {
+        state.status_generation = state.status_generation.wrapping_add(1);
+    }
+    changed
+}
+
+pub(crate) fn loading_indicator_visible(source: &ImageSource) -> bool {
+    if let Some(visible) = FRAME_ASSETS.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .filter(|frame| frame.matches_current())
+            .map(|frame| frame.loading_indicators.contains(source))
+    }) {
+        return visible;
+    }
+    current_context()
+        .state
+        .lock()
+        .is_ok_and(|state| state.loading_indicators.get(source) == Some(&None))
 }
 
 pub fn source_status(source: &ImageSource) -> Option<AssetStatus> {
@@ -1420,6 +1488,7 @@ pub(crate) struct FrameAssets {
     owner: std::sync::Weak<Mutex<AssetState>>,
     pub(crate) images: crate::renderer::ImageSnapshot,
     sources: HashMap<ImageSource, AssetStatus>,
+    loading_indicators: HashSet<ImageSource>,
     status_generation: u64,
     measured: HashMap<crate::tree::element::NodeId, Option<(u32, u32)>>,
 }
@@ -1431,6 +1500,7 @@ impl FrameAssets {
                 owner: Arc::downgrade(&context.state),
                 images: Default::default(),
                 sources: HashMap::new(),
+                loading_indicators: HashSet::new(),
                 measured: HashMap::new(),
                 status_generation: 0,
             };
@@ -1513,6 +1583,16 @@ impl FrameAssets {
                         },
                     )
                 })
+                .collect(),
+            loading_indicators: statuses
+                .iter()
+                .filter(|(source, status)| {
+                    matches!(status, AssetStatus::Pending)
+                        && state.as_ref().is_some_and(|state| {
+                            state.loading_indicators.get(*source) == Some(&None)
+                        })
+                })
+                .map(|(source, _)| source.clone())
                 .collect(),
             sources: statuses,
         }

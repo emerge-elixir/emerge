@@ -3170,6 +3170,9 @@ fn test_svg_slider_thumb_paints_above_scroll_moving_track_layers() {
     tree.insert(thumb);
     tree.clear_refresh_dirty();
 
+    crate::assets::ensure_source(&ImageSource::Id(image_id.to_string()));
+    let deadline = crate::assets::next_loading_indicator_deadline().unwrap();
+    crate::assets::advance_loading_indicators(deadline);
     let output = super::super::render_tree_scene_with_scroll_layers(&tree);
     let scroll_layer =
         first_paint_layer_with_reason(&output.scene.nodes, PaintLayerReason::ScrollContent)

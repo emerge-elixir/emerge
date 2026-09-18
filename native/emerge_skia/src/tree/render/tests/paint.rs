@@ -216,7 +216,7 @@ fn demo_inset_glow_dotted_card_attrs(with_glow: bool) -> Attrs {
 }
 
 #[test]
-fn test_render_image_source_pending_emits_loading_placeholder() {
+fn test_render_image_source_pending_delays_loading_indicator() {
     let id = NodeId::from_term_bytes(vec![9]);
     let attrs = Attrs {
         image_src: Some(ImageSource::Id("paint_pending_photo".to_string())),
@@ -238,13 +238,21 @@ fn test_render_image_source_pending_emits_loading_placeholder() {
     tree.set_root_id(id);
     tree.insert(element);
 
+    let before = trace_tree(&tree);
+    assert!(before.draws.is_empty());
+    let deadline = crate::assets::next_loading_indicator_deadline().unwrap();
+    assert!(!crate::assets::advance_loading_indicators(
+        deadline - std::time::Duration::from_nanos(1)
+    ));
+    assert!(trace_tree(&tree).draws.is_empty());
+    assert!(crate::assets::advance_loading_indicators(deadline));
     let draws = observe_tree(&tree);
-
     assert!(
         draws
             .iter()
             .any(|draw| matches!(draw.primitive, DrawPrimitive::ImageLoading(_, _, _, _)))
     );
+    assert_eq!(tree.get(&id).unwrap().layout.frame.unwrap().width, 120.0);
 }
 
 #[test]
@@ -272,14 +280,19 @@ fn test_cached_pending_image_subtree_refreshes_when_asset_becomes_ready() {
     tree.insert(element);
     tree.clear_refresh_dirty();
 
+    let blank_scene = super::super::render_tree_scene_with_scroll_layers(&tree).scene;
+    assert!(trace_scene(&blank_scene).draws.is_empty());
+    let deadline = crate::assets::next_loading_indicator_deadline().unwrap();
+    crate::assets::advance_loading_indicators(deadline);
     let first_scene = super::super::render_tree_scene_with_scroll_layers(&tree).scene;
-    let first_trace = trace_scene(&first_scene);
-    assert!(first_trace.draws.iter().any(|draw| {
+    assert!(trace_scene(&first_scene).draws.iter().any(|draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::ImageLoading(0.0, 0.0, 40.0, 40.0)
         )
     }));
+    // Retained pre-deadline scenes do not consult a live clock or new asset state.
+    assert!(trace_scene(&blank_scene).draws.is_empty());
     crate::renderer::insert_test_raster_asset_rgba(image_id, 1, 1, &[0, 255, 0, 255])
         .expect("test asset should insert");
     crate::assets::ensure_source(&ImageSource::Id(image_id.to_string()));
@@ -729,6 +742,9 @@ fn test_render_background_image_pending_uses_self_clip() {
     };
 
     let tree = build_tree_with_attrs(attrs);
+    assert!(observe_tree(&tree).is_empty());
+    let deadline = crate::assets::next_loading_indicator_deadline().unwrap();
+    crate::assets::advance_loading_indicators(deadline);
     let draws = observe_tree(&tree);
 
     let background = only_draw(&draws, |draw| {

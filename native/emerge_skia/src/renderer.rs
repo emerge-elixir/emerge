@@ -8038,34 +8038,19 @@ fn draw_image_loading(canvas: &skia_safe::Canvas, x: f32, y: f32, w: f32, h: f32
         return;
     }
 
-    let rect = Rect::from_xywh(x, y, w, h);
-
-    let mut bg = Paint::default();
-    bg.set_anti_alias(true);
-    bg.set_color(Color::from_argb(255, 238, 242, 247));
-    canvas.draw_rect(rect, &bg);
-
-    let millis = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as f32)
-        .unwrap_or(0.0);
-
-    let period = 1400.0;
-    let phase = (millis % period) / period;
-    let band_w = (w * 0.35).max(24.0);
-    let band_x = x - band_w + (w + band_w * 2.0) * phase;
-
-    let shimmer_rect = Rect::from_xywh(band_x, y, band_w, h);
-    let mut shimmer = Paint::default();
-    shimmer.set_anti_alias(true);
-    shimmer.set_color(Color::from_argb(170, 248, 250, 252));
-
-    canvas.save();
-    canvas.clip_rect(rect, skia_safe::ClipOp::Intersect, true);
-    canvas.draw_rect(shimmer_rect, &shimmer);
-    canvas.restore();
-
-    draw_image_placeholder_glyph(canvas, rect, Color::from_argb(180, 148, 163, 184));
+    // Small, static dots: no full-slot fill, wall clock or perpetual animation.
+    // Clamp to the slot so even tiny images do not paint outside their bounds.
+    let size = w.min(h).min(24.0);
+    let mut paint = Paint::default();
+    paint.set_anti_alias(true);
+    paint.set_color(Color::from_argb(220, 148, 163, 184));
+    for offset in [-1.0, 0.0, 1.0] {
+        canvas.draw_circle(
+            (x + w * 0.5 + offset * size / 3.0, y + h * 0.5),
+            size / 12.0,
+            &paint,
+        );
+    }
 }
 
 fn draw_image_failed(canvas: &skia_safe::Canvas, x: f32, y: f32, w: f32, h: f32) {
@@ -12555,19 +12540,33 @@ mod tests {
     }
 
     #[test]
-    fn image_loading_placeholder_uses_light_neutral_surface() {
-        let pixels = render_single_command_to_pixels(
-            80,
-            60,
-            DrawPrimitive::ImageLoading(0.0, 0.0, 80.0, 60.0),
-        );
-        let (r, g, b, a) = rgba_at(&pixels, 80, 4, 4);
-
-        assert_eq!(a, 255);
-        assert!(
-            r >= 220 && g >= 220 && b >= 220,
-            "expected loading placeholder to be a light neutral surface, got rgba({r}, {g}, {b}, {a})"
-        );
+    fn image_loading_indicator_is_small_centered_static_and_has_no_surface() {
+        for (x, y, w, h) in [(10.0, 10.0, 160.0, 100.0), (40.0, 30.0, 6.0, 4.0)] {
+            let primitive = DrawPrimitive::ImageLoading(x, y, w, h);
+            let pixels = render_single_command_to_pixels(200, 120, primitive.clone());
+            assert_eq!(pixels, render_single_command_to_pixels(200, 120, primitive));
+            let blank = render_commands_to_pixels(200, 120, vec![]);
+            let changed: Vec<_> = pixels
+                .chunks_exact(4)
+                .zip(blank.chunks_exact(4))
+                .enumerate()
+                .filter(|(_, (a, b))| a != b)
+                .map(|(i, _)| ((i % 200) as f32 + 0.5, (i / 200) as f32 + 0.5))
+                .collect();
+            assert!(!changed.is_empty());
+            let size = w.min(h).min(24.0);
+            assert!(
+                changed.iter().all(|(px, py)| {
+                    (*px - (x + w * 0.5)).abs() <= size * 0.5
+                        && (*py - (y + h * 0.5)).abs() <= size * 0.5
+                        && *px >= x
+                        && *px <= x + w
+                        && *py >= y
+                        && *py <= y + h
+                }),
+                "indicator must be centered and limited to 24px, not fill the image slot"
+            );
+        }
     }
 
     #[test]

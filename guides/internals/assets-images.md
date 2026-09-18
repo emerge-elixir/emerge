@@ -52,9 +52,18 @@ Startup/config flow:
 
 Render behavior while waiting:
 
-- pending source -> loading placeholder
-- failed source -> failed placeholder
-- ready source -> normal image draw
+- newly pending source -> no loading paint for 100 ms; its layout slot remains
+- still pending at the deadline -> small centered static dots, no full-slot fill
+- failed source -> failed placeholder immediately
+- ready source -> normal image draw immediately, without a minimum delay
+
+The grace deadline is renderer/source-local and cancelled on readiness, failure,
+removal or configuration reset. Repeated refreshes do not restart it. The existing
+tree actor deadline wait and macOS asset tick service a one-shot paint invalidation,
+including on an otherwise idle screen; no loader sleep or animation loop is added.
+Prepared asset inputs freeze indicator visibility, so retained scenes do not consult
+a live clock while painting. Explicit/fill layout is unchanged by visibility;
+unknown intrinsic dimensions still resolve when the asset becomes ready.
 
 Source status state machine:
 

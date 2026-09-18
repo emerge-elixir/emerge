@@ -187,12 +187,10 @@ fn paint_node_for_image_source(
             rect.width,
             rect.height,
         ))),
-        _ => Some(RenderNode::Primitive(DrawPrimitive::ImageLoading(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
-        ))),
+        _ if assets::loading_indicator_visible(source) => Some(RenderNode::Primitive(
+            DrawPrimitive::ImageLoading(rect.x, rect.y, rect.width, rect.height),
+        )),
+        _ => None,
     }
 }
 

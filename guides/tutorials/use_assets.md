@@ -435,8 +435,16 @@ available to your device rather than from compressed file sizes.
 
 Asset loading is asynchronous.
 
-While a source is still loading, Emerge shows a loading placeholder. If loading
-fails, Emerge shows a failed placeholder.
+Emerge keeps the image's layout slot but leaves its loading paint empty for the
+first 100 ms. Images that finish sooner appear immediately, without a placeholder
+flash. If the source is still pending after that, a small centered three-dot
+indicator appears without filling the slot's background. Failed loads show the
+existing error placeholder immediately.
+
+The grace period does not delay loading or remove the image from layout. Explicit
+pixel/fill dimensions remain reserved; content-sized images still need their
+intrinsic dimensions before their final size can be known. With `image_fit(:contain)`,
+the photo fits inside the reserved slot rather than stretching to the indicator.
 
 You do not need to block rendering while assets are being resolved.
 

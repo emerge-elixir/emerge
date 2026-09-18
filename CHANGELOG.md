@@ -13,6 +13,8 @@
 
 ### Changed
 
+- Pending images reserve their layout slot without loading paint for the first 100 ms. Slower loads show a small centered three-dot indicator instead of a full-slot shimmer; ready images and errors appear immediately.
+
 - Split Mix configuration into build-only native, packaging and documentation helpers, sharing compiler target data while preserving SDK setup and precompiled selection.
 
 - **Visual change:** `Border.shadow` and `Border.glow` now paint the full box-shaped shadow behind backgrounds and content, including text. Transparent interiors reveal the shadow instead of cutting it out; opaque backgrounds still cover it. Applies to ordinary elements and inline paragraph wrappers; inset shadows are unchanged.
