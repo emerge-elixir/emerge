@@ -77,7 +77,11 @@ defmodule Emerge.MixProjectTest do
   end
 
   test "full SDK preparation supports direct and opt/ext-toolchain layouts" do
-    root = fixture()
+    directory = fixture()
+    root = directory <> "-link"
+    File.ln_s!(directory, root)
+    on_exit(fn -> File.rm!(root) end)
+
     prefix = "aarch64-nerves-linux-gnu"
     python = Path.join(root, "host python interpreter")
 
@@ -126,7 +130,8 @@ defmodule Emerge.MixProjectTest do
                "#{bin}/clang++ --sysroot=/sdk/sysroot --gcc-toolchain=#{toolchain} -I#{includes} -I#{includes}/#{prefix} -Wno-invalid-constexpr"
 
       assert env["SDKTARGETSYSROOT"] == "/sdk/sysroot"
-      tools = Path.join(root, "native/emerge_skia/target/nerves-host-tools")
+      # The subprocess resolves symlinks in its cwd (including macOS /var -> /private/var).
+      tools = Path.join(config.cwd, "native/emerge_skia/target/nerves-host-tools")
       assert String.starts_with?(env["PATH"], tools <> ":")
 
       for name <- ["python", "python3"] do
@@ -314,7 +319,7 @@ defmodule Emerge.MixProjectTest do
     false = Code.ensure_loaded?(EmergeSkia.Native)
     config = Emerge.MixProject.project()
     docs = config[:docs]
-    result = %{opts: config[:rustler_opts], app: config[:app], elixir: config[:elixir],
+    result = %{cwd: File.cwd!(), opts: config[:rustler_opts], app: config[:app], elixir: config[:elixir],
       deps: config[:deps], aliases: config[:aliases], cli: Emerge.MixProject.cli(),
       application: Emerge.MixProject.application(), extras: docs[:extras],
       groups: Keyword.keys(docs[:groups_for_extras]),
