@@ -562,10 +562,25 @@ impl RenderState {
 // ============================================================================
 
 // Embedded default fonts (Inter, OFL licensed)
-static DEFAULT_FONT_REGULAR: &[u8] = include_bytes!("fonts/Inter-Regular.ttf");
-static DEFAULT_FONT_BOLD: &[u8] = include_bytes!("fonts/Inter-Bold.ttf");
-static DEFAULT_FONT_ITALIC: &[u8] = include_bytes!("fonts/Inter-Italic.ttf");
-static DEFAULT_FONT_BOLD_ITALIC: &[u8] = include_bytes!("fonts/Inter-BoldItalic.ttf");
+static DEFAULT_FONT_REGULAR: &[u8] = include_bytes!("fonts/inter/Inter-Regular.ttf");
+static DEFAULT_FONT_BOLD: &[u8] = include_bytes!("fonts/inter/Inter-Bold.ttf");
+static DEFAULT_FONT_ITALIC: &[u8] = include_bytes!("fonts/inter/Inter-Italic.ttf");
+static DEFAULT_FONT_BOLD_ITALIC: &[u8] = include_bytes!("fonts/inter/Inter-BoldItalic.ttf");
+
+// Embedded monospace fonts (JetBrains Mono NL v2.304, OFL licensed).
+static MONOSPACE_FONT_REGULAR: &[u8] =
+    include_bytes!("fonts/jetbrains-mono/JetBrainsMonoNL-Regular.ttf");
+static MONOSPACE_FONT_BOLD: &[u8] = include_bytes!("fonts/jetbrains-mono/JetBrainsMonoNL-Bold.ttf");
+static MONOSPACE_FONT_ITALIC: &[u8] =
+    include_bytes!("fonts/jetbrains-mono/JetBrainsMonoNL-Italic.ttf");
+static MONOSPACE_FONT_BOLD_ITALIC: &[u8] =
+    include_bytes!("fonts/jetbrains-mono/JetBrainsMonoNL-BoldItalic.ttf");
+const DEFAULT_FONT_FAMILIES: &[&str] = &["default"];
+const MONOSPACE_FONT_FAMILIES: &[&str] = &["monospace", "JetBrains Mono NL", "JetBrains Mono"];
+
+#[cfg(test)]
+#[path = "fonts/tests.rs"]
+mod font_tests;
 
 /// Key for looking up fonts in the cache.
 #[derive(Hash, Eq, PartialEq, Clone, Debug)]
@@ -608,23 +623,35 @@ impl Default for FontKey {
 }
 
 fn default_font_cache() -> HashMap<FontKey, Arc<Typeface>> {
-    let mut cache = HashMap::new();
     let font_mgr = FontMgr::new();
 
-    if let Some(tf) = font_mgr.new_from_data(DEFAULT_FONT_REGULAR, 0) {
-        cache.insert(FontKey::default_regular(), Arc::new(tf));
-    }
-    if let Some(tf) = font_mgr.new_from_data(DEFAULT_FONT_BOLD, 0) {
-        cache.insert(FontKey::default_bold(), Arc::new(tf));
-    }
-    if let Some(tf) = font_mgr.new_from_data(DEFAULT_FONT_ITALIC, 0) {
-        cache.insert(FontKey::default_italic(), Arc::new(tf));
-    }
-    if let Some(tf) = font_mgr.new_from_data(DEFAULT_FONT_BOLD_ITALIC, 0) {
-        cache.insert(FontKey::default_bold_italic(), Arc::new(tf));
-    }
-
-    cache
+    [
+        (DEFAULT_FONT_FAMILIES, 400, false, DEFAULT_FONT_REGULAR),
+        (DEFAULT_FONT_FAMILIES, 700, false, DEFAULT_FONT_BOLD),
+        (DEFAULT_FONT_FAMILIES, 400, true, DEFAULT_FONT_ITALIC),
+        (DEFAULT_FONT_FAMILIES, 700, true, DEFAULT_FONT_BOLD_ITALIC),
+        (MONOSPACE_FONT_FAMILIES, 400, false, MONOSPACE_FONT_REGULAR),
+        (MONOSPACE_FONT_FAMILIES, 700, false, MONOSPACE_FONT_BOLD),
+        (MONOSPACE_FONT_FAMILIES, 400, true, MONOSPACE_FONT_ITALIC),
+        (
+            MONOSPACE_FONT_FAMILIES,
+            700,
+            true,
+            MONOSPACE_FONT_BOLD_ITALIC,
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(families, weight, italic, data)| {
+        font_mgr
+            .new_from_data(data, 0)
+            .map(|tf| (families, weight, italic, Arc::new(tf)))
+    })
+    .flat_map(|(families, weight, italic, tf)| {
+        families
+            .iter()
+            .map(move |family| (FontKey::new(*family, weight, italic), Arc::clone(&tf)))
+    })
+    .collect()
 }
 
 /// Immutable renderer-local font facts. Snapshots retain typefaces and the bounded
