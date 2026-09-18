@@ -4,6 +4,8 @@
 
 ### Added
 
+- Bundle JetBrains Mono NL v2.304 regular, bold, italic, and bold italic fonts (826 KiB total, SIL OFL 1.1). Select with `Font.family("monospace")`, `"JetBrains Mono NL"`, or `"JetBrains Mono"`; Inter remains the default proportional font.
+
 - Add release builds for x86_64 musl and RISC-V64 GNU (raster and DRM/OpenGL), Nerves compiler detection for MangoPi, and dynamic-CRT flags for musl NIF source builds. New artifacts require publication with matching package checksums.
 - Added `Emerge.UI.Animation.change/3` for native retained-value transitions, with per-field timing, current-presentation interruption, and automatic sibling geometry holds. Explicit and change animations support pixel/content/fill/weighted-fill width and height transitions.
 
@@ -34,6 +36,8 @@
 - Parsed SVG cache configuration and universal multi-color gradients are included in the v14 macOS host protocol.
 
 ### Fixed
+
+- Replace the invalid bundled Inter Bold Italic HTML download with the genuine v4.0 TTF, matching the other embedded Inter faces. Bold italic text now uses its real face instead of synthetic styling.
 
 - A full tree channel no longer blocks the event actor from receiving Stop. Unsent
   native operation packets retain FIFO order and mount/receipt authority; host

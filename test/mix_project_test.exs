@@ -208,6 +208,30 @@ defmodule Emerge.MixProjectTest do
     refute "native/emerge_skia/src/.hidden" in files
   end
 
+  test "package includes scoped font families, provenance, and redistribution licenses" do
+    files = Emerge.Mix.Package.config(@root, "https://example.test")[:files]
+    fonts = "native/emerge_skia/src/fonts"
+
+    for {directory, family} <- [{"inter", "Inter"}, {"jetbrains-mono", "JetBrainsMonoNL"}],
+        name <- [
+          "#{family}-Regular.ttf",
+          "#{family}-Bold.ttf",
+          "#{family}-Italic.ttf",
+          "#{family}-BoldItalic.ttf",
+          "OFL.txt",
+          "SOURCES.md"
+        ] do
+      path = Path.join([fonts, directory, name])
+      assert path in files
+      assert File.regular?(Path.join(@root, path))
+      refute Path.join(fonts, name) in files
+    end
+
+    license = File.read!(Path.join([@root, fonts, "jetbrains-mono", "OFL.txt"]))
+    assert license =~ "Copyright 2020 The JetBrains Mono Project Authors"
+    assert license =~ "SIL OPEN FONT LICENSE Version 1.1"
+  end
+
   test "new Mix runs see helper and target-map edits without cached helper modules" do
     root = fixture()
     env = %{"CC" => "example-nerves-linux-gnu-gcc"}

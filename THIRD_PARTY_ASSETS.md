@@ -18,15 +18,28 @@ Scope markers used below:
 ### Inter default fonts
 
 - Paths:
-  - `native/emerge_skia/src/fonts/Inter-Regular.ttf`
-  - `native/emerge_skia/src/fonts/Inter-Bold.ttf`
-  - `native/emerge_skia/src/fonts/Inter-Italic.ttf`
-  - `native/emerge_skia/src/fonts/Inter-BoldItalic.ttf`
+  - `native/emerge_skia/src/fonts/inter/Inter-Regular.ttf`
+  - `native/emerge_skia/src/fonts/inter/Inter-Bold.ttf`
+  - `native/emerge_skia/src/fonts/inter/Inter-Italic.ttf`
+  - `native/emerge_skia/src/fonts/inter/Inter-BoldItalic.ttf`
 - Purpose: embedded as the renderer's default bundled fonts via `include_bytes!`.
 - Upstream: `https://github.com/rsms/inter`
 - License: SIL Open Font License 1.1
-- License text: `native/emerge_skia/src/fonts/OFL.txt`
-- Source note: `native/emerge_skia/src/fonts/SOURCES.md`
+- License text: `native/emerge_skia/src/fonts/inter/OFL.txt`
+- Source note: `native/emerge_skia/src/fonts/inter/SOURCES.md`
+
+### JetBrains Mono NL monospace fonts
+
+- Path: `native/emerge_skia/src/fonts/jetbrains-mono/`
+- Files: `JetBrainsMonoNL-Regular.ttf`, `JetBrainsMonoNL-Bold.ttf`,
+  `JetBrainsMonoNL-Italic.ttf`, `JetBrainsMonoNL-BoldItalic.ttf`
+- Purpose: embedded monospace fonts, shared by the `monospace`, `JetBrains Mono NL`,
+  and `JetBrains Mono` family names.
+- Upstream: `https://github.com/JetBrains/JetBrainsMono`, release v2.304
+- Copyright 2020 The JetBrains Mono Project Authors
+- License: SIL Open Font License 1.1
+- License text: `native/emerge_skia/src/fonts/jetbrains-mono/OFL.txt`
+- Pinned source and checksums: `native/emerge_skia/src/fonts/jetbrains-mono/SOURCES.md`
 
 ### Mocu DRM cursor SVGs
 

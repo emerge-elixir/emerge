@@ -32,6 +32,21 @@ defmodule Emerge.UI.Font do
   - color: black
   - alignment: left
 
+  ## Bundled Fonts
+
+  Emerge embeds Inter as the default proportional font and JetBrains Mono NL
+  as a monospace font. JetBrains Mono NL includes regular, bold, italic, and bold
+  italic faces. Both families use the SIL Open Font License 1.1; no system font
+  installation is required.
+
+  Use `Font.family("monospace")` for JetBrains Mono NL. `"JetBrains Mono NL"`
+  and `"JetBrains Mono"` are aliases for the same bundled no-ligatures faces.
+  Font family and size inherit normally:
+
+  ```elixir
+  el([Font.family("monospace"), Font.size(22)], text("IO.puts(:hello)"))
+  ```
+
   ## Inheritance
 
   Font attrs inherit through the element tree. For example, setting
@@ -145,7 +160,9 @@ defmodule Emerge.UI.Font do
   Set font family.
 
   Accepts either an atom or a binary family name. The family inherits to
-  descendant text until overridden.
+  descendant text until overridden. `"default"` uses bundled Inter;
+  `"monospace"`, `"JetBrains Mono NL"`, and `"JetBrains Mono"` select bundled
+  JetBrains Mono NL without loading a font file.
 
   ## Example
 
