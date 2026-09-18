@@ -133,16 +133,30 @@ impl TreeUpdateEngine {
         messages: Vec<TreeMsg>,
         options: TreeUpdateOptions<'_>,
     ) -> Result<TreeUpdateEffect, String> {
+        self.process_messages_at(messages, options, Instant::now())
+    }
+
+    fn process_messages_at(
+        &mut self,
+        messages: Vec<TreeMsg>,
+        options: TreeUpdateOptions<'_>,
+        tree_batch_started_at: Instant,
+    ) -> Result<TreeUpdateEffect, String> {
         let mut flat = Vec::new();
         messages
             .into_iter()
             .for_each(|msg| push_tree_message_flat(msg, &mut flat));
 
+        if assets::advance_loading_indicators(tree_batch_started_at) {
+            self.tree
+                .pending_patch_effects
+                .invalidation
+                .add(TreeInvalidation::Paint);
+        }
         if flat.is_empty() && !self.tree.pending_patch_effects.invalidation.is_dirty() {
             return Ok(TreeUpdateEffect::Skip);
         }
 
-        let tree_batch_started_at = Instant::now();
         let pulse_only = !flat.is_empty()
             && flat
                 .iter()
@@ -1249,6 +1263,147 @@ mod tests {
         element::{Element, ElementKind, Frame, NearbySlot, SliderValueOrigin},
         serialize::encode_tree,
     };
+
+    #[test]
+    fn loading_indicator_refresh_preserves_fill_and_fixed_slots_and_shows_ready_immediately() {
+        use crate::tree::attrs::{ImageFit, ImageSource};
+        for fill in [false, true] {
+            for slow in [false, true] {
+                let assets = assets::AssetRuntime::new();
+                let _guard = assets.enter();
+                let source = ImageSource::Id("loading-slot-photo".into());
+                let mut tree = ElementTree::new();
+                for (id, kind, attrs) in [
+                    (
+                        NodeId(1),
+                        ElementKind::Row,
+                        Attrs {
+                            width: Some(Length::Fill),
+                            height: Some(Length::Fill),
+                            ..Default::default()
+                        },
+                    ),
+                    (
+                        NodeId(2),
+                        ElementKind::Image,
+                        Attrs {
+                            image_src: Some(source.clone()),
+                            image_fit: Some(ImageFit::Contain),
+                            width: Some(if fill {
+                                Length::Fill
+                            } else {
+                                Length::Px(150.0)
+                            }),
+                            height: Some(if fill {
+                                Length::Fill
+                            } else {
+                                Length::Px(100.0)
+                            }),
+                            on_mouse_move: Some(true),
+                            ..Default::default()
+                        },
+                    ),
+                    (
+                        NodeId(3),
+                        ElementKind::El,
+                        Attrs {
+                            width: Some(Length::Fill),
+                            height: Some(Length::Px(30.0)),
+                            on_mouse_move: Some(true),
+                            ..Default::default()
+                        },
+                    ),
+                ] {
+                    tree.insert(Element::with_attrs(id, kind, vec![], attrs));
+                }
+                tree.set_root_id(NodeId(1));
+                tree.set_children(&NodeId(1), vec![NodeId(2), NodeId(3)])
+                    .unwrap();
+                let frames = |engine: &TreeUpdateEngine| {
+                    [NodeId(1), NodeId(2), NodeId(3)]
+                        .map(|id| engine.tree().get(&id).unwrap().layout.frame.unwrap())
+                };
+                let options = || TreeUpdateOptions::new(None, TreeUpdateDecodePolicy::ReturnErr);
+                let mut engine = TreeUpdateEngine::new(tree, 300, 100);
+                let blank = layout_output(
+                    engine
+                        .process_messages(vec![TreeMsg::RebuildRegistry], options())
+                        .unwrap(),
+                );
+                let reserved = frames(&engine);
+                assert_eq!((reserved[1].width, reserved[1].height), (150.0, 100.0));
+                assert_eq!(blank.scene.summary().image_loading, 0);
+                let deadline = assets::next_loading_indicator_deadline().unwrap();
+                assert!(matches!(
+                    engine
+                        .process_messages_at(vec![], options(), deadline - Duration::from_nanos(1))
+                        .unwrap(),
+                    TreeUpdateEffect::Skip
+                ));
+                let indicator = slow.then(|| {
+                    let output = layout_output(
+                        engine
+                            .process_messages_at(vec![], options(), deadline)
+                            .unwrap(),
+                    );
+                    assert_eq!(frames(&engine), reserved);
+                    assert_eq!(output.scene.summary().image_loading, 1);
+                    assert!(
+                        !output.event_rebuild_changed,
+                        "paint deadline must not rebuild unchanged hits"
+                    );
+                    assert!(
+                        !output.animations_active,
+                        "indicator must not start a frame loop"
+                    );
+                    assert_eq!(assets::next_loading_indicator_deadline(), None);
+                    assert!(matches!(
+                        engine
+                            .process_messages_at(
+                                vec![],
+                                options(),
+                                deadline + Duration::from_secs(1)
+                            )
+                            .unwrap(),
+                        TreeUpdateEffect::Skip
+                    ));
+                    output
+                });
+                crate::renderer::insert_test_raster_asset_rgba(
+                    "loading-slot-photo",
+                    2,
+                    1,
+                    &[0, 255, 0, 255, 0, 255, 0, 255],
+                )
+                .unwrap();
+                assets::ensure_source(&source);
+                let ready_at = if slow {
+                    deadline + Duration::from_millis(1)
+                } else {
+                    deadline - Duration::from_millis(1)
+                };
+                let ready = layout_output(
+                    engine
+                        .process_messages_at(vec![TreeMsg::AssetStateChanged], options(), ready_at)
+                        .unwrap(),
+                );
+                assert_eq!(frames(&engine), reserved);
+                assert_eq!(ready.scene.summary().images, 1);
+                assert_eq!(ready.scene.summary().image_loading, 0);
+                assert_eq!(assets::next_loading_indicator_deadline(), None);
+                assert_eq!(blank.scene.summary().image_loading, 0);
+                if let Some(indicator) = indicator {
+                    assert_eq!(indicator.scene.summary().image_loading, 1);
+                }
+                assert!(matches!(
+                    engine
+                        .process_messages_at(vec![], options(), deadline + Duration::from_secs(2))
+                        .unwrap(),
+                    TreeUpdateEffect::Skip
+                ));
+            }
+        }
+    }
 
     #[test]
     fn asset_state_change_remeasures_single_axis_image_and_sibling() {

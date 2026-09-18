@@ -84,23 +84,32 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
             stats: stats.as_deref(),
         };
         loop {
+            let deadline = crate::assets::next_loading_indicator_deadline()
+                .map(|at| crossbeam_channel::after(at.saturating_duration_since(Instant::now())))
+                .unwrap_or_else(crossbeam_channel::never);
             let message = if let Some(rebuild) = pending_registry.take() {
                 crossbeam_channel::select! {
                     send(event_tx,EventMsg::RegistryUpdate {rebuild}) -> _ => {
                         if let Some(layout)=pending_layout.take() {layout.publish(targets());}
                         continue;
                     }
-                    recv(tree_rx) -> message => {pending_registry=Some(rebuild);message}
+                    recv(tree_rx) -> message => {pending_registry=Some(rebuild);message.map(Some)}
+                    recv(deadline) -> _ => {pending_registry=Some(rebuild);Ok(None)}
                 }
             } else {
-                tree_rx.recv()
+                crossbeam_channel::select! {
+                    recv(tree_rx) -> message => message.map(Some),
+                    recv(deadline) -> _ => Ok(None),
+                }
             };
             let Ok(message) = message else {
                 return;
             };
             // Bound a batch even when producers continuously replenish the queue.
-            let messages = std::iter::once(message)
-                .chain(tree_rx.try_iter().take(63))
+            let remaining = if message.is_some() { 63 } else { 64 };
+            let messages = message
+                .into_iter()
+                .chain(tree_rx.try_iter().take(remaining))
                 .collect();
             match engine.process_messages(
                 messages,
@@ -306,6 +315,64 @@ mod tests {
             let _ = self.tree_tx.send(TreeMsg::Stop);
             let _ = self.handle.join();
         }
+    }
+
+    #[test]
+    fn idle_tree_wakes_once_for_delayed_loading_indicator() {
+        let mut tree = ElementTree::new();
+        tree.set_root_id(NodeId(1));
+        tree.insert(Element::with_attrs(
+            NodeId(1),
+            ElementKind::Image,
+            vec![],
+            Attrs {
+                image_src: Some(crate::tree::attrs::ImageSource::Id(
+                    "idle-pending-photo".into(),
+                )),
+                width: Some(Length::Fill),
+                height: Some(Length::Fill),
+                ..Default::default()
+            },
+        ));
+        // No worker, animation, input or external tick can produce the second
+        // scene. Only the source deadline wakes it.
+        let actor = TreeActorHarness::new(tree, 150, 100);
+        let started = Instant::now();
+        actor.send(TreeMsg::RebuildRegistry);
+        let first = actor
+            .render_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        let second = actor
+            .render_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        let elapsed = started.elapsed();
+        let idle = actor.render_rx.recv_timeout(Duration::from_millis(30));
+        actor.stop();
+        let RenderMsg::Scene {
+            scene: blank,
+            animate: false,
+            ..
+        } = first
+        else {
+            panic!("expected static blank scene")
+        };
+        let RenderMsg::Scene {
+            scene: visible,
+            animate: false,
+            ..
+        } = second
+        else {
+            panic!("expected static loading scene")
+        };
+        assert_eq!(blank.summary().image_loading, 0);
+        assert_eq!(visible.summary().image_loading, 1);
+        assert!(elapsed >= Duration::from_millis(100));
+        assert!(matches!(
+            idle,
+            Err(crossbeam_channel::RecvTimeoutError::Timeout)
+        ));
     }
 
     fn single_node_tree(id: NodeId, attrs_raw: Vec<u8>, attrs: Attrs) -> ElementTree {

@@ -294,3 +294,28 @@ fn coalesced_mount_focus_survives_revision_changes_but_not_remount_or_removal() 
             .is_none()
     );
 }
+
+#[test]
+fn loading_indicator_deadline_progresses_with_blocked_registry_and_stop_stays_selectable() {
+    let mut tree = ElementTree::new();
+    tree.insert(crate::tree::element::Element::with_attrs(
+        NodeId(1),
+        crate::tree::element::ElementKind::Image,
+        vec![],
+        Attrs {
+            image_src: Some(crate::tree::attrs::ImageSource::Id(
+                "blocked-loading".into(),
+            )),
+            width: Some(Length::Fill),
+            height: Some(Length::Fill),
+            ..Default::default()
+        },
+    ));
+    tree.set_root_id(NodeId(1));
+    let actor = BlockedActor::new(tree);
+    actor.tx.send(TreeMsg::RebuildRegistry).unwrap();
+    actor.wait_constructed(2); // initial blank, then one delayed paint update
+    assert!(actor.renders.is_empty());
+    assert_eq!(actor.registry.len(), 1);
+    actor.stop();
+}

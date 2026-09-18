@@ -884,3 +884,118 @@ fn frozen_frame_lookups_do_not_resurrect_sources_after_epoch_reset() {
     ensure_source(&source);
     assert_eq!(source_status(&source), Some(AssetStatus::Pending));
 }
+
+#[test]
+fn loading_indicator_deadline_is_one_shot_and_frozen_per_preparation() {
+    let runtime = AssetRuntime::new();
+    let _guard = runtime.enter();
+    let source = ImageSource::Id("delayed-indicator".into());
+    let before = Instant::now();
+    ensure_source(&source);
+    let deadline = next_loading_indicator_deadline().unwrap();
+    assert!(deadline >= before + Duration::from_millis(100));
+    assert!(deadline <= Instant::now() + Duration::from_millis(100));
+    ensure_source(&source); // repeat refreshes must not restart the grace period
+    assert_eq!(next_loading_indicator_deadline(), Some(deadline));
+    let sources = FrameSourceList {
+        all: vec![source.clone()],
+        measured: vec![],
+    };
+    let early = Arc::new(FrameAssets::capture(&sources));
+    let generation = source_status_generation();
+    assert!(!advance_loading_indicators(
+        deadline - Duration::from_nanos(1)
+    ));
+    assert!(!loading_indicator_visible(&source));
+    assert!(advance_loading_indicators(deadline));
+    assert!(loading_indicator_visible(&source));
+    assert!(source_status_generation() > generation);
+    assert_eq!(next_loading_indicator_deadline(), None);
+    assert!(!advance_loading_indicators(
+        deadline + Duration::from_secs(1)
+    ));
+    let late = Arc::new(FrameAssets::capture(&sources));
+    {
+        let _snapshot = early.enter();
+        assert!(!loading_indicator_visible(&source));
+        ensure_source(&source); // no new live request from a frozen frame
+    }
+    {
+        let _snapshot = late.enter();
+        assert!(loading_indicator_visible(&source));
+    }
+    runtime.stop();
+    assert!(!loading_indicator_visible(&source));
+    assert_eq!(next_loading_indicator_deadline(), None);
+    let _snapshot = late.enter();
+    assert!(
+        loading_indicator_visible(&source),
+        "historical frame stays immutable"
+    );
+}
+
+#[test]
+fn loading_indicator_cancels_on_ready_failure_removal_and_reconfiguration() {
+    for outcome in 0..4 {
+        let runtime = AssetRuntime::new();
+        let _guard = runtime.enter();
+        let source = ImageSource::Id("pending-lifecycle".into());
+        ensure_source(&source);
+        let old = next_loading_indicator_deadline().unwrap();
+        match outcome {
+            0 => {
+                crate::renderer::insert_test_raster_asset_rgba(
+                    "pending-lifecycle",
+                    1,
+                    1,
+                    &[0, 255, 0, 255],
+                )
+                .unwrap();
+                ensure_source(&source);
+                assert!(matches!(
+                    source_status(&source),
+                    Some(AssetStatus::Ready(_))
+                ));
+            }
+            1 => current_context()
+                .state
+                .lock()
+                .unwrap()
+                .set_source_status(source.clone(), AssetStatus::Failed),
+            2 => ensure_tree_sources(&ElementTree::new()),
+            _ => runtime.configure(AssetConfig::default()),
+        }
+        assert_eq!(next_loading_indicator_deadline(), None);
+        assert!(!advance_loading_indicators(old + Duration::from_secs(1)));
+        assert!(!loading_indicator_visible(&source));
+        if outcome >= 2 {
+            ensure_source(&source);
+            assert!(next_loading_indicator_deadline().unwrap() >= old);
+            assert!(!loading_indicator_visible(&source));
+        }
+    }
+}
+
+#[test]
+fn loading_indicator_deadlines_are_renderer_and_source_local() {
+    let a = AssetRuntime::new();
+    let b = AssetRuntime::new();
+    let source = ImageSource::Id("same-pending-id".into());
+    let _a = a.enter();
+    ensure_source(&source);
+    let a_deadline = next_loading_indicator_deadline().unwrap();
+    advance_loading_indicators(a_deadline);
+    {
+        let _b = b.enter();
+        assert_eq!(next_loading_indicator_deadline(), None);
+        assert!(!loading_indicator_visible(&source));
+        ensure_source(&source);
+        assert!(!loading_indicator_visible(&source));
+        assert!(next_loading_indicator_deadline().is_some());
+    }
+    assert!(loading_indicator_visible(&source));
+    let other = ImageSource::Id("new-pending-id".into());
+    ensure_source(&other);
+    assert!(!loading_indicator_visible(&other));
+    assert!(loading_indicator_visible(&source));
+}

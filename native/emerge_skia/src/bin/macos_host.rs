@@ -1958,12 +1958,16 @@ mod app {
                     saw_update
                 });
 
-                if saw_update {
-                    let _asset_context_guard = session.enter_asset_context();
-                    if let Err(err) = session
-                        .runtime
-                        .process_tree_messages(vec![TreeMsg::AssetStateChanged])
-                    {
+                let _asset_context_guard = session.enter_asset_context();
+                let indicator_due = emerge_skia::assets::next_loading_indicator_deadline()
+                    .is_some_and(|at| at <= Instant::now());
+                if saw_update || indicator_due {
+                    let messages = if saw_update {
+                        vec![TreeMsg::AssetStateChanged]
+                    } else {
+                        Vec::new()
+                    };
+                    if let Err(err) = session.runtime.process_tree_messages(messages) {
                         eprintln!("macOS asset rerender failed: {err}");
                     }
                 }
