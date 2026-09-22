@@ -2821,7 +2821,6 @@ struct ResolvePassParams<'a> {
     insets: LayoutInsets,
     is_scrollable: bool,
     scroll_x_enabled: bool,
-    scroll_y_enabled: bool,
     spacing_x: f32,
     spacing_y: f32,
     align_x: AlignX,
@@ -2847,14 +2846,11 @@ fn resolve_el_kind<M: TextMeasurer>(
     let options = ElChildrenOptions {
         parent_align_x: params.align_x,
         parent_align_y: params.align_y,
-        scroll_x_enabled: params.scroll_x_enabled,
-        scroll_y_enabled: params.scroll_y_enabled,
     };
     let (mut actual_cw, mut actual_ch) = resolve_el_children(
         tree,
         params.child_ids,
         params.content,
-        options,
         element_context,
         measurer,
         params.use_resolve_cache,
@@ -2887,7 +2883,6 @@ fn resolve_el_kind<M: TextMeasurer>(
                 width: content_width,
                 ..params.content
             },
-            options,
             element_context,
             measurer,
             params.use_resolve_cache,
@@ -3534,7 +3529,6 @@ fn resolve_element<M: TextMeasurer>(
         insets,
         is_scrollable,
         scroll_x_enabled,
-        scroll_y_enabled,
         spacing_x,
         spacing_y,
         align_x,
@@ -4377,8 +4371,6 @@ fn get_fill_weight_opt(length: Option<&Length>) -> Option<f32> {
 struct ElChildrenOptions {
     parent_align_x: AlignX,
     parent_align_y: AlignY,
-    scroll_x_enabled: bool,
-    scroll_y_enabled: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -4547,18 +4539,13 @@ fn slider_range(attrs: &Attrs) -> (f64, f64) {
 // Child Resolution by Element Type
 // =============================================================================
 
-/// Resolve children for El (single child container with alignment).
-/// Reads from pre-scaled attrs.
-///   Returns (actual_content_width, actual_content_height).
-///
-/// Alignment follows elm-ui semantics:
-/// - Parent's alignment (e.g., `el([centerX()], child)`) sets default for children
-/// - Child can override with its own alignment attribute
+/// Resolve El children and return their outer-box footprint in the parent's content area.
+/// Descendant content extents are not the child's layout size: a fixed-size child's
+/// empty or overflowing contents must not shrink or enlarge its content-sized parent.
 fn resolve_el_children<M: TextMeasurer>(
     tree: &mut ElementTree,
     child_ids: &[NodeId],
     content: ContentRect,
-    options: ElChildrenOptions,
     inherited: &FontContext,
     measurer: &M,
     use_resolve_cache: bool,
@@ -4580,20 +4567,11 @@ fn resolve_el_children<M: TextMeasurer>(
             )
         })
         .fold((0.0, 0.0), |(width, height), frame| {
-            let child_width = if options.scroll_x_enabled {
-                frame.width
-            } else {
-                frame.content_width
-            };
-            let child_height = if options.scroll_y_enabled {
-                frame.height
-            } else {
-                frame.content_height
-            };
-            (width.max(child_width), height.max(child_height))
+            (width.max(frame.width), height.max(frame.height))
         })
 }
 
+// Alignment follows elm-ui semantics: a child can override its parent's alignment.
 fn align_el_children(
     tree: &mut ElementTree,
     child_ids: &[NodeId],
