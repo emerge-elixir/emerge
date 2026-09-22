@@ -45,6 +45,45 @@ defmodule EmergeSkia do
   @type renderer :: reference() | struct()
   @type color :: non_neg_integer()
 
+  @type drm_mode :: %{
+          id: String.t(),
+          name: String.t(),
+          width: pos_integer(),
+          height: pos_integer(),
+          refresh_hz: float(),
+          preferred: boolean(),
+          interlaced: boolean()
+        }
+  @type drm_output :: %{
+          name: String.t(),
+          connector_id: non_neg_integer(),
+          connected: boolean(),
+          modes: [drm_mode()]
+        }
+
+  @doc """
+  Lists DRM connectors and their advertised modes without changing display configuration.
+
+  Accepts `drm_card: "/dev/dri/card0"` (the default), including stable
+  `/dev/dri/by-path/...-card` paths. Returns disconnected outputs too, with
+  `connected: false`. Requires Linux, compiled DRM support and read access to the card.
+
+  Pass an output's `name` as `:drm_output` and a mode map (or its exact `id`)
+  as `:drm_mode` to `start/1` or viewport options. IDs describe exact timings,
+  not indices or rounded refresh rates. Discovery is a snapshot; startup checks
+  availability again. Explicit selections never fall back to another output/mode.
+
+      {:ok, outputs} = EmergeSkia.drm_outputs(drm_card: "/dev/dri/card0")
+      output = Enum.find(outputs, &(&1.connected and &1.name == "HDMI-A-1"))
+      mode = Enum.find(output.modes, & &1.preferred)
+      # Viewport mount options:
+      [backend: :drm, drm_output: output.name, drm_mode: mode]
+  """
+  @spec drm_outputs(keyword()) :: {:ok, [drm_output()]} | {:error, String.t()}
+  def drm_outputs(opts \\ []) do
+    opts |> Options.drm_discovery_card!() |> Native.drm_outputs()
+  end
+
   @doc """
   Starts a renderer session.
 
@@ -102,12 +141,15 @@ defmodule EmergeSkia do
   | Option | Default | Description |
   |---|---|---|
   | `otp_app` | required | Application used to resolve logical assets |
+  | `owner` | `nil` | Live local process whose death requests native cleanup, even if handles are retained elsewhere |
   | `backend` | platform default | `:macos`, `:wayland`, `:drm`, or `:headless` |
   | `rendering_api` | `:auto` | Renderer selection described above |
   | `title` | `"Emerge"` | Window title |
   | `width`, `height` | `800`, `600` | Initial window size or fixed headless size |
   | `scroll_line_pixels` | `30.0` | Pixels for one discrete wheel step |
-  | `drm_card` | `/dev/dri/card0` | KMS primary-node path |
+  | `drm_card` | `/dev/dri/card0` | KMS primary-node path (also accepts `/dev/dri/by-path/` aliases) |
+  | `drm_output` | automatic | Exact connector name returned by `drm_outputs/1` |
+  | `drm_mode` | automatic | Advertised mode map or ID; requires `drm_output` |
   | `vulkan_drm_node` | none | Required Vulkan device node for DRM Vulkan |
   | `drm_startup_retries` | `40` | DRM startup retry count |
   | `drm_retry_interval_ms` | `250` | Delay between DRM retries |
@@ -274,6 +316,80 @@ defmodule EmergeSkia do
     renderer
     |> Transport.for_renderer()
     |> apply(:stop_session, [renderer])
+  end
+
+  @doc """
+  Requests native shutdown and waits at most `timeout` milliseconds (default 5,000).
+
+  A timeout does not release ownership or make an output reusable. Native cleanup
+  continues; `renderer_status/1` distinguishes pending cleanup from completion.
+  Quarantined sessions require a VM restart. macOS currently supports only `stop/1`.
+  """
+  @spec stop(renderer(), keyword()) :: :ok | {:error, term()}
+  def stop(renderer, opts) when is_list(opts) do
+    timeout = Keyword.get(opts, :timeout, 5_000)
+
+    unless is_integer(timeout) and timeout >= 0 and timeout <= 4_294_967_295 do
+      raise ArgumentError, "stop timeout must be a non-negative 32-bit integer"
+    end
+
+    case renderer do
+      %Renderer{} ->
+        {:error, :unsupported}
+
+      %HeadlessPrimeSession{} ->
+        HeadlessPrimeSession.stop(renderer, timeout)
+
+      _ ->
+        Native.stop_timeout(renderer, timeout)
+    end
+  end
+
+  @doc """
+  Returns native session health and cleanup status.
+
+  `cleanup_complete` is true only after safe teardown. `running?/1 == false`
+  alone does not mean a DRM output is available for a replacement renderer.
+  """
+  @spec renderer_status(renderer()) :: {:ok, map()} | {:error, term()}
+  def renderer_status(%Renderer{}), do: {:error, :unsupported}
+
+  def renderer_status(%HeadlessPrimeSession{} = renderer),
+    do: HeadlessPrimeSession.status(renderer)
+
+  def renderer_status(renderer) do
+    case Native.renderer_status(renderer) do
+      {:ok, status} -> {:ok, normalize_renderer_status(status)}
+      error -> error
+    end
+  end
+
+  @doc false
+  def normalize_renderer_status(status) do
+    states = %{
+      "running" => :running,
+      "stopping" => :stopping,
+      "stopped" => :stopped,
+      "quarantined" => :quarantined
+    }
+
+    scopes = %{"session" => :session, "output" => :output, "card" => :card, "process" => :process}
+    recoveries = %{"after_cleanup" => :after_cleanup, "vm_restart" => :vm_restart}
+
+    failure =
+      case status.failure do
+        nil ->
+          nil
+
+        failure ->
+          %{
+            failure
+            | scope: Map.fetch!(scopes, failure.scope),
+              recovery: Map.fetch!(recoveries, failure.recovery)
+          }
+      end
+
+    %{status | state: Map.fetch!(states, status.state), failure: failure}
   end
 
   @doc """

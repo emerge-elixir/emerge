@@ -207,8 +207,11 @@ defmodule Emerge.Runtime.Viewport do
 
   alias Emerge.Runtime.VideoEndpoints
   alias Emerge.Runtime.Viewport.Config
+  alias Emerge.Runtime.Viewport.Lifecycle
+  alias Emerge.Runtime.Viewport.LifecycleSupervisor
   alias Emerge.Runtime.Viewport.ReloadGroup
   alias Emerge.Runtime.Viewport.Renderer
+  alias Emerge.Runtime.Viewport.Renderer.Skia
   alias Emerge.Runtime.Viewport.State
 
   @genserver_start_options [:name, :timeout, :debug, :spawn_opt, :hibernate_after]
@@ -225,6 +228,73 @@ defmodule Emerge.Runtime.Viewport do
   @impl true
   def handle_continue({:emerge_viewport_mount, opts}, state) do
     handle_continue_mount(opts, state)
+  end
+
+  @impl true
+  def handle_info({:emerge_viewport_renderer, generation, message}, state) do
+    runtime = runtime!(state)
+
+    retiring_close =
+      match?({:emerge_skia_close, _}, message) and
+        runtime.retiring_renderer_generation == generation
+
+    if runtime.renderer_generation == generation or retiring_close do
+      handle_info(message, state)
+    else
+      {:noreply, state}
+    end
+  end
+
+  def handle_info({:emerge_viewport, :renderer_ready, owner, generation, renderer, relay}, state) do
+    if runtime!(state).lifecycle == owner do
+      state =
+        update_runtime(
+          state,
+          &%{
+            &1
+            | renderer: renderer,
+              diff_state: nil,
+              renderer_generation: generation,
+              retiring_renderer_generation: nil,
+              renderer_relay: relay
+          }
+        )
+
+      {:noreply, render_frame(state, :renderer_recovery)}
+    else
+      {:noreply, state}
+    end
+  end
+
+  def handle_info({:emerge_viewport, :renderer_unavailable, owner, generation, result}, state) do
+    runtime = runtime!(state)
+
+    if runtime.lifecycle == owner and runtime.renderer_generation == generation do
+      if result not in [:ok, :pending],
+        do: Logger.error("renderer cleanup failed: #{inspect(result)}")
+
+      {:noreply,
+       update_runtime(
+         state,
+         &%{
+           &1
+           | renderer: nil,
+             diff_state: nil,
+             renderer_generation: nil,
+             retiring_renderer_generation: generation,
+             renderer_relay: nil
+         }
+       )}
+    else
+      {:noreply, state}
+    end
+  end
+
+  def handle_info({:emerge_viewport, :renderer_error, owner, reason}, state) do
+    if runtime!(state).lifecycle == owner,
+      do: Logger.warning("renderer restart failed: #{inspect(reason)}")
+
+    {:noreply, state}
   end
 
   @impl true
@@ -258,8 +328,10 @@ defmodule Emerge.Runtime.Viewport do
   end
 
   @impl true
-  def handle_info({:EXIT, _pid, :normal}, state) do
-    {:noreply, state}
+  def handle_info({:EXIT, pid, :normal}, state) do
+    if runtime!(state).lifecycle_supervisor == pid,
+      do: {:stop, :normal, state},
+      else: {:noreply, state}
   end
 
   @impl true
@@ -387,6 +459,10 @@ defmodule Emerge.Runtime.Viewport do
     runtime = runtime!(state)
 
     cond do
+      runtime.renderer_module == Skia and is_pid(runtime.lifecycle) ->
+        Lifecycle.check(runtime.lifecycle)
+        {:noreply, state}
+
       is_nil(runtime.renderer) ->
         {:noreply, state}
 
@@ -442,23 +518,16 @@ defmodule Emerge.Runtime.Viewport do
   @spec terminate_viewport(term(), t()) :: :ok
   def terminate_viewport(_reason, state) when is_map(state) do
     _ = VideoEndpoints.unregister(self())
+    _ = ReloadGroup.leave(self())
 
     case Map.get(state, @runtime_key) do
-      %State{renderer: nil} ->
+      %State{lifecycle: lifecycle, lifecycle_supervisor: supervisor} when is_pid(lifecycle) ->
+        _ = safe_invoke(fn -> Lifecycle.close(lifecycle) end)
+        _ = safe_invoke(fn -> Supervisor.stop(supervisor, :normal, 7_000) end)
         :ok
 
-      %State{} = runtime ->
-        maybe_log_close_signal(state, fn ->
-          "close: terminate_viewport stopping renderer module=#{inspect(runtime.module)}"
-        end)
-
-        _ = ReloadGroup.leave(self())
-        _ = safe_stop_renderer(runtime.renderer_module, runtime.renderer)
-
-        maybe_log_close_signal(state, fn ->
-          "close: terminate_viewport renderer stop returned module=#{inspect(runtime.module)}"
-        end)
-
+      %State{renderer: renderer} = runtime when not is_nil(renderer) ->
+        _ = safe_stop_renderer(runtime.renderer_module, renderer)
         :ok
 
       _ ->
@@ -592,7 +661,8 @@ defmodule Emerge.Runtime.Viewport do
   defp maybe_schedule_renderer_check(state) when is_map(state) do
     runtime = runtime!(state)
 
-    if is_integer(runtime.renderer_check_interval_ms) and runtime.renderer_check_interval_ms > 0 do
+    if runtime.renderer_module != Skia and is_integer(runtime.renderer_check_interval_ms) and
+         runtime.renderer_check_interval_ms > 0 do
       Process.send_after(
         self(),
         {:emerge_viewport, :check_renderer},
@@ -699,9 +769,12 @@ defmodule Emerge.Runtime.Viewport do
 
   defp start_and_upload_renderer(state, runtime, tree) do
     case safe_invoke(fn ->
-           runtime.renderer_module.start(runtime.skia_opts, runtime.renderer_opts)
+           Lifecycle.acquire(runtime.lifecycle)
          end) do
-      {:ok, {:ok, renderer}} ->
+      {:ok, {:ok, renderer, generation, relay}} ->
+        state =
+          update_runtime(state, &%{&1 | renderer_generation: generation, renderer_relay: relay})
+
         case upload_initial_tree(state, renderer, tree) do
           {:ok, next_state} ->
             {:ok, next_state}
@@ -726,8 +799,9 @@ defmodule Emerge.Runtime.Viewport do
     runtime = runtime!(state)
 
     case safe_invoke(fn ->
-           :ok = runtime.renderer_module.set_input_target(renderer, self())
-           :ok = runtime.renderer_module.set_log_target(renderer, self())
+           target = runtime.renderer_relay || self()
+           :ok = runtime.renderer_module.set_input_target(renderer, target)
+           :ok = runtime.renderer_module.set_log_target(renderer, target)
 
            if is_integer(runtime.input_mask) do
              :ok = runtime.renderer_module.set_input_mask(renderer, runtime.input_mask)
@@ -787,10 +861,13 @@ defmodule Emerge.Runtime.Viewport do
        when is_map(mounted_state) and is_struct(runtime, State) and is_list(mount_opts) do
     _ = validate_render_callback_shape!(runtime.module)
     mount_config = Config.parse!(runtime.module, mount_opts)
+    {:ok, supervisor} = LifecycleSupervisor.start_link(self(), mount_config)
+    lifecycle = LifecycleSupervisor.lifecycle(supervisor)
 
     mounted_state
     |> put_runtime(runtime)
     |> put_mount_config(mount_config)
+    |> update_runtime(&%{&1 | lifecycle: lifecycle, lifecycle_supervisor: supervisor})
     |> register_reload_viewport()
     |> render_frame(:initial_render)
   end

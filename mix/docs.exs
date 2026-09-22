@@ -52,6 +52,7 @@ defmodule Emerge.Mix.Docs do
       "guides/internals/architecture.md",
       "guides/internals/assets-images.md",
       "guides/internals/beam-performance-constraints.md",
+      "guides/internals/drm-outputs-and-lifecycle.md",
       "guides/internals/macos-backend.md",
       "guides/internals/feature-roadmap.md",
       "guides/internals/emrg-format.md",

@@ -35,6 +35,7 @@ mod clipboard;
 #[cfg(all(feature = "drm-core", target_os = "linux"))]
 mod cursor;
 mod debug_trace;
+mod display;
 #[cfg(all(feature = "drm-core", target_os = "linux"))]
 mod drm_input;
 pub mod events;
@@ -850,7 +851,22 @@ struct NativeBackendStartupInfo {
     vulkan_device: Option<backend::vulkan::VulkanRendererReport>,
 }
 
+struct SessionOwner {
+    lifecycle: Arc<runtime::lifecycle::Lifecycle>,
+    down: AtomicBool,
+}
+
+#[rustler::resource_impl]
+impl rustler::Resource for SessionOwner {
+    fn down<'a>(&'a self, _env: Env<'a>, _pid: LocalPid, _monitor: rustler::Monitor) {
+        self.down.store(true, Ordering::Release);
+        self.lifecycle.request_stop();
+    }
+}
+
 struct RendererResource {
+    lifecycle: Arc<runtime::lifecycle::Lifecycle>,
+    _owner: Option<ResourceArc<SessionOwner>>,
     asset_runtime: Arc<AssetRuntime>,
     running_flag: Arc<AtomicBool>,
     backend_wake: BackendWakeHandle,
@@ -871,7 +887,7 @@ struct RendererResource {
     log_render: bool,
     log_input: bool,
     cleanup_dispatcher: CleanupDispatcher,
-    handles: Mutex<Option<RendererHandles>>,
+    handles: Arc<Mutex<Option<RendererHandles>>>,
 }
 
 #[derive(Default)]
@@ -1418,29 +1434,9 @@ fn dispatcher_close_error(reason: impl Into<String>) -> DispatcherCloseError {
 
 impl Drop for RendererResource {
     fn drop(&mut self) {
-        self.latest_frame.stop();
-        self.video_registry.close_admission();
-        let registry = Arc::clone(&self.video_registry);
-        let wake = self.video_wake.clone();
-        let shutdown = self.take_shutdown_for_drop();
-        #[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
-        let direct_video_dispatcher = Arc::clone(&self.direct_video_dispatcher);
-
-        self.cleanup_dispatcher.dispatch(Box::new(move || {
-            registry.close();
-            wake.notify();
-            if let Some((ctx, handles)) = shutdown
-                && let Err(error) = shutdown_renderer_runtime(ctx, handles)
-            {
-                eprintln!("renderer drop shutdown failed: {error}");
-            }
-            #[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
-            if let Err((_category, error)) =
-                direct_video_dispatcher.close_and_join(RELEASE_DISPATCHER_CLOSE_TIMEOUT)
-            {
-                eprintln!("direct video dispatcher shutdown failed: {error}");
-            }
-        }));
+        if self.lifecycle.begin_cleanup() {
+            self.cleanup_dispatcher.dispatch(self.cleanup_task());
+        }
     }
 }
 
@@ -1502,29 +1498,87 @@ fn stop_test_harness_runtime(
 
 impl RendererResource {
     fn stop(&self) -> Result<(), String> {
-        self.latest_frame.stop();
-        self.video_registry.close();
-        self.video_wake.notify();
-        self.stop_inner()?;
-        #[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
-        self.direct_video_dispatcher
-            .close_and_join(RELEASE_DISPATCHER_CLOSE_TIMEOUT)
-            .map_err(|(_category, reason)| reason)?;
-        Ok(())
+        self.stop_with_timeout(Duration::from_secs(5))
     }
 
-    fn stop_inner(&self) -> Result<(), String> {
-        let mut handles_guard = match self.handles.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+    fn stop_with_timeout(&self, timeout: Duration) -> Result<(), String> {
+        if self.lifecycle.begin_cleanup() {
+            self.cleanup_dispatcher.dispatch(self.cleanup_task());
+        }
+        self.lifecycle.wait(timeout)
+    }
 
-        let Some(handles) = handles_guard.take() else {
-            return Ok(());
-        };
+    fn cleanup_task(&self) -> CleanupTask {
+        let ctx = self.shutdown_context();
+        let handles = Arc::clone(&self.handles);
+        let lifecycle = Arc::clone(&self.lifecycle);
+        let registry = Arc::clone(&self.video_registry);
+        let wake = self.video_wake.clone();
+        let latest_frame = Arc::clone(&self.latest_frame);
+        #[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
+        let dispatcher = Arc::clone(&self.direct_video_dispatcher);
+        Box::new(move || {
+            latest_frame.stop();
+            registry.close();
+            wake.notify();
+            let handles = handles.lock().unwrap_or_else(|p| p.into_inner()).take();
+            let result = match handles {
+                Some(handles) => shutdown_renderer_runtime(ctx, handles),
+                None => Ok(()),
+            };
+            #[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
+            let result = result.and_then(|()| {
+                dispatcher
+                    .close_and_join(RELEASE_DISPATCHER_CLOSE_TIMEOUT)
+                    .map_err(|(_, reason)| reason)
+            });
+            lifecycle.complete(result);
+        })
+    }
 
-        drop(handles_guard);
-        shutdown_renderer_runtime(self.shutdown_context(), handles)
+    fn monitor_workers(&self) -> Result<(), String> {
+        let handles = Arc::clone(&self.handles);
+        let lifecycle = Arc::clone(&self.lifecycle);
+        let cleanup = self.cleanup_task();
+        thread::Builder::new()
+            .name("emerge_session_monitor".into())
+            .spawn(move || {
+                while !lifecycle.stop.load(Ordering::Acquire) {
+                    let exited = {
+                        let handles = handles.lock().unwrap_or_else(|p| p.into_inner());
+                        handles.as_ref().and_then(|h| {
+                            [
+                                ("backend", &h.backend_handle),
+                                ("tree", &h.tree_handle),
+                                ("event", &h.event_handle),
+                                ("input", &h.input_handle),
+                                ("heartbeat", &h.heartbeat_handle),
+                            ]
+                            .into_iter()
+                            .find_map(|(name, handle)| {
+                                handle
+                                    .as_ref()
+                                    .is_some_and(thread::JoinHandle::is_finished)
+                                    .then_some(name)
+                            })
+                        })
+                    };
+                    if let Some(worker) = exited {
+                        if lifecycle.running.load(Ordering::Acquire) {
+                            lifecycle.fail(format!("renderer {worker} thread exited unexpectedly"));
+                        } else {
+                            lifecycle.request_stop();
+                        }
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(25));
+                }
+                if lifecycle.begin_cleanup() {
+                    cleanup();
+                }
+            })
+            .map(|_| ())
+            .map_err(|e| format!("failed to start renderer lifecycle monitor: {e}"))
     }
 
     fn shutdown_context(&self) -> ShutdownRuntimeContext {
@@ -1541,15 +1595,31 @@ impl RendererResource {
             log_input: self.log_input,
         }
     }
+}
 
-    fn take_shutdown_for_drop(&mut self) -> Option<(ShutdownRuntimeContext, RendererHandles)> {
-        let handles = match self.handles.get_mut() {
-            Ok(handles) => handles,
-            Err(poisoned) => poisoned.into_inner(),
-        }
-        .take()?;
-        Some((self.shutdown_context(), handles))
-    }
+#[cfg(any(
+    all(feature = "wayland-core", target_os = "linux"),
+    all(feature = "drm-core", target_os = "linux")
+))]
+fn shutdown_startup_runtime(
+    ctx: ShutdownRuntimeContext,
+    handles: RendererHandles,
+    dispatcher: &CleanupDispatcher,
+) -> NifResult<()> {
+    ctx.stop_flag.store(true, Ordering::Release);
+    ctx.running_flag.store(false, Ordering::Release);
+    ctx.backend_wake.request_stop();
+    let (tx, rx) = std::sync::mpsc::channel();
+    dispatcher.dispatch(Box::new(move || {
+        let _ = tx.send(shutdown_renderer_runtime(ctx, handles));
+    }));
+    rx.recv_timeout(Duration::from_secs(5))
+        .map_err(|_| {
+            rustler::Error::Term(Box::new(
+                "startup cleanup still pending; output remains reserved".to_string(),
+            ))
+        })?
+        .map_err(|reason| rustler::Error::Term(Box::new(reason)))
 }
 
 fn shutdown_renderer_runtime(
@@ -1569,12 +1639,12 @@ fn shutdown_renderer_runtime(
         log_input,
     } = ctx;
 
-    asset_runtime.stop();
     log_close_signal(close_signal_log, "nif_close", "shutdown begin");
     running_flag.store(false, Ordering::Relaxed);
     stop_flag.store(true, Ordering::Relaxed);
     render_tx.send_latest(RenderMsg::Stop);
     backend_wake.request_stop();
+    asset_runtime.stop();
     send_actor_stops(&tree_tx, &event_tx, log_render, log_input);
 
     let mut join_failures = Vec::new();
@@ -1893,8 +1963,10 @@ fn send_event(event_tx: &Sender<EventMsg>, msg: EventMsg, log_input: bool) {
 // NIF Functions
 // ============================================================================
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct StartConfig {
+    startup_deadline: Instant,
+    owner: Option<ResourceArc<SessionOwner>>,
     #[cfg_attr(
         not(any(
             all(feature = "wayland-core", target_os = "linux"),
@@ -1947,6 +2019,10 @@ struct StartConfig {
     asset_config: AssetConfig,
     #[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
     drm_card: Option<String>,
+    #[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
+    drm_output: Option<String>,
+    #[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
+    drm_mode: Option<String>,
     #[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
     vulkan_drm_node: Option<String>,
     #[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
@@ -2073,6 +2149,7 @@ pub(crate) struct DrmCursorOverrideConfig {
 
 #[derive(rustler::NifMap)]
 struct StartOptsNif {
+    owner: Option<LocalPid>,
     backend: String,
     rendering_api: RenderingApiConfigNif,
     headless: HeadlessConfigNif,
@@ -2081,6 +2158,10 @@ struct StartOptsNif {
     height: u32,
     scroll_line_pixels: f32,
     drm_card: Option<String>,
+    #[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
+    drm_output: Option<String>,
+    #[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
+    drm_mode: Option<String>,
     vulkan_drm_node: Option<String>,
     asset_sources: Vec<String>,
     asset_runtime_enabled: bool,
@@ -2304,6 +2385,21 @@ fn start_auto_raster_fallback_or_error(
 ) -> NifResult<ResourceArc<RendererResource>> {
     match fallback {
         Some(config) => {
+            if Instant::now() >= config.startup_deadline {
+                return Err(rustler::Error::Term(Box::new(reason)));
+            }
+            if let Some(owner) = &config.owner {
+                // No resource was published and the previous attempt's threads were joined.
+                // Store before checking down so a racing owner callback can never be undone.
+                owner.lifecycle.stop.store(false, Ordering::Release);
+                owner.lifecycle.running.store(true, Ordering::Release);
+                if owner.down.load(Ordering::Acquire) {
+                    owner.lifecycle.request_stop();
+                    return Err(rustler::Error::Term(Box::new(
+                        "renderer owner exited during startup".to_string(),
+                    )));
+                }
+            }
             eprintln!("OpenGL backend startup failed; falling back to raster: {reason}");
             start_native_renderer_with_config(config, initial_log_target)
         }
@@ -2322,8 +2418,13 @@ fn start_native_renderer_with_config(
     let auto_raster_fallback = auto_raster_fallback_config(&config);
     let fallback_log_target = initial_log_target;
     let asset_runtime = Arc::new(AssetRuntime::new());
-    let running_flag = Arc::new(AtomicBool::new(true));
-    let stop_flag = Arc::new(AtomicBool::new(false));
+    let lifecycle = config
+        .owner
+        .as_ref()
+        .map(|owner| Arc::clone(&owner.lifecycle))
+        .unwrap_or_default();
+    let running_flag = Arc::clone(&lifecycle.running);
+    let stop_flag = Arc::clone(&lifecycle.stop);
     let render_counter = Arc::new(AtomicU64::new(0));
     let input_target = Arc::new(InputTargetRelay::new(None));
     let native_log = Arc::new(NativeLogRelay::new(initial_log_target));
@@ -2469,10 +2570,14 @@ fn start_native_renderer_with_config(
                 });
             }));
 
-            let startup = match proxy_rx.recv() {
+            let startup = match proxy_rx.recv_timeout(
+                config
+                    .startup_deadline
+                    .saturating_duration_since(Instant::now()),
+            ) {
                 Ok(Ok(startup)) => startup,
                 Ok(Err(reason)) => {
-                    let _ = shutdown_renderer_runtime(
+                    shutdown_startup_runtime(
                         ShutdownRuntimeContext {
                             asset_runtime: Arc::clone(&asset_runtime),
                             running_flag: Arc::clone(&running_flag),
@@ -2486,7 +2591,8 @@ fn start_native_renderer_with_config(
                             log_input,
                         },
                         std::mem::take(&mut handles),
-                    );
+                        &cleanup_dispatcher,
+                    )?;
 
                     return start_auto_raster_fallback_or_error(
                         auto_raster_fallback,
@@ -2495,7 +2601,7 @@ fn start_native_renderer_with_config(
                     );
                 }
                 Err(_) => {
-                    let _ = shutdown_renderer_runtime(
+                    shutdown_startup_runtime(
                         ShutdownRuntimeContext {
                             asset_runtime: Arc::clone(&asset_runtime),
                             running_flag: Arc::clone(&running_flag),
@@ -2509,7 +2615,8 @@ fn start_native_renderer_with_config(
                             log_input,
                         },
                         std::mem::take(&mut handles),
-                    );
+                        &cleanup_dispatcher,
+                    )?;
 
                     return start_auto_raster_fallback_or_error(
                         auto_raster_fallback,
@@ -2606,6 +2713,8 @@ fn start_native_renderer_with_config(
             let drm_config = drm::DrmRunConfig {
                 requested_size: Some((config.width, config.height)),
                 card_path: config.drm_card.clone(),
+                output: config.drm_output.clone(),
+                mode: config.drm_mode.clone(),
                 vulkan_drm_node: config.vulkan_drm_node.clone(),
                 asset_config: config.asset_config.clone(),
                 startup_retries: config.drm_startup_retries,
@@ -2621,10 +2730,12 @@ fn start_native_renderer_with_config(
             };
 
             let asset_context = asset_runtime.context();
+            let drm_lifecycle = Arc::clone(&lifecycle);
             handles.backend_handle = Some(thread::spawn(move || {
                 let _asset_context_guard = asset_context.enter();
                 drm::run(
                     drm::DrmRunContext {
+                        lifecycle: drm_lifecycle,
                         startup_tx,
                         stop: stop_for_thread,
                         running_flag: running_flag_clone,
@@ -2646,10 +2757,14 @@ fn start_native_renderer_with_config(
                 );
             }));
 
-            let drm_startup = match startup_rx.recv() {
+            let drm_startup = match startup_rx.recv_timeout(
+                config
+                    .startup_deadline
+                    .saturating_duration_since(Instant::now()),
+            ) {
                 Ok(Ok(startup)) => startup,
                 Ok(Err(reason)) => {
-                    let _ = shutdown_renderer_runtime(
+                    shutdown_startup_runtime(
                         ShutdownRuntimeContext {
                             asset_runtime: Arc::clone(&asset_runtime),
                             running_flag: Arc::clone(&running_flag),
@@ -2663,7 +2778,8 @@ fn start_native_renderer_with_config(
                             log_input,
                         },
                         std::mem::take(&mut handles),
-                    );
+                        &cleanup_dispatcher,
+                    )?;
 
                     return start_auto_raster_fallback_or_error(
                         auto_raster_fallback,
@@ -2672,7 +2788,7 @@ fn start_native_renderer_with_config(
                     );
                 }
                 Err(_) => {
-                    let _ = shutdown_renderer_runtime(
+                    shutdown_startup_runtime(
                         ShutdownRuntimeContext {
                             asset_runtime: Arc::clone(&asset_runtime),
                             running_flag: Arc::clone(&running_flag),
@@ -2686,7 +2802,8 @@ fn start_native_renderer_with_config(
                             log_input,
                         },
                         std::mem::take(&mut handles),
-                    );
+                        &cleanup_dispatcher,
+                    )?;
 
                     return start_auto_raster_fallback_or_error(
                         auto_raster_fallback,
@@ -2771,6 +2888,8 @@ fn start_native_renderer_with_config(
     let video_wake = VideoWake::noop();
 
     let resource = RendererResource {
+        lifecycle,
+        _owner: config.owner,
         asset_runtime,
         running_flag,
         backend_wake,
@@ -2802,9 +2921,17 @@ fn start_native_renderer_with_config(
         log_render,
         log_input,
         cleanup_dispatcher,
-        handles: Mutex::new(Some(handles)),
+        handles: Arc::new(Mutex::new(Some(handles))),
     };
 
+    resource
+        .monitor_workers()
+        .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
+    if resource.stop_flag.load(Ordering::Acquire) {
+        return Err(rustler::Error::Term(Box::new(
+            "renderer stopped during startup".to_string(),
+        )));
+    }
     Ok(ResourceArc::new(resource))
 }
 
@@ -2824,6 +2951,19 @@ fn start_native_renderer_with_config(
 }
 
 #[rustler::nif(schedule = "DirtyIo")]
+fn drm_outputs(card_path: String) -> Result<Vec<display::DrmOutput>, String> {
+    #[cfg(all(feature = "drm-core", target_os = "linux"))]
+    {
+        backend::drm::outputs(&card_path)
+    }
+    #[cfg(not(all(feature = "drm-core", target_os = "linux")))]
+    {
+        let _ = card_path;
+        Err("DRM support is not compiled into this build".into())
+    }
+}
+
+#[rustler::nif(schedule = "DirtyIo")]
 fn start(
     env: Env,
     title: String,
@@ -2834,6 +2974,8 @@ fn start(
     {
         start_with_config(
             StartConfig {
+                startup_deadline: Instant::now() + Duration::from_secs(15),
+                owner: None,
                 backend: BackendKind::Wayland,
                 rendering_api: RenderingApiConfig::default(),
                 requested_rendering_api: RenderingApi::Auto,
@@ -2843,6 +2985,8 @@ fn start(
                 scroll_line_pixels: input::SCROLL_LINE_PIXELS,
                 asset_config: AssetConfig::default(),
                 drm_card: None,
+                drm_output: None,
+                drm_mode: None,
                 vulkan_drm_node: None,
                 drm_startup_retries: 40,
                 drm_retry_interval_ms: 250,
@@ -2874,6 +3018,19 @@ fn start(
 
 #[rustler::nif(schedule = "DirtyIo")]
 fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererResource>> {
+    let owner = opts
+        .owner
+        .map(|pid| {
+            let resource = ResourceArc::new(SessionOwner {
+                lifecycle: Arc::default(),
+                down: AtomicBool::new(false),
+            });
+            resource.monitor(Some(env), &pid).ok_or_else(|| {
+                rustler::Error::Term(Box::new("renderer owner is not alive".to_string()))
+            })?;
+            Ok::<_, rustler::Error>(resource)
+        })
+        .transpose()?;
     let backend = opts.backend.to_lowercase();
     let backend =
         parse_backend_name(&backend).map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
@@ -2900,6 +3057,8 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
 
     start_with_config(
         StartConfig {
+            startup_deadline: Instant::now() + Duration::from_secs(15),
+            owner,
             backend,
             rendering_api,
             requested_rendering_api: rendering_api.kind,
@@ -2909,6 +3068,8 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
             scroll_line_pixels: opts.scroll_line_pixels,
             asset_config,
             drm_card: opts.drm_card,
+            drm_output: opts.drm_output,
+            drm_mode: opts.drm_mode,
             vulkan_drm_node: opts.vulkan_drm_node,
             drm_startup_retries: opts.drm_startup_retries,
             drm_retry_interval_ms: opts.drm_retry_interval_ms,
@@ -2940,6 +3101,25 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
         },
         Some(env.pid()),
     )
+}
+
+#[rustler::nif]
+fn renderer_status(
+    renderer: ResourceArc<RendererResource>,
+) -> Result<runtime::lifecycle::Status, String> {
+    renderer.lifecycle.status()
+}
+
+#[rustler::nif(schedule = "DirtyIo")]
+fn stop_timeout<'a>(
+    env: Env<'a>,
+    renderer: ResourceArc<RendererResource>,
+    timeout_ms: u32,
+) -> Term<'a> {
+    match renderer.stop_with_timeout(Duration::from_millis(u64::from(timeout_ms))) {
+        Ok(()) => atoms::ok().encode(env),
+        Err(reason) => (atoms::error(), reason).encode(env),
+    }
 }
 
 #[rustler::nif(schedule = "DirtyIo")]
@@ -4916,6 +5096,8 @@ mod tests {
 
         let cleanup_dispatcher = CleanupDispatcher::start().expect("start cleanup dispatcher");
         let resource = Arc::new(RendererResource {
+            lifecycle: Arc::default(),
+            _owner: None,
             asset_runtime: Arc::new(AssetRuntime::new()),
             running_flag: Arc::clone(&running_flag),
             backend_wake: backend_wake.clone(),
@@ -4951,13 +5133,13 @@ mod tests {
             log_render: false,
             log_input: false,
             cleanup_dispatcher,
-            handles: Mutex::new(Some(RendererHandles {
+            handles: Arc::new(Mutex::new(Some(RendererHandles {
                 backend_handle: Some(backend_handle),
                 input_handle: None,
                 tree_handle: Some(tree_handle),
                 event_handle: Some(event_handle),
                 heartbeat_handle: None,
-            })),
+            }))),
         });
 
         let (stop_done_tx, stop_done_rx) = bounded::<()>(1);

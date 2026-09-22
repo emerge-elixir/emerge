@@ -62,13 +62,27 @@ defmodule EmergeSkia.Options do
 
     validate_headless_dither!(backend, rendering_api, headless)
 
+    drm_output = optional_display_string!(Keyword.get(opts, :drm_output), :drm_output)
+    drm_mode = normalize_drm_mode!(Keyword.get(opts, :drm_mode))
+
+    if (drm_output || drm_mode) && backend != "drm" do
+      raise ArgumentError, ":drm_output and :drm_mode require backend: :drm"
+    end
+
+    if drm_mode && is_nil(drm_output) do
+      raise ArgumentError, ":drm_mode requires an explicit :drm_output"
+    end
+
     %{
+      owner: normalize_owner!(Keyword.get(opts, :owner)),
       backend: backend,
       rendering_api: rendering_api,
       title: Keyword.get(opts, :title, "Emerge"),
       width: Keyword.get(opts, :width, 800),
       height: Keyword.get(opts, :height, 600),
       drm_card: normalize_optional_string(Keyword.get(opts, :drm_card)),
+      drm_output: drm_output,
+      drm_mode: drm_mode,
       vulkan_drm_node: vulkan_drm_node,
       drm_startup_retries:
         opts
@@ -96,6 +110,46 @@ defmodule EmergeSkia.Options do
       renderer_cache: renderer_cache,
       headless: headless
     }
+  end
+
+  @doc false
+  def drm_discovery_card!(opts) when not is_list(opts) do
+    raise ArgumentError, "drm_outputs/1 expects a keyword list"
+  end
+
+  def drm_discovery_card!(opts) do
+    opts = normalize_keyword_list!(opts, "drm_outputs/1 expects a keyword list")
+
+    if Keyword.keys(opts) -- [:drm_card] != [] do
+      raise ArgumentError, "drm_outputs/1 only accepts :drm_card"
+    end
+
+    optional_display_string!(Keyword.get(opts, :drm_card, "/dev/dri/card0"), :drm_card) ||
+      "/dev/dri/card0"
+  end
+
+  defp normalize_owner!(nil), do: nil
+
+  defp normalize_owner!(pid) when is_pid(pid) do
+    if node(pid) == node() and Process.alive?(pid) do
+      pid
+    else
+      raise ArgumentError, ":owner must be a live local process"
+    end
+  end
+
+  defp normalize_owner!(_), do: raise(ArgumentError, ":owner must be a live local process or nil")
+
+  defp normalize_drm_mode!(%{id: id}) when is_binary(id) and byte_size(id) > 0, do: id
+  defp normalize_drm_mode!(mode), do: optional_display_string!(mode, :drm_mode)
+
+  defp optional_display_string!(nil, _key), do: nil
+
+  defp optional_display_string!(value, _key) when is_binary(value) and byte_size(value) > 0,
+    do: value
+
+  defp optional_display_string!(value, key) do
+    raise ArgumentError, "#{inspect(key)} must be a non-empty string, got: #{inspect(value)}"
   end
 
   @doc false

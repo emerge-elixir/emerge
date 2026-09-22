@@ -14,13 +14,13 @@ defmodule EmergeSkia.HeadlessPrimeSession do
   @dispatcher_close_retry_ms 50
 
   @enforce_keys [:pid, :renderer]
-  defstruct @enforce_keys
+  defstruct @enforce_keys ++ [completion: nil]
 
-  @type t :: %__MODULE__{pid: pid(), renderer: reference()}
+  @type t :: %__MODULE__{pid: pid(), renderer: reference(), completion: reference() | nil}
 
   @spec start(map()) :: {:ok, t()} | {:error, term()}
   def start(native_opts) do
-    producer = self()
+    producer = Map.get(native_opts, :owner) || self()
 
     case GenServer.start(__MODULE__, {producer, native_opts}) do
       {:ok, pid} -> GenServer.call(pid, :renderer, :infinity)
@@ -30,11 +30,49 @@ defmodule EmergeSkia.HeadlessPrimeSession do
   end
 
   @spec stop(t()) :: :ok | {:error, term()}
-  def stop(%__MODULE__{pid: pid}) do
-    GenServer.call(pid, :stop, :infinity)
+  def stop(session), do: stop(session, 5_000)
+
+  @spec stop(t(), non_neg_integer()) :: :ok | {:error, term()}
+  def stop(%__MODULE__{pid: pid, completion: completion}, timeout) do
+    GenServer.call(pid, :stop, timeout)
   catch
-    :exit, {:noproc, _details} -> :ok
-    :exit, {:normal, _details} -> :ok
+    :exit, {:noproc, _details} -> completed_stop(completion)
+    :exit, {:normal, _details} -> completed_stop(completion)
+    :exit, {:timeout, _details} -> {:error, :cleanup_pending}
+  end
+
+  @spec status(t()) :: {:ok, map()} | {:error, term()}
+  def status(%__MODULE__{pid: pid, renderer: renderer, completion: completion}) do
+    with {:ok, status} <- Native.renderer_status(renderer) do
+      status = EmergeSkia.normalize_renderer_status(status)
+      phase = if completion, do: :atomics.get(completion, 1), else: 0
+
+      cond do
+        phase == 1 ->
+          {:ok, status}
+
+        phase == 2 or not Process.alive?(pid) ->
+          failure =
+            status.failure ||
+              %{
+                reason: "PRIME cleanup was not proven safe",
+                scope: :session,
+                recovery: :vm_restart
+              }
+
+          {:ok, %{status | state: :quarantined, failure: failure, cleanup_complete: false}}
+
+        status.state == :stopped ->
+          {:ok, %{status | state: :stopping, cleanup_complete: false}}
+
+        true ->
+          {:ok, %{status | cleanup_complete: false}}
+      end
+    end
+  end
+
+  defp completed_stop(completion) do
+    if completion && :atomics.get(completion, 1) == 1, do: :ok, else: {:error, :cleanup_unproven}
   end
 
   @spec running?(t()) :: boolean()
@@ -74,7 +112,9 @@ defmodule EmergeSkia.HeadlessPrimeSession do
 
   @impl true
   def handle_call(:renderer, _from, state) do
-    {:reply, {:ok, %__MODULE__{pid: self(), renderer: state.renderer}}, state}
+    {:reply,
+     {:ok, %__MODULE__{pid: self(), renderer: state.renderer, completion: state.completion}},
+     state}
   end
 
   def handle_call(:running?, _from, state) do
@@ -291,7 +331,9 @@ defmodule EmergeSkia.HeadlessPrimeSession do
         frame_message: @internal_frame_message
     }
 
-    %{native_opts | headless: headless}
+    # The relay must drain borrowed-frame leases before stopping native ownership.
+    # A short-lived start task is neither the producer nor the native safety owner.
+    %{native_opts | headless: headless, owner: relay}
   end
 
   defp forward_frame(frame, %{destination: :disconnected} = state) do
@@ -425,6 +467,7 @@ defmodule EmergeSkia.HeadlessPrimeSession do
       # dispatcher here would suppress guards that may still be the only path
       # capable of retiring a published holder.
       result = shutdown_result_for_test(native_result, lease_owner_error)
+      :atomics.put(state.completion, 1, 2)
       Enum.each(state.stop_waiters, &GenServer.reply(&1, result))
 
       {:noreply,
@@ -441,6 +484,7 @@ defmodule EmergeSkia.HeadlessPrimeSession do
             state.shutdown_lease_owner_error
           )
 
+        :atomics.put(state.completion, 1, if(result == :ok, do: 1, else: 2))
         Enum.each(state.stop_waiters, &GenServer.reply(&1, result))
         state = %{state | mode: :stopped, stop_waiters: []}
 
@@ -455,6 +499,7 @@ defmodule EmergeSkia.HeadlessPrimeSession do
 
       {:error, reason} ->
         result = append_dispatcher_error(state, reason)
+        :atomics.put(state.completion, 1, 2)
         Enum.each(state.stop_waiters, &GenServer.reply(&1, result))
 
         {:noreply,

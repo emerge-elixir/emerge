@@ -49,7 +49,7 @@ use super::{
     core::{
         AtomicCommitErrorKind, Card, classify_atomic_commit_error, find_cursor_plane,
         find_primary_plane, first_connected_connector, mode_frame_interval, mode_refresh_hz,
-        open_card, prop_handle,
+        prop_handle,
     },
     cursor_theme::{CURSOR_PLANE_SIZE, CursorVisual, DrmCursorTheme},
 };
@@ -802,33 +802,6 @@ fn sleep_with_stop(stop: &Arc<AtomicBool>, duration: Duration) {
     }
 }
 
-fn release_master_lock(card: &Card) {
-    if let Err(err) = card.release_master_lock() {
-        eprintln!("DRM master release failed: {err}");
-    }
-}
-
-fn handle_startup_failure_with_card(
-    card: &Card,
-    startup_tx: &mut Option<StartupSender<Result<super::DrmBackendStartupInfo, String>>>,
-    running_flag: &Arc<AtomicBool>,
-    stop: &Arc<AtomicBool>,
-    retries_remaining: &mut u32,
-    retry_interval: Duration,
-    message: String,
-) -> bool {
-    release_master_lock(card);
-
-    handle_startup_failure(
-        startup_tx,
-        running_flag,
-        stop,
-        retries_remaining,
-        retry_interval,
-        message,
-    )
-}
-
 fn handle_startup_failure(
     startup_tx: &mut Option<StartupSender<Result<super::DrmBackendStartupInfo, String>>>,
     running_flag: &Arc<AtomicBool>,
@@ -979,6 +952,7 @@ fn cleanup_active_session(
     crtc_props: &HashMap<String, property::Info>,
     plane_props: &HashMap<String, property::Info>,
     cursor_plane: Option<CursorPlane>,
+    lifecycle: &crate::runtime::lifecycle::Lifecycle,
     framebuffer_cache: &mut HashMap<u32, framebuffer::Handle>,
     mode_blob_id: Option<u64>,
 ) {
@@ -992,11 +966,17 @@ fn cleanup_active_session(
         plane_props,
         cursor_plane.as_ref().map(CursorPlane::commit),
     ) {
-        eprintln!("DRM teardown failed: {err}");
+        lifecycle.quarantine_output(format!(
+            "DRM teardown failed; ownership retained until VM restart: {err}"
+        ));
+        // Never unwind/drop buffers that KMS may still scan out. The lease and all GPU owners
+        // remain on this thread. Admission for this output stays closed; other leases are untouched.
+        loop {
+            std::thread::park();
+        }
     }
 
     destroy_session_resources(card, cursor_plane, framebuffer_cache, mode_blob_id);
-    release_master_lock(card);
 }
 
 fn create_cursor_plane<T: AsFd>(
@@ -2153,10 +2133,10 @@ fn create_frame_surface(
     egl: &egl::Egl,
     dimensions: (u32, u32),
 ) -> Result<(GlFrameSurface, GlCapabilities), String> {
-    gl::load_with(|s| unsafe {
+    crate::backend::skia_gpu::load_gl_once(|s| unsafe {
         let symbol = CString::new(s).expect("gl symbol");
         egl.GetProcAddress(symbol.as_ptr()) as *const _
-    });
+    })?;
     let capabilities = GlCapabilities::detect();
 
     let interface = skia_safe::gpu::gl::Interface::new_load_with(|name| unsafe {
@@ -2530,6 +2510,7 @@ fn draw_software_cursor(
 
 pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
     let DrmRunContext {
+        lifecycle,
         startup_tx,
         stop,
         running_flag,
@@ -2596,7 +2577,14 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             break;
         }
 
-        let card = match open_card(config.card_path.as_deref()) {
+        let card = match super::session::open_output(
+            config.card_path.as_deref(),
+            config.output.as_deref(),
+            config.mode.as_deref(),
+            config.requested_size,
+            config.hw_cursor,
+            Some(Arc::clone(&lifecycle)),
+        ) {
             Ok(card) => card,
             Err(err) => {
                 if handle_startup_failure(
@@ -2616,24 +2604,8 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
 
         let card = Arc::new(card);
 
-        if let Err(err) = card.acquire_master_lock() {
-            if handle_startup_failure(
-                &mut startup_tx,
-                &running_flag,
-                &stop,
-                &mut startup_retries_remaining,
-                retry_interval,
-                format!("acquiring DRM master failed: {err}"),
-            ) {
-                break;
-            }
-
-            continue;
-        }
-
         if let Err(err) = card.set_client_capability(ClientCapability::UniversalPlanes, true) {
-            if handle_startup_failure_with_card(
-                &card,
+            if handle_startup_failure(
                 &mut startup_tx,
                 &running_flag,
                 &stop,
@@ -2648,8 +2620,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
         }
 
         if let Err(err) = card.set_client_capability(ClientCapability::Atomic, true) {
-            if handle_startup_failure_with_card(
-                &card,
+            if handle_startup_failure(
                 &mut startup_tx,
                 &running_flag,
                 &stop,
@@ -2666,8 +2637,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
         let gbm_device = match GbmDevice::new(card.as_fd()) {
             Ok(device) => device,
             Err(err) => {
-                if handle_startup_failure_with_card(
-                    &card,
+                if handle_startup_failure(
                     &mut startup_tx,
                     &running_flag,
                     &stop,
@@ -2685,8 +2655,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
         let resources = match card.resource_handles() {
             Ok(handles) => handles,
             Err(err) => {
-                if handle_startup_failure_with_card(
-                    &card,
+                if handle_startup_failure(
                     &mut startup_tx,
                     &running_flag,
                     &stop,
@@ -2705,8 +2674,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             match first_connected_connector(&card, &resources, config.requested_size) {
                 Ok(values) => values,
                 Err(err) => {
-                    if handle_startup_failure_with_card(
-                        &card,
+                    if handle_startup_failure(
                         &mut startup_tx,
                         &running_flag,
                         &stop,
@@ -2724,8 +2692,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
         let plane = match find_primary_plane(&card, &resources, crtc_handle) {
             Ok(handle) => handle,
             Err(err) => {
-                if handle_startup_failure_with_card(
-                    &card,
+                if handle_startup_failure(
                     &mut startup_tx,
                     &running_flag,
                     &stop,
@@ -2746,8 +2713,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
         {
             Ok(props) => props,
             Err(err) => {
-                if handle_startup_failure_with_card(
-                    &card,
+                if handle_startup_failure(
                     &mut startup_tx,
                     &running_flag,
                     &stop,
@@ -2767,8 +2733,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
         {
             Ok(props) => props,
             Err(err) => {
-                if handle_startup_failure_with_card(
-                    &card,
+                if handle_startup_failure(
                     &mut startup_tx,
                     &running_flag,
                     &stop,
@@ -2788,8 +2753,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
         {
             Ok(props) => props,
             Err(err) => {
-                if handle_startup_failure_with_card(
-                    &card,
+                if handle_startup_failure(
                     &mut startup_tx,
                     &running_flag,
                     &stop,
@@ -2923,8 +2887,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
         ) {
             Ok(surface) => surface,
             Err(err) => {
-                if handle_startup_failure_with_card(
-                    &card,
+                if handle_startup_failure(
                     &mut startup_tx,
                     &running_flag,
                     &stop,
@@ -2942,8 +2905,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
         let (egl_lib, egl_api) = match load_egl() {
             Ok(values) => values,
             Err(err) => {
-                if handle_startup_failure_with_card(
-                    &card,
+                if handle_startup_failure(
                     &mut startup_tx,
                     &running_flag,
                     &stop,
@@ -2965,8 +2927,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
         ) {
             Ok(values) => values,
             Err(err) => {
-                if handle_startup_failure_with_card(
-                    &card,
+                if handle_startup_failure(
                     &mut startup_tx,
                     &running_flag,
                     &stop,
@@ -3026,8 +2987,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             match create_renderer_frame_surface(config.rendering_api, &egl_state.egl, dimensions) {
                 Ok(values) => values,
                 Err(err) => {
-                    if handle_startup_failure_with_card(
-                        &card,
+                    if handle_startup_failure(
                         &mut startup_tx,
                         &running_flag,
                         &stop,
@@ -3102,8 +3062,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             ) {
                 Ok(renderer) => Some(renderer),
                 Err(err) => {
-                    if handle_startup_failure_with_card(
-                        &card,
+                    if handle_startup_failure(
                         &mut startup_tx,
                         &running_flag,
                         &stop,
@@ -3143,8 +3102,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
         let mode_blob = match card.create_property_blob(&mode) {
             Ok(blob) => blob,
             Err(err) => {
-                if handle_startup_failure_with_card(
-                    &card,
+                if handle_startup_failure(
                     &mut startup_tx,
                     &running_flag,
                     &stop,
@@ -3181,8 +3139,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                 mode_blob_id,
             );
 
-            if handle_startup_failure_with_card(
-                &card,
+            if handle_startup_failure(
                 &mut startup_tx,
                 &running_flag,
                 &stop,
@@ -3206,8 +3163,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                     mode_blob_id,
                 );
 
-                if handle_startup_failure_with_card(
-                    &card,
+                if handle_startup_failure(
                     &mut startup_tx,
                     &running_flag,
                     &stop,
@@ -3243,8 +3199,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                     mode_blob_id,
                 );
 
-                if handle_startup_failure_with_card(
-                    &card,
+                if handle_startup_failure(
                     &mut startup_tx,
                     &running_flag,
                     &stop,
@@ -3283,8 +3238,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                 mode_blob_id,
             );
 
-            if handle_startup_failure_with_card(
-                &card,
+            if handle_startup_failure(
                 &mut startup_tx,
                 &running_flag,
                 &stop,
@@ -3307,8 +3261,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                 mode_blob_id,
             );
 
-            if handle_startup_failure_with_card(
-                &card,
+            if handle_startup_failure(
                 &mut startup_tx,
                 &running_flag,
                 &stop,
@@ -4116,6 +4069,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             &crtc_props,
             &plane_props,
             cursor_plane.take(),
+            &lifecycle,
             &mut framebuffer_cache,
             mode_blob_id,
         );

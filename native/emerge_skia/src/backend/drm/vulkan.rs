@@ -43,7 +43,7 @@ use super::{
     DrmBackendStartupInfo, DrmRunConfig, DrmRunContext,
     core::{
         AtomicCommitErrorKind, KmsOutputProbe, classify_atomic_commit_error, duplicate_card,
-        mode_frame_interval, open_vulkan_selection_node, probe_kms_output, prop_handle,
+        mode_frame_interval, open_vulkan_selection_node, probe_card, prop_handle,
     },
     cursor_theme::{CursorVisual, DrmCursorTheme},
     functional_probe::{
@@ -516,12 +516,23 @@ impl PresenterSession {
     fn new(
         config: &DrmRunConfig,
         native_log: &crate::native_log::NativeLogRelay,
+        lifecycle: Arc<crate::runtime::lifecycle::Lifecycle>,
     ) -> Result<(Self, VulkanRendererReport), String> {
         let vulkan_node_path = config.vulkan_drm_node.as_deref().ok_or_else(|| {
             "explicit DRM Vulkan requires vulkan_drm_node; it is selected independently from drm_card"
                 .to_string()
         })?;
-        let kms = probe_kms_output(config.card_path.as_deref(), config.requested_size)?;
+        let kms = probe_card(
+            super::session::open_output(
+                config.card_path.as_deref(),
+                config.output.as_deref(),
+                config.mode.as_deref(),
+                config.requested_size,
+                false,
+                Some(lifecycle),
+            )?,
+            config.requested_size,
+        )?;
         if !kms.primary_supports_xrgb8888 {
             return Err("selected KMS primary plane does not advertise DRM XRGB8888".into());
         }
@@ -531,9 +542,6 @@ impl PresenterSession {
                     .into(),
             );
         }
-        kms.card
-            .acquire_master_lock()
-            .map_err(|error| format!("could not acquire DRM master: {error}"))?;
         kms.card
             .set_client_capability(ClientCapability::UniversalPlanes, true)
             .map_err(|error| format!("could not enable universal planes: {error}"))?;
@@ -981,9 +989,6 @@ impl PresenterSession {
             .kms
             .take()
             .ok_or_else(|| "DRM Vulkan KMS owner already dropped".to_string())?;
-        kms.card
-            .release_master_lock()
-            .map_err(|error| format!("failed to release DRM master: {error}"))?;
         drop(kms);
         Ok(())
     }
@@ -1087,6 +1092,7 @@ fn quarantine_session(session: PresenterSession) {
 
 pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
     let DrmRunContext {
+        lifecycle,
         startup_tx,
         stop,
         running_flag,
@@ -1141,7 +1147,7 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
             return;
         }
 
-        match PresenterSession::new(&config, &native_log) {
+        match PresenterSession::new(&config, &native_log, Arc::clone(&lifecycle)) {
             Ok(session) => break session,
             Err(error) if retries_remaining > 0 => {
                 eprintln!(
@@ -1633,6 +1639,7 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
         if let Some(tx) = startup_tx.take() {
             let _ = tx.send(Err(format!("DRM Vulkan backend unavailable: {reason}")));
         }
+        lifecycle.quarantine("DRM Vulkan ownership is uncertain; restart the VM/process");
         quarantine_session(session);
     } else {
         // A clean stop only reaches here with no prepared/in-flight ownership. The explicit KMS
@@ -1642,6 +1649,7 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
                 "drm_vulkan",
                 format!("clean shutdown became uncertain; quarantining: {error}"),
             );
+            lifecycle.quarantine("DRM Vulkan ownership is uncertain; restart the VM/process");
             quarantine_session(session);
         }
     }
@@ -1687,7 +1695,7 @@ fn probe_hotplug_unchanged(
     session: &PresenterSession,
     config: &DrmRunConfig,
 ) -> Result<bool, String> {
-    let probe = probe_kms_output(config.card_path.as_deref(), config.requested_size)?;
+    let probe = probe_card(duplicate_card(&session.kms().card)?, config.requested_size)?;
     Ok(probe.connector == session.kms().connector
         && probe.crtc == session.kms().crtc
         && probe.primary == session.kms().primary

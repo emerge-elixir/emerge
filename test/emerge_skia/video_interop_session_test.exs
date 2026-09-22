@@ -56,8 +56,10 @@ defmodule EmergeSkia.DirectVideoFrameTest do
       )
 
     on_exit(fn -> EmergeSkia.stop(renderer) end)
-    :ok = Emerge.Runtime.VideoEndpoints.register(self(), renderer)
-    on_exit(fn -> Emerge.Runtime.VideoEndpoints.unregister(self()) end)
+    viewport = self()
+    start_supervised!({Emerge.Runtime.VideoEndpoints, viewport})
+    :ok = Emerge.Runtime.VideoEndpoints.register(viewport, renderer)
+    on_exit(fn -> Emerge.Runtime.VideoEndpoints.unregister(viewport) end)
 
     EmergeSkia.upload_tree(renderer, video([width(px(2)), height(px(1))], :preview))
     assert_receive {:emerge_skia_frame, %Frame{storage: %Binary{}} = output}, 1_000

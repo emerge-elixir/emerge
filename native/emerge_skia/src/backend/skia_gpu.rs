@@ -6,6 +6,28 @@ use skia_safe::{
 
 use crate::renderer::{RenderFrame, text_surface_props};
 
+/// The `gl` crate's entry points are process-global mutable statics. Loading on every
+/// renderer startup races with siblings calling GL. EGL proc addresses are context-
+/// independent dispatch entries: initialize once and pin EGL so they cannot outlive
+/// their library after the last viewport closes and a later viewport starts.
+pub(crate) fn load_gl_once(
+    load: impl FnMut(&'static str) -> *const std::ffi::c_void,
+) -> Result<(), String> {
+    static BINDINGS: std::sync::OnceLock<Result<libloading::Library, String>> =
+        std::sync::OnceLock::new();
+    BINDINGS
+        .get_or_init(|| {
+            // SAFETY: pin the same platform EGL library used by all Linux GL backends.
+            let library = unsafe { libloading::Library::new("libEGL.so.1") }
+                .map_err(|error| format!("failed to pin EGL dispatch library: {error}"))?;
+            gl::load_with(load);
+            Ok(library)
+        })
+        .as_ref()
+        .map(|_| ())
+        .map_err(Clone::clone)
+}
+
 pub struct GlFrameSurface {
     surface: Surface,
     direct_context: gpu::DirectContext,

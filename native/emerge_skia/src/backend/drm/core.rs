@@ -30,7 +30,11 @@ use drm::node::NodeType;
 #[cfg(feature = "drm-vulkan")]
 use std::{os::unix::fs::FileTypeExt, path::Path};
 
-pub(super) struct Card(File);
+// The file closes before the lease guard releases its reservation. Duplicates retain the guard.
+pub(super) struct Card(
+    pub(super) File,
+    pub(super) Option<std::sync::Arc<super::session::Lease>>,
+);
 
 impl AsFd for Card {
     fn as_fd(&self) -> BorrowedFd<'_> {
@@ -51,7 +55,7 @@ impl ControlDevice for Card {}
 pub(super) fn duplicate_card(card: &Card) -> Result<Card, String> {
     card.0
         .try_clone()
-        .map(Card)
+        .map(|file| Card(file, card.1.clone()))
         .map_err(|error| format!("failed to duplicate KMS fd for GBM: {error}"))
 }
 
@@ -64,7 +68,7 @@ pub(super) fn open_card(card_path: Option<&str>) -> Result<Card, String> {
         .write(true)
         .open(card_path)
         .map_err(|error| format!("failed to open {card_path}: {error}"))?;
-    Ok(Card(fd))
+    Ok(Card(fd, None))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -150,7 +154,7 @@ pub(super) fn probe_kms_output(
     requested_size: Option<(u32, u32)>,
 ) -> Result<KmsOutputProbe, String> {
     let path = card_path.unwrap_or("/dev/dri/card0");
-    let card = Card(open_character_device(path, "KMS DRM card")?);
+    let card = Card(open_character_device(path, "KMS DRM card")?, None);
     let node = drm::node::DrmNode::from_file(&card.0)
         .map_err(|error| format!("configured KMS DRM card {path:?} is not a DRM node: {error}"))?;
     if node.ty() != NodeType::Primary {
@@ -167,9 +171,17 @@ pub(super) fn probe_kms_output(
         .map_err(|error| {
             format!("configured KMS DRM card {path:?} cannot enable atomic modesetting: {error}")
         })?;
-    let resources = card.resource_handles().map_err(|error| {
-        format!("configured KMS DRM card {path:?} exposes no control resources: {error}")
-    })?;
+    probe_card(card, requested_size)
+}
+
+#[cfg(feature = "drm-vulkan")]
+pub(super) fn probe_card(
+    card: Card,
+    requested_size: Option<(u32, u32)>,
+) -> Result<KmsOutputProbe, String> {
+    let resources = card
+        .resource_handles()
+        .map_err(|error| format!("KMS DRM card exposes no control resources: {error}"))?;
     let (connector, mode, crtc, encoder) =
         first_connected_connector(&card, &resources, requested_size)?;
     let primary = find_strict_primary_plane(&card, &resources, crtc)?;
@@ -289,6 +301,75 @@ pub(super) fn mode_refresh_hz(mode: &control::Mode) -> f64 {
     .unwrap_or_else(|| mode.vrefresh().max(1) as f64)
 }
 
+/// Exact timing identity, independent of kernel ordering, preferred flags and display names.
+/// Never decode caller-provided timings: selection only matches modes advertised by the connector.
+pub(super) fn mode_id(mode: &control::Mode) -> String {
+    let (w, h) = mode.size();
+    let (hs, he, ht) = mode.hsync();
+    let (vs, ve, vt) = mode.vsync();
+    format!(
+        "{w}x{h}:{}:{hs}:{he}:{ht}:{}:{vs}:{ve}:{vt}:{}:{:x}",
+        mode.clock(),
+        mode.hskew(),
+        mode.vscan(),
+        mode.flags().bits()
+    )
+}
+
+pub(super) fn select_mode(
+    modes: &[control::Mode],
+    requested: Option<(u32, u32)>,
+    exact: Option<&str>,
+) -> Result<control::Mode, String> {
+    match exact {
+        Some(id) => modes
+            .iter()
+            .find(|mode| mode_id(mode) == id)
+            .copied()
+            .ok_or_else(|| "selected DRM mode is not advertised by this output".to_string()),
+        None => choose_mode(modes, requested),
+    }
+}
+
+pub(crate) fn outputs(path: &str) -> Result<Vec<crate::display::DrmOutput>, String> {
+    // Read-only discovery: no explicit master acquisition, capabilities or modeset.
+    let file = OpenOptions::new()
+        .read(true)
+        .open(path)
+        .map_err(|error| format!("failed to open {path}: {error}"))?;
+    let card = Card(file, None);
+    let resources = card
+        .resource_handles()
+        .map_err(|error| format!("failed to query DRM outputs on {path}: {error}"))?;
+    resources
+        .connectors()
+        .iter()
+        .map(|handle| {
+            let info = card
+                .get_connector(*handle, false)
+                .map_err(|error| format!("failed to query DRM connector {handle:?}: {error}"))?;
+            Ok(crate::display::DrmOutput {
+                name: info.to_string(),
+                connector_id: u32::from(*handle),
+                connected: info.state() == connector::State::Connected,
+                modes: info
+                    .modes()
+                    .iter()
+                    .map(|mode| crate::display::DrmMode {
+                        id: mode_id(mode),
+                        name: mode.name().to_string_lossy().into_owned(),
+                        width: u32::from(mode.size().0),
+                        height: u32::from(mode.size().1),
+                        refresh_hz: mode_refresh_hz(mode),
+                        preferred: mode_is_preferred(mode),
+                        interlaced: mode.flags().contains(control::ModeFlags::INTERLACE),
+                    })
+                    .collect(),
+            })
+        })
+        .collect()
+}
+
 pub(super) fn mode_frame_interval(mode: &control::Mode) -> Duration {
     frame_interval_for_refresh_hz(mode_refresh_hz(mode))
 }
@@ -336,6 +417,22 @@ pub(super) fn first_connected_connector(
     ),
     String,
 > {
+    if let Some(lease) = card.1.as_ref() {
+        let info = card
+            .get_connector(lease.connector, false)
+            .map_err(|e| format!("failed to read leased connector: {e}"))?;
+        if info.state() != connector::State::Connected {
+            return Err("selected DRM output is disconnected".into());
+        }
+        if !info
+            .modes()
+            .iter()
+            .any(|mode| mode_id(mode) == mode_id(&lease.mode))
+        {
+            return Err("selected DRM mode is no longer available".into());
+        }
+        return Ok((lease.connector, lease.mode, lease.crtc, lease.encoder));
+    }
     let mut last_error = None;
 
     for handle in resources.connectors() {
@@ -449,7 +546,7 @@ pub(super) fn is_cursor_plane(card: &Card, plane: plane::Handle) -> Result<bool,
     Ok(false)
 }
 
-fn compatible_planes(
+pub(super) fn compatible_planes(
     card: &Card,
     resources: &ResourceHandles,
     crtc_handle: crtc::Handle,
@@ -552,6 +649,49 @@ pub(super) fn prop_handle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fixture(clock: u32, flags: u32, preferred: bool) -> control::Mode {
+        drm_ffi::drm_mode_modeinfo {
+            clock,
+            hdisplay: 1920,
+            hsync_start: 2008,
+            hsync_end: 2052,
+            htotal: 2200,
+            vdisplay: 1080,
+            vsync_start: 1084,
+            vsync_end: 1089,
+            vtotal: 1125,
+            vrefresh: 60,
+            flags,
+            type_: if preferred {
+                control::ModeTypeFlags::PREFERRED.bits()
+            } else {
+                0
+            },
+            ..Default::default()
+        }
+        .into()
+    }
+
+    #[test]
+    fn exact_mode_distinguishes_fractional_refresh_and_scan_flags() {
+        let sixty = fixture(148500, 0, true);
+        let fractional = fixture(148352, 0, false);
+        let interlaced = fixture(148500, control::ModeFlags::INTERLACE.bits(), false);
+        assert_ne!(mode_id(&sixty), mode_id(&fractional));
+        assert_ne!(mode_id(&sixty), mode_id(&interlaced));
+        assert_eq!(mode_id(&sixty), mode_id(&fixture(148500, 0, false)));
+        assert_eq!(
+            select_mode(
+                &[sixty, fractional],
+                Some((800, 600)),
+                Some(&mode_id(&fractional))
+            ),
+            Ok(fractional)
+        );
+        assert!(select_mode(&[sixty], None, Some(&mode_id(&fractional))).is_err());
+        assert!(select_mode(&[], None, None).is_err());
+    }
 
     #[test]
     fn atomic_commit_errno_is_classified_without_string_parsing() {

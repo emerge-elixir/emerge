@@ -104,6 +104,13 @@ defmodule EmergeSkia.Native do
     end
   end
 
+  @doc false
+  def drm_outputs(_card_path), do: :erlang.nif_error(:nif_not_loaded)
+  @doc false
+  def renderer_status(_renderer), do: :erlang.nif_error(:nif_not_loaded)
+  @doc false
+  def stop_timeout(_renderer, _timeout_ms), do: :erlang.nif_error(:nif_not_loaded)
+
   @doc """
   Start the Skia renderer with a window.
 
@@ -119,6 +126,7 @@ defmodule EmergeSkia.Native do
   Mirrors `EmergeSkia.start/1` keyword options.
   """
   @spec start_opts(%{
+          required(:owner) => pid() | nil,
           required(:backend) => String.t(),
           required(:rendering_api) => %{
             required(:kind) => String.t(),
@@ -129,6 +137,8 @@ defmodule EmergeSkia.Native do
           required(:width) => non_neg_integer(),
           required(:height) => non_neg_integer(),
           required(:drm_card) => String.t() | nil,
+          required(:drm_output) => String.t() | nil,
+          required(:drm_mode) => String.t() | nil,
           required(:vulkan_drm_node) => String.t() | nil,
           required(:drm_startup_retries) => non_neg_integer(),
           required(:drm_retry_interval_ms) => non_neg_integer(),

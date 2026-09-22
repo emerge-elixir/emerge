@@ -4,6 +4,8 @@
 //! the Vulkan owner never imports the OpenGL/EGL module in a `drm-vulkan` build.
 
 mod core;
+mod session;
+pub(crate) use core::outputs;
 #[cfg(any(feature = "drm", feature = "drm-vulkan"))]
 mod cursor_theme;
 #[cfg(feature = "drm-vulkan")]
@@ -70,6 +72,8 @@ impl BackendWake for DrmBackendWake {
 pub(crate) struct DrmRunConfig {
     pub(crate) requested_size: Option<(u32, u32)>,
     pub(crate) card_path: Option<String>,
+    pub(crate) output: Option<String>,
+    pub(crate) mode: Option<String>,
     #[cfg_attr(not(feature = "drm-vulkan"), allow(dead_code))]
     pub(crate) vulkan_drm_node: Option<String>,
     pub(crate) asset_config: AssetConfig,
@@ -110,6 +114,7 @@ impl DrmBackendStartupInfo {
 
 #[cfg_attr(not(feature = "drm"), allow(dead_code))]
 pub(crate) struct DrmRunContext {
+    pub(crate) lifecycle: Arc<crate::runtime::lifecycle::Lifecycle>,
     pub(crate) startup_tx: StartupSender<Result<DrmBackendStartupInfo, String>>,
     pub(crate) stop: Arc<AtomicBool>,
     pub(crate) running_flag: Arc<AtomicBool>,

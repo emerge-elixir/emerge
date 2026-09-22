@@ -110,7 +110,9 @@ pub(super) fn create_gl_env(
             }
         };
 
-    gl::load_with(|symbol| gl_display.get_proc_address(gl_symbol_name(symbol).as_c_str()));
+    crate::backend::skia_gpu::load_gl_once(|symbol| {
+        gl_display.get_proc_address(gl_symbol_name(symbol).as_c_str())
+    })?;
 
     let interface = Interface::new_load_with(|name| {
         if name == "eglGetCurrentDisplay" {

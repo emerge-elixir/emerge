@@ -151,3 +151,4 @@ arboard = { version = "3.6", default-features = false, features = ["wayland-data
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 video-interop = "0.1.1"
+drm-ffi = "0.9"

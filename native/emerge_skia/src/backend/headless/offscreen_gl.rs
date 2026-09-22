@@ -636,10 +636,10 @@ fn init_on_display(
 }
 
 fn create_frame_surface(egl: &egl::Egl, dimensions: (u32, u32)) -> Result<GlFrameSurface, String> {
-    gl::load_with(|symbol| unsafe {
+    crate::backend::skia_gpu::load_gl_once(|symbol| unsafe {
         let symbol = CString::new(symbol).expect("GL symbol");
         egl.GetProcAddress(symbol.as_ptr()) as *const _
-    });
+    })?;
 
     let interface = Interface::new_load_with(|name| unsafe {
         if name == "eglGetCurrentDisplay" {

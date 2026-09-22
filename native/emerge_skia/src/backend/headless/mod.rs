@@ -165,8 +165,13 @@ pub(crate) fn start_renderer_with_config(
         let _asset_context_guard = asset_runtime.enter();
         crate::renderer::set_render_log_enabled(config.render_log);
     }
-    let running_flag = Arc::new(AtomicBool::new(true));
-    let stop_flag = Arc::new(AtomicBool::new(false));
+    let lifecycle = config
+        .owner
+        .as_ref()
+        .map(|owner| Arc::clone(&owner.lifecycle))
+        .unwrap_or_default();
+    let running_flag = Arc::clone(&lifecycle.running);
+    let stop_flag = Arc::clone(&lifecycle.stop);
     let render_counter = Arc::new(AtomicU64::new(0));
     let input_target = Arc::new(InputTargetRelay::new(None));
     let native_log = Arc::new(NativeLogRelay::new(initial_log_target));
@@ -239,16 +244,26 @@ pub(crate) fn start_renderer_with_config(
         );
     });
 
-    let startup = match startup_rx.recv() {
+    let startup = match startup_rx.recv_timeout(
+        config
+            .startup_deadline
+            .saturating_duration_since(Instant::now()),
+    ) {
         Ok(Ok(startup)) => startup,
         Ok(Err(reason)) => {
             running_flag.store(false, Ordering::Relaxed);
-            let _ = render_handle.join();
+            render_sender.send_latest(RenderMsg::Stop);
+            cleanup_dispatcher.dispatch(Box::new(move || {
+                let _ = render_handle.join();
+            }));
             return Err(rustler::Error::Term(Box::new(reason)));
         }
         Err(_) => {
             running_flag.store(false, Ordering::Relaxed);
-            let _ = render_handle.join();
+            render_sender.send_latest(RenderMsg::Stop);
+            cleanup_dispatcher.dispatch(Box::new(move || {
+                let _ = render_handle.join();
+            }));
             return Err(rustler::Error::Term(Box::new(
                 "headless render thread exited before startup completed".to_string(),
             )));
@@ -324,6 +339,8 @@ pub(crate) fn start_renderer_with_config(
 
     let video_wake = VideoWake::new(backend_wake.clone());
     let resource = RendererResource {
+        lifecycle,
+        _owner: config.owner,
         asset_runtime,
         running_flag,
         backend_wake,
@@ -344,15 +361,23 @@ pub(crate) fn start_renderer_with_config(
         log_render: config.render_log,
         log_input: false,
         cleanup_dispatcher,
-        handles: Mutex::new(Some(RendererHandles {
+        handles: Arc::new(Mutex::new(Some(RendererHandles {
             backend_handle: Some(render_handle),
             input_handle: None,
             tree_handle: Some(tree_handle),
             event_handle: Some(event_handle),
             heartbeat_handle: Some(heartbeat_handle),
-        })),
+        }))),
     };
 
+    resource
+        .monitor_workers()
+        .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
+    if resource.stop_flag.load(Ordering::Acquire) {
+        return Err(rustler::Error::Term(Box::new(
+            "renderer stopped during startup".to_string(),
+        )));
+    }
     Ok(ResourceArc::new(resource))
 }
 
