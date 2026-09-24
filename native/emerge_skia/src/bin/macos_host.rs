@@ -89,6 +89,7 @@ mod app {
     const REQUEST_CONFIGURE_ASSETS: u16 = 0x0019;
     const REQUEST_RENDER_TREE_TO_PIXELS: u16 = 0x001A;
     const REQUEST_RENDER_TREE_TO_PNG: u16 = 0x001B;
+    const REQUEST_SUBMIT_VIDEO: u16 = 0x001C;
 
     const ASSET_MODE_AWAIT: u8 = 0;
     const ASSET_MODE_SNAPSHOT: u8 = 1;
@@ -385,6 +386,11 @@ mod app {
         PatchTree {
             session_id: u64,
             bytes: Vec<u8>,
+        },
+        SubmitVideo {
+            session_id: u64,
+            frame: emerge_skia::cpu_video::CpuVideoSubmission,
+            reply_tx: std::sync::mpsc::Sender<HostReply>,
         },
         SetInputMask {
             session_id: u64,
@@ -849,6 +855,7 @@ mod app {
         _window_delegate: Retained<HostWindowDelegate>,
         surface: SessionSurface,
         renderer: SceneRenderer,
+        video: emerge_skia::cpu_video::CpuVideoFrames,
         runtime: HostSessionRuntime,
         logical_size: (u32, u32),
         scale_factor: f32,
@@ -1710,6 +1717,40 @@ mod app {
                         }
                     }
                 }
+                Ok(HostCommand::SubmitVideo {
+                    session_id,
+                    frame,
+                    reply_tx,
+                }) => {
+                    let result = (|| {
+                        let mut ui = ui_state.borrow_mut();
+                        let session = ui
+                            .sessions
+                            .get_mut(&session_id)
+                            .ok_or_else(|| "unknown macOS session".to_string())?;
+                        session.video.sync(
+                            &mut session.renderer,
+                            &session.runtime.render_state.video_target_ids,
+                        )?;
+                        session.video.submit(
+                            &frame.target,
+                            frame.width,
+                            frame.height,
+                            frame.rgba,
+                        )?;
+                        if session.video.sync(
+                            &mut session.renderer,
+                            &session.runtime.render_state.video_target_ids,
+                        )? {
+                            session.runtime.dirty = true;
+                        }
+                        Ok::<_, String>(())
+                    })();
+                    let _ = reply_tx.send(match result {
+                        Ok(()) => HostReply::UploadTree,
+                        Err(reason) => HostReply::Error(reason),
+                    });
+                }
                 Ok(HostCommand::SetInputMask {
                     session_id,
                     mask,
@@ -2113,6 +2154,7 @@ mod app {
                 _window_delegate: window_delegate,
                 surface,
                 renderer: SceneRenderer::with_cache_config(renderer_cache_config),
+                video: emerge_skia::cpu_video::CpuVideoFrames::new()?,
                 runtime: HostSessionRuntime::new(
                     event_runtime,
                     metrics.render_size.0,
@@ -2437,6 +2479,10 @@ mod app {
 
     fn draw_session(session: &mut HostSession) -> Result<(), String> {
         let _asset_context_guard = session.enter_asset_context();
+        session.video.sync(
+            &mut session.renderer,
+            &session.runtime.render_state.video_target_ids,
+        )?;
         let draw_started_at = Instant::now();
         if let SessionSurface::Metal(surface) = &session.surface {
             let size = surface.metal_layer.drawableSize();
@@ -3504,6 +3550,16 @@ mod app {
         }
 
         let reply = match frame.tag {
+            REQUEST_SUBMIT_VIDEO => {
+                match emerge_skia::cpu_video::CpuVideoSubmission::decode(&frame.payload) {
+                    Ok(video) => roundtrip(command_tx, |reply_tx| HostCommand::SubmitVideo {
+                        session_id: frame.session_id,
+                        frame: video,
+                        reply_tx,
+                    }),
+                    Err(reason) => HostReply::Error(reason),
+                }
+            }
             REQUEST_START_SESSION => {
                 let Some(decoded) = decode_start_session(&frame.payload) else {
                     return encode_frame(

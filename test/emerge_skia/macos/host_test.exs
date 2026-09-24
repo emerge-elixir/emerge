@@ -67,7 +67,7 @@ defmodule EmergeSkia.Macos.HostTest do
 
     assert Protocol.encode_init_payload() ==
              <<byte_size("emerge_skia_macos")::unsigned-big-16, "emerge_skia_macos",
-               14::unsigned-big-16>>
+               15::unsigned-big-16>>
   end
 
   test "protocol rejects hosts without shared animation support" do
@@ -76,9 +76,9 @@ defmodule EmergeSkia.Macos.HostTest do
         version::unsigned-big-16, 123::unsigned-big-64, 456::unsigned-big-32>>
     end
 
-    assert {:ok, %{host_id: 123, host_pid: 456}} = Protocol.decode_init_ok_payload(reply.(14))
+    assert {:ok, %{host_id: 123, host_pid: 456}} = Protocol.decode_init_ok_payload(reply.(15))
 
-    for version <- [12, 13] do
+    for version <- [12, 13, 14] do
       assert {:error, "unsupported macOS host init response"} =
                Protocol.decode_init_ok_payload(reply.(version))
     end

@@ -423,8 +423,14 @@ defmodule EmergeSkia do
   """
   @spec submit_video_frame(renderer(), atom(), VideoInterop.Frame.t()) ::
           :ok | {:error, {:caller_owned | :transferred, term()}}
-  def submit_video_frame(%Renderer{}, _target, %VideoInterop.Frame{}),
-    do: {:error, {:caller_owned, :video_submission_unsupported}}
+  def submit_video_frame(%Renderer{} = renderer, target, %VideoInterop.Frame{} = frame) do
+    with {:ok, payload} <- EmergeSkia.Macos.Video.encode(target, frame),
+         :ok <- EmergeSkia.Macos.Host.submit_video(renderer, payload) do
+      :ok
+    else
+      {:error, reason} -> {:error, {:caller_owned, reason}}
+    end
+  end
 
   def submit_video_frame(
         %HeadlessPrimeSession{} = renderer,

@@ -76,8 +76,8 @@ headless-opengl = ["linux-opengl"]
 # Headless Vulkan is a PRIME producer, not a window-system or KMS presenter.
 headless-vulkan = ["vulkan"]
 headless-all = ["headless-opengl", "headless-vulkan"]
-# The external macOS host does not expose video targets. Keep Linux DMA-BUF
-# transport out of this feature so the host remains an Apple-only renderer build.
+# The macOS host accepts owned CPU video frames. Keep Linux DMA-BUF transport
+# out of this feature so the host remains an Apple-only renderer build.
 macos = [
     "dep:objc2",
     "dep:objc2-foundation",

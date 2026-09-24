@@ -31,6 +31,7 @@ defmodule EmergeSkia.Macos.Host do
   @request_configure_assets 0x0019
   @request_render_tree_to_pixels 0x001A
   @request_render_tree_to_png 0x001B
+  @request_submit_video 0x001C
 
   @notify_resized 0x0100
   @notify_focused 0x0101
@@ -128,6 +129,12 @@ defmodule EmergeSkia.Macos.Host do
   def upload_tree(%Renderer{} = renderer, bytes) when is_binary(bytes) do
     with :ok <- ensure_started() do
       GenServer.call(@name, {:upload_tree, renderer.session_id, bytes}, 15_000)
+    end
+  end
+
+  def submit_video(%Renderer{} = renderer, bytes) do
+    with :ok <- ensure_started() do
+      GenServer.call(@name, {:submit_video, renderer.session_id, bytes}, 15_000)
     end
   end
 
@@ -365,6 +372,20 @@ defmodule EmergeSkia.Macos.Host do
            {:upload_tree, session_id},
            session_id,
            @request_upload_tree,
+           bytes
+         ) do
+      {:ok, state} -> {:noreply, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:submit_video, session_id, bytes}, from, state) do
+    case queue_request(
+           state,
+           from,
+           {:submit_video, session_id},
+           session_id,
+           @request_submit_video,
            bytes
          ) do
       {:ok, state} -> {:noreply, state}
@@ -677,6 +698,18 @@ defmodule EmergeSkia.Macos.Host do
        ) do
     GenServer.reply(from, :ok)
     Session.mark_stopped(state, session_id, @input_mask_all)
+  end
+
+  defp handle_reply_request(
+         {:submit_video, _session_id},
+         from,
+         _reply_session_id,
+         @request_submit_video,
+         <<>>,
+         state
+       ) do
+    GenServer.reply(from, :ok)
+    state
   end
 
   defp handle_reply_request(
@@ -996,6 +1029,9 @@ defmodule EmergeSkia.Macos.Host do
   end
 
   defp handle_notify_frame(_frame, state), do: state
+
+  defp reply_pending_error({:submit_video, _session_id}, from, message),
+    do: GenServer.reply(from, {:error, message})
 
   defp reply_pending_error({:start_session, _native_opts}, from, message),
     do: GenServer.reply(from, {:error, message})

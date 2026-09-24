@@ -32,6 +32,7 @@ pub mod actors;
 pub mod assets;
 pub mod backend;
 mod clipboard;
+pub mod cpu_video;
 #[cfg(all(feature = "drm-core", target_os = "linux"))]
 mod cursor;
 mod debug_trace;

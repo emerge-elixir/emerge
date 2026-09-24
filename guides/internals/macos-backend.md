@@ -116,10 +116,15 @@ commands.
 
 ## Unsupported For Now
 
-- video targets on macOS
+- DMA-BUF video targets on macOS
 - in-process macOS NIF window backend
 
-Direct video-frame submission is not currently supported by the macOS host renderer.
+The macOS host accepts owned RGBA8888 binary frames through `Emerge.submit_video_frame/3`.
+Protocol version 15 carries cropped, packed pixels and their alpha mode; the host normalizes
+them to premultiplied RGBA and uses the shared CPU video renderer. Hidden targets discard frames.
+DMA-BUF import remains unsupported. Applications that also run a headless producer on macOS
+must compile with `config :emerge, load_macos_nif: true`; desktop-only applications can continue
+using the external host without loading the NIF.
 
 ## Validation
 
