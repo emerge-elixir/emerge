@@ -37,14 +37,13 @@ impl CpuVideoSubmission {
             return Err(invalid());
         }
         let rgba = header[9..]
-            .chunks_exact(4)
-            .flat_map(|pixel| {
-                let [r, g, b, a] = <[u8; 4]>::try_from(pixel).unwrap();
-                match alpha {
-                    1 => [premultiply(r, a), premultiply(g, a), premultiply(b, a), a],
-                    2 => [r, g, b, 255],
-                    _ => [r, g, b, a],
-                }
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|&[r, g, b, a]| match alpha {
+                1 => [premultiply(r, a), premultiply(g, a), premultiply(b, a), a],
+                2 => [r, g, b, 255],
+                _ => [r, g, b, a],
             })
             .collect();
         Ok(Self {
