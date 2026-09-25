@@ -237,6 +237,7 @@ defmodule EmergeSkia.HeadlessPrimeSession do
             {:ok,
              %{
                renderer: renderer,
+               completion: :atomics.new(1, signed: false),
                lease_owner: lease_owner,
                release_dispatcher: release_dispatcher,
                destination: destination,
