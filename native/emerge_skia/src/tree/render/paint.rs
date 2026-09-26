@@ -1,6 +1,6 @@
-use super::box_model::{border_radius_uniform, content_rect};
-use super::color::color_to_u32;
+use super::box_model::{border_radii, content_rect};
 use crate::assets::{self, AssetStatus};
+use crate::render_color::RenderColor;
 use crate::render_scene::{DrawPrimitive, RenderNode};
 use crate::tree::attrs::{
     Attrs, Background, BorderRadius, BorderStyle, BorderWidth, ImageFit, ImageSource,
@@ -22,7 +22,7 @@ pub(super) fn collect_box_shadow_nodes(
     };
 
     let rect = Rect::from_frame(frame);
-    let radius = border_radius_uniform(radius);
+    let radius = border_radii(radius);
 
     shadows
         .iter()
@@ -32,7 +32,7 @@ pub(super) fn collect_box_shadow_nodes(
             let offset_y = shadow.offset_y as f32;
             let blur = shadow.blur as f32;
             let size = shadow.size as f32;
-            let color = color_to_u32(&shadow.color);
+            let color = shadow.color.render(rect);
 
             RenderNode::Primitive(if inset {
                 DrawPrimitive::InsetShadow(
@@ -45,7 +45,7 @@ pub(super) fn collect_box_shadow_nodes(
                     blur,
                     size,
                     radius,
-                    color,
+                    (color).clone(),
                 )
             } else {
                 DrawPrimitive::Shadow(
@@ -58,7 +58,7 @@ pub(super) fn collect_box_shadow_nodes(
                     blur,
                     size,
                     radius,
-                    color,
+                    (color).clone(),
                 )
             })
         })
@@ -71,17 +71,8 @@ pub(super) fn build_background_nodes(frame: Frame, attrs: &Attrs) -> Vec<RenderN
     };
 
     let nodes = match background {
-        Background::Color(color) => collect_background_rect_nodes(frame, color_to_u32(color)),
-        Background::Gradient { from, to, angle } => {
-            vec![RenderNode::Primitive(DrawPrimitive::Gradient(
-                frame.x,
-                frame.y,
-                frame.width,
-                frame.height,
-                color_to_u32(from),
-                color_to_u32(to),
-                *angle as f32,
-            ))]
+        Background::Color(color) => {
+            collect_background_rect_nodes(frame, color.render(Rect::from_frame(frame)))
         }
         Background::Image { source, fit } => {
             paint_node_for_image_source(Rect::from_frame(frame), source, *fit, None, false)
@@ -110,7 +101,14 @@ pub(super) fn render_image_nodes(frame: Frame, attrs: &Attrs) -> Vec<RenderNode>
         },
         source,
         fit,
-        attrs.svg_color.as_ref().map(color_to_u32),
+        attrs.svg_color.as_ref().map(|c| {
+            c.render(Rect {
+                x: draw_x,
+                y: draw_y,
+                width: draw_w,
+                height: draw_h,
+            })
+        }),
         attrs.svg_expected.unwrap_or(false),
     )
     .into_iter()
@@ -143,7 +141,7 @@ fn paint_node_for_image_source(
     rect: Rect,
     source: &ImageSource,
     fit: ImageFit,
-    svg_tint: Option<u32>,
+    svg_tint: Option<RenderColor>,
     svg_expected: bool,
 ) -> Option<RenderNode> {
     if rect.width <= 0.0 || rect.height <= 0.0 {
@@ -174,11 +172,12 @@ fn paint_node_for_image_source(
                     rect.height,
                     asset.id,
                     fit,
-                    if svg_expected && asset_is_vector {
+                    (if svg_expected && asset_is_vector {
                         svg_tint
                     } else {
                         None
-                    },
+                    })
+                    .clone(),
                 )))
             }
         }
@@ -188,12 +187,10 @@ fn paint_node_for_image_source(
             rect.width,
             rect.height,
         ))),
-        _ => Some(RenderNode::Primitive(DrawPrimitive::ImageLoading(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
-        ))),
+        _ if assets::loading_indicator_visible(source) => Some(RenderNode::Primitive(
+            DrawPrimitive::ImageLoading(rect.x, rect.y, rect.width, rect.height),
+        )),
+        _ => None,
     }
 }
 
@@ -212,7 +209,7 @@ pub(super) fn collect_scrollbar_nodes(
             metrics.thumb_width,
             metrics.thumb_height,
             metrics.thumb_width / 2.0,
-            SCROLLBAR_COLOR,
+            (SCROLLBAR_COLOR).into(),
         )));
     }
 
@@ -223,20 +220,20 @@ pub(super) fn collect_scrollbar_nodes(
             metrics.thumb_width,
             metrics.thumb_height,
             metrics.thumb_height / 2.0,
-            SCROLLBAR_COLOR,
+            (SCROLLBAR_COLOR).into(),
         )));
     }
 
     nodes
 }
 
-pub(super) fn collect_background_rect_nodes(frame: Frame, fill: u32) -> Vec<RenderNode> {
+pub(super) fn collect_background_rect_nodes(frame: Frame, fill: RenderColor) -> Vec<RenderNode> {
     vec![RenderNode::Primitive(DrawPrimitive::Rect(
         frame.x,
         frame.y,
         frame.width,
         frame.height,
-        fill,
+        (fill).clone(),
     ))]
 }
 
@@ -276,7 +273,7 @@ pub(super) fn collect_border_nodes(frame: Frame, attrs: &Attrs) -> Vec<RenderNod
         return Vec::new();
     };
 
-    let color = color_to_u32(border_color);
+    let color = border_color.render(Rect::from_frame(frame));
     let style = attrs.border_style.unwrap_or(BorderStyle::Solid);
 
     let primitive = match border_width {
@@ -288,7 +285,7 @@ pub(super) fn collect_border_nodes(frame: Frame, attrs: &Attrs) -> Vec<RenderNod
                 frame.height,
                 *value as f32,
                 *w as f32,
-                color,
+                (color).clone(),
                 style,
             )),
             Some(BorderRadius::Corners { tl, tr, br, bl }) => Some(DrawPrimitive::BorderCorners(
@@ -301,7 +298,7 @@ pub(super) fn collect_border_nodes(frame: Frame, attrs: &Attrs) -> Vec<RenderNod
                 *br as f32,
                 *bl as f32,
                 *w as f32,
-                color,
+                (color).clone(),
                 style,
             )),
             _ => Some(DrawPrimitive::Border(
@@ -311,7 +308,7 @@ pub(super) fn collect_border_nodes(frame: Frame, attrs: &Attrs) -> Vec<RenderNod
                 frame.height,
                 0.0,
                 *w as f32,
-                color,
+                (color).clone(),
                 style,
             )),
         },
@@ -325,12 +322,12 @@ pub(super) fn collect_border_nodes(frame: Frame, attrs: &Attrs) -> Vec<RenderNod
             frame.y,
             frame.width,
             frame.height,
-            border_radius_uniform(radius),
+            border_radii(radius),
             *top as f32,
             *right as f32,
             *bottom as f32,
             *left as f32,
-            color,
+            (color).clone(),
             style,
         )),
         _ => None,

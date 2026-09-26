@@ -141,7 +141,28 @@ column(
 
 ## Use SVG files
 
-Use `svg/2` when the source is an SVG:
+Use `svg/2` when the source is an SVG. For proportional sizing, set one pixel
+dimension and leave the other omitted (or use `content()`):
+
+```elixir
+svg([height(px(68))], "logos/logo.svg")
+```
+
+A 200×200 SVG then occupies a 68×68 frame; a 200×100 SVG occupies 136×68.
+This also works with `image/2` and with a fixed width instead of height. Padding
+and borders are included in pixel sizes; the aspect ratio applies inside them.
+For responsive sizing, `image([width(fill())], source)` and
+`svg([width(fill()), height(content())], source)` derive height from the allocated
+width, even when it exceeds the source width. This is symmetric:
+`image([height(fill())], source)` and `svg([height(fill()), width(content())], source)`
+derive width from the allocated height. Explicit dimensions and min/max limits
+take precedence; fixed parent frames remain fixed, with overflow available for
+scrolling.
+
+Once both dimensions are set, they determine the frame and `image_fit(:contain)`
+or `image_fit(:cover)` determines how the source is drawn within it.
+
+For a fixed-size icon frame:
 
 ```elixir
 row(
@@ -243,15 +264,26 @@ If you want multiple variants of the same family, register each variant:
 
 After that, use the configured family in UI code:
 
+<!-- emerge-example:ui-assets-font-variants -->
 ```elixir
-column([spacing(8)], [
-  el([Font.family("Inter"), Font.size(22), Font.bold()], text("Release notes")),
-  el([Font.family("Inter"), Font.regular()], text("Design system updated")),
-  el([Font.family("Inter"), Font.italic(), Font.color(color(:slate, 300))], text("Beta"))
-])
+column(
+  [
+    width(fill()),
+    height(fill()),
+    padding(24),
+    spacing(8),
+    Background.color(color(:slate, 900)),
+    Font.family("Inter")
+  ],
+  [
+    el([Font.size(22), Font.bold(), Font.color(color(:slate, 50))], text("Release notes")),
+    el([Font.regular(), Font.color(color(:slate, 200))], text("Design system updated")),
+    el([Font.italic(), Font.color(color(:slate, 300))], text("Beta"))
+  ]
+)
 ```
 
-<img src="assets/ui-font-overview.png" alt="Rendered font family, weight, and style example" width="320">
+<img src="assets/ui-assets-font-variants.png" alt="Rendered regular, bold, and italic font variants" width="320">
 
 The key idea is:
 
@@ -285,11 +317,138 @@ assets: [
 ]
 ```
 
+## Asset start options
+
+| Option | Default | Purpose |
+|---|---|---|
+| `assets.decode_at_size` | `false` | Decode/resample rasters to their fitted device-space draw size. |
+| `assets.cache.max_entries` | `256` | Maximum retained raster images and SVG size/fit variants, combined. |
+| `assets.cache.max_bytes` | `268_435_456` | Shared raster/SVG decoded-pixel byte limit. |
+| `assets.cache.svg_tree_max_entries` | `64` | Maximum retained parsed SVG trees. |
+| `assets.cache.svg_tree_max_bytes` | `16_777_216` | Estimated parsed-tree storage limit, separate from pixels/fonts. |
+| `assets.fonts` | `[]` | Font family/source/weight/italic registrations loaded at startup. |
+| `assets.runtime_paths.enabled` | `false` | Permit `{:path, absolute_path}` sources. |
+| `assets.runtime_paths.allowlist` | `[]` | Absolute roots allowed for runtime paths. |
+| `assets.runtime_paths.follow_symlinks` | `false` | Permit canonical paths reached through symlinks. |
+| `assets.runtime_paths.max_file_size` | `25_000_000` | Maximum encoded runtime file bytes. |
+| `assets.runtime_paths.extensions` | image/SVG list | Allowed extensions: `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`, `.bmp`, and `.svg`. |
+
+A font entry requires `family` and logical `source`; `weight` defaults to `400`
+and must be from `100` through `900`, while `italic` defaults to `false`.
+
+Asset source workers, configuration, registered fonts, and decoded caches are
+renderer-local. Concurrent renderers can use different source roots, runtime
+path policies, fonts, and cache limits.
+
+Runtime file-size limits do not bound decoded dimensions or pixels. Validate
+asset dimensions before making untrusted files available to the renderer. The
+shared pixel-cache limits bound retained decoded pixels, not peak decode allocation.
+
+## Bound decoded-pixel memory
+
+Raster source files are compressed, but decoded pixels normally use four bytes
+per pixel. Cache limits apply independently to each renderer, so process-wide
+retention can reach the sum of all running renderers' limits. Configure
+shared raster/SVG pixel retention independently from runtime file limits:
+
+```elixir
+assets: [
+  decode_at_size: true,
+  cache: [
+    max_entries: 32,
+    max_bytes: 32 * 1024 * 1024
+  ]
+]
+```
+
+Defaults are 256 entries and 256 MiB **per renderer**:
+
+- `max_entries` counts decoded raster images and each exact-size SVG variant.
+- `max_bytes` limits retained decoded pixels, not compressed file size.
+- Setting either limit to `0` disables retained pixel reuse for that limit.
+  Images still decode and draw when requested.
+
+SVG rendering is always available, including embedded builds; there is no
+optional SVG feature to enable.
+
+## Reuse SVGs across scenes and sizes
+
+Font discovery and parsed SVG trees are cached separately from rasterized pixels.
+A parsed tree is retained immediately, even if the scene closes before it is
+first drawn. With sufficient budgets, one SVG used at 24px, 68px, and 200px
+requires one font discovery, one parse, and three independent rasterizations.
+Reopening those scenes reuses the corresponding pixels; a new size uses the
+vector tree directly, never an enlarged smaller bitmap.
+
+Parsed-tree limits are `svg_tree_max_entries` and `svg_tree_max_bytes` under
+`assets.cache`. Bytes are an estimated tree-owned storage charge, not exact RSS;
+shared font-database storage is estimated separately once. Zero limits disable
+parsed-tree retention without disabling font reuse. Tree and pixel eviction are
+independent, and scene removal does not clear either cache. A new size can still
+take time to rasterize, but a retained tree does not transition to a placeholder.
+
+See [Asset/image internals](assets-images.html) for ownership,
+revalidation, and accounting details.
+
+## Decode raster images at draw size
+
+Set `decode_at_size: true` when large files are normally displayed at smaller
+sizes. Emerge decodes the image near the size at which it will be drawn instead
+of retaining the full source dimensions.
+
+Reuse follows these rules:
+
+- a retained raster at least as wide and tall as the new target is reused;
+- a larger target requests and retains a larger decode;
+- one content ID retains at most one decoded raster, so the larger decode
+  replaces the smaller one;
+- image fit, layout scale, and device-space draw size determine the target, not
+  the source file dimensions alone.
+
+`decode_at_size` defaults to `false`. Enable it for thumbnail grids and
+constrained devices where full-size decoded images would waste memory.
+
+## Read asset-memory diagnostics
+
+Start with `renderer_stats_log: true` to include asset usage in each five-second
+summary:
+
+```text
+asset memory
+  sources: entries=4 encoded_bytes=430561
+  shared pixel cache: entries=3 bytes=153728 limits=entries:8 bytes:2097152
+    raster cache: entries=1 bytes=120960
+    vector cache: entries=2 bytes=32768
+  parsed SVG cache: entries=2 estimated_bytes=40960 limits=entries:64 estimated_bytes:16777216 hits=10 misses=2 evictions=0
+  raster variants
+    source="images/photo.jpg" source_dimensions=1581x1333 decoded_dimensions=189x160 decoded_bytes=120960
+```
+
+Use `shared pixel cache` for the combined retained-pixel budget, with separate
+raster/SVG breakdowns. Parsed-tree and shared-font estimates are additional
+storage, not extra pixel pools. Compare
+`source_dimensions` with `decoded_dimensions` to confirm that
+`decode_at_size: true` is reducing image size. Set cache limits from the memory
+available to your device rather than from compressed file sizes.
+
 ## What happens while assets load
 
 Asset loading is asynchronous.
 
-While a source is still loading, Emerge shows a loading placeholder. If loading
-fails, Emerge shows a failed placeholder.
+Emerge keeps the image's layout slot but leaves its loading paint empty for the
+first 100 ms. Images that finish sooner appear immediately, without a placeholder
+flash. If the source is still pending after that, a small centered three-dot
+indicator appears without filling the slot's background. Failed loads show the
+existing error placeholder immediately.
+
+The grace period does not delay loading or remove the image from layout. Explicit
+pixel/fill dimensions remain reserved; content-sized images still need their
+intrinsic dimensions before their final size can be known. With `image_fit(:contain)`,
+the photo fits inside the reserved slot rather than stretching to the indicator.
 
 You do not need to block rendering while assets are being resolved.
+
+## Next
+
+Continue with [Manage state](state_management.md) to move application state out
+of the viewport as the UI grows.

@@ -307,7 +307,7 @@ fn test_render_text_input_preedit_underlines_segment_and_reports_composition_car
         3,
         TextRunStyle {
             font_size: 16.0,
-            color: 0,
+            color: &crate::render_color::RenderColor::Solid(0),
             family: "default",
             weight: 400,
             italic: false,
@@ -327,7 +327,7 @@ fn test_render_text_input_preedit_underlines_segment_and_reports_composition_car
             2,
             TextRunStyle {
                 font_size: 16.0,
-                color: 0,
+                color: &crate::render_color::RenderColor::Solid(0),
                 family: "default",
                 weight: 400,
                 italic: false,

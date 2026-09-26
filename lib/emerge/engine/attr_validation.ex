@@ -62,6 +62,99 @@ defmodule Emerge.Engine.AttrValidation do
           "#{owner_name} expects a map with :keyframes, :duration, :curve, and optional :repeat, got: #{inspect(other)}"
   end
 
+  def normalize_change!(attrs, duration, curve) when is_list(attrs) do
+    validate_animation_duration!("change", duration)
+    validate_animation_curve!("change", curve)
+    policy = %{duration: duration, curve: curve}
+
+    Enum.map(attrs, fn attr ->
+      case normalize_animation_attr!("change", attr) do
+        {key, value} -> {key, value, policy}
+        _ -> raise ArgumentError, "change expects non-nil animatable attributes"
+      end
+    end)
+  end
+
+  def normalize_change!(attrs, _duration, _curve) do
+    raise ArgumentError, "change expects a list of animatable attributes, got: #{inspect(attrs)}"
+  end
+
+  def normalize_change_policies!(policies) when is_map(policies) do
+    Map.new(policies, fn {key, policy} ->
+      unless MapSet.member?(@animatable_key_set, key),
+        do: raise(ArgumentError, "invalid change field: #{inspect(key)}")
+
+      unless is_map(policy) and map_size(policy) == 2 and Map.has_key?(policy, :duration) and
+               Map.has_key?(policy, :curve),
+             do: raise(ArgumentError, "change policy expects :duration and :curve")
+
+      %{duration: duration, curve: curve} = policy
+      validate_animation_duration!("change", duration)
+      validate_animation_curve!("change", curve)
+      {key, %{duration: duration, curve: curve}}
+    end)
+  end
+
+  def normalize_change_policies!(_), do: raise(ArgumentError, "change policies must be a map")
+
+  def validate_change_attrs!(attrs) do
+    policies = normalize_change_policies!(Map.get(attrs, :animate_change, %{}))
+
+    if map_size(policies) > 0 do
+      regular_fields =
+        case Map.get(attrs, :animate) do
+          nil ->
+            []
+
+          spec ->
+            normalize_animation!(:animate, spec).keyframes
+            |> Enum.flat_map(&Map.keys/1)
+            |> Enum.uniq()
+        end
+
+      _owned_fields =
+        Enum.reduce(policies, [], fn {field, _}, seen ->
+          unless Map.has_key?(attrs, field) and
+                   normalize_animation_attr!("change", {field, attrs[field]}) != :skip,
+                 do:
+                   raise(
+                     ArgumentError,
+                     "change policy requires a non-nil target for #{inspect(field)}"
+                   )
+
+          if Enum.any?(seen, &animation_fields_conflict?(&1, field)),
+            do:
+              raise(
+                ArgumentError,
+                "change policies cannot own the same field or transform aliases"
+              )
+
+          if Enum.any?(regular_fields, &animation_fields_conflict?(&1, field)),
+            do: raise(ArgumentError, "animate and change cannot own the same field")
+
+          [field | seen]
+        end)
+    end
+
+    attrs
+  end
+
+  defp animation_fields_conflict?(a, b) do
+    a == b or (a in [:spacing, :spacing_xy] and b in [:spacing, :spacing_xy]) or
+      (a in [:scale, :layout_scale] and b in [:scale, :layout_scale]) or
+      (a in [:rotate, :layout_rotate] and b in [:rotate, :layout_rotate])
+  end
+
+  def validate_change_update!(before, after_attrs) do
+    Enum.each(Map.get(after_attrs, :animate_change, %{}), fn {key, _policy} ->
+      with {:ok, a} <- Map.fetch(before, key), {:ok, b} <- Map.fetch(after_attrs, key) do
+        validate_animation_compatibility!("change", key, a, b, 2)
+      end
+    end)
+
+    :ok
+  end
+
   def normalize_decorative_value!(attrs_owner, :background, value) do
     validate_background!(attrs_owner, value)
     value
@@ -189,6 +282,24 @@ defmodule Emerge.Engine.AttrValidation do
       end)
     end)
 
+    _gradient_counts =
+      normalized
+      |> Enum.with_index(1)
+      |> Enum.reduce(%{}, fn {attrs, index}, counts ->
+        attrs
+        |> Enum.flat_map(&gradient_stop_counts/1)
+        |> Enum.reduce(counts, fn {slot, count}, counts ->
+          case Map.fetch(counts, slot) do
+            {:ok, previous} when previous != count ->
+              raise ArgumentError,
+                    "#{owner_name} keyframe #{index} must keep #{inspect(slot)} gradient stop counts compatible"
+
+            _ ->
+              Map.put(counts, slot, count)
+          end
+        end)
+      end)
+
     normalized
   end
 
@@ -196,6 +307,18 @@ defmodule Emerge.Engine.AttrValidation do
     raise ArgumentError,
           "#{owner_name} expects :keyframes to be a list of keyframe attr lists/maps, got: #{inspect(other)}"
   end
+
+  defp gradient_stop_counts({key, {:color_gradient, colors, _}}), do: [{key, length(colors)}]
+
+  defp gradient_stop_counts({:box_shadow, shadows}) do
+    shadows
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {shadow, index} ->
+      gradient_stop_counts({{:box_shadow, index}, shadow.color})
+    end)
+  end
+
+  defp gradient_stop_counts(_), do: []
 
   defp normalize_animation_keyframe!(owner_name, attrs, index) when is_list(attrs) do
     Enum.reduce(attrs, %{}, fn attr, acc ->
@@ -308,11 +431,11 @@ defmodule Emerge.Engine.AttrValidation do
   defp skip_nil_or(nil, _fun), do: :skip
   defp skip_nil_or(_value, fun), do: fun.()
 
-  defp validate_animation_compatibility!(owner_name, :width, first, other, index),
-    do: validate_length_compatibility!(owner_name, :width, first, other, index)
-
-  defp validate_animation_compatibility!(owner_name, :height, first, other, index),
-    do: validate_length_compatibility!(owner_name, :height, first, other, index)
+  defp validate_animation_compatibility!(owner, key, first, other, _index)
+       when key in [:width, :height] do
+    validate_length!(owner, key, first)
+    validate_length!(owner, key, other)
+  end
 
   defp validate_animation_compatibility!(owner_name, :padding, first, other, index) do
     if padding_shape(first) != padding_shape(other) do
@@ -358,10 +481,21 @@ defmodule Emerge.Engine.AttrValidation do
     end
   end
 
-  defp validate_animation_compatibility!(owner_name, :box_shadow, first, other, index) do
-    if length(first) != length(other) do
+  defp validate_animation_compatibility!(owner, key, first, other, index)
+       when key in [:font_color, :border_color, :svg_color] do
+    unless compatible_color?(first, other) do
       raise ArgumentError,
-            "#{owner_name} keyframe #{index} must keep :box_shadow list length the same as keyframe 1"
+            "#{owner} keyframe #{index} must keep #{inspect(key)} gradient stop counts compatible"
+    end
+  end
+
+  defp validate_animation_compatibility!(owner_name, :box_shadow, first, other, index) do
+    if length(first) != length(other) or
+         not Enum.all?(Enum.zip(first, other), fn {a, b} ->
+           compatible_color?(a.color, b.color)
+         end) do
+      raise ArgumentError,
+            "#{owner_name} keyframe #{index} must keep :box_shadow list length and gradient stop counts compatible with keyframe 1"
     end
   end
 
@@ -404,36 +538,17 @@ defmodule Emerge.Engine.AttrValidation do
           "#{owner_name} expects :repeat to be :once, :loop, or a positive integer, got: #{inspect(repeat)}"
   end
 
-  defp validate_length_compatibility!(owner_name, key, first, other, index) do
-    if !compatible_length?(first, other) do
-      raise ArgumentError,
-            "#{owner_name} keyframe #{index} must keep #{inspect(key)} in the same length variant as keyframe 1"
-    end
-  end
-
-  defp compatible_length?(:fill, :fill), do: true
-  defp compatible_length?(:content, :content), do: true
-  defp compatible_length?({:px, _}, {:px, _}), do: true
-  defp compatible_length?({:fill, _}, {:fill, _}), do: true
-
-  defp compatible_length?({:min, left_a, right_a}, {:min, left_b, right_b}),
-    do: compatible_length?(left_a, left_b) and compatible_length?(right_a, right_b)
-
-  defp compatible_length?({:max, left_a, right_a}, {:max, left_b, right_b}),
-    do: compatible_length?(left_a, left_b) and compatible_length?(right_a, right_b)
-
-  defp compatible_length?(_first, _other), do: false
-
-  defp compatible_background?(
-         {:gradient, _from_a, _to_a, _angle_a},
-         {:gradient, _from_b, _to_b, _angle_b}
-       ),
-       do: true
-
   defp compatible_background?({:image, source_a, fit_a}, {:image, source_b, fit_b}),
     do: source_a == source_b and fit_a == fit_b
 
-  defp compatible_background?(first, other), do: valid_color?(first) and valid_color?(other)
+  defp compatible_background?(first, other), do: compatible_color?(first, other)
+
+  defp compatible_color?({:color_gradient, a, _}, {:color_gradient, b, _}),
+    do: length(a) == length(b)
+
+  defp compatible_color?({:color_gradient, _, _}, solid), do: valid_color?(solid)
+  defp compatible_color?(solid, {:color_gradient, _, _}), do: valid_color?(solid)
+  defp compatible_color?(a, b), do: valid_color?(a) and valid_color?(b)
 
   defp normalize_padding({vertical, horizontal}), do: {vertical, horizontal, vertical, horizontal}
   defp normalize_padding(value), do: value
@@ -497,6 +612,15 @@ defmodule Emerge.Engine.AttrValidation do
           "#{attrs_owner} expects :layout_rotate to be a finite number of degrees, got: #{inspect(value)}"
   end
 
+  defp validate_color_attr!(owner, key, {:color_gradient, _, _} = gradient) do
+    Emerge.UI.Color.validate_gradient!(gradient)
+  rescue
+    error in ArgumentError ->
+      reraise ArgumentError,
+              [message: "#{owner} invalid #{inspect(key)}: #{Exception.message(error)}"],
+              __STACKTRACE__
+  end
+
   defp validate_color_attr!(attrs_owner, key, value) do
     case valid_color?(value) do
       true ->
@@ -535,11 +659,6 @@ defmodule Emerge.Engine.AttrValidation do
   defp validate_border_style!(attrs_owner, value) do
     raise ArgumentError,
           "#{attrs_owner} expects :border_style to be :solid, :dashed, or :dotted, got: #{inspect(value)}"
-  end
-
-  defp validate_background!(attrs_owner, {:gradient, from, to, angle}) when is_number(angle) do
-    validate_color_attr!(attrs_owner, :background, from)
-    validate_color_attr!(attrs_owner, :background, to)
   end
 
   defp validate_background!(attrs_owner, {:image, source, fit}) do
@@ -611,14 +730,9 @@ defmodule Emerge.Engine.AttrValidation do
           "#{attrs_owner} expects #{inspect(key)} fill weight to be a positive number, got: #{inspect(value)}"
   end
 
-  defp validate_length!(attrs_owner, key, {:min, left, right}) do
-    validate_length!(attrs_owner, key, left)
-    validate_length!(attrs_owner, key, right)
-  end
-
-  defp validate_length!(attrs_owner, key, {:max, left, right}) do
-    validate_length!(attrs_owner, key, left)
-    validate_length!(attrs_owner, key, right)
+  defp validate_length!(attrs_owner, key, {bound, _, _}) when bound in [:min, :max] do
+    raise ArgumentError,
+          "#{attrs_owner} cannot animate min/max #{inspect(key)} expressions; use pixels, content, fill or weighted fill"
   end
 
   defp validate_length!(attrs_owner, key, value) do

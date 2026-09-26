@@ -6,6 +6,7 @@ pub struct CursorState {
     pub visible: bool,
 }
 
+#[cfg_attr(not(feature = "drm-core"), allow(dead_code))]
 #[derive(Debug, Clone, Copy)]
 pub struct CursorSnapshot {
     pub state: CursorState,

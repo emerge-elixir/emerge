@@ -97,6 +97,7 @@ pub struct DrmInput {
 }
 
 impl DrmInput {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         screen_size: (u32, u32),
         screen_rx: Receiver<(u32, u32)>,
@@ -172,14 +173,15 @@ impl DrmInput {
         let screen_size = self.screen_size;
         let mut idx = 0;
         while idx < self.devices.len() {
-            let events = match {
+            let fetched_events = {
                 let device = &mut self.devices[idx];
                 match device.device.fetch_events() {
                     Ok(events) => Ok(events.collect::<Vec<_>>()),
                     Err(err) if should_remove_device_on_fetch_error(&err) => Err(err),
                     Err(_) => Ok(Vec::new()),
                 }
-            } {
+            };
+            let events = match fetched_events {
                 Ok(events) => events,
                 Err(err) => {
                     self.remove_device(idx, Some(err));
@@ -533,6 +535,7 @@ impl DrmInput {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     fn try_push_input(&self, event: InputEvent) -> Result<(), TrySendError<EventMsg>> {
         if self.log_enabled
             && let InputEvent::CursorPos { x, y } = &event
@@ -759,6 +762,7 @@ fn axis_state_from_abs(info: Option<&input_absinfo>) -> Option<AbsAxisState> {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn classify_abs_mode(
     direct_prop: bool,
     pointer_prop: bool,
@@ -901,6 +905,7 @@ impl DrmInput {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
     use crate::cursor::SharedCursorState;

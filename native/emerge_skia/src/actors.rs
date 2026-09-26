@@ -57,6 +57,21 @@ impl AnimationFrameTraceSeed {
     }
 }
 
+/// Opaque event-to-tree response fence. Identity is scoped by ownership, not a
+/// reusable counter, so an old renderer/runtime cannot acknowledge a new request.
+#[derive(Clone, Debug, Default)]
+pub struct ListenerBarrier(std::sync::Arc<()>);
+impl ListenerBarrier {
+    #[cfg(test)]
+    pub(crate) fn weak_identity(&self) -> std::sync::Weak<()> {
+        std::sync::Arc::downgrade(&self.0)
+    }
+
+    pub(crate) fn matches(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum TreeMsg {
     UploadTree {
@@ -127,12 +142,66 @@ pub enum TreeMsg {
         trace: Option<AnimationPulseTrace>,
     },
     Batch(Vec<TreeMsg>),
+    /// One event-driver operation. Only its sparse numeric target evidence is
+    /// retained in flight, never the originating registry or tree.
+    EventBatch {
+        target_mounts: Box<[(NodeId, Option<u64>)]>,
+        messages: Vec<TreeMsg>,
+    },
     RebuildRegistry,
+    ListenerBarrier(ListenerBarrier),
     AssetStateChanged,
+    FontMetricsChanged {
+        generation: u64,
+    },
     Stop,
 }
 
 impl TreeMsg {
+    /// Read-only diagnostic view. Delivery must preserve EventBatch envelopes.
+    pub(crate) fn commands(&self) -> Vec<&TreeMsg> {
+        match self {
+            Self::Batch(messages) | Self::EventBatch { messages, .. } => {
+                messages.iter().flat_map(Self::commands).collect()
+            }
+            _ => vec![self],
+        }
+    }
+
+    pub(crate) fn target_id(&self) -> Option<NodeId> {
+        match self {
+            Self::ScrollRequest { element_id, .. }
+            | Self::ScrollbarThumbDragX { element_id, .. }
+            | Self::ScrollbarThumbDragY { element_id, .. }
+            | Self::SetScrollbarXHover { element_id, .. }
+            | Self::SetScrollbarYHover { element_id, .. }
+            | Self::SetMouseOverActive { element_id, .. }
+            | Self::SetMouseDownActive { element_id, .. }
+            | Self::SetFocusedActive { element_id, .. }
+            | Self::SetTextInputContent { element_id, .. }
+            | Self::SetTextInputRuntime { element_id, .. }
+            | Self::SetSliderValue { element_id, .. } => Some(*element_id),
+            Self::UploadTree { .. }
+            | Self::PatchTree { .. }
+            | Self::Resize { .. }
+            | Self::AnimationPulse { .. }
+            | Self::Batch(_)
+            | Self::EventBatch { .. }
+            | Self::RebuildRegistry
+            | Self::ListenerBarrier(_)
+            | Self::AssetStateChanged
+            | Self::FontMetricsChanged { .. }
+            | Self::Stop => None,
+        }
+    }
+
+    pub(crate) fn is_event_control(&self) -> bool {
+        matches!(
+            self,
+            Self::Resize { .. } | Self::RebuildRegistry | Self::ListenerBarrier(_) | Self::Stop
+        )
+    }
+
     /// Whether an event-runtime dispatch that emits this message must wait for
     /// a registry response before it can safely process more hit-test input.
     ///
@@ -148,7 +217,7 @@ impl TreeMsg {
             // for a registry round trip on every pointer move.
             Self::SetTextInputRuntime { .. } => false,
             Self::AnimationPulse { .. } | Self::Stop => false,
-            Self::Batch(messages) => messages
+            Self::Batch(messages) | Self::EventBatch { messages, .. } => messages
                 .iter()
                 .any(Self::requires_listener_registry_response),
             Self::UploadTree { .. }
@@ -163,7 +232,9 @@ impl TreeMsg {
             | Self::SetTextInputContent { .. }
             | Self::SetSliderValue { .. }
             | Self::RebuildRegistry
-            | Self::AssetStateChanged => true,
+            | Self::ListenerBarrier(_)
+            | Self::AssetStateChanged
+            | Self::FontMetricsChanged { .. } => true,
         }
     }
 }
@@ -191,11 +262,20 @@ pub enum RenderMsg {
         pipeline_render_queued_at: Option<Instant>,
         animation_trace: Option<Box<AnimationFrameTrace>>,
         animate: bool,
-        #[cfg_attr(not(all(feature = "wayland", target_os = "linux")), allow(dead_code))]
+        #[cfg_attr(
+            not(all(feature = "wayland-core", target_os = "linux")),
+            allow(dead_code)
+        )]
         ime_enabled: bool,
-        #[cfg_attr(not(all(feature = "wayland", target_os = "linux")), allow(dead_code))]
+        #[cfg_attr(
+            not(all(feature = "wayland-core", target_os = "linux")),
+            allow(dead_code)
+        )]
         ime_cursor_area: Option<(f32, f32, f32, f32)>,
-        #[cfg_attr(not(all(feature = "wayland", target_os = "linux")), allow(dead_code))]
+        #[cfg_attr(
+            not(all(feature = "wayland-core", target_os = "linux")),
+            allow(dead_code)
+        )]
         ime_text_state: Box<Option<TextInputState>>,
     },
     Stop,

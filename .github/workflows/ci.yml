@@ -1,29 +1,44 @@
 name: CI
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches:
       - main
       - master
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
 
 jobs:
   ci_linux:
-    name: Linux CI
+    name: Linux CI / Rust ${{ matrix.rust }}
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: ["1.91.0", "stable"]
 
     steps:
       - name: Checkout source code
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Set up Elixir and OTP
         uses: erlef/setup-beam@v1
         with:
           elixir-version: "1.20.2"
-          otp-version: "29.0.4"
+          otp-version: "29.0.5"
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+          components: rustfmt, clippy
 
       - name: Install native build dependencies
         run: |
@@ -43,9 +58,9 @@ jobs:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-mix-elixir-1.20.2-otp-29.0.4-${{ hashFiles('mix.lock') }}
+          key: ${{ runner.os }}-mix-elixir-1.20.2-otp-29.0.5-${{ hashFiles('mix.lock') }}
           restore-keys: |
-            ${{ runner.os }}-mix-elixir-1.20.2-otp-29.0.4-
+            ${{ runner.os }}-mix-elixir-1.20.2-otp-29.0.5-
 
       - name: Cache Cargo dependencies and target
         uses: actions/cache@v5
@@ -54,15 +69,61 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             native/emerge_skia/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('native/emerge_skia/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ matrix.rust }}-${{ hashFiles('native/emerge_skia/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-${{ matrix.rust }}-
 
       - name: Install dependencies
         run: mix deps.get
 
       - name: Run CI test script
         run: ./ci-tests.sh
+
+      - name: Validate source metadata
+        if: ${{ matrix.rust == '1.91.0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          project_version="$(awk -F'"' '/^  @version "/ { print $2; exit }' mix.exs)"
+          cargo_version="$(awk -F'"' '$0 == "[package]" { in_package=1; next } in_package && /^version = "/ { print $2; exit }' native/emerge_skia/Cargo.toml)"
+
+          test -n "$project_version"
+          test "$project_version" = "$cargo_version"
+          grep -Eq "^## \[$project_version\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$" CHANGELOG.md
+          git merge-base --is-ancestor v0.3.4 HEAD
+
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            test "$GITHUB_REF_NAME" = "v$project_version"
+          fi
+
+          echo "PROJECT_VERSION=$project_version" >> "$GITHUB_ENV"
+
+      - name: Run full-sweep Elixir tests
+        if: ${{ matrix.rust == '1.91.0' }}
+        run: mix test --include full_sweep --warnings-as-errors
+
+      - name: Build documentation without warnings
+        if: ${{ matrix.rust == '1.91.0' }}
+        env:
+          EMERGE_INCLUDE_INTERNAL_DOCS: "false"
+        run: mix docs --warnings-as-errors
+
+      - name: Validate unpacked package native sources
+        if: ${{ matrix.rust == '1.91.0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_dir="$RUNNER_TEMP/emerge-${PROJECT_VERSION}"
+          mix hex.build --unpack --output "$package_dir"
+          cargo check \
+            --manifest-path "$package_dir/native/emerge_skia/Cargo.toml" \
+            --locked \
+            --all-targets
+          cargo check \
+            --manifest-path "$package_dir/native/emerge_skia/Cargo.toml" \
+            --locked \
+            --no-default-features \
+            --features embedded-cpu
 
   ci_macos:
     name: macOS CI
@@ -76,7 +137,7 @@ jobs:
         uses: erlef/setup-beam@v1
         with:
           elixir-version: "1.20.2"
-          otp-version: "29.0.4"
+          otp-version: "29.0.5"
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -87,9 +148,9 @@ jobs:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-mix-elixir-1.20.2-otp-29.0.4-${{ hashFiles('mix.lock') }}
+          key: ${{ runner.os }}-mix-elixir-1.20.2-otp-29.0.5-${{ hashFiles('mix.lock') }}
           restore-keys: |
-            ${{ runner.os }}-mix-elixir-1.20.2-otp-29.0.4-
+            ${{ runner.os }}-mix-elixir-1.20.2-otp-29.0.5-
 
       - name: Cache Cargo dependencies and target
         uses: actions/cache@v5

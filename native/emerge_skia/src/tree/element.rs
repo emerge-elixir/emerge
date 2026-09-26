@@ -11,13 +11,14 @@ use super::invalidation::{
     TreeInvalidation, classify_interaction_style, content_box_is_layout_independent,
 };
 use crate::events::registry_builder::RegistrySubtreeCache;
-use crate::render_scene::{RenderNode, RenderPaintLayer};
+use crate::render_scene::RenderNode;
 use crate::stats::LayoutCacheStats;
 #[cfg(test)]
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::{HashMap, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 pub type NodeIx = usize;
 
@@ -170,9 +171,11 @@ pub struct ResolveExtent {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolveCacheKey {
+    pub dimension_samples: super::layout::dimensions::DimensionCacheKey,
     pub kind: ElementKind,
     pub attrs: ResolveAttrs,
     pub inherited: InheritedMeasureFontKey,
+    pub inherited_text_align: Option<TextAlign>,
     pub measured_frame: Option<Frame>,
     pub constraint: ResolveConstraintKey,
     pub topology: TopologyDependencyKey,
@@ -234,6 +237,7 @@ pub struct ResolveAttrs {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SubtreeMeasureCacheKey {
+    pub dimension_samples: super::layout::dimensions::DimensionCacheKey,
     pub kind: ElementKind,
     pub attrs: SubtreeMeasureAttrs,
     pub inherited: InheritedMeasureFontKey,
@@ -587,7 +591,7 @@ pub struct NodeSpec {
     pub declared: Attrs,
 }
 
-#[derive(Clone, Debug, Default, Hash)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct NodeRuntime {
     /// Runtime-only origin label for current text-input content.
     pub text_input_content_origin: TextInputContentOrigin,
@@ -616,16 +620,9 @@ pub struct NodeRefreshState {
     pub registry_dirty: bool,
     pub registry_descendant_dirty: bool,
     pub registry_cache: Option<RegistrySubtreeCache>,
-    pub render_layer_cache: RefCell<Option<RenderLayerCache>>,
     pub render_fragment_cache: RefCell<Option<RenderFragmentCache>>,
     pub registry_subtree_affects: bool,
     pub paint_generation: u64,
-}
-
-#[derive(Clone, Debug)]
-pub struct RenderLayerCache {
-    pub key: RenderLayerCacheKey,
-    pub layer: RenderPaintLayer,
 }
 
 #[derive(Clone, Debug)]
@@ -651,13 +648,6 @@ pub struct RenderFragmentCacheKey {
     pub context: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct RenderLayerCacheKey {
-    pub paint_generation: u64,
-    pub topology: TopologyDependencyKey,
-    pub bounds: Rect,
-}
-
 impl Default for NodeRefreshState {
     fn default() -> Self {
         Self {
@@ -666,7 +656,6 @@ impl Default for NodeRefreshState {
             registry_dirty: true,
             registry_descendant_dirty: false,
             registry_cache: None,
-            render_layer_cache: RefCell::new(None),
             render_fragment_cache: RefCell::new(None),
             registry_subtree_affects: false,
             paint_generation: 1,
@@ -700,8 +689,19 @@ impl NodeRefreshState {
     }
 }
 
+/// A wrapper's cloned decoration box on one paragraph line. Text ranges preserve
+/// document order without rescanning all words for each wrapper during paint.
+#[derive(Clone, Debug)]
+pub struct InlineBox {
+    pub owner: NodeId,
+    pub frame: Frame,
+    pub text_range: std::ops::Range<usize>,
+}
+
 #[derive(Clone, Debug)]
 pub struct NodeLayoutState {
+    pub dimension_samples: Option<std::sync::Arc<super::layout::dimensions::DimensionSamples>>,
+    pub dimension_facts: super::layout::dimensions::DimensionFacts,
     /// Scaled attributes (populated by layout pass, used by render).
     pub effective: Attrs,
 
@@ -723,6 +723,7 @@ pub struct NodeLayoutState {
     pub scroll_x_max: f32,
     pub scroll_y_max: f32,
     pub paragraph_fragments: Option<Vec<TextFragment>>,
+    pub paragraph_boxes: Vec<InlineBox>,
     pub topology_versions: LayoutTopologyVersions,
     pub intrinsic_measure_cache: Option<IntrinsicMeasureCache>,
     pub subtree_measure_cache: Option<SubtreeMeasureCache>,
@@ -736,6 +737,8 @@ pub struct NodeLayoutState {
 impl Default for NodeLayoutState {
     fn default() -> Self {
         Self {
+            dimension_samples: None,
+            dimension_facts: Default::default(),
             effective: Attrs::default(),
             frame: None,
             render_frame: None,
@@ -746,6 +749,7 @@ impl Default for NodeLayoutState {
             scroll_x_max: 0.0,
             scroll_y_max: 0.0,
             paragraph_fragments: None,
+            paragraph_boxes: Vec::new(),
             topology_versions: LayoutTopologyVersions::default(),
             intrinsic_measure_cache: None,
             subtree_measure_cache: None,
@@ -851,6 +855,8 @@ impl Element {
                 scrollbar_hover_axis: None,
             },
             layout: NodeLayoutState {
+                dimension_samples: None,
+                dimension_facts: Default::default(),
                 scroll_x: attrs.scroll_x.unwrap_or(0.0) as f32,
                 scroll_y: attrs.scroll_y.unwrap_or(0.0) as f32,
                 #[cfg(test)]
@@ -865,6 +871,7 @@ impl Element {
                 paragraph_fragments: attrs.paragraph_fragments.clone(),
                 #[cfg(not(test))]
                 paragraph_fragments: None,
+                paragraph_boxes: Vec::new(),
                 topology_versions: LayoutTopologyVersions::default(),
                 effective: attrs,
                 frame: None,
@@ -903,6 +910,8 @@ impl Element {
             spec: self.spec.clone(),
             runtime: self.runtime.clone(),
             layout: NodeLayoutState {
+                dimension_samples: self.layout.dimension_samples.clone(),
+                dimension_facts: self.layout.dimension_facts,
                 effective: self.layout.effective.clone(),
                 frame: self.layout.frame,
                 render_frame: self.layout.render_frame,
@@ -913,6 +922,7 @@ impl Element {
                 scroll_x_max: self.layout.scroll_x_max,
                 scroll_y_max: self.layout.scroll_y_max,
                 paragraph_fragments: self.layout.paragraph_fragments.clone(),
+                paragraph_boxes: self.layout.paragraph_boxes.clone(),
                 topology_versions: self.layout.topology_versions,
                 intrinsic_measure_cache: None,
                 subtree_measure_cache: None,
@@ -928,7 +938,6 @@ impl Element {
                 registry_dirty: self.refresh.registry_dirty,
                 registry_descendant_dirty: self.refresh.registry_descendant_dirty,
                 registry_cache: None,
-                render_layer_cache: RefCell::new(self.refresh.render_layer_cache.borrow().clone()),
                 render_fragment_cache: RefCell::new(
                     self.refresh.render_fragment_cache.borrow().clone(),
                 ),
@@ -1167,9 +1176,42 @@ fn paragraph_child_mode(tree: &ElementTree, child_ix: NodeIx) -> RetainedChildMo
     }
 }
 
+/// Numeric diagnostics only; never retain a retired model or projection.
+#[cfg(any(test, feature = "bench-diagnostics"))]
+#[derive(Clone, Debug, Default)]
+pub(crate) struct AnimationQueryRetirement {
+    pub count: u64,
+    pub layout_queries: u64,
+    pub model_copies: u64,
+    pub copied_nodes: u64,
+    pub drop_time: std::time::Duration,
+    pub last: super::layout::projection::ProjectionStats,
+    pub continuation_ancestry_visits: std::cell::Cell<u64>,
+}
+
 /// The complete element tree with indexed access.
 #[derive(Clone, Debug)]
 pub struct ElementTree {
+    pub(crate) publication: super::animation::frame::Publication,
+    pub(crate) frame_metrics_epoch: Option<u64>,
+    pub(crate) frame_fonts: Option<crate::renderer::FontSnapshot>,
+    pub(crate) frame_assets: Option<Arc<crate::assets::FrameAssets>>,
+    frame_image_sources: Option<((u64, u64), crate::assets::FrameSourceList)>,
+    frame_image_sources_dirty: bool,
+    pub(crate) animation_authority: super::animation::frame::TreeAuthority,
+    pub(crate) prepared_attempt: Option<std::sync::Arc<()>>,
+    pub(crate) applied_animation_frame: super::animation::frame::AppliedState,
+    #[cfg(test)]
+    pub(crate) animation_inspection:
+        Option<RefCell<Box<super::animation::lengths::inspection::Inspection>>>,
+    pub(crate) layout_model_epoch: u64,
+    pub(crate) layout_structure_epoch: u64,
+    pub(crate) animation_constraint: Option<super::layout::Constraint>,
+    pub(crate) length_runtime: Option<Box<super::animation::lengths::LengthRuntime>>,
+    #[cfg(any(test, feature = "bench-diagnostics"))]
+    pub(crate) animation_query_retirement: AnimationQueryRetirement,
+    pub(crate) animation_error: Option<String>,
+    pub(crate) pending_patch_effects: super::animation::source::PatchEffects,
     /// Monotonic revision for tree mutations.
     pub revision: u64,
 
@@ -1196,6 +1238,10 @@ pub struct ElementTree {
     detached_layout_cache: Vec<DetachedLayoutSubtreeCache>,
     scroll_refresh_dirty: bool,
     scroll_cache_context_active: bool,
+    registry_affects_dirty: bool,
+    registry_affects_stamp: Option<(u64, u64)>,
+    #[cfg(any(test, feature = "bench-diagnostics"))]
+    registry_affects_visits: u64,
 
     pending_root_id: Option<NodeId>,
 
@@ -1211,6 +1257,25 @@ pub struct ElementTree {
 impl Default for ElementTree {
     fn default() -> Self {
         Self {
+            #[cfg(test)]
+            animation_inspection: None,
+            publication: Default::default(),
+            frame_metrics_epoch: None,
+            frame_fonts: None,
+            frame_assets: None,
+            frame_image_sources: None,
+            frame_image_sources_dirty: true,
+            animation_authority: Default::default(),
+            prepared_attempt: None,
+            applied_animation_frame: Default::default(),
+            layout_model_epoch: 0,
+            layout_structure_epoch: 0,
+            animation_constraint: None,
+            length_runtime: None,
+            #[cfg(any(test, feature = "bench-diagnostics"))]
+            animation_query_retirement: Default::default(),
+            animation_error: None,
+            pending_patch_effects: Default::default(),
             revision: 0,
             next_ghost_seq: 0,
             current_scale: 1.0,
@@ -1223,6 +1288,10 @@ impl Default for ElementTree {
             detached_layout_cache: Vec::new(),
             scroll_refresh_dirty: false,
             scroll_cache_context_active: false,
+            registry_affects_dirty: true,
+            registry_affects_stamp: None,
+            #[cfg(any(test, feature = "bench-diagnostics"))]
+            registry_affects_visits: 0,
             pending_root_id: None,
             #[cfg(test)]
             topology: RefCell::new(TreeTopology::default()),
@@ -1243,6 +1312,138 @@ enum ScrollAxis {
 impl ElementTree {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub(crate) fn clear_length_runtime(&mut self) {
+        let Some(state) = self.length_runtime.take() else {
+            return;
+        };
+        #[cfg(any(test, feature = "bench-diagnostics"))]
+        let (stats, started) = (state.query_stats(), std::time::Instant::now());
+        drop(state);
+        #[cfg(any(test, feature = "bench-diagnostics"))]
+        {
+            let elapsed = started.elapsed();
+            let work = &mut self.animation_query_retirement;
+            work.count += 1;
+            work.layout_queries += stats.layout_queries;
+            work.model_copies += stats.model_copies;
+            work.copied_nodes += stats.copied_nodes;
+            work.drop_time += elapsed;
+            work.last = stats;
+        }
+    }
+
+    /// Cache declared/interaction references across animation ticks. Asset facts
+    /// are captured afresh; no layout or paint work occurs under asset locks.
+    pub(crate) fn capture_frame_assets(&mut self) -> Arc<crate::assets::FrameAssets> {
+        if self.frame_image_sources_dirty
+            || self
+                .frame_image_sources
+                .as_ref()
+                .is_none_or(|(model, _)| *model != (self.layout_model_epoch, self.revision()))
+        {
+            self.frame_image_sources = Some((
+                (self.layout_model_epoch, self.revision()),
+                crate::assets::FrameSourceList::capture(self),
+            ));
+        }
+        self.frame_image_sources_dirty = false;
+        let sources = &self
+            .frame_image_sources
+            .as_ref()
+            .expect("initialized source list")
+            .1;
+        sources
+            .all
+            .iter()
+            .for_each(crate::assets::ensure_live_source);
+        Arc::new(crate::assets::FrameAssets::capture(sources))
+    }
+
+    /// A cold, layout-only model copy. Never clone live render/registry caches,
+    /// frame asset bindings, encoded attrs or sampled presentation into queries.
+    pub(crate) fn layout_query_snapshot(&self) -> Self {
+        self.ensure_topology();
+        let nodes: Vec<_> = self
+            .iter_nodes()
+            .map(|node| {
+                let mut copy = Element::with_attrs(
+                    node.id,
+                    node.spec.kind,
+                    Vec::new(),
+                    node.spec.declared.clone(),
+                );
+                copy.runtime = node.runtime.clone();
+                copy.lifecycle = node.lifecycle.clone();
+                copy.layout.scroll_x = node.layout.scroll_x;
+                copy.layout.scroll_y = node.layout.scroll_y;
+                copy.layout.scroll_x_max = node.layout.scroll_x_max;
+                copy.layout.scroll_y_max = node.layout.scroll_y_max;
+                #[cfg(test)]
+                {
+                    copy.children = node.children.clone();
+                    copy.nearby = node.nearby.clone();
+                }
+                Some(copy)
+            })
+            .collect();
+        // Compact arena holes instead of retaining a second copy of free slots.
+        let id_to_ix: HashMap<_, _> = nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(ix, node)| node.as_ref().map(|node| (node.id, ix)))
+            .collect();
+        let reindex = |old| self.id_of(old).and_then(|id| id_to_ix.get(&id).copied());
+        #[cfg(test)]
+        let source_topology = self.topology.borrow();
+        #[cfg(not(test))]
+        let source_topology = &self.topology;
+        let topology = TreeTopology {
+            nodes: self
+                .iter_nodes()
+                .map(|node| {
+                    let old = &source_topology.nodes[self.id_to_ix[&node.id]];
+                    NodeTopology {
+                        parent: old.parent.and_then(|parent| match parent {
+                            ParentLink::Child { parent } => {
+                                reindex(parent).map(|parent| ParentLink::Child { parent })
+                            }
+                            ParentLink::Nearby { host, slot } => {
+                                reindex(host).map(|host| ParentLink::Nearby { host, slot })
+                            }
+                        }),
+                        children: old.children.iter().filter_map(|&ix| reindex(ix)).collect(),
+                        nearby: old
+                            .nearby
+                            .iter()
+                            .filter_map(|mount| {
+                                reindex(mount.ix).map(|ix| NearbyMountIx {
+                                    ix,
+                                    slot: mount.slot,
+                                })
+                            })
+                            .collect(),
+                        // Paint ordering is produced by resolution, never query input.
+                        paint_children: Vec::new(),
+                    }
+                })
+                .collect(),
+        };
+        Self {
+            revision: self.revision,
+            next_ghost_seq: self.next_ghost_seq,
+            current_scale: self.current_scale,
+            root: self.root.and_then(reindex),
+            pending_root_id: self.pending_root_id,
+            nodes,
+            id_to_ix,
+            #[cfg(test)]
+            topology: RefCell::new(topology),
+            #[cfg(not(test))]
+            topology,
+            ..Self::default()
+        }
     }
 
     pub fn reset_layout_cache_stats(&mut self) {
@@ -1678,7 +1879,27 @@ impl ElementTree {
         self.nodes.get(ix).and_then(|slot| slot.as_ref())
     }
 
+    pub(crate) fn invalidate_unapplied_frame(&mut self) {
+        if self.applied_animation_frame.0.is_none() {
+            self.registry_affects_dirty = true;
+            self.frame_image_sources_dirty = true;
+            self.prepared_attempt = None;
+        }
+    }
+    /// Prepared overlays change effective layout/paint, not declared handlers.
+    /// Preserve only this derived-cache dirty flag; publication authority and
+    /// all ordinary mutation invalidation remain active throughout the writes.
+    pub(crate) fn apply_native_frame_attrs<T>(&mut self, update: impl FnOnce(&mut Self) -> T) -> T {
+        let dirty = self.registry_affects_dirty;
+        let images_dirty = self.frame_image_sources_dirty;
+        let result = update(self);
+        self.registry_affects_dirty = dirty;
+        self.frame_image_sources_dirty = images_dirty;
+        result
+    }
+
     pub fn get_ix_mut(&mut self, ix: NodeIx) -> Option<&mut Element> {
+        self.invalidate_unapplied_frame();
         self.nodes.get_mut(ix).and_then(|slot| slot.as_mut())
     }
 
@@ -1842,10 +2063,24 @@ impl ElementTree {
     }
 
     pub(crate) fn refresh_registry_subtree_affects_cache(&mut self) {
+        let stamp = (self.layout_structure_epoch, self.revision);
+        if !self.registry_affects_dirty && self.registry_affects_stamp == Some(stamp) {
+            return;
+        }
         self.ensure_topology();
         if let Some(root_ix) = self.root {
             self.refresh_registry_subtree_affects_cache_ix(root_ix);
         }
+        // Native geometry/paint writes under exclusive publication cannot add
+        // handlers. External mutable access invalidates this cache; topology and
+        // revision stamps also cover insertion/removal and root replacement.
+        self.registry_affects_dirty = false;
+        self.registry_affects_stamp = Some(stamp);
+    }
+
+    #[cfg(any(test, feature = "bench-diagnostics"))]
+    pub(crate) fn registry_affects_visit_count(&self) -> u64 {
+        self.registry_affects_visits
     }
 
     pub(crate) fn cached_subtree_affects_registry(&self, id: &NodeId) -> bool {
@@ -1986,6 +2221,10 @@ impl ElementTree {
 
     #[allow(clippy::unnecessary_fold)]
     fn refresh_registry_subtree_affects_cache_ix(&mut self, ix: NodeIx) -> bool {
+        #[cfg(any(test, feature = "bench-diagnostics"))]
+        {
+            self.registry_affects_visits += 1;
+        }
         let Some(own_affects) = self.get_ix(ix).map(element_affects_registry) else {
             return false;
         };
@@ -2025,6 +2264,7 @@ impl ElementTree {
     }
 
     pub fn iter_nodes_mut(&mut self) -> impl Iterator<Item = &mut Element> {
+        self.invalidate_unapplied_frame();
         #[cfg(test)]
         self.mark_topology_dirty();
         self.nodes.iter_mut().filter_map(|slot| slot.as_mut())
@@ -2049,6 +2289,11 @@ impl ElementTree {
 
     /// Insert or update an element.
     pub fn insert(&mut self, element: Element) {
+        if self.publication.0.is_some() && self.get(&element.id).is_some() {
+            self.capture_animation_subtree(&element.id);
+        }
+        self.layout_structure_epoch = self.layout_structure_epoch.wrapping_add(1);
+        self.layout_model_epoch = self.layout_model_epoch.wrapping_add(1);
         let element_id = element.id;
         let new_scroll_active = Self::element_has_active_scroll_offset(&element);
         let mut removed_scroll_active = false;
@@ -2087,7 +2332,10 @@ impl ElementTree {
     }
 
     pub fn remove_node(&mut self, id: &NodeId) -> Option<Element> {
+        self.invalidate_unapplied_frame();
         let ix = self.id_to_ix.remove(id)?;
+        self.layout_structure_epoch = self.layout_structure_epoch.wrapping_add(1);
+        self.layout_model_epoch = self.layout_model_epoch.wrapping_add(1);
         let removed_scroll_active = self.nodes[ix]
             .as_ref()
             .is_some_and(Self::element_has_active_scroll_offset);
@@ -2317,7 +2565,6 @@ impl ElementTree {
             if let Some(element) = self.get_ix_mut(ix) {
                 if render {
                     element.refresh.mark_render_changed();
-                    element.refresh.render_layer_cache.borrow_mut().take();
                     element.refresh.render_fragment_cache.borrow_mut().take();
                     if origin {
                         element.refresh.render_dirty = true;
@@ -2562,7 +2809,10 @@ impl ElementTree {
         uploaded.next_ghost_seq = self.next_ghost_seq;
         uploaded.current_scale = self.current_scale;
         uploaded.set_layout_cache_stats_enabled(layout_cache_stats_enabled);
+        uploaded.layout_structure_epoch = self.layout_structure_epoch.wrapping_add(1);
+        uploaded.layout_model_epoch = self.layout_model_epoch.wrapping_add(1);
         uploaded.stamp_all_mounted_at_revision(revision);
+        uploaded.finish_patch_frame();
         *self = uploaded;
 
         #[cfg(test)]
@@ -2587,6 +2837,7 @@ impl ElementTree {
 
     /// Clear the tree.
     pub fn clear(&mut self) {
+        self.layout_structure_epoch = self.layout_structure_epoch.wrapping_add(1);
         self.bump_revision();
         self.root = None;
         self.pending_root_id = None;
@@ -2600,11 +2851,28 @@ impl ElementTree {
     }
 
     pub fn clear_root(&mut self) {
+        if self.publication.0.is_some()
+            && let Some(root) = self.root_id()
+        {
+            self.capture_animation_subtree(&root);
+        }
+        self.layout_model_epoch = self.layout_model_epoch.wrapping_add(1);
+        self.layout_structure_epoch = self.layout_structure_epoch.wrapping_add(1);
+        self.invalidate_unapplied_frame();
         self.root = None;
         self.pending_root_id = None;
     }
 
     pub fn set_root_id(&mut self, id: NodeId) {
+        if self.publication.0.is_some() && self.root_id() != Some(id) {
+            if let Some(root) = self.root_id() {
+                self.capture_animation_subtree(&root);
+            }
+            self.capture_animation_subtree(&id);
+        }
+        self.invalidate_unapplied_frame();
+        self.layout_structure_epoch = self.layout_structure_epoch.wrapping_add(1);
+        self.layout_model_epoch = self.layout_model_epoch.wrapping_add(1);
         match self.ix_of(&id) {
             Some(ix) => self.set_root_ix(ix),
             None => {
@@ -2664,6 +2932,19 @@ impl ElementTree {
             .ix_of(parent_id)
             .ok_or_else(|| format!("parent not found: {:?}", parent_id.0))?;
         let child_ixs = self.resolve_child_ixs(&child_ids)?;
+        if self.publication.0.is_some() {
+            let old = self
+                .child_ids(parent_id)
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>();
+            let next = child_ids
+                .iter()
+                .copied()
+                .collect::<std::collections::HashSet<_>>();
+            for id in old.symmetric_difference(&next) {
+                self.capture_animation_subtree(id);
+            }
+        }
         self.ensure_topology();
 
         #[cfg(test)]
@@ -2709,6 +2990,26 @@ impl ElementTree {
             .ok_or_else(|| format!("host not found: {:?}", host_id.0))?;
 
         let nearby_ixs = self.resolve_nearby_ixs(&mounts)?;
+        if self.publication.0.is_some() {
+            let old = self
+                .nearby_mounts_for(host_id)
+                .into_iter()
+                .map(|mount| (mount.id, mount.slot))
+                .collect::<std::collections::HashMap<_, _>>();
+            let next = mounts
+                .iter()
+                .map(|mount| (mount.id, mount.slot))
+                .collect::<std::collections::HashMap<_, _>>();
+            let changed = old
+                .keys()
+                .chain(next.keys())
+                .filter(|id| old.get(id) != next.get(id))
+                .copied()
+                .collect::<std::collections::HashSet<_>>();
+            for id in changed {
+                self.capture_animation_subtree(&id);
+            }
+        }
         self.ensure_topology();
 
         #[cfg(test)]
@@ -3238,6 +3539,8 @@ impl ElementTree {
     }
 
     fn bump_children_version(&mut self, ix: NodeIx) {
+        self.layout_structure_epoch = self.layout_structure_epoch.wrapping_add(1);
+        self.layout_model_epoch = self.layout_model_epoch.wrapping_add(1);
         if let Some(element) = self.get_ix_mut(ix) {
             element.layout.topology_versions.children =
                 element.layout.topology_versions.children.saturating_add(1);
@@ -3255,6 +3558,8 @@ impl ElementTree {
     }
 
     fn bump_nearby_version(&mut self, ix: NodeIx) {
+        self.layout_structure_epoch = self.layout_structure_epoch.wrapping_add(1);
+        self.layout_model_epoch = self.layout_model_epoch.wrapping_add(1);
         if let Some(element) = self.get_ix_mut(ix) {
             element.layout.topology_versions.nearby =
                 element.layout.topology_versions.nearby.saturating_add(1);
@@ -3370,6 +3675,15 @@ impl ElementTree {
     }
 
     pub fn set_text_input_content(&mut self, id: &NodeId, content: String) -> TreeInvalidation {
+        let deferred = self.animation_authority.deferred();
+        if deferred
+            && self.get(id).is_some_and(|element| {
+                element.spec.kind.is_text_input_family()
+                    && element.spec.declared.content.as_deref().unwrap_or("") != content
+            })
+        {
+            self.capture_animation_source(id);
+        }
         let changed = {
             let Some(element) = self.get_mut(id) else {
                 return TreeInvalidation::None;
@@ -3381,10 +3695,12 @@ impl ElementTree {
 
             let prev_base = element.spec.declared.content.as_deref().unwrap_or("");
             let prev_attrs = element.layout.effective.content.as_deref().unwrap_or("");
-            let mut changed = prev_base != content || prev_attrs != content;
+            let mut changed = prev_base != content || (!deferred && prev_attrs != content);
 
             element.spec.declared.content = Some(content.clone());
-            element.layout.effective.content = Some(content.clone());
+            if !deferred {
+                element.layout.effective.content = Some(content.clone());
+            }
 
             if element.runtime.patch_content.take().is_some() {
                 changed = true;
@@ -3430,6 +3746,7 @@ impl ElementTree {
         };
 
         if changed {
+            self.layout_model_epoch = self.layout_model_epoch.wrapping_add(1);
             let invalidation = self
                 .get(id)
                 .filter(|element| text_input_content_change_can_refresh_without_layout(element))
@@ -3531,6 +3848,18 @@ impl ElementTree {
     }
 
     pub fn set_slider_value(&mut self, id: &NodeId, value: f64) -> TreeInvalidation {
+        let deferred = self.animation_authority.deferred();
+        if deferred
+            && self.get(id).is_some_and(|element| {
+                element.spec.kind == ElementKind::Slider
+                    && !f64_values_equal(
+                        element.spec.declared.slider_value.unwrap_or(0.0),
+                        normalize_slider_value(&element.layout.effective, value),
+                    )
+            })
+        {
+            self.capture_animation_source(id);
+        }
         let value_changed = {
             let Some(element) = self.get_mut(id) else {
                 return TreeInvalidation::None;
@@ -3543,11 +3872,13 @@ impl ElementTree {
             let value = normalize_slider_value(&element.layout.effective, value);
             let prev_base = element.spec.declared.slider_value.unwrap_or(0.0);
             let prev_attrs = element.layout.effective.slider_value.unwrap_or(0.0);
-            let value_changed =
-                !f64_values_equal(prev_base, value) || !f64_values_equal(prev_attrs, value);
+            let value_changed = !f64_values_equal(prev_base, value)
+                || (!deferred && !f64_values_equal(prev_attrs, value));
 
             element.spec.declared.slider_value = Some(value);
-            element.layout.effective.slider_value = Some(value);
+            if !deferred {
+                element.layout.effective.slider_value = Some(value);
+            }
             element.runtime.slider_patch_value = None;
 
             if element.runtime.slider_value_origin != SliderValueOrigin::Event {

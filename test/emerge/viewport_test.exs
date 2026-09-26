@@ -138,6 +138,35 @@ defmodule Emerge.ViewportTest do
     defp stop_heartbeat_unless_running(heartbeat_pid, false), do: stop_heartbeat(heartbeat_pid)
   end
 
+  defmodule NoConnectionRenderer do
+    @behaviour Emerge.Runtime.Viewport.Renderer
+
+    defdelegate start(skia_opts, renderer_opts), to: Emerge.ViewportTest.FakeRenderer
+    defdelegate stop(renderer), to: Emerge.ViewportTest.FakeRenderer
+    defdelegate running?(renderer), to: Emerge.ViewportTest.FakeRenderer
+    defdelegate set_input_target(renderer, pid), to: Emerge.ViewportTest.FakeRenderer
+    defdelegate set_log_target(renderer, pid), to: Emerge.ViewportTest.FakeRenderer
+    defdelegate set_input_mask(renderer, mask), to: Emerge.ViewportTest.FakeRenderer
+    defdelegate upload_tree(renderer, tree), to: Emerge.ViewportTest.FakeRenderer
+    defdelegate patch_tree(renderer, diff_state, tree), to: Emerge.ViewportTest.FakeRenderer
+  end
+
+  defmodule NoConnectionViewport do
+    use Emerge
+
+    @impl Viewport
+    def mount(_opts) do
+      {:ok,
+       viewport: [
+         renderer_module: Emerge.ViewportTest.NoConnectionRenderer,
+         renderer_check_interval_ms: nil
+       ]}
+    end
+
+    @impl Viewport
+    def render, do: el([], text("no connection"))
+  end
+
   defmodule BareSkiaViewport do
     use Emerge
 
@@ -506,6 +535,22 @@ defmodule Emerge.ViewportTest do
     GenServer.stop(pid)
   end
 
+  test "rejects video submission to a non-Skia renderer" do
+    {:ok, pid} = CounterViewport.start_link(count: 1)
+    _renderer = Emerge.renderer(pid)
+    frame = VideoInterop.Frame.binary(<<1, 2, 3>>, width: 1, height: 1, pixel_format: :rgb888)
+
+    assert {:error, :video_submission_unsupported} =
+             Emerge.submit_video_frame(pid, :preview, frame)
+
+    GenServer.stop(pid)
+  end
+
+  test "submission consumes a frame when the viewport endpoint is absent" do
+    frame = VideoInterop.Frame.binary(<<1, 2, 3>>, width: 1, height: 1, pixel_format: :rgb888)
+    assert {:error, :viewport_not_ready} = Emerge.submit_video_frame(self(), :preview, frame)
+  end
+
   test "viewport child spec waits for renderer teardown during supervisor shutdown" do
     assert %{shutdown: :infinity} = CounterViewport.child_spec([])
   end
@@ -632,6 +677,19 @@ defmodule Emerge.ViewportTest do
       end)
 
     assert log =~ "EmergeSkia native[drm] DRM cursor: hardware plane enabled"
+  end
+
+  test "verbose event runtime traces stay below Logger's default level" do
+    log =
+      capture_log([level: :info], fn ->
+        assert {:noreply, %{}} =
+                 Emerge.Runtime.Viewport.handle_info(
+                   {:emerge_skia_log, :info, "event_runtime", "input begin"},
+                   %{}
+                 )
+      end)
+
+    assert log == ""
   end
 
   test "rerender requests from callback state updates are coalesced" do

@@ -4,6 +4,7 @@ defmodule Emerge.Docs.Screenshots do
   use Emerge.UI
 
   alias Emerge.Docs.Examples
+  alias EmergeSkia.TreeRenderer
 
   @project_root Path.expand("../../..", __DIR__)
 
@@ -42,12 +43,16 @@ defmodule Emerge.Docs.Screenshots do
   def render_png(spec) do
     density = Map.get(spec, :density, 1)
 
-    EmergeSkia.render_to_png(spec.build.(),
-      otp_app: :emerge,
-      width: spec.width * density,
-      height: spec.height * density,
-      scale: density * 1.0,
-      asset_mode: :await
+    TreeRenderer.render_to_png(
+      spec.build.(),
+      [
+        otp_app: :emerge,
+        width: spec.width * density,
+        height: spec.height * density,
+        scale: density * 1.0,
+        asset_mode: :await
+      ],
+      5_000
     )
   end
 

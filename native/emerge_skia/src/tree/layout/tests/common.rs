@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::renderer::{RenderFrame, RenderState, SceneRenderer};
 use crate::tree::attrs::Attrs;
 use crate::tree::element::Element;
 use std::cell::Cell;
@@ -126,4 +127,28 @@ pub(super) fn fill_box_attrs() -> Attrs {
         height: Some(Length::Fill),
         ..Attrs::default()
     }
+}
+
+pub(super) fn render_scene_to_pixels(
+    width: u32,
+    height: u32,
+    scene: crate::render_scene::RenderScene,
+) -> Vec<u8> {
+    let info = skia_safe::ImageInfo::new(
+        (width as i32, height as i32),
+        skia_safe::ColorType::RGBA8888,
+        skia_safe::AlphaType::Premul,
+        None,
+    );
+    let mut surface = skia_safe::surfaces::raster(&info, None, None)
+        .expect("raster surface should be created for render equivalence test");
+    let state = RenderState::new(scene, skia_safe::Color::TRANSPARENT, 1, false);
+    {
+        let mut frame = RenderFrame::new(&mut surface, None);
+        SceneRenderer::new().render(&mut frame, &state);
+    }
+
+    let mut pixels = vec![0u8; (width * height * 4) as usize];
+    surface.read_pixels(&info, pixels.as_mut_slice(), (width * 4) as usize, (0, 0));
+    pixels
 }

@@ -3,7 +3,7 @@ defmodule Emerge.UI.Border do
 
   alias Emerge.Docs.Examples
 
-  Examples.external_resources(~w(ui-border-radius-width ui-border-shadows))
+  Examples.external_resources(~w(ui-border-radius-width ui-border-shadows ui-inline-decorations))
 
   @moduledoc """
   Border styling attributes.
@@ -33,8 +33,12 @@ defmodule Emerge.UI.Border do
 
   ## Shadows
 
-  `shadow/1` and `glow/2` create outer shadows. They are decorative and do not
-  affect layout.
+  `shadow/1` and `glow/2` paint the complete box-shaped shadow behind the
+  element's background and content, including behind its text. Transparent
+  areas reveal the shadow; opaque backgrounds cover it. Unlike CSS `box-shadow`,
+  the casting box's interior is not cut out of the shadow.
+
+  Shadows are decorative and do not affect layout.
 
   Parent padding does not clip descendant rendering, so outer shadows can bleed
   into a parent's padding.
@@ -44,6 +48,33 @@ defmodule Emerge.UI.Border do
   the full scrollport clips the shadow, including rounded corners.
 
   `inner_shadow/1` renders inside the element and does not bleed outside it.
+
+  ## Inline paragraph wrappers
+
+  All border styles, independent edge widths/corner radii, shadows and glow work
+  on `el(attrs, text(...))` inside a paragraph. Each wrapped line segment gets a
+  complete box with its own edges, corners, padding and shadow stack (clone-on-wrap).
+  Words on the same line share the box; adjacent wrappers remain separate.
+
+  Border width and padding reserve space and can change wrapping and line height.
+  Shadows and glow remain decorative, including when no visible border is set.
+  Outer shadows can bleed between lines and into padding; the existing active-axis
+  scroll clips still apply. Inset shadows are painted inside the rounded box,
+  behind the text. Explicit `Background.color/1` fills paint over outer shadows
+  and under inset shadows/text: opaque colors hide the interior shadow while
+  transparency reveals it. No implicit background is painted. Borders are
+  painted after the text.
+
+  Background and border gradients span each line segment's outer box. Shadow gradients use that
+  same casting box before offset, spread and blur. Both restart at a wrapped
+  continuation, not at each word. Text gradients still span the paragraph.
+
+  This does not add inline background images, nested wrapper extraction or a
+  new multiline hit-testing model. Floating elements retain ordinary box layout.
+
+  #{Examples.code_block!("ui-inline-decorations")}
+
+  #{Examples.image_tag!("ui-inline-decorations", "Wrapped inline borders, shadow and glow")}
 
   ## Examples
 
@@ -121,7 +152,10 @@ defmodule Emerge.UI.Border do
   def dotted, do: {:border_style, :dotted}
 
   @doc """
-  Add an outer box shadow.
+  Add a box-shaped outer shadow, including behind the element's content.
+
+  Transparent backgrounds reveal the shadow inside the box; opaque backgrounds
+  painted over it provide occlusion. This is not a glyph-shaped text shadow.
 
   Decorative only. Outer shadows do not affect layout.
 

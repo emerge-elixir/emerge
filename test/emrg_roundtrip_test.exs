@@ -50,10 +50,11 @@ defmodule EmergeSkia.EmrgRoundtripTest do
               padding(10.0),
               width({:px, 240.0}),
               height(:content),
-              Emerge.UI.Background.gradient(
-                {:color_rgba, {20, 30, 40, 255}},
-                {:color_rgba, {60, 70, 80, 255}},
-                45.0
+              Emerge.UI.Background.color(
+                Emerge.UI.Color.gradient(
+                  [{:color_rgba, {20, 30, 40, 255}}, {:color_rgba, {60, 70, 80, 255}}],
+                  45.0
+                )
               ),
               Emerge.UI.Border.rounded_each(8.0, 6.0, 4.0, 2.0),
               Emerge.UI.Border.width(2.0),

@@ -29,6 +29,7 @@ use rustler::LocalPid;
 
 use crate::{
     actors::{EventMsg, TreeMsg},
+    assets::AssetContext,
     backend::wake::BackendWakeHandle,
     clipboard::{ClipboardManager, ClipboardTarget},
     input::{ACTION_PRESS, InputEvent, InputHandler, SCROLL_LINE_PIXELS},
@@ -66,9 +67,44 @@ pub trait HostEventSink: Send + Sync {
     );
 }
 
+/// Dispatch-local collection keeps all native effects of an operation together.
+/// Production drivers add source evidence before handing this packet to a channel.
+trait TreeSink {
+    fn emit(&self, message: TreeMsg, log_render: bool);
+}
+#[cfg(test)]
+impl TreeSink for Sender<TreeMsg> {
+    fn emit(&self, msg: TreeMsg, log_render: bool) {
+        match self.try_send(msg) {
+            Ok(()) => {}
+            Err(TrySendError::Full(msg)) => {
+                if log_render {
+                    eprintln!("tree channel full, blocking send");
+                }
+                let _ = self.send(msg);
+            }
+            Err(TrySendError::Disconnected(_)) => {}
+        }
+    }
+}
+#[derive(Default)]
+struct EventCommands(std::cell::RefCell<Vec<TreeMsg>>);
+impl TreeSink for EventCommands {
+    fn emit(&self, msg: TreeMsg, _: bool) {
+        crate::runtime::tree_update::push_tree_message_flat(msg, &mut self.0.borrow_mut());
+    }
+}
+
+// Work quantum, not an input-retention bound or a wall-clock latency promise.
+const INPUT_BATCH_LIMIT: usize = 64;
+const HOST_TREE_BATCH_LIMIT: usize = 512;
+
 struct EventRuntimeDriver {
     runtime: DirectEventRuntime,
+    awaiting_registry: Option<crate::actors::ListenerBarrier>,
+    pending_mount_focus: Option<(super::FocusOnMountTarget, Option<NodeId>)>,
     tree_tx: Sender<TreeMsg>,
+    outbox: VecDeque<TreeMsg>,
     log_render: bool,
     native_log: Arc<NativeLogRelay>,
 }
@@ -84,6 +120,8 @@ impl EventRuntimeDriver {
         stats: Option<Arc<RendererStatsCollector>>,
     ) -> Self {
         Self {
+            awaiting_registry: None,
+            pending_mount_focus: None,
             runtime: DirectEventRuntime::new_with_backend_cursor(
                 system_clipboard,
                 backend_cursor_tx,
@@ -92,6 +130,7 @@ impl EventRuntimeDriver {
                 stats,
             ),
             tree_tx,
+            outbox: VecDeque::new(),
             log_render,
             native_log,
         }
@@ -99,7 +138,7 @@ impl EventRuntimeDriver {
 
     fn log_event_diagnostic(&self, build: impl FnOnce() -> String) {
         if self.log_render {
-            self.native_log.info("event_runtime", build());
+            self.native_log.debug("event_runtime", build());
         }
     }
 
@@ -115,27 +154,87 @@ impl EventRuntimeDriver {
         self.runtime.set_input_target(target);
     }
 
-    fn handle_input(&mut self, event: InputEvent) {
-        self.runtime
-            .handle_input_event(event, &self.tree_tx, self.log_render);
+    fn dispatch<R>(
+        &mut self,
+        operation: impl FnOnce(&mut DirectEventRuntime, &dyn TreeSink, bool) -> R,
+    ) -> R {
+        let commands = EventCommands::default();
+        let result = operation(&mut self.runtime, &commands, self.log_render);
+        let mut messages = commands.0.into_inner();
+        if std::mem::take(&mut self.runtime.listener_lane.needs_barrier) {
+            let barrier = crate::actors::ListenerBarrier::default();
+            self.awaiting_registry = Some(barrier.clone());
+            messages.push(TreeMsg::ListenerBarrier(barrier));
+        }
+        if !messages.is_empty() {
+            let mut targets: Vec<_> = messages.iter().filter_map(TreeMsg::target_id).collect();
+            targets.sort_unstable_by_key(|id| id.0);
+            targets.dedup();
+            let packet = if targets.is_empty() {
+                TreeMsg::Batch(messages)
+            } else {
+                TreeMsg::EventBatch {
+                    target_mounts: targets
+                        .into_iter()
+                        .map(|id| (id, self.runtime.base_registry.source_mount(&id)))
+                        .collect(),
+                    messages,
+                }
+            };
+            self.queue_tree_packet(packet);
+        }
+        result
     }
 
-    fn install_rebuild(&mut self, rebuild: RegistryRebuildPayload) {
-        self.runtime
-            .handle_registry_update(rebuild, &self.tree_tx, self.log_render);
+    fn queue_tree_packet(&mut self, packet: TreeMsg) {
+        // Once a packet is deferred, new operations must not overtake it even
+        // when a slot happens to become available during this dispatch.
+        if self.outbox.is_empty() {
+            match self.tree_tx.try_send(packet) {
+                Ok(()) => {}
+                Err(TrySendError::Full(packet) | TrySendError::Disconnected(packet)) => {
+                    self.outbox.push_back(packet)
+                }
+            }
+        } else {
+            self.outbox.push_back(packet);
+        }
+    }
+
+    fn handle_input(&mut self, event: InputEvent) {
+        self.dispatch(|runtime, tx, log| runtime.handle_input_event(event, tx, log));
+    }
+
+    fn install_rebuild(&mut self, mut rebuild: RegistryRebuildPayload) {
+        rebuild.focus_on_mount = rebuild.focus_on_mount.take().filter(|target| {
+            target.mounted_at_revision > self.runtime.last_focus_on_mount_revision
+        });
+        if let Some((target, previous_focused)) = self.pending_mount_focus.take() {
+            rebuild.carry_mount_focus(Some(target), previous_focused);
+        }
+        if self.awaiting_registry.as_ref().is_some_and(|pending| {
+            !rebuild
+                .listener_barrier
+                .as_ref()
+                .is_some_and(|ack| pending.matches(ack))
+        }) {
+            self.pending_mount_focus = rebuild
+                .focus_on_mount
+                .map(|target| (target, rebuild.focused_id));
+            return;
+        }
+        self.awaiting_registry = None;
+        self.dispatch(|runtime, tx, log| runtime.handle_registry_update(rebuild, tx, log));
     }
 
     fn handle_timers(&mut self) {
-        self.runtime.handle_timers(&self.tree_tx, self.log_render);
+        self.dispatch(|runtime, tx, log| runtime.handle_timers(tx, log));
     }
 
     fn handle_present_timing(&mut self, presented_at: Instant, predicted_next_present_at: Instant) {
-        self.runtime.handle_present_timing(
-            presented_at,
-            predicted_next_present_at,
-            &self.tree_tx,
-            self.log_render,
-        );
+        self.dispatch(|runtime, tx, log| {
+            runtime.handle_present_timing(presented_at, predicted_next_present_at, tx, log)
+        });
     }
 
     fn focused_text_state(&self) -> Option<TextInputState> {
@@ -143,13 +242,11 @@ impl EventRuntimeDriver {
     }
 
     fn handle_text_input_command(&mut self, request: TextInputCommandRequest) -> bool {
-        self.runtime
-            .handle_text_input_command(request, &self.tree_tx, self.log_render)
+        self.dispatch(|runtime, tx, log| runtime.handle_text_input_command(request, tx, log))
     }
 
     fn handle_text_input_edit(&mut self, request: TextInputEditRequest) -> bool {
-        self.runtime
-            .handle_text_input_edit(request, &self.tree_tx, self.log_render)
+        self.dispatch(|runtime, tx, log| runtime.handle_text_input_edit(request, tx, log))
     }
 
     fn prepare_text_input_replacement_range(
@@ -291,9 +388,11 @@ impl HostEventRuntime {
         stats: Option<Arc<RendererStatsCollector>>,
         backend_cursor_tx: Option<Sender<CursorIcon>>,
     ) -> Self {
-        let (tree_tx, tree_rx) = crossbeam_channel::bounded(512);
+        let (tree_tx, tree_rx) = crossbeam_channel::bounded(HOST_TREE_BATCH_LIMIT);
         let native_log = Arc::new(NativeLogRelay::default());
         let mut driver = EventRuntimeDriver {
+            awaiting_registry: None,
+            pending_mount_focus: None,
             runtime: DirectEventRuntime::new_with_host_sink(
                 system_clipboard,
                 backend_cursor_tx,
@@ -303,6 +402,7 @@ impl HostEventRuntime {
                 stats,
             ),
             tree_tx: tree_tx.clone(),
+            outbox: VecDeque::new(),
             log_render,
             native_log,
         };
@@ -340,14 +440,20 @@ impl HostEventRuntime {
         self.driver.focused_text_state()
     }
 
+    /// True means handled now or retained for ordered dispatch. A queued request
+    /// must not trigger a platform responder fallback; it is not a tree ack.
     pub fn handle_text_input_command(&mut self, request: TextInputCommandRequest) -> bool {
         self.driver.handle_text_input_command(request)
     }
 
+    /// Shares the raw input dependency queue. Accepted deferred edits are not
+    /// reflected in `focused_text_state` until they can be dispatched safely.
     pub fn handle_text_input_edit(&mut self, request: TextInputEditRequest) -> bool {
         self.driver.handle_text_input_edit(request)
     }
 
+    /// A deferred range addresses the queried mount/text context. It is cancelled
+    /// if focus or that context changes before replay, never retargeted by id.
     pub fn prepare_text_input_replacement_range(
         &mut self,
         replacement_range: Option<(u32, u32)>,
@@ -356,13 +462,18 @@ impl HostEventRuntime {
             .prepare_text_input_replacement_range(replacement_range)
     }
 
-    pub fn drain_tree_messages(&self) -> Vec<TreeMsg> {
-        let mut messages = Vec::new();
-
-        while let Ok(msg) = self.tree_rx.try_recv() {
-            messages.push(msg);
+    pub fn drain_tree_messages(&mut self) -> Vec<TreeMsg> {
+        // Successfully queued packets precede the single host producer's deferred
+        // FIFO. Preserve the former channel-capacity quantum, not a memory cap.
+        let messages = self
+            .tree_rx
+            .try_iter()
+            .chain(std::iter::from_fn(|| self.driver.outbox.pop_front()))
+            .take(HOST_TREE_BATCH_LIMIT)
+            .collect();
+        if self.driver.outbox.is_empty() {
+            self.driver.outbox = VecDeque::new();
         }
-
         messages
     }
 }
@@ -380,6 +491,7 @@ const ADAPTIVE_SCROLL_PHYSICAL_COEFF: f32 = 51_890.203;
 const ADAPTIVE_SCROLL_MIN_VELOCITY: f32 = 500.0;
 const ADAPTIVE_SCROLL_MAX_VELOCITY: f32 = 6_000.0;
 const ADAPTIVE_SCROLL_STOP_TOLERANCE: f32 = 0.5;
+const ADAPTIVE_SCROLL_WATCHDOG_MIN_DELAY: Duration = Duration::from_millis(1);
 const ADAPTIVE_SCROLL_WATCHDOG_MAX_DELAY: Duration = Duration::from_millis(100);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PresentTimingState {
@@ -392,6 +504,7 @@ struct DragMotionState {
     element_id: NodeId,
     axis: ScrollbarAxis,
     last_pointer_axis: f32,
+    sampled_pointer_axis: f32,
     last_sample_at: Instant,
     velocity_px_per_sec: f32,
 }
@@ -548,7 +661,7 @@ impl PendingDispatchEffects {
     fn flush(
         mut self,
         runtime: &mut DirectEventRuntime,
-        tree_tx: &Sender<TreeMsg>,
+        tree_tx: &dyn TreeSink,
         log_render: bool,
         dispatch_mode: DispatchMode,
     ) {
@@ -665,8 +778,11 @@ fn tree_msg_label(msg: &TreeMsg) -> &'static str {
         TreeMsg::SetSliderValue { .. } => "set_slider_value",
         TreeMsg::AnimationPulse { .. } => "animation_pulse",
         TreeMsg::Batch(_) => "batch",
+        TreeMsg::EventBatch { .. } => "event_batch",
         TreeMsg::RebuildRegistry => "rebuild_registry",
+        TreeMsg::ListenerBarrier(_) => "listener_barrier",
         TreeMsg::AssetStateChanged => "asset_state_changed",
+        TreeMsg::FontMetricsChanged { .. } => "font_metrics_changed",
         TreeMsg::Stop => "stop",
     }
 }
@@ -768,17 +884,70 @@ impl ListenerComputeCtx for RuntimeListenerComputeCtx<'_> {
 /// While stale, listener input is buffered and coalesced until a fresh
 /// `RegistryUpdate` is installed. Raw observer input forwarding continues
 /// independently.
+/// One ordered semantic stream. Host commands are not raw observer input, but
+/// must not overtake a queued click/focus decision or a registry dependency.
+#[derive(Clone, Debug, PartialEq)]
+enum PendingInput {
+    Raw(InputEvent),
+    Command(TextInputCommandRequest),
+    Edit(TextInputEditRequest),
+    ReplacementRange {
+        start: u32,
+        end: u32,
+        element_id: NodeId,
+        mount: u64,
+        generation: RangeGeneration,
+    },
+}
+
+/// Identity of the text/focus context queried by the host. Only ranges retain
+/// this token; ordinary input does not allocate a token on each edit.
+#[derive(Clone, Debug, Default)]
+struct RangeGeneration(Arc<()>);
+impl PartialEq for RangeGeneration {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for RangeGeneration {}
+impl RangeGeneration {
+    fn invalidate(&mut self) {
+        if Arc::strong_count(&self.0) > 1 {
+            *self = Self::default();
+        }
+    }
+}
+
+impl PendingInput {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Raw(event) => input_event_label(event),
+            Self::Command(_) => "text_command",
+            Self::Edit(_) => "text_edit",
+            Self::ReplacementRange { .. } => "text_replacement_range",
+        }
+    }
+}
+
+impl From<InputEvent> for PendingInput {
+    fn from(event: InputEvent) -> Self {
+        Self::Raw(event)
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 struct ListenerLaneState {
     stale: bool,
-    buffered_inputs: Vec<InputEvent>,
+    needs_barrier: bool,
+    buffered_inputs: VecDeque<PendingInput>,
 }
 
 impl ListenerLaneState {
     fn initially_stale() -> Self {
         Self {
             stale: true,
-            buffered_inputs: Vec::new(),
+            needs_barrier: false,
+            buffered_inputs: VecDeque::new(),
         }
     }
 
@@ -788,17 +957,48 @@ impl ListenerLaneState {
 
     fn mark_stale(&mut self) {
         self.stale = true;
+        self.needs_barrier = true;
     }
 
     fn buffer_input(&mut self, event: InputEvent) {
-        self.buffered_inputs.push(event);
-        let mut buffered = std::mem::take(&mut self.buffered_inputs);
-        self.buffered_inputs = coalesce_input_events(&mut buffered);
+        self.buffer_pending(event.into());
     }
 
-    fn mark_fresh_and_take_buffered(&mut self) -> Vec<InputEvent> {
+    fn buffer_pending(&mut self, event: PendingInput) {
+        if let Some(event) = coalesce_pending_input(self.buffered_inputs.back_mut(), event) {
+            self.buffered_inputs.push_back(event);
+        }
+    }
+
+    fn mark_fresh_and_take_buffered(&mut self) -> VecDeque<PendingInput> {
         self.stale = false;
         std::mem::take(&mut self.buffered_inputs)
+    }
+
+    fn restore_replay_tail(&mut self, mut remaining: VecDeque<PendingInput>) {
+        // An empty drained deque drops its peak-capacity storage here, not on a
+        // deferred-free queue. The normal paused path transfers ownership in O(1).
+        if remaining.is_empty() {
+            return;
+        }
+        if self.buffered_inputs.is_empty() {
+            self.buffered_inputs = remaining;
+        } else {
+            // Nested dispatch may already have buffered input. Preserve its prior
+            // ordering and coalesce only the join; both interiors are normalized.
+            // Prepend that new prefix rather than reinserting the old remainder.
+            let mut prefix = std::mem::take(&mut self.buffered_inputs);
+            if let Some(first) = remaining.pop_front()
+                && let Some(first) = coalesce_pending_input(prefix.back_mut(), first)
+            {
+                remaining.push_front(first);
+            }
+            prefix
+                .into_iter()
+                .rev()
+                .for_each(|event| remaining.push_front(event));
+            self.buffered_inputs = remaining;
+        }
     }
 }
 
@@ -816,6 +1016,7 @@ struct DirectEventRuntime {
     overlay_registry: registry_builder::Registry,
     listener_lane: ListenerLaneState,
     last_focus_on_mount_revision: u64,
+    range_generation: RangeGeneration,
     focused_id: Option<NodeId>,
     text_states: HashMap<NodeId, TextInputState>,
     slider_states: HashMap<NodeId, SliderState>,
@@ -873,6 +1074,7 @@ impl DirectEventRuntime {
             overlay_registry,
             listener_lane: ListenerLaneState::initially_stale(),
             last_focus_on_mount_revision: 0,
+            range_generation: RangeGeneration::default(),
             focused_id: None,
             text_states: HashMap::new(),
             slider_states: HashMap::new(),
@@ -929,7 +1131,7 @@ impl DirectEventRuntime {
 
     fn log_event_diagnostic(&self, log_render: bool, build: impl FnOnce() -> String) {
         if log_render {
-            self.native_log.info("event_runtime", build());
+            self.native_log.debug("event_runtime", build());
         }
     }
 
@@ -1051,10 +1253,12 @@ impl DirectEventRuntime {
         now: Instant,
     ) {
         let axis = Self::drag_axis_from_gesture(locked_axis);
+        let pointer_axis = Self::pointer_axis_value(axis, last_x, last_y);
         self.drag_motion = Some(DragMotionState {
             element_id,
             axis,
-            last_pointer_axis: Self::pointer_axis_value(axis, last_x, last_y),
+            last_pointer_axis: pointer_axis,
+            sampled_pointer_axis: pointer_axis,
             last_sample_at: now,
             velocity_px_per_sec: 0.0,
         });
@@ -1065,8 +1269,8 @@ impl DirectEventRuntime {
             return;
         };
 
-        let next_axis = Self::pointer_axis_value(motion.axis, last_x, last_y);
-        Self::update_drag_motion_axis_sample(motion, next_axis, now);
+        motion.last_pointer_axis = Self::pointer_axis_value(motion.axis, last_x, last_y);
+        Self::sample_drag_motion_velocity(motion, now);
     }
 
     fn update_drag_motion_by_delta(&mut self, axis_delta: f32, now: Instant) {
@@ -1074,26 +1278,30 @@ impl DirectEventRuntime {
             return;
         };
 
-        let next_axis = motion.last_pointer_axis + axis_delta;
-        Self::update_drag_motion_axis_sample(motion, next_axis, now);
+        motion.last_pointer_axis += axis_delta;
+        Self::sample_drag_motion_velocity(motion, now);
     }
 
-    fn update_drag_motion_axis_sample(motion: &mut DragMotionState, next_axis: f32, now: Instant) {
+    fn sample_drag_motion_velocity(motion: &mut DragMotionState, now: Instant) {
         let dt = now.saturating_duration_since(motion.last_sample_at);
-        if dt >= DRAG_VELOCITY_SAMPLE_MIN_DT {
-            let dt_secs = dt.as_secs_f32();
-            if dt_secs > 0.0 {
-                let instantaneous = (next_axis - motion.last_pointer_axis) / dt_secs;
-                let filtered = motion.velocity_px_per_sec;
-                motion.velocity_px_per_sec = if filtered == 0.0 {
-                    instantaneous
-                } else {
-                    filtered + (instantaneous - filtered) * DRAG_VELOCITY_FILTER_ALPHA
-                };
-                motion.last_sample_at = now;
-            }
+        if dt < DRAG_VELOCITY_SAMPLE_MIN_DT {
+            return;
         }
-        motion.last_pointer_axis = next_axis;
+
+        let dt_secs = dt.as_secs_f32();
+        if dt_secs <= 0.0 {
+            return;
+        }
+
+        let instantaneous = (motion.last_pointer_axis - motion.sampled_pointer_axis) / dt_secs;
+        let filtered = motion.velocity_px_per_sec;
+        motion.velocity_px_per_sec = if filtered == 0.0 {
+            instantaneous
+        } else {
+            filtered + (instantaneous - filtered) * DRAG_VELOCITY_FILTER_ALPHA
+        };
+        motion.sampled_pointer_axis = motion.last_pointer_axis;
+        motion.last_sample_at = now;
     }
 
     fn edge_blocks_inertial_scroll(
@@ -1116,13 +1324,12 @@ impl DirectEventRuntime {
     }
 
     fn next_inertial_watchdog_deadline(&self, now: Instant) -> Instant {
+        let earliest = now + ADAPTIVE_SCROLL_WATCHDOG_MIN_DELAY;
+        let latest = now + ADAPTIVE_SCROLL_WATCHDOG_MAX_DELAY;
+
         self.last_present_timing
-            .map(|timing| {
-                timing
-                    .predicted_next_present_at
-                    .min(now + ADAPTIVE_SCROLL_WATCHDOG_MAX_DELAY)
-            })
-            .unwrap_or(now + ADAPTIVE_SCROLL_WATCHDOG_MAX_DELAY)
+            .map(|timing| timing.predicted_next_present_at.max(earliest).min(latest))
+            .unwrap_or(latest)
     }
 
     fn clamp_inertial_scroll_delta(
@@ -1143,10 +1350,7 @@ impl DirectEventRuntime {
             0.0
         };
 
-        (
-            clamped,
-            (clamped - delta).abs() > ADAPTIVE_SCROLL_STOP_TOLERANCE,
-        )
+        (clamped, (clamped - delta).abs() > f32::EPSILON)
     }
 
     fn maybe_start_inertial_scroll(&mut self, now: Instant) {
@@ -1185,7 +1389,7 @@ impl DirectEventRuntime {
         self.backend_wake.request_redraw();
     }
 
-    fn step_inertial_scroll(&mut self, now: Instant, tree_tx: &Sender<TreeMsg>, log_render: bool) {
+    fn step_inertial_scroll(&mut self, now: Instant, tree_tx: &dyn TreeSink, log_render: bool) {
         let Some(mut inertia) = self.inertial_scroll.take() else {
             return;
         };
@@ -1196,12 +1400,10 @@ impl DirectEventRuntime {
         let position = inertia.simulation.x(elapsed_secs);
         let delta = position - inertia.last_sample_position;
 
-        if delta.abs() <= ADAPTIVE_SCROLL_STOP_TOLERANCE {
-            if inertia.simulation.is_done(elapsed_secs) {
-                return;
-            }
-
-            inertia.last_sample_position = position;
+        let simulation_done = inertia.simulation.is_done(elapsed_secs);
+        if delta.abs() <= ADAPTIVE_SCROLL_STOP_TOLERANCE && !simulation_done {
+            // Keep the last emitted position so frequent timer/present samples accumulate rather
+            // than silently consuming sub-pixel motion from the finite fling trajectory.
             inertia.watchdog_deadline = self.next_inertial_watchdog_deadline(now);
             self.inertial_scroll = Some(inertia);
             self.backend_wake.request_redraw();
@@ -1236,7 +1438,7 @@ impl DirectEventRuntime {
             );
         }
 
-        if hit_boundary || inertia.simulation.is_done(elapsed_secs) {
+        if hit_boundary || simulation_done {
             return;
         }
 
@@ -1257,12 +1459,7 @@ impl DirectEventRuntime {
             .min()
     }
 
-    fn handle_input_event(
-        &mut self,
-        event: InputEvent,
-        tree_tx: &Sender<TreeMsg>,
-        log_render: bool,
-    ) {
+    fn handle_input_event(&mut self, event: InputEvent, tree_tx: &dyn TreeSink, log_render: bool) {
         let event = event.normalize_scroll_with_line_pixels(self.scroll_line_pixels);
         let label = input_event_label(&event);
         self.log_event_diagnostic(log_render, || {
@@ -1313,7 +1510,22 @@ impl DirectEventRuntime {
     fn handle_text_input_command(
         &mut self,
         request: TextInputCommandRequest,
-        tree_tx: &Sender<TreeMsg>,
+        tree_tx: &dyn TreeSink,
+        log_render: bool,
+    ) -> bool {
+        if self.listener_lane.is_stale() {
+            self.listener_lane
+                .buffer_pending(PendingInput::Command(request));
+            // Accepted for ordered dispatch, not a request for a Cocoa fallback.
+            return true;
+        }
+        self.dispatch_text_input_command(request, tree_tx, log_render)
+    }
+
+    fn dispatch_text_input_command(
+        &mut self,
+        request: TextInputCommandRequest,
+        tree_tx: &dyn TreeSink,
         log_render: bool,
     ) -> bool {
         let Some(element_id) = self
@@ -1352,7 +1564,21 @@ impl DirectEventRuntime {
     fn handle_text_input_edit(
         &mut self,
         request: TextInputEditRequest,
-        tree_tx: &Sender<TreeMsg>,
+        tree_tx: &dyn TreeSink,
+        log_render: bool,
+    ) -> bool {
+        if self.listener_lane.is_stale() {
+            self.listener_lane
+                .buffer_pending(PendingInput::Edit(request));
+            return true;
+        }
+        self.dispatch_text_input_edit(request, tree_tx, log_render)
+    }
+
+    fn dispatch_text_input_edit(
+        &mut self,
+        request: TextInputEditRequest,
+        tree_tx: &dyn TreeSink,
         log_render: bool,
     ) -> bool {
         let Some(element_id) = self
@@ -1403,6 +1629,22 @@ impl DirectEventRuntime {
             return false;
         };
 
+        if self.listener_lane.is_stale() {
+            let Some(mount) = self.base_registry.source_mount(&element_id) else {
+                // A delayed range needs genuine source ownership.
+                return false;
+            };
+            self.listener_lane
+                .buffer_pending(PendingInput::ReplacementRange {
+                    start,
+                    end,
+                    element_id,
+                    mount,
+                    generation: self.range_generation.clone(),
+                });
+            return true;
+        }
+
         self.text_states
             .get_mut(&element_id)
             .is_some_and(|state| state.set_selection_range(start, end))
@@ -1411,7 +1653,7 @@ impl DirectEventRuntime {
     fn inject_synthetic_inputs(
         &mut self,
         events: Vec<InputEvent>,
-        tree_tx: &Sender<TreeMsg>,
+        tree_tx: &dyn TreeSink,
         log_render: bool,
     ) {
         for event in events {
@@ -1422,7 +1664,7 @@ impl DirectEventRuntime {
     fn handle_registry_update(
         &mut self,
         rebuild: RegistryRebuildPayload,
-        tree_tx: &Sender<TreeMsg>,
+        tree_tx: &dyn TreeSink,
         log_render: bool,
     ) {
         let stale_before_install = self.listener_lane.is_stale();
@@ -1471,10 +1713,12 @@ impl DirectEventRuntime {
     fn install_rebuild(
         &mut self,
         rebuild: RegistryRebuildPayload,
-        tree_tx: &Sender<TreeMsg>,
+        tree_tx: &dyn TreeSink,
         log_render: bool,
     ) {
         let RegistryRebuildPayload {
+            listener_barrier: _,
+            mount_focus_targets: _,
             base_registry,
             text_inputs,
             sliders,
@@ -1489,11 +1733,14 @@ impl DirectEventRuntime {
 
         self.prune_expired_pending_text_patches();
         self.prune_expired_pending_slider_patches();
-        self.base_registry = base_registry;
+        let previous_registry = std::mem::replace(&mut self.base_registry, base_registry);
         self.scrollbar_nodes = scrollbars;
 
-        self.reconcile_runtime_overlay(&text_inputs, &sliders);
+        self.reconcile_runtime_overlay(&previous_registry, &text_inputs, &sliders);
         self.recompose_overlay_registry();
+        if self.focused_id != focused_id {
+            self.range_generation.invalidate();
+        }
         self.focused_id = focused_id;
         self.text_commit_suppressions.retain(|suppression| {
             self.focused_id
@@ -1502,7 +1749,7 @@ impl DirectEventRuntime {
         });
 
         let pending_text_patch_ttl = self.pending_text_patch_ttl();
-        let mut changed_tree = reconcile_text_input_states(
+        let (mut changed_tree, accepted_tree_patch) = reconcile_text_input_states(
             &text_inputs,
             &mut self.text_states,
             &mut self.pending_text_patches,
@@ -1511,6 +1758,9 @@ impl DirectEventRuntime {
             tree_tx,
             log_render,
         );
+        if accepted_tree_patch {
+            self.range_generation.invalidate();
+        }
         changed_tree |= reconcile_slider_states(
             &sliders,
             &mut self.slider_states,
@@ -1531,6 +1781,9 @@ impl DirectEventRuntime {
                 tree_tx,
                 log_render,
             };
+            if self.focused_id != Some(target.element_id) {
+                self.range_generation.invalidate();
+            }
             changed_tree |= apply_focus_to(
                 Some(target.element_id),
                 &target.reveal_scrolls,
@@ -1566,39 +1819,70 @@ impl DirectEventRuntime {
 
     fn replay_buffered(
         &mut self,
-        events: Vec<InputEvent>,
-        tree_tx: &Sender<TreeMsg>,
+        mut events: VecDeque<PendingInput>,
+        tree_tx: &dyn TreeSink,
         log_render: bool,
     ) {
         let event_count = events.len();
         self.log_event_diagnostic(log_render, || {
             format!(
-                "buffered replay begin\n  count: {event_count}\n  labels: {}\n  {}",
+                "buffered replay begin\n  count: {event_count}\n  labels (first 16): {}\n  {}",
                 events
                     .iter()
-                    .map(input_event_label)
+                    .take(16)
+                    .map(PendingInput::label)
                     .collect::<Vec<_>>()
                     .join(","),
                 self.diagnostic_summary(),
             )
         });
-        for event in events {
+        for _ in 0..INPUT_BATCH_LIMIT {
             if self.listener_lane.is_stale() {
-                self.log_event_diagnostic(log_render, || {
-                    format!(
-                        "buffered replay paused because lane became stale\n  event: {}\n  {}",
-                        input_event_label(&event),
-                        self.diagnostic_summary(),
-                    )
-                });
-                self.listener_lane.buffer_input(event);
-                continue;
+                break;
             }
-            let dispatch_mode = match event {
-                InputEvent::CursorPos { .. } => DispatchMode::CursorRevalidate,
-                _ => DispatchMode::Normal,
+            let Some(event) = events.pop_front() else {
+                break;
             };
-            self.dispatch_event(event, tree_tx, log_render, dispatch_mode);
+            match event {
+                PendingInput::Raw(event) => {
+                    let dispatch_mode = match event {
+                        InputEvent::CursorPos { .. } => DispatchMode::CursorRevalidate,
+                        _ => DispatchMode::Normal,
+                    };
+                    self.dispatch_event(event, tree_tx, log_render, dispatch_mode);
+                }
+                PendingInput::Command(request) => {
+                    self.dispatch_text_input_command(request, tree_tx, log_render);
+                }
+                PendingInput::Edit(request) => {
+                    self.dispatch_text_input_edit(request, tree_tx, log_render);
+                }
+                PendingInput::ReplacementRange {
+                    start,
+                    end,
+                    element_id,
+                    mount,
+                    generation,
+                } => {
+                    // A range addresses the text queried from one particular
+                    // mount. Unlike a key, it cannot be retargeted after focus
+                    // moves, or applied to a replacement reusing the numeric id.
+                    if self.focused_id == Some(element_id)
+                        && generation == self.range_generation
+                        && self.base_registry.source_mount(&element_id) == Some(mount)
+                        && let Some(state) = self.text_states.get_mut(&element_id)
+                    {
+                        state.set_selection_range(start, end);
+                    }
+                }
+            }
+        }
+        self.listener_lane.restore_replay_tail(events);
+        if !self.listener_lane.is_stale() && !self.listener_lane.buffered_inputs.is_empty() {
+            // A finite continuation request reuses the existing ordered receipt
+            // gate. No extra scheduler/queue or fabricated animation pulse.
+            self.listener_lane.mark_stale();
+            send_tree(tree_tx, TreeMsg::RebuildRegistry, log_render);
         }
         self.log_event_diagnostic(log_render, || {
             format!("buffered replay end\n  {}", self.diagnostic_summary(),)
@@ -1620,7 +1904,7 @@ impl DirectEventRuntime {
         })
     }
 
-    fn handle_timers(&mut self, tree_tx: &Sender<TreeMsg>, log_render: bool) {
+    fn handle_timers(&mut self, tree_tx: &dyn TreeSink, log_render: bool) {
         let now = Instant::now();
         self.log_event_diagnostic(log_render, || {
             format!("timers begin\n  {}", self.diagnostic_summary())
@@ -1651,7 +1935,7 @@ impl DirectEventRuntime {
         &mut self,
         presented_at: Instant,
         predicted_next_present_at: Instant,
-        tree_tx: &Sender<TreeMsg>,
+        tree_tx: &dyn TreeSink,
         log_render: bool,
     ) {
         self.note_present_timing(presented_at, predicted_next_present_at);
@@ -1662,7 +1946,7 @@ impl DirectEventRuntime {
         self.step_inertial_scroll(presented_at, tree_tx, log_render);
     }
 
-    fn handle_virtual_key_timer(&mut self, tree_tx: &Sender<TreeMsg>, log_render: bool) {
+    fn handle_virtual_key_timer(&mut self, tree_tx: &dyn TreeSink, log_render: bool) {
         let Some(tracker) = self.runtime_overlay.virtual_key.clone() else {
             self.virtual_key_deadline = None;
             return;
@@ -1740,7 +2024,7 @@ impl DirectEventRuntime {
         }
     }
 
-    fn redispatch_last_cursor_pos(&mut self, tree_tx: &Sender<TreeMsg>, log_render: bool) {
+    fn redispatch_last_cursor_pos(&mut self, tree_tx: &dyn TreeSink, log_render: bool) {
         if !self.cursor_in_window {
             return;
         }
@@ -1791,7 +2075,7 @@ impl DirectEventRuntime {
     fn dispatch_event(
         &mut self,
         event: InputEvent,
-        tree_tx: &Sender<TreeMsg>,
+        tree_tx: &dyn TreeSink,
         log_render: bool,
         dispatch_mode: DispatchMode,
     ) {
@@ -1833,7 +2117,7 @@ impl DirectEventRuntime {
     fn apply_listener_actions(
         &mut self,
         actions: Vec<ListenerAction>,
-        tree_tx: &Sender<TreeMsg>,
+        tree_tx: &dyn TreeSink,
         log_render: bool,
         dispatch_mode: DispatchMode,
     ) {
@@ -2073,6 +2357,16 @@ impl DirectEventRuntime {
     }
 
     fn apply_text_input_state(&mut self, element_id: &NodeId, state: TextInputState) {
+        if self.focused_id == Some(*element_id)
+            && Arc::strong_count(&self.range_generation.0) > 1
+            && self.text_states.get(element_id).is_some_and(|previous| {
+                previous.content != state.content
+                    || previous.preedit != state.preedit
+                    || (previous.preedit.is_some() && previous.cursor != state.cursor)
+            })
+        {
+            self.range_generation.invalidate();
+        }
         self.text_states.insert(*element_id, state);
     }
 
@@ -2134,25 +2428,45 @@ impl DirectEventRuntime {
 
     fn reconcile_runtime_overlay(
         &mut self,
+        previous: &registry_builder::Registry,
         text_inputs: &HashMap<NodeId, TextInputState>,
         sliders: &HashMap<NodeId, SliderState>,
     ) {
+        let base = &self.base_registry;
+        let same_mount = |id: &NodeId| base.same_mount(previous, id);
+        let has_source =
+            |id: &NodeId, kind| same_mount(id) && base_has_source_listener(base, id, kind);
+        // Local edits, anchors and hover belong to a mount, not its reusable ID.
+        // Drop old-mount state before incoming native state is reconciled/replayed.
+        self.text_states.retain(|id, _| same_mount(id));
+        self.slider_states.retain(|id, _| same_mount(id));
+        self.pending_text_patches.retain(|id, _| same_mount(id));
+        self.pending_slider_patches.retain(|id, _| same_mount(id));
+        self.text_commit_suppressions
+            .retain(|suppression| same_mount(&suppression.element_id));
+        self.hover_stack
+            .retain(|tracker| same_mount(&tracker.element_id));
         if let Some(click_press) = self.runtime_overlay.click_press.as_ref()
-            && !base_has_source_listener(
-                &self.base_registry,
-                &click_press.element_id,
-                click_press.matcher_kind,
-            )
+            && !has_source(&click_press.element_id, click_press.matcher_kind)
         {
             self.runtime_overlay.click_press = None;
         }
 
+        if self
+            .runtime_overlay
+            .virtual_key
+            .as_ref()
+            .is_some_and(|tracker| !same_mount(&tracker.element_id))
+        {
+            self.runtime_overlay.virtual_key = None;
+        }
         if self.runtime_overlay.virtual_key.is_none() {
             self.virtual_key_deadline = None;
         }
 
         self.runtime_overlay.key_presses.retain(|tracker| {
-            registry_builder::base_has_key_press_source(&self.base_registry, tracker)
+            tracker.source_element_id.as_ref().is_none_or(same_mount)
+                && registry_builder::base_has_key_press_source(base, tracker)
         });
 
         match self.runtime_overlay.drag {
@@ -2167,7 +2481,7 @@ impl DirectEventRuntime {
                 matcher_kind,
                 ..
             } => {
-                if !base_has_source_listener(&self.base_registry, element_id, matcher_kind) {
+                if !has_source(element_id, matcher_kind) {
                     self.runtime_overlay.drag = registry_builder::DragTrackerState::Inactive;
                     self.drag_motion = None;
                 }
@@ -2175,8 +2489,7 @@ impl DirectEventRuntime {
         }
 
         if self.drag_motion.as_ref().is_some_and(|motion| {
-            !base_has_source_listener(
-                &self.base_registry,
+            !has_source(
                 &motion.element_id,
                 ListenerMatcherKind::CursorButtonLeftPressInside,
             )
@@ -2185,26 +2498,33 @@ impl DirectEventRuntime {
         }
 
         if let Some(swipe) = self.runtime_overlay.swipe.as_ref()
-            && !base_has_source_listener(&self.base_registry, &swipe.element_id, swipe.matcher_kind)
+            && !has_source(&swipe.element_id, swipe.matcher_kind)
         {
             self.runtime_overlay.swipe = None;
         }
 
         if let Some(text_drag) = self.runtime_overlay.text_drag.as_ref()
-            && !text_inputs.contains_key(&text_drag.element_id)
+            && (!same_mount(&text_drag.element_id)
+                || !text_inputs.contains_key(&text_drag.element_id))
         {
             self.runtime_overlay.text_drag = None;
         }
 
         if let Some(slider_drag) = self.runtime_overlay.slider_drag.as_ref()
-            && !sliders.contains_key(&slider_drag.element_id)
+            && (!same_mount(&slider_drag.element_id)
+                || !sliders.contains_key(&slider_drag.element_id))
         {
             self.runtime_overlay.slider_drag = None;
         }
 
         if let Some(ref mut tracker) = self.runtime_overlay.scrollbar {
             let key = scrollbar_key(&tracker.element_id, tracker.axis);
-            if let Some(node) = self.scrollbar_nodes.get(&key).copied() {
+            if let Some(node) = self
+                .scrollbar_nodes
+                .get(&key)
+                .copied()
+                .filter(|_| same_mount(&tracker.element_id))
+            {
                 tracker.track_start = node.track_start;
                 tracker.track_len = node.track_len;
                 tracker.thumb_len = node.thumb_len;
@@ -2218,9 +2538,10 @@ impl DirectEventRuntime {
         }
 
         if self.inertial_scroll.as_ref().is_some_and(|inertia| {
-            !self
-                .scrollbar_nodes
-                .contains_key(&scrollbar_key(&inertia.element_id, inertia.axis))
+            !same_mount(&inertia.element_id)
+                || !self
+                    .scrollbar_nodes
+                    .contains_key(&scrollbar_key(&inertia.element_id, inertia.axis))
         }) {
             self.inertial_scroll = None;
         }
@@ -2244,20 +2565,11 @@ fn scrollbar_key(element_id: &NodeId, axis: ScrollbarAxis) -> (NodeId, Scrollbar
     (*element_id, axis)
 }
 
-fn send_tree(tree_tx: &Sender<TreeMsg>, msg: TreeMsg, log_render: bool) {
-    match tree_tx.try_send(msg) {
-        Ok(()) => {}
-        Err(TrySendError::Full(msg)) => {
-            if log_render {
-                eprintln!("tree channel full, blocking send");
-            }
-            let _ = tree_tx.send(msg);
-        }
-        Err(TrySendError::Disconnected(_)) => {}
-    }
+fn send_tree(tree_tx: &dyn TreeSink, msg: TreeMsg, log_render: bool) {
+    tree_tx.emit(msg, log_render);
 }
 
-fn send_tree_messages(tree_tx: &Sender<TreeMsg>, msgs: Vec<TreeMsg>, log_render: bool) {
+fn send_tree_messages(tree_tx: &dyn TreeSink, msgs: Vec<TreeMsg>, log_render: bool) {
     match msgs.len() {
         0 => {}
         1 => send_tree(tree_tx, msgs.into_iter().next().unwrap(), log_render),
@@ -2312,7 +2624,7 @@ fn event_kind_to_atom(kind: ElementEventKind) -> rustler::Atom {
 }
 
 fn send_runtime_update(
-    tree_tx: &Sender<TreeMsg>,
+    tree_tx: &dyn TreeSink,
     log_render: bool,
     element_id: &NodeId,
     state: &TextInputState,
@@ -2336,7 +2648,7 @@ fn send_runtime_update(
 }
 
 fn send_pending_content_update(
-    tree_tx: &Sender<TreeMsg>,
+    tree_tx: &dyn TreeSink,
     log_render: bool,
     pending_text_patches: &mut HashMap<NodeId, VecDeque<PendingTextPatch>>,
     pending_text_patch_ttl: Duration,
@@ -2363,7 +2675,7 @@ fn send_pending_content_update(
 }
 
 fn send_content_update(
-    tree_tx: &Sender<TreeMsg>,
+    tree_tx: &dyn TreeSink,
     log_render: bool,
     element_id: &NodeId,
     content: String,
@@ -2380,7 +2692,7 @@ fn send_content_update(
 }
 
 fn send_slider_value_update(
-    tree_tx: &Sender<TreeMsg>,
+    tree_tx: &dyn TreeSink,
     log_render: bool,
     element_id: &NodeId,
     value: f64,
@@ -2525,9 +2837,10 @@ fn consume_pending_slider_patch_match(
 }
 
 struct FocusedTextInputReconcileContext<'a> {
+    accepted_tree_patch: &'a mut bool,
     pending_text_patches: &'a mut HashMap<NodeId, VecDeque<PendingTextPatch>>,
     pending_text_patch_ttl: Duration,
-    tree_tx: &'a Sender<TreeMsg>,
+    tree_tx: &'a dyn TreeSink,
     log_render: bool,
 }
 
@@ -2537,9 +2850,9 @@ fn reconcile_text_input_states(
     pending_text_patches: &mut HashMap<NodeId, VecDeque<PendingTextPatch>>,
     pending_text_patch_ttl: Duration,
     focused: &Option<NodeId>,
-    tree_tx: &Sender<TreeMsg>,
+    tree_tx: &dyn TreeSink,
     log_render: bool,
-) -> bool {
+) -> (bool, bool) {
     fn text_input_runtime_mismatch(rebuild: &TextInputState, state: &TextInputState) -> bool {
         rebuild.focused != state.focused
             || rebuild.cursor != state.cursor
@@ -2610,6 +2923,7 @@ fn reconcile_text_input_states(
             patch_content: String,
             context: &mut FocusedTextInputReconcileContext<'_>,
         ) -> bool {
+            *context.accepted_tree_patch = true;
             state.copy_rebuild_metadata_from(rebuild_state);
             state.set_content(patch_content.clone());
             state.content_origin = TextInputContentOrigin::Event;
@@ -2684,6 +2998,7 @@ fn reconcile_text_input_states(
     }
 
     let mut changed_tree = false;
+    let mut accepted_tree_patch = false;
 
     for (id, rebuild_state) in text_inputs {
         let id = *id;
@@ -2693,6 +3008,7 @@ fn reconcile_text_input_states(
 
         if should_focus {
             let mut context = FocusedTextInputReconcileContext {
+                accepted_tree_patch: &mut accepted_tree_patch,
                 pending_text_patches,
                 pending_text_patch_ttl,
                 tree_tx,
@@ -2710,21 +3026,21 @@ fn reconcile_text_input_states(
             && focused.as_ref().is_some_and(|focused_id| focused_id == id)
             && !queue.is_empty()
     });
-    changed_tree
+    (changed_tree, accepted_tree_patch)
 }
 
 fn reconcile_slider_states(
     sliders: &HashMap<NodeId, SliderState>,
     states: &mut HashMap<NodeId, SliderState>,
     pending_slider_patches: &mut HashMap<NodeId, VecDeque<PendingSliderPatch>>,
-    tree_tx: &Sender<TreeMsg>,
+    tree_tx: &dyn TreeSink,
     log_render: bool,
 ) -> bool {
     fn preserve_runtime_slider(
         element_id: &NodeId,
         rebuild_state: &SliderState,
         state: &mut SliderState,
-        tree_tx: &Sender<TreeMsg>,
+        tree_tx: &dyn TreeSink,
         log_render: bool,
     ) -> bool {
         state.copy_rebuild_metadata_from(rebuild_state);
@@ -2745,7 +3061,7 @@ fn reconcile_slider_states(
         rebuild_state: &SliderState,
         state: &mut SliderState,
         patch_value: f64,
-        tree_tx: &Sender<TreeMsg>,
+        tree_tx: &dyn TreeSink,
         log_render: bool,
     ) -> bool {
         state.copy_rebuild_metadata_from(rebuild_state);
@@ -2790,7 +3106,7 @@ struct FocusApplyContext<'a> {
     host_event_sink: Option<&'a dyn HostEventSink>,
     states: &'a mut HashMap<NodeId, TextInputState>,
     pending_text_patches: &'a mut HashMap<NodeId, VecDeque<PendingTextPatch>>,
-    tree_tx: &'a Sender<TreeMsg>,
+    tree_tx: &'a dyn TreeSink,
     log_render: bool,
 }
 
@@ -2938,42 +3254,61 @@ fn apply_focus_to(
     changed_tree
 }
 
-fn coalesce_input_events(events: &mut Vec<InputEvent>) -> Vec<InputEvent> {
-    let mut coalesced = Vec::new();
-    let mut last_cursor: Option<InputEvent> = None;
-    let mut scroll_acc: Option<(f32, f32, f32, f32)> = None;
-    let mut last_resize: Option<InputEvent> = None;
-
-    for event in events.drain(..) {
-        let event = event.normalize_scroll();
-        match event {
-            InputEvent::CursorPos { .. } => {
-                last_cursor = Some(event);
-            }
-            InputEvent::CursorScroll { dx, dy, x, y } => {
-                scroll_acc = Some(match scroll_acc {
-                    Some((acc_dx, acc_dy, _, _)) => (acc_dx + dx, acc_dy + dy, x, y),
-                    None => (dx, dy, x, y),
-                });
-            }
-            InputEvent::Resized { .. } => {
-                last_resize = Some(event);
-            }
-            other => coalesced.push(other),
+fn coalesce_pending_input(
+    previous: Option<&mut PendingInput>,
+    event: PendingInput,
+) -> Option<PendingInput> {
+    match event {
+        PendingInput::Raw(event) => {
+            let previous = match previous {
+                Some(PendingInput::Raw(previous)) => Some(previous),
+                _ => None,
+            };
+            coalesce_with_previous(previous, event).map(PendingInput::Raw)
         }
+        event => Some(event),
     }
+}
 
-    if let Some((dx, dy, x, y)) = scroll_acc {
-        coalesced.push(InputEvent::CursorScroll { dx, dy, x, y });
+/// Only adjacent compatible events coalesce. Commits, keys, composition and
+/// button edges remain lossless ordering barriers.
+fn coalesce_with_previous(
+    previous: Option<&mut InputEvent>,
+    event: InputEvent,
+) -> Option<InputEvent> {
+    #[cfg(test)]
+    tests::delayed::stalled::visit();
+    match (previous, event.normalize_scroll()) {
+        (Some(previous @ InputEvent::CursorPos { .. }), event @ InputEvent::CursorPos { .. })
+        | (Some(previous @ InputEvent::Resized { .. }), event @ InputEvent::Resized { .. }) => {
+            *previous = event;
+            None
+        }
+        (
+            Some(InputEvent::CursorScroll {
+                dx: acc_dx,
+                dy: acc_dy,
+                x: acc_x,
+                y: acc_y,
+            }),
+            InputEvent::CursorScroll { dx, dy, x, y },
+        ) => {
+            *acc_dx += dx;
+            *acc_dy += dy;
+            *acc_x = x;
+            *acc_y = y;
+            None
+        }
+        (_, event) => Some(event),
     }
-    if let Some(resize) = last_resize {
-        coalesced.push(resize);
-    }
-    if let Some(cursor) = last_cursor {
-        coalesced.push(cursor);
-    }
-
-    coalesced
+}
+fn coalesce_input_events(events: &mut Vec<InputEvent>) -> Vec<InputEvent> {
+    events.drain(..).fold(Vec::new(), |mut coalesced, event| {
+        if let Some(event) = coalesce_with_previous(coalesced.last_mut(), event) {
+            coalesced.push(event);
+        }
+        coalesced
+    })
 }
 
 fn drain_fresh_input_events(
@@ -2986,7 +3321,10 @@ fn drain_fresh_input_events(
     }
 
     let mut events = vec![initial_event];
-    while let Ok(message) = event_rx.try_recv() {
+    for _ in 1..INPUT_BATCH_LIMIT {
+        let Ok(message) = event_rx.try_recv() else {
+            break;
+        };
         match message {
             EventMsg::InputEvent(event @ InputEvent::CursorPos { .. }) => events.push(event),
             other => {
@@ -3026,6 +3364,7 @@ pub(crate) struct SpawnEventActorConfig {
     pub native_log: Arc<NativeLogRelay>,
     pub system_clipboard: bool,
     pub stats: Option<Arc<RendererStatsCollector>>,
+    pub asset_context: AssetContext,
 }
 
 pub(crate) fn spawn_event_actor(config: SpawnEventActorConfig) -> thread::JoinHandle<()> {
@@ -3039,9 +3378,11 @@ pub(crate) fn spawn_event_actor(config: SpawnEventActorConfig) -> thread::JoinHa
         native_log,
         system_clipboard,
         stats,
+        asset_context,
     } = config;
 
     thread::spawn(move || {
+        let _asset_context_guard = asset_context.enter();
         let mut driver = EventRuntimeDriver::new(
             system_clipboard,
             backend_cursor_tx,
@@ -3058,40 +3399,69 @@ pub(crate) fn spawn_event_actor(config: SpawnEventActorConfig) -> thread::JoinHa
                 driver.runtime.diagnostic_summary(),
             )
         });
-        let mut pending_message: Option<EventMsg> = None;
+        run_event_actor(driver, event_rx);
+    })
+}
 
-        loop {
-            let message = match pending_message.take() {
-                Some(message) => Some(message),
-                None => match driver.next_event_timeout() {
-                    Some(timeout) => match event_rx.recv_timeout(timeout) {
-                        Ok(message) => Some(message),
-                        Err(RecvTimeoutError::Timeout) => None,
-                        Err(RecvTimeoutError::Disconnected) => return,
-                    },
-                    None => match event_rx.recv() {
+fn run_event_actor(mut driver: EventRuntimeDriver, event_rx: Receiver<EventMsg>) {
+    let send_ready = driver.tree_tx.clone();
+    let mut pending_message: Option<EventMsg> = None;
+
+    loop {
+        #[cfg(all(test, feature = "bench-diagnostics"))]
+        tests::delayed::pressure_probe::sample(&driver, &event_rx);
+        let message = match pending_message.take() {
+            Some(message) => Some(message),
+            None if !driver.outbox.is_empty() => {
+                let timer = driver
+                    .next_event_timeout()
+                    .map(crossbeam_channel::after)
+                    .unwrap_or_else(crossbeam_channel::never);
+                crossbeam_channel::select! {
+                    send(send_ready, driver.outbox.pop_front().expect("selected nonempty outbox")) -> sent => {
+                        if sent.is_err() {
+                            return;
+                        }
+                        if driver.outbox.is_empty() {
+                            driver.outbox = VecDeque::new();
+                        }
+                        continue;
+                    }
+                    recv(event_rx) -> message => match message {
                         Ok(message) => Some(message),
                         Err(_) => return,
                     },
-                },
-            };
-
-            let Some(message) = message else {
-                driver.log_event_diagnostic(|| {
-                    format!(
-                        "event actor timer wake\n  {}",
-                        driver.runtime.diagnostic_summary(),
-                    )
-                });
-                driver.handle_timers();
-                continue;
-            };
-
-            if !driver.handle_actor_message(message, &event_rx, &mut pending_message) {
-                return;
+                    recv(timer) -> _ => None,
+                }
             }
+            None => match driver.next_event_timeout() {
+                Some(timeout) => match event_rx.recv_timeout(timeout) {
+                    Ok(message) => Some(message),
+                    Err(RecvTimeoutError::Timeout) => None,
+                    Err(RecvTimeoutError::Disconnected) => return,
+                },
+                None => match event_rx.recv() {
+                    Ok(message) => Some(message),
+                    Err(_) => return,
+                },
+            },
+        };
+
+        let Some(message) = message else {
+            driver.log_event_diagnostic(|| {
+                format!(
+                    "event actor timer wake\n  {}",
+                    driver.runtime.diagnostic_summary(),
+                )
+            });
+            driver.handle_timers();
+            continue;
+        };
+
+        if !driver.handle_actor_message(message, &event_rx, &mut pending_message) {
+            return;
         }
-    })
+    }
 }
 
 fn coalesce_registry_updates(
@@ -3100,11 +3470,15 @@ fn coalesce_registry_updates(
     pending_message: &mut Option<EventMsg>,
 ) -> (RegistryRebuildPayload, usize) {
     let mut coalesced_count = 0;
-    while let Ok(message) = event_rx.try_recv() {
+    while coalesced_count < 63 {
+        let Ok(message) = event_rx.try_recv() else {
+            break;
+        };
         match message {
             EventMsg::RegistryUpdate {
-                rebuild: newer_rebuild,
+                rebuild: mut newer_rebuild,
             } => {
+                newer_rebuild.carry_mount_focus(rebuild.focus_on_mount.take(), rebuild.focused_id);
                 rebuild = newer_rebuild;
                 coalesced_count += 1;
             }
@@ -3120,6 +3494,7 @@ fn coalesce_registry_updates(
 
 #[cfg(test)]
 mod tests {
+    pub(super) mod delayed;
     use std::collections::{HashMap, VecDeque};
     use std::sync::Mutex;
 
@@ -3130,6 +3505,9 @@ mod tests {
     use crate::events::{CursorIcon, FocusOnMountTarget, RegistryRebuildPayload};
     use crate::input::{ACTION_PRESS, ACTION_RELEASE};
     use crate::keys::CanonicalKey;
+    use crate::runtime::tree_update::{
+        TreeUpdateDecodePolicy, TreeUpdateEffect, TreeUpdateEngine, TreeUpdateOptions,
+    };
     use crate::tree::animation::{
         AnimationCurve, AnimationRepeat, AnimationRuntime, AnimationSpec,
     };
@@ -3225,6 +3603,8 @@ mod tests {
         focused_id: Option<NodeId>,
     ) -> RegistryRebuildPayload {
         RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::Registry::default(),
             text_inputs: HashMap::from([(input_id, state)]),
             sliders: HashMap::new(),
@@ -3369,6 +3749,40 @@ mod tests {
                 .expect("recording host event sink lock poisoned")
                 .push((*element_id, kind));
         }
+    }
+
+    fn process_host_runtime_boundary(
+        runtime: &mut HostEventRuntime,
+        engine: &mut TreeUpdateEngine,
+        messages: Vec<TreeMsg>,
+    ) {
+        let mut messages = messages;
+
+        for _ in 0..8 {
+            let effect = engine
+                .process_messages(
+                    messages,
+                    TreeUpdateOptions::new(None, TreeUpdateDecodePolicy::ReturnErr),
+                )
+                .expect("tree update should succeed");
+
+            match effect {
+                TreeUpdateEffect::Stop | TreeUpdateEffect::Skip => {}
+                TreeUpdateEffect::RegistryUpdate { rebuild } => runtime.install_rebuild(rebuild),
+                TreeUpdateEffect::Layout { output, .. } => {
+                    if output.event_rebuild_changed {
+                        runtime.install_rebuild(output.event_rebuild.clone());
+                    }
+                }
+            }
+
+            messages = runtime.drain_tree_messages();
+            if messages.is_empty() {
+                return;
+            }
+        }
+
+        panic!("host runtime boundary did not settle after registry replay");
     }
 
     fn rebuild_with_focus(id: u8) -> RegistryRebuildPayload {
@@ -3556,6 +3970,21 @@ mod tests {
         element
     }
 
+    fn host_runtime_mouse_listener_tree(element_id: NodeId) -> ElementTree {
+        let attrs = Attrs {
+            width: Some(Length::Px(100.0)),
+            height: Some(Length::Px(40.0)),
+            on_mouse_down: Some(true),
+            on_mouse_move: Some(true),
+            ..Attrs::default()
+        };
+        let element = Element::with_attrs(element_id, ElementKind::El, Vec::new(), attrs);
+        let mut tree = ElementTree::new();
+        tree.insert(element);
+        tree.set_root_id(element_id);
+        tree
+    }
+
     fn animated_width_move_rebuild_at(
         sample_ms: u64,
         hover_active: bool,
@@ -3603,9 +4032,10 @@ mod tests {
             &mut tree,
             Constraint::new(128.0, 82.0),
             1.0,
-            &runtime,
+            &mut runtime,
             start + Duration::from_millis(sample_ms),
         )
+        .unwrap()
         .event_rebuild
     }
 
@@ -3629,17 +4059,129 @@ mod tests {
 
         let buffered = lane.mark_fresh_and_take_buffered();
         assert_eq!(buffered.len(), 2);
+        assert!(
+            matches!(buffered[0], PendingInput::Raw(InputEvent::CursorPos { x, y }) if (x - 3.0).abs() < f32::EPSILON && (y - 4.0).abs() < f32::EPSILON)
+        );
         assert!(matches!(
-            buffered[0],
-            InputEvent::CursorScroll { dx, dy, x, y }
+            buffered[1],
+            PendingInput::Raw(InputEvent::CursorScroll { dx, dy, x, y })
                 if (dx - 3.0).abs() < f32::EPSILON
                     && (dy + 1.0).abs() < f32::EPSILON
                     && (x - 5.0).abs() < f32::EPSILON
                     && (y - 6.0).abs() < f32::EPSILON
         ));
-        assert!(
-            matches!(buffered[1], InputEvent::CursorPos { x, y } if (x - 3.0).abs() < f32::EPSILON && (y - 4.0).abs() < f32::EPSILON)
+    }
+
+    #[test]
+    fn listener_lane_keeps_final_touch_motion_before_release() {
+        let mut lane = ListenerLaneState::initially_stale();
+        lane.buffer_input(InputEvent::CursorPos { x: 10.0, y: 20.0 });
+        lane.buffer_input(InputEvent::CursorPos { x: 10.0, y: 120.0 });
+        lane.buffer_input(InputEvent::CursorButton {
+            button: "left".to_string(),
+            action: crate::input::ACTION_RELEASE,
+            mods: 0,
+            x: 10.0,
+            y: 120.0,
+        });
+
+        let buffered = lane.mark_fresh_and_take_buffered();
+        assert_eq!(buffered.len(), 2);
+        assert!(matches!(
+            buffered[0],
+            PendingInput::Raw(InputEvent::CursorPos { x, y })
+                if (x - 10.0).abs() < f32::EPSILON && (y - 120.0).abs() < f32::EPSILON
+        ));
+        assert!(matches!(
+            &buffered[1],
+            PendingInput::Raw(InputEvent::CursorButton { button, action, x, y, .. })
+                if button == "left"
+                    && *action == crate::input::ACTION_RELEASE
+                    && (*x - 10.0).abs() < f32::EPSILON
+                    && (*y - 120.0).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn direct_runtime_replays_final_touch_motion_before_starting_release_inertia() {
+        let element_id = NodeId::from_term_bytes(vec![219]);
+        let attrs = Attrs {
+            scrollbar_y: Some(true),
+            scroll_y: Some(20.0),
+            scroll_y_max: Some(100.0),
+            ..Attrs::default()
+        };
+        let element = with_interaction(make_element(219, ElementKind::El, attrs));
+        let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
+            base_registry: registry_builder::registry_for_elements(&[element]),
+            text_inputs: HashMap::new(),
+            sliders: HashMap::new(),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+            focus_on_mount: None,
+        };
+        let (tree_tx, tree_rx) = bounded(32);
+        let mut runtime = DirectEventRuntime::new(false);
+        runtime.handle_registry_update(rebuild.clone(), &tree_tx, false);
+
+        runtime.runtime_overlay.drag = registry_builder::DragTrackerState::Active {
+            element_id,
+            matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
+            last_x: 10.0,
+            last_y: 30.0,
+            locked_axis: GestureAxis::Vertical,
+            scroll_mode: registry_builder::DragScrollMode::Locked,
+        };
+        let now = Instant::now();
+        runtime.sync_drag_motion_start(
+            element_id,
+            GestureAxis::Vertical,
+            10.0,
+            30.0,
+            now.checked_sub(Duration::from_millis(10)).unwrap_or(now),
         );
+        runtime.recompose_overlay_registry();
+        runtime.listener_lane.mark_stale();
+
+        runtime.handle_input_event(InputEvent::CursorPos { x: 10.0, y: 5.0 }, &tree_tx, false);
+        runtime.handle_input_event(
+            InputEvent::CursorButton {
+                button: "left".to_string(),
+                action: crate::input::ACTION_RELEASE,
+                mods: 0,
+                x: 10.0,
+                y: 5.0,
+            },
+            &tree_tx,
+            false,
+        );
+
+        runtime.handle_registry_update(rebuild.clone(), &tree_tx, false);
+        assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
+            msg,
+            TreeMsg::ScrollRequest { element_id: id, dx, dy }
+                if *id == element_id
+                    && dx.abs() < f32::EPSILON
+                    && (*dy + 25.0).abs() < 0.001
+        )));
+        assert!(matches!(
+            runtime.runtime_overlay.drag,
+            registry_builder::DragTrackerState::Active { .. }
+        ));
+        assert!(matches!(
+            runtime.listener_lane.buffered_inputs.make_contiguous(),
+            [PendingInput::Raw(InputEvent::CursorButton { action, .. })]
+                if *action == crate::input::ACTION_RELEASE
+        ));
+
+        runtime.handle_registry_update(rebuild, &tree_tx, false);
+        assert!(matches!(
+            runtime.runtime_overlay.drag,
+            registry_builder::DragTrackerState::Inactive
+        ));
+        assert!(runtime.inertial_scroll.is_some());
     }
 
     #[test]
@@ -3661,17 +4203,74 @@ mod tests {
         assert_eq!(buffered.len(), 2);
         assert!(matches!(
             buffered[0],
-            InputEvent::Resized {
+            PendingInput::Raw(InputEvent::Resized {
                 width: 640,
                 height: 360,
                 scale_factor
-            } if (scale_factor - 1.5).abs() < f32::EPSILON
+            }) if (scale_factor - 1.5).abs() < f32::EPSILON
         ));
         assert!(matches!(
             buffered[1],
-            InputEvent::CursorPos { x, y }
+            PendingInput::Raw(InputEvent::CursorPos { x, y })
                 if (x - 10.0).abs() < f32::EPSILON && (y - 20.0).abs() < f32::EPSILON
         ));
+    }
+
+    #[test]
+    fn host_runtime_tree_update_boundary_replays_buffered_input_after_cached_registry() {
+        let element_id = NodeId::from_term_bytes(vec![86]);
+        let mut runtime =
+            HostEventRuntime::new(false, SCROLL_LINE_PIXELS, false, noop_host_sink(), None);
+        let mut engine =
+            TreeUpdateEngine::new(host_runtime_mouse_listener_tree(element_id), 100, 40);
+
+        process_host_runtime_boundary(&mut runtime, &mut engine, vec![TreeMsg::RebuildRegistry]);
+        assert!(!runtime.driver.runtime.listener_lane.is_stale());
+
+        runtime.handle_input(InputEvent::CursorEntered { entered: true });
+        runtime.handle_input(InputEvent::CursorPos { x: 10.0, y: 10.0 });
+
+        runtime.handle_input(InputEvent::CursorButton {
+            button: "left".to_string(),
+            action: ACTION_PRESS,
+            mods: 0,
+            x: 10.0,
+            y: 10.0,
+        });
+
+        assert!(runtime.driver.runtime.listener_lane.is_stale());
+
+        let tree_messages = runtime.drain_tree_messages();
+        assert!(
+            tree_messages
+                .iter()
+                .flat_map(TreeMsg::commands)
+                .any(|message| matches!(message, TreeMsg::RebuildRegistry))
+        );
+
+        runtime.handle_input(InputEvent::CursorPos { x: 20.0, y: 10.0 });
+        assert!(
+            !runtime
+                .driver
+                .runtime
+                .listener_lane
+                .buffered_inputs
+                .is_empty(),
+            "listener input should buffer while the host lane is stale"
+        );
+
+        process_host_runtime_boundary(&mut runtime, &mut engine, tree_messages);
+
+        assert!(!runtime.driver.runtime.listener_lane.is_stale());
+        assert!(
+            runtime
+                .driver
+                .runtime
+                .listener_lane
+                .buffered_inputs
+                .is_empty()
+        );
+        assert_eq!(runtime.driver.runtime.last_cursor_pos, Some((20.0, 10.0)));
     }
 
     #[test]
@@ -3958,6 +4557,8 @@ mod tests {
         let descriptor = make_text_input_state("hello", 2, None, true);
         let base_registry = registry_builder::Registry::default();
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry,
             text_inputs: HashMap::from([(input_id, descriptor.clone())]),
             sliders: HashMap::new(),
@@ -4084,6 +4685,8 @@ mod tests {
         let attrs = mouse_down_style_attrs();
         let element = with_interaction(make_element(20, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -4147,6 +4750,8 @@ mod tests {
         };
         let element = with_interaction(make_element(23, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -4229,6 +4834,8 @@ mod tests {
         };
         let element = with_interaction(make_element(22, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -4291,6 +4898,8 @@ mod tests {
         };
         let element = with_interaction(make_element(21, ElementKind::El, attrs.clone()));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -4328,6 +4937,8 @@ mod tests {
         active_attrs.focused_active = Some(true);
         let active_element = with_interaction(make_element(21, ElementKind::El, active_attrs));
         let active_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[active_element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -4372,6 +4983,8 @@ mod tests {
         let second = with_interaction(make_element(31, ElementKind::El, second_attrs));
 
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[first, second]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -4418,6 +5031,8 @@ mod tests {
         };
         let element = with_interaction(make_element(40, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -4452,6 +5067,8 @@ mod tests {
         };
         let element = with_interaction(make_element(44, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -4521,6 +5138,8 @@ mod tests {
         };
         let element = with_interaction(make_element(43, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -4578,6 +5197,8 @@ mod tests {
         };
         let element = with_interaction(make_element(89, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -4639,6 +5260,8 @@ mod tests {
         };
         let element = with_interaction(make_element(90, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -4708,6 +5331,8 @@ mod tests {
             },
         );
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -4776,6 +5401,36 @@ mod tests {
         assert_eq!(inertia.element_id, element_id);
         assert_eq!(inertia.axis, ScrollbarAxis::X);
         assert!(inertia.simulation.initial_velocity.abs() >= ADAPTIVE_SCROLL_MIN_VELOCITY);
+    }
+
+    #[test]
+    fn direct_runtime_high_frequency_drag_accumulates_velocity_samples() {
+        let element_id = NodeId::from_term_bytes(vec![218]);
+        let mut runtime = DirectEventRuntime::new(false);
+        let now = Instant::now();
+
+        runtime.sync_drag_motion_start(element_id, GestureAxis::Vertical, 0.0, 0.0, now);
+        for sample in 1_u64..=4 {
+            runtime.update_drag_motion_by_delta(-16.0, now + Duration::from_millis(sample));
+        }
+
+        let sampled_velocity = runtime
+            .drag_motion
+            .as_ref()
+            .expect("drag motion should remain active")
+            .velocity_px_per_sec;
+        assert!((sampled_velocity + 16_000.0).abs() < 1.0);
+
+        runtime.maybe_start_inertial_scroll(now + Duration::from_millis(5));
+        let inertia = runtime
+            .inertial_scroll
+            .as_ref()
+            .expect("fast drag should start inertia");
+        assert_eq!(
+            inertia.simulation.initial_velocity,
+            -ADAPTIVE_SCROLL_MAX_VELOCITY
+        );
+        assert!(inertia.simulation.distance < -4_000.0);
     }
 
     #[test]
@@ -4862,6 +5517,81 @@ mod tests {
     }
 
     #[test]
+    fn direct_runtime_high_velocity_samples_accumulate_to_exact_edges() {
+        for (id_byte, velocity, scroll_offset, expected_delta) in [
+            (216_u8, 6_000.0_f32, 0.55_f32, 0.55_f32),
+            (217_u8, -6_000.0_f32, 99.45_f32, -0.55_f32),
+        ] {
+            let element_id = NodeId::from_term_bytes(vec![id_byte]);
+            let (tree_tx, tree_rx) = bounded(32);
+            let mut runtime = DirectEventRuntime::new(false);
+            let now = Instant::now();
+
+            runtime.scrollbar_nodes.insert(
+                scrollbar_key(&element_id, ScrollbarAxis::Y),
+                ScrollbarNode {
+                    axis: ScrollbarAxis::Y,
+                    track_rect: crate::tree::geometry::Rect::default(),
+                    thumb_rect: crate::tree::geometry::Rect::default(),
+                    track_start: 0.0,
+                    track_len: 80.0,
+                    thumb_start: 0.0,
+                    thumb_len: 20.0,
+                    scroll_offset,
+                    scroll_range: 100.0,
+                    screen_to_local: None,
+                },
+            );
+            runtime.inertial_scroll = Some(InertialScrollState {
+                element_id,
+                axis: ScrollbarAxis::Y,
+                simulation: AdaptiveScrollSimulation::new(0.0, velocity)
+                    .expect("simulation should start"),
+                started_at: now,
+                last_sample_position: 0.0,
+                watchdog_deadline: now + Duration::from_millis(16),
+            });
+
+            runtime.handle_present_timing(
+                now + Duration::from_micros(50),
+                now + Duration::from_millis(16),
+                &tree_tx,
+                false,
+            );
+            assert!(drain_msgs(&tree_rx).is_empty());
+            assert_eq!(
+                runtime
+                    .inertial_scroll
+                    .as_ref()
+                    .expect("sub-pixel sample should keep inertia")
+                    .last_sample_position,
+                0.0
+            );
+
+            runtime.handle_present_timing(
+                now + Duration::from_micros(100),
+                now + Duration::from_millis(16),
+                &tree_tx,
+                false,
+            );
+
+            let emitted_delta = drain_msgs(&tree_rx)
+                .into_iter()
+                .find_map(|msg| match msg {
+                    TreeMsg::ScrollRequest {
+                        element_id: id,
+                        dx,
+                        dy,
+                    } if id == element_id && dx.abs() < f32::EPSILON => Some(dy),
+                    _ => None,
+                })
+                .expect("accumulated fling sample should reach the edge");
+            assert!((emitted_delta - expected_delta).abs() < 0.001);
+            assert!(runtime.inertial_scroll.is_none());
+        }
+    }
+
+    #[test]
     fn host_runtime_present_timing_steps_inertia_with_adaptive_decay() {
         let element_id = NodeId::from_term_bytes(vec![215]);
         let mut runtime =
@@ -4901,6 +5631,7 @@ mod tests {
         let first_dx = runtime
             .drain_tree_messages()
             .iter()
+            .flat_map(TreeMsg::commands)
             .find_map(|msg| match msg {
                 TreeMsg::ScrollRequest {
                     element_id: id,
@@ -4920,6 +5651,7 @@ mod tests {
         let second_dx = runtime
             .drain_tree_messages()
             .iter()
+            .flat_map(TreeMsg::commands)
             .find_map(|msg| match msg {
                 TreeMsg::ScrollRequest {
                     element_id: id,
@@ -4977,6 +5709,14 @@ mod tests {
             TreeMsg::ScrollRequest { element_id: id, dx, dy }
                 if *id == element_id && dx.abs() < f32::EPSILON && *dy < -1.0
         )));
+        assert!(
+            runtime
+                .inertial_scroll
+                .as_ref()
+                .expect("watchdog step should keep inertia")
+                .watchdog_deadline
+                > now
+        );
     }
 
     #[test]
@@ -5064,6 +5804,8 @@ mod tests {
         let child = with_interaction(make_element(74, ElementKind::El, child_attrs));
 
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[parent, child]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -5123,6 +5865,8 @@ mod tests {
         let child = with_interaction(make_element(76, ElementKind::El, child_attrs));
 
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[parent, child]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -5167,6 +5911,8 @@ mod tests {
         };
         let element = with_interaction(make_element(88, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -5236,6 +5982,8 @@ mod tests {
         let child = with_interaction(make_element(78, ElementKind::El, child_attrs));
 
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[parent, child]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -5345,6 +6093,8 @@ mod tests {
         };
         let element = with_interaction(make_element(41, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -5407,6 +6157,8 @@ mod tests {
         let attrs = on_mouse_move_attrs();
         let element = with_interaction(make_element(42, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -5440,6 +6192,8 @@ mod tests {
         };
         let element = with_interaction(make_element(50, ElementKind::TextInput, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::from([(
                 NodeId::from_term_bytes(vec![50]),
@@ -5492,6 +6246,8 @@ mod tests {
         let input_id = NodeId::from_term_bytes(vec![58]);
         let (tree_tx, tree_rx) = bounded(64);
         let mut runtime = DirectEventRuntime::new(false);
+        // This fixture manually supplies a ready text session.
+        runtime.listener_lane.stale = false;
         runtime.focused_id = Some(input_id);
         runtime
             .text_states
@@ -5529,6 +6285,8 @@ mod tests {
         };
         let element = with_interaction(make_element(158, ElementKind::TextInput, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::from([(input_id, make_text_input_state("abcd", 0, None, true))]),
             sliders: HashMap::new(),
@@ -5597,6 +6355,8 @@ mod tests {
             .insert(input_id, make_text_input_state("abcd", 3, Some(0), true));
 
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::Registry::default(),
             text_inputs: HashMap::from([(input_id, make_text_input_state("abcd", 1, None, true))]),
             sliders: HashMap::new(),
@@ -5621,6 +6381,8 @@ mod tests {
         let input_id = NodeId::from_term_bytes(vec![59]);
         let (tree_tx, tree_rx) = bounded(64);
         let mut runtime = DirectEventRuntime::new(false);
+        // This fixture manually supplies a ready text session.
+        runtime.listener_lane.stale = false;
         runtime.focused_id = Some(input_id);
         runtime
             .text_states
@@ -5646,6 +6408,8 @@ mod tests {
         let input_id = NodeId::from_term_bytes(vec![60]);
         let (tree_tx, tree_rx) = bounded(64);
         let mut runtime = DirectEventRuntime::new(false);
+        // This fixture manually supplies a ready text session.
+        runtime.listener_lane.stale = false;
         runtime.focused_id = Some(input_id);
         runtime
             .text_states
@@ -5673,6 +6437,8 @@ mod tests {
         let input_id = NodeId::from_term_bytes(vec![61]);
         let (tree_tx, tree_rx) = bounded(64);
         let mut runtime = DirectEventRuntime::new(false);
+        // This fixture manually supplies a ready text session.
+        runtime.listener_lane.stale = false;
         runtime.focused_id = Some(input_id);
         runtime.text_states.insert(
             input_id,
@@ -5702,6 +6468,8 @@ mod tests {
         let input_id = NodeId::from_term_bytes(vec![62]);
         let (tree_tx, tree_rx) = bounded(64);
         let mut runtime = DirectEventRuntime::new(false);
+        // This fixture manually supplies a ready text session.
+        runtime.listener_lane.stale = false;
         runtime.focused_id = Some(input_id);
         runtime
             .text_states
@@ -5730,6 +6498,8 @@ mod tests {
         let input_id = NodeId::from_term_bytes(vec![63]);
         let (tree_tx, tree_rx) = bounded(64);
         let mut runtime = DirectEventRuntime::new(false);
+        // This fixture manually supplies a ready text session.
+        runtime.listener_lane.stale = false;
         runtime.focused_id = Some(input_id);
         runtime.text_states.insert(
             input_id,
@@ -5764,6 +6534,8 @@ mod tests {
         };
         let element = with_interaction(make_element(150, ElementKind::TextInput, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::from([(
                 NodeId::from_term_bytes(vec![150]),
@@ -5840,6 +6612,8 @@ mod tests {
         let mut state = make_text_input_state("ab", 2, None, true);
         state.multiline = true;
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::from([(NodeId::from_term_bytes(vec![151]), state)]),
             sliders: HashMap::new(),
@@ -5885,6 +6659,8 @@ mod tests {
         state.multiline = true;
         let element_id = NodeId::from_term_bytes(vec![153]);
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::from([(element_id, state)]),
             sliders: HashMap::new(),
@@ -5949,6 +6725,8 @@ mod tests {
         let mut state = make_text_input_state("ab", 2, None, true);
         state.multiline = true;
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::from([(NodeId::from_term_bytes(vec![152]), state)]),
             sliders: HashMap::new(),
@@ -6000,6 +6778,8 @@ mod tests {
         };
         let element = with_interaction(make_element(154, ElementKind::TextInput, attrs));
         let initial_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(std::slice::from_ref(&element)),
             text_inputs: HashMap::from([(input_id, make_text_input_state("task", 4, None, true))]),
             sliders: HashMap::new(),
@@ -6008,6 +6788,8 @@ mod tests {
             focus_on_mount: None,
         };
         let reset_patch_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(std::slice::from_ref(&element)),
             text_inputs: HashMap::from([(
                 input_id,
@@ -6032,6 +6814,8 @@ mod tests {
         let cleared_element =
             with_interaction(make_element(154, ElementKind::TextInput, cleared_attrs));
         let reset_applied_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[cleared_element]),
             text_inputs: HashMap::from([(
                 input_id,
@@ -6119,6 +6903,8 @@ mod tests {
         );
 
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[text_input, soft_key]),
             text_inputs: HashMap::from([(
                 NodeId::from_term_bytes(vec![80]),
@@ -6215,6 +7001,8 @@ mod tests {
         );
 
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[text_input, soft_key]),
             text_inputs: HashMap::from([(
                 NodeId::from_term_bytes(vec![180]),
@@ -6301,6 +7089,8 @@ mod tests {
         );
 
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[
                 text_input.clone(),
                 soft_key.clone(),
@@ -6360,6 +7150,8 @@ mod tests {
         )));
 
         let repeat_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[text_input, soft_key]),
             text_inputs: HashMap::from([(
                 NodeId::from_term_bytes(vec![82]),
@@ -6418,6 +7210,8 @@ mod tests {
         };
         let element = with_interaction(make_element(51, ElementKind::TextInput, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::from([(
                 NodeId::from_term_bytes(vec![51]),
@@ -6473,6 +7267,8 @@ mod tests {
         let element = with_interaction(make_element(53, ElementKind::TextInput, attrs));
 
         let rebuild_ab = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(std::slice::from_ref(&element)),
             text_inputs: HashMap::from([(input_id, make_text_input_state("ab", 2, None, true))]),
             sliders: HashMap::new(),
@@ -6482,6 +7278,8 @@ mod tests {
         };
 
         let rebuild_abc = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::from([(input_id, make_text_input_state("abc", 3, None, true))]),
             sliders: HashMap::new(),
@@ -6770,6 +7568,8 @@ mod tests {
     fn slider_tree_patch_matching_pending_value_preserves_runtime_value() {
         let slider_id = NodeId::from_term_bytes(vec![58]);
         let rebuild_echo = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::Registry::default(),
             text_inputs: HashMap::new(),
             sliders: HashMap::from([(
@@ -6816,12 +7616,38 @@ mod tests {
             TreeMsg::SetSliderValue { element_id, value }
                 if *element_id == slider_id && (*value - 60.0).abs() < f64::EPSILON
         )));
+
+        let corrected = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
+            base_registry: registry_builder::Registry::default(),
+            text_inputs: HashMap::new(),
+            sliders: HashMap::from([(
+                slider_id,
+                make_slider_state_with_patch(60.0, None, SliderValueOrigin::Event, 0.0, 100.0, 5.0),
+            )]),
+            scrollbars: HashMap::new(),
+            focused_id: None,
+            focus_on_mount: None,
+        };
+        runtime.handle_registry_update(corrected, &tree_tx, false);
+
+        let state = runtime
+            .slider_states
+            .get(&slider_id)
+            .expect("corrected slider state preserved");
+        assert!((state.value - 60.0).abs() < f64::EPSILON);
+        assert_eq!(state.patch_value, None);
+        assert!(drain_msgs(&tree_rx).is_empty());
+        assert!(!runtime.listener_lane.is_stale());
     }
 
     #[test]
     fn slider_tree_patch_matching_current_value_does_not_echo_back_to_tree() {
         let slider_id = NodeId::from_term_bytes(vec![60]);
         let rebuild_echo = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::Registry::default(),
             text_inputs: HashMap::new(),
             sliders: HashMap::from([(
@@ -6870,6 +7696,8 @@ mod tests {
     fn slider_tree_patch_non_pending_value_is_accepted() {
         let slider_id = NodeId::from_term_bytes(vec![59]);
         let rebuild_remote = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::Registry::default(),
             text_inputs: HashMap::new(),
             sliders: HashMap::from([(
@@ -6923,6 +7751,8 @@ mod tests {
     fn unfocused_rebuild_clears_pending_text_patches() {
         let input_id = NodeId::from_term_bytes(vec![58]);
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::Registry::default(),
             text_inputs: HashMap::from([(
                 input_id,
@@ -6966,6 +7796,8 @@ mod tests {
         };
         let element = with_interaction(make_element(54, ElementKind::TextInput, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::from([(
                 NodeId::from_term_bytes(vec![54]),
@@ -7016,6 +7848,8 @@ mod tests {
         };
         let element = with_interaction(make_element(52, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -7060,6 +7894,8 @@ mod tests {
         };
         let element = with_interaction(make_element(53, ElementKind::El, attrs.clone()));
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -7095,6 +7931,8 @@ mod tests {
 
         let patched_before_hover_state = with_interaction(make_element(53, ElementKind::El, attrs));
         let patch_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[patched_before_hover_state]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -7140,6 +7978,8 @@ mod tests {
         let child = with_interaction(make_element(63, ElementKind::El, child_attrs));
 
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[parent, child]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -7190,6 +8030,8 @@ mod tests {
         let child = with_interaction(make_element(65, ElementKind::El, child_attrs));
 
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[parent, child]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -7245,6 +8087,8 @@ mod tests {
         );
 
         let initial_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[
                 parent.clone(),
                 child.clone(),
@@ -7318,6 +8162,8 @@ mod tests {
         );
 
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[parent, child]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -7364,6 +8210,8 @@ mod tests {
             40.0,
         );
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[initial]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -7380,6 +8228,8 @@ mod tests {
             40.0,
         );
         let moved_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[moved]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -7435,6 +8285,8 @@ mod tests {
         );
 
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[
                 text_input,
                 pressable,
@@ -7483,6 +8335,8 @@ mod tests {
         );
 
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[text_input]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -7534,6 +8388,8 @@ mod tests {
         );
 
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[pressable]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -7578,6 +8434,8 @@ mod tests {
             40.0,
         );
         let initial_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[initial]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -7599,6 +8457,8 @@ mod tests {
             40.0,
         );
         let moved_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[moved]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -7640,6 +8500,8 @@ mod tests {
             40.0,
         );
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -7670,6 +8532,8 @@ mod tests {
             40.0,
         );
         let active_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[active_element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -7689,6 +8553,8 @@ mod tests {
             40.0,
         );
         let moved_away_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[moved_away]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -7899,6 +8765,8 @@ mod tests {
             40.0,
         );
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -7924,6 +8792,8 @@ mod tests {
             40.0,
         );
         let active_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[active_element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -7953,6 +8823,8 @@ mod tests {
             40.0,
         );
         let inactive_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[inactive_element]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -7984,6 +8856,8 @@ mod tests {
             40.0,
         );
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[initial]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -8000,6 +8874,8 @@ mod tests {
             40.0,
         );
         let moved_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[moved]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -8040,6 +8916,8 @@ mod tests {
             40.0,
         );
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[initial]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -8056,6 +8934,8 @@ mod tests {
             40.0,
         );
         let moved_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[moved]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -8090,6 +8970,8 @@ mod tests {
             40.0,
         );
         let hovered_rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[hovered]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -8152,6 +9034,8 @@ mod tests {
         );
 
         let rebuild = RegistryRebuildPayload {
+            listener_barrier: None,
+            mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[menu, plain, scrollable]),
             text_inputs: HashMap::new(),
             sliders: HashMap::new(),

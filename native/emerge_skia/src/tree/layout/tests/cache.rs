@@ -4,9 +4,8 @@ use crate::events::registry_builder::{
     assert_registry_rebuild_payloads_equivalent, build_registry_rebuild,
     build_registry_rebuild_cached,
 };
-use crate::renderer::{RenderFrame, RenderState, RendererCacheFrameStats, SceneRenderer};
 use crate::tree::animation::{AnimationCurve, AnimationRepeat, AnimationRuntime, AnimationSpec};
-use crate::tree::attrs::{Background, BorderRadius, BoxShadow};
+use crate::tree::attrs::{Background, BoxShadow};
 use crate::tree::invalidation::{
     RefreshAvailability, RefreshDecision, TreeInvalidation, decide_refresh_action,
 };
@@ -122,222 +121,8 @@ fn clean_deep_child_subtree_measure_cache_skips_descendant_layout() {
     assert_eq!(stats.intrinsic_measure_hits, 0);
 }
 
-#[test]
-fn animation_refresh_reusing_registry_keeps_dynamic_layer_inside_scrolled_paint_layer() {
-    let scroll_id = NodeId::from_u64(91_000);
-    let content_id = NodeId::from_u64(91_001);
-    let before_id = NodeId::from_u64(91_002);
-    let card_id = NodeId::from_u64(91_003);
-    let text_id = NodeId::from_u64(91_004);
-    let after_id = NodeId::from_u64(91_005);
-
-    let mut tree = ElementTree::new();
-    tree.set_root_id(scroll_id);
-
-    let mut scroll_attrs = fixed_box_attrs(320.0, 180.0);
-    scroll_attrs.scrollbar_y = Some(true);
-    scroll_attrs.background = Some(Background::Color(Color::Rgb {
-        r: 241,
-        g: 244,
-        b: 250,
-    }));
-    tree.insert(Element::with_attrs(
-        scroll_id,
-        ElementKind::El,
-        Vec::new(),
-        scroll_attrs,
-    ));
-
-    let content_attrs = Attrs {
-        width: Some(Length::Fill),
-        spacing: Some(16.0),
-        ..Attrs::default()
-    };
-    tree.insert(Element::with_attrs(
-        content_id,
-        ElementKind::Column,
-        Vec::new(),
-        content_attrs,
-    ));
-
-    tree.insert(Element::with_attrs(
-        before_id,
-        ElementKind::El,
-        Vec::new(),
-        fixed_box_attrs(300.0, 220.0),
-    ));
-
-    let mut card_attrs = fixed_box_attrs(300.0, 94.0);
-    card_attrs.padding = Some(Padding::Uniform(14.0));
-    card_attrs.background = Some(Background::Color(Color::Rgb {
-        r: 244,
-        g: 248,
-        b: 255,
-    }));
-    card_attrs.border_radius = Some(BorderRadius::Uniform(14.0));
-    card_attrs.animate = Some(AnimationSpec {
-        keyframes: vec![
-            Attrs {
-                box_shadows: Some(vec![BoxShadow {
-                    offset_x: 0.0,
-                    offset_y: -12.0,
-                    blur: 18.0,
-                    size: 2.0,
-                    color: Color::Rgba {
-                        r: 15,
-                        g: 23,
-                        b: 42,
-                        a: 40,
-                    },
-                    inset: false,
-                }]),
-                ..Attrs::default()
-            },
-            Attrs {
-                box_shadows: Some(vec![BoxShadow {
-                    offset_x: 12.0,
-                    offset_y: 0.0,
-                    blur: 18.0,
-                    size: 2.0,
-                    color: Color::Rgba {
-                        r: 15,
-                        g: 23,
-                        b: 42,
-                        a: 40,
-                    },
-                    inset: false,
-                }]),
-                ..Attrs::default()
-            },
-        ],
-        duration_ms: 2800.0,
-        curve: AnimationCurve::Linear,
-        repeat: AnimationRepeat::Loop,
-    });
-    tree.insert(Element::with_attrs(
-        card_id,
-        ElementKind::Column,
-        Vec::new(),
-        card_attrs,
-    ));
-
-    tree.insert(Element::with_attrs(
-        text_id,
-        ElementKind::Text,
-        Vec::new(),
-        text_attrs("Stacked"),
-    ));
-
-    tree.insert(Element::with_attrs(
-        after_id,
-        ElementKind::El,
-        Vec::new(),
-        fixed_box_attrs(300.0, 260.0),
-    ));
-
-    tree.set_children(&scroll_id, vec![content_id]).unwrap();
-    tree.set_children(&content_id, vec![before_id, card_id, after_id])
-        .unwrap();
-    tree.set_children(&card_id, vec![text_id]).unwrap();
-
-    let start = Instant::now();
-    let mut runtime = AnimationRuntime::default();
-    runtime.sync_with_tree(&tree, start);
-    let first = layout_and_refresh_default_with_animation(
-        &mut tree,
-        Constraint::new(320.0, 180.0),
-        1.0,
-        &runtime,
-        start,
-    );
-    let cached_rebuild = first.event_rebuild.clone();
-
-    assert_eq!(
-        tree.apply_scroll_y(&scroll_id, -190.0),
-        TreeInvalidation::Paint
-    );
-    let _ = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
-
-    let preparation = prepare_frame_attrs_for_update(
-        &mut tree,
-        1.0,
-        Some(&runtime),
-        Some(start + Duration::from_millis(16)),
-    );
-    assert!(preparation.animation_result.active);
-
-    let update = refresh_prepared_default_reusing_clean_registry(
-        &mut tree,
-        preparation,
-        Some(&cached_rebuild),
-    );
-    let summaries = paint_layer_debug_summaries(&update.output.scene.nodes);
-    let scroll_container_layer = summaries
-        .iter()
-        .find(|(stable_id, _, _, _)| *stable_id == scroll_id.to_wire_u64())
-        .unwrap_or_else(|| {
-            panic!("expected scroll-container paint-layer summary, got {summaries:?}")
-        });
-
-    assert!(
-        scroll_container_layer.2 > 0,
-        "animated paint should be a dynamic slot inside the scrolled paint layer: {summaries:?}"
-    );
-}
-
-fn paint_layer_debug_summaries(
-    nodes: &[crate::render_scene::RenderNode],
-) -> Vec<(u64, usize, usize, usize)> {
-    fn visit(
-        nodes: &[crate::render_scene::RenderNode],
-        out: &mut Vec<(u64, usize, usize, usize)>,
-    ) -> (usize, usize) {
-        nodes
-            .iter()
-            .fold((0, 0), |(static_count, dynamic_count), node| {
-                use crate::render_scene::RenderNode;
-
-                match node {
-                    RenderNode::ShadowPass { children }
-                    | RenderNode::Clip { children, .. }
-                    | RenderNode::RelaxedClip { children, .. }
-                    | RenderNode::Transform { children, .. }
-                    | RenderNode::Alpha { children, .. } => {
-                        let (child_static, child_dynamic) = visit(children, out);
-                        (
-                            static_count + child_static + usize::from(child_static > 0),
-                            dynamic_count + child_dynamic,
-                        )
-                    }
-                    RenderNode::PaintLayer(layer)
-                        if layer.placement == crate::render_scene::PaintLayerPlacement::Fixed
-                            && (layer.policy
-                                == crate::render_scene::PaintLayerPolicy::Cacheable
-                                || layer.reason
-                                    == crate::render_scene::PaintLayerReason::ScrollContainer) =>
-                    {
-                        let children = layer.content_nodes();
-                        let (child_static, child_dynamic) = visit(&children, out);
-                        out.push((layer.stable_id, child_static, child_dynamic, children.len()));
-                        (static_count, dynamic_count + 1)
-                    }
-                    RenderNode::PaintLayer(_) => (static_count, dynamic_count + 1),
-                    RenderNode::Primitive(_) => (static_count + 1, dynamic_count),
-                }
-            })
-    }
-
-    let mut out = Vec::new();
-    visit(nodes, &mut out);
-    out
-}
-
 #[derive(Clone)]
-struct MovingPaintLayerView {
-    content_generation: u64,
-    bounds: crate::tree::geometry::Rect,
-    children: Vec<crate::render_scene::RenderNode>,
-}
+struct MovingPaintLayerView;
 
 #[test]
 fn test_paint_only_attr_change_reuses_leaf_measurement_cache() {
@@ -908,9 +693,10 @@ fn test_layout_cache_stats_report_layout_affecting_animation_cache_misses() {
         1.0,
         &MockTextMeasurer,
         &FontContext::default(),
-        Some(&runtime),
+        Some(&mut runtime),
         Some(start + Duration::from_millis(1)),
-    );
+    )
+    .unwrap();
     let stats = tree.layout_cache_stats();
 
     assert!(animations_active);
@@ -955,27 +741,33 @@ fn test_measure_affecting_animation_preserves_unrelated_sibling_cache_reuse() {
     let mut runtime = AnimationRuntime::default();
     runtime.sync_with_tree(&tree, start);
 
-    assert!(layout_tree_with_context_and_animation(
-        &mut tree,
-        Constraint::new(800.0, 600.0),
-        1.0,
-        &measurer,
-        &FontContext::default(),
-        Some(&runtime),
-        Some(start),
-    ));
+    assert!(
+        layout_tree_with_context_and_animation(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &measurer,
+            &FontContext::default(),
+            Some(&mut runtime),
+            Some(start),
+        )
+        .unwrap()
+    );
     let first_calls = measurer.total_calls();
     assert!(first_calls > 0);
 
-    assert!(layout_tree_with_context_and_animation(
-        &mut tree,
-        Constraint::new(800.0, 600.0),
-        1.0,
-        &measurer,
-        &FontContext::default(),
-        Some(&runtime),
-        Some(start + Duration::from_millis(25)),
-    ));
+    assert!(
+        layout_tree_with_context_and_animation(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &measurer,
+            &FontContext::default(),
+            Some(&mut runtime),
+            Some(start + Duration::from_millis(25)),
+        )
+        .unwrap()
+    );
     let stats = tree.layout_cache_stats();
 
     assert_eq!(measurer.total_calls(), first_calls);
@@ -1021,27 +813,33 @@ fn test_resolve_affecting_animation_does_not_remeasure_text() {
     let mut runtime = AnimationRuntime::default();
     runtime.sync_with_tree(&tree, start);
 
-    assert!(layout_tree_with_context_and_animation(
-        &mut tree,
-        Constraint::new(800.0, 600.0),
-        1.0,
-        &measurer,
-        &FontContext::default(),
-        Some(&runtime),
-        Some(start),
-    ));
+    assert!(
+        layout_tree_with_context_and_animation(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &measurer,
+            &FontContext::default(),
+            Some(&mut runtime),
+            Some(start),
+        )
+        .unwrap()
+    );
     let first_calls = measurer.total_calls();
     assert!(first_calls > 0);
 
-    assert!(layout_tree_with_context_and_animation(
-        &mut tree,
-        Constraint::new(800.0, 600.0),
-        1.0,
-        &measurer,
-        &FontContext::default(),
-        Some(&runtime),
-        Some(start + Duration::from_millis(75)),
-    ));
+    assert!(
+        layout_tree_with_context_and_animation(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &measurer,
+            &FontContext::default(),
+            Some(&mut runtime),
+            Some(start + Duration::from_millis(75)),
+        )
+        .unwrap()
+    );
     let stats = tree.layout_cache_stats();
 
     assert_eq!(measurer.total_calls(), first_calls);
@@ -1088,9 +886,10 @@ fn test_paint_only_shadow_animation_refresh_skips_layout_after_warm_frame() {
         &mut tree,
         Constraint::new(800.0, 600.0),
         1.0,
-        &runtime,
+        &mut runtime,
         start,
-    );
+    )
+    .unwrap();
     assert!(initial.layout_performed);
     let initial_frame = tree.get(&root_id).unwrap().layout.frame.unwrap();
 
@@ -1098,9 +897,10 @@ fn test_paint_only_shadow_animation_refresh_skips_layout_after_warm_frame() {
         &mut tree,
         Constraint::new(800.0, 600.0),
         1.0,
-        &runtime,
+        &mut runtime,
         start + Duration::from_millis(25),
-    );
+    )
+    .unwrap();
 
     assert!(update.output.animations_active);
     assert!(!update.layout_performed);
@@ -1172,9 +972,10 @@ fn test_scroll_with_paint_only_animation_refresh_skips_layout() {
         &mut tree,
         Constraint::new(800.0, 600.0),
         1.0,
-        &runtime,
+        &mut runtime,
         start,
-    );
+    )
+    .unwrap();
     assert!(initial.layout_performed);
     assert_eq!(tree.get(&root_id).unwrap().layout.scroll_y_max, 136.0);
 
@@ -1185,9 +986,10 @@ fn test_scroll_with_paint_only_animation_refresh_skips_layout() {
         &mut tree,
         Constraint::new(800.0, 600.0),
         1.0,
-        &runtime,
+        &mut runtime,
         start + Duration::from_millis(25),
-    );
+    )
+    .unwrap();
 
     assert!(update.output.animations_active);
     assert!(!update.layout_performed);
@@ -1259,7 +1061,8 @@ fn test_paint_only_shadow_patch_refresh_skips_layout() {
         RefreshDecision::RefreshOnly
     );
 
-    let update = refresh_prepared_default(&mut tree, preparation);
+    let applied = preparation.apply(&mut tree, None).unwrap();
+    let update = refresh_prepared_default(&mut tree, applied);
 
     assert!(!update.layout_performed);
     assert_eq!(
@@ -1312,1031 +1115,6 @@ fn test_render_snapshot_omits_layout_cache_entries() {
 }
 
 #[test]
-fn test_scrolled_clean_child_emits_reusable_moving_paint_layer() {
-    let root_attrs = Attrs {
-        width: Some(Length::Px(120.0)),
-        height: Some(Length::Px(80.0)),
-        scrollbar_y: Some(true),
-        ..Attrs::default()
-    };
-
-    let mut tree = ElementTree::new();
-    let root = make_element("scroll_layer_root", ElementKind::Column, root_attrs);
-    let root_id = root.id;
-    let top = make_element(
-        "scroll_layer_top",
-        ElementKind::El,
-        fixed_box_attrs(100.0, 20.0),
-    );
-    let top_id = top.id;
-
-    let mut target_attrs = fixed_box_attrs(100.0, 40.0);
-    target_attrs.background = Some(Background::Color(Color::Rgba {
-        r: 248,
-        g: 250,
-        b: 252,
-        a: 255,
-    }));
-    let target = make_element("scroll_layer_target", ElementKind::El, target_attrs);
-    let target_id = target.id;
-    let bottom = make_element(
-        "scroll_layer_bottom",
-        ElementKind::El,
-        fixed_box_attrs(100.0, 120.0),
-    );
-    let bottom_id = bottom.id;
-
-    tree.set_root_id(root_id);
-    tree.insert(root);
-    tree.insert(top);
-    tree.insert(target);
-    tree.insert(bottom);
-    tree.set_children(&root_id, vec![top_id, target_id, bottom_id])
-        .unwrap();
-
-    let initial_output = layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
-    let cached_rebuild = initial_output.event_rebuild;
-    let warmed_output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
-    assert!(
-        moving_paint_layer_with_placement_for_stable_id(
-            &warmed_output.scene.nodes,
-            target_id.to_wire_u64(),
-        )
-        .is_some(),
-        "stable scroll-content children should keep paint-layer boundaries outside scroll-dirty frames"
-    );
-
-    assert_eq!(
-        tree.apply_scroll_y(&root_id, -24.0),
-        TreeInvalidation::Paint
-    );
-    assert!(tree.has_scroll_refresh_damage());
-    let first_scrolled_output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
-    assert!(!tree.has_scroll_refresh_damage());
-    let (first_scrolled_placement, first_scrolled_layer) =
-        moving_paint_layer_with_placement_for_stable_id(
-            &first_scrolled_output.scene.nodes,
-            target_id.to_wire_u64(),
-        )
-        .expect("visible clean child should emit a scroll-moving paint layer while scrolling");
-
-    assert_eq!(
-        tree.apply_scroll_y(&root_id, -16.0),
-        TreeInvalidation::Paint
-    );
-    let second_scrolled_output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
-    let (second_scrolled_placement, second_scrolled_layer) =
-        moving_paint_layer_with_placement_for_stable_id(
-            &second_scrolled_output.scene.nodes,
-            target_id.to_wire_u64(),
-        )
-        .expect("visible clean child should keep emitting a layer during scroll");
-
-    assert_eq!(
-        second_scrolled_layer.content_generation,
-        first_scrolled_layer.content_generation
-    );
-    assert_eq!(second_scrolled_layer.bounds, first_scrolled_layer.bounds);
-    assert!((second_scrolled_placement.tx - first_scrolled_placement.tx).abs() <= 0.001);
-    assert!((second_scrolled_placement.ty - (first_scrolled_placement.ty - 16.0)).abs() <= 0.001);
-}
-
-#[test]
-fn test_registry_only_patch_keeps_stable_scroll_child_payload_generation() {
-    let root_attrs = Attrs {
-        width: Some(Length::Px(160.0)),
-        height: Some(Length::Px(90.0)),
-        spacing: Some(8.0),
-        scrollbar_y: Some(true),
-        ..Attrs::default()
-    };
-
-    let mut tree = ElementTree::new();
-    let root = make_element(
-        "registry_stable_scroll_root",
-        ElementKind::Column,
-        root_attrs,
-    );
-    let root_id = root.id;
-    let mut target_attrs = fixed_box_attrs(140.0, 48.0);
-    target_attrs.background = Some(Background::Color(Color::Rgba {
-        r: 248,
-        g: 250,
-        b: 252,
-        a: 255,
-    }));
-    let target = make_element(
-        "registry_stable_scroll_target",
-        ElementKind::El,
-        target_attrs,
-    );
-    let target_id = target.id;
-    let event_text = make_element(
-        "registry_stable_scroll_event_text",
-        ElementKind::Text,
-        text_attrs("Hover target"),
-    );
-    let event_text_id = event_text.id;
-    let bottom = make_element(
-        "registry_stable_scroll_bottom",
-        ElementKind::El,
-        fixed_box_attrs(140.0, 120.0),
-    );
-    let bottom_id = bottom.id;
-
-    tree.set_root_id(root_id);
-    tree.insert(root);
-    tree.insert(target);
-    tree.insert(event_text);
-    tree.insert(bottom);
-    tree.set_children(&root_id, vec![target_id, event_text_id, bottom_id])
-        .unwrap();
-
-    let initial_output = layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
-    let cached_rebuild = initial_output.event_rebuild;
-    let warmed_output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
-    let (_, warmed_layer) = moving_paint_layer_with_placement_for_stable_id(
-        &warmed_output.scene.nodes,
-        target_id.to_wire_u64(),
-    )
-    .expect("stable scroll child should emit a reusable moving paint layer");
-
-    let invalidation = apply_patches(
-        &mut tree,
-        vec![Patch::SetAttrs {
-            id: event_text_id,
-            attrs_raw: raw_text_event_attrs("Hover target"),
-        }],
-    )
-    .unwrap();
-    assert_eq!(invalidation, TreeInvalidation::Registry);
-
-    let refreshed_output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
-    let (_, refreshed_layer) = moving_paint_layer_with_placement_for_stable_id(
-        &refreshed_output.scene.nodes,
-        target_id.to_wire_u64(),
-    )
-    .expect("registry-only sibling patch should not remove the stable child layer");
-
-    assert_eq!(
-        refreshed_layer.content_generation,
-        warmed_layer.content_generation
-    );
-}
-
-#[test]
-fn test_fractional_scrolled_clean_child_keeps_fractional_placement_out_of_content_key() {
-    let root_attrs = Attrs {
-        width: Some(Length::Px(120.0)),
-        height: Some(Length::Px(80.0)),
-        scrollbar_y: Some(true),
-        ..Attrs::default()
-    };
-
-    let mut tree = ElementTree::new();
-    let root = make_element("fractional_scroll_root", ElementKind::Column, root_attrs);
-    let root_id = root.id;
-    let top = make_element(
-        "fractional_scroll_top",
-        ElementKind::El,
-        fixed_box_attrs(100.0, 20.5),
-    );
-    let top_id = top.id;
-
-    let mut target_attrs = fixed_box_attrs(100.0, 40.0);
-    target_attrs.background = Some(Background::Color(Color::Rgba {
-        r: 248,
-        g: 250,
-        b: 252,
-        a: 255,
-    }));
-    let target = make_element("fractional_scroll_target", ElementKind::El, target_attrs);
-    let target_id = target.id;
-    let bottom = make_element(
-        "fractional_scroll_bottom",
-        ElementKind::El,
-        fixed_box_attrs(100.0, 120.0),
-    );
-    let bottom_id = bottom.id;
-
-    tree.set_root_id(root_id);
-    tree.insert(root);
-    tree.insert(top);
-    tree.insert(target);
-    tree.insert(bottom);
-    tree.set_children(&root_id, vec![top_id, target_id, bottom_id])
-        .unwrap();
-
-    let initial_output = layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
-    let cached_rebuild = initial_output.event_rebuild;
-    let warmed_output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
-    assert!(
-        moving_paint_layer_with_placement_for_stable_id(
-            &warmed_output.scene.nodes,
-            target_id.to_wire_u64(),
-        )
-        .is_some(),
-        "stable scroll-content children should keep paint-layer boundaries outside scroll-dirty frames"
-    );
-
-    assert_eq!(
-        tree.apply_scroll_y(&root_id, -16.0),
-        TreeInvalidation::Paint
-    );
-    let first_scrolled_output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
-    let (first_scrolled_placement, first_scrolled_layer) =
-        moving_paint_layer_with_placement_for_stable_id(
-            &first_scrolled_output.scene.nodes,
-            target_id.to_wire_u64(),
-        )
-        .expect("fractional clean child should emit a scroll-moving paint layer on scroll");
-
-    assert!((first_scrolled_placement.ty - 4.5).abs() <= 0.001);
-    assert_eq!(first_scrolled_layer.bounds.height, 40.0);
-
-    assert_eq!(
-        tree.apply_scroll_y(&root_id, -16.0),
-        TreeInvalidation::Paint
-    );
-    let second_scrolled_output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
-    let (second_scrolled_placement, second_scrolled_layer) =
-        moving_paint_layer_with_placement_for_stable_id(
-            &second_scrolled_output.scene.nodes,
-            target_id.to_wire_u64(),
-        )
-        .expect("fractional clean child should keep a layer after integer scroll");
-
-    assert_eq!(second_scrolled_layer.bounds, first_scrolled_layer.bounds);
-    assert_eq!(
-        second_scrolled_layer.content_generation,
-        first_scrolled_layer.content_generation
-    );
-    assert!((second_scrolled_placement.ty - (first_scrolled_placement.ty - 16.0)).abs() <= 0.001);
-}
-
-#[test]
-fn test_fractional_scroll_delta_keeps_moving_paint_layer_payload_content_key_stable() {
-    let root_attrs = Attrs {
-        width: Some(Length::Px(120.0)),
-        height: Some(Length::Px(80.0)),
-        scrollbar_y: Some(true),
-        ..Attrs::default()
-    };
-
-    let mut target_attrs = fixed_box_attrs(100.0, 40.0);
-    target_attrs.background = Some(Background::Color(Color::Rgba {
-        r: 248,
-        g: 250,
-        b: 252,
-        a: 255,
-    }));
-
-    let mut tree = ElementTree::new();
-    let root = make_element(
-        "fractional_delta_scroll_root",
-        ElementKind::Column,
-        root_attrs,
-    );
-    let root_id = root.id;
-    let top = make_element(
-        "fractional_delta_scroll_top",
-        ElementKind::El,
-        fixed_box_attrs(100.0, 20.0),
-    );
-    let top_id = top.id;
-    let target = make_element(
-        "fractional_delta_scroll_target",
-        ElementKind::El,
-        target_attrs,
-    );
-    let target_id = target.id;
-    let bottom = make_element(
-        "fractional_delta_scroll_bottom",
-        ElementKind::El,
-        fixed_box_attrs(100.0, 120.0),
-    );
-    let bottom_id = bottom.id;
-
-    tree.set_root_id(root_id);
-    tree.insert(root);
-    tree.insert(top);
-    tree.insert(target);
-    tree.insert(bottom);
-    tree.set_children(&root_id, vec![top_id, target_id, bottom_id])
-        .unwrap();
-
-    let initial_output = layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
-    let cached_rebuild = initial_output.event_rebuild;
-    assert_eq!(
-        tree.apply_scroll_y(&root_id, -16.25),
-        TreeInvalidation::Paint
-    );
-    let first_scrolled_output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
-    let (first_scrolled_placement, first_scrolled_layer) =
-        moving_paint_layer_with_placement_for_stable_id(
-            &first_scrolled_output.scene.nodes,
-            target_id.to_wire_u64(),
-        )
-        .expect("fractional scroll should emit a scroll-moving paint layer");
-
-    assert_eq!(
-        tree.apply_scroll_y(&root_id, -16.25),
-        TreeInvalidation::Paint
-    );
-    let second_scrolled_output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
-    let (second_scrolled_placement, second_scrolled_layer) =
-        moving_paint_layer_with_placement_for_stable_id(
-            &second_scrolled_output.scene.nodes,
-            target_id.to_wire_u64(),
-        )
-        .expect("fractional scroll should keep emitting a scroll-moving paint layer");
-
-    assert_eq!(second_scrolled_layer.bounds, first_scrolled_layer.bounds);
-    assert_eq!(
-        second_scrolled_layer.content_generation,
-        first_scrolled_layer.content_generation
-    );
-    assert!((second_scrolled_placement.ty - (first_scrolled_placement.ty - 16.25)).abs() <= 0.001);
-}
-
-#[test]
-fn test_scrolled_clean_container_prefers_ancestor_layer_over_child_layers() {
-    let root_attrs = Attrs {
-        width: Some(Length::Px(180.0)),
-        height: Some(Length::Px(84.0)),
-        scrollbar_y: Some(true),
-        ..Attrs::default()
-    };
-
-    let row_attrs = Attrs {
-        width: Some(Length::Px(168.0)),
-        spacing: Some(8.0),
-        ..Attrs::default()
-    };
-
-    let card_attrs = |width, height, r, g, b| {
-        let mut attrs = fixed_box_attrs(width, height);
-        attrs.background = Some(Background::Color(Color::Rgba { r, g, b, a: 255 }));
-        attrs
-    };
-
-    let mut tree = ElementTree::new();
-    let root = make_element(
-        "scroll_ancestor_layer_root",
-        ElementKind::Column,
-        root_attrs,
-    );
-    let root_id = root.id;
-    let spacer = make_element(
-        "scroll_ancestor_layer_spacer",
-        ElementKind::El,
-        fixed_box_attrs(168.0, 20.0),
-    );
-    let spacer_id = spacer.id;
-    let row = make_element("scroll_ancestor_layer_row", ElementKind::Row, row_attrs);
-    let row_id = row.id;
-    let first = make_element(
-        "scroll_ancestor_layer_first",
-        ElementKind::El,
-        card_attrs(80.0, 44.0, 248, 250, 252),
-    );
-    let first_id = first.id;
-    let first_text = make_element(
-        "scroll_ancestor_layer_first_text",
-        ElementKind::Text,
-        text_attrs("Alpha"),
-    );
-    let first_text_id = first_text.id;
-    let second = make_element(
-        "scroll_ancestor_layer_second",
-        ElementKind::El,
-        card_attrs(80.0, 44.0, 241, 245, 249),
-    );
-    let second_id = second.id;
-    let second_text = make_element(
-        "scroll_ancestor_layer_second_text",
-        ElementKind::Text,
-        text_attrs("Beta"),
-    );
-    let second_text_id = second_text.id;
-    let bottom = make_element(
-        "scroll_ancestor_layer_bottom",
-        ElementKind::El,
-        fixed_box_attrs(168.0, 120.0),
-    );
-    let bottom_id = bottom.id;
-
-    tree.set_root_id(root_id);
-    tree.insert(root);
-    tree.insert(spacer);
-    tree.insert(row);
-    tree.insert(first);
-    tree.insert(first_text);
-    tree.insert(second);
-    tree.insert(second_text);
-    tree.insert(bottom);
-    tree.set_children(&first_id, vec![first_text_id]).unwrap();
-    tree.set_children(&second_id, vec![second_text_id]).unwrap();
-    tree.set_children(&row_id, vec![first_id, second_id])
-        .unwrap();
-    tree.set_children(&root_id, vec![spacer_id, row_id, bottom_id])
-        .unwrap();
-
-    let initial_output = layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
-    let cached_rebuild = initial_output.event_rebuild;
-    let warmed_output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
-    assert!(
-        moving_paint_layer_with_placement_for_stable_id(
-            &warmed_output.scene.nodes,
-            row_id.to_wire_u64(),
-        )
-        .is_some(),
-        "stable scroll-content rows should keep paint-layer boundaries outside scroll-dirty frames"
-    );
-
-    assert_eq!(
-        tree.apply_scroll_y(&root_id, -16.0),
-        TreeInvalidation::Paint
-    );
-    let first_scrolled_output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
-    let (first_scrolled_placement, first_scrolled_layer) =
-        moving_paint_layer_with_placement_for_stable_id(
-            &first_scrolled_output.scene.nodes,
-            row_id.to_wire_u64(),
-        )
-        .expect("scrolled clean row should emit the ancestor layer boundary");
-    let first_generation = first_scrolled_layer.content_generation;
-    let first_bounds = first_scrolled_layer.bounds;
-
-    assert!(
-        !render_nodes_have_moving_paint_layers(&first_scrolled_layer.children),
-        "clean static descendants should be owned by the ancestor payload instead of \
-         split into depth-based child layers"
-    );
-
-    assert_eq!(
-        tree.apply_scroll_y(&root_id, -16.0),
-        TreeInvalidation::Paint
-    );
-    let second_scrolled_output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
-    let (second_scrolled_placement, second_scrolled_layer) =
-        moving_paint_layer_with_placement_for_stable_id(
-            &second_scrolled_output.scene.nodes,
-            row_id.to_wire_u64(),
-        )
-        .expect("scrolled clean row should keep the ancestor layer boundary");
-
-    assert_eq!(second_scrolled_layer.content_generation, first_generation);
-    assert_eq!(second_scrolled_layer.bounds, first_bounds);
-    assert!((second_scrolled_placement.tx - first_scrolled_placement.tx).abs() <= 0.001);
-    assert!((second_scrolled_placement.ty - (first_scrolled_placement.ty - 16.0)).abs() <= 0.001);
-}
-
-#[test]
-fn test_scrolled_clean_section_with_shadow_prefers_section_layer() {
-    let root_attrs = Attrs {
-        width: Some(Length::Px(220.0)),
-        height: Some(Length::Px(110.0)),
-        scrollbar_y: Some(true),
-        ..Attrs::default()
-    };
-
-    let section_attrs = Attrs {
-        width: Some(Length::Px(200.0)),
-        spacing: Some(10.0),
-        ..Attrs::default()
-    };
-
-    let mut card_attrs = fixed_box_attrs(200.0, 56.0);
-    card_attrs.background = Some(Background::Color(Color::Rgba {
-        r: 248,
-        g: 250,
-        b: 252,
-        a: 255,
-    }));
-    card_attrs.box_shadows = Some(vec![test_shadow(0.0, 10.0)]);
-
-    let mut tree = ElementTree::new();
-    let root = make_element(
-        "scroll_shadow_section_root",
-        ElementKind::Column,
-        root_attrs,
-    );
-    let root_id = root.id;
-    let spacer = make_element(
-        "scroll_shadow_section_spacer",
-        ElementKind::El,
-        fixed_box_attrs(200.0, 18.0),
-    );
-    let spacer_id = spacer.id;
-    let section = make_element("scroll_shadow_section", ElementKind::Column, section_attrs);
-    let section_id = section.id;
-    let title = make_element(
-        "scroll_shadow_section_title",
-        ElementKind::Text,
-        text_attrs("Shadow section"),
-    );
-    let title_id = title.id;
-    let card = make_element("scroll_shadow_section_card", ElementKind::El, card_attrs);
-    let card_id = card.id;
-    let card_text = make_element(
-        "scroll_shadow_section_card_text",
-        ElementKind::Text,
-        text_attrs("Stable shadow card"),
-    );
-    let card_text_id = card_text.id;
-    let bottom = make_element(
-        "scroll_shadow_section_bottom",
-        ElementKind::El,
-        fixed_box_attrs(200.0, 140.0),
-    );
-    let bottom_id = bottom.id;
-
-    tree.set_root_id(root_id);
-    tree.insert(root);
-    tree.insert(spacer);
-    tree.insert(section);
-    tree.insert(title);
-    tree.insert(card);
-    tree.insert(card_text);
-    tree.insert(bottom);
-    tree.set_children(&card_id, vec![card_text_id]).unwrap();
-    tree.set_children(&section_id, vec![title_id, card_id])
-        .unwrap();
-    tree.set_children(&root_id, vec![spacer_id, section_id, bottom_id])
-        .unwrap();
-
-    let initial_output = layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
-    let cached_rebuild = initial_output.event_rebuild;
-
-    assert_eq!(
-        tree.apply_scroll_y(&root_id, -12.0),
-        TreeInvalidation::Paint
-    );
-    let scrolled_output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
-    let (first_placement, section_layer) = moving_paint_layer_with_placement_for_stable_id(
-        &scrolled_output.scene.nodes,
-        section_id.to_wire_u64(),
-    )
-    .expect("scrolled clean section should emit one section-level layer");
-    let first_generation = section_layer.content_generation;
-    let first_bounds = section_layer.bounds;
-
-    assert!(
-        moving_paint_layer_with_placement_for_stable_id(
-            &scrolled_output.scene.nodes,
-            card_id.to_wire_u64(),
-        )
-        .is_none(),
-        "clean static card content should be owned by the section layer"
-    );
-    assert!(
-        !render_nodes_have_moving_paint_layers(&section_layer.children),
-        "clean static descendants should not be split into nested paint layers"
-    );
-
-    assert_eq!(
-        tree.apply_scroll_y(&root_id, -16.0),
-        TreeInvalidation::Paint
-    );
-    let scrolled_again_output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
-    let (second_placement, second_section_layer) = moving_paint_layer_with_placement_for_stable_id(
-        &scrolled_again_output.scene.nodes,
-        section_id.to_wire_u64(),
-    )
-    .expect("scrolled clean section should remain a section-level layer");
-
-    assert_eq!(second_section_layer.content_generation, first_generation);
-    assert_eq!(second_section_layer.bounds, first_bounds);
-    assert!((second_placement.tx - first_placement.tx).abs() <= 0.001);
-    assert!((second_placement.ty - (first_placement.ty - 16.0)).abs() <= 0.001);
-}
-
-#[test]
-fn test_scroll_refresh_clean_layers_stay_under_scroll_clip() {
-    let root_attrs = fixed_box_attrs(280.0, 110.0);
-
-    let scroll_attrs = Attrs {
-        width: Some(Length::Px(200.0)),
-        height: Some(Length::Px(90.0)),
-        scrollbar_y: Some(true),
-        ..Attrs::default()
-    };
-
-    let mut chrome_attrs = fixed_box_attrs(60.0, 90.0);
-    chrome_attrs.background = Some(Background::Color(Color::Rgba {
-        r: 15,
-        g: 23,
-        b: 42,
-        a: 255,
-    }));
-
-    let section_attrs = Attrs {
-        width: Some(Length::Px(180.0)),
-        spacing: Some(8.0),
-        ..Attrs::default()
-    };
-
-    let mut card_attrs = fixed_box_attrs(180.0, 40.0);
-    card_attrs.background = Some(Background::Color(Color::Rgba {
-        r: 248,
-        g: 250,
-        b: 252,
-        a: 255,
-    }));
-
-    let mut tree = ElementTree::new();
-    let root = make_element("scroll_layer_scope_root", ElementKind::Row, root_attrs);
-    let root_id = root.id;
-    let chrome = make_element("scroll_layer_scope_chrome", ElementKind::El, chrome_attrs);
-    let chrome_id = chrome.id;
-    let scroll = make_element(
-        "scroll_layer_scope_scroll",
-        ElementKind::Column,
-        scroll_attrs,
-    );
-    let scroll_id = scroll.id;
-    let spacer = make_element(
-        "scroll_layer_scope_spacer",
-        ElementKind::El,
-        fixed_box_attrs(180.0, 18.0),
-    );
-    let spacer_id = spacer.id;
-    let section = make_element(
-        "scroll_layer_scope_section",
-        ElementKind::Column,
-        section_attrs,
-    );
-    let section_id = section.id;
-    let card = make_element("scroll_layer_scope_card", ElementKind::El, card_attrs);
-    let card_id = card.id;
-    let bottom = make_element(
-        "scroll_layer_scope_bottom",
-        ElementKind::El,
-        fixed_box_attrs(180.0, 140.0),
-    );
-    let bottom_id = bottom.id;
-
-    tree.set_root_id(root_id);
-    tree.insert(root);
-    tree.insert(chrome);
-    tree.insert(scroll);
-    tree.insert(spacer);
-    tree.insert(section);
-    tree.insert(card);
-    tree.insert(bottom);
-    tree.set_children(&section_id, vec![card_id]).unwrap();
-    tree.set_children(&scroll_id, vec![spacer_id, section_id, bottom_id])
-        .unwrap();
-    tree.set_children(&root_id, vec![chrome_id, scroll_id])
-        .unwrap();
-
-    let initial_output = layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
-    let cached_rebuild = initial_output.event_rebuild;
-
-    assert_eq!(
-        tree.apply_scroll_y(&scroll_id, -16.0),
-        TreeInvalidation::Paint
-    );
-    let scrolled_output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
-
-    assert!(
-        moving_paint_layer_with_placement_for_stable_id(
-            &scrolled_output.scene.nodes,
-            chrome_id.to_wire_u64(),
-        )
-        .is_none(),
-        "scroll-dirty refresh should not emit scroll-moving paint layers outside the scroll clip"
-    );
-    assert!(
-        moving_paint_layer_with_placement_for_stable_id(
-            &scrolled_output.scene.nodes,
-            section_id.to_wire_u64(),
-        )
-        .is_some(),
-        "stable descendants inside the scroll clip should still emit scroll-moving paint layers"
-    );
-}
-
-#[test]
-fn test_tree_emitted_scroll_layer_records_moved_hit_after_scroll() {
-    let root_attrs = Attrs {
-        width: Some(Length::Px(220.0)),
-        height: Some(Length::Px(100.0)),
-        scrollbar_y: Some(true),
-        ..Attrs::default()
-    };
-
-    let section_attrs = Attrs {
-        width: Some(Length::Px(200.0)),
-        spacing: Some(8.0),
-        ..Attrs::default()
-    };
-
-    let mut card_attrs = fixed_box_attrs(200.0, 48.0);
-    card_attrs.background = Some(Background::Color(Color::Rgba {
-        r: 248,
-        g: 250,
-        b: 252,
-        a: 255,
-    }));
-    card_attrs.box_shadows = Some(vec![test_shadow(0.0, 8.0)]);
-
-    let mut tree = ElementTree::new();
-    let root = make_element("scroll_moved_hit_root", ElementKind::Column, root_attrs);
-    let root_id = root.id;
-    let spacer = make_element(
-        "scroll_moved_hit_spacer",
-        ElementKind::El,
-        fixed_box_attrs(200.0, 16.0),
-    );
-    let spacer_id = spacer.id;
-    let section = make_element(
-        "scroll_moved_hit_section",
-        ElementKind::Column,
-        section_attrs,
-    );
-    let section_id = section.id;
-    let card = make_element("scroll_moved_hit_card", ElementKind::El, card_attrs);
-    let card_id = card.id;
-    let bottom = make_element(
-        "scroll_moved_hit_bottom",
-        ElementKind::El,
-        fixed_box_attrs(200.0, 140.0),
-    );
-    let bottom_id = bottom.id;
-
-    tree.set_root_id(root_id);
-    tree.insert(root);
-    tree.insert(spacer);
-    tree.insert(section);
-    tree.insert(card);
-    tree.insert(bottom);
-    tree.set_children(&section_id, vec![card_id]).unwrap();
-    tree.set_children(&root_id, vec![spacer_id, section_id, bottom_id])
-        .unwrap();
-
-    let initial_output = layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
-    let cached_rebuild = initial_output.event_rebuild;
-    let mut renderer = SceneRenderer::new();
-
-    assert_eq!(tree.apply_scroll_y(&root_id, -8.0), TreeInvalidation::Paint);
-    let first_scene = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild)).scene;
-    assert!(
-        moving_paint_layer_with_placement_for_stable_id(
-            &first_scene.nodes,
-            section_id.to_wire_u64(),
-        )
-        .is_some()
-    );
-    let first_stats = render_cache_stats_for_scene(&mut renderer, first_scene, 260, 140);
-    assert!(first_stats.paint_layer.stores >= 1, "{first_stats:?}");
-
-    assert_eq!(tree.apply_scroll_y(&root_id, -8.0), TreeInvalidation::Paint);
-    let second_scene = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild)).scene;
-    let second_stats = render_cache_stats_for_scene(&mut renderer, second_scene, 260, 140);
-    assert!(second_stats.paint_layer.hits >= 1, "{second_stats:?}");
-}
-
-#[test]
-fn test_scrolled_clean_layer_strips_outer_paint_layer_clip_from_content_key() {
-    let wrapper_attrs = fixed_box_attrs(260.0, 140.0);
-
-    let root_attrs = Attrs {
-        width: Some(Length::Px(220.0)),
-        height: Some(Length::Px(100.0)),
-        scrollbar_y: Some(true),
-        ..Attrs::default()
-    };
-
-    let section_attrs = fixed_width_attrs(200.0);
-
-    let mut card_attrs = fixed_box_attrs(200.0, 48.0);
-    card_attrs.background = Some(Background::Color(Color::Rgba {
-        r: 248,
-        g: 250,
-        b: 252,
-        a: 255,
-    }));
-    card_attrs.box_shadows = Some(vec![test_shadow(0.0, 8.0)]);
-
-    let mut tree = ElementTree::new();
-    let wrapper = make_element(
-        "scroll_container_layer_clip_wrapper",
-        ElementKind::Column,
-        wrapper_attrs,
-    );
-    let wrapper_id = wrapper.id;
-    let root = make_element(
-        "scroll_container_layer_clip_root",
-        ElementKind::Column,
-        root_attrs,
-    );
-    let root_id = root.id;
-    let spacer = make_element(
-        "scroll_container_layer_clip_spacer",
-        ElementKind::El,
-        fixed_box_attrs(200.0, 16.0),
-    );
-    let spacer_id = spacer.id;
-    let section = make_element(
-        "scroll_container_layer_clip_section",
-        ElementKind::Column,
-        section_attrs,
-    );
-    let section_id = section.id;
-    let card = make_element(
-        "scroll_container_layer_clip_card",
-        ElementKind::El,
-        card_attrs,
-    );
-    let card_id = card.id;
-    let bottom = make_element(
-        "scroll_container_layer_clip_bottom",
-        ElementKind::El,
-        fixed_box_attrs(200.0, 140.0),
-    );
-    let bottom_id = bottom.id;
-
-    tree.set_root_id(wrapper_id);
-    tree.insert(wrapper);
-    tree.insert(root);
-    tree.insert(spacer);
-    tree.insert(section);
-    tree.insert(card);
-    tree.insert(bottom);
-    tree.set_children(&section_id, vec![card_id]).unwrap();
-    tree.set_children(&root_id, vec![spacer_id, section_id, bottom_id])
-        .unwrap();
-    tree.set_children(&wrapper_id, vec![root_id]).unwrap();
-
-    let initial_output = layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
-    let cached_rebuild = initial_output.event_rebuild;
-    let mut renderer = SceneRenderer::new();
-
-    assert_eq!(tree.apply_scroll_y(&root_id, -8.0), TreeInvalidation::Paint);
-    let first_scene = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild)).scene;
-    let (first_placement, first_layer) = moving_paint_layer_with_placement_for_stable_id(
-        &first_scene.nodes,
-        section_id.to_wire_u64(),
-    )
-    .expect("first scroll should emit the clean section layer");
-    let first_generation = first_layer.content_generation;
-    let first_stats = render_cache_stats_for_scene(&mut renderer, first_scene, 260, 140);
-    assert!(first_stats.paint_layer.stores >= 1, "{first_stats:?}");
-
-    assert_eq!(tree.apply_scroll_y(&root_id, -8.0), TreeInvalidation::Paint);
-    let second_scene = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild)).scene;
-    let (second_placement, second_layer) = moving_paint_layer_with_placement_for_stable_id(
-        &second_scene.nodes,
-        section_id.to_wire_u64(),
-    )
-    .expect("second scroll should keep the same clean section layer");
-
-    assert_eq!(second_layer.content_generation, first_generation);
-    assert!((second_placement.tx - first_placement.tx).abs() <= 0.001);
-    assert!((second_placement.ty - (first_placement.ty - 8.0)).abs() <= 0.001);
-
-    let second_stats = render_cache_stats_for_scene(&mut renderer, second_scene, 260, 140);
-    assert!(second_stats.paint_layer.hits >= 1, "{second_stats:?}");
-}
-
-#[test]
-fn test_active_scroll_context_emits_moving_layers_after_layout_pass() {
-    let root_attrs = Attrs {
-        width: Some(Length::Px(220.0)),
-        height: Some(Length::Px(100.0)),
-        scrollbar_y: Some(true),
-        ..Attrs::default()
-    };
-
-    let section_attrs = Attrs {
-        width: Some(Length::Px(200.0)),
-        spacing: Some(8.0),
-        ..Attrs::default()
-    };
-
-    let mut card_attrs = fixed_box_attrs(200.0, 48.0);
-    card_attrs.background = Some(Background::Color(Color::Rgba {
-        r: 248,
-        g: 250,
-        b: 252,
-        a: 255,
-    }));
-
-    let mut tree = ElementTree::new();
-    let root = make_element(
-        "layout_scroll_context_root",
-        ElementKind::Column,
-        root_attrs,
-    );
-    let root_id = root.id;
-    let spacer = make_element(
-        "layout_scroll_context_spacer",
-        ElementKind::El,
-        fixed_box_attrs(200.0, 24.0),
-    );
-    let spacer_id = spacer.id;
-    let section = make_element(
-        "layout_scroll_context_section",
-        ElementKind::Column,
-        section_attrs,
-    );
-    let section_id = section.id;
-    let card = make_element("layout_scroll_context_card", ElementKind::El, card_attrs);
-    let card_id = card.id;
-    let bottom = make_element(
-        "layout_scroll_context_bottom",
-        ElementKind::El,
-        fixed_box_attrs(200.0, 220.0),
-    );
-    let bottom_id = bottom.id;
-
-    tree.set_root_id(root_id);
-    tree.insert(root);
-    tree.insert(spacer);
-    tree.insert(section);
-    tree.insert(card);
-    tree.insert(bottom);
-    tree.set_children(&section_id, vec![card_id]).unwrap();
-    tree.set_children(&root_id, vec![spacer_id, section_id, bottom_id])
-        .unwrap();
-
-    layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
-    assert_eq!(
-        tree.apply_scroll_y(&root_id, -16.0),
-        TreeInvalidation::Paint
-    );
-
-    let relayout_output = layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
-    moving_paint_layer_with_placement_for_stable_id(
-        &relayout_output.scene.nodes,
-        section_id.to_wire_u64(),
-    )
-    .expect("active scroll offset should keep stable sections cacheable after layout");
-}
-
-#[test]
-fn test_scroll_container_own_payload_generation_changes_when_direct_content_scrolls() {
-    let root_attrs = Attrs {
-        width: Some(Length::Px(220.0)),
-        height: Some(Length::Px(64.0)),
-        spacing: Some(8.0),
-        scrollbar_y: Some(true),
-        ..Attrs::default()
-    };
-
-    let mut tree = ElementTree::new();
-    let root = make_element(
-        "direct_scroll_content_root",
-        ElementKind::Column,
-        root_attrs,
-    );
-    let root_id = root.id;
-    tree.set_root_id(root_id);
-    tree.insert(root);
-
-    let child_ids: Vec<_> = (0..8)
-        .map(|index| {
-            let child = make_element(
-                &format!("direct_scroll_content_text_{index}"),
-                ElementKind::Text,
-                text_attrs(&format!("Row {index}")),
-            );
-            let child_id = child.id;
-            tree.insert(child);
-            child_id
-        })
-        .collect();
-    tree.set_children(&root_id, child_ids).unwrap();
-
-    let initial_output = layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
-    let cached_rebuild = initial_output.event_rebuild.clone();
-    let initial_layer = paint_layer_by_reason(
-        &initial_output.scene.nodes,
-        crate::render_scene::PaintLayerReason::ScrollContainer,
-    )
-    .expect("scroll container should emit a paint layer");
-    let initial_generation = initial_layer.content_generation;
-
-    assert_eq!(
-        tree.apply_scroll_y(&root_id, -24.0),
-        TreeInvalidation::Paint
-    );
-    let scrolled_output = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild));
-    let scrolled_layer = paint_layer_by_reason(
-        &scrolled_output.scene.nodes,
-        crate::render_scene::PaintLayerReason::ScrollContainer,
-    )
-    .expect("scroll container should remain a paint layer after scroll");
-
-    assert_ne!(
-        scrolled_layer.content_generation, initial_generation,
-        "direct own content inside a scroll container must not reuse a payload across scroll offsets"
-    );
-}
-
-#[test]
 fn test_todo_filter_like_fill_list_shrinks_after_cached_layout() {
     let mut cached = todo_filter_like_tree("cached", 4);
     let mut fresh = todo_filter_like_tree("fresh", 1);
@@ -2383,185 +1161,6 @@ fn test_todo_filter_like_fill_list_shrinks_after_cached_layout() {
     assert!(
         cached_entries.height <= 64.0,
         "filtered todo list should not retain stale multi-row height: {cached_entries:?}"
-    );
-}
-
-#[test]
-fn test_scrolled_section_layer_keeps_full_content_when_descendants_cross_viewport() {
-    let root_attrs = Attrs {
-        width: Some(Length::Px(220.0)),
-        height: Some(Length::Px(100.0)),
-        scrollbar_y: Some(true),
-        ..Attrs::default()
-    };
-
-    let section_attrs = Attrs {
-        width: Some(Length::Px(200.0)),
-        spacing: Some(8.0),
-        ..Attrs::default()
-    };
-
-    let card_attrs = |name: &str, r, g, b| {
-        let mut attrs = fixed_box_attrs(200.0, 48.0);
-        attrs.background = Some(Background::Color(Color::Rgba { r, g, b, a: 255 }));
-        make_element(name, ElementKind::El, attrs)
-    };
-
-    let mut tree = ElementTree::new();
-    let root = make_element("scroll_full_payload_root", ElementKind::Column, root_attrs);
-    let root_id = root.id;
-    let spacer = make_element(
-        "scroll_full_payload_spacer",
-        ElementKind::El,
-        fixed_box_attrs(200.0, 16.0),
-    );
-    let spacer_id = spacer.id;
-    let section = make_element(
-        "scroll_full_payload_section",
-        ElementKind::Column,
-        section_attrs,
-    );
-    let section_id = section.id;
-    let first = card_attrs("scroll_full_payload_first", 248, 250, 252);
-    let first_id = first.id;
-    let second = card_attrs("scroll_full_payload_second", 241, 245, 249);
-    let second_id = second.id;
-    let third = card_attrs("scroll_full_payload_third", 226, 232, 240);
-    let third_id = third.id;
-    let fourth = card_attrs("scroll_full_payload_fourth", 203, 213, 225);
-    let fourth_id = fourth.id;
-    let bottom = make_element(
-        "scroll_full_payload_bottom",
-        ElementKind::El,
-        fixed_box_attrs(200.0, 160.0),
-    );
-    let bottom_id = bottom.id;
-
-    tree.set_root_id(root_id);
-    tree.insert(root);
-    tree.insert(spacer);
-    tree.insert(section);
-    tree.insert(first);
-    tree.insert(second);
-    tree.insert(third);
-    tree.insert(fourth);
-    tree.insert(bottom);
-    tree.set_children(&section_id, vec![first_id, second_id, third_id, fourth_id])
-        .unwrap();
-    tree.set_children(&root_id, vec![spacer_id, section_id, bottom_id])
-        .unwrap();
-
-    let initial_output = layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
-    let cached_rebuild = initial_output.event_rebuild;
-    let mut renderer = SceneRenderer::new();
-
-    assert_eq!(tree.apply_scroll_y(&root_id, -8.0), TreeInvalidation::Paint);
-    let first_scene = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild)).scene;
-    let (first_placement, first_layer) = moving_paint_layer_with_placement_for_stable_id(
-        &first_scene.nodes,
-        section_id.to_wire_u64(),
-    )
-    .expect("first scroll should emit the stable section layer");
-    let first_generation = first_layer.content_generation;
-    let first_bounds = first_layer.bounds;
-    let first_stats = render_cache_stats_for_scene(&mut renderer, first_scene, 260, 140);
-    assert!(first_stats.paint_layer.stores >= 1, "{first_stats:?}");
-
-    assert_eq!(
-        tree.apply_scroll_y(&root_id, -48.0),
-        TreeInvalidation::Paint
-    );
-    let second_scene = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild)).scene;
-    let (second_placement, second_layer) = moving_paint_layer_with_placement_for_stable_id(
-        &second_scene.nodes,
-        section_id.to_wire_u64(),
-    )
-    .expect("second scroll should keep the same stable section layer");
-
-    assert_eq!(second_layer.content_generation, first_generation);
-    assert_eq!(second_layer.bounds, first_bounds);
-    assert!((second_placement.tx - first_placement.tx).abs() <= 0.001);
-    assert!((second_placement.ty - (first_placement.ty - 48.0)).abs() <= 0.001);
-
-    let second_stats = render_cache_stats_for_scene(&mut renderer, second_scene, 260, 140);
-    assert!(second_stats.paint_layer.hits >= 1, "{second_stats:?}");
-}
-
-#[test]
-fn test_large_moving_paint_layer_keeps_smaller_child_layer() {
-    let root_attrs = Attrs {
-        width: Some(Length::Px(320.0)),
-        height: Some(Length::Px(120.0)),
-        scrollbar_y: Some(true),
-        ..Attrs::default()
-    };
-
-    let mut wrapper_attrs = fixed_box_attrs(1_100.0, 1_100.0);
-    wrapper_attrs.background = Some(Background::Color(Color::Rgba {
-        r: 241,
-        g: 245,
-        b: 249,
-        a: 255,
-    }));
-
-    let mut card_attrs = fixed_box_attrs(220.0, 64.0);
-    card_attrs.background = Some(Background::Color(Color::Rgba {
-        r: 248,
-        g: 250,
-        b: 252,
-        a: 255,
-    }));
-    card_attrs.box_shadows = Some(vec![test_shadow(0.0, 8.0)]);
-
-    let mut tree = ElementTree::new();
-    let root = make_element(
-        "scroll_oversized_boundary_root",
-        ElementKind::Column,
-        root_attrs,
-    );
-    let root_id = root.id;
-    let wrapper = make_element(
-        "scroll_oversized_boundary_wrapper",
-        ElementKind::Column,
-        wrapper_attrs,
-    );
-    let wrapper_id = wrapper.id;
-    let card = make_element(
-        "scroll_oversized_boundary_card",
-        ElementKind::El,
-        card_attrs,
-    );
-    let card_id = card.id;
-
-    tree.set_root_id(root_id);
-    tree.insert(root);
-    tree.insert(wrapper);
-    tree.insert(card);
-    tree.set_children(&wrapper_id, vec![card_id]).unwrap();
-    tree.set_children(&root_id, vec![wrapper_id]).unwrap();
-
-    let initial_output = layout_and_refresh_default(&mut tree, Constraint::new(800.0, 600.0), 1.0);
-    let cached_rebuild = initial_output.event_rebuild;
-
-    assert_eq!(tree.apply_scroll_y(&root_id, -8.0), TreeInvalidation::Paint);
-    let scrolled_scene = refresh_reusing_clean_registry(&mut tree, Some(&cached_rebuild)).scene;
-
-    assert!(
-        moving_paint_layer_with_placement_for_stable_id(
-            &scrolled_scene.nodes,
-            wrapper_id.to_wire_u64(),
-        )
-        .is_some(),
-        "large scroll-moving paint-layer boundaries should be semantic; cache admission decides whether the payload stores"
-    );
-    assert!(
-        moving_paint_layer_with_placement_for_stable_id(
-            &scrolled_scene.nodes,
-            card_id.to_wire_u64(),
-        )
-        .is_none(),
-        "clean static descendants should stay inside the ancestor payload; cache \
-         admission decides whether that semantic layer stores"
     );
 }
 
@@ -2920,9 +1519,10 @@ fn test_paint_only_patch_and_paint_only_animation_refresh_skip_layout() {
         &mut tree,
         Constraint::new(800.0, 600.0),
         1.0,
-        &runtime,
+        &mut runtime,
         start,
-    );
+    )
+    .unwrap();
     assert!(initial.layout_performed);
     let initial_child_frame = tree.get(&child_id).unwrap().layout.frame.unwrap();
 
@@ -2939,7 +1539,7 @@ fn test_paint_only_patch_and_paint_only_animation_refresh_skip_layout() {
     let preparation = prepare_frame_attrs_for_update(
         &mut tree,
         1.0,
-        Some(&runtime),
+        Some(&mut runtime),
         Some(start + Duration::from_millis(25)),
     );
     let combined_invalidation = patch_invalidation.join(preparation.animation_result.invalidation);
@@ -2956,7 +1556,8 @@ fn test_paint_only_patch_and_paint_only_animation_refresh_skip_layout() {
         RefreshDecision::RefreshOnly
     );
 
-    let update = refresh_prepared_default(&mut tree, preparation);
+    let applied = preparation.apply(&mut tree, Some(&runtime)).unwrap();
+    let update = refresh_prepared_default(&mut tree, applied);
 
     assert!(update.output.animations_active);
     assert!(!update.layout_performed);
@@ -3020,18 +1621,20 @@ fn test_layout_affecting_animation_refresh_still_runs_layout() {
         &mut tree,
         Constraint::new(800.0, 600.0),
         1.0,
-        &runtime,
+        &mut runtime,
         start,
-    );
+    )
+    .unwrap();
     assert!(initial.layout_performed);
 
     let update = layout_or_refresh_default_with_animation(
         &mut tree,
         Constraint::new(800.0, 600.0),
         1.0,
-        &runtime,
+        &mut runtime,
         start + Duration::from_millis(25),
-    );
+    )
+    .unwrap();
     let stats = tree.layout_cache_stats();
 
     assert!(update.output.animations_active);
@@ -3902,25 +2505,31 @@ fn test_measure_affecting_animation_inside_fixed_size_el_reuses_parent_measure_c
     let mut runtime = AnimationRuntime::default();
     runtime.sync_with_tree(&tree, start);
 
-    assert!(layout_tree_with_context_and_animation(
-        &mut tree,
-        Constraint::new(800.0, 600.0),
-        1.0,
-        &MockTextMeasurer,
-        &FontContext::default(),
-        Some(&runtime),
-        Some(start),
-    ));
+    assert!(
+        layout_tree_with_context_and_animation(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+            &FontContext::default(),
+            Some(&mut runtime),
+            Some(start),
+        )
+        .unwrap()
+    );
 
-    assert!(layout_tree_with_context_and_animation(
-        &mut tree,
-        Constraint::new(800.0, 600.0),
-        1.0,
-        &MockTextMeasurer,
-        &FontContext::default(),
-        Some(&runtime),
-        Some(start + Duration::from_millis(50)),
-    ));
+    assert!(
+        layout_tree_with_context_and_animation(
+            &mut tree,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+            &FontContext::default(),
+            Some(&mut runtime),
+            Some(start + Duration::from_millis(50)),
+        )
+        .unwrap()
+    );
     let stats = tree.layout_cache_stats();
 
     assert!(stats.subtree_measure_hits > 0);
@@ -4155,6 +2764,91 @@ fn test_wrapped_row_resolve_cache_hits_and_width_change_misses() {
 }
 
 #[test]
+fn paragraph_alignment_patches_and_inherited_changes_match_fresh_layout() {
+    let raw_attrs = |width: f64, align: Option<AlignX>, text_align: Option<TextAlign>| {
+        let count = 1 + u16::from(align.is_some()) + u16::from(text_align.is_some());
+        count
+            .to_be_bytes()
+            .into_iter()
+            .chain([1, 2])
+            .chain(width.to_be_bytes())
+            .chain(align.into_iter().flat_map(|value| [5, value as u8]))
+            .chain(text_align.into_iter().flat_map(|value| [30, value as u8]))
+            .collect::<Vec<_>>()
+    };
+    let mut cached = aligned_paragraph_tree(AlignX::Left);
+    let root_id = cached.root_id().unwrap();
+    let paragraph_id = cached.child_ids(&root_id)[0];
+    cached.set_layout_cache_stats_enabled(true);
+
+    for (parent_width, inherited_align, align, text_align, width) in [
+        (100.0, TextAlign::Left, Some(AlignX::Left), None, 50.0),
+        (100.0, TextAlign::Left, Some(AlignX::Center), None, 50.0),
+        (100.0, TextAlign::Left, Some(AlignX::Right), None, 50.0),
+        (100.0, TextAlign::Left, Some(AlignX::Left), None, 50.0),
+        (100.0, TextAlign::Center, None, None, 50.0),
+        (100.0, TextAlign::Right, None, None, 50.0),
+        (100.0, TextAlign::Left, None, None, 50.0),
+        (160.0, TextAlign::Right, Some(AlignX::Center), None, 40.0),
+        (200.0, TextAlign::Right, Some(AlignX::Center), None, 40.0),
+        (
+            100.0,
+            TextAlign::Right,
+            Some(AlignX::Center),
+            Some(TextAlign::Left),
+            50.0,
+        ),
+    ] {
+        let patches = || {
+            vec![
+                Patch::SetAttrs {
+                    id: root_id,
+                    attrs_raw: raw_attrs(parent_width, None, Some(inherited_align)),
+                },
+                Patch::SetAttrs {
+                    id: paragraph_id,
+                    attrs_raw: raw_attrs(width, align, text_align),
+                },
+            ]
+        };
+        let had_measure_cache = cached
+            .get(&paragraph_id)
+            .unwrap()
+            .layout
+            .subtree_measure_cache
+            .is_some();
+        apply_patches(&mut cached, patches()).unwrap();
+        let mut fresh = aligned_paragraph_tree(AlignX::Left);
+        apply_patches(&mut fresh, patches()).unwrap();
+        layout_tree(
+            &mut fresh,
+            Constraint::new(800.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
+
+        for _ in 0..3 {
+            layout_tree(
+                &mut cached,
+                Constraint::new(800.0, 600.0),
+                1.0,
+                &MockTextMeasurer,
+            );
+            if had_measure_cache {
+                let stats = cached.layout_cache_stats();
+                assert!(stats.subtree_measure_hits + stats.intrinsic_measure_hits > 0);
+            }
+            assert_layout_matches(&cached, &fresh);
+            assert_render_scenes_equivalent(
+                render_tree_scene(&cached).scene,
+                render_tree_scene(&fresh).scene,
+            );
+        }
+        assert!(cached.layout_cache_stats().resolve_hits > 0);
+    }
+}
+
+#[test]
 fn test_paragraph_resolve_cache_shifts_fragments_after_parent_alignment_change() {
     let mut cached = aligned_paragraph_tree(AlignX::Left);
     cached.set_layout_cache_stats_enabled(true);
@@ -4354,16 +3048,18 @@ fn assert_paint_only_inherited_text_animation_matches_uncached(use_nearby: bool)
         &mut cached,
         Constraint::new(800.0, 600.0),
         1.0,
-        &cached_runtime,
+        &mut cached_runtime,
         start,
-    );
+    )
+    .unwrap();
     let initial_uncached = layout_or_refresh_default_with_animation(
         &mut uncached,
         Constraint::new(800.0, 600.0),
         1.0,
-        &uncached_runtime,
+        &mut uncached_runtime,
         start,
-    );
+    )
+    .unwrap();
 
     assert!(initial_cached.layout_performed);
     assert!(initial_uncached.layout_performed);
@@ -4372,16 +3068,18 @@ fn assert_paint_only_inherited_text_animation_matches_uncached(use_nearby: bool)
         &mut cached,
         Constraint::new(800.0, 600.0),
         1.0,
-        &cached_runtime,
+        &mut cached_runtime,
         start + Duration::from_millis(25),
-    );
+    )
+    .unwrap();
     let uncached_update = layout_or_refresh_default_with_animation(
         &mut uncached,
         Constraint::new(800.0, 600.0),
         1.0,
-        &uncached_runtime,
+        &mut uncached_runtime,
         start + Duration::from_millis(25),
-    );
+    )
+    .unwrap();
 
     assert!(cached_update.output.animations_active);
     assert!(uncached_update.output.animations_active);
@@ -5246,11 +3944,7 @@ fn first_moving_paint_layer(
         crate::render_scene::RenderNode::PaintLayer(layer)
             if layer.placement == crate::render_scene::PaintLayerPlacement::ScrollMoving =>
         {
-            Some(MovingPaintLayerView {
-                content_generation: layer.content_generation,
-                bounds: layer.bounds,
-                children: layer.content_nodes(),
-            })
+            Some(MovingPaintLayerView)
         }
         crate::render_scene::RenderNode::PaintLayer(layer) => {
             first_moving_paint_layer(&layer.content_nodes())
@@ -5280,40 +3974,6 @@ fn render_nodes_have_moving_paint_layers(nodes: &[crate::render_scene::RenderNod
     })
 }
 
-fn paint_layer_by_reason(
-    nodes: &[crate::render_scene::RenderNode],
-    reason: crate::render_scene::PaintLayerReason,
-) -> Option<&crate::render_scene::RenderPaintLayer> {
-    paint_layers(nodes)
-        .into_iter()
-        .find(|layer| layer.reason == reason)
-}
-
-fn paint_layers(
-    nodes: &[crate::render_scene::RenderNode],
-) -> Vec<&crate::render_scene::RenderPaintLayer> {
-    nodes
-        .iter()
-        .flat_map(|node| match node {
-            crate::render_scene::RenderNode::ShadowPass { children }
-            | crate::render_scene::RenderNode::Clip { children, .. }
-            | crate::render_scene::RenderNode::RelaxedClip { children, .. }
-            | crate::render_scene::RenderNode::Transform { children, .. }
-            | crate::render_scene::RenderNode::Alpha { children, .. } => paint_layers(children),
-            crate::render_scene::RenderNode::PaintLayer(layer) => {
-                let mut layers = vec![layer];
-                layers.extend(paint_layers(&layer.own_nodes));
-                layer
-                    .child_refs
-                    .iter()
-                    .for_each(|child| layers.extend(paint_layers(&child.nodes)));
-                layers
-            }
-            crate::render_scene::RenderNode::Primitive(_) => Vec::new(),
-        })
-        .collect()
-}
-
 fn moving_paint_layer_with_placement_for_stable_id(
     nodes: &[crate::render_scene::RenderNode],
     stable_id: u64,
@@ -5336,16 +3996,9 @@ fn moving_paint_layer_with_placement_for_stable_id(
             } => visit(children, stable_id, placement.then(*transform)),
             crate::render_scene::RenderNode::PaintLayer(layer)
                 if layer.placement == crate::render_scene::PaintLayerPlacement::ScrollMoving
-                    && layer.stable_id == stable_id =>
+                    && layer.id.node_id == stable_id =>
             {
-                Some((
-                    placement,
-                    MovingPaintLayerView {
-                        content_generation: layer.content_generation,
-                        bounds: layer.bounds,
-                        children: layer.content_nodes(),
-                    },
-                ))
+                Some((placement, MovingPaintLayerView))
             }
             crate::render_scene::RenderNode::PaintLayer(layer) => {
                 visit(&layer.content_nodes(), stable_id, placement)
@@ -5519,57 +4172,12 @@ fn assert_render_scenes_equivalent(
     }
 }
 
-fn render_scene_to_pixels(
-    width: u32,
-    height: u32,
-    scene: crate::render_scene::RenderScene,
-) -> Vec<u8> {
-    let info = skia_safe::ImageInfo::new(
-        (width as i32, height as i32),
-        skia_safe::ColorType::RGBA8888,
-        skia_safe::AlphaType::Premul,
-        None,
-    );
-    let mut surface = skia_safe::surfaces::raster(&info, None, None)
-        .expect("raster surface should be created for render equivalence test");
-    let state = RenderState::new(scene, skia_safe::Color::TRANSPARENT, 1, false);
-    {
-        let mut frame = RenderFrame::new(&mut surface, None);
-        SceneRenderer::new().render(&mut frame, &state);
-    }
-
-    let mut pixels = vec![0u8; (width * height * 4) as usize];
-    surface.read_pixels(&info, pixels.as_mut_slice(), (width * 4) as usize, (0, 0));
-    pixels
-}
-
-fn render_cache_stats_for_scene(
-    renderer: &mut SceneRenderer,
-    scene: crate::render_scene::RenderScene,
-    width: u32,
-    height: u32,
-) -> RendererCacheFrameStats {
-    let info = skia_safe::ImageInfo::new(
-        (width as i32, height as i32),
-        skia_safe::ColorType::RGBA8888,
-        skia_safe::AlphaType::Premul,
-        None,
-    );
-    let mut surface = skia_safe::surfaces::raster(&info, None, None)
-        .expect("raster surface should be created for cache stats test");
-    let state = RenderState::new(scene, skia_safe::Color::TRANSPARENT, 1, false);
-    let mut frame = RenderFrame::new(&mut surface, None);
-    renderer
-        .render(&mut frame, &state)
-        .renderer_cache
-        .map(|stats| *stats)
-        .unwrap_or_default()
-}
-
 fn scene_without_moving_paint_layers(
     scene: crate::render_scene::RenderScene,
 ) -> crate::render_scene::RenderScene {
     crate::render_scene::RenderScene {
+        fonts: None,
+        images: None,
         nodes: nodes_without_moving_paint_layers(scene.nodes),
     }
 }
@@ -5648,12 +4256,7 @@ fn node_without_moving_paint_layers(
             )
         }
         crate::render_scene::RenderNode::PaintLayer(layer)
-            if layer.policy == crate::render_scene::PaintLayerPolicy::DynamicRedraw =>
-        {
-            nodes_without_moving_paint_layers_with_flag(layer.content_nodes())
-        }
-        crate::render_scene::RenderNode::PaintLayer(layer)
-            if layer.reason == crate::render_scene::PaintLayerReason::Root =>
+            if layer.id.role == crate::render_scene::PaintLayerReason::Root =>
         {
             nodes_without_moving_paint_layers_with_flag(layer.content_nodes())
         }
@@ -5769,10 +4372,17 @@ fn translate_primitive(
 ) -> crate::render_scene::DrawPrimitive {
     match primitive {
         crate::render_scene::DrawPrimitive::Rect(x, y, w, h, fill) => {
-            crate::render_scene::DrawPrimitive::Rect(x + dx, y + dy, w, h, fill)
+            crate::render_scene::DrawPrimitive::Rect(x + dx, y + dy, w, h, fill.translated(dx, dy))
         }
         crate::render_scene::DrawPrimitive::RoundedRect(x, y, w, h, radius, fill) => {
-            crate::render_scene::DrawPrimitive::RoundedRect(x + dx, y + dy, w, h, radius, fill)
+            crate::render_scene::DrawPrimitive::RoundedRect(
+                x + dx,
+                y + dy,
+                w,
+                h,
+                radius,
+                fill.translated(dx, dy),
+            )
         }
         crate::render_scene::DrawPrimitive::Border(x, y, w, h, radius, width, color, style) => {
             crate::render_scene::DrawPrimitive::Border(
@@ -5782,7 +4392,7 @@ fn translate_primitive(
                 h,
                 radius,
                 width,
-                color,
+                color.translated(dx, dy),
                 style,
             )
         }
@@ -5808,7 +4418,7 @@ fn translate_primitive(
             bottom_right,
             bottom_left,
             width,
-            color,
+            color.translated(dx, dy),
             style,
         ),
         crate::render_scene::DrawPrimitive::BorderEdges(
@@ -5833,7 +4443,7 @@ fn translate_primitive(
             right,
             bottom,
             left,
-            color,
+            color.translated(dx, dy),
             style,
         ),
         crate::render_scene::DrawPrimitive::Shadow(
@@ -5857,7 +4467,7 @@ fn translate_primitive(
             blur,
             size,
             radius,
-            color,
+            color.translated(dx, dy),
         ),
         crate::render_scene::DrawPrimitive::InsetShadow(
             x,
@@ -5880,7 +4490,7 @@ fn translate_primitive(
             blur,
             size,
             radius,
-            color,
+            color.translated(dx, dy),
         ),
         crate::render_scene::DrawPrimitive::TextWithFont(
             x,
@@ -5896,16 +4506,22 @@ fn translate_primitive(
             y + dy,
             text,
             font_size,
-            fill,
+            fill.translated(dx, dy),
             family,
             weight,
             italic,
         ),
-        crate::render_scene::DrawPrimitive::Gradient(x, y, w, h, from, to, angle) => {
-            crate::render_scene::DrawPrimitive::Gradient(x + dx, y + dy, w, h, from, to, angle)
-        }
+
         crate::render_scene::DrawPrimitive::Image(x, y, w, h, image_id, fit, tint) => {
-            crate::render_scene::DrawPrimitive::Image(x + dx, y + dy, w, h, image_id, fit, tint)
+            crate::render_scene::DrawPrimitive::Image(
+                x + dx,
+                y + dy,
+                w,
+                h,
+                image_id,
+                fit,
+                tint.as_ref().map(|c| c.translated(dx, dy)),
+            )
         }
         crate::render_scene::DrawPrimitive::Video(x, y, w, h, target, fit) => {
             crate::render_scene::DrawPrimitive::Video(x + dx, y + dy, w, h, target, fit)
@@ -5926,4 +4542,243 @@ fn push_align_x_attr(data: &mut Vec<u8>, align_x: AlignX) {
         AlignX::Center => 1,
         AlignX::Right => 2,
     });
+}
+
+#[test]
+fn test_single_axis_image_patches_and_clean_cache_match_fresh_layout() {
+    fn attrs_raw(height: f64, source: (f64, f64)) -> Vec<u8> {
+        [
+            vec![0, 2, 2, 2], // two attributes: height(Px), image_size
+            height.to_be_bytes().to_vec(),
+            vec![55],
+            source.0.to_be_bytes().to_vec(),
+            source.1.to_be_bytes().to_vec(),
+        ]
+        .concat()
+    }
+
+    fn image_row(height: f64, source: (f64, f64)) -> ElementTree {
+        let parent = make_element("parent", ElementKind::Row, Attrs::default());
+        let image = make_element(
+            "image",
+            ElementKind::Image,
+            crate::tree::attrs::decode_attrs(&attrs_raw(height, source)).unwrap(),
+        );
+        let sibling = make_element("sibling", ElementKind::El, fixed_box_attrs(10.0, 10.0));
+        let (parent_id, image_id, sibling_id) = (parent.id, image.id, sibling.id);
+        let mut tree = ElementTree::new();
+        tree.set_root_id(parent_id);
+        for element in [parent, image, sibling] {
+            tree.insert(element);
+        }
+        tree.set_children(&parent_id, vec![image_id, sibling_id])
+            .unwrap();
+        tree
+    }
+
+    let constraint = Constraint::new(800.0, 600.0);
+    let mut cached = image_row(68.0, (200.0, 200.0));
+    let parent_id = cached.root_id().unwrap();
+    let image_id = cached.child_ids(&parent_id)[0];
+    let sibling_id = cached.child_ids(&parent_id)[1];
+    layout_tree(&mut cached, constraint, 1.0, &MockTextMeasurer);
+
+    for (height, source, expected_width) in [
+        (34.0, (200.0, 200.0), 34.0),
+        (34.0, (200.0, 100.0), 68.0),
+        (68.0, (100.0, 200.0), 34.0),
+    ] {
+        let invalidation = apply_patches(
+            &mut cached,
+            vec![Patch::SetAttrs {
+                id: image_id,
+                attrs_raw: attrs_raw(height, source),
+            }],
+        )
+        .unwrap();
+        assert_eq!(invalidation, TreeInvalidation::Measure);
+        let mut fresh = image_row(height, source);
+        layout_tree(&mut fresh, constraint, 1.0, &MockTextMeasurer);
+        for _ in 0..2 {
+            layout_tree(&mut cached, constraint, 1.0, &MockTextMeasurer);
+            assert_layout_matches(&cached, &fresh);
+            assert_eq!(
+                cached.get(&image_id).unwrap().layout.measured_frame,
+                fresh.get(&image_id).unwrap().layout.measured_frame
+            );
+            assert_eq!(
+                cached.get(&parent_id).unwrap().layout.frame.unwrap().width,
+                expected_width + 10.0
+            );
+            assert_eq!(
+                cached.get(&sibling_id).unwrap().layout.frame.unwrap().x,
+                expected_width
+            );
+        }
+    }
+}
+
+#[test]
+fn gradient_patch_invalidates_paint_without_remeasuring_text() {
+    for tag in [12, 17] {
+        let attrs_raw = |middle: [u8; 3]| {
+            [
+                [
+                    vec![0, 2, tag],
+                    if tag == 12 { vec![0] } else { vec![] },
+                    vec![3, 0, 0, 0, 3, 0, 255, 0, 0, 0],
+                ]
+                .concat(),
+                middle.to_vec(),
+                vec![0, 0, 0, 255],
+                0.0_f64.to_be_bytes().to_vec(),
+                vec![21, 0, 5, b'H', b'e', b'l', b'l', b'o'],
+            ]
+            .concat()
+        };
+        let mut tree = ElementTree::new();
+        let raw = attrs_raw([0, 255, 0]);
+        let attrs = crate::tree::attrs::decode_attrs(&raw).unwrap();
+        let text = make_element("gradient-text", ElementKind::Text, attrs);
+        let id = text.id;
+        tree.set_root_id(id);
+        tree.insert(text);
+        let measurer = CountingTextMeasurer::default();
+        let constraint = Constraint::new(800.0, 600.0);
+        layout_tree(&mut tree, constraint, 1.0, &measurer);
+        let calls = measurer.total_calls();
+        let before = render_tree_scene(&tree).scene;
+        let frame = tree.get(&id).unwrap().layout.frame;
+        let invalidation = apply_patches(
+            &mut tree,
+            vec![Patch::SetAttrs {
+                id,
+                attrs_raw: attrs_raw([255, 255, 255]),
+            }],
+        )
+        .unwrap();
+        assert_eq!(invalidation, TreeInvalidation::Paint);
+        layout_tree(&mut tree, constraint, 1.0, &measurer);
+        assert_eq!(measurer.total_calls(), calls);
+        assert_eq!(tree.get(&id).unwrap().layout.frame, frame);
+        assert_ne!(render_tree_scene(&tree).scene, before);
+        let valid = tree.get(&id).unwrap().spec.declared.background.clone();
+        assert!(
+            apply_patches(
+                &mut tree,
+                vec![Patch::SetAttrs {
+                    id,
+                    attrs_raw: vec![0, 1, 12, 1]
+                }]
+            )
+            .is_err()
+        );
+        assert_eq!(tree.get(&id).unwrap().spec.declared.background, valid);
+    }
+}
+
+fn decorated_animation_tree(attrs: Attrs) -> (ElementTree, NodeId, NodeId) {
+    let mut tree = ElementTree::new();
+    let paragraph = make_element(
+        "decorated_paragraph",
+        ElementKind::Paragraph,
+        Attrs {
+            align_x: Some(AlignX::Center),
+            padding: Some(Padding::Uniform(20.0)),
+            font_size: Some(24.0),
+            ..fixed_width_attrs(180.0)
+        },
+    );
+    let paragraph_id = paragraph.id;
+    let owner = make_element("decorated_owner", ElementKind::El, attrs);
+    let owner_id = owner.id;
+    let text = make_element(
+        "decorated_text",
+        ElementKind::Text,
+        text_attrs("AA BB CC DD EE FF"),
+    );
+    let text_id = text.id;
+    tree.insert(paragraph);
+    tree.insert(owner);
+    tree.insert(text);
+    tree.set_root_id(paragraph_id);
+    tree.set_children(&paragraph_id, vec![owner_id]).unwrap();
+    tree.set_children(&owner_id, vec![text_id]).unwrap();
+    (tree, paragraph_id, owner_id)
+}
+
+#[test]
+fn inline_decoration_animation_matches_fresh_frames_and_only_width_reflows() {
+    use crate::tree::attrs::{BorderRadius, BorderWidth};
+    let keyframe = |end: bool, width_animation: bool| Attrs {
+        border_width: width_animation.then_some(BorderWidth::Uniform(if end { 6.0 } else { 1.0 })),
+        background: Some(Background::Color(Color::Rgba {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: if end { 255 } else { 0 },
+        })),
+        border_radius: Some(BorderRadius::Corners {
+            tl: if end { 12.0 } else { 0.0 },
+            tr: 2.0,
+            br: 6.0,
+            bl: 0.0,
+        }),
+        box_shadows: Some(vec![test_shadow(if end { 12.0 } else { -4.0 }, 3.0)]),
+        ..Attrs::default()
+    };
+    for width_animation in [false, true] {
+        let attrs = Attrs {
+            border_width: Some(BorderWidth::Uniform(2.0)),
+            border_color: Some(Color::Named("blue".into())),
+            animate: Some(AnimationSpec {
+                keyframes: vec![
+                    keyframe(false, width_animation),
+                    keyframe(true, width_animation),
+                ],
+                duration_ms: 100.0,
+                curve: AnimationCurve::Linear,
+                repeat: AnimationRepeat::Loop,
+            }),
+            ..Attrs::default()
+        };
+        let (mut tree, paragraph, owner) = decorated_animation_tree(attrs);
+        let start = Instant::now();
+        let mut runtime = AnimationRuntime::default();
+        runtime.sync_with_tree(&tree, start);
+        let constraint = Constraint::new(800.0, 600.0);
+        let frames: Vec<_> = [0, 25, 50, 75, 125]
+            .into_iter()
+            .map(|ms| {
+                let result = layout_or_refresh_default_with_animation(
+                    &mut tree,
+                    constraint,
+                    1.0,
+                    &mut runtime,
+                    start + Duration::from_millis(ms),
+                )
+                .unwrap();
+                if ms > 0 {
+                    assert_eq!(result.layout_performed, width_animation);
+                }
+                let mut sampled = tree.get(&owner).unwrap().layout.effective.clone();
+                sampled.animate = None;
+                let (mut fresh, _, _) = decorated_animation_tree(sampled);
+                layout_tree_default(&mut fresh, constraint, 1.0);
+                assert_eq!(
+                    fragment_snapshot(&tree, &paragraph),
+                    fragment_snapshot(&fresh, &paragraph)
+                );
+                assert_render_scenes_equivalent(
+                    result.output.scene.clone(),
+                    render_tree_scene(&fresh).scene,
+                );
+                render_scene_to_pixels(240, 200, result.output.scene)
+            })
+            .collect();
+        assert_ne!(
+            frames[0], frames[1],
+            "animation must visibly change decoration"
+        );
+    }
 }

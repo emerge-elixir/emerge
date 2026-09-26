@@ -278,7 +278,28 @@ pub fn apply_patches(
     let mut invalidation = TreeInvalidation::None;
 
     for patch in patches {
-        invalidation.add(apply_patch(tree, patch, batch_revision)?);
+        let structural = !matches!(patch, Patch::SetAttrs { .. });
+        let applied = match apply_patch(tree, patch, batch_revision) {
+            Ok(applied) => applied,
+            Err(error) => {
+                // A structural operation may fail after insertion/attachment has
+                // begun. Preserve conservative damage for that successful prefix.
+                if structural {
+                    tree.pending_patch_effects
+                        .invalidation
+                        .add(TreeInvalidation::Structure);
+                }
+                return Err(error);
+            }
+        };
+        invalidation.add(applied);
+        // Commit effects as each operation succeeds, never only at batch end.
+        tree.pending_patch_effects.invalidation.add(applied);
+    }
+    if !tree.pending_patch_effects.invalidation.is_dirty()
+        && tree.pending_patch_effects.sources.is_empty()
+    {
+        tree.finish_patch_frame();
     }
     Ok(invalidation)
 }
@@ -312,7 +333,18 @@ fn text_content_patch_layout_skip_path(
             continue;
         }
 
+        // The manual path only knows this label's width. Do not bypass layout
+        // when resizing its column could reflow siblings/ancestors or Nearby.
+        let fixed_column = matches!(parent.layout.effective.width, Some(Length::Px(_)));
+        let isolated_root = tree.root_id() == Some(parent.id)
+            && tree.child_ixs(parent_ix).len() == 1
+            && tree.nearby_ixs(parent_ix).is_empty();
         return (parent.spec.kind == ElementKind::Column
+            && (fixed_column || isolated_root)
+            && parent.layout.dimension_samples.is_none()
+            && parent.layout.effective.layout_rotate.is_none()
+            && !effective_scrollbar_x(&parent.layout.effective)
+            && !effective_scrollbar_y(&parent.layout.effective)
             && parent.layout.effective.align_x.unwrap_or(AlignX::Left) == AlignX::Left
             && !attrs_affect_interaction_or_registry(&parent.layout.effective))
         .then_some(TextContentPatchLayoutSkipPath {
@@ -330,6 +362,7 @@ fn plain_single_child_wrapper_contains(
     wrapper: &Element,
 ) -> bool {
     matches!(wrapper.spec.kind, ElementKind::El | ElementKind::None)
+        && wrapper.layout.dimension_samples.is_none()
         && plain_wrapper_attrs(&wrapper.layout.effective)
         && tree.child_ixs(wrapper_ix).as_slice() == [child_ix]
         && tree.nearby_ixs(wrapper_ix).is_empty()
@@ -338,6 +371,7 @@ fn plain_single_child_wrapper_contains(
 fn plain_wrapper_attrs(attrs: &Attrs) -> bool {
     attrs.width.is_none()
         && attrs.height.is_none()
+        && attrs.align_x.unwrap_or(AlignX::Left) == AlignX::Left
         && attrs.layout_scale.is_none()
         && attrs.layout_rotate.is_none()
         && attrs.padding.is_none()
@@ -368,6 +402,7 @@ fn plain_text_content_change_can_paint_without_layout(
     after: &Attrs,
 ) -> bool {
     element.spec.kind == ElementKind::Text
+        && element.layout.dimension_samples.is_none()
         && before.content != after.content
         && content_is_single_line(before.content.as_deref())
         && content_is_single_line(after.content.as_deref())
@@ -473,6 +508,16 @@ fn refresh_text_content_layout_skip_frames(
     let Some(text_frame) = refreshed_text_content_frame(tree, path.text_ix) else {
         return false;
     };
+    for ix in path
+        .wrapper_ixs
+        .iter()
+        .copied()
+        .chain([path.text_ix, path.column_ix])
+    {
+        if let Some(id) = tree.id_of(ix) {
+            tree.capture_animation_source(&id);
+        }
+    }
     resize_all_layout_frames_ix(tree, path.text_ix, text_frame.width, text_frame.height);
 
     let mut child_width = text_frame.width;
@@ -518,15 +563,27 @@ fn refreshed_text_content_frame(tree: &ElementTree, text_ix: NodeIx) -> Option<F
         .or(inherited.font_word_spacing)
         .unwrap_or(0.0);
     let measurer = SkiaTextMeasurer;
-    let width = measure_text_width_with_spacing_for_patch(
-        &measurer,
-        content,
-        font_size,
-        &family,
-        weight,
-        italic,
-        (letter_spacing, word_spacing),
-    );
+    let (width, height) = if letter_spacing == 0.0 && word_spacing == 0.0 {
+        measurer.measure_text_layout_with_font(content, font_size, &family, weight, italic)
+    } else {
+        (
+            measure_text_width_with_spacing_for_patch(
+                &measurer,
+                content,
+                font_size,
+                &family,
+                weight,
+                italic,
+                (letter_spacing, word_spacing),
+            ),
+            measurer
+                .measure_with_font(content, font_size, &family, weight, italic)
+                .1,
+        )
+    };
+    if height != frame.height {
+        return None;
+    }
     Some(Frame {
         width,
         height: frame.height,
@@ -605,21 +662,37 @@ fn refresh_left_column_content_width(tree: &mut ElementTree, column_ix: NodeIx) 
         return;
     };
     let insets = patch_content_insets(&attrs);
-    let max_child_width = tree
+    let (measured_width, visible_right) = tree
         .child_ixs(column_ix)
         .into_iter()
-        .filter_map(|ix| tree.get_ix(ix).and_then(|child| child.layout.frame))
-        .map(|frame| frame.width)
-        .fold(0.0, f32::max);
+        .filter_map(|ix| tree.get_ix(ix))
+        .fold((0.0_f32, 0.0_f32), |(measured, right), child| {
+            (
+                measured.max(child.layout.measured_frame.map_or(0.0, |f| f.width)),
+                right.max(child.layout.frame.map_or(0.0, |f| f.x - frame.x + f.width)),
+            )
+        });
     let intrinsic_width = resolve_intrinsic_length_for_patch(
         attrs.width.as_ref(),
-        max_child_width + insets.horizontal(),
+        measured_width + insets.horizontal(),
     );
     let resolved_width =
         resolve_frame_width_for_patch(attrs.width.as_ref(), intrinsic_width, frame.width);
-
-    resize_measured_layout_frames_ix(tree, column_ix, intrinsic_width, frame.height);
+    let measured_height = column
+        .layout
+        .measured_frame
+        .map_or(frame.height, |f| f.height);
+    resize_measured_layout_frames_ix(tree, column_ix, intrinsic_width, measured_height);
     resize_resolved_layout_frames_ix(tree, column_ix, resolved_width, frame.height);
+    if let Some(column) = tree.get_ix_mut(column_ix) {
+        let content_width = resolved_width.max(visible_right + insets.right);
+        for frame in [&mut column.layout.frame, &mut column.layout.render_frame]
+            .into_iter()
+            .flatten()
+        {
+            frame.content_width = content_width;
+        }
+    }
 }
 
 fn resize_all_layout_frames_ix(tree: &mut ElementTree, ix: NodeIx, width: f32, height: f32) {
@@ -640,6 +713,7 @@ fn resize_resolved_layout_frames_ix(tree: &mut ElementTree, ix: NodeIx, width: f
     if let Some(element) = tree.get_ix_mut(ix) {
         resize_frame_option(&mut element.layout.frame, width, height);
         resize_frame_option(&mut element.layout.render_frame, width, height);
+        element.layout.dimension_facts.initial[0] = width;
         element.layout.resolve_cache = None;
     }
 }
@@ -880,61 +954,80 @@ fn apply_patch(
 ) -> Result<TreeInvalidation, String> {
     let invalidation = match patch {
         Patch::SetAttrs { id, attrs_raw } => {
-            let text_content_layout_skip_path = text_content_patch_layout_skip_path(tree, &id);
-            let before_declared_attrs = tree
+            let defer_presentation = tree.animation_authority.deferred();
+            let text_content_layout_skip_path = tree
+                .ix_of(&id)
+                .filter(|_| !defer_presentation)
+                .filter(|&ix| tree.nearby_ixs(ix).is_empty())
+                .and_then(|_| text_content_patch_layout_skip_path(tree, &id));
+            let node = tree
                 .get(&id)
-                .ok_or_else(|| "SetAttrs: node not found".to_string())?
-                .spec
-                .declared
-                .clone();
+                .ok_or_else(|| "SetAttrs: node not found".to_string())?;
+            let before_declared_attrs = &node.spec.declared;
             let mut decoded = decode_attrs(&attrs_raw).map_err(|e| e.to_string())?;
+            super::animation::change::validate_transition(before_declared_attrs, &decoded)?;
+            // Normalize runtime-owned patch markers before deciding whether a
+            // presentation preimage is needed. Marker-only writes stay registry-only.
+            let content_is_from_patch =
+                node.spec.kind.is_text_input_family() && decoded.content.is_some();
+            let text_input_is_focused =
+                node.spec.kind.is_text_input_family() && node.runtime.text_input_focused;
+            let pending_content = if content_is_from_patch && text_input_is_focused {
+                std::mem::replace(&mut decoded.content, node.spec.declared.content.clone())
+            } else {
+                None
+            };
+            let slider_value_is_from_patch =
+                node.spec.kind == ElementKind::Slider && decoded.slider_value.is_some();
+            let slider_value_is_runtime_owned = node.spec.kind == ElementKind::Slider
+                && node.runtime.slider_value_origin == SliderValueOrigin::Event;
+            let pending_slider = if slider_value_is_from_patch && slider_value_is_runtime_owned {
+                std::mem::replace(&mut decoded.slider_value, node.spec.declared.slider_value)
+            } else {
+                None
+            };
+            let changed = &decoded != before_declared_attrs;
             let paragraph_flow_dirty_ids =
-                if text_paint_attrs_changed(&before_declared_attrs, &decoded) {
+                if text_paint_attrs_changed(before_declared_attrs, &decoded) {
                     affected_paragraph_flow_roots(tree, &id)
                 } else {
                     Vec::new()
                 };
 
+            if changed {
+                tree.capture_animation_source(&id);
+            }
             let invalidation = {
                 let element = tree
                     .get_mut(&id)
                     .ok_or_else(|| "SetAttrs: node not found".to_string())?;
-                let before_attrs = before_declared_attrs.clone();
-                let before_patch_content = element.runtime.patch_content.clone();
-                let before_content_origin = element.runtime.text_input_content_origin;
-                let before_slider_patch_value = element.runtime.slider_patch_value;
-                let before_slider_value_origin = element.runtime.slider_value_origin;
 
                 element.spec.attrs_raw = attrs_raw;
-                let content_is_from_patch =
-                    element.spec.kind.is_text_input_family() && decoded.content.is_some();
-                let text_input_is_focused =
-                    element.spec.kind.is_text_input_family() && element.runtime.text_input_focused;
-                let slider_value_is_from_patch =
-                    element.spec.kind == ElementKind::Slider && decoded.slider_value.is_some();
-                let slider_value_is_runtime_owned = element.spec.kind == ElementKind::Slider
-                    && element.runtime.slider_value_origin == SliderValueOrigin::Event;
-
                 if content_is_from_patch && text_input_is_focused {
-                    element.runtime.patch_content = decoded.content.clone();
-                    decoded.content = element.spec.declared.content.clone();
+                    element.runtime.patch_content = pending_content;
                 } else if element.spec.kind.is_text_input_family() && !text_input_is_focused {
                     element.runtime.patch_content = None;
                 }
 
                 if slider_value_is_from_patch && slider_value_is_runtime_owned {
-                    element.runtime.slider_patch_value =
-                        decoded.slider_value.and_then(|patch_value| {
-                            (!slider_patch_matches_runtime_value(element, patch_value))
-                                .then_some(patch_value.to_bits())
-                        });
-                    decoded.slider_value = element.spec.declared.slider_value;
+                    element.runtime.slider_patch_value = pending_slider.and_then(|patch_value| {
+                        (!slider_patch_matches_runtime_value(element, patch_value))
+                            .then_some(patch_value.to_bits())
+                    });
                 } else if element.spec.kind == ElementKind::Slider {
                     element.runtime.slider_patch_value = None;
                 }
 
-                element.spec.declared = decoded.clone();
-                element.layout.effective = decoded;
+                if element.spec.declared != decoded
+                    && !defer_presentation
+                    && decoded.animate.is_none()
+                    && decoded.animate_enter.is_none()
+                    && decoded.animate_change.is_none()
+                {
+                    element.layout.effective =
+                        super::layout::scale_attrs(&decoded, element.layout.dimension_facts.scale);
+                }
+                let before_attrs = std::mem::replace(&mut element.spec.declared, decoded);
                 element.normalize_extracted_state();
                 if content_is_from_patch && !text_input_is_focused {
                     element.runtime.text_input_content_origin = TextInputContentOrigin::TreePatch;
@@ -968,20 +1061,21 @@ fn apply_patch(
                 }
                 let registry_refresh_dirty =
                     attrs_change_affects_registry_refresh(&before_attrs, &element.spec.declared);
-                if before_patch_content != element.runtime.patch_content
-                    || before_content_origin != element.runtime.text_input_content_origin
-                    || before_slider_patch_value != element.runtime.slider_patch_value
-                    || before_slider_value_origin != element.runtime.slider_value_origin
-                {
-                    invalidation.add(TreeInvalidation::Paint);
-                }
                 (
                     invalidation,
                     registry_refresh_dirty,
                     before_attrs.layout_scale != element.spec.declared.layout_scale,
                     skipped_text_content_layout,
+                    super::invalidation::layout_model_attrs_changed(
+                        &before_attrs,
+                        &element.spec.declared,
+                    ),
                 )
             };
+            tree.pending_patch_effects.model_changed |= invalidation.4;
+            if invalidation.4 {
+                tree.layout_model_epoch = tree.layout_model_epoch.wrapping_add(1);
+            }
             let mut invalidation_kind = invalidation.0;
             if invalidation.3
                 && !text_content_layout_skip_path
@@ -1010,7 +1104,19 @@ fn apply_patch(
         Patch::SetChildren { id, children } => {
             let nearby_local_change = tree.is_inside_nearby_subtree(&id);
             let merged_children = tree.merge_live_children_with_ghosts(&id, children);
+            let old_children = tree.child_ids(&id);
+            let changed = old_children != merged_children;
+            if changed && tree.get(&id).is_some() {
+                tree.capture_animation_source(&id);
+                for child in old_children.iter().chain(&merged_children) {
+                    tree.capture_animation_source(child);
+                }
+            }
             tree.set_children(&id, merged_children)?;
+            tree.pending_patch_effects.model_changed |= changed;
+            if changed {
+                tree.layout_model_epoch = tree.layout_model_epoch.wrapping_add(1);
+            }
             if nearby_local_change {
                 TreeInvalidation::Resolve
             } else {
@@ -1022,7 +1128,19 @@ fn apply_patch(
             let merged_mounts = tree.merge_live_nearby_with_ghosts(&host_id, mounts);
             let registry_relevant =
                 tree.nearby_mount_change_affects_registry(&host_id, &merged_mounts);
+            let old_mounts = tree.nearby_mounts_for(&host_id);
+            let changed = old_mounts != merged_mounts;
+            if changed && tree.get(&host_id).is_some() {
+                tree.capture_animation_source(&host_id);
+                for mount in old_mounts.iter().chain(&merged_mounts) {
+                    tree.capture_animation_subtree(&mount.id);
+                }
+            }
             tree.set_nearby_mounts(&host_id, merged_mounts)?;
+            tree.pending_patch_effects.model_changed |= changed;
+            if changed {
+                tree.layout_model_epoch = tree.layout_model_epoch.wrapping_add(1);
+            }
             if layout_nearby_mounts_for_refresh(tree, &host_id) {
                 if registry_relevant {
                     TreeInvalidation::Registry
@@ -1057,6 +1175,13 @@ fn apply_patch(
                 .collect();
 
             subtree.stamp_all_mounted_at_revision(batch_revision);
+            if let Some(parent) = parent_id {
+                tree.capture_animation_source(&parent);
+            }
+            tree.pending_patch_effects.model_changed = true;
+            tree.pending_patch_effects
+                .invalidation
+                .add(TreeInvalidation::Structure);
 
             // Insert all nodes from subtree into main tree
             for element in subtree.nodes.into_iter().flatten() {
@@ -1112,6 +1237,11 @@ fn apply_patch(
             let has_animation_attrs = subtree_has_animation_attrs(&subtree);
 
             subtree.stamp_all_mounted_at_revision(batch_revision);
+            tree.capture_animation_source(&host_id);
+            for mount in tree.nearby_mounts_for(&host_id) {
+                tree.capture_animation_subtree(&mount.id);
+            }
+            tree.pending_patch_effects.model_changed = true;
 
             for element in subtree.nodes.into_iter().flatten() {
                 tree.insert(element);
@@ -1174,6 +1304,10 @@ fn apply_patch(
         }
 
         Patch::Remove { id } => {
+            if tree.get(&id).is_some() {
+                tree.capture_animation_subtree(&id);
+                tree.pending_patch_effects.model_changed = true;
+            }
             let parent_link = tree.ix_of(&id).and_then(|ix| tree.parent_link_of(ix));
             let nearby_registry_relevant = match parent_link {
                 Some(ParentLink::Nearby { slot, .. }) => {
@@ -1283,7 +1417,7 @@ fn maybe_capture_exit_ghost(tree: &mut ElementTree, id: &NodeId) -> Result<Optio
     }
 
     let capture_scale = effective_layout_scale_for_node(tree, id, tree.current_scale());
-    let Some(spec) = captured_exit_spec(element, capture_scale) else {
+    let Some(spec) = captured_exit_spec(element, capture_scale)? else {
         return Ok(None);
     };
 
@@ -1353,6 +1487,7 @@ fn maybe_capture_exit_ghost(tree: &mut ElementTree, id: &NodeId) -> Result<Optio
                 .copied()
                 .unwrap_or(capture_scale);
             clone_as_ghost(
+                tree,
                 &old,
                 &id_map,
                 capture_scale,
@@ -1424,20 +1559,25 @@ fn attach_ghost_root(tree: &mut ElementTree, ghost_root_id: &NodeId) -> Result<(
     Ok(())
 }
 
-fn captured_exit_spec(element: &Element, capture_scale: f32) -> Option<AnimationSpec> {
-    let spec = element.layout.effective.animate_exit.clone().or_else(|| {
-        element
-            .spec
-            .declared
-            .animate_exit
-            .as_ref()
-            .map(|spec| scale_animation_spec(spec, capture_scale as f64))
-    })?;
-
-    Some(retarget_exit_animation_spec_to_current_visual(
-        spec,
-        &element.layout.effective,
-    ))
+fn captured_exit_spec(
+    element: &Element,
+    capture_scale: f32,
+) -> Result<Option<AnimationSpec>, String> {
+    // Timing/targets come from the latest declaration, not deferred visual attrs.
+    // Validate before replacing the first keyframe with captured coordinates.
+    let Some(declared) = element.spec.declared.animate_exit.as_ref() else {
+        return Ok(None);
+    };
+    super::animation::validate_animation_lengths(declared)?;
+    let spec = scale_animation_spec(declared, capture_scale as f64);
+    let mut current = element.layout.effective.clone();
+    if let Some(frame) = element.layout.render_frame.or(element.layout.frame) {
+        current.width = Some(Length::Px(frame.width as f64));
+        current.height = Some(Length::Px(frame.height as f64));
+    }
+    Ok(Some(retarget_exit_animation_spec_to_current_visual(
+        spec, &current,
+    )))
 }
 
 fn locate_attachment(tree: &ElementTree, id: &NodeId) -> Option<AttachmentPoint> {
@@ -1498,6 +1638,7 @@ fn locate_attachment(tree: &ElementTree, id: &NodeId) -> Option<AttachmentPoint>
 }
 
 fn clone_as_ghost(
+    tree: &ElementTree,
     old: &Element,
     id_map: &HashMap<NodeId, NodeId>,
     capture_scale: f32,
@@ -1510,6 +1651,8 @@ fn clone_as_ghost(
         .cloned()
         .expect("ghost id should exist for every cloned node");
     let (kind, attrs) = sanitize_ghost_visual(old.spec.kind, &old.layout.effective);
+    let mut dimension_facts = old.layout.dimension_facts;
+    dimension_facts.scale = 1.0;
 
     let mut cloned = Element {
         id: new_id,
@@ -1534,6 +1677,8 @@ fn clone_as_ghost(
             scrollbar_hover_axis: None,
         },
         layout: crate::tree::element::NodeLayoutState {
+            dimension_samples: super::layout::dimensions::capture_ghost_samples(tree, old, id_map),
+            dimension_facts,
             effective: attrs,
             frame: old.layout.frame,
             render_frame: old.layout.render_frame,
@@ -1544,6 +1689,19 @@ fn clone_as_ghost(
             scroll_x_max: old.layout.scroll_x_max,
             scroll_y_max: old.layout.scroll_y_max,
             paragraph_fragments: old.layout.paragraph_fragments.clone(),
+            paragraph_boxes: old
+                .layout
+                .paragraph_boxes
+                .iter()
+                .filter_map(|b| {
+                    id_map
+                        .get(&b.owner)
+                        .map(|owner| crate::tree::element::InlineBox {
+                            owner: *owner,
+                            ..b.clone()
+                        })
+                })
+                .collect(),
             topology_versions: Default::default(),
             intrinsic_measure_cache: None,
             subtree_measure_cache: None,
@@ -3155,6 +3313,65 @@ mod tests {
     }
 
     #[test]
+    fn test_apply_patches_relayouts_centered_column_text_label() {
+        let root_id = NodeId::from_term_bytes(vec![11]);
+        let wrapper_id = NodeId::from_term_bytes(vec![12]);
+        let text_id = NodeId::from_term_bytes(vec![13]);
+        let mut tree = ElementTree::new();
+        tree.set_root_id(root_id);
+        tree.insert(Element::with_attrs(
+            root_id,
+            ElementKind::Column,
+            Vec::new(),
+            Attrs {
+                width: Some(Length::Px(400.0)),
+                height: Some(Length::Px(200.0)),
+                padding: Some(Padding::Uniform(48.0)),
+                ..Attrs::default()
+            },
+        ));
+        tree.insert(Element::with_attrs(
+            wrapper_id,
+            ElementKind::El,
+            Vec::new(),
+            Attrs {
+                align_x: Some(AlignX::Center),
+                font_size: Some(48.0),
+                ..Attrs::default()
+            },
+        ));
+        tree.insert(Element::with_attrs(
+            text_id,
+            ElementKind::Text,
+            Vec::new(),
+            Attrs {
+                content: Some("Say intro here".to_string()),
+                ..Attrs::default()
+            },
+        ));
+        tree.set_children(&root_id, vec![wrapper_id]).unwrap();
+        tree.set_children(&wrapper_id, vec![text_id]).unwrap();
+        layout_tree_default(&mut tree, Constraint::new(400.0, 200.0), 1.0);
+        let before = tree.get(&wrapper_id).unwrap().layout.frame.unwrap();
+
+        let invalidation = apply_patches(
+            &mut tree,
+            vec![Patch::SetAttrs {
+                id: text_id,
+                attrs_raw: content_only_attrs_raw("Second slide notes"),
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(invalidation, TreeInvalidation::Measure);
+        layout_tree_default(&mut tree, Constraint::new(400.0, 200.0), 1.0);
+        let after = tree.get(&wrapper_id).unwrap().layout.frame.unwrap();
+        assert!(after.width > before.width);
+        assert!(after.x < before.x);
+        assert!((after.x + after.width / 2.0 - 200.0).abs() < 0.001);
+    }
+
+    #[test]
     fn test_apply_patches_keeps_row_text_label_content_as_measure() {
         let root_id = NodeId::from_term_bytes(vec![4]);
         let wrapper_id = NodeId::from_term_bytes(vec![5]);
@@ -3450,6 +3667,40 @@ mod tests {
         assert_eq!(updated.spec.declared.slider_value, Some(60.0));
         assert_eq!(updated.layout.effective.slider_value, Some(60.0));
         assert_eq!(updated.runtime.slider_patch_value, None);
+        assert_eq!(
+            updated.runtime.slider_value_origin,
+            SliderValueOrigin::Event
+        );
+    }
+
+    #[test]
+    fn test_runtime_owned_slider_delayed_patch_marker_is_not_paint_damage() {
+        let id = NodeId::from_term_bytes(vec![184]);
+        let attrs = Attrs {
+            slider_value: Some(60.0),
+            ..Attrs::default()
+        };
+        let mut element = Element::with_attrs(id, ElementKind::Slider, Vec::new(), attrs);
+        element.runtime.slider_value_origin = SliderValueOrigin::Event;
+
+        let mut tree = ElementTree::new();
+        tree.set_root_id(id);
+        tree.insert(element);
+
+        let invalidation = apply_patches(
+            &mut tree,
+            vec![Patch::SetAttrs {
+                id,
+                attrs_raw: slider_value_attrs_raw(40.0),
+            }],
+        )
+        .unwrap();
+
+        let updated = tree.get(&id).unwrap();
+        assert_eq!(invalidation, TreeInvalidation::None);
+        assert_eq!(updated.spec.declared.slider_value, Some(60.0));
+        assert_eq!(updated.layout.effective.slider_value, Some(60.0));
+        assert_eq!(updated.runtime.slider_patch_value, Some(40.0_f64.to_bits()));
         assert_eq!(
             updated.runtime.slider_value_origin,
             SliderValueOrigin::Event

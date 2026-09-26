@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200">
+  <defs>
+    <linearGradient id="sky" x2="1" y2="1"><stop stop-color="#1248b0"/><stop offset="1" stop-color="#90e0ff"/></linearGradient>
+    <pattern id="grid" width="10" height="10" patternUnits="userSpaceOnUse"><path d="M0 10V0H10" fill="none" stroke="#ffffff" stroke-width="0.4"/></pattern>
+    <clipPath id="disc"><circle cx="100" cy="100" r="94"/></clipPath>
+  </defs>
+  <g clip-path="url(#disc)">
+    <rect width="200" height="200" fill="url(#sky)"/>
+    <rect width="200" height="200" fill="url(#grid)"/>
+    <path d="M0 160 Q40 60 80 140 T200 70 V200H0Z" fill="#116844"/>
+    <path d="M12 170 C30 10 65 185 90 20 S155 185 190 35" fill="none" stroke="#ffcc11" stroke-width="1.25"/>
+    <circle cx="150" cy="45" r="19" fill="#fff4a0"/>
+    <text x="30" y="180" font-size="20" fill="white">SVG cache</text>
+  </g>
+</svg>

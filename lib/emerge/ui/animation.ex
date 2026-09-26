@@ -23,14 +23,16 @@ defmodule Emerge.UI.Animation do
   ## Keyframes
 
   Every keyframe must use the same attribute set throughout the animation.
-  Matching attrs must also stay in compatible variants.
+  Width and height accept pixels, content, fill and weighted fill; other attrs must stay compatible.
 
   Examples:
 
-  - `width(px(80))` can animate to `width(px(160))`, but not to `width(fill())`
+  - widths/heights can animate between pixels, content, fill and weighted fill
+  - `min/2` and `max/2` remain static layout expressions and cannot be animation endpoints
   - `padding(8)` can animate to `padding(16)`, but not to `padding_each(8, 12, 8, 12)`
-  - `Background.color(...)` can animate to another color background, and
-    `Background.gradient(...)` can animate to another gradient background
+  - solid backgrounds can animate to other solid backgrounds
+  - `Background.color(gradient([...]))` can animate to another gradient background
+    with the same number of stops (colors and angle are interpolated)
   - image backgrounds must keep the same source and fit across keyframes
   - `Border.shadow/1` and `Border.glow/2` must keep the same shadow count in
     each keyframe
@@ -69,6 +71,8 @@ defmodule Emerge.UI.Animation do
 
   If both `animate_enter/4` and `animate/4` are present, the regular animation
   waits for the enter animation to finish and then starts from zero progress.
+  Fields can hand off separately: geometry may remain held for a sibling while
+  an unrelated paint field starts its regular clock.
 
       el(
         [
@@ -130,6 +134,15 @@ defmodule Emerge.UI.Animation do
   `spacing/1`, `scale/1`, and `rotate/1` participate in relayout. The first
   keyframe also establishes the initial layout state before any animation time
   has elapsed.
+
+  Dimension transitions interpolate native resolved allocation, not fill weights.
+  Related finite geometry owners keep their own clocks; an early finisher holds
+  its allocation until their group can release together. Loops are not finite
+  waiters. Text, images, scroll clipping and hit regions follow the real layout.
+
+  If native frame preparation fails, the last published layout and hit regions
+  remain available. Repeated animation-only retries back off to a maximum 250ms
+  delay; external updates and explicit retries are not throttled.
   """
 
   @type curve :: :linear | :ease_in | :ease_out | :ease_in_out
@@ -146,7 +159,34 @@ defmodule Emerge.UI.Animation do
   @type animate_attr :: {:animate, spec_map()}
   @type animate_enter_attr :: {:animate_enter, spec_map()}
   @type animate_exit_attr :: {:animate_exit, spec_map()}
-  @type t :: animate_attr() | animate_enter_attr() | animate_exit_attr()
+  @type change_attr :: {:animate_change, {Emerge.UI.attrs(), number(), curve()}}
+  @type t :: animate_attr() | animate_enter_attr() | animate_exit_attr() | change_attr()
+
+  @doc """
+  Animate retained attributes when their desired values change.
+
+  Takes a list of non-nil animatable attributes sharing the duration and curve.
+  An empty list is a no-op. Repeated attributes use the last value; separate calls
+  can assign different timings to different properties.
+
+  First mount is immediate. Identical resolved targets and timing-only updates do not restart.
+  Interruption starts from the current native presentation. A later plain attribute
+  removes only its change policy.
+
+  Content width and height also transition when text, children or intrinsic font/image
+  measurements change, even if the declared length stays `content()`. Animation's own
+  layout samples do not restart the transition.
+
+      Animation.change([width(fill()), height(px(60))], 300, :ease_out)
+
+      # Updating the text animates the retained element's resolved width.
+      el([Animation.change([width(content())], 1000, :linear)], text(label))
+  """
+  @spec change(Emerge.UI.attrs(), number(), curve()) :: change_attr()
+  def change(attrs, duration, curve) do
+    Emerge.Engine.AttrValidation.normalize_change!(attrs, duration, curve)
+    {:animate_change, {attrs, duration, curve}}
+  end
 
   @doc "Animate animatable attrs across keyframes during normal updates."
   @spec animate(keyframes(), number(), curve()) :: animate_attr()

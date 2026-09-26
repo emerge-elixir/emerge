@@ -1,6 +1,7 @@
 mod support;
 
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
+use emerge_skia::assets::AssetRuntime;
 #[cfg(target_os = "linux")]
 use emerge_skia::backend::skia_gpu::GlFrameSurface;
 #[cfg(target_os = "linux")]
@@ -23,7 +24,7 @@ use emerge_skia::tree::element::{Element, ElementKind, ElementTree, Frame, Nearb
 use emerge_skia::tree::geometry::{ClipShape, CornerRadii, Rect};
 #[cfg(target_os = "linux")]
 use emerge_skia::tree::layout::{
-    Constraint, layout_and_refresh_default_with_animation,
+    Constraint, layout_and_refresh_default, layout_and_refresh_default_with_animation,
     layout_or_refresh_default_with_animation_and_invalidation_reusing_clean_registry_for_benchmark,
     layout_or_refresh_default_with_animation_reusing_clean_registry_for_benchmark,
 };
@@ -45,9 +46,13 @@ use std::sync::Once;
 #[cfg(target_os = "linux")]
 use std::time::{Duration, Instant};
 #[cfg(target_os = "linux")]
-use std::{ffi::CString, os::raw::c_void, ptr};
+use std::{
+    ffi::{CStr, CString},
+    os::raw::c_void,
+    ptr,
+};
 #[cfg(target_os = "linux")]
-use support::scrollable_rich_borders_shadow_showcase;
+use support::{borders_cache, scrollable_rich_borders_shadow_showcase};
 
 const WIDTH: u32 = 960;
 const HEIGHT: u32 = 720;
@@ -61,6 +66,36 @@ const EMERGE_DEMO_SHOWCASE_LAYOUT_EMRG: &[u8] =
 const EMERGE_DEMO_SHOWCASE_BORDERS_EMRG: &[u8] =
     include_bytes!("../../../bench/external_fixtures/emerge_demo_showcase_borders/full.emrg");
 #[cfg(target_os = "linux")]
+const CAMERA_ACTIVE_SHUTTER_SLIDER_EMRG: [&[u8]; 8] = [
+    include_bytes!("../../../bench/external_fixtures/camera_active_slider/phase_0.emrg"),
+    include_bytes!("../../../bench/external_fixtures/camera_active_slider/phase_1.emrg"),
+    include_bytes!("../../../bench/external_fixtures/camera_active_slider/phase_2.emrg"),
+    include_bytes!("../../../bench/external_fixtures/camera_active_slider/phase_3.emrg"),
+    include_bytes!("../../../bench/external_fixtures/camera_active_slider/phase_4.emrg"),
+    include_bytes!("../../../bench/external_fixtures/camera_active_slider/phase_5.emrg"),
+    include_bytes!("../../../bench/external_fixtures/camera_active_slider/phase_6.emrg"),
+    include_bytes!("../../../bench/external_fixtures/camera_active_slider/phase_7.emrg"),
+];
+#[cfg(target_os = "linux")]
+const CAMERA_ACTIVE_FOCUS_SLIDER_EMRG: [&[u8]; 8] = [
+    include_bytes!("../../../bench/external_fixtures/camera_active_focus_slider/phase_0.emrg"),
+    include_bytes!("../../../bench/external_fixtures/camera_active_focus_slider/phase_1.emrg"),
+    include_bytes!("../../../bench/external_fixtures/camera_active_focus_slider/phase_2.emrg"),
+    include_bytes!("../../../bench/external_fixtures/camera_active_focus_slider/phase_3.emrg"),
+    include_bytes!("../../../bench/external_fixtures/camera_active_focus_slider/phase_4.emrg"),
+    include_bytes!("../../../bench/external_fixtures/camera_active_focus_slider/phase_5.emrg"),
+    include_bytes!("../../../bench/external_fixtures/camera_active_focus_slider/phase_6.emrg"),
+    include_bytes!("../../../bench/external_fixtures/camera_active_focus_slider/phase_7.emrg"),
+];
+#[cfg(target_os = "linux")]
+const CAMERA_ACTIVE_SLIDER_WIDTH: u32 = 1440;
+#[cfg(target_os = "linux")]
+const CAMERA_ACTIVE_SLIDER_HEIGHT: u32 = 2560;
+#[cfg(target_os = "linux")]
+const CAMERA_ACTIVE_SHUTTER_SLIDER_ID: u64 = 48;
+#[cfg(target_os = "linux")]
+const CAMERA_ACTIVE_FOCUS_SLIDER_ID: u64 = 74;
+#[cfg(target_os = "linux")]
 const EMERGE_DEMO_SHOWCASE_LAYOUT_FRAME_MS: [u64; 8] = [0, 16, 32, 48, 64, 80, 96, 112];
 #[cfg(target_os = "linux")]
 const EMERGE_DEMO_SHOWCASE_LAYOUT_SCROLL_STEP: f32 = 8.0;
@@ -70,8 +105,6 @@ const EMERGE_DEMO_SHOWCASE_BORDERS_FRAME_MS: [u64; 8] = [0, 16, 32, 48, 64, 80, 
 const EMERGE_DEMO_SHOWCASE_BORDERS_SCROLL_STEP: f32 = 8.0;
 #[cfg(target_os = "linux")]
 const RICH_BORDERS_SHOWCASE_FRAME_MS: [u64; 8] = [0, 16, 32, 48, 64, 80, 96, 112];
-#[cfg(target_os = "linux")]
-const RICH_BORDERS_SHOWCASE_SCROLL_STEP: f32 = 8.0;
 #[cfg(target_os = "linux")]
 const EMERGE_DEMO_SHOWCASE_BORDERS_SCREENSHOT_WIDTH: u32 = 1909;
 #[cfg(target_os = "linux")]
@@ -327,6 +360,11 @@ fn bench_renderer_paint_layer_cache(c: &mut Criterion) {
         eprintln!("Skipping native/renderer/paint_layer_cache: EGL surfaceless setup failed");
         return;
     };
+    eprintln!(
+        "paint-layer benchmark GL_RENDERER={} GL_VERSION={}",
+        current_gl_string(gl::RENDERER),
+        current_gl_string(gl::VERSION)
+    );
     drop(surface_probe);
 
     let mut group = c.benchmark_group("native/renderer/paint_layer_cache");
@@ -564,20 +602,34 @@ fn bench_renderer_paint_layer_cache(c: &mut Criterion) {
     let borders = rich_borders_showcase_benchmark();
     group.throughput(Throughput::Elements(borders.summary.nodes as u64));
     group.bench_function("rich_borders_showcase/cache_steady_hits", |b| {
-        let mut state_index = 2usize;
         let mut surface = EglBenchSurface::new((borders.width, borders.height))
             .expect("EGL surfaceless setup should stay available after probe");
-        let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+        let config = RendererCacheConfig {
             enabled: true,
             ..RendererCacheConfig::default()
-        });
-        assert_rich_borders_showcase_cache_hits(&mut renderer, &mut surface, &borders);
-
+        };
+        // An uncached control rules out cache warm-up itself supplying a false
+        // animation signal. Both controls/readbacks are outside Criterion timing.
+        let mut direct = SceneRenderer::with_cache_config(RendererCacheConfig::default());
+        assert_rich_borders_coverage(&mut direct, &mut surface, &borders, false, 0);
+        let mut renderer = SceneRenderer::with_cache_config(config);
+        let mut state_index = assert_rich_borders_showcase_cache_hits(
+            &mut renderer,
+            &mut surface,
+            &borders,
+            config.max_new_payloads_per_frame,
+        );
+        unsafe { gl::Finish() };
         b.iter(|| {
             let state = &borders.states[state_index];
             state_index = (state_index + 1) % borders.states.len();
-            let mut frame = surface.frame();
-            black_box(renderer.render(&mut frame, state));
+            let timings = {
+                let mut frame = surface.frame();
+                renderer.render(&mut frame, state)
+            };
+            // Surfaceless EGL has no presentation throttle: include GPU completion.
+            unsafe { gl::Finish() };
+            black_box(timings);
         });
     });
 
@@ -717,7 +769,108 @@ fn bench_renderer_paint_layer_cache(c: &mut Criterion) {
         });
     });
 
+    let camera_active_shutter_states = camera_active_slider_fixture_states(
+        &CAMERA_ACTIVE_SHUTTER_SLIDER_EMRG,
+        NodeId::from_u64(CAMERA_ACTIVE_SHUTTER_SLIDER_ID),
+    );
+    bench_camera_active_slider(
+        &mut group,
+        "camera_active_shutter_slider/frame_sequence_gpu_complete",
+        &camera_active_shutter_states,
+        true,
+    );
+
+    let camera_active_focus_states = camera_active_slider_fixture_states(
+        &CAMERA_ACTIVE_FOCUS_SLIDER_EMRG,
+        NodeId::from_u64(CAMERA_ACTIVE_FOCUS_SLIDER_ID),
+    );
+    bench_camera_active_slider(
+        &mut group,
+        "camera_active_focus_slider/frame_sequence_gpu_complete",
+        &camera_active_focus_states,
+        true,
+    );
+    bench_camera_active_slider(
+        &mut group,
+        "camera_active_focus_slider/frame_sequence_cache_disabled_gpu_complete",
+        &camera_active_focus_states,
+        false,
+    );
+
     group.finish();
+}
+
+#[cfg(target_os = "linux")]
+fn bench_camera_active_slider(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    name: &str,
+    states: &[RenderState],
+    cache_enabled: bool,
+) {
+    states.iter().enumerate().for_each(|(phase, state)| {
+        let summary = state.scene.summary();
+        assert_eq!(summary.paint_layers, 9, "phase={phase} {summary:?}");
+        assert_eq!(summary.direct_only_layers, 1, "phase={phase} {summary:?}");
+        assert_eq!(summary.videos, 1, "phase={phase} {summary:?}");
+        let expected_focus_shadow = usize::from(phase > 0);
+        assert_eq!(
+            summary.shadow_passes, expected_focus_shadow,
+            "phase={phase} {summary:?}"
+        );
+        assert_eq!(
+            summary.shadows, expected_focus_shadow,
+            "phase={phase} {summary:?}"
+        );
+    });
+    group.throughput(Throughput::Elements(states[1].scene.summary().nodes as u64));
+    group.bench_function(name, |b| {
+        let mut state_index = 1usize;
+        let mut surface =
+            EglBenchSurface::new((CAMERA_ACTIVE_SLIDER_WIDTH, CAMERA_ACTIVE_SLIDER_HEIGHT))
+                .expect("EGL surfaceless setup should stay available after probe");
+        let mut renderer = SceneRenderer::with_cache_config(RendererCacheConfig {
+            enabled: cache_enabled,
+            max_new_payloads_per_frame: 64,
+            ..RendererCacheConfig::default()
+        });
+
+        if cache_enabled {
+            let cold = render_paint_layer_cache_stats(&mut renderer, &mut surface, &states[0]);
+            let warm = render_paint_layer_cache_stats(&mut renderer, &mut surface, &states[0]);
+            let active = render_paint_layer_cache_stats(&mut renderer, &mut surface, &states[1]);
+            assert!(cold.stores > 0, "Camera fixture did not warm: {cold:?}");
+            assert!(warm.hits > 0, "Camera fixture did not hit: {warm:?}");
+            assert!(
+                active.hits > 0 && active.misses.saturating_add(active.rejected_admission) > 0,
+                "Camera fixture should mix static hits and changing direct runs: {active:?}"
+            );
+        } else {
+            [&states[0], &states[0], &states[1]]
+                .into_iter()
+                .for_each(|state| {
+                    let mut frame = surface.frame();
+                    let _ = renderer.render(&mut frame, state);
+                });
+        }
+        // Setup rendering is asynchronous. Complete it before Criterion starts timing so the
+        // first measured phase drains only work submitted by that phase.
+        unsafe { gl::Finish() };
+        b.iter(|| {
+            let state = &states[state_index];
+            state_index = (state_index + 1) % states.len().max(2);
+            if state_index == 0 {
+                state_index = 1;
+            }
+            let timings = {
+                let mut frame = surface.frame();
+                renderer.render(&mut frame, state)
+            };
+            // Surfaceless EGL does not present or otherwise throttle. Include completion so
+            // Criterion measures submitted GPU work rather than only command enqueue time.
+            unsafe { gl::Finish() };
+            black_box(timings);
+        });
+    });
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -732,6 +885,22 @@ fn render_cases() -> Vec<RenderCase> {
     ensure_benchmark_assets();
 
     vec![
+        RenderCase {
+            name: "gradient_text",
+            scene: universal_gradient_scene(0),
+        },
+        RenderCase {
+            name: "gradient_borders",
+            scene: universal_gradient_scene(1),
+        },
+        RenderCase {
+            name: "gradient_shadows",
+            scene: universal_gradient_scene(2),
+        },
+        RenderCase {
+            name: "gradient_svg_tint",
+            scene: universal_gradient_scene(3),
+        },
         RenderCase {
             name: "text_heavy",
             scene: text_heavy_scene(),
@@ -789,6 +958,13 @@ fn render_cases() -> Vec<RenderCase> {
 
 fn ensure_benchmark_assets() {
     BENCH_ASSETS.call_once(|| {
+        let tree = resvg::usvg::Tree::from_data(
+            include_bytes!("../../../priv/test_assets/gradient_mask.svg"),
+            &resvg::usvg::Options::default(),
+        )
+        .expect("gradient SVG");
+        emerge_skia::renderer::insert_vector_asset("renderer_bench_gradient_svg", tree)
+            .expect("gradient SVG asset");
         insert_raster_asset(
             BENCH_IMAGE_ID,
             include_bytes!("../../../priv/sample_assets/static.jpg"),
@@ -797,8 +973,68 @@ fn ensure_benchmark_assets() {
     });
 }
 
+fn universal_gradient_scene(kind: u8) -> RenderScene {
+    let stops: std::sync::Arc<[u32]> = [0xff0000a0, 0x00ff00ff, 0x0000ff80].into();
+    RenderScene {
+        fonts: None,
+        images: None,
+        nodes: (0..120)
+            .map(|index| {
+                let x = 14.0 + (index % 8) as f32 * 116.0;
+                let y = 16.0 + (index / 8) as f32 * 44.0;
+                let color = emerge_skia::render_color::RenderColor::linear(
+                    stops.clone(),
+                    30.0,
+                    Rect {
+                        x,
+                        y,
+                        width: 94.0,
+                        height: 30.0,
+                    },
+                );
+                RenderNode::Primitive(match kind {
+                    0 => DrawPrimitive::TextWithFont(
+                        x,
+                        y + 22.0,
+                        "Gradient".into(),
+                        20.0,
+                        color,
+                        "default".into(),
+                        400,
+                        false,
+                    ),
+                    1 => DrawPrimitive::Border(
+                        x,
+                        y,
+                        94.0,
+                        30.0,
+                        6.0,
+                        4.0,
+                        color,
+                        BorderStyle::Dashed,
+                    ),
+                    2 => {
+                        DrawPrimitive::Shadow(x, y, 94.0, 30.0, 0.0, 3.0, 6.0, 2.0, [6.0; 4], color)
+                    }
+                    _ => DrawPrimitive::Image(
+                        x,
+                        y,
+                        94.0,
+                        30.0,
+                        "renderer_bench_gradient_svg".into(),
+                        ImageFit::Cover,
+                        Some(color),
+                    ),
+                })
+            })
+            .collect(),
+    }
+}
+
 fn text_heavy_scene() -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: (0..144)
             .map(|index| {
                 let col = index % 3;
@@ -810,7 +1046,7 @@ fn text_heavy_scene() -> RenderScene {
                     y,
                     format!("Renderer cache benchmark row {index:03}"),
                     13.0,
-                    0x18202AFF,
+                    (0x18202AFFu32).into(),
                     "default".to_string(),
                     if index % 7 == 0 { 700 } else { 400 },
                     index % 11 == 0,
@@ -822,6 +1058,8 @@ fn text_heavy_scene() -> RenderScene {
 
 fn solid_uniform_borders_scene() -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: (0..144)
             .map(|index| {
                 let col = index % 9;
@@ -835,7 +1073,7 @@ fn solid_uniform_borders_scene() -> RenderScene {
                     28.0,
                     if index % 3 == 0 { 0.0 } else { 8.0 },
                     1.0 + (index % 3) as f32,
-                    0x526071FF,
+                    (0x526071FFu32).into(),
                     BorderStyle::Solid,
                 ))
             })
@@ -845,6 +1083,8 @@ fn solid_uniform_borders_scene() -> RenderScene {
 
 fn solid_edge_borders_scene() -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: (0..144)
             .map(|index| {
                 let col = index % 9;
@@ -863,12 +1103,12 @@ fn solid_edge_borders_scene() -> RenderScene {
                     y,
                     86.0,
                     28.0,
-                    0.0,
+                    [0.0; 4],
                     top,
                     right,
                     bottom,
                     left,
-                    0x3E536CFF,
+                    (0x3E536CFFu32).into(),
                     BorderStyle::Solid,
                 ))
             })
@@ -878,6 +1118,8 @@ fn solid_edge_borders_scene() -> RenderScene {
 
 fn dashed_borders_scene() -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: (0..120)
             .map(|index| {
                 let col = index % 8;
@@ -891,7 +1133,7 @@ fn dashed_borders_scene() -> RenderScene {
                     30.0,
                     if index % 2 == 0 { 0.0 } else { 9.0 },
                     1.5 + (index % 3) as f32,
-                    0x5E6E82FF,
+                    (0x5E6E82FFu32).into(),
                     if index % 2 == 0 {
                         BorderStyle::Dashed
                     } else {
@@ -905,6 +1147,8 @@ fn dashed_borders_scene() -> RenderScene {
 
 fn border_clip_heavy_scene() -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: (0..84)
             .map(|index| {
                 let col = index % 7;
@@ -931,11 +1175,12 @@ fn border_clip_heavy_scene() -> RenderScene {
                             y,
                             rect.width,
                             rect.height,
-                            if index % 2 == 0 {
+                            (if index % 2 == 0 {
                                 0xF6F8FAFF
                             } else {
                                 0xEEF3F7FF
-                            },
+                            })
+                            .into(),
                         )),
                         RenderNode::Primitive(DrawPrimitive::Border(
                             x + 0.5,
@@ -944,7 +1189,7 @@ fn border_clip_heavy_scene() -> RenderScene {
                             rect.height - 1.0,
                             8.0,
                             1.5 + (index % 3) as f32,
-                            0x596579FF,
+                            (0x596579FFu32).into(),
                             match index % 5 {
                                 0 => BorderStyle::Dashed,
                                 1 => BorderStyle::Dotted,
@@ -968,6 +1213,8 @@ fn raster_images_scene() -> RenderScene {
 
 fn image_grid_scene(tint: Option<u32>) -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: (0..96)
             .map(|index| {
                 let col = index % 8;
@@ -983,7 +1230,7 @@ fn image_grid_scene(tint: Option<u32>) -> RenderScene {
                     } else {
                         ImageFit::Contain
                     },
-                    tint,
+                    (tint).map(Into::into),
                 ))
             })
             .collect(),
@@ -992,6 +1239,8 @@ fn image_grid_scene(tint: Option<u32>) -> RenderScene {
 
 fn alpha_single_primitive_scene() -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: (0..144)
             .map(|index| {
                 let col = index % 9;
@@ -1004,7 +1253,7 @@ fn alpha_single_primitive_scene() -> RenderScene {
                         86.0,
                         28.0,
                         7.0,
-                        0x246B9FFF,
+                        (0x246B9FFFu32).into(),
                     ))],
                 }
             })
@@ -1014,6 +1263,8 @@ fn alpha_single_primitive_scene() -> RenderScene {
 
 fn alpha_group_overlap_scene() -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: (0..80)
             .map(|index| {
                 let col = index % 8;
@@ -1024,7 +1275,12 @@ fn alpha_group_overlap_scene() -> RenderScene {
                     alpha: 0.62,
                     children: vec![
                         RenderNode::Primitive(DrawPrimitive::RoundedRect(
-                            x, y, 64.0, 34.0, 8.0, 0x1E6A8DFF,
+                            x,
+                            y,
+                            64.0,
+                            34.0,
+                            8.0,
+                            (0x1E6A8DFFu32).into(),
                         )),
                         RenderNode::Primitive(DrawPrimitive::RoundedRect(
                             x + 28.0,
@@ -1032,7 +1288,7 @@ fn alpha_group_overlap_scene() -> RenderScene {
                             64.0,
                             34.0,
                             8.0,
-                            0xC85252FF,
+                            (0xC85252FFu32).into(),
                         )),
                     ],
                 }
@@ -1043,6 +1299,8 @@ fn alpha_group_overlap_scene() -> RenderScene {
 
 fn shadow_mask_filter_scene() -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: (0..24)
             .flat_map(|index| {
                 let col = index % 6;
@@ -1062,17 +1320,24 @@ fn shadow_mask_filter_scene() -> RenderScene {
                             10.0,
                             20.0 + (index % 4) as f32 * 2.0,
                             0.0,
-                            14.0,
-                            0x1B243040,
+                            [14.0; 4],
+                            (0x1B243040u32).into(),
                         ))],
                     },
-                    RenderNode::Primitive(DrawPrimitive::RoundedRect(x, y, w, h, 14.0, 0xFFFFFFFF)),
+                    RenderNode::Primitive(DrawPrimitive::RoundedRect(
+                        x,
+                        y,
+                        w,
+                        h,
+                        14.0,
+                        (0xFFFFFFFFu32).into(),
+                    )),
                     RenderNode::Primitive(DrawPrimitive::TextWithFont(
                         x + 14.0,
                         y + 34.0,
                         format!("Card {index}"),
                         15.0,
-                        0x202936FF,
+                        (0x202936FFu32).into(),
                         "default".to_string(),
                         700,
                         false,
@@ -1085,18 +1350,27 @@ fn shadow_mask_filter_scene() -> RenderScene {
 
 fn gradient_rects_scene() -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: (0..120)
             .map(|index| {
                 let col = index % 8;
                 let row = index / 8;
-                RenderNode::Primitive(DrawPrimitive::Gradient(
+                RenderNode::Primitive(emerge_skia::render_scene::DrawPrimitive::Rect(
                     14.0 + col as f32 * 116.0,
                     16.0 + row as f32 * 44.0,
                     94.0,
                     30.0,
-                    0xDDEBFFFF,
-                    0x557AA6FF,
-                    (index % 12) as f32 * 15.0,
+                    emerge_skia::render_color::RenderColor::linear(
+                        vec![0xDDEBFFFF, 0x557AA6FF],
+                        ((index % 12) as f32 * 15.0) as f64,
+                        emerge_skia::tree::geometry::Rect {
+                            x: 14.0 + col as f32 * 116.0,
+                            y: 16.0 + row as f32 * 44.0,
+                            width: 94.0,
+                            height: 30.0,
+                        },
+                    ),
                 ))
             })
             .collect(),
@@ -1105,6 +1379,8 @@ fn gradient_rects_scene() -> RenderScene {
 
 fn clip_rect_vs_rrect_scene() -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: (0..120)
             .map(|index| {
                 let col = index % 8;
@@ -1126,15 +1402,24 @@ fn clip_rect_vs_rrect_scene() -> RenderScene {
                             bl: 8.0,
                         }),
                     }],
-                    children: vec![RenderNode::Primitive(DrawPrimitive::Gradient(
-                        x - 6.0,
-                        y - 4.0,
-                        106.0,
-                        38.0,
-                        0xEEF6FFFF,
-                        0x496B9AFF,
-                        45.0,
-                    ))],
+                    children: vec![RenderNode::Primitive(
+                        emerge_skia::render_scene::DrawPrimitive::Rect(
+                            x - 6.0,
+                            y - 4.0,
+                            106.0,
+                            38.0,
+                            emerge_skia::render_color::RenderColor::linear(
+                                [0xEEF6FFFF, 0x496B9AFF],
+                                45.0_f64,
+                                emerge_skia::tree::geometry::Rect {
+                                    x: x - 6.0,
+                                    y: y - 4.0,
+                                    width: 106.0,
+                                    height: 38.0,
+                                },
+                            ),
+                        ),
+                    )],
                 }
             })
             .collect(),
@@ -1148,16 +1433,23 @@ fn mixed_ui_scene() -> RenderScene {
             0.0,
             WIDTH as f32,
             HEIGHT as f32,
-            0xF4F7FAFF,
+            (0xF4F7FAFFu32).into(),
         )),
-        RenderNode::Primitive(DrawPrimitive::Gradient(
+        RenderNode::Primitive(emerge_skia::render_scene::DrawPrimitive::Rect(
             0.0,
             0.0,
             WIDTH as f32,
             120.0,
-            0xEAF2FFFF,
-            0xF4F7FAFF,
-            90.0,
+            emerge_skia::render_color::RenderColor::linear(
+                [0xEAF2FFFF, 0xF4F7FAFF],
+                90.0_f64,
+                emerge_skia::tree::geometry::Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: WIDTH as f32,
+                    height: 120.0,
+                },
+            ),
         )),
     ];
 
@@ -1171,7 +1463,16 @@ fn mixed_ui_scene() -> RenderScene {
         vec![
             RenderNode::ShadowPass {
                 children: vec![RenderNode::Primitive(DrawPrimitive::Shadow(
-                    x, y, w, h, 0.0, 6.0, 14.0, 0.0, 10.0, 0x11182726,
+                    x,
+                    y,
+                    w,
+                    h,
+                    0.0,
+                    6.0,
+                    14.0,
+                    0.0,
+                    [10.0; 4],
+                    (0x11182726u32).into(),
                 ))],
             },
             RenderNode::Clip {
@@ -1190,7 +1491,14 @@ fn mixed_ui_scene() -> RenderScene {
                     }),
                 }],
                 children: vec![
-                    RenderNode::Primitive(DrawPrimitive::RoundedRect(x, y, w, h, 10.0, 0xFFFFFFFF)),
+                    RenderNode::Primitive(DrawPrimitive::RoundedRect(
+                        x,
+                        y,
+                        w,
+                        h,
+                        10.0,
+                        (0xFFFFFFFFu32).into(),
+                    )),
                     RenderNode::Primitive(DrawPrimitive::Border(
                         x + 0.5,
                         y + 0.5,
@@ -1198,7 +1506,7 @@ fn mixed_ui_scene() -> RenderScene {
                         h - 1.0,
                         10.0,
                         1.0,
-                        0xD2D8E0FF,
+                        (0xD2D8E0FFu32).into(),
                         BorderStyle::Solid,
                     )),
                     RenderNode::Primitive(DrawPrimitive::TextWithFont(
@@ -1206,7 +1514,7 @@ fn mixed_ui_scene() -> RenderScene {
                         y + 32.0,
                         format!("Metric {index}"),
                         15.0,
-                        0x2F3744FF,
+                        (0x2F3744FFu32).into(),
                         "default".to_string(),
                         700,
                         false,
@@ -1216,7 +1524,7 @@ fn mixed_ui_scene() -> RenderScene {
                         y + 58.0,
                         "stable renderer baseline".to_string(),
                         13.0,
-                        0x677385FF,
+                        (0x677385FFu32).into(),
                         "default".to_string(),
                         400,
                         false,
@@ -1233,13 +1541,20 @@ fn mixed_ui_scene() -> RenderScene {
             children: vec![RenderNode::Alpha {
                 alpha: 0.72,
                 children: vec![RenderNode::Primitive(DrawPrimitive::RoundedRect(
-                    0.0, 0.0, 42.0, 22.0, 6.0, 0x375F9AFF,
+                    0.0,
+                    0.0,
+                    42.0,
+                    22.0,
+                    6.0,
+                    (0x375F9AFFu32).into(),
                 ))],
             }],
         }
     });
 
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: background
             .into_iter()
             .chain(cards)
@@ -1336,8 +1651,8 @@ fn emerge_demo_showcase_layout_page_benchmark() -> EmergeDemoShowcaseLayoutPageB
     let mut runtime = AnimationRuntime::default();
     runtime.sync_with_tree(&tree, started_at);
 
-    let target = emerge_demo_showcase_layout_target(&tree, &runtime, started_at);
-    let states = emerge_demo_showcase_layout_states(&tree, &runtime, started_at, target);
+    let target = emerge_demo_showcase_layout_target(&tree, &mut runtime, started_at);
+    let states = emerge_demo_showcase_layout_states(&tree, &mut runtime, started_at, target);
     let summary = states
         .first()
         .expect("emerge_demo showcase layout benchmark should build states")
@@ -1375,7 +1690,7 @@ fn emerge_demo_showcase_layout_page_benchmark() -> EmergeDemoShowcaseLayoutPageB
 #[cfg(target_os = "linux")]
 fn emerge_demo_showcase_layout_states(
     tree: &ElementTree,
-    runtime: &AnimationRuntime,
+    runtime: &mut AnimationRuntime,
     started_at: Instant,
     target: EmergeDemoShowcaseLayoutTarget,
 ) -> Vec<RenderState> {
@@ -1386,7 +1701,8 @@ fn emerge_demo_showcase_layout_states(
         1.0,
         runtime,
         started_at,
-    );
+    )
+    .unwrap();
     tree.apply_scroll_y(&target.scroll_id, -target.scroll_y);
 
     EMERGE_DEMO_SHOWCASE_LAYOUT_FRAME_MS
@@ -1401,7 +1717,8 @@ fn emerge_demo_showcase_layout_states(
                     runtime,
                     started_at + Duration::from_millis(*frame_ms),
                     Some(&initial.event_rebuild),
-                );
+                )
+                .unwrap();
             RenderState::new(update.output.scene, Color::WHITE, index as u64 + 1, false)
         })
         .collect()
@@ -1530,8 +1847,8 @@ fn emerge_demo_showcase_borders_benchmark() -> EmergeDemoShowcaseBordersBenchmar
     let mut runtime = AnimationRuntime::default();
     runtime.sync_with_tree(&tree, started_at);
 
-    let target = emerge_demo_showcase_borders_target(&tree, &runtime, started_at);
-    let states = emerge_demo_showcase_borders_states(&tree, &runtime, started_at, target);
+    let target = emerge_demo_showcase_borders_target(&tree, &mut runtime, started_at);
+    let states = emerge_demo_showcase_borders_states(&tree, &mut runtime, started_at, target);
     let summary = states
         .first()
         .expect("emerge_demo showcase Borders benchmark should build states")
@@ -1548,7 +1865,7 @@ fn emerge_demo_showcase_borders_benchmark() -> EmergeDemoShowcaseBordersBenchmar
         target.score
     );
     assert!(
-        summary.paint_layers >= 8 && summary.dynamic_layers > 0,
+        summary.paint_layers >= 6 && summary.cacheable_layers > 0,
         "emerge_demo showcase Borders benchmark did not select the animated Borders viewport: \
          size={}x{}, scroll_y={}, score={}, summary={summary:?}",
         target.width,
@@ -1577,13 +1894,13 @@ fn emerge_demo_showcase_borders_screenshot_benchmark() -> EmergeDemoShowcaseBord
 
     let target = emerge_demo_showcase_borders_exact_target(
         &tree,
-        &runtime,
+        &mut runtime,
         started_at,
         EMERGE_DEMO_SHOWCASE_BORDERS_SCREENSHOT_WIDTH,
         EMERGE_DEMO_SHOWCASE_BORDERS_SCREENSHOT_HEIGHT,
         EMERGE_DEMO_SHOWCASE_BORDERS_SCREENSHOT_SCALE,
     );
-    let states = emerge_demo_showcase_borders_states(&tree, &runtime, started_at, target);
+    let states = emerge_demo_showcase_borders_states(&tree, &mut runtime, started_at, target);
     let summary = states
         .first()
         .expect("emerge_demo showcase Borders screenshot benchmark should build states")
@@ -1601,7 +1918,7 @@ fn emerge_demo_showcase_borders_screenshot_benchmark() -> EmergeDemoShowcaseBord
         target.score
     );
     assert!(
-        summary.paint_layers >= 8 && summary.dynamic_layers > 0,
+        summary.paint_layers >= 6 && summary.cacheable_layers > 0,
         "emerge_demo showcase Borders screenshot benchmark did not select the animated Borders viewport: \
          size={}x{} scale={} scroll_y={}, score={}, summary={summary:?}",
         target.width,
@@ -1641,10 +1958,11 @@ impl EmergeDemoShowcaseBordersRefreshBenchmark {
             &mut self.tree,
             emerge_demo_showcase_borders_constraint(self.width, self.height),
             self.scale,
-            &self.runtime,
+            &mut self.runtime,
             self.started_at + Duration::from_millis(self.next_frame.saturating_mul(16)),
             Some(&self.cached_rebuild),
-        );
+        )
+        .unwrap();
 
         (update.layout_performed, update.output.scene.nodes.len())
     }
@@ -1683,7 +2001,7 @@ fn emerge_demo_showcase_borders_screenshot_hover_replay() -> EmergeDemoShowcaseB
     runtime.sync_with_tree(&tree, started_at);
     let target = emerge_demo_showcase_borders_exact_target(
         &tree,
-        &runtime,
+        &mut runtime,
         started_at,
         EMERGE_DEMO_SHOWCASE_BORDERS_SCREENSHOT_WIDTH,
         EMERGE_DEMO_SHOWCASE_BORDERS_SCREENSHOT_HEIGHT,
@@ -1696,18 +2014,20 @@ fn emerge_demo_showcase_borders_screenshot_hover_replay() -> EmergeDemoShowcaseB
         &mut tree,
         constraint,
         target.scale,
-        &runtime,
+        &mut runtime,
         started_at,
-    );
+    )
+    .unwrap();
     tree.apply_scroll_y(&target.scroll_id, -target.scroll_y);
     let warm = layout_or_refresh_default_with_animation_reusing_clean_registry_for_benchmark(
         &mut tree,
         constraint,
         target.scale,
-        &runtime,
+        &mut runtime,
         started_at,
         Some(&initial.event_rebuild),
-    );
+    )
+    .unwrap();
     let mut cached_rebuild = if warm.output.event_rebuild_changed {
         warm.output.event_rebuild
     } else {
@@ -1760,11 +2080,11 @@ fn emerge_demo_showcase_borders_screenshot_hover_replay() -> EmergeDemoShowcaseB
                 &mut tree,
                 constraint,
                 target.scale,
-                &runtime,
+                &mut runtime,
                 started_at + Duration::from_millis((index as u64 + 1).saturating_mul(16)),
                 invalidation,
                 Some(&cached_rebuild),
-            );
+            ).unwrap();
             if update.output.event_rebuild_changed {
                 cached_rebuild = update.output.event_rebuild.clone();
             }
@@ -1861,7 +2181,7 @@ fn emerge_demo_showcase_borders_screenshot_refresh_benchmark()
     runtime.sync_with_tree(&tree, started_at);
     let target = emerge_demo_showcase_borders_exact_target(
         &tree,
-        &runtime,
+        &mut runtime,
         started_at,
         EMERGE_DEMO_SHOWCASE_BORDERS_SCREENSHOT_WIDTH,
         EMERGE_DEMO_SHOWCASE_BORDERS_SCREENSHOT_HEIGHT,
@@ -1873,18 +2193,20 @@ fn emerge_demo_showcase_borders_screenshot_refresh_benchmark()
         &mut tree,
         emerge_demo_showcase_borders_constraint(target.width, target.height),
         target.scale,
-        &runtime,
+        &mut runtime,
         started_at,
-    );
+    )
+    .unwrap();
     tree.apply_scroll_y(&target.scroll_id, -target.scroll_y);
     let warm = layout_or_refresh_default_with_animation_reusing_clean_registry_for_benchmark(
         &mut tree,
         emerge_demo_showcase_borders_constraint(target.width, target.height),
         target.scale,
-        &runtime,
+        &mut runtime,
         started_at,
         Some(&initial.event_rebuild),
-    );
+    )
+    .unwrap();
     let cached_rebuild = if warm.output.event_rebuild_changed {
         warm.output.event_rebuild
     } else {
@@ -1894,10 +2216,11 @@ fn emerge_demo_showcase_borders_screenshot_refresh_benchmark()
         &mut tree,
         emerge_demo_showcase_borders_constraint(target.width, target.height),
         target.scale,
-        &runtime,
+        &mut runtime,
         started_at + Duration::from_millis(16),
         Some(&cached_rebuild),
-    );
+    )
+    .unwrap();
     assert!(
         !second.layout_performed,
         "emerge_demo showcase Borders screenshot refresh benchmark should stay refresh-only: \
@@ -1933,7 +2256,7 @@ fn emerge_demo_showcase_borders_screenshot_refresh_benchmark()
 #[cfg(target_os = "linux")]
 fn emerge_demo_showcase_borders_states(
     tree: &ElementTree,
-    runtime: &AnimationRuntime,
+    runtime: &mut AnimationRuntime,
     started_at: Instant,
     target: EmergeDemoShowcaseBordersTarget,
 ) -> Vec<RenderState> {
@@ -1944,7 +2267,8 @@ fn emerge_demo_showcase_borders_states(
         target.scale,
         runtime,
         started_at,
-    );
+    )
+    .unwrap();
     tree.apply_scroll_y(&target.scroll_id, -target.scroll_y);
 
     EMERGE_DEMO_SHOWCASE_BORDERS_FRAME_MS
@@ -1959,7 +2283,8 @@ fn emerge_demo_showcase_borders_states(
                     runtime,
                     started_at + Duration::from_millis(*frame_ms),
                     Some(&initial.event_rebuild),
-                );
+                )
+                .unwrap();
             RenderState::new(update.output.scene, Color::WHITE, index as u64 + 1, false)
         })
         .collect()
@@ -1968,7 +2293,7 @@ fn emerge_demo_showcase_borders_states(
 #[cfg(target_os = "linux")]
 fn emerge_demo_showcase_borders_target(
     tree: &ElementTree,
-    runtime: &AnimationRuntime,
+    runtime: &mut AnimationRuntime,
     started_at: Instant,
 ) -> EmergeDemoShowcaseBordersTarget {
     let target = EMERGE_DEMO_SHOWCASE_BORDERS_VIEWPORTS
@@ -1981,7 +2306,8 @@ fn emerge_demo_showcase_borders_target(
                 1.0,
                 runtime,
                 started_at,
-            );
+            )
+            .unwrap();
             let scroll_id = largest_vertical_scroll_node(&layout_tree)?;
             let (scroll_y, summary, score) = emerge_demo_showcase_borders_target_scroll_y(
                 &layout_tree,
@@ -2021,7 +2347,7 @@ fn emerge_demo_showcase_borders_target(
 #[cfg(target_os = "linux")]
 fn emerge_demo_showcase_borders_exact_target(
     tree: &ElementTree,
-    runtime: &AnimationRuntime,
+    runtime: &mut AnimationRuntime,
     started_at: Instant,
     width: u32,
     height: u32,
@@ -2034,7 +2360,8 @@ fn emerge_demo_showcase_borders_exact_target(
         scale,
         runtime,
         started_at,
-    );
+    )
+    .unwrap();
     let scroll_id = largest_vertical_scroll_node(&layout_tree)
         .expect("emerge_demo showcase Borders page should have a vertical scroll container");
     let (scroll_y, summary, score) = emerge_demo_showcase_borders_target_scroll_y(
@@ -2077,7 +2404,7 @@ fn emerge_demo_showcase_borders_exact_target(
 fn emerge_demo_showcase_borders_target_scroll_y(
     tree: &ElementTree,
     scroll_id: NodeId,
-    runtime: &AnimationRuntime,
+    runtime: &mut AnimationRuntime,
     started_at: Instant,
     viewport: EmergeDemoShowcaseBordersViewport,
 ) -> (f32, RenderSceneSummary, usize) {
@@ -2108,7 +2435,7 @@ fn emerge_demo_showcase_borders_target_scroll_y(
 fn emerge_demo_showcase_borders_summary_at_scroll(
     tree: &ElementTree,
     scroll_id: NodeId,
-    runtime: &AnimationRuntime,
+    runtime: &mut AnimationRuntime,
     started_at: Instant,
     scroll_y: f32,
     viewport: EmergeDemoShowcaseBordersViewport,
@@ -2122,6 +2449,7 @@ fn emerge_demo_showcase_borders_summary_at_scroll(
         runtime,
         started_at,
     )
+    .unwrap()
     .scene
     .summary()
 }
@@ -2135,9 +2463,8 @@ fn emerge_demo_showcase_borders_target_score(summary: RenderSceneSummary) -> usi
         + summary.inset_shadows.abs_diff(0) * 8
         + summary.gradients.abs_diff(0) * 8
         + summary.borders.abs_diff(18) * 4
-        + summary.paint_layers.abs_diff(12) * 16
-        + summary.dynamic_layers.abs_diff(3) * 16
-        + summary.moving_layers.abs_diff(7) * 8
+        + summary.paint_layers.abs_diff(7) * 16
+        + summary.moving_layers.abs_diff(1) * 8
 }
 
 #[cfg(target_os = "linux")]
@@ -2294,7 +2621,7 @@ struct RichBordersShowcaseBenchmark {
     states: Vec<RenderState>,
     width: u32,
     height: u32,
-    scroll_y: f32,
+    viewport: borders_cache::Viewport,
     summary: RenderSceneSummary,
 }
 
@@ -2304,9 +2631,7 @@ struct RichBordersShowcaseTarget {
     width: u32,
     height: u32,
     scroll_id: NodeId,
-    scroll_y: f32,
-    summary: RenderSceneSummary,
-    score: usize,
+    viewport: borders_cache::Viewport,
 }
 
 #[cfg(target_os = "linux")]
@@ -2315,39 +2640,18 @@ fn rich_borders_showcase_benchmark() -> RichBordersShowcaseBenchmark {
     let tree = scrollable_rich_borders_shadow_showcase();
     let mut runtime = AnimationRuntime::default();
     runtime.sync_with_tree(&tree, started_at);
-
-    let target = rich_borders_showcase_target(&tree, &runtime, started_at);
-    let states = rich_borders_showcase_states(&tree, &runtime, started_at, target);
+    let target = rich_borders_showcase_target(&tree, &mut runtime, started_at);
+    let states = rich_borders_showcase_states(&tree, &mut runtime, started_at, target);
     let summary = states
         .first()
-        .expect("rich borders showcase benchmark should build states")
+        .expect("rich borders states missing")
         .scene
         .summary();
-
-    assert!(
-        summary.nodes >= 500 && summary.primitives >= 150 && summary.texts >= 100,
-        "rich borders benchmark did not select the expected rich viewport: \
-         size={}x{}, scroll_y={}, score={}, summary={summary:?}",
-        target.width,
-        target.height,
-        target.scroll_y,
-        target.score
-    );
-    assert!(
-        summary.dynamic_layers > 0,
-        "rich borders benchmark should select the animated-shadow viewport: \
-         size={}x{}, scroll_y={}, score={}, summary={summary:?}",
-        target.width,
-        target.height,
-        target.scroll_y,
-        target.score
-    );
-
     RichBordersShowcaseBenchmark {
         states,
         width: target.width,
         height: target.height,
-        scroll_y: target.scroll_y,
+        viewport: target.viewport,
         summary,
     }
 }
@@ -2355,7 +2659,7 @@ fn rich_borders_showcase_benchmark() -> RichBordersShowcaseBenchmark {
 #[cfg(target_os = "linux")]
 fn rich_borders_showcase_states(
     tree: &ElementTree,
-    runtime: &AnimationRuntime,
+    runtime: &mut AnimationRuntime,
     started_at: Instant,
     target: RichBordersShowcaseTarget,
 ) -> Vec<RenderState> {
@@ -2366,8 +2670,9 @@ fn rich_borders_showcase_states(
         1.0,
         runtime,
         started_at,
-    );
-    tree.apply_scroll_y(&target.scroll_id, -target.scroll_y);
+    )
+    .unwrap();
+    tree.apply_scroll_y(&target.scroll_id, -target.viewport.scroll_y);
 
     RICH_BORDERS_SHOWCASE_FRAME_MS
         .iter()
@@ -2381,7 +2686,8 @@ fn rich_borders_showcase_states(
                     runtime,
                     started_at + Duration::from_millis(*frame_ms),
                     Some(&initial.event_rebuild),
-                );
+                )
+                .unwrap();
             RenderState::new(update.output.scene, Color::WHITE, index as u64 + 1, false)
         })
         .collect()
@@ -2390,7 +2696,7 @@ fn rich_borders_showcase_states(
 #[cfg(target_os = "linux")]
 fn rich_borders_showcase_target(
     tree: &ElementTree,
-    runtime: &AnimationRuntime,
+    runtime: &mut AnimationRuntime,
     started_at: Instant,
 ) -> RichBordersShowcaseTarget {
     let width = 960;
@@ -2402,101 +2708,20 @@ fn rich_borders_showcase_target(
         1.0,
         runtime,
         started_at,
-    );
+    )
+    .unwrap();
     let scroll_id = largest_vertical_scroll_node(&layout_tree)
         .expect("rich borders showcase should have a vertical scroll container");
-    let (scroll_y, summary, score) = rich_borders_showcase_target_scroll_y(
-        &layout_tree,
-        scroll_id,
-        runtime,
-        started_at,
-        width,
-        height,
-    );
-    let target = RichBordersShowcaseTarget {
-        width,
-        height,
-        scroll_id,
-        scroll_y,
-        summary,
-        score,
-    };
-
+    let viewport = borders_cache::select_viewport(&layout_tree, scroll_id, width, height);
     if emerge_bench_diagnostics_enabled() {
-        eprintln!(
-            "rich borders showcase selected target: size={}x{} scroll_y={} score={} summary={:?}",
-            target.width, target.height, target.scroll_y, target.score, target.summary
-        );
+        eprintln!("rich borders geometry-selected viewport: {viewport:?}");
     }
-
-    target
-}
-
-#[cfg(target_os = "linux")]
-fn rich_borders_showcase_target_scroll_y(
-    tree: &ElementTree,
-    scroll_id: NodeId,
-    runtime: &AnimationRuntime,
-    started_at: Instant,
-    width: u32,
-    height: u32,
-) -> (f32, RenderSceneSummary, usize) {
-    let max_y = tree
-        .get(&scroll_id)
-        .map(|element| element.layout.scroll_y_max.max(0.0))
-        .unwrap_or(0.0);
-    let sample_count = (max_y / RICH_BORDERS_SHOWCASE_SCROLL_STEP).ceil() as usize;
-
-    (0..=sample_count)
-        .map(|sample| {
-            let scroll_y = (sample as f32 * RICH_BORDERS_SHOWCASE_SCROLL_STEP).min(max_y);
-            let summary = rich_borders_showcase_summary_at_scroll(
-                tree, scroll_id, runtime, started_at, scroll_y, width, height,
-            );
-            (
-                rich_borders_showcase_target_score(summary),
-                scroll_y,
-                summary,
-            )
-        })
-        .min_by_key(|(score, _, _)| *score)
-        .map(|(score, scroll_y, summary)| (scroll_y, summary, score))
-        .unwrap_or((0.0, RenderSceneSummary::default(), usize::MAX))
-}
-
-#[cfg(target_os = "linux")]
-fn rich_borders_showcase_summary_at_scroll(
-    tree: &ElementTree,
-    scroll_id: NodeId,
-    runtime: &AnimationRuntime,
-    started_at: Instant,
-    scroll_y: f32,
-    width: u32,
-    height: u32,
-) -> RenderSceneSummary {
-    let mut frame_tree = tree.clone();
-    frame_tree.apply_scroll_y(&scroll_id, -scroll_y);
-    layout_and_refresh_default_with_animation(
-        &mut frame_tree,
-        rich_borders_showcase_constraint(width, height),
-        1.0,
-        runtime,
-        started_at,
-    )
-    .scene
-    .summary()
-}
-
-#[cfg(target_os = "linux")]
-fn rich_borders_showcase_target_score(summary: RenderSceneSummary) -> usize {
-    summary.nodes.abs_diff(750)
-        + summary.primitives.abs_diff(281) * 8
-        + summary.texts.abs_diff(201) * 4
-        + summary.shadows.abs_diff(14) * 8
-        + summary.borders.abs_diff(18) * 4
-        + summary.paint_layers.abs_diff(12) * 12
-        + summary.dynamic_layers.abs_diff(3) * 12
-        + summary.moving_layers.abs_diff(7) * 6
+    RichBordersShowcaseTarget {
+        width,
+        height,
+        scroll_id,
+        viewport,
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -2509,67 +2734,72 @@ fn assert_rich_borders_showcase_cache_hits(
     renderer: &mut SceneRenderer,
     surface: &mut EglBenchSurface,
     page: &RichBordersShowcaseBenchmark,
-) {
-    let warm_stats = render_paint_layer_cache_stats(renderer, surface, &page.states[0]);
-    assert!(
-        warm_stats.stores > 0,
-        "rich borders showcase did not warm paint-layer payloads: \
-         scroll_y={}, summary={:?}, stats={warm_stats:?}",
-        page.scroll_y,
-        page.summary
-    );
-
-    let second_warm_stats = render_paint_layer_cache_stats(renderer, surface, &page.states[1]);
-    let steady_stats = render_paint_layer_cache_stats(renderer, surface, &page.states[2]);
-    assert!(
-        steady_paint_layer_coverage(steady_stats) > 0,
-        "rich borders showcase lost warmed cache-hit coverage: \
-         scroll_y={}, summary={:?}, stats={steady_stats:?}",
-        page.scroll_y,
-        page.summary
-    );
-    assert!(steady_stats.misses <= 2, "{steady_stats:?}");
-    assert!(steady_stats.stores <= 2, "{steady_stats:?}");
-    assert_eq!(steady_stats.evictions, 0, "{steady_stats:?}");
-    assert_eq!(steady_stats.stale_evictions, 0, "{steady_stats:?}");
-
-    let mut total = Duration::ZERO;
-    let mut draw = Duration::ZERO;
-    let mut flush = Duration::ZERO;
-    let mut count = 0u32;
-    for state in page.states.iter().skip(3) {
-        let timings = {
-            let mut frame = surface.frame();
-            renderer.render(&mut frame, state)
-        };
-        let stats = timings
-            .renderer_cache
-            .as_ref()
-            .expect("steady rich borders frame should produce cache stats")
-            .paint_layer;
-        assert!(steady_paint_layer_coverage(stats) > 0, "{stats:?}");
-        assert!(stats.misses <= 2, "{stats:?}");
-        assert!(stats.stores <= 2, "{stats:?}");
-        assert_eq!(stats.evictions, 0, "{stats:?}");
-        assert_eq!(stats.stale_evictions, 0, "{stats:?}");
-        total += timings.total;
-        draw += timings.draw;
-        flush += timings.flush;
-        count += 1;
-    }
+    budget: u32,
+) -> usize {
+    let first = render_paint_layer_cache_stats(renderer, surface, &page.states[0]);
+    let next = borders_cache::warm_cache(first, budget, page.states.len(), |index| {
+        let stats = render_paint_layer_cache_stats(renderer, surface, &page.states[index]);
+        if emerge_bench_diagnostics_enabled() {
+            eprintln!("rich borders warm-up: state={index}, stats={stats:?}");
+        }
+        stats
+    });
+    // Check an additional entire cycle, including the wrap to state zero, without
+    // warm-up exemptions. Validate both the live shadows and static recipe pixels.
+    assert_rich_borders_coverage(renderer, surface, page, true, next);
     if emerge_bench_diagnostics_enabled() {
         eprintln!(
-            "rich borders showcase: scroll_y={}, summary={:?}, warm={:?}, second_warm={:?}, steady={:?}, steady_total_avg={:?}, steady_draw_avg={:?}, steady_flush_avg={:?}",
-            page.scroll_y,
-            page.summary,
-            warm_stats,
-            second_warm_stats,
-            steady_stats,
-            total / count,
-            draw / count,
-            flush / count
+            "rich borders warmed: next_state={next}, viewport={:?}, summary={:?}",
+            page.viewport, page.summary
         );
     }
+    next
+}
+
+#[cfg(target_os = "linux")]
+fn assert_rich_borders_coverage(
+    renderer: &mut SceneRenderer,
+    surface: &mut EglBenchSurface,
+    page: &RichBordersShowcaseBenchmark,
+    steady: bool,
+    start: usize,
+) {
+    let samples: Vec<_> = (0..page.states.len())
+        .filter_map(|step| {
+            let index = (start + step) % page.states.len();
+            let state = &page.states[index];
+            if steady {
+                let stats = render_paint_layer_cache_stats(renderer, surface, state);
+                assert!(
+                    borders_cache::is_steady(stats),
+                    "borders steady state {index}: {stats:?}"
+                );
+            } else {
+                // Scroll-moving payloads opt into tracking even with config.enabled=false.
+                // Force the direct traversal for this validation-only control.
+                let mut direct = RenderState::new(
+                    state.scene.clone(),
+                    state.clear_color,
+                    state.render_version,
+                    state.animate,
+                );
+                direct.has_cacheable_paint_layers = false;
+                let timings = renderer.render(&mut surface.frame(), &direct);
+                assert!(
+                    timings.renderer_cache.is_none(),
+                    "coverage control must be uncached"
+                );
+            }
+            (index == 0 || index == page.states.len() - 1)
+                .then(|| borders_cache::read_coverage(surface.frame().surface_mut(), page.viewport))
+        })
+        .collect();
+    assert_eq!(
+        samples.len(),
+        2,
+        "borders benchmark must have distinct animation states"
+    );
+    borders_cache::assert_coverage(&samples[0], &samples[1]);
 }
 
 #[cfg(target_os = "linux")]
@@ -2580,7 +2810,7 @@ fn emerge_bench_diagnostics_enabled() -> bool {
 #[cfg(target_os = "linux")]
 fn emerge_demo_showcase_layout_target(
     tree: &ElementTree,
-    runtime: &AnimationRuntime,
+    runtime: &mut AnimationRuntime,
     started_at: Instant,
 ) -> EmergeDemoShowcaseLayoutTarget {
     let target = EMERGE_DEMO_SHOWCASE_LAYOUT_VIEWPORTS
@@ -2593,7 +2823,8 @@ fn emerge_demo_showcase_layout_target(
                 1.0,
                 runtime,
                 started_at,
-            );
+            )
+            .unwrap();
             let scroll_id = largest_vertical_scroll_node(&layout_tree)?;
             let (scroll_y, summary, score) = emerge_demo_showcase_layout_target_scroll_y(
                 &layout_tree,
@@ -2642,7 +2873,7 @@ fn largest_vertical_scroll_node(tree: &ElementTree) -> Option<NodeId> {
 fn emerge_demo_showcase_layout_target_scroll_y(
     tree: &ElementTree,
     scroll_id: NodeId,
-    runtime: &AnimationRuntime,
+    runtime: &mut AnimationRuntime,
     started_at: Instant,
     width: u32,
     height: u32,
@@ -2678,7 +2909,7 @@ fn emerge_demo_showcase_layout_target_scroll_y(
 fn emerge_demo_showcase_layout_summary_at_scroll(
     tree: &ElementTree,
     scroll_id: NodeId,
-    runtime: &AnimationRuntime,
+    runtime: &mut AnimationRuntime,
     started_at: Instant,
     scroll_y: f32,
     width: u32,
@@ -2693,6 +2924,7 @@ fn emerge_demo_showcase_layout_summary_at_scroll(
         runtime,
         started_at,
     )
+    .unwrap()
     .scene
     .summary()
 }
@@ -2882,6 +3114,8 @@ fn large_simple_paint_layer_state() -> RenderState {
 #[cfg(target_os = "linux")]
 fn large_simple_paint_layer_scene() -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: vec![RenderNode::PaintLayer(RenderPaintLayer::from_children(
             9_100,
             Rect {
@@ -2892,7 +3126,7 @@ fn large_simple_paint_layer_scene() -> RenderScene {
             },
             PaintLayerPlacement::Fixed,
             PaintLayerPolicy::Cacheable,
-            PaintLayerReason::StableSubtree,
+            PaintLayerReason::Nearby,
             1,
             vec![
                 RenderNode::Primitive(DrawPrimitive::Rect(
@@ -2900,7 +3134,7 @@ fn large_simple_paint_layer_scene() -> RenderScene {
                     0.0,
                     WIDTH as f32,
                     HEIGHT as f32,
-                    0xF6F8FBFF,
+                    (0xF6F8FBFFu32).into(),
                 )),
                 RenderNode::Primitive(DrawPrimitive::RoundedRect(
                     64.0,
@@ -2908,7 +3142,7 @@ fn large_simple_paint_layer_scene() -> RenderScene {
                     WIDTH as f32 - 128.0,
                     HEIGHT as f32 - 144.0,
                     18.0,
-                    0xFFFFFFFF,
+                    (0xFFFFFFFFu32).into(),
                 )),
                 RenderNode::Primitive(DrawPrimitive::Border(
                     64.5,
@@ -2917,7 +3151,7 @@ fn large_simple_paint_layer_scene() -> RenderScene {
                     HEIGHT as f32 - 145.0,
                     18.0,
                     1.0,
-                    0xD7DEE8FF,
+                    (0xD7DEE8FFu32).into(),
                     BorderStyle::Solid,
                 )),
             ],
@@ -2933,6 +3167,8 @@ fn text_heavy_paint_layer_state() -> RenderState {
 #[cfg(target_os = "linux")]
 fn text_heavy_paint_layer_scene() -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: vec![RenderNode::PaintLayer(RenderPaintLayer::from_children(
             9_200,
             Rect {
@@ -2943,7 +3179,7 @@ fn text_heavy_paint_layer_scene() -> RenderScene {
             },
             PaintLayerPlacement::Fixed,
             PaintLayerPolicy::Cacheable,
-            PaintLayerReason::StableSubtree,
+            PaintLayerReason::Nearby,
             1,
             std::iter::once(RenderNode::Primitive(DrawPrimitive::RoundedRect(
                 58.0,
@@ -2951,7 +3187,7 @@ fn text_heavy_paint_layer_scene() -> RenderScene {
                 WIDTH as f32 - 116.0,
                 HEIGHT as f32 - 92.0,
                 16.0,
-                0xFFFFFFFF,
+                (0xFFFFFFFFu32).into(),
             )))
             .chain((0..96).map(|index| {
                 let col = index % 4;
@@ -2961,7 +3197,7 @@ fn text_heavy_paint_layer_scene() -> RenderScene {
                     88.0 + row as f32 * 22.0,
                     format!("Cached text group {index:03}"),
                     14.0,
-                    0x172033FF,
+                    (0x172033FFu32).into(),
                     "default".to_string(),
                     if index % 5 == 0 { 700 } else { 400 },
                     false,
@@ -2970,6 +3206,37 @@ fn text_heavy_paint_layer_scene() -> RenderScene {
             .collect(),
         ))],
     }
+}
+
+#[cfg(target_os = "linux")]
+fn camera_active_slider_fixture_states(
+    encoded_states: &[&[u8]],
+    focused_slider_id: NodeId,
+) -> Vec<RenderState> {
+    encoded_states
+        .iter()
+        .enumerate()
+        .map(|(phase, encoded)| {
+            let mut tree = decode_tree(encoded).unwrap_or_else(|error| {
+                panic!("Camera phase {phase} fixture should decode: {error}")
+            });
+            if phase > 0 {
+                assert!(
+                    !tree.set_focused_active(&focused_slider_id, true).is_none(),
+                    "Camera phase {phase} should activate slider {focused_slider_id:?}"
+                );
+            }
+            let output = layout_and_refresh_default(
+                &mut tree,
+                Constraint::new(
+                    CAMERA_ACTIVE_SLIDER_WIDTH as f32,
+                    CAMERA_ACTIVE_SLIDER_HEIGHT as f32,
+                ),
+                1.0,
+            );
+            RenderState::new(output.scene, Color::BLACK, phase as u64 + 1, false)
+        })
+        .collect()
 }
 
 #[cfg(target_os = "linux")]
@@ -3023,13 +3290,15 @@ fn paint_layer_cache_states<T: Copy>(
 #[cfg(target_os = "linux")]
 fn scrolling_direct_scene(offset_y: f32) -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: vec![
             RenderNode::Primitive(DrawPrimitive::Rect(
                 0.0,
                 0.0,
                 WIDTH as f32,
                 HEIGHT as f32,
-                0xF3F6FAFF,
+                (0xF3F6FAFFu32).into(),
             )),
             RenderNode::Transform {
                 transform: Affine2::translation(60.0, 54.0 - offset_y),
@@ -3042,13 +3311,15 @@ fn scrolling_direct_scene(offset_y: f32) -> RenderScene {
 #[cfg(target_os = "linux")]
 fn scrolling_paint_layer_scene(offset_y: f32) -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: vec![
             RenderNode::Primitive(DrawPrimitive::Rect(
                 0.0,
                 0.0,
                 WIDTH as f32,
                 HEIGHT as f32,
-                0xF3F6FAFF,
+                (0xF3F6FAFFu32).into(),
             )),
             RenderNode::Transform {
                 transform: Affine2::translation(60.0, 54.0 - offset_y),
@@ -3062,7 +3333,7 @@ fn scrolling_paint_layer_scene(offset_y: f32) -> RenderScene {
                     },
                     PaintLayerPlacement::ScrollMoving,
                     PaintLayerPolicy::Cacheable,
-                    PaintLayerReason::ScrollContainer,
+                    PaintLayerReason::ScrollContent,
                     1,
                     scrolling_paint_layer_content(),
                 ))],
@@ -3087,18 +3358,41 @@ fn scrolling_paint_layer_content() -> Vec<RenderNode> {
             vec![
                 RenderNode::ShadowPass {
                     children: vec![RenderNode::Primitive(DrawPrimitive::Shadow(
-                        x, y, 94.0, 34.0, 0.0, 4.0, 9.0, 0.0, 8.0, 0x1720331F,
+                        x,
+                        y,
+                        94.0,
+                        34.0,
+                        0.0,
+                        4.0,
+                        9.0,
+                        0.0,
+                        [8.0; 4],
+                        (0x1720331Fu32).into(),
                     ))],
                 },
-                RenderNode::Primitive(DrawPrimitive::RoundedRect(x, y, 94.0, 34.0, 8.0, fill)),
-                RenderNode::Primitive(DrawPrimitive::Gradient(
+                RenderNode::Primitive(DrawPrimitive::RoundedRect(
+                    x,
+                    y,
+                    94.0,
+                    34.0,
+                    8.0,
+                    (fill).into(),
+                )),
+                RenderNode::Primitive(emerge_skia::render_scene::DrawPrimitive::Rect(
                     x + 10.0,
                     y + 9.0,
                     52.0,
                     7.0,
-                    0x6CA9E6FF,
-                    0x3D6F96FF,
-                    0.0,
+                    emerge_skia::render_color::RenderColor::linear(
+                        [0x6CA9E6FF, 0x3D6F96FF],
+                        0.0_f64,
+                        emerge_skia::tree::geometry::Rect {
+                            x: x + 10.0,
+                            y: y + 9.0,
+                            width: 52.0,
+                            height: 7.0,
+                        },
+                    ),
                 )),
                 RenderNode::Primitive(DrawPrimitive::Border(
                     x + 0.5,
@@ -3107,7 +3401,7 @@ fn scrolling_paint_layer_content() -> Vec<RenderNode> {
                     33.0,
                     8.0,
                     1.0,
-                    0xC5CEDAFF,
+                    (0xC5CEDAFFu32).into(),
                     BorderStyle::Solid,
                 )),
             ]
@@ -3118,6 +3412,8 @@ fn scrolling_paint_layer_content() -> Vec<RenderNode> {
 #[cfg(target_os = "linux")]
 fn animated_direct_scene(phase: usize) -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: animated_static_before()
             .into_iter()
             .chain(animated_dynamic_nodes(phase))
@@ -3129,6 +3425,8 @@ fn animated_direct_scene(phase: usize) -> RenderScene {
 #[cfg(target_os = "linux")]
 fn animated_paint_layer_scene(phase: usize) -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: vec![
             RenderNode::PaintLayer(RenderPaintLayer::from_children(
                 5_200,
@@ -3140,7 +3438,7 @@ fn animated_paint_layer_scene(phase: usize) -> RenderScene {
                 },
                 PaintLayerPlacement::Fixed,
                 PaintLayerPolicy::Cacheable,
-                PaintLayerReason::StableSubtree,
+                PaintLayerReason::Nearby,
                 1,
                 animated_static_before(),
             )),
@@ -3153,7 +3451,7 @@ fn animated_paint_layer_scene(phase: usize) -> RenderScene {
                     height: 130.0,
                 },
                 PaintLayerPlacement::Fixed,
-                PaintLayerPolicy::DynamicRedraw,
+                PaintLayerPolicy::Cacheable,
                 PaintLayerReason::Animation,
                 phase as u64 + 1,
                 animated_dynamic_nodes(phase),
@@ -3168,7 +3466,7 @@ fn animated_paint_layer_scene(phase: usize) -> RenderScene {
                 },
                 PaintLayerPlacement::Fixed,
                 PaintLayerPolicy::Cacheable,
-                PaintLayerReason::StableSubtree,
+                PaintLayerReason::Nearby,
                 1,
                 animated_static_after(),
             )),
@@ -3184,16 +3482,23 @@ fn animated_static_before() -> Vec<RenderNode> {
             0.0,
             WIDTH as f32,
             HEIGHT as f32,
-            0xF5F7FAFF,
+            (0xF5F7FAFFu32).into(),
         )),
-        RenderNode::Primitive(DrawPrimitive::Gradient(
+        RenderNode::Primitive(emerge_skia::render_scene::DrawPrimitive::Rect(
             0.0,
             0.0,
             WIDTH as f32,
             132.0,
-            0xE6EEF8FF,
-            0xF5F7FAFF,
-            90.0,
+            emerge_skia::render_color::RenderColor::linear(
+                [0xE6EEF8FF, 0xF5F7FAFF],
+                90.0_f64,
+                emerge_skia::tree::geometry::Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: WIDTH as f32,
+                    height: 132.0,
+                },
+            ),
         )),
     ];
     let cards = (0..30).flat_map(|index| {
@@ -3204,11 +3509,25 @@ fn animated_static_before() -> Vec<RenderNode> {
         vec![
             RenderNode::ShadowPass {
                 children: vec![RenderNode::Primitive(DrawPrimitive::Shadow(
-                    x, y, 142.0, 58.0, 0.0, 5.0, 12.0, 0.0, 10.0, 0x17203321,
+                    x,
+                    y,
+                    142.0,
+                    58.0,
+                    0.0,
+                    5.0,
+                    12.0,
+                    0.0,
+                    [10.0; 4],
+                    (0x17203321u32).into(),
                 ))],
             },
             RenderNode::Primitive(DrawPrimitive::RoundedRect(
-                x, y, 142.0, 58.0, 10.0, 0xFFFFFFFF,
+                x,
+                y,
+                142.0,
+                58.0,
+                10.0,
+                (0xFFFFFFFFu32).into(),
             )),
             RenderNode::Primitive(DrawPrimitive::Border(
                 x + 0.5,
@@ -3217,7 +3536,7 @@ fn animated_static_before() -> Vec<RenderNode> {
                 57.0,
                 10.0,
                 1.0,
-                0xD3DAE5FF,
+                (0xD3DAE5FFu32).into(),
                 BorderStyle::Solid,
             )),
         ]
@@ -3235,11 +3554,25 @@ fn animated_dynamic_nodes(phase: usize) -> Vec<RenderNode> {
     vec![
         RenderNode::ShadowPass {
             children: vec![RenderNode::Primitive(DrawPrimitive::Shadow(
-                x, 278.0, 138.0, 52.0, 0.0, 7.0, 16.0, 0.0, 14.0, 0x11182738,
+                x,
+                278.0,
+                138.0,
+                52.0,
+                0.0,
+                7.0,
+                16.0,
+                0.0,
+                [14.0; 4],
+                (0x11182738u32).into(),
             ))],
         },
         RenderNode::Primitive(DrawPrimitive::RoundedRect(
-            x, 278.0, 138.0, 52.0, 14.0, fill,
+            x,
+            278.0,
+            138.0,
+            52.0,
+            14.0,
+            (fill).into(),
         )),
         RenderNode::Primitive(DrawPrimitive::RoundedRect(
             x + 18.0,
@@ -3247,7 +3580,7 @@ fn animated_dynamic_nodes(phase: usize) -> Vec<RenderNode> {
             78.0,
             10.0,
             5.0,
-            0xFFFFFFFF,
+            (0xFFFFFFFFu32).into(),
         )),
     ]
 }
@@ -3264,11 +3597,12 @@ fn animated_static_after() -> Vec<RenderNode> {
                 76.0,
                 5.0,
                 2.5,
-                if index % 3 == 0 {
+                (if index % 3 == 0 {
                     0x6D7B8DFF
                 } else {
                     0xCBD4E0FF
-                },
+                })
+                .into(),
             ))
         })
         .collect()
@@ -3277,13 +3611,15 @@ fn animated_static_after() -> Vec<RenderNode> {
 #[cfg(target_os = "linux")]
 fn offscreen_layout_animation_scene(phase: usize) -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: vec![
             RenderNode::Primitive(DrawPrimitive::Rect(
                 0.0,
                 0.0,
                 WIDTH as f32,
                 HEIGHT as f32,
-                0xF5F7FAFF,
+                (0xF5F7FAFFu32).into(),
             )),
             RenderNode::PaintLayer(RenderPaintLayer::from_children(
                 8_200,
@@ -3295,7 +3631,7 @@ fn offscreen_layout_animation_scene(phase: usize) -> RenderScene {
                 },
                 PaintLayerPlacement::Fixed,
                 PaintLayerPolicy::Cacheable,
-                PaintLayerReason::ScrollContainer,
+                PaintLayerReason::ScrollContent,
                 1,
                 offscreen_layout_animation_children(phase),
             )),
@@ -3317,7 +3653,7 @@ fn offscreen_layout_animation_children(phase: usize) -> Vec<RenderNode> {
                     height: 88.0,
                 },
                 PaintLayerPlacement::Fixed,
-                PaintLayerPolicy::DynamicRedraw,
+                PaintLayerPolicy::Cacheable,
                 PaintLayerReason::Animation,
                 phase as u64 + 1,
                 offscreen_animated_layout_row(phase),
@@ -3342,7 +3678,7 @@ fn offscreen_visible_layout_rows() -> Vec<RenderNode> {
                 },
                 PaintLayerPlacement::Fixed,
                 PaintLayerPolicy::Cacheable,
-                PaintLayerReason::StableSubtree,
+                PaintLayerReason::Nearby,
                 1,
                 offscreen_visible_layout_row_nodes(index, y),
             ))
@@ -3360,18 +3696,41 @@ fn offscreen_visible_layout_row_nodes(index: u64, y: f32) -> Vec<RenderNode> {
     vec![
         RenderNode::ShadowPass {
             children: vec![RenderNode::Primitive(DrawPrimitive::Shadow(
-                78.0, y, 776.0, 42.0, 0.0, 4.0, 9.0, 0.0, 8.0, 0x1720331F,
+                78.0,
+                y,
+                776.0,
+                42.0,
+                0.0,
+                4.0,
+                9.0,
+                0.0,
+                [8.0; 4],
+                (0x1720331Fu32).into(),
             ))],
         },
-        RenderNode::Primitive(DrawPrimitive::RoundedRect(78.0, y, 776.0, 42.0, 8.0, fill)),
-        RenderNode::Primitive(DrawPrimitive::Gradient(
+        RenderNode::Primitive(DrawPrimitive::RoundedRect(
+            78.0,
+            y,
+            776.0,
+            42.0,
+            8.0,
+            (fill).into(),
+        )),
+        RenderNode::Primitive(emerge_skia::render_scene::DrawPrimitive::Rect(
             102.0,
             y + 14.0,
             180.0,
             9.0,
-            0x7CB7E6FF,
-            0x3D6F96FF,
-            0.0,
+            emerge_skia::render_color::RenderColor::linear(
+                [0x7CB7E6FF, 0x3D6F96FF],
+                0.0_f64,
+                emerge_skia::tree::geometry::Rect {
+                    x: 102.0,
+                    y: y + 14.0,
+                    width: 180.0,
+                    height: 9.0,
+                },
+            ),
         )),
         RenderNode::Primitive(DrawPrimitive::Border(
             78.5,
@@ -3380,7 +3739,7 @@ fn offscreen_visible_layout_row_nodes(index: u64, y: f32) -> Vec<RenderNode> {
             41.0,
             8.0,
             1.0,
-            0xC5CEDAFF,
+            (0xC5CEDAFFu32).into(),
             BorderStyle::Solid,
         )),
     ]
@@ -3394,11 +3753,25 @@ fn offscreen_animated_layout_row(phase: usize) -> Vec<RenderNode> {
     vec![
         RenderNode::ShadowPass {
             children: vec![RenderNode::Primitive(DrawPrimitive::Shadow(
-                x, 828.0, width, 64.0, 0.0, 7.0, 16.0, 0.0, 14.0, 0x11182738,
+                x,
+                828.0,
+                width,
+                64.0,
+                0.0,
+                7.0,
+                16.0,
+                0.0,
+                [14.0; 4],
+                (0x11182738u32).into(),
             ))],
         },
         RenderNode::Primitive(DrawPrimitive::RoundedRect(
-            x, 828.0, width, 64.0, 14.0, 0xD94F70FF,
+            x,
+            828.0,
+            width,
+            64.0,
+            14.0,
+            (0xD94F70FFu32).into(),
         )),
         RenderNode::Primitive(DrawPrimitive::RoundedRect(
             x + 28.0,
@@ -3406,7 +3779,7 @@ fn offscreen_animated_layout_row(phase: usize) -> Vec<RenderNode> {
             190.0,
             10.0,
             5.0,
-            0xFFFFFFFF,
+            (0xFFFFFFFFu32).into(),
         )),
     ]
 }
@@ -3427,7 +3800,7 @@ fn offscreen_static_rows_after_animation(phase: usize) -> Vec<RenderNode> {
                 row_width,
                 8.0,
                 4.0,
-                0xCBD4E0FF,
+                (0xCBD4E0FFu32).into(),
             ))
         })
         .collect()
@@ -3436,13 +3809,15 @@ fn offscreen_static_rows_after_animation(phase: usize) -> Vec<RenderNode> {
 #[cfg(target_os = "linux")]
 fn stable_descendant_layout_animation_scene(phase: usize) -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: vec![
             RenderNode::Primitive(DrawPrimitive::Rect(
                 0.0,
                 0.0,
                 WIDTH as f32,
                 HEIGHT as f32,
-                0xF5F7FAFF,
+                (0xF5F7FAFFu32).into(),
             )),
             RenderNode::PaintLayer(RenderPaintLayer::from_children(
                 8_400,
@@ -3454,7 +3829,7 @@ fn stable_descendant_layout_animation_scene(phase: usize) -> RenderScene {
                 },
                 PaintLayerPlacement::Fixed,
                 PaintLayerPolicy::Cacheable,
-                PaintLayerReason::ScrollContainer,
+                PaintLayerReason::ScrollContent,
                 1,
                 stable_descendant_layout_animation_children(phase),
             )),
@@ -3477,7 +3852,12 @@ fn stable_descendant_layout_animation_children(phase: usize) -> Vec<RenderNode> 
         }],
         children: vec![
             RenderNode::Primitive(DrawPrimitive::RoundedRect(
-                52.0, 44.0, 856.0, 360.0, 12.0, 0xFFFFFFFF,
+                52.0,
+                44.0,
+                856.0,
+                360.0,
+                12.0,
+                (0xFFFFFFFFu32).into(),
             )),
             stable_descendant_layer(8_401, 78.0, 70.0, 776.0, 58.0, 0xEEF7F5FF),
             stable_descendant_layer(8_402, 78.0, 146.0, 776.0, 58.0, 0xF7F3FFFF),
@@ -3493,7 +3873,7 @@ fn stable_descendant_layout_animation_children(phase: usize) -> Vec<RenderNode> 
                     height: 86.0 + offscreen_shift,
                 },
                 PaintLayerPlacement::Fixed,
-                PaintLayerPolicy::DynamicRedraw,
+                PaintLayerPolicy::Cacheable,
                 PaintLayerReason::Animation,
                 phase as u64 + 1,
                 stable_descendant_animated_row(phase),
@@ -3529,23 +3909,46 @@ fn stable_descendant_layer(
         },
         PaintLayerPlacement::ScrollMoving,
         PaintLayerPolicy::Cacheable,
-        PaintLayerReason::StableSubtree,
+        PaintLayerReason::Nearby,
         1,
         vec![
             RenderNode::ShadowPass {
                 children: vec![RenderNode::Primitive(DrawPrimitive::Shadow(
-                    x, y, width, height, 0.0, 4.0, 9.0, 0.0, 8.0, 0x1720331F,
+                    x,
+                    y,
+                    width,
+                    height,
+                    0.0,
+                    4.0,
+                    9.0,
+                    0.0,
+                    [8.0; 4],
+                    (0x1720331Fu32).into(),
                 ))],
             },
-            RenderNode::Primitive(DrawPrimitive::RoundedRect(x, y, width, height, 8.0, fill)),
-            RenderNode::Primitive(DrawPrimitive::Gradient(
+            RenderNode::Primitive(DrawPrimitive::RoundedRect(
+                x,
+                y,
+                width,
+                height,
+                8.0,
+                (fill).into(),
+            )),
+            RenderNode::Primitive(emerge_skia::render_scene::DrawPrimitive::Rect(
                 x + 24.0,
                 y + height * 0.5 - 5.0,
                 180.0,
                 10.0,
-                0x7CB7E6FF,
-                0x3D6F96FF,
-                0.0,
+                emerge_skia::render_color::RenderColor::linear(
+                    [0x7CB7E6FF, 0x3D6F96FF],
+                    0.0_f64,
+                    emerge_skia::tree::geometry::Rect {
+                        x: x + 24.0,
+                        y: y + height * 0.5 - 5.0,
+                        width: 180.0,
+                        height: 10.0,
+                    },
+                ),
             )),
             RenderNode::Primitive(DrawPrimitive::Border(
                 x + 0.5,
@@ -3554,7 +3957,7 @@ fn stable_descendant_layer(
                 height - 1.0,
                 8.0,
                 1.0,
-                0xC5CEDAFF,
+                (0xC5CEDAFFu32).into(),
                 BorderStyle::Solid,
             )),
         ],
@@ -3568,11 +3971,25 @@ fn stable_descendant_animated_row(phase: usize) -> Vec<RenderNode> {
     vec![
         RenderNode::ShadowPass {
             children: vec![RenderNode::Primitive(DrawPrimitive::Shadow(
-                x, 430.0, width, 70.0, 0.0, 7.0, 16.0, 0.0, 14.0, 0x11182738,
+                x,
+                430.0,
+                width,
+                70.0,
+                0.0,
+                7.0,
+                16.0,
+                0.0,
+                [14.0; 4],
+                (0x11182738u32).into(),
             ))],
         },
         RenderNode::Primitive(DrawPrimitive::RoundedRect(
-            x, 430.0, width, 70.0, 14.0, 0xD94F70FF,
+            x,
+            430.0,
+            width,
+            70.0,
+            14.0,
+            (0xD94F70FFu32).into(),
         )),
         RenderNode::Primitive(DrawPrimitive::RoundedRect(
             x + 28.0,
@@ -3580,7 +3997,7 @@ fn stable_descendant_animated_row(phase: usize) -> Vec<RenderNode> {
             190.0,
             10.0,
             5.0,
-            0xFFFFFFFF,
+            (0xFFFFFFFFu32).into(),
         )),
     ]
 }
@@ -3618,13 +4035,15 @@ fn scroll_return_state(scroll_y: f32) -> RenderState {
 #[cfg(target_os = "linux")]
 fn scroll_return_scene(scroll_y: f32) -> RenderScene {
     RenderScene {
+        fonts: None,
+        images: None,
         nodes: vec![
             RenderNode::Primitive(DrawPrimitive::Rect(
                 0.0,
                 0.0,
                 WIDTH as f32,
                 HEIGHT as f32,
-                0xF3F6FAFF,
+                (0xF3F6FAFFu32).into(),
             )),
             RenderNode::Clip {
                 clips: vec![ClipShape {
@@ -3648,7 +4067,7 @@ fn scroll_return_scene(scroll_y: f32) -> RenderScene {
                         },
                         PaintLayerPlacement::ScrollMoving,
                         PaintLayerPolicy::Cacheable,
-                        PaintLayerReason::StableSubtree,
+                        PaintLayerReason::Nearby,
                         1,
                         scroll_return_layer_content(),
                     ))],
@@ -3663,14 +4082,41 @@ fn scroll_return_layer_content() -> Vec<RenderNode> {
     vec![
         RenderNode::ShadowPass {
             children: vec![RenderNode::Primitive(DrawPrimitive::Shadow(
-                0.0, 0.0, 260.0, 54.0, 0.0, 5.0, 12.0, 0.0, 10.0, 0x17203321,
+                0.0,
+                0.0,
+                260.0,
+                54.0,
+                0.0,
+                5.0,
+                12.0,
+                0.0,
+                [10.0; 4],
+                (0x17203321u32).into(),
             ))],
         },
         RenderNode::Primitive(DrawPrimitive::RoundedRect(
-            0.0, 0.0, 260.0, 54.0, 10.0, 0xFFFFFFFF,
+            0.0,
+            0.0,
+            260.0,
+            54.0,
+            10.0,
+            (0xFFFFFFFFu32).into(),
         )),
-        RenderNode::Primitive(DrawPrimitive::Gradient(
-            22.0, 21.0, 132.0, 9.0, 0x6CA9E6FF, 0x3D6F96FF, 0.0,
+        RenderNode::Primitive(emerge_skia::render_scene::DrawPrimitive::Rect(
+            22.0,
+            21.0,
+            132.0,
+            9.0,
+            emerge_skia::render_color::RenderColor::linear(
+                [0x6CA9E6FF, 0x3D6F96FF],
+                0.0_f64,
+                emerge_skia::tree::geometry::Rect {
+                    x: 22.0,
+                    y: 21.0,
+                    width: 132.0,
+                    height: 9.0,
+                },
+            ),
         )),
         RenderNode::Primitive(DrawPrimitive::Border(
             0.5,
@@ -3679,7 +4125,7 @@ fn scroll_return_layer_content() -> Vec<RenderNode> {
             53.0,
             10.0,
             1.0,
-            0xC5CEDAFF,
+            (0xC5CEDAFFu32).into(),
             BorderStyle::Solid,
         )),
     ]
@@ -3718,6 +4164,18 @@ struct EglBenchSurface {
     context: EGLContext,
     surface: EGLSurface,
     frame_surface: Option<GlFrameSurface>,
+}
+
+#[cfg(target_os = "linux")]
+fn current_gl_string(name: u32) -> String {
+    let value = unsafe { gl::GetString(name) };
+    if value.is_null() {
+        return "unavailable".to_string();
+    }
+
+    unsafe { CStr::from_ptr(value.cast()) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[cfg(target_os = "linux")]
@@ -3930,13 +4388,17 @@ fn create_gpu_frame_surface(
     Ok(GlFrameSurface::new(dimensions, fb_info, gr_context, 0, 0))
 }
 
-criterion_group!(
-    benches,
-    bench_renderer_raster_direct,
-    bench_renderer_direct_candidates,
-    bench_renderer_cold_frames,
-    bench_renderer_gpu_surfaceless,
-    bench_renderer_gpu_cold_frames,
-    bench_renderer_paint_layer_cache
-);
+fn bench_renderer(c: &mut Criterion) {
+    let asset_runtime = AssetRuntime::new();
+    let _asset_context_guard = asset_runtime.enter();
+
+    bench_renderer_raster_direct(c);
+    bench_renderer_direct_candidates(c);
+    bench_renderer_cold_frames(c);
+    bench_renderer_gpu_surfaceless(c);
+    bench_renderer_gpu_cold_frames(c);
+    bench_renderer_paint_layer_cache(c);
+}
+
+criterion_group!(benches, bench_renderer);
 criterion_main!(benches);

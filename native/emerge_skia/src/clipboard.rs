@@ -11,7 +11,7 @@ pub enum ClipboardTarget {
 
 pub struct ClipboardManager {
     system_enabled: bool,
-    #[cfg(all(feature = "wayland", target_os = "linux"))]
+    #[cfg(all(feature = "wayland-core", target_os = "linux"))]
     system: Option<arboard::Clipboard>,
     fallback_clipboard: String,
     fallback_primary: String,
@@ -21,7 +21,7 @@ impl ClipboardManager {
     pub fn new(system_enabled: bool) -> Self {
         Self {
             system_enabled,
-            #[cfg(all(feature = "wayland", target_os = "linux"))]
+            #[cfg(all(feature = "wayland-core", target_os = "linux"))]
             system: None,
             fallback_clipboard: String::new(),
             fallback_primary: String::new(),
@@ -32,7 +32,7 @@ impl ClipboardManager {
         self.set_fallback(target, text);
 
         if self.system_enabled_for_target(target) {
-            #[cfg(all(feature = "wayland", target_os = "linux"))]
+            #[cfg(all(feature = "wayland-core", target_os = "linux"))]
             if let Some(system) = self.system_mut() {
                 let _ = set_system_text(system, target, text);
             }
@@ -45,7 +45,7 @@ impl ClipboardManager {
     }
 
     pub fn get_text(&mut self, target: ClipboardTarget) -> Option<String> {
-        #[cfg(all(feature = "wayland", target_os = "linux"))]
+        #[cfg(all(feature = "wayland-core", target_os = "linux"))]
         if self.system_enabled_for_target(target)
             && let Some(system) = self.system_mut()
             && let Ok(text) = get_system_text(system, target)
@@ -74,7 +74,7 @@ impl ClipboardManager {
         self.system_enabled && target != ClipboardTarget::Primary
     }
 
-    #[cfg(all(feature = "wayland", target_os = "linux"))]
+    #[cfg(all(feature = "wayland-core", target_os = "linux"))]
     fn system_mut(&mut self) -> Option<&mut arboard::Clipboard> {
         if !self.system_enabled {
             return None;
@@ -114,7 +114,7 @@ impl ClipboardManager {
     }
 }
 
-#[cfg(all(feature = "wayland", target_os = "linux"))]
+#[cfg(all(feature = "wayland-core", target_os = "linux"))]
 fn linux_clipboard_kind(target: ClipboardTarget) -> arboard::LinuxClipboardKind {
     match target {
         ClipboardTarget::Clipboard => arboard::LinuxClipboardKind::Clipboard,
@@ -122,7 +122,7 @@ fn linux_clipboard_kind(target: ClipboardTarget) -> arboard::LinuxClipboardKind 
     }
 }
 
-#[cfg(all(feature = "wayland", target_os = "linux"))]
+#[cfg(all(feature = "wayland-core", target_os = "linux"))]
 fn set_system_text(
     system: &mut arboard::Clipboard,
     target: ClipboardTarget,
@@ -137,7 +137,7 @@ fn set_system_text(
         .map_err(|err| err.to_string())
 }
 
-#[cfg(all(feature = "wayland", target_os = "linux"))]
+#[cfg(all(feature = "wayland-core", target_os = "linux"))]
 fn get_system_text(
     system: &mut arboard::Clipboard,
     target: ClipboardTarget,

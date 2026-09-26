@@ -85,7 +85,7 @@ fn build_scroll_panel_with_cards(
     panel.children = child_ids.clone();
     tree.insert(panel);
 
-    for ((id_byte, attrs, frame), child_id) in cards.into_iter().zip(child_ids.into_iter()) {
+    for ((id_byte, attrs, frame), child_id) in cards.into_iter().zip(child_ids) {
         let mut child = Element::with_attrs(child_id, ElementKind::El, Vec::new(), attrs);
         child.layout.frame = Some(frame);
         tree.insert(child);
@@ -131,21 +131,26 @@ fn demo_glow_card_attrs_without_glow() -> Attrs {
 
 fn demo_combined_glow_card_attrs() -> Attrs {
     Attrs {
-        background: Some(Background::Gradient {
-            from: Color::Rgba {
-                r: 67,
-                g: 97,
-                b: 238,
-                a: 255,
-            },
-            to: Color::Rgba {
-                r: 114,
-                g: 9,
-                b: 183,
-                a: 255,
-            },
+        background: Some(Background::Color(crate::tree::attrs::Color::Gradient {
+            colors: (vec![
+                Color::Rgba {
+                    r: 67,
+                    g: 97,
+                    b: 238,
+                    a: 255,
+                },
+                Color::Rgba {
+                    r: 114,
+                    g: 9,
+                    b: 183,
+                    a: 255,
+                },
+            ])
+            .into_iter()
+            .map(|c| c.try_into().expect("solid stop"))
+            .collect(),
             angle: 135.0,
-        }),
+        })),
         border_radius: Some(BorderRadius::Uniform(10.0)),
         border_width: Some(BorderWidth::Uniform(2.0)),
         border_color: Some(Color::Named("cyan".to_string())),
@@ -211,10 +216,10 @@ fn demo_inset_glow_dotted_card_attrs(with_glow: bool) -> Attrs {
 }
 
 #[test]
-fn test_render_image_source_pending_emits_loading_placeholder() {
+fn test_render_image_source_pending_delays_loading_indicator() {
     let id = NodeId::from_term_bytes(vec![9]);
     let attrs = Attrs {
-        image_src: Some(ImageSource::Logical("images/photo.jpg".to_string())),
+        image_src: Some(ImageSource::Id("paint_pending_photo".to_string())),
         image_fit: Some(ImageFit::Contain),
         ..Attrs::default()
     };
@@ -233,13 +238,21 @@ fn test_render_image_source_pending_emits_loading_placeholder() {
     tree.set_root_id(id);
     tree.insert(element);
 
+    let before = trace_tree(&tree);
+    assert!(before.draws.is_empty());
+    let deadline = crate::assets::next_loading_indicator_deadline().unwrap();
+    assert!(!crate::assets::advance_loading_indicators(
+        deadline - std::time::Duration::from_nanos(1)
+    ));
+    assert!(trace_tree(&tree).draws.is_empty());
+    assert!(crate::assets::advance_loading_indicators(deadline));
     let draws = observe_tree(&tree);
-
     assert!(
         draws
             .iter()
             .any(|draw| matches!(draw.primitive, DrawPrimitive::ImageLoading(_, _, _, _)))
     );
+    assert_eq!(tree.get(&id).unwrap().layout.frame.unwrap().width, 120.0);
 }
 
 #[test]
@@ -267,14 +280,19 @@ fn test_cached_pending_image_subtree_refreshes_when_asset_becomes_ready() {
     tree.insert(element);
     tree.clear_refresh_dirty();
 
+    let blank_scene = super::super::render_tree_scene_with_scroll_layers(&tree).scene;
+    assert!(trace_scene(&blank_scene).draws.is_empty());
+    let deadline = crate::assets::next_loading_indicator_deadline().unwrap();
+    crate::assets::advance_loading_indicators(deadline);
     let first_scene = super::super::render_tree_scene_with_scroll_layers(&tree).scene;
-    let first_trace = trace_scene(&first_scene);
-    assert!(first_trace.draws.iter().any(|draw| {
+    assert!(trace_scene(&first_scene).draws.iter().any(|draw| {
         matches!(
             draw.primitive,
             DrawPrimitive::ImageLoading(0.0, 0.0, 40.0, 40.0)
         )
     }));
+    // Retained pre-deadline scenes do not consult a live clock or new asset state.
+    assert!(trace_scene(&blank_scene).draws.is_empty());
     crate::renderer::insert_test_raster_asset_rgba(image_id, 1, 1, &[0, 255, 0, 255])
         .expect("test asset should insert");
     crate::assets::ensure_source(&ImageSource::Id(image_id.to_string()));
@@ -408,7 +426,7 @@ fn test_render_image_cover_border_has_no_inner_gap_from_background() {
 fn test_render_nested_image_cover_has_no_inner_gap_from_parent_background() {
     let image_id = "paint_nested_image_cover_no_inner_gap";
     let mut src = vec![0u8; 24 * 16 * 4];
-    for px in src.chunks_exact_mut(4) {
+    for px in src.as_chunks_mut::<4>().0 {
         px[0] = 36;
         px[1] = 216;
         px[2] = 72;
@@ -571,7 +589,7 @@ fn test_render_nested_image_cover_has_no_inner_gap_from_parent_background() {
 fn test_render_nested_image_contain_has_no_right_gap_when_touching_horizontal_edges() {
     let image_id = "paint_nested_image_contain_no_right_gap";
     let mut src = vec![0u8; 24 * 16 * 4];
-    for px in src.chunks_exact_mut(4) {
+    for px in src.as_chunks_mut::<4>().0 {
         px[0] = 36;
         px[1] = 216;
         px[2] = 72;
@@ -711,7 +729,7 @@ fn test_render_nested_image_contain_has_no_right_gap_when_touching_horizontal_ed
 fn test_render_background_image_pending_uses_self_clip() {
     let attrs = Attrs {
         background: Some(Background::Image {
-            source: ImageSource::Logical("images/background_pending_clip.png".to_string()),
+            source: ImageSource::Id("paint_pending_background_clip".to_string()),
             fit: ImageFit::Cover,
         }),
         border_radius: Some(BorderRadius::Corners {
@@ -724,6 +742,9 @@ fn test_render_background_image_pending_uses_self_clip() {
     };
 
     let tree = build_tree_with_attrs(attrs);
+    assert!(observe_tree(&tree).is_empty());
+    let deadline = crate::assets::next_loading_indicator_deadline().unwrap();
+    crate::assets::advance_loading_indicators(deadline);
     let draws = observe_tree(&tree);
 
     let background = only_draw(&draws, |draw| {
@@ -840,7 +861,7 @@ fn test_render_svg_source_with_color_emits_tinted_image_command() {
     assert!(draws.iter().any(|draw| {
         matches!(
             &draw.primitive,
-            DrawPrimitive::Image(_, _, _, _, asset_id, ImageFit::Contain, Some(0xFFFFFFFF)) if asset_id == image_id
+            DrawPrimitive::Image(_, _, _, _, asset_id, ImageFit::Contain, Some(crate::render_color::RenderColor::Solid(0xFFFFFFFF))) if asset_id == image_id
         )
     }));
 }
@@ -906,13 +927,26 @@ fn test_render_scrollbar_y_thumb() {
     let background = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(0.0, 0.0, 100.0, 50.0, 0x000000FF)
+            DrawPrimitive::Rect(
+                0.0,
+                0.0,
+                100.0,
+                50.0,
+                crate::render_color::RenderColor::Solid(0x000000FF)
+            )
         )
     });
     let thumb = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::RoundedRect(95.0, 13.0, 5.0, 24.0, 2.5, SCROLLBAR_COLOR)
+            DrawPrimitive::RoundedRect(
+                95.0,
+                13.0,
+                5.0,
+                24.0,
+                2.5,
+                crate::render_color::RenderColor::Solid(SCROLLBAR_COLOR)
+            )
         )
     });
 
@@ -972,14 +1006,27 @@ fn test_render_scrollbar_x_thumb() {
     let background = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Rect(0.0, 0.0, 80.0, 40.0, 0x000000FF)
+            DrawPrimitive::Rect(
+                0.0,
+                0.0,
+                80.0,
+                40.0,
+                crate::render_color::RenderColor::Solid(0x000000FF)
+            )
         )
     });
 
     let thumb = only_draw(draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::RoundedRect(15.0, 35.0, 40.0, 5.0, 2.5, SCROLLBAR_COLOR)
+            DrawPrimitive::RoundedRect(
+                15.0,
+                35.0,
+                40.0,
+                5.0,
+                2.5,
+                crate::render_color::RenderColor::Solid(SCROLLBAR_COLOR)
+            )
         )
     });
     let expected_clip = ClipShape {
@@ -1030,7 +1077,14 @@ fn test_render_scrollbar_hover_uses_wider_thumb() {
     only_draw(&draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::RoundedRect(93.0, 13.0, 7.0, 24.0, 3.5, SCROLLBAR_COLOR)
+            DrawPrimitive::RoundedRect(
+                93.0,
+                13.0,
+                7.0,
+                24.0,
+                3.5,
+                crate::render_color::RenderColor::Solid(SCROLLBAR_COLOR)
+            )
         )
     });
 }
@@ -1050,7 +1104,16 @@ fn test_render_border_uniform_emits_border_cmd() {
     only_draw(&draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Border(_, _, _, _, 4.0, 2.0, 0xFF0000FF, BorderStyle::Solid)
+            DrawPrimitive::Border(
+                _,
+                _,
+                _,
+                _,
+                4.0,
+                2.0,
+                crate::render_color::RenderColor::Solid(0xFF0000FF),
+                BorderStyle::Solid
+            )
         )
     });
 }
@@ -1084,7 +1147,7 @@ fn test_render_border_edges_emits_border_edges_cmd() {
                 2.0,
                 3.0,
                 4.0,
-                0xFF0000FF,
+                crate::render_color::RenderColor::Solid(0xFF0000FF),
                 BorderStyle::Solid
             )
         )
@@ -1106,7 +1169,16 @@ fn test_render_border_dashed_passes_style() {
     only_draw(&draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Border(_, _, _, _, _, 2.0, 0xFFFFFFFF, BorderStyle::Dashed)
+            DrawPrimitive::Border(
+                _,
+                _,
+                _,
+                _,
+                _,
+                2.0,
+                crate::render_color::RenderColor::Solid(0xFFFFFFFF),
+                BorderStyle::Dashed
+            )
         )
     });
 }
@@ -1620,7 +1692,7 @@ fn test_demo_like_nested_glow_cards_bleed_into_scroll_panel_padding_and_trailing
         tree.insert(glow_row);
         tree.insert(combined_row);
 
-        for (id, attrs, frame) in glow_cards.into_iter().chain(combined_cards.into_iter()) {
+        for (id, attrs, frame) in glow_cards.into_iter().chain(combined_cards) {
             let id = NodeId::from_term_bytes(vec![id]);
             let mut child = Element::with_attrs(id, ElementKind::El, Vec::new(), attrs);
             child.layout.frame = Some(frame);
@@ -1639,7 +1711,18 @@ fn test_demo_like_nested_glow_cards_bleed_into_scroll_panel_padding_and_trailing
     let first_left_glow = only_draw(&with_glow_trace.draws, |draw| {
         matches!(
             draw.primitive,
-            DrawPrimitive::Shadow(36.0, 120.0, 300.0, 110.0, 0.0, 0.0, 4.0, 2.0, 8.0, _)
+            DrawPrimitive::Shadow(
+                36.0,
+                120.0,
+                300.0,
+                110.0,
+                0.0,
+                0.0,
+                4.0,
+                2.0,
+                [8.0, 8.0, 8.0, 8.0],
+                _
+            )
         )
     });
     assert!(
@@ -1703,19 +1786,24 @@ fn test_render_no_border_without_color() {
 #[test]
 fn test_render_gradient_with_rounded_corners_uses_self_clip() {
     let attrs = Attrs {
-        background: Some(Background::Gradient {
-            from: Color::Rgb {
-                r: 67,
-                g: 97,
-                b: 238,
-            },
-            to: Color::Rgb {
-                r: 114,
-                g: 9,
-                b: 183,
-            },
+        background: Some(Background::Color(crate::tree::attrs::Color::Gradient {
+            colors: (vec![
+                Color::Rgb {
+                    r: 67,
+                    g: 97,
+                    b: 238,
+                },
+                Color::Rgb {
+                    r: 114,
+                    g: 9,
+                    b: 183,
+                },
+            ])
+            .into_iter()
+            .map(|c| c.try_into().expect("solid stop"))
+            .collect(),
             angle: 135.0,
-        }),
+        })),
         border_radius: Some(BorderRadius::Uniform(10.0)),
         ..Attrs::default()
     };
@@ -1724,7 +1812,10 @@ fn test_render_gradient_with_rounded_corners_uses_self_clip() {
     let draws = observe_tree(&tree);
 
     let gradient = only_draw(&draws, |draw| {
-        matches!(draw.primitive, DrawPrimitive::Gradient(..))
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(_, _, _, _, crate::render_color::RenderColor::Linear { .. })
+        )
     });
 
     assert_eq!(gradient.clips.len(), 1);
@@ -1750,15 +1841,20 @@ fn test_render_gradient_with_rounded_corners_uses_self_clip() {
 #[test]
 fn test_render_gradient_without_radius_has_no_self_clip() {
     let attrs = Attrs {
-        background: Some(Background::Gradient {
-            from: Color::Rgb { r: 0, g: 0, b: 0 },
-            to: Color::Rgb {
-                r: 255,
-                g: 255,
-                b: 255,
-            },
+        background: Some(Background::Color(crate::tree::attrs::Color::Gradient {
+            colors: (vec![
+                Color::Rgb { r: 0, g: 0, b: 0 },
+                Color::Rgb {
+                    r: 255,
+                    g: 255,
+                    b: 255,
+                },
+            ])
+            .into_iter()
+            .map(|c| c.try_into().expect("solid stop"))
+            .collect(),
             angle: 90.0,
-        }),
+        })),
         ..Attrs::default()
     };
     // No border_radius set
@@ -1767,7 +1863,10 @@ fn test_render_gradient_without_radius_has_no_self_clip() {
     let draws = observe_tree(&tree);
 
     let gradient = only_draw(&draws, |draw| {
-        matches!(draw.primitive, DrawPrimitive::Gradient(..))
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(_, _, _, _, crate::render_color::RenderColor::Linear { .. })
+        )
     });
 
     assert!(gradient.clips.is_empty());
@@ -1776,15 +1875,20 @@ fn test_render_gradient_without_radius_has_no_self_clip() {
 #[test]
 fn test_render_gradient_with_per_corner_radius_uses_self_clip() {
     let attrs = Attrs {
-        background: Some(Background::Gradient {
-            from: Color::Rgb { r: 0, g: 0, b: 0 },
-            to: Color::Rgb {
-                r: 255,
-                g: 255,
-                b: 255,
-            },
+        background: Some(Background::Color(crate::tree::attrs::Color::Gradient {
+            colors: (vec![
+                Color::Rgb { r: 0, g: 0, b: 0 },
+                Color::Rgb {
+                    r: 255,
+                    g: 255,
+                    b: 255,
+                },
+            ])
+            .into_iter()
+            .map(|c| c.try_into().expect("solid stop"))
+            .collect(),
             angle: 0.0,
-        }),
+        })),
         border_radius: Some(BorderRadius::Corners {
             tl: 10.0,
             tr: 5.0,
@@ -1798,7 +1902,10 @@ fn test_render_gradient_with_per_corner_radius_uses_self_clip() {
     let draws = observe_tree(&tree);
 
     let gradient = only_draw(&draws, |draw| {
-        matches!(draw.primitive, DrawPrimitive::Gradient(..))
+        matches!(
+            draw.primitive,
+            DrawPrimitive::Rect(_, _, _, _, crate::render_color::RenderColor::Linear { .. })
+        )
     });
 
     assert_eq!(gradient.clips.len(), 1);
@@ -1824,15 +1931,20 @@ fn test_render_gradient_with_per_corner_radius_uses_self_clip() {
 #[test]
 fn test_render_gradient_with_per_corner_radius_clips_corner_pixels() {
     let attrs = Attrs {
-        background: Some(Background::Gradient {
-            from: Color::Rgb { r: 0, g: 0, b: 0 },
-            to: Color::Rgb {
-                r: 255,
-                g: 255,
-                b: 255,
-            },
+        background: Some(Background::Color(crate::tree::attrs::Color::Gradient {
+            colors: (vec![
+                Color::Rgb { r: 0, g: 0, b: 0 },
+                Color::Rgb {
+                    r: 255,
+                    g: 255,
+                    b: 255,
+                },
+            ])
+            .into_iter()
+            .map(|c| c.try_into().expect("solid stop"))
+            .collect(),
             angle: 0.0,
-        }),
+        })),
         border_radius: Some(BorderRadius::Corners {
             tl: 10.0,
             tr: 5.0,
@@ -1980,7 +2092,7 @@ fn test_render_border_edges_asymmetric_widths() {
             assert_eq!(right, 1.0);
             assert_eq!(bottom, 4.0);
             assert_eq!(left, 1.0);
-            assert_eq!(radius, 8.0, "border radius should be passed through");
+            assert_eq!(radius, [8.0; 4], "border radius should be passed through");
         }
         _ => unreachable!(),
     }
@@ -2017,7 +2129,7 @@ fn test_render_border_edges_bottom_only() {
             assert_eq!(right, 0.0);
             assert_eq!(bottom, 3.0);
             assert_eq!(left, 0.0);
-            assert_eq!(radius, 0.0, "no border radius set");
+            assert_eq!(radius, [0.0; 4], "no border radius set");
         }
         _ => unreachable!(),
     }
@@ -2054,9 +2166,71 @@ fn test_render_border_edges_with_style() {
                 2.0,
                 2.0,
                 2.0,
-                0xFFFFFFFF,
+                crate::render_color::RenderColor::Solid(0xFFFFFFFF),
                 BorderStyle::Dashed
             )
         )
     });
+}
+
+#[test]
+fn multicolor_gradient_paints_middle_stop_and_keeps_clip_and_large_angle() {
+    let attrs = |middle, angle| Attrs {
+        background: Some(Background::Color(crate::tree::attrs::Color::Gradient {
+            colors: (vec![
+                Color::Named("red".into()),
+                Color::Named(middle),
+                Color::Named("blue".into()),
+            ])
+            .into_iter()
+            .map(|c| c.try_into().expect("solid stop"))
+            .collect(),
+            angle,
+        })),
+        border_radius: Some(BorderRadius::Corners {
+            tl: 10.0,
+            tr: 5.0,
+            br: 10.0,
+            bl: 5.0,
+        }),
+        ..Attrs::default()
+    };
+    let tree = build_tree_with_attrs(attrs("green".into(), 0.0));
+    let (_, pixels) = render_tree_to_pixels(100, 50, &tree);
+    let (r, g, b, a) = rgba_at(&pixels, 100, 50, 25);
+    assert!(
+        g > 245 && r < 10 && b < 10 && a == 255,
+        "middle: {r},{g},{b},{a}"
+    );
+    assert_eq!(rgba_at(&pixels, 100, 0, 0).3, 0);
+    let (_, other) =
+        render_tree_to_pixels(100, 50, &build_tree_with_attrs(attrs("white".into(), 0.0)));
+    assert_ne!(pixels, other);
+    for angle in [-450.0, 90.0, 1.0e300] {
+        let tree = build_tree_with_attrs(attrs("green".into(), angle));
+        let draws = observe_tree(&tree);
+        let gradient = only_draw(&draws, |draw| {
+            matches!(
+                draw.primitive,
+                DrawPrimitive::Rect(_, _, _, _, crate::render_color::RenderColor::Linear { .. })
+            )
+        });
+        let DrawPrimitive::Rect(
+            _,
+            _,
+            _,
+            _,
+            crate::render_color::RenderColor::Linear {
+                colors,
+                angle: native_angle,
+                ..
+            },
+        ) = &gradient.primitive
+        else {
+            unreachable!()
+        };
+        assert_eq!(colors.as_ref(), &[0xff0000ff, 0x00ff00ff, 0x0000ffff]);
+        assert_eq!(*native_angle, (angle % 360.0) as f32);
+        assert_eq!(gradient.clips.len(), 1);
+    }
 }

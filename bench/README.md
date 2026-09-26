@@ -43,6 +43,13 @@ Update the tracked fixtures when scenario generation, serialization, patch
 encoding, mutation coverage, or fixture metadata changes. Empty patch binaries
 are valid fixtures for no-op mutations and should stay tracked when generated.
 
+Fixtures use EMRG v9 and shared color tag `3`. Background color variant `0`
+contains either a solid color or a gradient; background tags `1` and `3` are
+retired. External fixtures under `bench/external_fixtures/` use the same contract,
+including attribute patches and embedded subtree payloads. The v9 migration
+preserved decoded trees/patches and re-encoded their values; a header-only edit
+is not a valid migration. No runtime compatibility decoder is retained.
+
 After regenerating fixtures, run at least one Elixir retained-layout smoke and
 one Rust Criterion target that reads fixtures before committing the fixture
 diff.
@@ -56,6 +63,24 @@ EMERGE_BENCH_SCENARIOS=list_text,scroll_rich EMERGE_BENCH_SIZES=500 mix bench.en
 EMERGE_BENCH_SCENARIOS=list_text,scroll_rich EMERGE_BENCH_SIZES=500 BENCH_LABEL=current REPS=300 WARMUP=30 mix bench.engine.update_compare
 EMERGE_BENCH_WARMUP=2 EMERGE_BENCH_MEMORY_TIME=1 mix bench.native.patch
 ```
+
+## Performance isolation
+
+Parallel worktrees share the host toolchain and GPU. Run compilation and tests under a
+shared lock and every Criterion/GPU measurement under the same exclusive lock:
+
+```bash
+scripts/performance-lock.sh shared cargo test --manifest-path native/emerge_skia/Cargo.toml
+scripts/performance-lock.sh exclusive cargo bench --manifest-path native/emerge_skia/Cargo.toml --bench renderer --features bench-diagnostics
+```
+
+`EMERGE_PERFORMANCE_LOCK` overrides the default
+`/tmp/emerge-performance.lock`. Hold the exclusive coordinator lock for the complete
+remote deploy/measurement window as well; never overlap a benchmark with another build,
+test, or GPU probe. Pass `--source-revision <immutable-id>` before the lock mode (or set
+`EMERGE_SOURCE_REVISION`) while building uncommitted firmware so DRM startup diagnostics
+identify the exact content snapshot. Clean worktrees default to their committed SHA; dirty
+worktrees emit an identity warning until an explicit immutable ID is supplied.
 
 ## Rust / Criterion
 
@@ -94,6 +119,18 @@ Focused resize/reflow cache checks can be run with:
 cargo bench --manifest-path native/emerge_skia/Cargo.toml --bench renderer --features bench-diagnostics -- cache_candidates_layout_reflow
 ```
 
+The exact Camera active-shutter and active-focus sequences include focused
+interaction styling and GPU completion. Use the case matching the hardware trace
+as a focused before/after gate:
+
+```bash
+cargo bench --manifest-path native/emerge_skia/Cargo.toml --bench renderer --features bench-diagnostics -- camera_active_shutter_slider/frame_sequence_gpu_complete --save-baseline before
+cargo bench --manifest-path native/emerge_skia/Cargo.toml --bench renderer --features bench-diagnostics -- camera_active_shutter_slider/frame_sequence_gpu_complete --baseline before
+
+cargo bench --manifest-path native/emerge_skia/Cargo.toml --bench renderer --features bench-diagnostics -- camera_active_focus_slider/frame_sequence_gpu_complete --save-baseline before
+cargo bench --manifest-path native/emerge_skia/Cargo.toml --bench renderer --features bench-diagnostics -- camera_active_focus_slider/frame_sequence_gpu_complete --baseline before
+```
+
 Direct renderer drawing optimization work must take a renderer benchmark baseline
 before changing draw behavior. Every drawing optimization should compare focused
 renderer cases and broad mixed-scene cases against this baseline before landing:
@@ -102,6 +139,27 @@ renderer cases and broad mixed-scene cases against this baseline before landing:
 cargo bench --manifest-path native/emerge_skia/Cargo.toml --bench renderer --features bench-diagnostics -- --save-baseline drawing_opt_before
 cargo bench --manifest-path native/emerge_skia/Cargo.toml --bench renderer --features bench-diagnostics -- --baseline drawing_opt_before
 ```
+
+### Rich borders cache workload
+
+`rich_borders_showcase/cache_steady_hits` selects its viewport from the three
+animated fixture cards' layout geometry, with a static recipe also visible.
+Setup checks pixel changes around every animated card and unchanged painted
+static detail, using both forced-direct and warmed-cache rendering. A finite
+budget-derived warm-up requires a full consecutive steady animation cycle,
+followed by another strictly checked cycle; it does not increase the production
+payload budget or relax the two-miss/two-store limits. Setup and pixel readbacks
+are outside timing; timed iterations include GPU completion.
+
+```bash
+scripts/performance-lock.sh exclusive cargo bench --manifest-path native/emerge_skia/Cargo.toml --bench renderer --features bench-diagnostics -- rich_borders_showcase/cache_steady_hits --test
+```
+
+CPU contract and raster coverage regressions run in `cargo test` through
+`tests/borders_cache_benchmark.rs`. Re-baseline this corrected workload: historical
+results could sample an offscreen-animation/static viewport and only enqueue GPU
+work. See `plans/borders-cache-benchmark-investigation.md` for the history and the
+separate, still-failing large screenshot benchmark assertion.
 
 ## Naming
 
@@ -120,3 +178,52 @@ native/patch/list_text_500/decode_apply/paint_attr
 native/emrg/list_text_500/decode_encode
 native/renderer/raster_direct/shadow_mask_filter
 ```
+
+### Inline paragraph decoration workload
+
+The layout benchmark's `inline_paragraph` cases compare 32/512 plain wrappers,
+bordered wrappers and wrappers with three stacked shadows. `cold_layout` excludes
+source-tree cloning; `warm_refresh` measures retained scene/registry refresh, not
+GPU draw time. The same words are used in each variant. Run under the exclusive
+performance lock with an immutable source identity; do not interpret these host
+measurements as constrained-device or blurred-shadow GPU qualification.
+
+## Shared-animation publication probe
+
+The native `shared_animation` benchmark and its runners measure native layout/
+publication and synchronous retirement, not raster/GPU/BEAM/display latency.
+Use a **new output directory outside the repository**. The runner records immutable
+source/build identities, raw samples and repeated separate processes. Do not run
+builds or tests concurrently with measurements.
+
+```bash
+./scripts/performance-lock.sh --source-revision snapshot-created-under-lock exclusive \
+  python3 scripts/benchmarks/shared-animation/run.py /tmp/emerge-animation-results
+python3 scripts/benchmarks/shared-animation/summarize.py /tmp/emerge-animation-results
+```
+
+The full matrix uses 5k/20k nodes and 1/64 owners. Preserve paint/pixel controls;
+RSS is not exact live heap, and desktop timings do not qualify constrained devices.
+
+Add `--closeout` to the runner for the compact 20k-node/64-owner matrix: paint,
+pixel, length, moving, mixed and upward, each in three separate processes (18 total).
+The flag selects a measurement preset, not a product completion or budget gate.
+
+## Native event-pressure probe
+
+This test-only probe uses real event/tree loops with 4096-event / 512-tree channel
+capacities, small/20k-node trees, paced edits/pointer/IME, bursts and controlled
+consumer stalls. It separates ingress rejection from causal tree-response backlog;
+it does not qualify BEAM subscribers, physical input, RSS or GPU behavior.
+
+```bash
+./scripts/performance-lock.sh --source-revision snapshot-created-under-lock exclusive \
+  python3 scripts/benchmarks/event-pressure/run.py /tmp/emerge-event-pressure-results
+python3 scripts/benchmarks/event-pressure/summarize.py /tmp/emerge-event-pressure-results
+```
+
+Requires Linux `/proc`, `flock`, `lscpu` and `/usr/bin/time`. Keep production queue
+capacities, warm-up and instrumentation overhead consistent across comparisons.
+The runner performs 30 cases with three rotated separate-process repeats. Retain
+raw output externally and distinguish local editing, publication and display.
+Do not infer an overflow policy or whole-runtime memory bound from these results.

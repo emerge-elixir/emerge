@@ -67,7 +67,21 @@ defmodule EmergeSkia.Macos.HostTest do
 
     assert Protocol.encode_init_payload() ==
              <<byte_size("emerge_skia_macos")::unsigned-big-16, "emerge_skia_macos",
-               8::unsigned-big-16>>
+               15::unsigned-big-16>>
+  end
+
+  test "protocol rejects hosts without shared animation support" do
+    reply = fn version ->
+      <<byte_size("emerge_skia_macos")::unsigned-big-16, "emerge_skia_macos",
+        version::unsigned-big-16, 123::unsigned-big-64, 456::unsigned-big-32>>
+    end
+
+    assert {:ok, %{host_id: 123, host_pid: 456}} = Protocol.decode_init_ok_payload(reply.(15))
+
+    for version <- [12, 13, 14] do
+      assert {:error, "unsupported macOS host init response"} =
+               Protocol.decode_init_ok_payload(reply.(version))
+    end
   end
 
   test "protocol decodes raw input payloads" do
@@ -88,6 +102,38 @@ defmodule EmergeSkia.Macos.HostTest do
 
     assert {:ok, {:text_preedit, {"compose", nil}}} =
              Protocol.decode_text_preedit_payload(<<7::unsigned-big-32, "compose", 0>>)
+  end
+
+  test "offscreen protocol carries asset cache and decode policy" do
+    payload =
+      Protocol.encode_offscreen_request(
+        "tree",
+        %{
+          width: 96,
+          height: 96,
+          scale: 1.0,
+          asset_mode: "await",
+          asset_timeout_ms: 30_000
+        },
+        %{
+          priv_dir: "/tmp/priv",
+          runtime_allowlist: [],
+          runtime_extensions: [".jpg"],
+          runtime_enabled: false,
+          runtime_follow_symlinks: false,
+          runtime_max_file_size: 25_000_000,
+          cache_max_entries: 17,
+          cache_max_bytes: 1_048_576,
+          svg_tree_max_entries: 5,
+          svg_tree_max_bytes: 2_097_152,
+          decode_at_size: true,
+          fonts: []
+        }
+      )
+
+    assert binary_part(payload, byte_size(payload) - 37, 37) ==
+             <<17::unsigned-big-64, 1_048_576::unsigned-big-64, 5::unsigned-big-64,
+               2_097_152::unsigned-big-64, 1, 0::unsigned-big-32>>
   end
 
   test "protocol decodes canonical pointer button tags" do
