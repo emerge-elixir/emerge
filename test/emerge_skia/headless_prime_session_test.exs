@@ -3,6 +3,8 @@ defmodule EmergeSkia.HeadlessPrimeSessionTest do
 
   alias EmergeSkia.{Assets, HeadlessPrimeSession, Options}
 
+  # PRIME dispatcher NIFs are unavailable on macOS, even with a raster renderer.
+  @tag :linux_only
   test "startup returns a shared completion flag and stop proves cleanup even after exit" do
     session = start_session()
     monitor = Process.monitor(session.pid)
