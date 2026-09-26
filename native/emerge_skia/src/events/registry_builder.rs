@@ -1700,6 +1700,8 @@ fn runtime_click_press_window_leave_clear_listener(
 }
 
 fn click_press_clear_actions(tracker: &ClickPressTracker) -> Vec<ListenerAction> {
+    // Styled inputs can track a press and an editable drag simultaneously. This
+    // terminal listener wins precedence over the text/slider cleanup listeners.
     tracker
         .clear_mouse_down
         .then_some(ListenerAction::TreeMsg(TreeMsg::SetMouseDownActive {
@@ -1710,6 +1712,8 @@ fn click_press_clear_actions(tracker: &ClickPressTracker) -> Vec<ListenerAction>
         .chain([
             ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
             ListenerAction::RuntimeChange(RuntimeChange::ClearDragTracker),
+            ListenerAction::RuntimeChange(RuntimeChange::ClearTextDragTracker),
+            ListenerAction::RuntimeChange(RuntimeChange::ClearSliderDragTracker),
         ])
         .collect()
 }
@@ -3233,9 +3237,13 @@ impl ListenerCompute {
                                 active: false,
                             }),
                         ))
+                        // As with outside release/cancellation, ending the
+                        // press must also end any concurrent editable drag.
                         .chain([
                             ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
                             ListenerAction::RuntimeChange(RuntimeChange::ClearDragTracker),
+                            ListenerAction::RuntimeChange(RuntimeChange::ClearTextDragTracker),
+                            ListenerAction::RuntimeChange(RuntimeChange::ClearSliderDragTracker),
                         ])
                         .collect()
                 }
@@ -11840,6 +11848,8 @@ mod tests {
                 }),
                 ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
                 ListenerAction::RuntimeChange(RuntimeChange::ClearDragTracker),
+                ListenerAction::RuntimeChange(RuntimeChange::ClearTextDragTracker),
+                ListenerAction::RuntimeChange(RuntimeChange::ClearSliderDragTracker),
             ] if *element_id == NodeId::from_term_bytes(vec![27])
         ));
     }
@@ -11941,6 +11951,8 @@ mod tests {
                 ListenerAction::ElixirEvent(ElixirEvent { kind, .. }),
                 ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
                 ListenerAction::RuntimeChange(RuntimeChange::ClearDragTracker),
+                ListenerAction::RuntimeChange(RuntimeChange::ClearTextDragTracker),
+                ListenerAction::RuntimeChange(RuntimeChange::ClearSliderDragTracker),
             ] if *element_id == NodeId::from_term_bytes(vec![91])
                 && !*active
                 && *kind == ElementEventKind::Press
