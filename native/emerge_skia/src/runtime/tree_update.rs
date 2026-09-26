@@ -1208,6 +1208,10 @@ pub(crate) fn push_tree_message_flat(msg: TreeMsg, out: &mut Vec<TreeMsg>) {
     }
 }
 
+#[cfg(test)]
+#[path = "tree_update/long_running_tests.rs"]
+mod long_running_tests;
+
 #[cfg(feature = "hover-trace")]
 fn trace_tree_snapshots(tree: &ElementTree) {
     for (id, x, y, w, h, move_x) in trace_element_snapshots(tree) {

@@ -710,12 +710,28 @@ struct CursorPlane {
     bo: BufferObject<()>,
 }
 
+/// Owned by the actual GBM BO, not its recyclable GEM handle. Mesa can destroy
+/// unused swapchain BOs while the EGL surface is still alive. Its userdata
+/// callback removes the framebuffer then; releasing a front-buffer lock does not.
+struct PrimaryFramebuffer {
+    card: Arc<Card>,
+    handle: framebuffer::Handle,
+}
+
+impl Drop for PrimaryFramebuffer {
+    fn drop(&mut self) {
+        // Keep the DRM fd and output lease alive through the BO destruction callback.
+        // KMS teardown still happens before releasing current/in-flight buffer locks.
+        let _ = self.card.destroy_framebuffer(self.handle);
+    }
+}
+
 struct PreparedPrimaryFrame {
     generation: u64,
     render_version: u64,
     pipeline_submitted_at: Option<Instant>,
     pipeline_swap_done_at: Option<Instant>,
-    bo: BufferObject<()>,
+    bo: BufferObject<PrimaryFramebuffer>,
     fb: framebuffer::Handle,
     video_sync_succeeded: bool,
     video_needs_cleanup: bool,
@@ -731,7 +747,7 @@ struct PreparedPrimaryFrame {
 struct CurrentPrimaryFrame {
     generation: u64,
     render_version: u64,
-    bo: BufferObject<()>,
+    bo: BufferObject<PrimaryFramebuffer>,
     fb: framebuffer::Handle,
 }
 
@@ -866,23 +882,15 @@ fn destroy_mode_blob(card: &Card, blob_id: Option<u64>) {
     }
 }
 
-fn destroy_framebuffers(card: &Card, framebuffer_cache: &mut HashMap<u32, framebuffer::Handle>) {
-    for (_, framebuffer) in framebuffer_cache.drain() {
-        let _ = card.destroy_framebuffer(framebuffer);
-    }
-}
-
 fn destroy_session_resources(
     card: &Card,
     cursor_plane: Option<CursorPlane>,
-    framebuffer_cache: &mut HashMap<u32, framebuffer::Handle>,
     mode_blob_id: Option<u64>,
 ) {
     if let Some(cursor_plane) = cursor_plane {
         let _ = card.destroy_framebuffer(cursor_plane.commit.fb);
     }
 
-    destroy_framebuffers(card, framebuffer_cache);
     destroy_mode_blob(card, mode_blob_id);
 }
 
@@ -953,7 +961,6 @@ fn cleanup_active_session(
     plane_props: &HashMap<String, property::Info>,
     cursor_plane: Option<CursorPlane>,
     lifecycle: &crate::runtime::lifecycle::Lifecycle,
-    framebuffer_cache: &mut HashMap<u32, framebuffer::Handle>,
     mode_blob_id: Option<u64>,
 ) {
     if let Err(err) = teardown_drm_output(
@@ -976,7 +983,7 @@ fn cleanup_active_session(
         }
     }
 
-    destroy_session_resources(card, cursor_plane, framebuffer_cache, mode_blob_id);
+    destroy_session_resources(card, cursor_plane, mode_blob_id);
 }
 
 fn create_cursor_plane<T: AsFd>(
@@ -1276,6 +1283,59 @@ fn should_schedule_video_cleanup(
 mod tests {
     use super::*;
     use crate::stats::{RendererStatsSnapshot, RendererTimingMetric};
+
+    // Allocates buffers/framebuffers only: never sets a mode or touches scanout.
+    #[test]
+    #[ignore = "requires EMERGE_TEST_DRM_CARD pointing to an accessible KMS card"]
+    fn recycled_gbm_handles_do_not_reuse_stale_framebuffers() {
+        let path = std::env::var("EMERGE_TEST_DRM_CARD").expect("explicit test card required");
+        let card = Arc::new(super::super::core::open_card(Some(&path)).unwrap());
+        let device = GbmDevice::new(card.as_fd()).unwrap();
+        let log = NativeLogRelay::default();
+        let mut handles = std::collections::HashSet::new();
+        let mut recycled = 0;
+        for iteration in 0..128 {
+            let width = 64 + iteration * 16;
+            let mut bo = device
+                .create_buffer_object::<PrimaryFramebuffer>(
+                    width,
+                    64,
+                    GbmFormat::Xrgb8888,
+                    BufferObjectFlags::SCANOUT
+                        | BufferObjectFlags::RENDERING
+                        | BufferObjectFlags::LINEAR,
+                )
+                .unwrap();
+            let handle = unsafe { bo.handle().u32_ };
+            recycled += usize::from(!handles.insert(handle));
+            let fb = framebuffer_for_bo(&card, &mut bo, &log).unwrap();
+            let info = card.get_framebuffer(fb).unwrap();
+            // Privileged GETFB callers receive an extra GEM handle. Do not leak
+            // it or close the BO's own handle on drivers returning that instead.
+            if let Some(queried) = info
+                .buffer()
+                .filter(|queried| u32::from(*queried) != handle)
+            {
+                card.close_buffer(queried).unwrap();
+            }
+            assert_eq!(
+                info.size(),
+                (width, 64),
+                "iteration={iteration}, GEM handle={handle}, recycled={recycled}"
+            );
+            assert_eq!(
+                framebuffer_for_bo(&card, &mut bo, &log).unwrap(),
+                fb,
+                "repeated lookup on a live BO must reuse its framebuffer"
+            );
+            drop(bo);
+            assert!(
+                card.get_framebuffer(fb).is_err(),
+                "destroying a BO must also retire its framebuffer"
+            );
+        }
+        assert!(recycled > 0, "test must exercise GEM handle reuse");
+    }
 
     fn assert_timing(
         snapshot: &RendererStatsSnapshot,
@@ -2166,7 +2226,7 @@ fn create_frame_surface(
     Ok((frame_surface, capabilities))
 }
 
-fn gbm_bo_diagnostics(bo: &BufferObject<()>) -> String {
+fn gbm_bo_diagnostics<T: 'static>(bo: &BufferObject<T>) -> String {
     let plane_count = bo.plane_count().min(4);
     let planes = (0..plane_count)
         .map(|plane| {
@@ -2205,14 +2265,12 @@ fn create_renderer_frame_surface(
 }
 
 fn framebuffer_for_bo(
-    card: &Card,
-    cache: &mut HashMap<u32, framebuffer::Handle>,
-    bo: &BufferObject<()>,
+    card: &Arc<Card>,
+    bo: &mut BufferObject<PrimaryFramebuffer>,
     native_log: &NativeLogRelay,
 ) -> Result<framebuffer::Handle, String> {
-    let handle = unsafe { bo.handle().u32_ };
-    if let Some(existing) = cache.get(&handle).copied() {
-        return Ok(existing);
+    if let Some(existing) = bo.userdata() {
+        return Ok(existing.handle);
     }
 
     let modifier = bo.modifier();
@@ -2244,7 +2302,10 @@ fn framebuffer_for_bo(
             ));
         }
     };
-    cache.insert(handle, framebuffer);
+    bo.set_userdata(PrimaryFramebuffer {
+        card: Arc::clone(card),
+        handle: framebuffer,
+    });
     Ok(framebuffer)
 }
 
@@ -2265,10 +2326,9 @@ fn prepare_primary_frame(
     video_registry: &Arc<VideoRegistry>,
     video_import: Option<&VideoImportContext>,
     egl_state: &EglState,
-    gbm_surface: &Surface<()>,
+    gbm_surface: &Surface<PrimaryFramebuffer>,
     force_gpu_finish: bool,
-    card: &Card,
-    framebuffer_cache: &mut HashMap<u32, framebuffer::Handle>,
+    card: &Arc<Card>,
     stats: Option<&RendererStatsCollector>,
     profile_render: bool,
     renderer_cache_enabled: bool,
@@ -2457,14 +2517,14 @@ fn prepare_primary_frame(
     }
 
     let lock_started_at = Instant::now();
-    let bo = unsafe { gbm_surface.lock_front_buffer() }
+    let mut bo = unsafe { gbm_surface.lock_front_buffer() }
         .map_err(|e| format!("locking GBM buffer failed: {e}"))?;
     if let Some(stats) = stats {
         stats.record_drm_gbm_lock_front_buffer(lock_started_at.elapsed());
     }
 
     let framebuffer_started_at = Instant::now();
-    let fb = framebuffer_for_bo(card, framebuffer_cache, &bo, native_log)?;
+    let fb = framebuffer_for_bo(card, &mut bo, native_log)?;
     if let Some(stats) = stats {
         stats.record_drm_framebuffer_lookup(framebuffer_started_at.elapsed());
     }
@@ -2879,7 +2939,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             logged_cursor_info = true;
         }
 
-        let gbm_surface: Surface<()> = match gbm_device.create_surface(
+        let gbm_surface: Surface<PrimaryFramebuffer> = match gbm_device.create_surface(
             dimensions.0,
             dimensions.1,
             GbmFormat::Xrgb8888,
@@ -3118,8 +3178,6 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
         };
         let mode_blob_id = mode_blob_id(&mode_blob);
 
-        let mut framebuffer_cache: HashMap<u32, framebuffer::Handle> = HashMap::new();
-
         let mut render_state = RenderState::default();
         {
             let mut frame = frame_surface.frame();
@@ -3132,12 +3190,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                 .SwapBuffers(egl_state.display, egl_state.surface)
         } == egl::FALSE
         {
-            destroy_session_resources(
-                &card,
-                cursor_plane.take(),
-                &mut framebuffer_cache,
-                mode_blob_id,
-            );
+            destroy_session_resources(&card, cursor_plane.take(), mode_blob_id);
 
             if handle_startup_failure(
                 &mut startup_tx,
@@ -3153,15 +3206,10 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             continue;
         }
 
-        let bo = match unsafe { gbm_surface.lock_front_buffer() } {
+        let mut bo = match unsafe { gbm_surface.lock_front_buffer() } {
             Ok(bo) => bo,
             Err(err) => {
-                destroy_session_resources(
-                    &card,
-                    cursor_plane.take(),
-                    &mut framebuffer_cache,
-                    mode_blob_id,
-                );
+                destroy_session_resources(&card, cursor_plane.take(), mode_blob_id);
 
                 if handle_startup_failure(
                     &mut startup_tx,
@@ -3189,15 +3237,10 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             );
         }
 
-        let fb = match framebuffer_for_bo(&card, &mut framebuffer_cache, &bo, &native_log) {
+        let fb = match framebuffer_for_bo(&card, &mut bo, &native_log) {
             Ok(fb) => fb,
             Err(err) => {
-                destroy_session_resources(
-                    &card,
-                    cursor_plane.take(),
-                    &mut framebuffer_cache,
-                    mode_blob_id,
-                );
+                destroy_session_resources(&card, cursor_plane.take(), mode_blob_id);
 
                 if handle_startup_failure(
                     &mut startup_tx,
@@ -3231,12 +3274,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             add_plane_geometry(&mut atomic_req, plane, &plane_props, &mode)
         })() {
             drop(bo);
-            destroy_session_resources(
-                &card,
-                cursor_plane.take(),
-                &mut framebuffer_cache,
-                mode_blob_id,
-            );
+            destroy_session_resources(&card, cursor_plane.take(), mode_blob_id);
 
             if handle_startup_failure(
                 &mut startup_tx,
@@ -3254,12 +3292,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
 
         if let Err(err) = card.atomic_commit(AtomicCommitFlags::ALLOW_MODESET, atomic_req) {
             drop(bo);
-            destroy_session_resources(
-                &card,
-                cursor_plane.take(),
-                &mut framebuffer_cache,
-                mode_blob_id,
-            );
+            destroy_session_resources(&card, cursor_plane.take(), mode_blob_id);
 
             if handle_startup_failure(
                 &mut startup_tx,
@@ -3723,7 +3756,6 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                         &gbm_surface,
                         config.force_gpu_finish,
                         &card,
-                        &mut framebuffer_cache,
                         stats.as_deref(),
                         profile_render,
                         config.renderer_cache_config.enabled,
@@ -4070,7 +4102,6 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             &plane_props,
             cursor_plane.take(),
             &lifecycle,
-            &mut framebuffer_cache,
             mode_blob_id,
         );
 
