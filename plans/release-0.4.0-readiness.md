@@ -147,7 +147,7 @@ Fix/validation logs: `/tmp/emerge-release-fixes/`; Elixir-only conversion rechec
 | Cargo audit 0.22.2 `--deny warnings` / `mix hex.audit` | PASS, no exceptions |
 | Actionlint 1.7.12 / shell syntax / Elixir helper tests | PASS; 15 new ExUnit tests included in the full suite |
 | Elixir benchmark CLI synthetic smoke | PASS: fake Cargo/probe executables, 90 event-pressure and 18 animation-closeout processes, source archives, separate build diagnostics and summaries. Not a performance measurement |
-| Elixir 1.19.0 minimum | PASS: 564 tests/doctests including the unpacked consumer; four hardware tests excluded. Locally tested on OTP 29.0.5; the new CI pair uses OTP 28.0.2 |
+| Elixir 1.19.0 minimum | PASS: 564 tests/doctests including the unpacked consumer on OTP 28.1.1 with a fresh build and compatible Hex archive; four hardware tests excluded. An earlier OTP 29.0.5 run also passed |
 
 The initial local minimum-version test used a global Hex archive compiled under
 Elixir 1.20, failing on `Enum.__in__/2`. A separate minimum-version Hex archive is
@@ -155,12 +155,27 @@ used for the successful retry; this was tooling compatibility, not a project run
 Fresh consumer tests also clear inherited build/dependency paths to prevent
 accidental reuse of the test runner's compiled application.
 
+### Minimum-Elixir CI follow-up
+
+The reported Elixir 1.19.0 / OTP 28.0.2 CI run failed only because Elixir's startup
+warning was merged into the standalone consumer's expected stdout. Its runtime
+assertions succeeded and it exited zero. Elixir warns on OTP 28 without
+`re:import/1`; OTP 28.1 fixes this regex import/performance limitation.
+
+- [x] Keep Elixir pinned to 1.19.0 and use OTP 28.1.1 in its CI job. Do not weaken
+  the consumer assertion or suppress startup warnings.
+- [x] Validate the actual Elixir 1.19.0 / OTP 28.1.1 pair with a fresh build and
+  compatible Hex archive: 564 tests/doctests pass, including the exact-output
+  consumer test. `./ci-tests.sh all` and Actionlint also pass. Logs:
+  `/tmp/emerge-ci-minimum-fix/` (ephemeral).
+- [ ] Rerun the updated GitHub minimum-version job before accepting the release.
+
 ## Still required before tagging/publication
 
 - [ ] Confirm actual release date and remove the `CHANGELOG.md` draft notice.
   `scripts/release-notes.exs` deliberately refuses draft/undated/mismatched notes.
 - [ ] Push/review the changes and run the expanded source CI on the final commit,
-  including macOS and Elixir 1.19.0/OTP 28.0.2. Local Linux results do not replace it.
+  including macOS and Elixir 1.19.0/OTP 28.1.1. Local Linux results do not replace it.
 - [ ] Merge approved changes/workflows into protected `main` before tagging and
   revalidate the final SHA. `workflow_run` uses the default-branch definition,
   not whichever workflow happens to exist in the checked-out source tree.

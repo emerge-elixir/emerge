@@ -38,7 +38,8 @@ jobs:
           - name: Elixir 1.19 minimum
             rust: "1.91.0"
             elixir: "1.19.0"
-            otp: "28.0.2"
+            # OTP 28.0 emits Elixir regex startup warnings; use the fixed 28.1 line.
+            otp: "28.1.1"
             minimum: true
 
     steps:
