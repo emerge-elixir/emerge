@@ -1,6 +1,12 @@
 name: CI
 
 on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact source commit to validate for a release caller
+        type: string
+        required: true
   workflow_dispatch:
   pull_request:
   push:
@@ -15,24 +21,38 @@ permissions:
 
 jobs:
   ci_linux:
-    name: Linux CI / Rust ${{ matrix.rust }}
+    name: Linux CI / ${{ matrix.name }}
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        rust: ["1.91.0", "stable"]
+        include:
+          - name: Rust 1.91.0
+            rust: "1.91.0"
+            elixir: "1.20.2"
+            otp: "29.0.5"
+          - name: Rust stable
+            rust: stable
+            elixir: "1.20.2"
+            otp: "29.0.5"
+          - name: Elixir 1.19 minimum
+            rust: "1.91.0"
+            elixir: "1.19.0"
+            otp: "28.0.2"
+            minimum: true
 
     steps:
       - name: Checkout source code
         uses: actions/checkout@v5
         with:
+          ref: ${{ inputs.ref || github.sha }}
           fetch-depth: 0
 
       - name: Set up Elixir and OTP
         uses: erlef/setup-beam@v1
         with:
-          elixir-version: "1.20.2"
-          otp-version: "29.0.5"
+          elixir-version: ${{ matrix.elixir }}
+          otp-version: ${{ matrix.otp }}
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@master
@@ -58,9 +78,9 @@ jobs:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-mix-elixir-1.20.2-otp-29.0.5-${{ hashFiles('mix.lock') }}
+          key: ${{ runner.os }}-mix-elixir-${{ matrix.elixir }}-otp-${{ matrix.otp }}-${{ hashFiles('mix.lock') }}
           restore-keys: |
-            ${{ runner.os }}-mix-elixir-1.20.2-otp-29.0.5-
+            ${{ runner.os }}-mix-elixir-${{ matrix.elixir }}-otp-${{ matrix.otp }}-
 
       - name: Cache Cargo dependencies and target
         uses: actions/cache@v5
@@ -77,10 +97,17 @@ jobs:
         run: mix deps.get
 
       - name: Run CI test script
+        if: ${{ matrix.minimum != true }}
         run: ./ci-tests.sh
 
+      - name: Compile and test the minimum supported Elixir
+        if: ${{ matrix.minimum == true }}
+        run: |
+          mix compile --warnings-as-errors
+          mix test --include full_sweep --warnings-as-errors
+
       - name: Validate source metadata
-        if: ${{ matrix.rust == '1.91.0' }}
+        if: ${{ matrix.rust == '1.91.0' && matrix.minimum != true }}
         shell: bash
         run: |
           set -euo pipefail
@@ -99,31 +126,28 @@ jobs:
           echo "PROJECT_VERSION=$project_version" >> "$GITHUB_ENV"
 
       - name: Run full-sweep Elixir tests
-        if: ${{ matrix.rust == '1.91.0' }}
+        if: ${{ matrix.rust == '1.91.0' && matrix.minimum != true }}
         run: mix test --include full_sweep --warnings-as-errors
 
       - name: Build documentation without warnings
-        if: ${{ matrix.rust == '1.91.0' }}
+        if: ${{ matrix.rust == '1.91.0' && matrix.minimum != true }}
         env:
           EMERGE_INCLUDE_INTERNAL_DOCS: "false"
-        run: mix docs --warnings-as-errors
-
-      - name: Validate unpacked package native sources
-        if: ${{ matrix.rust == '1.91.0' }}
-        shell: bash
         run: |
-          set -euo pipefail
-          package_dir="$RUNNER_TEMP/emerge-${PROJECT_VERSION}"
-          mix hex.build --unpack --output "$package_dir"
-          cargo check \
-            --manifest-path "$package_dir/native/emerge_skia/Cargo.toml" \
-            --locked \
-            --all-targets
-          cargo check \
-            --manifest-path "$package_dir/native/emerge_skia/Cargo.toml" \
-            --locked \
-            --no-default-features \
-            --features embedded-cpu
+          mix docs.screenshots --check
+          mix docs --warnings-as-errors
+          elixir scripts/check-doc-links.exs doc
+
+      - name: Validate unpacked package sources, screenshots and docs
+        if: ${{ matrix.rust == '1.91.0' && matrix.minimum != true }}
+        run: bash scripts/check-package.sh
+
+      - name: Audit dependencies
+        if: ${{ matrix.rust == 'stable' }}
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo audit --file native/emerge_skia/Cargo.lock --deny warnings
+          mix hex.audit
 
   ci_macos:
     name: macOS CI
@@ -132,6 +156,8 @@ jobs:
     steps:
       - name: Checkout source code
         uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.sha }}
 
       - name: Set up Elixir and OTP
         uses: erlef/setup-beam@v1

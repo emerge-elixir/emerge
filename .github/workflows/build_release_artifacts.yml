@@ -7,12 +7,22 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   EMERGE_SOURCE_REVISION: ${{ github.sha }}
 
+concurrency:
+  group: release-artifacts-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  validate:
+    name: Validate release source
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ github.sha }}
+
   build_release:
     name: NIF ${{ matrix.nif }} - ${{ matrix.job.name }}
     runs-on: ${{ matrix.job.os }}
@@ -360,12 +370,7 @@ jobs:
         with:
           name: ${{ steps.build-crate.outputs.file-name || steps.build-container.outputs.file-name }}
           path: ${{ steps.build-crate.outputs.file-path || steps.build-container.outputs.file-path }}
-
-      - name: Publish archives and packages
-        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
-        uses: softprops/action-gh-release@v2
-        with:
-          files: ${{ steps.build-crate.outputs.file-path || steps.build-container.outputs.file-path }}
+          if-no-files-found: error
 
   build_macos_host:
     name: macos_host - ${{ matrix.job.name }}
@@ -446,14 +451,56 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: macos_host-v${{ env.PROJECT_VERSION }}-${{ matrix.job.target }}
+          if-no-files-found: error
           path: |
             ${{ env.ARCHIVE_NAME }}
             ${{ env.ARCHIVE_NAME }}.sha256
 
-      - name: Publish macos_host archives
-        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
-        uses: softprops/action-gh-release@v2
+
+  publish:
+    name: Publish validated release assets
+    needs: [validate, build_release, build_macos_host]
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
         with:
-          files: |
-            ${{ env.ARCHIVE_NAME }}
-            ${{ env.ARCHIVE_NAME }}.sha256
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Verify immutable tag and default-branch integration
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          test "$(git rev-parse "refs/tags/${GITHUB_REF_NAME}^{commit}")" = "$(git rev-parse HEAD)"
+          git merge-base --is-ancestor HEAD "origin/$DEFAULT_BRANCH"
+
+      - name: Download all completed build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Set up Elixir for release checks
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.20.2"
+          otp-version: "29.0.5"
+
+      - name: Prepare release notes
+        run: elixir scripts/release-notes.exs "$GITHUB_REF_NAME" > release-notes.md
+
+      - name: Publish the complete asset set
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # create fails if the release already exists: never replace published hashes.
+          # Upload to a draft first; an upload failure must not expose a partial release.
+          gh release create "$GITHUB_REF_NAME" release-assets/* \
+            --verify-tag --target "$(git rev-parse HEAD)" --draft \
+            --title "$GITHUB_REF_NAME" --notes-file release-notes.md
+          gh release edit "$GITHUB_REF_NAME" --draft=false
