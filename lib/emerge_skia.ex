@@ -104,11 +104,16 @@ defmodule EmergeSkia do
 
   | Backend/mode | Rendering APIs | Fallback | Capture | Video |
   |---|---|---|---|---|
-  | macOS | `:auto`, `:metal`, `:raster` | `:auto` falls back from Metal to raster | No | No |
+  | macOS | `:auto`, `:metal`, `:raster` | `:auto` falls back from Metal to raster | No | Owned RGBA8888 binary frames |
   | Wayland | `:auto`, `:opengl`, `:raster`, `:vulkan` | `:auto` falls back from OpenGL to raster | Yes | OpenGL/Vulkan when supported |
   | DRM | `:auto`, `:opengl`, `:raster`, `:vulkan` | `:auto` falls back from OpenGL to raster GPU upload | Yes | OpenGL/Vulkan when supported |
   | headless binary | `:auto`, `:opengl`, `:raster` | `:auto` falls back from OpenGL to raster | Yes | No |
   | headless PRIME | `:auto`, `:opengl`, `:vulkan` | None | No | Produces ABGR8888 DMA-BUF frames |
+
+  macOS video accepts single-plane `%VideoInterop.Binary{}` RGBA8888 frames with
+  no lease, implicit synchronization, and `:premultiplied`, `:straight`, or `:opaque`
+  alpha. DMA-BUF/PRIME frames are unsupported on macOS. Submit through
+  `Emerge.submit_video_frame/3` for viewport targets.
 
   Explicit Vulkan never falls back. DRM Vulkan requires
   `vulkan_drm_node` in addition to the KMS `drm_card`.
@@ -141,7 +146,7 @@ defmodule EmergeSkia do
   | Option | Default | Description |
   |---|---|---|
   | `otp_app` | required | Application used to resolve logical assets |
-  | `owner` | `nil` | Live local process whose death requests native cleanup, even if handles are retained elsewhere |
+  | `owner` | `nil` | Native backends only: live local process whose death requests cleanup, even if handles are retained elsewhere |
   | `backend` | platform default | `:macos`, `:wayland`, `:drm`, or `:headless` |
   | `rendering_api` | `:auto` | Renderer selection described above |
   | `title` | `"Emerge"` | Window title |
@@ -306,10 +311,11 @@ defmodule EmergeSkia do
   @doc """
   Stop the renderer and close its window or output session.
 
-  Most sessions return `:ok`. A headless PRIME session returns
-  `{:error, reason}` when it cannot complete ownership-safe shutdown. Do not
-  treat an error as successful cleanup; stop native video use and cold-restart
-  before loading replacement native code.
+  Most sessions return `:ok`. Native sessions, including headless PRIME, can
+  return `{:error, reason}` when ownership-safe shutdown cannot finish. Do not
+  treat an error as successful cleanup. Use `renderer_status/1` to check native
+  cleanup completion; a timeout does not make a DRM output reusable.
+  Quarantined sessions require a BEAM process restart.
   """
   @spec stop(renderer()) :: :ok | {:error, term()}
   def stop(renderer) do

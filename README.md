@@ -159,7 +159,8 @@ For nerves example take a look at [`nerves_emerge_demo`](https://github.com/emer
 - **Vulkan** provides supported rendering for Wayland, DRM, and headless PRIME when compiled for those backends.
 
 Raster is a rendering API used by windowed and headless runtimes, not a separate
-viewport backend. macOS currently has no video target or retained-frame capture.
+viewport backend. macOS supports owned RGBA8888 binary video frames, but not
+DMA-BUF/PRIME video or retained-frame capture.
 
 Each native renderer owns its asset source worker, source policy, registered
 fonts, decoded raster cache, and rendered vector cache. Concurrent renderers can

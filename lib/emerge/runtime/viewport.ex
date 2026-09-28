@@ -73,6 +73,31 @@ defmodule Emerge.Runtime.Viewport do
   specific path. Raster is a rendering API, not a backend. Vulkan support is
   selected explicitly at build time.
 
+  ## Renderer recovery
+
+  The PID returned by `start_link/1` is the callback process. With native backends
+  (Wayland, DRM, and headless), an unexpectedly stopped renderer can be replaced
+  after safe cleanup without replacing that PID or losing callback state. The
+  viewport rerenders its current UI; renderer startup retries are bounded.
+
+  `Emerge.renderer/1` may return `nil` while the renderer is unavailable. A
+  previously returned renderer handle belongs to that session, so retrieve a
+  fresh handle after recovery rather than caching it indefinitely.
+  `Emerge.submit_video_frame/3` returns `{:error, :viewport_not_ready}` while no
+  endpoint is ready and still consumes the frame. Do not retry that same frame.
+
+  Applications still supervise viewport children. Callback-process death ends
+  that viewport instance; the application's supervisor decides whether to restart
+  it. Native renderer recovery does not change names, direct messages, event
+  callback execution, or subscriptions attached to the callback process.
+
+  Recovery does not detect GPU hangs or bypass incomplete cleanup. A quarantined
+  renderer may require restarting the BEAM process. macOS host sessions and custom
+  renderer adapters do not implement this native recovery contract.
+
+  For low-level native renderers, see `EmergeSkia.renderer_status/1` and
+  `EmergeSkia.stop/2`. For DRM display selection, see `EmergeSkia.drm_outputs/1`.
+
   ## Headless binary viewports
 
   Headless is another viewport mode. It uses the same `mount`, `render`, event,
