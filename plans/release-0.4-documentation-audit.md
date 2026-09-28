@@ -1,5 +1,8 @@
 # Emerge 0.4 Documentation Audit
 
+Historical feature-range audit. Later changes introduced new documentation gaps;
+see [the current release-readiness recheck](release-0.4.0-readiness.md).
+
 ## Status
 
 Complete. The feature audit, release notes, guides, API reference, package

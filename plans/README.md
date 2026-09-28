@@ -1,6 +1,6 @@
 # Plans
 
-Last updated: 2026-09-01.
+Last updated: 2026-09-28.
 
 This directory contains only open implementation plans and durable design/research
 notes. Completed implementation logs belong in Git history, the changelog, tests,
@@ -76,6 +76,13 @@ lost visible animation coverage. Includes controls and a scoped correction.
 Large Borders screenshot failure: bounded cold fill plus intentional direct
 animated-shadow admission fallback omitted by the coverage assertion. Includes
 an adjacent good/bad commit pair, pause/frozen controls and pixel-quality findings.
+
+### `release-0.4.0-readiness.md`
+
+Current 0.4.0 release checklist at `976e058` plus local preparation fixes:
+corrected public docs, package closure, asset notices, clean dependency audits,
+and exact-SHA publication gates. Tracks final CI/artifacts, integration, release
+approval and hardware follow-up; supersedes the earlier release audits.
 
 ### `release-0.4.0-audit.md`
 

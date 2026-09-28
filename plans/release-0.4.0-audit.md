@@ -1,5 +1,10 @@
 # Emerge 0.4.0 Commit Audit
 
+Historical baseline audit. For the current candidate, see
+[the 2026-09-28 release-readiness recheck](release-0.4.0-readiness.md).
+In particular, the artifact validation dependency described below was later
+removed, and subsequent work changed package closure, docs, and host protocols.
+
 ## Scope
 
 This audit originally reviewed the committed range from `v0.3.4` through
