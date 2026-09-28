@@ -213,7 +213,10 @@ Package/runtime-relevant notices are summarized in
 
 Packaged/runtime-relevant asset groups:
 
-- Inter default fonts in `native/emerge_skia/src/fonts` - SIL Open Font License 1.1
+- Inter default fonts in `native/emerge_skia/src/fonts/inter` - SIL Open Font License 1.1
+- JetBrains Mono NL fonts in `native/emerge_skia/src/fonts/jetbrains-mono` - SIL Open Font License 1.1
 - Mocu DRM cursor SVGs in `native/emerge_skia/src/backend/drm/cursors/mocu_black_right` - CC0 1.0 Universal
+- Tabler-derived sample SVG in `priv/sample_assets/template_cloud.svg` - MIT
+- Sample photos in `priv/sample_assets` - Unsplash License; credits and source hashes are included in `priv/sample_assets/SOURCES.md`
 
 If you redistribute Emerge inside an application or firmware image, include the applicable notice files.

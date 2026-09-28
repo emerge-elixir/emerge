@@ -180,8 +180,17 @@ cargo test --manifest-path native/emerge_skia/Cargo.toml
 cargo clippy --manifest-path native/emerge_skia/Cargo.toml -- -D warnings
 ```
 
-Release validation must also compile the unpacked Hex package so missing native
-sources, benchmarks, support files, or guides are detected before publication.
+Release validation also compiles the unpacked Hex package, including the
+feature-gated benchmarks, and checks its generated documentation screenshots:
+
+```sh
+bash scripts/check-package.sh
+```
+
+This detects omitted benchmark fixtures, support files, guides, and image inputs.
+It checks screenshots before regeneration so missing-asset fallback rendering
+cannot silently replace the checked examples. The package includes benchmark
+sources/fixtures and sample assets with their redistribution notices.
 
 ## Maintaining build configuration
 

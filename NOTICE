@@ -32,5 +32,18 @@ Bundled third-party assets in packaged/runtime paths:
    - Source note:
      `native/emerge_skia/src/backend/drm/cursors/mocu_black_right/SOURCES.md`
 
+4. Tabler-derived sample SVG
+   - Path: `priv/sample_assets/template_cloud.svg`
+   - License: MIT
+   - Full license text: `licenses/Tabler-icons-MIT.txt`
+   - Source note: `priv/sample_assets/SOURCES.md`
+
+5. Sample photos
+   - `priv/sample_assets/static.jpg`: Andrew Ridley, via Unsplash/Lorem Picsum
+   - `priv/sample_assets/fallback.jpg`: Christian Joudrey, via Unsplash/Lorem Picsum
+   - License: Unsplash License (not Apache-2.0)
+   - License text and restrictions: `licenses/Unsplash.txt`
+   - Original photo links, download URLs and hashes: `priv/sample_assets/SOURCES.md`
+
 For a fuller repo-wide inventory, including repo-only Emerge docs/test assets,
 see `THIRD_PARTY_ASSETS.md`.

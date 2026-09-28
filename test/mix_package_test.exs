@@ -14,7 +14,7 @@ defmodule Emerge.MixPackageTest do
 
     env =
       Enum.map(
-        ~w(CC CXX TARGET_ARCH TARGET_OS TARGET_ABI TARGET_VENDOR MIX_TARGET
+        ~w(CC CXX TARGET_ARCH TARGET_OS TARGET_ABI TARGET_VENDOR MIX_TARGET MIX_BUILD_PATH MIX_DEPS_PATH
       NERVES_SDK_SYSROOT NERVES_TOOLCHAIN EMERGE_SKIA_HOST_PYTHON EMERGE_SKIA_BUILD
       EMERGE_INCLUDE_INTERNAL_DOCS RUSTLER_PRECOMPILED_FORCE_BUILD_ALL),
         &{&1, nil}
@@ -33,6 +33,28 @@ defmodule Emerge.MixPackageTest do
     end
 
     refute File.exists?(Path.join(package, "native/emerge_skia/target"))
+
+    # Include the inputs as well as their consumers. Source builds and docs may
+    # otherwise pass while feature-gated benches fail or examples paint fallbacks.
+    required =
+      ~w(priv/sample_assets/static.jpg priv/sample_assets/fallback.jpg
+        priv/sample_assets/template_cloud.svg priv/sample_assets/SOURCES.md
+        priv/test_assets/gradient_mask.svg licenses/Unsplash.txt
+        licenses/Tabler-icons-MIT.txt NOTICE THIRD_PARTY_ASSETS.md) ++
+        Enum.flat_map(~w(bench/**/* assets/*.png scripts/**/*.exs scripts/**/*.sh), fn pattern ->
+          @root
+          |> Path.join(pattern)
+          |> Path.wildcard()
+          |> Enum.filter(&File.regular?/1)
+          |> Enum.map(&Path.relative_to(&1, @root))
+        end)
+
+    for relative <- required do
+      assert File.read!(Path.join(package, relative)) == File.read!(Path.join(@root, relative)),
+             "package must preserve #{relative}"
+    end
+
+    refute File.exists?(Path.join(package, "guides/internals"))
 
     # Use already fetched dependency sources, but a fresh build/code path. No
     # registry access, Rustler, ExDoc or compiled checkout modules are required.

@@ -52,44 +52,43 @@ Scope markers used below:
 - Source note:
   `native/emerge_skia/src/backend/drm/cursors/mocu_black_right/SOURCES.md`
 
+### Tabler-derived sample SVG
+
+- Path: `priv/sample_assets/template_cloud.svg`
+- Purpose: packaged offline docs examples and renderer tests.
+- Upstream: https://github.com/tabler/tabler-icons/blob/master/icons/outline/cloud.svg
+- License: MIT; full text in `licenses/Tabler-icons-MIT.txt`.
+- Source note: `priv/sample_assets/SOURCES.md`.
+
+### Sample photos
+
+- `priv/sample_assets/static.jpg`: Andrew Ridley, https://unsplash.com/photos/Kt5hRENuotI
+- `priv/sample_assets/fallback.jpg`: Christian Joudrey, https://unsplash.com/photos/mWRR1xj95hg
+- Purpose: packaged offline docs/examples and benchmark assets.
+- License: [Unsplash License](https://unsplash.com/license), not Apache-2.0.
+  Permits copying and redistribution, including commercial use; prohibits
+  selling images without significant modification or compiling a competing image service.
+- License text and restrictions: `licenses/Unsplash.txt`.
+- Verified source URLs, photographer metadata and file hashes:
+  `priv/sample_assets/SOURCES.md` (2026-09-28).
+
 These package/runtime-relevant notices are also summarized in `NOTICE`.
 
 ## Repo-only docs/test assets
 
 ### Lobster test font fixture
 
-- Paths:
-  - `priv/test_assets/Lobster-Regular.ttf`
-- Purpose: test fixture for custom font loading.
-- Upstream: `https://github.com/google/fonts/tree/main/ofl/lobster`
-- License: SIL Open Font License 1.1
-- License text: `priv/test_assets/OFL.txt`
-- Source note: `priv/test_assets/SOURCES.md`
-
-### Tabler-derived sample SVG
-
-- Paths:
-  - `priv/sample_assets/template_cloud.svg`
-- Purpose: offline docs examples and renderer tests.
-- Upstream:
-  - `https://github.com/tabler/tabler-icons/blob/master/icons/outline/cloud.svg`
-- License: MIT
-- License text: `licenses/Tabler-icons-MIT.txt`
-- Source note: `priv/sample_assets/SOURCES.md`
-
-### Placeholder sample photos
-
-- Paths:
-  - `priv/sample_assets/static.jpg`
-  - `priv/sample_assets/fallback.jpg`
-- Purpose: offline docs/examples assets only.
-- Source note: `priv/sample_assets/SOURCES.md`
-- Note: these placeholder photos are retained for offline repo use and are not
-  included in the Hex package. Re-verify provenance and redistribution terms
-  before reusing them outside this repository.
+- Path: `priv/test_assets/Lobster-Regular.ttf`
+- Purpose: test fixture for custom font loading; not included in the Hex package.
+- Upstream: https://github.com/google/fonts/tree/main/ofl/lobster
+- License: SIL Open Font License 1.1.
+- License text: `priv/test_assets/OFL.txt`.
+- Source note: `priv/test_assets/SOURCES.md`.
 
 ## Generated in-repo assets
 
 - Documentation screenshots under `assets/` and `guides/tutorials/assets/` are
-  generated from this repository's own source code and are not third-party asset
-  imports.
+  generated from this repository's source code. Screenshots containing third-party
+  photos or fonts retain the applicable notices above.
+- The packaged `priv/test_assets/gradient_mask.svg` benchmark fixture and
+  `priv/sample_assets/tile_quad.svg` pattern are generated in-repo under Apache-2.0.

@@ -194,6 +194,10 @@ defmodule Emerge.MixProjectTest do
           "native/emerge_skia/target/cache.o",
           "native/emerge_skia/src/.hidden",
           "assets/ui-test.png",
+          "assets/dropdown-demo.png",
+          "scripts/check-package.sh",
+          "scripts/check-doc-links.exs",
+          "scripts/output.log",
           "checksum-test.exs"
         ] do
       path = Path.join(root, file)
@@ -209,8 +213,31 @@ defmodule Emerge.MixProjectTest do
     assert "native/emerge_skia/src/lib.rs" in files
     assert "checksum-test.exs" in files
     assert "assets/ui-test.png" in files
+    assert "assets/dropdown-demo.png" in files
+    assert "bench" in files
+    assert "scripts/check-package.sh" in files
+    assert "scripts/check-doc-links.exs" in files
+    refute "scripts/output.log" in files
     refute Enum.any?(files, &String.contains?(&1, "/target/"))
     refute "native/emerge_skia/src/.hidden" in files
+  end
+
+  test "sample photos match their recorded provenance and include redistribution notices" do
+    sources = File.read!(Path.join(@root, "priv/sample_assets/SOURCES.md"))
+    files = Emerge.Mix.Package.config(@root, "https://example.test")[:files]
+
+    for path <- ~w(priv/sample_assets licenses NOTICE THIRD_PARTY_ASSETS.md) do
+      assert path in files
+    end
+
+    assert File.regular?(Path.join(@root, "licenses/Unsplash.txt"))
+    assert File.regular?(Path.join(@root, "licenses/Tabler-icons-MIT.txt"))
+
+    for file <- ~w(static.jpg fallback.jpg) do
+      bytes = File.read!(Path.join([@root, "priv/sample_assets", file]))
+      hash = Base.encode16(:crypto.hash(:sha256, bytes), case: :lower)
+      assert sources =~ "#{hash}  #{file}"
+    end
   end
 
   test "package includes scoped font families, provenance, and redistribution licenses" do

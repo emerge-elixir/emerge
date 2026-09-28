@@ -14,6 +14,7 @@ defmodule Emerge.Mix.Package do
     [
       "lib",
       "mix",
+      "bench",
       "guides/tutorials",
       "guides/migrations",
       "guides/reference",
@@ -24,7 +25,8 @@ defmodule Emerge.Mix.Package do
       "NOTICE",
       "THIRD_PARTY_ASSETS.md",
       "licenses",
-      "priv/sample_assets/static.jpg",
+      "priv/sample_assets",
+      "priv/test_assets/gradient_mask.svg",
       "README.md",
       "CHANGELOG.md",
       "mix.exs",
@@ -32,7 +34,9 @@ defmodule Emerge.Mix.Package do
     ] ++
       Enum.flat_map(["src", "benches", "support"], fn dir ->
         regular_files(root, "native/emerge_skia/#{dir}/**/*")
-      end) ++ assets(root) ++ regular_files(root, "checksum-*.exs")
+      end) ++
+      Enum.flat_map(["scripts/**/*.exs", "scripts/**/*.sh"], &regular_files(root, &1)) ++
+      assets(root) ++ regular_files(root, "checksum-*.exs")
   end
 
   defp regular_files(root, pattern) do
@@ -43,13 +47,5 @@ defmodule Emerge.Mix.Package do
     |> Enum.map(&Path.relative_to(&1, root))
   end
 
-  defp assets(root) do
-    Enum.uniq(
-      [
-        "assets/counter-basic.png",
-        "assets/dashboard-functions.png",
-        "assets/assets-image-and-background.png"
-      ] ++ regular_files(root, "assets/ui-*.png")
-    )
-  end
+  defp assets(root), do: regular_files(root, "assets/*.png")
 end

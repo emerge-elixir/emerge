@@ -387,7 +387,7 @@ parsed-tree retention without disabling font reuse. Tree and pixel eviction are
 independent, and scene removal does not clear either cache. A new size can still
 take time to rasterize, but a retained tree does not transition to a placeholder.
 
-See [Asset/image internals](assets-images.html) for ownership,
+See [Asset/image internals](https://github.com/emerge-elixir/emerge/blob/main/guides/internals/assets-images.md) for ownership,
 revalidation, and accounting details.
 
 ## Decode raster images at draw size
