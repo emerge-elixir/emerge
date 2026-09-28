@@ -120,6 +120,7 @@ Run `mix docs` to generate the full ExDoc site.
 
 ## Repository Coding Preferences
 
+- Python code is not allowed in this repository. Implement automation and helpers in Elixir (`.exs`) or as Mix tasks, and test them with ExUnit.
 - Default to functional composition for collection building (`map`, `filter`, `flat_map`, `fold`, `collect`) instead of mutable accumulator loops.
 - Avoid mutable accumulator patterns in general (for example `let mut out = Vec::new(); for ... { out.push(...) }`).
 - Prefer functions that return collections over functions that mutate passed-in output collections.

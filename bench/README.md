@@ -198,8 +198,8 @@ builds or tests concurrently with measurements.
 
 ```bash
 ./scripts/performance-lock.sh --source-revision snapshot-created-under-lock exclusive \
-  python3 scripts/benchmarks/shared-animation/run.py /tmp/emerge-animation-results
-python3 scripts/benchmarks/shared-animation/summarize.py /tmp/emerge-animation-results
+  elixir --erl "+S 1:1 +SDcpu 1 +SDio 1" scripts/benchmarks/shared-animation/run.exs /tmp/emerge-animation-results
+elixir scripts/benchmarks/shared-animation/summarize.exs /tmp/emerge-animation-results
 ```
 
 The full matrix uses 5k/20k nodes and 1/64 owners. Preserve paint/pixel controls;
@@ -218,11 +218,14 @@ it does not qualify BEAM subscribers, physical input, RSS or GPU behavior.
 
 ```bash
 ./scripts/performance-lock.sh --source-revision snapshot-created-under-lock exclusive \
-  python3 scripts/benchmarks/event-pressure/run.py /tmp/emerge-event-pressure-results
-python3 scripts/benchmarks/event-pressure/summarize.py /tmp/emerge-event-pressure-results
+  elixir --erl "+S 1:1 +SDcpu 1 +SDio 1" scripts/benchmarks/event-pressure/run.exs /tmp/emerge-event-pressure-results
+elixir scripts/benchmarks/event-pressure/summarize.exs /tmp/emerge-event-pressure-results
 ```
 
-Requires Linux `/proc`, `flock`, `lscpu` and `/usr/bin/time`. Keep production queue
+The standalone runners require Elixir 1.19+, Linux `/proc`, `flock`, `lscpu`, GNU
+`tar`, `mktemp`, and `timeout`. They do not start the Emerge application. Event
+results are journaled incrementally to `results.jsonl` and written to
+`results.json` after all runs finish. Keep production queue
 capacities, warm-up and instrumentation overhead consistent across comparisons.
 The runner performs 30 cases with three rotated separate-process repeats. Retain
 raw output externally and distinguish local editing, publication and display.
