@@ -1,9 +1,11 @@
 use super::box_model::content_insets;
-use super::color::{DEFAULT_TEXT_COLOR, color_to_u32};
+use super::box_model::content_rect;
+use crate::render_color::RenderColor;
 use crate::render_scene::{DrawPrimitive, RenderNode};
 use crate::renderer::{make_font_with_style, measure_text_visual_metrics};
 use crate::tree::attrs::{Attrs, TextAlign};
 use crate::tree::element::{Frame, NodeRuntime};
+use crate::tree::geometry::Rect;
 use crate::tree::layout::{FontContext, font_info_with_inheritance};
 use crate::tree::text_layout::{TextLayoutStyle, layout_text_lines};
 
@@ -12,7 +14,7 @@ pub(super) const TEXT_SELECTION_COLOR: u32 = 0x4A90E266;
 #[derive(Clone, Copy)]
 pub(super) struct TextRunStyle<'a> {
     pub(super) font_size: f32,
-    pub(super) color: u32,
+    pub(super) color: &'a RenderColor,
     pub(super) family: &'a str,
     pub(super) weight: u16,
     pub(super) italic: bool,
@@ -90,12 +92,19 @@ pub(super) fn render_text_items(
         .map(|s| s as f32)
         .or(inherited.font_size)
         .unwrap_or(16.0);
+    let (x, y, width, height) = content_rect(frame, attrs);
+    let bounds = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
     let color = attrs
         .font_color
         .as_ref()
-        .map(color_to_u32)
-        .or(inherited.font_color)
-        .unwrap_or(DEFAULT_TEXT_COLOR);
+        .map(|c| c.render(bounds))
+        .or_else(|| inherited.font_color.as_ref().map(|c| c.with_bounds(bounds)))
+        .unwrap_or(RenderColor::Solid(0xff));
     let underline = attrs
         .font_underline
         .or(inherited.font_underline)
@@ -114,7 +123,7 @@ pub(super) fn render_text_items(
     let (family, weight, italic) = font_info_with_inheritance(attrs, inherited);
     let style = TextRunStyle {
         font_size,
-        color,
+        color: &color,
         family: &family,
         weight,
         italic,
@@ -152,7 +161,7 @@ pub(super) fn render_text_items(
         baseline_y,
         width: text_width,
         font_size,
-        color,
+        color: &color,
         underline,
         strike,
     }));
@@ -174,12 +183,19 @@ pub(super) fn render_text_input_items(
         .map(|s| s as f32)
         .or(inherited.font_size)
         .unwrap_or(16.0);
+    let (x, y, width, height) = content_rect(frame, attrs);
+    let bounds = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
     let color = attrs
         .font_color
         .as_ref()
-        .map(color_to_u32)
-        .or(inherited.font_color)
-        .unwrap_or(DEFAULT_TEXT_COLOR);
+        .map(|c| c.render(bounds))
+        .or_else(|| inherited.font_color.as_ref().map(|c| c.with_bounds(bounds)))
+        .unwrap_or(RenderColor::Solid(0xff));
     let underline = attrs
         .font_underline
         .or(inherited.font_underline)
@@ -198,7 +214,7 @@ pub(super) fn render_text_input_items(
     let (family, weight, italic) = font_info_with_inheritance(attrs, inherited);
     let style = TextRunStyle {
         font_size,
-        color,
+        color: &color,
         family: &family,
         weight,
         italic,
@@ -265,7 +281,7 @@ pub(super) fn render_text_input_items(
                     selection_top,
                     selection_width,
                     selection_height,
-                    TEXT_SELECTION_COLOR,
+                    (TEXT_SELECTION_COLOR).into(),
                 )));
             }
         }
@@ -278,7 +294,7 @@ pub(super) fn render_text_input_items(
         baseline_y,
         width: text_width,
         font_size,
-        color,
+        color: &color,
         underline,
         strike,
     }));
@@ -301,7 +317,7 @@ pub(super) fn render_text_input_items(
             baseline_y,
             width: preedit_width,
             font_size,
-            color,
+            color: &color,
             underline: true,
             strike: false,
         }));
@@ -332,7 +348,7 @@ pub(super) fn render_text_input_items(
             caret_top,
             caret_width,
             caret_height,
-            color,
+            (color).clone(),
         )));
 
         return Some((caret_x, caret_top, caret_width, caret_height));
@@ -356,12 +372,19 @@ pub(super) fn render_multiline_text_input_items(
         .map(|s| s as f32)
         .or(inherited.font_size)
         .unwrap_or(16.0);
+    let (x, y, width, height) = content_rect(frame, attrs);
+    let bounds = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
     let color = attrs
         .font_color
         .as_ref()
-        .map(color_to_u32)
-        .or(inherited.font_color)
-        .unwrap_or(DEFAULT_TEXT_COLOR);
+        .map(|c| c.render(bounds))
+        .or_else(|| inherited.font_color.as_ref().map(|c| c.with_bounds(bounds)))
+        .unwrap_or(RenderColor::Solid(0xff));
     let underline = attrs
         .font_underline
         .or(inherited.font_underline)
@@ -380,7 +403,7 @@ pub(super) fn render_multiline_text_input_items(
     let (family, weight, italic) = font_info_with_inheritance(attrs, inherited);
     let style = TextRunStyle {
         font_size,
-        color,
+        color: &color,
         family: &family,
         weight,
         italic,
@@ -467,7 +490,7 @@ pub(super) fn render_multiline_text_input_items(
                     line_top(line_index),
                     width,
                     layout.line_height,
-                    TEXT_SELECTION_COLOR,
+                    (TEXT_SELECTION_COLOR).into(),
                 )));
             }
         }
@@ -482,7 +505,7 @@ pub(super) fn render_multiline_text_input_items(
             baseline_y,
             width: line.width,
             font_size,
-            color,
+            color: &color,
             underline,
             strike,
         }));
@@ -506,7 +529,7 @@ pub(super) fn render_multiline_text_input_items(
                 baseline_y,
                 width,
                 font_size,
-                color,
+                color: &color,
                 underline: true,
                 strike: false,
             }));
@@ -538,7 +561,7 @@ pub(super) fn render_multiline_text_input_items(
             caret_top,
             caret_width,
             caret_height,
-            color,
+            (color).clone(),
         )));
 
         return Some((caret_x, caret_top, caret_width, caret_height));
@@ -565,7 +588,7 @@ pub(super) fn text_run_items(
             baseline_y,
             text.to_string(),
             style.font_size,
-            style.color,
+            (style.color).clone(),
             style.family.to_string(),
             style.weight,
             style.italic,
@@ -585,7 +608,7 @@ pub(super) fn text_run_items(
             baseline_y,
             glyph.clone(),
             style.font_size,
-            style.color,
+            (style.color).clone(),
             style.family.to_string(),
             style.weight,
             style.italic,
@@ -605,7 +628,7 @@ pub(super) fn text_run_items(
     items
 }
 
-pub(super) fn text_decoration_items(spec: TextDecorationSpec) -> Vec<RenderNode> {
+pub(super) fn text_decoration_items(spec: TextDecorationSpec<'_>) -> Vec<RenderNode> {
     let TextDecorationSpec {
         x,
         baseline_y,
@@ -626,13 +649,21 @@ pub(super) fn text_decoration_items(spec: TextDecorationSpec) -> Vec<RenderNode>
     if underline {
         let y = baseline_y + font_size * 0.08 - thickness / 2.0;
         items.push(RenderNode::Primitive(DrawPrimitive::Rect(
-            x, y, width, thickness, color,
+            x,
+            y,
+            width,
+            thickness,
+            (color).clone(),
         )));
     }
     if strike {
         let y = baseline_y - font_size * 0.3 - thickness / 2.0;
         items.push(RenderNode::Primitive(DrawPrimitive::Rect(
-            x, y, width, thickness, color,
+            x,
+            y,
+            width,
+            thickness,
+            (color).clone(),
         )));
     }
 
@@ -651,12 +682,12 @@ pub(super) fn text_metrics_with_font(
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(super) struct TextDecorationSpec {
+pub(super) struct TextDecorationSpec<'a> {
     pub(super) x: f32,
     pub(super) baseline_y: f32,
     pub(super) width: f32,
     pub(super) font_size: f32,
-    pub(super) color: u32,
+    pub(super) color: &'a RenderColor,
     pub(super) underline: bool,
     pub(super) strike: bool,
 }

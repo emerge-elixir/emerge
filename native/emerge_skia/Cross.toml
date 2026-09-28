@@ -2,11 +2,36 @@
 # host machine. Local source builds on Arch or other distros still use the host
 # toolchain and system libraries directly.
 [build.env]
-passthrough = ["RUSTFLAGS", "RUSTLER_PRECOMPILED_DEBUG_MODE", "DRY_RUN"]
+passthrough = [
+    "RUSTFLAGS",
+    "RUSTLER_PRECOMPILED_DEBUG_MODE",
+    "DRY_RUN",
+    "EMERGE_SOURCE_REVISION",
+    "FORCE_SKIA_BUILD",
+    "SKIA_GN_ARGS",
+    "SDKTARGETSYSROOT",
+    "CLANGCC",
+    "CLANGCXX",
+    "HOST_CC",
+    "HOST_CXX",
+    "PKG_CONFIG_ALLOW_CROSS",
+    "PKG_CONFIG_LIBDIR",
+]
 
 [target.aarch64-unknown-linux-gnu]
 pre-build = [
     "dpkg --add-architecture $CROSS_DEB_ARCH",
     "apt-get update",
     "apt-get install --assume-yes libegl1-mesa-dev:$CROSS_DEB_ARCH libgbm-dev:$CROSS_DEB_ARCH libdrm-dev:$CROSS_DEB_ARCH libfontconfig1-dev:$CROSS_DEB_ARCH libfreetype6-dev:$CROSS_DEB_ARCH libwayland-dev:$CROSS_DEB_ARCH libxkbcommon-dev:$CROSS_DEB_ARCH",
+]
+
+# Embedded ARMv7 artifacts force a Skia source build. Pin the current Ubuntu
+# 24.04 cross image so Skia gets a supported host Clang instead of the legacy
+# compiler in cross 0.2.5's default ARMv7 image.
+[target.armv7-unknown-linux-gnueabihf]
+image = "ghcr.io/cross-rs/armv7-unknown-linux-gnueabihf@sha256:2d3df5c06507fd14f29133d6ec6abbd662829731367cc8bbf2861d83eb533ef5"
+pre-build = [
+    "dpkg --add-architecture $CROSS_DEB_ARCH",
+    "apt-get update",
+    "DEBIAN_FRONTEND=noninteractive apt-get install --assume-yes clang python3 ninja-build pkg-config libegl1-mesa-dev:$CROSS_DEB_ARCH libgbm-dev:$CROSS_DEB_ARCH libdrm-dev:$CROSS_DEB_ARCH",
 ]

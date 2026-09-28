@@ -120,7 +120,7 @@ defmodule Emerge.UI do
 
   The rest of the API is organized by concern:
 
-  - `Emerge.UI.Color` for named and explicit colors
+  - `Emerge.UI.Color` for named colors, explicit colors, and background gradients
   - `Emerge.UI.Size` for width, height, and length helpers
   - `Emerge.UI.Space` for padding and spacing
   - `Emerge.UI.Scroll` for scroll-related attrs
@@ -170,8 +170,8 @@ defmodule Emerge.UI do
   @type image_source ::
           binary() | atom() | {:id, binary()} | {:path, binary()} | Emerge.Assets.Ref.t()
 
-  @typedoc "A video target accepted by `video/2`."
-  @type video_target :: EmergeSkia.VideoTarget.t()
+  @typedoc "A viewport-local atom target accepted by `video/2`."
+  @type video_target :: atom()
 
   @type key_attr :: {:key, key()}
   @type layout_scale_attr :: {:layout_scale, number()}
@@ -343,7 +343,22 @@ defmodule Emerge.UI do
   A paragraph lays out inline text children with word wrapping.
 
   Children should be `text/1` elements or `el/2`-wrapped text elements.
-  Words flow left-to-right and wrap at the container width.
+  Words flow left-to-right and wrap at the container width. `center_x/0`,
+  `align_right/0`, and `align_left/0` on the paragraph also align each wrapped
+  line within its content area, including the last line. Padding, borders, and
+  floating children reduce the available line width.
+
+  Explicit `Font.center/0`, `Font.align_right/0`, or `Font.align_left/0` on the
+  paragraph takes precedence over its horizontal alignment helper. Without either,
+  inherited font text alignment applies; otherwise lines are left-aligned.
+  The paragraph's width and placement in its parent still follow normal layout.
+
+  Inline `el` wrappers support `Background.color/1`, every `Border` variant,
+  outer/inner shadows and glow. No implicit background is painted. A wrapped
+  phrase gets one complete decoration box per line, including
+  spaces between its words, rather than a border around each word. Padding and
+  border widths participate in wrapping; shadows/glow do not affect layout.
+  See `Emerge.UI.Border` for continuation and gradient behavior.
 
   ## Example
 
@@ -389,7 +404,15 @@ defmodule Emerge.UI do
   `source` can be a verified `~m"..."` reference, logical asset path,
   runtime file path, or `{:id, image_id}`.
 
-  Use `image_fit/1` to choose between `:contain` and `:cover`.
+  When one dimension is pixel-sized and the other is omitted or `content()`,
+  the content-sized dimension follows the source's intrinsic aspect ratio.
+  With `width(fill())`, an omitted or `content()` height follows the resolved
+  width. With `height(fill())`, an automatic width follows the resolved height.
+  Both grow or shrink proportionally, subject to explicit dimensions and min/max
+  limits. Sizes include padding and borders; the ratio applies to the inner content.
+
+  Use `image_fit/1` to choose between `:contain` and `:cover`. Setting both
+  dimensions fixes the frame; the fit mode controls how the image fills it.
 
   ## Example
 
@@ -416,10 +439,18 @@ defmodule Emerge.UI do
   Preserves the SVG's original colors by default. Use `Svg.color/1` to apply
   template tinting to all visible pixels.
 
+  Like `image/2`, a pixel-sized dimension determines an omitted or `content()`
+  dimension from the source's intrinsic aspect ratio. For example, a 200×200 SVG
+  with only `height(px(68))` occupies 68×68 pixels without padding or borders.
+  `width(fill())` derives an automatic height from the allocated width, and
+  `height(fill())` derives an automatic width from the allocated height, including
+  enlargement beyond the source dimensions. Setting both dimensions
+  fixes the frame, with `image_fit/1` controlling the fit.
+
   ## Example
 
   ```elixir
-  svg([width(px(24)), height(px(24))], "icons/check.svg")
+  svg([height(px(24))], "icons/check.svg")
   ```
   """
   @spec svg(attrs(), image_source()) :: t()
@@ -436,10 +467,11 @@ defmodule Emerge.UI do
   end
 
   @doc """
-  A video element backed by a renderer-owned video target.
+  A video element addressed by a viewport-local atom target.
 
-  `video/2` behaves like an image element whose pixels are provided by an owned
-  target instead of a file source.
+  Submit frames with `Emerge.submit_video_frame/3`. The element has no intrinsic
+  size; normal layout attrs determine its bounds and the latest frame is fitted
+  within them.
   """
   @spec video(attrs(), video_target()) :: t()
   def video(attrs, target) do
@@ -448,8 +480,7 @@ defmodule Emerge.UI do
 
     attrs
     |> Map.put_new(:image_fit, :contain)
-    |> Map.put(:video_target, target.id)
-    |> Map.put(:image_size, {target.width, target.height})
+    |> Map.put(:video_target, Atom.to_string(target))
     |> Builder.build_element(nearby, :video, [])
   end
 

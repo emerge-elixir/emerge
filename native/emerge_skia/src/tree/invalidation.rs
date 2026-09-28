@@ -91,6 +91,9 @@ pub fn decide_refresh_action(
 
 pub fn classify_attrs_change(before: &Attrs, after: &Attrs) -> TreeInvalidation {
     let mut invalidation = TreeInvalidation::None;
+    if before.animate_change != after.animate_change {
+        invalidation.add(TreeInvalidation::Paint);
+    }
 
     if before.on_click != after.on_click
         || before.on_mouse_down != after.on_mouse_down
@@ -134,46 +137,10 @@ pub fn classify_attrs_change(before: &Attrs, after: &Attrs) -> TreeInvalidation 
         invalidation.add(TreeInvalidation::Paint);
     }
 
-    if before.align_x != after.align_x
-        || before.align_y != after.align_y
-        || before.slider_min != after.slider_min
-        || before.slider_max != after.slider_max
-        || before.slider_value != after.slider_value
-        || before.slider_step != after.slider_step
-    {
+    if layout_resolve_attrs_changed(before, after) {
         invalidation.add(TreeInvalidation::Resolve);
     }
-
-    if before.width != after.width
-        || before.height != after.height
-        || before.layout_scale != after.layout_scale
-        || before.layout_rotate != after.layout_rotate
-        || before.padding != after.padding
-        || before.spacing != after.spacing
-        || before.spacing_x != after.spacing_x
-        || before.spacing_y != after.spacing_y
-        || before.scrollbar_y != after.scrollbar_y
-        || before.scrollbar_x != after.scrollbar_x
-        || before.ghost_scrollbar_y != after.ghost_scrollbar_y
-        || before.ghost_scrollbar_x != after.ghost_scrollbar_x
-        || before.scroll_x != after.scroll_x
-        || before.scroll_y != after.scroll_y
-        || before.clip_nearby != after.clip_nearby
-        || before.border_width != after.border_width
-        || before.font_size != after.font_size
-        || before.font != after.font
-        || before.font_weight != after.font_weight
-        || before.font_style != after.font_style
-        || before.font_letter_spacing != after.font_letter_spacing
-        || before.font_word_spacing != after.font_word_spacing
-        || before.image_src != after.image_src
-        || before.image_fit != after.image_fit
-        || before.image_size != after.image_size
-        || before.text_align != after.text_align
-        || before.content != after.content
-        || before.snap_layout != after.snap_layout
-        || before.snap_text_metrics != after.snap_text_metrics
-        || before.space_evenly != after.space_evenly
+    if layout_measure_attrs_changed(before, after)
         || before.animate.is_some()
         || after.animate.is_some()
         || before.animate_enter.is_some()
@@ -204,6 +171,72 @@ pub fn classify_attrs_change(before: &Attrs, after: &Attrs) -> TreeInvalidation 
     }
 
     invalidation
+}
+
+fn layout_resolve_attrs_changed(before: &Attrs, after: &Attrs) -> bool {
+    before.align_x != after.align_x
+        || before.align_y != after.align_y
+        || before.slider_min != after.slider_min
+        || before.slider_max != after.slider_max
+        || before.slider_value != after.slider_value
+        || before.slider_step != after.slider_step
+}
+fn layout_measure_attrs_changed(before: &Attrs, after: &Attrs) -> bool {
+    before.width != after.width
+        || before.height != after.height
+        || before.layout_scale != after.layout_scale
+        || before.layout_rotate != after.layout_rotate
+        || before.padding != after.padding
+        || before.spacing != after.spacing
+        || before.spacing_x != after.spacing_x
+        || before.spacing_y != after.spacing_y
+        || before.scrollbar_y != after.scrollbar_y
+        || before.scrollbar_x != after.scrollbar_x
+        || before.ghost_scrollbar_y != after.ghost_scrollbar_y
+        || before.ghost_scrollbar_x != after.ghost_scrollbar_x
+        || before.scroll_x != after.scroll_x
+        || before.scroll_y != after.scroll_y
+        || before.clip_nearby != after.clip_nearby
+        || before.border_width != after.border_width
+        || before.font_size != after.font_size
+        || before.font != after.font
+        || before.font_weight != after.font_weight
+        || before.font_style != after.font_style
+        || before.font_letter_spacing != after.font_letter_spacing
+        || before.font_word_spacing != after.font_word_spacing
+        || before.image_src != after.image_src
+        || before.image_fit != after.image_fit
+        || before.image_size != after.image_size
+        || before.text_align != after.text_align
+        || before.content != after.content
+        || before.snap_layout != after.snap_layout
+        || before.snap_text_metrics != after.snap_text_metrics
+        || before.space_evenly != after.space_evenly
+}
+
+/// Endpoint model changes, independent of conservative animation work flags.
+pub(crate) fn layout_model_attrs_changed(before: &Attrs, after: &Attrs) -> bool {
+    layout_resolve_attrs_changed(before, after)
+        || layout_measure_attrs_changed(before, after)
+        || interaction_layout_changed(before.mouse_over.as_ref(), after.mouse_over.as_ref())
+        || interaction_layout_changed(before.focused.as_ref(), after.focused.as_ref())
+        || interaction_layout_changed(before.mouse_down.as_ref(), after.mouse_down.as_ref())
+}
+fn interaction_layout_changed(
+    before: Option<&MouseOverAttrs>,
+    after: Option<&MouseOverAttrs>,
+) -> bool {
+    macro_rules! changed { ($($field:ident),*) => { false $(|| before.and_then(|s| s.$field.as_ref()) != after.and_then(|s| s.$field.as_ref()))* }; }
+    changed!(
+        border_width,
+        font,
+        font_weight,
+        font_style,
+        font_size,
+        font_letter_spacing,
+        font_word_spacing,
+        text_align
+    )
 }
 
 pub fn downgrade_content_measure_when_layout_independent(

@@ -20,7 +20,7 @@ column(
       [
         width(px(260)),
         height(px(120)),
-        Background.gradient(color(:sky, 400), color(:sky, 700), 45),
+        Background.color(Emerge.UI.Color.gradient([color(:sky, 400), color(:sky, 700)], 45)),
         Border.rounded(12)
       ],
       none()

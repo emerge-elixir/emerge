@@ -1,5 +1,9 @@
 use std::collections::HashMap;
 
+use crate::render_scene::PaintLayerId;
+#[cfg(test)]
+use crate::render_scene::PaintLayerReason;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PaintLayerPayloadCacheConfig {
     pub max_entries: usize,
@@ -29,7 +33,8 @@ pub enum PaintLayerPayloadStorage {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PaintLayerPayloadKey {
-    pub stable_id: u64,
+    pub id: PaintLayerId,
+    pub slot: u32,
     pub content_hash: u64,
     pub width_px: u32,
     pub height_px: u32,
@@ -39,7 +44,8 @@ pub struct PaintLayerPayloadKey {
 
 impl PaintLayerPayloadKey {
     pub fn new(
-        stable_id: u64,
+        id: PaintLayerId,
+        slot: u32,
         content_hash: u64,
         width_px: u32,
         height_px: u32,
@@ -47,7 +53,8 @@ impl PaintLayerPayloadKey {
         resource_generation: u64,
     ) -> Self {
         Self {
-            stable_id,
+            id,
+            slot,
             content_hash,
             width_px,
             height_px,
@@ -151,6 +158,12 @@ impl<P> PaintLayerPayloadCache<P> {
         false
     }
 
+    pub fn contains_run_family(&self, key: &PaintLayerPayloadKey) -> bool {
+        self.entries
+            .keys()
+            .any(|candidate| same_run_family(*candidate, *key))
+    }
+
     #[cfg(test)]
     pub fn contains_key(&self, key: &PaintLayerPayloadKey) -> bool {
         self.entries.contains_key(key)
@@ -201,6 +214,20 @@ impl<P> PaintLayerPayloadCache<P> {
         if let Some(existing) = self.entries.remove(&key) {
             self.total_bytes = self.total_bytes.saturating_sub(existing.bytes);
         }
+        let replaced_keys = self
+            .entries
+            .keys()
+            .copied()
+            .filter(|candidate| same_run_family(*candidate, key))
+            .collect::<Vec<_>>();
+        let mut evicted = replaced_keys
+            .into_iter()
+            .filter_map(|candidate| self.entries.remove(&candidate))
+            .map(|entry| {
+                self.total_bytes = self.total_bytes.saturating_sub(entry.bytes);
+                entry.bytes
+            })
+            .collect::<Vec<_>>();
 
         self.total_bytes = self.total_bytes.saturating_add(bytes);
         self.entries.insert(
@@ -215,7 +242,7 @@ impl<P> PaintLayerPayloadCache<P> {
             },
         );
 
-        let evicted = self.evict_if_needed();
+        evicted.extend(self.evict_if_needed());
         self.refresh_next_stale_sweep_frame();
         Ok(evicted)
     }
@@ -303,16 +330,21 @@ impl<P> PaintLayerPayloadCache<P> {
         store_key: PaintLayerPayloadKey,
         store_bytes: u64,
     ) -> bool {
-        let existing_bytes = self
+        let (replaced_entries, replaced_bytes) = self
             .entries
-            .get(&store_key)
-            .map(|entry| entry.bytes)
-            .unwrap_or(0);
-        let mut projected_len =
-            self.entries.len() + usize::from(!self.entries.contains_key(&store_key));
+            .iter()
+            .filter(|(key, _)| same_run_family(**key, store_key))
+            .fold((0usize, 0u64), |(count, bytes), (_, entry)| {
+                (count.saturating_add(1), bytes.saturating_add(entry.bytes))
+            });
+        let mut projected_len = self
+            .entries
+            .len()
+            .saturating_sub(replaced_entries)
+            .saturating_add(1);
         let mut projected_bytes = self
             .total_bytes
-            .saturating_sub(existing_bytes)
+            .saturating_sub(replaced_bytes)
             .saturating_add(store_bytes);
 
         if projected_len <= self.config.max_entries && projected_bytes <= self.config.max_bytes {
@@ -322,7 +354,7 @@ impl<P> PaintLayerPayloadCache<P> {
         let mut victims: Vec<_> = self
             .entries
             .iter()
-            .filter(|(key, _)| **key != store_key)
+            .filter(|(key, _)| !same_run_family(**key, store_key))
             .collect();
         victims.sort_by_key(|(_, entry)| entry.last_used_frame);
 
@@ -340,6 +372,10 @@ impl<P> PaintLayerPayloadCache<P> {
 
         projected_len > self.config.max_entries || projected_bytes > self.config.max_bytes
     }
+}
+
+fn same_run_family(first: PaintLayerPayloadKey, second: PaintLayerPayloadKey) -> bool {
+    first.id == second.id && first.slot == second.slot
 }
 
 fn frame_has_not_reached(current: u64, target: u64) -> bool {
@@ -361,7 +397,15 @@ mod tests {
     }
 
     fn moving_key(stable_id: u64, content_hash: u64) -> PaintLayerPayloadKey {
-        PaintLayerPayloadKey::new(stable_id, content_hash, 100, 40, 1.0f32.to_bits(), 9)
+        PaintLayerPayloadKey::new(
+            PaintLayerId::new(stable_id, PaintLayerReason::Nearby),
+            0,
+            content_hash,
+            100,
+            40,
+            1.0f32.to_bits(),
+            9,
+        )
     }
 
     #[test]
@@ -388,11 +432,18 @@ mod tests {
             width_px: 101,
             ..base
         };
+        let different_role = PaintLayerPayloadKey {
+            id: PaintLayerId::new(base.id.node_id, PaintLayerReason::SliderValue),
+            ..base
+        };
+        let different_slot = PaintLayerPayloadKey { slot: 1, ..base };
 
         assert_ne!(base, different_content);
         assert_ne!(base, different_resource);
         assert_ne!(base, different_scale);
         assert_ne!(base, different_size);
+        assert_ne!(base, different_role);
+        assert_ne!(base, different_slot);
     }
 
     #[test]
@@ -480,6 +531,38 @@ mod tests {
             Err(PaintLayerPayloadStoreRejection::PayloadBudget)
         );
         assert_eq!(cache.get(&first), Some(&"first"));
+    }
+
+    #[test]
+    fn storing_a_run_replacement_evicts_only_older_versions_of_that_run() {
+        let mut cache = PaintLayerPayloadCache::with_config(config());
+        let first = moving_key(3, 1);
+        let replacement = moving_key(3, 2);
+        let sibling = PaintLayerPayloadKey { slot: 1, ..first };
+
+        cache.begin_frame(1);
+        cache
+            .try_store(first, "first", 10, PaintLayerPayloadStorage::Gpu)
+            .expect("first version should store");
+        cache
+            .try_store(sibling, "sibling", 20, PaintLayerPayloadStorage::Gpu)
+            .expect("sibling run should store");
+        cache.begin_frame(2);
+        let evicted = cache
+            .try_store(
+                replacement,
+                "replacement",
+                30,
+                PaintLayerPayloadStorage::Gpu,
+            )
+            .expect("replacement should store");
+
+        assert_eq!(evicted, vec![10]);
+        assert!(!cache.contains_key(&first));
+        assert!(cache.contains_key(&replacement));
+        assert!(cache.contains_key(&sibling));
+        assert_eq!(cache.stats().entries, 2);
+        assert_eq!(cache.stats().bytes, 50);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Attribute types and decoding for EMRG v3 format.
+//! Attribute types and decoding for EMRG v9 format.
 //!
 //! Attributes are encoded as a compact binary block:
 //! - attr_count (u16)
@@ -70,11 +70,54 @@ pub enum TextAlign {
     Right,
 }
 
+/// Non-recursive gradient stop.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SolidColor {
+    Rgb { r: u8, g: u8, b: u8 },
+    Rgba { r: u8, g: u8, b: u8, a: u8 },
+    Named(String),
+}
+
+impl From<SolidColor> for Color {
+    fn from(c: SolidColor) -> Self {
+        match c {
+            SolidColor::Rgb { r, g, b } => Self::Rgb { r, g, b },
+            SolidColor::Rgba { r, g, b, a } => Self::Rgba { r, g, b, a },
+            SolidColor::Named(n) => Self::Named(n),
+        }
+    }
+}
+
+impl TryFrom<Color> for SolidColor {
+    type Error = &'static str;
+    fn try_from(c: Color) -> Result<Self, Self::Error> {
+        match c {
+            Color::Rgb { r, g, b } => Ok(Self::Rgb { r, g, b }),
+            Color::Rgba { r, g, b, a } => Ok(Self::Rgba { r, g, b, a }),
+            Color::Named(n) => Ok(Self::Named(n)),
+            Color::Gradient { .. } => Err("nested gradient"),
+        }
+    }
+}
+
 /// Color value.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Color {
-    Rgb { r: u8, g: u8, b: u8 },
-    Rgba { r: u8, g: u8, b: u8, a: u8 },
+    Gradient {
+        colors: std::sync::Arc<[SolidColor]>,
+        angle: f64,
+    },
+    Rgb {
+        r: u8,
+        g: u8,
+        b: u8,
+    },
+    Rgba {
+        r: u8,
+        g: u8,
+        b: u8,
+        a: u8,
+    },
     Named(String),
 }
 
@@ -82,7 +125,6 @@ pub enum Color {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Background {
     Color(Color),
-    Gradient { from: Color, to: Color, angle: f64 },
     Image { source: ImageSource, fit: ImageFit },
 }
 
@@ -192,13 +234,13 @@ pub struct MouseOverAttrs {
 }
 
 /// A positioned text fragment within a paragraph, computed during layout.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TextFragment {
     pub x: f32,
     pub y: f32,
     pub text: String,
     pub font_size: f32,
-    pub color: u32,
+    pub color: crate::render_color::RenderColor,
     pub family: String,
     pub weight: u16,
     pub italic: bool,
@@ -251,7 +293,7 @@ pub struct VirtualKeySpec {
 }
 
 /// All decoded attributes for an element.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Attrs {
     pub width: Option<Length>,
     pub height: Option<Length>,
@@ -349,6 +391,7 @@ pub struct Attrs {
     pub scale: Option<f64>,
     pub alpha: Option<f64>,
     pub animate: Option<AnimationSpec>,
+    pub animate_change: Option<std::sync::Arc<Vec<super::animation::change::ChangePolicy>>>,
     pub animate_enter: Option<AnimationSpec>,
     pub animate_exit: Option<AnimationSpec>,
     pub space_evenly: Option<bool>,
@@ -449,6 +492,7 @@ const TAG_SLIDER_MIN: u8 = 80;
 const TAG_SLIDER_MAX: u8 = 81;
 const TAG_SLIDER_VALUE: u8 = 82;
 const TAG_SLIDER_STEP: u8 = 83;
+const TAG_ANIMATE_CHANGE: u8 = 84;
 
 // =============================================================================
 // Decoder
@@ -470,7 +514,7 @@ impl<'a> AttrCursor<'a> {
     }
 
     fn read_bytes(&mut self, len: usize) -> Result<&'a [u8], DecodeError> {
-        if self.pos + len > self.data.len() {
+        if len > self.remaining() {
             return Err(DecodeError::UnexpectedEof);
         }
         let bytes = &self.data[self.pos..self.pos + len];
@@ -535,6 +579,13 @@ pub fn decode_attrs(data: &[u8]) -> Result<Attrs, DecodeError> {
         decode_attr(&mut cursor, tag, &mut attrs)?;
     }
 
+    if cursor.remaining() != 0 {
+        return Err(DecodeError::InvalidStructure(format!(
+            "attribute block has {} trailing bytes",
+            cursor.remaining()
+        )));
+    }
+    super::animation::change::validate_policies(&attrs).map_err(DecodeError::InvalidStructure)?;
     Ok(attrs)
 }
 
@@ -622,6 +673,9 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
             attrs.image_size = Some((width, height));
         }
         TAG_VIDEO_TARGET => attrs.video_target = Some(cursor.read_string_u16()?),
+        TAG_ANIMATE_CHANGE => {
+            attrs.animate_change = Some(std::sync::Arc::new(decode_change_policies(cursor)?))
+        }
         TAG_ANIMATE => attrs.animate = Some(decode_animation_spec(cursor)?),
         TAG_ANIMATE_ENTER => attrs.animate_enter = Some(decode_animation_spec(cursor)?),
         TAG_ANIMATE_EXIT => attrs.animate_exit = Some(decode_exit_animation_spec(cursor)?),
@@ -694,6 +748,46 @@ fn decode_decorative_style_attrs(
     Ok(out)
 }
 
+fn decode_change_policies(
+    cursor: &mut AttrCursor,
+) -> Result<Vec<super::animation::change::ChangePolicy>, DecodeError> {
+    use super::animation::change::{ChangePolicy, Field};
+    let data = cursor.read_bytes_u32()?;
+    let mut nested = AttrCursor::new(&data);
+    let count = nested.read_u16_be()?;
+    let policies = (0..count)
+        .map(|_| {
+            let name = nested.read_string_u16()?;
+            let field = Field::from_name(&name).ok_or_else(|| {
+                DecodeError::InvalidStructure(format!("invalid animate_change field: {name}"))
+            })?;
+            let duration_ms = nested.read_f64()?;
+            let curve = match nested.read_string_u16()?.as_str() {
+                "linear" => AnimationCurve::Linear,
+                "ease_in" => AnimationCurve::EaseIn,
+                "ease_out" => AnimationCurve::EaseOut,
+                "ease_in_out" => AnimationCurve::EaseInOut,
+                _ => {
+                    return Err(DecodeError::InvalidStructure(
+                        "invalid animate_change curve".into(),
+                    ));
+                }
+            };
+            Ok(ChangePolicy {
+                field,
+                duration_ms,
+                curve,
+            })
+        })
+        .collect::<Result<Vec<_>, DecodeError>>()?;
+    if nested.remaining() != 0 {
+        return Err(DecodeError::InvalidStructure(
+            "animate_change trailing bytes".into(),
+        ));
+    }
+    Ok(policies)
+}
+
 fn decode_animation_spec(cursor: &mut AttrCursor) -> Result<AnimationSpec, DecodeError> {
     let data = cursor.read_bytes_u32()?;
     let mut nested = AttrCursor::new(&data);
@@ -758,12 +852,14 @@ fn decode_animation_spec(cursor: &mut AttrCursor) -> Result<AnimationSpec, Decod
         )));
     }
 
-    Ok(AnimationSpec {
+    let spec = AnimationSpec {
         keyframes,
         duration_ms,
         curve,
         repeat,
-    })
+    };
+    super::animation::validate_animation_lengths(&spec).map_err(DecodeError::InvalidStructure)?;
+    Ok(spec)
 }
 
 fn decode_exit_animation_spec(cursor: &mut AttrCursor) -> Result<AnimationSpec, DecodeError> {
@@ -1064,24 +1160,54 @@ fn decode_text_align(cursor: &mut AttrCursor) -> Result<TextAlign, DecodeError> 
 }
 
 fn decode_color(cursor: &mut AttrCursor) -> Result<Color, DecodeError> {
+    if cursor.data.get(cursor.pos) != Some(&3) {
+        return decode_solid_color(cursor).map(Color::from);
+    }
+    cursor.read_u8()?;
+    {
+        let count = cursor.read_u32_be()? as usize;
+        // Even the shortest solid encoding needs three bytes, plus the angle.
+        // Bound the iterator/allocation by bytes actually supplied, not just count.
+        if count < 2 || count > cursor.remaining().saturating_sub(8) / 3 {
+            return Err(DecodeError::InvalidStructure(
+                "invalid gradient stop count".into(),
+            ));
+        }
+        let colors = (0..count)
+            .map(|_| decode_solid_color(cursor))
+            .collect::<Result<Vec<_>, _>>()?;
+        let angle = cursor.read_f64()?;
+        if !angle.is_finite() {
+            return Err(DecodeError::InvalidStructure(
+                "gradient angle must be finite".into(),
+            ));
+        }
+        Ok(Color::Gradient {
+            colors: colors.into(),
+            angle,
+        })
+    }
+}
+
+fn decode_solid_color(cursor: &mut AttrCursor) -> Result<SolidColor, DecodeError> {
     let variant = cursor.read_u8()?;
     match variant {
         0 => {
             let r = cursor.read_u8()?;
             let g = cursor.read_u8()?;
             let b = cursor.read_u8()?;
-            Ok(Color::Rgb { r, g, b })
+            Ok(SolidColor::Rgb { r, g, b })
         }
         1 => {
             let r = cursor.read_u8()?;
             let g = cursor.read_u8()?;
             let b = cursor.read_u8()?;
             let a = cursor.read_u8()?;
-            Ok(Color::Rgba { r, g, b, a })
+            Ok(SolidColor::Rgba { r, g, b, a })
         }
         2 => {
             let name = cursor.read_string_u16()?;
-            Ok(Color::Named(name))
+            Ok(SolidColor::Named(name))
         }
         _ => Err(DecodeError::InvalidStructure(format!(
             "unknown color variant: {}",
@@ -1094,12 +1220,6 @@ fn decode_background(cursor: &mut AttrCursor) -> Result<Background, DecodeError>
     let variant = cursor.read_u8()?;
     match variant {
         0 => Ok(Background::Color(decode_color(cursor)?)),
-        1 => {
-            let from = decode_color(cursor)?;
-            let to = decode_color(cursor)?;
-            let angle = cursor.read_f64()?;
-            Ok(Background::Gradient { from, to, angle })
-        }
         2 => {
             let source = decode_image_source(cursor)?;
             let fit = decode_image_fit(cursor)?;
@@ -1424,6 +1544,62 @@ mod tests {
         data.extend_from_slice(&0.5_f64.to_be_bytes());
         let attrs = decode_attrs(&data).unwrap();
         assert_eq!(attrs.alpha, Some(0.5));
+    }
+
+    #[test]
+    fn min_max_lengths_decode_statically_but_not_in_animation_payloads() {
+        for axis in [TAG_WIDTH, TAG_HEIGHT] {
+            for bound in [4, 5] {
+                let frame = vec![0, 1, axis, bound, 0, 1];
+                assert!(decode_attrs(&frame).is_ok());
+                for owner in [TAG_ANIMATE, TAG_ANIMATE_ENTER, TAG_ANIMATE_EXIT] {
+                    let payload: Vec<u8> = [0, 2]
+                        .into_iter()
+                        .chain((0..2).flat_map(|_| {
+                            (frame.len() as u32)
+                                .to_be_bytes()
+                                .into_iter()
+                                .chain(frame.iter().copied())
+                        }))
+                        .chain(1000.0_f64.to_be_bytes())
+                        .chain([0, 6])
+                        .chain(*b"linear")
+                        .chain([0])
+                        .collect();
+                    let data: Vec<u8> = [0, 1, owner]
+                        .into_iter()
+                        .chain((payload.len() as u32).to_be_bytes())
+                        .chain(payload)
+                        .collect();
+                    assert!(
+                        decode_attrs(&data)
+                            .unwrap_err()
+                            .to_string()
+                            .contains("min/max")
+                    );
+                }
+                let name = if axis == TAG_WIDTH { "width" } else { "height" };
+                let policy: Vec<u8> = [0, 1]
+                    .into_iter()
+                    .chain((name.len() as u16).to_be_bytes())
+                    .chain(name.bytes())
+                    .chain(1000.0_f64.to_be_bytes())
+                    .chain([0, 6])
+                    .chain(*b"linear")
+                    .collect();
+                let data: Vec<u8> = [0, 2, axis, bound, 0, 1, TAG_ANIMATE_CHANGE]
+                    .into_iter()
+                    .chain((policy.len() as u32).to_be_bytes())
+                    .chain(policy)
+                    .collect();
+                assert!(
+                    decode_attrs(&data)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("min/max")
+                );
+            }
+        }
     }
 
     #[test]
@@ -1975,5 +2151,121 @@ mod tests {
             attrs.mouse_over.and_then(|style| style.svg_color),
             Some(Color::Rgb { r: 1, g: 2, b: 3 })
         );
+    }
+
+    fn gradient_attrs(colors: &[u8], count: u32, angle: f64) -> Vec<u8> {
+        [
+            vec![0, 1, TAG_BACKGROUND, 0, 3],
+            count.to_be_bytes().to_vec(),
+            colors.to_vec(),
+            angle.to_be_bytes().to_vec(),
+        ]
+        .concat()
+    }
+
+    #[test]
+    fn decode_multicolor_gradient_model_and_nested_styles() {
+        let data = gradient_attrs(
+            &[0, 1, 2, 3, 1, 4, 5, 6, 128, 2, 0, 3, b'r', b'e', b'd'],
+            3,
+            -450.0,
+        );
+        let expected = Some(Background::Color(crate::tree::attrs::Color::Gradient {
+            colors: (vec![
+                Color::Rgb { r: 1, g: 2, b: 3 },
+                Color::Rgba {
+                    r: 4,
+                    g: 5,
+                    b: 6,
+                    a: 128,
+                },
+                Color::Named("red".into()),
+            ])
+            .into_iter()
+            .map(|c| c.try_into().expect("solid stop"))
+            .collect(),
+            angle: -450.0,
+        }));
+        assert_eq!(decode_attrs(&data).unwrap().background, expected);
+        for tag in [TAG_MOUSE_OVER, TAG_FOCUSED, TAG_MOUSE_DOWN_STYLE] {
+            let nested = [
+                vec![0, 1, tag],
+                (data.len() as u32).to_be_bytes().to_vec(),
+                data.clone(),
+            ]
+            .concat();
+            let attrs = decode_attrs(&nested).unwrap();
+            let style = attrs
+                .mouse_over
+                .or(attrs.focused)
+                .or(attrs.mouse_down)
+                .unwrap();
+            assert_eq!(style.background, expected);
+        }
+    }
+
+    #[test]
+    fn gradient_decoder_rejects_malformed_payloads() {
+        let stops = [0, 1, 2, 3, 0, 4, 5, 6];
+        let valid = gradient_attrs(&stops, 2, 0.0);
+        for end in 1..valid.len() {
+            assert!(
+                decode_attrs(&valid[..end]).is_err(),
+                "accepted prefix of length {end}"
+            );
+        }
+        for count in [0, 1, u32::MAX] {
+            assert!(decode_attrs(&gradient_attrs(&stops, count, 0.0)).is_err());
+        }
+        for angle in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(decode_attrs(&gradient_attrs(&stops, 2, angle)).is_err());
+        }
+        assert!(decode_attrs(&gradient_attrs(&[3; 16], 2, 0.0)).is_err());
+        assert!(decode_attrs(&[0, 1, TAG_BACKGROUND, 1]).is_err());
+        assert!(decode_attrs(&[valid, vec![0]].concat()).is_err());
+        assert!(decode_attrs(&gradient_attrs(&stops, 2, f64::MAX)).is_ok());
+    }
+    #[test]
+    fn shared_color_payload_decodes_in_every_color_slot_and_rejects_nested_gradients() {
+        let background = gradient_attrs(&[0, 255, 0, 0, 1, 0, 0, 255, 128], 2, 90.0);
+        let payload = &background[4..];
+        for tag in [TAG_FONT_COLOR, TAG_BORDER_COLOR, TAG_SVG_COLOR] {
+            let bytes = [vec![0, 1, tag], payload.to_vec()].concat();
+            let attrs = decode_attrs(&bytes).unwrap();
+            let color = attrs
+                .font_color
+                .or(attrs.border_color)
+                .or(attrs.svg_color)
+                .unwrap();
+            let Color::Gradient { colors, angle } = color else {
+                panic!("gradient")
+            };
+            assert_eq!(colors.len(), 2);
+            assert_eq!(angle, 90.0);
+            for end in 1..bytes.len() {
+                assert!(decode_attrs(&bytes[..end]).is_err());
+            }
+            let invalid = [
+                vec![0, 1, tag, 3, 0, 0, 0, 2],
+                payload.to_vec(),
+                payload.to_vec(),
+                vec![0; 8],
+            ]
+            .concat();
+            assert!(decode_attrs(&invalid).is_err());
+        }
+        let shadow = [
+            vec![0, 1, TAG_BOX_SHADOW, 1],
+            vec![0; 32],
+            payload.to_vec(),
+            vec![0],
+        ]
+        .concat();
+        let attrs = decode_attrs(&shadow).unwrap();
+        assert!(matches!(
+            attrs.box_shadows.unwrap()[0].color,
+            Color::Gradient { .. }
+        ));
+        assert!(decode_attrs(&[0, 1, TAG_BACKGROUND, 3]).is_err());
     }
 }

@@ -4,43 +4,115 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: Git ref to publish (tag or branch)
+        description: Exact v-prefixed release tag to publish
         required: true
-        default: main
   workflow_run:
     workflows: ["Build Release Artifacts"]
     types: [completed]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: hex-release
+  cancel-in-progress: false
+
 jobs:
-  publish:
-    name: Publish Hex package
+  resolve:
+    name: Resolve exact release commit
     runs-on: ubuntu-24.04
     if: >
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'workflow_run' &&
        github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event == 'push')
-    permissions:
-      contents: read
-
+    outputs:
+      sha: ${{ steps.release.outputs.sha }}
+      version: ${{ steps.release.outputs.version }}
     steps:
-      - name: Checkout source code (manual)
-        if: ${{ github.event_name == 'workflow_dispatch' }}
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.ref || github.event.workflow_run.head_sha }}
+          fetch-depth: 0
 
-      - name: Checkout source code (after precompiled build)
-        if: ${{ github.event_name == 'workflow_run' }}
-        uses: actions/checkout@v5
+      - name: Set up Elixir for release checks
+        uses: erlef/setup-beam@v1
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          elixir-version: "1.20.2"
+          otp-version: "29.0.5"
+
+      - name: Validate exact release tag and project version
+        id: release
+        shell: bash
+        env:
+          MANUAL_REF: ${{ inputs.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+
+          project_version="$(awk -F'"' '/^  @version "/ { print $2; exit }' mix.exs)"
+          cargo_version="$(awk -F'"' '$0 == "[package]" { in_package=1; next } in_package && /^version = "/ { print $2; exit }' native/emerge_skia/Cargo.toml)"
+
+          if [[ -z "$project_version" || -z "$cargo_version" ]]; then
+            echo "Failed to resolve Mix/Cargo project versions" >&2
+            exit 1
+          fi
+
+          if [[ "$project_version" != "$cargo_version" ]]; then
+            echo "Mix version ${project_version} does not match Cargo version ${cargo_version}" >&2
+            exit 1
+          fi
+
+          expected_tag="v${project_version}"
+          if ! git tag --points-at HEAD | grep -Fx "$expected_tag" >/dev/null; then
+            echo "Checked-out commit is not exact release tag ${expected_tag}" >&2
+            exit 1
+          fi
+
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && "$MANUAL_REF" != "$expected_tag" ]]; then
+            echo "Manual ref ${MANUAL_REF} must equal ${expected_tag}" >&2
+            exit 1
+          fi
+
+          grep -Eq "^## \[$project_version\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$" CHANGELOG.md
+          git merge-base --is-ancestor v0.3.4 HEAD
+          git merge-base --is-ancestor HEAD "origin/$DEFAULT_BRANCH"
+          elixir scripts/release-notes.exs "$expected_tag" > /dev/null
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "version=$project_version" >> "$GITHUB_OUTPUT"
+
+  validate:
+    name: Validate exact release commit
+    needs: resolve
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.resolve.outputs.sha }}
+
+  publish:
+    name: Publish Hex package
+    needs: [resolve, validate]
+    runs-on: ubuntu-24.04
+    env:
+      PROJECT_VERSION: ${{ needs.resolve.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          fetch-depth: 0
+
+      - name: Reject a moved release tag
+        run: test "$(git rev-parse "refs/tags/v${PROJECT_VERSION}^{commit}")" = "$(git rev-parse HEAD)"
 
       - name: Set up Elixir and OTP
         uses: erlef/setup-beam@v1
         with:
           elixir-version: "1.20.2"
-          otp-version: "29.0.4"
+          otp-version: "29.0.5"
+
+      - name: Set up supported Rust floor
+        uses: dtolnay/rust-toolchain@1.91.0
+        with:
+          components: rustfmt, clippy
 
       - name: Install Hex and Rebar
         run: |
@@ -61,20 +133,6 @@ jobs:
 
       - name: Install dependencies
         run: mix deps.get
-
-      - name: Extract project version
-        shell: bash
-        run: |
-          # Avoid custom Mix tasks here because they compile the project and can
-          # trigger a host NIF build before native packages are installed.
-          project_version="$(awk -F'"' '/^  @version "/ { print $2; exit }' mix.exs)"
-
-          if [[ -z "$project_version" ]]; then
-            echo "Failed to resolve project version" >&2
-            exit 1
-          fi
-
-          echo "PROJECT_VERSION=$project_version" >> "$GITHUB_ENV"
 
       - name: Verify macOS host release assets exist
         shell: bash
@@ -138,8 +196,10 @@ jobs:
           MIX_ENV: prod
         run: mix rustler_precompiled.download EmergeSkia.Native --all --print
 
-      - name: Verify Hex package contents
-        run: mix hex.build --unpack
+      - name: Verify Hex package contains generated checksums
+        run: |
+          mix hex.build --unpack --output "$RUNNER_TEMP/publish-package"
+          test -s "$RUNNER_TEMP/publish-package/checksum-Elixir.EmergeSkia.Native.exs"
 
       - name: Publish package and docs to Hex
         env:

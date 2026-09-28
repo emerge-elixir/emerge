@@ -1140,12 +1140,36 @@ pub struct FocusOnMountTarget {
 /// - `focus_on_mount` for one-shot mount-time focus requests
 #[derive(Default)]
 pub struct RegistryRebuildPayload {
+    /// Latest event request fence covered by this successful tree output.
+    pub listener_barrier: Option<crate::actors::ListenerBarrier>,
+    /// Eligible mounts with current native focus-reveal geometry, including old
+    /// revisions whose one-shot request may still be waiting in a channel.
+    pub mount_focus_targets: Option<std::sync::Arc<HashMap<NodeId, FocusOnMountTarget>>>,
     pub base_registry: registry_builder::Registry,
     pub text_inputs: HashMap<NodeId, TextInputState>,
     pub sliders: HashMap<NodeId, SliderState>,
     pub scrollbars: HashMap<(NodeId, ScrollbarAxis), ScrollbarNode>,
     pub focused_id: Option<NodeId>,
     pub focus_on_mount: Option<FocusOnMountTarget>,
+}
+impl RegistryRebuildPayload {
+    pub(crate) fn carry_mount_focus(
+        &mut self,
+        pending: Option<FocusOnMountTarget>,
+        previous_focused: Option<NodeId>,
+    ) {
+        if self.focus_on_mount.is_none()
+            && (self.focused_id.is_none() || self.focused_id == previous_focused)
+        {
+            self.focus_on_mount = pending.and_then(|pending| {
+                self.mount_focus_targets
+                    .as_ref()?
+                    .get(&pending.element_id)
+                    .filter(|current| current.mounted_at_revision == pending.mounted_at_revision)
+                    .cloned()
+            });
+        }
+    }
 }
 
 fn text_input_state(
@@ -1385,7 +1409,7 @@ pub(crate) fn send_running_message_in_env(env: Env<'_>, pid: LocalPid) {
     let _ = env.send(&pid, (emerge_viewport_renderer(), heartbeat()));
 }
 
-#[cfg(all(feature = "wayland", target_os = "linux"))]
+#[cfg(all(feature = "wayland-core", target_os = "linux"))]
 pub(crate) fn send_close_message(pid: LocalPid) {
     let mut env = OwnedEnv::new();
     let _ = env.send_and_clear(&pid, |inner_env| {
@@ -1393,7 +1417,7 @@ pub(crate) fn send_close_message(pid: LocalPid) {
     });
 }
 
-#[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
+#[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
 pub(crate) fn send_log_event(pid: LocalPid, level: NativeLogLevel, source: &str, message: &str) {
     let mut env = OwnedEnv::new();
     let _ = env.send_and_clear(&pid, |inner_env| {
@@ -1432,6 +1456,7 @@ rustler::atoms! {
     mouse_leave,
     mouse_move,
     window_close_requested,
+    debug,
     info,
     warning,
     error,
@@ -1509,9 +1534,10 @@ pub(crate) fn mouse_move_atom() -> Atom {
     mouse_move()
 }
 
-#[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
+#[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
 fn log_level_atom(level: NativeLogLevel) -> Atom {
     match level {
+        NativeLogLevel::Debug => debug(),
         NativeLogLevel::Info => info(),
         NativeLogLevel::Warning => warning(),
         NativeLogLevel::Error => error(),

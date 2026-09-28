@@ -259,7 +259,7 @@ fn test_refresh_with_frame_attrs_applies_mouse_over_styles() {
     layout_and_refresh_default(&mut tree, Constraint::new(300.0, 200.0), 1.0);
     tree.set_mouse_over_active(&root_id, true);
 
-    refresh_default_with_frame_attrs(&mut tree, 1.0, None, None);
+    refresh_default_with_frame_attrs(&mut tree, 1.0, None, None).unwrap();
 
     let updated = tree.get(&root_id).unwrap();
     assert_eq!(

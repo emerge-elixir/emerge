@@ -66,6 +66,7 @@ defmodule Emerge.Engine.AttrCodec do
     video_target: 62,
     svg_color: 63,
     svg_expected: 64,
+    animate_change: 84,
     animate: 65,
     animate_enter: 66,
     animate_exit: 67,
@@ -92,6 +93,7 @@ defmodule Emerge.Engine.AttrCodec do
     attrs
     |> TreeAttrs.strip_runtime_attrs()
     |> Nearby.strip_nearby_attrs()
+    |> AttrValidation.validate_change_attrs!()
     |> Map.to_list()
     |> Enum.map(fn {key, value} ->
       tag = Map.fetch!(@type_tag, key)
@@ -110,7 +112,7 @@ defmodule Emerge.Engine.AttrCodec do
   @spec decode_attrs(binary()) :: map()
   def decode_attrs(<<count::unsigned-16, rest::binary>>) do
     {attrs, <<>>} = decode_pairs(rest, count, [])
-    Map.new(attrs)
+    attrs |> Map.new() |> AttrValidation.validate_change_attrs!()
   end
 
   defp decode_pairs(rest, 0, acc), do: {Enum.reverse(acc), rest}
@@ -139,7 +141,7 @@ defmodule Emerge.Engine.AttrCodec do
   defp encode_value(:background, value), do: encode_background(value)
   defp encode_value(:border_radius, value), do: encode_radius(value)
   defp encode_value(:border_width, value), do: encode_border_width(value)
-  defp encode_value(:border_color, value), do: encode_color(value)
+  defp encode_value(:border_color, value), do: encode_color(value, :border_color)
   defp encode_value(:font_size, value), do: encode_f64(value)
   defp encode_value(:font_color, value), do: encode_color(value)
   defp encode_value(:font, value), do: encode_font(value)
@@ -180,9 +182,10 @@ defmodule Emerge.Engine.AttrCodec do
   defp encode_value(:image_src, value), do: encode_image_src(value)
   defp encode_value(:image_fit, value), do: encode_image_fit(value)
   defp encode_value(:image_size, value), do: encode_image_size(value)
-  defp encode_value(:svg_color, value), do: encode_color(value)
+  defp encode_value(:svg_color, value), do: encode_color(value, :svg_color)
   defp encode_value(:svg_expected, value), do: encode_bool(value)
   defp encode_value(:video_target, value), do: encode_string(value)
+  defp encode_value(:animate_change, value), do: encode_change(value)
   defp encode_value(:animate, value), do: encode_animation(value, :animate)
   defp encode_value(:animate_enter, value), do: encode_animation(value, :animate_enter)
   defp encode_value(:animate_exit, value), do: encode_animation(value, :animate_exit)
@@ -258,6 +261,7 @@ defmodule Emerge.Engine.AttrCodec do
   defp decode_value(:svg_color, rest), do: decode_color(rest)
   defp decode_value(:svg_expected, rest), do: decode_bool(rest)
   defp decode_value(:video_target, rest), do: decode_string(rest)
+  defp decode_value(:animate_change, rest), do: decode_change(rest)
   defp decode_value(:animate, rest), do: decode_animation(rest, :animate)
   defp decode_value(:animate_enter, rest), do: decode_animation(rest, :animate_enter)
   defp decode_value(:animate_exit, rest), do: decode_animation(rest, :animate_exit)
@@ -291,6 +295,39 @@ defmodule Emerge.Engine.AttrCodec do
   defp decode_state_style(<<len::unsigned-32, rest::binary>>) do
     <<attrs_bin::binary-size(^len), rest::binary>> = rest
     {decode_attrs(attrs_bin), rest}
+  end
+
+  defp encode_change(value) do
+    policies = AttrValidation.normalize_change_policies!(value)
+
+    entries =
+      Enum.map(Enum.sort(policies), fn {field, %{duration: duration, curve: curve}} ->
+        [encode_atom(field), encode_f64(duration), encode_atom(curve)]
+      end)
+
+    payload = [<<map_size(policies)::unsigned-16>>, entries]
+    [<<IO.iodata_length(payload)::unsigned-32>>, payload]
+  end
+
+  defp decode_change(<<len::unsigned-32, payload::binary-size(len), rest::binary>>) do
+    <<count::unsigned-16, entries::binary>> = payload
+    {policies, <<>>} = decode_change_entries(entries, count, %{})
+    {AttrValidation.normalize_change_policies!(policies), rest}
+  end
+
+  defp decode_change_entries(rest, 0, acc), do: {acc, rest}
+
+  defp decode_change_entries(rest, count, acc) do
+    {field, rest} = decode_atom(rest)
+    {duration, rest} = decode_f64(rest)
+    {curve, rest} = decode_atom(rest)
+    if Map.has_key?(acc, field), do: raise(ArgumentError, "duplicate change field")
+
+    decode_change_entries(
+      rest,
+      count - 1,
+      Map.put(acc, field, %{duration: duration, curve: curve})
+    )
   end
 
   defp encode_animation(value, owner) do
@@ -682,8 +719,14 @@ defmodule Emerge.Engine.AttrCodec do
                              color: color,
                              inset: inset
                            } ->
-        <<encode_f64(ox)::binary, encode_f64(oy)::binary, encode_f64(blur)::binary,
-          encode_f64(size)::binary, encode_color(color)::binary, encode_bool(inset)::binary>>
+        [
+          encode_f64(ox),
+          encode_f64(oy),
+          encode_f64(blur),
+          encode_f64(size),
+          encode_color(color),
+          encode_bool(inset)
+        ]
       end)
 
     [<<count::unsigned-8>> | encoded] |> IO.iodata_to_binary()
@@ -758,30 +801,47 @@ defmodule Emerge.Engine.AttrCodec do
   defp decode_text_align(<<1, rest::binary>>), do: {:center, rest}
   defp decode_text_align(<<2, rest::binary>>), do: {:right, rest}
 
-  defp encode_color({:color_rgb, {r, g, b}}),
-    do: <<0, r::unsigned-8, g::unsigned-8, b::unsigned-8>>
+  defp encode_color(color, key \\ :font_color) do
+    AttrValidation.normalize_decorative_value!("color encoding", key, color)
 
-  defp encode_color({:color_rgba, {r, g, b, a}}),
-    do: <<1, r::unsigned-8, g::unsigned-8, b::unsigned-8, a::unsigned-8>>
+    case color do
+      {:color_gradient, colors, angle} ->
+        [
+          <<3, length(colors)::unsigned-32>>,
+          Enum.map(colors, &encode_solid_color/1),
+          encode_f64(angle)
+        ]
 
-  defp encode_color(color) when is_atom(color), do: <<2, encode_atom(color)::binary>>
-
-  defp decode_color(<<0, r::unsigned-8, g::unsigned-8, b::unsigned-8, rest::binary>>),
-    do: {{:color_rgb, {r, g, b}}, rest}
-
-  defp decode_color(
-         <<1, r::unsigned-8, g::unsigned-8, b::unsigned-8, a::unsigned-8, rest::binary>>
-       ),
-       do: {{:color_rgba, {r, g, b, a}}, rest}
-
-  defp decode_color(<<2, rest::binary>>) do
-    {atom, rest} = decode_atom(rest)
-    {atom, rest}
+      solid ->
+        encode_solid_color(solid)
+    end
   end
 
-  defp encode_background({:gradient, from, to, angle}) do
-    <<1, encode_color(from)::binary, encode_color(to)::binary, encode_f64(angle)::binary>>
+  defp encode_solid_color({:color_rgb, {r, g, b}}), do: <<0, r, g, b>>
+  defp encode_solid_color({:color_rgba, {r, g, b, a}}), do: <<1, r, g, b, a>>
+  defp encode_solid_color(color) when is_atom(color), do: <<2, encode_atom(color)::binary>>
+
+  defp decode_color(<<3, count::unsigned-32, rest::binary>>)
+       when count >= 2 and byte_size(rest) >= 8 and count <= div(byte_size(rest) - 8, 3) do
+    {colors, rest} = decode_gradient_colors(rest, count, [])
+    {angle, rest} = decode_f64(rest)
+    {Emerge.UI.Color.gradient(colors, angle), rest}
+  rescue
+    error in [FunctionClauseError, MatchError] ->
+      reraise ArgumentError,
+              [message: "invalid gradient encoding: #{Exception.message(error)}"],
+              __STACKTRACE__
   end
+
+  defp decode_color(rest), do: decode_solid_color(rest)
+
+  defp decode_solid_color(<<0, r, g, b, rest::binary>>), do: {{:color_rgb, {r, g, b}}, rest}
+
+  defp decode_solid_color(<<1, r, g, b, a, rest::binary>>),
+    do: {{:color_rgba, {r, g, b, a}}, rest}
+
+  defp decode_solid_color(<<2, rest::binary>>), do: decode_atom(rest)
+  defp decode_solid_color(_), do: raise(ArgumentError, "invalid solid color encoding")
 
   defp encode_background({:image, source, fit}) do
     <<2, encode_image_source(source)::binary, encode_image_fit(fit)::binary>>
@@ -792,7 +852,8 @@ defmodule Emerge.Engine.AttrCodec do
   end
 
   defp encode_background(color) do
-    <<0, encode_color(color)::binary>>
+    AttrValidation.normalize_decorative_value!("background", :background, color)
+    [<<0>>, encode_color(color)]
   end
 
   defp decode_background(<<0, rest::binary>>) do
@@ -800,17 +861,21 @@ defmodule Emerge.Engine.AttrCodec do
     {color, rest}
   end
 
-  defp decode_background(<<1, rest::binary>>) do
-    {from, rest} = decode_color(rest)
-    {to, rest} = decode_color(rest)
-    {angle, rest} = decode_f64(rest)
-    {{:gradient, from, to, angle}, rest}
-  end
-
   defp decode_background(<<2, rest::binary>>) do
     {source, rest} = decode_image_source(rest)
     {fit, rest} = decode_image_fit(rest)
     {{:image, source, fit}, rest}
+  end
+
+  defp decode_background(_invalid) do
+    raise ArgumentError, "invalid background encoding"
+  end
+
+  defp decode_gradient_colors(rest, 0, colors), do: {Enum.reverse(colors), rest}
+
+  defp decode_gradient_colors(rest, count, colors) do
+    {color, rest} = decode_solid_color(rest)
+    decode_gradient_colors(rest, count - 1, [color | colors])
   end
 
   defp encode_image_source({:id, id}) when is_binary(id), do: <<0, encode_string(id)::binary>>

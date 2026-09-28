@@ -1,5 +1,4 @@
 use super::super::color::{color_to_u32, named_color};
-use super::*;
 
 #[test]
 fn test_named_colors() {
@@ -31,7 +30,7 @@ fn test_named_colors() {
 #[test]
 fn test_color_to_u32() {
     // Test RGB color
-    let rgb = Color::Rgb {
+    let rgb = crate::tree::attrs::SolidColor::Rgb {
         r: 255,
         g: 128,
         b: 64,
@@ -39,7 +38,7 @@ fn test_color_to_u32() {
     assert_eq!(color_to_u32(&rgb), 0xFF8040FF);
 
     // Test RGBA color
-    let rgba = Color::Rgba {
+    let rgba = crate::tree::attrs::SolidColor::Rgba {
         r: 255,
         g: 128,
         b: 64,
@@ -48,6 +47,6 @@ fn test_color_to_u32() {
     assert_eq!(color_to_u32(&rgba), 0xFF8040C8);
 
     // Test named color
-    let named = Color::Named("cyan".to_string());
+    let named = crate::tree::attrs::SolidColor::Named("cyan".to_string());
     assert_eq!(color_to_u32(&named), 0x00FFFFFF);
 }

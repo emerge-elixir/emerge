@@ -64,13 +64,14 @@ AppKit lifecycle correctly.
 
 ## Backend Selection
 
-macOS supports:
+macOS uses the shared renderer selection option:
 
-- `macos_backend: :auto`
-- `macos_backend: :metal`
-- `macos_backend: :raster`
+- `rendering_api: :auto`
+- `rendering_api: :metal`
+- `rendering_api: :raster`
 
-` :auto` prefers Metal and falls back to raster when Metal is unavailable.
+`:auto` prefers Metal and falls back to raster when Metal is unavailable.
+The old `macos_backend` option has been removed; use `rendering_api` instead.
 
 ## Assets And Fonts
 
@@ -85,8 +86,9 @@ That includes:
 - runtime max file size
 - preloaded custom fonts
 
-The host starts the shared asset worker and rerenders sessions when async asset
-state changes arrive.
+The host creates one asset runtime per session. Each session owns its worker,
+source policy, registered fonts, caches, generations, and diagnostics. Async
+asset changes rerender only the owning session.
 
 ## Input Model
 
@@ -114,10 +116,15 @@ commands.
 
 ## Unsupported For Now
 
-- video targets on macOS
+- DMA-BUF video targets on macOS
 - in-process macOS NIF window backend
 
-`EmergeSkia.video_target/2` intentionally returns an error for macOS.
+The macOS host accepts owned RGBA8888 binary frames through `Emerge.submit_video_frame/3`.
+Protocol version 15 carries cropped, packed pixels and their alpha mode; the host normalizes
+them to premultiplied RGBA and uses the shared CPU video renderer. Hidden targets discard frames.
+DMA-BUF import remains unsupported. Applications that also run a headless producer on macOS
+must compile with `config :emerge, load_macos_nif: true`; desktop-only applications can continue
+using the external host without loading the NIF.
 
 ## Validation
 

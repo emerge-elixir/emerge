@@ -20,7 +20,7 @@ use super::attrs::{Attrs, decode_attrs};
 use super::element::{Element, ElementKind, ElementTree, NearbyMounts, NearbySlot, NodeId};
 
 const MAGIC: &[u8] = b"EMRG";
-const VERSION: u8 = 7;
+const VERSION: u8 = 9;
 
 /// Error type for deserialization failures.
 #[derive(Debug, Clone)]

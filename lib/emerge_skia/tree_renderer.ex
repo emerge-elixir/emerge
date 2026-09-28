@@ -72,28 +72,22 @@ defmodule EmergeSkia.TreeRenderer do
   end
 
   defp render_offscreen(tree, opts, default_asset_timeout_ms, action, label) do
-    asset_config = Assets.normalize_asset_config!(opts)
+    asset_config = Assets.normalize_asset_config!(opts, decode_at_size: true)
     raster_opts = Options.normalize_raster_opts!(opts, default_asset_timeout_ms)
     transport = Transport.default()
 
-    case Assets.preload_font_assets(asset_config, transport) do
-      :ok ->
-        state = Emerge.Engine.diff_state_new()
-        {full_bin, _state, _assigned} = Emerge.Engine.encode_full(state, tree)
+    state = Emerge.Engine.diff_state_new()
+    {full_bin, _state, _assigned} = Emerge.Engine.encode_full(state, tree)
 
-        case apply(transport, action, [full_bin, raster_opts, asset_config]) do
-          binary when is_binary(binary) ->
-            binary
+    case apply(transport, action, [full_bin, raster_opts, asset_config]) do
+      binary when is_binary(binary) ->
+        binary
 
-          {:ok, binary} when is_binary(binary) ->
-            binary
-
-          {:error, reason} ->
-            raise "#{label} failed: #{reason}"
-        end
+      {:ok, binary} when is_binary(binary) ->
+        binary
 
       {:error, reason} ->
-        raise "#{label} failed: #{inspect(reason)}"
+        raise "#{label} failed: #{reason}"
     end
   end
 end

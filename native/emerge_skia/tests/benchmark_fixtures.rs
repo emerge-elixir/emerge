@@ -1,5 +1,6 @@
+use emerge_skia::tree::attrs::decode_attrs;
 use emerge_skia::tree::deserialize::decode_tree;
-use emerge_skia::tree::patch::decode_patches;
+use emerge_skia::tree::patch::{Patch, decode_patches};
 use std::path::{Path, PathBuf};
 
 #[test]
@@ -34,12 +35,18 @@ fn benchmark_fixtures_decode() {
     {
         let bytes = std::fs::read(&path)
             .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
-        decode_patches(&bytes).unwrap_or_else(|err| {
+        let patches = decode_patches(&bytes).unwrap_or_else(|err| {
             panic!(
                 "benchmark patch fixture {} does not decode: {err}",
                 path.display()
             )
         });
+        for patch in patches {
+            if let Patch::SetAttrs { attrs_raw, .. } = patch {
+                decode_attrs(&attrs_raw)
+                    .unwrap_or_else(|err| panic!("invalid attrs in {}: {err}", path.display()));
+            }
+        }
     }
 }
 

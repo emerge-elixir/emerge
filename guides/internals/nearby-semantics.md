@@ -92,6 +92,13 @@ Nearby root alignment uses the nearby root element's own `align_x` / `align_y`.
 
 Default nearby alignment is start/start (`left`, `top`).
 
+An `el` finalizes automatic dimensions from its resolved child before aligning
+that child or resolving nearby mounts. This applies to growth and shrinkage of
+responsive images. With no host padding/border or explicit opposite-axis size,
+a fill-width image and the same fill-width `in_front` image therefore share a
+frame, even when the host is centered. Nearby still uses the host border-box,
+not the normal child's padded content box.
+
 ## Clip And Scroll Semantics
 
 - nearby inherits ancestor clip lineage

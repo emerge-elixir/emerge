@@ -81,10 +81,13 @@ pub(super) fn content_rect(frame: Frame, attrs: &Attrs) -> (f32, f32, f32, f32) 
     (x, y, w, h)
 }
 
-/// Extract a uniform radius value from a BorderRadius, or 0.0 if per-corner.
-pub(super) fn border_radius_uniform(radius: Option<&BorderRadius>) -> f32 {
+/// Preserve independent corners for borders and shadow casting geometry.
+pub(super) fn border_radii(radius: Option<&BorderRadius>) -> [f32; 4] {
     match radius {
-        Some(BorderRadius::Uniform(value)) => *value as f32,
-        _ => 0.0,
+        Some(BorderRadius::Uniform(r)) => [*r as f32; 4],
+        Some(BorderRadius::Corners { tl, tr, br, bl }) => {
+            [*tl as f32, *tr as f32, *br as f32, *bl as f32]
+        }
+        None => [0.0; 4],
     }
 }

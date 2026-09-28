@@ -10,7 +10,7 @@
   "item_count": 100,
   "node_count": 706,
   "text_node_count": 102,
-  "full_emrg_bytes": 44295,
+  "full_emrg_bytes": 42569,
   "element_types": {
     "text": 102,
     "image": 200,
@@ -24,7 +24,7 @@
     "layout": 1309,
     "nearby": 1,
     "paint": 605,
-    "measure": 702
+    "measure": 602
   },
   "patches": {
     "noop": {
@@ -101,7 +101,7 @@
       ]
     },
     "insert_tail": {
-      "byte_size": 459,
+      "byte_size": 440,
       "expected_invalidation": "structure",
       "op_count": 1,
       "operation_counts": {

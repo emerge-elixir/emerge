@@ -16,8 +16,8 @@ defmodule Emerge.UI.Align do
   Alignment is visible when the parent has extra space on that axis.
 
   Alignment helpers position the element they are attached to inside its
-  parent. `el` is the main exception: child content inherits alignment from the
-  `el`.
+  parent. `el` also aligns its child content, and `paragraph` also aligns its
+  wrapped text lines.
 
   ## `el`
 
@@ -40,6 +40,24 @@ defmodule Emerge.UI.Align do
     el([align_right()], text("Child"))
   )
   ```
+
+  ## `paragraph`
+
+  On a paragraph, `center_x/0`, `align_right/0`, and `align_left/0` also align
+  each wrapped text line, including the last line. Alignment uses the content
+  width remaining after padding, borders, and floating children.
+
+  ```elixir
+  paragraph([width(fill()), center_x()], [
+    text("Each line of this paragraph is centered.")
+  ])
+  ```
+
+  An explicit `Font.center/0`, `Font.align_right/0`, or `Font.align_left/0` on
+  the paragraph overrides its line alignment without changing its placement.
+  For example, `center_x()` with `Font.align_left()` centers the paragraph box
+  but leaves its lines left-aligned. Inherited font alignment is used only when
+  the paragraph has neither an explicit font alignment nor a horizontal helper.
 
   ## `row`
 
@@ -103,7 +121,7 @@ defmodule Emerge.UI.Align do
   @type y_attr :: {:align_y, vertical_alignment()}
   @type t :: x_attr() | y_attr()
 
-  @doc "Center horizontally within the current layout parent."
+  @doc "Center horizontally within the current layout parent; on a paragraph, also center its text lines."
   @spec center_x() :: x_attr()
   def center_x, do: {:align_x, :center}
 
@@ -111,11 +129,11 @@ defmodule Emerge.UI.Align do
   @spec center_y() :: y_attr()
   def center_y, do: {:align_y, :center}
 
-  @doc "Align to the left within the current layout parent."
+  @doc "Align to the left within the current layout parent; on a paragraph, also left-align its text lines."
   @spec align_left() :: x_attr()
   def align_left, do: {:align_x, :left}
 
-  @doc "Align to the right within the current layout parent."
+  @doc "Align to the right within the current layout parent; on a paragraph, also right-align its text lines."
   @spec align_right() :: x_attr()
   def align_right, do: {:align_x, :right}
 

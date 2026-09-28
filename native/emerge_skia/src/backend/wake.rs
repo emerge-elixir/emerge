@@ -50,13 +50,22 @@ impl std::panic::RefUnwindSafe for BackendWakeHandle {}
 
 impl std::panic::UnwindSafe for BackendWakeHandle {}
 
-#[cfg_attr(not(all(feature = "wayland", target_os = "linux")), allow(dead_code))]
+#[cfg_attr(
+    not(all(feature = "wayland-core", target_os = "linux")),
+    allow(dead_code)
+)]
 pub(crate) struct WindowBackendStartupInfo {
     pub(crate) wake: BackendWakeHandle,
     pub(crate) prime_video_supported: bool,
+    pub(crate) prime_video_formats: Vec<String>,
+    #[cfg(feature = "vulkan")]
+    pub(crate) vulkan_device: Option<crate::backend::vulkan::VulkanRendererReport>,
 }
 
-#[cfg_attr(not(all(feature = "wayland", target_os = "linux")), allow(dead_code))]
+#[cfg_attr(
+    not(all(feature = "wayland-core", target_os = "linux")),
+    allow(dead_code)
+)]
 pub(crate) type WindowBackendStartupResult = Result<WindowBackendStartupInfo, String>;
 
 struct NoopWake;

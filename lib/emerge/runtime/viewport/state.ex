@@ -4,6 +4,11 @@ defmodule Emerge.Runtime.Viewport.State do
   @enforce_keys [:module]
   defstruct module: nil,
             renderer: nil,
+            lifecycle: nil,
+            lifecycle_supervisor: nil,
+            renderer_generation: nil,
+            retiring_renderer_generation: nil,
+            renderer_relay: nil,
             diff_state: nil,
             dirty?: false,
             flush_scheduled?: false,
@@ -17,6 +22,11 @@ defmodule Emerge.Runtime.Viewport.State do
   @type t :: %__MODULE__{
           module: module(),
           renderer: term() | nil,
+          lifecycle: pid() | nil,
+          lifecycle_supervisor: pid() | nil,
+          renderer_generation: reference() | nil,
+          retiring_renderer_generation: reference() | nil,
+          renderer_relay: pid() | nil,
           diff_state: Emerge.Engine.diff_state() | nil,
           dirty?: boolean(),
           flush_scheduled?: boolean(),

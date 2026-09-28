@@ -274,3 +274,92 @@ fn test_border_box_shadows_do_not_affect_layout() {
     assert_eq!(child_frame.width, 200.0);
     assert_eq!(child_frame.height, 100.0);
 }
+
+#[test]
+fn content_sized_el_reserves_fixed_child_border_box_not_descendant_content() {
+    for scale in [1.0, 1.5, 2.0] {
+        for kind in [ElementKind::Row, ElementKind::Column] {
+            for explicit_content in [false, true] {
+                for label in ["", "x", "content wider than the fixed child"] {
+                    for (child_width, child_height) in [(28.0, 28.0), (40.0, 18.0)] {
+                        let mut root = make_element("root", kind, fixed_box_attrs(300.0, 160.0));
+                        let mut wrapper = make_element(
+                            "wrapper",
+                            ElementKind::El,
+                            Attrs {
+                                width: explicit_content.then_some(Length::Content),
+                                height: explicit_content.then_some(Length::Content),
+                                padding: Some(Padding::Uniform(12.0)),
+                                border_width: Some(BorderWidth::Uniform(1.0)),
+                                ..Attrs::default()
+                            },
+                        );
+                        let mut child = make_element(
+                            "fixed_child",
+                            ElementKind::El,
+                            Attrs {
+                                align_x: Some(AlignX::Center),
+                                align_y: Some(AlignY::Center),
+                                border_width: Some(BorderWidth::Uniform(1.0)),
+                                ..fixed_box_attrs(child_width, child_height)
+                            },
+                        );
+                        let text = make_element("label", ElementKind::Text, text_attrs(label));
+                        let sibling =
+                            make_element("sibling", ElementKind::El, fixed_box_attrs(20.0, 20.0));
+                        let [root_id, wrapper_id, child_id, sibling_id] =
+                            [root.id, wrapper.id, child.id, sibling.id];
+                        root.children = vec![wrapper_id, sibling_id];
+                        wrapper.children = vec![child_id];
+                        child.children = vec![text.id];
+                        let mut tree = ElementTree::new();
+                        tree.set_root_id(root_id);
+                        [root, wrapper, child, text, sibling]
+                            .into_iter()
+                            .for_each(|element| tree.insert(element));
+
+                        // Also exercise a warm layout-cache pass. Text content must not change
+                        // the footprint of the fixed child (the todo's empty and checked states).
+                        for _ in 0..2 {
+                            layout_tree(
+                                &mut tree,
+                                Constraint::new(900.0, 600.0),
+                                scale,
+                                &MockTextMeasurer,
+                            );
+                            let wrapper = tree.get(&wrapper_id).unwrap().layout.frame.unwrap();
+                            let child = tree.get(&child_id).unwrap().layout.frame.unwrap();
+                            let sibling = tree.get(&sibling_id).unwrap().layout.frame.unwrap();
+                            let context = format!(
+                                "{kind:?} scale={scale} explicit_content={explicit_content} label={label:?}"
+                            );
+                            assert_eq!(
+                                wrapper.width,
+                                (child_width as f32 + 26.0) * scale,
+                                "{context}"
+                            );
+                            assert_eq!(
+                                wrapper.height,
+                                (child_height as f32 + 26.0) * scale,
+                                "{context}"
+                            );
+                            assert_eq!(child.width, child_width as f32 * scale, "{context}");
+                            assert_eq!(child.height, child_height as f32 * scale, "{context}");
+                            assert_eq!(child.x - wrapper.x, 13.0 * scale, "{context}");
+                            assert_eq!(child.y - wrapper.y, 13.0 * scale, "{context}");
+                            match kind {
+                                ElementKind::Row => {
+                                    assert_eq!(sibling.x, wrapper.x + wrapper.width, "{context}")
+                                }
+                                ElementKind::Column => {
+                                    assert_eq!(sibling.y, wrapper.y + wrapper.height, "{context}")
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

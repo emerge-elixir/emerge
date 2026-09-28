@@ -210,9 +210,10 @@ fn sampled_tree_for_case(
         &mut tree,
         case.constraint,
         1.0,
-        &runtime,
+        &mut runtime,
         start + Duration::from_millis(sample_ms),
-    );
+    )
+    .unwrap();
 
     tree
 }
@@ -297,8 +298,9 @@ fn sampled_rebuild_for_case(
         &mut tree,
         case.constraint,
         1.0,
-        &runtime,
+        &mut runtime,
         start + Duration::from_millis(sample_ms),
     )
+    .unwrap()
     .event_rebuild
 }

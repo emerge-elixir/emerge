@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+pub mod borders_cache;
+
 use emerge_skia::tree::animation::{AnimationCurve, AnimationRepeat, AnimationSpec};
 use emerge_skia::tree::attrs::{
     Attrs, Background, BorderRadius, BorderWidth, BoxShadow, Color, Length, Padding,
@@ -457,19 +459,26 @@ fn insert_paint_rich_scroll_row(tree: &mut ElementTree, index: usize) -> NodeId 
         height: Some(Length::Px(82.0)),
         padding: Some(Padding::Uniform(10.0)),
         spacing: Some(5.0),
-        background: Some(Background::Gradient {
-            from: Color::Rgb {
-                r: 246,
-                g: 249,
-                b: 255,
+        background: Some(Background::Color(
+            emerge_skia::tree::attrs::Color::Gradient {
+                colors: (vec![
+                    Color::Rgb {
+                        r: 246,
+                        g: 249,
+                        b: 255,
+                    },
+                    Color::Rgb {
+                        r: 232,
+                        g: 238 + hue,
+                        b: 248,
+                    },
+                ])
+                .into_iter()
+                .map(|c| c.try_into().expect("solid stop"))
+                .collect(),
+                angle: 18.0,
             },
-            to: Color::Rgb {
-                r: 232,
-                g: 238 + hue,
-                b: 248,
-            },
-            angle: 18.0,
-        }),
+        )),
         border_radius: Some(BorderRadius::Uniform(10.0)),
         border_width: Some(BorderWidth::Uniform(1.0)),
         border_color: Some(Color::Rgb {

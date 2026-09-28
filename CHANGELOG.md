@@ -1,5 +1,130 @@
 # Changelog
 
+## [0.4.0] - 2026-09-28
+
+Draft release notes; confirm the date when tagging. Changes below are relative to
+stable 0.3.4 and include the features introduced in 0.4.0-beta.1.
+
+See the [0.4 migration guide](guides/migrations/0.4.md) for upgrade examples.
+
+### Breaking changes
+
+- `render_to_pixels/2` and `render_to_png/2` now capture a running renderer's latest
+  retained frame instead of rendering a supplied tree. They return `{:ok, binary}`
+  or `{:error, reason}` rather than a binary.
+- Replace `macos_backend` with `rendering_api`. The `dispatch_mode` option was
+  removed. `backend_renderer` and `:gl` remain deprecated aliases, not removals.
+- Video submission now uses viewport-local atom targets and
+  `Emerge.submit_video_frame/3`. Raw PRIME submission, direct renderer connections,
+  and renderer-owned target handles were removed. Every normal viewport submission
+  return consumes the frame.
+- Runtime font loading is renderer-local: `EmergeSkia.load_font_file/5` now takes
+  the owning renderer as its first argument.
+- `EmergeSkia.stop/1` can return `{:error, reason}` when ownership-safe shutdown
+  cannot finish. Do not treat an error as successful cleanup or reuse uncertain resources.
+- `Background.gradient/2,3` and raw `{:gradient, from, to, angle}` attributes were
+  removed. Use `Background.color(gradient([from, to], angle))` with
+  `Emerge.UI.Color.gradient/1,2` instead.
+- Animated width and height no longer accept `min`/`max` expressions, including
+  as sources of change transitions. These expressions remain available for static layout.
+
+### Added
+
+- Unified `rendering_api` selection across macOS, Wayland, DRM, and headless
+  renderers. Wayland and DRM gained raster presentation; Vulkan is available when
+  compiled for Wayland, DRM, or headless PRIME output.
+- Headless binary and Linux DMA-BUF PRIME output, delivered directly to a configured
+  process as `%VideoInterop.Frame{}` values. Packed BW1 and Gray2 output supports
+  configurable BW1 polarity and deterministic Atkinson dithering that protects
+  crisp text, borders, and SVG content.
+- Viewport-local `video(attrs, target)` elements for owned binary and leased
+  DMA-BUF frames. Hidden targets consume and drop frames; visible targets retain
+  only the latest frame. Vulkan composition supports NV12 and XRGB8888 DMA-BUF
+  streams with explicit synchronization and supported linear/non-linear layouts.
+- Owned RGBA8888 binary video frames on macOS. DMA-BUF/PRIME input remains unsupported.
+- DRM display discovery with `EmergeSkia.drm_outputs/1` and explicit display/mode
+  selection with `drm_output` and `drm_mode`. Multiple viewports can use separate
+  displays on the same GPU.
+- Native renderer status and shutdown timeouts through `EmergeSkia.renderer_status/1`
+  and `EmergeSkia.stop/2`. Viewports can recover from an unexpectedly stopped native
+  renderer after safe cleanup without losing their callback PID or state.
+- `Emerge.UI.Animation.change/3` animates retained attribute changes from the
+  current presentation, for example
+  `Animation.change([width(fill()), height(px(60))], 300, :ease_out)`.
+  Explicit and change animations support pixel, content, fill, and weighted-fill
+  dimensions. Content-size transitions also respond to text, child, and asset
+  metric changes without changing the `content()` declaration.
+- `Emerge.UI.Color.gradient/1,2` creates evenly spaced multi-color gradients for
+  backgrounds, text, borders, shadows, and SVG tint. Animated solid endpoints can
+  transition to gradients; gradient endpoints must have matching stop counts.
+- Configurable image/SVG caching, target-sized image decoding, and asset-memory
+  diagnostics. The default pixel cache is 256 entries / 256 MiB per renderer;
+  parsed SVG caching has separate limits. SVG support is also included in embedded builds.
+- Bundled JetBrains Mono NL v2.304 regular, bold, italic, and bold italic fonts
+  under SIL OFL 1.1. Select `"monospace"`, `"JetBrains Mono NL"`, or `"JetBrains Mono"`
+  with `Font.family/1`; Inter remains the default proportional font.
+- `EmergeSkia.renderer_info/1` and expanded renderer, cache, asset, and video statistics.
+- A per-backend `compiled_backends` GPU API matrix, such as `[drm: [:vulkan]]`
+  or `[drm: :all]`. Expanded release-build profiles include minimal raster,
+  combined OpenGL/Vulkan, and Vulkan-only variants for x86_64/AArch64 GNU Linux;
+  ARMv7 hard-float GNU, x86_64 musl, and RISC-V64 GNU have raster and DRM/headless
+  OpenGL profiles.
+
+### Changed
+
+- Renderers can use independent asset roots, fonts, and cache limits without
+  affecting each other when started, reconfigured, or stopped.
+- **Visual change:** `Border.shadow` and `Border.glow` paint the full box-shaped
+  shadow behind backgrounds and content. Transparent interiors reveal the shadow;
+  opaque backgrounds cover it. This also applies to inline paragraph wrappers;
+  inset shadows are unchanged.
+- Pending images reserve their layout slot without a loading indicator for the
+  first 100 ms. Slower loads show a small centered three-dot indicator instead
+  of a full-slot shimmer; ready images and errors appear immediately.
+- Raised the default renderer cache creation budget from 16 to 64 payloads per
+  frame. Total/per-entry byte limits and cache admission policy are unchanged.
+- Renderer statistics use schema version 25. DRM timing field
+  `gpu_queue_completion` was replaced by `gpu_render_elapsed`.
+- Updated the VideoInterop dependency minimum to 0.1.2. Source builds require
+  Rust 1.91 or newer.
+
+### Fixed
+
+- Fixed stuck text selections and slider drags, delayed or misdirected input during
+  UI updates, and touch-scrolling glitches.
+- Improved renderer responsiveness and shutdown during heavy UI updates, and
+  recovery from temporary rendering failures that could leave headless output frozen.
+- Fixed animation jumps, unexpected restarts, and completion issues when content
+  or layout changes, including interrupted and exit animations.
+- Fixed stale images and rendered content after asset replacement, text changes,
+  scrolling, animation, or cache resets.
+- Images and SVGs preserve aspect ratio when one dimension is fixed or fill-based
+  and the other is automatic, and align correctly with `in_front` overlays.
+- Fixed content-sized containers wrapping fixed-size children and sizing errors
+  after slider updates.
+- Fixed centered text after content changes, alignment of wrapped paragraph lines,
+  and excessive spacing in highlighted code containing zero-width anchors.
+- Fixed paragraph backgrounds, borders, shadows, and glow across wrapped lines,
+  including rounded corners and border/padding spacing.
+- Fixed the bundled Inter Bold Italic font and SVG gradient transparency.
+- Fixed video-only Wayland scenes not refreshing and expanded OpenGL video
+  compatibility with supported non-linear DMA-BUF layouts.
+- Fixed a DRM buffer-reuse bug that could display stale frames and retain memory.
+- Fixed source builds with newer Nerves toolchains and musl, and added automatic
+  MangoPi RISC-V64 target detection.
+
+### Known limitations
+
+- Gray8 headless output remains outside the stable 0.4 output contract. Gray4
+  output is unsupported.
+- macOS does not support retained-frame capture, `renderer_status/1`, or `stop/2`.
+- Automatic renderer recovery does not cover GPU hangs or all device failures;
+  some failures require restarting the BEAM process. Separate DRM displays do not
+  have independent input-device routing.
+- Hardware compatibility and constrained-device performance testing remain ongoing;
+  a precompiled artifact does not guarantee a board's GPU compatibility.
+- Image file-size and cache limits do not cap temporary memory use during decoding.
+
 ## [0.3.4] - 2026-07-31
 
 ### Fixed

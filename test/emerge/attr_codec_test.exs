@@ -22,7 +22,7 @@ defmodule Emerge.Engine.AttrCodecTest do
       align_y: :bottom,
       scrollbar_y: true,
       scrollbar_x: false,
-      background: {:gradient, {:color_rgb, {10, 20, 30}}, {:color_rgb, {40, 50, 60}}, 45},
+      background: gradient([{:color_rgb, {10, 20, 30}}, {:color_rgb, {40, 50, 60}}], 45),
       border_radius: {2, 3, 4, 5},
       border_width: 1,
       border_color: {:color_rgba, {1, 2, 3, 255}},
@@ -426,17 +426,17 @@ defmodule Emerge.Engine.AttrCodecTest do
     assert normalize_attrs(decoded) == normalize_attrs(attrs)
   end
 
-  test "animate encoding rejects incompatible keyframes" do
-    assert_raise ArgumentError, ~r/same length variant/, fn ->
-      AttrCodec.encode_attrs(%{
-        animate: %{
-          keyframes: [%{width: :fill}, %{width: {:px, 120}}],
-          duration: 200,
-          curve: :linear,
-          repeat: :once
-        }
-      })
-    end
+  test "animate encoding accepts mixed length keyframes" do
+    attrs = %{
+      animate: %{
+        keyframes: [%{width: :fill}, %{width: {:px, 120}}],
+        duration: 200,
+        curve: :linear,
+        repeat: :once
+      }
+    }
+
+    assert attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs() == attrs
   end
 
   test "animate_exit encoding rejects non-once repeats" do

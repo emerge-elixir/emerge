@@ -10,8 +10,9 @@ column([spacing(16), padding(12), Background.color(color(:slate, 900)), Border.r
       Font.color(color(:slate, 50))
     ],
     column([spacing(8)], [
-      el([Font.semi_bold(), Font.size(20)], text("Release notes")),
-      el([Font.color(color(:slate, 300))], text("Design system updated"))
+      el([Font.bold(), Font.size(20)], text("Release notes")),
+      el([Font.regular(), Font.color(color(:slate, 300))], text("Design system updated")),
+      el([Font.italic(), Font.color(color(:slate, 300))], text("Beta"))
     ])
   ),
   el(
