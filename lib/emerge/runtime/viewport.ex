@@ -42,6 +42,7 @@ defmodule Emerge.Runtime.Viewport do
   | `otp_app` | inferred | Application whose `priv/` directory contains assets |
   | `title` | `"Emerge"` | Window title |
   | `width`, `height` | `800`, `600` | Initial window size or fixed headless size |
+  | `always_on_top` | `false` | macOS only: keep the window above other windows |
   | `backend` | platform default | `:macos`, `:wayland`, `:drm`, or `:headless` |
   | `rendering_api` | `:auto` | `:metal`, `:opengl`, `:raster`, or `:vulkan` where supported |
   | `assets` | restrictive defaults | Fonts, image paths, raster decode, and cache limits |

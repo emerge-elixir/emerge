@@ -80,6 +80,10 @@ defmodule EmergeSkia.Options do
       title: Keyword.get(opts, :title, "Emerge"),
       width: Keyword.get(opts, :width, 800),
       height: Keyword.get(opts, :height, 600),
+      always_on_top:
+        opts
+        |> Keyword.get(:always_on_top, false)
+        |> normalize_boolean!(":always_on_top"),
       drm_card: normalize_optional_string(Keyword.get(opts, :drm_card)),
       drm_output: drm_output,
       drm_mode: drm_mode,

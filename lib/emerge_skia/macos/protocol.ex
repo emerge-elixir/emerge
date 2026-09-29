@@ -4,7 +4,7 @@ defmodule EmergeSkia.Macos.Protocol do
   import Bitwise
 
   @protocol_name "emerge_skia_macos"
-  @protocol_version 15
+  @protocol_version 16
 
   @log_level_debug 0
   @log_level_info 1
@@ -152,6 +152,7 @@ defmodule EmergeSkia.Macos.Protocol do
         title,
         width,
         height,
+        always_on_top,
         scroll_line_pixels,
         renderer_stats_log,
         renderer_cache,
@@ -163,10 +164,11 @@ defmodule EmergeSkia.Macos.Protocol do
     asset_payload = encode_asset_config(asset_config)
     fonts = Map.fetch!(asset_config, :fonts)
     renderer_stats_log = if renderer_stats_log, do: 1, else: 0
+    always_on_top = if always_on_top, do: 1, else: 0
 
     <<byte_size(title)::unsigned-big-32, title::binary, width::unsigned-big-32,
-      height::unsigned-big-32, scroll_line_pixels::float-big-32, renderer_stats_log,
-      encode_renderer_cache_config(renderer_cache)::binary,
+      height::unsigned-big-32, always_on_top, scroll_line_pixels::float-big-32,
+      renderer_stats_log, encode_renderer_cache_config(renderer_cache)::binary,
       encode_rendering_api_tag(rendering_api), asset_payload::binary,
       encode_fonts(fonts, priv_dir)::binary>>
   end

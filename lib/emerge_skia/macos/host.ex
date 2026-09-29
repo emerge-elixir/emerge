@@ -276,6 +276,7 @@ defmodule EmergeSkia.Macos.Host do
     title = Map.fetch!(native_opts, :title)
     width = Map.fetch!(native_opts, :width)
     height = Map.fetch!(native_opts, :height)
+    always_on_top = Map.fetch!(native_opts, :always_on_top)
     scroll_line_pixels = Map.fetch!(native_opts, :scroll_line_pixels)
     renderer_stats_log = Map.fetch!(native_opts, :renderer_stats_log)
     renderer_cache = Map.fetch!(native_opts, :renderer_cache)
@@ -291,6 +292,7 @@ defmodule EmergeSkia.Macos.Host do
              title,
              width,
              height,
+             always_on_top,
              scroll_line_pixels,
              renderer_stats_log,
              renderer_cache,

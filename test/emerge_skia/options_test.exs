@@ -256,6 +256,15 @@ defmodule EmergeSkia.OptionsTest do
     end
   end
 
+  test "build_start_native_opts! normalizes always_on_top" do
+    assert %{always_on_top: false} = Options.build_start_native_opts!([])
+    assert %{always_on_top: true} = Options.build_start_native_opts!(always_on_top: true)
+
+    assert_raise ArgumentError, ~r/:always_on_top must be a boolean/, fn ->
+      Options.build_start_native_opts!(always_on_top: :yes)
+    end
+  end
+
   test "build_start_native_opts! normalizes scroll_line_pixels" do
     assert %{scroll_line_pixels: 45.0} =
              Options.build_start_native_opts!(scroll_line_pixels: 45)
