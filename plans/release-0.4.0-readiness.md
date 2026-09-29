@@ -1,18 +1,19 @@
 # Emerge 0.4.0 release readiness
 
-Updated: 2026-09-28 (UTC).
+Updated: 2026-09-29 (UTC).
 Baseline: `976e0585f08ded95e8a7e2444883317f9ed13c9e`, `headless-backend`, followed
 by the local release-preparation commit sequence described below.
 
-**Do not tag yet.** The known repository defects are fixed locally. Final pushed
-CI/artifact qualification, default-branch integration, release scope/approval,
-and the final release date remain outstanding. Preparation commits were requested
-separately after validation; nothing was pushed, merged, tagged, or published.
-Hardware was not exercised.
+**Publication is blocked by the existing tag's draft notes.** Preparation has been
+merged into `main` at `2d7d60d`, and `v0.4.0` points there. Source validation and
+all artifact builds passed; the publication guard correctly rejected the draft
+changelog. The notes are finalized locally below, but tag recovery needs explicit
+maintainer approval after the correction reaches `main`. No public GitHub/Hex
+0.4.0 release was found. Hardware was not exercised in this preparation pass.
 
 This record supersedes the September 1 release audits; those are historical,
-not acceptance for this candidate. Local fixes are not evidence that the new
-workflow has run successfully on GitHub or on macOS.
+not acceptance for this candidate. Remote validation evidence is recorded below;
+hardware qualification and final-consumer acceptance remain separate gates.
 
 ## Verified baseline (original audit)
 
@@ -52,7 +53,8 @@ workflow has run successfully on GitHub or on macOS.
   are unchanged.
 - [x] Consolidate user-facing release notes since stable 0.3.4, preserve older
   history, use one sentence for input fixes, and omit the rejected protocol/
-  coordinated-upgrade bullet. The date and draft notice are intentionally pending.
+  coordinated-upgrade bullet. The date/draft notice were initially left pending;
+  see the September 29 finalization below.
 - [x] Correct macOS video support in `README.md`, `lib/emerge_skia.ex`, and the
   migration guide: owned single-plane RGBA8888 binary frames, implicit sync,
   premultiplied/straight/opaque alpha; no DMA-BUF/PRIME or retained capture.
@@ -168,23 +170,48 @@ assertions succeeded and it exited zero. Elixir warns on OTP 28 without
   compatible Hex archive: 564 tests/doctests pass, including the exact-output
   consumer test. `./ci-tests.sh all` and Actionlint also pass. Logs:
   `/tmp/emerge-ci-minimum-fix/` (ephemeral).
-- [ ] Rerun the updated GitHub minimum-version job before accepting the release.
+- [x] The updated GitHub minimum-version job passed in the main/tag artifact runs
+  linked below; a corrected release SHA still requires fresh validation.
 
-## Still required before tagging/publication
+### Tagged release blocked by draft notes — 2026-09-29
 
-- [ ] Confirm actual release date and remove the `CHANGELOG.md` draft notice.
-  `scripts/release-notes.exs` deliberately refuses draft/undated/mismatched notes.
+- [x] Main artifact dry-run [36492130475](https://github.com/emerge-elixir/emerge/actions/runs/36492130475)
+  passed at `2d7d60d`.
+- [x] Tag run [36520256069](https://github.com/emerge-elixir/emerge/actions/runs/36520256069)
+  passed its four source-validation jobs and 24 artifact builds. Its only failed
+  step was `Prepare release notes`, before any release creation/upload step.
+- [x] Finalize local `CHANGELOG.md`: date 2026-09-29, remove the draft notice,
+  preserve the user-facing notes and all stable history.
+- [x] Validate the corrected notes with `elixir scripts/release-notes.exs v0.4.0`,
+  preserve all 0.3.4-and-earlier changelog history, and pass `./ci-tests.sh all`:
+  564 Elixir tests/doctests plus 1,482 Rust unit and 14 integration tests.
+  An initial test-only run hit a mismatched local native-feature variant; the
+  full CI run rebuilt the default native library and passed without test changes.
+  Logs: `/tmp/emerge-release-notes-final/` (ephemeral).
+- [ ] Merge the notes correction into `main`; obtain explicit approval to move
+  the unpublished `v0.4.0` tag to the corrected, validated commit, or choose a new
+  version instead. Editing `main` and rerunning the existing tag job is insufficient.
+  Do not move tags or reuse artifacts from a published release. Both the public
+  GitHub release API and Hex 0.4.0 API returned 404 during this check; private drafts
+  and any manual uploads still require maintainer inspection before tag recovery.
+- [ ] Build/validate the corrected release SHA and generate fresh checksums from
+  its actual published archives. Do not reuse the failed run's old-SHA artifacts.
+
+## Still required before publication
+
+- [x] Finalize the local release date and remove the `CHANGELOG.md` draft notice.
+  `scripts/release-notes.exs` still refuses draft/undated/mismatched notes.
 - [ ] Push/review the changes and run the expanded source CI on the final commit,
   including macOS and Elixir 1.19.0/OTP 28.1.1. Local Linux results do not replace it.
-- [ ] Merge approved changes/workflows into protected `main` before tagging and
-  revalidate the final SHA. `workflow_run` uses the default-branch definition,
-  not whichever workflow happens to exist in the checked-out source tree.
+- [x] Merge preparation changes/workflows into protected `main` (`2d7d60d`).
+  The notes correction still needs integration and final-SHA validation.
+  `workflow_run` uses the default-branch workflow definition.
 - [ ] Confirm maintainer access, `HEX_API_KEY`, tag/release permissions and any
   approval/protection requirements. These settings were not inspected or changed.
   The Hex workflow publishes automatically after its checks; configure a protected
   approval environment before tagging if staged maintainer inspection is required.
-- [ ] Run an artifact-workflow **branch dispatch** before tagging. It validates
-  sources and stages Actions artifacts without publishing GitHub/Hex releases.
+- [x] Run an artifact-workflow **branch dispatch** on `main` at `2d7d60d`.
+  It passed and staged Actions artifacts without publishing GitHub/Hex releases.
 - [ ] Inspect all 24 builds for architecture, hard-float/libc ABI, font closure,
   raster GPU-dependency exclusion, Vulkan-only OpenGL exclusion and dynamic loading.
 - [ ] Decide and record the hardware/performance scope below, performing required
@@ -241,8 +268,10 @@ an explicit scope/deferral; this pass does not silently waive hardware gates.
 2. Run the complete non-publishing artifact dry-run; inspect and smoke the results.
 3. Finalize notes/date, merge approved workflows/source to `main`, and validate the
    clean final commit, versions, ancestry, and exact-SHA source/artifact gates.
-4. Only with authorization, tag `v0.4.0`. Wait for all checks/builds before exposing
-   the complete staged release. Do not overwrite published archives.
+4. Only with authorization, recover the unpublished tag as described above (or
+   choose a new version). A new tag event must validate/build the corrected SHA;
+   rerunning the old workflow remains pinned to `2d7d60d`. Wait for all checks/builds
+   before exposing the complete staged release. Do not overwrite published archives.
 5. Inspect/smoke the checksum-bearing Hex package; allow authorized publication
    and verify public package/docs links and fresh-consumer installation.
 6. Announce with the migration link; update demo dependencies separately. Use a

@@ -1,9 +1,9 @@
 # Changelog
 
-## [0.4.0] - 2026-09-28
+## [0.4.0] - 2026-09-29
 
-Draft release notes; confirm the date when tagging. Changes below are relative to
-stable 0.3.4 and include the features introduced in 0.4.0-beta.1.
+Changes below are relative to stable 0.3.4 and include the features introduced in
+0.4.0-beta.1.
 
 See the [0.4 migration guide](guides/migrations/0.4.md) for upgrade examples.
 
