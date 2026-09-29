@@ -137,6 +137,7 @@ defmodule EmergeSkia.Native do
           required(:title) => String.t(),
           required(:width) => non_neg_integer(),
           required(:height) => non_neg_integer(),
+          required(:always_on_top) => boolean(),
           required(:drm_card) => String.t() | nil,
           required(:drm_output) => String.t() | nil,
           required(:drm_mode) => String.t() | nil,

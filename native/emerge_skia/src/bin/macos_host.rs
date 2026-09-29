@@ -58,8 +58,8 @@ mod app {
     use objc2_app_kit::{
         NSApplication, NSApplicationActivationPolicy, NSAutoresizingMaskOptions,
         NSBackingStoreType, NSCursor, NSEvent, NSEventMask, NSEventModifierFlags,
-        NSEventTrackingRunLoopMode, NSEventType, NSImage, NSImageScaling, NSImageView,
-        NSTextInputClient, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow,
+        NSEventTrackingRunLoopMode, NSEventType, NSFloatingWindowLevel, NSImage, NSImageScaling,
+        NSImageView, NSTextInputClient, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow,
         NSWindowDelegate, NSWindowStyleMask,
     };
     use objc2_core_foundation::CGSize;
@@ -367,6 +367,7 @@ mod app {
             title: String,
             width: u32,
             height: u32,
+            always_on_top: bool,
             scroll_line_pixels: f32,
             renderer_stats_log: bool,
             renderer_cache_config: RendererCacheConfig,
@@ -485,6 +486,7 @@ mod app {
         title: String,
         width: u32,
         height: u32,
+        always_on_top: bool,
         scroll_line_pixels: f32,
         renderer_stats_log: bool,
         renderer_cache_config: RendererCacheConfig,
@@ -1610,6 +1612,7 @@ mod app {
                     title,
                     width,
                     height,
+                    always_on_top,
                     scroll_line_pixels,
                     renderer_stats_log,
                     renderer_cache_config,
@@ -1628,6 +1631,7 @@ mod app {
                         title: &title,
                         width,
                         height,
+                        always_on_top,
                         scroll_line_pixels,
                         renderer_stats_log,
                         renderer_cache_config,
@@ -2073,6 +2077,7 @@ mod app {
         title: &'a str,
         width: u32,
         height: u32,
+        always_on_top: bool,
         scroll_line_pixels: f32,
         renderer_stats_log: bool,
         renderer_cache_config: RendererCacheConfig,
@@ -2093,6 +2098,7 @@ mod app {
             title,
             width,
             height,
+            always_on_top,
             scroll_line_pixels,
             renderer_stats_log,
             mut renderer_cache_config,
@@ -2108,7 +2114,7 @@ mod app {
         configure_host_assets_for_start(&asset_runtime, &asset_config)?;
         let _asset_context_guard = asset_runtime.enter();
 
-        let window = create_window(app, mtm, title, width, height)?;
+        let window = create_window(app, mtm, title, width, height, always_on_top)?;
         let initial_content_view = window
             .contentView()
             .ok_or_else(|| "macOS window missing contentView".to_string())?;
@@ -2184,6 +2190,7 @@ mod app {
         title: &str,
         width: u32,
         height: u32,
+        always_on_top: bool,
     ) -> Result<Retained<NSWindow>, String> {
         let frame = NSRect::new(
             NSPoint::new(120.0, 120.0),
@@ -2210,6 +2217,9 @@ mod app {
         }
         window.setTitle(&title);
         window.setAcceptsMouseMovedEvents(true);
+        if always_on_top {
+            window.setLevel(NSFloatingWindowLevel);
+        }
         window.center();
         window.makeKeyAndOrderFront(None);
         app.activate();
@@ -3575,6 +3585,7 @@ mod app {
                     title: decoded.title,
                     width: decoded.width,
                     height: decoded.height,
+                    always_on_top: decoded.always_on_top,
                     scroll_line_pixels: decoded.scroll_line_pixels,
                     renderer_stats_log: decoded.renderer_stats_log,
                     renderer_cache_config: decoded.renderer_cache_config,
@@ -3836,6 +3847,7 @@ mod app {
         let title = decode_string(payload, &mut cursor)?;
         let width = decode_u32(payload, &mut cursor)?;
         let height = decode_u32(payload, &mut cursor)?;
+        let always_on_top = decode_u8(payload, &mut cursor)? != 0;
         let scroll_line_pixels = decode_f32(payload, &mut cursor)?;
         let renderer_stats_log = decode_u8(payload, &mut cursor)? != 0;
         let (renderer_cache_config, renderer_cache_enabled_configured) =
@@ -3852,6 +3864,7 @@ mod app {
             title,
             width,
             height,
+            always_on_top,
             scroll_line_pixels,
             renderer_stats_log,
             renderer_cache_config,

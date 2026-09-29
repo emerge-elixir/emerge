@@ -151,6 +151,7 @@ defmodule EmergeSkia do
   | `rendering_api` | `:auto` | Renderer selection described above |
   | `title` | `"Emerge"` | Window title |
   | `width`, `height` | `800`, `600` | Initial window size or fixed headless size |
+  | `always_on_top` | `false` | macOS only: keep the window above other windows |
   | `scroll_line_pixels` | `30.0` | Pixels for one discrete wheel step |
   | `drm_card` | `/dev/dri/card0` | KMS primary-node path (also accepts `/dev/dri/by-path/` aliases) |
   | `drm_output` | automatic | Exact connector name returned by `drm_outputs/1` |
