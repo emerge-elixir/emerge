@@ -1,5 +1,25 @@
 # Embedded release builds
 
+## GNU DRM and RPi5
+
+The main release matrix builds GNU x86_64/AArch64 `drm`, `drm_vulkan` and
+`drm_all` archives with embedded FreeType and source-built Skia with fontconfig
+disabled. `drm_all` contains DRM OpenGL+Vulkan, without the desktop Wayland
+presenter. `scripts/check-embedded-artifact.exs` checks the packaged library's
+architecture, NIF entry point, unresolved font/desktop symbols and SONAME allowlist.
+
+Before publication, all three AArch64 archives are loaded with `load.c` in the
+unmodified stock Nerves RPi5 **2.0.1** userspace, downloaded with a pinned SHA256.
+Native ARM runners use `chroot`, so neither the builder's libraries nor a host
+sysroot can conceal missing runtime libraries or GLIBC/GLIBCXX versions. No
+extra libraries are installed into this rootfs. This is eager dynamic loading,
+not a BEAM or hardware/GPU test; stock 2.0.1 supplies OpenGL ES, not Vulkan.
+
+CI is reused by exact source SHA before any release builds start. These
+artifact-specific checks remain separate from the ordinary test suite.
+
+## musl and RISC-V containers
+
 The release workflow builds two profiles for each target:
 
 | Container | Rust target | Profiles |

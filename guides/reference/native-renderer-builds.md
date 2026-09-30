@@ -129,7 +129,10 @@ combinations.
 
 The GNU `drm`, `drm_vulkan` and `drm_all` archives embed FreeType and disable
 Skia fontconfig. They do not require xkbcommon, Wayland or desktop font libraries;
-applications supply their registered font assets.
+applications supply their registered font assets. Release builds inspect the
+**packaged** ELF and load all three AArch64 archives inside the checksum-pinned
+stock Nerves RPi5 2.0.1 rootfs. This checks transitive library dependencies and
+GLIBC/GLIBCXX symbol compatibility, not just matching library filenames.
 
 These fixes require a release after **0.4.0**. Its existing archives are not
 replaced: 0.4.0's combined DRM API selection downloads the desktop Vulkan bundle,
@@ -219,7 +222,7 @@ cannot authorize a release. For a commit without a main-branch run, dispatch CI
 on that exact ref first.
 
 Both native build matrices depend on this gate. Artifact-specific feature, ELF,
-tag/version and packaging checks remain mandatory before
+stock-rootfs load, tag/version and packaging checks remain mandatory before
 publishing. Hex publication reuses successful CI and artifact workflow results
 for the same commit, including manual publication, rather than invoking CI a
 third time. Previously published release hashes are never overwritten.

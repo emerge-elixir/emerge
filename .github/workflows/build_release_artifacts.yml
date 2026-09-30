@@ -282,10 +282,9 @@ jobs:
           sudo apt-get install --assume-yes ${{ matrix.job.system_packages }}
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.91.0
         with:
-          toolchain: stable
-          target: ${{ matrix.job.target }}
+          targets: ${{ matrix.job.target }}
 
       - name: Configure ARMv7 cross toolchain
         if: ${{ matrix.job.target == 'armv7-unknown-linux-gnueabihf' }}
@@ -356,51 +355,21 @@ jobs:
           cross-version: "v0.2.5"
           project-dir: native/emerge_skia
           variant: ${{ matrix.job.variant }}
-          cargo-args: ${{ matrix.job.cargo_args }}
+          cargo-args: --locked --lib ${{ matrix.job.cargo_args }}
 
-      - name: Verify embedded ABI and dependency closure
+      - name: Verify packaged embedded ABI and dependency closure
         if: ${{ matrix.job.embedded_skia == true }}
         shell: bash
         run: |
           set -euo pipefail
-          export LC_ALL=C
           artifact_dir="$RUNNER_TEMP/embedded-artifact"
-          rm -rf "$artifact_dir"
           mkdir -p "$artifact_dir"
           tar -xzf "${{ steps.build-crate.outputs.file-path }}" -C "$artifact_dir"
-          artifact="$(find "$artifact_dir" -maxdepth 1 -type f -name '*.so' -print -quit)"
-          test -n "$artifact"
-          dynamic_dependencies="$(readelf --dynamic "$artifact")"
-          undefined_symbols="$(nm --dynamic --undefined-only "$artifact")"
-
-          if [[ "${{ matrix.job.target }}" == "armv7-unknown-linux-gnueabihf" ]]; then
-            elf_header="$(readelf --file-header "$artifact")"
-            arm_attributes="$(readelf --arch-specific "$artifact")"
-            printf '%s\n%s\n' "$elf_header" "$arm_attributes"
-            if ! grep --extended-regexp 'Class: +ELF32' <<<"$elf_header" ||
-               ! grep --extended-regexp 'Machine: +ARM' <<<"$elf_header" ||
-               ! grep --extended-regexp 'Tag_CPU_arch: v7$' <<<"$arm_attributes" ||
-               ! grep --fixed-strings 'Tag_ABI_VFP_args: VFP registers' <<<"$arm_attributes"; then
-              echo "ARMv7 artifact is not an ELF32 ARMv7 hard-float library" >&2
-              exit 1
-            fi
-          fi
-
-          if grep --extended-regexp 'NEEDED.*(fontconfig|freetype)' <<<"$dynamic_dependencies"; then
-            echo "Embedded artifact depends on desktop fontconfig or FreeType" >&2
-            exit 1
-          fi
-
-          if grep --extended-regexp ' (Fc|FT_)' <<<"$undefined_symbols"; then
-            echo "Embedded artifact contains unresolved fontconfig or FreeType symbols" >&2
-            exit 1
-          fi
-
-          if [[ "${{ matrix.job.raster_only }}" == "true" ]] &&
-             grep --extended-regexp 'NEEDED.*(EGL|GLES|GL|gbm|drm|wayland)' <<<"$dynamic_dependencies"; then
-            echo "Raster-only artifact depends on a desktop or GPU library" >&2
-            exit 1
-          fi
+          artifacts=("$artifact_dir"/*.so)
+          test "${#artifacts[@]}" = 1
+          profile='${{ matrix.job.variant }}'
+          if [[ '${{ matrix.job.raster_only }}' == true ]]; then profile=raster; fi
+          elixir scripts/check-embedded-artifact.exs "${artifacts[0]}" '${{ matrix.job.target }}' "$profile"
 
       - name: Artifact upload
         uses: actions/upload-artifact@v6
@@ -431,15 +400,14 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.91.0
         with:
-          toolchain: stable
-          target: ${{ matrix.job.target }}
+          targets: ${{ matrix.job.target }}
 
       - name: Build macos_host
         working-directory: native/emerge_skia
         run: >
-          cargo build --release
+          cargo build --locked --release
           --bin macos_host
           --no-default-features
           --features macos
@@ -464,10 +432,52 @@ jobs:
             ${{ env.ARCHIVE_NAME }}
             ${{ env.ARCHIVE_NAME }}.sha256
 
+  verify_rpi5:
+    name: Load packaged DRM NIFs on stock RPi5 userspace
+    needs: [validate, build_release]
+    runs-on: ubuntu-24.04-arm
+    env:
+      PROJECT_VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: libemerge_skia-*-aarch64-unknown-linux-gnu--drm*.so.tar.gz
+          path: release-assets
+          merge-multiple: true
+      - name: Fetch checksum-pinned stock Nerves RPi5 rootfs
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --assume-yes squashfs-tools
+          archive="$RUNNER_TEMP/rpi5.tar.gz"
+          curl --fail --location --retry 3 \
+            https://github.com/nerves-project/nerves_system_rpi5/releases/download/v2.0.1/nerves_system_rpi5-portable-2.0.1-715A070.tar.gz \
+            --output "$archive"
+          echo "a1084a76f8064ec44b322f667da5d304ea001b0bcdfb2f9a34c143cfc9164ef0  $archive" | sha256sum --check
+          tar -xzf "$archive" -C "$RUNNER_TEMP" nerves_system_rpi5-portable-2.0.1-715A070/images/rootfs.squashfs
+          sudo unsquashfs -d "$RUNNER_TEMP/rpi5-root" \
+            "$RUNNER_TEMP/nerves_system_rpi5-portable-2.0.1-715A070/images/rootfs.squashfs"
+      - name: Resolve all NIF dependencies using only the stock rootfs
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/rpi5-root"
+          cc -Wall -Wextra -Werror native/emerge_skia/support/release/load.c -o "$RUNNER_TEMP/load-nif" -ldl
+          # Avoid /tmp and other absolute symlinks inside an extracted rootfs.
+          sudo mkdir "$root/emerge-smoke"
+          sudo cp "$RUNNER_TEMP/load-nif" "$root/emerge-smoke/"
+          for profile in drm drm_vulkan drm_all; do
+            name="libemerge_skia-v$PROJECT_VERSION-nif-2.15-aarch64-unknown-linux-gnu--$profile.so"
+            sudo tar -xzf "release-assets/$name.tar.gz" -C "$root/emerge-smoke" "$name"
+            sudo chroot "$root" /emerge-smoke/load-nif "/emerge-smoke/$name"
+          done
+          # This is an eager dlopen/ABI check, not BEAM, GPU or physical-board qualification.
 
   publish:
     name: Publish validated release assets
-    needs: [validate, build_release, build_macos_host]
+    needs: [validate, build_release, build_macos_host, verify_rpi5]
     if: ${{ startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-24.04
     permissions:
