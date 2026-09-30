@@ -7,6 +7,8 @@
 - GNU DRM precompiled artifacts embed FreeType and disable fontconfig. DRM
   OpenGL+Vulkan configurations select a dedicated `drm_all` archive instead of
   the desktop Vulkan bundle, avoiding xkbcommon/Wayland dependencies on Nerves.
+- Release builds check embedded ELF dependencies and load AArch64 DRM archives
+  against a checksum-pinned stock RPi5 rootfs before publishing.
 - Release and Hex workflows reuse successful CI for the exact source commit
   instead of rerunning the standard test matrix. Native builds wait for that
   gate; the full-sweep CI step runs only the additional tagged tests.
