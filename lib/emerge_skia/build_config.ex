@@ -23,8 +23,9 @@ defmodule EmergeSkia.BuildConfig do
     "riscv64gc-unknown-linux-gnu"
   ]
   @linux_precompiled_backend_profiles [[], [:wayland], [:drm], [:wayland, :drm]]
-  @precompiled_targets @linux_64_precompiled_targets ++ @linux_embedded_precompiled_targets
   @macos_host_targets ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+  @precompiled_targets @linux_64_precompiled_targets ++
+                         @linux_embedded_precompiled_targets ++ @macos_host_targets
   @precompiled_nif_versions ["2.15"]
   @valid_backends [:wayland, :drm, :macos]
   @valid_opengl_backends [:wayland, :drm, :headless]
@@ -284,6 +285,9 @@ defmodule EmergeSkia.BuildConfig do
       nerves_build_env?(env) ->
         ["embedded-freetype"]
 
+      host_darwin?(env) and compiled_backends == [] and compiled_vulkan_backends == [] ->
+        ["embedded-cpu"]
+
       compiled_backends == [] and compiled_vulkan_backends == [] ->
         ["video-interop-support"]
 
@@ -489,6 +493,10 @@ defmodule EmergeSkia.BuildConfig do
 
     variant =
       cond do
+        target in @macos_host_targets and compiled_backends == [] and
+          compiled_vulkan_backends == [] and compiled_opengl_backends == [] ->
+          {:ok, nil}
+
         target in @linux_64_precompiled_targets and compiled_opengl_backends == [] and
           compiled_backends == [:wayland] and compiled_vulkan_backends == [:wayland] ->
           {:ok, :wayland_vulkan}

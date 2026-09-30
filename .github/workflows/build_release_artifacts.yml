@@ -240,6 +240,22 @@ jobs:
             profile: opengl
             variant: "opengl"
             system_packages: ""
+          - name: macos_arm64_raster
+            target: aarch64-apple-darwin
+            os: macos-15
+            use_cross: false
+            variant: ""
+            cargo_args: "--no-default-features --features embedded-cpu"
+            system_packages: ""
+            macos_raster: true
+          - name: macos_x86_64_raster
+            target: x86_64-apple-darwin
+            os: macos-15-intel
+            use_cross: false
+            variant: ""
+            cargo_args: "--no-default-features --features embedded-cpu"
+            system_packages: ""
+            macos_raster: true
           - name: linux_armv7_raster
             target: armv7-unknown-linux-gnueabihf
             os: ubuntu-24.04
@@ -263,13 +279,14 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v5
 
+      - name: Normalize Linux image name for setup-beam
+        if: ${{ runner.os == 'Linux' }}
+        shell: bash
+        # Ubuntu ARM exposes ubuntu24-arm64; setup-beam reads RUNNER_ARCH separately.
+        run: echo "ImageOS=ubuntu24" >> "$GITHUB_ENV"
+
       - name: Set up Elixir and OTP
         uses: erlef/setup-beam@v1
-        env:
-          # GitHub's Ubuntu ARM runners currently expose ImageOS=ubuntu24-arm64,
-          # but setup-beam expects the OS-only ImageOS value and reads RUNNER_ARCH
-          # separately to pick arm64 OTP builds.
-          ImageOS: ubuntu24
         with:
           elixir-version: "1.20.2"
           otp-version: "29.0.5"
@@ -308,6 +325,13 @@ jobs:
           echo "FORCE_SKIA_BUILD=1" >> "$GITHUB_ENV"
           echo "SKIA_GN_ARGS=skia_use_fontconfig=false skia_use_system_freetype2=false" >> "$GITHUB_ENV"
           echo "RUSTFLAGS=-Lnative=support/embedded-linux-link-stubs" >> "$GITHUB_ENV"
+
+      - name: Configure macOS raster Skia
+        if: ${{ matrix.job.macos_raster == true }}
+        shell: bash
+        run: |
+          echo "MACOSX_DEPLOYMENT_TARGET=11.0" >> "$GITHUB_ENV"
+          echo "FORCE_SKIA_BUILD=1" >> "$GITHUB_ENV"
 
       - name: Verify Vulkan-only dependency closure
         if: ${{ matrix.job.variant == 'wayland_vulkan' || matrix.job.variant == 'drm_vulkan' || matrix.job.variant == 'headless_vulkan' }}

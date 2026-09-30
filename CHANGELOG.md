@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Precompiled macOS raster NIFs for Apple Silicon and Intel (macOS 11+).
+  `compiled_backends: []` preserves headless packed-frame previews, including
+  BW1/Gray2 dithering, without building Rust/Skia or opening a window. Native
+  window applications continue to use the separate `macos_host` executable.
+
 ## [0.4.1] - 2026-09-30
 
 ### Fixed
