@@ -431,6 +431,7 @@ defmodule EmergeSkia.BuildConfig do
           :vulkan,
           :wayland_vulkan,
           :drm_vulkan,
+          :drm_all,
           :headless_vulkan
         ]),
       "aarch64-unknown-linux-gnu" =>
@@ -441,6 +442,7 @@ defmodule EmergeSkia.BuildConfig do
           :vulkan,
           :wayland_vulkan,
           :drm_vulkan,
+          :drm_all,
           :headless_vulkan
         ])
     }
@@ -498,6 +500,10 @@ defmodule EmergeSkia.BuildConfig do
         target in @linux_64_precompiled_targets and compiled_opengl_backends == [] and
           compiled_backends == [] and compiled_vulkan_backends == [:headless] ->
           {:ok, :headless_vulkan}
+
+        target in @linux_64_precompiled_targets and compiled_backends == [:drm] and
+          compiled_vulkan_backends == [:drm] and compiled_opengl_backends == [:drm] ->
+          {:ok, :drm_all}
 
         target in @linux_64_precompiled_targets and
           compiled_backends in @linux_precompiled_backend_profiles and

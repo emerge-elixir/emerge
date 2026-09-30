@@ -400,6 +400,19 @@ defmodule EmergeSkia.BuildConfigTest do
              )
   end
 
+  test "DRM OpenGL plus Vulkan never selects the desktop bundle" do
+    for target <- ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"],
+        env <- [%{}, %{"MIX_TARGET" => "rpi5"}] do
+      assert {:ok, %{variant: :drm_all, backends: [:drm]}} =
+               BuildConfig.precompiled_profile(env, [:drm], [:drm], target)
+
+      variants = BuildConfig.precompiled_variants(env, [:drm], [:drm])
+      assert variants[target][:drm_all].(%{})
+      refute variants[target][:vulkan].(%{})
+      refute variants[target][:drm_vulkan].(%{})
+    end
+  end
+
   test "precompiled_variants select exact backend and rendering profiles" do
     x64_variants = BuildConfig.precompiled_variants(%{}, [:wayland, :drm], [])
     assert x64_variants["x86_64-unknown-linux-gnu"][:drm_wayland].(%{})

@@ -120,10 +120,26 @@ config :emerge,
 
 On 64-bit Linux this selects the `drm_vulkan` artifact. Equivalent
 `wayland_vulkan` and `headless_vulkan` artifacts are available. `[drm: :all]`
-or `[drm: [:opengl, :vulkan]]` includes both APIs and selects the comprehensive
-`vulkan` artifact; custom combinations not covered by the release matrix build
+or `[drm: [:opengl, :vulkan]]` includes both APIs and selects the dedicated
+`drm_all` artifact, not the desktop `vulkan` bundle. The legacy combination
+`compiled_backends: [:drm], compiled_vulkan_backends: [:drm]` selects the same
+DRM-only archive. Custom combinations not covered by the release matrix build
 from source. See `EmergeSkia.start/1` for valid backend and rendering API
 combinations.
+
+The GNU `drm`, `drm_vulkan` and `drm_all` archives embed FreeType and disable
+Skia fontconfig. They do not require xkbcommon, Wayland or desktop font libraries;
+applications supply their registered font assets.
+
+These fixes require a release after **0.4.0**. Its existing archives are not
+replaced: 0.4.0's combined DRM API selection downloads the desktop Vulkan bundle,
+and its standalone GNU DRM builds can still require fontconfig.
+
+Stock RPi5 2.0.1 provides Mesa V3D/OpenGL ES, not a Vulkan driver stack. Use
+`compiled_backends: [drm: [:opengl]]` and `rendering_api: :opengl` on that system.
+A Vulkan renderer additionally requires a system with the Vulkan loader and
+appropriate GPU driver/extensions. Successfully loading the NIF does not qualify
+Vulkan support or physical display/input operation.
 
 ## Nerves cross-builds
 
