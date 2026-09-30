@@ -82,9 +82,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             native/emerge_skia/target
-          key: ${{ runner.os }}-cargo-${{ matrix.rust }}-${{ hashFiles('native/emerge_skia/Cargo.lock') }}
+          # Keep the minimum-Elixir job from claiming the full Rust job's immutable cache.
+          key: ${{ runner.os }}-cargo-${{ matrix.rust }}-${{ matrix.name }}-${{ hashFiles('native/emerge_skia/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-${{ matrix.rust }}-
+            ${{ runner.os }}-cargo-${{ matrix.rust }}-${{ matrix.name }}-
 
       - name: Install dependencies
         run: mix deps.get
