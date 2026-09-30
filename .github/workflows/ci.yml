@@ -1,20 +1,12 @@
 name: CI
 
 on:
-  workflow_call:
-    inputs:
-      ref:
-        description: Exact source commit to validate for a release caller
-        type: string
-        required: true
   workflow_dispatch:
   pull_request:
   push:
     branches:
       - main
       - master
-    tags:
-      - "v*"
 
 permissions:
   contents: read
@@ -46,7 +38,7 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.ref || github.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - name: Set up Elixir and OTP
@@ -126,9 +118,9 @@ jobs:
 
           echo "PROJECT_VERSION=$project_version" >> "$GITHUB_ENV"
 
-      - name: Run full-sweep Elixir tests
+      - name: Run additional full-sweep Elixir tests
         if: ${{ matrix.rust == '1.91.0' && matrix.minimum != true }}
-        run: mix test --include full_sweep --warnings-as-errors
+        run: mix test --only full_sweep --warnings-as-errors
 
       - name: Build documentation without warnings
         if: ${{ matrix.rust == '1.91.0' && matrix.minimum != true }}
@@ -158,7 +150,7 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.ref || github.sha }}
+          ref: ${{ github.sha }}
 
       - name: Set up Elixir and OTP
         uses: erlef/setup-beam@v1

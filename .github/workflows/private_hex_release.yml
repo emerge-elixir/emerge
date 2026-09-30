@@ -19,7 +19,11 @@ concurrency:
 
 jobs:
   resolve:
-    name: Resolve exact release commit
+    name: Resolve exact release commit and reuse workflow results
+    timeout-minutes: 130
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-24.04
     if: >
       github.event_name == 'workflow_dispatch' ||
@@ -81,16 +85,16 @@ jobs:
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "version=$project_version" >> "$GITHUB_OUTPUT"
 
-  validate:
-    name: Validate exact release commit
-    needs: resolve
-    uses: ./.github/workflows/ci.yml
-    with:
-      ref: ${{ needs.resolve.outputs.sha }}
+      - name: Require successful CI and artifact builds for this exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          elixir scripts/require-workflow.exs "$(git rev-parse HEAD)" ci.yml
+          elixir scripts/require-workflow.exs "$(git rev-parse HEAD)" build_release_artifacts.yml
 
   publish:
     name: Publish Hex package
-    needs: [resolve, validate]
+    needs: resolve
     runs-on: ubuntu-24.04
     env:
       PROJECT_VERSION: ${{ needs.resolve.outputs.version }}
