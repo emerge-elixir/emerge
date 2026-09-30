@@ -39,6 +39,25 @@ defmodule Emerge.ReleaseWorkflowTest do
     assert artifacts =~ ~s(sudo chroot "$root" /emerge-smoke/load-nif)
   end
 
+  test "Linux Cargo cache saves and restores stay within the same matrix job" do
+    ci = File.read!(Path.join(@workflows, "ci.yml"))
+    [linux, _macos] = String.split(ci, "\n  ci_macos:", parts: 2)
+
+    [_, cargo_cache] =
+      Regex.run(
+        ~r/      - name: Cache Cargo dependencies and target\n(.*?)(?=\n      - name:)/s,
+        linux
+      )
+
+    prefix = "${{ runner.os }}-cargo-${{ matrix.rust }}-${{ matrix.name }}-"
+
+    assert cargo_cache =~
+             "key: #{prefix}${{ hashFiles('native/emerge_skia/Cargo.lock') }}"
+
+    assert cargo_cache =~ "restore-keys: |\n            #{prefix}\n"
+    refute cargo_cache =~ "${{ runner.os }}-cargo-${{ matrix.rust }}-\n"
+  end
+
   test "every GNU DRM profile builds embedded Skia and checks the packaged ELF" do
     artifacts = File.read!(Path.join(@workflows, "build_release_artifacts.yml"))
 
