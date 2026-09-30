@@ -21,7 +21,7 @@ the Hex publication workflow generates the release checksum manifest. The
 parent project compiles in checksum-only mode, so no second NIF is built or
 substituted for the artifact under test.
 
-These archives are new after the 0.4.1 release. Never append them to an existing
+These archives are introduced in 0.4.2. Never append them to an existing
 published release or fabricate release checksum entries.
 
 ## GNU DRM and RPi5
@@ -65,7 +65,7 @@ docker run --rm \
   --mount "type=bind,source=$PWD,target=/source,readonly" \
   --mount "type=bind,source=/tmp/emerge-artifacts,target=/artifacts" \
   --env EMERGE_SOURCE_REVISION="$(git rev-parse HEAD)" \
-  emerge-musl x86_64-unknown-linux-musl raster 0.4.1 2.15
+  emerge-musl x86_64-unknown-linux-musl raster 0.4.2 2.15
 ```
 
 Use an immutable patch identity instead of just HEAD for a dirty checkout.

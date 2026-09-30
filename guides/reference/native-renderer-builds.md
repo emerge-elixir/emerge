@@ -2,7 +2,7 @@
 
 Emerge normally downloads a precompiled NIF or the matching macOS window host.
 The release matrix covers x86_64 GNU/musl, AArch64 GNU, ARMv7 hard-float,
-RISC-V64 GNU, and macOS raster on Apple Silicon/Intel (unreleased).
+RISC-V64 GNU, and macOS raster on Apple Silicon/Intel (0.4.2+).
 A source build is required only for unsupported targets or custom backend
 combinations.
 
@@ -76,8 +76,8 @@ The release artifact profiles are:
 | `armv7-unknown-linux-gnueabihf` | Minimal raster | DRM/headless OpenGL |
 | `x86_64-unknown-linux-musl` | Minimal raster | DRM/headless OpenGL |
 | `riscv64gc-unknown-linux-gnu` | Minimal raster | DRM/headless OpenGL |
-| `aarch64-apple-darwin` | Minimal raster (unreleased) | Separate `macos_host` window executable |
-| `x86_64-apple-darwin` | Minimal raster (unreleased) | Separate `macos_host` window executable |
+| `aarch64-apple-darwin` | Minimal raster (0.4.2+) | Separate `macos_host` window executable |
+| `x86_64-apple-darwin` | Minimal raster (0.4.2+) | Separate `macos_host` window executable |
 
 The ARMv7 artifact uses the hard-float ABI of the
 `armv7-nerves-linux-gnueabihf` toolchain used by Cortex-A7 systems such as
@@ -180,10 +180,10 @@ required Nerves flags. Override them only when diagnosing a toolchain problem.
 
 ## Headless raster on macOS
 
-The upcoming release adds precompiled raster NIFs for Apple Silicon and Intel
-(macOS 11 or later). These are **not** part of the 0.4.1 artifact set; use a
-release containing both the new archives and their generated checksum manifest.
-Existing release assets are not replaced.
+Starting with **0.4.2**, the release matrix includes precompiled raster NIFs for
+Apple Silicon and Intel (macOS 11 or later). Use a published release containing
+both the archives and their generated checksum manifest. Version 0.4.1 and
+earlier do not include them; existing release assets are not replaced.
 
 Select raster at dependency compilation time:
 
