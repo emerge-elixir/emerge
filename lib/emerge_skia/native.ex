@@ -10,8 +10,6 @@ defmodule EmergeSkia.Native do
   @behaviour VideoInterop.AbandonmentGuard
 
   @checksum_only EmergeSkia.BuildConfig.checksum_only_mode?()
-  @load_native_runtime Application.compile_env(:emerge, :load_macos_nif, false) or
-                         EmergeSkia.BuildConfig.load_native_runtime?()
 
   if @checksum_only do
     @version Mix.Project.config()[:version]
@@ -32,6 +30,9 @@ defmodule EmergeSkia.Native do
         variants: EmergeSkia.BuildConfig.precompiled_variants()
       )
   else
+    @load_native_runtime Application.compile_env(:emerge, :load_macos_nif, false) or
+                           EmergeSkia.BuildConfig.load_native_runtime?()
+
     if @load_native_runtime do
       @rustler_opts Mix.Project.config()[:rustler_opts] || []
       @crate_path Path.expand("../../native/emerge_skia", __DIR__)

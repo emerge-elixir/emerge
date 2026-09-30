@@ -65,6 +65,43 @@ defmodule EmergeSkia.ChecksumMetadataTest do
     on_exit(fn -> File.rm_rf!(cache_path) end)
   end
 
+  test "checksum-only Native compilation is warning-free without Rustler" do
+    cache =
+      Path.join(System.tmp_dir!(), "emerge-checksum-only-#{System.unique_integer([:positive])}")
+
+    on_exit(fn -> File.rm_rf!(cache) end)
+
+    paths =
+      :code.get_path()
+      |> Enum.map(&to_string/1)
+      |> Enum.reject(&(Path.basename(Path.dirname(&1)) == "rustler"))
+      |> Enum.flat_map(&["-pa", &1])
+
+    script = """
+    Mix.start()
+    Code.compile_file("mix.exs")
+    false = Code.ensure_loaded?(Rustler)
+    Code.compiler_options(ignore_module_conflict: true)
+    {_modules, diagnostics} = Code.with_diagnostics(fn -> Code.compile_file("lib/emerge_skia/native.ex") end)
+    [] = Enum.filter(diagnostics, &(&1.severity == :warning))
+    IO.puts("checksum-only compilation passed")
+    """
+
+    {output, status} =
+      System.cmd(System.find_executable("elixir"), paths ++ ["-e", script],
+        cd: Path.expand("../..", __DIR__),
+        stderr_to_stdout: true,
+        env: [
+          {"ERL_FLAGS", "+S 2:2"},
+          {"EMERGE_SKIA_CHECKSUM_ONLY", "true"},
+          {"RUSTLER_PRECOMPILED_GLOBAL_CACHE_PATH", cache}
+        ]
+      )
+
+    assert status == 0, output
+    assert output =~ "checksum-only compilation passed"
+  end
+
   defp restore_env_on_exit(name) do
     previous = System.get_env(name)
 
