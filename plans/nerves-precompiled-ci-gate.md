@@ -21,5 +21,5 @@ Branch: `fix/nerves-precompiled-ci-gate`.
 ## Still required before shipping
 
 - Run the release workflow to build/check the actual AArch64 archives and execute the stock-rootfs load gate. Local x86_64 results do not qualify AArch64 or hardware.
-- Cut a new version, finalize its release notes and pass CI on that exact commit before tagging. No version was bumped, release published or tag moved as part of these changes; 0.4.0 assets remain untouched.
+- Version 0.4.1 and its dated release notes are prepared on `release/v0.4.1`. Pass CI on the final release commit before tagging. No release has been published or tag moved; 0.4.0 assets remain untouched.
 - Qualify physical RPi5 display/input behavior separately. The pinned stock 2.0.1 baseline has OpenGL ES, not Vulkan; a Vulkan renderer needs a system supplying the appropriate Vulkan driver stack.

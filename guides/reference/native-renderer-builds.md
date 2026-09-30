@@ -134,7 +134,7 @@ applications supply their registered font assets. Release builds inspect the
 stock Nerves RPi5 2.0.1 rootfs. This checks transitive library dependencies and
 GLIBC/GLIBCXX symbol compatibility, not just matching library filenames.
 
-These fixes require a release after **0.4.0**. Its existing archives are not
+These fixes require **0.4.1 or later**. The existing 0.4.0 archives are not
 replaced: 0.4.0's combined DRM API selection downloads the desktop Vulkan bundle,
 and its standalone GNU DRM builds can still require fontconfig.
 

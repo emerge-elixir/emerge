@@ -41,7 +41,7 @@ docker run --rm \
   --mount "type=bind,source=$PWD,target=/source,readonly" \
   --mount "type=bind,source=/tmp/emerge-artifacts,target=/artifacts" \
   --env EMERGE_SOURCE_REVISION="$(git rev-parse HEAD)" \
-  emerge-musl x86_64-unknown-linux-musl raster 0.4.0 2.15
+  emerge-musl x86_64-unknown-linux-musl raster 0.4.1 2.15
 ```
 
 Use an immutable patch identity instead of just HEAD for a dirty checkout.
