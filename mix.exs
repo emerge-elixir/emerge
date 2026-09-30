@@ -6,7 +6,7 @@ end
 defmodule Emerge.MixProject do
   use Mix.Project
 
-  @version "0.4.0"
+  @version "0.4.1"
   @source_url "https://github.com/emerge-elixir/emerge"
 
   for file <- ~w(native.exs package.exs docs.exs targets.exs) do
