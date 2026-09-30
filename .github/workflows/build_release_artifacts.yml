@@ -395,6 +395,28 @@ jobs:
           if [[ '${{ matrix.job.raster_only }}' == true ]]; then profile=raster; fi
           elixir scripts/check-embedded-artifact.exs "${artifacts[0]}" '${{ matrix.job.target }}' "$profile"
 
+      - name: Verify packaged macOS raster NIF
+        if: ${{ matrix.job.macos_raster == true }}
+        shell: bash
+        env:
+          MIX_ENV: prod
+          EMERGE_SKIA_CHECKSUM_ONLY: "true"
+          RASTER_ARCHIVE: ${{ steps.build-crate.outputs.file-path }}
+        run: |
+          set -euo pipefail
+          artifact_dir="$RUNNER_TEMP/macos-raster-artifact"
+          mkdir -p "$artifact_dir"
+          tar -xzf "$RASTER_ARCHIVE" -C "$artifact_dir"
+          artifacts=("$artifact_dir"/*.so)
+          test "${#artifacts[@]}" = 1
+          elixir scripts/check-macos-raster-artifact.exs "${artifacts[0]}" '${{ matrix.job.target }}'
+          # Compile Elixir only, then load the archive in isolated VMs without Rustler.
+          mix local.hex --force
+          mix local.rebar --force
+          mix deps.get
+          mix compile --warnings-as-errors
+          mix run --no-start scripts/smoke-raster-artifact.exs "$RASTER_ARCHIVE"
+
       - name: Artifact upload
         uses: actions/upload-artifact@v6
         with:
