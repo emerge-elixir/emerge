@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.4.2] - 2026-09-30
 
 ### Added
 
@@ -10,6 +10,13 @@
   window applications continue to use the separate `macos_host` executable.
 - Release checks for packaged macOS raster architecture, system-only dependencies
   and deployment version, plus isolated BEAM load/render/cache/integrity probes.
+
+### Fixed
+
+- Checksum-only NIF compilation no longer emits an unused-attribute warning,
+  allowing release probes to compile with warnings treated as errors.
+- Linux CI Cargo caches are isolated by matrix job so the minimum-Elixir job
+  cannot claim the full Rust job's immutable cache or restore its build output.
 
 ## [0.4.1] - 2026-09-30
 

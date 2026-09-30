@@ -18,8 +18,9 @@ those previews with native windows or remove the host renderer.
 
 Existing changes to `.github/workflows/ci.yml` and
 `test/release_workflow_test.exs` belong to the CI cache-isolation work and must
-remain untouched. No version bump, tag or publication is part of this change;
-newly added binaries require a new release after 0.4.1.
+remain untouched. The implementation commits left the version unchanged;
+these binaries are included in the subsequent [0.4.2 release preparation](release-0.4.2.md).
+No tag or publication has been performed as part of that preparation.
 
 ## Commit sequence
 
