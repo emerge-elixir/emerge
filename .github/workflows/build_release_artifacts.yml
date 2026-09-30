@@ -18,12 +18,57 @@ concurrency:
 
 jobs:
   validate:
-    name: Validate release source
-    uses: ./.github/workflows/ci.yml
-    with:
-      ref: ${{ github.sha }}
+    name: Require existing CI success for this commit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.20.2"
+          otp-version: "29.0.5"
+      - name: Wait for successful CI without rerunning it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: elixir scripts/require-workflow.exs "$(git rev-parse HEAD)" ci.yml
+
+      - name: Extract project version
+        id: version
+        shell: bash
+        run: |
+          # Read both source manifests even on tag builds. Deriving the version
+          # from the tag and comparing it back to the same tag proves nothing.
+          project_version="$(awk -F'"' '/^  @version "/ { print $2; exit }' mix.exs)"
+          cargo_version="$(awk -F'"' '$0 == "[package]" { in_package=1; next } in_package && /^version = "/ { print $2; exit }' native/emerge_skia/Cargo.toml)"
+
+          if [[ -z "$project_version" || -z "$cargo_version" ]]; then
+            echo "Failed to resolve Mix/Cargo project versions" >&2
+            exit 1
+          fi
+
+          if [[ "$project_version" != "$cargo_version" ]]; then
+            echo "Mix version ${project_version} does not match Cargo version ${cargo_version}" >&2
+            exit 1
+          fi
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v* && "v${project_version}" != "${GITHUB_REF_NAME}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match project version ${project_version}" >&2
+            exit 1
+          fi
+
+          echo "version=$project_version" >> "$GITHUB_OUTPUT"
 
   build_release:
+    needs: validate
+    env:
+      PROJECT_VERSION: ${{ needs.validate.outputs.version }}
     name: NIF ${{ matrix.nif }} - ${{ matrix.job.name }}
     runs-on: ${{ matrix.job.os }}
     strategy:
@@ -209,34 +254,6 @@ jobs:
           elixir-version: "1.20.2"
           otp-version: "29.0.5"
 
-      - name: Install dependencies
-        run: mix deps.get
-
-      - name: Extract project version
-        shell: bash
-        run: |
-          # Read both source manifests even on tag builds. Deriving the version
-          # from the tag and comparing it back to the same tag proves nothing.
-          project_version="$(awk -F'"' '/^  @version "/ { print $2; exit }' mix.exs)"
-          cargo_version="$(awk -F'"' '$0 == "[package]" { in_package=1; next } in_package && /^version = "/ { print $2; exit }' native/emerge_skia/Cargo.toml)"
-
-          if [[ -z "$project_version" || -z "$cargo_version" ]]; then
-            echo "Failed to resolve Mix/Cargo project versions" >&2
-            exit 1
-          fi
-
-          if [[ "$project_version" != "$cargo_version" ]]; then
-            echo "Mix version ${project_version} does not match Cargo version ${cargo_version}" >&2
-            exit 1
-          fi
-
-          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v* && "v${project_version}" != "${GITHUB_REF_NAME}" ]]; then
-            echo "Tag ${GITHUB_REF_NAME} does not match project version ${project_version}" >&2
-            exit 1
-          fi
-
-          echo "PROJECT_VERSION=$project_version" >> "$GITHUB_ENV"
-
       - name: Install Linux build dependencies
         if: ${{ matrix.job.system_packages != '' }}
         shell: bash
@@ -373,6 +390,9 @@ jobs:
           if-no-files-found: error
 
   build_macos_host:
+    needs: validate
+    env:
+      PROJECT_VERSION: ${{ needs.validate.outputs.version }}
     name: macos_host - ${{ matrix.job.name }}
     runs-on: ${{ matrix.job.os }}
     strategy:
@@ -389,38 +409,6 @@ jobs:
     steps:
       - name: Checkout source code
         uses: actions/checkout@v5
-
-      - name: Set up Elixir and OTP
-        uses: erlef/setup-beam@v1
-        with:
-          elixir-version: "1.20.2"
-          otp-version: "29.0.5"
-
-      - name: Install dependencies
-        run: mix deps.get
-
-      - name: Extract project version
-        shell: bash
-        run: |
-          project_version="$(awk -F'"' '/^  @version "/ { print $2; exit }' mix.exs)"
-          cargo_version="$(awk -F'"' '$0 == "[package]" { in_package=1; next } in_package && /^version = "/ { print $2; exit }' native/emerge_skia/Cargo.toml)"
-
-          if [[ -z "$project_version" || -z "$cargo_version" ]]; then
-            echo "Failed to resolve Mix/Cargo project versions" >&2
-            exit 1
-          fi
-
-          if [[ "$project_version" != "$cargo_version" ]]; then
-            echo "Mix version ${project_version} does not match Cargo version ${cargo_version}" >&2
-            exit 1
-          fi
-
-          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v* && "v${project_version}" != "${GITHUB_REF_NAME}" ]]; then
-            echo "Tag ${GITHUB_REF_NAME} does not match project version ${project_version}" >&2
-            exit 1
-          fi
-
-          echo "PROJECT_VERSION=$project_version" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

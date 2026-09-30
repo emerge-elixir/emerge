@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Release and Hex workflows reuse successful CI for the exact source commit
+  instead of rerunning the standard test matrix. Native builds wait for that
+  gate; the full-sweep CI step runs only the additional tagged tests.
+
 ## [0.4.0] - 2026-09-29
 
 Changes below are relative to stable 0.3.4 and include the features introduced in

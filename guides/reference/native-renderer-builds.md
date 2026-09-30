@@ -192,6 +192,22 @@ It checks screenshots before regeneration so missing-asset fallback rendering
 cannot silently replace the checked examples. The package includes benchmark
 sources/fixtures and sample assets with their redistribution notices.
 
+## Release validation without repeated CI
+
+Run `CI` on the exact release commit (normally by merging it to `main`). Once
+that workflow succeeds, push the version tag or dispatch `Build Release Artifacts`
+on that ref. Tag pushes do not start CI again. The artifact workflow waits up to
+one hour for an existing successful `ci.yml` run for that SHA; it never dispatches
+another test run. A PR merge SHA, another commit, a fork, or a failed/skipped run
+cannot authorize a release. For a commit without a main-branch run, dispatch CI
+on that exact ref first.
+
+Both native build matrices depend on this gate. Artifact-specific feature, ELF,
+tag/version and packaging checks remain mandatory before
+publishing. Hex publication reuses successful CI and artifact workflow results
+for the same commit, including manual publication, rather than invoking CI a
+third time. Previously published release hashes are never overwritten.
+
 ## Maintaining build configuration
 
 `mix.exs` keeps project metadata, dependencies and commands. Build-only helpers
