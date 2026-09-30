@@ -1,4 +1,28 @@
-# Embedded release builds
+# Embedded and raster release builds
+
+## macOS raster
+
+The main NIF matrix also builds `embedded-cpu` on native Apple Silicon and Intel
+macOS runners, separately from `macos_host`. The default Darwin archive has no
+variant suffix. Skia is source-built with a macOS 11 deployment target and uses
+macOS CoreText for fonts (the profile's FreeType feature is Linux-specific).
+Metal, AppKit and Linux graphics features are not enabled.
+
+Before upload, `scripts/check-macos-raster-artifact.exs` inspects the **unpacked
+archive** with `lipo`, `otool` and `nm`. It rejects mismatched architectures,
+missing NIF exports, newer deployment floors, non-system font libraries and GPU
+or windowing dependencies. CPU/font system frameworks remain allowed.
+
+`scripts/smoke-raster-artifact.exs` then uses the actual archive in fresh BEAM
+VMs without Rustler on the code path. It checks registered fonts, BW1/Gray2
+packing with and without dithering, cache reuse and corrupt-cache rejection.
+Its temporary checksum is derived solely for this isolated validation; only
+the Hex publication workflow generates the release checksum manifest. The
+parent project compiles in checksum-only mode, so no second NIF is built or
+substituted for the artifact under test.
+
+These archives are new after the 0.4.1 release. Never append them to an existing
+published release or fabricate release checksum entries.
 
 ## GNU DRM and RPi5
 

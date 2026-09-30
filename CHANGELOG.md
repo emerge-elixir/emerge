@@ -8,6 +8,8 @@
   `compiled_backends: []` preserves headless packed-frame previews, including
   BW1/Gray2 dithering, without building Rust/Skia or opening a window. Native
   window applications continue to use the separate `macos_host` executable.
+- Release checks for packaged macOS raster architecture, system-only dependencies
+  and deployment version, plus isolated BEAM load/render/cache/integrity probes.
 
 ## [0.4.1] - 2026-09-30
 

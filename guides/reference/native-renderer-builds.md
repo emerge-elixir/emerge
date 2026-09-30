@@ -221,6 +221,12 @@ Default macOS window applications still use the separate `macos_host` executable
 and Metal. Headless Metal is not supported. GPU/window NIF combinations are not
 silently mapped to the raster archive.
 
+Release jobs inspect each packaged Mach-O's architecture, deployment version,
+NIF entry point and system-only dependencies. Isolated BEAM probes without
+Rustler load the archive, render packed frames and registered text, reuse the
+cache, and reject a corrupted archive. These checks run on both macOS runners;
+Linux fixture tests alone do not qualify the macOS binaries.
+
 ## Develop the macOS host locally
 
 Normal macOS use downloads a versioned `macos_host` artifact. To rebuild and
@@ -267,10 +273,10 @@ cannot authorize a release. For a commit without a main-branch run, dispatch CI
 on that exact ref first.
 
 Both native build matrices depend on this gate. Artifact-specific feature, ELF,
-stock-rootfs load, tag/version and packaging checks remain mandatory before
-publishing. Hex publication reuses successful CI and artifact workflow results
-for the same commit, including manual publication, rather than invoking CI a
-third time. Previously published release hashes are never overwritten.
+Mach-O, packed-frame, stock-rootfs load, tag/version and packaging checks remain
+mandatory before publishing. Hex publication reuses successful CI and artifact
+workflow results for the same commit, including manual publication, rather than
+invoking CI a third time. Previously published release hashes are never overwritten.
 
 ## Maintaining build configuration
 
