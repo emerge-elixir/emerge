@@ -1,9 +1,9 @@
 # Build the native renderer
 
-Emerge normally downloads a precompiled Linux NIF or the matching macOS host.
+Emerge normally downloads a precompiled NIF or the matching macOS window host.
 The release matrix covers x86_64 GNU/musl, AArch64 GNU, ARMv7 hard-float,
-and RISC-V64 GNU. A
-source build is required only for unsupported targets or custom backend
+RISC-V64 GNU, and macOS raster on Apple Silicon/Intel (unreleased).
+A source build is required only for unsupported targets or custom backend
 combinations.
 
 ## Toolchain floor
@@ -76,6 +76,8 @@ The release artifact profiles are:
 | `armv7-unknown-linux-gnueabihf` | Minimal raster | DRM/headless OpenGL |
 | `x86_64-unknown-linux-musl` | Minimal raster | DRM/headless OpenGL |
 | `riscv64gc-unknown-linux-gnu` | Minimal raster | DRM/headless OpenGL |
+| `aarch64-apple-darwin` | Minimal raster (unreleased) | Separate `macos_host` window executable |
+| `x86_64-apple-darwin` | Minimal raster (unreleased) | Separate `macos_host` window executable |
 
 The ARMv7 artifact uses the hard-float ABI of the
 `armv7-nerves-linux-gnueabihf` toolchain used by Cortex-A7 systems such as
@@ -175,6 +177,49 @@ Useful checks when a Nerves source build fails:
 `BINDGEN_EXTRA_CLANG_ARGS`, `CFLAGS`, `CXXFLAGS`, `RUSTFLAGS`, and
 `SKIA_GN_ARGS` are build inputs. Emerge preserves caller values and appends the
 required Nerves flags. Override them only when diagnosing a toolchain problem.
+
+## Headless raster on macOS
+
+The upcoming release adds precompiled raster NIFs for Apple Silicon and Intel
+(macOS 11 or later). These are **not** part of the 0.4.1 artifact set; use a
+release containing both the new archives and their generated checksum manifest.
+Existing release assets are not replaced.
+
+Select raster at dependency compilation time:
+
+```elixir
+config :emerge, compiled_backends: []
+```
+
+At runtime, retain the existing headless frame sink:
+
+```elixir
+EmergeSkia.start(
+  otp_app: :my_app,
+  backend: :headless,
+  rendering_api: :raster,
+  width: 400,
+  height: 300,
+  headless: [target: self(), pixel_format: :bw1, dither: true]
+)
+```
+
+RGBA, RGB, grayscale, BW1 and Gray2 output use the existing CPU pipeline,
+including registered fonts and packed-frame dithering. This path creates no
+window and needs neither Rustler nor local Rust/Skia compilation when the
+published artifact is available. No macOS NIF opt-in environment variable is
+needed for `compiled_backends: []`.
+
+Darwin raster archives have no variant suffix:
+`libemerge_skia-v<VERSION>-nif-2.15-<ARCH>-apple-darwin.so.tar.gz`.
+Here `<ARCH>` is `aarch64` or `x86_64`; the `.so` payload is a Mach-O library.
+The same raster configuration on a Trellis target selects ARMv7 Linux, even
+when building firmware on a Mac. Do not select an architecture from the build
+host's OS instead of the target environment.
+
+Default macOS window applications still use the separate `macos_host` executable
+and Metal. Headless Metal is not supported. GPU/window NIF combinations are not
+silently mapped to the raster archive.
 
 ## Develop the macOS host locally
 

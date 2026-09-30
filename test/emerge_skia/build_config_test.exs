@@ -214,7 +214,9 @@ defmodule EmergeSkia.BuildConfigTest do
              "embedded-freetype"
            ]
 
-    assert BuildConfig.rustler_platform_features(%{}, [], []) == ["video-interop-support"]
+    assert BuildConfig.rustler_platform_features(%{"TARGET_OS" => "linux"}, [], []) == [
+             "video-interop-support"
+           ]
   end
 
   test "default_runtime_backend prefers wayland and falls back to drm" do
@@ -223,14 +225,106 @@ defmodule EmergeSkia.BuildConfigTest do
     assert BuildConfig.default_runtime_backend([]) == :wayland
   end
 
-  test "precompiled targets include 64-bit Linux and ARMv7 hard-float" do
+  test "precompiled targets include Linux and both macOS raster architectures" do
     assert BuildConfig.precompiled_targets() == [
              "x86_64-unknown-linux-gnu",
              "aarch64-unknown-linux-gnu",
              "armv7-unknown-linux-gnueabihf",
              "x86_64-unknown-linux-musl",
-             "riscv64gc-unknown-linux-gnu"
+             "riscv64gc-unknown-linux-gnu",
+             "aarch64-apple-darwin",
+             "x86_64-apple-darwin"
            ]
+  end
+
+  test "macOS raster uses the NIF, not the window host or a source build" do
+    env = %{"TARGET_OS" => "darwin"}
+
+    assert BuildConfig.rustler_platform_features(env, [], []) == ["embedded-cpu"]
+
+    for mix_env <- [:dev, :test, :prod] do
+      assert BuildConfig.load_native_runtime?(env, [], mix_env)
+    end
+
+    for target <- ["aarch64-apple-darwin", "x86_64-apple-darwin"] do
+      assert {:ok, %{variant: nil, backends: [], opengl_backends: [], vulkan_backends: []}} =
+               BuildConfig.precompiled_profile(env, [], [], [], target)
+
+      refute BuildConfig.force_precompiled_build?(
+               env: env,
+               checksum_path: __ENV__.file,
+               compiled_backends: [],
+               compiled_vulkan_backends: [],
+               target_resolver: fn _, _ -> {:ok, "nif-2.15-#{target}"} end
+             )
+
+      # The raster NIF must not silently stand in for an unsupported GPU NIF.
+      for {backends, vulkan, opengl} <- [
+            {[:macos], [], []},
+            {[], [], [:headless]},
+            {[], [:headless], []},
+            {[:wayland], [], [:wayland]}
+          ] do
+        assert {:error, :unsupported_profile} =
+                 BuildConfig.precompiled_profile(env, backends, vulkan, opengl, target)
+      end
+    end
+
+    refute BuildConfig.load_native_runtime?(env, [:macos], :prod)
+  end
+
+  test "Darwin target resolution selects the matching raster archive architecture" do
+    for {arch, target} <- [
+          {"aarch64", "aarch64-apple-darwin"},
+          {"arm", "aarch64-apple-darwin"},
+          {"x86_64", "x86_64-apple-darwin"}
+        ] do
+      assert {:ok, "nif-2.15-" <> ^target} =
+               RustlerPrecompiled.target(
+                 %{
+                   os_type: {:unix, :darwin},
+                   target_system: %{arch: arch, vendor: "apple", os: "darwin25.0.0"},
+                   word_size: 8,
+                   nif_version: "2.15"
+                 },
+                 BuildConfig.precompiled_targets(),
+                 BuildConfig.precompiled_nif_versions()
+               )
+    end
+  end
+
+  test "Trellis targets retain ARMv7 raster selection on either host OS" do
+    env = %{
+      "MIX_TARGET" => "trellis",
+      "CC" => "armv7-nerves-linux-gnueabihf-gcc",
+      "TARGET_ARCH" => "armv7",
+      "TARGET_OS" => "linux",
+      "TARGET_ABI" => "gnueabihf"
+    }
+
+    for {os_type, system} <- [
+          {{:unix, :darwin}, %{arch: "aarch64", vendor: "apple", os: "darwin25.0.0"}},
+          {{:unix, :linux}, %{arch: "x86_64", vendor: "pc", os: "linux", abi: "gnu"}}
+        ] do
+      target_system = RustlerPrecompiled.maybe_override_with_env_vars(system, &Map.get(env, &1))
+
+      assert {:ok, "nif-2.15-armv7-unknown-linux-gnueabihf"} =
+               RustlerPrecompiled.target(
+                 %{
+                   os_type: os_type,
+                   target_system: target_system,
+                   word_size: 8,
+                   nif_version: "2.15"
+                 },
+                 BuildConfig.precompiled_targets(),
+                 BuildConfig.precompiled_nif_versions()
+               )
+    end
+
+    assert BuildConfig.rustler_platform_features(env, [], []) == ["embedded-cpu"]
+
+    assert {:ok, %{variant: nil}} =
+             BuildConfig.precompiled_profile(env, [], "armv7-unknown-linux-gnueabihf")
   end
 
   test "embedded musl and RISC-V targets only select published profiles" do

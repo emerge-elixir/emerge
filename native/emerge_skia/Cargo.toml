@@ -51,7 +51,8 @@ bench-diagnostics = []
 # Nerves raster-only builds provide fonts as registered assets and do not ship
 # desktop fontconfig/freetype development libraries.
 embedded-freetype = ["skia-safe/embed-freetype"]
-# ARM/Nerves headless raster profile. CPU-rendered SVG is always available;
+# Minimal headless raster profile, including ARM/Nerves and macOS artifacts.
+# CPU-rendered SVG is always available;
 # desktop, GPU, and video capabilities remain absent unless explicitly selected.
 embedded-cpu = ["embedded-freetype"]
 video-interop-support = ["dep:video-interop"]
