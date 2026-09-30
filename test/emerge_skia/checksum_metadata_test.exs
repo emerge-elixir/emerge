@@ -37,6 +37,7 @@ defmodule EmergeSkia.ChecksumMetadataTest do
            |> Enum.map(&elem(&1, 0))
            |> Enum.sort() == [
              "libemerge_skia-v#{version}-nif-2.15-aarch64-unknown-linux-gnu--drm.so.tar.gz",
+             "libemerge_skia-v#{version}-nif-2.15-aarch64-unknown-linux-gnu--drm_all.so.tar.gz",
              "libemerge_skia-v#{version}-nif-2.15-aarch64-unknown-linux-gnu--drm_vulkan.so.tar.gz",
              "libemerge_skia-v#{version}-nif-2.15-aarch64-unknown-linux-gnu--drm_wayland.so.tar.gz",
              "libemerge_skia-v#{version}-nif-2.15-aarch64-unknown-linux-gnu--headless_vulkan.so.tar.gz",
@@ -49,6 +50,7 @@ defmodule EmergeSkia.ChecksumMetadataTest do
              "libemerge_skia-v#{version}-nif-2.15-riscv64gc-unknown-linux-gnu--opengl.so.tar.gz",
              "libemerge_skia-v#{version}-nif-2.15-riscv64gc-unknown-linux-gnu.so.tar.gz",
              "libemerge_skia-v#{version}-nif-2.15-x86_64-unknown-linux-gnu--drm.so.tar.gz",
+             "libemerge_skia-v#{version}-nif-2.15-x86_64-unknown-linux-gnu--drm_all.so.tar.gz",
              "libemerge_skia-v#{version}-nif-2.15-x86_64-unknown-linux-gnu--drm_vulkan.so.tar.gz",
              "libemerge_skia-v#{version}-nif-2.15-x86_64-unknown-linux-gnu--drm_wayland.so.tar.gz",
              "libemerge_skia-v#{version}-nif-2.15-x86_64-unknown-linux-gnu--headless_vulkan.so.tar.gz",

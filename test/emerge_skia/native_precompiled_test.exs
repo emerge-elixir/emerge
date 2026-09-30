@@ -20,6 +20,37 @@ defmodule EmergeSkia.NativePrecompiledTest do
     assert_run(fixture, "loaded")
   end
 
+  for {backends, vulkan, suffix} <- [
+        {[:drm], [], "--drm"},
+        {[drm: [:vulkan]], nil, "--drm_vulkan"},
+        {[drm: :all], nil, "--drm_all"},
+        {[:drm], [:drm], "--drm_all"}
+      ] do
+    @backends backends
+    @vulkan vulkan
+    @suffix suffix
+    test "RPi5 downloads #{inspect(backends)}/#{inspect(vulkan)} without desktop fallback or Rustler" do
+      fixture =
+        fixture(@backends, @suffix,
+          target: "aarch64-unknown-linux-gnu",
+          compiler: "aarch64-nerves-linux-gnu-gcc",
+          arch: "aarch64",
+          abi: "gnu",
+          vulkan: @vulkan
+        )
+
+      server = serve_archive(fixture.archive)
+      assert_run(fixture, "loaded", "http://127.0.0.1:#{server.port}")
+
+      assert Task.await(server.task, 30_000) ==
+               "/releases/download/v#{fixture.version}/#{fixture.file_name}"
+
+      assert_run(fixture, "loaded")
+      File.write!(Path.join(fixture.cache, fixture.file_name), fixture.archive <> "corrupt")
+      assert_run(fixture, "integrity check failed")
+    end
+  end
+
   test "failed checksum validation restores the original Nerves target environment" do
     fixture = fixture([], "")
     File.write!(Path.join(fixture.cache, fixture.file_name), fixture.archive <> "corrupt")
@@ -115,10 +146,20 @@ defmodule EmergeSkia.NativePrecompiledTest do
         do: "",
         else: "Application.put_env(:emerge, :compiled_backends, #{inspect(backends)})"
 
+    configure_vulkan =
+      case Keyword.get(opts, :vulkan) do
+        nil ->
+          ""
+
+        backends ->
+          "Application.put_env(:emerge, :compiled_vulkan_backends, #{inspect(backends)})"
+      end
+
     File.write!(Path.join(root, "probe.exs"), """
     Mix.start()
     Code.compile_file("mix.exs")
     #{configure_backends}
+    #{configure_vulkan}
     Code.compile_file(#{inspect(Path.join(@root, "lib/emerge_skia/build_config.ex"))})
     :code.add_patha(~c"#{app_dir}/ebin")
     false = Code.ensure_loaded?(Rustler)

@@ -95,15 +95,25 @@ jobs:
             os: ubuntu-24.04
             use_cross: false
             variant: "drm"
-            cargo_args: "--no-default-features --features drm"
-            system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev libxkbcommon-dev"
+            cargo_args: "--no-default-features --features drm,embedded-freetype"
+            system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev"
+            embedded_skia: true
           - name: linux_drm_vulkan
             target: x86_64-unknown-linux-gnu
             os: ubuntu-24.04
             use_cross: false
             variant: "drm_vulkan"
             cargo_args: "--no-default-features --features drm-vulkan,embedded-freetype"
-            system_packages: "libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev"
+            system_packages: "libgbm-dev libdrm-dev"
+            embedded_skia: true
+          - name: linux_drm_all
+            target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+            use_cross: false
+            variant: "drm_all"
+            cargo_args: "--no-default-features --features drm-all,embedded-freetype"
+            system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev"
+            embedded_skia: true
           - name: linux_drm_wayland
             target: x86_64-unknown-linux-gnu
             os: ubuntu-24.04
@@ -153,15 +163,25 @@ jobs:
             os: ubuntu-24.04-arm
             use_cross: false
             variant: "drm"
-            cargo_args: "--no-default-features --features drm"
-            system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev libxkbcommon-dev"
+            cargo_args: "--no-default-features --features drm,embedded-freetype"
+            system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev"
+            embedded_skia: true
           - name: linux_aarch64_drm_vulkan
             target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
             use_cross: false
             variant: "drm_vulkan"
             cargo_args: "--no-default-features --features drm-vulkan,embedded-freetype"
-            system_packages: "libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev"
+            system_packages: "libgbm-dev libdrm-dev"
+            embedded_skia: true
+          - name: linux_aarch64_drm_all
+            target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            use_cross: false
+            variant: "drm_all"
+            cargo_args: "--no-default-features --features drm-all,embedded-freetype"
+            system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev"
+            embedded_skia: true
           - name: linux_aarch64_drm_wayland
             target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
