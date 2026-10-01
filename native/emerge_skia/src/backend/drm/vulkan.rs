@@ -404,6 +404,7 @@ impl ScanoutLifecycle {
         Ok(())
     }
 
+    #[cfg(test)]
     fn page_flip_timeout(&mut self) -> Result<(), String> {
         self.poison("DRM Vulkan page-flip timeout")
     }
@@ -432,6 +433,31 @@ impl ScanoutLifecycle {
         candidate.imported_video_frames = 0;
         candidate.imported_video_streams.clear();
         Ok(slot)
+    }
+
+    /// A disconnect alone is not ownership loss. These ordered barriers must
+    /// succeed before ANY slot/fence can be reused, including an in-flight flip
+    /// whose event was lost during hotplug. Never apply this to poisoned state.
+    fn detach_output(
+        &mut self,
+        gpu_idle: impl FnOnce() -> Result<(), String>,
+        disable_scanout: impl FnOnce() -> Result<(), String>,
+        drain_events: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.ensure_healthy()?;
+        if self.rendering.is_some() {
+            return Err("cannot detach DRM Vulkan output during render submission".into());
+        }
+        gpu_idle()?;
+        disable_scanout()?;
+        drain_events()?;
+        self.slots = (0..self.slots.len())
+            .map(|_| ScanoutSlot::available())
+            .collect();
+        self.prepared = None;
+        self.in_flight = None;
+        self.current = None;
+        Ok(())
     }
 
     fn poison<T>(&mut self, message: impl Into<String>) -> Result<T, String> {
@@ -505,6 +531,7 @@ struct PresenterSession {
     kms_state: Option<PreparedKmsState>,
     kms: Option<KmsOutputProbe>,
     lifecycle: ScanoutLifecycle,
+    output_suspended: bool,
 }
 
 impl PresenterSession {
@@ -706,6 +733,7 @@ impl PresenterSession {
                 device: Some(device),
                 instance: Some(instance),
                 lifecycle: ScanoutLifecycle::new(MIN_SCANOUT_SLOTS)?,
+                output_suspended: false,
             },
             report,
         ))
@@ -896,7 +924,12 @@ impl PresenterSession {
         let result = self.kms().card.atomic_commit(flags, request);
         drop(attempt_fence);
         let classified = AtomicAttemptResult::from_io_result(&result);
-        self.lifecycle.complete_atomic_attempt(classified)?;
+        // A rejected commit may race an ordinary disconnect. Keep the prepared
+        // identity/fence until the caller checks the connector and either proves
+        // safe detachment or takes the existing terminal quarantine path.
+        if !matches!(classified, AtomicAttemptResult::Terminal(_)) {
+            self.lifecycle.complete_atomic_attempt(classified)?;
+        }
         if classified == AtomicAttemptResult::Committed {
             self.slots[slot_index].committed_at = Some(Instant::now());
         }
@@ -935,6 +968,61 @@ impl PresenterSession {
         Ok(presented)
     }
 
+    fn suspend_output(
+        &mut self,
+        video_registry: &Arc<crate::video::VideoRegistry>,
+    ) -> Result<(), String> {
+        if self.output_suspended {
+            return Ok(());
+        }
+        let device = self
+            .device
+            .as_ref()
+            .ok_or("DRM Vulkan device already dropped")?;
+        let kms = self
+            .kms
+            .as_ref()
+            .ok_or("DRM Vulkan KMS owner already dropped")?;
+        let props = self
+            .kms_state
+            .as_ref()
+            .ok_or("DRM Vulkan KMS state already dropped")?;
+        self.lifecycle.detach_output(
+            || device.wait_idle("DRM Vulkan display detach"),
+            || disable_output(kms, props),
+            || drain_detached_events(kms),
+        )?;
+        self.output_suspended = true;
+        self.slots.iter_mut().for_each(|slot| {
+            slot.capture_generation = None;
+            slot.captured.take();
+            slot.committed_at = None;
+            slot.video_needs_cleanup = false;
+        });
+        // The first reused slot need not contain the last visible scene. A
+        // static slide must actually draw again, not just submit a new flip.
+        self.engine
+            .as_mut()
+            .ok_or("DRM Vulkan engine already dropped")?
+            .renderer_mut()?
+            .invalidate_visible_frame_fingerprint();
+        // Retain the current video image (including one-shot submissions), but
+        // don't strand completed retirement/source leases while HDMI is absent.
+        self.reap_video_cleanup(video_registry)
+    }
+
+    fn reap_video_cleanup(
+        &mut self,
+        video_registry: &Arc<crate::video::VideoRegistry>,
+    ) -> Result<(), String> {
+        self.engine
+            .as_mut()
+            .ok_or("DRM Vulkan engine already dropped")?
+            .renderer_mut()?
+            .reap_vulkan_video_cleanup(video_registry)?;
+        Ok(())
+    }
+
     fn normal_shutdown(&mut self) -> Result<(), String> {
         if self.lifecycle.in_flight.is_some()
             || self.lifecycle.prepared.is_some()
@@ -959,7 +1047,9 @@ impl PresenterSession {
         engine.shutdown_ganesh();
         self.engine.take();
 
-        if let Some(state) = self.kms_state.as_ref() {
+        if !self.output_suspended
+            && let Some(state) = self.kms_state.as_ref()
+        {
             state.restore(self.kms(), PAGE_FLIP_TIMEOUT)?;
         }
         let state = self
@@ -1309,31 +1399,68 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
         }
 
         let now = Instant::now();
-        if session.lifecycle.in_flight.is_some()
-            && page_flip_deadline.is_some_and(|deadline| now >= deadline)
-        {
-            let _ = session.lifecycle.page_flip_timeout();
-            terminal = Some("DRM Vulkan page-flip timeout".into());
-            break;
-        }
-        if now >= next_hotplug {
-            match probe_hotplug_unchanged(&session, &config) {
-                Ok(true) => next_hotplug = now + HOTPLUG_INTERVAL,
-                Ok(false) => {
-                    terminal = Some("DRM Vulkan output topology changed during trial".into());
-                    break;
-                }
+        let flip_timed_out = session.lifecycle.in_flight.is_some()
+            && page_flip_deadline.is_some_and(|deadline| now >= deadline);
+        if now >= next_hotplug || flip_timed_out {
+            let available = match probe_output_available(
+                &session,
+                session.output_suspended || flip_timed_out,
+            ) {
+                Ok(available) => available,
                 Err(error) => {
                     terminal = Some(error);
                     break;
                 }
+            };
+            let action = output_action(session.output_suspended, available, flip_timed_out);
+            if matches!(action, OutputAction::Suspend | OutputAction::Repair) {
+                if let Err(error) = session.suspend_output(&video_registry) {
+                    terminal = Some(format!("DRM Vulkan output detach failed: {error}"));
+                    break;
+                }
+                native_log.warning(
+                    "drm_vulkan",
+                    if flip_timed_out {
+                        "missing page flip recovered by GPU-idle and blocking KMS disable"
+                    } else {
+                        "selected output/mode unavailable; scanout suspended, waiting for reconnect"
+                    },
+                );
+                page_flip_deadline = None;
+                retry_at = None;
             }
+            if matches!(action, OutputAction::Resume | OutputAction::Repair) {
+                session.output_suspended = false;
+                initial_commit = true;
+                desired_generation = desired_generation.wrapping_add(1);
+                // Force replay of the latest scene, including a static UI with
+                // no new Solve/render event after reconnection.
+                committed_generation = desired_generation.wrapping_sub(1);
+                native_log.info(
+                    "drm_vulkan",
+                    "selected output returned; remodesetting latest scene",
+                );
+            }
+            next_hotplug = Instant::now() + HOTPLUG_INTERVAL;
         }
         if retry_at.is_some_and(|deadline| now >= deadline) {
             retry_at = None;
         }
 
-        if session.lifecycle.prepared.is_none()
+        // A completion/release task may finish just after detachment. Continue
+        // reaping without drawing so an unplugged monitor cannot pin all camera
+        // producer buffers until somebody reconnects it.
+        if session.output_suspended
+            && let Err(error) = session.reap_video_cleanup(&video_registry)
+        {
+            terminal = Some(format!(
+                "DRM Vulkan suspended video cleanup failed: {error}"
+            ));
+            break;
+        }
+
+        if !session.output_suspended
+            && session.lifecycle.prepared.is_none()
             && desired_generation != committed_generation
             && session.lifecycle.rendering.is_none()
         {
@@ -1413,6 +1540,27 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
                         stats.record_drm_atomic_commit_ioctl(started.elapsed());
                         stats.record_drm_primary_commit_ebusy();
                     }
+                    // Even a zero EBUSY retry budget must not turn a cable
+                    // disconnect into a renderer/camera session replacement.
+                    if matches!(probe_output_available(&session, false), Ok(false)) {
+                        match session.suspend_output(&video_registry) {
+                            Ok(()) => {
+                                page_flip_deadline = None;
+                                retry_at = None;
+                                next_hotplug = Instant::now() + HOTPLUG_INTERVAL;
+                                native_log.warning(
+                                    "drm_vulkan",
+                                    "output disappeared during busy commit; scanout suspended",
+                                );
+                                continue;
+                            }
+                            Err(error) => {
+                                terminal =
+                                    Some(format!("DRM Vulkan busy-commit detach failed: {error}"));
+                                break;
+                            }
+                        }
+                    }
                     match commit_retry_policy.on_busy() {
                         CommitBusyAction::RetryAfter(delay) => {
                             retry_at = Some(Instant::now() + delay);
@@ -1438,7 +1586,31 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
                     }
                 }
                 Ok(AtomicAttemptResult::Terminal(kind)) => {
-                    terminal = Some(format!("terminal DRM Vulkan atomic commit: {kind:?}"));
+                    let available = probe_output_available(&session, true);
+                    let retry_modeset = available == Ok(true)
+                        && !initial_commit
+                        && kind == AtomicCommitErrorKind::Invalid;
+                    if available == Ok(false) || retry_modeset {
+                        match session.suspend_output(&video_registry) {
+                            Ok(()) => {
+                                page_flip_deadline = None;
+                                retry_at = None;
+                                next_hotplug = Instant::now();
+                                native_log.warning(
+                                    "drm_vulkan",
+                                    "output changed during commit; scanout suspended for remodeset",
+                                );
+                                continue;
+                            }
+                            Err(error) => {
+                                terminal = Some(format!(
+                                    "DRM Vulkan commit {kind:?}; detach failed: {error}"
+                                ));
+                            }
+                        }
+                    } else {
+                        terminal = Some(format!("terminal DRM Vulkan atomic commit: {kind:?}"));
+                    }
                     break;
                 }
                 Err(error) => {
@@ -1452,7 +1624,8 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
             .into_iter()
             .flatten()
             .min();
-        let timeout = if session.lifecycle.in_flight.is_none()
+        let timeout = if !session.output_suspended
+            && session.lifecycle.in_flight.is_none()
             && session.lifecycle.prepared.is_none()
             && desired_generation != committed_generation
         {
@@ -1486,6 +1659,15 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
             break;
         }
         if pollfds[0].revents & (libc::POLLIN | libc::POLLPRI) != 0 {
+            if session.output_suspended {
+                // The disable barrier has retired all old presentations. No
+                // capture/timing hooks may be published for detached events.
+                if let Err(error) = drain_detached_events(session.kms()) {
+                    terminal = Some(error);
+                    break;
+                }
+                continue;
+            }
             match session.receive_page_flips() {
                 Ok(flips) => {
                     for (sequence, hooks, retired_slot) in flips {
@@ -1597,6 +1779,14 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
     if let Err(error) = video_registry.set_prime_video_available(false) {
         native_log.warning("video", format!("failed to disable PRIME video: {error}"));
     }
+    // Stop may race unplug before the periodic probe. Detach safely rather
+    // than waiting for a lost flip or restoring a now-disconnected old mode.
+    if terminal.is_none()
+        && matches!(probe_output_available(&session, true), Ok(false))
+        && let Err(error) = session.suspend_output(&video_registry)
+    {
+        terminal = Some(error);
+    }
     if terminal.is_none()
         && session.lifecycle.in_flight.is_some()
         && let Err(error) = resolve_shutdown_page_flip(&mut session, PAGE_FLIP_TIMEOUT)
@@ -1691,16 +1881,101 @@ fn resolve_shutdown_page_flip(
     Ok(())
 }
 
-fn probe_hotplug_unchanged(
-    session: &PresenterSession,
-    config: &DrmRunConfig,
-) -> Result<bool, String> {
-    let probe = probe_card(duplicate_card(&session.kms().card)?, config.requested_size)?;
-    Ok(probe.connector == session.kms().connector
-        && probe.crtc == session.kms().crtc
-        && probe.primary == session.kms().primary
-        && probe.dimensions == session.kms().dimensions
-        && mode_frame_interval(&probe.mode) == mode_frame_interval(&session.kms().mode))
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OutputAction {
+    Keep,
+    Suspend,
+    Resume,
+    Repair,
+}
+
+fn output_action(suspended: bool, available: bool, flip_timed_out: bool) -> OutputAction {
+    match (suspended, available, flip_timed_out) {
+        (false, false, _) => OutputAction::Suspend,
+        (true, true, _) => OutputAction::Resume,
+        (false, true, true) => OutputAction::Repair,
+        _ => OutputAction::Keep,
+    }
+}
+
+fn probe_output_available(session: &PresenterSession, force_probe: bool) -> Result<bool, String> {
+    let kms = session.kms();
+    // Cached connector metadata may keep an empty/stale mode list after HPD.
+    // Refresh EDID/modes while waiting for reconnect or repairing a fault, not
+    // on normal active polling (forced probes can block/flicker).
+    let connector = kms
+        .card
+        .get_connector(kms.connector, force_probe)
+        .map_err(|error| format!("failed to probe leased DRM output: {error}"))?;
+    // A lease deliberately pins connector, routing, and mode. Do not steal a
+    // sibling viewport's output or silently substitute an incompatible mode.
+    Ok(
+        connector.state() == drm::control::connector::State::Connected
+            && connector
+                .modes()
+                .iter()
+                .any(|mode| super::core::mode_id(mode) == super::core::mode_id(&kms.mode)),
+    )
+}
+
+fn disable_output(kms: &KmsOutputProbe, props: &PreparedKmsState) -> Result<(), String> {
+    let mut request = atomic::AtomicModeReq::new();
+    request.add_property(
+        kms.primary,
+        prop_handle(props.plane_infos(), "FB_ID")?,
+        property::Value::Framebuffer(None),
+    );
+    request.add_property(
+        kms.primary,
+        prop_handle(props.plane_infos(), "CRTC_ID")?,
+        property::Value::CRTC(None),
+    );
+    request.add_property(
+        kms.primary,
+        prop_handle(props.plane_infos(), "IN_FENCE_FD")?,
+        property::Value::SignedRange(-1),
+    );
+    request.add_property(
+        kms.crtc,
+        prop_handle(props.crtc_infos(), "ACTIVE")?,
+        property::Value::Boolean(false),
+    );
+    request.add_property(
+        kms.crtc,
+        prop_handle(props.crtc_infos(), "MODE_ID")?,
+        property::Value::Blob(0),
+    );
+    request.add_property(
+        kms.connector,
+        prop_handle(props.connector_infos(), "CRTC_ID")?,
+        property::Value::CRTC(None),
+    );
+    // No NONBLOCK or PAGE_FLIP_EVENT: success acknowledges stopped scanout and
+    // preceding commits, even if their page-flip notification was lost. GPU idle
+    // alone would NOT prove that KMS had stopped reading the old framebuffer.
+    kms.card
+        .atomic_commit(AtomicCommitFlags::ALLOW_MODESET, request)
+        .map_err(|error| format!("blocking DRM output disable failed: {error}"))
+}
+
+fn drain_detached_events(kms: &KmsOutputProbe) -> Result<(), String> {
+    loop {
+        let mut fds = [libc::pollfd {
+            fd: kms.card.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        }];
+        poll_fds(&mut fds, Duration::ZERO)?;
+        if fds[0].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+            return Err("DRM fd failed while draining detached output".into());
+        }
+        if fds[0].revents & (libc::POLLIN | libc::POLLPRI) == 0 {
+            return Ok(());
+        }
+        kms.card
+            .receive_events()
+            .map_err(|error| format!("failed to drain detached DRM events: {error}"))?;
+    }
 }
 
 fn poll_fds(fds: &mut [libc::pollfd], timeout: Duration) -> Result<(), String> {
@@ -1927,6 +2202,124 @@ mod tests {
         assert!(!policy.retain_one());
         assert_eq!(policy.retained_sessions, 1);
         assert!(policy.admit().is_err());
+    }
+
+    #[test]
+    fn detach_requires_gpu_idle_then_blocking_disable_then_old_event_drain() {
+        for fail_at in 0..3 {
+            let mut lifecycle = ScanoutLifecycle::new(3).unwrap();
+            let slot = prepare(&mut lifecycle, 1);
+            lifecycle
+                .complete_atomic_attempt(AtomicAttemptResult::Committed)
+                .unwrap();
+            let calls = std::cell::RefCell::new(Vec::new());
+            let step = |index| {
+                calls.borrow_mut().push(index);
+                if index == fail_at {
+                    Err("injected barrier failure".into())
+                } else {
+                    Ok(())
+                }
+            };
+            assert!(
+                lifecycle
+                    .detach_output(|| step(0), || step(1), || step(2))
+                    .is_err()
+            );
+            assert_eq!(*calls.borrow(), (0..=fail_at).collect::<Vec<_>>());
+            assert_eq!(lifecycle.in_flight, Some(slot));
+            assert_eq!(lifecycle.slots[slot].state, LogicalState::CommitInFlight);
+            assert!(lifecycle.slots[slot].refs.gpu_submission);
+        }
+    }
+
+    #[test]
+    fn detach_retires_current_in_flight_and_unaccepted_prepared_only_after_barriers() {
+        let mut lifecycle = ScanoutLifecycle::new(3).unwrap();
+        let current = prepare(&mut lifecycle, 1);
+        lifecycle
+            .complete_atomic_attempt(AtomicAttemptResult::Committed)
+            .unwrap();
+        lifecycle.page_flip().unwrap();
+        let in_flight = prepare(&mut lifecycle, 2);
+        lifecycle
+            .complete_atomic_attempt(AtomicAttemptResult::Committed)
+            .unwrap();
+        let prepared = prepare(&mut lifecycle, 3);
+        assert_eq!(lifecycle.current, Some(current));
+        assert_eq!(lifecycle.in_flight, Some(in_flight));
+        assert_eq!(lifecycle.prepared, Some(prepared));
+        let calls = std::cell::RefCell::new(Vec::new());
+        let step = |name| {
+            calls.borrow_mut().push(name);
+            Ok(())
+        };
+        lifecycle
+            .detach_output(|| step("gpu"), || step("kms"), || step("events"))
+            .unwrap();
+        assert_eq!(*calls.borrow(), vec!["gpu", "kms", "events"]);
+        assert!(lifecycle.current.is_none());
+        assert!(lifecycle.in_flight.is_none());
+        assert!(lifecycle.prepared.is_none());
+        assert!(
+            lifecycle
+                .slots
+                .iter()
+                .all(|slot| slot.state == LogicalState::Available
+                    && slot.refs.reusable()
+                    && slot.master_sync_file.is_none()
+                    && slot.generation.is_none())
+        );
+        // There was no presentation: no old capture/timing hook was emitted.
+        assert!(lifecycle.begin_render().is_ok());
+    }
+
+    #[test]
+    fn hotplug_never_clears_terminal_or_partial_render_ownership() {
+        let mut lifecycle = ScanoutLifecycle::new(3).unwrap();
+        lifecycle.begin_render().unwrap();
+        assert!(
+            lifecycle
+                .detach_output(|| panic!("must not attempt repair"), || Ok(()), || Ok(()))
+                .is_err()
+        );
+        let _ = lifecycle.poison::<()>("device lost");
+        assert!(
+            lifecycle
+                .detach_output(|| panic!("must not attempt repair"), || Ok(()), || Ok(()))
+                .is_err()
+        );
+        assert!(lifecycle.begin_render().is_err());
+    }
+
+    #[test]
+    fn repeated_reconnects_reuse_bounded_inventory_with_fresh_presentation_identity() {
+        let mut lifecycle = ScanoutLifecycle::new(3).unwrap();
+        for generation in 1..=100 {
+            prepare(&mut lifecycle, generation);
+            lifecycle
+                .complete_atomic_attempt(AtomicAttemptResult::Committed)
+                .unwrap();
+            assert_eq!(lifecycle.page_flip().unwrap().generation, generation);
+            lifecycle
+                .detach_output(|| Ok(()), || Ok(()), || Ok(()))
+                .unwrap();
+            assert_eq!(lifecycle.slots.len(), MIN_SCANOUT_SLOTS);
+            assert!(lifecycle.terminal_error.is_none());
+        }
+    }
+
+    #[test]
+    fn long_absence_and_fast_replug_are_recoverable_without_a_retry_budget() {
+        assert_eq!(output_action(false, false, false), OutputAction::Suspend);
+        assert_eq!(output_action(false, false, true), OutputAction::Suspend);
+        for _ in 0..10_000 {
+            assert_eq!(output_action(true, false, false), OutputAction::Keep);
+        }
+        assert_eq!(output_action(true, true, false), OutputAction::Resume);
+        // A disconnect/reconnect between probes may only be visible as a lost flip.
+        assert_eq!(output_action(false, true, true), OutputAction::Repair);
+        assert_eq!(output_action(false, true, false), OutputAction::Keep);
     }
 
     #[test]
