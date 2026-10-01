@@ -20,6 +20,22 @@ defmodule Emerge.MacosRasterArtifactTest do
     end
   end
 
+  test "accepts the raster dependency list reported by macOS release CI" do
+    libraries = [
+      "/usr/lib/libc++.1.dylib",
+      "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/ApplicationServices",
+      "/usr/lib/libiconv.2.dylib",
+      "/usr/lib/libSystem.B.dylib",
+      "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+      "/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics",
+      "/System/Library/Frameworks/CoreText.framework/Versions/A/CoreText"
+    ]
+
+    for {target, arch} <- [{"aarch64-apple-darwin", "arm64"}, {"x86_64-apple-darwin", "x86_64"}] do
+      assert :ok = validate(arch: arch, target: target, libraries: libraries)
+    end
+  end
+
   test "rejects wrong/universal architecture and missing NIF exports" do
     for arch <- ["x86_64", "arm64 x86_64"] do
       assert_raise ArgumentError, ~r/architecture/, fn -> validate(arch: arch) end
@@ -33,6 +49,11 @@ defmodule Emerge.MacosRasterArtifactTest do
           "/opt/homebrew/lib/libfreetype.6.dylib",
           "/usr/local/lib/libfontconfig.1.dylib",
           "@rpath/libfreetype.6.dylib",
+          "/opt/homebrew/opt/libiconv/lib/libiconv.2.dylib",
+          "/usr/local/opt/libiconv/lib/libiconv.2.dylib",
+          "@rpath/libiconv.2.dylib",
+          "@loader_path/libiconv.2.dylib",
+          "/usr/lib/libiconv.3.dylib",
           "/System/Library/Frameworks/Metal.framework/Versions/A/Metal",
           "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit"
         ] do
@@ -43,6 +64,14 @@ defmodule Emerge.MacosRasterArtifactTest do
 
     assert_raise ArgumentError, ~r/Unexpected raster dependencies/, fn ->
       validate(libraries: [])
+    end
+  end
+
+  test "dependency failures report only rejected libraries" do
+    library = "/opt/homebrew/opt/libiconv/lib/libiconv.2.dylib"
+
+    assert_raise ArgumentError, "Unexpected raster dependencies: #{inspect([library])}", fn ->
+      validate(libraries: @libraries ++ ["/usr/lib/libiconv.2.dylib", library])
     end
   end
 

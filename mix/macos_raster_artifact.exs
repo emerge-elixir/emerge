@@ -2,7 +2,13 @@ defmodule Emerge.Mix.MacosRasterArtifact do
   @moduledoc false
 
   @architectures %{"aarch64-apple-darwin" => "arm64", "x86_64-apple-darwin" => "x86_64"}
-  @libraries ~w(/usr/lib/libSystem.B.dylib /usr/lib/libc++.1.dylib /usr/lib/libobjc.A.dylib)
+  # Allow Apple's system libiconv, not Homebrew or unresolved rpath substitutes.
+  @libraries ~w(
+    /usr/lib/libSystem.B.dylib
+    /usr/lib/libc++.1.dylib
+    /usr/lib/libobjc.A.dylib
+    /usr/lib/libiconv.2.dylib
+  )
   # rust-skia links ApplicationServices for the macOS CPU/font APIs.
   @frameworks ~w(ApplicationServices CoreFoundation CoreGraphics CoreServices CoreText Foundation)
 
@@ -29,8 +35,10 @@ defmodule Emerge.Mix.MacosRasterArtifact do
       |> List.flatten()
       |> Enum.reject(&(&1 == String.trim(install_name)))
 
-    if needed == [] or Enum.any?(needed, &(not system_library?(&1))) do
-      raise ArgumentError, "Unexpected raster dependencies: #{inspect(needed)}"
+    unexpected = Enum.reject(needed, &system_library?/1)
+
+    if needed == [] or unexpected != [] do
+      raise ArgumentError, "Unexpected raster dependencies: #{inspect(unexpected)}"
     end
 
     minimums =
