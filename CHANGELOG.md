@@ -13,6 +13,12 @@
 
 ### Fixed
 
+- DRM/Vulkan presentation recovers from display unplug/replug without replacing
+  the renderer or video endpoints. Scanout safely pauses until the same connector
+  and selected mode return, then remodesets and redraws the latest scene, including
+  static content. Completed video resources continue to retire while disconnected.
+  Initial startup still requires a display; GPU/device loss and failed ownership
+  barriers remain terminal.
 - Checksum-only NIF compilation no longer emits an unused-attribute warning,
   allowing release probes to compile with warnings treated as errors.
 - Linux CI Cargo caches are isolated by matrix job so the minimum-Elixir job
