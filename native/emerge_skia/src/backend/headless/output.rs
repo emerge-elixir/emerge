@@ -1,13 +1,14 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum FramePixelFormat {
     Rgba8888Premul,
+    Bgra8888Premul,
     Gray8Opaque,
 }
 
 impl FramePixelFormat {
     fn bytes_per_pixel(self) -> usize {
         match self {
-            Self::Rgba8888Premul => 4,
+            Self::Rgba8888Premul | Self::Bgra8888Premul => 4,
             Self::Gray8Opaque => 1,
         }
     }
@@ -333,17 +334,28 @@ fn distribute_error(
     }
 }
 
+/// Returns a 4-byte pixel as `[r, g, b, a]` regardless of its stored byte order.
+pub(super) fn rgba_at(format: FramePixelFormat, px: &[u8]) -> [u8; 4] {
+    match format {
+        FramePixelFormat::Bgra8888Premul => [px[2], px[1], px[0], px[3]],
+        FramePixelFormat::Rgba8888Premul | FramePixelFormat::Gray8Opaque => {
+            [px[0], px[1], px[2], px[3]]
+        }
+    }
+}
+
 fn luma_at(source: FrameSource<'_>, x: usize, y: usize) -> u8 {
     let row = y * source.row_bytes;
     match source.format {
         FramePixelFormat::Gray8Opaque => source.data[row + x],
-        FramePixelFormat::Rgba8888Premul => {
+        FramePixelFormat::Rgba8888Premul | FramePixelFormat::Bgra8888Premul => {
             let offset = row + x * 4;
-            let rgba = &source.data[offset..offset + 4];
-            let inverse_alpha = 255_u16 - u16::from(rgba[3]);
-            let red = (u16::from(rgba[0]) + inverse_alpha).min(255);
-            let green = (u16::from(rgba[1]) + inverse_alpha).min(255);
-            let blue = (u16::from(rgba[2]) + inverse_alpha).min(255);
+            let [red, green, blue, alpha] =
+                rgba_at(source.format, &source.data[offset..offset + 4]);
+            let inverse_alpha = 255_u16 - u16::from(alpha);
+            let red = (u16::from(red) + inverse_alpha).min(255);
+            let green = (u16::from(green) + inverse_alpha).min(255);
+            let blue = (u16::from(blue) + inverse_alpha).min(255);
             ((red * 54 + green * 183 + blue * 19 + 128) >> 8) as u8
         }
     }

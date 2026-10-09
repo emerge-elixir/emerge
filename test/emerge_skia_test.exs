@@ -602,6 +602,42 @@ defmodule EmergeSkiaTest do
     assert_frame_color("blue_asset_frame", {0, 255, 0})
   end
 
+  test "headless raster delivers BGRA8888 frames and RGBA screenshots" do
+    {:ok, renderer} =
+      EmergeSkia.start(
+        otp_app: :emerge,
+        backend: :headless,
+        rendering_api: :raster,
+        width: 2,
+        height: 2,
+        headless: [target: self(), pixel_format: :bgra8888]
+      )
+
+    on_exit(fn -> EmergeSkia.stop(renderer) end)
+
+    tree =
+      el(
+        [
+          width(px(2)),
+          height(px(2)),
+          Emerge.UI.Background.color(Emerge.UI.Color.color_rgb(10, 20, 30))
+        ],
+        none()
+      )
+
+    {_state, _assigned} = EmergeSkia.upload_tree(renderer, tree)
+
+    assert %Frame{
+             format: %{storage: %Format{pixel_format: :bgra8888}, alpha_mode: :premultiplied},
+             storage: %Binary{data: data, planes: [%{stride: 8}]}
+           } = frame = receive_latest_headless_frame()
+
+    assert :ok = VideoInterop.validate(frame)
+    assert data == :binary.copy(<<30, 20, 10, 255>>, 4)
+    assert {:ok, pixels} = EmergeSkia.render_to_pixels(renderer)
+    assert pixels == :binary.copy(<<10, 20, 30, 255>>, 4)
+  end
+
   test "headless BW1 packs rows independently and expands Gray8 screenshots" do
     {:ok, renderer} =
       EmergeSkia.start(

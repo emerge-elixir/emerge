@@ -212,6 +212,7 @@ defmodule EmergeSkia do
   | Format | Stride | Data |
   |---|---:|---|
   | `:rgba8888` | `width * 4` | Premultiplied RGBA |
+  | `:bgra8888` | `width * 4` | Premultiplied BGRA (little-endian DRM `ARGB8888`/`XRGB8888`) |
   | `:rgb888` | `width * 3` | Premultiplied RGB components with alpha omitted |
   | `:bw1` | `ceil(width / 8)` | Eight MSB-first pixels per byte |
   | `:gray2` | `ceil(width / 4)` | Four MSB-first two-bit pixels per byte |

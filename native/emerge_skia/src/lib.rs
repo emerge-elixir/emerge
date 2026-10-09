@@ -677,6 +677,7 @@ mod atoms {
         implicit,
         sync_file,
         rgba8888,
+        bgra8888,
         rgb888,
         gray8,
         gray2,
@@ -986,6 +987,7 @@ impl RenderSender {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LatestFramePixelFormat {
     Rgba8888Premul,
+    Bgra8888Premul,
     Gray8Opaque,
 }
 
@@ -1001,8 +1003,18 @@ pub(crate) struct LatestFrameSnapshot {
 
 impl LatestFrameSnapshot {
     fn into_rgba(mut self) -> Result<Self, String> {
-        if self.pixel_format == LatestFramePixelFormat::Rgba8888Premul {
-            return Ok(self);
+        match self.pixel_format {
+            LatestFramePixelFormat::Rgba8888Premul => return Ok(self),
+            LatestFramePixelFormat::Bgra8888Premul => {
+                self.pixels
+                    .as_chunks_mut::<4>()
+                    .0
+                    .iter_mut()
+                    .for_each(|px| px.swap(0, 2));
+                self.pixel_format = LatestFramePixelFormat::Rgba8888Premul;
+                return Ok(self);
+            }
+            LatestFramePixelFormat::Gray8Opaque => {}
         }
         let expected = usize::try_from(self.width)
             .ok()
@@ -1045,6 +1057,16 @@ impl LatestFrameStore {
             height,
             scale,
             LatestFramePixelFormat::Rgba8888Premul,
+            pixels,
+        );
+    }
+
+    pub(crate) fn publish_bgra(&self, width: u32, height: u32, scale: f32, pixels: Vec<u8>) {
+        self.publish(
+            width,
+            height,
+            scale,
+            LatestFramePixelFormat::Bgra8888Premul,
             pixels,
         );
     }

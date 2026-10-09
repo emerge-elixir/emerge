@@ -13,6 +13,8 @@ use crate::renderer::{
 pub enum RasterPixelFormat {
     #[default]
     Rgba8888Premul,
+    /// B, G, R, A byte order; matches little-endian DRM ARGB8888/XRGB8888.
+    Bgra8888Premul,
     Gray8Opaque,
 }
 
@@ -20,20 +22,21 @@ impl RasterPixelFormat {
     pub fn color_type(self) -> ColorType {
         match self {
             Self::Rgba8888Premul => ColorType::RGBA8888,
+            Self::Bgra8888Premul => ColorType::BGRA8888,
             Self::Gray8Opaque => ColorType::Gray8,
         }
     }
 
     pub fn alpha_type(self) -> AlphaType {
         match self {
-            Self::Rgba8888Premul => AlphaType::Premul,
+            Self::Rgba8888Premul | Self::Bgra8888Premul => AlphaType::Premul,
             Self::Gray8Opaque => AlphaType::Opaque,
         }
     }
 
     pub fn bytes_per_pixel(self) -> usize {
         match self {
-            Self::Rgba8888Premul => 4,
+            Self::Rgba8888Premul | Self::Bgra8888Premul => 4,
             Self::Gray8Opaque => 1,
         }
     }
@@ -130,18 +133,7 @@ impl RasterBackend {
         let byte_len = row_bytes
             .checked_mul(self.height as usize)
             .expect("validated raster surface dimensions must fit memory");
-        let mut data = vec![0_u8; byte_len];
-        let info = ImageInfo::new(
-            (self.width as i32, self.height as i32),
-            self.format.color_type(),
-            self.format.alpha_type(),
-            None,
-        );
-
-        let read = self
-            .surface
-            .read_pixels(&info, &mut data, row_bytes, (0, 0));
-        debug_assert!(read, "raster surface readback must match its native format");
+        let data = self.copy_pixels(row_bytes, byte_len);
 
         (
             RasterFrame {
@@ -151,6 +143,33 @@ impl RasterBackend {
             },
             timings,
         )
+    }
+
+    /// Copies the surface pixels in one pass. A raster surface already stores
+    /// pixels in the requested format, so borrowing them avoids zero-filling a
+    /// buffer and running Skia's general readback.
+    fn copy_pixels(&mut self, row_bytes: usize, byte_len: usize) -> Vec<u8> {
+        let peeked = self.surface.peek_pixels().and_then(|pixmap| {
+            (pixmap.row_bytes() == row_bytes)
+                .then(|| pixmap.bytes())
+                .flatten()
+                .and_then(|bytes| bytes.get(..byte_len).map(<[u8]>::to_vec))
+        });
+
+        peeked.unwrap_or_else(|| {
+            let mut data = vec![0_u8; byte_len];
+            let info = ImageInfo::new(
+                (self.width as i32, self.height as i32),
+                self.format.color_type(),
+                self.format.alpha_type(),
+                None,
+            );
+            let read = self
+                .surface
+                .read_pixels(&info, &mut data, row_bytes, (0, 0));
+            debug_assert!(read, "raster surface readback must match its native format");
+            data
+        })
     }
 
     pub fn render_grayscale_dither_policy(&self, state: &RenderState) -> Result<Vec<u8>, String> {
@@ -174,7 +193,7 @@ fn create_surface(
     );
 
     let surface = match format {
-        RasterPixelFormat::Rgba8888Premul => {
+        RasterPixelFormat::Rgba8888Premul | RasterPixelFormat::Bgra8888Premul => {
             let surface_props = text_surface_props();
             surfaces::raster(&info, None, Some(&surface_props))
         }
@@ -209,5 +228,39 @@ mod tests {
         assert_eq!(frame.format, RasterPixelFormat::Gray8Opaque);
         assert_eq!(frame.row_bytes, 3);
         assert_eq!(frame.data, vec![255; 6]);
+    }
+
+    #[test]
+    fn rgba_and_bgra_surfaces_store_their_byte_order() {
+        let render = |format| {
+            let mut backend = RasterBackend::with_cache_config_and_format(
+                &RasterConfig {
+                    width: 2,
+                    height: 1,
+                },
+                RendererCacheConfig {
+                    enabled: false,
+                    ..RendererCacheConfig::default()
+                },
+                format,
+            )
+            .unwrap();
+            let state = RenderState::new(
+                RenderScene::default(),
+                Color::from_rgb(10, 20, 30),
+                1,
+                false,
+            );
+            backend.render(&state)
+        };
+
+        let rgba = render(RasterPixelFormat::Rgba8888Premul);
+        let bgra = render(RasterPixelFormat::Bgra8888Premul);
+
+        assert_eq!(rgba.row_bytes, 8);
+        assert_eq!(rgba.data, [10, 20, 30, 255].repeat(2));
+        assert_eq!(bgra.format, RasterPixelFormat::Bgra8888Premul);
+        assert_eq!(bgra.row_bytes, 8);
+        assert_eq!(bgra.data, [30, 20, 10, 255].repeat(2));
     }
 }

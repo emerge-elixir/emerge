@@ -441,6 +441,10 @@ defmodule EmergeSkia.Options do
        when value in [:rgba8888, "rgba8888"],
        do: "rgba8888"
 
+  defp normalize_headless_pixel_format!(value)
+       when value in [:bgra8888, "bgra8888"],
+       do: "bgra8888"
+
   defp normalize_headless_pixel_format!(value) when value in [:rgb888, "rgb888"], do: "rgb888"
   defp normalize_headless_pixel_format!(value) when value in [:gray8, "gray8"], do: "gray8"
   defp normalize_headless_pixel_format!(value) when value in [:gray2, "gray2"], do: "gray2"
@@ -448,7 +452,7 @@ defmodule EmergeSkia.Options do
 
   defp normalize_headless_pixel_format!(value) do
     raise ArgumentError,
-          ":headless.pixel_format must be :rgba8888, :rgb888, :gray8, :gray2, or :bw1, got: #{inspect(value)}"
+          ":headless.pixel_format must be :rgba8888, :bgra8888, :rgb888, :gray8, :gray2, or :bw1, got: #{inspect(value)}"
   end
 
   defp normalize_bw1_polarity!(value) when value in [:one_is_black, "one_is_black"],

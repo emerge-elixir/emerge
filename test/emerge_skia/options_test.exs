@@ -345,6 +345,12 @@ defmodule EmergeSkia.OptionsTest do
 
     assert target == self()
 
+    assert %{headless: %{pixel_format: "bgra8888"}} =
+             Options.build_start_native_opts!(
+               backend: :headless,
+               headless: [target: self(), pixel_format: :bgra8888]
+             )
+
     for pixel_format <- [:bw1, :gray2] do
       assert %{headless: %{dither: true, pixel_format: normalized}} =
                Options.build_start_native_opts!(

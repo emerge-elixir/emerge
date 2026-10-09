@@ -16,7 +16,7 @@ use skia_safe::Color;
 use video_interop::{AcquireSync, Descriptor, Layer, Modifier, Object, Plane};
 
 use self::output::{
-    FramePixelFormat, FrameSource, convert_packed_gray_into, packed_gray_output_len,
+    FramePixelFormat, FrameSource, convert_packed_gray_into, packed_gray_output_len, rgba_at,
 };
 
 use crate::{
@@ -458,6 +458,13 @@ fn run_render_loop(
                     "gray2" => Some(2),
                     _ => None,
                 };
+                let source = FrameSource {
+                    data: &frame.data,
+                    width: frame.width,
+                    height: frame.height,
+                    row_bytes: frame.row_bytes,
+                    format: frame.pixel_format,
+                };
                 let converted = if let Some(bits) = packed_bits {
                     let policy = if headless.dither {
                         renderer.render_grayscale_dither_policy(state).map(Some)
@@ -465,37 +472,30 @@ fn run_render_loop(
                         Ok(None)
                     };
                     policy.and_then(|policy| {
-                        let mut data =
-                            vec![0_u8; packed_gray_output_len(frame.width, frame.height, bits,)?];
+                        let mut binary = new_frame_binary(packed_gray_output_len(
+                            frame.width,
+                            frame.height,
+                            bits,
+                        )?)?;
                         let stride = convert_packed_gray_into(
-                            FrameSource {
-                                data: &frame.data,
-                                width: frame.width,
-                                height: frame.height,
-                                row_bytes: frame.row_bytes,
-                                format: frame.pixel_format,
-                            },
+                            source,
                             bits,
                             &headless.bw1_polarity,
                             policy.as_deref(),
-                            &mut data,
+                            binary.as_mut_slice(),
                         )?;
-                        Ok((data, stride))
+                        Ok((binary, stride))
                     })
-                } else if frame.pixel_format == FramePixelFormat::Rgba8888Premul {
-                    convert_frame(
-                        &frame.data,
-                        frame.width,
-                        &headless.pixel_format,
-                        &headless.bw1_polarity,
-                    )
                 } else {
-                    Err("non-packed output unexpectedly received Gray8 pixels".to_string())
+                    convert_frame(source, &headless.pixel_format)
                 };
 
                 match frame.pixel_format {
                     FramePixelFormat::Rgba8888Premul => {
                         latest_frame.publish_rgba(frame.width, frame.height, 1.0, frame.data)
+                    }
+                    FramePixelFormat::Bgra8888Premul => {
+                        latest_frame.publish_bgra(frame.width, frame.height, 1.0, frame.data)
                     }
                     FramePixelFormat::Gray8Opaque => {
                         latest_frame.publish_gray8(frame.width, frame.height, 1.0, frame.data)
@@ -838,10 +838,10 @@ impl HeadlessRenderer {
         if matches!(pixel_format, "bw1" | "gray2") {
             raster_renderer_cache_config.enabled = false;
         }
-        let raster_pixel_format = if matches!(pixel_format, "bw1" | "gray2") {
-            RasterPixelFormat::Gray8Opaque
-        } else {
-            RasterPixelFormat::Rgba8888Premul
+        let raster_pixel_format = match pixel_format {
+            "bw1" | "gray2" => RasterPixelFormat::Gray8Opaque,
+            "bgra8888" => RasterPixelFormat::Bgra8888Premul,
+            _ => RasterPixelFormat::Rgba8888Premul,
         };
 
         match (mode, rendering_api) {
@@ -1081,6 +1081,7 @@ impl RasterHeadlessRenderer {
             row_bytes: frame.row_bytes,
             pixel_format: match frame.format {
                 RasterPixelFormat::Rgba8888Premul => FramePixelFormat::Rgba8888Premul,
+                RasterPixelFormat::Bgra8888Premul => FramePixelFormat::Bgra8888Premul,
                 RasterPixelFormat::Gray8Opaque => FramePixelFormat::Gray8Opaque,
             },
             data: frame.data,
@@ -1099,11 +1100,8 @@ fn send_binary_frame(
     pixel_format: &str,
     bw1_polarity: &str,
     stride_bytes: u32,
-    data: Vec<u8>,
+    binary: OwnedBinary,
 ) {
-    let mut binary =
-        OwnedBinary::new(data.len()).expect("failed to allocate headless frame binary");
-    binary.as_mut_slice().copy_from_slice(&data);
     let mut env = OwnedEnv::new();
     let use_default_message = frame_message == "emerge_skia_frame";
     let frame_message = frame_message.to_string();
@@ -1114,6 +1112,7 @@ fn send_binary_frame(
         let data = binary.release(inner_env);
         let pixel_format_atom = match pixel_format.as_str() {
             "rgba8888" => crate::atoms::rgba8888(),
+            "bgra8888" => crate::atoms::bgra8888(),
             "rgb888" => crate::atoms::rgb888(),
             "gray8" => crate::atoms::gray8(),
             "gray2" => crate::atoms::gray2(),
@@ -1141,7 +1140,7 @@ fn send_binary_frame(
                 chroma_location: crate::atoms::center(),
             },
             pixel_aspect_ratio: (1, 1),
-            alpha_mode: if pixel_format == "rgba8888" {
+            alpha_mode: if matches!(pixel_format.as_str(), "rgba8888" | "bgra8888") {
                 crate::atoms::premultiplied()
             } else {
                 crate::atoms::opaque()
@@ -1256,32 +1255,70 @@ fn encode_frame_message<'a>(
     }
 }
 
+fn new_frame_binary(len: usize) -> Result<OwnedBinary, String> {
+    OwnedBinary::new(len).ok_or_else(|| format!("failed to allocate {len}-byte headless frame"))
+}
+
+/// Writes a frame into a BEAM binary in the requested format. When the
+/// rendered byte order already matches, this is a single copy.
 fn convert_frame(
-    rgba: &[u8],
-    width: u32,
+    source: FrameSource<'_>,
     pixel_format: &str,
-    _bw1_polarity: &str,
-) -> Result<(Vec<u8>, u32), String> {
-    match pixel_format {
-        "rgba8888" => Ok((rgba.to_vec(), width * 4)),
-        "rgb888" => Ok((
-            rgba.as_chunks::<4>()
-                .0
-                .iter()
-                .flat_map(|px| [px[0], px[1], px[2]])
-                .collect(),
-            width * 3,
-        )),
-        "gray8" => Ok((
-            rgba.as_chunks::<4>().0.iter().map(|px| luma8(px)).collect(),
-            width,
-        )),
-        other => Err(format!("unsupported headless pixel format: {other}")),
+) -> Result<(OwnedBinary, u32), String> {
+    let bytes_per_pixel = output_bytes_per_pixel(source.format, pixel_format)?;
+    let mut binary = new_frame_binary(source.data.len() / 4 * bytes_per_pixel)?;
+    write_frame(source, pixel_format, binary.as_mut_slice())?;
+    Ok((binary, source.width * bytes_per_pixel as u32))
+}
+
+fn output_bytes_per_pixel(format: FramePixelFormat, pixel_format: &str) -> Result<usize, String> {
+    match (pixel_format, format) {
+        (_, FramePixelFormat::Gray8Opaque) => {
+            Err("non-packed output unexpectedly received Gray8 pixels".to_string())
+        }
+        ("rgba8888" | "bgra8888", _) => Ok(4),
+        ("rgb888", _) => Ok(3),
+        ("gray8", _) => Ok(1),
+        (other, _) => Err(format!("unsupported headless pixel format: {other}")),
     }
 }
 
-fn luma8(px: &[u8]) -> u8 {
-    ((u16::from(px[0]) * 77 + u16::from(px[1]) * 150 + u16::from(px[2]) * 29) >> 8) as u8
+/// Converts 4-byte source pixels into `output`, which must be sized by
+/// `output_bytes_per_pixel`.
+fn write_frame(
+    source: FrameSource<'_>,
+    pixel_format: &str,
+    output: &mut [u8],
+) -> Result<(), String> {
+    fn fill(output: &mut [u8], bytes: impl Iterator<Item = u8>) {
+        output
+            .iter_mut()
+            .zip(bytes)
+            .for_each(|(out, byte)| *out = byte);
+    }
+    let pixels = || source.data.as_chunks::<4>().0.iter();
+
+    match (pixel_format, source.format) {
+        ("rgba8888", FramePixelFormat::Rgba8888Premul)
+        | ("bgra8888", FramePixelFormat::Bgra8888Premul) => output.copy_from_slice(source.data),
+        ("rgba8888" | "bgra8888", _) => {
+            fill(output, pixels().flat_map(|px| [px[2], px[1], px[0], px[3]]))
+        }
+        ("rgb888", format) => fill(
+            output,
+            pixels().flat_map(|px| {
+                let [r, g, b, _] = rgba_at(format, px);
+                [r, g, b]
+            }),
+        ),
+        ("gray8", format) => fill(output, pixels().map(|px| luma8(rgba_at(format, px)))),
+        (other, _) => return Err(format!("unsupported headless pixel format: {other}")),
+    }
+    Ok(())
+}
+
+fn luma8([r, g, b, _]: [u8; 4]) -> u8 {
+    ((u16::from(r) * 77 + u16::from(g) * 150 + u16::from(b) * 29) >> 8) as u8
 }
 
 #[cfg(any(feature = "video-interop-support", all(test, target_os = "linux")))]
@@ -1382,13 +1419,78 @@ mod tests {
         );
     }
 
+    fn source(data: &[u8], format: FramePixelFormat) -> FrameSource<'_> {
+        FrameSource {
+            data,
+            width: (data.len() / 4) as u32,
+            height: 1,
+            row_bytes: data.len(),
+            format,
+        }
+    }
+
+    // OwnedBinary needs a running BEAM, so tests exercise the conversion into a Vec.
+    fn convert(data: &[u8], format: FramePixelFormat, pixel_format: &str) -> (Vec<u8>, u32) {
+        let bytes_per_pixel = output_bytes_per_pixel(format, pixel_format).unwrap();
+        let mut output = vec![0; data.len() / 4 * bytes_per_pixel];
+        write_frame(source(data, format), pixel_format, &mut output).unwrap();
+        (output, (data.len() / 4 * bytes_per_pixel) as u32)
+    }
+
     #[test]
     fn convert_frame_converts_gray8() {
-        let rgba = vec![0, 0, 0, 255, 255, 255, 255, 255, 128, 128, 128, 255];
+        let rgba = [0, 0, 0, 255, 255, 255, 255, 255, 128, 128, 128, 255];
 
         assert_eq!(
-            convert_frame(&rgba, 3, "gray8", "one_is_black").unwrap().1,
-            3
+            convert(&rgba, FramePixelFormat::Rgba8888Premul, "gray8"),
+            (vec![0, 255, 128], 3)
+        );
+    }
+
+    #[test]
+    fn convert_frame_copies_matching_byte_order() {
+        let pixels = [1, 2, 3, 255, 4, 5, 6, 128];
+
+        assert_eq!(
+            convert(&pixels, FramePixelFormat::Rgba8888Premul, "rgba8888"),
+            (pixels.to_vec(), 8)
+        );
+        assert_eq!(
+            convert(&pixels, FramePixelFormat::Bgra8888Premul, "bgra8888"),
+            (pixels.to_vec(), 8)
+        );
+    }
+
+    #[test]
+    fn convert_frame_swaps_red_and_blue_between_byte_orders() {
+        let rgba = [1, 2, 3, 255, 4, 5, 6, 128];
+
+        assert_eq!(
+            convert(&rgba, FramePixelFormat::Rgba8888Premul, "bgra8888"),
+            (vec![3, 2, 1, 255, 6, 5, 4, 128], 8)
+        );
+        assert_eq!(
+            convert(&rgba, FramePixelFormat::Bgra8888Premul, "rgba8888"),
+            (vec![3, 2, 1, 255, 6, 5, 4, 128], 8)
+        );
+    }
+
+    #[test]
+    fn convert_frame_reads_bgra_sources_for_rgb_outputs() {
+        let bgra = [30, 20, 10, 255];
+
+        assert_eq!(
+            convert(&bgra, FramePixelFormat::Bgra8888Premul, "rgb888"),
+            (vec![10, 20, 30], 3)
+        );
+        assert_eq!(
+            convert(&bgra, FramePixelFormat::Bgra8888Premul, "gray8").0,
+            convert(
+                &[10, 20, 30, 255],
+                FramePixelFormat::Rgba8888Premul,
+                "gray8"
+            )
+            .0
         );
     }
 }
