@@ -124,7 +124,10 @@ defmodule EmergeSkia do
       rendering_api: [raster: [present: :gpu_upload]]
       rendering_api: [auto: [raster: [present: :cpu]]]
 
-  Wayland supports `:cpu` and `:gpu_upload`. DRM supports `:gpu_upload`.
+  Wayland and DRM support `:cpu` and `:gpu_upload`. DRM raster defaults to
+  `:cpu`: Skia draws into mapped DRM dumb buffers, without EGL, GBM or a GPU
+  driver. Explicit `:gpu_upload` requires OpenGL. CPU DRM uses a software cursor
+  and requires atomic KMS, DRM leasing, and XRGB8888 dumb-buffer support.
 
   Runtime backends and their GPU APIs must be compiled into the NIF:
 
@@ -135,8 +138,10 @@ defmodule EmergeSkia do
           headless: [:vulkan]
         ]
 
-  Use `:all` to compile every GPU API supported by one backend, for example
-  `[drm: :all]`. Use an exact list such as `[drm: [:vulkan]]` to omit OpenGL.
+  Use `:all` to compile every API supported by one backend, for example
+  `[drm: :all]`. Use `[drm: [:raster]]` for GPU-free DRM, or an exact list such
+  as `[drm: [:vulkan]]` to omit OpenGL. The DRM raster-only profile currently
+  builds from source. With that profile, `rendering_api: :auto` selects raster.
   Atom entries remain the compatibility shorthand, selecting OpenGL on Linux
   and Metal on macOS: `[:wayland, :drm]`. Headless raster rendering requires no
   matrix entry.

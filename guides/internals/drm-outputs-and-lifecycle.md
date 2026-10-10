@@ -33,6 +33,25 @@ retains size/preferred-mode heuristics and chooses an available output.
 Discovery and startup return errors when DRM support, permissions, master ownership,
 leasing, the connector, mode or compatible scanout resources are unavailable.
 
+## CPU-only DRM
+
+`config :emerge, compiled_backends: [drm: [:raster]]` builds a DRM presenter with
+no GBM, EGL or GPU dependencies. Use `backend: :drm, rendering_api: :raster` in
+mount options; a CPU-only build also selects raster for `rendering_api: :auto`.
+This profile currently requires a source build.
+
+Skia draws into the back DRM dumb buffer with its actual row pitch. Two XRGB8888
+buffers alternate only after a blocking atomic commit completes. No per-frame
+BEAM transfer or custom output NIF is involved. Screenshots copy/convert to RGBA
+on demand. Cursor drawing is software-only; CPU video works, PRIME import does
+not. Atomic KMS, DRM leasing and XRGB8888 dumb-buffer support remain required.
+
+Raster `present: :auto` now means CPU on DRM. Explicit `present: :gpu_upload`
+keeps the old OpenGL upload path when that feature is compiled. A disconnect or
+removed mode stops the raster backend after safe detachment; viewport lifecycle
+recovery then reacquires the selected output. Failed detachment quarantines its
+buffers and lease instead of permitting unsafe reuse.
+
 ## Two viewports on one GPU
 
 Pass different discovered output names in the mount options of two viewport children.
@@ -118,6 +137,16 @@ EMERGE_DRM_TEST_API=opengl \
 mix test test/emerge_skia/drm_hardware_test.exs --include drm_hardware
 ```
 
-Use `EMERGE_DRM_TEST_API=vulkan` for the Vulkan presenter. The test covers simultaneous
+Use `EMERGE_DRM_TEST_API=vulkan` for the Vulkan presenter or `raster` for CPU DRM. The test covers simultaneous
 presentation, duplicate rejection, repeated independent renderer replacement, callback
 kill with a retained handle, and output reacquisition while the sibling keeps rendering.
+
+A separate single-display CPU test checks colors, RGBA screenshots, updates and
+output release/reacquisition. It also modesets the explicitly selected card:
+
+```sh
+EMERGE_DRM_TEST_CARD=/dev/dri/by-path/your-test-gpu-card \
+  mix test test/emerge_skia/drm_raster_hardware_test.exs --include drm_hardware
+```
+
+Build the `drm: [:raster]` profile before running it to validate the no-GPU path.
