@@ -1265,10 +1265,54 @@ fn convert_frame(
     source: FrameSource<'_>,
     pixel_format: &str,
 ) -> Result<(OwnedBinary, u32), String> {
-    let bytes_per_pixel = output_bytes_per_pixel(source.format, pixel_format)?;
-    let mut binary = new_frame_binary(source.data.len() / 4 * bytes_per_pixel)?;
+    let (stride, byte_len) = frame_output_layout(source, pixel_format)?;
+    let mut binary = new_frame_binary(byte_len)?;
     write_frame(source, pixel_format, binary.as_mut_slice())?;
-    Ok((binary, source.width * bytes_per_pixel as u32))
+    Ok((binary, stride))
+}
+
+/// Non-packed producers must supply tightly packed RGBA/BGRA rows. Validate
+/// before allocating or writing so padding cannot be mistaken for pixels.
+fn frame_output_layout(
+    source: FrameSource<'_>,
+    pixel_format: &str,
+) -> Result<(u32, usize), String> {
+    let bytes_per_pixel = output_bytes_per_pixel(source.format, pixel_format)?;
+    if source.width == 0 || source.height == 0 {
+        return Err("frame dimensions must be nonzero".to_string());
+    }
+    let source_stride = source
+        .width
+        .checked_mul(4)
+        .ok_or_else(|| "frame row size overflow".to_string())?;
+    let source_stride =
+        usize::try_from(source_stride).map_err(|_| "frame row size overflow".to_string())?;
+    if source.row_bytes != source_stride {
+        return Err(format!(
+            "frame rows must be tightly packed: expected {source_stride}, got {}",
+            source.row_bytes
+        ));
+    }
+    let height =
+        usize::try_from(source.height).map_err(|_| "frame height is too large".to_string())?;
+    let source_len = source_stride
+        .checked_mul(height)
+        .ok_or_else(|| "frame byte size overflow".to_string())?;
+    if source.data.len() != source_len {
+        return Err(format!(
+            "frame byte length mismatch: expected {source_len}, got {}",
+            source.data.len()
+        ));
+    }
+    let stride = source
+        .width
+        .checked_mul(bytes_per_pixel as u32)
+        .ok_or_else(|| "output row size overflow".to_string())?;
+    let byte_len = usize::try_from(stride)
+        .ok()
+        .and_then(|stride| stride.checked_mul(height))
+        .ok_or_else(|| "output byte size overflow".to_string())?;
+    Ok((stride, byte_len))
 }
 
 fn output_bytes_per_pixel(format: FramePixelFormat, pixel_format: &str) -> Result<usize, String> {
@@ -1283,13 +1327,21 @@ fn output_bytes_per_pixel(format: FramePixelFormat, pixel_format: &str) -> Resul
     }
 }
 
-/// Converts 4-byte source pixels into `output`, which must be sized by
-/// `output_bytes_per_pixel`.
+/// Converts validated 4-byte source pixels, filling every output byte.
+/// Invalid layouts leave the output unchanged.
 fn write_frame(
     source: FrameSource<'_>,
     pixel_format: &str,
     output: &mut [u8],
 ) -> Result<(), String> {
+    let (_, expected_output) = frame_output_layout(source, pixel_format)?;
+    if output.len() != expected_output {
+        return Err(format!(
+            "frame output length mismatch: expected {expected_output}, got {}",
+            output.len()
+        ));
+    }
+
     fn fill(output: &mut [u8], bytes: impl Iterator<Item = u8>) {
         output
             .iter_mut()
@@ -1431,10 +1483,100 @@ mod tests {
 
     // OwnedBinary needs a running BEAM, so tests exercise the conversion into a Vec.
     fn convert(data: &[u8], format: FramePixelFormat, pixel_format: &str) -> (Vec<u8>, u32) {
-        let bytes_per_pixel = output_bytes_per_pixel(format, pixel_format).unwrap();
-        let mut output = vec![0; data.len() / 4 * bytes_per_pixel];
-        write_frame(source(data, format), pixel_format, &mut output).unwrap();
-        (output, (data.len() / 4 * bytes_per_pixel) as u32)
+        let source = source(data, format);
+        let (stride, byte_len) = frame_output_layout(source, pixel_format).unwrap();
+        let mut output = vec![0xAA; byte_len];
+        write_frame(source, pixel_format, &mut output).unwrap();
+        (output, stride)
+    }
+
+    #[test]
+    fn write_frame_rejects_invalid_layouts_without_touching_output() {
+        let valid = FrameSource {
+            data: &[10, 20, 30, 128, 40, 50, 60, 255],
+            width: 1,
+            height: 2,
+            row_bytes: 4,
+            format: FramePixelFormat::Rgba8888Premul,
+        };
+        let invalid_sources = [
+            FrameSource { width: 0, ..valid },
+            FrameSource { height: 0, ..valid },
+            FrameSource {
+                width: u32::MAX,
+                ..valid
+            },
+            FrameSource {
+                row_bytes: 3,
+                ..valid
+            },
+            // Padding must not be interpreted as another pixel or row.
+            FrameSource {
+                row_bytes: 8,
+                height: 1,
+                ..valid
+            },
+            FrameSource {
+                data: &valid.data[..7],
+                ..valid
+            },
+            FrameSource {
+                data: &[0; 9],
+                ..valid
+            },
+            FrameSource { height: 3, ..valid },
+            FrameSource {
+                format: FramePixelFormat::Gray8Opaque,
+                ..valid
+            },
+        ];
+        for source in invalid_sources {
+            for pixel_format in ["rgba8888", "bgra8888", "rgb888", "gray8"] {
+                let mut output = [0xAA; 8];
+                assert!(write_frame(source, pixel_format, &mut output).is_err());
+                assert_eq!(output, [0xAA; 8]);
+            }
+        }
+
+        for pixel_format in ["rgba8888", "bgra8888", "rgb888", "gray8"] {
+            let (_, byte_len) = frame_output_layout(valid, pixel_format).unwrap();
+            for len in [byte_len - 1, byte_len + 1] {
+                let mut output = vec![0xAA; len];
+                assert!(write_frame(valid, pixel_format, &mut output).is_err());
+                assert_eq!(output, vec![0xAA; len]);
+            }
+        }
+        let mut output = [0xAA; 8];
+        assert!(write_frame(valid, "unsupported", &mut output).is_err());
+        assert_eq!(output, [0xAA; 8]);
+    }
+
+    #[test]
+    fn write_frame_preserves_multiple_rows_and_premultiplied_alpha() {
+        let rgba = [
+            10, 20, 30, 255, 100, 50, 25, 128, 0, 0, 0, 0, 20, 30, 40, 64,
+        ];
+        let bgra = [
+            30, 20, 10, 255, 25, 50, 100, 128, 0, 0, 0, 0, 40, 30, 20, 64,
+        ];
+        for (data, format) in [
+            (&rgba, FramePixelFormat::Rgba8888Premul),
+            (&bgra, FramePixelFormat::Bgra8888Premul),
+        ] {
+            let source = FrameSource {
+                data,
+                width: 2,
+                height: 2,
+                row_bytes: 8,
+                format,
+            };
+            for (pixel_format, expected) in [("rgba8888", rgba), ("bgra8888", bgra)] {
+                assert_eq!(frame_output_layout(source, pixel_format).unwrap(), (8, 16));
+                let mut output = [0xAA; 16];
+                write_frame(source, pixel_format, &mut output).unwrap();
+                assert_eq!(output, expected);
+            }
+        }
     }
 
     #[test]

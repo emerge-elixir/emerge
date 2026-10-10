@@ -602,40 +602,67 @@ defmodule EmergeSkiaTest do
     assert_frame_color("blue_asset_frame", {0, 255, 0})
   end
 
-  test "headless raster delivers BGRA8888 frames and RGBA screenshots" do
-    {:ok, renderer} =
-      EmergeSkia.start(
-        otp_app: :emerge,
-        backend: :headless,
-        rendering_api: :raster,
-        width: 2,
-        height: 2,
-        headless: [target: self(), pixel_format: :bgra8888]
-      )
+  for pixel_format <- [:rgba8888, :bgra8888] do
+    test "headless raster preserves pixel order and alpha in #{pixel_format} frames and RGBA screenshots" do
+      pixel_format = unquote(pixel_format)
 
-    on_exit(fn -> EmergeSkia.stop(renderer) end)
+      {:ok, renderer} =
+        EmergeSkia.start(
+          otp_app: :emerge,
+          backend: :headless,
+          rendering_api: :raster,
+          width: 3,
+          height: 2,
+          headless: [target: self(), pixel_format: pixel_format]
+        )
 
-    tree =
-      el(
-        [
-          width(px(2)),
-          height(px(2)),
-          Emerge.UI.Background.color(Emerge.UI.Color.color_rgb(10, 20, 30))
-        ],
-        none()
-      )
+      on_exit(fn -> EmergeSkia.stop(renderer) end)
 
-    {_state, _assigned} = EmergeSkia.upload_tree(renderer, tree)
+      rows = [
+        [{10, 20, 30, 255}, {200, 100, 50, 128}, {70, 90, 110, 255}],
+        [{255, 100, 50, 0}, {80, 120, 160, 64}, {210, 160, 90, 255}]
+      ]
 
-    assert %Frame{
-             format: %{storage: %Format{pixel_format: :bgra8888}, alpha_mode: :premultiplied},
-             storage: %Binary{data: data, planes: [%{stride: 8}]}
-           } = frame = receive_latest_headless_frame()
+      tree =
+        column(
+          [width(px(3)), height(px(2))],
+          Enum.map(rows, fn colors ->
+            row(
+              [width(px(3)), height(px(1))],
+              Enum.map(colors, fn color ->
+                el(
+                  [width(px(1)), height(px(1)), Emerge.UI.Background.color({:color_rgba, color})],
+                  none()
+                )
+              end)
+            )
+          end)
+        )
 
-    assert :ok = VideoInterop.validate(frame)
-    assert data == :binary.copy(<<30, 20, 10, 255>>, 4)
-    assert {:ok, pixels} = EmergeSkia.render_to_pixels(renderer)
-    assert pixels == :binary.copy(<<10, 20, 30, 255>>, 4)
+      {_state, _assigned} = EmergeSkia.upload_tree(renderer, tree)
+
+      assert %Frame{
+               format: %{
+                 storage: %Format{pixel_format: ^pixel_format},
+                 alpha_mode: :premultiplied
+               },
+               storage: %Binary{data: data, planes: [%{stride: 12}]}
+             } = frame = receive_latest_headless_frame()
+
+      # Distinct pixels across rows catch swaps, row reordering, and alpha loss.
+      rgba =
+        <<10, 20, 30, 255, 100, 50, 25, 128, 70, 90, 110, 255, 0, 0, 0, 0, 20, 30, 40, 64, 210,
+          160, 90, 255>>
+
+      bgra = for <<r, g, b, a <- rgba>>, into: <<>>, do: <<b, g, r, a>>
+      expected = Map.fetch!(%{rgba8888: rgba, bgra8888: bgra}, pixel_format)
+
+      assert data == expected
+      assert {:ok, ^rgba} = EmergeSkia.render_to_pixels(renderer)
+      # Screenshot conversion must not mutate the stored BGRA snapshot.
+      assert {:ok, ^rgba} = EmergeSkia.render_to_pixels(renderer)
+      assert :ok = VideoInterop.validate(frame)
+    end
   end
 
   test "headless BW1 packs rows independently and expands Gray8 screenshots" do
