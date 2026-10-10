@@ -790,6 +790,7 @@ fn tree_msg_label(msg: &TreeMsg) -> &'static str {
         TreeMsg::ListenerBarrier(_) => "listener_barrier",
         TreeMsg::AssetStateChanged => "asset_state_changed",
         TreeMsg::FontMetricsChanged { .. } => "font_metrics_changed",
+        TreeMsg::RequestFrame { .. } => "request_frame",
         TreeMsg::Stop => "stop",
     }
 }

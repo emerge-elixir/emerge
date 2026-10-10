@@ -87,6 +87,8 @@ impl AnimationRetry {
 
 pub struct TreeUpdateEngine {
     application_tree_initialized: bool,
+    frame_request: u64,
+    requested_frame_layout: Option<(f32, f32, f32)>,
     tree: ElementTree,
     width: f32,
     height: f32,
@@ -102,6 +104,8 @@ impl TreeUpdateEngine {
     pub fn new(initial_tree: ElementTree, initial_width: u32, initial_height: u32) -> Self {
         Self {
             application_tree_initialized: false,
+            frame_request: 0,
+            requested_frame_layout: None,
             tree: initial_tree,
             width: (initial_width as f32).max(1.0),
             height: (initial_height as f32).max(1.0),
@@ -111,6 +115,16 @@ impl TreeUpdateEngine {
             latest_animation_sample_time: None,
             animation_retry: AnimationRetry::default(),
             listener_barrier: None,
+        }
+    }
+
+    pub fn frame_request(&self) -> u64 {
+        // A delayed resize from another queue cannot satisfy a replay barrier
+        // for the wrong layout. Keep the request so a matching resize restores it.
+        if self.requested_frame_layout == Some((self.width, self.height, self.scale)) {
+            self.frame_request
+        } else {
+            0
         }
     }
 
@@ -246,6 +260,11 @@ impl TreeUpdateEngine {
                 .map(|node| node.lifecycle.mounted_at_revision);
             match message {
                 TreeMsg::Stop => return Ok(TreeUpdateEffect::Stop),
+                TreeMsg::RequestFrame { request } => {
+                    self.frame_request = request;
+                    self.requested_frame_layout = Some((self.width, self.height, self.scale));
+                    invalidation.add(TreeInvalidation::Paint);
+                }
                 TreeMsg::Batch(_) | TreeMsg::EventBatch { .. } => {
                     unreachable!("tree batches must be flattened before processing")
                 }
@@ -1848,6 +1867,70 @@ mod tests {
             )
             .unwrap();
         assert!(engine.application_tree_initialized());
+    }
+
+    #[test]
+    fn frame_requests_replay_unchanged_content_without_inventing_an_upload() {
+        let mut engine = TreeUpdateEngine::new(ElementTree::new(), 20, 20);
+        let options = || TreeUpdateOptions::new(None, TreeUpdateDecodePolicy::ReturnErr);
+        engine
+            .process_messages(vec![TreeMsg::RequestFrame { request: 1 }], options())
+            .unwrap();
+        assert_eq!(engine.frame_request(), 1);
+        assert!(!engine.application_tree_initialized());
+        engine
+            .process_messages(
+                vec![TreeMsg::UploadTree {
+                    bytes: encode_tree(&ElementTree::new()),
+                    submitted_at: None,
+                }],
+                options(),
+            )
+            .unwrap();
+        let replay = engine
+            .process_messages(
+                vec![TreeMsg::Batch(vec![
+                    TreeMsg::Resize {
+                        width: 40.0,
+                        height: 30.0,
+                        scale: 1.0,
+                    },
+                    TreeMsg::RequestFrame { request: 2 },
+                ])],
+                options(),
+            )
+            .unwrap();
+        assert!(matches!(replay, TreeUpdateEffect::Layout { .. }));
+        assert_eq!(engine.size(), (40.0, 30.0));
+        assert_eq!(engine.frame_request(), 2);
+        assert!(engine.application_tree_initialized());
+        let replay = engine
+            .process_messages(vec![TreeMsg::RequestFrame { request: 3 }], options())
+            .unwrap();
+        assert!(matches!(replay, TreeUpdateEffect::Layout { .. }));
+        assert_eq!(engine.frame_request(), 3);
+        engine
+            .process_messages(
+                vec![TreeMsg::Resize {
+                    width: 20.0,
+                    height: 20.0,
+                    scale: 1.0,
+                }],
+                options(),
+            )
+            .unwrap();
+        assert_eq!(engine.frame_request(), 0);
+        engine
+            .process_messages(
+                vec![TreeMsg::Resize {
+                    width: 40.0,
+                    height: 30.0,
+                    scale: 1.0,
+                }],
+                options(),
+            )
+            .unwrap();
+        assert_eq!(engine.frame_request(), 3);
     }
 
     fn layout_output(effect: TreeUpdateEffect) -> Box<LayoutOutput> {

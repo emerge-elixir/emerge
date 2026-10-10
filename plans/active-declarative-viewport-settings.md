@@ -12,12 +12,11 @@ Implemented:
 - Optional `config(previous)` / `config(previous, state)` callbacks; initial evaluation, replacement semantics, config-only updates and lifecycle replay.
 - Opt-in atom-list input subscriptions and typed callback payloads; removed public numeric mask helpers and legacy keyword/positional startup APIs.
 - Wayland title updates on its owning event-loop thread.
-- CPU DRM resource-ready acknowledgement before first presentation; explicit successful-upload readiness survives scene coalescing. Resize, capture and cursor wakes cannot activate a placeholder. A valid empty tree counts as application content.
+- All DRM presenters acknowledge resource readiness before first presentation. Explicit successful-upload readiness survives scene coalescing; resize, capture and cursor wakes cannot activate a placeholder. GL/GPU-upload raster also request a layout-scoped replay barrier on session recreation, rejecting queued stale scenes. Vulkan sleeps instead of spinning before upload. A valid empty tree counts as application content.
 - Migrated affected test fixtures and artifact smoke probe; added normalization, callback, config-only native recovery and upload-readiness tests.
 
 Still required (not merely unverified):
 
-- GL/GPU-upload raster and Vulkan first-frame gating.
 - Native desired/pending/applied revisions and completion reporting.
 - DRM backlight binding/ownership and sysfs control, display-off/on KMS transitions, native off-state work suppression, stale enable protection and safe mode/output reconfiguration.
 - Live frame caps and macOS title protocol support.

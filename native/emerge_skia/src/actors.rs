@@ -74,6 +74,11 @@ impl ListenerBarrier {
 
 #[derive(Debug, Clone)]
 pub enum TreeMsg {
+    /// Replay the latest accepted tree, even when no patch/layout changed.
+    /// Presenters pair this with Resize and reject scenes from older requests.
+    RequestFrame {
+        request: u64,
+    },
     UploadTree {
         bytes: Vec<u8>,
         submitted_at: Option<Instant>,
@@ -186,7 +191,8 @@ impl TreeMsg {
             | Self::SetTextInputContent { element_id, .. }
             | Self::SetTextInputRuntime { element_id, .. }
             | Self::SetSliderValue { element_id, .. } => Some(*element_id),
-            Self::UploadTree { .. }
+            Self::RequestFrame { .. }
+            | Self::UploadTree { .. }
             | Self::PatchTree { .. }
             | Self::Resize { .. }
             | Self::AnimationPulse { .. }
@@ -221,7 +227,7 @@ impl TreeMsg {
             // immediately by the event runtime, so text dragging must not wait
             // for a registry round trip on every pointer move.
             Self::SetTextInputRuntime { .. } => false,
-            Self::AnimationPulse { .. } | Self::Stop => false,
+            Self::RequestFrame { .. } | Self::AnimationPulse { .. } | Self::Stop => false,
             Self::Batch(messages) | Self::EventBatch { messages, .. } => messages
                 .iter()
                 .any(Self::requires_listener_registry_response),
@@ -272,6 +278,8 @@ pub enum RenderMsg {
     Scene {
         /// A successfully decoded application upload precedes this scene.
         application_frame: bool,
+        /// Latest presenter replay barrier incorporated into this scene.
+        frame_request: u64,
         scene: Box<RenderScene>,
         version: u64,
         pipeline_submitted_at: Option<Instant>,

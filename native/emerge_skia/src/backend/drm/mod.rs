@@ -8,6 +8,8 @@ mod raster;
 mod session;
 pub(crate) use core::outputs;
 mod cursor_theme;
+#[cfg(feature = "drm")]
+mod first_frame;
 #[cfg(feature = "drm-vulkan")]
 pub mod functional_probe;
 #[cfg(feature = "drm")]

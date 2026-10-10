@@ -815,6 +815,7 @@ mod app {
 
             RenderMsg::Scene {
                 application_frame: self.tree_engine.application_tree_initialized(),
+                frame_request: self.tree_engine.frame_request(),
                 scene: Box::new(output.scene),
                 version: self.render_state.render_version.wrapping_add(1),
                 pipeline_submitted_at: pipeline.pipeline_submitted_at,

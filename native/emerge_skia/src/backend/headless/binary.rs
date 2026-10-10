@@ -92,6 +92,7 @@ mod tests {
     fn message(animate: bool) -> RenderMsg {
         RenderMsg::Scene {
             application_frame: true,
+            frame_request: 0,
             scene: Box::default(),
             version: 1,
             pipeline_submitted_at: None,
