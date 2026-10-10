@@ -2,6 +2,10 @@
 //!
 //! Each backend provides a way to create a window/surface and run an event loop.
 
+// Pure owner-side backlight primitives are tested without enabling DRM or
+// touching hardware. Presenters remain fail-closed until power/barrier wiring.
+#[cfg(all(target_os = "linux", any(feature = "drm-core", test)))]
+pub mod backlight;
 pub(crate) mod cadence;
 #[cfg(all(feature = "drm-core", target_os = "linux"))]
 pub mod drm;
