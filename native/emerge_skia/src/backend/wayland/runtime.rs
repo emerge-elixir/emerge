@@ -93,6 +93,7 @@ use super::{
 
 #[derive(Clone, Debug)]
 enum WakeAction {
+    Title(String),
     Stop,
     Redraw,
     VideoFrameAvailable,
@@ -534,6 +535,12 @@ fn key_text_commit_event(
 }
 
 impl BackendWake for WaylandWake {
+    fn set_title(&self, title: String) -> Result<(), String> {
+        self.tx
+            .send(WakeAction::Title(title))
+            .map_err(|_| "window event loop stopped".into())
+    }
+
     fn request_stop(&self) {
         let _ = self.tx.send(WakeAction::Stop);
     }
@@ -815,6 +822,7 @@ impl WaylandApp {
         }
 
         match action {
+            WakeAction::Title(title) => self.window.set_title(title),
             WakeAction::Stop => {
                 self.log_direct_watchdog("wake stop action received; exiting wayland loop");
                 self.unmap_for_shutdown(conn, "wake stop action");

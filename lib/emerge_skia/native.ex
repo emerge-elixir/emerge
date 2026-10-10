@@ -107,6 +107,9 @@ defmodule EmergeSkia.Native do
   end
 
   @doc false
+  def set_window_title(_renderer, _title), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
   def drm_outputs(_card_path), do: :erlang.nif_error(:nif_not_loaded)
   @doc false
   def renderer_status(_renderer), do: :erlang.nif_error(:nif_not_loaded)

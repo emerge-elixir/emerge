@@ -3679,6 +3679,16 @@ fn set_input_mask(renderer: ResourceArc<RendererResource>, mask: u32) -> Atom {
     atoms::ok()
 }
 
+/// Queue title changes on the window owner thread; never call platform APIs on a BEAM scheduler.
+#[rustler::nif(schedule = "DirtyIo")]
+fn set_window_title(renderer: ResourceArc<RendererResource>, title: String) -> NifResult<Atom> {
+    renderer
+        .backend_wake
+        .set_title(title)
+        .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
+    Ok(atoms::ok())
+}
+
 /// Set the target process to receive input events.
 ///
 /// Input events are sent directly to the target process as
