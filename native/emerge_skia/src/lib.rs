@@ -667,6 +667,7 @@ mod atoms {
         ok,
         error,
         emerge_skia_frame,
+        emerge_skia_config,
         caller_owned,
         transferred,
         released,
@@ -867,6 +868,7 @@ impl rustler::Resource for SessionOwner {
 }
 
 struct RendererResource {
+    config_control: Arc<runtime::config::ConfigControl>,
     lifecycle: Arc<runtime::lifecycle::Lifecycle>,
     _owner: Option<ResourceArc<SessionOwner>>,
     asset_runtime: Arc<AssetRuntime>,
@@ -2937,6 +2939,7 @@ fn start_native_renderer_with_config(
     let video_wake = VideoWake::noop();
 
     let resource = RendererResource {
+        config_control: runtime::config::ConfigControl::new(lifecycle.id, Arc::clone(&stop_flag)),
         lifecycle,
         _owner: config.owner,
         asset_runtime,
@@ -3687,6 +3690,28 @@ fn set_input_mask(renderer: ResourceArc<RendererResource>, mask: u32) -> Atom {
         renderer.log_input,
     );
     atoms::ok()
+}
+
+/// Submit a complete supported live-control snapshot. Owner completions carry
+/// the session/revision token to the submitting process, independently of input.
+#[rustler::nif(schedule = "DirtyIo")]
+fn configure(
+    env: Env<'_>,
+    renderer: ResourceArc<RendererResource>,
+    config: runtime::config::LiveConfig,
+) -> Result<(u64, u64), String> {
+    config.validate()?;
+    renderer.backend_wake.validate_config(&config)?;
+    renderer.config_control.submit(
+        config,
+        runtime::config::CompletionTarget::Beam(env.pid()),
+        &renderer.event_tx,
+    )
+}
+
+#[rustler::nif(schedule = "DirtyIo")]
+fn config_status(renderer: ResourceArc<RendererResource>) -> runtime::config::Status {
+    renderer.config_control.status()
 }
 
 /// Update the shared cap and wake its owner without using the scene queue.
@@ -5198,8 +5223,13 @@ mod tests {
         };
 
         let cleanup_dispatcher = CleanupDispatcher::start().expect("start cleanup dispatcher");
+        let lifecycle = Arc::<runtime::lifecycle::Lifecycle>::default();
         let resource = Arc::new(RendererResource {
-            lifecycle: Arc::default(),
+            config_control: runtime::config::ConfigControl::new(
+                lifecycle.id,
+                Arc::clone(&stop_flag),
+            ),
+            lifecycle,
             _owner: None,
             asset_runtime: Arc::new(AssetRuntime::new()),
             running_flag: Arc::clone(&running_flag),

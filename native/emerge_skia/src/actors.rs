@@ -252,6 +252,7 @@ impl TreeMsg {
 }
 
 pub enum EventMsg {
+    Configure(crate::runtime::config::ConfigRequest),
     InputEvent(InputEvent),
     PresentTiming {
         presented_at: Instant,
