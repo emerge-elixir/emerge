@@ -67,6 +67,32 @@ On session shutdown, completion delivery may end with the worker. Status treats
 pending work as failed once stopping; renderer lifecycle/cleanup remains the
 terminal ownership authority and recovery replays desired intent.
 
+## Backlight foundations (not yet wired to presenters)
+
+`native/emerge_skia/src/backend/backlight/` contains tested owner-side primitives,
+not additional supported config controls. Discovery uses proven connector ancestry;
+a shared GPU parent or a single globally discovered device is not sufficient for
+`:auto`. Ambiguous associations require explicit selection. Explicit bindings may
+override unknown association, but not a proven different connector. Discovery and
+attribute descriptors are pinned; class aliases share one identity reservation.
+Reservations cover Emerge siblings, not external backlight managers or different
+driver interfaces that happen to control the same physical lamp.
+
+Managed takeover deliberately suppresses both `bl_power` and brightness. Brightness
+changes while dark retain intent without writing it. `nil` resolves to a captured
+initial **requested** level, not `actual_brightness`; recovery must carry that
+baseline rather than recapturing Emerge's zero. This follows the Linux
+[backlight sysfs ABI](https://github.com/torvalds/linux/blob/master/Documentation/ABI/stable/sysfs-class-backlight).
+A failed enable attempts both suppression mechanisms and never reports success.
+Unknown state cannot acknowledge a later brightness update as applied.
+
+Clean stop leaves a managed device dark. Explicit release requires cancelled
+pending enables and safe KMS/GPU detach; uncertain cleanup retains admission.
+Destructors perform no backlight writes and never restore illumination. These
+primitives do **not** establish presentation completion or current-intent authority:
+the future presenter must supply those before illumination. Tests use private
+filesystem trees and injected attribute failures; they are not hardware qualification.
+
 ## Remaining boundaries
 
 - macOS keeps its existing acknowledged host title/input operations; native

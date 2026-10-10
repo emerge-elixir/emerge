@@ -18,27 +18,53 @@ Implemented:
 - Headless binary/PRIME startup and live frame caps now gate all render admissions, not just animation pulses. Bounded latest-scene coalescing preserves earliest pending pipeline latency; an independent control lane rebases deadlines without catch-up frames. Static config changes stay idle, and stop/PRIME retirement remain wakeable. Tests cover cap changes, burst coalescing, terminal-frame retry, native output and config-only recovery. PRIME hardware qualification remains pending.
 - Wayland startup/live caps across CPU raster, raster GPU upload, GL and Vulkan. A coalescing calloop ping wakes updates; deadlines only arm for presentable work. Input, callback/cleanup handling and stop remain independent. Physical refresh estimation ignores capped callback intervals, and animation sampling accounts for the next admission. Private startup FPS is now shared, not headless-specific. See `guides/internals/frame-pacing.md`.
 - Migrated affected test fixtures and artifact smoke probe; added normalization, callback, config-only native recovery and upload-readiness tests.
+- Backlight foundations in `native/emerge_skia/src/backend/backlight/`: conservative connector association, alias-safe process-wide reservations, pinned directory/attribute descriptors, requested-brightness baselines, quantization, dark-state intent retention and failure-safe leave-dark cleanup. Twenty-one fake-filesystem/fault/concurrency tests pass. These are **not wired to presenters** and do not enable any public control.
 
 Still required (not merely unverified):
 
 - Startup/DRM power/output config-to-frame revisions and presentation completion reporting; macOS host config revisions. The supported live-control tracker above does not replace these gates.
-- DRM backlight binding/ownership and sysfs control, display-off/on KMS transitions, native off-state work suppression, stale enable protection and safe mode/output reconfiguration.
+- Wire backlight binding, baseline persistence and sysfs primitives into DRM startup/recovery/owner cleanup; implement display-off/on KMS transitions, native off-state work suppression, stale enable protection and safe mode/output reconfiguration.
 - macOS/DRM live frame caps.
 - Remaining guides/demo migration, full input transport contract coverage, release version changes and hardware qualification.
 
 Unsupported explicit native display/backlight requests and macOS/DRM frame caps currently raise rather than silently accepting intent. `backlight.device: :auto` does not yet manage a device. Live DRM output and macOS/DRM frame-cap updates report unsupported. Off-state callback deferral is tested with a custom adapter; it is **not** native display-off support. The package version remains 0.4.2 until the remaining 0.5 release work is complete.
 
-Latest native-config validation: `mix test --warnings-as-errors` (627 passed, 13 excluded), default `cargo test` (1509 unit tests plus fixture suites), combined Wayland-all/DRM-all Rust tests (1628 passed, 2 ignored plus fixtures), CPU-only DRM Rust tests (1480 passed, 1 ignored plus fixtures), combined and CPU-only Clippy, `./ci-tests.sh quality`, `mix docs --warnings-as-errors`, and the live Wayland OpenGL smoke with owner acknowledgements. Earlier slices also passed Wayland-all and DRM-raster-only Rust tests, combined Wayland-all/DRM-all and CPU-only Clippy, and `mix docs --warnings-as-errors`. The opt-in live Wayland test passed on the available compositor for CPU raster, GPU-upload raster and OpenGL. Wayland Vulkan functional frame-cap checks also passed on Hyprland/RADV RX 7900 XTX, but synchronization validation reports acquire-to-layout-transition hazards (4 errors, 0 warnings in the native-validation run). Qualification is blocked pending a fix; details are in `active-linux-gpu-qualification.md`. DRM and headless PRIME hardware tests remain unrun; macOS was not built or qualified.
+Latest backlight-foundation validation: `EMERGE_SKIA_BUILD=true mix test --warnings-as-errors` (627 passed, 13 excluded); default Rust (1530 unit tests), CPU-only DRM (1501 passed, 1 ignored), combined Wayland-all/DRM-all (1649 passed, 2 ignored), plus fixture suites; combined all-targets Clippy with warnings denied, `./ci-tests.sh quality`, and `mix docs --warnings-as-errors`. No real sysfs writes or DRM power hardware qualification were performed.
+
+Previous native-config validation: `mix test --warnings-as-errors` (627 passed, 13 excluded), default `cargo test` (1509 unit tests plus fixture suites), combined Wayland-all/DRM-all Rust tests (1628 passed, 2 ignored plus fixtures), CPU-only DRM Rust tests (1480 passed, 1 ignored plus fixtures), combined and CPU-only Clippy, `./ci-tests.sh quality`, `mix docs --warnings-as-errors`, and the live Wayland OpenGL smoke with owner acknowledgements. Earlier slices also passed Wayland-all and DRM-raster-only Rust tests, combined Wayland-all/DRM-all and CPU-only Clippy, and `mix docs --warnings-as-errors`. The opt-in live Wayland test passed on the available compositor for CPU raster, GPU-upload raster and OpenGL. Wayland Vulkan functional frame-cap checks also passed on Hyprland/RADV RX 7900 XTX, but synchronization validation reports acquire-to-layout-transition hazards (4 errors, 0 warnings in the native-validation run). Qualification is blocked pending a fix; details are in `active-linux-gpu-qualification.md`. DRM and headless PRIME hardware tests remain unrun; macOS was not built or qualified.
 
 The Vulkan synchronization failure is separately tracked in
 [the deferred fix plan](active-vulkan-acquire-synchronization.md); do not expand
 config implementation into that graphics repair.
 
-Next config slice: DRM power/backlight controls and config-to-frame/presentation
-revisions. Resolve takeover/clean-stop illumination policy and implement binding,
-exclusive managed-device reservation and fake-filesystem tests before enabling
-hardware effects. Power controls need a wake lane independent of blocked input/tree
-work, not just the bounded event admission used for existing live controls above.
+Completed foundation slice: backlight discovery, binding primitives, pinned sysfs
+I/O, exclusive identity reservation, retained initial requested brightness and
+failure cleanup are implemented/tested separately from presenters. For managed
+devices, use deliberate dark takeover and leave-dark clean stop; never restore
+illumination from a destructor. Unmanaged (`device: nil`) devices receive no Emerge
+backlight attribute writes. Auto association must be proven by
+connector ancestry, not a shared GPU parent or enumeration order. Explicit unknown
+association is an operator override; a proven different connector is rejected.
+Use both power-down and zero brightness for suppression, attempt both on failure,
+and retain uncertain ownership rather than allowing sibling reuse. Tests use only
+private fake sysfs trees/in-memory attributes, not host display controls.
+
+This foundation is not public power support: config guards remain until native
+control wakeups, matching-frame/presentation barriers, and all relevant owner
+cleanup paths are integrated. `brightness: nil` recovery must reuse the captured
+baseline, never recapture a level Emerge already darkened. Power controls need a
+wake lane independent of blocked input/tree work, not just the bounded event
+admission used for existing live controls above.
+
+Next: carry binding/baseline ownership through startup/recovery and connect the
+power lane to config/tree/layout/presentation barriers. Persist the baseline before
+first darkening, including startup failures before the readiness/handle reply—not
+only recovery of successfully started renderers. A native replay request
+alone can replay the pre-off application tree before BEAM submits its latest UI.
+Require a revision-tagged acknowledgement after successful tree reconciliation
+(including a no-op diff), plus matching native layout/frame completion, before
+illumination. Recheck current intent at the final effect; do not hold its lock
+across GPU/KMS waits. The new sysfs helpers deliberately do not invent that proof.
 macOS retains its acknowledged host operations until its revision protocol lands.
 Native stop/status and recovery remain the ownership authority.
 
