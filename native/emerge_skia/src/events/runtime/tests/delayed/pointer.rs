@@ -439,11 +439,9 @@ fn real_event_actor_drops_remounted_click_capture_but_preserves_same_mount_relea
         let (event_tx, event_rx) = bounded(16);
         let (tree_tx, tree_rx) = bounded(64);
         for msg in [
-            EventMsg::RegistryUpdate {
-                rebuild: initial.clone(),
-            },
+            EventMsg::registry_update(initial.clone()),
             EventMsg::InputEvent(button(ACTION_PRESS, 10.0, 10.0)),
-            EventMsg::RegistryUpdate { rebuild: initial },
+            EventMsg::registry_update(initial),
             EventMsg::InputEvent(button(ACTION_RELEASE, 10.0, 10.0)),
         ] {
             event_tx.send(msg).unwrap();
@@ -477,7 +475,7 @@ fn real_event_actor_drops_remounted_click_capture_but_preserves_same_mount_relea
             .chain(remount.then(|| upload(&tree)))
             .collect();
         let rebuild = response(&mut engine, messages, TreeUpdateDecodePolicy::ReturnErr);
-        event_tx.send(EventMsg::RegistryUpdate { rebuild }).unwrap();
+        event_tx.send(EventMsg::registry_update(rebuild)).unwrap();
         event_tx.send(EventMsg::Stop).unwrap();
         handle.join().unwrap();
         let outgoing = drain_msgs(&tree_rx);

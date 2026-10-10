@@ -246,11 +246,19 @@ pub enum EventMsg {
         predicted_next_present_at: Instant,
     },
     RegistryUpdate {
-        rebuild: RegistryRebuildPayload,
+        rebuild: Box<RegistryRebuildPayload>,
     },
     SetInputMask(u32),
     SetInputTarget(Option<LocalPid>),
     Stop,
+}
+
+impl EventMsg {
+    pub fn registry_update(rebuild: RegistryRebuildPayload) -> Self {
+        Self::RegistryUpdate {
+            rebuild: Box::new(rebuild),
+        }
+    }
 }
 
 #[derive(Debug)]

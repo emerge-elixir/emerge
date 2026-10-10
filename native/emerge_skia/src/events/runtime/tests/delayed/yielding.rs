@@ -421,9 +421,7 @@ fn real_actor_recovers_yielded_bursts_or_stops_without_a_yield_receipt() {
                 }))
                 .unwrap();
         }
-        event_tx
-            .send(EventMsg::RegistryUpdate { rebuild: initial })
-            .unwrap();
+        event_tx.send(EventMsg::registry_update(initial)).unwrap();
         if !recover {
             event_tx.send(EventMsg::Stop).unwrap();
         }
@@ -451,7 +449,7 @@ fn real_actor_recovers_yielded_bursts_or_stops_without_a_yield_receipt() {
                 else {
                     panic!("cached ack must not construct a scene");
                 };
-                event_tx.send(EventMsg::RegistryUpdate { rebuild }).unwrap();
+                event_tx.send(EventMsg::registry_update(rebuild)).unwrap();
             }
             event_tx.send(EventMsg::Stop).unwrap();
         }

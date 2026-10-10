@@ -211,6 +211,7 @@ impl Harness {
         else {
             panic!("registry");
         };
+        let other = *other;
         assert_registry_rebuild_payloads_equivalent(&rebuild, &other);
         if self.defer_install {
             self.deferred.push_back((rebuild, other));
