@@ -478,10 +478,11 @@ impl HostEventRuntime {
     }
 }
 
-const PENDING_TEXT_PATCH_TTL_FALLBACK: Duration = Duration::from_millis(100);
-const PENDING_TEXT_PATCH_TTL_MIN: Duration = Duration::from_millis(40);
-const PENDING_TEXT_PATCH_TTL_MAX: Duration = Duration::from_millis(400);
-const PENDING_TEXT_PATCH_TTL_FRAME_WINDOW: u32 = 4;
+const TEXT_INPUT_ECHO_TTL: Duration = Duration::from_secs(5);
+const PENDING_SLIDER_PATCH_TTL_FALLBACK: Duration = Duration::from_millis(100);
+const PENDING_SLIDER_PATCH_TTL_MIN: Duration = Duration::from_millis(40);
+const PENDING_SLIDER_PATCH_TTL_MAX: Duration = Duration::from_millis(400);
+const PENDING_SLIDER_PATCH_TTL_FRAME_WINDOW: u32 = 4;
 const DRAG_VELOCITY_SAMPLE_MIN_DT: Duration = Duration::from_millis(4);
 const DRAG_VELOCITY_FILTER_ALPHA: f32 = 0.25;
 const ADAPTIVE_SCROLL_FRICTION: f32 = 0.015;
@@ -577,7 +578,7 @@ struct InertialScrollState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct PendingTextPatch {
+struct ExpectedTextEcho {
     content: String,
     expires_at: Instant,
 }
@@ -1021,7 +1022,7 @@ struct DirectEventRuntime {
     text_states: HashMap<NodeId, TextInputState>,
     slider_states: HashMap<NodeId, SliderState>,
     text_commit_suppressions: Vec<TextCommitSuppression>,
-    pending_text_patches: HashMap<NodeId, VecDeque<PendingTextPatch>>,
+    expected_text_echoes: HashMap<NodeId, VecDeque<ExpectedTextEcho>>,
     pending_slider_patches: HashMap<NodeId, VecDeque<PendingSliderPatch>>,
     scrollbar_nodes: HashMap<(NodeId, ScrollbarAxis), ScrollbarNode>,
     input_handler: InputHandler,
@@ -1079,7 +1080,7 @@ impl DirectEventRuntime {
             text_states: HashMap::new(),
             slider_states: HashMap::new(),
             text_commit_suppressions: Vec::new(),
-            pending_text_patches: HashMap::new(),
+            expected_text_echoes: HashMap::new(),
             pending_slider_patches: HashMap::new(),
             scrollbar_nodes: HashMap::new(),
             input_handler: InputHandler::new(),
@@ -1150,7 +1151,7 @@ impl DirectEventRuntime {
             self.has_active_pointer_overlay(),
             self.runtime_overlay.virtual_key.is_some(),
             self.inertial_scroll.is_some(),
-            self.pending_text_patches.len(),
+            self.expected_text_echoes.len(),
             self.pending_slider_patches.len(),
             self.next_event_timeout()
                 .map(|duration| format!("{:.3} ms", duration.as_secs_f64() * 1_000.0))
@@ -1187,7 +1188,7 @@ impl DirectEventRuntime {
         });
     }
 
-    fn pending_text_patch_ttl(&self) -> Duration {
+    fn pending_slider_patch_ttl(&self) -> Duration {
         self.last_present_timing
             .and_then(|timing| {
                 timing
@@ -1195,10 +1196,10 @@ impl DirectEventRuntime {
                     .checked_duration_since(timing.presented_at)
             })
             .filter(|interval| !interval.is_zero())
-            .map(|interval| interval.saturating_mul(PENDING_TEXT_PATCH_TTL_FRAME_WINDOW))
-            .unwrap_or(PENDING_TEXT_PATCH_TTL_FALLBACK)
-            .max(PENDING_TEXT_PATCH_TTL_MIN)
-            .min(PENDING_TEXT_PATCH_TTL_MAX)
+            .map(|interval| interval.saturating_mul(PENDING_SLIDER_PATCH_TTL_FRAME_WINDOW))
+            .unwrap_or(PENDING_SLIDER_PATCH_TTL_FALLBACK)
+            .max(PENDING_SLIDER_PATCH_TTL_MIN)
+            .min(PENDING_SLIDER_PATCH_TTL_MAX)
     }
 
     fn cancel_inertial_scroll(&mut self) {
@@ -1731,7 +1732,7 @@ impl DirectEventRuntime {
         let slider_count = sliders.len();
         let scrollbar_count = scrollbars.len();
 
-        self.prune_expired_pending_text_patches();
+        self.prune_expired_expected_text_echoes();
         self.prune_expired_pending_slider_patches();
         let previous_registry = std::mem::replace(&mut self.base_registry, base_registry);
         self.scrollbar_nodes = scrollbars;
@@ -1748,12 +1749,10 @@ impl DirectEventRuntime {
                 .is_some_and(|focused_id| focused_id == &suppression.element_id)
         });
 
-        let pending_text_patch_ttl = self.pending_text_patch_ttl();
         let (mut changed_tree, accepted_tree_patch) = reconcile_text_input_states(
             &text_inputs,
             &mut self.text_states,
-            &mut self.pending_text_patches,
-            pending_text_patch_ttl,
+            &mut self.expected_text_echoes,
             &self.focused_id,
             tree_tx,
             log_render,
@@ -1777,7 +1776,6 @@ impl DirectEventRuntime {
                 target: &self.input_target,
                 host_event_sink: self.host_event_sink.as_deref(),
                 states: &mut self.text_states,
-                pending_text_patches: &mut self.pending_text_patches,
                 tree_tx,
                 log_render,
             };
@@ -2341,11 +2339,11 @@ impl DirectEventRuntime {
                 self.text_commit_suppressions
                     .push(TextCommitSuppression { element_id, key });
             }
-            RuntimeChange::ExpectTextInputPatchValue {
+            RuntimeChange::ExpectTextInputEcho {
                 element_id,
                 content,
             } => {
-                self.enqueue_pending_text_patch(element_id, content);
+                self.enqueue_expected_text_echo(element_id, content);
             }
             RuntimeChange::ExpectSliderPatchValue { element_id, value } => {
                 self.enqueue_pending_slider_patch(element_id, value);
@@ -2387,14 +2385,18 @@ impl DirectEventRuntime {
         }
     }
 
-    fn enqueue_pending_text_patch(&mut self, element_id: NodeId, content: String) {
-        let ttl = self.pending_text_patch_ttl();
-        enqueue_pending_text_patch_value(&mut self.pending_text_patches, element_id, content, ttl);
+    fn enqueue_expected_text_echo(&mut self, element_id: NodeId, content: String) {
+        enqueue_expected_text_echo_value(
+            &mut self.expected_text_echoes,
+            element_id,
+            content,
+            Instant::now(),
+        );
     }
 
     fn enqueue_pending_slider_patch(&mut self, element_id: NodeId, value: f64) {
         let now = Instant::now();
-        let ttl = self.pending_text_patch_ttl();
+        let ttl = self.pending_slider_patch_ttl();
         let queue = self.pending_slider_patches.entry(element_id).or_default();
         prune_expired_pending_slider_patch_queue(queue, now);
 
@@ -2410,10 +2412,10 @@ impl DirectEventRuntime {
         }
     }
 
-    fn prune_expired_pending_text_patches(&mut self) {
+    fn prune_expired_expected_text_echoes(&mut self) {
         let now = Instant::now();
-        self.pending_text_patches.retain(|_, queue| {
-            prune_expired_pending_text_patch_queue(queue, now);
+        self.expected_text_echoes.retain(|_, queue| {
+            prune_expired_text_echo_queue(queue, now);
             !queue.is_empty()
         });
     }
@@ -2440,7 +2442,7 @@ impl DirectEventRuntime {
         // Drop old-mount state before incoming native state is reconciled/replayed.
         self.text_states.retain(|id, _| same_mount(id));
         self.slider_states.retain(|id, _| same_mount(id));
-        self.pending_text_patches.retain(|id, _| same_mount(id));
+        self.expected_text_echoes.retain(|id, _| same_mount(id));
         self.pending_slider_patches.retain(|id, _| same_mount(id));
         self.text_commit_suppressions
             .retain(|suppression| same_mount(&suppression.element_id));
@@ -2647,33 +2649,6 @@ fn send_runtime_update(
     false
 }
 
-fn send_pending_content_update(
-    tree_tx: &dyn TreeSink,
-    log_render: bool,
-    pending_text_patches: &mut HashMap<NodeId, VecDeque<PendingTextPatch>>,
-    pending_text_patch_ttl: Duration,
-    element_id: &NodeId,
-    content: String,
-) -> bool {
-    if refresh_pending_text_patch_match(
-        pending_text_patches,
-        element_id,
-        content.as_str(),
-        pending_text_patch_ttl,
-    ) {
-        return false;
-    }
-
-    let changed_tree = send_content_update(tree_tx, log_render, element_id, content.clone());
-    enqueue_pending_text_patch_value(
-        pending_text_patches,
-        *element_id,
-        content,
-        pending_text_patch_ttl,
-    );
-    changed_tree
-}
-
 fn send_content_update(
     tree_tx: &dyn TreeSink,
     log_render: bool,
@@ -2708,7 +2683,7 @@ fn send_slider_value_update(
     true
 }
 
-fn prune_expired_pending_text_patch_queue(queue: &mut VecDeque<PendingTextPatch>, now: Instant) {
+fn prune_expired_text_echo_queue(queue: &mut VecDeque<ExpectedTextEcho>, now: Instant) {
     while queue
         .front()
         .is_some_and(|pending| pending.expires_at <= now)
@@ -2717,55 +2692,25 @@ fn prune_expired_pending_text_patch_queue(queue: &mut VecDeque<PendingTextPatch>
     }
 }
 
-fn enqueue_pending_text_patch_value(
-    pending_text_patches: &mut HashMap<NodeId, VecDeque<PendingTextPatch>>,
+fn enqueue_expected_text_echo_value(
+    expected_text_echoes: &mut HashMap<NodeId, VecDeque<ExpectedTextEcho>>,
     element_id: NodeId,
     content: String,
-    ttl: Duration,
+    now: Instant,
 ) {
-    let now = Instant::now();
-    let queue = pending_text_patches.entry(element_id).or_default();
-    prune_expired_pending_text_patch_queue(queue, now);
+    let queue = expected_text_echoes.entry(element_id).or_default();
+    prune_expired_text_echo_queue(queue, now);
 
     if let Some(existing) = queue.back_mut()
         && existing.content == content
     {
-        existing.expires_at = now + ttl;
+        existing.expires_at = now + TEXT_INPUT_ECHO_TTL;
     } else {
-        queue.push_back(PendingTextPatch {
+        queue.push_back(ExpectedTextEcho {
             content,
-            expires_at: now + ttl,
+            expires_at: now + TEXT_INPUT_ECHO_TTL,
         });
     }
-}
-
-fn refresh_pending_text_patch_match(
-    pending_text_patches: &mut HashMap<NodeId, VecDeque<PendingTextPatch>>,
-    element_id: &NodeId,
-    content: &str,
-    ttl: Duration,
-) -> bool {
-    let now = Instant::now();
-    let matched = pending_text_patches
-        .get_mut(element_id)
-        .and_then(|queue| {
-            prune_expired_pending_text_patch_queue(queue, now);
-            let pending = queue
-                .iter_mut()
-                .find(|pending| pending.content == content)?;
-            pending.expires_at = now + ttl;
-            Some(())
-        })
-        .is_some();
-
-    if pending_text_patches
-        .get(element_id)
-        .is_some_and(|queue| queue.is_empty())
-    {
-        pending_text_patches.remove(element_id);
-    }
-
-    matched
 }
 
 fn prune_expired_pending_slider_patch_queue(
@@ -2780,14 +2725,16 @@ fn prune_expired_pending_slider_patch_queue(
     }
 }
 
-fn consume_pending_text_patch_match(
-    pending_text_patches: &mut HashMap<NodeId, VecDeque<PendingTextPatch>>,
+fn consume_expected_text_echo(
+    expected_text_echoes: &mut HashMap<NodeId, VecDeque<ExpectedTextEcho>>,
     element_id: &NodeId,
     content: &str,
+    now: Instant,
 ) -> bool {
-    let matched = pending_text_patches
+    let matched = expected_text_echoes
         .get_mut(element_id)
         .and_then(|queue| {
+            prune_expired_text_echo_queue(queue, now);
             let match_index = queue
                 .iter()
                 .position(|pending| pending.content == content)?;
@@ -2798,11 +2745,11 @@ fn consume_pending_text_patch_match(
         })
         .is_some();
 
-    if pending_text_patches
+    if expected_text_echoes
         .get(element_id)
         .is_some_and(|queue| queue.is_empty())
     {
-        pending_text_patches.remove(element_id);
+        expected_text_echoes.remove(element_id);
     }
 
     matched
@@ -2836,196 +2783,47 @@ fn consume_pending_slider_patch_match(
     matched
 }
 
-struct FocusedTextInputReconcileContext<'a> {
-    accepted_tree_patch: &'a mut bool,
-    pending_text_patches: &'a mut HashMap<NodeId, VecDeque<PendingTextPatch>>,
-    pending_text_patch_ttl: Duration,
-    tree_tx: &'a dyn TreeSink,
-    log_render: bool,
-}
-
+// The event session owns editing state. Native rebuilds refresh metadata, not text.
+// Only a new Elixir proposal may acknowledge an echo or replace live content.
 fn reconcile_text_input_states(
     text_inputs: &HashMap<NodeId, TextInputState>,
     states: &mut HashMap<NodeId, TextInputState>,
-    pending_text_patches: &mut HashMap<NodeId, VecDeque<PendingTextPatch>>,
-    pending_text_patch_ttl: Duration,
+    expected_text_echoes: &mut HashMap<NodeId, VecDeque<ExpectedTextEcho>>,
     focused: &Option<NodeId>,
     tree_tx: &dyn TreeSink,
     log_render: bool,
 ) -> (bool, bool) {
-    fn text_input_runtime_mismatch(rebuild: &TextInputState, state: &TextInputState) -> bool {
-        rebuild.focused != state.focused
-            || rebuild.cursor != state.cursor
-            || rebuild.selection_anchor != state.selection_anchor
-            || rebuild.preedit != state.preedit
-            || rebuild.preedit_cursor != state.preedit_cursor
-    }
-
-    fn reconcile_focused_text_input(
-        element_id: &NodeId,
-        rebuild_state: &TextInputState,
-        state: &mut TextInputState,
-        context: &mut FocusedTextInputReconcileContext<'_>,
-    ) -> bool {
-        fn preserve_runtime_focused_text_input(
-            element_id: &NodeId,
-            rebuild_state: &TextInputState,
-            state: &mut TextInputState,
-            context: &mut FocusedTextInputReconcileContext<'_>,
-        ) -> bool {
-            let mut changed_tree = false;
-
-            state.copy_rebuild_metadata_from(rebuild_state);
-            if state.content == rebuild_state.content {
-                consume_pending_text_patch_match(
-                    context.pending_text_patches,
-                    element_id,
-                    state.content.as_str(),
-                );
-            }
-            let patch_content_matches_runtime = state
-                .patch_content
-                .as_deref()
-                .is_some_and(|patch_content| patch_content == state.content);
-            let had_patch_content = state.patch_content.take().is_some();
-            // A focused tree patch whose content already matches the runtime
-            // value is just an app echo. Do not send SetTextInputContent
-            // solely to clear patch_content, because stale cached rebuilds can
-            // replay that echo and keep the listener lane/render queue hot.
-            if (state.content != rebuild_state.content || had_patch_content)
-                && !patch_content_matches_runtime
-            {
-                changed_tree |= send_pending_content_update(
-                    context.tree_tx,
-                    context.log_render,
-                    context.pending_text_patches,
-                    context.pending_text_patch_ttl,
-                    element_id,
-                    state.content.clone(),
-                );
-            }
-
-            state.focused = true;
-            state.normalize_runtime();
-
-            if text_input_runtime_mismatch(rebuild_state, state) {
-                changed_tree |=
-                    send_runtime_update(context.tree_tx, context.log_render, element_id, state);
-            }
-
-            changed_tree
-        }
-
-        fn accept_tree_patch_focused_text_input(
-            element_id: &NodeId,
-            rebuild_state: &TextInputState,
-            state: &mut TextInputState,
-            patch_content: String,
-            context: &mut FocusedTextInputReconcileContext<'_>,
-        ) -> bool {
-            *context.accepted_tree_patch = true;
-            state.copy_rebuild_metadata_from(rebuild_state);
-            state.set_content(patch_content.clone());
-            state.content_origin = TextInputContentOrigin::Event;
-            state.patch_content = None;
-            state.focused = true;
-            state.normalize_runtime();
-
-            let mut changed_tree = send_pending_content_update(
-                context.tree_tx,
-                context.log_render,
-                context.pending_text_patches,
-                context.pending_text_patch_ttl,
-                element_id,
-                patch_content,
-            );
-
-            if text_input_runtime_mismatch(rebuild_state, state) {
-                changed_tree |=
-                    send_runtime_update(context.tree_tx, context.log_render, element_id, state);
-            }
-
-            changed_tree
-        }
-
-        let patch_content = rebuild_state.patch_content.clone();
-        let preserve_runtime = match patch_content.as_deref() {
-            None => true,
-            Some(patch_content) => {
-                // A focused patch is not a tree ack yet: the ack arrives when
-                // the tree's base content matches the runtime content. Keep
-                // pending runtime writes alive until that base-content ack so
-                // stale focused patch rebuilds cannot re-emit the same write.
-                refresh_pending_text_patch_match(
-                    context.pending_text_patches,
-                    element_id,
-                    patch_content,
-                    context.pending_text_patch_ttl,
-                ) || patch_content == state.content
-            }
-        };
-
-        if preserve_runtime {
-            preserve_runtime_focused_text_input(element_id, rebuild_state, state, context)
-        } else {
-            context.pending_text_patches.remove(element_id);
-            accept_tree_patch_focused_text_input(
-                element_id,
-                rebuild_state,
-                state,
-                patch_content.expect("focused patch reconcile requires patch_content"),
-                context,
-            )
-        }
-    }
-
-    fn reset_unfocused_text_input_from_rebuild(
-        state: &mut TextInputState,
-        rebuild_state: &TextInputState,
-    ) {
-        *state = rebuild_state.clone();
-        let cursor = state.cursor;
-        let selection_anchor = state.selection_anchor;
-        let preedit = state.preedit.clone();
-        let preedit_cursor = state.preedit_cursor;
-        state.set_runtime(
-            false,
-            Some(cursor),
-            selection_anchor,
-            preedit,
-            preedit_cursor,
-        );
-    }
-
     let mut changed_tree = false;
     let mut accepted_tree_patch = false;
+    let now = Instant::now();
 
     for (id, rebuild_state) in text_inputs {
-        let id = *id;
-        let should_focus = focused.as_ref().is_some_and(|focused_id| focused_id == &id);
+        let state = states.entry(*id).or_insert_with(|| rebuild_state.clone());
+        state.copy_rebuild_metadata_from(rebuild_state);
+        let should_focus = focused.as_ref() == Some(id);
+        state.focused = should_focus;
+        state.normalize_runtime();
 
-        let state = states.entry(id).or_insert_with(|| rebuild_state.clone());
-
-        if should_focus {
-            let mut context = FocusedTextInputReconcileContext {
-                accepted_tree_patch: &mut accepted_tree_patch,
-                pending_text_patches,
-                pending_text_patch_ttl,
-                tree_tx,
-                log_render,
-            };
-            changed_tree |= reconcile_focused_text_input(&id, rebuild_state, state, &mut context);
-        } else {
-            reset_unfocused_text_input_from_rebuild(state, rebuild_state);
+        if let Some(proposal) = &rebuild_state.content_proposal
+            && proposal.id > state.last_processed_proposal_id
+        {
+            // Record even echoes/no-ops: cached and animation snapshots can replay
+            // this proposal long after its echo entry was consumed or expired.
+            state.last_processed_proposal_id = proposal.id;
+            let is_echo =
+                consume_expected_text_echo(expected_text_echoes, id, &proposal.content, now);
+            if !is_echo && proposal.content != state.content {
+                state.set_content(proposal.content.clone());
+                state.content_origin = TextInputContentOrigin::Event;
+                accepted_tree_patch = true;
+                changed_tree |= send_content_update(tree_tx, log_render, id, state.content.clone());
+                send_runtime_update(tree_tx, log_render, id, state);
+            }
         }
     }
 
     states.retain(|id, _| text_inputs.contains_key(id));
-    pending_text_patches.retain(|id, queue| {
-        text_inputs.contains_key(id)
-            && focused.as_ref().is_some_and(|focused_id| focused_id == id)
-            && !queue.is_empty()
-    });
+    expected_text_echoes.retain(|id, queue| text_inputs.contains_key(id) && !queue.is_empty());
     (changed_tree, accepted_tree_patch)
 }
 
@@ -3105,7 +2903,6 @@ struct FocusApplyContext<'a> {
     target: &'a Option<LocalPid>,
     host_event_sink: Option<&'a dyn HostEventSink>,
     states: &'a mut HashMap<NodeId, TextInputState>,
-    pending_text_patches: &'a mut HashMap<NodeId, VecDeque<PendingTextPatch>>,
     tree_tx: &'a dyn TreeSink,
     log_render: bool,
 }
@@ -3136,37 +2933,6 @@ fn apply_focus_to(
 
         let mut changed_tree = true;
         if let Some(state) = context.states.get_mut(&prev_id) {
-            if let Some(patch_content) = state.patch_content.clone() {
-                let preserve_runtime = consume_pending_text_patch_match(
-                    context.pending_text_patches,
-                    &prev_id,
-                    &patch_content,
-                );
-                context.pending_text_patches.remove(&prev_id);
-
-                if preserve_runtime {
-                    changed_tree |= send_content_update(
-                        context.tree_tx,
-                        context.log_render,
-                        &prev_id,
-                        state.content.clone(),
-                    );
-                    state.patch_content = None;
-                } else {
-                    state.set_content(patch_content.clone());
-                    state.content_origin = TextInputContentOrigin::Event;
-                    state.patch_content = None;
-                    changed_tree |= send_content_update(
-                        context.tree_tx,
-                        context.log_render,
-                        &prev_id,
-                        patch_content,
-                    );
-                }
-            } else {
-                context.pending_text_patches.remove(&prev_id);
-            }
-
             let cursor = state.cursor;
             state.set_runtime(false, Some(cursor), None, None, None);
             changed_tree |=
@@ -3549,7 +3315,8 @@ mod tests {
     ) -> TextInputState {
         TextInputState {
             content: content.to_string(),
-            patch_content: None,
+            content_proposal: None,
+            last_processed_proposal_id: 0,
             content_origin,
             content_len: content.chars().count() as u32,
             cursor,
@@ -3580,7 +3347,7 @@ mod tests {
 
     fn make_text_input_state_with_patch(
         content: &str,
-        patch_content: Option<&str>,
+        content_proposal: Option<&str>,
         content_origin: TextInputContentOrigin,
         cursor: u32,
         selection_anchor: Option<u32>,
@@ -3593,7 +3360,11 @@ mod tests {
             selection_anchor,
             focused,
         );
-        state.patch_content = patch_content.map(ToString::to_string);
+        state.content_proposal =
+            content_proposal.map(|content| crate::tree::element::TextInputContentProposal {
+                id: 1,
+                content: content.to_string(),
+            });
         state
     }
 
@@ -3621,8 +3392,8 @@ mod tests {
         text_input_rebuild(input_id, state, Some(input_id))
     }
 
-    fn pending_text_patch(content: &str, expires_at: Instant) -> PendingTextPatch {
-        PendingTextPatch {
+    fn pending_text_patch(content: &str, expires_at: Instant) -> ExpectedTextEcho {
+        ExpectedTextEcho {
             content: content.to_string(),
             expires_at,
         }
@@ -3677,7 +3448,6 @@ mod tests {
         reveal_scrolls: &[FocusRevealScroll],
         focused: &mut Option<NodeId>,
         states: &mut HashMap<NodeId, TextInputState>,
-        pending_text_patches: &mut HashMap<NodeId, VecDeque<PendingTextPatch>>,
         tree_tx: &Sender<TreeMsg>,
     ) -> bool {
         let target = None;
@@ -3685,7 +3455,6 @@ mod tests {
             target: &target,
             host_event_sink: None,
             states,
-            pending_text_patches,
             tree_tx,
             log_render: false,
         };
@@ -4416,7 +4185,6 @@ mod tests {
 
         let mut sessions = HashMap::from([(previous_id, previous), (next_id, next)]);
         let mut focused = Some(previous_id);
-        let mut pending_text_patches = HashMap::new();
         let (tree_tx, tree_rx) = bounded(32);
 
         assert!(apply_focus_to_without_host(
@@ -4428,7 +4196,6 @@ mod tests {
             }],
             &mut focused,
             &mut sessions,
-            &mut pending_text_patches,
             &tree_tx,
         ));
 
@@ -4462,23 +4229,20 @@ mod tests {
     }
 
     #[test]
-    fn apply_focus_to_blur_reconciles_matching_patch_content_to_runtime_value() {
+    fn apply_focus_to_blur_does_not_replay_acknowledged_echo() {
         let previous_id = NodeId::from_term_bytes(vec![211]);
         let next_id = NodeId::from_term_bytes(vec![212]);
 
         let mut previous = make_text_input_state("abc", 3, None, true);
-        previous.patch_content = Some("abc".to_string());
+        previous.content_proposal = Some(crate::tree::element::TextInputContentProposal {
+            id: 1,
+            content: "abc".into(),
+        });
+        previous.last_processed_proposal_id = 1;
         let next = make_text_input_state("next", 0, None, false);
 
         let mut sessions = HashMap::from([(previous_id, previous), (next_id, next)]);
         let mut focused = Some(previous_id);
-        let mut pending_text_patches = HashMap::from([(
-            previous_id,
-            VecDeque::from([PendingTextPatch {
-                content: "abc".to_string(),
-                expires_at: Instant::now() + Duration::from_millis(200),
-            }]),
-        )]);
         let (tree_tx, tree_rx) = bounded(32);
 
         assert!(apply_focus_to_without_host(
@@ -4486,7 +4250,6 @@ mod tests {
             &[],
             &mut focused,
             &mut sessions,
-            &mut pending_text_patches,
             &tree_tx,
         ));
 
@@ -4494,36 +4257,31 @@ mod tests {
             .get(&previous_id)
             .expect("previous session updated");
         assert_eq!(previous.content, "abc");
-        assert_eq!(previous.patch_content, None);
+        assert_eq!(previous.last_processed_proposal_id, 1);
         assert!(!previous.focused);
-        assert!(!pending_text_patches.contains_key(&previous_id));
 
-        let msgs = drain_msgs(&tree_rx);
-        assert!(msgs.iter().any(|msg| matches!(
-            msg,
-            TreeMsg::SetTextInputContent { element_id, content }
-                if *element_id == previous_id && content == "abc"
-        )));
+        assert!(
+            drain_msgs(&tree_rx)
+                .iter()
+                .all(|msg| !matches!(msg, TreeMsg::SetTextInputContent { .. }))
+        );
     }
 
     #[test]
-    fn apply_focus_to_blur_accepts_conflicting_patch_content() {
+    fn apply_focus_to_blur_does_not_replay_accepted_app_proposal() {
         let previous_id = NodeId::from_term_bytes(vec![213]);
         let next_id = NodeId::from_term_bytes(vec![214]);
 
         let mut previous = make_text_input_state("abc", 3, None, true);
-        previous.patch_content = Some("server".to_string());
+        previous.content_proposal = Some(crate::tree::element::TextInputContentProposal {
+            id: 1,
+            content: "server".into(),
+        });
+        previous.last_processed_proposal_id = 1;
         let next = make_text_input_state("next", 0, None, false);
 
         let mut sessions = HashMap::from([(previous_id, previous), (next_id, next)]);
         let mut focused = Some(previous_id);
-        let mut pending_text_patches = HashMap::from([(
-            previous_id,
-            VecDeque::from([PendingTextPatch {
-                content: "abc".to_string(),
-                expires_at: Instant::now() + Duration::from_millis(200),
-            }]),
-        )]);
         let (tree_tx, tree_rx) = bounded(32);
 
         assert!(apply_focus_to_without_host(
@@ -4531,24 +4289,21 @@ mod tests {
             &[],
             &mut focused,
             &mut sessions,
-            &mut pending_text_patches,
             &tree_tx,
         ));
 
         let previous = sessions
             .get(&previous_id)
             .expect("previous session updated");
-        assert_eq!(previous.content, "server");
-        assert_eq!(previous.patch_content, None);
+        assert_eq!(previous.content, "abc");
+        assert_eq!(previous.last_processed_proposal_id, 1);
         assert!(!previous.focused);
-        assert!(!pending_text_patches.contains_key(&previous_id));
 
-        let msgs = drain_msgs(&tree_rx);
-        assert!(msgs.iter().any(|msg| matches!(
-            msg,
-            TreeMsg::SetTextInputContent { element_id, content }
-                if *element_id == previous_id && content == "server"
-        )));
+        assert!(
+            drain_msgs(&tree_rx)
+                .iter()
+                .all(|msg| !matches!(msg, TreeMsg::SetTextInputContent { .. }))
+        );
     }
 
     #[test]
@@ -5720,11 +5475,11 @@ mod tests {
     }
 
     #[test]
-    fn pending_text_patch_ttl_defaults_and_tracks_present_timing() {
+    fn pending_slider_patch_ttl_defaults_and_tracks_present_timing() {
         let mut runtime = DirectEventRuntime::new(false);
         assert_eq!(
-            runtime.pending_text_patch_ttl(),
-            PENDING_TEXT_PATCH_TTL_FALLBACK
+            runtime.pending_slider_patch_ttl(),
+            PENDING_SLIDER_PATCH_TTL_FALLBACK
         );
 
         let now = Instant::now();
@@ -5732,13 +5487,19 @@ mod tests {
             presented_at: now,
             predicted_next_present_at: now + Duration::from_millis(30),
         });
-        assert_eq!(runtime.pending_text_patch_ttl(), Duration::from_millis(120));
+        assert_eq!(
+            runtime.pending_slider_patch_ttl(),
+            Duration::from_millis(120)
+        );
 
         runtime.last_present_timing = Some(PresentTimingState {
             presented_at: now,
             predicted_next_present_at: now + Duration::from_millis(200),
         });
-        assert_eq!(runtime.pending_text_patch_ttl(), PENDING_TEXT_PATCH_TTL_MAX);
+        assert_eq!(
+            runtime.pending_slider_patch_ttl(),
+            PENDING_SLIDER_PATCH_TTL_MAX
+        );
     }
 
     #[test]
@@ -6344,7 +6105,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_runtime_reconciled_text_runtime_update_does_not_stale_listener_lane() {
+    fn native_text_snapshot_does_not_overwrite_or_resend_editing_state() {
         let input_id = NodeId::from_term_bytes(vec![159]);
         let (tree_tx, tree_rx) = bounded(64);
         let mut runtime = DirectEventRuntime::new(false);
@@ -6368,12 +6129,9 @@ mod tests {
         runtime.handle_registry_update(rebuild, &tree_tx, false);
 
         assert!(!runtime.listener_lane.is_stale());
-        let msgs = drain_msgs(&tree_rx);
-        assert!(msgs.iter().any(|msg| matches!(
-            msg,
-            TreeMsg::SetTextInputRuntime { element_id, cursor, selection_anchor, .. }
-                if *element_id == input_id && *cursor == Some(3) && *selection_anchor == Some(0)
-        )));
+        assert!(drain_msgs(&tree_rx).is_empty());
+        let state = &runtime.text_states[&input_id];
+        assert_eq!((state.cursor, state.selection_anchor), (3, Some(0)));
     }
 
     #[test]
@@ -7365,8 +7123,8 @@ mod tests {
         runtime
             .text_states
             .insert(input_id, make_text_input_state("abc", 3, None, true));
-        let ttl = runtime.pending_text_patch_ttl();
-        runtime.pending_text_patches.insert(
+        let ttl = TEXT_INPUT_ECHO_TTL;
+        runtime.expected_text_echoes.insert(
             input_id,
             VecDeque::from([
                 pending_text_patch("ab", Instant::now() + ttl),
@@ -7382,8 +7140,8 @@ mod tests {
             .expect("session preserved");
         assert_eq!(session.content, "abc");
         assert_eq!(session.cursor, 3);
-        assert_eq!(session.patch_content, None);
-        assert!(!runtime.pending_text_patches.contains_key(&input_id));
+        assert_eq!(session.last_processed_proposal_id, 1);
+        assert!(!runtime.expected_text_echoes.contains_key(&input_id));
         assert!(!runtime.listener_lane.is_stale());
         assert!(drain_msgs(&tree_rx).iter().all(|msg| !matches!(
             msg,
@@ -7421,8 +7179,8 @@ mod tests {
         runtime
             .text_states
             .insert(input_id, make_text_input_state("abc", 3, None, true));
-        let ttl = runtime.pending_text_patch_ttl();
-        runtime.pending_text_patches.insert(
+        let ttl = TEXT_INPUT_ECHO_TTL;
+        runtime.expected_text_echoes.insert(
             input_id,
             VecDeque::from([pending_text_patch("abc", Instant::now() + ttl)]),
         );
@@ -7435,8 +7193,8 @@ mod tests {
             .expect("session accepted");
         assert_eq!(session.content, "server");
         assert_eq!(session.content_origin, TextInputContentOrigin::Event);
-        assert_eq!(session.patch_content, None);
-        assert!(runtime.pending_text_patches.contains_key(&input_id));
+        assert_eq!(session.last_processed_proposal_id, 1);
+        assert!(runtime.expected_text_echoes.contains_key(&input_id));
         assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
             msg,
             TreeMsg::SetTextInputContent { element_id, content }
@@ -7446,7 +7204,7 @@ mod tests {
         let acknowledged =
             focused_text_input_rebuild(input_id, make_text_input_state("server", 3, None, true));
         runtime.handle_registry_update(acknowledged, &tree_tx, false);
-        assert!(!runtime.pending_text_patches.contains_key(&input_id));
+        assert!(runtime.expected_text_echoes.contains_key(&input_id));
         assert!(!runtime.listener_lane.is_stale());
     }
 
@@ -7506,7 +7264,7 @@ mod tests {
         )));
 
         runtime.handle_registry_update(acknowledged_rebuild, &tree_tx, false);
-        assert!(!runtime.pending_text_patches.contains_key(&input_id));
+        assert!(!runtime.expected_text_echoes.contains_key(&input_id));
         assert!(!runtime.listener_lane.is_stale());
         assert!(drain_msgs(&tree_rx).is_empty());
     }
@@ -7532,7 +7290,7 @@ mod tests {
         runtime
             .text_states
             .insert(input_id, make_text_input_state("abc", 3, None, true));
-        runtime.pending_text_patches.insert(
+        runtime.expected_text_echoes.insert(
             input_id,
             VecDeque::from([pending_text_patch(
                 "abc",
@@ -7550,7 +7308,7 @@ mod tests {
                 .content,
             "server"
         );
-        assert!(runtime.pending_text_patches.contains_key(&input_id));
+        assert!(!runtime.expected_text_echoes.contains_key(&input_id));
         assert!(drain_msgs(&tree_rx).iter().any(|msg| matches!(
             msg,
             TreeMsg::SetTextInputContent { element_id, content }
@@ -7560,7 +7318,7 @@ mod tests {
         let acknowledged =
             focused_text_input_rebuild(input_id, make_text_input_state("server", 3, None, true));
         runtime.handle_registry_update(acknowledged, &tree_tx, false);
-        assert!(!runtime.pending_text_patches.contains_key(&input_id));
+        assert!(!runtime.expected_text_echoes.contains_key(&input_id));
         assert!(!runtime.listener_lane.is_stale());
     }
 
@@ -7593,7 +7351,7 @@ mod tests {
         runtime
             .slider_states
             .insert(slider_id, make_slider_state(60.0, 0.0, 100.0, 5.0));
-        let ttl = runtime.pending_text_patch_ttl();
+        let ttl = runtime.pending_slider_patch_ttl();
         runtime.pending_slider_patches.insert(
             slider_id,
             VecDeque::from([PendingSliderPatch {
@@ -7671,7 +7429,7 @@ mod tests {
         runtime
             .slider_states
             .insert(slider_id, make_slider_state(60.0, 0.0, 100.0, 5.0));
-        let ttl = runtime.pending_text_patch_ttl();
+        let ttl = runtime.pending_slider_patch_ttl();
         runtime.pending_slider_patches.insert(
             slider_id,
             VecDeque::from([PendingSliderPatch {
@@ -7721,7 +7479,7 @@ mod tests {
         runtime
             .slider_states
             .insert(slider_id, make_slider_state(60.0, 0.0, 100.0, 5.0));
-        let ttl = runtime.pending_text_patch_ttl();
+        let ttl = runtime.pending_slider_patch_ttl();
         runtime.pending_slider_patches.insert(
             slider_id,
             VecDeque::from([PendingSliderPatch {
@@ -7748,7 +7506,7 @@ mod tests {
     }
 
     #[test]
-    fn unfocused_rebuild_clears_pending_text_patches() {
+    fn unfocused_rebuild_preserves_expected_text_echoes() {
         let input_id = NodeId::from_term_bytes(vec![58]);
         let rebuild = RegistryRebuildPayload {
             listener_barrier: None,
@@ -7772,10 +7530,10 @@ mod tests {
 
         let (tree_tx, _tree_rx) = bounded(32);
         let mut runtime = DirectEventRuntime::new(false);
-        let ttl = runtime.pending_text_patch_ttl();
-        runtime.pending_text_patches.insert(
+        let ttl = TEXT_INPUT_ECHO_TTL;
+        runtime.expected_text_echoes.insert(
             input_id,
-            VecDeque::from([PendingTextPatch {
+            VecDeque::from([ExpectedTextEcho {
                 content: "abc".to_string(),
                 expires_at: Instant::now() + ttl,
             }]),
@@ -7783,7 +7541,7 @@ mod tests {
 
         runtime.handle_registry_update(rebuild, &tree_tx, false);
 
-        assert!(!runtime.pending_text_patches.contains_key(&input_id));
+        assert!(runtime.expected_text_echoes.contains_key(&input_id));
     }
 
     #[test]

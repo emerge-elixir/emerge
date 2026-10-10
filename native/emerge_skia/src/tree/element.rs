@@ -591,13 +591,21 @@ pub struct NodeSpec {
     pub declared: Attrs,
 }
 
+/// An Elixir-authored value, independent of the native rendering mirror.
+/// IDs increase within a mount; registry/animation snapshots retain the same ID.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct TextInputContentProposal {
+    pub id: u64,
+    pub content: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct NodeRuntime {
     /// Runtime-only origin label for current text-input content.
     pub text_input_content_origin: TextInputContentOrigin,
 
-    /// Runtime-only pending patch content for focused text inputs.
-    pub patch_content: Option<String>,
+    /// Latest app declaration. ID zero seeds the mount; native edits never change it.
+    pub content_proposal: Option<TextInputContentProposal>,
 
     pub text_input_focused: bool,
     pub text_input_cursor: Option<u32>,
@@ -814,7 +822,12 @@ impl Element {
             },
             runtime: NodeRuntime {
                 text_input_content_origin: TextInputContentOrigin::TreePatch,
-                patch_content: None,
+                content_proposal: kind
+                    .is_text_input_family()
+                    .then(|| TextInputContentProposal {
+                        id: 0,
+                        content: attrs.content.clone().unwrap_or_default(),
+                    }),
                 #[cfg(test)]
                 text_input_focused: attrs.text_input_focused.unwrap_or(false),
                 #[cfg(not(test))]
@@ -3705,10 +3718,6 @@ impl ElementTree {
             element.spec.declared.content = Some(content.clone());
             if !deferred {
                 element.layout.effective.content = Some(content.clone());
-            }
-
-            if element.runtime.patch_content.take().is_some() {
-                changed = true;
             }
 
             if element.runtime.text_input_content_origin != TextInputContentOrigin::Event {

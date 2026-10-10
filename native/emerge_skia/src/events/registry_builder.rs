@@ -2913,7 +2913,7 @@ pub(crate) enum RuntimeChange {
         key: CanonicalKey,
     },
     /// Track an expected content value coming back from an Elixir tree patch.
-    ExpectTextInputPatchValue { element_id: NodeId, content: String },
+    ExpectTextInputEcho { element_id: NodeId, content: String },
     /// Track an expected slider value coming back from an Elixir tree patch.
     ExpectSliderPatchValue { element_id: NodeId, value: f64 },
     /// Replace active hover trackers.
@@ -5609,8 +5609,8 @@ fn content_change_actions(
         text_runtime_tree_action(element_id, snapshot),
     ]
     .into_iter()
-    .chain(snapshot.emit_change.then(|| {
-        ListenerAction::RuntimeChange(RuntimeChange::ExpectTextInputPatchValue {
+    .chain(change_payload.is_some().then(|| {
+        ListenerAction::RuntimeChange(RuntimeChange::ExpectTextInputEcho {
             element_id: *element_id,
             content: snapshot.content.clone(),
         })
@@ -9664,7 +9664,8 @@ mod tests {
     ) -> TextInputState {
         TextInputState {
             content: content.to_string(),
-            patch_content: None,
+            content_proposal: None,
+            last_processed_proposal_id: 0,
             content_origin: crate::tree::element::TextInputContentOrigin::TreePatch,
             content_len: content.chars().count() as u32,
             cursor,
@@ -13977,7 +13978,7 @@ mod tests {
         )));
         assert!(commit_actions.iter().any(|action| matches!(
             action,
-            ListenerAction::RuntimeChange(RuntimeChange::ExpectTextInputPatchValue {
+            ListenerAction::RuntimeChange(RuntimeChange::ExpectTextInputEcho {
                 element_id,
                 content,
             }) if *element_id == NodeId::from_term_bytes(vec![17]) && content == "abx"
@@ -14030,7 +14031,7 @@ mod tests {
         )));
         assert!(cut_actions.iter().any(|action| matches!(
             action,
-            ListenerAction::RuntimeChange(RuntimeChange::ExpectTextInputPatchValue {
+            ListenerAction::RuntimeChange(RuntimeChange::ExpectTextInputEcho {
                 element_id,
                 content,
             }) if *element_id == NodeId::from_term_bytes(vec![17]) && content.is_empty()
@@ -14071,7 +14072,7 @@ mod tests {
         )));
         assert!(paste_actions.iter().any(|action| matches!(
             action,
-            ListenerAction::RuntimeChange(RuntimeChange::ExpectTextInputPatchValue {
+            ListenerAction::RuntimeChange(RuntimeChange::ExpectTextInputEcho {
                 element_id,
                 content,
             }) if *element_id == NodeId::from_term_bytes(vec![17]) && content == "abzz"

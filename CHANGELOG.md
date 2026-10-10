@@ -29,6 +29,11 @@
 
 ### Fixed
 
+- Controlled text inputs preserve newer edits and cursor/selection state when
+  controller echoes arrive after native updates. Elixir content proposals are
+  processed once per mount; native and animation rebuilds no longer resend or
+  overwrite live text. Expected echoes survive native acknowledgments and expire
+  after a fixed five-second window.
 - Text input caret/selection normalization uses the current native content rather
   than the previous frame's text, so the first keystroke advances the rendered
   caret immediately without a corrective update.

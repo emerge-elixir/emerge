@@ -19,9 +19,11 @@ defmodule Emerge.UI.Input do
   multiline text input that defaults to a one-line minimum height and grows with
   its content when height is omitted.
 
-  Both helpers are controlled inputs: the second argument is the currently
-  rendered string value. Runtime editing can update the focused session
-  immediately, but the next render still comes from the value you pass in.
+  Both helpers are controlled inputs: the second argument supplies the initial
+  value and subsequent application-authored changes. Native editing updates the
+  live session immediately. Returning an `on_change` value acknowledges that edit
+  without moving the cursor or overwriting newer edits; a different application
+  value is applied as a replacement.
 
   For both text-input helpers, a matching `Emerge.UI.Event.on_key_down/2`
   handler suppresses the default keydown behavior for that input. For example,
