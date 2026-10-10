@@ -8,7 +8,8 @@
   `rendering_api: :raster`. Skia renders into double-buffered DRM dumb buffers
   without GBM/EGL/OpenGL or per-frame BEAM transfers. Includes software cursors,
   CPU video and RGBA screenshots; requires atomic KMS, DRM leasing and XRGB8888.
-  The raster-only DRM profile currently builds from source.
+  Dedicated `drm_raster` precompiled artifacts cover all supported Linux targets,
+  including ARMv7, with GPU-free dependency checks.
 - Headless binary `pixel_format: :bgra8888` (premultiplied B, G, R, A). Raster
   renderers draw in this byte order, so frames can be copied straight into
   little-endian DRM `ARGB8888`/`XRGB8888` scanout buffers or framebuffers without
@@ -16,6 +17,8 @@
 
 ### Changed
 
+- All DRM Cargo profiles now embed FreeType, including source builds and mixed
+  Wayland/DRM builds. Nerves builds need no system FreeType package.
 - DRM raster presentation now defaults to CPU. Explicit `present: :gpu_upload`
   retains the OpenGL upload path. GPU-free DRM builds select raster for `:auto`.
 - Require `video_interop ~> 0.1.3` for BGRA frame validation.
