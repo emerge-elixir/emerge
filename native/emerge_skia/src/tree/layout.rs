@@ -1500,6 +1500,9 @@ pub(crate) fn scale_attrs(attrs: &Attrs, scale: f32) -> Attrs {
         on_swipe_left: attrs.on_swipe_left,
         on_swipe_right: attrs.on_swipe_right,
         on_change: attrs.on_change,
+        on_scroll: attrs.on_scroll,
+        scroll_position_x: attrs.scroll_position_x,
+        scroll_position_y: attrs.scroll_position_y,
         on_focus: attrs.on_focus,
         on_blur: attrs.on_blur,
         focus_on_mount: attrs.focus_on_mount,
@@ -7046,6 +7049,12 @@ fn update_scroll_state(tree: &mut ElementTree, id: &NodeId) {
             }
         }
 
+        if let Some(position) = element.runtime.scroll_position {
+            element.layout.scroll_x =
+                (f64::from_bits(position[0]) * element.layout.scroll_x_max as f64) as f32;
+            element.layout.scroll_y =
+                (f64::from_bits(position[1]) * element.layout.scroll_y_max as f64) as f32;
+        }
         (element.layout.scroll_x > f32::EPSILON || element.layout.scroll_y > f32::EPSILON)
             && (element.layout.scroll_x_max > f32::EPSILON
                 || element.layout.scroll_y_max > f32::EPSILON)

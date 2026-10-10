@@ -118,10 +118,19 @@ defmodule EmergeSkia.Macos.Protocol do
     <<id::binary-size(^id_len), payload_len::unsigned-big-32, payload::binary-size(payload_len)>> =
       rest
 
+    true = has_payload in [0, 1] and (kind_tag != 19 or has_payload == 1)
+
     event =
       case has_payload do
-        0 -> {id, decode_element_event_kind(kind_tag)}
-        1 -> {id, decode_element_event_kind(kind_tag), payload}
+        0 ->
+          {id, decode_element_event_kind(kind_tag)}
+
+        1 when kind_tag == 19 ->
+          [x, y] = String.split(payload, ",", parts: 2)
+          {id, :scroll, %{x: parse_scroll_fraction!(x), y: parse_scroll_fraction!(y)}}
+
+        1 ->
+          {id, decode_element_event_kind(kind_tag), payload}
       end
 
     {:ok, event}
@@ -279,6 +288,12 @@ defmodule EmergeSkia.Macos.Protocol do
   defp decode_log_level(@log_level_warning), do: :warning
   defp decode_log_level(@log_level_error), do: :error
   defp decode_log_level(_other), do: :info
+
+  defp parse_scroll_fraction!(text) do
+    {value, ""} = Float.parse(text)
+    true = value >= 0.0 and value <= 1.0
+    value
+  end
 
   defp decode_element_event_kind(1), do: :click
   defp decode_element_event_kind(2), do: :press

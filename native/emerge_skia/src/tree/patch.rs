@@ -1020,6 +1020,24 @@ fn apply_patch(
                     .ok_or_else(|| "SetAttrs: node not found".to_string())?;
 
                 element.spec.attrs_raw = attrs_raw;
+                for (axis, next) in [decoded.scroll_position_x, decoded.scroll_position_y]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let proposal = &mut element.runtime.scroll_proposals[axis];
+                    let same = match (proposal.value, next) {
+                        (Some(a), Some(b)) => a.same_declaration(b),
+                        (None, None) => true,
+                        _ => false,
+                    };
+                    if !same {
+                        proposal.id = proposal
+                            .id
+                            .checked_add(1)
+                            .ok_or("scroll proposal ID exhausted")?;
+                    }
+                    proposal.value = next;
+                }
                 if let Some(proposal) = content_proposal {
                     element.runtime.content_proposal = Some(proposal);
                 }
@@ -1677,6 +1695,8 @@ fn clone_as_ghost(
             declared: attrs.clone(),
         },
         runtime: crate::tree::element::NodeRuntime {
+            scroll_proposals: old.runtime.scroll_proposals,
+            scroll_position: old.runtime.scroll_position,
             text_input_content_origin: old.runtime.text_input_content_origin,
             content_proposal: old.runtime.content_proposal.clone(),
             text_input_focused: false,

@@ -107,6 +107,9 @@ pub fn classify_attrs_change(before: &Attrs, after: &Attrs) -> TreeInvalidation 
         || before.on_swipe_left != after.on_swipe_left
         || before.on_swipe_right != after.on_swipe_right
         || before.on_change != after.on_change
+        || before.on_scroll != after.on_scroll
+        || before.scroll_position_x != after.scroll_position_x
+        || before.scroll_position_y != after.scroll_position_y
         || before.on_focus != after.on_focus
         || before.on_blur != after.on_blur
         || before.focus_on_mount != after.focus_on_mount
@@ -303,6 +306,9 @@ fn registry_attrs_changed(before: &Attrs, after: &Attrs) -> bool {
         || before.on_swipe_left != after.on_swipe_left
         || before.on_swipe_right != after.on_swipe_right
         || before.on_change != after.on_change
+        || before.on_scroll != after.on_scroll
+        || before.scroll_position_x != after.scroll_position_x
+        || before.scroll_position_y != after.scroll_position_y
         || before.on_focus != after.on_focus
         || before.on_blur != after.on_blur
         || before.focus_on_mount != after.focus_on_mount

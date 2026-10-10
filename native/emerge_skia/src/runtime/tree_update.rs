@@ -354,6 +354,12 @@ impl TreeUpdateEngine {
                         invalidation.add(TreeInvalidation::Measure);
                     }
                 }
+                TreeMsg::SetScrollPosition {
+                    element_id,
+                    position,
+                } => {
+                    invalidation.add(self.tree.set_scroll_position(&element_id, position));
+                }
                 TreeMsg::ScrollRequest { element_id, dx, dy } => {
                     let entry = scroll_acc.entry((element_id, mount)).or_insert((0.0, 0.0));
                     entry.0 += dx;

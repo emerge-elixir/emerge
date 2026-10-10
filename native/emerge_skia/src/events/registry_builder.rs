@@ -767,6 +767,7 @@ pub struct RegistrySubtreeCache {
 pub(crate) struct RegistryBuildAcc {
     current_revision: u64,
     registry: Registry,
+    scrolls: HashMap<NodeId, super::scroll::ScrollNode>,
     text_inputs: HashMap<NodeId, TextInputState>,
     sliders: HashMap<NodeId, SliderState>,
     scrollbars: HashMap<(NodeId, ScrollbarAxis), ScrollbarNode>,
@@ -798,6 +799,7 @@ impl RegistryBuildAcc {
     fn merge_acc(&mut self, acc: RegistryBuildAcc) {
         self.registry.extend_storage_from(&acc.registry);
 
+        self.scrolls.extend(acc.scrolls);
         for (id, state) in acc.text_inputs {
             let previous = self.text_inputs.insert(id, state);
             debug_assert!(previous.is_none(), "duplicate text input rebuild state");
@@ -2954,6 +2956,7 @@ impl RuntimeChange {
 pub enum ElixirEventPayload {
     String(String),
     Float(f64),
+    Scroll(super::ScrollPayload),
 }
 
 /// Elixir-facing element event.
@@ -6378,6 +6381,17 @@ pub(crate) fn accumulate_element_rebuild(
     scroll_contexts: &[ScrollContext],
     hover_stack: &[HoverTracker],
 ) -> (Vec<ScrollContext>, Vec<HoverTracker>) {
+    if element.is_live()
+        && (element.layout.effective.scrollbar_x.unwrap_or(false)
+            || element.layout.effective.scrollbar_y.unwrap_or(false)
+            || element.runtime.scroll_proposals.iter().any(|p| p.id > 0)
+            || element.runtime.scroll_position.is_some())
+    {
+        acc.scrolls.insert(
+            element.id,
+            super::scroll::ScrollNode::from_element(tree, element),
+        );
+    }
     if acc.focused_id.is_none() && element.runtime.focused_active {
         acc.focused_id = Some(element.id);
     }
@@ -6466,11 +6480,12 @@ pub(crate) fn accumulate_element_rebuild(
         )
     });
 
-    let retains_runtime_state = state.is_some()
-        && (element.spec.kind.is_text_input_family()
-            || element.spec.kind == ElementKind::Slider
-            || element.layout.effective.scrollbar_x.unwrap_or(false)
-            || element.layout.effective.scrollbar_y.unwrap_or(false));
+    // Scroll proposals also apply while clipped/offscreen; retain source mount
+    // evidence even when there is no interactive geometry or visible thumb.
+    let retains_runtime_state = acc.scrolls.contains_key(&element.id)
+        || (state.is_some()
+            && (element.spec.kind.is_text_input_family()
+                || element.spec.kind == ElementKind::Slider));
     if acc.registry.listeners.len() != listener_start
         || retains_runtime_state
         || element.runtime.focused_active
@@ -7243,6 +7258,7 @@ pub(crate) fn assert_registry_rebuild_payloads_equivalent(
     assert_eq!(left.text_inputs, right.text_inputs);
     assert_eq!(left.sliders, right.sliders);
     assert_eq!(left.scrollbars, right.scrollbars);
+    assert_eq!(left.scrolls, right.scrolls);
     assert_eq!(left.focused_id, right.focused_id);
     assert_eq!(
         format!("{:?}", left.focus_on_mount),
@@ -7279,6 +7295,18 @@ pub(crate) fn refresh_runtime_state_in_cached_rebuild(
 ) -> Option<RegistryRebuildPayload> {
     let mut updated: Option<RegistryRebuildPayload> = None;
 
+    for (id, previous) in &cached.scrolls {
+        let Some(element) = tree.get(id) else {
+            return Some(build_registry_rebuild(tree));
+        };
+        let next = super::scroll::ScrollNode::from_element(tree, element);
+        if &next != previous {
+            updated
+                .get_or_insert_with(|| cached.clone())
+                .scrolls
+                .insert(*id, next);
+        }
+    }
     for (id, previous) in &cached.text_inputs {
         let Some(element) = tree.get(id) else {
             return Some(build_registry_rebuild(tree));
@@ -7380,6 +7408,7 @@ pub(crate) fn finalize_registry_rebuild(acc: RegistryBuildAcc) -> RegistryRebuil
         listener_barrier: None,
         mount_focus_targets: (!mount_focus_targets.is_empty()).then(|| mount_focus_targets.into()),
         base_registry: low_registry,
+        scrolls: acc.scrolls,
         text_inputs: acc.text_inputs,
         sliders: acc.sliders,
         scrollbars: acc.scrollbars,

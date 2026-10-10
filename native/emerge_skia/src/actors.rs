@@ -87,6 +87,10 @@ pub enum TreeMsg {
         height: f32,
         scale: f32,
     },
+    SetScrollPosition {
+        element_id: NodeId,
+        position: [f64; 2],
+    },
     ScrollRequest {
         element_id: NodeId,
         dx: f32,
@@ -170,7 +174,8 @@ impl TreeMsg {
 
     pub(crate) fn target_id(&self) -> Option<NodeId> {
         match self {
-            Self::ScrollRequest { element_id, .. }
+            Self::SetScrollPosition { element_id, .. }
+            | Self::ScrollRequest { element_id, .. }
             | Self::ScrollbarThumbDragX { element_id, .. }
             | Self::ScrollbarThumbDragY { element_id, .. }
             | Self::SetScrollbarXHover { element_id, .. }
@@ -223,6 +228,7 @@ impl TreeMsg {
             Self::UploadTree { .. }
             | Self::PatchTree { .. }
             | Self::Resize { .. }
+            | Self::SetScrollPosition { .. }
             | Self::ScrollRequest { .. }
             | Self::ScrollbarThumbDragX { .. }
             | Self::ScrollbarThumbDragY { .. }
