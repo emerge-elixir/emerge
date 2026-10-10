@@ -24,6 +24,7 @@ fn control_loop() -> (EventLoop<'static, usize>, WaylandWake, FramePacer) {
         })
         .unwrap();
     let wake = WaylandWake {
+        config_inbox: ConfigInbox::default(),
         tx,
         frame_rate: control.clone(),
         frame_rate_ping: ping,

@@ -73,6 +73,7 @@ use crate::{
     input::{InputEvent, keyboard::normalize_commit_text},
     native_log::NativeLogRelay,
     renderer::{RenderState, RendererCacheConfig},
+    runtime::config::{ConfigInbox, ConfigRequest, LiveConfig},
     stats::{
         RendererStatsCollector, SLOW_PRESENT_SUBMIT_THRESHOLD, earliest_pipeline_instant,
         format_slow_present_frame_log, format_slow_render_frame_log, render_frame_has_slow_stage,
@@ -107,6 +108,7 @@ const RENDER_PROFILE_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
 struct WaylandWake {
+    config_inbox: ConfigInbox,
     frame_rate: FrameRateControl,
     frame_rate_ping: calloop::ping::Ping,
     running_flag: Arc<AtomicBool>,
@@ -540,6 +542,20 @@ fn key_text_commit_event(
 }
 
 impl BackendWake for WaylandWake {
+    fn validate_config(&self, _config: &LiveConfig) -> Result<(), String> {
+        if !self.running_flag.load(Ordering::Acquire) {
+            return Err("window event loop stopped".into());
+        }
+        Ok(())
+    }
+
+    fn configure(&self, request: ConfigRequest) -> Result<(), String> {
+        self.validate_config(&request.config)?;
+        self.config_inbox.submit(request)?;
+        self.frame_rate_ping.ping();
+        Ok(())
+    }
+
     fn set_frame_rate(&self, fps: Option<u32>) -> Result<(), String> {
         if !self.running_flag.load(Ordering::Acquire) {
             return Err("window event loop stopped".into());
@@ -3200,7 +3216,18 @@ pub(crate) fn run(args: WaylandRunArgs) {
             return;
         }
     };
+    let (config_inbox, config_receiver) = ConfigInbox::pair();
     if let Err(err) = loop_handle.insert_source(rate_source, move |(), _, state| {
+        if let Some(request) = config_receiver.take() {
+            let result = request.apply(|| {
+                state.frame_pacer.control.set(request.config.target_fps)?;
+                if let Some(title) = &request.config.title {
+                    state.window.set_title(title.clone());
+                }
+                Ok(())
+            });
+            request.finish(result);
+        }
         let _ = control_rx.try_recv();
         state.present.reset_frame_interval_observation();
         state.watchdog.mark_wake();
@@ -3215,6 +3242,7 @@ pub(crate) fn run(args: WaylandRunArgs) {
         return;
     }
     let wake = BackendWakeHandle::new(WaylandWake {
+        config_inbox,
         tx: wake_tx.clone(),
         frame_rate: frame_rate.clone(),
         frame_rate_ping,

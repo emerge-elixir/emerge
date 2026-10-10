@@ -342,6 +342,21 @@ impl EventRuntimeDriver {
                 self.handle_present_timing(presented_at, predicted_next_present_at);
                 true
             }
+            EventMsg::Configure(request) => {
+                let result = request.apply(|| {
+                    self.set_input_mask(request.config.input_mask);
+                    Ok(())
+                });
+                match result {
+                    Ok(()) => {
+                        if let Err(reason) = self.runtime.backend_wake.configure(request.clone()) {
+                            request.finish(Err(reason));
+                        }
+                    }
+                    Err(reason) => request.finish(Err(reason)),
+                }
+                true
+            }
             EventMsg::SetInputMask(mask) => {
                 self.log_event_diagnostic(|| format!("set input mask\n  mask: {mask}"));
                 self.set_input_mask(mask);
@@ -800,6 +815,7 @@ fn event_msg_label(msg: &EventMsg) -> &'static str {
         EventMsg::InputEvent(event) => input_event_label(event),
         EventMsg::PresentTiming { .. } => "present_timing",
         EventMsg::RegistryUpdate { .. } => "registry_update",
+        EventMsg::Configure(_) => "configure",
         EventMsg::SetInputMask(_) => "set_input_mask",
         EventMsg::SetInputTarget(_) => "set_input_target",
         EventMsg::Stop => "stop",

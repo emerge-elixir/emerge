@@ -53,6 +53,20 @@ struct HeadlessBackendWake {
 }
 
 impl BackendWake for HeadlessBackendWake {
+    fn validate_config(&self, config: &crate::runtime::config::LiveConfig) -> Result<(), String> {
+        if config.title.is_some() {
+            return Err("headless output does not support window titles".into());
+        }
+        Ok(())
+    }
+
+    fn configure(&self, request: crate::runtime::config::ConfigRequest) -> Result<(), String> {
+        // Caps are read directly from the atomic control at admission. Publishing
+        // it applies the control; no draw or producer work is needed for an ack.
+        request.finish(request.apply(|| self.set_frame_rate(request.config.target_fps)));
+        Ok(())
+    }
+
     fn set_frame_rate(&self, fps: Option<u32>) -> Result<(), String> {
         if self.stop.load(Ordering::Acquire) {
             return Err("renderer is stopping".into());
@@ -354,6 +368,10 @@ pub(crate) fn start_renderer_with_config(
 
     let video_wake = VideoWake::new(backend_wake.clone());
     let resource = RendererResource {
+        config_control: crate::runtime::config::ConfigControl::new(
+            lifecycle.id,
+            Arc::clone(&stop_flag),
+        ),
         lifecycle,
         _owner: config.owner,
         asset_runtime,

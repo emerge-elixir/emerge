@@ -1,6 +1,22 @@
+use crate::runtime::config::{ConfigRequest, LiveConfig};
 use std::sync::Arc;
 
 pub(crate) trait BackendWake: Send + Sync {
+    fn validate_config(&self, config: &LiveConfig) -> Result<(), String> {
+        if config.title.is_some() || config.target_fps.is_some() {
+            return Err("this backend does not support the requested live controls".into());
+        }
+        Ok(())
+    }
+
+    // Called on the input owner, never on a NIF scheduler. Input-only backends
+    // have no further owner work; window backends override with a control lane.
+    fn configure(&self, request: ConfigRequest) -> Result<(), String> {
+        self.validate_config(&request.config)?;
+        request.finish(request.apply(|| Ok(())));
+        Ok(())
+    }
+
     fn request_stop(&self);
 
     fn request_redraw(&self);
@@ -33,6 +49,14 @@ impl BackendWakeHandle {
 
     pub(crate) fn noop() -> Self {
         Self::new(NoopWake)
+    }
+
+    pub(crate) fn validate_config(&self, config: &LiveConfig) -> Result<(), String> {
+        self.inner.validate_config(config)
+    }
+
+    pub(crate) fn configure(&self, request: ConfigRequest) -> Result<(), String> {
+        self.inner.configure(request)
     }
 
     pub(crate) fn set_frame_rate(&self, fps: Option<u32>) -> Result<(), String> {
