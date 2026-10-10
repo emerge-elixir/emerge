@@ -23,6 +23,8 @@ defmodule Emerge.UI.Internal.Validation do
                       :space_evenly,
                       :scrollbar_y,
                       :scrollbar_x,
+                      :scroll_position_x,
+                      :scroll_position_y,
                       :align_x,
                       :align_y,
                       :background,
@@ -68,6 +70,7 @@ defmodule Emerge.UI.Internal.Validation do
                       :box_shadow,
                       :image_fit,
                       :on_change,
+                      :on_scroll,
                       :on_focus,
                       :on_blur,
                       :on_key_down,
@@ -430,6 +433,12 @@ defmodule Emerge.UI.Internal.Validation do
           "#{attrs_owner} expects #{inspect(key)} to be a boolean, got: #{inspect(value)}"
   end
 
+  defp validate_public_attr_value!(_owner, key, value)
+       when key in [:scroll_position_x, :scroll_position_y] do
+    Emerge.UI.Scroll.validate_position!(value)
+    :ok
+  end
+
   defp validate_public_attr_value!(_attrs_owner, :align_x, value)
        when value in [:left, :center, :right],
        do: :ok
@@ -519,6 +528,7 @@ defmodule Emerge.UI.Internal.Validation do
               :on_mouse_leave,
               :on_mouse_move,
               :on_change,
+              :on_scroll,
               :on_focus,
               :on_blur
             ],

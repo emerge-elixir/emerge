@@ -4,6 +4,7 @@ defmodule Emerge.Engine.AttrCodec do
   """
 
   alias Emerge.Engine.AttrValidation
+  alias Emerge.Engine.ScrollTarget
   alias Emerge.Engine.Tree.Attrs, as: TreeAttrs
   alias Emerge.Engine.Tree.Nearby
   alias Emerge.UI.Event
@@ -83,7 +84,10 @@ defmodule Emerge.Engine.AttrCodec do
     slider_min: 80,
     slider_max: 81,
     slider_value: 82,
-    slider_step: 83
+    slider_step: 83,
+    scroll_position_x: 85,
+    scroll_position_y: 86,
+    on_scroll: 87
   }
 
   @tag_type Map.new(@type_tag, fn {type, tag} -> {tag, type} end)
@@ -157,6 +161,21 @@ defmodule Emerge.Engine.AttrCodec do
   defp encode_value(:scale, value), do: encode_f64(value)
   defp encode_value(:alpha, value), do: encode_f64(value)
   defp encode_value(:space_evenly, value), do: encode_bool(value)
+
+  defp encode_value(axis, value) when axis in [:scroll_position_x, :scroll_position_y] do
+    case value do
+      fraction when is_float(fraction) and fraction >= 0.0 and fraction <= 1.0 ->
+        <<0, fraction::float-big-64>>
+
+      %ScrollTarget{declaration: declaration, id: id} ->
+        <<1, declaration::unsigned-big-64, id::unsigned-big-64>>
+
+      _ ->
+        raise ArgumentError, "scroll keys must be resolved through tree reconciliation"
+    end
+  end
+
+  defp encode_value(:on_scroll, _value), do: encode_bool(true)
   defp encode_value(:scroll_x, value), do: encode_f64(value)
   defp encode_value(:scroll_y, value), do: encode_f64(value)
   defp encode_value(:on_click, _value), do: encode_bool(true)
@@ -233,6 +252,16 @@ defmodule Emerge.Engine.AttrCodec do
   defp decode_value(:scale, rest), do: decode_f64(rest)
   defp decode_value(:alpha, rest), do: decode_f64(rest)
   defp decode_value(:space_evenly, rest), do: decode_bool(rest)
+
+  defp decode_value(axis, <<0, value::float-big-64, rest::binary>>)
+       when axis in [:scroll_position_x, :scroll_position_y] and value >= 0.0 and value <= 1.0,
+       do: {value, rest}
+
+  defp decode_value(axis, <<1, declaration::unsigned-big-64, id::unsigned-big-64, rest::binary>>)
+       when axis in [:scroll_position_x, :scroll_position_y],
+       do: {%ScrollTarget{key: nil, declaration: declaration, id: id}, rest}
+
+  defp decode_value(:on_scroll, rest), do: decode_bool(rest)
   defp decode_value(:scroll_x, rest), do: decode_f64(rest)
   defp decode_value(:scroll_y, rest), do: decode_f64(rest)
   defp decode_value(:on_click, rest), do: decode_bool(rest)
