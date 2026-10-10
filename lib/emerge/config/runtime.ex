@@ -9,7 +9,7 @@ defmodule Emerge.Config.Runtime do
   | `health_check_interval_ms` | `500` |
   | `startup_retries` | `40` |
   | `retry_interval_ms` | `250` |
-  | `adapter` | `Emerge.Runtime.Viewport.Renderer.Skia` |
+  | `adapter` | <code>Emerge.Runtime.Viewport.Renderer.Skia</code> |
   | `adapter_opts` | `[]` |
   """
   defstruct health_check_interval_ms: 500,
