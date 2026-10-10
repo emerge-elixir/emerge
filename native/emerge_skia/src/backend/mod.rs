@@ -2,6 +2,7 @@
 //!
 //! Each backend provides a way to create a window/surface and run an event loop.
 
+pub(crate) mod cadence;
 #[cfg(all(feature = "drm-core", target_os = "linux"))]
 pub mod drm;
 pub mod headless;

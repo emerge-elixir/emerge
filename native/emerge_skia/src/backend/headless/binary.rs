@@ -1,8 +1,7 @@
 //! Binary rendering orchestration, independent of Rustler delivery and GPU setup.
 use super::*;
 
-/// Retry draw/readback, not the tree transaction or its animation clock. Backoff
-/// bounds autonomous retries; a new scene is an immediate external recovery input.
+/// Retry draw/readback, not the tree transaction or its animation clock.
 #[derive(Default)]
 struct RetryDelay(Option<Duration>);
 impl RetryDelay {
@@ -18,69 +17,92 @@ pub(super) fn run_binary_loop(
     tree_tx: &Sender<TreeMsg>,
     running: &AtomicBool,
     pixel_format: &str,
-    frame_interval: Duration,
+    control: (FrameRateControl, Receiver<()>),
     mut render: impl FnMut(&RenderState, Instant) -> Result<(), String>,
 ) {
+    let (frame_rate, control_rx) = control;
+    let mut pacer = FramePacer::new(frame_rate);
     let mut sequence = 0u64;
-    let mut animation_tick = never();
-    let mut next_animation_at = None;
-    let mut retry_tick = never();
+    let mut animation_at = None;
+    let mut retry_at = None;
     let mut retry_delay = RetryDelay::default();
     let mut pending = None;
     while running.load(Ordering::Relaxed) {
-        let attempt = select! {
-            recv(animation_tick)->_=>{
-                animation_tick=never();
-                maybe_send_animation_pulse(tree_tx,true,frame_interval);
-                None
-            }
-            recv(retry_tick)->_=>{
-                retry_tick=never();
-                pending.take().map(|state|(state,Instant::now()))
-            }
-            recv(render_rx)->message=>{
-                let Ok(message)=message else {break;};
-                match message {
-                    RenderMsg::Stop=>break,
-                    RenderMsg::Scene{scene,animate,pipeline_submitted_at,pipeline_render_queued_at,..}=>{
-                        let started=Instant::now();
-                        // Dispose the superseded scene synchronously, inside attempt timing.
-                        pending=None;
-                        retry_tick=never();
-                        let clear=if matches!(pixel_format,"bw1"|"gray2") {Color::WHITE}else{Color::TRANSPARENT};
-                        let mut state=RenderState::new(*scene,clear,sequence,animate);
-                        state.pipeline_submitted_at=pipeline_submitted_at;
-                        state.pipeline_render_queued_at=pipeline_render_queued_at;
-                        Some((state,started))
+        // Bounded draining keeps the latest scene without starving admission or
+        // stop. Superseded retained scenes are released on this owner thread.
+        for _ in 0..64 {
+            match render_rx.try_recv() {
+                Ok(message) => {
+                    let Some(state) =
+                        received_scene(message, sequence, pixel_format, pending.take())
+                    else {
+                        return;
+                    };
+                    if !state.animate {
+                        animation_at = None;
                     }
+                    pending = Some(state);
+                    retry_at = None;
+                }
+                Err(crossbeam_channel::TryRecvError::Empty) => break,
+                Err(crossbeam_channel::TryRecvError::Disconnected) => return,
+            }
+        }
+        let now = Instant::now();
+        // Video/tree traffic must not continually postpone the animation pulse.
+        if animation_at.is_some_and(|deadline| deadline <= now) {
+            animation_at = None;
+            maybe_send_animation_pulse(tree_tx, true, pacer.control.animation_interval());
+        }
+        let now = Instant::now();
+        let render_at = pending
+            .as_ref()
+            .map(|_| pacer.render_at(now).max(retry_at.unwrap_or(now)));
+        if render_at.is_some_and(|at| at <= now) {
+            let Some(state) = pending.take() else {
+                continue;
+            };
+            if !running.load(Ordering::Relaxed) {
+                break;
+            }
+            pacer.started(now);
+            match render(&state, now) {
+                Ok(()) => {
+                    sequence = sequence.wrapping_add(1);
+                    retry_at = None;
+                    retry_delay = RetryDelay::default();
+                    animation_at =
+                        next_animation_tick(state.animate, animation_at, &pacer, Instant::now());
+                }
+                Err(error) => {
+                    eprintln!("headless render failed: {error}");
+                    animation_at = None;
+                    pending = Some(state);
+                    retry_at = Some(retry_delay.next(Instant::now()));
                 }
             }
-        };
-        let Some((state, started)) = attempt else {
             continue;
-        };
-        if !running.load(Ordering::Relaxed) {
-            break;
         }
-        match render(&state, started) {
-            Ok(()) => {
-                sequence = sequence.wrapping_add(1);
-                retry_delay = RetryDelay::default();
-                animation_tick = animation_tick_receiver(
-                    state.animate,
-                    frame_interval,
-                    Instant::now(),
-                    &mut next_animation_at,
-                );
+        let render_tick = render_at.map(at).unwrap_or_else(never);
+        let animation_tick = animation_at.map(at).unwrap_or_else(never);
+        select! {
+            recv(control_rx) -> message => {
+                if message.is_err() { break; }
+                if animation_at.is_some() {
+                    animation_at = Some(pacer.animation_at(Instant::now()));
+                }
             }
-            Err(error) => {
-                eprintln!("headless render failed: {error}");
-                // Do not keep driving new animation samples through a failed output.
-                // Successful recovery resumes native wall-clock sampling normally.
-                animation_tick = never();
-                next_animation_at = None;
+            recv(animation_tick) -> _ => {
+                animation_at = None;
+                maybe_send_animation_pulse(tree_tx, true, pacer.control.animation_interval());
+            }
+            recv(render_tick) -> _ => {}
+            recv(render_rx) -> message => {
+                let Ok(message) = message else { break; };
+                let Some(state) = received_scene(message, sequence, pixel_format, pending.take()) else { break; };
+                if !state.animate { animation_at = None; }
                 pending = Some(state);
-                retry_tick = at(retry_delay.next(Instant::now()));
+                retry_at = None;
             }
         }
     }
@@ -105,6 +127,163 @@ mod tests {
         }
     }
     #[test]
+    fn cap_coalesces_bursts_and_renders_only_the_latest_pending_scene() {
+        let (tx, rx) = bounded(64);
+        let (tree_tx, _tree_rx) = unbounded();
+        let (control, control_rx) = FrameRateControl::new(Some(20));
+        let (output, frames) = unbounded();
+        let (gate, release) = bounded(1);
+        let handle = thread::spawn(move || {
+            let mut first = true;
+            run_binary_loop(
+                &rx,
+                &tree_tx,
+                &AtomicBool::new(true),
+                "rgba",
+                (control, control_rx),
+                |state, started| {
+                    let crate::render_scene::RenderNode::PaintLayer(layer) = &state.scene.nodes[0]
+                    else {
+                        panic!("layer");
+                    };
+                    output
+                        .send((layer.id.node_id, started, state.pipeline_submitted_at))
+                        .unwrap();
+                    if std::mem::take(&mut first) {
+                        release.recv().unwrap();
+                    }
+                    Ok(())
+                },
+            );
+        });
+        tx.send(tracked_message(0).0).unwrap();
+        let (id, first, _) = frames.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(id, 0);
+        let submitted = Instant::now() - Duration::from_secs(1);
+        let superseded = (1..=20)
+            .map(|id| {
+                let (mut message, weak) = tracked_message(id);
+                if let RenderMsg::Scene {
+                    pipeline_submitted_at,
+                    ..
+                } = &mut message
+                {
+                    *pipeline_submitted_at = Some(submitted + Duration::from_millis(id));
+                }
+                tx.send(message).unwrap();
+                weak
+            })
+            .collect::<Vec<_>>();
+        gate.send(()).unwrap();
+        let (id, second, earliest) = frames.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(id, 20);
+        assert_eq!(earliest, Some(submitted + Duration::from_millis(1)));
+        assert!(second.duration_since(first) >= Duration::from_millis(50));
+        tx.send(RenderMsg::Stop).unwrap();
+        handle.join().unwrap();
+        assert!(frames.is_empty());
+        assert!(superseded.iter().all(|weak| weak.upgrade().is_none()));
+    }
+
+    #[test]
+    fn live_cap_removal_wakes_pending_frames_but_does_not_redraw_static_content() {
+        let (tx, rx) = bounded(4);
+        let (tree_tx, _tree_rx) = unbounded();
+        let (control, control_rx) = FrameRateControl::new(Some(1));
+        let (output, frames) = unbounded();
+        let render_control = control.clone();
+        let handle = thread::spawn(move || {
+            run_binary_loop(
+                &rx,
+                &tree_tx,
+                &AtomicBool::new(true),
+                "rgba",
+                (render_control, control_rx),
+                |_, started| {
+                    output.send(started).unwrap();
+                    Ok(())
+                },
+            );
+        });
+        tx.send(message(false)).unwrap();
+        frames.recv_timeout(Duration::from_secs(5)).unwrap();
+        tx.send(message(false)).unwrap();
+        control.set(None).unwrap();
+        frames
+            .recv_timeout(Duration::from_millis(750))
+            .expect("uncapping must wake the pending frame");
+        control.set(Some(60)).unwrap();
+        control.set(Some(1)).unwrap();
+        assert!(frames.recv_timeout(Duration::from_millis(40)).is_err());
+        tx.send(RenderMsg::Stop).unwrap();
+        handle.join().unwrap();
+        assert!(control.set(None).is_err());
+    }
+
+    #[test]
+    fn continuous_animated_scenes_do_not_starve_presentation_pulses() {
+        let (tx, rx) = bounded(4);
+        let (tree_tx, tree_rx) = unbounded();
+        let (output, frames) = unbounded();
+        let handle = thread::spawn(move || {
+            run_binary_loop(
+                &rx,
+                &tree_tx,
+                &AtomicBool::new(true),
+                "rgba",
+                FrameRateControl::new(Some(100)),
+                |_, _| {
+                    output.send(()).unwrap();
+                    Ok(())
+                },
+            );
+        });
+        for _ in 0..5 {
+            tx.send(message(true)).unwrap();
+            frames.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+        tx.send(RenderMsg::Stop).unwrap();
+        handle.join().unwrap();
+        assert!(
+            tree_rx.len() >= 4,
+            "scene traffic must not reset each pending pulse"
+        );
+    }
+
+    #[test]
+    fn capped_static_scene_cancels_an_older_animation_pulse() {
+        let (tx, rx) = bounded(4);
+        let (tree_tx, tree_rx) = unbounded();
+        let (output, frames) = unbounded();
+        let (gate, release) = bounded(1);
+        let handle = thread::spawn(move || {
+            let mut first = true;
+            run_binary_loop(
+                &rx,
+                &tree_tx,
+                &AtomicBool::new(true),
+                "rgba",
+                FrameRateControl::new(Some(30)),
+                |state, _| {
+                    output.send(state.animate).unwrap();
+                    if std::mem::take(&mut first) {
+                        release.recv().unwrap();
+                    }
+                    Ok(())
+                },
+            );
+        });
+        tx.send(message(true)).unwrap();
+        assert!(frames.recv_timeout(Duration::from_secs(5)).unwrap());
+        tx.send(message(false)).unwrap();
+        gate.send(()).unwrap();
+        assert!(!frames.recv_timeout(Duration::from_secs(5)).unwrap());
+        tx.send(RenderMsg::Stop).unwrap();
+        handle.join().unwrap();
+        assert!(tree_rx.is_empty());
+    }
+
+    #[test]
     fn failed_terminal_binary_frame_recovers_without_another_tree_message() {
         let (tx, rx) = bounded(4);
         let (tree_tx, tree_rx) = bounded(4);
@@ -118,7 +297,7 @@ mod tests {
                 &tree_tx,
                 &running,
                 "rgba",
-                Duration::from_millis(16),
+                FrameRateControl::new(None),
                 |_, _| {
                     attempt_tx.send(()).unwrap();
                     if std::mem::take(&mut fail) {
@@ -202,7 +381,7 @@ mod tests {
                 &tree_tx,
                 &AtomicBool::new(true),
                 "rgba",
-                Duration::from_millis(16),
+                FrameRateControl::new(None),
                 |state, _| {
                     let crate::render_scene::RenderNode::PaintLayer(layer) = &state.scene.nodes[0]
                     else {
@@ -278,7 +457,7 @@ mod tests {
                     &tree_tx,
                     &AtomicBool::new(true),
                     "rgba",
-                    Duration::from_millis(16),
+                    FrameRateControl::new(None),
                     |_, _| {
                         attempt_tx.send(()).unwrap();
                         release.recv().unwrap();
@@ -317,7 +496,7 @@ mod tests {
                 &tree_tx,
                 &AtomicBool::new(true),
                 "rgba",
-                Duration::from_millis(16),
+                FrameRateControl::new(None),
                 |state, _| {
                     assert_eq!(state.pipeline_submitted_at, Some(submitted));
                     assert_eq!(state.render_version, 0);

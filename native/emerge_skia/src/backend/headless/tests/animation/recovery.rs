@@ -25,7 +25,7 @@ impl FaultRenderer {
                 &tree_tx,
                 &running,
                 "rgba",
-                Duration::from_millis(16),
+                super::super::super::FrameRateControl::new(None),
                 |state, _| {
                     let fail = failing.load(Ordering::SeqCst);
                     let frame = (!fail || after_paint).then(|| renderer.render(state));

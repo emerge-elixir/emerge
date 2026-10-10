@@ -7,6 +7,10 @@ pub(crate) trait BackendWake: Send + Sync {
 
     fn notify_video_frame(&self);
 
+    fn set_frame_rate(&self, _fps: Option<u32>) -> Result<(), String> {
+        Err("this backend does not support live frame caps".into())
+    }
+
     fn set_title(&self, _title: String) -> Result<(), String> {
         Err("this backend does not support window titles".into())
     }
@@ -29,6 +33,10 @@ impl BackendWakeHandle {
 
     pub(crate) fn noop() -> Self {
         Self::new(NoopWake)
+    }
+
+    pub(crate) fn set_frame_rate(&self, fps: Option<u32>) -> Result<(), String> {
+        self.inner.set_frame_rate(fps)
     }
 
     pub(crate) fn set_title(&self, title: String) -> Result<(), String> {
