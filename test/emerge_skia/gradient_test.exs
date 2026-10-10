@@ -1,11 +1,12 @@
 defmodule EmergeSkia.GradientTest do
   use ExUnit.Case
   use Emerge.UI
-
   alias Emerge.Engine.{Patch, Serialization}
   alias EmergeSkia.{Native, TreeRenderer}
 
-  defp panel(color), do: el([width(px(100)), height(px(50)), Background.color(color)], none())
+  defp panel(color) do
+    el([width(px(100)), height(px(50)), Background.color(color)], none())
+  end
 
   defp render(tree) do
     TreeRenderer.render_to_pixels(tree, [otp_app: :emerge, width: 100, height: 50], 30_000)
@@ -22,12 +23,10 @@ defmodule EmergeSkia.GradientTest do
     pixels = render(panel(gradient(rgb)))
     {r, g, b, 255} = pixel(pixels, 50, 25)
     assert g > 245 and r < 10 and b < 10
-
     refute pixels == render(panel(gradient([:red, :white, :blue])))
     assert render(panel(gradient(List.duplicate(:red, 4)))) == render(panel(:red))
     translucent = color_rgba(20, 40, 60, 0.5)
     assert render(panel(gradient(List.duplicate(translucent, 4)))) == render(panel(translucent))
-
     huge = 1.0e300
 
     assert render(panel(gradient(rgb, huge))) ==
@@ -53,14 +52,12 @@ defmodule EmergeSkia.GradientTest do
     tree = Native.tree_new()
     assert {:ok, roundtrip} = Native.tree_upload_roundtrip(tree, bytes)
     assert Serialization.decode(roundtrip).attrs.background == assigned.attrs.background
-
     attrs = Map.put(assigned.attrs, :background, gradient([:red, :white, :blue], 90))
     patch = Patch.encode([{:set_attrs, assigned.id, attrs}])
     assert {:ok, updated} = Native.tree_patch_roundtrip(tree, patch)
     decoded = Serialization.decode(updated)
     assert decoded.attrs.background == attrs.background
     assert render(decoded) == render(panel(gradient([:red, :white, :blue], 90)))
-
     <<"EMRG", 9, rest::binary>> = bytes
     assert {:error, _} = Native.tree_upload(tree, <<"EMRG", 7, rest::binary>>)
     assert {:error, _} = Native.tree_patch(tree, <<1, assigned.id::64, 4::32, 0, 1, 12, 1>>)
@@ -68,17 +65,17 @@ defmodule EmergeSkia.GradientTest do
 
   test "headless retained patches repaint middle-stop changes and solid switches" do
     {:ok, renderer} =
-      EmergeSkia.start(
-        otp_app: :emerge,
-        backend: :headless,
-        rendering_api: :raster,
-        width: 100,
-        height: 50,
-        headless: [target: self(), pixel_format: :rgb888]
-      )
+      EmergeSkia.start(%Emerge.Config{
+        output: %Emerge.Config.Headless{
+          size: {100, 50},
+          frames: %Emerge.Config.BinaryFrames{pixel_format: :rgb888},
+          target: self()
+        },
+        renderer: [api: :raster],
+        assets: [otp_app: :emerge]
+      })
 
     on_exit(fn -> EmergeSkia.stop(renderer) end)
-
     {state, _} = EmergeSkia.upload_tree(renderer, panel(gradient([:red, :green, :blue])))
     wait_for_center(fn {r, g, b} -> g > 245 and r < 10 and b < 10 end)
     {state, _} = EmergeSkia.patch_tree(renderer, state, panel(gradient([:red, :white, :blue])))
@@ -236,14 +233,15 @@ defmodule EmergeSkia.GradientTest do
 
     for build <- builders do
       {:ok, renderer} =
-        EmergeSkia.start(
-          otp_app: :emerge,
-          backend: :headless,
-          rendering_api: :raster,
-          width: 100,
-          height: 50,
-          headless: [target: self(), pixel_format: :rgb888]
-        )
+        EmergeSkia.start(%Emerge.Config{
+          output: %Emerge.Config.Headless{
+            size: {100, 50},
+            frames: %Emerge.Config.BinaryFrames{pixel_format: :rgb888},
+            target: self()
+          },
+          renderer: [api: :raster],
+          assets: [otp_app: :emerge]
+        })
 
       on_exit(fn -> EmergeSkia.stop(renderer) end)
       initial = build.(gradient([:red, :green, :blue]))
@@ -273,19 +271,22 @@ defmodule EmergeSkia.GradientTest do
     end
   end
 
-  defp rgb(data), do: for(<<r, g, b, _a <- data>>, into: <<>>, do: <<r, g, b>>)
+  defp rgb(data) do
+    for <<r, g, b, _a <- data>>, into: <<>>, do: <<r, g, b>>
+  end
 
   test "SVG gradient alpha survives direct Gray8 and packed grayscale output" do
     for format <- [:gray8, :gray2] do
       {:ok, renderer} =
-        EmergeSkia.start(
-          otp_app: :emerge,
-          backend: :headless,
-          rendering_api: :raster,
-          width: 100,
-          height: 50,
-          headless: [target: self(), pixel_format: format, dither: false]
-        )
+        EmergeSkia.start(%Emerge.Config{
+          output: %Emerge.Config.Headless{
+            size: {100, 50},
+            frames: %Emerge.Config.BinaryFrames{pixel_format: format, dither: false},
+            target: self()
+          },
+          renderer: [api: :raster],
+          assets: [otp_app: :emerge]
+        })
 
       on_exit(fn -> EmergeSkia.stop(renderer) end)
 
@@ -323,7 +324,13 @@ defmodule EmergeSkia.GradientTest do
          x,
          y
        ) do
-    bits = if format == :gray8, do: 8, else: 2
+    bits =
+      if format == :gray8 do
+        8
+      else
+        2
+      end
+
     per_byte = div(8, bits)
     byte = :binary.at(data, y * stride + div(x, per_byte))
     max_value = Bitwise.bsl(1, bits) - 1
@@ -332,26 +339,35 @@ defmodule EmergeSkia.GradientTest do
   end
 
   defp wait_for_frame(predicate, deadline \\ nil) do
-    deadline = deadline || System.monotonic_time(:millisecond) + 5_000
+    deadline = deadline || System.monotonic_time(:millisecond) + 5000
     remaining = Kernel.max(deadline - System.monotonic_time(:millisecond), 0)
 
     receive do
       {:emerge_skia_frame, %VideoInterop.Frame{} = frame} ->
-        if predicate.(frame), do: frame, else: wait_for_frame(predicate, deadline)
+        if predicate.(frame) do
+          frame
+        else
+          wait_for_frame(predicate, deadline)
+        end
     after
       remaining -> flunk("gradient pixels did not reach grayscale output")
     end
   end
 
   defp wait_for_center(predicate, deadline \\ nil) do
-    deadline = deadline || System.monotonic_time(:millisecond) + 5_000
+    deadline = deadline || System.monotonic_time(:millisecond) + 5000
     remaining = Kernel.max(deadline - System.monotonic_time(:millisecond), 0)
 
     receive do
       {:emerge_skia_frame, %VideoInterop.Frame{storage: %VideoInterop.Binary{data: data}}} ->
         offset = (25 * 100 + 50) * 3
         <<_::binary-size(^offset), r, g, b, _::binary>> = data
-        if predicate.({r, g, b}), do: :ok, else: wait_for_center(predicate, deadline)
+
+        if predicate.({r, g, b}) do
+          :ok
+        else
+          wait_for_center(predicate, deadline)
+        end
     after
       remaining -> flunk("gradient update did not reach the headless output")
     end

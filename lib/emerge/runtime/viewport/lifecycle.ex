@@ -11,6 +11,7 @@ defmodule Emerge.Runtime.Viewport.Lifecycle do
   def close(pid), do: GenServer.call(pid, :close, 6_000)
   def discard(pid), do: GenServer.call(pid, :discard, 6_000)
   def check(pid), do: send(pid, :check)
+  def configure(pid, config), do: GenServer.call(pid, {:configure, config})
 
   @impl true
   def init({viewport, config}) do
@@ -35,6 +36,10 @@ defmodule Emerge.Runtime.Viewport.Lifecycle do
   end
 
   @impl true
+  def handle_call({:configure, config}, _from, state) do
+    {:reply, :ok, schedule_check(%{state | config: config})}
+  end
+
   def handle_call(:acquire, _from, %{closed: true} = state),
     do: {:reply, {:error, :closed}, state}
 
@@ -180,12 +185,12 @@ defmodule Emerge.Runtime.Viewport.Lifecycle do
   defp start_renderer(state) do
     config = state.config
 
-    opts =
+    adapter_opts =
       if config.renderer_module == Skia,
-        do: Keyword.put(config.skia_opts, :owner, state.viewport),
-        else: config.skia_opts
+        do: Keyword.put(config.renderer_opts, :owner, state.viewport),
+        else: config.renderer_opts
 
-    case invoke(fn -> config.renderer_module.start(opts, config.renderer_opts) end) do
+    case invoke(fn -> config.renderer_module.start(config.config, adapter_opts) end) do
       {:ok, renderer} ->
         generation = make_ref()
 

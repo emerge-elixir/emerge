@@ -15,7 +15,8 @@ defmodule Emerge do
 
         @impl Viewport
         def mount(opts) do
-          {:ok, %{count: 0}, Keyword.merge([title: "Counter"], opts)}
+          output = %Emerge.Config.Window{title: Keyword.get(opts, :title, "Counter")}
+          {:ok, %{count: 0}, %Emerge.Config{output: output}}
         end
 
         @impl Viewport
@@ -52,8 +53,8 @@ defmodule Emerge do
 
   `mount/1` receives the options passed to `start_link/1`. Return one of:
 
-  - `{:ok, viewport_options}` and implement `render/0`;
-  - `{:ok, state, viewport_options}` and implement `render/1`;
+  - `{:ok, config}` and implement `render/0`;
+  - `{:ok, state, config}` and implement `render/1`;
   - `{:stop, reason}` to stop startup.
 
   State must be a map. The `:__emerge__` key is reserved.
@@ -99,8 +100,10 @@ defmodule Emerge do
   assets, diagnostics, and headless output. `Emerge.Runtime.Viewport` documents
   these user-facing options and includes desktop, DRM, and headless examples.
 
-  Options can be returned at the top level or under `emerge_skia: [...]`.
-  Runtime-only viewport options use `viewport: [...]`.
+  Return `%Emerge.Config{}` from mount. Optional `config/1` or `config/2`
+  callbacks receive the previous normalized config and reconcile desired
+  configuration during rerenders. Raw input subscriptions use
+  `Emerge.Config.Input.events`; see `Emerge.Input` for callback payloads.
 
   Video elements use viewport-local atom targets. Submit owned binary or
   borrowed DMA-BUF frames with `submit_video_frame/3`. Vulkan rendering and
@@ -115,14 +118,20 @@ defmodule Emerge do
   @typedoc "Viewport state map passed to render/1 and callback functions."
   @type state :: map()
 
-  @callback mount(keyword()) :: {:ok, state(), keyword()} | {:ok, keyword()} | {:stop, term()}
+  @callback mount(keyword()) ::
+              {:ok, state(), Emerge.Config.t()} | {:ok, Emerge.Config.t()} | {:stop, term()}
+
+  @doc "Returns desired configuration, given the previous normalized config."
+  @callback config(Emerge.Config.normalized_t()) :: Emerge.Config.t()
+  @doc "Returns desired configuration, given the previous normalized config and application state."
+  @callback config(Emerge.Config.normalized_t(), state()) :: Emerge.Config.t()
   @callback render() :: tree()
   @callback render(state()) :: tree()
 
   @callback handle_info(term(), state()) ::
               {:noreply, state()} | {:stop, term(), state()}
 
-  @callback handle_input(term(), state()) ::
+  @callback handle_input(Emerge.Input.event(), state()) ::
               {:noreply, state()} | {:stop, term(), state()}
 
   @callback handle_close(term(), state()) ::
@@ -130,7 +139,9 @@ defmodule Emerge do
 
   @callback wrap_payload(term(), term(), term()) :: term()
 
-  @optional_callbacks render: 0,
+  @optional_callbacks config: 1,
+                      config: 2,
+                      render: 0,
                       render: 1,
                       handle_info: 2,
                       handle_input: 2,

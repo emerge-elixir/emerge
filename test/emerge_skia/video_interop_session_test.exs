@@ -1,16 +1,12 @@
 defmodule EmergeSkia.DirectVideoFrameTest do
   use ExUnit.Case, async: false
   use Emerge.UI
-
   alias VideoInterop.{Binary, Format, Frame, Lease, Rect}
   alias VideoInterop.DMABuf
   alias VideoInterop.DMABuf.{Descriptor, FourCC, Layer, Object, Plane}
 
   test "OpenGL PRIME publishes the concrete synchronization and modifier contract" do
-    descriptor = %Descriptor{
-      objects: [%Object{fd: 0, size: 4_096, modifier: 0}],
-      layers: []
-    }
+    descriptor = %Descriptor{objects: [%Object{fd: 0, size: 4096, modifier: 0}], layers: []}
 
     assert %{acquire_sync: :sync_file, modifier: 0} =
              EmergeSkia.HeadlessPrimeSession.prime_stream_contract(
@@ -29,10 +25,7 @@ defmodule EmergeSkia.DirectVideoFrameTest do
 
   test "OpenGL PRIME retains per-buffer modifier negotiation for mixed descriptors" do
     descriptor = %Descriptor{
-      objects: [
-        %Object{fd: 0, size: 4_096, modifier: 0},
-        %Object{fd: 1, size: 4_096, modifier: 1}
-      ],
+      objects: [%Object{fd: 0, size: 4096, modifier: 0}, %Object{fd: 1, size: 4096, modifier: 1}],
       layers: []
     }
 
@@ -46,23 +39,23 @@ defmodule EmergeSkia.DirectVideoFrameTest do
 
   test "binary headless output and video submission use VideoInterop.Frame" do
     {:ok, renderer} =
-      EmergeSkia.start(
-        otp_app: :emerge,
-        backend: :headless,
-        rendering_api: :raster,
-        width: 2,
-        height: 1,
-        headless: [target: self(), pixel_format: :rgba8888]
-      )
+      EmergeSkia.start(%Emerge.Config{
+        output: %Emerge.Config.Headless{
+          size: {2, 1},
+          frames: %Emerge.Config.BinaryFrames{pixel_format: :rgba8888},
+          target: self()
+        },
+        renderer: [api: :raster],
+        assets: [otp_app: :emerge]
+      })
 
     on_exit(fn -> EmergeSkia.stop(renderer) end)
     viewport = self()
     start_supervised!({Emerge.Runtime.VideoEndpoints, viewport})
     :ok = Emerge.Runtime.VideoEndpoints.register(viewport, renderer)
     on_exit(fn -> Emerge.Runtime.VideoEndpoints.unregister(viewport) end)
-
     EmergeSkia.upload_tree(renderer, video([width(px(2)), height(px(1))], :preview))
-    assert_receive {:emerge_skia_frame, %Frame{storage: %Binary{}} = output}, 1_000
+    assert_receive {:emerge_skia_frame, %Frame{storage: %Binary{}} = output}, 1000
     assert :ok = VideoInterop.validate(output)
 
     input =
@@ -84,7 +77,7 @@ defmodule EmergeSkia.DirectVideoFrameTest do
                       },
                       lease: nil
                     }},
-                   1_000
+                   1000
   end
 
   @tag :linux_only
@@ -97,19 +90,19 @@ defmodule EmergeSkia.DirectVideoFrameTest do
     end)
 
     {:ok, renderer} =
-      EmergeSkia.start(
-        otp_app: :emerge,
-        backend: :headless,
-        rendering_api: :raster,
-        width: 2,
-        height: 1,
-        headless: [target: self(), pixel_format: :rgba8888]
-      )
+      EmergeSkia.start(%Emerge.Config{
+        output: %Emerge.Config.Headless{
+          size: {2, 1},
+          frames: %Emerge.Config.BinaryFrames{pixel_format: :rgba8888},
+          target: self()
+        },
+        renderer: [api: :raster],
+        assets: [otp_app: :emerge]
+      })
 
     on_exit(fn -> EmergeSkia.stop(renderer) end)
     EmergeSkia.upload_tree(renderer, text("hidden"))
-    assert_receive {:emerge_skia_frame, %Frame{}}, 1_000
-
+    assert_receive {:emerge_skia_frame, %Frame{}}, 1000
     fourcc = FourCC.from_string!("AB24")
     token = make_ref()
     lease = Lease.new(self(), token)
@@ -126,36 +119,31 @@ defmodule EmergeSkia.DirectVideoFrameTest do
       },
       storage: %Descriptor{
         objects: [%Object{fd: fd, size: 4, modifier: :implicit}],
-        layers: [
-          %Layer{
-            fourcc: fourcc,
-            planes: [%Plane{object_index: 0, offset: 0, pitch: 4}]
-          }
-        ]
+        layers: [%Layer{fourcc: fourcc, planes: [%Plane{object_index: 0, offset: 0, pitch: 4}]}]
       },
       lease: lease
     }
 
     assert :ok = EmergeSkia.submit_video_frame(renderer, :preview, frame)
-    assert_receive {:video_interop_release, ^token, holder}, 1_000
+    assert_receive {:video_interop_release, ^token, holder}, 1000
     assert holder == lease.holder
   end
 
   test "hidden targets consume and drop binary frames" do
     {:ok, renderer} =
-      EmergeSkia.start(
-        otp_app: :emerge,
-        backend: :headless,
-        rendering_api: :raster,
-        width: 2,
-        height: 1,
-        headless: [target: self(), pixel_format: :rgba8888]
-      )
+      EmergeSkia.start(%Emerge.Config{
+        output: %Emerge.Config.Headless{
+          size: {2, 1},
+          frames: %Emerge.Config.BinaryFrames{pixel_format: :rgba8888},
+          target: self()
+        },
+        renderer: [api: :raster],
+        assets: [otp_app: :emerge]
+      })
 
     on_exit(fn -> EmergeSkia.stop(renderer) end)
     EmergeSkia.upload_tree(renderer, text("hidden"))
-    assert_receive {:emerge_skia_frame, %Frame{}}, 1_000
-
+    assert_receive {:emerge_skia_frame, %Frame{}}, 1000
     frame = Frame.binary(<<0, 0, 0, 255>>, width: 1, height: 1, pixel_format: :rgba8888)
     assert :ok = EmergeSkia.submit_video_frame(renderer, :preview, frame)
   end

@@ -1,7 +1,6 @@
 defmodule EmergeSkia.ParagraphAlignmentTest do
   use ExUnit.Case
   use Emerge.UI
-
   alias EmergeSkia.TreeRenderer
 
   defp render(tree, width, height) do
@@ -54,18 +53,15 @@ defmodule EmergeSkia.ParagraphAlignmentTest do
   end
 
   defp quote_tree(alignment) do
-    column(
-      [center_x(), center_y(), spacing(48), padding(48), width(fill())],
-      [
-        el([Font.color(color(:white)), Font.size(48), center_x()], text("User Interface")),
-        el(
-          [Font.color(color(:white)), Font.size(44), width(fill())],
-          paragraph(alignment, [
-            text("“User Interface is a point of user interaction with the system”")
-          ])
-        )
-      ]
-    )
+    column([center_x(), center_y(), spacing(48), padding(48), width(fill())], [
+      el([Font.color(color(:white)), Font.size(48), center_x()], text("User Interface")),
+      el(
+        [Font.color(color(:white)), Font.size(44), width(fill())],
+        paragraph(alignment, [
+          text("“User Interface is a point of user interaction with the system”")
+        ])
+      )
+    ])
   end
 
   test "paragraph alignment positions each line of the supplied quote, not only its box" do
@@ -100,14 +96,15 @@ defmodule EmergeSkia.ParagraphAlignmentTest do
 
   test "live alignment patches and inherited changes match fresh raster frames" do
     {:ok, renderer} =
-      EmergeSkia.start(
-        otp_app: :emerge,
-        backend: :headless,
-        rendering_api: :raster,
-        width: 200,
-        height: 100,
-        headless: [target: self(), pixel_format: :rgba8888]
-      )
+      EmergeSkia.start(%Emerge.Config{
+        output: %Emerge.Config.Headless{
+          size: {200, 100},
+          frames: %Emerge.Config.BinaryFrames{pixel_format: :rgba8888},
+          target: self()
+        },
+        renderer: [api: :raster],
+        assets: [otp_app: :emerge]
+      })
 
     on_exit(fn -> EmergeSkia.stop(renderer) end)
 
@@ -146,7 +143,7 @@ defmodule EmergeSkia.ParagraphAlignmentTest do
           EmergeSkia.upload_tree(renderer, tree)
         end
 
-      await_pixels(expected, System.monotonic_time(:millisecond) + 5_000)
+      await_pixels(expected, System.monotonic_time(:millisecond) + 5000)
       state
     end)
   end
@@ -156,7 +153,9 @@ defmodule EmergeSkia.ParagraphAlignmentTest do
 
     receive do
       {:emerge_skia_frame, %VideoInterop.Frame{storage: %VideoInterop.Binary{data: data}}} ->
-        if data != expected, do: await_pixels(expected, deadline)
+        if data != expected do
+          await_pixels(expected, deadline)
+        end
     after
       remaining -> flunk("paragraph patch did not match the fresh raster frame")
     end
@@ -164,10 +163,9 @@ defmodule EmergeSkia.ParagraphAlignmentTest do
 
   test "small paragraphs align within padded content and explicit font alignment wins" do
     make_tree = fn alignment ->
-      paragraph(
-        [width(px(140)), padding(10), Font.size(20), Font.color(:white) | alignment],
-        [text("AAAA BBBB C")]
-      )
+      paragraph([width(px(140)), padding(10), Font.size(20), Font.color(:white) | alignment], [
+        text("AAAA BBBB C")
+      ])
     end
 
     left = render(make_tree.([align_left()]), 140, 100)

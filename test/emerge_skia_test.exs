@@ -2,15 +2,19 @@ defmodule EmergeSkiaTest do
   use ExUnit.Case
   doctest EmergeSkia
   use Emerge.UI
-
   alias Emerge.UI.Svg
   alias EmergeSkia.BuildConfig
   alias EmergeSkia.Macos.Renderer
   alias VideoInterop.{Binary, Frame}
   alias VideoInterop.Binary.{Format, Plane}
 
-  defp restore_env(name, nil), do: System.delete_env(name)
-  defp restore_env(name, value), do: System.put_env(name, value)
+  defp restore_env(name, nil) do
+    System.delete_env(name)
+  end
+
+  defp restore_env(name, value) do
+    System.put_env(name, value)
+  end
 
   defp rgba_at(pixels, width, x, y) do
     offset = (y * width + x) * 4
@@ -33,7 +37,7 @@ defmodule EmergeSkiaTest do
     EmergeSkia.TreeRenderer.render_to_png(tree, opts, 30_000)
   end
 
-  defp receive_latest_headless_frame(timeout \\ 1_000) do
+  defp receive_latest_headless_frame(timeout \\ 1000) do
     assert_receive {:emerge_skia_frame, frame}, timeout
     drain_headless_frames(frame, System.monotonic_time(:millisecond) + 50)
   end
@@ -50,9 +54,7 @@ defmodule EmergeSkiaTest do
 
   test "render_to_pixels returns RGBA binary" do
     tree = el([width(px(10)), height(px(10)), Emerge.UI.Background.color(:red)], none())
-
-    pixels =
-      render_tree_to_pixels(tree, otp_app: :emerge, width: 10, height: 10)
+    pixels = render_tree_to_pixels(tree, otp_app: :emerge, width: 10, height: 10)
 
     # 10x10 pixels, 4 bytes each = 400 bytes
     assert byte_size(pixels) == 400
@@ -60,20 +62,14 @@ defmodule EmergeSkiaTest do
 
   test "render_to_pixels leaves uncovered pixels transparent by default" do
     tree = el([width(px(4)), height(px(4)), Emerge.UI.Background.color(:red)], none())
-
-    pixels =
-      render_tree_to_pixels(tree, otp_app: :emerge, width: 10, height: 10)
-
+    pixels = render_tree_to_pixels(tree, otp_app: :emerge, width: 10, height: 10)
     assert rgba_at(pixels, 10, 1, 1) == {255, 0, 0, 255}
     assert rgba_at(pixels, 10, 9, 9) == {0, 0, 0, 0}
   end
 
   test "render_to_png returns encoded PNG binary" do
     tree = el([width(px(10)), height(px(10)), Emerge.UI.Background.color(:red)], none())
-
-    png =
-      render_tree_to_png(tree, otp_app: :emerge, width: 10, height: 10)
-
+    png = render_tree_to_png(tree, otp_app: :emerge, width: 10, height: 10)
     assert <<137, 80, 78, 71, 13, 10, 26, 10, _::binary>> = png
     assert png_dimensions(png) == {10, 10}
     assert byte_size(png) > 50
@@ -103,17 +99,9 @@ defmodule EmergeSkiaTest do
     tree = image([width(px(32)), height(px(24))], "sample_assets/missing.jpg")
 
     snapshot =
-      render_tree_to_pixels(
-        tree,
-        otp_app: :emerge,
-        width: 32,
-        height: 24,
-        asset_mode: :snapshot
-      )
+      render_tree_to_pixels(tree, otp_app: :emerge, width: 32, height: 24, asset_mode: :snapshot)
 
-    awaited =
-      render_tree_to_pixels(tree, otp_app: :emerge, width: 32, height: 24)
-
+    awaited = render_tree_to_pixels(tree, otp_app: :emerge, width: 32, height: 24)
     assert byte_size(snapshot) == 32 * 24 * 4
     assert byte_size(awaited) == 32 * 24 * 4
     refute snapshot == awaited
@@ -122,13 +110,8 @@ defmodule EmergeSkiaTest do
   test "render_to_pixels await mode resolves logical image assets" do
     good_tree = image([width(px(32)), height(px(24))], "sample_assets/static.jpg")
     bad_tree = image([width(px(32)), height(px(24))], "sample_assets/missing.jpg")
-
-    good =
-      render_tree_to_pixels(good_tree, otp_app: :emerge, width: 32, height: 24)
-
-    bad =
-      render_tree_to_pixels(bad_tree, otp_app: :emerge, width: 32, height: 24)
-
+    good = render_tree_to_pixels(good_tree, otp_app: :emerge, width: 32, height: 24)
+    bad = render_tree_to_pixels(bad_tree, otp_app: :emerge, width: 32, height: 24)
     assert byte_size(good) == 32 * 24 * 4
     assert byte_size(bad) == 32 * 24 * 4
     refute good == bad
@@ -146,7 +129,6 @@ defmodule EmergeSkiaTest do
 
     first = render_tree_to_pixels(tree, opts)
     second = render_tree_to_pixels(tree, opts)
-
     assert byte_size(first) == 32 * 24 * 4
     assert first == second
   end
@@ -167,18 +149,13 @@ defmodule EmergeSkiaTest do
     fallback = render_tree_to_pixels(tree, otp_app: :emerge, width: 180, height: 40)
 
     custom =
-      render_tree_to_pixels(
-        tree,
+      render_tree_to_pixels(tree,
         otp_app: :emerge,
         width: 180,
         height: 40,
         assets: [
           fonts: [
-            [
-              family: "offscreen-lobster",
-              source: "test_assets/Lobster-Regular.ttf",
-              weight: 400
-            ]
+            [family: "offscreen-lobster", source: "test_assets/Lobster-Regular.ttf", weight: 400]
           ]
         ]
       )
@@ -189,9 +166,7 @@ defmodule EmergeSkiaTest do
 
   test "render_to_pixels resolves logical SVG image assets" do
     tree = image([width(px(8)), height(px(8)), image_fit(:cover)], "sample_assets/tile_quad.svg")
-
     pixels = render_tree_to_pixels(tree, otp_app: :emerge, width: 8, height: 8)
-
     assert byte_size(pixels) == 8 * 8 * 4
     assert rgba_at(pixels, 8, 1, 1) == {255, 0, 0, 255}
     assert rgba_at(pixels, 8, 6, 1) == {0, 255, 0, 255}
@@ -201,9 +176,7 @@ defmodule EmergeSkiaTest do
 
   test "render_to_pixels svg/2 preserves original multicolor SVGs by default" do
     tree = svg([width(px(8)), height(px(8)), image_fit(:cover)], "sample_assets/tile_quad.svg")
-
     pixels = render_tree_to_pixels(tree, otp_app: :emerge, width: 8, height: 8)
-
     assert byte_size(pixels) == 8 * 8 * 4
     assert rgba_at(pixels, 8, 1, 1) == {255, 0, 0, 255}
     assert rgba_at(pixels, 8, 6, 1) == {0, 255, 0, 255}
@@ -253,10 +226,20 @@ defmodule EmergeSkiaTest do
       {container, parent_attrs, image_attrs} =
         if axis == :width do
           {&column/2, [width(px(available_width))],
-           [width(fill())] ++ if(explicit_content, do: [height(content())], else: [])}
+           [width(fill())] ++
+             if explicit_content do
+               [height(content())]
+             else
+               []
+             end}
         else
           {&row/2, [height(px(div(available_width, 2)))],
-           [height(fill())] ++ if(explicit_content, do: [width(content())], else: [])}
+           [height(fill())] ++
+             if explicit_content do
+               [width(content())]
+             else
+               []
+             end}
         end
 
       tree =
@@ -272,7 +255,14 @@ defmodule EmergeSkiaTest do
       bottom = div(right, 2)
       assert rgba_at(pixels, 640, 1, 1) == {255, 0, 0, 255}
       assert rgba_at(pixels, 640, right - 1, bottom - 1) == {255, 0, 0, 255}
-      {sibling_x, sibling_y} = if axis == :width, do: {1, bottom}, else: {right, 1}
+
+      {sibling_x, sibling_y} =
+        if axis == :width do
+          {1, bottom}
+        else
+          {right, 1}
+        end
+
       assert rgba_at(pixels, 640, sibling_x, sibling_y) == {0, 0, 255, 255}
       assert rgba_at(pixels, 640, right - 1, bottom + 2) == {0, 0, 0, 0}
     end
@@ -320,14 +310,15 @@ defmodule EmergeSkiaTest do
 
   test "a live renderer reuses parsed SVGs and exact-size pixels across scenes without placeholders" do
     {:ok, renderer} =
-      EmergeSkia.start(
-        otp_app: :emerge,
-        backend: :headless,
-        rendering_api: :raster,
-        width: 240,
-        height: 220,
-        headless: [target: self(), pixel_format: :rgb888]
-      )
+      EmergeSkia.start(%Emerge.Config{
+        output: %Emerge.Config.Headless{
+          size: {240, 220},
+          frames: %Emerge.Config.BinaryFrames{pixel_format: :rgb888},
+          target: self()
+        },
+        renderer: [api: :raster],
+        assets: [otp_app: :emerge]
+      })
 
     on_exit(fn -> EmergeSkia.stop(renderer) end)
 
@@ -348,7 +339,6 @@ defmodule EmergeSkiaTest do
     expected = reference.(initial)
     EmergeSkia.upload_tree(renderer, initial)
     await_svg_cache_frame(fn data -> data == expected end)
-
     blank = el([width(px(240)), height(px(220)), Emerge.UI.Background.color(:green)], none())
     blank_pixels = reference.(blank)
 
@@ -371,12 +361,16 @@ defmodule EmergeSkiaTest do
   end
 
   defp await_svg_cache_frame(predicate, deadline \\ nil) do
-    deadline = deadline || System.monotonic_time(:millisecond) + 5_000
+    deadline = deadline || System.monotonic_time(:millisecond) + 5000
     remaining = Kernel.max(deadline - System.monotonic_time(:millisecond), 0)
 
     receive do
       {:emerge_skia_frame, %Frame{storage: %Binary{data: data}}} ->
-        if predicate.(data), do: data, else: await_svg_cache_frame(predicate, deadline)
+        if predicate.(data) do
+          data
+        else
+          await_svg_cache_frame(predicate, deadline)
+        end
     after
       remaining -> flunk("timed out waiting for SVG cache frame")
     end
@@ -395,7 +389,6 @@ defmodule EmergeSkiaTest do
       )
 
     pixels = render_tree_to_pixels(tree, otp_app: :emerge, width: 8, height: 8)
-
     assert byte_size(pixels) == 8 * 8 * 4
     assert rgba_at(pixels, 8, 1, 1) == {255, 255, 255, 255}
     assert rgba_at(pixels, 8, 6, 1) == {255, 255, 255, 255}
@@ -406,10 +399,8 @@ defmodule EmergeSkiaTest do
   test "render_to_pixels svg/2 fails when source resolves to raster" do
     bad_tree = svg([width(px(32)), height(px(24))], "sample_assets/static.jpg")
     failed_tree = image([width(px(32)), height(px(24))], "sample_assets/missing.jpg")
-
     bad = render_tree_to_pixels(bad_tree, otp_app: :emerge, width: 32, height: 24)
     failed = render_tree_to_pixels(failed_tree, otp_app: :emerge, width: 32, height: 24)
-
     assert byte_size(bad) == 32 * 24 * 4
     assert bad == failed
   end
@@ -426,7 +417,6 @@ defmodule EmergeSkiaTest do
       )
 
     pixels = render_tree_to_pixels(tree, otp_app: :emerge, width: 8, height: 8)
-
     assert byte_size(pixels) == 8 * 8 * 4
     assert rgba_at(pixels, 8, 0, 0) == {255, 0, 0, 255}
     assert rgba_at(pixels, 8, 1, 0) == {0, 255, 0, 255}
@@ -436,42 +426,40 @@ defmodule EmergeSkiaTest do
     assert rgba_at(pixels, 8, 0, 0) == rgba_at(pixels, 8, 0, 2)
   end
 
-  test "input mask constants" do
-    assert EmergeSkia.input_mask_key() == 0x01
-    assert EmergeSkia.input_mask_codepoint() == 0x02
-    assert EmergeSkia.input_mask_cursor_pos() == 0x04
-    assert EmergeSkia.input_mask_cursor_button() == 0x08
-    assert EmergeSkia.input_mask_cursor_scroll() == 0x10
-    assert EmergeSkia.input_mask_cursor_enter() == 0x20
-    assert EmergeSkia.input_mask_resize() == 0x40
-    assert EmergeSkia.input_mask_focus() == 0x80
-    assert EmergeSkia.input_mask_all() == 0xFF
+  test "raw input subscriptions are typed categories, not public numeric masks" do
+    assert :key in Emerge.Config.Input.all_events()
+    refute function_exported?(EmergeSkia, :input_mask_all, 0)
+    refute function_exported?(EmergeSkia, :set_input_mask, 2)
   end
 
   test "start/1 requires otp_app option" do
-    assert_raise ArgumentError, ~r/missing required :otp_app option/, fn ->
-      EmergeSkia.start(title: "No otp app")
+    assert_raise ArgumentError, ~r/assets.otp_app is required/, fn ->
+      EmergeSkia.start(%Emerge.Config{
+        output: %Emerge.Config.Window{backend: :auto, size: {800, 600}, title: "No otp app"},
+        assets: []
+      })
     end
   end
 
   test "start/1 validates otp_app type" do
-    assert_raise ArgumentError, ~r/otp_app must be an atom/, fn ->
-      EmergeSkia.start(otp_app: "emerge")
+    assert_raise ArgumentError, ~r/assets.otp_app expects :module/, fn ->
+      EmergeSkia.start(%Emerge.Config{
+        output: %Emerge.Config.Window{backend: :auto, size: {800, 600}},
+        assets: [otp_app: "emerge"]
+      })
     end
   end
 
-  test "start/1 rejects removed legacy window backends" do
-    assert {:error, {:error, "backend :wayland_legacy has been removed; use :wayland"}} =
-             EmergeSkia.start(otp_app: :emerge, backend: :wayland_legacy)
-  end
-
-  test "start/1 rejects unsupported backends" do
-    assert {:error, {:error, "unsupported backend: bogus"}} =
-             EmergeSkia.start(otp_app: :emerge, backend: :bogus)
+  for backend <- [:wayland_legacy, :bogus] do
+    test "start/1 rejects unsupported backend #{backend}" do
+      assert_raise ArgumentError, ~r/output.backend expects one of/, fn ->
+        EmergeSkia.start(%Emerge.Config{output: %Emerge.Config.Window{backend: unquote(backend)}})
+      end
+    end
   end
 
   test "start/1 rejects removed macos_backend option" do
-    assert_raise ArgumentError, ~r/macos_backend has been removed.*rendering_api/, fn ->
+    assert_raise ArgumentError, ~r/keyword configuration was removed/, fn ->
       EmergeSkia.start(otp_app: :emerge, backend: :drm, macos_backend: :raster)
     end
   end
@@ -479,39 +467,48 @@ defmodule EmergeSkiaTest do
   @tag :linux_only
   test "start/1 delegates Wayland Vulkan availability to the native feature matrix" do
     assert {:error, {:error, "Vulkan rendering support is not available in this build"}} =
-             EmergeSkia.start(otp_app: :emerge, backend: :wayland, rendering_api: :vulkan)
+             EmergeSkia.start(%Emerge.Config{
+               output: %Emerge.Config.Window{backend: :wayland, size: {800, 600}},
+               renderer: [api: :vulkan],
+               assets: [otp_app: :emerge]
+             })
   end
 
   test "start/1 validates the headless target before native startup" do
-    assert_raise ArgumentError, ~r/:headless.target must be a live local pid/, fn ->
-      EmergeSkia.start(otp_app: :emerge, backend: :headless)
+    assert_raise ArgumentError, ~r/output.target expects a live local PID/, fn ->
+      EmergeSkia.start(%Emerge.Config{
+        output: %Emerge.Config.Headless{size: {800, 600}, frames: %Emerge.Config.BinaryFrames{}},
+        assets: [otp_app: :emerge]
+      })
     end
   end
 
   test "headless PRIME rejects raster renderer instead of falling back" do
     assert {:error, {:error, reason}} =
-             EmergeSkia.start(
-               otp_app: :emerge,
-               backend: :headless,
-               rendering_api: :raster,
-               width: 4,
-               height: 4,
-               headless: [target: self(), mode: :prime]
-             )
+             EmergeSkia.start(%Emerge.Config{
+               output: %Emerge.Config.Headless{
+                 size: {4, 4},
+                 frames: %Emerge.Config.PrimeFrames{},
+                 target: self()
+               },
+               renderer: [api: :raster],
+               assets: [otp_app: :emerge]
+             })
 
     assert reason =~ "raster cannot export dma-buf frames"
   end
 
   test "headless backend delivers binary frames" do
     {:ok, renderer} =
-      EmergeSkia.start(
-        otp_app: :emerge,
-        backend: :headless,
-        rendering_api: :raster,
-        width: 4,
-        height: 4,
-        headless: [target: self(), pixel_format: :rgb888]
-      )
+      EmergeSkia.start(%Emerge.Config{
+        output: %Emerge.Config.Headless{
+          size: {4, 4},
+          frames: %Emerge.Config.BinaryFrames{pixel_format: :rgb888},
+          target: self()
+        },
+        renderer: [api: :raster],
+        assets: [otp_app: :emerge]
+      })
 
     assert {:ok,
             %{
@@ -532,31 +529,31 @@ defmodule EmergeSkiaTest do
            } = receive_latest_headless_frame()
 
     assert byte_size(data) == 4 * 4 * 3
-
     assert :ok = EmergeSkia.stop(renderer)
   end
 
   @tag :tmp_dir
-  test "concurrent headless renderers isolate asset roots and worker shutdown", %{
+  test("concurrent headless renderers isolate asset roots and worker shutdown", %{
     tmp_dir: tmp_dir
-  } do
+  }) do
     red_root = Path.join(tmp_dir, "red")
     blue_root = Path.join(tmp_dir, "blue")
     File.mkdir_p!(red_root)
     File.mkdir_p!(blue_root)
-
     write_solid_svg(Path.join(red_root, "shared.svg"), "#ff0000")
     write_solid_svg(Path.join(blue_root, "shared.svg"), "#0000ff")
 
     start_renderer = fn frame_message ->
-      EmergeSkia.start(
-        otp_app: :emerge,
-        backend: :headless,
-        rendering_api: :raster,
-        width: 4,
-        height: 4,
-        headless: [target: self(), frame_message: frame_message, pixel_format: :rgb888]
-      )
+      EmergeSkia.start(%Emerge.Config{
+        output: %Emerge.Config.Headless{
+          size: {4, 4},
+          frames: %Emerge.Config.BinaryFrames{pixel_format: :rgb888},
+          target: self(),
+          frame_message: frame_message
+        },
+        renderer: [api: :raster],
+        assets: [otp_app: :emerge]
+      })
     end
 
     {:ok, red_renderer} = start_renderer.("red_asset_frame")
@@ -584,12 +581,9 @@ defmodule EmergeSkiaTest do
     tree = image([width(px(4)), height(px(4))], "shared.svg")
     {_state, _assigned} = EmergeSkia.upload_tree(red_renderer, tree)
     assert_frame_color("red_asset_frame", {255, 0, 0})
-
     {_state, _assigned} = EmergeSkia.upload_tree(blue_renderer, tree)
     assert_frame_color("blue_asset_frame", {0, 0, 255})
-
     assert :ok = EmergeSkia.stop(red_renderer)
-
     write_solid_svg(Path.join(blue_root, "shared.svg"), "#00ff00")
 
     assert :ok =
@@ -607,14 +601,15 @@ defmodule EmergeSkiaTest do
       pixel_format = unquote(pixel_format)
 
       {:ok, renderer} =
-        EmergeSkia.start(
-          otp_app: :emerge,
-          backend: :headless,
-          rendering_api: :raster,
-          width: 3,
-          height: 2,
-          headless: [target: self(), pixel_format: pixel_format]
-        )
+        EmergeSkia.start(%Emerge.Config{
+          output: %Emerge.Config.Headless{
+            size: {3, 2},
+            frames: %Emerge.Config.BinaryFrames{pixel_format: pixel_format},
+            target: self()
+          },
+          renderer: [api: :raster],
+          assets: [otp_app: :emerge]
+        })
 
       on_exit(fn -> EmergeSkia.stop(renderer) end)
 
@@ -656,7 +651,6 @@ defmodule EmergeSkiaTest do
 
       bgra = for <<r, g, b, a <- rgba>>, into: <<>>, do: <<b, g, r, a>>
       expected = Map.fetch!(%{rgba8888: rgba, bgra8888: bgra}, pixel_format)
-
       assert data == expected
       assert {:ok, ^rgba} = EmergeSkia.render_to_pixels(renderer)
       # Screenshot conversion must not mutate the stored BGRA snapshot.
@@ -667,19 +661,19 @@ defmodule EmergeSkiaTest do
 
   test "headless BW1 packs rows independently and expands Gray8 screenshots" do
     {:ok, renderer} =
-      EmergeSkia.start(
-        otp_app: :emerge,
-        backend: :headless,
-        rendering_api: :raster,
-        width: 9,
-        height: 2,
-        headless: [
-          target: self(),
-          pixel_format: :bw1,
-          bw1_polarity: :one_is_white,
-          dither: false
-        ]
-      )
+      EmergeSkia.start(%Emerge.Config{
+        output: %Emerge.Config.Headless{
+          size: {9, 2},
+          frames: %Emerge.Config.BinaryFrames{
+            pixel_format: :bw1,
+            bw1_polarity: :one_is_white,
+            dither: false
+          },
+          target: self()
+        },
+        renderer: [api: :raster],
+        assets: [otp_app: :emerge]
+      })
 
     tree =
       el(
@@ -690,13 +684,8 @@ defmodule EmergeSkiaTest do
     {_state, _assigned} = EmergeSkia.upload_tree(renderer, tree)
 
     assert %Frame{
-             format: %{
-               storage: %Format{pixel_format: :bw1, bw1_polarity: :one_is_white}
-             },
-             storage: %Binary{
-               data: <<0xFF, 0x80, 0xFF, 0x80>>,
-               planes: [%Plane{stride: 2}]
-             }
+             format: %{storage: %Format{pixel_format: :bw1, bw1_polarity: :one_is_white}},
+             storage: %Binary{data: <<255, 128, 255, 128>>, planes: [%Plane{stride: 2}]}
            } = receive_latest_headless_frame()
 
     assert {:ok, pixels} = EmergeSkia.render_to_pixels(renderer)
@@ -706,14 +695,15 @@ defmodule EmergeSkiaTest do
 
   test "headless Gray2 packs canonical rows and expands Gray8 screenshots" do
     {:ok, renderer} =
-      EmergeSkia.start(
-        otp_app: :emerge,
-        backend: :headless,
-        rendering_api: :raster,
-        width: 5,
-        height: 2,
-        headless: [target: self(), pixel_format: :gray2, dither: false]
-      )
+      EmergeSkia.start(%Emerge.Config{
+        output: %Emerge.Config.Headless{
+          size: {5, 2},
+          frames: %Emerge.Config.BinaryFrames{pixel_format: :gray2, dither: false},
+          target: self()
+        },
+        renderer: [api: :raster],
+        assets: [otp_app: :emerge]
+      })
 
     tree =
       el(
@@ -725,10 +715,7 @@ defmodule EmergeSkiaTest do
 
     assert %Frame{
              format: %{storage: %Format{pixel_format: :gray2}},
-             storage: %Binary{
-               data: <<0xFF, 0xC0, 0xFF, 0xC0>>,
-               planes: [%Plane{stride: 2}]
-             }
+             storage: %Binary{data: <<255, 192, 255, 192>>, planes: [%Plane{stride: 2}]}
            } = receive_latest_headless_frame()
 
     assert {:ok, pixels} = EmergeSkia.render_to_pixels(renderer)
@@ -739,19 +726,19 @@ defmodule EmergeSkiaTest do
   test "packed grayscale dithering changes gradients but not text-only output" do
     render = fn pixel_format, dither, tree ->
       {:ok, renderer} =
-        EmergeSkia.start(
-          otp_app: :emerge,
-          backend: :headless,
-          rendering_api: :raster,
-          width: 64,
-          height: 36,
-          headless: [
-            target: self(),
-            pixel_format: pixel_format,
-            bw1_polarity: :one_is_white,
-            dither: dither
-          ]
-        )
+        EmergeSkia.start(%Emerge.Config{
+          output: %Emerge.Config.Headless{
+            size: {64, 36},
+            frames: %Emerge.Config.BinaryFrames{
+              pixel_format: pixel_format,
+              bw1_polarity: :one_is_white,
+              dither: dither
+            },
+            target: self()
+          },
+          renderer: [api: :raster],
+          assets: [otp_app: :emerge]
+        })
 
       {_state, _assigned} = EmergeSkia.upload_tree(renderer, tree)
       assert %Frame{storage: %Binary{data: data}} = receive_latest_headless_frame()
@@ -782,8 +769,7 @@ defmodule EmergeSkiaTest do
       )
 
     for pixel_format <- [:bw1, :gray2] do
-      assert render.(pixel_format, false, text_tree) ==
-               render.(pixel_format, true, text_tree)
+      assert render.(pixel_format, false, text_tree) == render.(pixel_format, true, text_tree)
 
       refute render.(pixel_format, false, gradient_tree) ==
                render.(pixel_format, true, gradient_tree)
@@ -794,14 +780,15 @@ defmodule EmergeSkiaTest do
   test "headless GL backend delivers binary frames when explicitly enabled" do
     if System.get_env("EMERGE_SKIA_HEADLESS_GL_TEST") == "1" do
       {:ok, renderer} =
-        EmergeSkia.start(
-          otp_app: :emerge,
-          backend: :headless,
-          rendering_api: :opengl,
-          width: 4,
-          height: 4,
-          headless: [target: self(), pixel_format: :rgba8888]
-        )
+        EmergeSkia.start(%Emerge.Config{
+          output: %Emerge.Config.Headless{
+            size: {4, 4},
+            frames: %Emerge.Config.BinaryFrames{pixel_format: :rgba8888},
+            target: self()
+          },
+          renderer: [api: :opengl],
+          assets: [otp_app: :emerge]
+        })
 
       assert {:ok, %{rendering_api: %{selected: :opengl}, capabilities: %{gpu: true}}} =
                EmergeSkia.renderer_info(renderer)
@@ -815,12 +802,10 @@ defmodule EmergeSkiaTest do
              } = receive_latest_headless_frame()
 
       assert byte_size(data) == 4 * 4 * 4
-
       assert {:ok, pixels} = EmergeSkia.render_to_pixels(renderer)
       assert byte_size(pixels) == 4 * 4 * 4
       assert {:ok, png} = EmergeSkia.render_to_png(renderer)
-      assert <<0x89, "PNG", _rest::binary>> = png
-
+      assert <<137, "PNG", _rest::binary>> = png
       assert :ok = EmergeSkia.stop(renderer)
     end
   end
@@ -836,28 +821,25 @@ defmodule EmergeSkiaTest do
     end)
 
     {:ok, renderer} =
-      EmergeSkia.start(
-        otp_app: :emerge,
-        backend: :headless,
-        rendering_api: :auto,
-        width: 4,
-        height: 4,
-        headless: [target: self(), mode: :prime, prime: [max_in_flight: 1]]
-      )
+      EmergeSkia.start(%Emerge.Config{
+        output: %Emerge.Config.Headless{
+          size: {4, 4},
+          frames: %Emerge.Config.PrimeFrames{max_in_flight: 1},
+          target: self()
+        },
+        assets: [otp_app: :emerge]
+      })
 
     assert {:ok,
-            %{
-              rendering_api: %{selected: :opengl},
-              capabilities: %{gpu: true, screenshot: false}
-            }} = EmergeSkia.renderer_info(renderer)
+            %{rendering_api: %{selected: :opengl}, capabilities: %{gpu: true, screenshot: false}}} =
+             EmergeSkia.renderer_info(renderer)
 
     assert {:error, "screenshot capture is not supported for headless PRIME output"} =
              EmergeSkia.render_to_png(renderer)
 
     tree = el([width(px(4)), height(px(4)), Emerge.UI.Background.color(:red)], none())
     {_state, _assigned} = EmergeSkia.upload_tree(renderer, tree)
-
-    assert_receive {:emerge_skia_frame, dma_buf}, 1_000
+    assert_receive {:emerge_skia_frame, dma_buf}, 1000
 
     assert %VideoInterop.Frame{
              coded_width: 4,
@@ -896,32 +878,25 @@ defmodule EmergeSkiaTest do
     assert %VideoInterop.AbandonmentGuard{} = child_lease.abandonment_guard
     assert VideoInterop.AbandonmentGuard.valid?(child_lease.abandonment_guard)
     refute child_lease.abandonment_guard == lease.abandonment_guard
-
     assert :ok = VideoInterop.release(dma_buf)
     blocked_tree = el([width(px(4)), height(px(4)), Emerge.UI.Background.color(:blue)], none())
     {_state, _assigned} = EmergeSkia.upload_tree(renderer, blocked_tree)
     refute_receive {:emerge_skia_frame, _frame}, 100
-
     assert :ok = VideoInterop.release(child_lease)
-
-    assert eventually(fn ->
-             VideoInterop.LeaseOwner.stats(lease.owner).active_leases == 0
-           end)
-
+    assert eventually(fn -> VideoInterop.LeaseOwner.stats(lease.owner).active_leases == 0 end)
     next_tree = el([width(px(4)), height(px(4)), Emerge.UI.Background.color(:green)], none())
     {_state, _assigned} = EmergeSkia.upload_tree(renderer, next_tree)
-    assert_receive {:emerge_skia_frame, %VideoInterop.Frame{} = next_dma_buf}, 1_000
+    assert_receive {:emerge_skia_frame, %VideoInterop.Frame{} = next_dma_buf}, 1000
     [%VideoInterop.DMABuf.Object{fd: next_fd}] = next_dma_buf.storage.objects
     session_monitor = Process.monitor(renderer.pid)
     test_pid = self()
     spawn(fn -> send(test_pid, {:stop_result, EmergeSkia.stop(renderer)}) end)
     refute_receive {:stop_result, _result}, 100
     assert {:ok, _stat} = File.stat("/proc/self/fd/#{next_fd}")
-
     assert :ok = VideoInterop.release(next_dma_buf)
-    assert_receive {:stop_result, :ok}, 1_000
+    assert_receive {:stop_result, :ok}, 1000
     refute EmergeSkia.running?(renderer)
-    assert_receive {:DOWN, ^session_monitor, :process, _pid, :normal}, 1_000
+    assert_receive {:DOWN, ^session_monitor, :process, _pid, :normal}, 1000
   end
 
   @tag :hardware
@@ -930,28 +905,24 @@ defmodule EmergeSkiaTest do
     assert :headless in BuildConfig.compiled_vulkan_backends(),
            "compile the test NIF with the headless Vulkan backend"
 
-    prime_opts =
-      case System.get_env("EMERGE_DEMO_PRIME_DRM_NODE") do
-        nil -> [max_in_flight: 1]
-        drm_node -> [max_in_flight: 1, drm_node: drm_node]
-      end
+    frames = %Emerge.Config.PrimeFrames{
+      max_in_flight: 1,
+      device: System.get_env("EMERGE_DEMO_PRIME_DRM_NODE")
+    }
+
+    output = %Emerge.Config.Headless{target: self(), size: {640, 420}, frames: frames}
 
     {:ok, renderer} =
-      EmergeSkia.start(
-        otp_app: :emerge,
-        backend: :headless,
-        rendering_api: :vulkan,
-        width: 640,
-        height: 420,
-        headless: [target: self(), mode: :prime, prime: prime_opts]
-      )
+      EmergeSkia.start(%Emerge.Config{
+        output: output,
+        renderer: [api: :vulkan],
+        assets: [otp_app: :emerge]
+      })
 
     assert {:ok, %{rendering_api: %{selected: :vulkan}}} = EmergeSkia.renderer_info(renderer)
-
     tree = el([width(px(640)), height(px(420)), Emerge.UI.Background.color(:red)], none())
     {_state, _assigned} = EmergeSkia.upload_tree(renderer, tree)
-
-    assert_receive {:emerge_skia_frame, dma_buf}, 5_000
+    assert_receive {:emerge_skia_frame, dma_buf}, 5000
 
     assert %VideoInterop.Frame{
              coded_width: 640,
@@ -967,9 +938,7 @@ defmodule EmergeSkiaTest do
              acquire_sync: %VideoInterop.SyncFile{}
            } = dma_buf
 
-    assert {:ok, %File.Stat{size: fd_allocation_size}} =
-             File.stat("/proc/self/fd/#{object.fd}")
-
+    assert {:ok, %File.Stat{size: fd_allocation_size}} = File.stat("/proc/self/fd/#{object.fd}")
     visible_span = plane.offset + plane.pitch * 419 + 640 * 4
     assert layer.fourcc == :binary.decode_unsigned("AB24", :little)
     assert object.modifier == 0
@@ -977,10 +946,9 @@ defmodule EmergeSkiaTest do
     assert object.size >= visible_span
     assert :ok = VideoInterop.validate(dma_buf)
     assert :ok = VideoInterop.release(dma_buf)
-
     next_tree = el([width(px(640)), height(px(420)), Emerge.UI.Background.color(:blue)], none())
     {_state, _assigned} = EmergeSkia.upload_tree(renderer, next_tree)
-    assert_receive {:emerge_skia_frame, %VideoInterop.Frame{} = next_dma_buf}, 5_000
+    assert_receive {:emerge_skia_frame, %VideoInterop.Frame{} = next_dma_buf}, 5000
     assert :ok = VideoInterop.release(next_dma_buf)
     assert :ok = EmergeSkia.stop(renderer)
   end
@@ -996,19 +964,19 @@ defmodule EmergeSkiaTest do
     end)
 
     {:ok, renderer} =
-      EmergeSkia.start(
-        otp_app: :emerge,
-        backend: :headless,
-        rendering_api: :opengl,
-        width: 4,
-        height: 4,
-        headless: [target: self(), mode: :prime, prime: [max_in_flight: 1]]
-      )
+      EmergeSkia.start(%Emerge.Config{
+        output: %Emerge.Config.Headless{
+          size: {4, 4},
+          frames: %Emerge.Config.PrimeFrames{max_in_flight: 1},
+          target: self()
+        },
+        renderer: [api: :opengl],
+        assets: [otp_app: :emerge]
+      })
 
     tree = el([width(px(4)), height(px(4)), Emerge.UI.Background.color(:red)], none())
     {_state, _assigned} = EmergeSkia.upload_tree(renderer, tree)
-
-    assert_receive {:emerge_skia_frame, %VideoInterop.Frame{} = dma_buf}, 1_000
+    assert_receive {:emerge_skia_frame, %VideoInterop.Frame{} = dma_buf}, 1000
 
     assert %VideoInterop.Frame{
              format: %VideoInterop.Format{
@@ -1062,90 +1030,97 @@ defmodule EmergeSkiaTest do
          "DRM backend is not compiled; add :drm to config :emerge, compiled_backends: [...]"}
       end
 
-    assert {:error, {:error, ^message}} = EmergeSkia.start(otp_app: :emerge, backend: backend)
+    output =
+      if backend == :drm do
+        %Emerge.Config.DRM{}
+      else
+        %Emerge.Config.Window{backend: backend}
+      end
+
+    assert {:error, {:error, ^message}} =
+             EmergeSkia.start(%Emerge.Config{output: output, assets: [otp_app: :emerge]})
   end
 
   test "legacy start arities raise explicit otp_app guidance" do
-    assert_raise ArgumentError, ~r/requires explicit otp_app/, fn ->
-      EmergeSkia.start()
-    end
-
-    assert_raise ArgumentError, ~r/no longer supported/, fn ->
-      EmergeSkia.start("Legacy")
-    end
+    refute function_exported?(EmergeSkia, :start, 0)
+    assert_raise ArgumentError, ~r/expects %Emerge.Config/, fn -> EmergeSkia.start("Legacy") end
   end
 
   test "start/1 validates assets.fonts source type" do
-    assert_raise ArgumentError, ~r/assets\.fonts\[\]\.source must be a logical string path/, fn ->
-      EmergeSkia.start(
-        otp_app: :emerge,
-        assets: [fonts: [[family: "my-font", source: {:path, "/tmp/font.ttf"}]]]
-      )
+    assert_raise ArgumentError, ~r/assets\.fonts\[\]\.source expects/, fn ->
+      EmergeSkia.start(%Emerge.Config{
+        output: %Emerge.Config.Window{backend: :auto, size: {800, 600}},
+        assets: [otp_app: :emerge, fonts: [[family: "my-font", source: {:path, "/tmp/font.ttf"}]]]
+      })
     end
   end
 
   test "start/1 validates assets.fonts weight range" do
     assert_raise ArgumentError,
-                 ~r/assets\.fonts\[\]\.weight must be an integer between 100 and 900/,
+                 ~r/assets\.fonts\[\]\.weight expects/,
                  fn ->
-                   EmergeSkia.start(
-                     otp_app: :emerge,
+                   EmergeSkia.start(%Emerge.Config{
+                     output: %Emerge.Config.Window{backend: :auto, size: {800, 600}},
                      assets: [
+                       otp_app: :emerge,
                        fonts: [[family: "my-font", source: "fonts/MyFont.ttf", weight: 50]]
                      ]
-                   )
+                   })
                  end
   end
 
   test "start/1 rejects duplicate font variants" do
     assert_raise ArgumentError, ~r/duplicate assets\.fonts entries/, fn ->
-      EmergeSkia.start(
-        otp_app: :emerge,
+      EmergeSkia.start(%Emerge.Config{
+        output: %Emerge.Config.Window{backend: :auto, size: {800, 600}},
         assets: [
+          otp_app: :emerge,
           fonts: [
             [family: "my-font", source: "fonts/MyFont-Regular.ttf", weight: 400],
             [family: "my-font", source: "fonts/MyFont-Regular2.ttf", weight: 400]
           ]
         ]
-      )
+      })
     end
   end
 
   test "start/1 validates assets.fonts extension allowlist" do
     assert_raise ArgumentError, ~r/extension must be one of/, fn ->
-      EmergeSkia.start(
-        otp_app: :emerge,
-        assets: [fonts: [[family: "my-font", source: "fonts/MyFont.woff2", weight: 400]]]
-      )
+      EmergeSkia.start(%Emerge.Config{
+        output: %Emerge.Config.Window{backend: :auto, size: {800, 600}},
+        assets: [
+          otp_app: :emerge,
+          fonts: [[family: "my-font", source: "fonts/MyFont.woff2", weight: 400]]
+        ]
+      })
     end
   end
 
   test "start/1 rejects drm_cursor on wayland" do
     assert_raise ArgumentError, ~r/drm_cursor is only supported with backend: :drm/, fn ->
-      EmergeSkia.start(
-        otp_app: :emerge,
-        backend: :wayland,
-        drm_cursor: [default: [source: "sample_assets/tile_quad.svg", hotspot: {1, 1}]]
-      )
+      EmergeSkia.start(%Emerge.Config{
+        output: %Emerge.Config.Window{backend: :wayland, size: {800, 600}},
+        input: [cursor: [default: [source: "cursor.png"]]],
+        assets: [otp_app: :emerge]
+      })
     end
   end
 
   test "load_font_file/5 loads into the selected renderer" do
     {:ok, renderer} =
-      EmergeSkia.start(
-        otp_app: :emerge,
-        backend: :headless,
-        rendering_api: :raster,
-        width: 4,
-        height: 4,
-        headless: [target: self(), pixel_format: :rgb888]
-      )
+      EmergeSkia.start(%Emerge.Config{
+        output: %Emerge.Config.Headless{
+          size: {4, 4},
+          frames: %Emerge.Config.BinaryFrames{pixel_format: :rgb888},
+          target: self()
+        },
+        renderer: [api: :raster],
+        assets: [otp_app: :emerge]
+      })
 
     on_exit(fn -> EmergeSkia.stop(renderer) end)
-
     priv_dir = :code.priv_dir(:emerge) |> List.to_string()
     path = Path.join(priv_dir, "test_assets/Lobster-Regular.ttf")
-
     assert File.regular?(path)
     assert :ok = EmergeSkia.load_font_file(renderer, "lobster-test", 400, false, path)
   end
@@ -1159,7 +1134,7 @@ defmodule EmergeSkiaTest do
 
   defp assert_frame_color(message_tag, {red, green, blue}) do
     expected = :binary.copy(<<red, green, blue>>, 16)
-    deadline = System.monotonic_time(:millisecond) + 5_000
+    deadline = System.monotonic_time(:millisecond) + 5000
     assert_frame_color_until(message_tag, expected, deadline, nil)
   end
 
@@ -1181,7 +1156,7 @@ defmodule EmergeSkiaTest do
     end
   end
 
-  defp eventually(predicate, timeout_ms \\ 1_000) do
+  defp eventually(predicate, timeout_ms \\ 1000) do
     wait_until(predicate, System.monotonic_time(:millisecond) + timeout_ms)
   end
 

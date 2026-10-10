@@ -1,230 +1,36 @@
 defmodule Emerge.Runtime.Viewport do
   @moduledoc """
-  Configuration reference for viewports defined with `use Emerge`.
+  Runtime for viewports defined with `use Emerge`.
 
-  You normally start the generated function on your viewport module rather than
-  calling this module directly:
-
-      {:ok, viewport} = MyApp.Viewport.start_link(title: "My App")
-
-  The options passed to `start_link/1` are received by `c:Emerge.mount/1`. The
-  options returned from `mount/1` configure the viewport.
-
-  ## Option locations
-
-  Renderer options may be returned directly:
-
-      {:ok, Keyword.merge([title: "My App", width: 800, height: 600], opts)}
-
-  They may also be placed under `emerge_skia: [...]`. Nested values override
-  duplicate top-level renderer values:
-
-      {:ok,
-       [
-         title: "My App",
-         emerge_skia: [scroll_line_pixels: 45]
-       ]}
-
-  Runtime-only options belong under `viewport: [...]`:
-
-  | Option | Default | Use |
-  |---|---|---|
-  | `input_mask` | renderer default | Bitmask selecting raw events delivered to `c:Emerge.handle_input/2` |
-  | `renderer_check_interval_ms` | `500` | Renderer liveness-check interval; use `nil` to disable it |
-
-  `viewport.renderer_module` and `viewport.renderer_opts` are advanced adapter
-  options and are not needed when using EmergeSkia.
-
-  ## Common renderer options
-
-  | Option | Default | Use |
-  |---|---|---|
-  | `otp_app` | inferred | Application whose `priv/` directory contains assets |
-  | `title` | `"Emerge"` | Window title |
-  | `width`, `height` | `800`, `600` | Initial window size or fixed headless size |
-  | `always_on_top` | `false` | macOS only: keep the window above other windows |
-  | `backend` | platform default | `:macos`, `:wayland`, `:drm`, or `:headless` |
-  | `rendering_api` | `:auto` | `:metal`, `:opengl`, `:raster`, or `:vulkan` where supported |
-  | `assets` | restrictive defaults | Fonts, image paths, raster decode, and cache limits |
-  | `stats` | `false` | Collect renderer statistics |
-  | `renderer_stats_log` | `false` | Log a renderer summary every five seconds |
-  | `headless` | binary defaults | Headless binary or PRIME output options |
-
-  `backend_renderer` and `:gl` are deprecated compatibility names.
-  `macos_backend` and `dispatch_mode` were removed in 0.4.
-
-  ## Windowed and display viewports
-
-  Most desktop viewports need no backend option. Emerge defaults to macOS on
-  Darwin and Wayland on Linux desktop:
-
-      def mount(opts), do: {:ok, Keyword.merge([title: "My App"], opts)}
-
-  Use DRM for direct display output on Linux or Nerves:
+  Application mount arguments remain keyword lists. The configuration returned
+  by `mount/1` is an `Emerge.Config` struct, not renderer keywords:
 
       def mount(opts) do
-        {:ok,
-         Keyword.merge(
-           [backend: :drm, drm_card: "/dev/dri/card0"],
-           opts
-         )}
+        output = %Emerge.Config.Window{title: Keyword.get(opts, :title, "My App")}
+        {:ok, %Emerge.Config{output: output, input: [events: [:key]]}}
       end
 
-  `rendering_api: :auto` is recommended unless the application requires a
-  specific path. Raster is a rendering API, not a backend. Vulkan support is
-  selected explicitly at build time.
+  Implement neither or exactly one of `config/1` and `config/2`. They receive
+  the previous normalized desired config; `config/2` also receives application
+  state. The first call receives mount config, before renderer creation. Later
+  calls run during coalesced rerenders, even if the tree has not changed.
+  Callback/validation failures retain the previous valid config.
 
-  ## Renderer recovery
-
-  The PID returned by `start_link/1` is the callback process. With native backends
-  (Wayland, DRM, and headless), an unexpectedly stopped renderer can be replaced
-  after safe cleanup without replacing that PID or losing callback state. The
-  viewport rerenders its current UI; renderer startup retries are bounded.
-
-  `Emerge.renderer/1` may return `nil` while the renderer is unavailable. A
-  previously returned renderer handle belongs to that session, so retrieve a
-  fresh handle after recovery rather than caching it indefinitely.
-  `Emerge.submit_video_frame/3` returns `{:error, :viewport_not_ready}` while no
-  endpoint is ready and still consumes the frame. Do not retry that same frame.
-
-  Applications still supervise viewport children. Callback-process death ends
-  that viewport instance; the application's supervisor decides whether to restart
-  it. Native renderer recovery does not change names, direct messages, event
-  callback execution, or subscriptions attached to the callback process.
-
-  Recovery does not detect GPU hangs or bypass incomplete cleanup. A quarantined
-  renderer may require restarting the BEAM process. macOS host sessions and custom
-  renderer adapters do not implement this native recovery contract.
-
-  For low-level native renderers, see `EmergeSkia.renderer_status/1` and
-  `EmergeSkia.stop/2`. For DRM display selection, see `EmergeSkia.drm_outputs/1`.
-
-  ## Headless binary viewports
-
-  Headless is another viewport mode. It uses the same `mount`, `render`, event,
-  rerender, and supervision APIs without opening a window.
-
-  Binary mode sends frames directly to a live local PID. A sink can be an
-  ordinary GenServer:
-
-      defmodule MyApp.FrameSink do
-        use GenServer
-
-        def start_link(_opts) do
-          GenServer.start_link(__MODULE__, nil, name: __MODULE__)
-        end
-
-        @impl true
-        def init(_opts), do: {:ok, nil}
-
-        @impl true
-        def handle_info(
-              {:emerge_skia_frame,
-               %VideoInterop.Frame{
-                 coded_height: height,
-                 storage: %VideoInterop.Binary{
-                   data: data,
-                   planes: [%VideoInterop.Binary.Plane{stride: stride}]
-                 }
-               } = frame},
-              last_frame
-            ) do
-          :ok = VideoInterop.validate(frame)
-
-          if byte_size(data) != stride * height do
-            raise "invalid headless frame"
-          end
-
-          if data != last_frame do
-            MyApp.Display.draw(frame)
-          end
-
-          {:noreply, data}
-        end
+      def config(%Emerge.Config{output: %Emerge.Config.Window{} = output} = previous, state) do
+        output = %Emerge.Config.Window{output | title: state.title}
+        %Emerge.Config{previous | output: output}
       end
 
-  Configure the viewport with that process as its direct target:
+  Nested keyword shorthand expands from record defaults, not previous values.
+  Use typed struct updates to preserve untouched fields. See `Emerge.Config`
+  for groups, output variants, defaults and current implementation limits.
 
-      defmodule MyApp.DisplayViewport do
-        use Emerge
+  Raw input observation is opt-in through `Emerge.Config.Input.events`.
+  `Emerge.Input` documents every callback payload. This filter does not disable
+  element interactions or window-close notifications.
 
-        @impl Viewport
-        def mount(opts) do
-          target = Process.whereis(MyApp.FrameSink) || raise "frame sink is not running"
-
-          {:ok,
-           Keyword.merge(
-             [
-               backend: :headless,
-               rendering_api: :raster,
-               width: 400,
-               height: 300,
-               headless: [
-                 mode: :binary,
-                 target: target,
-                 pixel_format: :gray2,
-                 dither: true,
-                 bw1_polarity: :one_is_white
-               ]
-             ],
-             opts
-           )}
-        end
-
-        @impl Viewport
-        def render, do: MyApp.UI.display()
-      end
-
-  Start the frame sink before the viewport. Use `:rest_for_one` when a sink
-  restart must also restart the viewport holding its PID:
-
-      children = [MyApp.FrameSink, MyApp.DisplayViewport]
-      Supervisor.start_link(children, strategy: :rest_for_one)
-
-  The target receives `{:emerge_skia_frame, %VideoInterop.Frame{}}` by default.
-  See `EmergeSkia.start/1` for packed BW1/Gray2 rules and all headless options.
-
-  ## Headless PRIME viewports
-
-  PRIME mode produces leased Linux DMA-BUF frames. Its target is usually a
-  `Membrane.VideoInterop.Source` process:
-
-      def mount(opts) do
-        {:ok,
-         Keyword.merge(
-           [
-             backend: :headless,
-             rendering_api: :opengl,
-             width: 640,
-             height: 420,
-             headless: [
-               mode: :prime,
-               target: frame_source,
-               target_fps: 30,
-               prime: [max_in_flight: 3, on_backpressure: :drop_new]
-             ]
-           ],
-           opts
-         )}
-      end
-
-  Route those frames through `membrane_video_interop` and submit them to a
-  visible atom target with `Emerge.submit_video_frame/3`. PRIME is Linux-only;
-  both OpenGL and Vulkan PRIME are supported when compiled and available.
-
-  ## Raw input
-
-  Set `viewport.input_mask` with the bitmasks returned by
-  `EmergeSkia.input_mask_*`. Selected messages are delivered to
-  `c:Emerge.handle_input/2`, for example:
-
-      @impl Viewport
-      def handle_input({:resized, {width, height, scale}}, state) do
-        IO.inspect({width, height, scale})
-        {:noreply, state}
-      end
-
-  Element events still use `c:Emerge.handle_info/2`.
+  Adapter selection and liveness policy live in `Emerge.Config.Runtime`.
+  Native ownership is managed internally, not configured by applications.
   """
 
   use GenServer
@@ -428,11 +234,11 @@ defmodule Emerge.Runtime.Viewport do
     runtime = runtime!(state)
 
     case apply(runtime.module, :mount, [opts]) do
-      {:ok, mount_opts} when is_list(mount_opts) ->
+      {:ok, %Emerge.Config{} = mount_opts} ->
         state = mount_viewport(%{}, runtime, mount_opts)
         {:noreply, state}
 
-      {:ok, mounted_state, mount_opts} when is_list(mount_opts) ->
+      {:ok, mounted_state, %Emerge.Config{} = mount_opts} ->
         mounted_state = validate_mount_state!(runtime.module, mounted_state)
         state = mount_viewport(mounted_state, runtime, mount_opts)
 
@@ -443,7 +249,7 @@ defmodule Emerge.Runtime.Viewport do
 
       other ->
         raise ArgumentError,
-              "#{inspect(runtime.module)}.mount/1 must return {:ok, opts}, {:ok, state, opts}, or {:stop, reason}, got: #{inspect(other)}"
+              "#{inspect(runtime.module)}.mount/1 must return {:ok, %Emerge.Config{}}, {:ok, state, %Emerge.Config{}}, or {:stop, reason}, got: #{inspect(other)}"
     end
   end
 
@@ -474,7 +280,7 @@ defmodule Emerge.Runtime.Viewport do
       _ ->
         state
         |> runtime!()
-        |> then(&apply(&1.module, :handle_input, [event, state]))
+        |> then(&apply(&1.module, :handle_input, [Emerge.Input.from_native(event), state]))
         |> apply_callback_result(state, :handle_input)
     end
   end
@@ -734,7 +540,8 @@ defmodule Emerge.Runtime.Viewport do
     update_runtime(state, fn runtime ->
       %{
         runtime
-        | renderer_module: mount_config.renderer_module,
+        | config: mount_config.config,
+          renderer_module: mount_config.renderer_module,
           renderer_opts: mount_config.renderer_opts,
           skia_opts: mount_config.skia_opts,
           input_mask: mount_config.input_mask,
@@ -744,6 +551,65 @@ defmodule Emerge.Runtime.Viewport do
   end
 
   defp render_frame(state, phase) when is_map(state) do
+    case safe_invoke(fn -> reconcile_config(state, phase) end) do
+      {:ok, next_state} ->
+        if Emerge.Config.Changes.display_off?(runtime!(next_state).config),
+          do: clear_pending_rerender(next_state),
+          else: render_tree_frame(next_state, phase)
+
+      {:error, failure} ->
+        log_render_failure(runtime!(state).module, phase, failure)
+        clear_pending_rerender(state)
+    end
+  end
+
+  defp reconcile_config(state, phase) do
+    runtime = runtime!(state)
+
+    desired =
+      case config_callback_arity!(runtime.module) do
+        nil -> runtime.config
+        1 -> apply(runtime.module, :config, [runtime.config])
+        2 -> apply(runtime.module, :config, [runtime.config, state])
+      end
+
+    parsed = Config.parse!(runtime.module, desired)
+
+    if parsed.config == runtime.config do
+      state
+    else
+      if phase != :initial_render,
+        do: Emerge.Config.Changes.validate!(runtime.config, parsed.config)
+
+      if runtime.renderer do
+        case runtime.renderer_module.configure(runtime.renderer, runtime.config, parsed.config) do
+          :ok -> :ok
+          {:error, reason} -> raise "renderer config failed: #{inspect(reason)}"
+        end
+      end
+
+      :ok = Lifecycle.configure(runtime.lifecycle, parsed)
+      put_mount_config(state, parsed)
+    end
+  end
+
+  defp config_callback_arity!(module) do
+    case {function_exported?(module, :config, 1), function_exported?(module, :config, 2)} do
+      {false, false} ->
+        nil
+
+      {true, false} ->
+        1
+
+      {false, true} ->
+        2
+
+      {true, true} ->
+        raise ArgumentError, "#{inspect(module)} must define at most one of config/1 or config/2"
+    end
+  end
+
+  defp render_tree_frame(state, phase) do
     case safe_render_tree(state) do
       {:ok, tree} ->
         case apply_tree_to_renderer(state, tree) do
@@ -884,8 +750,10 @@ defmodule Emerge.Runtime.Viewport do
   end
 
   defp mount_viewport(mounted_state, runtime, mount_opts)
-       when is_map(mounted_state) and is_struct(runtime, State) and is_list(mount_opts) do
+       when is_map(mounted_state) and is_struct(runtime, State) and
+              is_struct(mount_opts, Emerge.Config) do
     _ = validate_render_callback_shape!(runtime.module)
+    _ = config_callback_arity!(runtime.module)
     mount_config = Config.parse!(runtime.module, mount_opts)
     {:ok, supervisor} = LifecycleSupervisor.start_link(self(), mount_config)
     lifecycle = LifecycleSupervisor.lifecycle(supervisor)
@@ -964,6 +832,7 @@ defmodule Emerge.Runtime.Viewport do
 
   defp phase_label(:initial_render), do: "initial render"
   defp phase_label(:rerender), do: "rerender"
+  defp phase_label(:renderer_recovery), do: "renderer recovery"
 
   defp safe_stop_renderer(renderer_module, renderer) do
     renderer_module.stop(renderer)

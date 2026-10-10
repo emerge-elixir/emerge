@@ -4,7 +4,11 @@ defmodule Emerge.Runtime.Viewport.Renderer.Skia do
   @behaviour Emerge.Runtime.Viewport.Renderer
 
   @impl true
-  def start(skia_opts, _renderer_opts) when is_list(skia_opts), do: EmergeSkia.start(skia_opts)
+  def start(%Emerge.Config{} = config, renderer_opts),
+    do: EmergeSkia.start_owned(config, Keyword.get(renderer_opts, :owner))
+
+  @impl true
+  def configure(renderer, previous, config), do: EmergeSkia.configure(renderer, previous, config)
 
   @impl true
   def stop(renderer), do: EmergeSkia.stop(renderer)
@@ -19,7 +23,9 @@ defmodule Emerge.Runtime.Viewport.Renderer.Skia do
   def set_log_target(renderer, pid), do: EmergeSkia.set_log_target(renderer, pid)
 
   @impl true
-  def set_input_mask(renderer, mask), do: EmergeSkia.set_input_mask(renderer, mask)
+  def set_input_mask(renderer, mask) do
+    renderer |> EmergeSkia.Transport.for_renderer() |> apply(:set_input_mask, [renderer, mask])
+  end
 
   @impl true
   def upload_tree(renderer, tree), do: EmergeSkia.upload_tree(renderer, tree)

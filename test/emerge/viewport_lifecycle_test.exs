@@ -1,34 +1,37 @@
 defmodule Emerge.ViewportLifecycleTest do
   use ExUnit.Case, async: false
   @moduletag capture_log: true
-
   defmodule Screen do
     use Emerge
-
     @impl Viewport
     def mount(opts) do
       {:ok, %{count: 0, keep_open: Keyword.get(opts, :keep_open, false), closed: false},
-       [
-         otp_app: :emerge,
-         backend: :headless,
-         rendering_api: :raster,
-         width: 32,
-         height: 24,
-         headless: [target: Keyword.fetch!(opts, :target)],
-         viewport: [renderer_check_interval_ms: 25]
-       ]}
+       %Emerge.Config{
+         output: %Emerge.Config.Headless{target: Keyword.fetch!(opts, :target), size: {32, 24}},
+         renderer: [api: :raster],
+         assets: [otp_app: :emerge],
+         runtime: [health_check_interval_ms: 25]
+       }}
     end
 
     @impl Viewport
-    def render(state), do: text("count #{state.count}")
+    def render(state) do
+      text("count #{state.count}")
+    end
 
     @impl Viewport
-    def handle_close(_reason, %{keep_open: true} = state), do: {:noreply, %{state | closed: true}}
-    def handle_close(_reason, state), do: {:stop, :normal, state}
+    def handle_close(_reason, %{keep_open: true} = state) do
+      {:noreply, %{state | closed: true}}
+    end
+
+    def handle_close(_reason, state) do
+      {:stop, :normal, state}
+    end
 
     @impl Viewport
-    def handle_info(:increment, state),
-      do: {:noreply, Viewport.rerender(%{state | count: state.count + 1})}
+    def handle_info(:increment, state) do
+      {:noreply, Viewport.rerender(%{state | count: state.count + 1})}
+    end
   end
 
   test "Emerge has no automatically started application callback" do
@@ -69,7 +72,6 @@ defmodule Emerge.ViewportLifecycleTest do
     ref = Process.monitor(viewport)
     Process.exit(viewport, :kill)
     assert_receive {:DOWN, ^ref, :process, ^viewport, :killed}
-
     assert eventually(fn -> clean?(renderer) end)
     assert eventually(fn -> not Process.alive?(runtime.lifecycle_supervisor) end)
     frame = VideoInterop.Frame.binary(<<0, 0, 0>>, width: 1, height: 1, pixel_format: :rgb888)
@@ -84,7 +86,7 @@ defmodule Emerge.ViewportLifecycleTest do
     owner = :sys.get_state(viewport).__emerge__.lifecycle
     ref = Process.monitor(viewport)
     Process.exit(owner, :kill)
-    assert_receive {:DOWN, ^ref, :process, ^viewport, _}, 8_000
+    assert_receive {:DOWN, ^ref, :process, ^viewport, _}, 8000
     assert eventually(fn -> clean?(renderer) end)
   end
 
@@ -94,7 +96,7 @@ defmodule Emerge.ViewportLifecycleTest do
     supervisor = :sys.get_state(viewport).__emerge__.lifecycle_supervisor
     ref = Process.monitor(viewport)
     Supervisor.stop(supervisor, :normal)
-    assert_receive {:DOWN, ^ref, :process, ^viewport, :normal}, 5_000
+    assert_receive {:DOWN, ^ref, :process, ^viewport, :normal}, 5000
     assert clean?(renderer)
   end
 
@@ -167,14 +169,17 @@ defmodule Emerge.ViewportLifecycleTest do
     owner =
       spawn(fn ->
         {:ok, renderer} =
-          EmergeSkia.start(
-            otp_app: :emerge,
-            backend: :headless,
-            rendering_api: :raster,
-            width: 8,
-            height: 8,
-            headless: [target: test],
-            owner: self()
+          EmergeSkia.start_owned(
+            %Emerge.Config{
+              output: %Emerge.Config.Headless{
+                size: {8, 8},
+                frames: %Emerge.Config.BinaryFrames{},
+                target: test
+              },
+              renderer: [api: :raster],
+              assets: [otp_app: :emerge]
+            },
+            self()
           )
 
         send(test, {:owned_renderer, renderer})
@@ -184,7 +189,7 @@ defmodule Emerge.ViewportLifecycleTest do
         end
       end)
 
-    assert_receive {:owned_renderer, renderer}, 5_000
+    assert_receive {:owned_renderer, renderer}, 5000
     send(owner, :exit)
     assert eventually(fn -> clean?(renderer) end)
     assert :ok = EmergeSkia.stop(renderer, timeout: 0)
@@ -199,15 +204,17 @@ defmodule Emerge.ViewportLifecycleTest do
   end
 
   defp eventually(fun, attempts \\ 250)
-  defp eventually(fun, 0), do: fun.()
+
+  defp eventually(fun, 0) do
+    fun.()
+  end
 
   defp eventually(fun, attempts) do
-    if fun.(),
-      do: true,
-      else:
-        (
-          Process.sleep(20)
-          eventually(fun, attempts - 1)
-        )
+    if fun.() do
+      true
+    else
+      Process.sleep(20)
+      eventually(fun, attempts - 1)
+    end
   end
 end
