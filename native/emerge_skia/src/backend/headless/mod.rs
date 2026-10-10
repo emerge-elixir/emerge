@@ -25,6 +25,7 @@ use crate::{
     actors::{RenderMsg, TreeMsg},
     assets,
     backend::{
+        cadence::{FramePacer, FrameRateControl},
         raster::{RasterBackend, RasterConfig, RasterPixelFormat},
         wake::{BackendWake, BackendWakeHandle},
     },
@@ -47,9 +48,18 @@ mod vulkan;
 
 struct HeadlessBackendWake {
     tree_tx: Sender<TreeMsg>,
+    frame_rate: FrameRateControl,
+    stop: Arc<AtomicBool>,
 }
 
 impl BackendWake for HeadlessBackendWake {
+    fn set_frame_rate(&self, fps: Option<u32>) -> Result<(), String> {
+        if self.stop.load(Ordering::Acquire) {
+            return Err("renderer is stopping".into());
+        }
+        self.frame_rate.set(fps)
+    }
+
     fn request_stop(&self) {}
 
     fn request_redraw(&self) {}
@@ -136,6 +146,11 @@ pub(crate) fn start_renderer_with_config(
     config: StartConfig,
     initial_log_target: Option<LocalPid>,
 ) -> NifResult<ResourceArc<RendererResource>> {
+    if config.headless.target_fps == Some(0) {
+        return Err(rustler::Error::Term(Box::new(
+            "target_fps must be positive",
+        )));
+    }
     let mode = HeadlessMode::parse(&config.headless.mode)
         .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
     if config.headless.dither
@@ -189,8 +204,11 @@ pub(crate) fn start_renderer_with_config(
         log_render: config.render_log,
     };
 
+    let (frame_rate, control_rx) = FrameRateControl::new(config.headless.target_fps);
     let backend_wake = BackendWakeHandle::new(HeadlessBackendWake {
         tree_tx: tree_tx.clone(),
+        frame_rate: frame_rate.clone(),
+        stop: Arc::clone(&stop_flag),
     });
     let video_release_tx = video::spawn_release_worker()
         .map_err(|err| rustler::Error::Term(Box::new(err.to_string())))?;
@@ -225,6 +243,8 @@ pub(crate) fn start_renderer_with_config(
         let _asset_context_guard = render_asset_context.enter();
         run_render_loop(
             render_rx,
+            frame_rate,
+            control_rx,
             release_rx,
             tree_tx_for_thread,
             running_for_thread,
@@ -384,6 +404,8 @@ pub(crate) fn start_renderer_with_config(
 #[allow(clippy::too_many_arguments)]
 fn run_render_loop(
     render_rx: Receiver<RenderMsg>,
+    frame_rate: FrameRateControl,
+    control_rx: Receiver<()>,
     release_rx: Receiver<HeadlessReleaseMsg>,
     tree_tx: Sender<TreeMsg>,
     running_flag: Arc<AtomicBool>,
@@ -431,17 +453,14 @@ fn run_render_loop(
 
     let mut sequence = 0_u64;
     let mut pending_prime_animation = false;
-    let frame_interval = headless
-        .target_fps
-        .map(|fps| Duration::from_secs_f64(1.0 / f64::from(fps.max(1))))
-        .unwrap_or_else(|| Duration::from_millis(16));
+    let mut pacer = FramePacer::new(frame_rate.clone());
     if mode == HeadlessMode::Binary {
         binary::run_binary_loop(
             &render_rx,
             &tree_tx,
             &running_flag,
             &headless.pixel_format,
-            frame_interval,
+            (frame_rate.clone(), control_rx),
             |state, render_started_at| {
                 sync_headless_video(&mut renderer, state, &video_registry);
                 let frame = renderer.render_binary(state)?;
@@ -450,7 +469,7 @@ fn run_render_loop(
                     render_started_at,
                     &frame.timings,
                     state.pipeline_submitted_at,
-                    frame_interval,
+                    frame_rate.animation_interval(),
                 );
                 let sequence = state.render_version.wrapping_add(1);
                 let packed_bits = match headless.pixel_format.as_str() {
@@ -522,126 +541,102 @@ fn run_render_loop(
         running_flag.store(false, Ordering::Relaxed);
         return;
     }
-    let mut animation_tick = never();
+    let mut animation_at = None;
     let prime_completion_rx = renderer.prime_completion_receiver();
-    let mut next_animation_at = None;
+    let mut pending_scene = None;
 
-    while running_flag.load(Ordering::Relaxed) {
+    'render: while running_flag.load(Ordering::Relaxed) {
+        let frame_interval = frame_rate.animation_interval();
+        let animation_tick = animation_at.map(at).unwrap_or_else(never);
+        let render_tick = pending_scene
+            .as_ref()
+            .map(|_| at(pacer.render_at(Instant::now())))
+            .unwrap_or_else(never);
         select! {
+            recv(control_rx) -> message => {
+                if message.is_err() { break; }
+                if animation_at.is_some() {
+                    animation_at = Some(pacer.animation_at(Instant::now()));
+                }
+            }
             recv(animation_tick) -> _ => {
-                animation_tick = never();
+                animation_at = None;
                 maybe_send_animation_pulse(&tree_tx, true, frame_interval);
             }
             recv(prime_completion_rx) -> completion => {
                 let Ok(release_id) = completion else { break; };
                 if renderer.complete_prime_retirement(release_id)
-                    && let Some(tick) = resume_prime_animation_tick(
-                        &mut pending_prime_animation,
-                        frame_interval,
-                        Instant::now(),
-                        &mut next_animation_at,
+                    && let Some(deadline) = resume_prime_animation_tick(
+                        &mut pending_prime_animation, &pacer, Instant::now(),
                     )
                 {
-                    animation_tick = tick;
+                    animation_at = Some(deadline);
                 }
-                if renderer.terminal_prime_shutdown_ready() {
-                    break;
-                }
+                if renderer.terminal_prime_shutdown_ready() { break; }
             }
             recv(release_rx) -> msg => {
                 match msg {
                     Ok(HeadlessReleaseMsg::PrimeFrame(release_id)) => {
-                        let capacity_released = renderer.release_prime(release_id);
-                        if capacity_released
-                            && let Some(tick) = resume_prime_animation_tick(
-                                &mut pending_prime_animation,
-                                frame_interval,
-                                Instant::now(),
-                                &mut next_animation_at,
+                        if renderer.release_prime(release_id)
+                            && let Some(deadline) = resume_prime_animation_tick(
+                                &mut pending_prime_animation, &pacer, Instant::now(),
                             )
                         {
-                            animation_tick = tick;
+                            animation_at = Some(deadline);
                         }
-                        if renderer.terminal_prime_shutdown_ready() {
-                            break;
-                        }
-                    },
+                        if renderer.terminal_prime_shutdown_ready() { break; }
+                    }
                     Err(_) => break,
                 }
             }
             recv(render_rx) -> msg => {
                 let Ok(msg) = msg else { break; };
-                match msg {
-                    RenderMsg::Scene {
-                        scene,
-                        version: _,
-                        pipeline_submitted_at,
-                        pipeline_render_queued_at: _,
-                        animation_trace: _,
-                        animate,
-                        ime_enabled: _,
-                        ime_cursor_area: _,
-                        ime_text_state: _,
-                        ..
-                    } => {
-                        let render_started_at = Instant::now();
-                        let clear_color = if matches!(headless.pixel_format.as_str(), "bw1" | "gray2") {
-                            Color::WHITE
-                        } else {
-                            Color::TRANSPARENT
-                        };
-                        let state = RenderState::new(*scene, clear_color, sequence, animate);
-                        sync_headless_video(&mut renderer,&state,&video_registry);
-                        match renderer.render_prime(&state) {
-                                Ok(Some(frame)) => {
-                                    record_render_stats(
-                                        stats.as_deref(),
-                                        render_started_at,
-                                        &frame.timings,
-                                        pipeline_submitted_at,
-                                        frame_interval,
-                                    );
-                                    if let Some(stats) = stats.as_deref() {
-                                        stats.record_headless_prime_timings(
-                                            frame.prime_timings.prepare,
-                                            frame.prime_timings.retarget,
-                                            frame.prime_timings.fence_export,
-                                            frame.prime_timings.gpu_finish_fallback,
-                                            frame.prime_timings.export_metadata,
-                                        );
-                                    }
-                                    sequence = sequence.wrapping_add(1);
-                                    send_prime_frame(
-                                        target,
-                                        &headless.frame_message,
-                                        sequence,
-                                        frame,
-                                        release_tx.clone(),
-                                    );
-                                    animation_tick = animation_tick_receiver(
-                                        animate,
-                                        frame_interval,
-                                        Instant::now(),
-                                        &mut next_animation_at,
-                                    );
-                                }
-                                Ok(None) => {
-                                    // Resume retained animation after a consumer frees a slot and
-                                    // its independent Vulkan release fence signals.
-                                    animation_tick = never();
-                                    pending_prime_animation |= animate;
-                                }
-                                Err(err) => {
-                                    eprintln!("headless PRIME render failed terminally: {err}");
-                                    animation_tick = never();
-                                    pending_prime_animation = false;
-                                    if renderer.terminal_prime_shutdown_ready() {
-                                        break;
-                                    }
-                                }
+                let Some(state) = received_scene(msg, sequence, &headless.pixel_format, pending_scene.take()) else { break; };
+                if !state.animate { animation_at = None; }
+                pending_scene = Some(state);
+                pending_prime_animation = false;
+            }
+            recv(render_tick) -> _ => {
+                // Refresh the pending scene before admission, bounded so continuous
+                // producers cannot starve the control and lease-retirement lanes.
+                for msg in render_rx.try_iter().take(64) {
+                    let Some(state) = received_scene(msg, sequence, &headless.pixel_format, pending_scene.take()) else { break 'render; };
+                    if !state.animate { animation_at = None; }
+                    pending_scene = Some(state);
+                    pending_prime_animation = false;
+                }
+                let render_started_at = Instant::now();
+                // A lower live cap may have invalidated the timer while it fired.
+                if pacer.render_at(render_started_at) > render_started_at { continue; }
+                if !running_flag.load(Ordering::Relaxed) { break; }
+                let Some(state) = pending_scene.take() else { continue; };
+                pacer.started(render_started_at);
+                sync_headless_video(&mut renderer, &state, &video_registry);
+                match renderer.render_prime(&state) {
+                    Ok(Some(frame)) => {
+                        record_render_stats(stats.as_deref(), render_started_at,
+                            &frame.timings, state.pipeline_submitted_at, frame_interval);
+                        if let Some(stats) = stats.as_deref() {
+                            stats.record_headless_prime_timings(
+                                frame.prime_timings.prepare, frame.prime_timings.retarget,
+                                frame.prime_timings.fence_export, frame.prime_timings.gpu_finish_fallback,
+                                frame.prime_timings.export_metadata,
+                            );
                         }
+                        sequence = sequence.wrapping_add(1);
+                        send_prime_frame(target, &headless.frame_message, sequence, frame, release_tx.clone());
+                        animation_at = next_animation_tick(state.animate, animation_at, &pacer, Instant::now());
                     }
-                    RenderMsg::Stop => break,
+                    Ok(None) => {
+                        animation_at = None;
+                        pending_prime_animation = state.animate;
+                    }
+                    Err(err) => {
+                        eprintln!("headless PRIME render failed terminally: {err}");
+                        animation_at = None;
+                        pending_prime_animation = false;
+                        if renderer.terminal_prime_shutdown_ready() { break; }
+                    }
                 }
             }
         }
@@ -681,55 +676,53 @@ fn record_render_stats(
     }
 }
 
+// Preserve an outstanding pulse across unrelated redraws, including when it is
+// already due. Resetting it after each video frame can starve native animation.
+fn next_animation_tick(
+    animate: bool,
+    current: Option<Instant>,
+    pacer: &FramePacer,
+    now: Instant,
+) -> Option<Instant> {
+    animate.then(|| current.unwrap_or_else(|| pacer.animation_at(now)))
+}
+
 fn resume_prime_animation_tick(
     pending: &mut bool,
-    frame_interval: Duration,
+    pacer: &FramePacer,
     now: Instant,
-    next_animation_at: &mut Option<Instant>,
-) -> Option<Receiver<Instant>> {
-    std::mem::take(pending)
-        .then(|| animation_tick_receiver(true, frame_interval, now, next_animation_at))
+) -> Option<Instant> {
+    std::mem::take(pending).then(|| pacer.animation_at(now))
 }
 
-fn animation_tick_receiver(
-    animate: bool,
-    frame_interval: Duration,
-    now: Instant,
-    next_animation_at: &mut Option<Instant>,
-) -> Receiver<Instant> {
-    if !animate {
-        *next_animation_at = None;
-        return never();
-    }
-
-    let deadline = next_animation_deadline(*next_animation_at, now, frame_interval);
-    *next_animation_at = Some(deadline);
-    at(deadline)
-}
-
-fn next_animation_deadline(
-    previous_deadline: Option<Instant>,
-    now: Instant,
-    frame_interval: Duration,
-) -> Instant {
-    let Some(previous_deadline) = previous_deadline else {
-        return now + frame_interval;
+fn received_scene(
+    message: RenderMsg,
+    sequence: u64,
+    pixel_format: &str,
+    previous: Option<RenderState>,
+) -> Option<RenderState> {
+    let RenderMsg::Scene {
+        scene,
+        animate,
+        pipeline_submitted_at,
+        pipeline_render_queued_at,
+        ..
+    } = message
+    else {
+        return None;
     };
-    if previous_deadline > now {
-        return previous_deadline;
-    }
-
-    let missed_intervals = now
-        .saturating_duration_since(previous_deadline)
-        .as_nanos()
-        .checked_div(frame_interval.as_nanos())
-        .unwrap_or(0)
-        .saturating_add(1);
-    u32::try_from(missed_intervals)
-        .ok()
-        .and_then(|count| frame_interval.checked_mul(count))
-        .and_then(|advance| previous_deadline.checked_add(advance))
-        .unwrap_or(now + frame_interval)
+    let clear = if matches!(pixel_format, "bw1" | "gray2") {
+        Color::WHITE
+    } else {
+        Color::TRANSPARENT
+    };
+    let mut state = RenderState::new(*scene, clear, sequence, animate);
+    state.pipeline_submitted_at = crate::stats::earliest_pipeline_instant(
+        pipeline_submitted_at,
+        previous.and_then(|state| state.pipeline_submitted_at),
+    );
+    state.pipeline_render_queued_at = pipeline_render_queued_at;
+    Some(state)
 }
 
 fn maybe_send_animation_pulse(tree_tx: &Sender<TreeMsg>, animate: bool, frame_interval: Duration) {
@@ -1390,7 +1383,12 @@ mod tests {
     #[test]
     fn renderer_redraw_wake_does_not_feed_back_into_the_tree_actor() {
         let (tree_tx, tree_rx) = unbounded();
-        let wake = HeadlessBackendWake { tree_tx };
+        let (frame_rate, _control) = FrameRateControl::new(None);
+        let wake = HeadlessBackendWake {
+            tree_tx,
+            frame_rate,
+            stop: Arc::new(AtomicBool::new(false)),
+        };
 
         wake.request_redraw();
         assert!(tree_rx.try_recv().is_err());
@@ -1418,57 +1416,43 @@ mod tests {
     }
 
     #[test]
-    fn target_fps_deadlines_do_not_accumulate_render_time() {
+    fn redraws_preserve_due_animation_ticks_but_static_content_cancels_them() {
         let now = Instant::now();
-        let interval = Duration::from_millis(33);
-        let first = next_animation_deadline(None, now, interval);
-        assert_eq!(first, now + interval);
-
-        let before_deadline =
-            next_animation_deadline(Some(first), now + Duration::from_millis(10), interval);
-        assert_eq!(before_deadline, first);
-
-        let after_missed_deadlines =
-            next_animation_deadline(Some(first), now + Duration::from_millis(100), interval);
-        assert_eq!(after_missed_deadlines, now + Duration::from_millis(132));
+        let (control, _rx) = FrameRateControl::new(None);
+        let mut pacer = FramePacer::new(control);
+        pacer.started(now);
+        let first = next_animation_tick(true, None, &pacer, now);
+        assert_eq!(first, Some(now + Duration::from_millis(16)));
+        let later = now + Duration::from_millis(50);
+        pacer.started(later);
+        assert_eq!(next_animation_tick(true, first, &pacer, later), first);
+        assert_eq!(next_animation_tick(false, first, &pacer, later), None);
     }
 
     #[test]
-    fn disabling_animation_cancels_the_target_fps_deadline() {
-        let mut next_animation_at = Some(Instant::now() + Duration::from_secs(1));
-        let disabled = animation_tick_receiver(
-            false,
-            Duration::from_millis(10),
-            Instant::now(),
-            &mut next_animation_at,
-        );
-
-        assert!(next_animation_at.is_none());
-        assert!(matches!(
-            disabled.recv_timeout(Duration::from_millis(1)),
-            Err(crossbeam_channel::RecvTimeoutError::Timeout)
-        ));
-    }
-
-    #[test]
-    fn prime_release_resumes_pending_animation_at_target_cadence() {
+    fn prime_release_resumes_once_at_the_current_cap_without_replaying_missed_ticks() {
         let now = Instant::now();
-        let interval = Duration::from_millis(30);
+        let (control, _rx) = FrameRateControl::new(Some(10));
+        let mut pacer = FramePacer::new(control.clone());
+        pacer.started(now);
         let mut pending = true;
-        let mut next_animation_at = None;
-
-        let tick = resume_prime_animation_tick(&mut pending, interval, now, &mut next_animation_at)
-            .expect("pending animation should schedule a tick");
-
+        assert_eq!(
+            resume_prime_animation_tick(&mut pending, &pacer, now),
+            Some(now + Duration::from_millis(100))
+        );
         assert!(!pending);
-        assert_eq!(next_animation_at, Some(now + interval));
-        assert!(matches!(
-            tick.recv_timeout(Duration::from_millis(1)),
-            Err(crossbeam_channel::RecvTimeoutError::Timeout)
-        ));
-        assert!(
-            resume_prime_animation_tick(&mut pending, interval, now, &mut next_animation_at,)
-                .is_none()
+        assert!(resume_prime_animation_tick(&mut pending, &pacer, now).is_none());
+        control.set(Some(1)).unwrap();
+        pending = true;
+        assert_eq!(
+            resume_prime_animation_tick(&mut pending, &pacer, now),
+            Some(now + Duration::from_secs(1))
+        );
+        pending = true;
+        let later = now + Duration::from_secs(10);
+        assert_eq!(
+            resume_prime_animation_tick(&mut pending, &pacer, later),
+            Some(later)
         );
     }
 

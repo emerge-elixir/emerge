@@ -3679,6 +3679,16 @@ fn set_input_mask(renderer: ResourceArc<RendererResource>, mask: u32) -> Atom {
     atoms::ok()
 }
 
+/// Update the shared cap and wake its owner without using the scene queue.
+#[rustler::nif(schedule = "DirtyIo")]
+fn set_frame_rate(renderer: ResourceArc<RendererResource>, fps: Option<u32>) -> NifResult<Atom> {
+    renderer
+        .backend_wake
+        .set_frame_rate(fps)
+        .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
+    Ok(atoms::ok())
+}
+
 /// Queue title changes on the window owner thread; never call platform APIs on a BEAM scheduler.
 #[rustler::nif(schedule = "DirtyIo")]
 fn set_window_title(renderer: ResourceArc<RendererResource>, title: String) -> NifResult<Atom> {
