@@ -55,6 +55,7 @@ defmodule Emerge.Mix.Docs do
       "guides/internals/drm-outputs-and-lifecycle.md",
       "guides/internals/macos-backend.md",
       "guides/internals/feature-roadmap.md",
+      "guides/internals/frame-pacing.md",
       "guides/internals/emrg-format.md",
       "guides/internals/gradient-colors.md",
       "guides/internals/events.md",
