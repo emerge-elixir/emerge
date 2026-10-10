@@ -14,7 +14,10 @@ defmodule Emerge.Runtime.Viewport do
   the previous normalized desired config; `config/2` also receives application
   state. The first call receives mount config, before renderer creation. Later
   calls run during coalesced rerenders, even if the tree has not changed.
-  Callback/validation failures retain the previous valid config.
+  Callback/validation failures retain the previous valid config. Operational
+  renderer failures retain the new desired config for the next callback and
+  recovery; the complete live snapshot is retried on the next rerender. Accepted
+  config is not proof of hardware application or presentation completion.
 
       def config(%Emerge.Config{output: %Emerge.Config.Window{} = output} = previous, state) do
         output = %Emerge.Config.Window{output | title: state.title}
@@ -77,14 +80,23 @@ defmodule Emerge.Runtime.Viewport do
     end
   end
 
-  def handle_info({:emerge_viewport, :renderer_ready, owner, generation, renderer, relay}, state) do
-    if runtime!(state).lifecycle == owner do
+  def handle_info(
+        {:emerge_viewport, :renderer_ready, owner, generation, renderer, relay, startup_config},
+        state
+      ) do
+    runtime = runtime!(state)
+
+    # A synchronous acquire can have already adopted the session while its ready
+    # notification was queued. Never overwrite an active session with that message.
+    if runtime.lifecycle == owner and is_nil(runtime.renderer) do
       state =
         update_runtime(
           state,
           &%{
             &1
             | renderer: renderer,
+              renderer_config: startup_config,
+              config_error: nil,
               diff_state: nil,
               renderer_generation: generation,
               retiring_renderer_generation: nil,
@@ -111,6 +123,8 @@ defmodule Emerge.Runtime.Viewport do
          &%{
            &1
            | renderer: nil,
+             renderer_config: nil,
+             config_error: nil,
              diff_state: nil,
              renderer_generation: nil,
              retiring_renderer_generation: generation,
@@ -553,9 +567,10 @@ defmodule Emerge.Runtime.Viewport do
   defp render_frame(state, phase) when is_map(state) do
     case safe_invoke(fn -> reconcile_config(state, phase) end) do
       {:ok, next_state} ->
-        if Emerge.Config.Changes.display_off?(runtime!(next_state).config),
-          do: clear_pending_rerender(next_state),
-          else: render_tree_frame(next_state, phase)
+        if runtime!(next_state).config_error != nil or
+             Emerge.Config.Changes.display_off?(runtime!(next_state).config),
+           do: clear_pending_rerender(next_state),
+           else: render_tree_frame(next_state, phase)
 
       {:error, failure} ->
         log_render_failure(runtime!(state).module, phase, failure)
@@ -575,22 +590,65 @@ defmodule Emerge.Runtime.Viewport do
 
     parsed = Config.parse!(runtime.module, desired)
 
-    if parsed.config == runtime.config do
-      state
-    else
-      if phase != :initial_render,
-        do: Emerge.Config.Changes.validate!(runtime.config, parsed.config)
+    state =
+      if parsed.config == runtime.config do
+        state
+      else
+        if phase != :initial_render do
+          Emerge.Config.Changes.validate!(runtime.config, parsed.config)
 
-      if runtime.renderer do
-        case runtime.renderer_module.configure(runtime.renderer, runtime.config, parsed.config) do
-          :ok -> :ok
-          {:error, reason} -> raise "renderer config failed: #{inspect(reason)}"
+          if runtime.renderer_module == Skia do
+            case EmergeSkia.validate_config_change(runtime.config, parsed.config) do
+              :ok -> :ok
+              {:error, reason} -> raise ArgumentError, "unsupported config: #{inspect(reason)}"
+            end
+          end
         end
+
+        # Recovery and the next callback must see validated desired intent even
+        # when a backend cannot apply it right now.
+        :ok = Lifecycle.configure(runtime.lifecycle, parsed)
+        put_mount_config(state, parsed)
       end
 
-      :ok = Lifecycle.configure(runtime.lifecycle, parsed)
-      put_mount_config(state, parsed)
+    reconcile_renderer_config(state)
+  end
+
+  defp reconcile_renderer_config(state) do
+    runtime = runtime!(state)
+
+    if runtime.renderer &&
+         (runtime.renderer_config != runtime.config or runtime.config_error != nil) do
+      result =
+        safe_invoke(fn ->
+          runtime.renderer_module.configure(
+            runtime.renderer,
+            runtime.renderer_config,
+            runtime.config
+          )
+        end)
+
+      case result do
+        {:ok, :ok} ->
+          update_runtime(state, &%{&1 | renderer_config: &1.config, config_error: nil})
+
+        {:ok, {:error, reason}} ->
+          config_failed(state, reason)
+
+        {:error, failure} ->
+          config_failed(state, failure)
+
+        {:ok, other} ->
+          config_failed(state, {:invalid_config_result, other})
+      end
+    else
+      state
     end
+  end
+
+  defp config_failed(state, reason) do
+    log_render_failure(runtime!(state).module, :config, inspect(reason))
+    update_runtime(state, &%{&1 | config_error: {:error, reason}})
   end
 
   defp config_callback_arity!(module) do
@@ -663,17 +721,35 @@ defmodule Emerge.Runtime.Viewport do
     case safe_invoke(fn ->
            Lifecycle.acquire(runtime.lifecycle)
          end) do
-      {:ok, {:ok, renderer, generation, relay}} ->
+      {:ok, {:ok, renderer, generation, relay, startup_config}} ->
         state =
-          update_runtime(state, &%{&1 | renderer_generation: generation, renderer_relay: relay})
+          state
+          |> update_runtime(
+            &%{
+              &1
+              | renderer: renderer,
+                renderer_config:
+                  if(runtime.renderer_generation == generation,
+                    do: runtime.renderer_config,
+                    else: startup_config
+                  ),
+                renderer_generation: generation,
+                renderer_relay: relay
+            }
+          )
+          |> reconcile_renderer_config()
 
-        case upload_initial_tree(state, renderer, tree) do
-          {:ok, next_state} ->
-            {:ok, next_state}
+        if runtime!(state).config_error do
+          {:ok, state}
+        else
+          case upload_initial_tree(state, renderer, tree) do
+            {:ok, next_state} ->
+              {:ok, next_state}
 
-          {:error, failure} ->
-            _ = safe_stop_renderer(runtime.renderer_module, renderer)
-            {:error, failure}
+            {:error, failure} ->
+              _ = safe_stop_renderer(runtime.renderer_module, renderer)
+              {:error, failure}
+          end
         end
 
       {:ok, {:error, reason}} ->
@@ -830,6 +906,7 @@ defmodule Emerge.Runtime.Viewport do
 
   defp normalize_native_log_level(_level, _source), do: :info
 
+  defp phase_label(:config), do: "config reconciliation"
   defp phase_label(:initial_render), do: "initial render"
   defp phase_label(:rerender), do: "rerender"
   defp phase_label(:renderer_recovery), do: "renderer recovery"

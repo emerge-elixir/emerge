@@ -169,7 +169,21 @@ defmodule EmergeSkia do
   defp supports_frame_cap?(_output), do: false
 
   @doc false
+  @spec configure(renderer(), Emerge.Config.normalized_t(), Emerge.Config.normalized_t()) ::
+          :ok | {:error, term()}
   def configure(renderer, previous, config) do
+    with :ok <- validate_config_change(previous, config),
+         :ok <- configure_frame_rate(renderer, config),
+         :ok <- configure_title(renderer, config.output) do
+      transport = Transport.for_renderer(renderer)
+      transport.set_input_mask(renderer, Emerge.Config.Native.input_mask(config.input))
+    end
+  end
+
+  @doc false
+  @spec validate_config_change(Emerge.Config.normalized_t(), Emerge.Config.normalized_t()) ::
+          :ok | {:error, {:unsupported_live_config, :target_fps | :drm_output}}
+  def validate_config_change(previous, config) do
     Emerge.Config.Changes.validate!(previous, config)
 
     cond do
@@ -181,36 +195,28 @@ defmodule EmergeSkia do
         {:error, {:unsupported_live_config, :drm_output}}
 
       true ->
-        with :ok <-
-               configure_frame_rate(
-                 renderer,
-                 previous.renderer.target_fps,
-                 config.renderer.target_fps
-               ),
-             :ok <- configure_title(renderer, previous.output, config.output) do
-          transport = Transport.for_renderer(renderer)
-          transport.set_input_mask(renderer, Emerge.Config.Native.input_mask(config.input))
-        end
+        :ok
     end
   end
 
-  defp configure_frame_rate(_renderer, fps, fps), do: :ok
-
-  defp configure_frame_rate(renderer, _previous, fps) do
-    renderer |> Transport.Native.native_renderer() |> Native.set_frame_rate(fps)
+  # A failed call may have partially changed the backend. Apply complete live
+  # snapshots so reversals cannot be lost by diffing against the accepted config.
+  defp configure_frame_rate(renderer, config) do
+    if supports_frame_cap?(config.output),
+      do:
+        renderer
+        |> Transport.Native.native_renderer()
+        |> Native.set_frame_rate(config.renderer.target_fps),
+      else: :ok
   end
 
-  defp configure_title(_renderer, output, output), do: :ok
+  defp configure_title(%Renderer{} = renderer, %Emerge.Config.Window{title: title}),
+    do: EmergeSkia.Macos.Host.set_window_title(renderer, title)
 
-  defp configure_title(%Renderer{} = renderer, %Emerge.Config.Window{}, %Emerge.Config.Window{
-         title: title
-       }),
-       do: EmergeSkia.Macos.Host.set_window_title(renderer, title)
-
-  defp configure_title(renderer, %Emerge.Config.Window{}, %Emerge.Config.Window{title: title}),
+  defp configure_title(renderer, %Emerge.Config.Window{title: title}),
     do: Native.set_window_title(renderer, title)
 
-  defp configure_title(_renderer, _old, _new), do: :ok
+  defp configure_title(_renderer, _output), do: :ok
 
   @doc """
   Stop the renderer and close its window or output session.

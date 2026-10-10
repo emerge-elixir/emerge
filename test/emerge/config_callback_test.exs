@@ -84,7 +84,11 @@ defmodule Emerge.ConfigCallbackTest do
       output = %Config.Headless{target: observer, size: {8, 8}}
 
       {:ok, %{observer: observer, events: [], fps: nil},
-       %Config{output: output, renderer: [api: :raster]}}
+       %Config{
+         output: output,
+         renderer: [api: :raster],
+         runtime: [health_check_interval_ms: 60_000]
+       }}
     end
 
     def config(
@@ -138,6 +142,8 @@ defmodule Emerge.ConfigCallbackTest do
     renderer = Emerge.renderer(pid)
     assert_receive {:native_previous, _}
     assert_receive :native_rendered
+    lifecycle = :sys.get_state(pid).__emerge__.lifecycle
+    check_tag = :sys.get_state(lifecycle).check_tag
     send(pid, {:events, [:key]})
     assert_receive {:native_previous, _}
     assert_receive :native_rendered
@@ -150,6 +156,7 @@ defmodule Emerge.ConfigCallbackTest do
     assert_receive :native_rendered
     assert Emerge.renderer(pid) == renderer
     assert :sys.get_state(runtime.lifecycle).config.config.renderer.target_fps == 30
+    assert :sys.get_state(lifecycle).check_tag == check_tag
     assert :ok = EmergeSkia.stop(renderer)
     Emerge.Runtime.Viewport.Lifecycle.check(runtime.lifecycle)
     assert_receive {:native_previous, previous}, 3_000

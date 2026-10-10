@@ -42,6 +42,34 @@ defmodule EmergeSkia.FrameRateTest do
     assert {:error, "renderer is stopping"} = EmergeSkia.Native.set_frame_rate(renderer, 30)
   end
 
+  test "equal config snapshots repair partial backend changes instead of skipping replay" do
+    config =
+      Normalize.config!(%Config{
+        output: %Config.Headless{
+          target: self(),
+          size: {2, 2},
+          frame_message: "rate_frame",
+          frames: %Config.BinaryFrames{pixel_format: :rgb888}
+        },
+        renderer: [api: :raster],
+        assets: [otp_app: :emerge]
+      })
+
+    {:ok, renderer} = EmergeSkia.start(config)
+    on_exit(fn -> EmergeSkia.stop(renderer) end)
+
+    # Model a setter that succeeded before a later part of configure failed.
+    assert :ok = EmergeSkia.Native.set_frame_rate(renderer, 1)
+    upload_color(renderer, {255, 0, 0})
+    await_color(<<255, 0, 0>>, 5_000)
+    upload_color(renderer, {0, 255, 0})
+    refute_receive {"rate_frame", _}, 100
+
+    assert :ok = EmergeSkia.configure(renderer, config, config)
+    await_color(<<0, 255, 0>>, 750)
+    refute_receive {"rate_frame", _}, 60
+  end
+
   test "frame caps validate positive 32-bit values at both boundaries" do
     for fps <- [0, -1, 1.5, 4_294_967_296] do
       assert_raise ArgumentError, ~r/config.renderer.target_fps/, fn ->

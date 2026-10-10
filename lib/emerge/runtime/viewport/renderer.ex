@@ -4,6 +4,14 @@ defmodule Emerge.Runtime.Viewport.Renderer do
   @type heartbeat_message :: {:emerge_viewport_renderer, :heartbeat}
 
   @callback start(Emerge.Config.normalized_t(), keyword()) :: {:ok, term()} | {:error, term()}
+  @doc """
+  Reconcile the complete desired live configuration without replacing the renderer.
+
+  The second argument is the last successfully submitted snapshot, not proof of
+  hardware application. A failed call may have partially changed the backend;
+  retries must apply the complete desired live snapshot, even when both config
+  arguments compare equal. `:ok` means accepted, not presentation completion.
+  """
   @callback configure(term(), Emerge.Config.normalized_t(), Emerge.Config.normalized_t()) ::
               :ok | {:error, term()}
   @callback stop(term()) :: :ok
