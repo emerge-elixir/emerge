@@ -52,7 +52,7 @@ required-features = ["bench-diagnostics"]
 [features]
 default = ["wayland"]
 bench-diagnostics = []
-# Nerves raster-only builds provide fonts as registered assets and do not ship
+# Embedded builds provide fonts as registered assets and do not ship
 # desktop fontconfig/freetype development libraries.
 embedded-freetype = ["skia-safe/embed-freetype"]
 # Minimal headless raster profile, including ARM/Nerves and macOS artifacts.
@@ -106,8 +106,9 @@ wayland = ["wayland-core", "headless-opengl"]
 # Vulkan-only Wayland build. Use wayland-all when runtime OpenGL fallback is required.
 wayland-vulkan = ["wayland-core", "vulkan", "dep:ash-window"]
 wayland-all = ["wayland", "wayland-vulkan"]
+# Every DRM build embeds FreeType, including source builds and mixed presenters.
 # CPU KMS presentation must not pull in GBM, EGL, or any GPU driver.
-drm-core = ["dep:drm", "dep:evdev"]
+drm-core = ["dep:drm", "dep:evdev", "embedded-freetype"]
 drm-raster = ["drm-core"]
 # Compatibility feature: DRM continues to mean the existing OpenGL backend.
 drm = ["drm-core", "headless-opengl"]
