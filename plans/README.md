@@ -26,6 +26,10 @@ archive subdirectory or a permanently active plan.
   constrained-device gradient performance and the outstanding screenshot-cache
   benchmark issue.
 
+- [Declarative viewport settings](active-declarative-viewport-settings.md):
+  breaking 0.5.0 typed config/input APIs, lifecycle replay, and remaining native
+  controls. Schema/migration reference: [viewport settings](viewport-settings-schema.md).
+
 ## Research and roadmaps
 
 - [Screenshot cache investigation](screenshot-cache-benchmark-investigation.md):
