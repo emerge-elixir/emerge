@@ -129,6 +129,7 @@ mod app {
     const ELEMENT_EVENT_FOCUS: u8 = 16;
     const ELEMENT_EVENT_BLUR: u8 = 17;
     const ELEMENT_EVENT_CHANGE: u8 = 18;
+    const ELEMENT_EVENT_SCROLL: u8 = 19;
 
     const LOG_LEVEL_DEBUG: u8 = 0;
     const LOG_LEVEL_INFO: u8 = 1;
@@ -2898,6 +2899,7 @@ mod app {
         let payload = match payload {
             Some(ElixirEventPayload::String(value)) => value.clone(),
             Some(ElixirEventPayload::Float(value)) => value.to_string(),
+            Some(ElixirEventPayload::Scroll(value)) => format!("{:?},{:?}", value.x, value.y),
             None => String::new(),
         };
         let payload = payload.as_bytes();
@@ -3065,6 +3067,7 @@ mod app {
             ElementEventKind::Focus => ELEMENT_EVENT_FOCUS,
             ElementEventKind::Blur => ELEMENT_EVENT_BLUR,
             ElementEventKind::Change => ELEMENT_EVENT_CHANGE,
+            ElementEventKind::Scroll => ELEMENT_EVENT_SCROLL,
         }
     }
 

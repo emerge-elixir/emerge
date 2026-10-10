@@ -329,6 +329,9 @@ pub struct Attrs {
     pub on_swipe_left: Option<bool>,
     pub on_swipe_right: Option<bool>,
     pub on_change: Option<bool>,
+    pub on_scroll: Option<bool>,
+    pub scroll_position_x: Option<crate::events::scroll::ScrollPosition>,
+    pub scroll_position_y: Option<crate::events::scroll::ScrollPosition>,
     pub on_focus: Option<bool>,
     pub on_blur: Option<bool>,
     pub focus_on_mount: Option<bool>,
@@ -492,6 +495,9 @@ const TAG_SLIDER_MIN: u8 = 80;
 const TAG_SLIDER_MAX: u8 = 81;
 const TAG_SLIDER_VALUE: u8 = 82;
 const TAG_SLIDER_STEP: u8 = 83;
+const TAG_SCROLL_POSITION_X: u8 = 85;
+const TAG_SCROLL_POSITION_Y: u8 = 86;
+const TAG_ON_SCROLL: u8 = 87;
 const TAG_ANIMATE_CHANGE: u8 = 84;
 
 // =============================================================================
@@ -599,6 +605,9 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
         TAG_SLIDER_MAX => attrs.slider_max = Some(cursor.read_f64()?),
         TAG_SLIDER_VALUE => attrs.slider_value = Some(cursor.read_f64()?),
         TAG_SLIDER_STEP => attrs.slider_step = Some(cursor.read_f64()?),
+        TAG_SCROLL_POSITION_X => attrs.scroll_position_x = Some(decode_scroll_position(cursor)?),
+        TAG_SCROLL_POSITION_Y => attrs.scroll_position_y = Some(decode_scroll_position(cursor)?),
+        TAG_ON_SCROLL => attrs.on_scroll = Some(cursor.read_bool()?),
         TAG_PADDING => attrs.padding = Some(decode_padding(cursor)?),
         TAG_SPACING => attrs.spacing = Some(cursor.read_f64()?),
         TAG_ALIGN_X => attrs.align_x = Some(decode_align_x(cursor)?),
@@ -786,6 +795,46 @@ fn decode_change_policies(
         ));
     }
     Ok(policies)
+}
+
+fn decode_scroll_position(
+    cursor: &mut AttrCursor,
+) -> Result<crate::events::scroll::ScrollPosition, DecodeError> {
+    use crate::events::scroll::ScrollPosition;
+    match cursor.read_u8()? {
+        0 => {
+            let n = cursor.read_f64()?;
+            if !n.is_finite() || !(0.0..=1.0).contains(&n) {
+                return Err(DecodeError::InvalidStructure(
+                    "scroll fraction must be in [0, 1]".into(),
+                ));
+            }
+            Ok(ScrollPosition::Fraction(
+                (if n == 0.0 { 0.0 } else { n }).to_bits(),
+            ))
+        }
+        1 => {
+            let declaration = u64::from_be_bytes(
+                cursor
+                    .read_bytes(8)?
+                    .try_into()
+                    .map_err(|_| DecodeError::InvalidStructure("scroll target".into()))?,
+            );
+            let node = u64::from_be_bytes(
+                cursor
+                    .read_bytes(8)?
+                    .try_into()
+                    .map_err(|_| DecodeError::InvalidStructure("scroll target".into()))?,
+            );
+            Ok(ScrollPosition::Target {
+                declaration,
+                node: crate::tree::element::NodeId(node),
+            })
+        }
+        _ => Err(DecodeError::InvalidStructure(
+            "unknown scroll position variant".into(),
+        )),
+    }
 }
 
 fn decode_animation_spec(cursor: &mut AttrCursor) -> Result<AnimationSpec, DecodeError> {

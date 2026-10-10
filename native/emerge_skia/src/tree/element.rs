@@ -601,6 +601,9 @@ pub struct TextInputContentProposal {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct NodeRuntime {
+    pub scroll_proposals: [crate::events::scroll::ScrollProposal; 2],
+    /// Last event-owned fractions; legacy pixel attrs remain separate.
+    pub scroll_position: Option<[u64; 2]>,
     /// Runtime-only origin label for current text-input content.
     pub text_input_content_origin: TextInputContentOrigin,
 
@@ -821,6 +824,24 @@ impl Element {
                 declared: attrs.clone(),
             },
             runtime: NodeRuntime {
+                scroll_proposals: [attrs.scroll_position_x, attrs.scroll_position_y].map(|value| {
+                    crate::events::scroll::ScrollProposal {
+                        id: u64::from(value.is_some()),
+                        value,
+                    }
+                }),
+                scroll_position: if attrs.scroll_position_x.is_some()
+                    || attrs.scroll_position_y.is_some()
+                {
+                    Some([attrs.scroll_position_x, attrs.scroll_position_y].map(
+                        |value| match value {
+                            Some(crate::events::scroll::ScrollPosition::Fraction(bits)) => bits,
+                            _ => 0f64.to_bits(),
+                        },
+                    ))
+                } else {
+                    None
+                },
                 text_input_content_origin: TextInputContentOrigin::TreePatch,
                 content_proposal: kind
                     .is_text_input_family()
@@ -1056,6 +1077,12 @@ impl Element {
         }
         if let Some(scroll_y) = attrs.scroll_y {
             self.layout.scroll_y = scroll_y as f32;
+        }
+        if let Some(position) = self.runtime.scroll_position {
+            self.layout.scroll_x =
+                (f64::from_bits(position[0]) * self.layout.scroll_x_max as f64) as f32;
+            self.layout.scroll_y =
+                (f64::from_bits(position[1]) * self.layout.scroll_y_max as f64) as f32;
         }
 
         if !supports_mouse_over_tracking(attrs) {
@@ -3861,6 +3888,29 @@ impl ElementTree {
         invalidation
     }
 
+    pub fn set_scroll_position(&mut self, id: &NodeId, position: [f64; 2]) -> TreeInvalidation {
+        if !position
+            .iter()
+            .all(|v| v.is_finite() && (0.0..=1.0).contains(v))
+        {
+            return TreeInvalidation::None;
+        }
+        let Some(node) = self.get_mut(id) else {
+            return TreeInvalidation::None;
+        };
+        let bits = position.map(f64::to_bits);
+        if node.runtime.scroll_position == Some(bits) {
+            return TreeInvalidation::None;
+        }
+        node.runtime.scroll_position = Some(bits);
+        node.layout.scroll_x = (position[0] * node.layout.scroll_x_max as f64) as f32;
+        node.layout.scroll_y = (position[1] * node.layout.scroll_y_max as f64) as f32;
+        self.scroll_refresh_dirty = true;
+        self.scroll_cache_context_active = true;
+        self.mark_render_and_registry_refresh_dirty(id);
+        TreeInvalidation::Paint
+    }
+
     pub fn set_slider_value(&mut self, id: &NodeId, value: f64) -> TreeInvalidation {
         let deferred = self.animation_authority.deferred();
         if deferred
@@ -4003,6 +4053,9 @@ fn element_affects_registry(element: &Element) -> bool {
         || element.runtime.mouse_down_active
         || element.runtime.focused_active
         || element.runtime.scrollbar_hover_axis.is_some()
+        || element.runtime.scroll_position.is_some()
+        || element.runtime.scroll_proposals.iter().any(|p| p.id > 0)
+        || attrs.on_scroll.unwrap_or(false)
         || attrs.on_click.unwrap_or(false)
         || attrs.on_mouse_down.unwrap_or(false)
         || attrs.on_mouse_up.unwrap_or(false)

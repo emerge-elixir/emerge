@@ -57,6 +57,8 @@ use super::{
     swipe_down_atom, swipe_left_atom, swipe_right_atom, swipe_up_atom, virtual_key_hold_atom,
 };
 
+mod scroll;
+
 pub trait HostEventSink: Send + Sync {
     fn send_raw_input(&self, event: &InputEvent);
     fn send_element_event(
@@ -160,7 +162,9 @@ impl EventRuntimeDriver {
     ) -> R {
         let commands = EventCommands::default();
         let result = operation(&mut self.runtime, &commands, self.log_render);
-        let mut messages = commands.0.into_inner();
+        let mut messages = self
+            .runtime
+            .resolve_scroll_commands(commands.0.into_inner());
         if std::mem::take(&mut self.runtime.listener_lane.needs_barrier) {
             let barrier = crate::actors::ListenerBarrier::default();
             self.awaiting_registry = Some(barrier.clone());
@@ -767,6 +771,7 @@ fn tree_msg_label(msg: &TreeMsg) -> &'static str {
         TreeMsg::UploadTree { .. } => "upload_tree",
         TreeMsg::PatchTree { .. } => "patch_tree",
         TreeMsg::Resize { .. } => "resize",
+        TreeMsg::SetScrollPosition { .. } => "set_scroll_position",
         TreeMsg::ScrollRequest { .. } => "scroll_request",
         TreeMsg::ScrollbarThumbDragX { .. } => "scrollbar_thumb_drag_x",
         TreeMsg::ScrollbarThumbDragY { .. } => "scrollbar_thumb_drag_y",
@@ -1013,6 +1018,7 @@ impl ListenerLaneState {
 /// - text/scrollbar reconciliation state
 /// - freshness/buffering state for listener dispatch
 struct DirectEventRuntime {
+    scroll_sessions: HashMap<NodeId, super::scroll::ScrollSession>,
     base_registry: registry_builder::Registry,
     runtime_overlay: RuntimeOverlayState,
     overlay_registry: registry_builder::Registry,
@@ -1078,6 +1084,7 @@ impl DirectEventRuntime {
             last_focus_on_mount_revision: 0,
             range_generation: RangeGeneration::default(),
             focused_id: None,
+            scroll_sessions: HashMap::new(),
             text_states: HashMap::new(),
             slider_states: HashMap::new(),
             text_commit_suppressions: Vec::new(),
@@ -1722,6 +1729,7 @@ impl DirectEventRuntime {
             listener_barrier: _,
             mount_focus_targets: _,
             base_registry,
+            scrolls,
             text_inputs,
             sliders,
             scrollbars,
@@ -1737,6 +1745,7 @@ impl DirectEventRuntime {
         self.prune_expired_pending_slider_patches();
         let previous_registry = std::mem::replace(&mut self.base_registry, base_registry);
         self.scrollbar_nodes = scrollbars;
+        let scroll_changed = self.reconcile_scrolls(scrolls, tree_tx, log_render);
 
         self.reconcile_runtime_overlay(&previous_registry, &text_inputs, &sliders);
         self.recompose_overlay_registry();
@@ -1758,6 +1767,7 @@ impl DirectEventRuntime {
             tree_tx,
             log_render,
         );
+        changed_tree |= scroll_changed;
         if accepted_tree_patch {
             self.range_generation.invalidate();
         }
@@ -2164,6 +2174,9 @@ impl DirectEventRuntime {
         match event.payload {
             Some(ElixirEventPayload::String(value)) => {
                 send_element_event_with_string_payload(pid, &event.element_id, atom, &value)
+            }
+            Some(ElixirEventPayload::Scroll(value)) => {
+                super::send_element_event_with_scroll_payload(pid, &event.element_id, value)
             }
             Some(ElixirEventPayload::Float(value)) => {
                 send_element_event_with_float_payload(pid, &event.element_id, atom, value)
@@ -2623,6 +2636,7 @@ fn event_kind_to_atom(kind: ElementEventKind) -> rustler::Atom {
         ElementEventKind::Focus => focus_atom(),
         ElementEventKind::Blur => blur_atom(),
         ElementEventKind::Change => change_atom(),
+        ElementEventKind::Scroll => super::scroll_atom(),
     }
 }
 
@@ -3375,6 +3389,7 @@ mod tests {
         focused_id: Option<NodeId>,
     ) -> RegistryRebuildPayload {
         RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::Registry::default(),
@@ -3875,6 +3890,7 @@ mod tests {
         };
         let element = with_interaction(make_element(219, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
@@ -4305,6 +4321,7 @@ mod tests {
         let descriptor = make_text_input_state("hello", 2, None, true);
         let base_registry = registry_builder::Registry::default();
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry,
@@ -4433,6 +4450,7 @@ mod tests {
         let attrs = mouse_down_style_attrs();
         let element = with_interaction(make_element(20, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
@@ -4498,6 +4516,7 @@ mod tests {
         };
         let element = with_interaction(make_element(23, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
@@ -4582,6 +4601,7 @@ mod tests {
         };
         let element = with_interaction(make_element(22, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
@@ -4646,6 +4666,7 @@ mod tests {
         };
         let element = with_interaction(make_element(21, ElementKind::El, attrs.clone()));
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
@@ -4685,6 +4706,7 @@ mod tests {
         active_attrs.focused_active = Some(true);
         let active_element = with_interaction(make_element(21, ElementKind::El, active_attrs));
         let active_rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[active_element]),
@@ -4731,6 +4753,7 @@ mod tests {
         let second = with_interaction(make_element(31, ElementKind::El, second_attrs));
 
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[first, second]),
@@ -4779,6 +4802,7 @@ mod tests {
         };
         let element = with_interaction(make_element(40, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
@@ -4815,6 +4839,7 @@ mod tests {
         };
         let element = with_interaction(make_element(44, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
@@ -4886,6 +4911,7 @@ mod tests {
         };
         let element = with_interaction(make_element(43, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
@@ -4945,6 +4971,7 @@ mod tests {
         };
         let element = with_interaction(make_element(89, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
@@ -5008,6 +5035,7 @@ mod tests {
         };
         let element = with_interaction(make_element(90, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
@@ -5079,6 +5107,7 @@ mod tests {
             },
         );
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
@@ -5345,6 +5374,18 @@ mod tests {
         let mut runtime =
             HostEventRuntime::new(false, SCROLL_LINE_PIXELS, false, noop_host_sink(), None);
         let now = Instant::now();
+        runtime.driver.runtime.scroll_sessions.insert(
+            element_id,
+            crate::events::scroll::ScrollSession::new(crate::events::scroll::ScrollNode {
+                mount: 0,
+                position: [0.2, 0.0],
+                range: [100.0, 0.0],
+                enabled: [true, false],
+                proposals: Default::default(),
+                targets: [None, None],
+                emit: false,
+            }),
+        );
 
         runtime.driver.runtime.scrollbar_nodes.insert(
             scrollbar_key(&element_id, ScrollbarAxis::X),
@@ -5381,15 +5422,14 @@ mod tests {
             .iter()
             .flat_map(TreeMsg::commands)
             .find_map(|msg| match msg {
-                TreeMsg::ScrollRequest {
+                TreeMsg::SetScrollPosition {
                     element_id: id,
-                    dx,
-                    dy,
-                } if *id == element_id && dy.abs() < f32::EPSILON => Some(*dx),
+                    position,
+                } if *id == element_id => Some(position[0]),
                 _ => None,
             })
             .expect("host present timing should emit inertial scroll");
-        assert!(first_dx > 0.0);
+        assert!(first_dx < 0.2);
 
         runtime.handle_present_timing(
             now + Duration::from_millis(20),
@@ -5401,16 +5441,16 @@ mod tests {
             .iter()
             .flat_map(TreeMsg::commands)
             .find_map(|msg| match msg {
-                TreeMsg::ScrollRequest {
+                TreeMsg::SetScrollPosition {
                     element_id: id,
-                    dx,
-                    dy,
-                } if *id == element_id && dy.abs() < f32::EPSILON => Some(*dx),
+                    position,
+                } if *id == element_id => Some(position[0]),
                 _ => None,
             })
             .expect("second host present timing should emit inertial scroll");
         assert!(second_dx > 0.0);
         assert!(second_dx < first_dx);
+        assert!(first_dx - second_dx < 0.2 - first_dx);
     }
 
     #[test]
@@ -5558,6 +5598,7 @@ mod tests {
         let child = with_interaction(make_element(74, ElementKind::El, child_attrs));
 
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[parent, child]),
@@ -5619,6 +5660,7 @@ mod tests {
         let child = with_interaction(make_element(76, ElementKind::El, child_attrs));
 
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[parent, child]),
@@ -5665,6 +5707,7 @@ mod tests {
         };
         let element = with_interaction(make_element(88, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
@@ -5736,6 +5779,7 @@ mod tests {
         let child = with_interaction(make_element(78, ElementKind::El, child_attrs));
 
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[parent, child]),
@@ -5847,6 +5891,7 @@ mod tests {
         };
         let element = with_interaction(make_element(41, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
@@ -5911,6 +5956,7 @@ mod tests {
         let attrs = on_mouse_move_attrs();
         let element = with_interaction(make_element(42, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
@@ -5946,6 +5992,7 @@ mod tests {
         };
         let element = with_interaction(make_element(50, ElementKind::TextInput, attrs));
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
@@ -6039,6 +6086,7 @@ mod tests {
         };
         let element = with_interaction(make_element(158, ElementKind::TextInput, attrs));
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
@@ -6109,6 +6157,7 @@ mod tests {
             .insert(input_id, make_text_input_state("abcd", 3, Some(0), true));
 
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::Registry::default(),
@@ -6285,6 +6334,7 @@ mod tests {
         };
         let element = with_interaction(make_element(150, ElementKind::TextInput, attrs));
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
@@ -6363,6 +6413,7 @@ mod tests {
         let mut state = make_text_input_state("ab", 2, None, true);
         state.multiline = true;
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
@@ -6410,6 +6461,7 @@ mod tests {
         state.multiline = true;
         let element_id = NodeId::from_term_bytes(vec![153]);
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
@@ -6476,6 +6528,7 @@ mod tests {
         let mut state = make_text_input_state("ab", 2, None, true);
         state.multiline = true;
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
@@ -6529,6 +6582,7 @@ mod tests {
         };
         let element = with_interaction(make_element(154, ElementKind::TextInput, attrs));
         let initial_rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(std::slice::from_ref(&element)),
@@ -6539,6 +6593,7 @@ mod tests {
             focus_on_mount: None,
         };
         let reset_patch_rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(std::slice::from_ref(&element)),
@@ -6565,6 +6620,7 @@ mod tests {
         let cleared_element =
             with_interaction(make_element(154, ElementKind::TextInput, cleared_attrs));
         let reset_applied_rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[cleared_element]),
@@ -6654,6 +6710,7 @@ mod tests {
         );
 
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[text_input, soft_key]),
@@ -6752,6 +6809,7 @@ mod tests {
         );
 
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[text_input, soft_key]),
@@ -6840,6 +6898,7 @@ mod tests {
         );
 
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[
@@ -6901,6 +6960,7 @@ mod tests {
         )));
 
         let repeat_rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[text_input, soft_key]),
@@ -6961,6 +7021,7 @@ mod tests {
         };
         let element = with_interaction(make_element(51, ElementKind::TextInput, attrs));
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
@@ -7018,6 +7079,7 @@ mod tests {
         let element = with_interaction(make_element(53, ElementKind::TextInput, attrs));
 
         let rebuild_ab = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(std::slice::from_ref(&element)),
@@ -7029,6 +7091,7 @@ mod tests {
         };
 
         let rebuild_abc = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
@@ -7319,6 +7382,7 @@ mod tests {
     fn slider_tree_patch_matching_pending_value_preserves_runtime_value() {
         let slider_id = NodeId::from_term_bytes(vec![58]);
         let rebuild_echo = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::Registry::default(),
@@ -7369,6 +7433,7 @@ mod tests {
         )));
 
         let corrected = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::Registry::default(),
@@ -7397,6 +7462,7 @@ mod tests {
     fn slider_tree_patch_matching_current_value_does_not_echo_back_to_tree() {
         let slider_id = NodeId::from_term_bytes(vec![60]);
         let rebuild_echo = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::Registry::default(),
@@ -7447,6 +7513,7 @@ mod tests {
     fn slider_tree_patch_non_pending_value_is_accepted() {
         let slider_id = NodeId::from_term_bytes(vec![59]);
         let rebuild_remote = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::Registry::default(),
@@ -7502,6 +7569,7 @@ mod tests {
     fn unfocused_rebuild_preserves_expected_text_echoes() {
         let input_id = NodeId::from_term_bytes(vec![58]);
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::Registry::default(),
@@ -7547,6 +7615,7 @@ mod tests {
         };
         let element = with_interaction(make_element(54, ElementKind::TextInput, attrs));
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
@@ -7599,6 +7668,7 @@ mod tests {
         };
         let element = with_interaction(make_element(52, ElementKind::El, attrs));
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
@@ -7645,6 +7715,7 @@ mod tests {
         };
         let element = with_interaction(make_element(53, ElementKind::El, attrs.clone()));
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
@@ -7682,6 +7753,7 @@ mod tests {
 
         let patched_before_hover_state = with_interaction(make_element(53, ElementKind::El, attrs));
         let patch_rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[patched_before_hover_state]),
@@ -7729,6 +7801,7 @@ mod tests {
         let child = with_interaction(make_element(63, ElementKind::El, child_attrs));
 
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[parent, child]),
@@ -7781,6 +7854,7 @@ mod tests {
         let child = with_interaction(make_element(65, ElementKind::El, child_attrs));
 
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[parent, child]),
@@ -7838,6 +7912,7 @@ mod tests {
         );
 
         let initial_rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[
@@ -7913,6 +7988,7 @@ mod tests {
         );
 
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[parent, child]),
@@ -7961,6 +8037,7 @@ mod tests {
             40.0,
         );
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[initial]),
@@ -7979,6 +8056,7 @@ mod tests {
             40.0,
         );
         let moved_rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[moved]),
@@ -8036,6 +8114,7 @@ mod tests {
         );
 
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[
@@ -8086,6 +8165,7 @@ mod tests {
         );
 
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[text_input]),
@@ -8139,6 +8219,7 @@ mod tests {
         );
 
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[pressable]),
@@ -8185,6 +8266,7 @@ mod tests {
             40.0,
         );
         let initial_rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[initial]),
@@ -8208,6 +8290,7 @@ mod tests {
             40.0,
         );
         let moved_rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[moved]),
@@ -8251,6 +8334,7 @@ mod tests {
             40.0,
         );
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
@@ -8283,6 +8367,7 @@ mod tests {
             40.0,
         );
         let active_rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[active_element]),
@@ -8304,6 +8389,7 @@ mod tests {
             40.0,
         );
         let moved_away_rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[moved_away]),
@@ -8516,6 +8602,7 @@ mod tests {
             40.0,
         );
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[element]),
@@ -8543,6 +8630,7 @@ mod tests {
             40.0,
         );
         let active_rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[active_element]),
@@ -8574,6 +8662,7 @@ mod tests {
             40.0,
         );
         let inactive_rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[inactive_element]),
@@ -8607,6 +8696,7 @@ mod tests {
             40.0,
         );
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[initial]),
@@ -8625,6 +8715,7 @@ mod tests {
             40.0,
         );
         let moved_rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[moved]),
@@ -8667,6 +8758,7 @@ mod tests {
             40.0,
         );
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[initial]),
@@ -8685,6 +8777,7 @@ mod tests {
             40.0,
         );
         let moved_rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[moved]),
@@ -8721,6 +8814,7 @@ mod tests {
             40.0,
         );
         let hovered_rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[hovered]),
@@ -8785,6 +8879,7 @@ mod tests {
         );
 
         let rebuild = RegistryRebuildPayload {
+            scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
             base_registry: registry_builder::registry_for_elements(&[menu, plain, scrollable]),

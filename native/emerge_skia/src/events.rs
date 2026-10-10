@@ -50,6 +50,7 @@ use crate::tree::transform::{Affine2, Point};
 
 pub mod registry_builder;
 mod runtime;
+pub mod scroll;
 pub mod scrollbar;
 #[cfg(test)]
 pub mod test_support;
@@ -83,6 +84,7 @@ pub enum ElementEventKind {
     Focus,
     Blur,
     Change,
+    Scroll,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1150,6 +1152,7 @@ pub struct RegistryRebuildPayload {
     /// revisions whose one-shot request may still be waiting in a channel.
     pub mount_focus_targets: Option<std::sync::Arc<HashMap<NodeId, FocusOnMountTarget>>>,
     pub base_registry: registry_builder::Registry,
+    pub scrolls: HashMap<NodeId, scroll::ScrollNode>,
     pub text_inputs: HashMap<NodeId, TextInputState>,
     pub sliders: HashMap<NodeId, SliderState>,
     pub scrollbars: HashMap<(NodeId, ScrollbarAxis), ScrollbarNode>,
@@ -1377,6 +1380,28 @@ pub(crate) fn send_element_event_with_string_payload(
     });
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, rustler::NifMap)]
+pub struct ScrollPayload {
+    pub x: f64,
+    pub y: f64,
+}
+
+pub(crate) fn send_element_event_with_scroll_payload(
+    pid: LocalPid,
+    id: &NodeId,
+    value: ScrollPayload,
+) {
+    let bytes = id.to_be_bytes();
+    let Some(mut bin) = OwnedBinary::new(bytes.len()) else {
+        return;
+    };
+    bin.as_mut_slice().copy_from_slice(&bytes);
+    let mut env = OwnedEnv::new();
+    let _ = env.send_and_clear(&pid, |env| {
+        (emerge_skia_event(), (bin.release(env), scroll(), value)).encode(env)
+    });
+}
+
 pub(crate) fn send_element_event_with_float_payload(
     pid: LocalPid,
     element_id: &NodeId,
@@ -1453,6 +1478,7 @@ rustler::atoms! {
     key_press,
     virtual_key_hold,
     change,
+    scroll,
     focus,
     blur,
     mouse_down,
@@ -1505,6 +1531,10 @@ pub(crate) fn key_press_atom() -> Atom {
 
 pub(crate) fn virtual_key_hold_atom() -> Atom {
     virtual_key_hold()
+}
+
+pub(crate) fn scroll_atom() -> Atom {
+    scroll()
 }
 
 pub(crate) fn change_atom() -> Atom {
