@@ -270,6 +270,8 @@ impl EventMsg {
 #[derive(Debug)]
 pub enum RenderMsg {
     Scene {
+        /// A successfully decoded application upload precedes this scene.
+        application_frame: bool,
         scene: Box<RenderScene>,
         version: u64,
         pipeline_submitted_at: Option<Instant>,

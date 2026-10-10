@@ -484,6 +484,13 @@ fn run_session(
         "drm_raster",
         "CPU dumb-buffer scanout with software cursor; no GPU driver",
     );
+    // Resource readiness is independent of visibility: return the handle so the
+    // caller can upload its first tree before KMS is activated.
+    if let Some(tx) = startup.take() {
+        tx.send(Ok(DrmBackendStartupInfo::raster()))
+            .map_err(|_| "DRM raster startup receiver closed".to_string())?;
+    }
+    let mut application_frame_ready = false;
     let mut renderer = SceneRenderer::with_cache_config(config.renderer_cache_config);
     let mut state = RenderState::default();
     let mut cursor = context.cursor_state.snapshot();
@@ -502,6 +509,7 @@ fn run_session(
             match message {
                 RenderMsg::Stop => return Ok(()),
                 RenderMsg::Scene {
+                    application_frame,
                     scene,
                     version,
                     animate,
@@ -509,6 +517,7 @@ fn run_session(
                     pipeline_render_queued_at,
                     ..
                 } => {
+                    application_frame_ready = application_frame;
                     state.set_scene(*scene);
                     state.render_version = version;
                     state.animate = animate;
@@ -547,7 +556,7 @@ fn run_session(
             }
             next_hotplug = Instant::now() + HOTPLUG_INTERVAL;
         }
-        if dirty {
+        if dirty && application_frame_ready {
             let started = Instant::now();
             let profile = config.renderer_stats_log && started >= next_profile;
             if profile {
@@ -619,10 +628,6 @@ fn run_session(
             });
             if state.animate {
                 animation_pulse = Some((presented, presented + interval));
-            }
-            if let Some(tx) = startup.take() {
-                tx.send(Ok(DrmBackendStartupInfo::raster()))
-                    .map_err(|_| "DRM raster startup receiver closed")?;
             }
         }
         if let Some((presented_at, predicted_next_present_at)) = animation_pulse {

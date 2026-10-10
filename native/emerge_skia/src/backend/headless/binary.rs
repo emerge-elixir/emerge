@@ -91,6 +91,7 @@ mod tests {
     use super::*;
     fn message(animate: bool) -> RenderMsg {
         RenderMsg::Scene {
+            application_frame: true,
             scene: Box::default(),
             version: 1,
             pipeline_submitted_at: None,
