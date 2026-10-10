@@ -12,6 +12,7 @@ Implemented:
 - Optional `config(previous)` / `config(previous, state)` callbacks; initial evaluation, replacement semantics, config-only updates and lifecycle replay.
 - Desired intent is separate from the last renderer-accepted snapshot. Operational configure errors retain desired config for callbacks/recovery; subsequent rerenders retry complete live snapshots, including reversals after partial failure. Startup snapshots travel with session handshakes so changes made during restart are replayed before upload; delayed ready messages cannot overwrite an adopted session. Native capability/validation failures still reject intent. Queue acceptance is not hardware application. Restart intent updates do not wait behind slow native startup, and ordinary config traffic no longer postpones lifecycle health checks.
 - Opt-in atom-list input subscriptions and typed callback payloads; removed public numeric mask helpers and legacy keyword/positional startup APIs.
+- Native live-control revisions/completions for the currently supported Linux/native controls: one full-snapshot NIF, bounded nonblocking event admission, current-revision checks before owner effects, session/revision-tagged completion, and `EmergeSkia.config_status/1`. Wayland coalesces controls in a one-slot owner mailbox; headless publishes its existing atomic control. Viewports track pending/confirmed tokens, ignore stale replies and retain desired intent on asynchronous failure. See `guides/internals/config-reconciliation.md`; this is not KMS/presentation completion or startup revision tracking.
 - Live window titles on the Wayland event-loop thread and macOS AppKit thread. macOS protocol 17 acknowledges application and rejects stale host/session handles; socket/protocol tests cover errors and host loss.
 - All DRM presenters acknowledge resource readiness before first presentation. Explicit successful-upload readiness survives scene coalescing; resize, capture and cursor wakes cannot activate a placeholder. GL/GPU-upload raster also request a layout-scoped replay barrier on session recreation, rejecting queued stale scenes. Vulkan sleeps instead of spinning before upload. A valid empty tree counts as application content.
 - Headless binary/PRIME startup and live frame caps now gate all render admissions, not just animation pulses. Bounded latest-scene coalescing preserves earliest pending pipeline latency; an independent control lane rebases deadlines without catch-up frames. Static config changes stay idle, and stop/PRIME retirement remain wakeable. Tests cover cap changes, burst coalescing, terminal-frame retry, native output and config-only recovery. PRIME hardware qualification remains pending.
@@ -20,22 +21,26 @@ Implemented:
 
 Still required (not merely unverified):
 
-- Native desired/pending/applied revisions and completion reporting.
+- Startup/DRM power/output config-to-frame revisions and presentation completion reporting; macOS host config revisions. The supported live-control tracker above does not replace these gates.
 - DRM backlight binding/ownership and sysfs control, display-off/on KMS transitions, native off-state work suppression, stale enable protection and safe mode/output reconfiguration.
 - macOS/DRM live frame caps.
 - Remaining guides/demo migration, full input transport contract coverage, release version changes and hardware qualification.
 
 Unsupported explicit native display/backlight requests and macOS/DRM frame caps currently raise rather than silently accepting intent. `backlight.device: :auto` does not yet manage a device. Live DRM output and macOS/DRM frame-cap updates report unsupported. Off-state callback deferral is tested with a custom adapter; it is **not** native display-off support. The package version remains 0.4.2 until the remaining 0.5 release work is complete.
 
-Latest config-reconciliation validation: `mix test --warnings-as-errors` (620 passed, 13 excluded), default `cargo test` (1503 unit tests plus fixture suites), `./ci-tests.sh quality`, `mix docs --warnings-as-errors`, and the live Wayland OpenGL smoke. Earlier slices also passed Wayland-all and DRM-raster-only Rust tests, combined Wayland-all/DRM-all and CPU-only Clippy, and `mix docs --warnings-as-errors`. The opt-in live Wayland test passed on the available compositor for CPU raster, GPU-upload raster and OpenGL. Wayland Vulkan functional frame-cap checks also passed on Hyprland/RADV RX 7900 XTX, but synchronization validation reports acquire-to-layout-transition hazards (4 errors, 0 warnings in the native-validation run). Qualification is blocked pending a fix; details are in `active-linux-gpu-qualification.md`. DRM and headless PRIME hardware tests remain unrun; macOS was not built or qualified.
+Latest native-config validation: `mix test --warnings-as-errors` (627 passed, 13 excluded), default `cargo test` (1509 unit tests plus fixture suites), combined Wayland-all/DRM-all Rust tests (1628 passed, 2 ignored plus fixtures), CPU-only DRM Rust tests (1480 passed, 1 ignored plus fixtures), combined and CPU-only Clippy, `./ci-tests.sh quality`, `mix docs --warnings-as-errors`, and the live Wayland OpenGL smoke with owner acknowledgements. Earlier slices also passed Wayland-all and DRM-raster-only Rust tests, combined Wayland-all/DRM-all and CPU-only Clippy, and `mix docs --warnings-as-errors`. The opt-in live Wayland test passed on the available compositor for CPU raster, GPU-upload raster and OpenGL. Wayland Vulkan functional frame-cap checks also passed on Hyprland/RADV RX 7900 XTX, but synchronization validation reports acquire-to-layout-transition hazards (4 errors, 0 warnings in the native-validation run). Qualification is blocked pending a fix; details are in `active-linux-gpu-qualification.md`. DRM and headless PRIME hardware tests remain unrun; macOS was not built or qualified.
 
 The Vulkan synchronization failure is separately tracked in
 [the deferred fix plan](active-vulkan-acquire-synchronization.md); do not expand
 config implementation into that graphics repair.
 
-Next config slice: native revision/completion reporting, then DRM power/backlight
-controls. The completed desired/accepted snapshot separation above is not a
-substitute for native desired/pending/applied revisions or KMS completion.
+Next config slice: DRM power/backlight controls and config-to-frame/presentation
+revisions. Resolve takeover/clean-stop illumination policy and implement binding,
+exclusive managed-device reservation and fake-filesystem tests before enabling
+hardware effects. Power controls need a wake lane independent of blocked input/tree
+work, not just the bounded event admission used for existing live controls above.
+macOS retains its acknowledged host operations until its revision protocol lands.
+Native stop/status and recovery remain the ownership authority.
 
 The following sections retain the target design; they must not be read as claims that the pending features have shipped.
 
