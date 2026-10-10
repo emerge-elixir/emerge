@@ -101,6 +101,48 @@ defmodule EmergeSkia.DrmHardwareTest do
            end)
   end
 
+  test "resource readiness precedes the first upload and stop works without a frame" do
+    card = System.fetch_env!("EMERGE_DRM_TEST_CARD")
+    {:ok, outputs} = EmergeSkia.drm_outputs(drm_card: card)
+    output = Enum.find(outputs, &(&1.connected and &1.modes != []))
+    assert output
+    mode = Enum.find(output.modes, & &1.preferred) || hd(output.modes)
+
+    renderer_config =
+      case System.get_env("EMERGE_DRM_TEST_API", "opengl") do
+        "opengl" -> [api: :opengl]
+        "vulkan" -> [api: :vulkan, device: card]
+        "raster" -> [api: :raster]
+      end
+
+    config = %Emerge.Config{
+      output: %Emerge.Config.DRM{card: card, connector: output.name, mode: mode},
+      renderer: renderer_config,
+      assets: [otp_app: :emerge],
+      diagnostics: [stats: true],
+      runtime: [startup_retries: 0]
+    }
+
+    for upload? <- [false, true] do
+      {:ok, renderer} = EmergeSkia.start(config)
+
+      try do
+        Process.sleep(100)
+        assert EmergeSkia.running?(renderer)
+        assert frames(renderer) == 0
+
+        if upload? do
+          EmergeSkia.upload_tree(renderer, Emerge.UI.text("first application frame"))
+          assert eventually(fn -> frames(renderer) > 0 end)
+        end
+      after
+        assert :ok = EmergeSkia.stop(renderer, timeout: 5_000)
+      end
+
+      assert {:ok, %{cleanup_complete: true}} = EmergeSkia.renderer_status(renderer)
+    end
+  end
+
   defp frames(nil), do: 0
 
   defp frames(renderer) do

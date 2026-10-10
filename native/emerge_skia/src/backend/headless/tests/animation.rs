@@ -257,6 +257,7 @@ impl Harness {
                     }
                     let RenderMsg::Scene {
                         application_frame,
+                        frame_request,
                         scene,
                         version,
                         animate,
@@ -271,6 +272,7 @@ impl Harness {
                     if let Some(tap) = &self.render_tap {
                         tap.send(RenderMsg::Scene {
                             application_frame,
+                            frame_request,
                             scene: scene.clone(),
                             version,
                             animate,

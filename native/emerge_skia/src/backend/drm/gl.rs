@@ -2349,7 +2349,9 @@ fn prepare_primary_frame(
         newest_video_submitted_at,
     ) = match rendering_api {
         RenderingApi::OpenGl => {
-            let sample_gpu_render = gpu_render_timer.sample_due();
+            // Generation zero uses a blocking initial modeset without a page-flip
+            // sequence to correlate; sample only the subsequent async presents.
+            let sample_gpu_render = generation != 0 && gpu_render_timer.sample_due();
             let mut frame = frame_surface.frame();
             let (
                 video_sync_succeeded,
@@ -2610,6 +2612,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
     let retry_interval = Duration::from_millis(config.retry_interval_ms as u64);
     let mut startup_retries_remaining = config.startup_retries;
     let mut last_dimensions: Option<(u32, u32)> = None;
+    let mut frame_request = 0u64;
     let hotplug_interval = Duration::from_millis(750);
     let mut logged_cursor_info = false;
     let mut logged_mode_info = false;
@@ -3178,84 +3181,95 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
         };
         let mode_blob_id = mode_blob_id(&mode_blob);
 
-        let mut render_state = RenderState::default();
-        {
-            let mut frame = frame_surface.frame();
-            renderer.render(&mut frame, &render_state);
+        // Return resource readiness before waiting for an application upload.
+        // Otherwise the NIF cannot start the tree actor or return its handle.
+        if let Err(err) = video_registry.set_prime_video_available(video_import.is_some()) {
+            native_log.warning(
+                "video",
+                format!("failed to update PRIME video availability: {err}"),
+            );
         }
-
-        if unsafe {
-            egl_state
-                .egl
-                .SwapBuffers(egl_state.display, egl_state.surface)
-        } == egl::FALSE
-        {
-            destroy_session_resources(&card, cursor_plane.take(), mode_blob_id);
-
-            if handle_startup_failure(
-                &mut startup_tx,
-                &running_flag,
-                &stop,
-                &mut startup_retries_remaining,
-                retry_interval,
-                "eglSwapBuffers failed".to_string(),
-            ) {
+        if let Some(tx) = startup_tx.take() {
+            let _ = tx.send(Ok(super::DrmBackendStartupInfo::opengl(
+                video_import.is_some(),
+            )));
+        }
+        frame_request = frame_request.wrapping_add(1);
+        let request = TreeMsg::Batch(vec![
+            TreeMsg::Resize {
+                width: dimensions.0 as f32,
+                height: dimensions.1 as f32,
+                scale: 1.0,
+            },
+            TreeMsg::RequestFrame {
+                request: frame_request,
+            },
+        ]);
+        let first_scene = tree_tx
+            .send(request)
+            .map_err(|_| "DRM tree channel stopped before first frame".to_string())
+            .and_then(|_| super::first_frame::wait_for_frame(&render_rx, &stop, frame_request));
+        let mut render_state = match first_scene {
+            Ok(state) => state,
+            Err(error) => {
+                if !stop.load(Ordering::Acquire) {
+                    native_log.error("drm", error);
+                }
+                destroy_session_resources(&card, cursor_plane.take(), mode_blob_id);
+                running_flag.store(false, Ordering::Release);
                 break;
             }
-
-            continue;
-        }
-
-        let mut bo = match unsafe { gbm_surface.lock_front_buffer() } {
-            Ok(bo) => bo,
-            Err(err) => {
+        };
+        let first_frame = video_registry
+            .set_active_targets(&render_state.video_target_ids)
+            .and_then(|_| {
+                prepare_primary_frame(
+                    0,
+                    config.rendering_api,
+                    &mut renderer,
+                    raster_renderer.as_mut(),
+                    &mut frame_surface,
+                    dimensions,
+                    &render_state,
+                    (0.0, 0.0),
+                    false,
+                    true,
+                    CursorIcon::Default,
+                    &cursor_theme,
+                    &video_registry,
+                    video_import.as_ref(),
+                    &egl_state,
+                    &gbm_surface,
+                    config.force_gpu_finish,
+                    &card,
+                    stats.as_deref(),
+                    false,
+                    config.renderer_cache_config.enabled,
+                    &mut gpu_render_timer,
+                    &native_log,
+                    &mut last_video_sync_error,
+                    &mut logged_video_import,
+                    &latest_frame,
+                )
+            });
+        let first_frame = match first_frame {
+            Ok(frame) => frame,
+            Err(error) => {
+                native_log.error(
+                    "drm",
+                    format!("preparing first application frame failed: {error}"),
+                );
                 destroy_session_resources(&card, cursor_plane.take(), mode_blob_id);
-
-                if handle_startup_failure(
-                    &mut startup_tx,
-                    &running_flag,
-                    &stop,
-                    &mut startup_retries_remaining,
-                    retry_interval,
-                    format!("locking first GBM buffer failed: {err}"),
-                ) {
-                    break;
-                }
-
-                continue;
+                running_flag.store(false, Ordering::Release);
+                break;
             }
         };
-
+        let bo = first_frame.bo;
+        let fb = first_frame.fb;
         native_log.info(
             "drm",
             format!("GBM primary BO: {}", gbm_bo_diagnostics(&bo)),
         );
-        if !matches!(bo.modifier(), GbmModifier::Invalid | GbmModifier::Linear) {
-            native_log.info(
-                "drm",
-                "GBM selected a tiled/compressed modifier; Emerge will require modifier-aware AddFB2 for scanout",
-            );
-        }
-
-        let fb = match framebuffer_for_bo(&card, &mut bo, &native_log) {
-            Ok(fb) => fb,
-            Err(err) => {
-                destroy_session_resources(&card, cursor_plane.take(), mode_blob_id);
-
-                if handle_startup_failure(
-                    &mut startup_tx,
-                    &running_flag,
-                    &stop,
-                    &mut startup_retries_remaining,
-                    retry_interval,
-                    format!("creating framebuffer failed: {err}"),
-                ) {
-                    break;
-                }
-
-                continue;
-            }
-        };
 
         let mut atomic_req = atomic::AtomicModeReq::new();
         if let Err(e) = (|| -> Result<(), String> {
@@ -3290,9 +3304,27 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             continue;
         }
 
-        if let Err(err) = card.atomic_commit(AtomicCommitFlags::ALLOW_MODESET, atomic_req) {
-            drop(bo);
+        if stop.load(Ordering::Acquire) {
             destroy_session_resources(&card, cursor_plane.take(), mode_blob_id);
+            running_flag.store(false, Ordering::Release);
+            break;
+        }
+        if let Err(err) = card.atomic_commit(AtomicCommitFlags::ALLOW_MODESET, atomic_req) {
+            // A failed ioctl does not prove that KMS never took the framebuffer.
+            // Keep every GPU/scanout owner alive until a blocking detach succeeds.
+            cleanup_active_session(
+                &card,
+                connector,
+                crtc_handle,
+                plane,
+                &con_props,
+                &crtc_props,
+                &plane_props,
+                cursor_plane.take(),
+                &lifecycle,
+                mode_blob_id,
+            );
+            drop(bo);
 
             if handle_startup_failure(
                 &mut startup_tx,
@@ -3308,16 +3340,9 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             continue;
         }
 
-        if let Err(err) = video_registry.set_prime_video_available(video_import.is_some()) {
-            native_log.warning(
-                "video",
-                format!("failed to update PRIME video availability: {err}"),
-            );
-        }
-        if let Some(startup_tx) = startup_tx.take() {
-            let _ = startup_tx.send(Ok(super::DrmBackendStartupInfo::opengl(
-                video_import.is_some(),
-            )));
+        if let Some(stats) = stats.as_deref() {
+            stats.record_frame_present();
+            stats.record_drm_scene_presented();
         }
 
         if log_render {

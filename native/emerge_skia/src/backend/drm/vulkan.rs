@@ -1311,6 +1311,15 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
         scale_factor: 1.0,
     }));
 
+    // Readiness must not depend on scanout: the NIF cannot start the tree actor
+    // or return its handle until this acknowledgement arrives.
+    let _ = startup_tx.send(Ok(DrmBackendStartupInfo {
+        prime_video_supported,
+        prime_video_formats,
+        vulkan_device: Some(report),
+    }));
+    let mut application_frame_ready = false;
+    let mut first_present = true;
     let mut render_state = RenderState::default();
     let mut desired_generation = 1_u64;
     let mut committed_generation = 0_u64;
@@ -1323,7 +1332,6 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
         CommitRetryPolicy::new(config.startup_retries, config.retry_interval_ms);
     let mut page_flip_deadline = None;
     let mut initial_commit = true;
-    let mut startup_tx = Some(startup_tx);
     let mut next_hotplug = Instant::now() + HOTPLUG_INTERVAL;
     let mut next_profile = Instant::now();
     let mut last_presented_scene = None;
@@ -1336,6 +1344,7 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
         while let Ok(message) = render_rx.try_recv() {
             match message {
                 RenderMsg::Scene {
+                    application_frame,
                     scene,
                     version,
                     pipeline_submitted_at,
@@ -1344,6 +1353,7 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
                     ..
                 } => {
                     let received_at = Instant::now();
+                    application_frame_ready = application_frame;
                     render_state.set_scene(*scene);
                     if let Err(error) =
                         video_registry.set_active_targets(&render_state.video_target_ids)
@@ -1459,9 +1469,14 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
             break;
         }
 
-        if !session.output_suspended
+        let frame_pending = application_frame_pending(
+            application_frame_ready,
+            session.output_suspended,
+            desired_generation,
+            committed_generation,
+        );
+        if frame_pending
             && session.lifecycle.prepared.is_none()
-            && desired_generation != committed_generation
             && session.lifecycle.rendering.is_none()
         {
             let profile = config.renderer_stats_log && now >= next_profile;
@@ -1624,10 +1639,9 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
             .into_iter()
             .flatten()
             .min();
-        let timeout = if !session.output_suspended
+        let timeout = if frame_pending
             && session.lifecycle.in_flight.is_none()
             && session.lifecycle.prepared.is_none()
-            && desired_generation != committed_generation
         {
             Duration::ZERO
         } else {
@@ -1748,14 +1762,8 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
                                 Err(TrySendError::Disconnected(_)) => stop_requested = true,
                             }
                         }
-                        if startup_tx.is_some() {
-                            if let Some(tx) = startup_tx.take() {
-                                let _ = tx.send(Ok(DrmBackendStartupInfo {
-                                    prime_video_supported,
-                                    prime_video_formats: prime_video_formats.clone(),
-                                    vulkan_device: Some(report.clone()),
-                                }));
-                            }
+                        if first_present {
+                            first_present = false;
                             native_log.info(
                                 "drm_vulkan",
                                 format!(
@@ -1808,9 +1816,6 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
             "drm_vulkan",
             format!("presenter stopped after ownership-safe recovery: {reason}"),
         );
-        if let Some(tx) = startup_tx.take() {
-            let _ = tx.send(Err(format!("DRM Vulkan backend unavailable: {reason}")));
-        }
     }
     let uncertain = terminal.is_some()
         || session.lifecycle.in_flight.is_some()
@@ -1826,9 +1831,6 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
             "drm_vulkan",
             format!("terminal presenter fault; quarantining session until VM restart: {reason}"),
         );
-        if let Some(tx) = startup_tx.take() {
-            let _ = tx.send(Err(format!("DRM Vulkan backend unavailable: {reason}")));
-        }
         lifecycle.quarantine("DRM Vulkan ownership is uncertain; restart the VM/process");
         quarantine_session(session);
     } else {
@@ -1844,6 +1846,12 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
         }
     }
     running_flag.store(false, Ordering::Release);
+}
+
+// Shared by the render decision and idle deadline. Capture, cursor and video
+// generations must neither draw default content nor spin the loop before upload.
+fn application_frame_pending(ready: bool, suspended: bool, desired: u64, committed: u64) -> bool {
+    ready && !suspended && desired != committed
 }
 
 fn resolve_shutdown_page_flip(
@@ -1997,6 +2005,17 @@ mod tests {
     use std::os::fd::{AsRawFd, FromRawFd};
 
     use super::*;
+
+    #[test]
+    fn first_upload_gates_render_and_immediate_poll_despite_incidental_wakes() {
+        for generation in [1, 2, 100, u64::MAX] {
+            assert!(!application_frame_pending(false, false, generation, 0));
+        }
+        assert!(application_frame_pending(true, false, 2, 0));
+        assert!(!application_frame_pending(true, false, 2, 2));
+        assert!(!application_frame_pending(true, true, 3, 2));
+        assert!(application_frame_pending(true, false, 3, 2));
+    }
 
     fn sync_file_fixture() -> OwnedFd {
         let mut fds = [-1; 2];
