@@ -6,6 +6,7 @@ defmodule Emerge.Engine.Reconcile do
   alias Emerge.Engine.Element
   alias Emerge.Engine.EventRegistry
   alias Emerge.Engine.Patch
+  alias Emerge.Engine.ScrollTarget
   alias Emerge.Engine.Tree.Attrs, as: TreeAttrs
   alias Emerge.Engine.VNode
 
@@ -168,7 +169,7 @@ defmodule Emerge.Engine.Reconcile do
 
   defp reconcile_matched_node(%VNode{} = old, %Element{} = element, ctx) do
     key = element_key(element)
-    ctx = ensure_unique_key!(ctx, key)
+    ctx = ctx |> ensure_unique_key!(key) |> collect_scroll_keys(element.attrs)
 
     {child_vnodes, child_elements, child_patches, ctx} =
       reconcile_children(old.children, element.children, old.id, ctx)
@@ -176,7 +177,8 @@ defmodule Emerge.Engine.Reconcile do
     {nearby_vnodes, nearby_elements, nearby_patches, ctx} =
       reconcile_nearby(old.nearby, element.nearby, old.id, ctx)
 
-    new_attrs = element.attrs
+    {new_attrs, ctx} = resolve_scroll_attrs(element.attrs, old.attrs, ctx)
+    ctx = remember_key(ctx, key, old.id)
     events = vnode_events(old, new_attrs)
 
     parent_patches =
@@ -671,7 +673,7 @@ defmodule Emerge.Engine.Reconcile do
 
   defp build_fresh_subtree(%Element{} = element, ctx) do
     key = element_key(element)
-    ctx = ensure_unique_key!(ctx, key)
+    ctx = ctx |> ensure_unique_key!(key) |> collect_scroll_keys(element.attrs)
     _ = children_mode(element.children)
     _ = nearby_mode(element.nearby)
 
@@ -695,6 +697,9 @@ defmodule Emerge.Engine.Reconcile do
         }
       end)
 
+    {attrs, ctx} = resolve_scroll_attrs(element.attrs, %{}, ctx)
+    ctx = remember_key(ctx, key, id)
+    element = %{element | attrs: attrs}
     child_vnodes = Enum.reverse(child_vnodes_rev)
     child_elements = Enum.reverse(child_elements_rev)
     nearby_vnodes = Enum.reverse(nearby_vnodes_rev)
@@ -718,6 +723,46 @@ defmodule Emerge.Engine.Reconcile do
     }
 
     {vnode, assigned, ctx}
+  end
+
+  defp collect_scroll_keys(ctx, attrs) do
+    if Enum.any?([:scroll_position_x, :scroll_position_y], fn axis ->
+         Map.has_key?(attrs, axis) and not is_float(Map.fetch!(attrs, axis))
+       end), do: Map.put(ctx, :collect_scroll_keys?, true), else: ctx
+  end
+
+  defp remember_key(ctx, nil, _id), do: ctx
+
+  defp remember_key(%{collect_scroll_keys?: true} = ctx, key, id),
+    do: Map.update(ctx, :new_key_ids, %{key => id}, &Map.put(&1, key, id))
+
+  defp remember_key(ctx, _key, _id), do: ctx
+
+  defp resolve_scroll_attrs(attrs, old, ctx) do
+    Enum.reduce([:scroll_position_x, :scroll_position_y], {attrs, ctx}, fn axis, {attrs, ctx} ->
+      case Map.fetch(attrs, axis) do
+        :error ->
+          {attrs, ctx}
+
+        {:ok, value} when is_float(value) ->
+          {Map.put(attrs, axis, Emerge.UI.Scroll.validate_position!(value)), ctx}
+
+        {:ok, %ScrollTarget{}} ->
+          {attrs, ctx}
+
+        {:ok, key} ->
+          Emerge.UI.Scroll.validate_position!(key)
+
+          {token, ctx} =
+            case Map.get(old, axis) do
+              %ScrollTarget{key: ^key, declaration: token} -> {token, ctx}
+              _ -> alloc_id(ctx)
+            end
+
+          target = ctx |> Map.get(:new_key_ids, %{}) |> Map.get(key, 0)
+          {Map.put(attrs, axis, %ScrollTarget{key: key, declaration: token, id: target}), ctx}
+      end
+    end)
   end
 
   defp build_old_key_index(%VNode{} = old_root) do

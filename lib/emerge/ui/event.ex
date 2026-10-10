@@ -184,6 +184,7 @@ defmodule Emerge.UI.Event do
   @type mouse_enter_attr :: {:on_mouse_enter, payload()}
   @type mouse_leave_attr :: {:on_mouse_leave, payload()}
   @type mouse_move_attr :: {:on_mouse_move, payload()}
+  @type scroll_attr :: {:on_scroll, payload()}
   @type change_attr :: {:on_change, payload()}
   @type focus_attr :: {:on_focus, payload()}
   @type blur_attr :: {:on_blur, payload()}
@@ -389,6 +390,7 @@ defmodule Emerge.UI.Event do
           | mouse_leave_attr()
           | mouse_move_attr()
           | change_attr()
+          | scroll_attr()
           | focus_attr()
           | blur_attr()
           | key_down_attr()
@@ -630,6 +632,11 @@ defmodule Emerge.UI.Event do
   @spec on_change(payload() | term()) :: change_attr()
   def on_change({pid, _msg} = payload) when is_pid(pid), do: {:on_change, payload}
   def on_change(message), do: on_change({self(), message})
+
+  @doc "Receive event-owned scroll progress as `%{x: float, y: float}` in [0, 1]. App jumps do not emit feedback callbacks."
+  @spec on_scroll(term()) :: scroll_attr()
+  def on_scroll({pid, _msg} = payload) when is_pid(pid), do: {:on_scroll, payload}
+  def on_scroll(message), do: on_scroll({self(), message})
 
   @doc "Register a focus payload for a focusable element."
   @spec on_focus(payload() | term()) :: focus_attr()

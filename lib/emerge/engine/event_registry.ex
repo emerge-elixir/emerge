@@ -67,6 +67,7 @@ defmodule Emerge.Engine.EventRegistry do
     |> register_event(attrs, :on_mouse_leave, :mouse_leave)
     |> register_event(attrs, :on_mouse_move, :mouse_move)
     |> register_event(attrs, :on_change, :change)
+    |> register_event(attrs, :on_scroll, :scroll)
     |> register_event(attrs, :on_focus, :focus)
     |> register_event(attrs, :on_blur, :blur)
     |> register_virtual_key_hold_event(attrs)

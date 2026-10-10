@@ -407,7 +407,7 @@ defmodule Emerge.ViewportTest do
 
     @impl Viewport
     def render(_state) do
-      Input.text([key(:field), Event.on_change(:input_changed)], "")
+      Input.text([key(:field), Event.on_change(:input_changed), Event.on_scroll(:scrolled)], "")
     end
 
     @impl Viewport
@@ -416,6 +416,11 @@ defmodule Emerge.ViewportTest do
     end
 
     @impl Viewport
+    def handle_info({:wrapped, :scrolled, payload, :scroll}, state) do
+      send(state.test_pid, {:wrapped_scroll, payload})
+      {:noreply, state}
+    end
+
     def handle_info({:wrapped, :input_changed, payload, :change}, state) do
       send(state.test_pid, {:wrapped_payload, payload})
       {:noreply, state}
@@ -888,6 +893,9 @@ defmodule Emerge.ViewportTest do
     send(pid, {:emerge_skia_event, {id_bin, :change, "hello"}})
 
     assert_receive {:wrapped_payload, "hello"}
+
+    send(pid, {:emerge_skia_event, {id_bin, :scroll, %{x: 0.25, y: 0.75}}})
+    assert_receive {:wrapped_scroll, %{x: 0.25, y: 0.75}}
 
     GenServer.stop(pid)
   end

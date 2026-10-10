@@ -28,6 +28,30 @@ defmodule Emerge.UI.Scroll do
   Style the container normally with helpers such as `Background.color/1`,
   `Border.rounded/1`, `padding/1`, and `spacing/1`.
 
+  ## Controlled scrolling
+
+  Bind `scroll_y(state.y)` (or `scroll_x(state.x)`) and
+  `Emerge.UI.Event.on_scroll/1` to ordinary controller state. Callbacks carry
+  `%{x: float, y: float}`; store the relevant fraction unchanged. Fractions
+  describe the available scroll range, not total content size. Use float
+  endpoints `0.0` and `1.0`; integers are keys, not fractions.
+
+  `scroll_y(:selected_child)` aligns a keyed descendant's layout-box top with
+  the padded scrollport's top, clamped to the range. Horizontal targets align
+  left edges. Targets cannot cross nearby mounts or another scrollport on the
+  same axis. Paint-only transforms do not affect this layout-box alignment.
+  Missing targets are one-shot no-ops, not promises to jump on a later render.
+
+  Native input owns the live position. Repeated declarations and timely
+  callback echoes cannot rewind newer scrolling. App jumps do not emit
+  callbacks. Resize preserves the live fraction, including across temporary
+  zero overflow; disabling an axis resets its fraction to zero. Removing a
+  position attribute releases control without moving.
+
+  Echo protection lasts five seconds. A reset equal to an outstanding echo
+  is ambiguous; arbitrarily delayed/out-of-order controller results need a
+  separate application-level causal protocol.
+
   ## Examples
 
   A vertical scroll panel:
@@ -61,7 +85,36 @@ defmodule Emerge.UI.Scroll do
   @typedoc "Scroll attribute returned by this module."
   @type scrollbar_y_attr :: {:scrollbar_y, true}
   @type scrollbar_x_attr :: {:scrollbar_x, true}
-  @type t :: scrollbar_y_attr() | scrollbar_x_attr()
+  @type position :: float() | Emerge.UI.key()
+  @type position_attr :: {:scroll_position_x | :scroll_position_y, position()}
+  @type t :: scrollbar_y_attr() | scrollbar_x_attr() | position_attr()
+
+  @doc """
+  Set horizontal scroll progress (`0.0` to `1.0`) or align a keyed descendant's
+  left edge with this scrollport, clamped to its range. Requires `scrollbar_x/0`.
+  A repeated declaration does not override later user scrolling.
+  """
+  @spec scroll_x(position()) :: position_attr()
+  def scroll_x(position), do: {:scroll_position_x, validate_position!(position)}
+
+  @doc """
+  Set vertical scroll progress (`0.0` to `1.0`) or align a keyed descendant's top
+  with this scrollport, clamped to its range. Requires `scrollbar_y/0`.
+  Bind `Emerge.UI.Event.on_scroll/1`'s `%{x: x, y: y}` fractions back through these helpers
+  for controlled scrolling. Geometry changes preserve the live fraction.
+  Key jumps apply once, not as a permanent anchor; missing targets are no-ops.
+  """
+  @spec scroll_y(position()) :: position_attr()
+  def scroll_y(position), do: {:scroll_position_y, validate_position!(position)}
+
+  @doc false
+  def validate_position!(value) when is_float(value) and value >= 0.0 and value <= 1.0,
+    do: if(value == 0.0, do: 0.0, else: value)
+
+  def validate_position!(value) when not is_nil(value) and not is_float(value), do: value
+
+  def validate_position!(_value),
+    do: raise(ArgumentError, "scroll position must be a float in [0.0, 1.0] or a child key")
 
   @doc """
   Enable vertical scrolling when the child content is taller than the container.
