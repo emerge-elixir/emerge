@@ -168,17 +168,67 @@ defmodule EmergeSkia do
 
   defp supports_frame_cap?(_output), do: false
 
+  @typedoc "Session-scoped native live-control submission token."
+  @type config_token :: {non_neg_integer(), pos_integer()}
+
+  @typedoc "Native live-control progress, distinct from rendering or presentation."
+  @type config_control_status :: %{
+          session_id: non_neg_integer(),
+          desired_revision: non_neg_integer(),
+          pending_revision: pos_integer() | nil,
+          applied_revision: pos_integer() | nil,
+          failed_revision: pos_integer() | nil,
+          error: String.t() | nil
+        }
+
   @doc false
   @spec configure(renderer(), Emerge.Config.normalized_t(), Emerge.Config.normalized_t()) ::
-          :ok | {:error, term()}
-  def configure(renderer, previous, config) do
+          :ok | {:ok, config_token()} | {:error, term()}
+  def configure(%Renderer{} = renderer, previous, config) do
     with :ok <- validate_config_change(previous, config),
-         :ok <- configure_frame_rate(renderer, config),
          :ok <- configure_title(renderer, config.output) do
-      transport = Transport.for_renderer(renderer)
-      transport.set_input_mask(renderer, Emerge.Config.Native.input_mask(config.input))
+      Transport.for_renderer(renderer).set_input_mask(
+        renderer,
+        Emerge.Config.Native.input_mask(config.input)
+      )
     end
   end
+
+  def configure(renderer, previous, config) do
+    with :ok <- validate_config_change(previous, config) do
+      title =
+        case config.output do
+          %Emerge.Config.Window{title: title} -> title
+          _ -> nil
+        end
+
+      Native.configure(Transport.Native.native_renderer(renderer), %{
+        title: title,
+        target_fps: config.renderer.target_fps,
+        input_mask: Emerge.Config.Native.input_mask(config.input)
+      })
+    end
+  end
+
+  @doc """
+  Reports native live-control revisions for this renderer session.
+
+  `desired_revision` is the latest accepted submission, `pending_revision` awaits
+  owner application, and `applied_revision` is the last confirmed live-control
+  revision. Failures include `failed_revision` and `error`; a failed update may
+  have partial effects, so the last applied revision is not a rollback guarantee.
+  Revision zero means no live submission (startup settings are not counted). This does not report frame presentation or DRM power/KMS
+  completion. macOS host revision reporting is not implemented.
+
+  Native `configure/3` submissions send `{:emerge_skia_config, {session_id, revision},
+  :ok | {:error, reason}}` to the submitting process. Session shutdown can end
+  delivery; use renderer status/recovery as the terminal ownership authority.
+  """
+  @spec config_status(renderer()) :: {:ok, config_control_status()} | {:error, :unsupported}
+  def config_status(%Renderer{}), do: {:error, :unsupported}
+
+  def config_status(renderer),
+    do: {:ok, renderer |> Transport.Native.native_renderer() |> Native.config_status()}
 
   @doc false
   @spec validate_config_change(Emerge.Config.normalized_t(), Emerge.Config.normalized_t()) ::
@@ -199,22 +249,8 @@ defmodule EmergeSkia do
     end
   end
 
-  # A failed call may have partially changed the backend. Apply complete live
-  # snapshots so reversals cannot be lost by diffing against the accepted config.
-  defp configure_frame_rate(renderer, config) do
-    if supports_frame_cap?(config.output),
-      do:
-        renderer
-        |> Transport.Native.native_renderer()
-        |> Native.set_frame_rate(config.renderer.target_fps),
-      else: :ok
-  end
-
   defp configure_title(%Renderer{} = renderer, %Emerge.Config.Window{title: title}),
     do: EmergeSkia.Macos.Host.set_window_title(renderer, title)
-
-  defp configure_title(renderer, %Emerge.Config.Window{title: title}),
-    do: Native.set_window_title(renderer, title)
 
   defp configure_title(_renderer, _output), do: :ok
 

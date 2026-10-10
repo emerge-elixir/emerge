@@ -97,6 +97,8 @@ defmodule Emerge.Runtime.Viewport do
             | renderer: renderer,
               renderer_config: startup_config,
               config_error: nil,
+              config_pending: nil,
+              config_applied: nil,
               diff_state: nil,
               renderer_generation: generation,
               retiring_renderer_generation: nil,
@@ -125,6 +127,8 @@ defmodule Emerge.Runtime.Viewport do
            | renderer: nil,
              renderer_config: nil,
              config_error: nil,
+             config_pending: nil,
+             config_applied: nil,
              diff_state: nil,
              renderer_generation: nil,
              retiring_renderer_generation: generation,
@@ -141,6 +145,43 @@ defmodule Emerge.Runtime.Viewport do
       do: Logger.warning("renderer restart failed: #{inspect(reason)}")
 
     {:noreply, state}
+  end
+
+  def handle_info({:emerge_skia_config, token, result}, state) do
+    runtime = runtime!(state)
+
+    if runtime.config_pending === token and not is_nil(token) do
+      state = update_runtime(state, &%{&1 | config_pending: nil})
+
+      state =
+        case result do
+          :ok ->
+            update_runtime(state, fn current ->
+              %{
+                current
+                | config_applied: token,
+                  config_error:
+                    if(current.renderer_config == current.config,
+                      do: nil,
+                      else: current.config_error
+                    )
+              }
+            end)
+
+          {:error, reason} when runtime.renderer_config == runtime.config ->
+            config_failed(state, reason)
+
+          other when runtime.renderer_config == runtime.config ->
+            config_failed(state, {:invalid_config_completion, other})
+
+          _ ->
+            state
+        end
+
+      {:noreply, state}
+    else
+      {:noreply, state}
+    end
   end
 
   @impl true
@@ -630,7 +671,17 @@ defmodule Emerge.Runtime.Viewport do
 
       case result do
         {:ok, :ok} ->
-          update_runtime(state, &%{&1 | renderer_config: &1.config, config_error: nil})
+          update_runtime(
+            state,
+            &%{&1 | renderer_config: &1.config, config_error: nil, config_pending: nil}
+          )
+
+        {:ok, {:pending, {session, revision} = token}}
+        when is_integer(session) and session >= 0 and is_integer(revision) and revision > 0 ->
+          update_runtime(
+            state,
+            &%{&1 | renderer_config: &1.config, config_error: nil, config_pending: token}
+          )
 
         {:ok, {:error, reason}} ->
           config_failed(state, reason)
@@ -733,6 +784,10 @@ defmodule Emerge.Runtime.Viewport do
                     do: runtime.renderer_config,
                     else: startup_config
                   ),
+                config_pending:
+                  if(runtime.renderer_generation == generation, do: runtime.config_pending),
+                config_applied:
+                  if(runtime.renderer_generation == generation, do: runtime.config_applied),
                 renderer_generation: generation,
                 renderer_relay: relay
             }

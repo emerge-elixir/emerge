@@ -30,10 +30,12 @@ defmodule EmergeSkia.FrameRateTest do
     %Config{renderer: %Config.Renderer{} = rendering} = config
     rendering = %Config.Renderer{rendering | target_fps: nil}
     uncapped = %Config{config | renderer: rendering}
-    assert :ok = EmergeSkia.configure(renderer, config, uncapped)
+    assert {:ok, token} = EmergeSkia.configure(renderer, config, uncapped)
+    assert_receive {:emerge_skia_config, ^token, :ok}, 5_000
     await_color(<<0, 255, 0>>, 750)
     capped = %Config{uncapped | renderer: %Config.Renderer{rendering | target_fps: 1}}
-    assert :ok = EmergeSkia.configure(renderer, uncapped, capped)
+    assert {:ok, token} = EmergeSkia.configure(renderer, uncapped, capped)
+    assert_receive {:emerge_skia_config, ^token, :ok}, 5_000
     refute_receive {"rate_frame", _}, 60
     upload_color(renderer, {0, 0, 255})
     stop = Task.async(fn -> EmergeSkia.stop(renderer) end)
@@ -65,7 +67,8 @@ defmodule EmergeSkia.FrameRateTest do
     upload_color(renderer, {0, 255, 0})
     refute_receive {"rate_frame", _}, 100
 
-    assert :ok = EmergeSkia.configure(renderer, config, config)
+    assert {:ok, token} = EmergeSkia.configure(renderer, config, config)
+    assert_receive {:emerge_skia_config, ^token, :ok}, 5_000
     await_color(<<0, 255, 0>>, 750)
     refute_receive {"rate_frame", _}, 60
   end
