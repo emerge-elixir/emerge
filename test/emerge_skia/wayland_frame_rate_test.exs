@@ -41,11 +41,13 @@ defmodule EmergeSkia.WaylandFrameRateTest do
     %Config{renderer: %Config.Renderer{} = rendering} = config
     rendering = %Config.Renderer{rendering | target_fps: nil}
     uncapped = %Config{config | renderer: rendering}
-    assert :ok = EmergeSkia.configure(renderer, config, uncapped)
+    assert {:ok, token} = EmergeSkia.configure(renderer, config, uncapped)
+    assert_receive {:emerge_skia_config, ^token, :ok}, 5_000
     await_color(renderer, <<0, 20, 0>>, 750)
     Process.sleep(30)
     before = frame_count(renderer)
-    assert :ok = EmergeSkia.configure(renderer, uncapped, config)
+    assert {:ok, token} = EmergeSkia.configure(renderer, uncapped, config)
+    assert_receive {:emerge_skia_config, ^token, :ok}, 5_000
     Process.sleep(60)
     assert frame_count(renderer) == before
     {:ok, snapshot} = EmergeSkia.stats(renderer)

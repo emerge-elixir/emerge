@@ -211,6 +211,69 @@ defmodule Emerge.ConfigReconciliationTest do
     assert runtime(viewport).renderer_config == desired
   end
 
+  test "only the latest session/revision completion updates config progress", context do
+    %{viewport: viewport, renderer: renderer} = context
+    Agent.update(renderer, &%{&1 | outcome: {:pending, {77, 1}}})
+    change(viewport, %{title: "first"})
+    assert runtime(viewport).config_pending == {77, 1}
+    assert runtime(viewport).config_applied == nil
+
+    Agent.update(renderer, &%{&1 | outcome: {:pending, {77, 2}}})
+    change(viewport, %{title: "latest"})
+    send(viewport, {:emerge_skia_config, {77, 1}, {:error, :stale}})
+    send(viewport, {:emerge_skia_config, {76, 2}, :ok})
+    send(viewport, {:emerge_skia_config, {77.0, 2.0}, :ok})
+    assert runtime(viewport).config_pending == {77, 2}
+    assert runtime(viewport).config_error == nil
+    assert runtime(viewport).config_applied == nil
+
+    capture_log(fn ->
+      send(viewport, {:emerge_skia_config, {77, 2}, {:error, :backend_failure}})
+      assert runtime(viewport).config_error == {:error, :backend_failure}
+    end)
+
+    assert runtime(viewport).config.output.title == "latest"
+    assert runtime(viewport).config_pending == nil
+    Agent.update(renderer, &%{&1 | outcome: {:pending, {77, 3}}})
+    change(viewport, %{})
+    assert runtime(viewport).config_pending == {77, 3}
+    send(viewport, {:emerge_skia_config, {77, 3}, :ok})
+    assert runtime(viewport).config_applied == {77, 3}
+    assert runtime(viewport).config_pending == nil
+    assert runtime(viewport).config_error == nil
+  end
+
+  test "malformed current completions fail rather than silently clearing progress", context do
+    %{viewport: viewport, renderer: renderer} = context
+    Agent.update(renderer, &%{&1 | outcome: {:pending, {99, 1}}})
+    change(viewport, %{title: "desired"})
+
+    capture_log(fn ->
+      send(viewport, {:emerge_skia_config, {99, 1}, :unexpected})
+      assert runtime(viewport).config_error == {:error, {:invalid_config_completion, :unexpected}}
+    end)
+
+    assert runtime(viewport).config_pending == nil
+    assert runtime(viewport).config_applied == nil
+    assert runtime(viewport).config.output.title == "desired"
+  end
+
+  test "an older accepted completion cannot erase a newer submission error", context do
+    %{viewport: viewport, renderer: renderer} = context
+    Agent.update(renderer, &%{&1 | outcome: {:pending, {88, 1}}})
+    change(viewport, %{title: "accepted"})
+    Agent.update(renderer, &%{&1 | outcome: {:error, :queue_full}})
+    capture_log(fn -> change(viewport, %{title: "desired"}) end)
+    assert runtime(viewport).config_error == {:error, :queue_full}
+
+    send(viewport, {:emerge_skia_config, {88, 1}, :ok})
+    assert runtime(viewport).config_applied == {88, 1}
+    assert runtime(viewport).config_pending == nil
+    assert runtime(viewport).config_error == {:error, :queue_full}
+    assert runtime(viewport).config.output.title == "desired"
+    assert runtime(viewport).renderer_config.output.title == "accepted"
+  end
+
   defp change(viewport, changes) do
     send(viewport, {:change, changes})
     assert_receive {:previous, previous}

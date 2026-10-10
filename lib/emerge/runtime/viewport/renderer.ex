@@ -11,9 +11,13 @@ defmodule Emerge.Runtime.Viewport.Renderer do
   hardware application. A failed call may have partially changed the backend;
   retries must apply the complete desired live snapshot, even when both config
   arguments compare equal. `:ok` means accepted, not presentation completion.
+  An asynchronous adapter returns `{:pending, {session_id, revision}}` and sends
+  `{:emerge_skia_config, token, :ok | {:error, reason}}` to the calling viewport.
+  Tokens must be unique across renderer sessions; stale completions are ignored.
+  Completion concerns supported live controls, not frame presentation.
   """
   @callback configure(term(), Emerge.Config.normalized_t(), Emerge.Config.normalized_t()) ::
-              :ok | {:error, term()}
+              :ok | {:pending, {non_neg_integer(), pos_integer()}} | {:error, term()}
   @callback stop(term()) :: :ok
   @callback running?(term()) :: boolean()
   @doc """

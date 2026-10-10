@@ -8,7 +8,12 @@ defmodule Emerge.Runtime.Viewport.Renderer.Skia do
     do: EmergeSkia.start_owned(config, Keyword.get(renderer_opts, :owner))
 
   @impl true
-  def configure(renderer, previous, config), do: EmergeSkia.configure(renderer, previous, config)
+  def configure(renderer, previous, config) do
+    case EmergeSkia.configure(renderer, previous, config) do
+      {:ok, token} -> {:pending, token}
+      result -> result
+    end
+  end
 
   @impl true
   def stop(renderer), do: EmergeSkia.stop(renderer)
