@@ -131,7 +131,7 @@ defmodule EmergeSkia.BuildConfigTest do
            ]
   end
 
-  test "DRM raster uses a source build rather than an incompatible GPU or headless archive" do
+  test "DRM raster selects its own archive rather than a GPU or headless archive" do
     matrix = BuildConfig.normalize_compiled_backend_matrix!(drm: [:raster])
     assert matrix == [drm: [:raster]]
     assert EmergeSkia.BuildConfig.Schema.presenter_backends(matrix) == [:drm]
@@ -142,8 +142,42 @@ defmodule EmergeSkia.BuildConfigTest do
     for target <- [
           "armv7-unknown-linux-gnueabihf",
           "aarch64-unknown-linux-gnu",
-          "x86_64-unknown-linux-gnu"
-        ] do
+          "x86_64-unknown-linux-gnu",
+          "x86_64-unknown-linux-musl",
+          "riscv64gc-unknown-linux-gnu"
+        ],
+        env <- [%{}, %{"MIX_TARGET" => "nerves"}] do
+      assert {:ok,
+              %{variant: :drm_raster, backends: [:drm], opengl_backends: [], vulkan_backends: []}} =
+               BuildConfig.precompiled_profile(env, [:drm], [], [], target)
+
+      variants = BuildConfig.precompiled_variants(env, [:drm], [], [])[target]
+
+      assert Enum.filter(variants, fn {_name, matches?} -> matches?.(%{}) end)
+             |> Keyword.keys() == [:drm_raster]
+
+      refute BuildConfig.force_precompiled_build?(
+               env: env,
+               checksum_path: __ENV__.file,
+               compiled_backends: [:drm],
+               compiled_vulkan_backends: [],
+               compiled_opengl_backends: [],
+               target_resolver: fn _, _ -> {:ok, "nif-2.15-#{target}"} end
+             )
+
+      for {backends, vulkan, opengl} <- [
+            {[], [], []},
+            {[:drm], [], [:drm]},
+            {[:drm], [:drm], []},
+            {[:drm], [:drm], [:drm]}
+          ] do
+        refute BuildConfig.precompiled_variants(env, backends, vulkan, opengl)[target][
+                 :drm_raster
+               ].(%{})
+      end
+    end
+
+    for target <- ["aarch64-apple-darwin", "arm-unknown-linux-gnueabihf"] do
       assert {:error, :unsupported_profile} =
                BuildConfig.precompiled_profile(%{}, [:drm], [], [], target)
     end

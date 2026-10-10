@@ -431,6 +431,7 @@ defmodule EmergeSkia.BuildConfig do
       "x86_64-unknown-linux-gnu" =>
         variants_for.("x86_64-unknown-linux-gnu", [
           :drm,
+          :drm_raster,
           :drm_wayland,
           :raster,
           :vulkan,
@@ -442,6 +443,7 @@ defmodule EmergeSkia.BuildConfig do
       "aarch64-unknown-linux-gnu" =>
         variants_for.("aarch64-unknown-linux-gnu", [
           :drm,
+          :drm_raster,
           :drm_wayland,
           :raster,
           :vulkan,
@@ -453,7 +455,7 @@ defmodule EmergeSkia.BuildConfig do
     }
     |> Map.merge(
       Map.new(@linux_embedded_precompiled_targets, fn target ->
-        {target, variants_for.(target, [:opengl])}
+        {target, variants_for.(target, [:opengl, :drm_raster])}
       end)
     )
   end
@@ -494,6 +496,11 @@ defmodule EmergeSkia.BuildConfig do
 
     variant =
       cond do
+        target in (@linux_64_precompiled_targets ++ @linux_embedded_precompiled_targets) and
+          compiled_backends == [:drm] and compiled_vulkan_backends == [] and
+            compiled_opengl_backends == [] ->
+          {:ok, :drm_raster}
+
         target in @macos_host_targets and compiled_backends == [] and
           compiled_vulkan_backends == [] and compiled_opengl_backends == [] ->
           {:ok, nil}
