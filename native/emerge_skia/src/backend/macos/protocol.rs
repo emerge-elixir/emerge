@@ -1,5 +1,19 @@
 pub const PROTOCOL_NAME: &str = "emerge_skia_macos";
-pub const PROTOCOL_VERSION: u16 = 16;
+pub const PROTOCOL_VERSION: u16 = 17;
+pub const REQUEST_SET_WINDOW_TITLE: u16 = 0x001D;
+
+pub fn decode_window_title(payload: &[u8]) -> Result<String, String> {
+    let Some(prefix) = payload.get(..4) else {
+        return Err("invalid window title length".into());
+    };
+    let length = u32::from_be_bytes([prefix[0], prefix[1], prefix[2], prefix[3]]) as usize;
+    if payload.len() - 4 != length {
+        return Err("invalid window title payload size".into());
+    }
+    std::str::from_utf8(&payload[4..])
+        .map(str::to_owned)
+        .map_err(|_| "invalid window title UTF-8".into())
+}
 
 pub const FRAME_INIT: u8 = 1;
 pub const FRAME_INIT_OK: u8 = 2;
@@ -103,6 +117,24 @@ pub mod fixtures {
 #[cfg(test)]
 mod tests {
     use super::{fixtures, *};
+
+    #[test]
+    fn window_title_payload_is_exact_utf8_with_a_byte_length() {
+        assert_eq!(
+            decode_window_title(b"\x00\x00\x00\x0aHello \xf0\x9f\x8c\x8d").unwrap(),
+            "Hello 🌍"
+        );
+        assert_eq!(decode_window_title(&[0, 0, 0, 0]).unwrap(), "");
+        for invalid in [
+            &b""[..],
+            &b"\x00\x00\x00"[..],
+            &b"\x00\x00\x00\x01"[..],
+            &b"\x00\x00\x00\x00x"[..],
+            &b"\x00\x00\x00\x01\xff"[..],
+        ] {
+            assert!(decode_window_title(invalid).is_err());
+        }
+    }
 
     #[test]
     fn frame_fixture_roundtrips() {

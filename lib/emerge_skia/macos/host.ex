@@ -32,6 +32,7 @@ defmodule EmergeSkia.Macos.Host do
   @request_render_tree_to_pixels 0x001A
   @request_render_tree_to_png 0x001B
   @request_submit_video 0x001C
+  @request_set_window_title 0x001D
 
   @notify_resized 0x0100
   @notify_focused 0x0101
@@ -123,6 +124,24 @@ defmodule EmergeSkia.Macos.Host do
       :ok -> GenServer.call(@name, {:set_input_mask, renderer.session_id, mask}, 5_000)
       {:error, _reason} -> :ok
     end
+  end
+
+  @spec set_window_title(Renderer.t(), String.t()) :: :ok | {:error, term()}
+  def set_window_title(%Renderer{} = renderer, title) when is_binary(title) do
+    # Do not launch a new host for a property change on an old renderer.
+    case GenServer.whereis(@name) do
+      nil ->
+        {:error, :host_not_running}
+
+      pid ->
+        GenServer.call(
+          pid,
+          {:set_window_title, renderer.host_id, renderer.session_id, title},
+          5_000
+        )
+    end
+  catch
+    :exit, reason -> {:error, {:host_unavailable, reason}}
   end
 
   @spec upload_tree(Renderer.t(), binary()) :: :ok | {:error, term()}
@@ -364,6 +383,30 @@ defmodule EmergeSkia.Macos.Host do
          ) do
       {:ok, state} -> {:reply, :ok, state}
       {:error, _reason} -> {:reply, :ok, state}
+    end
+  end
+
+  def handle_call({:set_window_title, host_id, session_id, title}, from, state) do
+    cond do
+      host_id != state.host_id or
+          not match?(%{running: true}, Map.get(state.sessions, session_id)) ->
+        {:reply, {:error, :stale_renderer}, state}
+
+      not is_port(state.socket) ->
+        {:reply, {:error, :host_not_connected}, state}
+
+      true ->
+        case queue_request(
+               state,
+               from,
+               {:set_window_title, session_id},
+               session_id,
+               @request_set_window_title,
+               Protocol.encode_window_title(title)
+             ) do
+          {:ok, state} -> {:noreply, state}
+          {:error, reason} -> {:reply, {:error, reason}, state}
+        end
     end
   end
 
@@ -755,6 +798,23 @@ defmodule EmergeSkia.Macos.Host do
     state
   end
 
+  defp handle_reply_request(
+         {:set_window_title, expected_session},
+         from,
+         session_id,
+         tag,
+         payload,
+         state
+       ) do
+    reply =
+      if session_id == expected_session and tag == @request_set_window_title and payload == <<>>,
+        do: :ok,
+        else: {:error, "invalid window title acknowledgement"}
+
+    GenServer.reply(from, reply)
+    state
+  end
+
   defp handle_reply_request({:measure_text}, from, 0, @request_measure_text, payload, state) do
     case Protocol.decode_measure_text_reply(payload) do
       {:ok, metrics} -> GenServer.reply(from, {:ok, metrics})
@@ -1031,6 +1091,9 @@ defmodule EmergeSkia.Macos.Host do
   end
 
   defp handle_notify_frame(_frame, state), do: state
+
+  defp reply_pending_error({:set_window_title, _session_id}, from, message),
+    do: GenServer.reply(from, {:error, message})
 
   defp reply_pending_error({:submit_video, _session_id}, from, message),
     do: GenServer.reply(from, {:error, message})

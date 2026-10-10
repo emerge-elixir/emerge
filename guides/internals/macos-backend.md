@@ -9,7 +9,7 @@ AppKit NIF backend.
 
 The public Elixir API stays:
 
-- `EmergeSkia.start(backend: :macos, ...)`
+- `EmergeSkia.start(%Emerge.Config{output: %Emerge.Config.Window{backend: :macos}, assets: [otp_app: :my_app]})`
 - `EmergeSkia.stop/1`
 - `EmergeSkia.running?/1`
 - `EmergeSkia.upload_tree/2`
@@ -40,7 +40,7 @@ AppKit lifecycle correctly.
 ### Elixir side
 
 - `lib/emerge_skia.ex`
-  routes `backend: :macos` through the macOS host path
+  routes `Config.Window.backend: :macos` through the macOS host path
 - `lib/emerge_skia/macos/host.ex`
   owns host discovery, startup, protocol I/O, and session lifecycle
 - `lib/emerge_skia/macos/renderer.ex`
@@ -66,12 +66,41 @@ AppKit lifecycle correctly.
 
 macOS uses the shared renderer selection option:
 
-- `rendering_api: :auto`
-- `rendering_api: :metal`
-- `rendering_api: :raster`
+- `renderer: [api: :auto]`
+- `renderer: [api: :metal]`
+- `renderer: [api: :raster]`
 
 `:auto` prefers Metal and falls back to raster when Metal is unavailable.
-The old `macos_backend` option has been removed; use `rendering_api` instead.
+Legacy keyword renderer configuration has been replaced by `Emerge.Config`.
+
+## Live Window Titles
+
+Return an updated `Config.Window.title` from the viewport's `config` callback:
+
+```elixir
+alias Emerge.Config
+
+def config(%Config{output: %Config.Window{} = output} = previous, state) do
+  output = %Config.Window{output | title: state.title}
+  %Config{previous | output: output}
+end
+```
+
+Protocol version 17 adds request `0x001D`: a 32-bit big-endian UTF-8 byte length
+followed by the title. Empty titles are valid. The socket reader validates the
+payload and queues a command for the AppKit owner thread; only that thread calls
+`NSWindow.setTitle`. The reply follows application, not merely enqueueing. No
+renderer restart or canvas redraw is required.
+
+Elixir checks both host identity and the live session before dispatch, so an old
+renderer handle cannot rename a replacement host's window with a reused session
+ID. Native errors, malformed acknowledgements and host loss are returned to the
+config reconciliation path. Older hosts fail the version handshake explicitly.
+
+Protocol and socket-level tests run on Linux; AppKit compilation and visual
+validation still require macOS. For a manual smoke test, update only a title via
+`config`, confirm the window changes without renderer replacement, and close/reopen
+one of two windows while ensuring the other title is unchanged.
 
 ## Assets And Fonts
 

@@ -29,7 +29,7 @@ defmodule Emerge.Config do
   ## Implementation status
 
   This is the in-progress 0.5 contract. Native live updates currently support
-  input subscriptions and Wayland titles. Other fields are startup-only unless
+  input subscriptions and Wayland/macOS titles. Other fields are startup-only unless
   explicitly supported by an adapter. DRM display/backlight controls and live
   frame-rate/output changes remain unfinished: explicit unsupported controls
   report errors, not successful hardware application. Backlight `:auto` does
