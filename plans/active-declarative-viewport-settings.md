@@ -13,18 +13,19 @@ Implemented:
 - Opt-in atom-list input subscriptions and typed callback payloads; removed public numeric mask helpers and legacy keyword/positional startup APIs.
 - Live window titles on the Wayland event-loop thread and macOS AppKit thread. macOS protocol 17 acknowledges application and rejects stale host/session handles; socket/protocol tests cover errors and host loss.
 - All DRM presenters acknowledge resource readiness before first presentation. Explicit successful-upload readiness survives scene coalescing; resize, capture and cursor wakes cannot activate a placeholder. GL/GPU-upload raster also request a layout-scoped replay barrier on session recreation, rejecting queued stale scenes. Vulkan sleeps instead of spinning before upload. A valid empty tree counts as application content.
+- Headless binary/PRIME startup and live frame caps now gate all render admissions, not just animation pulses. Bounded latest-scene coalescing preserves earliest pending pipeline latency; an independent control lane rebases deadlines without catch-up frames. Static config changes stay idle, and stop/PRIME retirement remain wakeable. Tests cover cap changes, burst coalescing, terminal-frame retry, native output and config-only recovery. PRIME hardware qualification remains pending.
 - Migrated affected test fixtures and artifact smoke probe; added normalization, callback, config-only native recovery and upload-readiness tests.
 
 Still required (not merely unverified):
 
 - Native desired/pending/applied revisions and completion reporting.
 - DRM backlight binding/ownership and sysfs control, display-off/on KMS transitions, native off-state work suppression, stale enable protection and safe mode/output reconfiguration.
-- Live frame caps.
+- Window/DRM live frame caps.
 - Remaining guides/demo migration, full input transport contract coverage, release version changes and hardware qualification.
 
-Unsupported explicit native display/backlight requests and non-headless frame caps currently raise rather than silently accepting intent. `backlight.device: :auto` does not yet manage a device. Live DRM output/frame-cap updates report unsupported. Off-state callback deferral is tested with a custom adapter; it is **not** native display-off support. The package version remains 0.4.2 until the remaining 0.5 release work is complete.
+Unsupported explicit native display/backlight requests and non-headless frame caps currently raise rather than silently accepting intent. `backlight.device: :auto` does not yet manage a device. Live DRM output and non-headless frame-cap updates report unsupported. Off-state callback deferral is tested with a custom adapter; it is **not** native display-off support. The package version remains 0.4.2 until the remaining 0.5 release work is complete.
 
-Validation so far: `mix test`, `cargo test`, DRM-raster-only Rust tests, full DRM Rust tests, and `./ci-tests.sh quality`. Hardware tests are opt-in and were not run; macOS was not built or qualified.
+Latest validation: `mix test --warnings-as-errors` (611 passed, 12 excluded), `cargo test` (default, DRM-raster-only and full DRM profiles), `cargo clippy --features drm-all -- -D warnings`, and `./ci-tests.sh quality`. Hardware tests are opt-in and were not run; macOS was not built or qualified.
 
 The following sections retain the target design; they must not be read as claims that the pending features have shipped.
 
