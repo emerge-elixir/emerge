@@ -6,6 +6,10 @@ pub(crate) trait BackendWake: Send + Sync {
     fn request_redraw(&self);
 
     fn notify_video_frame(&self);
+
+    fn set_title(&self, _title: String) -> Result<(), String> {
+        Err("this backend does not support window titles".into())
+    }
 }
 
 #[derive(Clone)]
@@ -25,6 +29,10 @@ impl BackendWakeHandle {
 
     pub(crate) fn noop() -> Self {
         Self::new(NoopWake)
+    }
+
+    pub(crate) fn set_title(&self, title: String) -> Result<(), String> {
+        self.inner.set_title(title)
     }
 
     pub(crate) fn request_stop(&self) {
