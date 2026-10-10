@@ -1,12 +1,12 @@
 //! DRM/KMS presenter dispatch.
 //!
-//! `core` owns KMS discovery/error policy. OpenGL and Vulkan remain narrow concrete render owners;
-//! the Vulkan owner never imports the OpenGL/EGL module in a `drm-vulkan` build.
+//! `core` owns KMS discovery/error policy. Raster uses mapped dumb buffers without GPU libraries;
+//! OpenGL and Vulkan remain narrow concrete render owners.
 
 mod core;
+mod raster;
 mod session;
 pub(crate) use core::outputs;
-#[cfg(any(feature = "drm", feature = "drm-vulkan"))]
 mod cursor_theme;
 #[cfg(feature = "drm-vulkan")]
 pub mod functional_probe;
@@ -97,6 +97,15 @@ pub(crate) struct DrmBackendStartupInfo {
 }
 
 impl DrmBackendStartupInfo {
+    pub(crate) fn raster() -> Self {
+        Self {
+            prime_video_supported: false,
+            prime_video_formats: Vec::new(),
+            #[cfg(feature = "vulkan")]
+            vulkan_device: None,
+        }
+    }
+
     #[cfg_attr(not(feature = "drm"), allow(dead_code))]
     pub(crate) fn opengl(prime_video_supported: bool) -> Self {
         Self {
@@ -143,6 +152,9 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                 context,
                 "Vulkan rendering support is not available in this build".to_string(),
             );
+        }
+        RenderingApi::Raster if config.raster_present != RasterPresentKind::GpuUpload => {
+            raster::run(context, config);
         }
         RenderingApi::Auto | RenderingApi::OpenGl | RenderingApi::Raster => {
             #[cfg(feature = "drm")]
