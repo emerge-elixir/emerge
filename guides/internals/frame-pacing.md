@@ -65,3 +65,16 @@ EMERGE_WAYLAND_TEST_API=vulkan mix test test/emerge_skia/wayland_frame_rate_test
 It checks burst limits, live uncapping, final pixels, config-only idleness,
 refresh statistics and shutdown while capped. Passing on one compositor does
 not qualify every compositor/GPU or PRIME synchronization path.
+
+For Vulkan validation, install the Khronos validation layer and enable it with
+`EMERGE_VULKAN_VALIDATION=1`. To enable synchronization checks, place
+`khronos_validation.validate_sync = true` in `vk_layer_settings.txt` and point
+`VK_LAYER_SETTINGS_PATH` at its directory. Run the same Vulkan test with these
+settings and inspect native validation output: **an ExUnit pass is insufficient**
+if `Vulkan validation final count` reports errors.
+
+The 2026-10-10 run on Hyprland/RADV RX 7900 XTX passed the functional checks but
+failed synchronization validation with acquired-image layout-transition hazards
+(`SYNC-HAZARD-WRITE-AFTER-READ`; 4 errors, 0 warnings). Vulkan qualification remains
+blocked until those hazards are fixed. The reproduction and environment record
+is in `plans/active-linux-gpu-qualification.md` in the repository.
