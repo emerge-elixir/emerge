@@ -27,6 +27,12 @@
   the BEAM binary instead of an intermediate buffer. A full-screen 800x1280
   RGBA frame now takes two memory passes instead of four.
 
+### Fixed
+
+- Text input caret/selection normalization uses the current native content rather
+  than the previous frame's text, so the first keystroke advances the rendered
+  caret immediately without a corrective update.
+
 ## [0.4.2] - 2026-09-30
 
 ### Added

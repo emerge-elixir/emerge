@@ -970,7 +970,12 @@ impl Element {
         let attrs = &mut self.layout.effective;
 
         if self.spec.kind.is_text_input_family() {
-            let content_len = attrs
+            // Editing positions refer to the current native content, not the
+            // previous frame's projection. Deferred frame preparation can leave
+            // effective.content behind a just-applied content/runtime update.
+            let content_len = self
+                .spec
+                .declared
                 .content
                 .as_ref()
                 .map(|content| text_char_len(content))
@@ -4612,6 +4617,43 @@ mod tests {
 
         assert!(tree.set_focused_active(&id, false).is_dirty());
         assert!(!tree.get(&id).unwrap().runtime.focused_active);
+    }
+
+    #[test]
+    fn text_edit_positions_normalize_against_native_content_not_previous_frame() {
+        for kind in [ElementKind::TextInput, ElementKind::Multiline] {
+            for (content, previous_frame, cursor, anchor, expected_cursor, expected_anchor) in [
+                ("é🙂", "", 2, Some(1), 2, Some(1)),
+                ("", "é🙂", 2, Some(1), 0, None),
+                ("é🙂", "longer", 9, Some(8), 2, None),
+            ] {
+                let mut input = Element::with_attrs(
+                    NodeId(9),
+                    kind,
+                    vec![],
+                    Attrs {
+                        content: Some(content.into()),
+                        ..Default::default()
+                    },
+                );
+                input.layout.effective.content = Some(previous_frame.into());
+                input.runtime.text_input_focused = true;
+                input.runtime.text_input_cursor = Some(cursor);
+                input.runtime.text_input_selection_anchor = anchor;
+                input.runtime.text_input_preedit = Some("候".into());
+                input.runtime.text_input_preedit_cursor = Some((0, 1));
+                input.normalize_extracted_state();
+                assert_eq!(input.runtime.text_input_cursor, Some(expected_cursor));
+                assert_eq!(input.runtime.text_input_selection_anchor, expected_anchor);
+                assert_eq!(input.runtime.text_input_preedit.as_deref(), Some("候"));
+                assert_eq!(input.runtime.text_input_preedit_cursor, Some((0, 1)));
+                // Normalization must not prematurely update the frame projection.
+                assert_eq!(
+                    input.layout.effective.content.as_deref(),
+                    Some(previous_frame)
+                );
+            }
+        }
     }
 
     #[test]
