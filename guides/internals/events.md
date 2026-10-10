@@ -105,6 +105,7 @@ The rebuild payload sent from tree actor to event actor contains:
 
 - `base_registry`
 - `text_inputs: HashMap<NodeId, TextInputState>`
+- `scrolls: HashMap<NodeId, ScrollNode>` (geometry, proposals, mount identity)
 - `scrollbars: HashMap<(NodeId, ScrollbarAxis), ScrollbarNode>`
 - `focused_id`
 
@@ -152,6 +153,45 @@ There is no bubbling, capture, or handler-side fallback chain.
 
 Some behavior is implemented by top overlay listeners that turn one physical
 input into a sequence of derived listener inputs.
+
+### Controlled scroll positions
+
+`Emerge.UI.Scroll.scroll_x/1` and `scroll_y/1` accept float fractions in
+`[0.0, 1.0]` or semantic child keys. `Event.on_scroll/1` emits a fixed-shape
+`%{x: float, y: float}` payload through normal viewport/PID routing, including
+macOS host transport. Solve controllers can store the fractions unchanged.
+Position attrs do not enable scrolling; keep `scrollbar_x/0`/`scrollbar_y/0`.
+
+Every enabled container has a mount-scoped event session, even without overflow
+or a visible thumb. Wheel, drag, inertia, keyboard, scrollbar and focus-reveal
+requests converge at the event driver's operation boundary. It applies movement
+against live fractions/current geometry, emits at most one callback per changed
+container, and publishes an absolute `SetScrollPosition` in the existing
+mount-qualified envelope. The tree projects that fraction for rendering and
+hit testing. Runtime delta requests no longer reach the tree delta accumulator.
+
+Each axis has its own app-proposal ID, processed watermark and callback-only
+five-second echo history. Native receipts do not consume or extend echoes.
+Repeated declarations/processed snapshots cannot rewind state or trigger
+corrective writes. Fresh unmatched proposals apply once without callbacks;
+removing an attr releases control without jumping. No-op/echo proposals preserve
+momentum; real jumps cancel affected inertia/thumb anchors and suppress stale
+drag-release momentum without turning the release into a click.
+
+Reconciliation assigns semantic keys numeric target IDs after assigning their
+new descendants, with one shared lookup index only when key targets are present.
+A separate declaration token survives target remounts/resolution changes, so an
+old jump cannot reapply merely because geometry or target identity changed.
+Targets align layout-box leading edges against the padded content origin and
+clamp to range. Nearby mounts and intervening same-axis scrollports are excluded;
+paint-only transforms do not affect alignment. Missing targets are consumed
+no-ops with a diagnostic when event debug logging is enabled, not deferred jumps.
+
+Geometry changes preserve the live fraction without callbacks. Temporary zero
+range renders zero pixels but retains latent progress; disabling an axis resets
+it. Callback values round-trip as f64, not through rendered f32 pixel offsets.
+As with text inputs, an intentional reset equal to an unexpired echo is ambiguous,
+and first-seen responses older than five seconds can become replacements.
 
 ### Scroll Splitter
 
@@ -360,7 +400,8 @@ not undo element callbacks already emitted to Elixir or the host.
 
 Tree-side coalescing happens before refresh:
 
-- scroll requests and scrollbar thumb deltas accumulate per `(element, mount)`
+- event-owned absolute scroll positions apply in operation order; the legacy
+  low-level scroll-request accumulator remains available outside runtime dispatch
 - hover/active states are last-write-wins per `(element, mount)`
 - deferred writes recheck that mount after later topology edits in the same batch
 - text content/runtime and slider updates apply in message order

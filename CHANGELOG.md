@@ -10,6 +10,10 @@
   CPU video and RGBA screenshots; requires atomic KMS, DRM leasing and XRGB8888.
   Dedicated `drm_raster` precompiled artifacts cover all supported Linux targets,
   including ARMv7, with GPU-free dependency checks.
+- Controlled scrolling with `scroll_x/1`, `scroll_y/1` (fractions or keyed
+  descendants), and `Event.on_scroll/1` fraction payloads. Event-owned positions
+  resist delayed controller echoes and preserve progress across resizing.
+
 - Headless binary `pixel_format: :bgra8888` (premultiplied B, G, R, A). Raster
   renderers draw in this byte order, so frames can be copied straight into
   little-endian DRM `ARGB8888`/`XRGB8888` scanout buffers or framebuffers without
