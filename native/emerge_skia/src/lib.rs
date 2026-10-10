@@ -4684,7 +4684,7 @@ mod tests {
         }
 
         fn send_rebuild(&self, rebuild: RegistryRebuildPayload) {
-            super::send_event(&self.event_tx, EventMsg::RegistryUpdate { rebuild }, false);
+            super::send_event(&self.event_tx, EventMsg::registry_update(rebuild), false);
         }
 
         fn wait_for_tree_msgs_quiet(&self) -> Vec<TreeMsg> {

@@ -436,9 +436,7 @@ fn real_event_actor_handles_burst_recovery_or_stop_without_a_registry_ack() {
             asset_context: assets.context(),
         });
         event_tx
-            .send(EventMsg::RegistryUpdate {
-                rebuild: initial.clone(),
-            })
+            .send(EventMsg::registry_update(initial.clone()))
             .unwrap();
         let count = if recover { 256 } else { 4096 };
         for _ in 0..count {
@@ -449,9 +447,7 @@ fn real_event_actor_handles_burst_recovery_or_stop_without_a_registry_ack() {
                 }))
                 .unwrap();
         }
-        event_tx
-            .send(EventMsg::RegistryUpdate { rebuild: initial })
-            .unwrap();
+        event_tx.send(EventMsg::registry_update(initial)).unwrap();
         if recover {
             for index in 1..=count {
                 let packet = tree_rx.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -469,7 +465,7 @@ fn real_event_actor_handles_burst_recovery_or_stop_without_a_registry_ack() {
                         .count(),
                     index
                 );
-                event_tx.send(EventMsg::RegistryUpdate { rebuild }).unwrap();
+                event_tx.send(EventMsg::registry_update(rebuild)).unwrap();
             }
         }
         event_tx.send(EventMsg::Stop).unwrap();

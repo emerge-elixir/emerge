@@ -137,7 +137,7 @@ fn event_coalescing_rebinds_pending_mount_focus_only_to_the_same_eligible_mount(
         let next = native_rebuild(&mut tree);
         assert!(next.focus_on_mount.is_none());
         let (tx, rx) = bounded(4);
-        tx.send(EventMsg::RegistryUpdate { rebuild: next }).unwrap();
+        tx.send(EventMsg::registry_update(next)).unwrap();
         let mut pending = None;
         let (result, count) = coalesce_registry_updates(first, &rx, &mut pending);
         assert_eq!(count, 1);
@@ -227,9 +227,7 @@ fn cached_registry_acknowledges_noop_requests_without_constructing_a_scene() {
 fn event_registry_draining_is_bounded_and_stop_does_not_wait_for_a_receipt() {
     let (tx, rx) = unbounded();
     for _ in 0..129 {
-        tx.send(EventMsg::RegistryUpdate {
-            rebuild: RegistryRebuildPayload::default(),
-        })
+        tx.send(EventMsg::registry_update(RegistryRebuildPayload::default()))
         .unwrap();
     }
     tx.send(EventMsg::Stop).unwrap();
@@ -261,9 +259,7 @@ fn real_event_actor_waits_for_its_own_response_and_can_stop_with_buffered_input(
         let (event_tx, event_rx) = bounded(16);
         let (tree_tx, tree_rx) = bounded(64);
         event_tx
-            .send(EventMsg::RegistryUpdate {
-                rebuild: initial.clone(),
-            })
+            .send(EventMsg::registry_update(initial.clone()))
             .unwrap();
         event_tx
             .send(EventMsg::InputEvent(InputEvent::TextCommit {
@@ -271,9 +267,7 @@ fn real_event_actor_waits_for_its_own_response_and_can_stop_with_buffered_input(
                 mods: 0,
             }))
             .unwrap();
-        event_tx
-            .send(EventMsg::RegistryUpdate { rebuild: initial })
-            .unwrap();
+        event_tx.send(EventMsg::registry_update(initial)).unwrap();
         event_tx
             .send(EventMsg::InputEvent(InputEvent::TextCommit {
                 text: "Y".into(),
@@ -313,7 +307,7 @@ fn real_event_actor_waits_for_its_own_response_and_can_stop_with_buffered_input(
                 let content = &rebuild.text_inputs[&NodeId(9)].content;
                 assert!(content.contains(expected), "{content}");
                 assert_eq!(content.replace(expected, ""), "abc");
-                event_tx.send(EventMsg::RegistryUpdate { rebuild }).unwrap();
+                event_tx.send(EventMsg::registry_update(rebuild)).unwrap();
             }
             event_tx.send(EventMsg::Stop).unwrap();
             handle.join().unwrap();

@@ -300,6 +300,7 @@ impl EventRuntimeDriver {
                 true
             }
             EventMsg::RegistryUpdate { rebuild } => {
+                let rebuild = *rebuild;
                 let (rebuild, coalesced_count) =
                     if self.runtime.should_preserve_registry_transitions() {
                         (rebuild, 0)
@@ -3245,7 +3246,7 @@ fn coalesce_registry_updates(
                 rebuild: mut newer_rebuild,
             } => {
                 newer_rebuild.carry_mount_focus(rebuild.focus_on_mount.take(), rebuild.focused_id);
-                rebuild = newer_rebuild;
+                rebuild = *newer_rebuild;
                 coalesced_count += 1;
             }
             other => {
@@ -3573,14 +3574,10 @@ mod tests {
     fn coalesce_registry_updates_keeps_latest_consecutive_rebuild() {
         let (event_tx, event_rx) = bounded(8);
         event_tx
-            .send(EventMsg::RegistryUpdate {
-                rebuild: rebuild_with_focus(2),
-            })
+            .send(EventMsg::registry_update(rebuild_with_focus(2)))
             .unwrap();
         event_tx
-            .send(EventMsg::RegistryUpdate {
-                rebuild: rebuild_with_focus(3),
-            })
+            .send(EventMsg::registry_update(rebuild_with_focus(3)))
             .unwrap();
 
         let mut pending = None;
@@ -3596,9 +3593,7 @@ mod tests {
     fn coalesce_registry_updates_stops_at_non_registry_message() {
         let (event_tx, event_rx) = bounded(8);
         event_tx
-            .send(EventMsg::RegistryUpdate {
-                rebuild: rebuild_with_focus(2),
-            })
+            .send(EventMsg::registry_update(rebuild_with_focus(2)))
             .unwrap();
         event_tx
             .send(EventMsg::InputEvent(InputEvent::CursorEntered {
@@ -3606,9 +3601,7 @@ mod tests {
             }))
             .unwrap();
         event_tx
-            .send(EventMsg::RegistryUpdate {
-                rebuild: rebuild_with_focus(3),
-            })
+            .send(EventMsg::registry_update(rebuild_with_focus(3)))
             .unwrap();
 
         let mut pending = None;

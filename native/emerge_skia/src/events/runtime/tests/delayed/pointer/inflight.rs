@@ -344,9 +344,7 @@ fn real_event_actor_commands_queued_before_replacement_are_rejected_on_delivery(
         stats: None,
         asset_context: assets.context(),
     });
-    event_tx
-        .send(EventMsg::RegistryUpdate { rebuild: initial })
-        .unwrap();
+    event_tx.send(EventMsg::registry_update(initial)).unwrap();
     event_tx
         .send(EventMsg::InputEvent(InputEvent::TextCommit {
             text: "X".into(),
@@ -361,16 +359,12 @@ fn real_event_actor_commands_queued_before_replacement_are_rejected_on_delivery(
         policy,
     );
     event_tx
-        .send(EventMsg::RegistryUpdate {
-            rebuild: replacement,
-        })
+        .send(EventMsg::registry_update(replacement))
         .unwrap();
     let latest = response(&mut engine, vec![queued], policy);
     assert_eq!(latest.text_inputs[&NodeId(9)].content, "");
     assert!(!latest.text_inputs[&NodeId(9)].focused);
-    event_tx
-        .send(EventMsg::RegistryUpdate { rebuild: latest })
-        .unwrap();
+    event_tx.send(EventMsg::registry_update(latest)).unwrap();
     event_tx.send(EventMsg::Stop).unwrap();
     handle.join().unwrap();
     assert!(tree_rx.is_empty());

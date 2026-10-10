@@ -9,9 +9,7 @@ fn full_outbound_tree_channel_does_not_prevent_event_actor_stop() {
     let (event_tx, event_rx) = bounded(16);
     let (tree_tx, tree_rx) = bounded(1);
     tree_tx.send(TreeMsg::RebuildRegistry).unwrap();
-    event_tx
-        .send(EventMsg::RegistryUpdate { rebuild: initial })
-        .unwrap();
+    event_tx.send(EventMsg::registry_update(initial)).unwrap();
     event_tx
         .send(EventMsg::InputEvent(InputEvent::TextCommit {
             text: "X".into(),
@@ -234,9 +232,7 @@ fn real_outbound_recovery_preserves_input_order_and_rejects_old_mount_packets() 
                 driver.set_input_mask(u32::MAX);
                 run_event_actor(driver, event_rx);
             });
-            event_tx
-                .send(EventMsg::RegistryUpdate { rebuild: initial })
-                .unwrap();
+            event_tx.send(EventMsg::registry_update(initial)).unwrap();
             for text in ["X", "Y"] {
                 event_tx
                     .send(EventMsg::InputEvent(InputEvent::TextCommit {
@@ -285,14 +281,14 @@ fn real_outbound_recovery_preserves_input_order_and_rejects_old_mount_packets() 
                     }],
                     policy,
                 );
-                event_tx.send(EventMsg::RegistryUpdate { rebuild }).unwrap();
+                event_tx.send(EventMsg::registry_update(rebuild)).unwrap();
             }
             let rebuild = response(&mut engine, vec![packet], policy);
-            event_tx.send(EventMsg::RegistryUpdate { rebuild }).unwrap();
+            event_tx.send(EventMsg::registry_update(rebuild)).unwrap();
             if !remount {
                 let next = tree_rx.recv_timeout(Duration::from_secs(5)).unwrap();
                 let rebuild = response(&mut engine, vec![next], policy);
-                event_tx.send(EventMsg::RegistryUpdate { rebuild }).unwrap();
+                event_tx.send(EventMsg::registry_update(rebuild)).unwrap();
                 assert_eq!(
                     engine
                         .tree()
@@ -408,9 +404,7 @@ fn real_actor_sends_a_nonstaling_outbox_fifo_without_overtaking_or_replaying_raw
         driver.set_input_mask(u32::MAX);
         run_event_actor(driver, event_rx);
     });
-    event_tx
-        .send(EventMsg::RegistryUpdate { rebuild: initial })
-        .unwrap();
+    event_tx.send(EventMsg::registry_update(initial)).unwrap();
     for index in 0..128 {
         event_tx
             .send(EventMsg::InputEvent(InputEvent::TextPreedit {
@@ -445,7 +439,7 @@ fn real_actor_sends_a_nonstaling_outbox_fifo_without_overtaking_or_replaying_raw
         (0..128).map(|index| format!("{index}")).collect::<Vec<_>>()
     );
     let rebuild = response(&mut engine, packets, policy);
-    event_tx.send(EventMsg::RegistryUpdate { rebuild }).unwrap();
+    event_tx.send(EventMsg::registry_update(rebuild)).unwrap();
     event_tx.send(EventMsg::Stop).unwrap();
     handle.join().unwrap();
     assert!(tree_rx.is_empty());

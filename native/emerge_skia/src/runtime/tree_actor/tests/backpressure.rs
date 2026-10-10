@@ -13,9 +13,7 @@ impl BlockedActor {
         let (event_tx, registry) = bounded(1);
         let (render_tx, renders) = bounded(1);
         event_tx
-            .send(EventMsg::RegistryUpdate {
-                rebuild: RegistryRebuildPayload::default(),
-            })
+            .send(EventMsg::registry_update(RegistryRebuildPayload::default()))
             .unwrap();
         let stats = Arc::new(RendererStatsCollector::new());
         let handle = spawn_tree_actor_with_initial_tree(

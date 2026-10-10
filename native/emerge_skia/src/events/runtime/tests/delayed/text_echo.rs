@@ -657,9 +657,7 @@ fn actor_backed_fifo_echoes_do_not_publish_corrections_or_reorder_typing() {
         stats: None,
         asset_context: assets.context(),
     });
-    event_tx
-        .send(EventMsg::RegistryUpdate { rebuild: initial })
-        .unwrap();
+    event_tx.send(EventMsg::registry_update(initial)).unwrap();
     for (key, expected) in [("a", "a"), ("b", "ab")] {
         event_tx
             .send(EventMsg::InputEvent(InputEvent::TextCommit {
@@ -676,12 +674,12 @@ fn actor_backed_fifo_echoes_do_not_publish_corrections_or_reorder_typing() {
         );
         let rebuild = response(&mut engine, vec![packet], policy);
         assert_eq!(rebuild.text_inputs[&NodeId(9)].content, expected);
-        event_tx.send(EventMsg::RegistryUpdate { rebuild }).unwrap();
+        event_tx.send(EventMsg::registry_update(rebuild)).unwrap();
     }
     // Controller responses are FIFO but arrive after both native acknowledgments.
     for value in ["a", "ab"] {
         let rebuild = response(&mut engine, vec![app_patch(value)], policy);
-        event_tx.send(EventMsg::RegistryUpdate { rebuild }).unwrap();
+        event_tx.send(EventMsg::registry_update(rebuild)).unwrap();
         // A harmless release is an event-coalescing boundary, ensuring both
         // proposals are installed rather than just testing the latest echo.
         event_tx
@@ -702,7 +700,7 @@ fn actor_backed_fifo_echoes_do_not_publish_corrections_or_reorder_typing() {
     let rebuild = response(&mut engine, vec![packet], policy);
     let state = &rebuild.text_inputs[&NodeId(9)];
     assert_eq!((state.content.as_str(), state.cursor), ("abc", 3));
-    event_tx.send(EventMsg::RegistryUpdate { rebuild }).unwrap();
+    event_tx.send(EventMsg::registry_update(rebuild)).unwrap();
     event_tx.send(EventMsg::Stop).unwrap();
     actor.join().unwrap();
     assert!(tree_rx.is_empty());

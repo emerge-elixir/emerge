@@ -89,7 +89,7 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                 .unwrap_or_else(crossbeam_channel::never);
             let message = if let Some(rebuild) = pending_registry.take() {
                 crossbeam_channel::select! {
-                    send(event_tx,EventMsg::RegistryUpdate {rebuild}) -> _ => {
+                    send(event_tx,EventMsg::registry_update(rebuild)) -> _ => {
                         if let Some(layout)=pending_layout.take() {layout.publish(targets());}
                         continue;
                     }
@@ -306,7 +306,7 @@ mod tests {
                 .recv_timeout(Duration::from_millis(250))
                 .expect("tree actor should publish a registry update")
             {
-                EventMsg::RegistryUpdate { rebuild } => rebuild,
+                EventMsg::RegistryUpdate { rebuild } => *rebuild,
                 _ => panic!("expected registry update"),
             }
         }
