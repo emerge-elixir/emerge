@@ -136,6 +136,27 @@ jobs:
         if: ${{ matrix.rust == '1.91.0' && matrix.minimum != true }}
         run: bash scripts/check-package.sh
 
+      - name: Validate CPU-only DRM without GPU dependencies
+        if: ${{ matrix.rust == 'stable' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest=native/emerge_skia/Cargo.toml
+          cargo clippy --manifest-path "$manifest" --no-default-features --features drm-raster -- -D warnings
+          cargo test --release --manifest-path "$manifest" --no-default-features --features drm-raster
+          cargo build --release --manifest-path "$manifest" --no-default-features --features drm-raster
+          cargo tree --manifest-path "$manifest" --no-default-features --features drm-raster \
+            --edges normal --prefix none > /tmp/drm-raster-deps.txt
+          if grep -E '^(gbm|gbm-sys|gl|glutin|glutin_egl_sys|ash|ash-window|wayland-client) v' /tmp/drm-raster-deps.txt; then
+            echo "CPU DRM unexpectedly depends on a GPU/window-system library" >&2
+            exit 1
+          fi
+          ldd native/emerge_skia/target/release/libemerge_skia.so > /tmp/drm-raster-linkage.txt
+          if grep -E 'lib(EGL|GL|GLES|gbm|vulkan|wayland)' /tmp/drm-raster-linkage.txt; then
+            echo "CPU DRM unexpectedly links a GPU/window-system library" >&2
+            exit 1
+          fi
+
       - name: Audit dependencies
         if: ${{ matrix.rust == 'stable' }}
         run: |
