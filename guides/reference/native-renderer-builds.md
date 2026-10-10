@@ -63,9 +63,56 @@ config :emerge,
   ]
 ```
 
-Each value is `:all` or an exact GPU API list. Wayland, DRM, and headless
-support `:opengl` and `:vulkan`; macOS supports `:metal`. Atom entries retain
-the compatibility behavior: `[:wayland, :drm]` selects OpenGL for both.
+Each value is `:all` or an exact API list. Wayland, DRM, and headless
+support `:opengl` and `:vulkan`; DRM additionally accepts `:raster` for CPU-only
+scanout, and macOS supports `:metal`. Atom entries retain the compatibility
+behavior: `[:wayland, :drm]` selects OpenGL for both.
+
+### DRM without a GPU driver
+
+For devices such as Tegra 3 where KMS works but the OpenGL driver cannot render
+Skia shaders, select CPU-only DRM at dependency compilation time:
+
+```elixir
+# config/config.exs
+config :emerge, compiled_backends: [drm: [:raster]]
+```
+
+Return these options from your viewport's `mount/1` callback:
+
+```elixir
+[otp_app: :my_app, backend: :drm, rendering_api: :raster,
+ drm_card: "/dev/dri/card0"]
+```
+
+The Cargo profile is `--no-default-features --features drm-raster`. It uses the
+DRM ioctl and evdev/input stack, with no GBM, EGL, OpenGL, Vulkan or Wayland
+dependency. Skia's CPU/font dependencies still apply; Nerves source builds embed
+FreeType and use registered font assets. No custom headless frame consumer or
+per-frame BEAM binary is needed.
+
+This profile currently builds from source rather than selecting a GPU or
+headless-only precompiled archive. Recompile Emerge after changing configuration:
+
+```sh
+EMERGE_SKIA_BUILD=true mix deps.compile emerge --force
+```
+
+`rendering_api: :auto` selects raster in a DRM build without OpenGL. Explicit
+`:opengl` and `[raster: [present: :gpu_upload]]` require an OpenGL-enabled build.
+In all DRM builds, raster's default presentation is CPU; `:gpu_upload` remains
+available explicitly for compatibility.
+
+The KMS driver must expose dumb buffers, an XRGB8888 primary plane, atomic
+modesetting and DRM leasing. This does not add a legacy-KMS or fbdev backend.
+CPU presentation uses double-buffered, blocking atomic commits and a software
+cursor (including when `hw_cursor: true`). Screenshots remain RGBA; CPU binary
+video is supported, but DMA-BUF/PRIME video import is not. On disconnect or a
+removed mode, the backend detaches and exits so the viewport can recover through
+its normal lifecycle. Output selection uses `EmergeSkia.drm_outputs/1` as with
+the GPU presenters.
+
+### Release artifacts
 
 The release artifact profiles are:
 

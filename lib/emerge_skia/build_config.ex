@@ -321,6 +321,7 @@ defmodule EmergeSkia.BuildConfig do
             {true, true} -> "#{backend}-all"
             {true, false} -> Atom.to_string(backend)
             {false, true} -> "#{backend}-vulkan"
+            {false, false} when backend == :drm -> "drm-raster"
             {false, false} -> "#{backend}-core"
           end
       end)

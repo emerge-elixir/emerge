@@ -11,7 +11,7 @@ defmodule EmergeSkia.BuildConfigTest do
 
   test "compiled backend matrix selects APIs per backend" do
     assert BuildConfig.normalize_compiled_backend_matrix!(drm: :all) == [
-             drm: [:opengl, :vulkan]
+             drm: [:opengl, :vulkan, :raster]
            ]
 
     assert BuildConfig.normalize_compiled_backend_matrix!(
@@ -32,6 +32,9 @@ defmodule EmergeSkia.BuildConfigTest do
           {[wayland: [:opengl]], ["wayland"]},
           {[wayland: [:vulkan]], ["wayland-vulkan"]},
           {[wayland: :all], ["wayland-all"]},
+          {[drm: [:raster]], ["drm-raster"]},
+          {[drm: [:raster, :opengl]], ["drm"]},
+          {[drm: [:raster, :vulkan]], ["drm-vulkan"]},
           {[drm: [:opengl]], ["drm"]},
           {[drm: [:vulkan]], ["drm-vulkan"]},
           {[drm: :all], ["drm-all"]},
@@ -126,6 +129,24 @@ defmodule EmergeSkia.BuildConfigTest do
     assert BuildConfig.compiled_backends_to_rustler_features([:wayland], [], []) == [
              "wayland-core"
            ]
+  end
+
+  test "DRM raster uses a source build rather than an incompatible GPU or headless archive" do
+    matrix = BuildConfig.normalize_compiled_backend_matrix!(drm: [:raster])
+    assert matrix == [drm: [:raster]]
+    assert EmergeSkia.BuildConfig.Schema.presenter_backends(matrix) == [:drm]
+    assert EmergeSkia.BuildConfig.Schema.api_backends(matrix, :opengl) == []
+    assert EmergeSkia.BuildConfig.Schema.api_backends(matrix, :vulkan) == []
+    assert BuildConfig.compiled_backends_to_rustler_features([:drm], [], []) == ["drm-raster"]
+
+    for target <- [
+          "armv7-unknown-linux-gnueabihf",
+          "aarch64-unknown-linux-gnu",
+          "x86_64-unknown-linux-gnu"
+        ] do
+      assert {:error, :unsupported_profile} =
+               BuildConfig.precompiled_profile(%{}, [:drm], [], [], target)
+    end
   end
 
   test "load_native_runtime? skips Rustler on macOS-only runtime builds" do
