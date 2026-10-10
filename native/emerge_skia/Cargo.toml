@@ -37,6 +37,10 @@ harness = false
 required-features = ["bench-diagnostics"]
 
 [[bench]]
+name = "headless_frame_copy"
+harness = false
+
+[[bench]]
 name = "stats"
 harness = false
 
