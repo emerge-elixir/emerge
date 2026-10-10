@@ -390,7 +390,10 @@ fn accepted_external_value_invalidates_old_range_and_destruction_releases_tokens
         .text_inputs
         .get_mut(&NodeId(9))
         .unwrap()
-        .patch_content = Some("reset".into());
+        .content_proposal = Some(crate::tree::element::TextInputContentProposal {
+        id: 1,
+        content: "reset".into(),
+    });
     host.install_rebuild(rebuild);
     settle(&mut engine, &mut host);
     let content = host.focused_text_state().unwrap().content;

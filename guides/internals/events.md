@@ -244,9 +244,10 @@ away/back, intervening content/preedit change or accepted external replacement
 cancels the old range. Later ordinary input still resolves against current focus.
 
 This is an ordering prerequisite, **not yet asynchronous local editing**. Per-edit
-tree waits and value/TTL-based callback echo matching still exist; removing those
-waits requires versioned edit/echo authority and batched publication. Input/output
-queues remain unbounded.
+tree waits remain. Text proposals have mount-scoped IDs, while callback echoes
+are matched by value within a fixed five-second window (see below). Removing the
+native waits is separate work requiring batched publication and edit/echo authority.
+Input/output queues remain unbounded.
 
 Fresh cursor-channel draining also stops after 64 messages, including the initial
 input, and never crosses a control message. The host feedback pump processes at most
@@ -671,6 +672,42 @@ hit-testing:
 - focused runtime edit state remains the source of truth across rebuilds
 - rebuild metadata refreshes geometry and style data used by later editing and
   caret hit-testing
+
+### Controlled Values And Echoes
+
+The event runtime owns live editing state for each mounted input; the retained
+tree mirrors it for rendering. Native content snapshots do not replace live text
+or cause corrective content resends. Geometry/style and native ordering receipts
+still update normally.
+
+Every changed Elixir text declaration becomes a `TextInputContentProposal` with
+an increasing ID within its mount. The latest declaration is retained separately
+from native content, even while unfocused. Native edits never clear that proposal.
+Style-only patches repeating the last app value do not create a new proposal.
+Registry/animation snapshots retain its ID; the event runtime processes it once
+using `last_processed_proposal_id`.
+
+For a new proposal:
+
+- An expected `on_change` echo acknowledges the matching value and earlier queued
+  values, without changing live text, cursor, selection, or IME composition.
+- A value already equal to live content is a no-op.
+- Otherwise, accept it as an app replacement and publish content/runtime state to
+  the tree once, without emitting another `on_change`.
+
+Expected echoes are recorded only for emitted change callbacks. Native tree
+acknowledgments do not consume them. Unmatched entries expire five seconds after
+recording, independently of frame rate; rebuilds do not renew them. Entries are
+pruned on enqueue and reconciliation. A first-seen response beyond that window
+may be treated as a replacement; an already-processed proposal stays ignored by
+ID even after its echo expires. History survives blur/refocus but is discarded
+with its mount. These rules apply equally to physical and virtual keyboards.
+
+This value-based contract assumes ordered app publication, with possible render
+coalescing. An intentional reset equal to an outstanding unexpired echo cannot
+be distinguished from that echo. Proposal IDs identify app declarations, not the
+native edit that caused a controller update; they are not an end-to-end edit
+acknowledgment protocol.
 
 ### Selection And Clipboard
 

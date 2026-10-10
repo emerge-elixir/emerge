@@ -38,7 +38,9 @@ use crate::tree::attrs::{BorderWidth, Font, Padding, TextAlign};
 use crate::tree::element::ElementKind;
 #[cfg(test)]
 use crate::tree::element::ElementTree;
-use crate::tree::element::{Element, NodeId, SliderValueOrigin, TextInputContentOrigin};
+use crate::tree::element::{
+    Element, NodeId, SliderValueOrigin, TextInputContentOrigin, TextInputContentProposal,
+};
 use crate::tree::geometry::Rect;
 #[cfg(test)]
 use crate::tree::render::render_tree;
@@ -155,7 +157,7 @@ impl Default for CursorIconState {
 /// `TextInputState` combines:
 ///
 /// - live editing state (`content`, `cursor`, `selection_anchor`, `preedit`)
-/// - focused-only pending tree patch text (`patch_content`)
+/// - latest Elixir content proposal and a mount-scoped processing watermark
 /// - focus/runtime flags
 /// - layout and font metadata needed to place the caret, selection, and preedit
 ///   correctly after rebuild
@@ -166,7 +168,9 @@ impl Default for CursorIconState {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TextInputState {
     pub content: String,
-    pub patch_content: Option<String>,
+    pub content_proposal: Option<TextInputContentProposal>,
+    /// Event-owned watermark; native snapshots always initialize this to zero.
+    pub last_processed_proposal_id: u64,
     pub content_origin: TextInputContentOrigin,
     pub content_len: u32,
     pub cursor: u32,
@@ -196,7 +200,7 @@ pub struct TextInputState {
 
 impl TextInputState {
     pub fn copy_rebuild_metadata_from(&mut self, other: &Self) {
-        self.patch_content = other.patch_content.clone();
+        self.content_proposal = other.content_proposal.clone();
         self.emit_change = other.emit_change;
         self.multiline = other.multiline;
         self.frame_x = other.frame_x;
@@ -1195,7 +1199,8 @@ fn text_input_state(
 
     TextInputState {
         content,
-        patch_content: element.runtime.patch_content.clone(),
+        content_proposal: element.runtime.content_proposal.clone(),
+        last_processed_proposal_id: 0,
         content_origin: element.runtime.text_input_content_origin,
         content_len,
         cursor,
@@ -1623,7 +1628,8 @@ mod tests {
     fn text_input_cursor_from_click_point_uses_screen_to_local_transform() {
         let state = TextInputState {
             content: "ab".to_string(),
-            patch_content: None,
+            content_proposal: None,
+            last_processed_proposal_id: 0,
             content_origin: TextInputContentOrigin::TreePatch,
             content_len: 2,
             cursor: 0,
@@ -1659,7 +1665,8 @@ mod tests {
     fn appkit_ranges_account_for_marked_text_and_utf16_offsets() {
         let state = TextInputState {
             content: "a😀b".to_string(),
-            patch_content: None,
+            content_proposal: None,
+            last_processed_proposal_id: 0,
             content_origin: TextInputContentOrigin::TreePatch,
             content_len: 3,
             cursor: 1,
@@ -1700,7 +1707,8 @@ mod tests {
     fn appkit_replacement_range_maps_marked_text_back_to_committed_selection() {
         let state = TextInputState {
             content: "abcd".to_string(),
-            patch_content: None,
+            content_proposal: None,
+            last_processed_proposal_id: 0,
             content_origin: TextInputContentOrigin::TreePatch,
             content_len: 4,
             cursor: 3,

@@ -362,3 +362,5 @@ mod outbound;
 pub(crate) mod pressure_probe;
 
 mod ordered_host;
+
+mod text_echo;

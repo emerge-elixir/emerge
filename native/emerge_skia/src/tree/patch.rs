@@ -21,7 +21,7 @@ use super::deserialize::{DecodeError, decode_tree};
 use super::element::NearbyMounts;
 use super::element::{
     Element, ElementKind, ElementTree, Frame, GhostAttachment, NearbyMount, NearbySlot, NodeId,
-    NodeIx, NodeResidency, ParentLink, SliderValueOrigin, TextInputContentOrigin,
+    NodeIx, NodeResidency, ParentLink, SliderValueOrigin,
 };
 use super::invalidation::{
     TreeInvalidation, attrs_change_affects_registry_refresh, classify_attrs_change,
@@ -968,15 +968,32 @@ fn apply_patch(
             super::animation::change::validate_transition(before_declared_attrs, &decoded)?;
             // Normalize runtime-owned patch markers before deciding whether a
             // presentation preimage is needed. Marker-only writes stay registry-only.
-            let content_is_from_patch =
-                node.spec.kind.is_text_input_family() && decoded.content.is_some();
-            let text_input_is_focused =
-                node.spec.kind.is_text_input_family() && node.runtime.text_input_focused;
-            let pending_content = if content_is_from_patch && text_input_is_focused {
-                std::mem::replace(&mut decoded.content, node.spec.declared.content.clone())
+            let content_proposal = if node.spec.kind.is_text_input_family() {
+                // Compare app declarations, not the native-mutated mirror. A style-only
+                // SetAttrs must not re-propose an old value after a native edit.
+                let previous = node.runtime.content_proposal.as_ref();
+                let previous_content = previous
+                    .map(|proposal| proposal.content.as_str())
+                    .or(node.spec.declared.content.as_deref())
+                    .unwrap_or_default();
+                let proposed =
+                    std::mem::replace(&mut decoded.content, node.spec.declared.content.clone());
+                match proposed {
+                    Some(content) if content != previous_content => {
+                        Some(super::element::TextInputContentProposal {
+                            id: previous
+                                .map_or(0, |proposal| proposal.id)
+                                .checked_add(1)
+                                .ok_or("text input proposal ID exhausted")?,
+                            content,
+                        })
+                    }
+                    _ => None,
+                }
             } else {
                 None
             };
+            let content_proposal_changed = content_proposal.is_some();
             let slider_value_is_from_patch =
                 node.spec.kind == ElementKind::Slider && decoded.slider_value.is_some();
             let slider_value_is_runtime_owned = node.spec.kind == ElementKind::Slider
@@ -1003,10 +1020,8 @@ fn apply_patch(
                     .ok_or_else(|| "SetAttrs: node not found".to_string())?;
 
                 element.spec.attrs_raw = attrs_raw;
-                if content_is_from_patch && text_input_is_focused {
-                    element.runtime.patch_content = pending_content;
-                } else if element.spec.kind.is_text_input_family() && !text_input_is_focused {
-                    element.runtime.patch_content = None;
+                if let Some(proposal) = content_proposal {
+                    element.runtime.content_proposal = Some(proposal);
                 }
 
                 if slider_value_is_from_patch && slider_value_is_runtime_owned {
@@ -1029,9 +1044,6 @@ fn apply_patch(
                 }
                 let before_attrs = std::mem::replace(&mut element.spec.declared, decoded);
                 element.normalize_extracted_state();
-                if content_is_from_patch && !text_input_is_focused {
-                    element.runtime.text_input_content_origin = TextInputContentOrigin::TreePatch;
-                }
                 if slider_value_is_from_patch && !slider_value_is_runtime_owned {
                     element.runtime.slider_value_origin = SliderValueOrigin::TreePatch;
                 }
@@ -1059,8 +1071,11 @@ fn apply_patch(
                 ) {
                     invalidation = TreeInvalidation::Paint;
                 }
-                let registry_refresh_dirty =
-                    attrs_change_affects_registry_refresh(&before_attrs, &element.spec.declared);
+                if content_proposal_changed {
+                    invalidation.add(TreeInvalidation::Registry);
+                }
+                let registry_refresh_dirty = content_proposal_changed
+                    || attrs_change_affects_registry_refresh(&before_attrs, &element.spec.declared);
                 (
                     invalidation,
                     registry_refresh_dirty,
@@ -1663,7 +1678,7 @@ fn clone_as_ghost(
         },
         runtime: crate::tree::element::NodeRuntime {
             text_input_content_origin: old.runtime.text_input_content_origin,
-            patch_content: old.runtime.patch_content.clone(),
+            content_proposal: old.runtime.content_proposal.clone(),
             text_input_focused: false,
             text_input_cursor: None,
             text_input_selection_anchor: None,
@@ -3186,7 +3201,7 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_patches_classifies_single_line_text_input_content_as_paint() {
+    fn test_single_line_app_proposal_defers_paint_until_accepted() {
         let id = NodeId::from_term_bytes(vec![7]);
         let element = Element::with_attrs(
             id,
@@ -3207,15 +3222,19 @@ mod tests {
         let invalidation =
             apply_patches(&mut tree, vec![Patch::SetAttrs { id, attrs_raw: raw }]).unwrap();
 
-        assert_eq!(invalidation, TreeInvalidation::Paint);
+        assert_eq!(invalidation, TreeInvalidation::Registry);
+        assert_eq!(
+            tree.set_text_input_content(&id, "abc".into()),
+            TreeInvalidation::Paint
+        );
     }
 
     #[test]
-    fn test_apply_patches_keeps_multiline_text_input_content_as_measure() {
+    fn test_multiline_app_proposal_defers_layout_until_accepted() {
         let id = NodeId::from_term_bytes(vec![8]);
         let element = Element::with_attrs(
             id,
-            ElementKind::TextInput,
+            ElementKind::Multiline,
             Vec::new(),
             Attrs {
                 width: Some(Length::Fill),
@@ -3232,7 +3251,11 @@ mod tests {
         let invalidation =
             apply_patches(&mut tree, vec![Patch::SetAttrs { id, attrs_raw: raw }]).unwrap();
 
-        assert_eq!(invalidation, TreeInvalidation::Measure);
+        assert_eq!(invalidation, TreeInvalidation::Registry);
+        assert_eq!(
+            tree.set_text_input_content(&id, "ab\nc".into()),
+            TreeInvalidation::Resolve
+        );
     }
 
     #[test]
@@ -3514,7 +3537,7 @@ mod tests {
     }
 
     #[test]
-    fn test_set_attrs_marks_text_input_content_as_tree_patch_when_content_present() {
+    fn test_app_content_proposal_does_not_overwrite_native_content() {
         let id = NodeId::from_term_bytes(vec![17]);
         let attrs = Attrs {
             content: Some("before".to_string()),
@@ -3537,10 +3560,10 @@ mod tests {
         .unwrap();
 
         let updated = tree.get(&id).unwrap();
-        assert_eq!(updated.spec.declared.content.as_deref(), Some("after"));
+        assert_eq!(updated.spec.declared.content.as_deref(), Some("before"));
         assert_eq!(
             updated.runtime.text_input_content_origin,
-            TextInputContentOrigin::TreePatch
+            TextInputContentOrigin::Event
         );
     }
 
@@ -3600,7 +3623,14 @@ mod tests {
         let updated = tree.get(&id).unwrap();
         assert_eq!(updated.spec.declared.content.as_deref(), Some("before"));
         assert_eq!(updated.layout.effective.content.as_deref(), Some("before"));
-        assert_eq!(updated.runtime.patch_content.as_deref(), Some("after"));
+        assert_eq!(
+            updated
+                .runtime
+                .content_proposal
+                .as_ref()
+                .map(|proposal| proposal.content.as_str()),
+            Some("after")
+        );
         assert_eq!(
             updated.runtime.text_input_content_origin,
             TextInputContentOrigin::Event
@@ -3608,14 +3638,17 @@ mod tests {
     }
 
     #[test]
-    fn test_set_attrs_clears_patch_content_when_unfocused_text_input_accepts_patch() {
+    fn test_unfocused_app_content_is_also_a_versioned_proposal() {
         let id = NodeId::from_term_bytes(vec![182]);
         let attrs = Attrs {
             content: Some("before".to_string()),
             ..Attrs::default()
         };
         let mut element = Element::with_attrs(id, ElementKind::TextInput, Vec::new(), attrs);
-        element.runtime.patch_content = Some("stale".to_string());
+        element.runtime.content_proposal = Some(super::super::element::TextInputContentProposal {
+            id: 7,
+            content: "stale".into(),
+        });
 
         let mut tree = ElementTree::new();
         tree.set_root_id(id);
@@ -3631,8 +3664,9 @@ mod tests {
         .unwrap();
 
         let updated = tree.get(&id).unwrap();
-        assert_eq!(updated.spec.declared.content.as_deref(), Some("after"));
-        assert_eq!(updated.runtime.patch_content, None);
+        assert_eq!(updated.spec.declared.content.as_deref(), Some("before"));
+        let proposal = updated.runtime.content_proposal.as_ref().unwrap();
+        assert_eq!((proposal.id, proposal.content.as_str()), (8, "after"));
         assert_eq!(
             updated.runtime.text_input_content_origin,
             TextInputContentOrigin::TreePatch
