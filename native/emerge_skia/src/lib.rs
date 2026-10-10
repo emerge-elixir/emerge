@@ -1996,6 +1996,7 @@ fn send_event(event_tx: &Sender<EventMsg>, msg: EventMsg, log_input: bool) {
 
 #[derive(Clone)]
 struct StartConfig {
+    target_fps: Option<u32>,
     startup_deadline: Instant,
     owner: Option<ResourceArc<SessionOwner>>,
     #[cfg_attr(
@@ -2124,7 +2125,6 @@ struct HeadlessConfig {
     pixel_format: String,
     bw1_polarity: String,
     dither: bool,
-    target_fps: Option<u32>,
     frame_message: String,
     prime: HeadlessPrimeConfig,
 }
@@ -2144,7 +2144,6 @@ impl std::fmt::Debug for HeadlessConfig {
             .field("pixel_format", &self.pixel_format)
             .field("bw1_polarity", &self.bw1_polarity)
             .field("dither", &self.dither)
-            .field("target_fps", &self.target_fps)
             .field("frame_message", &self.frame_message)
             .field("prime", &self.prime)
             .finish()
@@ -2159,7 +2158,6 @@ impl Default for HeadlessConfig {
             pixel_format: "rgba8888".to_string(),
             bw1_polarity: "one_is_black".to_string(),
             dither: false,
-            target_fps: None,
             frame_message: "emerge_skia_frame".to_string(),
             prime: HeadlessPrimeConfig {
                 drm_node: None,
@@ -2180,6 +2178,7 @@ pub(crate) struct DrmCursorOverrideConfig {
 
 #[derive(rustler::NifMap)]
 struct StartOptsNif {
+    target_fps: Option<u32>,
     owner: Option<LocalPid>,
     backend: String,
     rendering_api: RenderingApiConfigNif,
@@ -2233,7 +2232,6 @@ struct HeadlessConfigNif {
     pixel_format: String,
     bw1_polarity: String,
     dither: bool,
-    target_fps: Option<u32>,
     frame_message: String,
     prime: HeadlessPrimeConfigNif,
 }
@@ -2331,6 +2329,16 @@ fn start_with_config(
     config: StartConfig,
     initial_log_target: Option<LocalPid>,
 ) -> NifResult<ResourceArc<RendererResource>> {
+    if config.target_fps == Some(0) {
+        return Err(rustler::Error::Term(Box::new(
+            "target_fps must be positive",
+        )));
+    }
+    if config.target_fps.is_some() && !matches!(config.backend.as_str(), "headless" | "wayland") {
+        return Err(rustler::Error::Term(Box::new(
+            "frame caps are supported only by headless and Wayland outputs",
+        )));
+    }
     ensure_rendering_api_supported(config.backend, config.rendering_api)
         .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
     ensure_compiled_runner_dispatch(config.backend, config.rendering_api.kind)
@@ -2579,6 +2587,7 @@ fn start_native_renderer_with_config(
             let latest_frame_clone = Arc::clone(&latest_frame);
             let video_registry_clone = Arc::clone(&video_registry);
             let wayland_config = WaylandConfig {
+                target_fps: config.target_fps,
                 title: config.title,
                 width: config.width,
                 height: config.height,
@@ -3016,6 +3025,7 @@ fn start(
             StartConfig {
                 startup_deadline: Instant::now() + Duration::from_secs(15),
                 owner: None,
+                target_fps: None,
                 backend: BackendKind::Wayland,
                 rendering_api: RenderingApiConfig::default(),
                 requested_rendering_api: RenderingApi::Auto,
@@ -3099,6 +3109,7 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
         StartConfig {
             startup_deadline: Instant::now() + Duration::from_secs(15),
             owner,
+            target_fps: opts.target_fps,
             backend,
             rendering_api,
             requested_rendering_api: rendering_api.kind,
@@ -3130,7 +3141,6 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
                 pixel_format: opts.headless.pixel_format,
                 bw1_polarity: opts.headless.bw1_polarity,
                 dither: opts.headless.dither,
-                target_fps: opts.headless.target_fps,
                 frame_message: opts.headless.frame_message,
                 prime: HeadlessPrimeConfig {
                     drm_node: opts.headless.prime.drm_node,

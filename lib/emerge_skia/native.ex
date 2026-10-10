@@ -190,13 +190,13 @@ defmodule EmergeSkia.Native do
               required(:max_stale_frames) => non_neg_integer()
             }
           },
+          required(:target_fps) => pos_integer() | nil,
           required(:headless) => %{
             required(:target) => pid() | nil,
             required(:mode) => String.t(),
             required(:pixel_format) => String.t(),
             required(:bw1_polarity) => String.t(),
             required(:dither) => boolean(),
-            required(:target_fps) => pos_integer() | nil,
             required(:frame_message) => String.t(),
             required(:prime) => %{
               required(:max_in_flight) => pos_integer(),

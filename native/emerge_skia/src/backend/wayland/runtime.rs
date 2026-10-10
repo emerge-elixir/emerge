@@ -62,6 +62,7 @@ use crate::{
     InputTargetRelay, LatestFrameStore, RasterPresentKind, RenderingApi,
     actors::{AnimationFrameTrace, AnimationPulseTrace, EventMsg, RenderMsg, TreeMsg},
     backend::{
+        cadence::{FramePacer, FrameRateControl},
         raster::{RasterBackend, RasterConfig},
         wake::{
             BackendWake, BackendWakeHandle, WindowBackendStartupInfo, WindowBackendStartupResult,
@@ -106,10 +107,14 @@ const RENDER_PROFILE_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
 struct WaylandWake {
+    frame_rate: FrameRateControl,
+    frame_rate_ping: calloop::ping::Ping,
+    running_flag: Arc<AtomicBool>,
     tx: calloop::channel::Sender<WakeAction>,
 }
 
 struct WaylandAppRuntime {
+    frame_rate: FrameRateControl,
     running_flag: Arc<AtomicBool>,
     tree_tx: CrossbeamSender<TreeMsg>,
     event_tx: crossbeam_channel::Sender<EventMsg>,
@@ -535,6 +540,14 @@ fn key_text_commit_event(
 }
 
 impl BackendWake for WaylandWake {
+    fn set_frame_rate(&self, fps: Option<u32>) -> Result<(), String> {
+        if !self.running_flag.load(Ordering::Acquire) {
+            return Err("window event loop stopped".into());
+        }
+        self.frame_rate.set(fps)?;
+        self.frame_rate_ping.ping();
+        Ok(())
+    }
     fn set_title(&self, title: String) -> Result<(), String> {
         self.tx
             .send(WakeAction::Title(title))
@@ -607,6 +620,7 @@ pub(super) struct WaylandApp {
     pending_pipeline_submitted_at: Option<std::time::Instant>,
     pending_pipeline_swap_done_at: Option<std::time::Instant>,
     gpu_acquire_retry_scheduled: bool,
+    frame_pacer: FramePacer,
     startup_error: Option<String>,
 }
 
@@ -645,6 +659,7 @@ impl WaylandApp {
         window.commit();
 
         let WaylandAppRuntime {
+            frame_rate,
             running_flag,
             tree_tx,
             event_tx,
@@ -720,6 +735,7 @@ impl WaylandApp {
             pending_pipeline_submitted_at: None,
             pending_pipeline_swap_done_at: None,
             gpu_acquire_retry_scheduled: false,
+            frame_pacer: FramePacer::new(frame_rate),
             startup_error: None,
         };
 
@@ -958,7 +974,11 @@ impl WaylandApp {
         let mut latest_scene_from_patch = false;
         let mut cursor_count = 0_u32;
 
-        while let Ok(msg) = self.render_rx.try_recv() {
+        // Bound draining so continuous scene traffic cannot monopolize dispatch.
+        for _ in 0..64 {
+            let Ok(msg) = self.render_rx.try_recv() else {
+                break;
+            };
             match msg {
                 RenderMsg::Scene {
                     scene,
@@ -983,7 +1003,10 @@ impl WaylandApp {
                         eprintln!("video target visibility update failed: {error}");
                     }
                     self.render_state.render_version = version;
-                    self.render_state.pipeline_submitted_at = pipeline_submitted_at;
+                    self.render_state.pipeline_submitted_at = earliest_pipeline_instant(
+                        self.render_state.pipeline_submitted_at,
+                        pipeline_submitted_at,
+                    );
                     self.render_state.pipeline_render_queued_at = pipeline_render_queued_at;
                     self.render_state.animate = animate;
                     self.render_animation_trace = animation_trace;
@@ -1011,13 +1034,6 @@ impl WaylandApp {
                             ),
                         );
                     }
-                    if let Some(stats) = self.stats.as_ref() {
-                        stats.record_pipeline_draw_started(
-                            pipeline_render_queued_at,
-                            std::time::Instant::now(),
-                        );
-                    }
-
                     if self.text_input.update_render_state(
                         ime_enabled,
                         ime_cursor_area,
@@ -1129,11 +1145,7 @@ impl WaylandApp {
         self.reconfigure_surface_geometry(conn);
     }
 
-    fn maybe_draw(&mut self) {
-        if self.gpu_acquire_retry_scheduled {
-            return;
-        }
-
+    fn render_readiness(&self) -> (bool, bool) {
         let allow_late_replacement = self
             .env
             .as_ref()
@@ -1143,6 +1155,28 @@ impl WaylandApp {
             RenderingApi::Raster => self.raster_env.is_some(),
             RenderingApi::Auto | RenderingApi::Metal => false,
         };
+        (env_ready, allow_late_replacement)
+    }
+
+    fn dispatch_timeout(&self) -> Duration {
+        let (ready, late) = self.render_readiness();
+        let work_ready = !self.gpu_acquire_retry_scheduled
+            && matches!(
+                frame_draw_decision(&self.present, ready, self.exit, late),
+                DrawDecision::Draw(_)
+            );
+        self.frame_pacer.dispatch_timeout(
+            work_ready,
+            Instant::now(),
+            WAYLAND_DISPATCH_STOP_POLL_INTERVAL,
+        )
+    }
+
+    fn maybe_draw(&mut self) {
+        if self.gpu_acquire_retry_scheduled {
+            return;
+        }
+        let (env_ready, allow_late_replacement) = self.render_readiness();
         let decision =
             frame_draw_decision(&self.present, env_ready, self.exit, allow_late_replacement);
 
@@ -1154,6 +1188,14 @@ impl WaylandApp {
 
         self.diagnostics.last_present_skip_log_key = None;
 
+        let now = Instant::now();
+        if self.frame_pacer.render_at(now) > now {
+            return;
+        }
+        self.frame_pacer.started(now);
+        if let Some(stats) = self.stats.as_ref() {
+            stats.record_pipeline_draw_started(self.render_state.pipeline_render_queued_at, now);
+        }
         self.draw(draw_kind);
     }
 
@@ -1895,6 +1937,10 @@ impl WaylandApp {
         presented_at: std::time::Instant,
         predicted_next_present_at: std::time::Instant,
     ) {
+        // Predict the next admissible application frame without changing the
+        // compositor-derived physical refresh estimate or presentation timing.
+        let predicted_next_present_at =
+            predicted_next_present_at.max(self.frame_pacer.render_at(Instant::now()));
         self.animation_pulse_sequence = self.animation_pulse_sequence.wrapping_add(1);
         let trace = AnimationPulseTrace {
             sequence: self.animation_pulse_sequence,
@@ -2514,7 +2560,11 @@ impl CompositorHandler for WaylandApp {
         }
         let nominal_display_interval = self.nominal_display_interval();
         let previous_estimated_interval = self.present.estimated_frame_interval();
-        self.present.frame_callback_received(received_at, time);
+        self.present.frame_callback_received(
+            received_at,
+            time,
+            !self.frame_pacer.control.is_capped(),
+        );
         self.reap_video_cleanup_before_redraw();
         if let Some(interval) = nominal_display_interval {
             self.present.set_frame_interval(interval);
@@ -3137,8 +3187,38 @@ pub(crate) fn run(args: WaylandRunArgs) {
         native_log.info("wayland_render", "render diagnostics watchdog inserted");
     }
 
+    let (frame_rate, control_rx) = FrameRateControl::new(config.target_fps);
+    let (frame_rate_ping, rate_source) = match calloop::ping::make_ping() {
+        Ok(pair) => pair,
+        Err(err) => {
+            fail_startup(
+                &proxy_tx,
+                &running_flag,
+                &event_tx,
+                format!("failed to create frame-rate wake: {err}"),
+            );
+            return;
+        }
+    };
+    if let Err(err) = loop_handle.insert_source(rate_source, move |(), _, state| {
+        let _ = control_rx.try_recv();
+        state.present.reset_frame_interval_observation();
+        state.watchdog.mark_wake();
+        // Wake dispatch only. A cap update does not make static content dirty.
+    }) {
+        fail_startup(
+            &proxy_tx,
+            &running_flag,
+            &event_tx,
+            format!("failed to insert frame-rate wake: {err}"),
+        );
+        return;
+    }
     let wake = BackendWakeHandle::new(WaylandWake {
         tx: wake_tx.clone(),
+        frame_rate: frame_rate.clone(),
+        frame_rate_ping,
+        running_flag: Arc::clone(&running_flag),
     });
     let watchdog = Arc::new(WaylandThreadWatchdogState::default());
 
@@ -3147,6 +3227,7 @@ pub(crate) fn run(args: WaylandRunArgs) {
         &globals,
         qh,
         WaylandAppRuntime {
+            frame_rate,
             running_flag: Arc::clone(&running_flag),
             tree_tx,
             event_tx: event_tx.clone(),
@@ -3281,8 +3362,7 @@ pub(crate) fn run(args: WaylandRunArgs) {
     while !app.exit {
         let dispatch_enter_wall_ms = current_wall_ms();
         app.watchdog.mark_dispatch_enter();
-        let dispatch_result =
-            event_loop.dispatch(Some(WAYLAND_DISPATCH_STOP_POLL_INTERVAL), &mut app);
+        let dispatch_result = event_loop.dispatch(Some(app.dispatch_timeout()), &mut app);
         let dispatch_exit_wall_ms = current_wall_ms();
         app.watchdog.mark_dispatch_exit();
 
@@ -3555,3 +3635,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "tests/frame_rate.rs"]
+mod frame_rate_tests;

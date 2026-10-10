@@ -148,16 +148,25 @@ defmodule EmergeSkia do
       when display != :on or not is_nil(backlight.brightness) or is_binary(backlight.device) ->
         raise ArgumentError, "DRM display/backlight control is not implemented yet"
 
-      %Emerge.Config.Headless{} ->
-        :ok
-
-      _ when not is_nil(config.renderer.target_fps) ->
-        raise ArgumentError, "target_fps is currently supported only by headless output"
-
       _ ->
         :ok
     end
+
+    if not is_nil(config.renderer.target_fps) and not supports_frame_cap?(config.output) do
+      raise ArgumentError,
+            "target_fps is currently supported only by headless and Wayland outputs"
+    end
+
+    :ok
   end
+
+  defp supports_frame_cap?(%Emerge.Config.Headless{}), do: true
+  defp supports_frame_cap?(%Emerge.Config.Window{backend: :wayland}), do: true
+
+  defp supports_frame_cap?(%Emerge.Config.Window{backend: :auto}),
+    do: EmergeSkia.BuildConfig.default_runtime_backend() == :wayland
+
+  defp supports_frame_cap?(_output), do: false
 
   @doc false
   def configure(renderer, previous, config) do
@@ -165,7 +174,7 @@ defmodule EmergeSkia do
 
     cond do
       previous.renderer.target_fps != config.renderer.target_fps and
-          not match?(%Emerge.Config.Headless{}, config.output) ->
+          not supports_frame_cap?(config.output) ->
         {:error, {:unsupported_live_config, :target_fps}}
 
       match?(%Emerge.Config.DRM{}, config.output) and previous.output != config.output ->

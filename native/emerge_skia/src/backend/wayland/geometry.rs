@@ -131,6 +131,7 @@ mod tests {
     fn surface_to_buffer_position_scales_integer_factor() {
         let mut geometry = SurfaceGeometry::new(&WaylandConfig {
             title: "test".to_string(),
+            target_fps: None,
             width: 100,
             height: 80,
         });
@@ -147,6 +148,7 @@ mod tests {
     fn surface_to_buffer_position_scales_fractional_factor() {
         let mut geometry = SurfaceGeometry::new(&WaylandConfig {
             title: "test".to_string(),
+            target_fps: None,
             width: 100,
             height: 100,
         });
@@ -163,6 +165,7 @@ mod tests {
     fn surface_to_buffer_position_uses_actual_buffer_ratio_for_rounded_fractional_size() {
         let mut geometry = SurfaceGeometry::new(&WaylandConfig {
             title: "test".to_string(),
+            target_fps: None,
             width: 101,
             height: 100,
         });
@@ -179,6 +182,7 @@ mod tests {
     fn surface_to_buffer_delta_uses_actual_buffer_ratio_for_fractional_size() {
         let mut geometry = SurfaceGeometry::new(&WaylandConfig {
             title: "test".to_string(),
+            target_fps: None,
             width: 101,
             height: 100,
         });

@@ -146,11 +146,6 @@ pub(crate) fn start_renderer_with_config(
     config: StartConfig,
     initial_log_target: Option<LocalPid>,
 ) -> NifResult<ResourceArc<RendererResource>> {
-    if config.headless.target_fps == Some(0) {
-        return Err(rustler::Error::Term(Box::new(
-            "target_fps must be positive",
-        )));
-    }
     let mode = HeadlessMode::parse(&config.headless.mode)
         .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
     if config.headless.dither
@@ -204,7 +199,7 @@ pub(crate) fn start_renderer_with_config(
         log_render: config.render_log,
     };
 
-    let (frame_rate, control_rx) = FrameRateControl::new(config.headless.target_fps);
+    let (frame_rate, control_rx) = FrameRateControl::new(config.target_fps);
     let backend_wake = BackendWakeHandle::new(HeadlessBackendWake {
         tree_tx: tree_tx.clone(),
         frame_rate: frame_rate.clone(),

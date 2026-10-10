@@ -29,11 +29,11 @@ defmodule Emerge.Config do
   ## Implementation status
 
   This is the in-progress 0.5 contract. Native live updates currently support
-  input subscriptions and Wayland/macOS titles. Other fields are startup-only unless
-  explicitly supported by an adapter. DRM display/backlight controls and live
-  frame-rate/output changes remain unfinished: explicit unsupported controls
-  report errors, not successful hardware application. Backlight `:auto` does
-  not yet manage a device. `target_fps` currently works only at headless startup.
+  input subscriptions, Wayland/macOS titles, and headless/Wayland frame caps.
+  Other fields are startup-only unless explicitly supported by an adapter.
+  DRM display/backlight/output changes and DRM/macOS frame caps remain unfinished:
+  explicit unsupported controls report errors, not successful hardware application.
+  Backlight `:auto` does not yet manage a device.
   """
 
   alias Emerge.Config.{Assets, Diagnostics, Input, Renderer, Runtime, Window}

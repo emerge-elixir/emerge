@@ -77,6 +77,8 @@ defmodule EmergeSkia.Options do
       owner: normalize_owner!(Keyword.get(opts, :owner)),
       backend: backend,
       rendering_api: rendering_api,
+      target_fps:
+        opts |> Keyword.get(:target_fps) |> normalize_optional_positive_integer!(":target_fps"),
       title: Keyword.get(opts, :title, "Emerge"),
       width: Keyword.get(opts, :width, 800),
       height: Keyword.get(opts, :height, 600),
@@ -416,10 +418,6 @@ defmodule EmergeSkia.Options do
         opts
         |> Keyword.get(:dither, false)
         |> normalize_boolean!(":headless.dither"),
-      target_fps:
-        opts
-        |> Keyword.get(:target_fps)
-        |> normalize_optional_positive_integer!(":headless.target_fps"),
       frame_message:
         opts
         |> Keyword.get(:frame_message, :emerge_skia_frame)
