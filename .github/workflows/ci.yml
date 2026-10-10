@@ -136,6 +136,18 @@ jobs:
         if: ${{ matrix.rust == '1.91.0' && matrix.minimum != true }}
         run: bash scripts/check-package.sh
 
+      - name: Verify all DRM profiles embed FreeType
+        if: ${{ matrix.rust == 'stable' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for features in drm-core drm-raster drm drm-vulkan drm-all wayland,drm wayland-all,drm-all; do
+            cargo tree --manifest-path native/emerge_skia/Cargo.toml --locked \
+              --no-default-features --features "$features" --edges normal,features --invert skia-safe \
+              > /tmp/drm-font-features.txt
+            grep -F 'skia-safe feature "embed-freetype"' /tmp/drm-font-features.txt
+          done
+
       - name: Validate CPU-only DRM without GPU dependencies
         if: ${{ matrix.rust == 'stable' }}
         shell: bash
