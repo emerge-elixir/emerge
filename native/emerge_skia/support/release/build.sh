@@ -4,7 +4,7 @@
 set -euo pipefail
 
 target="${1:?Rust target required}"
-profile="${2:?raster or opengl required}"
+profile="${2:?raster, drm_raster or opengl required}"
 version="${3:?version required}"
 nif_version="${4:-2.15}"
 target_args=(--target "$target")
@@ -25,6 +25,7 @@ case "$target" in
 esac
 case "$profile" in
   raster) features=embedded-cpu; suffix="" ;;
+  drm_raster) features=drm-raster; suffix=--drm_raster ;;
   opengl) features=drm,embedded-cpu; suffix=--opengl ;;
   *) echo "Unsupported embedded release profile: $profile" >&2; exit 1 ;;
 esac
