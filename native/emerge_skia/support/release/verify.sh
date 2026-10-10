@@ -2,7 +2,7 @@
 set -euo pipefail
 artifact="${1:?shared library required}"
 target="${2:?Rust target required}"
-profile="${3:?raster or opengl required}"
+profile="${3:?raster, drm_raster or opengl required}"
 export LC_ALL=C
 header="$(readelf --file-header "$artifact")"
 deps="$(readelf --dynamic "$artifact")"
@@ -30,8 +30,9 @@ if grep -Eq 'NEEDED.*(fontconfig|freetype)' <<<"$deps" ||
   echo 'Embedded artifact requires system fontconfig/FreeType' >&2; exit 1
 fi
 case "$profile" in
-  raster)
-    if grep -Eq 'NEEDED.*(EGL|GLES|GL|gbm|drm|wayland)' <<<"$deps"; then
+  raster|drm_raster)
+    # The Rust DRM crate uses ioctls directly; even libdrm is unnecessary.
+    if grep -Eq 'NEEDED.*(EGL|GLES|GL|gbm|drm|vulkan|wayland|xkbcommon|libX11)' <<<"$deps"; then
       echo 'Raster artifact requires a GPU/desktop library' >&2; exit 1
     fi ;;
   opengl) ;;

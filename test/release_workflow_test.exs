@@ -35,8 +35,43 @@ defmodule Emerge.ReleaseWorkflowTest do
       )
 
     assert artifacts =~ "#{package}/images/rootfs.squashfs"
-    assert artifacts =~ "for profile in drm drm_vulkan drm_all; do"
+    assert artifacts =~ "for profile in drm drm_vulkan drm_all drm_raster; do"
     assert artifacts =~ ~s(sudo chroot "$root" /emerge-smoke/load-nif)
+  end
+
+  test "CPU DRM has a separate artifact on every supported Linux target" do
+    artifacts = File.read!(Path.join(@workflows, "build_release_artifacts.yml"))
+
+    for {platform, target} <- [
+          {"linux", "x86_64-unknown-linux-gnu"},
+          {"linux_aarch64", "aarch64-unknown-linux-gnu"},
+          {"linux_armv7", "armv7-unknown-linux-gnueabihf"},
+          {"linux_musl", "x86_64-unknown-linux-musl"},
+          {"linux_riscv64", "riscv64gc-unknown-linux-gnu"}
+        ] do
+      [block] =
+        Regex.run(
+          ~r/          - name: #{platform}_drm_raster\n.*?(?=          - name:)/s,
+          artifacts
+        )
+
+      assert block =~ "target: #{target}"
+      assert block =~ ~s(variant: "drm_raster")
+
+      if platform in ["linux_musl", "linux_riscv64"] do
+        assert block =~ "profile: drm_raster"
+      else
+        assert block =~ "--no-default-features --features drm-raster"
+        assert block =~ "embedded_skia: true"
+        refute block =~ "raster_only: true"
+      end
+    end
+
+    assert artifacts =~ "matrix.job.variant == 'drm_raster'"
+    assert artifacts =~ "CPU DRM artifact enables a GPU/window-system dependency"
+
+    build = File.read!(Path.expand("../native/emerge_skia/support/release/build.sh", __DIR__))
+    assert build =~ "drm_raster) features=drm-raster; suffix=--drm_raster"
   end
 
   test "Linux Cargo cache saves and restores stay within the same matrix job" do

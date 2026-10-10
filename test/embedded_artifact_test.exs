@@ -24,11 +24,14 @@ defmodule Emerge.EmbeddedArtifactTest do
     end
   end
 
-  test "raster forbids GPU libraries and Vulkan-only forbids GL" do
-    assert :ok = validate(["libc.so.6"], "raster")
+  test "headless and DRM raster forbid GPU and desktop libraries; Vulkan-only forbids GL" do
+    for profile <- ~w(raster drm_raster) do
+      assert :ok = validate(["libc.so.6", "libstdc++.so.6"], profile)
 
-    for library <- ~w(libgbm.so.1 libdrm.so.2 libEGL.so.1 libvulkan.so.1) do
-      assert_raise ArgumentError, fn -> validate([library], "raster") end
+      for library <-
+            ~w(libgbm.so.1 libdrm.so.2 libEGL.so.1 libGL.so.1 libGLESv2.so.2 libvulkan.so.1 libwayland-client.so.0 libxkbcommon.so.0 libX11.so.6 libfontconfig.so.1 libfreetype.so.6) do
+        assert_raise ArgumentError, fn -> validate(["libc.so.6", library], profile) end
+      end
     end
 
     assert_raise ArgumentError, fn -> validate(["libEGL.so.1"], "drm_vulkan") end

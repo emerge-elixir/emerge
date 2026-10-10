@@ -32,7 +32,7 @@ defmodule Emerge.Mix.EmbeddedArtifact do
   def validate!(header, dynamic, symbols, target, profile) do
     {class, machine, loader} = Map.fetch!(@targets, target)
 
-    unless profile in ~w(raster drm drm_vulkan drm_all opengl),
+    unless profile in ~w(raster drm_raster drm drm_vulkan drm_all opengl),
       do: raise(ArgumentError, "Unsupported embedded profile: #{profile}")
 
     require_match!(header, ~r/Class:\s+#{class}\s/, "ELF class")
@@ -48,7 +48,7 @@ defmodule Emerge.Mix.EmbeddedArtifact do
 
     graphics =
       case profile do
-        "raster" -> []
+        profile when profile in ~w(raster drm_raster) -> []
         "drm_vulkan" -> ~w(libgbm.so.1 libdrm.so.2 libvulkan.so.1)
         _ -> @graphics
       end
