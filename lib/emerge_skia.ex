@@ -164,18 +164,31 @@ defmodule EmergeSkia do
     Emerge.Config.Changes.validate!(previous, config)
 
     cond do
-      previous.renderer.target_fps != config.renderer.target_fps ->
+      previous.renderer.target_fps != config.renderer.target_fps and
+          not match?(%Emerge.Config.Headless{}, config.output) ->
         {:error, {:unsupported_live_config, :target_fps}}
 
       match?(%Emerge.Config.DRM{}, config.output) and previous.output != config.output ->
         {:error, {:unsupported_live_config, :drm_output}}
 
       true ->
-        with :ok <- configure_title(renderer, previous.output, config.output) do
+        with :ok <-
+               configure_frame_rate(
+                 renderer,
+                 previous.renderer.target_fps,
+                 config.renderer.target_fps
+               ),
+             :ok <- configure_title(renderer, previous.output, config.output) do
           transport = Transport.for_renderer(renderer)
           transport.set_input_mask(renderer, Emerge.Config.Native.input_mask(config.input))
         end
     end
+  end
+
+  defp configure_frame_rate(_renderer, fps, fps), do: :ok
+
+  defp configure_frame_rate(renderer, _previous, fps) do
+    renderer |> Transport.Native.native_renderer() |> Native.set_frame_rate(fps)
   end
 
   defp configure_title(_renderer, output, output), do: :ok

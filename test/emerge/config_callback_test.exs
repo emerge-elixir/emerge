@@ -82,13 +82,20 @@ defmodule Emerge.ConfigCallbackTest do
     def mount(opts) do
       observer = Keyword.fetch!(opts, :observer)
       output = %Config.Headless{target: observer, size: {8, 8}}
-      {:ok, %{observer: observer, events: []}, %Config{output: output, renderer: [api: :raster]}}
+
+      {:ok, %{observer: observer, events: [], fps: nil},
+       %Config{output: output, renderer: [api: :raster]}}
     end
 
-    def config(%Config{input: %Config.Input{} = input} = previous, state) do
+    def config(
+          %Config{input: %Config.Input{} = input, renderer: %Config.Renderer{} = rendering} =
+            previous,
+          state
+        ) do
       send(state.observer, {:native_previous, previous})
       input = %Config.Input{input | events: state.events}
-      %Config{previous | input: input}
+      rendering = %Config.Renderer{rendering | target_fps: state.fps}
+      %Config{previous | input: input, renderer: rendering}
     end
 
     def render(state) do
@@ -98,6 +105,9 @@ defmodule Emerge.ConfigCallbackTest do
 
     def handle_info({:events, events}, state),
       do: {:noreply, Viewport.rerender(%{state | events: events})}
+
+    def handle_info({:fps, fps}, state),
+      do: {:noreply, Viewport.rerender(%{state | fps: fps})}
   end
 
   defmodule StatelessScreen do
@@ -134,10 +144,17 @@ defmodule Emerge.ConfigCallbackTest do
     runtime = :sys.get_state(pid).__emerge__
     assert runtime.config.input.events == [:key]
     assert :sys.get_state(runtime.lifecycle).config.config.input.events == [:key]
+    send(pid, {:fps, 30})
+    assert_receive {:native_previous, previous}
+    assert previous.renderer.target_fps == nil
+    assert_receive :native_rendered
+    assert Emerge.renderer(pid) == renderer
+    assert :sys.get_state(runtime.lifecycle).config.config.renderer.target_fps == 30
     assert :ok = EmergeSkia.stop(renderer)
     Emerge.Runtime.Viewport.Lifecycle.check(runtime.lifecycle)
     assert_receive {:native_previous, previous}, 3_000
     assert previous.input.events == [:key]
+    assert previous.renderer.target_fps == 30
     assert_receive :native_rendered
     assert Emerge.renderer(pid) != renderer
     assert Process.alive?(pid)
