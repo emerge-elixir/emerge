@@ -1821,9 +1821,9 @@ fn raster_present_capabilities(backend: BackendKind) -> Vec<&'static str> {
         #[cfg(all(feature = "drm-core", target_os = "linux"))]
         BackendKind::Drm => {
             if cfg!(feature = "drm") {
-                vec!["gpu_upload"]
+                vec!["gpu_upload", "cpu"]
             } else {
-                Vec::new()
+                vec!["cpu"]
             }
         }
         BackendKind::Headless => Vec::new(),
@@ -1834,8 +1834,16 @@ fn raster_present_capabilities(backend: BackendKind) -> Vec<&'static str> {
     all(feature = "wayland-core", target_os = "linux"),
     all(feature = "drm-core", target_os = "linux")
 ))]
-fn selected_rendering_api_for_config(config: RenderingApiConfig) -> RenderingApi {
+fn selected_rendering_api_for_config(
+    backend: BackendKind,
+    config: RenderingApiConfig,
+) -> RenderingApi {
+    let _ = backend;
     match config.kind {
+        #[cfg(all(feature = "drm-core", target_os = "linux"))]
+        RenderingApi::Auto if matches!(backend, BackendKind::Drm) && !cfg!(feature = "drm") => {
+            RenderingApi::Raster
+        }
         RenderingApi::Auto => RenderingApi::OpenGl,
         explicit => explicit,
     }
@@ -2438,7 +2446,17 @@ fn start_native_renderer_with_config(
     config: StartConfig,
     initial_log_target: Option<LocalPid>,
 ) -> NifResult<ResourceArc<RendererResource>> {
-    let auto_raster_fallback = auto_raster_fallback_config(&config);
+    let mut config = config;
+    let selected_rendering_api =
+        selected_rendering_api_for_config(config.backend, config.rendering_api);
+    if selected_rendering_api == RenderingApi::Raster && !config.renderer_cache_enabled_configured {
+        config.renderer_cache_config.enabled = false;
+    }
+    let auto_raster_fallback = if selected_rendering_api == RenderingApi::OpenGl {
+        auto_raster_fallback_config(&config)
+    } else {
+        None
+    };
     let fallback_log_target = initial_log_target;
     let asset_runtime = Arc::new(AssetRuntime::new());
     let lifecycle = config
@@ -2462,7 +2480,6 @@ fn start_native_renderer_with_config(
     let renderer_stats = (config.stats_enabled || config.renderer_stats_log)
         .then(|| Arc::new(RendererStatsCollector::new()));
     let backend_label = backend_stats_label(config.backend);
-    let selected_rendering_api = selected_rendering_api_for_config(config.rendering_api);
     let renderer_cache =
         renderer_cache_status(selected_rendering_api, config.renderer_cache_config);
     let rendering_api_label = RendererRuntimeInfo {
@@ -3733,7 +3750,7 @@ fn capture_renderer_frame(
     renderer: &RendererResource,
     opts: &ScreenshotOptsNif,
 ) -> Result<LatestFrameSnapshot, String> {
-    let frame = if uses_on_demand_gpu_capture(&renderer.info) {
+    let frame = if uses_on_demand_capture(&renderer.info) {
         if !renderer.running_flag.load(Ordering::Acquire) {
             return Err("renderer is not running".to_string());
         }
@@ -3751,7 +3768,14 @@ fn capture_renderer_frame(
     capture_latest_frame(frame, opts)
 }
 
-fn uses_on_demand_gpu_capture(info: &RendererRuntimeInfo) -> bool {
+fn uses_on_demand_capture(info: &RendererRuntimeInfo) -> bool {
+    #[cfg(all(feature = "drm-core", target_os = "linux"))]
+    if matches!(info.backend, BackendKind::Drm)
+        && info.selected_rendering_api == RenderingApi::Raster
+    {
+        return info.raster_present != RasterPresentKind::GpuUpload;
+    }
+
     if !matches!(
         info.selected_rendering_api,
         RenderingApi::OpenGl | RenderingApi::Vulkan
@@ -4728,7 +4752,33 @@ mod tests {
         assert_eq!(node.path, "/dev/dri/renderD128");
         assert_eq!(node.match_field, "render");
         assert_eq!((node.major, node.minor), (226, 128));
-        assert!(uses_on_demand_gpu_capture(&runtime));
+        assert!(uses_on_demand_capture(&runtime));
+    }
+
+    #[cfg(all(feature = "drm-core", target_os = "linux"))]
+    #[test]
+    fn drm_cpu_raster_uses_on_demand_capture_but_gpu_upload_retains_snapshots() {
+        let mut runtime = RendererRuntimeInfo {
+            backend: BackendKind::Drm,
+            requested_rendering_api: RenderingApi::Raster,
+            selected_rendering_api: RenderingApi::Raster,
+            raster_present: RasterPresentKind::Auto,
+            renderer_cache: RendererCacheStatus::disabled("raster_renderer"),
+            screenshot_supported: true,
+            prime_video_supported: false,
+            prime_video_formats: Vec::new(),
+            #[cfg(feature = "vulkan")]
+            vulkan_device: None,
+        };
+        for present in [RasterPresentKind::Auto, RasterPresentKind::Cpu] {
+            runtime.raster_present = present;
+            assert!(uses_on_demand_capture(&runtime));
+        }
+        runtime.raster_present = RasterPresentKind::GpuUpload;
+        assert!(!uses_on_demand_capture(&runtime));
+        runtime.backend = BackendKind::Headless;
+        runtime.raster_present = RasterPresentKind::Auto;
+        assert!(!uses_on_demand_capture(&runtime));
     }
 
     #[test]
@@ -5340,6 +5390,40 @@ mod tests {
 
     #[cfg(all(feature = "drm-core", target_os = "linux"))]
     #[test]
+    fn rendering_api_matrix_allows_drm_raster_without_gpu_presentation() {
+        for kind in [RenderingApi::Auto, RenderingApi::Raster] {
+            for raster_present in [RasterPresentKind::Auto, RasterPresentKind::Cpu] {
+                assert!(
+                    ensure_drm_rendering_api_supported(RenderingApiConfig {
+                        kind,
+                        raster_present,
+                        raster_present_configured: true,
+                    })
+                    .is_ok()
+                );
+            }
+            assert_eq!(
+                ensure_drm_rendering_api_supported(RenderingApiConfig {
+                    kind,
+                    raster_present: RasterPresentKind::GpuUpload,
+                    raster_present_configured: true,
+                })
+                .is_ok(),
+                cfg!(feature = "drm")
+            );
+        }
+        assert_eq!(
+            ensure_drm_rendering_api_supported(RenderingApiConfig {
+                kind: RenderingApi::OpenGl,
+                ..RenderingApiConfig::default()
+            })
+            .is_ok(),
+            cfg!(feature = "drm")
+        );
+    }
+
+    #[cfg(all(feature = "drm-core", target_os = "linux"))]
+    #[test]
     fn rendering_api_matrix_rejects_metal_on_drm() {
         let err = ensure_rendering_api_supported(
             BackendKind::Drm,
@@ -5528,8 +5612,12 @@ mod tests {
 
     #[cfg(all(feature = "drm-core", not(feature = "drm"), target_os = "linux"))]
     #[test]
-    fn vulkan_only_drm_reports_no_raster_presentation() {
-        assert!(raster_present_capabilities(BackendKind::Drm).is_empty());
+    fn gpu_free_drm_reports_cpu_raster_presentation() {
+        assert_eq!(raster_present_capabilities(BackendKind::Drm), ["cpu"]);
+        assert_eq!(
+            selected_rendering_api_for_config(BackendKind::Drm, RenderingApiConfig::default()),
+            RenderingApi::Raster
+        );
     }
 
     #[cfg(any(
@@ -5881,6 +5969,11 @@ fn ensure_wayland_rendering_api_supported(config: RenderingApiConfig) -> Result<
 #[cfg(all(feature = "drm-core", target_os = "linux"))]
 fn ensure_drm_rendering_api_supported(config: RenderingApiConfig) -> Result<(), String> {
     match config.kind {
+        RenderingApi::Auto | RenderingApi::Raster
+            if config.raster_present != RasterPresentKind::GpuUpload =>
+        {
+            Ok(())
+        }
         RenderingApi::Auto | RenderingApi::OpenGl | RenderingApi::Raster
             if cfg!(feature = "drm") =>
         {

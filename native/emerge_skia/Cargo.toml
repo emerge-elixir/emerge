@@ -106,12 +106,14 @@ wayland = ["wayland-core", "headless-opengl"]
 # Vulkan-only Wayland build. Use wayland-all when runtime OpenGL fallback is required.
 wayland-vulkan = ["wayland-core", "vulkan", "dep:ash-window"]
 wayland-all = ["wayland", "wayland-vulkan"]
-drm-core = ["dep:drm", "dep:evdev", "dep:gbm"]
+# CPU KMS presentation must not pull in GBM, EGL, or any GPU driver.
+drm-core = ["dep:drm", "dep:evdev"]
+drm-raster = ["drm-core"]
 # Compatibility feature: DRM continues to mean the existing OpenGL backend.
 drm = ["drm-core", "headless-opengl"]
 vulkan = ["video-interop-support", "dep:ash", "skia-safe/vulkan", "video-interop/vulkan"]
 # Vulkan-only DRM/KMS build. Use drm-all when runtime OpenGL fallback is required.
-drm-vulkan = ["drm-core", "vulkan"]
+drm-vulkan = ["drm-core", "vulkan", "dep:gbm"]
 drm-all = ["drm", "drm-vulkan"]
 
 [dependencies]
