@@ -128,6 +128,19 @@ endpoints accept pixels, content, fill and weighted fill in any pairing. `min` a
 keyframes and change policies. Other animated properties retain their existing
 shape-compatibility checks.
 
+Controlled-scroll attributes use new tags; legacy pixel-offset tags `38`/`39`
+retain their old encoding and are not reinterpreted as fractions:
+
+- `85`: `scroll_position_x`
+- `86`: `scroll_position_y`
+- `87`: `on_scroll` event presence (boolean)
+
+Position payloads are `0:u8 + fraction:f64be` (finite, in `[0, 1]`) or
+`1:u8 + declaration:u64be + target_node_id:u64be`. Zero target ID denotes an
+unresolved key. Semantic Elixir key terms never cross the wire. Declaration
+identity is independent of target-node resolution; native patch ingestion assigns
+mount-scoped per-axis proposal sequence IDs only when the declaration changes.
+
 Tag `84` encodes `animate_change`, separate from the ordinary target attributes:
 
 ```text
