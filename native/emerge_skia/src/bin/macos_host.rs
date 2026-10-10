@@ -23,8 +23,9 @@ mod app {
         backend::{
             macos::protocol::{
                 DecodedFrame, FRAME_ERROR, FRAME_INIT, FRAME_INIT_OK, FRAME_NOTIFY, FRAME_REPLY,
-                FRAME_REQUEST, PROTOCOL_NAME, PROTOCOL_VERSION, decode_frame, decode_init_payload,
-                encode_frame, encode_init_ok_payload,
+                FRAME_REQUEST, PROTOCOL_NAME, PROTOCOL_VERSION, REQUEST_SET_WINDOW_TITLE,
+                decode_frame, decode_init_payload, decode_window_title, encode_frame,
+                encode_init_ok_payload,
             },
             present::PresentPredictionState,
         },
@@ -394,6 +395,11 @@ mod app {
             frame: emerge_skia::cpu_video::CpuVideoSubmission,
             reply_tx: std::sync::mpsc::Sender<HostReply>,
         },
+        SetWindowTitle {
+            session_id: u64,
+            title: String,
+            reply_tx: std::sync::mpsc::Sender<HostReply>,
+        },
         SetInputMask {
             session_id: u64,
             mask: u32,
@@ -441,6 +447,7 @@ mod app {
         UploadTree,
         PatchTree,
         SetInputMask,
+        SetWindowTitle,
         MeasureText {
             width: f32,
             line_height: f32,
@@ -1757,6 +1764,22 @@ mod app {
                         Ok(()) => HostReply::UploadTree,
                         Err(reason) => HostReply::Error(reason),
                     });
+                }
+                Ok(HostCommand::SetWindowTitle {
+                    session_id,
+                    title,
+                    reply_tx,
+                }) => {
+                    // Drained on the AppKit owner thread, never the socket reader.
+                    // Acknowledge only after changing the window.
+                    let reply = match ui_state.borrow().sessions.get(&session_id) {
+                        Some(session) => {
+                            session.window.setTitle(&NSString::from_str(&title));
+                            HostReply::SetWindowTitle
+                        }
+                        None => HostReply::Error(format!("unknown session_id {session_id}")),
+                    };
+                    let _ = reply_tx.send(reply);
                 }
                 Ok(HostCommand::SetInputMask {
                     session_id,
@@ -3620,6 +3643,25 @@ mod app {
                 },
                 HostReply::PatchTree,
             ),
+            REQUEST_SET_WINDOW_TITLE => {
+                let title = match decode_window_title(&frame.payload) {
+                    Ok(title) => title,
+                    Err(error) => {
+                        return encode_frame(
+                            FRAME_ERROR,
+                            frame.request_id,
+                            frame.session_id,
+                            frame.tag,
+                            error.as_bytes(),
+                        );
+                    }
+                };
+                roundtrip(command_tx, |reply_tx| HostCommand::SetWindowTitle {
+                    session_id: frame.session_id,
+                    title,
+                    reply_tx,
+                })
+            }
             REQUEST_SET_INPUT_MASK => {
                 if frame.payload.len() != 4 {
                     return encode_frame(
@@ -3810,6 +3852,9 @@ mod app {
             HostReply::UploadTree => encode_frame(FRAME_REPLY, request_id, session_id, tag, &[]),
             HostReply::PatchTree => encode_frame(FRAME_REPLY, request_id, session_id, tag, &[]),
             HostReply::SetInputMask => encode_frame(FRAME_REPLY, request_id, session_id, tag, &[]),
+            HostReply::SetWindowTitle => {
+                encode_frame(FRAME_REPLY, request_id, session_id, tag, &[])
+            }
             HostReply::MeasureText {
                 width,
                 line_height,

@@ -5,7 +5,8 @@
 #[cfg(all(feature = "drm-core", target_os = "linux"))]
 pub mod drm;
 pub mod headless;
-#[cfg(feature = "macos")]
+// The wire protocol is platform-independent and is exercised on Linux CI too.
+#[cfg(any(feature = "macos", test))]
 pub mod macos;
 pub mod present;
 pub mod raster;

@@ -180,8 +180,10 @@ defmodule EmergeSkia do
 
   defp configure_title(_renderer, output, output), do: :ok
 
-  defp configure_title(%Renderer{}, %Emerge.Config.Window{}, %Emerge.Config.Window{}),
-    do: {:error, {:unsupported_live_config, :macos_title}}
+  defp configure_title(%Renderer{} = renderer, %Emerge.Config.Window{}, %Emerge.Config.Window{
+         title: title
+       }),
+       do: EmergeSkia.Macos.Host.set_window_title(renderer, title)
 
   defp configure_title(renderer, %Emerge.Config.Window{}, %Emerge.Config.Window{title: title}),
     do: Native.set_window_title(renderer, title)

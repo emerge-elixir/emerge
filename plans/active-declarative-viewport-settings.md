@@ -11,7 +11,7 @@ Implemented:
 - Typed `%Emerge.Config{}` groups/output variants, defaults, named enum types, typed keyword shorthand and canonical normalized types.
 - Optional `config(previous)` / `config(previous, state)` callbacks; initial evaluation, replacement semantics, config-only updates and lifecycle replay.
 - Opt-in atom-list input subscriptions and typed callback payloads; removed public numeric mask helpers and legacy keyword/positional startup APIs.
-- Wayland title updates on its owning event-loop thread.
+- Live window titles on the Wayland event-loop thread and macOS AppKit thread. macOS protocol 17 acknowledges application and rejects stale host/session handles; socket/protocol tests cover errors and host loss.
 - All DRM presenters acknowledge resource readiness before first presentation. Explicit successful-upload readiness survives scene coalescing; resize, capture and cursor wakes cannot activate a placeholder. GL/GPU-upload raster also request a layout-scoped replay barrier on session recreation, rejecting queued stale scenes. Vulkan sleeps instead of spinning before upload. A valid empty tree counts as application content.
 - Migrated affected test fixtures and artifact smoke probe; added normalization, callback, config-only native recovery and upload-readiness tests.
 
@@ -19,10 +19,10 @@ Still required (not merely unverified):
 
 - Native desired/pending/applied revisions and completion reporting.
 - DRM backlight binding/ownership and sysfs control, display-off/on KMS transitions, native off-state work suppression, stale enable protection and safe mode/output reconfiguration.
-- Live frame caps and macOS title protocol support.
+- Live frame caps.
 - Remaining guides/demo migration, full input transport contract coverage, release version changes and hardware qualification.
 
-Unsupported explicit native display/backlight requests and non-headless frame caps currently raise rather than silently accepting intent. `backlight.device: :auto` does not yet manage a device. Live DRM output/frame-cap updates and macOS titles report unsupported. Off-state callback deferral is tested with a custom adapter; it is **not** native display-off support. The package version remains 0.4.2 until the remaining 0.5 release work is complete.
+Unsupported explicit native display/backlight requests and non-headless frame caps currently raise rather than silently accepting intent. `backlight.device: :auto` does not yet manage a device. Live DRM output/frame-cap updates report unsupported. Off-state callback deferral is tested with a custom adapter; it is **not** native display-off support. The package version remains 0.4.2 until the remaining 0.5 release work is complete.
 
 Validation so far: `mix test`, `cargo test`, DRM-raster-only Rust tests, full DRM Rust tests, and `./ci-tests.sh quality`. Hardware tests are opt-in and were not run; macOS was not built or qualified.
 

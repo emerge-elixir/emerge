@@ -2,7 +2,7 @@
 
 Implementation in progress. Parent: [declarative viewport config and progress](active-declarative-viewport-settings.md). The callback is `config`, not `settings`, and receives the previous config. Implemented arities: `config(previous_config)` or `config(previous_config, state)`.
 
-The structs, shorthand normalization, callbacks and typed input API now exist in `lib/emerge/config*` and `lib/emerge/input.ex`. This document retains the full target schema; **native DRM display/backlight control, live frame caps/output reconfiguration and macOS titles are still pending**. First-upload readiness across all DRM presenters and Wayland title updates are implemented; DRM hardware qualification is still pending. See the parent progress checklist before treating any field as supported hardware behavior.
+The structs, shorthand normalization, callbacks and typed input API now exist in `lib/emerge/config*` and `lib/emerge/input.ex`. This document retains the full target schema; **native DRM display/backlight control and live frame caps/output reconfiguration are still pending**. First-upload readiness across all DRM presenters and Wayland/macOS title updates are implemented; DRM hardware and macOS AppKit qualification are still pending. See the parent progress checklist before treating any field as supported hardware behavior.
 
 Target: **0.5.0**, intentionally breaking. Old options below are a migration reference, not a compatibility contract. No keyword-config conversion layer, deprecated aliases or public numeric-mask compatibility will be carried forward.
 

@@ -67,21 +67,112 @@ defmodule EmergeSkia.Macos.HostTest do
 
     assert Protocol.encode_init_payload() ==
              <<byte_size("emerge_skia_macos")::unsigned-big-16, "emerge_skia_macos",
-               16::unsigned-big-16>>
+               17::unsigned-big-16>>
   end
 
-  test "protocol rejects hosts without shared animation support" do
+  test "protocol rejects hosts without live title support" do
     reply = fn version ->
       <<byte_size("emerge_skia_macos")::unsigned-big-16, "emerge_skia_macos",
         version::unsigned-big-16, 123::unsigned-big-64, 456::unsigned-big-32>>
     end
 
-    assert {:ok, %{host_id: 123, host_pid: 456}} = Protocol.decode_init_ok_payload(reply.(16))
+    assert {:ok, %{host_id: 123, host_pid: 456}} = Protocol.decode_init_ok_payload(reply.(17))
 
-    for version <- [12, 13, 14, 15] do
+    for version <- [12, 13, 14, 15, 16] do
       assert {:error, "unsupported macOS host init response"} =
                Protocol.decode_init_ok_payload(reply.(version))
     end
+  end
+
+  test "window title wire payload uses UTF-8 byte length, including empty titles" do
+    assert Protocol.encode_window_title("Hello 🌍") == <<10::unsigned-big-32, "Hello 🌍">>
+    assert Protocol.encode_window_title("") == <<0::unsigned-big-32>>
+  end
+
+  test "title changes reject stale host identities, closed sessions and disconnected sockets" do
+    state = %{
+      host_id: 11,
+      sessions: %{1 => %{running: true}, 2 => %{running: false}},
+      socket: nil
+    }
+
+    for {host_id, session} <- [{10, 1}, {11, 2}, {11, 3}] do
+      assert {:reply, {:error, :stale_renderer}, ^state} =
+               Host.handle_call({:set_window_title, host_id, session, "new"}, self(), state)
+    end
+
+    assert {:reply, {:error, :host_not_connected}, ^state} =
+             Host.handle_call({:set_window_title, 11, 1, "new"}, self(), state)
+  end
+
+  test "title changes wait for a session-matched AppKit acknowledgement" do
+    {state, peer} = title_socket_state()
+    tag = make_ref()
+
+    {:noreply, pending} =
+      Host.handle_call({:set_window_title, 11, 1, "Hello 🌍"}, {self(), tag}, state)
+
+    refute_receive {^tag, _}, 20
+    assert {:ok, request} = :gen_tcp.recv(peer, 0, 1_000)
+
+    assert {:ok, %{frame_type: 3, request_id: 1, session_id: 1, tag: 0x001D, payload: payload}} =
+             Protocol.decode_frame(request)
+
+    assert payload == <<10::unsigned-big-32, "Hello 🌍">>
+    reply = Protocol.encode_frame(4, 1, 1, 0x001D, <<>>)
+    assert {:noreply, next} = Host.handle_info({:tcp, state.socket, reply}, pending)
+    assert_receive {^tag, :ok}
+    assert next.pending_requests == %{}
+  end
+
+  test "title request reports native errors, malformed acknowledgements and host loss" do
+    for response <- [:native_error, :wrong_session, :wrong_tag, :wrong_payload, :closed] do
+      {state, _peer} = title_socket_state()
+      tag = make_ref()
+
+      {:noreply, pending} =
+        Host.handle_call({:set_window_title, 11, 1, "new"}, {self(), tag}, state)
+
+      case response do
+        :closed ->
+          Host.handle_info({:tcp_closed, state.socket}, pending)
+
+        other ->
+          frame =
+            case other do
+              :native_error -> Protocol.encode_frame(6, 1, 1, 0x001D, "unknown session")
+              :wrong_session -> Protocol.encode_frame(4, 1, 2, 0x001D, <<>>)
+              :wrong_tag -> Protocol.encode_frame(4, 1, 1, 0x001C, <<>>)
+              :wrong_payload -> Protocol.encode_frame(4, 1, 1, 0x001D, <<1>>)
+            end
+
+          Host.handle_info({:tcp, state.socket, frame}, pending)
+      end
+
+      assert_receive {^tag, {:error, _}}
+    end
+  end
+
+  defp title_socket_state do
+    opts = [:binary, packet: 4, active: false, ip: {127, 0, 0, 1}]
+    {:ok, listener} = :gen_tcp.listen(0, opts)
+    {:ok, {address, port}} = :inet.sockname(listener)
+    {:ok, socket} = :gen_tcp.connect(address, port, opts, 1_000)
+    {:ok, peer} = :gen_tcp.accept(listener, 1_000)
+    :gen_tcp.close(listener)
+
+    on_exit(fn ->
+      :gen_tcp.close(socket)
+      :gen_tcp.close(peer)
+    end)
+
+    {%{
+       host_id: 11,
+       sessions: %{1 => %{running: true}},
+       socket: socket,
+       next_request_id: 1,
+       pending_requests: %{}
+     }, peer}
   end
 
   test "protocol decodes raw input payloads" do

@@ -4,7 +4,7 @@ defmodule EmergeSkia.Macos.Protocol do
   import Bitwise
 
   @protocol_name "emerge_skia_macos"
-  @protocol_version 16
+  @protocol_version 17
 
   @log_level_debug 0
   @log_level_info 1
@@ -17,6 +17,9 @@ defmodule EmergeSkia.Macos.Protocol do
 
   @asset_mode_await 0
   @asset_mode_snapshot 1
+
+  def encode_window_title(title) when is_binary(title),
+    do: <<byte_size(title)::unsigned-big-32, title::binary>>
 
   def encode_init_payload do
     protocol_name = IO.iodata_to_binary(@protocol_name)
