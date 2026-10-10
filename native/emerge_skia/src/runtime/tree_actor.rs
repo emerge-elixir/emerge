@@ -140,6 +140,7 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                         output.event_rebuild_changed = false;
                     }
                     let layout = PendingLayout {
+                        application_frame: engine.application_tree_initialized(),
                         output,
                         pipeline_submitted_at,
                         tree_batch_started_at,
@@ -168,6 +169,7 @@ fn coalesce_registry(
 }
 
 struct PendingLayout {
+    application_frame: bool,
     output: Box<LayoutOutput>,
     pipeline_submitted_at: Option<Instant>,
     tree_batch_started_at: Instant,
@@ -178,6 +180,7 @@ impl PendingLayout {
         queue_layout_output(
             targets,
             *self.output,
+            self.application_frame,
             self.pipeline_submitted_at,
             self.pipeline_submitted_at
                 .map(|_| self.tree_batch_started_at),
@@ -196,6 +199,7 @@ struct LayoutOutputPublishTargets<'a> {
 fn queue_layout_output(
     targets: LayoutOutputPublishTargets<'_>,
     output: LayoutOutput,
+    application_frame: bool,
     pipeline_submitted_at: Option<Instant>,
     pipeline_tree_started_at: Option<Instant>,
     animation_trace: Option<AnimationFrameTraceSeed>,
@@ -210,6 +214,7 @@ fn queue_layout_output(
         Instant::now(),
     );
     let queue_overwritten = targets.render_sender.send_latest(RenderMsg::Scene {
+        application_frame,
         scene: Box::new(output.scene),
         version,
         pipeline_submitted_at: pipeline.pipeline_submitted_at,
@@ -717,6 +722,7 @@ mod tests {
                     ime_text_state: None,
                     animations_active: false,
                 },
+                true,
                 None,
                 None,
                 None,

@@ -582,6 +582,7 @@ fn run_render_loop(
                         ime_enabled: _,
                         ime_cursor_area: _,
                         ime_text_state: _,
+                        ..
                     } => {
                         let render_started_at = Instant::now();
                         let clear_color = if matches!(headless.pixel_format.as_str(), "bw1" | "gray2") {

@@ -86,6 +86,7 @@ impl AnimationRetry {
 }
 
 pub struct TreeUpdateEngine {
+    application_tree_initialized: bool,
     tree: ElementTree,
     width: f32,
     height: f32,
@@ -100,6 +101,7 @@ pub struct TreeUpdateEngine {
 impl TreeUpdateEngine {
     pub fn new(initial_tree: ElementTree, initial_width: u32, initial_height: u32) -> Self {
         Self {
+            application_tree_initialized: false,
             tree: initial_tree,
             width: (initial_width as f32).max(1.0),
             height: (initial_height as f32).max(1.0),
@@ -110,6 +112,10 @@ impl TreeUpdateEngine {
             animation_retry: AnimationRetry::default(),
             listener_barrier: None,
         }
+    }
+
+    pub fn application_tree_initialized(&self) -> bool {
+        self.application_tree_initialized
     }
 
     pub fn tree(&self) -> &ElementTree {
@@ -252,6 +258,7 @@ impl TreeUpdateEngine {
                     match crate::tree::deserialize::decode_tree(&bytes) {
                         Ok(decoded) => {
                             self.tree.replace_with_uploaded(decoded);
+                            self.application_tree_initialized = true;
                             invalidation.add(TreeInvalidation::Structure);
                         }
                         Err(err) => {
@@ -1801,6 +1808,46 @@ mod tests {
         let revision = tree.bump_revision();
         tree.stamp_all_mounted_at_revision(revision);
         tree
+    }
+
+    #[test]
+    fn resize_and_invalid_upload_do_not_mark_an_application_frame_ready() {
+        let mut engine = TreeUpdateEngine::new(ElementTree::new(), 20, 20);
+        let options = || TreeUpdateOptions::new(None, TreeUpdateDecodePolicy::ReturnErr);
+        engine
+            .process_messages(
+                vec![TreeMsg::Resize {
+                    width: 40.0,
+                    height: 40.0,
+                    scale: 1.0,
+                }],
+                options(),
+            )
+            .unwrap();
+        assert!(!engine.application_tree_initialized());
+        assert!(
+            engine
+                .process_messages(
+                    vec![TreeMsg::UploadTree {
+                        bytes: vec![0],
+                        submitted_at: None,
+                    }],
+                    options()
+                )
+                .is_err()
+        );
+        assert!(!engine.application_tree_initialized());
+        // An intentionally empty but valid uploaded tree is application content.
+        engine
+            .process_messages(
+                vec![TreeMsg::UploadTree {
+                    bytes: encode_tree(&ElementTree::new()),
+                    submitted_at: None,
+                }],
+                options(),
+            )
+            .unwrap();
+        assert!(engine.application_tree_initialized());
     }
 
     fn layout_output(effect: TreeUpdateEffect) -> Box<LayoutOutput> {

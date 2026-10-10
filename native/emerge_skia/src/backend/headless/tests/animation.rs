@@ -256,6 +256,7 @@ impl Harness {
                         self.registry(output.event_rebuild.clone());
                     }
                     let RenderMsg::Scene {
+                        application_frame,
                         scene,
                         version,
                         animate,
@@ -269,6 +270,7 @@ impl Harness {
                     };
                     if let Some(tap) = &self.render_tap {
                         tap.send(RenderMsg::Scene {
+                            application_frame,
                             scene: scene.clone(),
                             version,
                             animate,
