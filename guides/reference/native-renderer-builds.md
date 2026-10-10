@@ -87,16 +87,15 @@ Return these options from your viewport's `mount/1` callback:
 
 The Cargo profile is `--no-default-features --features drm-raster`. It uses the
 DRM ioctl and evdev/input stack, with no GBM, EGL, OpenGL, Vulkan or Wayland
-dependency. Skia's CPU/font dependencies still apply; Nerves source builds embed
-FreeType and use registered font assets. No custom headless frame consumer or
+dependency. All DRM builds embed FreeType; Nerves builds disable fontconfig
+and use registered font assets. No custom headless frame consumer or
 per-frame BEAM binary is needed.
 
-This profile currently builds from source rather than selecting a GPU or
-headless-only precompiled archive. Recompile Emerge after changing configuration:
-
-```sh
-EMERGE_SKIA_BUILD=true mix deps.compile emerge --force
-```
+This selects the dedicated `drm_raster` archive on every supported Linux target,
+including ARMv7. It requires a release containing the new archive and its checksum
+manifest; older releases do not contain it. Recompile Emerge after changing
+configuration (`mix deps.compile emerge --force`). For an unreleased checkout or
+a target outside the matrix, use the source-build instructions above.
 
 `rendering_api: :auto` selects raster in a DRM build without OpenGL. Explicit
 `:opengl` and `[raster: [present: :gpu_upload]]` require an OpenGL-enabled build.
@@ -118,11 +117,11 @@ The release artifact profiles are:
 
 | Target | Default artifact | Additional variants |
 |---|---|---|
-| `x86_64-unknown-linux-gnu` | Wayland/OpenGL | DRM/OpenGL, combined Wayland/DRM, minimal raster, Vulkan-only Wayland/DRM/headless, combined Vulkan/OpenGL |
-| `aarch64-unknown-linux-gnu` | Wayland/OpenGL | DRM/OpenGL, combined Wayland/DRM, minimal raster, Vulkan-only Wayland/DRM/headless, combined Vulkan/OpenGL |
-| `armv7-unknown-linux-gnueabihf` | Minimal raster | DRM/headless OpenGL |
-| `x86_64-unknown-linux-musl` | Minimal raster | DRM/headless OpenGL |
-| `riscv64gc-unknown-linux-gnu` | Minimal raster | DRM/headless OpenGL |
+| `x86_64-unknown-linux-gnu` | Wayland/OpenGL | CPU-only DRM, DRM/OpenGL, combined Wayland/DRM, minimal raster, Vulkan-only Wayland/DRM/headless, combined Vulkan/OpenGL |
+| `aarch64-unknown-linux-gnu` | Wayland/OpenGL | CPU-only DRM, DRM/OpenGL, combined Wayland/DRM, minimal raster, Vulkan-only Wayland/DRM/headless, combined Vulkan/OpenGL |
+| `armv7-unknown-linux-gnueabihf` | Minimal raster | CPU-only DRM, DRM/headless OpenGL |
+| `x86_64-unknown-linux-musl` | Minimal raster | CPU-only DRM, DRM/headless OpenGL |
+| `riscv64gc-unknown-linux-gnu` | Minimal raster | CPU-only DRM, DRM/headless OpenGL |
 | `aarch64-apple-darwin` | Minimal raster (0.4.2+) | Separate `macos_host` window executable |
 | `x86_64-apple-darwin` | Minimal raster (0.4.2+) | Separate `macos_host` window executable |
 
@@ -176,14 +175,20 @@ DRM-only archive. Custom combinations not covered by the release matrix build
 from source. See `EmergeSkia.start/1` for valid backend and rendering API
 combinations.
 
-The GNU `drm`, `drm_vulkan` and `drm_all` archives embed FreeType and disable
-Skia fontconfig. They do not require xkbcommon, Wayland or desktop font libraries;
+Every DRM Cargo profile inherits embedded FreeType from `drm-core`, including
+source builds and combined Wayland/DRM profiles. No separate Cargo feature or
+Nerves system FreeType package is needed. Nerves source builds also disable
+fontconfig; desktop builds with Wayland may still use system fontconfig.
+
+The GNU `drm_raster`, `drm`, `drm_vulkan` and `drm_all` archives embed FreeType
+and disable Skia fontconfig. They do not require xkbcommon, Wayland or desktop font libraries;
 applications supply their registered font assets. Release builds inspect the
-**packaged** ELF and load all three AArch64 archives inside the checksum-pinned
+**packaged** ELF and load all four AArch64 archives inside the checksum-pinned
 stock Nerves RPi5 2.0.1 rootfs. This checks transitive library dependencies and
 GLIBC/GLIBCXX symbol compatibility, not just matching library filenames.
 
-These fixes require **0.4.1 or later**. The existing 0.4.0 archives are not
+The GPU DRM archive fixes require **0.4.1 or later**; `drm_raster` additionally
+requires a release containing that new variant. The existing 0.4.0 archives are not
 replaced: 0.4.0's combined DRM API selection downloads the desktop Vulkan bundle,
 and its standalone GNU DRM builds can still require fontconfig.
 
