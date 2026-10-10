@@ -11,6 +11,7 @@
 
 ### Changed
 
+- Require `video_interop ~> 0.1.3` for BGRA frame validation.
 - Raster frames are copied out of the Skia surface once instead of being
   zero-filled and read back, and headless binary output is written directly into
   the BEAM binary instead of an intermediate buffer. A full-screen 800x1280
