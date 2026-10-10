@@ -28,6 +28,18 @@ Unsupported explicit native display/backlight requests and macOS/DRM frame caps 
 
 Latest validation: `mix test --warnings-as-errors` (612 passed, 13 excluded), default, Wayland-all and DRM-raster-only Rust tests, combined Wayland-all/DRM-all and CPU-only Clippy, `./ci-tests.sh quality`, and `mix docs --warnings-as-errors`. The opt-in live Wayland test passed on the available compositor for CPU raster, GPU-upload raster and OpenGL. Wayland Vulkan functional frame-cap checks also passed on Hyprland/RADV RX 7900 XTX, but synchronization validation reports acquire-to-layout-transition hazards (4 errors, 0 warnings in the native-validation run). Qualification is blocked pending a fix; details are in `active-linux-gpu-qualification.md`. DRM and headless PRIME hardware tests remain unrun; macOS was not built or qualified.
 
+The Vulkan synchronization failure is separately tracked in
+[the deferred fix plan](active-vulkan-acquire-synchronization.md); do not expand
+config implementation into that graphics repair.
+
+Next config slice: separate desired intent from the last renderer-accepted
+snapshot. Retain validated intent after operational configure failure, replay
+complete live snapshots on retry (including reversal after partial failure), and
+carry the actual startup snapshot through lifecycle recovery to avoid dropping
+changes made during restart. Capability/validation failures still reject intent.
+Queue acceptance is not hardware application; native revision/completion and DRM
+power controls remain subsequent work.
+
 The following sections retain the target design; they must not be read as claims that the pending features have shipped.
 
 ## Goals

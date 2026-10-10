@@ -30,6 +30,10 @@ archive subdirectory or a permanently active plan.
   breaking 0.5.0 typed config/input APIs, lifecycle replay, and remaining native
   controls. Schema/migration reference: [viewport settings](viewport-settings-schema.md).
 
+- [Vulkan acquire synchronization](active-vulkan-acquire-synchronization.md):
+  deferred acquired-image layout-transition fix discovered in Wayland frame-cap
+  validation; separate from config implementation.
+
 ## Research and roadmaps
 
 - [Screenshot cache investigation](screenshot-cache-benchmark-investigation.md):
