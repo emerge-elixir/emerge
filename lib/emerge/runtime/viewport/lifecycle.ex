@@ -11,7 +11,10 @@ defmodule Emerge.Runtime.Viewport.Lifecycle do
   def close(pid), do: GenServer.call(pid, :close, 6_000)
   def discard(pid), do: GenServer.call(pid, :discard, 6_000)
   def check(pid), do: send(pid, :check)
-  def configure(pid, config), do: GenServer.call(pid, {:configure, config})
+  # This updates restart intent, not hardware state. Queue it without waiting
+  # behind a potentially slow native start. Later acquire calls from the same
+  # viewport are ordered after this update.
+  def configure(pid, config), do: GenServer.cast(pid, {:configure, config})
 
   @impl true
   def init({viewport, config}) do
@@ -24,6 +27,7 @@ defmodule Emerge.Runtime.Viewport.Lifecycle do
        monitor: ref,
        config: config,
        renderer: nil,
+       startup_config: nil,
        cleanup_requested: false,
        generation: nil,
        relay: nil,
@@ -36,10 +40,19 @@ defmodule Emerge.Runtime.Viewport.Lifecycle do
   end
 
   @impl true
-  def handle_call({:configure, config}, _from, state) do
-    {:reply, :ok, schedule_check(%{state | config: config})}
+  def handle_cast({:configure, config}, state) do
+    next = %{state | config: config}
+
+    # Ordinary config traffic must not keep postponing failure detection.
+    next =
+      if state.config.renderer_check_interval_ms != config.renderer_check_interval_ms,
+        do: schedule_check(next),
+        else: next
+
+    {:noreply, next}
   end
 
+  @impl true
   def handle_call(:acquire, _from, %{closed: true} = state),
     do: {:reply, {:error, :closed}, state}
 
@@ -61,7 +74,8 @@ defmodule Emerge.Runtime.Viewport.Lifecycle do
   end
 
   def handle_call(:acquire, _from, state),
-    do: {:reply, {:ok, state.renderer, state.generation, state.relay}, state}
+    do:
+      {:reply, {:ok, state.renderer, state.generation, state.relay, state.startup_config}, state}
 
   def handle_call(:discard, _from, state) do
     {result, state} = stop_renderer(state)
@@ -83,10 +97,10 @@ defmodule Emerge.Runtime.Viewport.Lifecycle do
     {reply, state} = start_renderer(%{state | retry: nil})
 
     case reply do
-      {:ok, renderer, generation, relay} ->
+      {:ok, renderer, generation, relay, startup_config} ->
         send(
           state.viewport,
-          {:emerge_viewport, :renderer_ready, self(), generation, renderer, relay}
+          {:emerge_viewport, :renderer_ready, self(), generation, renderer, relay, startup_config}
         )
 
       {:error, reason} ->
@@ -202,6 +216,7 @@ defmodule Emerge.Runtime.Viewport.Lifecycle do
         state = %{
           state
           | renderer: renderer,
+            startup_config: config.config,
             cleanup_requested: false,
             generation: generation,
             relay: relay,
@@ -209,7 +224,7 @@ defmodule Emerge.Runtime.Viewport.Lifecycle do
         }
 
         if Process.alive?(state.viewport) do
-          {{:ok, renderer, generation, relay}, schedule_check(state)}
+          {{:ok, renderer, generation, relay, config.config}, schedule_check(state)}
         else
           {_, state} = stop_renderer(state)
           {{:error, :owner_down}, %{state | closed: true}}
