@@ -7,7 +7,7 @@ defmodule EmergeSkia.DrmHardwareTest do
   defmodule Screen do
     use Emerge
     @impl Viewport
-    def mount(opts), do: {:ok, %{count: 0}, Keyword.merge([otp_app: :emerge, stats: true], opts)}
+    def mount(opts), do: {:ok, %{count: 0}, Keyword.fetch!(opts, :config)}
     @impl Viewport
     def render(state),
       do:
@@ -36,16 +36,15 @@ defmodule EmergeSkia.DrmHardwareTest do
     options = fn output ->
       mode = Enum.find(output.modes, & &1.preferred) || hd(output.modes)
 
-      [
-        backend: :drm,
-        drm_card: card,
-        drm_output: output.name,
-        drm_mode: mode,
-        rendering_api: api,
-        vulkan_drm_node: card,
-        drm_startup_retries: 0,
-        viewport: [renderer_check_interval_ms: 50]
-      ]
+      config = %Emerge.Config{
+        output: %Emerge.Config.DRM{card: card, connector: output.name, mode: mode},
+        renderer: [api: api, device: card],
+        assets: [otp_app: :emerge],
+        diagnostics: [stats: true],
+        runtime: [startup_retries: 0, health_check_interval_ms: 50]
+      }
+
+      [config: config]
     end
 
     {:ok, first} = Screen.start_link(options.(a))
@@ -62,7 +61,7 @@ defmodule EmergeSkia.DrmHardwareTest do
     assert is_reference(renderer_a)
     assert is_reference(renderer_b)
     assert eventually(fn -> frames(renderer_a) > 0 and frames(renderer_b) > 0 end)
-    assert {:error, _} = EmergeSkia.start(Keyword.put(options.(a), :otp_app, :emerge))
+    assert {:error, _} = EmergeSkia.start(Keyword.fetch!(options.(a), :config))
 
     Enum.each(1..3, fn _ ->
       old = Emerge.renderer(first)

@@ -14,19 +14,18 @@ true = EmergeSkia.Native.tree_is_empty(tree)
 defmodule RasterArtifactProbe do
   @moduledoc false
   use Emerge.UI
-
   alias VideoInterop.{Binary, Frame}
   alias VideoInterop.Binary.{Format, Plane}
 
   def run do
     for {format, width, white} <- [
-          {:bw1, 9, <<0xFF, 0x80, 0xFF, 0x80>>},
-          {:gray2, 5, <<0xFF, 0xC0, 0xFF, 0xC0>>}
+          {:bw1, 9, <<255, 128, 255, 128>>},
+          {:gray2, 5, <<255, 192, 255, 192>>}
         ],
         dither <- [false, true] do
       renderer = start!(format, width, 2, dither)
 
-      for {color, expected} <- [{:white, white}, {:black, <<0, 0, 0, 0>>}] do
+      for {color, expected} <- [white: white, black: <<0, 0, 0, 0>>] do
         tree = el([width(px(width)), height(px(2)), Background.color(color)], none())
         {_state, _assigned} = EmergeSkia.upload_tree(renderer, tree)
         %Binary{planes: [%Plane{stride: 2}]} = await_frame!(format, &(&1 == expected))
@@ -67,25 +66,24 @@ defmodule RasterArtifactProbe do
 
   defp start!(format, width, height, dither) do
     {:ok, renderer} =
-      EmergeSkia.start(
-        otp_app: :emerge,
-        backend: :headless,
-        rendering_api: :raster,
-        width: width,
-        height: height,
-        assets: [fonts: [[family: "Probe", source: "test_assets/Probe.ttf"]]],
-        headless: [
-          target: self(),
-          pixel_format: format,
-          bw1_polarity: :one_is_white,
-          dither: dither
-        ]
-      )
+      EmergeSkia.start(%Emerge.Config{
+        output: %Emerge.Config.Headless{
+          size: {width, height},
+          frames: %Emerge.Config.BinaryFrames{
+            pixel_format: format,
+            bw1_polarity: :one_is_white,
+            dither: dither
+          },
+          target: self()
+        },
+        renderer: [api: :raster],
+        assets: [otp_app: :emerge, fonts: [[family: "Probe", source: "test_assets/Probe.ttf"]]]
+      })
 
     renderer
   end
 
-  defp await_frame!(format, matches, deadline \\ System.monotonic_time(:millisecond) + 10_000) do
+  defp await_frame!(format, matches, deadline \\ System.monotonic_time(:millisecond) + 10000) do
     remaining = Kernel.max(0, deadline - System.monotonic_time(:millisecond))
 
     receive do
@@ -94,7 +92,11 @@ defmodule RasterArtifactProbe do
          format: %{storage: %Format{pixel_format: ^format}},
          storage: %Binary{data: data} = binary
        }} ->
-        if matches.(data), do: binary, else: await_frame!(format, matches, deadline)
+        if matches.(data) do
+          binary
+        else
+          await_frame!(format, matches, deadline)
+        end
     after
       remaining -> raise "No matching #{format} frame from packaged NIF"
     end

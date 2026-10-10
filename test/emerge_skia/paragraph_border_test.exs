@@ -1,21 +1,26 @@
 defmodule EmergeSkia.ParagraphBorderTest do
   use ExUnit.Case
   use Emerge.UI
-
   alias Emerge.UI.Color
   alias EmergeSkia.TreeRenderer
 
   defp pixels(attrs) do
-    paragraph(
-      [width(px(180)), padding(16), Font.size(24), Font.color(:white), center_x()],
-      [text("before "), el(attrs, text("user interaction")), text(" after")]
-    )
+    paragraph([width(px(180)), padding(16), Font.size(24), Font.color(:white), center_x()], [
+      text("before "),
+      el(attrs, text("user interaction")),
+      text(" after")
+    ])
     |> TreeRenderer.render_to_pixels([otp_app: :emerge, width: 180, height: 180], 30_000)
   end
 
   defp blue_pixels(pixels) do
     for <<r, g, b, a <- pixels>>, reduce: 0 do
-      n -> if(a > 20 and b > r + 30 and g > r + 20, do: n + 1, else: n)
+      n ->
+        if a > 20 and b > r + 30 and g > r + 20 do
+          n + 1
+        else
+          n
+        end
     end
   end
 
@@ -103,14 +108,15 @@ defmodule EmergeSkia.ParagraphBorderTest do
 
   test "live decoration patches, reflow and parent movement match fresh pixels" do
     {:ok, renderer} =
-      EmergeSkia.start(
-        otp_app: :emerge,
-        backend: :headless,
-        rendering_api: :raster,
-        width: 240,
-        height: 200,
-        headless: [target: self(), pixel_format: :rgba8888]
-      )
+      EmergeSkia.start(%Emerge.Config{
+        output: %Emerge.Config.Headless{
+          size: {240, 200},
+          frames: %Emerge.Config.BinaryFrames{pixel_format: :rgba8888},
+          target: self()
+        },
+        renderer: [api: :raster],
+        assets: [otp_app: :emerge]
+      })
 
     on_exit(fn -> EmergeSkia.stop(renderer) end)
     blue = color_rgb(43, 145, 203)
@@ -154,10 +160,11 @@ defmodule EmergeSkia.ParagraphBorderTest do
           ],
           paragraph([width(px(width)), padding(16), center_x(), Transform.move_x(move)], [
             text("before "),
-            if(attrs == :remove_wrapper,
-              do: text("user interaction"),
-              else: el(attrs, text("user interaction"))
-            ),
+            if attrs == :remove_wrapper do
+              text("user interaction")
+            else
+              el(attrs, text("user interaction"))
+            end,
             text(" after")
           ])
         )
@@ -166,9 +173,11 @@ defmodule EmergeSkia.ParagraphBorderTest do
         TreeRenderer.render_to_pixels(tree, [otp_app: :emerge, width: 240, height: 200], 30_000)
 
       {next, _} =
-        if state,
-          do: EmergeSkia.patch_tree(renderer, state, tree),
-          else: EmergeSkia.upload_tree(renderer, tree)
+        if state do
+          EmergeSkia.patch_tree(renderer, state, tree)
+        else
+          EmergeSkia.upload_tree(renderer, tree)
+        end
 
       await_pixels(expected, System.monotonic_time(:millisecond) + 5000)
       next
@@ -267,7 +276,9 @@ defmodule EmergeSkia.ParagraphBorderTest do
 
     receive do
       {:emerge_skia_frame, %VideoInterop.Frame{storage: %VideoInterop.Binary{data: data}}} ->
-        if data != expected, do: await_pixels(expected, deadline)
+        if data != expected do
+          await_pixels(expected, deadline)
+        end
     after
       remaining -> flunk("decoration patch did not match fresh pixels")
     end

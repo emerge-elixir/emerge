@@ -3,7 +3,9 @@ defmodule Emerge.Runtime.Viewport.Renderer do
 
   @type heartbeat_message :: {:emerge_viewport_renderer, :heartbeat}
 
-  @callback start(keyword(), keyword()) :: {:ok, term()} | {:error, term()}
+  @callback start(Emerge.Config.normalized_t(), keyword()) :: {:ok, term()} | {:error, term()}
+  @callback configure(term(), Emerge.Config.normalized_t(), Emerge.Config.normalized_t()) ::
+              :ok | {:error, term()}
   @callback stop(term()) :: :ok
   @callback running?(term()) :: boolean()
   @doc """

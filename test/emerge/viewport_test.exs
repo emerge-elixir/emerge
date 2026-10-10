@@ -1,14 +1,14 @@
 defmodule Emerge.ViewportTest do
   use ExUnit.Case, async: false
-
   import ExUnit.CaptureLog
   use Emerge.UI
 
   defmodule FakeRenderer do
     @behaviour Emerge.Runtime.Viewport.Renderer
-
     @impl true
-    def start(skia_opts, renderer_opts) do
+    def start(config, renderer_opts) do
+      skia_opts = Emerge.Config.Native.options(config)
+
       Agent.start_link(fn ->
         %{
           ops: [],
@@ -24,10 +24,7 @@ defmodule Emerge.ViewportTest do
 
     @impl true
     def stop(renderer) do
-      renderer
-      |> Agent.get(& &1.heartbeat_pid)
-      |> stop_heartbeat()
-
+      renderer |> Agent.get(& &1.heartbeat_pid) |> stop_heartbeat()
       Agent.stop(renderer)
       :ok
     catch
@@ -35,7 +32,9 @@ defmodule Emerge.ViewportTest do
     end
 
     @impl true
-    def running?(renderer), do: Agent.get(renderer, & &1.running?)
+    def running?(renderer) do
+      Agent.get(renderer, & &1.running?)
+    end
 
     def set_running(renderer, running?) when is_boolean(running?) do
       Agent.update(renderer, fn state ->
@@ -81,9 +80,7 @@ defmodule Emerge.ViewportTest do
     @impl true
     def set_log_target(renderer, pid) do
       Agent.update(renderer, fn state ->
-        state
-        |> Map.put(:log_target, pid)
-        |> log_op({:set_log_target, pid})
+        state |> Map.put(:log_target, pid) |> log_op({:set_log_target, pid})
       end)
 
       :ok
@@ -109,13 +106,27 @@ defmodule Emerge.ViewportTest do
       {next_state, assigned_tree}
     end
 
-    def ops(renderer), do: Agent.get(renderer, &Enum.reverse(&1.ops))
+    @impl true
+    def configure(renderer, _previous, config) do
+      Agent.update(renderer, &log_op(&1, {:configure, config}))
+      :ok
+    end
 
-    def skia_opts(renderer), do: Agent.get(renderer, & &1.skia_opts)
+    def ops(renderer) do
+      Agent.get(renderer, &Enum.reverse(&1.ops))
+    end
 
-    def renderer_opts(renderer), do: Agent.get(renderer, & &1.renderer_opts)
+    def skia_opts(renderer) do
+      Agent.get(renderer, & &1.skia_opts)
+    end
 
-    defp log_op(state, op), do: %{state | ops: [op | state.ops]}
+    def renderer_opts(renderer) do
+      Agent.get(renderer, & &1.renderer_opts)
+    end
+
+    defp log_op(state, op) do
+      %{state | ops: [op | state.ops]}
+    end
 
     defp start_heartbeat(pid) do
       spawn(fn -> heartbeat_loop(pid) end)
@@ -127,20 +138,27 @@ defmodule Emerge.ViewportTest do
       heartbeat_loop(pid)
     end
 
-    defp stop_heartbeat(nil), do: nil
+    defp stop_heartbeat(nil) do
+      nil
+    end
 
     defp stop_heartbeat(pid) do
       Process.exit(pid, :kill)
       nil
     end
 
-    defp stop_heartbeat_unless_running(heartbeat_pid, true), do: heartbeat_pid
-    defp stop_heartbeat_unless_running(heartbeat_pid, false), do: stop_heartbeat(heartbeat_pid)
+    defp stop_heartbeat_unless_running(heartbeat_pid, true) do
+      heartbeat_pid
+    end
+
+    defp stop_heartbeat_unless_running(heartbeat_pid, false) do
+      stop_heartbeat(heartbeat_pid)
+    end
   end
 
   defmodule NoConnectionRenderer do
     @behaviour Emerge.Runtime.Viewport.Renderer
-
+    defdelegate configure(renderer, previous, config), to: Emerge.ViewportTest.FakeRenderer
     defdelegate start(skia_opts, renderer_opts), to: Emerge.ViewportTest.FakeRenderer
     defdelegate stop(renderer), to: Emerge.ViewportTest.FakeRenderer
     defdelegate running?(renderer), to: Emerge.ViewportTest.FakeRenderer
@@ -153,108 +171,104 @@ defmodule Emerge.ViewportTest do
 
   defmodule NoConnectionViewport do
     use Emerge
-
     @impl Viewport
     def mount(_opts) do
       {:ok,
-       viewport: [
-         renderer_module: Emerge.ViewportTest.NoConnectionRenderer,
-         renderer_check_interval_ms: nil
-       ]}
+       %Emerge.Config{
+         runtime: [
+           adapter: Emerge.ViewportTest.NoConnectionRenderer,
+           health_check_interval_ms: nil
+         ]
+       }}
     end
 
     @impl Viewport
-    def render, do: el([], text("no connection"))
+    def render do
+      el([], text("no connection"))
+    end
   end
 
   defmodule BareSkiaViewport do
     use Emerge
-
     @impl Viewport
     def mount(_opts) do
       {:ok, %{},
-       [
-         title: "Viewport Defaults",
-         viewport: [
-           renderer_module: Emerge.ViewportTest.FakeRenderer,
-           renderer_check_interval_ms: nil
-         ]
-       ]}
+       %Emerge.Config{
+         output: %Emerge.Config.Window{title: "Viewport Defaults"},
+         runtime: [adapter: Emerge.ViewportTest.FakeRenderer, health_check_interval_ms: nil]
+       }}
     end
 
     @impl Viewport
-    def render(_state), do: el([], text("defaults"))
+    def render(_state) do
+      el([], text("defaults"))
+    end
   end
 
   defmodule OptsOnlyViewport do
     use Emerge
-
     @impl Viewport
     def mount(opts) do
       {:ok,
-       Keyword.merge(
-         [
-           title: "Opts Only",
-           viewport: [
-             renderer_module: Emerge.ViewportTest.FakeRenderer,
-             renderer_check_interval_ms: nil
-           ]
-         ],
-         opts
-       )}
+       %Emerge.Config{
+         output: %Emerge.Config.Window{title: Keyword.get(opts, :title, "Opts Only")},
+         runtime: [adapter: Emerge.ViewportTest.FakeRenderer, health_check_interval_ms: nil]
+       }}
     end
 
     @impl Viewport
-    def render, do: el([], text("opts only"))
+    def render do
+      el([], text("opts only"))
+    end
   end
 
   defmodule ScrollLinePixelsViewport do
     use Emerge
-
     @impl Viewport
     def mount(_opts) do
       {:ok,
-       title: "Scroll line pixels",
-       emerge_skia: [otp_app: :emerge, scroll_line_pixels: 45],
-       viewport: [
-         renderer_module: Emerge.ViewportTest.FakeRenderer,
-         renderer_check_interval_ms: nil
-       ]}
+       %Emerge.Config{
+         output: %Emerge.Config.Window{title: "Scroll line pixels"},
+         assets: [otp_app: :emerge],
+         input: [scroll_line_pixels: 45],
+         runtime: [adapter: Emerge.ViewportTest.FakeRenderer, health_check_interval_ms: nil]
+       }}
     end
 
     @impl Viewport
-    def render, do: el([], text("scroll line pixels"))
+    def render do
+      el([], text("scroll line pixels"))
+    end
   end
 
   defmodule CloseSignalLogViewport do
     use Emerge
-
     @impl Viewport
     def mount(_opts) do
       {:ok,
-       title: "Close signal log",
-       emerge_skia: [otp_app: :emerge, close_signal_log: true],
-       viewport: [
-         renderer_module: Emerge.ViewportTest.FakeRenderer,
-         renderer_check_interval_ms: nil
-       ]}
+       %Emerge.Config{
+         output: %Emerge.Config.Window{title: "Close signal log"},
+         assets: [otp_app: :emerge],
+         diagnostics: [logs: [:close]],
+         runtime: [adapter: Emerge.ViewportTest.FakeRenderer, health_check_interval_ms: nil]
+       }}
     end
 
     @impl Viewport
-    def render, do: el([], text("close signal log"))
+    def render do
+      el([], text("close signal log"))
+    end
   end
 
   defmodule CounterViewport do
     use Emerge
-
     @impl Viewport
     def mount(opts) do
       {:ok, %{count: Keyword.get(opts, :count, 0)},
-       emerge_skia: [otp_app: :emerge],
-       viewport: [
-         renderer_module: Emerge.ViewportTest.FakeRenderer,
-         renderer_check_interval_ms: nil
-       ]}
+       %Emerge.Config{
+         assets: [otp_app: :emerge],
+         runtime: [adapter: Emerge.ViewportTest.FakeRenderer, health_check_interval_ms: nil]
+       }}
     end
 
     @impl Viewport
@@ -281,15 +295,13 @@ defmodule Emerge.ViewportTest do
 
   defmodule KeyViewport do
     use Emerge
-
     @impl Viewport
     def mount(opts) do
       {:ok, %{count: Keyword.get(opts, :count, 0)},
-       emerge_skia: [otp_app: :emerge],
-       viewport: [
-         renderer_module: Emerge.ViewportTest.FakeRenderer,
-         renderer_check_interval_ms: nil
-       ]}
+       %Emerge.Config{
+         assets: [otp_app: :emerge],
+         runtime: [adapter: Emerge.ViewportTest.FakeRenderer, health_check_interval_ms: nil]
+       }}
     end
 
     @impl Viewport
@@ -315,15 +327,13 @@ defmodule Emerge.ViewportTest do
 
   defmodule KeyPressViewport do
     use Emerge
-
     @impl Viewport
     def mount(opts) do
       {:ok, %{count: Keyword.get(opts, :count, 0)},
-       emerge_skia: [otp_app: :emerge],
-       viewport: [
-         renderer_module: Emerge.ViewportTest.FakeRenderer,
-         renderer_check_interval_ms: nil
-       ]}
+       %Emerge.Config{
+         assets: [otp_app: :emerge],
+         runtime: [adapter: Emerge.ViewportTest.FakeRenderer, health_check_interval_ms: nil]
+       }}
     end
 
     @impl Viewport
@@ -349,19 +359,19 @@ defmodule Emerge.ViewportTest do
 
   defmodule InputViewport do
     use Emerge
-
     @impl Viewport
     def mount(opts) do
       {:ok, %{events: [], test_pid: Keyword.fetch!(opts, :test_pid)},
-       emerge_skia: [otp_app: :emerge],
-       viewport: [
-         renderer_module: Emerge.ViewportTest.FakeRenderer,
-         renderer_check_interval_ms: nil
-       ]}
+       %Emerge.Config{
+         assets: [otp_app: :emerge],
+         runtime: [adapter: Emerge.ViewportTest.FakeRenderer, health_check_interval_ms: nil]
+       }}
     end
 
     @impl Viewport
-    def render(_state), do: el([], text("input viewport"))
+    def render(_state) do
+      el([], text("input viewport"))
+    end
 
     @impl Viewport
     def handle_input(event, state) do
@@ -372,19 +382,19 @@ defmodule Emerge.ViewportTest do
 
   defmodule RenderZeroViewport do
     use Emerge
-
     @impl Viewport
     def mount(_opts) do
       {:ok, %{rerenders: 0},
-       emerge_skia: [otp_app: :emerge],
-       viewport: [
-         renderer_module: Emerge.ViewportTest.FakeRenderer,
-         renderer_check_interval_ms: nil
-       ]}
+       %Emerge.Config{
+         assets: [otp_app: :emerge],
+         runtime: [adapter: Emerge.ViewportTest.FakeRenderer, health_check_interval_ms: nil]
+       }}
     end
 
     @impl Viewport
-    def render, do: el([], text("render zero"))
+    def render do
+      el([], text("render zero"))
+    end
 
     @impl Viewport
     def handle_info(:rerender, state) do
@@ -394,15 +404,13 @@ defmodule Emerge.ViewportTest do
 
   defmodule PayloadViewport do
     use Emerge
-
     @impl Viewport
     def mount(opts) do
       {:ok, %{test_pid: Keyword.fetch!(opts, :test_pid)},
-       emerge_skia: [otp_app: :emerge],
-       viewport: [
-         renderer_module: Emerge.ViewportTest.FakeRenderer,
-         renderer_check_interval_ms: nil
-       ]}
+       %Emerge.Config{
+         assets: [otp_app: :emerge],
+         runtime: [adapter: Emerge.ViewportTest.FakeRenderer, health_check_interval_ms: nil]
+       }}
     end
 
     @impl Viewport
@@ -429,36 +437,36 @@ defmodule Emerge.ViewportTest do
 
   defmodule LivenessViewport do
     use Emerge
-
     @impl Viewport
     def mount(_opts) do
       {:ok, %{},
-       emerge_skia: [otp_app: :emerge],
-       viewport: [
-         renderer_module: Emerge.ViewportTest.FakeRenderer,
-         renderer_check_interval_ms: nil
-       ]}
+       %Emerge.Config{
+         assets: [otp_app: :emerge],
+         runtime: [adapter: Emerge.ViewportTest.FakeRenderer, health_check_interval_ms: nil]
+       }}
     end
 
     @impl Viewport
-    def render(_state), do: el([], text("alive"))
+    def render(_state) do
+      el([], text("alive"))
+    end
   end
 
   defmodule CloseAwareViewport do
     use Emerge
-
     @impl Viewport
     def mount(opts) do
       {:ok, %{closed?: false, test_pid: Keyword.fetch!(opts, :test_pid)},
-       emerge_skia: [otp_app: :emerge],
-       viewport: [
-         renderer_module: Emerge.ViewportTest.FakeRenderer,
-         renderer_check_interval_ms: nil
-       ]}
+       %Emerge.Config{
+         assets: [otp_app: :emerge],
+         runtime: [adapter: Emerge.ViewportTest.FakeRenderer, health_check_interval_ms: nil]
+       }}
     end
 
     @impl Viewport
-    def render(_state), do: el([], text("close aware"))
+    def render(_state) do
+      el([], text("close aware"))
+    end
 
     @impl Viewport
     def handle_close(:window_close_requested, state) do
@@ -469,20 +477,23 @@ defmodule Emerge.ViewportTest do
 
   defmodule RecoveringViewport do
     use Emerge
-
     @impl Viewport
     def mount(opts) do
       {:ok, %{mode: Keyword.get(opts, :mode, {:label, "ready"})},
-       emerge_skia: [otp_app: :emerge],
-       viewport: [
-         renderer_module: Emerge.ViewportTest.FakeRenderer,
-         renderer_check_interval_ms: nil
-       ]}
+       %Emerge.Config{
+         assets: [otp_app: :emerge],
+         runtime: [adapter: Emerge.ViewportTest.FakeRenderer, health_check_interval_ms: nil]
+       }}
     end
 
     @impl Viewport
-    def render(%{mode: :raise}), do: raise("render boom")
-    def render(%{mode: {:label, label}}), do: el([], text(label))
+    def render(%{mode: :raise}) do
+      raise "render boom"
+    end
+
+    def render(%{mode: {:label, label}}) do
+      el([], text(label))
+    end
 
     @impl Viewport
     def handle_info({:set_mode, mode}, state) do
@@ -492,51 +503,47 @@ defmodule Emerge.ViewportTest do
 
   defmodule RenderBothViewport do
     use Emerge
-
     @impl Viewport
     def mount(_opts) do
       {:ok,
-       emerge_skia: [otp_app: :emerge],
-       viewport: [
-         renderer_module: Emerge.ViewportTest.FakeRenderer,
-         renderer_check_interval_ms: nil
-       ]}
+       %Emerge.Config{
+         assets: [otp_app: :emerge],
+         runtime: [adapter: Emerge.ViewportTest.FakeRenderer, health_check_interval_ms: nil]
+       }}
     end
 
     @impl Viewport
-    def render, do: el([], text("render both zero"))
+    def render do
+      el([], text("render both zero"))
+    end
 
     @impl Viewport
-    def render(_state), do: el([], text("render both one"))
+    def render(_state) do
+      el([], text("render both one"))
+    end
   end
 
   defmodule RenderMissingViewport do
     use Emerge
-
     @impl Viewport
     def mount(_opts) do
       {:ok,
-       emerge_skia: [otp_app: :emerge],
-       viewport: [
-         renderer_module: Emerge.ViewportTest.FakeRenderer,
-         renderer_check_interval_ms: nil
-       ]}
+       %Emerge.Config{
+         assets: [otp_app: :emerge],
+         runtime: [adapter: Emerge.ViewportTest.FakeRenderer, health_check_interval_ms: nil]
+       }}
     end
   end
 
   test "mount starts renderer and uploads initial tree" do
     {:ok, pid} = CounterViewport.start_link(count: 3)
-
     renderer = Emerge.renderer(pid)
     operations = FakeRenderer.ops(renderer)
-
     assert {:set_input_target, ^pid} = Enum.at(operations, 0)
     assert {:set_log_target, ^pid} = Enum.at(operations, 1)
-    assert {:upload_tree, %Emerge.Engine.Element{type: :row}} = Enum.at(operations, 2)
-
+    assert {:upload_tree, %Emerge.Engine.Element{type: :row}} = Enum.at(operations, 3)
     assert :sys.get_state(pid).count == 3
     assert pid in Emerge.Runtime.Viewport.ReloadGroup.local_members()
-
     GenServer.stop(pid)
   end
 
@@ -560,60 +567,46 @@ defmodule Emerge.ViewportTest do
     assert %{shutdown: :infinity} = CounterViewport.child_spec([])
   end
 
-  test "mount accepts bare skia opts and infers otp_app" do
+  test "mount accepts config defaults and infers otp_app" do
     {:ok, pid} = BareSkiaViewport.start_link()
-
     renderer = Emerge.renderer(pid)
-
     assert Keyword.get(FakeRenderer.skia_opts(renderer), :otp_app) == :emerge
     assert Keyword.get(FakeRenderer.skia_opts(renderer), :title) == "Viewport Defaults"
     assert FakeRenderer.renderer_opts(renderer) == []
-
     GenServer.stop(pid)
   end
 
-  test "mount accepts {:ok, opts} and uses empty viewport state" do
+  test "mount accepts {:ok, config} and uses empty viewport state" do
     {:ok, pid} = OptsOnlyViewport.start_link()
-
     renderer = Emerge.renderer(pid)
     state = :sys.get_state(pid)
-
     assert Map.drop(state, [:__emerge__]) == %{}
     assert Keyword.get(FakeRenderer.skia_opts(renderer), :otp_app) == :emerge
     assert Keyword.get(FakeRenderer.skia_opts(renderer), :title) == "Opts Only"
     assert rendered_text(pid) == "opts only"
-
     GenServer.stop(pid)
   end
 
-  test "mount can pass emerge_skia scroll_line_pixels option to the renderer" do
+  test "mount can pass input.scroll_line_pixels to the renderer" do
     {:ok, pid} = ScrollLinePixelsViewport.start_link()
-
     renderer = Emerge.renderer(pid)
-
     assert Keyword.get(FakeRenderer.skia_opts(renderer), :scroll_line_pixels) == 45
     assert Keyword.get(FakeRenderer.skia_opts(renderer), :otp_app) == :emerge
-
     GenServer.stop(pid)
   end
 
   test "mount can pass emerge_skia close_signal_log option to the renderer" do
     {:ok, pid} = CloseSignalLogViewport.start_link()
-
     renderer = Emerge.renderer(pid)
-
     assert Keyword.get(FakeRenderer.skia_opts(renderer), :close_signal_log) == true
     assert Keyword.get(FakeRenderer.skia_opts(renderer), :otp_app) == :emerge
-
     GenServer.stop(pid)
   end
 
   test "render/0 viewports render and rerender successfully" do
     {:ok, pid} = RenderZeroViewport.start_link()
     renderer = Emerge.renderer(pid)
-
     assert rendered_text(pid) == "render zero"
-
     send(pid, :rerender)
 
     assert_eventually(fn ->
@@ -628,9 +621,7 @@ defmodule Emerge.ViewportTest do
 
     assert_raise ArgumentError,
                  ~r/must define exactly one of render\/0 or render\/1, but defines both/,
-                 fn ->
-                   Emerge.Runtime.Viewport.handle_continue_mount([], state)
-                 end
+                 fn -> Emerge.Runtime.Viewport.handle_continue_mount([], state) end
   end
 
   test "viewport modules must define one render callback" do
@@ -644,7 +635,6 @@ defmodule Emerge.ViewportTest do
   test "self-targeted element events route through mailbox and rerender" do
     {:ok, pid} = CounterViewport.start_link(count: 0)
     renderer = Emerge.renderer(pid)
-
     state = :sys.get_state(pid)
 
     {id_bin, _events} =
@@ -653,7 +643,6 @@ defmodule Emerge.ViewportTest do
       end)
 
     send(pid, {:emerge_skia_event, {id_bin, :press}})
-
     assert_eventually(fn -> :sys.get_state(pid).count == 1 end)
 
     assert_eventually(fn ->
@@ -700,7 +689,6 @@ defmodule Emerge.ViewportTest do
   test "rerender requests from callback state updates are coalesced" do
     {:ok, pid} = CounterViewport.start_link(count: 0)
     renderer = Emerge.renderer(pid)
-
     send(pid, :increment)
     send(pid, :increment)
     send(pid, :increment)
@@ -723,7 +711,6 @@ defmodule Emerge.ViewportTest do
   test "source reload notifications rerender mounted viewports" do
     {:ok, pid} = CounterViewport.start_link(count: 0)
     renderer = Emerge.renderer(pid)
-
     :ok = Emerge.notify_source_reloaded(%{source: :test})
 
     assert_eventually(fn ->
@@ -741,7 +728,6 @@ defmodule Emerge.ViewportTest do
   test "source reload rerender requests are coalesced" do
     {:ok, pid} = CounterViewport.start_link(count: 0)
     renderer = Emerge.renderer(pid)
-
     send(pid, {:emerge_viewport, :source_reloaded, %{source: :test}})
     send(pid, {:emerge_viewport, :source_reloaded, %{source: :test}})
     send(pid, {:emerge_viewport, :source_reloaded, %{source: :test}})
@@ -760,17 +746,12 @@ defmodule Emerge.ViewportTest do
 
   test "source reload rerenders render/0 viewports after the module is unloaded" do
     module = compile_reloadable_render_zero_viewport()
-
     {:ok, pid} = module.start_link()
     renderer = Emerge.renderer(pid)
-
     assert :code.which(module) != :non_existing
-
     :code.purge(module)
     :code.delete(module)
-
     refute function_exported?(module, :render, 0)
-
     send(pid, {:emerge_viewport, :source_reloaded, %{source: :test}})
 
     assert_eventually(fn ->
@@ -804,21 +785,18 @@ defmodule Emerge.ViewportTest do
     log =
       capture_log(fn ->
         {:ok, pid} = RecoveringViewport.start_link(mode: :raise)
-
         send(pid, {:set_mode, {:label, "recovered"}})
 
         assert_eventually(fn ->
           state = :sys.get_state(pid)
 
           Process.alive?(pid) and state.__emerge__.renderer != nil and
-            state.__emerge__.diff_state != nil and
-            rendered_text(pid) == "recovered" and
+            state.__emerge__.diff_state != nil and rendered_text(pid) == "recovered" and
             pid in Emerge.Runtime.Viewport.ReloadGroup.local_members()
         end)
 
         renderer = Emerge.renderer(pid)
         assert count_renderer_ops(renderer, :upload_tree) == 1
-
         GenServer.stop(pid)
       end)
 
@@ -843,7 +821,6 @@ defmodule Emerge.ViewportTest do
       end)
 
     assert log =~ "rerender failed"
-
     GenServer.stop(pid)
   end
 
@@ -871,18 +848,14 @@ defmodule Emerge.ViewportTest do
 
   test "raw input events flow through handle_input callback" do
     {:ok, pid} = InputViewport.start_link(test_pid: self())
-
     send(pid, {:emerge_skia_event, {:focused, true}})
-
-    assert_receive {:input_event, {:focused, true}}
-    assert :sys.get_state(pid).events == [{:focused, true}]
-
+    assert_receive {:input_event, {:focus, true}}
+    assert :sys.get_state(pid).events == [focus: true]
     GenServer.stop(pid)
   end
 
   test "payload wrapping callback is applied before dispatch" do
     {:ok, pid} = PayloadViewport.start_link(test_pid: self())
-
     state = :sys.get_state(pid)
 
     {id_bin, _events} =
@@ -891,7 +864,6 @@ defmodule Emerge.ViewportTest do
       end)
 
     send(pid, {:emerge_skia_event, {id_bin, :change, "hello"}})
-
     assert_receive {:wrapped_payload, "hello"}
 
     send(pid, {:emerge_skia_event, {id_bin, :scroll, %{x: 0.25, y: 0.75}}})
@@ -902,7 +874,6 @@ defmodule Emerge.ViewportTest do
 
   test "key listener events route through the viewport mailbox" do
     {:ok, pid} = KeyViewport.start_link(count: 0)
-
     state = :sys.get_state(pid)
     route = Event.key_route_id(:key_down, :enter, [], :exact)
 
@@ -912,15 +883,12 @@ defmodule Emerge.ViewportTest do
       end)
 
     send(pid, {:emerge_skia_event, {id_bin, :key_down, route}})
-
     assert_eventually(fn -> :sys.get_state(pid).count == 1 end)
-
     GenServer.stop(pid)
   end
 
   test "key press listener events route through the viewport mailbox" do
     {:ok, pid} = KeyPressViewport.start_link(count: 0)
-
     state = :sys.get_state(pid)
     route = Event.key_route_id(:key_press, :space, [], :exact)
 
@@ -930,41 +898,36 @@ defmodule Emerge.ViewportTest do
       end)
 
     send(pid, {:emerge_skia_event, {id_bin, :key_press, route}})
-
     assert_eventually(fn -> :sys.get_state(pid).count == 1 end)
-
     GenServer.stop(pid)
   end
 
   test "renderer heartbeat watchdog stops viewport when heartbeats go stale" do
     {:ok, pid} = LivenessViewport.start_link()
     renderer = Emerge.renderer(pid)
-
     FakeRenderer.set_running(renderer, false)
 
     :sys.replace_state(pid, fn state ->
       update_in(
         state.__emerge__.last_renderer_heartbeat_at_ms,
-        fn _last_seen -> System.monotonic_time(:millisecond) - 1_500 end
+        fn _last_seen -> System.monotonic_time(:millisecond) - 1500 end
       )
     end)
 
     ref = Process.monitor(pid)
     send(pid, {:emerge_viewport, :check_renderer})
-
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}
   end
 
   test "renderer heartbeat watchdog tolerates a stale heartbeat when renderer is still running" do
     {:ok, pid} = LivenessViewport.start_link()
     renderer = Emerge.renderer(pid)
-
     FakeRenderer.pause_heartbeat(renderer)
 
     :sys.replace_state(pid, fn state ->
       update_in(
         state.__emerge__.last_renderer_heartbeat_at_ms,
-        fn _last_seen -> System.monotonic_time(:millisecond) - 1_500 end
+        fn _last_seen -> System.monotonic_time(:millisecond) - 1500 end
       )
     end)
 
@@ -972,41 +935,33 @@ defmodule Emerge.ViewportTest do
     send(pid, {:emerge_viewport, :check_renderer})
 
     assert :sys.get_state(pid).__emerge__.last_renderer_heartbeat_at_ms >
-             System.monotonic_time(:millisecond) - 1_000
+             System.monotonic_time(:millisecond) - 1000
 
     refute_receive {:DOWN, ^ref, :process, ^pid, :normal}, 100
-
     GenServer.stop(pid)
   end
 
   test "default handle_close stops viewport when close is received" do
     {:ok, pid} = LivenessViewport.start_link()
-
     ref = Process.monitor(pid)
     send(pid, {:emerge_skia_close, :window_close_requested})
-
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}
   end
 
   test "viewport can override close handling through handle_close" do
     {:ok, pid} = CloseAwareViewport.start_link(test_pid: self())
-
     send(pid, {:emerge_skia_close, :window_close_requested})
-
     assert_receive :close_requested
     assert Process.alive?(pid)
     assert :sys.get_state(pid).closed?
-
     GenServer.stop(pid)
   end
 
   test "stopping viewport stops renderer" do
     {:ok, pid} = CounterViewport.start_link(count: 1)
     renderer = Emerge.renderer(pid)
-
     ref = Process.monitor(renderer)
     GenServer.stop(pid)
-
     assert_receive {:DOWN, ^ref, :process, ^renderer, :normal}
   end
 
@@ -1014,10 +969,8 @@ defmodule Emerge.ViewportTest do
     {:ok, sup} = Supervisor.start_link([{LivenessViewport, []}], strategy: :one_for_one)
     [{_, pid, _, _}] = Supervisor.which_children(sup)
     renderer = Emerge.renderer(pid)
-
     ref = Process.monitor(renderer)
     :ok = Supervisor.stop(sup)
-
     assert_receive {:DOWN, ^ref, :process, ^renderer, :normal}
   end
 
@@ -1030,7 +983,6 @@ defmodule Emerge.ViewportTest do
     end)
 
     assert_eventually(fn -> Process.alive?(pid) end)
-
     GenServer.stop(pid)
   end
 
@@ -1069,33 +1021,28 @@ defmodule Emerge.ViewportTest do
     end
   end
 
-  defp assert_eventually(_fun, 0), do: flunk("condition was not met")
+  defp assert_eventually(_fun, 0) do
+    flunk("condition was not met")
+  end
 
   defp compile_reloadable_render_zero_viewport do
     suffix = System.unique_integer([:positive])
     module = Module.concat(__MODULE__, "ReloadableRenderZeroViewport#{suffix}")
     beam_dir = Path.join(System.tmp_dir!(), "emerge_viewport_test_#{suffix}")
     source_path = Path.join(beam_dir, "reloadable_render_zero_viewport.ex")
+    source = "defmodule #{inspect(module)} do
+  use Emerge
 
-    source = """
-    defmodule #{inspect(module)} do
-      use Emerge
+  @impl Viewport
+  def mount(_opts) do
+    {:ok,
+     %Emerge.Config{assets: [otp_app: :emerge], runtime: [adapter: Emerge.ViewportTest.FakeRenderer, health_check_interval_ms: nil]}}
+  end
 
-      @impl Viewport
-      def mount(_opts) do
-        {:ok,
-         emerge_skia: [otp_app: :emerge],
-         viewport: [
-           renderer_module: Emerge.ViewportTest.FakeRenderer,
-           renderer_check_interval_ms: nil
-         ]}
-      end
-
-      @impl Viewport
-      def render, do: el([], text(\"reload zero\"))
-    end
-    """
-
+  @impl Viewport
+  def render, do: el([], text(\"reload zero\"))
+end
+"
     File.mkdir_p!(beam_dir)
     File.write!(source_path, source)
 

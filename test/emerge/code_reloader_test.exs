@@ -1,17 +1,12 @@
 defmodule Emerge.Runtime.CodeReloaderTest do
   use ExUnit.Case, async: false
-
   import ExUnit.CaptureLog
   use Emerge.UI
-
   alias Emerge.Runtime.CodeReloader
   alias Emerge.Runtime.CodeReloader.MixListener
-
-  @reload_timeout 1_000
-
+  @reload_timeout 1000
   defmodule FakeRenderer do
     @behaviour Emerge.Runtime.Viewport.Renderer
-
     @impl true
     def start(_skia_opts, _renderer_opts) do
       Agent.start_link(fn -> %{ops: [], running?: true, heartbeat_pid: nil} end)
@@ -19,10 +14,7 @@ defmodule Emerge.Runtime.CodeReloaderTest do
 
     @impl true
     def stop(renderer) do
-      renderer
-      |> Agent.get(& &1.heartbeat_pid)
-      |> stop_heartbeat()
-
+      renderer |> Agent.get(& &1.heartbeat_pid) |> stop_heartbeat()
       Agent.stop(renderer)
       :ok
     catch
@@ -30,18 +22,23 @@ defmodule Emerge.Runtime.CodeReloaderTest do
     end
 
     @impl true
-    def running?(renderer), do: Agent.get(renderer, & &1.running?)
+    def running?(renderer) do
+      Agent.get(renderer, & &1.running?)
+    end
 
     @impl true
     def set_input_target(renderer, pid) do
       Agent.update(renderer, fn state ->
         stop_heartbeat(state.heartbeat_pid)
 
-        heartbeat_pid = if is_pid(pid), do: start_heartbeat(pid), else: nil
+        heartbeat_pid =
+          if is_pid(pid) do
+            start_heartbeat(pid)
+          else
+            nil
+          end
 
-        state
-        |> Map.put(:heartbeat_pid, heartbeat_pid)
-        |> log_op({:set_input_target, pid})
+        state |> Map.put(:heartbeat_pid, heartbeat_pid) |> log_op({:set_input_target, pid})
       end)
 
       :ok
@@ -73,9 +70,18 @@ defmodule Emerge.Runtime.CodeReloaderTest do
       {next_state, assigned_tree}
     end
 
-    def ops(renderer), do: Agent.get(renderer, &Enum.reverse(&1.ops))
+    @impl true
+    def configure(_renderer, _previous, _config) do
+      :ok
+    end
 
-    defp log_op(state, op), do: %{state | ops: [op | state.ops]}
+    def ops(renderer) do
+      Agent.get(renderer, &Enum.reverse(&1.ops))
+    end
+
+    defp log_op(state, op) do
+      %{state | ops: [op | state.ops]}
+    end
 
     defp start_heartbeat(pid) do
       spawn(fn -> heartbeat_loop(pid) end)
@@ -87,7 +93,9 @@ defmodule Emerge.Runtime.CodeReloaderTest do
       heartbeat_loop(pid)
     end
 
-    defp stop_heartbeat(nil), do: nil
+    defp stop_heartbeat(nil) do
+      nil
+    end
 
     defp stop_heartbeat(pid) do
       Process.exit(pid, :kill)
@@ -97,42 +105,46 @@ defmodule Emerge.Runtime.CodeReloaderTest do
 
   defmodule ReloadViewport do
     use Emerge
-
     @impl Viewport
     def mount(_opts) do
       {:ok, %{},
-       emerge_skia: [otp_app: :emerge],
-       viewport: [
-         renderer_module: Emerge.Runtime.CodeReloaderTest.FakeRenderer,
-         renderer_check_interval_ms: nil
-       ]}
+       %Emerge.Config{
+         assets: [otp_app: :emerge],
+         runtime: [
+           adapter: Emerge.Runtime.CodeReloaderTest.FakeRenderer,
+           health_check_interval_ms: nil
+         ]
+       }}
     end
 
     @impl Viewport
-    def render(_state), do: el([], text("reload"))
+    def render(_state) do
+      el([], text("reload"))
+    end
   end
 
   defmodule ReloadRenderZeroViewport do
     use Emerge
-
     @impl Viewport
     def mount(_opts) do
       {:ok,
-       viewport: [
-         renderer_module: Emerge.Runtime.CodeReloaderTest.FakeRenderer,
-         renderer_check_interval_ms: nil
-       ]}
+       %Emerge.Config{
+         runtime: [
+           adapter: Emerge.Runtime.CodeReloaderTest.FakeRenderer,
+           health_check_interval_ms: nil
+         ]
+       }}
     end
 
     @impl Viewport
-    def render, do: el([], text("reload zero"))
+    def render do
+      el([], text("reload zero"))
+    end
   end
 
   defmodule FakeWatcher do
     use GenServer
-
     @behaviour Emerge.Runtime.CodeReloader.Watcher
-
     @impl true
     def start_link(opts) do
       {genserver_opts, init_opts} = Keyword.split(opts, [:name])
@@ -158,7 +170,6 @@ defmodule Emerge.Runtime.CodeReloaderTest do
 
   defmodule MissingDependencyWatcher do
     @behaviour Emerge.Runtime.CodeReloader.Watcher
-
     @impl true
     def start_link(_opts) do
       {:error,
@@ -179,7 +190,9 @@ defmodule Emerge.Runtime.CodeReloaderTest do
   end
 
   defmodule PurgedModule do
-    def ping, do: :pong
+    def ping do
+      :pong
+    end
   end
 
   test "debounces repeated file changes into a single compile" do
@@ -196,12 +209,10 @@ defmodule Emerge.Runtime.CodeReloaderTest do
       )
 
     assert_receive {:watcher_started, watcher_pid}
-
     FakeWatcher.emit(watcher_pid, "/workspace/emerge/lib/emerge/code_reloader.ex")
     FakeWatcher.emit(watcher_pid, "/workspace/emerge/lib/emerge/code_reloader.ex")
     FakeWatcher.emit(watcher_pid, "/workspace/emerge/lib/emerge/viewport.ex")
     FakeWatcher.emit(watcher_pid, "/workspace/emerge/lib/emerge/viewport.txt")
-
     assert_receive {:compiler_reloaded, [:emerge], paths}, @reload_timeout
 
     assert paths == [
@@ -210,7 +221,6 @@ defmodule Emerge.Runtime.CodeReloaderTest do
            ]
 
     refute_receive {:compiler_reloaded, _, _}, 50
-
     GenServer.stop(reloader_pid)
   end
 
@@ -231,13 +241,9 @@ defmodule Emerge.Runtime.CodeReloaderTest do
       )
 
     assert_receive {:watcher_started, watcher_pid}
-
     FakeWatcher.emit(watcher_pid, "/workspace/emerge/lib/emerge/code_reloader.ex")
-
     assert_receive {:compiler_reloaded, [:emerge], _paths}, @reload_timeout
-
     assert_eventually(fn -> patch_count(renderer) == 1 end)
-
     GenServer.stop(reloader_pid)
     GenServer.stop(viewport_pid)
   end
@@ -259,13 +265,9 @@ defmodule Emerge.Runtime.CodeReloaderTest do
       )
 
     assert_receive {:watcher_started, watcher_pid}
-
     FakeWatcher.emit(watcher_pid, "/workspace/emerge/lib/emerge/code_reloader.ex")
-
     assert_receive {:compiler_reloaded, [:emerge], _paths}, @reload_timeout
-
     assert_eventually(fn -> patch_count(renderer) == 1 end)
-
     GenServer.stop(reloader_pid)
     GenServer.stop(viewport_pid)
   end
@@ -289,13 +291,10 @@ defmodule Emerge.Runtime.CodeReloaderTest do
     log =
       capture_log(fn ->
         assert_receive {:watcher_started, watcher_pid}
-
         FakeWatcher.emit(watcher_pid, "/workspace/emerge/lib/emerge/code_reloader.ex")
-
         assert_receive {:compiler_reloaded, [:emerge], _paths}, @reload_timeout
         Process.sleep(50)
         assert patch_count(renderer) == 0
-
         GenServer.stop(reloader_pid)
         GenServer.stop(viewport_pid)
       end)
@@ -317,21 +316,15 @@ defmodule Emerge.Runtime.CodeReloaderTest do
              )
 
     case reason do
-      message when is_binary(message) ->
-        assert message =~ ":file_system"
-
-      {:missing_dependency, message} ->
-        assert message =~ ":file_system"
-
-      :ignore ->
-        assert true
+      message when is_binary(message) -> assert message =~ ":file_system"
+      {:missing_dependency, message} -> assert message =~ ":file_system"
+      :ignore -> assert true
     end
   end
 
   test "mix listener ignores compiles from the current os process" do
     start_supervised!(MixListener)
     :ok = MixListener.subscribe(self(), [:emerge])
-
     {:ok, viewport_pid} = ReloadViewport.start_link()
     renderer = Emerge.renderer(viewport_pid)
 
@@ -352,17 +345,14 @@ defmodule Emerge.Runtime.CodeReloaderTest do
 
     Process.sleep(50)
     assert patch_count(renderer) == 0
-
     GenServer.stop(viewport_pid)
   end
 
   test "mix listener purges modules and rerenders on external compiles" do
     start_supervised!(MixListener)
     :ok = MixListener.subscribe(self(), [:emerge])
-
     {:ok, viewport_pid} = ReloadViewport.start_link()
     renderer = Emerge.renderer(viewport_pid)
-
     assert PurgedModule.ping() == :pong
     assert :code.is_loaded(PurgedModule) != false
 
@@ -383,7 +373,6 @@ defmodule Emerge.Runtime.CodeReloaderTest do
 
     assert_eventually(fn -> patch_count(renderer) == 1 end)
     assert_eventually(fn -> :code.is_loaded(PurgedModule) == false end)
-
     GenServer.stop(viewport_pid)
   end
 
@@ -407,5 +396,7 @@ defmodule Emerge.Runtime.CodeReloaderTest do
     end
   end
 
-  defp assert_eventually(_fun, 0), do: flunk("condition was not met")
+  defp assert_eventually(_fun, 0) do
+    flunk("condition was not met")
+  end
 end
