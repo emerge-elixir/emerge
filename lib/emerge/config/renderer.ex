@@ -4,12 +4,16 @@ defmodule Emerge.Config.Renderer do
   of the DRM scanout card.
 
   `target_fps` caps render admissions, not physical display refresh or application
-  timers. Headless output supports startup and live caps for all redraw sources;
+  timers. Headless and Wayland outputs support startup and live caps for all redraw sources;
   pending scenes coalesce, and already admitted frames may finish. `nil` restores
   backend pacing. Config-only changes do not redraw static content, and shutdown
   and PRIME lease retirement remain responsive while capped.
 
-  Window and DRM frame caps are not implemented yet and are rejected explicitly.
+  Wayland caps apply to raster, raster GPU upload, OpenGL and Vulkan. Compositor
+  callbacks, input and video retirement remain independent of render admission;
+  cap changes do not alter the physical refresh estimate.
+
+  macOS and DRM frame caps are not implemented yet and are rejected explicitly.
 
   ## Fields and defaults
 

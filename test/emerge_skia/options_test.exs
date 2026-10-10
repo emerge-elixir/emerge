@@ -310,35 +310,35 @@ defmodule EmergeSkia.OptionsTest do
 
   test "build_start_native_opts! normalizes headless options" do
     assert %{
+             target_fps: nil,
              headless: %{
                target: nil,
                mode: "binary",
                pixel_format: "rgba8888",
                bw1_polarity: "one_is_black",
                dither: false,
-               target_fps: nil,
                frame_message: "emerge_skia_frame"
              }
            } = Options.build_start_native_opts!([])
 
     assert %{
+             target_fps: 30,
              headless: %{
                target: target,
                mode: "binary",
                pixel_format: "bw1",
                bw1_polarity: "one_is_white",
                dither: false,
-               target_fps: 30,
                frame_message: "my_frame"
              }
            } =
              Options.build_start_native_opts!(
                backend: :headless,
+               target_fps: 30,
                headless: [
                  target: self(),
                  pixel_format: :bw1,
                  bw1_polarity: :one_is_white,
-                 target_fps: 30,
                  frame_message: :my_frame
                ]
              )
@@ -409,6 +409,7 @@ defmodule EmergeSkia.OptionsTest do
     assert target == self()
 
     assert %{
+             target_fps: nil,
              headless: %{
                target: target,
                mode: "prime",

@@ -31,6 +31,7 @@ defmodule Emerge.Config.Native do
     [
       otp_app: assets.otp_app,
       rendering_api: api,
+      target_fps: renderer.target_fps,
       vulkan_drm_node: renderer.device,
       scroll_line_pixels: config.input.scroll_line_pixels,
       hw_cursor: config.input.cursor.hardware,
@@ -51,10 +52,10 @@ defmodule Emerge.Config.Native do
         runtime_paths: fields(assets.runtime_paths),
         cache: fields(assets.cache)
       ]
-    ] ++ output_options(config.output, renderer.target_fps)
+    ] ++ output_options(config.output)
   end
 
-  defp output_options(%Config.Window{} = window, _fps) do
+  defp output_options(%Config.Window{} = window) do
     {width, height} = window.size
 
     backend =
@@ -71,7 +72,7 @@ defmodule Emerge.Config.Native do
     ]
   end
 
-  defp output_options(%Config.DRM{} = drm, _fps) do
+  defp output_options(%Config.DRM{} = drm) do
     {width, height} = drm.preferred_size || {800, 600}
 
     [
@@ -84,7 +85,7 @@ defmodule Emerge.Config.Native do
     ]
   end
 
-  defp output_options(%Config.Headless{} = output, fps) do
+  defp output_options(%Config.Headless{} = output) do
     {width, height} = output.size
 
     delivery =
@@ -107,8 +108,7 @@ defmodule Emerge.Config.Native do
       backend: :headless,
       width: width,
       height: height,
-      headless:
-        [target: output.target, frame_message: output.frame_message, target_fps: fps] ++ delivery
+      headless: [target: output.target, frame_message: output.frame_message] ++ delivery
     ]
   end
 

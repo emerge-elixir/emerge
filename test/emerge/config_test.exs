@@ -91,10 +91,29 @@ defmodule Emerge.ConfigTest do
       end
     end
 
-    config = Normalize.config!(%Config{renderer: [target_fps: 30]})
+    for output <- [%Config.DRM{}, %Config.Window{backend: :macos}] do
+      config = Normalize.config!(%Config{output: output, renderer: [target_fps: 30]})
 
-    assert_raise ArgumentError, ~r/target_fps is currently supported only by headless/, fn ->
-      EmergeSkia.validate_config!(config)
+      assert_raise ArgumentError,
+                   ~r/target_fps is currently supported only by headless and Wayland/,
+                   fn ->
+                     EmergeSkia.validate_config!(config)
+                   end
+    end
+  end
+
+  test "Wayland startup caps use the common native field, not headless delivery options" do
+    for api <- [:raster, :opengl, :vulkan] do
+      config =
+        Normalize.config!(%Config{
+          output: %Config.Window{backend: :wayland},
+          renderer: [api: api, target_fps: 30]
+        })
+
+      assert :ok = EmergeSkia.validate_config!(config)
+      opts = config |> Config.Native.options() |> EmergeSkia.Options.build_start_native_opts!()
+      assert opts.target_fps == 30
+      refute Map.has_key?(opts.headless, :target_fps)
     end
   end
 

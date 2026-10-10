@@ -192,7 +192,12 @@ impl PresentState {
         }
     }
 
-    pub(super) fn frame_callback_received(&mut self, received_at: Instant, callback_time_ms: u32) {
+    pub(super) fn frame_callback_received(
+        &mut self,
+        received_at: Instant,
+        callback_time_ms: u32,
+        estimate_interval: bool,
+    ) {
         let observed_from_callback =
             self.last_frame_callback_time_ms
                 .map(|last_callback_time_ms| {
@@ -204,16 +209,17 @@ impl PresentState {
             .last_frame_callback_at
             .map(|last_callback_at| received_at.saturating_duration_since(last_callback_at));
 
-        if let Some(observed) = observed_from_callback
-            .filter(|interval| plausible_frame_interval(*interval))
-            .or(observed_from_arrival)
-            .filter(|interval| plausible_frame_interval(*interval))
+        if estimate_interval
+            && let Some(observed) = observed_from_callback
+                .filter(|interval| plausible_frame_interval(*interval))
+                .or(observed_from_arrival)
+                .filter(|interval| plausible_frame_interval(*interval))
         {
             self.frame_interval.observe_interval(observed);
         }
 
-        self.last_frame_callback_at = Some(received_at);
-        self.last_frame_callback_time_ms = Some(callback_time_ms);
+        self.last_frame_callback_at = estimate_interval.then_some(received_at);
+        self.last_frame_callback_time_ms = estimate_interval.then_some(callback_time_ms);
         self.ready_frame_callback_at = Some(received_at);
         self.frame_callback_state = FrameCallbackState::Received;
         self.requested_frame_callback = None;
@@ -273,6 +279,11 @@ impl PresentState {
             presented_at,
             self.frame_interval.predict_next_present_after(presented_at),
         )
+    }
+
+    pub(super) fn reset_frame_interval_observation(&mut self) {
+        self.last_frame_callback_at = None;
+        self.last_frame_callback_time_ms = None;
     }
 
     pub(super) fn estimated_frame_interval(&self) -> Duration {
@@ -351,6 +362,31 @@ impl PresentState {
 mod tests {
     use super::{DrawDecision, DrawKind, FrameCallbackState, PresentState};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn capped_callbacks_do_not_redefine_physical_refresh_or_seed_uncapped_estimates() {
+        let mut present = PresentState::default();
+        let start = Instant::now();
+        present.set_frame_interval(Duration::from_millis(8));
+        present.frame_callback_received(start, 0, true);
+        present.reset_frame_interval_observation();
+        for n in 1..=5 {
+            present.frame_callback_received(
+                start + Duration::from_millis(n * 50),
+                (n * 50) as u32,
+                false,
+            );
+        }
+        assert_eq!(present.estimated_frame_interval(), Duration::from_millis(8));
+        // The first uncapped callback cannot measure the preceding capped gap.
+        present.frame_callback_received(start + Duration::from_millis(300), 300, true);
+        assert_eq!(present.estimated_frame_interval(), Duration::from_millis(8));
+        present.frame_callback_received(start + Duration::from_millis(312), 312, true);
+        assert_eq!(
+            present.estimated_frame_interval(),
+            Duration::from_millis(12)
+        );
+    }
 
     #[test]
     fn pending_frame_waits_when_no_new_patch_scene_arrived() {
@@ -455,7 +491,7 @@ mod tests {
         present.queue_video_redraw();
         assert_eq!(present.draw_decision(false, true), DrawDecision::Skip);
 
-        present.frame_callback_received(Instant::now(), 1);
+        present.frame_callback_received(Instant::now(), 1, true);
         assert_eq!(
             present.draw_decision(false, true),
             DrawDecision::Draw(DrawKind::Normal)
@@ -488,7 +524,7 @@ mod tests {
         present.queue_video_redraw();
 
         assert_eq!(present.draw_decision(false, false), DrawDecision::Skip);
-        present.frame_callback_received(Instant::now(), 1);
+        present.frame_callback_received(Instant::now(), 1, true);
         assert_eq!(
             present.draw_decision(false, false),
             DrawDecision::Draw(DrawKind::Normal)
@@ -554,7 +590,7 @@ mod tests {
         );
         present.finish_present(2, DrawKind::LateReplacement, false);
 
-        present.frame_callback_received(Instant::now(), 1_000);
+        present.frame_callback_received(Instant::now(), 1_000, true);
         present.queue_redraw();
         present.note_scene_received(3, true, false);
 
@@ -569,13 +605,13 @@ mod tests {
         let mut present = PresentState::default();
         let first = Instant::now();
 
-        present.frame_callback_received(first, 1_000);
+        present.frame_callback_received(first, 1_000, true);
         let (_, predicted) =
             present.present_timing_for_normal_draw(first + Duration::from_millis(2));
         assert_eq!(predicted, first + Duration::from_millis(16));
 
         let second = first + Duration::from_millis(12);
-        present.frame_callback_received(second, 1_012);
+        present.frame_callback_received(second, 1_012, true);
         let (presented, predicted) =
             present.present_timing_for_normal_draw(second + Duration::from_millis(2));
         assert_eq!(presented, second);
@@ -588,10 +624,10 @@ mod tests {
         let first = Instant::now();
         let second = first + Duration::from_millis(30);
 
-        present.frame_callback_received(first, 1_000);
+        present.frame_callback_received(first, 1_000, true);
         present.present_timing_for_normal_draw(first + Duration::from_millis(2));
 
-        present.frame_callback_received(second, 1_016);
+        present.frame_callback_received(second, 1_016, true);
         let (_, predicted) = present.present_timing_for_normal_draw(second);
 
         assert_eq!(predicted, second + Duration::from_millis(16));
@@ -602,7 +638,7 @@ mod tests {
         let mut present = PresentState::default();
         let callback_at = Instant::now();
 
-        present.frame_callback_received(callback_at, 1_000);
+        present.frame_callback_received(callback_at, 1_000, true);
         present.clear_ready_frame_callback_timing_if_idle();
 
         let fallback = callback_at + Duration::from_millis(80);
@@ -618,14 +654,14 @@ mod tests {
         let second = first + Duration::from_millis(17);
         let after_idle = second + Duration::from_millis(67);
 
-        present.frame_callback_received(first, 1_000);
+        present.frame_callback_received(first, 1_000, true);
         present.present_timing_for_normal_draw(first);
-        present.frame_callback_received(second, 1_017);
+        present.frame_callback_received(second, 1_017, true);
         let (_, predicted) = present.present_timing_for_normal_draw(second);
         assert_eq!(predicted, second + Duration::from_millis(17));
 
         present.clear_ready_frame_callback_timing_if_idle();
-        present.frame_callback_received(after_idle, 1_084);
+        present.frame_callback_received(after_idle, 1_084, true);
         let (_, predicted_after_idle) = present.present_timing_for_normal_draw(after_idle);
 
         assert_eq!(predicted_after_idle, after_idle + Duration::from_millis(17));
