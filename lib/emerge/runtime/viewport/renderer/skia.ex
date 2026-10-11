@@ -5,7 +5,12 @@ defmodule Emerge.Runtime.Viewport.Renderer.Skia do
 
   @impl true
   def start(%Emerge.Config{} = config, renderer_opts),
-    do: EmergeSkia.start_owned(config, Keyword.get(renderer_opts, :owner))
+    do:
+      EmergeSkia.start_owned(
+        config,
+        Keyword.get(renderer_opts, :owner),
+        Keyword.get(renderer_opts, :backlight_state)
+      )
 
   @impl true
   def configure(renderer, previous, config) do

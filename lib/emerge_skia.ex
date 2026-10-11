@@ -105,14 +105,24 @@ defmodule EmergeSkia do
   end
 
   @doc false
-  def start_owned(%Emerge.Config{} = config, owner) do
+  def start_owned(%Emerge.Config{} = config, owner, backlight_state \\ nil) do
     config = Emerge.Config.Normalize.config!(config)
     validate_config!(config)
 
     if is_nil(config.assets.otp_app),
       do: raise(ArgumentError, "config.assets.otp_app is required outside a viewport")
 
-    opts = config |> Emerge.Config.Native.options() |> Keyword.put(:owner, owner)
+    backlight_state =
+      if match?(%Emerge.Config.DRM{}, config.output),
+        do: backlight_state || Native.new_backlight_state(),
+        else: nil
+
+    opts =
+      config
+      |> Emerge.Config.Native.options()
+      |> Keyword.put(:owner, owner)
+      |> Keyword.put(:backlight_state, backlight_state)
+
     asset_config = Assets.normalize_asset_config!(opts)
 
     native_opts =

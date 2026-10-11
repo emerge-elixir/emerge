@@ -34,6 +34,17 @@ pub(super) struct Lease {
     pub(super) mode: control::Mode,
 }
 
+impl Lease {
+    pub(super) fn device_number(&self) -> std::io::Result<u64> {
+        use std::os::unix::fs::MetadataExt;
+        self.master
+            .card
+            .0
+            .metadata()
+            .map(|metadata| metadata.rdev())
+    }
+}
+
 impl Drop for Lease {
     fn drop(&mut self) {
         // Mesa can cache this DRM file in a GPU-wide winsys shared by a sibling EGL
@@ -190,9 +201,11 @@ pub(super) fn open_output(
                         .into_iter()
                         .chain(cursor_plane.map(Into::into))
                         .collect();
-                let (lessee_id, fd) = card.create_lease(&objects, drm::CLOEXEC).map_err(|e| {
-                    format!("failed to lease DRM output {info} (DRM leasing is required): {e}")
-                })?;
+                let (lessee_id, fd) = card
+                    .create_lease(&objects, drm::CLOEXEC | libc::O_NONBLOCK as u32)
+                    .map_err(|e| {
+                        format!("failed to lease DRM output {info} (DRM leasing is required): {e}")
+                    })?;
                 let lease_fd = fd
                     .try_clone()
                     .map_err(|e| format!("failed to retain lease fd: {e}"))?;

@@ -24,6 +24,7 @@ defmodule Emerge.Runtime.Viewport.Lifecycle do
     {:ok,
      %{
        viewport: viewport,
+       backlight_state: backlight_state(nil, config),
        monitor: ref,
        config: config,
        renderer: nil,
@@ -41,7 +42,11 @@ defmodule Emerge.Runtime.Viewport.Lifecycle do
 
   @impl true
   def handle_cast({:configure, config}, state) do
-    next = %{state | config: config}
+    next = %{
+      state
+      | config: config,
+        backlight_state: backlight_state(state.backlight_state, config)
+    }
 
     # Ordinary config traffic must not keep postponing failure detection.
     next =
@@ -196,12 +201,26 @@ defmodule Emerge.Runtime.Viewport.Lifecycle do
     {:noreply, state}
   end
 
+  # The initial callback may choose DRM after mount chose another output. Retain
+  # the baseline resource before any native start, including failed attempts.
+  defp backlight_state(nil, %{
+         renderer_module: Skia,
+         config: %Emerge.Config{output: %Emerge.Config.DRM{}}
+       }),
+       do: EmergeSkia.Native.new_backlight_state()
+
+  defp backlight_state(previous, _config), do: previous
+
   defp start_renderer(state) do
     config = state.config
 
     adapter_opts =
       if config.renderer_module == Skia,
-        do: Keyword.put(config.renderer_opts, :owner, state.viewport),
+        do:
+          Keyword.merge(config.renderer_opts,
+            owner: state.viewport,
+            backlight_state: state.backlight_state
+          ),
         else: config.renderer_opts
 
     case invoke(fn -> config.renderer_module.start(config.config, adapter_opts) end) do

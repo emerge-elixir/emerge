@@ -353,7 +353,7 @@ thread_local! {
     static TEST_ASSET_CONTEXT: AssetContext = AssetContext::default();
 }
 
-fn current_context() -> AssetContext {
+pub(crate) fn current_context() -> AssetContext {
     CURRENT_ASSET_CONTEXT
         .with(|current| current.borrow().clone())
         .unwrap_or_else(missing_current_context)

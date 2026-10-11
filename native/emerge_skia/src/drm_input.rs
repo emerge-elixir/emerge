@@ -189,6 +189,14 @@ impl DrmInput {
                 }
             };
 
+            if !self.backend_wake.input_enabled() {
+                self.modifiers = Modifiers::default();
+                self.pending_cursor_pos = None;
+                self.pending_pointer_buttons.clear();
+                self.devices[idx].pending_direct_touch_button = None;
+                idx += 1;
+                continue;
+            }
             for event in events {
                 match event.destructure() {
                     EventSummary::Key(_, key, value) => {
@@ -508,6 +516,9 @@ impl DrmInput {
     }
 
     fn push_input_blocking(&self, event: InputEvent) {
+        if !self.backend_wake.input_enabled() {
+            return;
+        }
         let mut msg = EventMsg::InputEvent(event);
         loop {
             match self.event_tx.try_send(msg) {
@@ -517,7 +528,7 @@ impl DrmInput {
                 }
             }
 
-            if self.stop.load(Ordering::Relaxed) {
+            if self.stop.load(Ordering::Relaxed) || !self.backend_wake.input_enabled() {
                 break;
             }
 
@@ -537,6 +548,9 @@ impl DrmInput {
 
     #[allow(clippy::result_large_err)]
     fn try_push_input(&self, event: InputEvent) -> Result<(), TrySendError<EventMsg>> {
+        if !self.backend_wake.input_enabled() {
+            return Ok(());
+        }
         if self.log_enabled
             && let InputEvent::CursorPos { x, y } = &event
         {

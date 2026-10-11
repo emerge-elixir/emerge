@@ -544,20 +544,25 @@ impl PresenterSession {
         config: &DrmRunConfig,
         native_log: &crate::native_log::NativeLogRelay,
         lifecycle: Arc<crate::runtime::lifecycle::Lifecycle>,
+        presenter: Option<&super::power::PresenterControl>,
     ) -> Result<(Self, VulkanRendererReport), String> {
         let vulkan_node_path = config.vulkan_drm_node.as_deref().ok_or_else(|| {
             "explicit DRM Vulkan requires vulkan_drm_node; it is selected independently from drm_card"
                 .to_string()
         })?;
         let kms = probe_card(
-            super::session::open_output(
-                config.card_path.as_deref(),
-                config.output.as_deref(),
-                config.mode.as_deref(),
-                config.requested_size,
-                false,
-                Some(lifecycle),
-            )?,
+            if let Some(presenter) = presenter {
+                duplicate_card(&presenter.card)?
+            } else {
+                super::session::open_output(
+                    config.card_path.as_deref(),
+                    config.output.as_deref(),
+                    config.mode.as_deref(),
+                    config.requested_size,
+                    false,
+                    Some(lifecycle),
+                )?
+            },
             config.requested_size,
         )?;
         if !kms.primary_supports_xrgb8888 {
@@ -1182,6 +1187,7 @@ fn quarantine_session(session: PresenterSession) {
 
 pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
     let DrmRunContext {
+        presenter,
         lifecycle,
         startup_tx,
         stop,
@@ -1199,6 +1205,7 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
         stats,
         latest_frame,
         video_registry,
+        ..
     } = context;
 
     if config.force_gpu_finish {
@@ -1237,7 +1244,12 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
             return;
         }
 
-        match PresenterSession::new(&config, &native_log, Arc::clone(&lifecycle)) {
+        match PresenterSession::new(
+            &config,
+            &native_log,
+            Arc::clone(&lifecycle),
+            presenter.as_ref(),
+        ) {
             Ok(session) => break session,
             Err(error) if retries_remaining > 0 => {
                 eprintln!(
@@ -1318,6 +1330,23 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
         prime_video_formats,
         vulkan_device: Some(report),
     }));
+    let required_frame = if let Some(presenter) = &presenter {
+        match presenter.request_frame(&tree_tx, session.kms().dimensions, &stop) {
+            Ok(required) => Some(required),
+            Err(error) => {
+                native_log.error("drm_vulkan", error);
+                presenter.before_detach();
+                if session.normal_shutdown().is_err() {
+                    lifecycle.quarantine("DRM Vulkan shutdown failed");
+                    quarantine_session(session);
+                }
+                running_flag.store(false, Ordering::Release);
+                return;
+            }
+        }
+    } else {
+        None
+    };
     let mut application_frame_ready = false;
     let mut first_present = true;
     let mut render_state = RenderState::default();
@@ -1345,6 +1374,7 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
             match message {
                 RenderMsg::Scene {
                     application_frame,
+                    frame_request,
                     scene,
                     version,
                     pipeline_submitted_at,
@@ -1353,7 +1383,9 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
                     ..
                 } => {
                     let received_at = Instant::now();
-                    application_frame_ready = application_frame;
+                    application_frame_ready = application_frame
+                        && (!first_present
+                            || required_frame.is_none_or(|request| frame_request == request));
                     render_state.set_scene(*scene);
                     if let Err(error) =
                         video_registry.set_active_targets(&render_state.video_target_ids)
@@ -1424,6 +1456,9 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
             };
             let action = output_action(session.output_suspended, available, flip_timed_out);
             if matches!(action, OutputAction::Suspend | OutputAction::Repair) {
+                if let Some(presenter) = &presenter {
+                    presenter.before_detach();
+                }
                 if let Err(error) = session.suspend_output(&video_registry) {
                     terminal = Some(format!("DRM Vulkan output detach failed: {error}"));
                     break;
@@ -1438,6 +1473,11 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
                 );
                 page_flip_deadline = None;
                 retry_at = None;
+                // A managed presenter is retired, not allowed to resume with an
+                // old receipt. Recovery obtains a fresh config/layout frame.
+                if presenter.is_some() {
+                    break;
+                }
             }
             if matches!(action, OutputAction::Resume | OutputAction::Repair) {
                 session.output_suspended = false;
@@ -1693,6 +1733,9 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
                         let presented_at = Instant::now();
                         let predicted = presented_at + mode_frame_interval(&session.kms().mode);
                         let slot = &mut session.slots[hooks.slot];
+                        if let Some(presenter) = &presenter {
+                            presenter.presented();
+                        }
                         if let Some(stats) = stats.as_deref() {
                             stats.record_frame_present();
                             stats.record_drm_page_flip_sequence(None);
@@ -1816,6 +1859,9 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
             "drm_vulkan",
             format!("presenter stopped after ownership-safe recovery: {reason}"),
         );
+    }
+    if let Some(presenter) = &presenter {
+        presenter.before_detach();
     }
     let uncertain = terminal.is_some()
         || session.lifecycle.in_flight.is_some()

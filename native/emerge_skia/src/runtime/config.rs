@@ -15,12 +15,34 @@ pub(crate) struct LiveConfig {
     pub title: Option<String>,
     pub target_fps: Option<u32>,
     pub input_mask: u32,
+    pub drm_power: Option<DrmPower>,
+}
+
+#[derive(Clone, Debug, PartialEq, rustler::NifMap)]
+pub(crate) struct DrmPower {
+    pub display_on: bool,
+    pub brightness: Option<f64>,
+}
+
+impl DrmPower {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if self
+            .brightness
+            .is_some_and(|v| !v.is_finite() || !(0.0..=1.0).contains(&v))
+        {
+            return Err("brightness must be finite and in 0..1 or nil".into());
+        }
+        Ok(())
+    }
 }
 
 impl LiveConfig {
     pub(crate) fn validate(&self) -> Result<(), String> {
         if self.target_fps == Some(0) {
             return Err("target_fps must be positive or nil".into());
+        }
+        if let Some(power) = &self.drm_power {
+            power.validate()?;
         }
         if self.input_mask & !0xff != 0 {
             return Err("input mask contains unknown event categories".into());
@@ -64,6 +86,26 @@ impl ConfigControl {
         target: CompletionTarget,
         event_tx: &Sender<EventMsg>,
     ) -> Result<(u64, u64), String> {
+        self.submit_to(config, target, |request| {
+            event_tx
+                .try_send(EventMsg::Configure(request))
+                .map_err(|error| match error {
+                    crossbeam_channel::TrySendError::Full(_) => {
+                        "renderer control queue is full".into()
+                    }
+                    crossbeam_channel::TrySendError::Disconnected(_) => {
+                        "renderer event actor stopped".into()
+                    }
+                })
+        })
+    }
+
+    pub(crate) fn submit_to(
+        self: &Arc<Self>,
+        config: LiveConfig,
+        target: CompletionTarget,
+        enqueue: impl FnOnce(ConfigRequest) -> Result<(), String>,
+    ) -> Result<(u64, u64), String> {
         config.validate()?;
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         if self.stop.load(Ordering::Acquire) {
@@ -81,14 +123,11 @@ impl ConfigControl {
             completion: Arc::new(Completion {
                 target,
                 sent: AtomicBool::new(false),
+                input_done: AtomicBool::new(false),
+                output_done: AtomicBool::new(false),
             }),
         };
-        event_tx
-            .try_send(EventMsg::Configure(request))
-            .map_err(|error| match error {
-                crossbeam_channel::TrySendError::Full(_) => "renderer control queue is full",
-                crossbeam_channel::TrySendError::Disconnected(_) => "renderer event actor stopped",
-            })?;
+        enqueue(request)?;
         state.desired_revision = revision;
         state.pending_revision = Some(revision);
         state.failed_revision = None;
@@ -117,6 +156,8 @@ pub(crate) enum CompletionTarget {
 struct Completion {
     target: CompletionTarget,
     sent: AtomicBool,
+    input_done: AtomicBool,
+    output_done: AtomicBool,
 }
 
 #[derive(Clone)]
@@ -128,9 +169,34 @@ pub struct ConfigRequest {
 }
 
 impl ConfigRequest {
-    /// Serialize the current-revision check with side effects. New desired
-    /// revisions cannot overtake a checked owner operation. Closures must be
-    /// short owner operations, never GPU/KMS waits or rendering.
+    pub(crate) fn finish_input(&self, result: Result<(), String>) {
+        self.finish_part(
+            &self.completion.input_done,
+            &self.completion.output_done,
+            result,
+        );
+    }
+
+    #[cfg(any(all(feature = "drm-core", target_os = "linux"), test))]
+    pub(crate) fn finish_output(&self, result: Result<(), String>) {
+        self.finish_part(
+            &self.completion.output_done,
+            &self.completion.input_done,
+            result,
+        );
+    }
+
+    fn finish_part(&self, own: &AtomicBool, other: &AtomicBool, result: Result<(), String>) {
+        if result.is_err() {
+            self.finish(result);
+        } else {
+            own.store(true, Ordering::SeqCst);
+            if other.load(Ordering::SeqCst) {
+                self.finish(Ok(()));
+            }
+        }
+    }
+
     pub(crate) fn apply(
         &self,
         operation: impl FnOnce() -> Result<(), String>,
@@ -202,6 +268,7 @@ mod tests {
             title: None,
             target_fps: None,
             input_mask: 1,
+            drm_power: None,
         }
     }
     type Replies = Receiver<((u64, u64), Result<(), String>)>;
@@ -351,3 +418,6 @@ mod tests {
         assert_eq!(control.status().applied_revision, None);
     }
 }
+
+#[cfg(test)]
+mod power_tests;

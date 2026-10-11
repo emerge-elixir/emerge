@@ -2,8 +2,16 @@ use crate::runtime::config::{ConfigRequest, LiveConfig};
 use std::sync::Arc;
 
 pub(crate) trait BackendWake: Send + Sync {
+    fn input_enabled(&self) -> bool {
+        true
+    }
+
+    fn direct_config_sender(&self) -> Option<crossbeam_channel::Sender<ConfigRequest>> {
+        None
+    }
+
     fn validate_config(&self, config: &LiveConfig) -> Result<(), String> {
-        if config.title.is_some() || config.target_fps.is_some() {
+        if config.title.is_some() || config.target_fps.is_some() || config.drm_power.is_some() {
             return Err("this backend does not support the requested live controls".into());
         }
         Ok(())
@@ -51,7 +59,18 @@ impl BackendWakeHandle {
         Self::new(NoopWake)
     }
 
+    pub(crate) fn input_enabled(&self) -> bool {
+        self.inner.input_enabled()
+    }
+
+    pub(crate) fn direct_config_sender(&self) -> Option<crossbeam_channel::Sender<ConfigRequest>> {
+        self.inner.direct_config_sender()
+    }
+
     pub(crate) fn validate_config(&self, config: &LiveConfig) -> Result<(), String> {
+        if config.drm_power.is_some() && self.direct_config_sender().is_none() {
+            return Err("DRM power controls require a DRM owner".into());
+        }
         self.inner.validate_config(config)
     }
 

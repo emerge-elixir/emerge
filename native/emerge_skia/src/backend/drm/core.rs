@@ -51,7 +51,21 @@ impl AsRawFd for Card {
 impl BasicDevice for Card {}
 impl ControlDevice for Card {}
 
-#[cfg(feature = "drm-vulkan")]
+/// Discard old flips before a fresh presenter submits anything. Only this
+/// presenter reads the lease fd; never wait for an event to establish readiness.
+pub(super) fn discard_pending_events(card: &Card) -> io::Result<()> {
+    let mut fds = [libc::pollfd {
+        fd: card.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    }];
+    crate::linux_wait::poll_fds(&mut fds, Some(Duration::ZERO))?;
+    if fds[0].revents & libc::POLLIN != 0 {
+        card.receive_events()?;
+    }
+    Ok(())
+}
+
 pub(super) fn duplicate_card(card: &Card) -> Result<Card, String> {
     card.0
         .try_clone()
@@ -649,6 +663,34 @@ pub(super) fn prop_handle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn discard_pending_events_does_not_wait_on_a_blocking_descriptor() {
+        use std::{io::Write, os::fd::OwnedFd, os::unix::net::UnixStream};
+
+        let (reader, mut writer) = UnixStream::pair().unwrap();
+        // Bound a broken unconditional read without using any host DRM device.
+        reader
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let fd = OwnedFd::from(reader);
+        let card = Card(File::from(fd), None);
+        discard_pending_events(&card).unwrap();
+
+        // Queued bytes are discarded, but an empty queue never waits for more.
+        writer.write_all(&[0; 32]).unwrap();
+        discard_pending_events(&card).unwrap();
+        let mut fds = [libc::pollfd {
+            fd: card.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        }];
+        assert_eq!(
+            crate::linux_wait::poll_fds(&mut fds, Some(Duration::ZERO)).unwrap(),
+            0
+        );
+        discard_pending_events(&card).unwrap();
+    }
 
     fn fixture(clock: u32, flags: u32, preferred: bool) -> control::Mode {
         drm_ffi::drm_mode_modeinfo {
