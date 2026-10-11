@@ -91,7 +91,7 @@ infers `assets.otp_app`, while standalone `EmergeSkia.start/1` requires it expli
 See [viewport configuration](viewport-configuration.md).
 
 The Cargo profile is `--no-default-features --features drm-raster`. It uses the
-DRM ioctl and evdev/input stack, with no GBM, EGL, OpenGL, Vulkan or Wayland
+DRM ioctl and bundled libinput stack, with no GBM, EGL, OpenGL, Vulkan or Wayland
 dependency. All DRM builds embed FreeType; Nerves builds disable fontconfig
 and use registered font assets. No custom headless frame consumer or
 per-frame BEAM binary is needed.
@@ -115,6 +115,54 @@ video is supported, but DMA-BUF/PRIME video import is not. On disconnect or a
 removed mode, the backend detaches and exits so the viewport can recover through
 its normal lifecycle. Output selection uses `EmergeSkia.drm_outputs/1` as with
 the GPU presenters.
+
+### Bundled, daemonless DRM input
+
+Every DRM profile statically includes libinput, libevdev, mtdev and libudev-zero.
+Applications do not need to add these packages or a udev daemon to their
+`nerves_system`. Source builds download pinned, SHA-256-verified upstream archives
+and use the existing cross C compiler. The build host needs `curl` and `tar` with
+gzip/xz/bzip2 support, but not pkg-config, Meson or Python. Set
+`EMERGE_INPUT_CACHE_DIR` to share the archive cache and `EMERGE_INPUT_OFFLINE=1`
+to require pre-populated archives without network access; see the input crate's
+README for cache filenames and offline setup. Hardware quirks from the downloaded
+libinput archive are embedded into the NIF, so deployment needs neither network
+access, `/usr/share/libinput` nor writable extraction paths. Precompiled NIFs
+already contain this bundle.
+
+The backend owns a libinput path context and discovers devices itself, with
+inotify plus bounded rescan/retry. Linux input drivers, readable `/dev/input`
+nodes and `/sys` are required; bundling cannot replace missing kernel drivers.
+Physical keyboard translation remains the existing Emerge mapping, with owner-
+thread key repeat (400 ms initial delay, 40 ms interval); libinput does not provide
+text/IME translation. Device removal cancels contact lifetimes.
+
+DRM touchscreen contacts retain independent identities. Virtual keys activate on
+that contact's release, with independent slide-off cancellation, pressed feedback
+and hold/repeat timers. Other UI retains single-primary-touch pointer behavior.
+Raw touchscreen observations use the explicit `:touch` subscription in
+`Emerge.Config.Input.events`, rather than mouse-button emulation; see `Emerge.Input`.
+Mouse subscriptions are unchanged. General multitouch gesture listeners are not
+introduced here.
+
+For source versions, licenses and a hardware-independent cross-build probe, see
+`native/emerge_input/README.md`. Published precompiled archives must contain this
+implementation; until the next matching release, build the source checkout.
+
+No extra precompiled artifact type is needed: the existing target/profile NIF
+archive contains the static input code and immutable quirks. The release workflow
+builds DRM profiles from the tagged sources, and the Hex workflow generates their
+RustlerPrecompiled checksums. RustlerPrecompiled installs the selected NIF into
+Emerge's `priv/native`; the Nerves application release includes it in firmware.
+The Hex source package retains the vendor sources/licenses and quirks for source
+builds. Existing published archives are unchanged: release this implementation
+under a new matching Mix/Cargo version and tag, not replacement hashes.
+
+For an unreleased checkout, explicitly select source compilation:
+
+```sh
+EMERGE_SKIA_BUILD=true MIX_TARGET=nerves_system_fp3 mix deps.compile emerge --force
+```
 
 ### Release artifacts
 

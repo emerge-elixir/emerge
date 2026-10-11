@@ -839,3 +839,40 @@ Nearby now participates in the retained tree/event model.
 - `native/emerge_skia/src/lib.rs`
 - `native/emerge_skia/src/tree/layout.rs`
 - `native/emerge_skia/src/tree/render.rs`
+
+## DRM contact-local virtual keys
+
+DRM uses the private `native/emerge_input` crate: PIC-static libinput, libevdev,
+mtdev and libudev-zero. A path context avoids requiring a udev daemon, database or
+hotplug helper. Emerge reconciles device nodes itself; libinput owns evdev packet
+and contact decoding. The C shim copies normalized scalar events and destroys the
+native event before Rust dispatch. Native context/device references remain on the
+input-owner thread. Quirks are immutable data embedded in the NIF.
+
+`InputEvent::Touch` carries a contact lifetime ID and down/move/up/cancel phase.
+The adapter allocates a new ID on down, independent of reusable seat slots, and
+stores each contact's position for up/cancel. Device removal emits cancellations,
+not releases. Touch phases are delivered in order, never coalesced across IDs.
+The `:touch` raw subscription has its own bit (0x100); pointer masks do not opt
+into new callback shapes.
+
+The event runtime resolves a virtual-key down against the base registry, then
+stores its tracker, pressed-style ownership, focused-input mount and hold/repeat
+deadline by contact ID. It does not overwrite the mouse click/virtual-key capture.
+Only that contact's movement can disarm it; release commits one armed tap, while
+cancel never activates. Same-key contacts share visual feedback until the last
+armed owner releases/cancels. A mouse release cannot clear another contact's
+feedback either.
+
+Touch input retains identity through the normal stale-listener FIFO and raw
+observers are forwarded only at receipt, not replay. Rebuilds refresh contact hit
+regions and discard captures for changed key declarations, removed/remounted keys
+or changed focused-input mounts. Hold timers pause while listener data is stale
+and resume only after capture reconciliation; hold/repeat releases do not append
+an extra tap. Blur and disabled-input lifecycle cleanup discard pending captures.
+
+Non-key UI still uses one primary touch projected onto the existing pointer
+pipeline, preserving row taps, drag capture and scroll inertia. Cancelling that
+primary touch cancels its pointer capture without activating a row or cancelling
+an independently held virtual key. This is not a general pinch/swipe/multitouch
+listener API. Wayland and macOS pointer handling remain unchanged.
