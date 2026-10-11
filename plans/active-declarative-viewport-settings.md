@@ -224,3 +224,60 @@ the user already reported CPU raster working. Vulkan/gpu-upload power, connector
 mode changes and DRM caps remain guarded. See `active-native-drm-power.md` and
 `active-fairphone-display-controls.md` for the simple lifecycle and test handoff.
 Hardware testing is performed by the user; assistant device access is not needed.
+
+## 0.5 documentation migration work
+
+- [x] Audit README, published guides, module docs and runnable documentation examples.
+- [x] Replace legacy mount/startup options and numeric input-mask examples with
+      typed config records and atom subscriptions; distinguish low-level native
+      event payloads from viewport `Emerge.Input` values.
+- [x] Update backend support, assets, diagnostics and live/static field guidance
+      to current implemented behavior, without claiming pending hardware results.
+- [x] Write and register the 0.4-to-0.5 migration guide, mapping all removed options
+      and adapter APIs; retain explicitly historical 0.4 examples as history.
+- [x] Add documentation regression checks and validate Rust, ExUnit, quality and
+      public/internal ExDoc generation. Leave release/version bump and external
+      consumer changes outside this documentation task.
+
+### Documentation validation
+
+- New public guides: `guides/migrations/0.5.md`,
+  `guides/reference/viewport-configuration.md`, `guides/tutorials/handle_input.md`.
+  The schema plan now indexes the implemented API instead of proposing stale fields.
+- Hardware-free regressions normalize/adapt all four configuration-reference
+  examples, compile the counter/input tutorial modules, parse current guide snippets,
+  reject stale startup recommendations and verify docs registration/order.
+- `cargo test`: 1,580 unit tests plus 1 + 13 fixtures; `mix test`: 645 checks
+  (15 doctests, 630 tests), 13 excluded. Local quality passes (191 Credo files).
+- Public and internal ExDoc both build without warnings, each generating 31
+  screenshots. Local link checks pass for 67 public and 82 internal-build pages.
+  Public guides link internal-only material via canonical repository source URLs.
+- Logs: `/tmp/emerge-05-docs-{focused,mix,rust,quality,public,internal}.log`.
+  Run Mix compilation/docs sequentially: a first concurrent quality/docs attempt
+  raced shared build artifacts; sequential public/internal builds passed.
+- No release/version bump, hardware qualification, firmware build, consumer changes
+  or deployment. Package version remains 0.4.2 pending release work.
+
+### Documentation commit sequence
+
+Keep the three cross-linked public guides together to avoid broken intermediate
+ExDoc links, then separate supporting material and regression coverage:
+
+1. Publish the configuration/input references and 0.5 migration guide, API module
+   docs, README/changelog, historical 0.4 notice and ExDoc registration/order checks.
+2. Migrate viewport/state/asset tutorials and asset internals; correct the removed
+   startup recommendation in the missing-asset error and repair tutorial syntax.
+3. Align native build, DRM lifecycle, architecture, input transport, macOS,
+   frame-pacing and video interoperability guidance with the implemented API.
+4. Add executable documentation regressions and record the completed migration work.
+
+Each staged snapshot passed `cargo test` and `mix test` in an isolated worktree:
+1,580 Rust unit tests plus 1 + 13 fixtures throughout; the first three snapshots
+have 641 Elixir checks, and the regression-test snapshot has 645. Final quality
+passes (191 Credo files); public/internal ExDoc builds are warning-free, generate
+31 screenshots each, and pass local link checks for 67/82 pages. Cold dependency
+compilation emitted upstream Elixir 1.20 warnings; the warm quality run is clean.
+
+Per-snapshot refs/logs and preservation backups are retained under
+`/tmp/emerge-docs-commit-sequence-20261011-182458/`. Unrelated plan/image hashes and
+the Fairphone working tree are preserved. Nothing is pushed or version-bumped.
