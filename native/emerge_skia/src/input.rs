@@ -15,8 +15,24 @@ use crate::keys::CanonicalKey;
 // Input Event
 // ============================================================================
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TouchPhase {
+    Down,
+    Move,
+    Up,
+    Cancel,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum InputEvent {
+    /// A direct-touch contact. Identity survives other fingers moving/releasing.
+    Touch {
+        id: u64,
+        phase: TouchPhase,
+        x: f32,
+        y: f32,
+    },
+
     /// Mouse cursor position changed
     CursorPos { x: f32, y: f32 },
 
@@ -106,9 +122,10 @@ pub const INPUT_MASK_CURSOR_SCROLL: u32 = 0x10;
 pub const INPUT_MASK_CURSOR_ENTER: u32 = 0x20;
 pub const INPUT_MASK_RESIZE: u32 = 0x40;
 pub const INPUT_MASK_FOCUS: u32 = 0x80;
+pub const INPUT_MASK_TOUCH: u32 = 0x100;
 
 /// All input events enabled
-pub const INPUT_MASK_ALL: u32 = 0xFF;
+pub const INPUT_MASK_ALL: u32 = 0x1FF;
 
 // ============================================================================
 // Modifier Keys
@@ -297,6 +314,11 @@ rustler::atoms! {
     text_preedit_clear,
     delete_surrounding,
     cursor_pos,
+    touch,
+    down,
+    move_touch = "move",
+    up,
+    cancel,
     cursor_button,
     cursor_scroll,
     cursor_entered,
@@ -338,6 +360,7 @@ impl InputHandler {
             | InputEvent::TextPreedit { .. }
             | InputEvent::TextPreeditClear
             | InputEvent::DeleteSurrounding { .. } => INPUT_MASK_CODEPOINT,
+            InputEvent::Touch { .. } => INPUT_MASK_TOUCH,
             InputEvent::CursorPos { .. } => INPUT_MASK_CURSOR_POS,
             InputEvent::CursorButton { .. } => INPUT_MASK_CURSOR_BUTTON,
             InputEvent::CursorScroll { .. } | InputEvent::CursorScrollLines { .. } => {
@@ -404,6 +427,15 @@ impl InputEvent {
 impl Encoder for InputEvent {
     fn encode<'a>(&self, env: Env<'a>) -> Term<'a> {
         match self {
+            InputEvent::Touch { id, phase, x, y } => {
+                let phase = match phase {
+                    TouchPhase::Down => down(),
+                    TouchPhase::Move => move_touch(),
+                    TouchPhase::Up => up(),
+                    TouchPhase::Cancel => cancel(),
+                };
+                (touch(), (*id, phase, (*x, *y))).encode(env)
+            }
             InputEvent::CursorPos { x, y } => (cursor_pos(), (*x, *y)).encode(env),
 
             InputEvent::CursorButton {
@@ -476,6 +508,29 @@ mod tests {
     use crate::keys::CanonicalKey;
 
     use super::{ACTION_PRESS, InputEvent, MOD_CTRL, MOD_META, keyboard, pointer};
+
+    #[test]
+    fn touch_observers_have_their_own_mask_for_every_phase() {
+        let mut handler = super::InputHandler::new();
+        for phase in [
+            super::TouchPhase::Down,
+            super::TouchPhase::Move,
+            super::TouchPhase::Up,
+            super::TouchPhase::Cancel,
+        ] {
+            let touch = InputEvent::Touch {
+                id: 1,
+                phase,
+                x: 10.0,
+                y: 20.0,
+            };
+            handler.set_mask(super::INPUT_MASK_CURSOR_POS | super::INPUT_MASK_CURSOR_BUTTON);
+            assert!(!handler.accepts(&touch));
+            handler.set_mask(super::INPUT_MASK_TOUCH);
+            assert!(handler.accepts(&touch));
+            assert!(!handler.accepts(&InputEvent::CursorPos { x: 10.0, y: 20.0 }));
+        }
+    }
 
     #[test]
     fn normalize_scroll_with_line_pixels_scales_discrete_wheel_steps() {

@@ -102,7 +102,8 @@ fn charge(lane: &ListenerLaneState) -> QueueCharge {
                     | InputEvent::DeleteSurrounding { .. }
                     | InputEvent::CursorEntered { .. }
                     | InputEvent::Resized { .. }
-                    | InputEvent::Focused { .. } => 0,
+                    | InputEvent::Focused { .. }
+                    | InputEvent::Touch { .. } => 0,
                 },
             })
             .sum(),

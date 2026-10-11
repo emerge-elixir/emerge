@@ -832,6 +832,7 @@ fn tree_msg_requires_listener_stale(msg: &TreeMsg) -> bool {
 
 fn input_event_label(event: &InputEvent) -> &'static str {
     match event {
+        InputEvent::Touch { .. } => "touch",
         InputEvent::CursorPos { .. } => "cursor_pos",
         InputEvent::CursorButton { .. } => "cursor_button",
         InputEvent::CursorScroll { .. } => "cursor_scroll",

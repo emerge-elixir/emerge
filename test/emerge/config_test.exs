@@ -148,9 +148,9 @@ defmodule Emerge.ConfigTest do
 
   test "all input categories map to internal bits and no subscriptions means zero" do
     assert Config.Native.input_mask(%Config.Input{}) == 0
-    assert Config.Native.input_mask(%Config.Input{events: Config.Input.all_events()}) == 255
+    assert Config.Native.input_mask(%Config.Input{events: Config.Input.all_events()}) == 511
 
-    for {event, bit} <- Enum.zip(Config.Input.all_events(), [1, 2, 4, 8, 16, 32, 64, 128]) do
+    for {event, bit} <- Enum.zip(Config.Input.all_events(), [1, 2, 4, 8, 16, 32, 64, 128, 256]) do
       assert Config.Native.input_mask(%Config.Input{events: [event]}) == bit
     end
   end
