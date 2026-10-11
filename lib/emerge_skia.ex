@@ -740,10 +740,13 @@ defmodule EmergeSkia do
   end
 
   @doc """
-  Fetch renderer stats.
+  Fetch renderer counters and timings as a structured snapshot.
 
-  Stats collection is disabled by default. Start the renderer with `stats: true`
-  or `renderer_stats_log: true` to collect renderer stats.
+  On native Wayland, DRM and headless renderers, collection is disabled by default.
+  Set `diagnostics: [stats: true]` in `Emerge.Config` to collect data without
+  periodic stats output, or `diagnostics: [logs: [:stats]]` to enable both
+  collection and periodic summaries. See `Emerge.Config.Diagnostics` for their
+  shared measurement-window behavior and log destinations.
 
       {:ok, snapshot} = EmergeSkia.stats(renderer, :peek)
       {:ok, closed_window} = EmergeSkia.stats(renderer, :take)
