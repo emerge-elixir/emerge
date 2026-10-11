@@ -154,6 +154,7 @@ raw-window-handle = { version = "0.6", optional = true }
 drm = { version = "0.14", optional = true }
 gbm = { version = "0.18", default-features = false, features = ["drm-support"], optional = true }
 glutin_egl_sys = { version = "0.7", optional = true }
+# evdev is retained only for Linux key-code constants, not device/event decoding.
 evdev = { version = "0.13", optional = true }
 emerge_input = { path = "../emerge_input", optional = true }
 arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"], optional = true }
