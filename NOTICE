@@ -1,5 +1,5 @@
 Emerge is licensed under the Apache License, Version 2.0. This distribution
-also includes package/runtime-relevant third-party non-code assets.
+also includes package/runtime-relevant third-party libraries and non-code assets.
 
 Bundled third-party assets in packaged/runtime paths:
 
@@ -44,6 +44,16 @@ Bundled third-party assets in packaged/runtime paths:
    - License: Unsplash License (not Apache-2.0)
    - License text and restrictions: `licenses/Unsplash.txt`
    - Original photo links, download URLs and hashes: `priv/sample_assets/SOURCES.md`
+
+6. Statically bundled DRM input libraries and hardware quirks
+   - Sources downloaded at build time: `native/emerge_input/sources.rs`
+   - Full library license notices: `native/emerge_input/licenses/`
+   - libinput 1.29.2, libevdev 1.13.4 and mtdev 1.1.7: MIT
+   - libudev-zero 1.0.3: ISC
+   - Hardware quirks are embedded from the pinned libinput source archive.
+   - Downloaded Linux UAPI headers retain their original upstream notices.
+   - Versions, source URLs, archive hashes and build adaptations:
+     `native/emerge_input/README.md`
 
 For a fuller repo-wide inventory, including repo-only Emerge docs/test assets,
 see `THIRD_PARTY_ASSETS.md`.
