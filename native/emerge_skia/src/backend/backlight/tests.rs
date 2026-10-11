@@ -546,3 +546,73 @@ fn production_registry_clones_share_admission() {
     drop(guard);
     assert!(Reservations::process_wide().reserve(identity).is_ok());
 }
+
+#[test]
+fn recovery_installs_original_baseline_without_releasing_reservation() {
+    let fake = Fake::new();
+    let registry = Reservations::new();
+    let mut light = managed(&fake, &registry);
+    let baseline = Baseline {
+        requested: 73,
+        ..light.baseline()
+    };
+    assert!(registry.reserve(id(1)).is_err());
+    light.use_baseline(baseline).unwrap();
+    assert!(registry.reserve(id(1)).is_err());
+    assert!(fake.writes().is_empty());
+    light.set_brightness(None).unwrap();
+    assert_eq!(light.desired_level(), 73);
+    light.darken().unwrap();
+    assert!(light.use_baseline(baseline).is_err());
+    light.illuminate_after_present().unwrap();
+    assert_eq!(fake.0.lock().unwrap().values[&Attribute::Brightness], 73);
+    light.release_after_detach().unwrap();
+    assert!(registry.reserve(id(1)).is_ok());
+}
+
+#[test]
+fn incompatible_recovery_baseline_leaves_untouched_binding_unchanged() {
+    let fake = Fake::new();
+    let registry = Reservations::new();
+    let mut light = managed(&fake, &registry);
+    let original = light.baseline();
+    for wrong in [
+        Baseline {
+            identity: id(2),
+            ..original
+        },
+        Baseline {
+            maximum: 99,
+            ..original
+        },
+        Baseline {
+            requested: 101,
+            ..original
+        },
+    ] {
+        assert!(light.use_baseline(wrong).is_err());
+        assert_eq!(light.baseline(), original);
+        assert_eq!(light.desired_level(), 37);
+        assert!(registry.reserve(id(1)).is_err());
+    }
+    assert!(fake.writes().is_empty());
+}
+
+#[test]
+fn detached_dark_panel_is_not_written_again_but_uncertain_suppression_is_retried() {
+    let fake = Fake::new();
+    let registry = Reservations::new();
+    let mut light = managed(&fake, &registry);
+    fake.fail(Attribute::Power, 4, false);
+    assert!(light.darken_if_needed().is_err());
+    assert_eq!(fake.writes().len(), 2);
+    light.darken_if_needed().unwrap();
+    assert_eq!(fake.writes().len(), 4);
+    // Simulate a DCS panel that will reject any command after KMS unprepare.
+    fake.fail(Attribute::Power, 4, false);
+    fake.fail(Attribute::Brightness, 0, false);
+    light.darken_if_needed().unwrap();
+    light.release_after_detach().unwrap();
+    assert_eq!(fake.writes().len(), 4);
+    assert!(registry.reserve(id(1)).is_ok());
+}

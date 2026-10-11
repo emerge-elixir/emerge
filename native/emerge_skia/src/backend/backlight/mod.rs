@@ -1,6 +1,5 @@
-//! Backlight primitives for DRM power integration. Presenters do not use these
-//! yet; public power/backlight config remains fail-closed. All I/O belongs on the
-//! native owner thread, never in a normal-scheduler NIF or a resource destructor.
+//! Backlight ownership primitives. All I/O belongs on the native owner thread,
+//! never in a normal-scheduler NIF or a resource destructor.
 mod sysfs;
 pub use sysfs::{SysfsAttributes, discover};
 
@@ -247,6 +246,30 @@ impl<A: Attributes> Backlight<A> {
         self.desired
     }
 
+    /// Install a recovery baseline while retaining the reservation continuously.
+    pub fn use_baseline(&mut self, baseline: Baseline) -> Result<(), String> {
+        if self.phase != Phase::Untouched
+            || baseline.identity != self.baseline.identity
+            || baseline.maximum != self.baseline.maximum
+            || baseline.requested > baseline.maximum
+        {
+            return Err("backlight baseline does not match an untouched binding".into());
+        }
+        self.baseline = baseline;
+        self.desired = baseline.requested;
+        Ok(())
+    }
+
+    /// DCS backlights cannot accept writes after their panel has been unprepared.
+    /// Suppress before KMS detach, and keep an already-dark binding unchanged.
+    pub fn darken_if_needed(&mut self) -> Result<(), String> {
+        if self.phase == Phase::Dark {
+            Ok(())
+        } else {
+            self.darken()
+        }
+    }
+
     pub fn actual_level(&mut self) -> Result<Option<u32>, String> {
         self.attributes.read(Attribute::Actual)
     }
@@ -331,7 +354,7 @@ impl<A: Attributes> Backlight<A> {
     /// Only after pending enables are cancelled and KMS/GPU owners are safely
     /// detached. Leave dark; never restore the captured brightness on shutdown.
     pub fn release_after_detach(mut self) -> Result<(), String> {
-        self.darken()?;
+        self.darken_if_needed()?;
         self.release_safe = true;
         Ok(())
     }
