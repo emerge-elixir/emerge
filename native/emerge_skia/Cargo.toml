@@ -108,7 +108,7 @@ wayland-vulkan = ["wayland-core", "vulkan", "dep:ash-window"]
 wayland-all = ["wayland", "wayland-vulkan"]
 # Every DRM build embeds FreeType, including source builds and mixed presenters.
 # CPU KMS presentation must not pull in GBM, EGL, or any GPU driver.
-drm-core = ["dep:drm", "dep:evdev", "embedded-freetype"]
+drm-core = ["dep:drm", "dep:evdev", "dep:emerge_input", "embedded-freetype"]
 drm-raster = ["drm-core"]
 # Compatibility feature: DRM continues to mean the existing OpenGL backend.
 drm = ["drm-core", "headless-opengl"]
@@ -155,6 +155,7 @@ drm = { version = "0.14", optional = true }
 gbm = { version = "0.18", default-features = false, features = ["drm-support"], optional = true }
 glutin_egl_sys = { version = "0.7", optional = true }
 evdev = { version = "0.13", optional = true }
+emerge_input = { path = "../emerge_input", optional = true }
 arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"], optional = true }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]

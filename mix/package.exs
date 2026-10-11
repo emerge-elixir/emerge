@@ -21,6 +21,15 @@ defmodule Emerge.Mix.Package do
       "native/emerge_skia/Cargo.toml",
       "native/emerge_skia/Cargo.lock",
       "native/emerge_skia/Cross.toml",
+      "native/emerge_input/Cargo.toml",
+      "native/emerge_input/Cargo.lock",
+      "native/emerge_input/build.rs",
+      "native/emerge_input/sources.rs",
+      "native/emerge_input/event_names.rs",
+      "native/emerge_input/shim.c",
+      "native/emerge_input/classification-test.c",
+      "native/emerge_input/quirks-bundle.h",
+      "native/emerge_input/README.md",
       "LICENSE",
       "NOTICE",
       "THIRD_PARTY_ASSETS.md",
@@ -34,6 +43,9 @@ defmodule Emerge.Mix.Package do
     ] ++
       Enum.flat_map(["src", "benches", "support"], fn dir ->
         regular_files(root, "native/emerge_skia/#{dir}/**/*")
+      end) ++
+      Enum.flat_map(["src", "licenses", "tests", "examples"], fn dir ->
+        regular_files(root, "native/emerge_input/#{dir}/**/*")
       end) ++
       Enum.flat_map(["scripts/**/*.exs", "scripts/**/*.sh"], &regular_files(root, &1)) ++
       assets(root) ++ regular_files(root, "checksum-*.exs")
