@@ -1,6 +1,9 @@
 defmodule Emerge.Config.Window do
   @moduledoc """
-  Desktop window output. Backend selection is independent of the rendering API.
+  Desktop window output. `backend: :auto` chooses the platform default (macOS or
+  Wayland), independently of `Emerge.Config.Renderer.api`. `size` requests initial
+  surface dimensions, not a live resize. `title` is live on both window backends;
+  other fields are startup-only. `always_on_top` is a macOS window preference.
 
   ## Fields and defaults
 

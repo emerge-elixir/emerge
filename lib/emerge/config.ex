@@ -26,14 +26,32 @@ defmodule Emerge.Config do
   replaced, never implicitly appended. Configuration does not interpret the
   cause of a display-state change.
 
-  ## Implementation status
+  ## Outputs and supported live changes
 
-  This is the in-progress 0.5 contract. Native live updates currently support
-  input subscriptions, Wayland/macOS titles, and headless/Wayland frame caps.
-  Other fields are startup-only unless explicitly supported by an adapter.
-  DRM display/backlight/output changes and DRM/macOS frame caps remain unfinished:
-  explicit unsupported controls report errors, not successful hardware application.
-  Backlight `:auto` does not yet manage a device.
+  - `Emerge.Config.Window` selects a desktop window; `backend: :auto` uses the
+    platform default, independently of `renderer.api`.
+  - `Emerge.Config.DRM` selects a KMS output; `preferred_size` is a mode-selection
+    hint, not a guaranteed framebuffer size.
+  - `Emerge.Config.Headless` sends frames to a required live local PID; use an
+    explicit `Emerge.Config.BinaryFrames` or `Emerge.Config.PrimeFrames` variant.
+
+  Input subscriptions and runtime health intervals can change without restarting.
+  Window titles are live on Wayland/macOS; render-admission caps are live on
+  headless/Wayland. DRM display/brightness controls support explicit OpenGL and
+  CPU raster (`raster_present: :auto | :cpu`). Off retains ownership/tree/intent
+  while destroying the presenter; on creates fresh resources and enables a managed
+  backlight after first presentation. Backlight `:auto` requires proven connector
+  association, `nil` opts out, and an explicit path selects a device.
+
+  DRM connector/mode changes, Vulkan/raster GPU-upload power controls and DRM/macOS
+  frame caps remain rejected. Output type, rendering API/device, assets, diagnostics,
+  cursor policy and adapter identity/options are startup-only. Unsupported changes
+  report errors instead of silently restarting or claiming hardware success.
+
+  This is the breaking 0.5 API: old mount/start keyword configurations and public
+  numeric input masks are removed. See the [configuration reference](viewport-configuration.html),
+  [input guide](handle_input.html) and [0.5 migration guide](0-5.html). Software
+  support does not establish panel timing or device qualification.
   """
 
   alias Emerge.Config.{Assets, Diagnostics, Input, Renderer, Runtime, Window}

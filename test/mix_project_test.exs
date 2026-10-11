@@ -164,7 +164,14 @@ defmodule Emerge.MixProjectTest do
   test "docs preserve ordering, truthiness and the HTML-only callback" do
     root = fixture()
 
-    for file <- ["README.md", "guides/migrations/0.4.md", "guides/internals/architecture.md"] do
+    for file <- [
+          "README.md",
+          "guides/tutorials/handle_input.md",
+          "guides/migrations/0.5.md",
+          "guides/migrations/0.4.md",
+          "guides/reference/viewport-configuration.md",
+          "guides/internals/architecture.md"
+        ] do
       File.mkdir_p!(Path.dirname(Path.join(root, file)))
       File.write!(Path.join(root, file), "# Example\n")
     end
@@ -174,7 +181,13 @@ defmodule Emerge.MixProjectTest do
       internal? = value not in [nil, "false", "0"]
 
       assert config.extras ==
-               ["README.md", "guides/migrations/0.4.md"] ++
+               [
+                 "README.md",
+                 "guides/tutorials/handle_input.md",
+                 "guides/migrations/0.5.md",
+                 "guides/migrations/0.4.md",
+                 "guides/reference/viewport-configuration.md"
+               ] ++
                  if(internal?, do: ["guides/internals/architecture.md"], else: [])
 
       assert :Internals in config.groups == internal?

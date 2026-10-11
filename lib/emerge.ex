@@ -57,7 +57,17 @@ defmodule Emerge do
   - `{:ok, state, config}` and implement `render/1`;
   - `{:stop, reason}` to stop startup.
 
-  State must be a map. The `:__emerge__` key is reserved.
+  `config` must be `%Emerge.Config{}`. Application mount arguments remain keyword
+  lists; they are not automatically merged into renderer configuration. State must
+  be a map. The `:__emerge__` key is reserved.
+
+  Optionally implement `config(previous)` or `config(previous, state)`, never both.
+  The first invocation receives normalized mount config before renderer creation;
+  later invocations receive the latest normalized desired intent, including while
+  native application is pending or the renderer is recovering. Return a complete
+  config; new nested records replace rather than merge with previous records.
+  Invalid results retain previous intent; operational errors preserve desired
+  intent for retry. See `Emerge.Config` for supported live versus startup-only fields.
 
   `render/0` or `render/1` returns an `Emerge.tree()` built with `Emerge.UI`.
 
@@ -75,8 +85,10 @@ defmodule Emerge do
 
       {:noreply, Viewport.rerender(%{state | count: state.count + 1})}
 
-  Return the state produced by `rerender/1`. Calling it schedules a new render;
-  it does not call `render/1` immediately.
+  Return the state produced by `rerender/1`. It schedules a coalesced config/render
+  cycle, not an immediate callback. Config-only changes do not require a tree diff.
+  While DRM display intent is off, config reconciliation remains active but routine
+  render callbacks and uploads are deferred; output ownership is still acquired.
 
   ## Element events
 
@@ -96,14 +108,17 @@ defmodule Emerge do
 
   ## Configuration and output modes
 
-  Viewport options choose the window/display backend, rendering API, size,
-  assets, diagnostics, and headless output. `Emerge.Runtime.Viewport` documents
-  these user-facing options and includes desktop, DRM, and headless examples.
+  `Emerge.Config` groups output, renderer, input, assets, diagnostics and runtime
+  settings. Output variants choose a window, DRM display or headless frame sink.
+  See the [configuration reference](viewport-configuration.html) for complete
+  desktop/DRM/headless examples and the supported live-field matrix.
 
   Return `%Emerge.Config{}` from mount. Optional `config/1` or `config/2`
   callbacks receive the previous normalized config and reconcile desired
   configuration during rerenders. Raw input subscriptions use
-  `Emerge.Config.Input.events`; see `Emerge.Input` for callback payloads.
+  `Emerge.Config.Input.events`, defaulting to `[]`; see `Emerge.Input` and the
+  [input guide](handle_input.html) for typed callback payloads. This filter does
+  not disable element interactions.
 
   Video elements use viewport-local atom targets. Submit owned binary or
   borrowed DMA-BUF frames with `submit_video_frame/3`. Vulkan rendering and
