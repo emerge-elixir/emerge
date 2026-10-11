@@ -3579,33 +3579,35 @@ fn headless_prime_release_backend_token(
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
-fn renderer_upload(renderer: ResourceArc<RendererResource>, data: Binary) -> Atom {
-    let submitted_at = Instant::now();
-    let bytes = data.as_slice().to_vec();
-    send_tree(
+fn renderer_upload(renderer: ResourceArc<RendererResource>, data: Binary) -> NifResult<Atom> {
+    try_renderer_tree(
         &renderer.tree_tx,
         TreeMsg::UploadTree {
-            bytes,
-            submitted_at: Some(submitted_at),
+            bytes: data.as_slice().to_vec(),
+            submitted_at: Some(Instant::now()),
         },
-        renderer.log_render,
-    );
-    atoms::ok()
+    )
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
-fn renderer_patch(renderer: ResourceArc<RendererResource>, data: Binary) -> Atom {
-    let submitted_at = Instant::now();
-    let bytes = data.as_slice().to_vec();
-    send_tree(
+fn renderer_patch(renderer: ResourceArc<RendererResource>, data: Binary) -> NifResult<Atom> {
+    try_renderer_tree(
         &renderer.tree_tx,
         TreeMsg::PatchTree {
-            bytes,
-            submitted_at: Some(submitted_at),
+            bytes: data.as_slice().to_vec(),
+            submitted_at: Some(Instant::now()),
         },
-        renderer.log_render,
-    );
-    atoms::ok()
+    )
+}
+
+fn try_renderer_tree(tx: &Sender<TreeMsg>, message: TreeMsg) -> NifResult<Atom> {
+    tx.try_send(message).map_err(|error| {
+        rustler::Error::Term(Box::new(match error {
+            crossbeam_channel::TrySendError::Full(_) => "renderer tree queue is full",
+            crossbeam_channel::TrySendError::Disconnected(_) => "renderer tree actor stopped",
+        }))
+    })?;
+    Ok(atoms::ok())
 }
 
 #[rustler::nif]
