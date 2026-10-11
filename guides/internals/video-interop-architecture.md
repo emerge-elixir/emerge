@@ -121,7 +121,10 @@ Headless binary and PRIME modes both send:
 {message_tag, %VideoInterop.Frame{}}
 ```
 
-The configured `headless.target` must be a live local PID.
+Configure `%Emerge.Config.Headless{target: sink, frames: ...}` as `config.output`.
+`target` must be a live local PID. `%Emerge.Config.BinaryFrames{}` selects owned
+binary output; `%Emerge.Config.PrimeFrames{}` selects leased DMA-BUF output.
+The cap is `config.renderer.target_fps`, not a nested headless option.
 
 Binary output is owned storage with no lease. PRIME output uses a bounded buffer
 pool and leased DMA-BUF storage. If all slots are in flight, the configured
@@ -173,7 +176,10 @@ the OS process must be cold-restarted before loading replacement native code.
 
 ## Diagnostics
 
-`EmergeSkia.stats/2` reports video submission, replacement, inactive-drop,
-import, synchronization, release, saturation, and Vulkan fault counters.
-`renderer_stats_log: true` emits periodic summaries through the native log
-relay. These diagnostics are optional and do not change frame ownership.
+`diagnostics: [stats: true]` enables structured `EmergeSkia.stats/2` counters for
+video submission, replacement, inactive-drop, import, synchronization, release,
+saturation, and Vulkan faults on native renderers. `diagnostics: [logs: [:stats]]`
+enables collection and periodic summaries through the native log relay; its window
+resets share the collector with the stats API. The macOS host supports summaries,
+not that API. See `Emerge.Config.Diagnostics`. These diagnostics are optional and
+do not change frame ownership.

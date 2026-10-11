@@ -17,9 +17,9 @@ card = "/dev/dri/by-path/pci-0000:6c:00.0-card"
 output = Enum.find(outputs, &(&1.connected and &1.name == "DP-4"))
 mode = Enum.find(output.modes, & &1.preferred) || hd(output.modes)
 
-# Options returned from your viewport's mount callback:
-[otp_app: :my_app, backend: :drm, drm_card: card,
- drm_output: output.name, drm_mode: mode]
+# Configuration returned from your viewport's mount callback:
+selected = %Emerge.Config.DRM{card: card, connector: output.name, mode: mode}
+{:ok, %Emerge.Config{output: selected, renderer: [api: :opengl]}}
 ```
 
 Discovery creates no renderer, performs no modeset and requires no `otp_app`. It returns
@@ -36,9 +36,10 @@ leasing, the connector, mode or compatible scanout resources are unavailable.
 ## CPU-only DRM
 
 `config :emerge, compiled_backends: [drm: [:raster]]` builds a DRM presenter with
-no GBM, EGL or GPU dependencies. Use `backend: :drm, rendering_api: :raster` in
-mount options; a CPU-only build also selects raster for `rendering_api: :auto`.
-This profile currently requires a source build.
+no GBM, EGL or GPU dependencies. Return `%Emerge.Config{output: %Emerge.Config.DRM{},
+renderer: [api: :raster]}` from mount; a CPU-only build also selects raster for
+`renderer.api: :auto`. Use the matching `drm_raster` artifact when available, or
+build from source; see the [native build guide](../reference/native-renderer-builds.md).
 
 Skia draws into the back DRM dumb buffer with its actual row pitch. Two XRGB8888
 buffers alternate only after a blocking atomic commit completes. No per-frame
@@ -46,7 +47,7 @@ BEAM transfer or custom output NIF is involved. Screenshots copy/convert to RGBA
 on demand. Cursor drawing is software-only; CPU video works, PRIME import does
 not. Atomic KMS, DRM leasing and XRGB8888 dumb-buffer support remain required.
 
-Raster `present: :auto` now means CPU on DRM. Explicit `present: :gpu_upload`
+Raster `renderer.raster_present: :auto` means CPU on DRM. Explicit `:gpu_upload`
 keeps the old OpenGL upload path when that feature is compiled. A disconnect or
 removed mode stops the raster backend after safe detachment; viewport lifecycle
 recovery then reacquires the selected output. Failed detachment quarantines its
@@ -54,20 +55,29 @@ buffers and lease instead of permitting unsafe reuse.
 
 ## Two viewports on one GPU
 
-Pass different discovered output names in the mount options of two viewport children.
+Pass different discovered output records as application arguments to two viewport children.
 If they use the same module, give their child specs distinct IDs:
 
 ```elixir
 children = [
-  Supervisor.child_spec({MyApp.Screen, left_options}, id: :left),
-  Supervisor.child_spec({MyApp.Screen, right_options}, id: :right)
+  Supervisor.child_spec({MyApp.Screen, [output: left_output]}, id: :left),
+  Supervisor.child_spec({MyApp.Screen, [output: right_output]}, id: :right)
 ]
 Supervisor.start_link(children, strategy: :one_for_one)
 ```
 
-`MyApp.Screen.mount/1` must pass those rendering options through in its return value.
+Here `left_output` and `right_output` are `%Emerge.Config.DRM{}` records.
+`MyApp.Screen.mount/1` translates the application argument into a typed config:
+
+```elixir
+def mount(opts) do
+  {:ok, %Emerge.Config{output: Keyword.fetch!(opts, :output), renderer: [api: :opengl]}}
+end
+```
+
 The application chooses its own supervision strategy; the library does not impose one.
-For Vulkan, also select the intended GPU with `vulkan_drm_node` as usual.
+For explicit Vulkan, also select the intended GPU with `renderer.device`, independently
+of `output.card`. Live connector/mode changes are currently rejected.
 
 A shared master is keyed by device identity, not the path spelling. Each renderer gets
 an independently readable DRM lease and reserves its connector, encoder, CRTC, primary
@@ -90,7 +100,9 @@ collection. Native startup waits have a 15-second deadline, followed by up to fi
 seconds waiting for rollback; a blocked cleanup worker retains its resources.
 
 An unexpected stopped renderer is replaced in place after **proven cleanup**, with a
-fresh diff state and full tree upload. Callback state and PID stay intact. Retries are
+fresh diff state and full tree upload while on. Initially-off/recovered-off owners
+are acquired and routed without rendering or uploading a tree. Callback state,
+latest desired config and PID stay intact. Retries are
 bounded (20, with 250 ms–5 s exponential backoff). Session-specific relays fence old
 input, close and heartbeat messages. A retirement acknowledgement drains queued native
 close requests before recovery, preserving normal close and close-override behavior.
@@ -102,8 +114,9 @@ another process retains its renderer handle. The application decides whether to 
 a new callback instance. A failure of private lifecycle supervision also ends the
 public instance; it does not silently replace its PID.
 
-Low-level native callers may supply `owner: self()` to `EmergeSkia.start/1`. Callers
-without an owner retain responsibility for stopping their renderer.
+`EmergeSkia.start/1` accepts only `%Emerge.Config{}`. Native owner/baseline handles
+are private lifecycle plumbing, not config fields. Standalone callers are responsible
+for stopping their renderer; normal viewports manage ownership automatically.
 
 ```elixir
 EmergeSkia.stop(renderer, timeout: 5_000)
@@ -124,6 +137,23 @@ process-wide terminal quarantine remains in force: do not hot-reload the NIF or 
 it to obtain a restart. GPU/device loss may affect siblings; sibling isolation is not
 a promise of recovery from a shared hardware failure. Worker monitoring detects exits,
 not a GPU/driver hang, and presenter-panic/hot-unplug fault injection is not yet validated.
+
+## Declarative display power and brightness
+
+`output.display` and `output.backlight.brightness` are live for explicit OpenGL
+and CPU raster. Vulkan and raster GPU-upload power controls remain rejected.
+Automatic backlight selection requires a proven connector association; `device: nil`
+opts out, and an explicit sysfs path pins a particular device. Brightness is a finite
+`0..1` request; zero is not display-off, and `nil` restores the original requested
+level retained across renderer recovery.
+
+Off retains the public renderer, lease/backlight ownership, tree and desired settings,
+but ignores native UI input and destroys the presenter. On creates a fresh presenter
+and enables a managed backlight after its first application presentation. There is no
+GPU restoration, strict config/frame provenance or physical no-flash guarantee.
+Applications provide their independent wake policy. See
+[config reconciliation](config-reconciliation.md) and the
+[configuration reference](../reference/viewport-configuration.md).
 
 ## Opt-in hardware test
 
