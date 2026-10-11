@@ -234,7 +234,7 @@ defmodule EmergeSkia.Assets do
 
       :error ->
         raise ArgumentError,
-              "missing required :otp_app option; use EmergeSkia.start(otp_app: :my_app, ...)"
+              "missing required :otp_app asset application; standalone EmergeSkia.start/1 requires config.assets.otp_app"
     end
   end
 

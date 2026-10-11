@@ -41,8 +41,9 @@ el(
 )
 ```
 
-Logical paths are resolved from the `otp_app` you pass to `EmergeSkia.start/1`
-or that the viewport infers for you.
+Logical paths are resolved from `config.assets.otp_app`. A viewport infers the
+application from its module when omitted. When starting `EmergeSkia` directly,
+supply `assets: [otp_app: :my_app]` in the `%Emerge.Config{}` record.
 
 ## Prefer `~m` in app code
 
@@ -249,17 +250,17 @@ If you want multiple variants of the same family, register each variant:
 
 ```elixir
 {:ok, renderer} =
-  EmergeSkia.start(
-    otp_app: :my_app,
-    title: "My App",
+  EmergeSkia.start(%Emerge.Config{
+    output: %Emerge.Config.Window{title: "My App"},
     assets: [
+      otp_app: :my_app,
       fonts: [
         [family: "Inter", source: "fonts/Inter-Regular.ttf", weight: 400],
         [family: "Inter", source: "fonts/Inter-Bold.ttf", weight: 700],
         [family: "Inter", source: "fonts/Inter-Italic.ttf", weight: 400, italic: true]
       ]
     ]
-  )
+  })
 ```
 
 After that, use the configured family in UI code:
@@ -304,20 +305,23 @@ image([width(px(160)), height(px(96))], {:path, "/data/photos/photo.jpg"})
 
 Runtime path loading is disabled by default.
 
-Enable it only when needed, and use an explicit allowlist in
-`EmergeSkia.start/1`:
+Enable it only when needed, and use an explicit allowlist in the configuration
+returned by `mount/1` or passed to `EmergeSkia.start/1`:
 
 ```elixir
-assets: [
-  runtime_paths: [
-    enabled: true,
-    allowlist: ["/data/photos"],
-    follow_symlinks: false
+%Emerge.Config{
+  assets: [
+    otp_app: :my_app,
+    runtime_paths: [
+      enabled: true,
+      allowlist: ["/data/photos"],
+      follow_symlinks: false
+    ]
   ]
-]
+}
 ```
 
-## Asset start options
+## Asset configuration
 
 | Option | Default | Purpose |
 |---|---|---|
@@ -336,6 +340,10 @@ assets: [
 A font entry requires `family` and logical `source`; `weight` defaults to `400`
 and must be from `100` through `900`, while `italic` defaults to `false`.
 
+Asset settings are startup-only; changing them requires a new viewport, not a
+live `config` update. Nested shorthand uses record defaults, not a deep merge
+with previously declared settings.
+
 Asset source workers, configuration, registered fonts, and decoded caches are
 renderer-local. Concurrent renderers can use different source roots, runtime
 path policies, fonts, and cache limits.
@@ -352,13 +360,16 @@ retention can reach the sum of all running renderers' limits. Configure
 shared raster/SVG pixel retention independently from runtime file limits:
 
 ```elixir
-assets: [
-  decode_at_size: true,
-  cache: [
-    max_entries: 32,
-    max_bytes: 32 * 1024 * 1024
+%Emerge.Config{
+  assets: [
+    otp_app: :my_app,
+    decode_at_size: true,
+    cache: [
+      max_entries: 32,
+      max_bytes: 32 * 1024 * 1024
+    ]
   ]
-]
+}
 ```
 
 Defaults are 256 entries and 256 MiB **per renderer**:
@@ -410,8 +421,11 @@ constrained devices where full-size decoded images would waste memory.
 
 ## Read asset-memory diagnostics
 
-Start with `renderer_stats_log: true` to include asset usage in each five-second
-summary:
+Set `diagnostics: [logs: [:stats]]` in `%Emerge.Config{}` to include asset usage
+in each approximately five-second summary. `diagnostics: [stats: true]` instead
+enables structured `EmergeSkia.stats/2` collection without periodic output; it is
+not needed in addition to `logs: [:stats]`. See `Emerge.Config.Diagnostics` for
+log routing and backend limitations:
 
 ```text
 asset memory

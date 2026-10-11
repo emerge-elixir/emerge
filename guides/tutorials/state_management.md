@@ -263,7 +263,8 @@ A controller process also restarts from `init/2` after a crash. Subscribers see
 
 A good viewport does very little:
 
-- configure renderer options in `mount/1`
+- return `%Emerge.Config{}` from `mount/1`
+- optionally declare state-derived live settings in `config/1` or `config/2`
 - delegate UI construction to a view module
 - rerender when subscribed state changes
 
@@ -274,7 +275,8 @@ defmodule MyApp.View.Root do
 
   @impl Viewport
   def mount(opts) do
-    {:ok, Keyword.merge([title: "My App"], opts)}
+    output = %Emerge.Config.Window{title: Keyword.get(opts, :title, "My App")}
+    {:ok, %Emerge.Config{output: output}}
   end
 
   @impl Viewport
@@ -290,7 +292,26 @@ end
 ```
 
 The viewport does not own navigation state, list state, or editor state here.
-It only renders and rerenders.
+It only declares configuration, renders and rerenders.
+
+`config(previous)` can read Solve state just as `render/0` does. For example,
+when a `:screen` controller exposes the current screen, the viewport can declare
+its title:
+
+```elixir
+@impl Viewport
+def config(%Emerge.Config{output: %Emerge.Config.Window{} = output} = previous) do
+  screen = solve(MyApp.App, :screen)
+  output = %Emerge.Config.Window{output | title: "My App — #{screen.current}"}
+  %Emerge.Config{previous | output: output}
+end
+```
+
+The callback runs before rendering and remains active while a DRM display is off.
+Put subscriptions needed for wake/brightness intent in `config`, not only in a
+render callback that is deferred while off. How a controller changes that intent
+is application policy, not an Emerge power-button API. See
+[viewport configuration](../reference/viewport-configuration.md).
 
 ## Decouple concerns into smaller units
 
