@@ -58,6 +58,7 @@ use super::{
 };
 
 mod scroll;
+mod touch;
 
 pub trait HostEventSink: Send + Sync {
     fn send_raw_input(&self, event: &InputEvent);
@@ -160,8 +161,11 @@ impl EventRuntimeDriver {
         &mut self,
         operation: impl FnOnce(&mut DirectEventRuntime, &dyn TreeSink, bool) -> R,
     ) -> R {
+        let commands = EventCommands::default();
         if !self.runtime.backend_wake.input_enabled() {
             self.runtime.runtime_overlay = RuntimeOverlayState::default();
+            self.runtime.cancel_touch_keys(&commands, self.log_render);
+            self.runtime.primary_touch = None;
             self.runtime.overlay_registry = registry_builder::build_runtime_overlay_registry(
                 &self.runtime.base_registry,
                 &self.runtime.runtime_overlay,
@@ -172,7 +176,6 @@ impl EventRuntimeDriver {
             self.runtime.inertial_scroll = None;
             self.runtime.hover_stack.clear();
         }
-        let commands = EventCommands::default();
         let result = operation(&mut self.runtime, &commands, self.log_render);
         let mut messages = self
             .runtime
@@ -766,6 +769,13 @@ impl PendingDispatchEffects {
             runtime.inject_synthetic_inputs(events, tree_tx, log_render);
         }
 
+        // Releasing one pointer must not clear feedback owned by another touch.
+        self.tree_msgs.retain(|message| {
+            !matches!(message,
+                TreeMsg::SetMouseDownActive { element_id, active: false }
+                    if runtime.touch_key_pressed(*element_id)
+            )
+        });
         let tree_msg_requires_stale = self.tree_msgs.iter().any(tree_msg_requires_listener_stale);
         if self.elixir_event_requires_rebuild && !tree_msg_requires_stale {
             self.tree_msgs.push(TreeMsg::RebuildRegistry);
@@ -1128,6 +1138,8 @@ struct DirectEventRuntime {
     hover_stack: Vec<HoverTracker>,
     current_cursor_icon: CursorIcon,
     virtual_key_deadline: Option<Instant>,
+    touch_keys: HashMap<u64, touch::TouchKey>,
+    primary_touch: Option<u64>,
     last_present_timing: Option<PresentTimingState>,
     drag_motion: Option<DragMotionState>,
     inertial_scroll: Option<InertialScrollState>,
@@ -1187,6 +1199,8 @@ impl DirectEventRuntime {
             hover_stack: Vec::new(),
             current_cursor_icon: CursorIcon::Default,
             virtual_key_deadline: None,
+            touch_keys: HashMap::new(),
+            primary_touch: None,
             last_present_timing: None,
             drag_motion: None,
             inertial_scroll: None,
@@ -1312,6 +1326,9 @@ impl DirectEventRuntime {
             event,
             InputEvent::CursorButton {
                 action: crate::input::ACTION_PRESS,
+                ..
+            } | InputEvent::Touch {
+                phase: crate::input::TouchPhase::Down,
                 ..
             } | InputEvent::CursorScroll { .. }
                 | InputEvent::CursorScrollLines { .. }
@@ -1545,6 +1562,11 @@ impl DirectEventRuntime {
     fn next_timer_deadline(&self) -> Option<Instant> {
         self.virtual_key_deadline
             .into_iter()
+            .chain(
+                (!self.listener_lane.is_stale())
+                    .then(|| self.touch_key_deadline())
+                    .flatten(),
+            )
             .chain(
                 self.inertial_scroll
                     .as_ref()
@@ -1886,6 +1908,7 @@ impl DirectEventRuntime {
             );
         }
 
+        self.reconcile_touch_keys(&previous_registry, self.focused_id, tree_tx, log_render);
         if changed_tree {
             self.listener_lane.mark_stale();
         }
@@ -2004,6 +2027,9 @@ impl DirectEventRuntime {
             format!("timers begin\n  {}", self.diagnostic_summary())
         });
 
+        if !self.listener_lane.is_stale() {
+            self.handle_touch_key_timers(now, tree_tx, log_render);
+        }
         if self
             .virtual_key_deadline
             .is_some_and(|deadline| deadline <= now)
@@ -2136,7 +2162,8 @@ impl DirectEventRuntime {
     }
 
     fn has_active_pointer_overlay(&self) -> bool {
-        self.runtime_overlay.click_press.is_some()
+        !self.touch_keys.is_empty()
+            || self.runtime_overlay.click_press.is_some()
             || self.runtime_overlay.virtual_key.is_some()
             || !matches!(
                 self.runtime_overlay.drag,
@@ -2173,6 +2200,14 @@ impl DirectEventRuntime {
         log_render: bool,
         dispatch_mode: DispatchMode,
     ) {
+        if let InputEvent::Touch { id, phase, x, y } = event {
+            self.dispatch_touch(id, phase, x, y, tree_tx, log_render);
+            return;
+        }
+        if matches!(event, InputEvent::Focused { focused: false }) {
+            self.cancel_touch_keys(tree_tx, log_render);
+            self.primary_touch = None;
+        }
         let started_at = Instant::now();
         let event_label = input_event_label(&event);
         let input = ListenerInput::Raw(event);
