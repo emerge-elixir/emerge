@@ -719,6 +719,41 @@ impl PendingDispatchEffects {
     ) {
         let runtime_change_count = self.runtime_changes.len();
         let synthetic_input_batch_count = self.synthetic_inputs.len();
+        // A drag may start on a pressable child, but momentum belongs to the
+        // scroll container that actually consumes movement on the fling axis.
+        if let Some(motion) = runtime.drag_motion.as_mut()
+            && let Some(target) = self.tree_msgs.iter().find_map(|message| match message {
+                TreeMsg::ScrollRequest { element_id, dx, dy }
+                    if (motion.axis == ScrollbarAxis::X && *dx != 0.0)
+                        || (motion.axis == ScrollbarAxis::Y && *dy != 0.0) =>
+                {
+                    Some(*element_id)
+                }
+                _ => None,
+            })
+        {
+            motion.element_id = target;
+        }
+        // Cancelling a press for scrolling/swiping must also cancel its visual
+        // feedback; the active drag's release listener does not redispatch it.
+        if self
+            .runtime_changes
+            .iter()
+            .any(|change| matches!(change, RuntimeChange::ClearClickPressTracker))
+            && let Some(press) = runtime.runtime_overlay.click_press.as_ref()
+            && press.clear_mouse_down
+            && !self.tree_msgs.iter().any(|message| {
+                matches!(message,
+                    TreeMsg::SetMouseDownActive { element_id, active: false }
+                        if *element_id == press.element_id
+                )
+            })
+        {
+            self.tree_msgs.push(TreeMsg::SetMouseDownActive {
+                element_id: press.element_id,
+                active: false,
+            });
+        }
         runtime.apply_runtime_changes_and_recompose_if_needed(self.runtime_changes);
         if let Some(icon) = self.requested_cursor {
             runtime.apply_cursor_request(icon);
