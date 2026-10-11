@@ -528,4 +528,5 @@ fn slider_drag_and_pending_value_belong_to_the_original_mount() {
 }
 
 mod inflight;
+mod scroll;
 mod styled;

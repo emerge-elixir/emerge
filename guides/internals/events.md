@@ -450,7 +450,7 @@ flow:
 - left press starts:
   - click/press tracker
   - drag tracker candidate
-- drag threshold promotion drops the click/press tracker
+- drag threshold promotion drops the click/press tracker and clears its pressed feedback
 - release followups are looked up again from the current base registry
 
 `on_press` also has focused keyboard `Enter` support.
@@ -588,7 +588,9 @@ Drag scroll uses the same path as wheel scroll after drag activation.
 - those components are run back through the base registry
 
 So drag scroll and wheel scroll follow the same propagation and precedence
-rules.
+rules. Release momentum targets the container that consumed the latest movement
+on the fling axis, not the element where the press started. A drag starting on a
+pressable list item therefore flings its scrolling parent without pressing the item.
 
 ### Key Scroll
 
