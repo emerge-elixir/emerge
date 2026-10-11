@@ -78,6 +78,8 @@ defmodule Emerge.Config.Native do
     [
       backend: :drm,
       drm_card: drm.card,
+      drm_power: %{display_on: drm.display == :on, brightness: drm.backlight.brightness},
+      drm_backlight: if(drm.backlight.device == :auto, do: "auto", else: drm.backlight.device),
       drm_output: drm.connector,
       drm_mode: drm.mode,
       width: width,

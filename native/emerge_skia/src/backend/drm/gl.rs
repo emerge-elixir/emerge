@@ -706,6 +706,7 @@ fn extension_list_contains(extensions: &str, expected: &str) -> bool {
 }
 
 struct CursorPlane {
+    card: Arc<Card>,
     commit: CursorPlaneCommit,
     bo: BufferObject<()>,
 }
@@ -723,6 +724,50 @@ impl Drop for PrimaryFramebuffer {
         // Keep the DRM fd and output lease alive through the BO destruction callback.
         // KMS teardown still happens before releasing current/in-flight buffer locks.
         let _ = self.card.destroy_framebuffer(self.handle);
+    }
+}
+
+#[derive(Default)]
+struct PrimaryFrames {
+    current: Option<PreparedPrimaryFrame>,
+    prepared: Option<PreparedPrimaryFrame>,
+    in_flight: Option<InFlightCommit>,
+}
+
+struct InFlightCommit {
+    primary: Option<PreparedPrimaryFrame>,
+    cursor: Option<SubmittedCursorState>,
+    emit_animation_pulse: bool,
+}
+struct CompletedCommit {
+    primary: bool,
+    cursor: Option<SubmittedCursorState>,
+    emit_animation_pulse: bool,
+}
+impl PrimaryFrames {
+    fn submitted(
+        &mut self,
+        primary: bool,
+        cursor: Option<SubmittedCursorState>,
+        emit_animation_pulse: bool,
+    ) {
+        self.in_flight = Some(InFlightCommit {
+            primary: if primary { self.prepared.take() } else { None },
+            cursor,
+            emit_animation_pulse,
+        });
+    }
+    fn completed(&mut self) -> Option<CompletedCommit> {
+        let commit = self.in_flight.take()?;
+        let primary = commit.primary.is_some();
+        if primary {
+            self.current = commit.primary;
+        }
+        Some(CompletedCommit {
+            primary,
+            cursor: commit.cursor,
+            emit_animation_pulse: commit.emit_animation_pulse,
+        })
     }
 }
 
@@ -744,23 +789,10 @@ struct PreparedPrimaryFrame {
     present_submit_duration: Duration,
 }
 
-struct CurrentPrimaryFrame {
-    generation: u64,
-    render_version: u64,
-    bo: BufferObject<PrimaryFramebuffer>,
-    fb: framebuffer::Handle,
-}
-
 struct SubmittedCursorState {
     version: Option<u64>,
     visible: bool,
     icon: CursorIcon,
-}
-
-struct InFlightCommit {
-    primary: Option<PreparedPrimaryFrame>,
-    cursor: Option<SubmittedCursorState>,
-    emit_animation_pulse: bool,
 }
 
 const FOLLOW_UP_PRIMARY_WINDOW: Duration = Duration::from_millis(4);
@@ -791,6 +823,12 @@ struct CursorPlaneCommit {
     props: Arc<HashMap<String, property::Info>>,
     fb: framebuffer::Handle,
     size: (u32, u32),
+}
+
+impl Drop for CursorPlane {
+    fn drop(&mut self) {
+        let _ = self.card.destroy_framebuffer(self.commit.fb);
+    }
 }
 
 impl CursorPlane {
@@ -887,9 +925,7 @@ fn destroy_session_resources(
     cursor_plane: Option<CursorPlane>,
     mode_blob_id: Option<u64>,
 ) {
-    if let Some(cursor_plane) = cursor_plane {
-        let _ = card.destroy_framebuffer(cursor_plane.commit.fb);
-    }
+    drop(cursor_plane);
 
     destroy_mode_blob(card, mode_blob_id);
 }
@@ -950,44 +986,54 @@ fn teardown_drm_output(
         .map_err(|e| format!("tearing down DRM output failed: {e}"))
 }
 
-#[allow(clippy::too_many_arguments)]
-fn cleanup_active_session(
-    card: &Card,
-    connector: connector::Handle,
-    crtc_handle: crtc::Handle,
-    plane: plane::Handle,
-    con_props: &HashMap<String, property::Info>,
-    crtc_props: &HashMap<String, property::Info>,
-    plane_props: &HashMap<String, property::Info>,
-    cursor_plane: Option<CursorPlane>,
-    lifecycle: &crate::runtime::lifecycle::Lifecycle,
-    mode_blob_id: Option<u64>,
-) {
-    if let Err(err) = teardown_drm_output(
-        card,
-        connector,
-        crtc_handle,
-        plane,
-        con_props,
-        crtc_props,
-        plane_props,
-        cursor_plane.as_ref().map(CursorPlane::commit),
-    ) {
-        lifecycle.quarantine_output(format!(
-            "DRM teardown failed; ownership retained until VM restart: {err}"
-        ));
-        // Never unwind/drop buffers that KMS may still scan out. The lease and all GPU owners
-        // remain on this thread. Admission for this output stays closed; other leases are untouched.
-        loop {
-            std::thread::park();
+fn retain_unsafe_session(lifecycle: &crate::runtime::lifecycle::Lifecycle, error: String) -> ! {
+    lifecycle.quarantine_output(format!(
+        "DRM OpenGL retirement failed; ownership retained until VM restart: {error}"
+    ));
+    // Do not unwind/drop any GBM, EGL, Ganesh, video or lease owner while KMS/GPU
+    // ownership is uncertain. Only failure parks; ordinary off/on retires below.
+    loop {
+        std::thread::park();
+    }
+}
+
+// One finish at retirement, never per frame. Prepared-but-unsubmitted drawing
+// and external video reads also need completion before renderer/video destruction.
+fn quiesce_gl(egl_state: &EglState, frame_surface: &mut GlFrameSurface) -> Result<(), String> {
+    if unsafe {
+        egl_state.egl.MakeCurrent(
+            egl_state.display,
+            egl_state.surface,
+            egl_state.surface,
+            egl_state.context,
+        )
+    } == egl::FALSE
+    {
+        return Err("making EGL current for retirement failed".into());
+    }
+    // Prior ordinary GL errors are not GPU completion evidence. Context loss is
+    // different: do not free source leases based on an invalid context's finish.
+    for _ in 0..32 {
+        let error = unsafe { gl::GetError() };
+        if error == gl::CONTEXT_LOST {
+            return Err("GL context lost during retirement".into());
+        }
+        if error == gl::NO_ERROR {
+            break;
         }
     }
-
-    destroy_session_resources(card, cursor_plane, mode_blob_id);
+    frame_surface.flush_for_retirement();
+    unsafe {
+        gl::Finish();
+    }
+    if unsafe { gl::GetError() } != gl::NO_ERROR {
+        return Err("GL finish failed during retirement".into());
+    }
+    Ok(())
 }
 
 fn create_cursor_plane<T: AsFd>(
-    card: &Card,
+    card: &Arc<Card>,
     gbm_device: &GbmDevice<T>,
     resources: &ResourceHandles,
     crtc_handle: crtc::Handle,
@@ -998,7 +1044,7 @@ fn create_cursor_plane<T: AsFd>(
     };
     let props = card
         .get_properties(handle)
-        .and_then(|props| props.as_hashmap(card))
+        .and_then(|props| props.as_hashmap(card.as_ref()))
         .map_err(|e| format!("failed to read cursor plane properties: {e}"))?;
     let props = Arc::new(props);
 
@@ -1020,6 +1066,7 @@ fn create_cursor_plane<T: AsFd>(
         .map_err(|e| format!("failed to create cursor fb: {e}"))?;
 
     Ok(Some(CursorPlane {
+        card: Arc::clone(card),
         commit: CursorPlaneCommit {
             handle,
             props,
@@ -1141,11 +1188,11 @@ fn send_animation_pulse(
 
     match tree_tx.try_send(msg) {
         Ok(()) => true,
-        Err(TrySendError::Full(msg)) => {
+        Err(TrySendError::Full(_)) => {
             if log_render {
-                eprintln!("tree channel full, blocking send");
+                eprintln!("tree channel full, coalescing animation pulse");
             }
-            tree_tx.send(msg).is_ok()
+            true
         }
         Err(TrySendError::Disconnected(_)) => false,
     }
@@ -2572,6 +2619,7 @@ fn draw_software_cursor(
 
 pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
     let DrmRunContext {
+        presenter,
         lifecycle,
         startup_tx,
         stop,
@@ -2589,6 +2637,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
         stats,
         latest_frame,
         video_registry,
+        ..
     } = context;
 
     if let Err(err) = video_registry.set_prime_video_available(false) {
@@ -2640,14 +2689,19 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             break;
         }
 
-        let card = match super::session::open_output(
-            config.card_path.as_deref(),
-            config.output.as_deref(),
-            config.mode.as_deref(),
-            config.requested_size,
-            config.hw_cursor,
-            Some(Arc::clone(&lifecycle)),
-        ) {
+        let opened = if let Some(presenter) = &presenter {
+            super::core::duplicate_card(&presenter.card)
+        } else {
+            super::session::open_output(
+                config.card_path.as_deref(),
+                config.output.as_deref(),
+                config.mode.as_deref(),
+                config.requested_size,
+                config.hw_cursor,
+                Some(Arc::clone(&lifecycle)),
+            )
+        };
+        let card = match opened {
             Ok(card) => card,
             Err(err) => {
                 if handle_startup_failure(
@@ -3046,7 +3100,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             );
         }
 
-        let (mut frame_surface, gl_capabilities) =
+        let (frame_surface, gl_capabilities) =
             match create_renderer_frame_surface(config.rendering_api, &egl_state.egl, dimensions) {
                 Ok(values) => values,
                 Err(err) => {
@@ -3181,717 +3235,686 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
         };
         let mode_blob_id = mode_blob_id(&mode_blob);
 
-        // Return resource readiness before waiting for an application upload.
-        // Otherwise the NIF cannot start the tree actor or return its handle.
-        if let Err(err) = video_registry.set_prime_video_available(video_import.is_some()) {
-            native_log.warning(
-                "video",
-                format!("failed to update PRIME video availability: {err}"),
-            );
-        }
-        if let Some(tx) = startup_tx.take() {
-            let _ = tx.send(Ok(super::DrmBackendStartupInfo::opengl(
-                video_import.is_some(),
-            )));
-        }
-        frame_request = frame_request.wrapping_add(1);
-        let request = TreeMsg::Batch(vec![
-            TreeMsg::Resize {
-                width: dimensions.0 as f32,
-                height: dimensions.1 as f32,
-                scale: 1.0,
-            },
-            TreeMsg::RequestFrame {
-                request: frame_request,
-            },
-        ]);
-        let first_scene = tree_tx
-            .send(request)
-            .map_err(|_| "DRM tree channel stopped before first frame".to_string())
-            .and_then(|_| super::first_frame::wait_for_frame(&render_rx, &stop, frame_request));
-        let mut render_state = match first_scene {
-            Ok(state) => state,
-            Err(error) => {
-                if !stop.load(Ordering::Acquire) {
-                    native_log.error("drm", error);
+        let cursor_commit = cursor_plane.as_ref().map(|plane| plane.commit().clone());
+        let mut retained = (PrimaryFrames::default(), frame_surface);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<bool, String> {
+                let (frames, frame_surface) = &mut retained;
+                super::core::discard_pending_events(&card)
+                    .map_err(|error| format!("discarding old DRM events failed: {error}"))?;
+                // Return resource readiness before waiting for an application upload.
+                // Otherwise the NIF cannot start the tree actor or return its handle.
+                if let Err(err) = video_registry.set_prime_video_available(video_import.is_some()) {
+                    native_log.warning(
+                        "video",
+                        format!("failed to update PRIME video availability: {err}"),
+                    );
                 }
-                destroy_session_resources(&card, cursor_plane.take(), mode_blob_id);
-                running_flag.store(false, Ordering::Release);
-                break;
-            }
-        };
-        let first_frame = video_registry
-            .set_active_targets(&render_state.video_target_ids)
-            .and_then(|_| {
-                prepare_primary_frame(
-                    0,
-                    config.rendering_api,
-                    &mut renderer,
-                    raster_renderer.as_mut(),
-                    &mut frame_surface,
-                    dimensions,
-                    &render_state,
-                    (0.0, 0.0),
-                    false,
-                    true,
-                    CursorIcon::Default,
-                    &cursor_theme,
-                    &video_registry,
-                    video_import.as_ref(),
-                    &egl_state,
-                    &gbm_surface,
-                    config.force_gpu_finish,
-                    &card,
-                    stats.as_deref(),
-                    false,
-                    config.renderer_cache_config.enabled,
-                    &mut gpu_render_timer,
-                    &native_log,
-                    &mut last_video_sync_error,
-                    &mut logged_video_import,
-                    &latest_frame,
-                )
-            });
-        let first_frame = match first_frame {
-            Ok(frame) => frame,
-            Err(error) => {
-                native_log.error(
-                    "drm",
-                    format!("preparing first application frame failed: {error}"),
-                );
-                destroy_session_resources(&card, cursor_plane.take(), mode_blob_id);
-                running_flag.store(false, Ordering::Release);
-                break;
-            }
-        };
-        let bo = first_frame.bo;
-        let fb = first_frame.fb;
-        native_log.info(
-            "drm",
-            format!("GBM primary BO: {}", gbm_bo_diagnostics(&bo)),
-        );
-
-        let mut atomic_req = atomic::AtomicModeReq::new();
-        if let Err(e) = (|| -> Result<(), String> {
-            atomic_req.add_property(
-                connector,
-                prop_handle(&con_props, "CRTC_ID")?,
-                property::Value::CRTC(Some(crtc_handle)),
-            );
-            atomic_req.add_property(crtc_handle, prop_handle(&crtc_props, "MODE_ID")?, mode_blob);
-            atomic_req.add_property(
-                crtc_handle,
-                prop_handle(&crtc_props, "ACTIVE")?,
-                property::Value::Boolean(true),
-            );
-            add_plane_properties(&mut atomic_req, plane, &plane_props, crtc_handle, fb)?;
-            add_plane_geometry(&mut atomic_req, plane, &plane_props, &mode)
-        })() {
-            drop(bo);
-            destroy_session_resources(&card, cursor_plane.take(), mode_blob_id);
-
-            if handle_startup_failure(
-                &mut startup_tx,
-                &running_flag,
-                &stop,
-                &mut startup_retries_remaining,
-                retry_interval,
-                format!("preparing initial atomic commit failed: {e}"),
-            ) {
-                break;
-            }
-
-            continue;
-        }
-
-        if stop.load(Ordering::Acquire) {
-            destroy_session_resources(&card, cursor_plane.take(), mode_blob_id);
-            running_flag.store(false, Ordering::Release);
-            break;
-        }
-        if let Err(err) = card.atomic_commit(AtomicCommitFlags::ALLOW_MODESET, atomic_req) {
-            // A failed ioctl does not prove that KMS never took the framebuffer.
-            // Keep every GPU/scanout owner alive until a blocking detach succeeds.
-            cleanup_active_session(
-                &card,
-                connector,
-                crtc_handle,
-                plane,
-                &con_props,
-                &crtc_props,
-                &plane_props,
-                cursor_plane.take(),
-                &lifecycle,
-                mode_blob_id,
-            );
-            drop(bo);
-
-            if handle_startup_failure(
-                &mut startup_tx,
-                &running_flag,
-                &stop,
-                &mut startup_retries_remaining,
-                retry_interval,
-                format!("initial atomic commit failed: {err}"),
-            ) {
-                break;
-            }
-
-            continue;
-        }
-
-        if let Some(stats) = stats.as_deref() {
-            stats.record_frame_present();
-            stats.record_drm_scene_presented();
-        }
-
-        if log_render {
-            eprintln!("drm present version={}", render_state.render_version);
-        }
-
-        let mut current_primary = CurrentPrimaryFrame {
-            generation: 0,
-            render_version: render_state.render_version,
-            bo,
-            fb,
-        };
-        let mut prepared_primary: Option<PreparedPrimaryFrame> = None;
-        let mut in_flight: Option<InFlightCommit> = None;
-        let mut desired_primary_generation = 1u64;
-        let mut committed_primary_generation = 0u64;
-        let mut next_render_profile_at = Instant::now();
-        let mut cursor_snapshot = cursor_state.snapshot();
-        let mut cursor_pos = cursor_snapshot.state.pos;
-        let mut cursor_visible = cursor_snapshot.state.visible;
-        let mut current_cursor_icon = CursorIcon::Default;
-        let mut last_cursor_pos = cursor_pos;
-        let mut last_cursor_visible = cursor_visible;
-        let mut last_cursor_icon = current_cursor_icon;
-        let mut hw_cursor_enabled = cursor_plane.is_some();
-        let mut committed_cursor_version: Option<u64> = None;
-        let mut committed_cursor_visible = false;
-        let mut committed_cursor_icon: Option<CursorIcon> = None;
-        let mut present_state = DrmPresentState::new(frame_interval);
-        let monotonic_page_flip_timestamps = card
-            .get_driver_capability(DriverCapability::MonotonicTimestamp)
-            .unwrap_or_default()
-            != 0;
-        let mut last_kernel_page_flip_at: Option<Duration> = None;
-        let mut last_page_flip_sequence: Option<u32> = None;
-        let mut last_selected_scene_version: Option<u64> = None;
-        let mut last_presented_scene_version: Option<u64> = None;
-        let mut follow_up_primary_until: Option<Instant> = None;
-        let mut retry_commit_at: Option<Instant> = None;
-        let mut observed_capture_generation = 0_u64;
-        let mut drm_ready = false;
-        let mut presenter_wake_ready = false;
-
-        let mut next_hotplug_check = Instant::now() + hotplug_interval;
-        let mut last_video_generation = video_registry.generation();
-        // Video submission and fence cleanup mutate renderer-owned resources without changing the
-        // scene fingerprint. Keep this sticky until sync_video_frames() has run so the generic
-        // unchanged-frame optimization cannot consume the generation and strand a pending frame.
-        let mut video_sync_required = true;
-        let mut stop_requested = false;
-
-        loop {
-            gpu_render_timer.poll(&native_log);
-
-            if presenter_wake_ready {
-                let _ = presenter_wake.drain();
-                presenter_wake_ready = false;
-            }
-
-            if drm_ready {
-                drm_ready = false;
-                match card.receive_events() {
-                    Ok(events) => {
-                        for event in events {
-                            if let control::Event::PageFlip(page_flip) = event {
-                                if page_flip.crtc != crtc_handle {
-                                    continue;
-                                }
-
-                                let dispatch_monotonic_at = monotonic_now();
-                                let kernel_page_flip_at = monotonic_page_flip_timestamps
-                                    .then_some(page_flip.duration)
-                                    .filter(|timestamp| !timestamp.is_zero());
-                                let sequence_delta = last_page_flip_sequence
-                                    .map(|last| page_flip.frame.wrapping_sub(last))
-                                    .filter(|delta| (1..=1_000).contains(delta));
-                                if let Some(stats) = stats.as_deref() {
-                                    stats.record_drm_page_flip_sequence(sequence_delta);
-                                    if let (Some(previous), Some(current)) =
-                                        (last_kernel_page_flip_at, kernel_page_flip_at)
-                                        && let Some(duration) = duration_since(current, previous)
-                                    {
-                                        stats.record_drm_kernel_page_flip_interval(duration);
-                                    }
-                                    if let (Some(dispatched), Some(kernel)) =
-                                        (dispatch_monotonic_at, kernel_page_flip_at)
-                                        && let Some(duration) = duration_since(dispatched, kernel)
-                                    {
-                                        stats.record_drm_page_flip_dispatch_delay(duration);
-                                    }
-                                }
-                                last_page_flip_sequence = Some(page_flip.frame);
-                                if let Some(timestamp) = kernel_page_flip_at {
-                                    last_kernel_page_flip_at = Some(timestamp);
-                                }
-
-                                if let Some(submitted) = in_flight.take() {
-                                    if let Some(frame) = submitted.primary {
-                                        let old_primary = std::mem::replace(
-                                            &mut current_primary,
-                                            CurrentPrimaryFrame {
-                                                generation: frame.generation,
-                                                render_version: frame.render_version,
-                                                bo: frame.bo,
-                                                fb: frame.fb,
-                                            },
-                                        );
-                                        drop(old_primary.bo);
-                                        committed_primary_generation = current_primary.generation;
-                                        gpu_render_timer.on_primary_presented(
-                                            frame.generation,
-                                            page_flip.frame,
-                                            sequence_delta,
-                                            &native_log,
-                                        );
-                                        if should_schedule_video_cleanup(
-                                            frame.video_needs_cleanup,
-                                            prepared_primary
-                                                .as_ref()
-                                                .is_some_and(|frame| frame.video_sync_succeeded),
-                                        ) {
-                                            desired_primary_generation =
-                                                desired_primary_generation.wrapping_add(1);
-                                            video_sync_required = true;
-                                        }
-                                        if log_render {
-                                            eprintln!(
-                                                "drm present version={}",
-                                                current_primary.render_version
-                                            );
-                                        }
-
-                                        let presented_at = Instant::now();
-                                        if let Some(stats) = stats.as_ref() {
-                                            stats.record_frame_present();
-                                            if frame.render_version > 0
-                                                && last_presented_scene_version
-                                                    != Some(frame.render_version)
-                                            {
-                                                stats.record_drm_scene_presented();
-                                                last_presented_scene_version =
-                                                    Some(frame.render_version);
-                                            }
-                                            if let (Some(committed), Some(kernel)) = (
-                                                frame.atomic_commit_monotonic_at,
-                                                kernel_page_flip_at,
-                                            ) && let Some(duration) =
-                                                duration_since(kernel, committed)
-                                            {
-                                                stats.record_drm_commit_to_kernel_page_flip(
-                                                    duration,
-                                                );
-                                            }
-                                            if let Some(committed_at) =
-                                                frame.atomic_commit_submitted_at
-                                            {
-                                                stats.record_drm_primary_presented(
-                                                    frame.imported_video_frames > 0,
-                                                    &frame.imported_video_streams,
-                                                    presented_at
-                                                        .saturating_duration_since(committed_at),
-                                                    frame.newest_video_submitted_at.map(
-                                                        |submitted_at| {
-                                                            presented_at.saturating_duration_since(
-                                                                submitted_at,
-                                                            )
-                                                        },
-                                                    ),
-                                                );
-                                            }
-                                            record_drm_pipeline_presented(
-                                                Some(stats),
-                                                frame.pipeline_submitted_at,
-                                                frame.pipeline_swap_done_at,
-                                                presented_at,
-                                            );
-                                        }
-
-                                        let predicted_next_present_at =
-                                            present_state.observe_present(presented_at);
-
-                                        record_drm_display_interval(
-                                            stats.as_deref(),
-                                            present_state.mode_frame_interval(),
-                                        );
-
-                                        send_present_timing(
-                                            &event_tx,
-                                            presented_at,
-                                            predicted_next_present_at,
-                                        );
-
-                                        if submitted.emit_animation_pulse {
-                                            if !send_animation_pulse(
-                                                &tree_tx,
-                                                presented_at,
-                                                predicted_next_present_at,
-                                                log_render,
-                                            ) {
-                                                stop_requested = true;
-                                                break;
-                                            }
-                                            follow_up_primary_until =
-                                                Some(presented_at + FOLLOW_UP_PRIMARY_WINDOW);
-                                        }
-                                    }
-
-                                    if let Some(cursor) = submitted.cursor {
-                                        committed_cursor_version = cursor.version;
-                                        committed_cursor_visible = cursor.visible;
-                                        committed_cursor_icon = Some(cursor.icon);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Err(err) if err.kind() == io::ErrorKind::WouldBlock => {}
-                    Err(err) => {
-                        eprintln!(
-                            "DRM backend unavailable: failed to receive page flip events: {err}"
-                        );
-                        break;
-                    }
+                if let Some(tx) = startup_tx.take() {
+                    let _ = tx.send(Ok(super::DrmBackendStartupInfo::opengl(
+                        video_import.is_some(),
+                    )));
                 }
-            }
-
-            if stop.load(Ordering::Relaxed) {
-                stop_requested = true;
-                break;
-            }
-
-            let now = Instant::now();
-            if now >= next_hotplug_check {
-                let resources = match card.resource_handles() {
-                    Ok(handles) => handles,
-                    Err(_) => break,
-                };
-                let next = first_connected_connector(&card, &resources, config.requested_size);
-                match next {
-                    Ok((next_connector, next_mode, next_crtc, _next_encoder)) => {
-                        let next_dimensions = next_mode.size();
-                        let next_dimensions = (next_dimensions.0 as u32, next_dimensions.1 as u32);
-                        let next_frame_interval = mode_frame_interval(&next_mode);
-                        if next_connector != connector
-                            || next_crtc != crtc_handle
-                            || drm_session_mode_changed(
-                                dimensions,
-                                next_dimensions,
-                                frame_interval,
-                                next_frame_interval,
+                let first_scene = if let Some(presenter) = &presenter {
+                    presenter
+                        .request_frame(&tree_tx, dimensions, &stop)
+                        .and_then(|request| {
+                            super::first_frame::wait_for_frame(
+                                &render_rx,
+                                &stop,
+                                request,
                             )
-                        {
-                            break;
+                        })
+                } else {
+                    frame_request
+                        .checked_add(1)
+                        .ok_or_else(|| "DRM frame request exhausted".to_string())
+                        .and_then(|next| {
+                            frame_request = next;
+                            let request = TreeMsg::Batch(vec![
+                                TreeMsg::Resize {
+                                    width: dimensions.0 as f32,
+                                    height: dimensions.1 as f32,
+                                    scale: 1.0,
+                                },
+                                TreeMsg::RequestFrame {
+                                    request: frame_request,
+                                },
+                            ]);
+                            tree_tx
+                                .send(request)
+                                .map_err(|_| {
+                                    "DRM tree channel stopped before first frame".to_string()
+                                })
+                                .and_then(|_| {
+                                    super::first_frame::wait_for_frame(
+                                        &render_rx,
+                                        &stop,
+                                        frame_request,
+                                    )
+                                })
+                        })
+                };
+                let mut render_state = match first_scene {
+                    Ok(state) => state,
+                    Err(error) => {
+                        if !stop.load(Ordering::Acquire) {
+                            native_log.error("drm", &error);
                         }
+                        return if stop.load(Ordering::Acquire) {
+                            Ok(true)
+                        } else {
+                            Err(error)
+                        };
                     }
-                    Err(_) => break,
-                }
-                next_hotplug_check = Instant::now() + hotplug_interval;
-            }
-
-            while let Ok(msg) = render_rx.try_recv() {
-                match msg {
-                    RenderMsg::Scene {
-                        scene,
-                        version,
-                        pipeline_submitted_at,
-                        pipeline_render_queued_at,
-                        animate,
-                        ..
-                    } => {
-                        let received_at = Instant::now();
-                        let scene = *scene;
-                        render_state.set_scene(scene);
-                        if let Err(error) =
-                            video_registry.set_active_targets(&render_state.video_target_ids)
-                        {
-                            eprintln!("video target visibility update failed: {error}");
-                        }
-                        render_state.render_version = version;
-                        render_state.pipeline_submitted_at = pipeline_submitted_at;
-                        render_state.pipeline_render_queued_at = pipeline_render_queued_at;
-                        render_state.animate = animate;
-                        record_drm_pipeline_scene_received(
+                };
+                let first_frame = video_registry
+                    .set_active_targets(&render_state.video_target_ids)
+                    .and_then(|_| {
+                        prepare_primary_frame(
+                            0,
+                            config.rendering_api,
+                            &mut renderer,
+                            raster_renderer.as_mut(),
+                            frame_surface,
+                            dimensions,
+                            &render_state,
+                            (0.0, 0.0),
+                            false,
+                            true,
+                            CursorIcon::Default,
+                            &cursor_theme,
+                            &video_registry,
+                            video_import.as_ref(),
+                            &egl_state,
+                            &gbm_surface,
+                            config.force_gpu_finish,
+                            &card,
                             stats.as_deref(),
-                            pipeline_render_queued_at,
-                            received_at,
+                            false,
+                            config.renderer_cache_config.enabled,
+                            &mut gpu_render_timer,
+                            &native_log,
+                            &mut last_video_sync_error,
+                            &mut logged_video_import,
+                            &latest_frame,
+                        )
+                    });
+                let first_frame = match first_frame {
+                    Ok(frame) => frame,
+                    Err(error) => {
+                        native_log.error(
+                            "drm",
+                            format!("preparing first application frame failed: {error}"),
                         );
-                        desired_primary_generation = desired_primary_generation.wrapping_add(1);
-                        follow_up_primary_until = None;
-                        if log_render {
-                            let latest = render_counter.load(Ordering::Relaxed);
-                            let delta = latest.saturating_sub(version);
-                            eprintln!("drm render version={version} latest={latest} delta={delta}");
-                        }
+                        return Err(error);
                     }
-                    RenderMsg::Stop => {
+                };
+                frames.prepared = Some(first_frame);
+                let first_frame = frames.prepared.as_ref().expect("first frame was prepared");
+                let fb = first_frame.fb;
+                native_log.info(
+                    "drm",
+                    format!("GBM primary BO: {}", gbm_bo_diagnostics(&first_frame.bo)),
+                );
+
+                let mut atomic_req = atomic::AtomicModeReq::new();
+                if let Err(e) = (|| -> Result<(), String> {
+                    atomic_req.add_property(
+                        connector,
+                        prop_handle(&con_props, "CRTC_ID")?,
+                        property::Value::CRTC(Some(crtc_handle)),
+                    );
+                    atomic_req.add_property(
+                        crtc_handle,
+                        prop_handle(&crtc_props, "MODE_ID")?,
+                        mode_blob,
+                    );
+                    atomic_req.add_property(
+                        crtc_handle,
+                        prop_handle(&crtc_props, "ACTIVE")?,
+                        property::Value::Boolean(true),
+                    );
+                    add_plane_properties(&mut atomic_req, plane, &plane_props, crtc_handle, fb)?;
+                    add_plane_geometry(&mut atomic_req, plane, &plane_props, &mode)
+                })() {
+                    return Err(format!("preparing initial atomic commit failed: {e}"));
+                }
+
+                if stop.load(Ordering::Acquire) {
+                    return Ok(true);
+                }
+                card.atomic_commit(AtomicCommitFlags::ALLOW_MODESET, atomic_req)
+                    .map_err(|error| format!("initial atomic commit failed: {error}"))?;
+                frames.current = frames.prepared.take();
+
+                if let Some(presenter) = &presenter { presenter.presented(); }
+                if let Some(stats) = stats.as_deref() {
+                    stats.record_frame_present();
+                    stats.record_drm_scene_presented();
+                }
+
+                if log_render {
+                    eprintln!("drm present version={}", render_state.render_version);
+                }
+
+                let mut desired_primary_generation = 1u64;
+                let mut committed_primary_generation = 0u64;
+                let mut next_render_profile_at = Instant::now();
+                let mut cursor_snapshot = cursor_state.snapshot();
+                let mut cursor_pos = cursor_snapshot.state.pos;
+                let mut cursor_visible = cursor_snapshot.state.visible;
+                let mut current_cursor_icon = CursorIcon::Default;
+                let mut last_cursor_pos = cursor_pos;
+                let mut last_cursor_visible = cursor_visible;
+                let mut last_cursor_icon = current_cursor_icon;
+                let mut hw_cursor_enabled = cursor_plane.is_some();
+                let mut committed_cursor_version: Option<u64> = None;
+                let mut committed_cursor_visible = false;
+                let mut committed_cursor_icon: Option<CursorIcon> = None;
+                let mut present_state = DrmPresentState::new(frame_interval);
+                let monotonic_page_flip_timestamps = card
+                    .get_driver_capability(DriverCapability::MonotonicTimestamp)
+                    .unwrap_or_default()
+                    != 0;
+                let mut last_kernel_page_flip_at: Option<Duration> = None;
+                let mut last_page_flip_sequence: Option<u32> = None;
+                let mut last_selected_scene_version: Option<u64> = None;
+                let mut last_presented_scene_version: Option<u64> = None;
+                let mut follow_up_primary_until: Option<Instant> = None;
+                let mut retry_commit_at: Option<Instant> = None;
+                let mut observed_capture_generation = 0_u64;
+                let mut drm_ready = false;
+                let mut presenter_wake_ready = false;
+
+                let mut next_hotplug_check = Instant::now() + hotplug_interval;
+                let mut last_video_generation = video_registry.generation();
+                // Video submission and fence cleanup mutate renderer-owned resources without changing the
+                // scene fingerprint. Keep this sticky until sync_video_frames() has run so the generic
+                // unchanged-frame optimization cannot consume the generation and strand a pending frame.
+                let mut video_sync_required = true;
+                let mut stop_requested = false;
+
+                loop {
+                    if stop.load(Ordering::Acquire) {
                         stop_requested = true;
                         break;
                     }
-                }
-            }
+                    gpu_render_timer.poll(&native_log);
 
-            if stop_requested {
-                break;
-            }
-
-            if let Some(retry_at) = retry_commit_at
-                && Instant::now() >= retry_at
-            {
-                retry_commit_at = None;
-            }
-            if let Some(deadline) = follow_up_primary_until
-                && Instant::now() >= deadline
-            {
-                follow_up_primary_until = None;
-            }
-            while let Ok(icon) = cursor_icon_rx.try_recv() {
-                current_cursor_icon = icon;
-            }
-
-            cursor_snapshot = cursor_state.snapshot();
-            cursor_pos = cursor_snapshot.state.pos;
-            cursor_visible = cursor_snapshot.state.visible;
-
-            if !hw_cursor_enabled {
-                if cursor_visible && cursor_pos != last_cursor_pos {
-                    desired_primary_generation = desired_primary_generation.wrapping_add(1);
-                }
-                if cursor_visible != last_cursor_visible {
-                    desired_primary_generation = desired_primary_generation.wrapping_add(1);
-                }
-                if cursor_visible && current_cursor_icon != last_cursor_icon {
-                    desired_primary_generation = desired_primary_generation.wrapping_add(1);
-                }
-            }
-
-            let video_generation = video_registry.generation();
-            if video_generation != last_video_generation {
-                desired_primary_generation = desired_primary_generation.wrapping_add(1);
-                last_video_generation = video_generation;
-                video_sync_required = true;
-            }
-
-            last_cursor_pos = cursor_pos;
-            last_cursor_visible = cursor_visible;
-            last_cursor_icon = current_cursor_icon;
-
-            let capture_request_generation = latest_frame.pending_capture_generation();
-            if let Some(capture_generation) = capture_request_generation
-                && capture_generation != observed_capture_generation
-            {
-                observed_capture_generation = capture_generation;
-                desired_primary_generation = desired_primary_generation.wrapping_add(1);
-            }
-
-            let primary_dirty = desired_primary_generation != committed_primary_generation;
-            // Animation pulses are driven by primary page-flip completions. Even
-            // when an enter frame is initially visually unchanged (for example
-            // translated outside a clip), it still needs a committed primary so
-            // the next pulse advances the animation clock.
-            if capture_request_generation.is_none()
-                && should_consider_unchanged_primary_skip(
-                    in_flight.is_some(),
-                    primary_dirty,
-                    video_sync_required,
-                    hw_cursor_enabled,
-                    cursor_visible,
-                    render_state.animate,
-                )
-                && renderer.can_skip_unchanged_visible_frame(&render_state, dimensions)
-            {
-                committed_primary_generation = desired_primary_generation;
-                // A frame prepared behind the previous commit may prove visually redundant once
-                // that commit lands. Release its GBM lock when consuming the generation as a noop.
-                if let Some(stale) = prepared_primary.take() {
-                    gpu_render_timer.on_primary_not_presented(
-                        stale.generation,
-                        "not_presented_visually_redundant",
-                        &native_log,
-                    );
-                    if let Some(stats) = stats.as_deref() {
-                        stats.record_drm_stale_prepared(stale.imported_video_frames > 0);
+                    if presenter_wake_ready {
+                        let _ = presenter_wake.drain();
+                        presenter_wake_ready = false;
                     }
-                }
-                render_state.pipeline_submitted_at = None;
-                render_state.pipeline_render_queued_at = None;
-            }
-            let in_flight_primary_generation = in_flight
-                .as_ref()
-                .and_then(|commit| commit.primary.as_ref().map(|frame| frame.generation));
-            let prepared_primary_generation =
-                prepared_primary.as_ref().map(|frame| frame.generation);
 
-            // Render at most one staged primary while the previous atomic commit waits for
-            // vblank. New camera submissions remain in the registry's latest-frame slot until
-            // that staged frame is committed; replacing it here would submit GPU work for frames
-            // that can never reach scanout and can delay the in-flight frame's implicit fence.
-            if should_prepare_primary(
-                desired_primary_generation,
-                committed_primary_generation,
-                in_flight_primary_generation,
-                prepared_primary_generation,
-            ) {
-                if gbm_surface.has_free_buffers() {
-                    let now = Instant::now();
-                    let sampled_diagnostics_due = (stats.is_some() || config.renderer_stats_log)
-                        && now >= next_render_profile_at;
-                    if sampled_diagnostics_due {
-                        next_render_profile_at = now + RENDER_PROFILE_INTERVAL;
-                    }
-                    let profile_render = config.renderer_stats_log && sampled_diagnostics_due;
-                    if render_state.render_version > 0
-                        && last_selected_scene_version != Some(render_state.render_version)
-                    {
-                        if let Some(stats) = stats.as_deref() {
-                            stats.record_drm_scene_selected_for_draw();
-                        }
-                        last_selected_scene_version = Some(render_state.render_version);
-                    }
-                    match prepare_primary_frame(
-                        desired_primary_generation,
-                        config.rendering_api,
-                        &mut renderer,
-                        raster_renderer.as_mut(),
-                        &mut frame_surface,
-                        dimensions,
-                        &render_state,
-                        cursor_pos,
-                        cursor_visible,
-                        hw_cursor_enabled,
-                        current_cursor_icon,
-                        &cursor_theme,
-                        &video_registry,
-                        video_import.as_ref(),
-                        &egl_state,
-                        &gbm_surface,
-                        config.force_gpu_finish,
-                        &card,
-                        stats.as_deref(),
-                        profile_render,
-                        config.renderer_cache_config.enabled,
-                        &mut gpu_render_timer,
-                        &native_log,
-                        &mut last_video_sync_error,
-                        &mut logged_video_import,
-                        &latest_frame,
-                    ) {
-                        Ok(frame) => {
-                            // Failed syncs and pending retired-import fences must survive stale
-                            // prepared-frame replacement and unchanged-frame checks.
-                            video_sync_required =
-                                !frame.video_sync_succeeded || frame.video_needs_cleanup;
-                            if let Some(stats) = stats.as_deref() {
-                                stats.record_drm_primary_prepared(frame.imported_video_frames > 0);
+                    if drm_ready {
+                        drm_ready = false;
+                        match card.receive_events() {
+                            Ok(events) => {
+                                for event in events {
+                                    let control::Event::PageFlip(page_flip) = event else { continue; };
+                                    if page_flip.crtc != crtc_handle { continue; }
+                                    if let Some(submitted) = frames.completed()
+                                    {
+                                        let dispatch_monotonic_at = monotonic_now();
+                                        let kernel_page_flip_at = monotonic_page_flip_timestamps
+                                            .then_some(page_flip.duration)
+                                            .filter(|timestamp| !timestamp.is_zero());
+                                        let sequence_delta = last_page_flip_sequence
+                                            .map(|last| page_flip.frame.wrapping_sub(last))
+                                            .filter(|delta| (1..=1_000).contains(delta));
+                                        if let Some(stats) = stats.as_deref() {
+                                            stats.record_drm_page_flip_sequence(sequence_delta);
+                                            if let (Some(previous), Some(current)) =
+                                                (last_kernel_page_flip_at, kernel_page_flip_at)
+                                                && let Some(duration) =
+                                                    duration_since(current, previous)
+                                            {
+                                                stats
+                                                    .record_drm_kernel_page_flip_interval(duration);
+                                            }
+                                            if let (Some(dispatched), Some(kernel)) =
+                                                (dispatch_monotonic_at, kernel_page_flip_at)
+                                                && let Some(duration) =
+                                                    duration_since(dispatched, kernel)
+                                            {
+                                                stats.record_drm_page_flip_dispatch_delay(duration);
+                                            }
+                                        }
+                                        last_page_flip_sequence = Some(page_flip.frame);
+                                        if let Some(timestamp) = kernel_page_flip_at {
+                                            last_kernel_page_flip_at = Some(timestamp);
+                                        }
+
+                                        if submitted.primary {
+                                            let frame = frames
+                                                .current
+                                                .as_ref()
+                                                .expect("completed primary installed");
+                                            committed_primary_generation = frame.generation;
+                                            gpu_render_timer.on_primary_presented(
+                                                frame.generation,
+                                                page_flip.frame,
+                                                sequence_delta,
+                                                &native_log,
+                                            );
+                                            if should_schedule_video_cleanup(
+                                                frame.video_needs_cleanup,
+                                                frames.prepared.as_ref().is_some_and(|frame| {
+                                                    frame.video_sync_succeeded
+                                                }),
+                                            ) {
+                                                desired_primary_generation =
+                                                    desired_primary_generation.wrapping_add(1);
+                                                video_sync_required = true;
+                                            }
+                                            if log_render {
+                                                eprintln!(
+                                                    "drm present version={}",
+                                                    frame.render_version
+                                                );
+                                            }
+
+                                            let presented_at = Instant::now();
+                                            if let Some(stats) = stats.as_ref() {
+                                                stats.record_frame_present();
+                                                if frame.render_version > 0
+                                                    && last_presented_scene_version
+                                                        != Some(frame.render_version)
+                                                {
+                                                    stats.record_drm_scene_presented();
+                                                    last_presented_scene_version =
+                                                        Some(frame.render_version);
+                                                }
+                                                if let (Some(committed), Some(kernel)) = (
+                                                    frame.atomic_commit_monotonic_at,
+                                                    kernel_page_flip_at,
+                                                ) && let Some(duration) =
+                                                    duration_since(kernel, committed)
+                                                {
+                                                    stats.record_drm_commit_to_kernel_page_flip(
+                                                        duration,
+                                                    );
+                                                }
+                                                if let Some(committed_at) =
+                                                    frame.atomic_commit_submitted_at
+                                                {
+                                                    stats.record_drm_primary_presented(
+                                                        frame.imported_video_frames > 0,
+                                                        &frame.imported_video_streams,
+                                                        presented_at.saturating_duration_since(
+                                                            committed_at,
+                                                        ),
+                                                        frame.newest_video_submitted_at.map(
+                                                            |submitted_at| {
+                                                                presented_at
+                                                                    .saturating_duration_since(
+                                                                        submitted_at,
+                                                                    )
+                                                            },
+                                                        ),
+                                                    );
+                                                }
+                                                record_drm_pipeline_presented(
+                                                    Some(stats),
+                                                    frame.pipeline_submitted_at,
+                                                    frame.pipeline_swap_done_at,
+                                                    presented_at,
+                                                );
+                                            }
+
+                                            let predicted_next_present_at =
+                                                present_state.observe_present(presented_at);
+
+                                            record_drm_display_interval(
+                                                stats.as_deref(),
+                                                present_state.mode_frame_interval(),
+                                            );
+
+                                            send_present_timing(
+                                                &event_tx,
+                                                presented_at,
+                                                predicted_next_present_at,
+                                            );
+
+                                            if submitted.emit_animation_pulse {
+                                                if !send_animation_pulse(
+                                                    &tree_tx,
+                                                    presented_at,
+                                                    predicted_next_present_at,
+                                                    log_render,
+                                                ) {
+                                                    stop_requested = true;
+                                                    break;
+                                                }
+                                                follow_up_primary_until =
+                                                    Some(presented_at + FOLLOW_UP_PRIMARY_WINDOW);
+                                            }
+                                        }
+
+                                        if let Some(cursor) = submitted.cursor {
+                                            committed_cursor_version = cursor.version;
+                                            committed_cursor_visible = cursor.visible;
+                                            committed_cursor_icon = Some(cursor.icon);
+                                        }
+                                    }
+                                }
                             }
-                            prepared_primary = Some(frame);
+                            Err(err) if err.kind() == io::ErrorKind::WouldBlock => {}
+                            Err(err) => {
+                                eprintln!(
+                                    "DRM backend unavailable: failed to receive page flip events: {err}"
+                                );
+                                break;
+                            }
                         }
-                        Err(err) => {
+                    }
+
+                    let now = Instant::now();
+                    if now >= next_hotplug_check {
+                        let resources = match card.resource_handles() {
+                            Ok(handles) => handles,
+                            Err(_) => break,
+                        };
+                        let next =
+                            first_connected_connector(&card, &resources, config.requested_size);
+                        match next {
+                            Ok((next_connector, next_mode, next_crtc, _next_encoder)) => {
+                                let next_dimensions = next_mode.size();
+                                let next_dimensions =
+                                    (next_dimensions.0 as u32, next_dimensions.1 as u32);
+                                let next_frame_interval = mode_frame_interval(&next_mode);
+                                if next_connector != connector
+                                    || next_crtc != crtc_handle
+                                    || drm_session_mode_changed(
+                                        dimensions,
+                                        next_dimensions,
+                                        frame_interval,
+                                        next_frame_interval,
+                                    )
+                                {
+                                    break;
+                                }
+                            }
+                            Err(_) => break,
+                        }
+                        next_hotplug_check = Instant::now() + hotplug_interval;
+                    }
+
+                    while let Ok(msg) = render_rx.try_recv() {
+                        match msg {
+                            RenderMsg::Scene {
+                                scene,
+                                version,
+                                pipeline_submitted_at,
+                                pipeline_render_queued_at,
+                                animate,
+                                ..
+                            } => {
+                                let received_at = Instant::now();
+                                let scene = *scene;
+                                render_state.set_scene(scene);
+                                if let Err(error) = video_registry
+                                    .set_active_targets(&render_state.video_target_ids)
+                                {
+                                    eprintln!("video target visibility update failed: {error}");
+                                }
+                                render_state.render_version = version;
+                                render_state.pipeline_submitted_at = pipeline_submitted_at;
+                                render_state.pipeline_render_queued_at = pipeline_render_queued_at;
+                                render_state.animate = animate;
+                                record_drm_pipeline_scene_received(
+                                    stats.as_deref(),
+                                    pipeline_render_queued_at,
+                                    received_at,
+                                );
+                                desired_primary_generation =
+                                    desired_primary_generation.wrapping_add(1);
+                                follow_up_primary_until = None;
+                                if log_render {
+                                    let latest = render_counter.load(Ordering::Relaxed);
+                                    let delta = latest.saturating_sub(version);
+                                    eprintln!(
+                                        "drm render version={version} latest={latest} delta={delta}"
+                                    );
+                                }
+                            }
+                            RenderMsg::Stop => {
+                                stop_requested = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if stop_requested {
+                        break;
+                    }
+
+                    if let Some(retry_at) = retry_commit_at
+                        && Instant::now() >= retry_at
+                    {
+                        retry_commit_at = None;
+                    }
+                    if let Some(deadline) = follow_up_primary_until
+                        && Instant::now() >= deadline
+                    {
+                        follow_up_primary_until = None;
+                    }
+                    while let Ok(icon) = cursor_icon_rx.try_recv() {
+                        current_cursor_icon = icon;
+                    }
+
+                    cursor_snapshot = cursor_state.snapshot();
+                    cursor_pos = cursor_snapshot.state.pos;
+                    cursor_visible = cursor_snapshot.state.visible;
+
+                    if !hw_cursor_enabled {
+                        if cursor_visible && cursor_pos != last_cursor_pos {
+                            desired_primary_generation = desired_primary_generation.wrapping_add(1);
+                        }
+                        if cursor_visible != last_cursor_visible {
+                            desired_primary_generation = desired_primary_generation.wrapping_add(1);
+                        }
+                        if cursor_visible && current_cursor_icon != last_cursor_icon {
+                            desired_primary_generation = desired_primary_generation.wrapping_add(1);
+                        }
+                    }
+
+                    let video_generation = video_registry.generation();
+                    if video_generation != last_video_generation {
+                        desired_primary_generation = desired_primary_generation.wrapping_add(1);
+                        last_video_generation = video_generation;
+                        video_sync_required = true;
+                    }
+
+                    last_cursor_pos = cursor_pos;
+                    last_cursor_visible = cursor_visible;
+                    last_cursor_icon = current_cursor_icon;
+
+                    let capture_request_generation = latest_frame.pending_capture_generation();
+                    if let Some(capture_generation) = capture_request_generation
+                        && capture_generation != observed_capture_generation
+                    {
+                        observed_capture_generation = capture_generation;
+                        desired_primary_generation = desired_primary_generation.wrapping_add(1);
+                    }
+
+                    let primary_dirty = desired_primary_generation != committed_primary_generation;
+                    // Animation pulses are driven by primary page-flip completions. Even
+                    // when an enter frame is initially visually unchanged (for example
+                    // translated outside a clip), it still needs a committed primary so
+                    // the next pulse advances the animation clock.
+                    if capture_request_generation.is_none()
+                        && should_consider_unchanged_primary_skip(
+                            frames.in_flight.is_some(),
+                            primary_dirty,
+                            video_sync_required,
+                            hw_cursor_enabled,
+                            cursor_visible,
+                            render_state.animate,
+                        )
+                        && renderer.can_skip_unchanged_visible_frame(&render_state, dimensions)
+                    {
+                        committed_primary_generation = desired_primary_generation;
+                        // A frame prepared behind the previous commit may prove visually redundant once
+                        // that commit lands. Release its GBM lock when consuming the generation as a noop.
+                        if let Some(stale) = frames.prepared.take() {
+                            gpu_render_timer.on_primary_not_presented(
+                                stale.generation,
+                                "not_presented_visually_redundant",
+                                &native_log,
+                            );
+                            if let Some(stats) = stats.as_deref() {
+                                stats.record_drm_stale_prepared(stale.imported_video_frames > 0);
+                            }
+                        }
+                        render_state.pipeline_submitted_at = None;
+                        render_state.pipeline_render_queued_at = None;
+                    }
+                    let in_flight_primary_generation = frames
+                        .in_flight
+                        .as_ref()
+                        .and_then(|commit| commit.primary.as_ref().map(|frame| frame.generation));
+                    let prepared_primary_generation =
+                        frames.prepared.as_ref().map(|frame| frame.generation);
+
+                    // Render at most one staged primary while the previous atomic commit waits for
+                    // vblank. New camera submissions remain in the registry's latest-frame slot until
+                    // that staged frame is committed; replacing it here would submit GPU work for frames
+                    // that can never reach scanout and can delay the in-flight frame's implicit fence.
+                    if should_prepare_primary(
+                        desired_primary_generation,
+                        committed_primary_generation,
+                        in_flight_primary_generation,
+                        prepared_primary_generation,
+                    ) {
+                        if gbm_surface.has_free_buffers() {
+                            let now = Instant::now();
+                            let sampled_diagnostics_due = (stats.is_some()
+                                || config.renderer_stats_log)
+                                && now >= next_render_profile_at;
+                            if sampled_diagnostics_due {
+                                next_render_profile_at = now + RENDER_PROFILE_INTERVAL;
+                            }
+                            let profile_render =
+                                config.renderer_stats_log && sampled_diagnostics_due;
+                            if render_state.render_version > 0
+                                && last_selected_scene_version != Some(render_state.render_version)
+                            {
+                                if let Some(stats) = stats.as_deref() {
+                                    stats.record_drm_scene_selected_for_draw();
+                                }
+                                last_selected_scene_version = Some(render_state.render_version);
+                            }
+                            match prepare_primary_frame(
+                                desired_primary_generation,
+                                config.rendering_api,
+                                &mut renderer,
+                                raster_renderer.as_mut(),
+                                frame_surface,
+                                dimensions,
+                                &render_state,
+                                cursor_pos,
+                                cursor_visible,
+                                hw_cursor_enabled,
+                                current_cursor_icon,
+                                &cursor_theme,
+                                &video_registry,
+                                video_import.as_ref(),
+                                &egl_state,
+                                &gbm_surface,
+                                config.force_gpu_finish,
+                                &card,
+                                stats.as_deref(),
+                                profile_render,
+                                config.renderer_cache_config.enabled,
+                                &mut gpu_render_timer,
+                                &native_log,
+                                &mut last_video_sync_error,
+                                &mut logged_video_import,
+                                &latest_frame,
+                            ) {
+                                Ok(frame) => {
+                                    frames.prepared = Some(frame);
+                                    let frame =
+                                        frames.prepared.as_ref().expect("prepared frame installed");
+                                    // Failed syncs and pending retired-import fences must survive stale
+                                    // prepared-frame replacement and unchanged-frame checks.
+                                    video_sync_required =
+                                        !frame.video_sync_succeeded || frame.video_needs_cleanup;
+                                    if let Some(stats) = stats.as_deref() {
+                                        stats.record_drm_primary_prepared(
+                                            frame.imported_video_frames > 0,
+                                        );
+                                    }
+                                }
+                                Err(err) => {
+                                    eprintln!("DRM backend unavailable: {err}");
+                                    break;
+                                }
+                            }
+                        } else if let Some(stats) = stats.as_deref() {
+                            stats.record_drm_gbm_no_free_buffer();
+                        }
+                    }
+
+                    let submit_primary = should_submit_prepared_primary(
+                        frames.in_flight.is_some(),
+                        committed_primary_generation,
+                        frames.prepared.as_ref().map(|frame| frame.generation),
+                    );
+                    let submit_cursor = cursor_plane.is_some()
+                        && frames.in_flight.is_none()
+                        && ((hw_cursor_enabled
+                            && (committed_cursor_version != Some(cursor_snapshot.version)
+                                || committed_cursor_icon != Some(current_cursor_icon)))
+                            || (!hw_cursor_enabled && committed_cursor_visible));
+                    let now = Instant::now();
+                    let defer_cursor_only = should_defer_cursor_only_commit(
+                        submit_primary,
+                        submit_cursor,
+                        follow_up_primary_until,
+                        now,
+                    );
+                    if defer_cursor_only && log_render {
+                        eprintln!("drm defer cursor-only commit waiting for follow-up primary");
+                    }
+
+                    if submit_primary || (submit_cursor && !defer_cursor_only) {
+                        let present_submit_started_at = submit_primary.then(Instant::now);
+                        let mut commit_req = atomic::AtomicModeReq::new();
+                        let primary_fb = frames
+                            .prepared
+                            .as_ref()
+                            .filter(|_| submit_primary)
+                            .map(|frame| frame.fb)
+                            .unwrap_or(
+                                frames
+                                    .current
+                                    .as_ref()
+                                    .expect("active primary installed")
+                                    .fb,
+                            );
+                        if let Err(err) = add_plane_properties(
+                            &mut commit_req,
+                            plane,
+                            &plane_props,
+                            crtc_handle,
+                            primary_fb,
+                        ) {
                             eprintln!("DRM backend unavailable: {err}");
                             break;
                         }
-                    }
-                } else if let Some(stats) = stats.as_deref() {
-                    stats.record_drm_gbm_no_free_buffer();
-                }
-            }
 
-            let submit_primary = should_submit_prepared_primary(
-                in_flight.is_some(),
-                committed_primary_generation,
-                prepared_primary.as_ref().map(|frame| frame.generation),
-            );
-            let submit_cursor = cursor_plane.is_some()
-                && in_flight.is_none()
-                && ((hw_cursor_enabled
-                    && (committed_cursor_version != Some(cursor_snapshot.version)
-                        || committed_cursor_icon != Some(current_cursor_icon)))
-                    || (!hw_cursor_enabled && committed_cursor_visible));
-            let now = Instant::now();
-            let defer_cursor_only = should_defer_cursor_only_commit(
-                submit_primary,
-                submit_cursor,
-                follow_up_primary_until,
-                now,
-            );
-            if defer_cursor_only && log_render {
-                eprintln!("drm defer cursor-only commit waiting for follow-up primary");
-            }
+                        let cursor_visual = cursor_theme.cursor(current_cursor_icon);
 
-            if submit_primary || (submit_cursor && !defer_cursor_only) {
-                let present_submit_started_at = submit_primary.then(Instant::now);
-                let mut commit_req = atomic::AtomicModeReq::new();
-                let primary_fb = prepared_primary
-                    .as_ref()
-                    .filter(|_| submit_primary)
-                    .map(|frame| frame.fb)
-                    .unwrap_or(current_primary.fb);
-                if let Err(err) = add_plane_properties(
-                    &mut commit_req,
-                    plane,
-                    &plane_props,
-                    crtc_handle,
-                    primary_fb,
-                ) {
-                    eprintln!("DRM backend unavailable: {err}");
-                    break;
-                }
-
-                let cursor_visual = cursor_theme.cursor(current_cursor_icon);
-
-                if submit_cursor
-                    && hw_cursor_enabled
-                    && let Some(cursor_plane) = cursor_plane.as_mut()
-                    && let Err(err) = cursor_plane.write_visual(cursor_visual)
-                {
-                    native_log.error(
-                        "drm",
-                        format!("DRM cursor setup failed during cursor upload: {err}"),
-                    );
-                    hw_cursor_enabled = false;
-                    committed_cursor_visible = false;
-                    committed_cursor_icon = None;
-                    desired_primary_generation = desired_primary_generation.wrapping_add(1);
-                    continue;
-                }
-
-                if submit_cursor && let Some(plane) = cursor_plane.as_ref().map(CursorPlane::commit)
-                {
-                    let cursor_for_commit = if hw_cursor_enabled {
-                        cursor_snapshot.state
-                    } else {
-                        CursorState {
-                            pos: cursor_pos,
-                            visible: false,
-                        }
-                    };
-
-                    if let Err(err) = add_cursor_plane_properties(
-                        &mut commit_req,
-                        crtc_handle,
-                        plane,
-                        cursor_for_commit,
-                        cursor_visual,
-                        dimensions,
-                    ) {
-                        if hw_cursor_enabled {
+                        if submit_cursor
+                            && hw_cursor_enabled
+                            && let Some(cursor_plane) = cursor_plane.as_mut()
+                            && let Err(err) = cursor_plane.write_visual(cursor_visual)
+                        {
                             native_log.error(
                                 "drm",
-                                format!("DRM cursor setup failed during commit build: {err}"),
+                                format!("DRM cursor setup failed during cursor upload: {err}"),
                             );
                             hw_cursor_enabled = false;
                             committed_cursor_visible = false;
@@ -3899,225 +3922,274 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                             desired_primary_generation = desired_primary_generation.wrapping_add(1);
                             continue;
                         }
-                        eprintln!("DRM backend unavailable: {err}");
-                        break;
-                    }
-                }
 
-                if submit_primary && let Some(stats) = stats.as_deref() {
-                    stats.record_drm_primary_commit_attempt();
-                }
-
-                let atomic_commit_started_at = Instant::now();
-                let atomic_commit_monotonic_at = monotonic_now();
-                let atomic_commit_result = card.atomic_commit(
-                    AtomicCommitFlags::NONBLOCK | AtomicCommitFlags::PAGE_FLIP_EVENT,
-                    commit_req,
-                );
-                if submit_primary && let Some(stats) = stats.as_deref() {
-                    stats.record_drm_atomic_commit_ioctl(atomic_commit_started_at.elapsed());
-                }
-                match atomic_commit_result {
-                    Ok(()) => {
-                        let swap_done_at = Instant::now();
-                        if submit_primary && let Some(frame) = prepared_primary.as_mut() {
-                            frame.atomic_commit_submitted_at = Some(atomic_commit_started_at);
-                            frame.atomic_commit_monotonic_at = atomic_commit_monotonic_at;
-                            if let Some(stats) = stats.as_deref() {
-                                stats.record_drm_primary_committed();
-                                stats.record_drm_prepared_to_commit(
-                                    atomic_commit_started_at
-                                        .saturating_duration_since(frame.prepared_at),
-                                );
-                                if let (Some(commit), Some(previous_flip)) =
-                                    (atomic_commit_monotonic_at, last_kernel_page_flip_at)
-                                    && let Some(duration) = duration_since(commit, previous_flip)
-                                {
-                                    stats.record_drm_previous_flip_to_commit(duration);
-                                }
-                            }
-                        }
-                        if let Some(stats) = stats.as_ref()
-                            && let (Some(present_submit_started_at), Some(frame)) = (
-                                present_submit_started_at,
-                                prepared_primary.as_ref().filter(|_| submit_primary),
-                            )
+                        if submit_cursor
+                            && let Some(plane) = cursor_plane.as_ref().map(CursorPlane::commit)
                         {
-                            stats.record_present_submit(
-                                frame.present_submit_duration
-                                    + swap_done_at
-                                        .saturating_duration_since(present_submit_started_at),
-                            );
+                            let cursor_for_commit = if hw_cursor_enabled {
+                                cursor_snapshot.state
+                            } else {
+                                CursorState {
+                                    pos: cursor_pos,
+                                    visible: false,
+                                }
+                            };
+
+                            if let Err(err) = add_cursor_plane_properties(
+                                &mut commit_req,
+                                crtc_handle,
+                                plane,
+                                cursor_for_commit,
+                                cursor_visual,
+                                dimensions,
+                            ) {
+                                if hw_cursor_enabled {
+                                    native_log.error(
+                                        "drm",
+                                        format!(
+                                            "DRM cursor setup failed during commit build: {err}"
+                                        ),
+                                    );
+                                    hw_cursor_enabled = false;
+                                    committed_cursor_visible = false;
+                                    committed_cursor_icon = None;
+                                    desired_primary_generation =
+                                        desired_primary_generation.wrapping_add(1);
+                                    continue;
+                                }
+                                eprintln!("DRM backend unavailable: {err}");
+                                break;
+                            }
                         }
 
-                        retry_commit_at = None;
-                        let submitted_primary = if submit_primary {
-                            let mut frame = prepared_primary.take();
-                            if let Some(frame) = frame.as_mut()
-                                && frame.pipeline_submitted_at.is_some()
-                            {
-                                record_drm_pipeline_swap_done(
-                                    stats.as_deref(),
-                                    frame.pipeline_submitted_at,
-                                    swap_done_at,
-                                );
-                                frame.pipeline_swap_done_at = Some(swap_done_at);
-                                render_state.pipeline_submitted_at = None;
-                                render_state.pipeline_render_queued_at = None;
-                            }
-                            frame
-                        } else {
-                            None
-                        };
-                        in_flight = Some(InFlightCommit {
-                            primary: submitted_primary,
-                            cursor: if submit_cursor {
-                                Some(SubmittedCursorState {
-                                    version: if hw_cursor_enabled {
-                                        Some(cursor_snapshot.version)
+                        if submit_primary && let Some(stats) = stats.as_deref() {
+                            stats.record_drm_primary_commit_attempt();
+                        }
+
+                        let atomic_commit_started_at = Instant::now();
+                        let atomic_commit_monotonic_at = monotonic_now();
+                        let atomic_commit_result = card.atomic_commit(
+                            AtomicCommitFlags::NONBLOCK | AtomicCommitFlags::PAGE_FLIP_EVENT, commit_req);
+                        if submit_primary && let Some(stats) = stats.as_deref() {
+                            stats
+                                .record_drm_atomic_commit_ioctl(atomic_commit_started_at.elapsed());
+                        }
+                        match atomic_commit_result {
+                            Ok(()) => {
+                                frames.submitted(
+                                    submit_primary,
+                                    if submit_cursor {
+                                        Some(SubmittedCursorState {
+                                            version: hw_cursor_enabled
+                                                .then_some(cursor_snapshot.version),
+                                            visible: hw_cursor_enabled
+                                                && cursor_snapshot.state.visible,
+                                            icon: current_cursor_icon,
+                                        })
                                     } else {
                                         None
                                     },
-                                    visible: hw_cursor_enabled && cursor_snapshot.state.visible,
-                                    icon: current_cursor_icon,
-                                })
-                            } else {
-                                None
-                            },
-                            emit_animation_pulse: submit_primary && render_state.animate,
-                        });
-                    }
-                    Err(err) => {
-                        if matches!(
-                            classify_atomic_commit_error(&err),
-                            AtomicCommitErrorKind::Busy
-                        ) {
-                            if submit_primary && let Some(stats) = stats.as_deref() {
-                                stats.record_drm_primary_commit_ebusy();
-                            }
-                            if log_render {
-                                eprintln!("drm atomic commit EBUSY, retrying staged state");
-                            }
-                            retry_commit_at = Some(Instant::now() + Duration::from_millis(1));
-                            continue;
-                        }
+                                    submit_primary && render_state.animate,
+                                );
+                                let swap_done_at = Instant::now();
+                                if let Some(frame) = frames
+                                    .in_flight
+                                    .as_mut()
+                                    .and_then(|commit| commit.primary.as_mut())
+                                {
+                                    frame.atomic_commit_submitted_at =
+                                        Some(atomic_commit_started_at);
+                                    frame.atomic_commit_monotonic_at = atomic_commit_monotonic_at;
+                                    if let Some(stats) = stats.as_deref() {
+                                        stats.record_drm_primary_committed();
+                                        stats.record_drm_prepared_to_commit(
+                                            atomic_commit_started_at
+                                                .saturating_duration_since(frame.prepared_at),
+                                        );
+                                        if let (Some(commit), Some(previous_flip)) =
+                                            (atomic_commit_monotonic_at, last_kernel_page_flip_at)
+                                            && let Some(duration) =
+                                                duration_since(commit, previous_flip)
+                                        {
+                                            stats.record_drm_previous_flip_to_commit(duration);
+                                        }
+                                    }
+                                }
+                                if let Some(stats) = stats.as_ref()
+                                    && let (Some(present_submit_started_at), Some(frame)) = (
+                                        present_submit_started_at,
+                                        frames
+                                            .in_flight
+                                            .as_ref()
+                                            .and_then(|commit| commit.primary.as_ref()),
+                                    )
+                                {
+                                    stats.record_present_submit(
+                                        frame.present_submit_duration
+                                            + swap_done_at.saturating_duration_since(
+                                                present_submit_started_at,
+                                            ),
+                                    );
+                                }
 
-                        if submit_cursor && hw_cursor_enabled {
-                            native_log.error(
+                                retry_commit_at = None;
+                                if let Some(frame) = frames
+                                    .in_flight
+                                    .as_mut()
+                                    .and_then(|commit| commit.primary.as_mut())
+                                    && frame.pipeline_submitted_at.is_some()
+                                {
+                                    record_drm_pipeline_swap_done(
+                                        stats.as_deref(),
+                                        frame.pipeline_submitted_at,
+                                        swap_done_at,
+                                    );
+                                    frame.pipeline_swap_done_at = Some(swap_done_at);
+                                    render_state.pipeline_submitted_at = None;
+                                    render_state.pipeline_render_queued_at = None;
+                                }
+                            }
+                            Err(err) => {
+                                if matches!(
+                                    classify_atomic_commit_error(&err),
+                                    AtomicCommitErrorKind::Busy
+                                ) {
+                                    if submit_primary && let Some(stats) = stats.as_deref() {
+                                        stats.record_drm_primary_commit_ebusy();
+                                    }
+                                    if log_render {
+                                        eprintln!("drm atomic commit EBUSY, retrying staged state");
+                                    }
+                                    retry_commit_at =
+                                        Some(Instant::now() + Duration::from_millis(1));
+                                    continue;
+                                }
+
+                                if submit_cursor && hw_cursor_enabled {
+                                    native_log.error(
                                 "drm",
                                 format!(
                                     "DRM cursor commit failed: {err}; falling back to software cursor"
                                 ),
                             );
 
-                            if let Some(cursor_plane_commit) =
-                                cursor_plane.as_ref().map(CursorPlane::commit)
-                            {
-                                let mut hide_req = atomic::AtomicModeReq::new();
-                                let _ = add_cursor_plane_properties(
-                                    &mut hide_req,
-                                    crtc_handle,
-                                    cursor_plane_commit,
-                                    CursorState {
-                                        pos: cursor_pos,
-                                        visible: false,
-                                    },
-                                    cursor_theme.cursor(current_cursor_icon),
-                                    dimensions,
-                                );
-                                let _ = add_plane_properties(
-                                    &mut hide_req,
-                                    plane,
-                                    &plane_props,
-                                    crtc_handle,
-                                    current_primary.fb,
-                                );
-                                let _ = card.atomic_commit(AtomicCommitFlags::empty(), hide_req);
+                                    if let Some(cursor_plane_commit) =
+                                        cursor_plane.as_ref().map(CursorPlane::commit)
+                                    {
+                                        let mut hide_req = atomic::AtomicModeReq::new();
+                                        let _ = add_cursor_plane_properties(
+                                            &mut hide_req,
+                                            crtc_handle,
+                                            cursor_plane_commit,
+                                            CursorState {
+                                                pos: cursor_pos,
+                                                visible: false,
+                                            },
+                                            cursor_theme.cursor(current_cursor_icon),
+                                            dimensions,
+                                        );
+                                        let _ = add_plane_properties(
+                                            &mut hide_req,
+                                            plane,
+                                            &plane_props,
+                                            crtc_handle,
+                                            frames
+                                                .current
+                                                .as_ref()
+                                                .expect("active primary installed")
+                                                .fb,
+                                        );
+                                        let _ = card.atomic_commit(
+                                            AtomicCommitFlags::empty(),
+                                            hide_req,
+                                        );
+                                    }
+
+                                    hw_cursor_enabled = false;
+                                    committed_cursor_visible = false;
+                                    committed_cursor_icon = None;
+                                    desired_primary_generation =
+                                        desired_primary_generation.wrapping_add(1);
+                                    continue;
+                                }
+
+                                eprintln!("DRM backend unavailable: {err}");
+                                break;
                             }
-
-                            hw_cursor_enabled = false;
-                            committed_cursor_visible = false;
-                            committed_cursor_icon = None;
-                            desired_primary_generation = desired_primary_generation.wrapping_add(1);
-                            continue;
                         }
-
-                        eprintln!("DRM backend unavailable: {err}");
-                        break;
                     }
-                }
-            }
 
-            let mut next_deadline = Some(next_hotplug_check);
-            if let Some(retry_at) = retry_commit_at {
-                next_deadline = Some(
-                    next_deadline
-                        .map(|deadline| deadline.min(retry_at))
-                        .unwrap_or(retry_at),
-                );
-            }
-            if let Some(deadline) = follow_up_primary_until {
-                next_deadline = Some(
-                    next_deadline
-                        .map(|current_deadline| current_deadline.min(deadline))
-                        .unwrap_or(deadline),
-                );
-            }
-            if gpu_render_timer.window_drain_poll_required() {
-                let drain_poll_at = Instant::now() + Duration::from_millis(1);
-                next_deadline = Some(
-                    next_deadline
-                        .map(|deadline| deadline.min(drain_poll_at))
-                        .unwrap_or(drain_poll_at),
-                );
-            }
-            if in_flight.is_none()
-                && (submit_primary || (submit_cursor && !defer_cursor_only))
-                && retry_commit_at.is_none()
-            {
-                continue;
-            }
-
-            let timeout =
-                next_deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
-            let mut pollfds = [
-                libc::pollfd {
-                    fd: card.as_raw_fd(),
-                    events: libc::POLLIN,
-                    revents: 0,
-                },
-                libc::pollfd {
-                    fd: presenter_wake.as_raw_fd(),
-                    events: libc::POLLIN,
-                    revents: 0,
-                },
-            ];
-
-            match poll_fds(&mut pollfds, timeout) {
-                Ok(_) => {
-                    drm_ready = (pollfds[0].revents & (libc::POLLIN | libc::POLLPRI)) != 0;
-                    presenter_wake_ready = (pollfds[1].revents & libc::POLLIN) != 0;
-                    if (pollfds[0].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL)) != 0
+                    let mut next_deadline = Some(next_hotplug_check);
+                    if let Some(retry_at) = retry_commit_at {
+                        next_deadline = Some(
+                            next_deadline
+                                .map(|deadline| deadline.min(retry_at))
+                                .unwrap_or(retry_at),
+                        );
+                    }
+                    if let Some(deadline) = follow_up_primary_until {
+                        next_deadline = Some(
+                            next_deadline
+                                .map(|current_deadline| current_deadline.min(deadline))
+                                .unwrap_or(deadline),
+                        );
+                    }
+                    if gpu_render_timer.window_drain_poll_required() {
+                        let drain_poll_at = Instant::now() + Duration::from_millis(1);
+                        next_deadline = Some(
+                            next_deadline
+                                .map(|deadline| deadline.min(drain_poll_at))
+                                .unwrap_or(drain_poll_at),
+                        );
+                    }
+                    if frames.in_flight.is_none()
+                        && (submit_primary || (submit_cursor && !defer_cursor_only))
+                        && retry_commit_at.is_none()
                     {
-                        eprintln!("DRM backend unavailable: poll reported DRM fd error");
-                        break;
+                        continue;
+                    }
+
+                    let timeout = next_deadline
+                        .map(|deadline| deadline.saturating_duration_since(Instant::now()));
+                    let mut pollfds = [
+                        libc::pollfd {
+                            fd: card.as_raw_fd(),
+                            events: libc::POLLIN,
+                            revents: 0,
+                        },
+                        libc::pollfd {
+                            fd: presenter_wake.as_raw_fd(),
+                            events: libc::POLLIN,
+                            revents: 0,
+                        },
+                    ];
+
+                    match poll_fds(&mut pollfds, timeout) {
+                        Ok(_) => {
+                            drm_ready = (pollfds[0].revents & (libc::POLLIN | libc::POLLPRI)) != 0;
+                            presenter_wake_ready = (pollfds[1].revents & libc::POLLIN) != 0;
+                            if (pollfds[0].revents
+                                & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL))
+                                != 0
+                            {
+                                eprintln!("DRM backend unavailable: poll reported DRM fd error");
+                                break;
+                            }
+                        }
+                        Err(err) => {
+                            eprintln!("DRM backend unavailable: poll failed: {err}");
+                            break;
+                        }
                     }
                 }
-                Err(err) => {
-                    eprintln!("DRM backend unavailable: poll failed: {err}");
-                    break;
-                }
-            }
-        }
 
-        if let Err(err) = video_registry.set_prime_video_available(false) {
-            native_log.warning("video", format!("failed to disable PRIME video: {err}"));
+                Ok(stop_requested)
+        })).unwrap_or_else(|_| Err("DRM OpenGL presenter panicked".into()));
+        if let Some(presenter) = &presenter {
+            presenter.before_detach();
         }
-
-        // Keep prepared and in-flight GBM buffers alive until teardown completes.
-        // A blocking ALLOW_MODESET teardown is our final barrier before those
-        // buffers can be released safely.
-        cleanup_active_session(
+        // Do not preserve or restore GPU state: detach, finish, and destroy it.
+        if let Err(error) = teardown_drm_output(
             &card,
             connector,
             crtc_handle,
@@ -4125,12 +4197,32 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             &con_props,
             &crtc_props,
             &plane_props,
-            cursor_plane.take(),
-            &lifecycle,
-            mode_blob_id,
-        );
-
-        if stop_requested {
+            cursor_commit.as_ref(),
+        )
+        .and_then(|_| quiesce_gl(&egl_state, &mut retained.1))
+        {
+            retain_unsafe_session(&lifecycle, error);
+        }
+        if let Err(error) = video_registry.set_prime_video_available(false) {
+            native_log.warning("video", format!("failed to disable PRIME video: {error}"));
+        }
+        // GPU completion and KMS detach are now proven. Destroy cursor/blob and
+        // BO locks while the renderer and its current EGL context are still live.
+        destroy_session_resources(&card, cursor_plane.take(), mode_blob_id);
+        drop(retained.0);
+        // Release renderer/video/timer GL objects before the still-current EGL
+        // context, and after submitting/quiescing any work left by a draw panic.
+        drop(renderer);
+        drop(raster_renderer);
+        drop(video_import);
+        drop(gpu_render_timer);
+        drop(retained.1);
+        let stop_requested = result.unwrap_or_else(|error| {
+            native_log.error("drm", error);
+            false
+        });
+        // On always starts a new presenter; no GPU state survives off.
+        if stop_requested || presenter.is_some() {
             running_flag.store(false, Ordering::Relaxed);
             break;
         }

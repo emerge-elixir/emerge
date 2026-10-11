@@ -160,6 +160,18 @@ impl EventRuntimeDriver {
         &mut self,
         operation: impl FnOnce(&mut DirectEventRuntime, &dyn TreeSink, bool) -> R,
     ) -> R {
+        if !self.runtime.backend_wake.input_enabled() {
+            self.runtime.runtime_overlay = RuntimeOverlayState::default();
+            self.runtime.overlay_registry = registry_builder::build_runtime_overlay_registry(
+                &self.runtime.base_registry,
+                &self.runtime.runtime_overlay,
+            );
+            self.runtime.listener_lane.buffered_inputs.clear();
+            self.runtime.virtual_key_deadline = None;
+            self.runtime.drag_motion = None;
+            self.runtime.inertial_scroll = None;
+            self.runtime.hover_stack.clear();
+        }
         let commands = EventCommands::default();
         let result = operation(&mut self.runtime, &commands, self.log_render);
         let mut messages = self
@@ -206,6 +218,14 @@ impl EventRuntimeDriver {
     }
 
     fn handle_input(&mut self, event: InputEvent) {
+        if !self.runtime.backend_wake.input_enabled()
+            && !matches!(
+                event,
+                InputEvent::Resized { .. } | InputEvent::Focused { .. }
+            )
+        {
+            return;
+        }
         self.dispatch(|runtime, tx, log| runtime.handle_input_event(event, tx, log));
     }
 
@@ -232,6 +252,9 @@ impl EventRuntimeDriver {
     }
 
     fn handle_timers(&mut self) {
+        if !self.runtime.backend_wake.input_enabled() {
+            return;
+        }
         self.dispatch(|runtime, tx, log| runtime.handle_timers(tx, log));
     }
 
@@ -340,6 +363,14 @@ impl EventRuntimeDriver {
                     )
                 });
                 self.handle_present_timing(presented_at, predicted_next_present_at);
+                true
+            }
+            EventMsg::ConfigureInput(request) => {
+                let result = request.apply(|| {
+                    self.set_input_mask(request.config.input_mask);
+                    Ok(())
+                });
+                request.finish_input(result);
                 true
             }
             EventMsg::Configure(request) => {
@@ -816,6 +847,7 @@ fn event_msg_label(msg: &EventMsg) -> &'static str {
         EventMsg::PresentTiming { .. } => "present_timing",
         EventMsg::RegistryUpdate { .. } => "registry_update",
         EventMsg::Configure(_) => "configure",
+        EventMsg::ConfigureInput(_) => "configure_input",
         EventMsg::SetInputMask(_) => "set_input_mask",
         EventMsg::SetInputTarget(_) => "set_input_target",
         EventMsg::Stop => "stop",

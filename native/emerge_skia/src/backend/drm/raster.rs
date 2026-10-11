@@ -83,14 +83,18 @@ impl Kms {
         if !cfg!(target_endian = "little") {
             return Err("DRM raster XRGB8888 currently requires a little-endian target".into());
         }
-        let card = Arc::new(super::session::open_output(
-            config.card_path.as_deref(),
-            config.output.as_deref(),
-            config.mode.as_deref(),
-            config.requested_size,
-            false,
-            Some(Arc::clone(&context.lifecycle)),
-        )?);
+        let card = Arc::new(if let Some(presenter) = &context.presenter {
+            core::duplicate_card(&presenter.card)?
+        } else {
+            super::session::open_output(
+                config.card_path.as_deref(),
+                config.output.as_deref(),
+                config.mode.as_deref(),
+                config.requested_size,
+                false,
+                Some(Arc::clone(&context.lifecycle)),
+            )?
+        });
         if card
             .get_driver_capability(DriverCapability::DumbBuffer)
             .map_err(|e| format!("querying DRM dumb-buffer capability failed: {e}"))?
@@ -413,7 +417,7 @@ fn run_inner(
     context.video_registry.set_prime_video_available(false)?;
     let theme = DrmCursorTheme::load(&config.asset_config, &config.cursor_overrides)?;
     let mut retries = config.startup_retries;
-    let mut session = loop {
+    let session = loop {
         if context.stop.load(Ordering::Acquire) {
             return Err("DRM raster startup aborted".into());
         }
@@ -431,11 +435,31 @@ fn run_inner(
             Err(error) => return Err(error),
         }
     };
-    let result = run_session(context, config, &theme, &mut session, startup);
-    if let Err(error) = session.kms.detach() {
-        context.lifecycle.quarantine(error.clone());
-        // Scanout ownership is uncertain. Retain the buffers, card and lease;
-        // releasing them could allow another viewport to reuse this output.
+    with_retained_scanout(
+        session,
+        |session| run_session(context, config, &theme, session, startup),
+        |session| {
+            if let Some(presenter) = &context.presenter {
+                presenter.before_detach();
+            }
+            session.kms.detach().inspect_err(|error| {
+                context.lifecycle.quarantine(error.clone());
+            })
+        },
+    )
+}
+
+// Keep scanout ownership outside the draw unwind scope. Never drop framebuffer
+// owners until suppression and blocking detach complete, even after a draw panic.
+fn with_retained_scanout<T>(
+    mut session: T,
+    draw: impl FnOnce(&mut T) -> Result<(), String>,
+    retire: impl FnOnce(&mut T) -> Result<(), String>,
+) -> Result<(), String> {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| draw(&mut session)))
+        .unwrap_or_else(|_| Err("DRM raster presenter panicked".into()));
+    if let Err(error) = retire(&mut session) {
+        // Retain the buffers, card and lease on uncertain ownership.
         std::mem::forget(session);
         return Err(error);
     }
@@ -490,6 +514,12 @@ fn run_session(
         tx.send(Ok(DrmBackendStartupInfo::raster()))
             .map_err(|_| "DRM raster startup receiver closed".to_string())?;
     }
+    let required_frame = context
+        .presenter
+        .as_ref()
+        .map(|p| p.request_frame(&context.tree_tx, dimensions, &context.stop))
+        .transpose()?;
+    let mut first_present = true;
     let mut application_frame_ready = false;
     let mut renderer = SceneRenderer::with_cache_config(config.renderer_cache_config);
     let mut state = RenderState::default();
@@ -510,6 +540,7 @@ fn run_session(
                 RenderMsg::Stop => return Ok(()),
                 RenderMsg::Scene {
                     application_frame,
+                    frame_request,
                     scene,
                     version,
                     animate,
@@ -517,7 +548,9 @@ fn run_session(
                     pipeline_render_queued_at,
                     ..
                 } => {
-                    application_frame_ready = application_frame;
+                    application_frame_ready = application_frame
+                        && (!first_present
+                            || required_frame.is_none_or(|request| frame_request == request));
                     state.set_scene(*scene);
                     state.render_version = version;
                     state.animate = animate;
@@ -589,6 +622,10 @@ fn run_session(
             let render_duration = started.elapsed();
             let commit_started = Instant::now();
             session.kms.present(framebuffers[next_buffer])?;
+            first_present = false;
+            if let Some(presenter) = &context.presenter {
+                presenter.presented();
+            }
             next_buffer ^= 1;
             dirty = false;
             let presented = Instant::now();
@@ -742,6 +779,41 @@ mod tests {
             )
             .unwrap();
         assert_eq!(frame.pixels, background);
+    }
+
+    #[test]
+    fn scanout_survives_draw_unwind_and_is_retained_if_detach_fails() {
+        struct Owner(Arc<std::sync::Mutex<Vec<&'static str>>>);
+        impl Drop for Owner {
+            fn drop(&mut self) {
+                self.0.lock().unwrap().push("drop");
+            }
+        }
+        for (panic_draw, fail_detach) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let trace = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let result = with_retained_scanout(
+                Owner(trace.clone()),
+                |owner| {
+                    owner.0.lock().unwrap().push("draw");
+                    assert!(!panic_draw, "injected draw panic");
+                    Ok(())
+                },
+                |owner| {
+                    owner.0.lock().unwrap().extend(["dark", "detach"]);
+                    if fail_detach {
+                        Err("detach failed".into())
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
+            assert_eq!(result.is_err(), panic_draw || fail_detach);
+            let trace = trace.lock().unwrap();
+            assert_eq!(&trace[..3], &["draw", "dark", "detach"]);
+            assert_eq!(trace.contains(&"drop"), !fail_detach);
+        }
     }
 
     #[test]

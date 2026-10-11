@@ -1998,6 +1998,12 @@ fn send_event(event_tx: &Sender<EventMsg>, msg: EventMsg, log_input: bool) {
 
 #[derive(Clone)]
 struct StartConfig {
+    #[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
+    drm_power: Option<runtime::config::DrmPower>,
+    #[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
+    drm_backlight: Option<String>,
+    #[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
+    backlight_state: Option<ResourceArc<runtime::backlight::BacklightState>>,
     target_fps: Option<u32>,
     startup_deadline: Instant,
     owner: Option<ResourceArc<SessionOwner>>,
@@ -2180,6 +2186,9 @@ pub(crate) struct DrmCursorOverrideConfig {
 
 #[derive(rustler::NifMap)]
 struct StartOptsNif {
+    drm_power: Option<runtime::config::DrmPower>,
+    drm_backlight: Option<String>,
+    backlight_state: Option<ResourceArc<runtime::backlight::BacklightState>>,
     target_fps: Option<u32>,
     owner: Option<LocalPid>,
     backend: String,
@@ -2341,6 +2350,23 @@ fn start_with_config(
             "frame caps are supported only by headless and Wayland outputs",
         )));
     }
+    if config.backend.as_str() == "drm"
+        && (config
+            .drm_power
+            .as_ref()
+            .is_some_and(|power| !power.display_on || power.brightness.is_some())
+            || config
+                .drm_backlight
+                .as_deref()
+                .is_some_and(|device| device != "auto"))
+        && !(config.rendering_api.kind == RenderingApi::OpenGl
+            || (config.rendering_api.kind == RenderingApi::Raster
+                && config.rendering_api.raster_present != RasterPresentKind::GpuUpload))
+    {
+        return Err(rustler::Error::Term(Box::new(
+            "DRM display/backlight control requires OpenGL or CPU raster presentation",
+        )));
+    }
     ensure_rendering_api_supported(config.backend, config.rendering_api)
         .map_err(|reason| rustler::Error::Term(Box::new(reason)))?;
     ensure_compiled_runner_dispatch(config.backend, config.rendering_api.kind)
@@ -2476,6 +2502,7 @@ fn start_native_renderer_with_config(
         .unwrap_or_default();
     let running_flag = Arc::clone(&lifecycle.running);
     let stop_flag = Arc::clone(&lifecycle.stop);
+    let config_control = runtime::config::ConfigControl::new(lifecycle.id, Arc::clone(&stop_flag));
     let render_counter = Arc::new(AtomicU64::new(0));
     let input_target = Arc::new(InputTargetRelay::new(None));
     let native_log = Arc::new(NativeLogRelay::new(initial_log_target));
@@ -2720,9 +2747,16 @@ fn start_native_renderer_with_config(
             let input_wake = EventFd::new().map_err(|err| {
                 rustler::Error::Term(Box::new(format!("creating DRM input wake failed: {err}")))
             })?;
+            let (control_tx, control_rx) = bounded(64);
+            let input_gate = Arc::new(AtomicBool::new(false));
             backend_wake = BackendWakeHandle::new(drm::DrmBackendWake::new(
                 presenter_wake.clone(),
                 input_wake.clone(),
+                control_tx,
+                input_gate.clone(),
+                selected_rendering_api == RenderingApi::OpenGl
+                    || (selected_rendering_api == RenderingApi::Raster
+                        && config.rendering_api.raster_present != RasterPresentKind::GpuUpload),
             ));
 
             let (screen_tx, screen_rx) = bounded(1);
@@ -2762,6 +2796,17 @@ fn start_native_renderer_with_config(
             let presenter_wake_for_backend = presenter_wake.clone();
             let input_wake_for_backend = input_wake.clone();
             let drm_config = drm::DrmRunConfig {
+                power: config
+                    .drm_power
+                    .clone()
+                    .unwrap_or(runtime::config::DrmPower {
+                        display_on: true,
+                        brightness: None,
+                    }),
+                backlight: config.drm_backlight.clone(),
+                backlight_state: config.backlight_state.clone().unwrap_or_else(|| {
+                    ResourceArc::new(runtime::backlight::BacklightState::default())
+                }),
                 requested_size: Some((config.width, config.height)),
                 card_path: config.drm_card.clone(),
                 output: config.drm_output.clone(),
@@ -2786,6 +2831,9 @@ fn start_native_renderer_with_config(
                 let _asset_context_guard = asset_context.enter();
                 drm::run(
                     drm::DrmRunContext {
+                        input_gate,
+                        control_rx,
+                        presenter: None,
                         lifecycle: drm_lifecycle,
                         startup_tx,
                         stop: stop_for_thread,
@@ -2939,7 +2987,7 @@ fn start_native_renderer_with_config(
     let video_wake = VideoWake::noop();
 
     let resource = RendererResource {
-        config_control: runtime::config::ConfigControl::new(lifecycle.id, Arc::clone(&stop_flag)),
+        config_control,
         lifecycle,
         _owner: config.owner,
         asset_runtime,
@@ -3037,6 +3085,9 @@ fn start(
                 height,
                 scroll_line_pixels: input::SCROLL_LINE_PIXELS,
                 asset_config: AssetConfig::default(),
+                drm_power: None,
+                drm_backlight: None,
+                backlight_state: None,
                 drm_card: None,
                 drm_output: None,
                 drm_mode: None,
@@ -3121,6 +3172,9 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
             height: opts.height,
             scroll_line_pixels: opts.scroll_line_pixels,
             asset_config,
+            drm_power: opts.drm_power,
+            drm_backlight: opts.drm_backlight,
+            backlight_state: opts.backlight_state,
             drm_card: opts.drm_card,
             drm_output: opts.drm_output,
             drm_mode: opts.drm_mode,
@@ -3697,18 +3751,37 @@ fn set_input_mask(renderer: ResourceArc<RendererResource>, mask: u32) -> Atom {
 /// Submit a complete supported live-control snapshot. Owner completions carry
 /// the session/revision token to the submitting process, independently of input.
 #[rustler::nif(schedule = "DirtyIo")]
-fn configure(
+fn configure_nif(
     env: Env<'_>,
     renderer: ResourceArc<RendererResource>,
     config: runtime::config::LiveConfig,
 ) -> Result<(u64, u64), String> {
     config.validate()?;
     renderer.backend_wake.validate_config(&config)?;
-    renderer.config_control.submit(
-        config,
-        runtime::config::CompletionTarget::Beam(env.pid()),
-        &renderer.event_tx,
-    )
+    let target = runtime::config::CompletionTarget::Beam(env.pid());
+    if let Some(tx) = renderer.backend_wake.direct_config_sender() {
+        let token = renderer
+            .config_control
+            .submit_to(config, target, |request| {
+                tx.try_send(request).map_err(|error| match error {
+                    crossbeam_channel::TrySendError::Full(_) => "DRM control queue is full".into(),
+                    crossbeam_channel::TrySendError::Disconnected(_) => {
+                        "DRM control owner stopped".into()
+                    }
+                })
+            })?;
+        renderer.backend_wake.request_redraw();
+        Ok(token)
+    } else {
+        renderer
+            .config_control
+            .submit(config, target, &renderer.event_tx)
+    }
+}
+
+#[rustler::nif]
+fn new_backlight_state() -> ResourceArc<runtime::backlight::BacklightState> {
+    ResourceArc::new(runtime::backlight::BacklightState::default())
 }
 
 #[rustler::nif(schedule = "DirtyIo")]

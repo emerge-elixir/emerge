@@ -86,6 +86,9 @@ defmodule EmergeSkia.Options do
         opts
         |> Keyword.get(:always_on_top, false)
         |> normalize_boolean!(":always_on_top"),
+      drm_power: Keyword.get(opts, :drm_power),
+      drm_backlight: Keyword.get(opts, :drm_backlight),
+      backlight_state: Keyword.get(opts, :backlight_state),
       drm_card: normalize_optional_string(Keyword.get(opts, :drm_card)),
       drm_output: drm_output,
       drm_mode: drm_mode,

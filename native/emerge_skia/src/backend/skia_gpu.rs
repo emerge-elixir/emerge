@@ -144,6 +144,14 @@ impl GlFrameSurface {
         self.direct_context.reset(None);
     }
 
+    #[cfg(all(feature = "drm", target_os = "linux"))]
+    pub(crate) fn flush_for_retirement(&mut self) {
+        // A caught draw panic can leave Ganesh work recorded but not submitted.
+        // Submit it while external video/source owners are still retained, before
+        // the presenter's one teardown GL completion barrier.
+        self.direct_context.flush_and_submit();
+    }
+
     pub fn abandon(mut self) {
         self.direct_context.abandon();
         self.abandoned = true;
