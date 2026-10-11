@@ -29,6 +29,9 @@ archive subdirectory or a permanently active plan.
 - [Declarative viewport settings](active-declarative-viewport-settings.md):
   breaking 0.5.0 typed config/input APIs, lifecycle replay, and remaining native
   controls. Schema/migration reference: [viewport settings](viewport-settings-schema.md).
+  New power-cycle acceptance: [native DRM lifecycle](active-native-drm-power.md)
+  and [Fairphone display controls](active-fairphone-display-controls.md); this does
+  not reopen the already-closed general FP3 renderer qualification.
 
 - [Vulkan acquire synchronization](active-vulkan-acquire-synchronization.md):
   deferred acquired-image layout-transition fix discovered in Wayland frame-cap
