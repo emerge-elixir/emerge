@@ -1,18 +1,29 @@
 defmodule Emerge.Config.Window do
   @moduledoc """
-  Desktop window output. `backend: :auto` chooses the platform default (macOS or
-  Wayland), independently of `Emerge.Config.Renderer.api`. `size` requests initial
-  surface dimensions, not a live resize. `title` is live on both window backends;
-  other fields are startup-only. `always_on_top` is a macOS window preference.
+  A desktop window. Set this record as `Emerge.Config.output`.
 
-  ## Fields and defaults
+  ```elixir
+  %Emerge.Config{
+    output: %Emerge.Config.Window{title: "My App", size: {1024, 768}}
+  }
+  ```
 
-  | Field | Default |
-  |---|---|
-  | `backend` | `:auto` |
-  | `title` | `"Emerge"` |
-  | `size` | `{800, 600}` |
-  | `always_on_top` | `false` |
+  ## Fields
+
+  - `backend` — `:auto` (default), `:wayland` or `:macos`. Automatic selection uses
+    the platform's window backend. This is separate from the drawing API in
+    `Emerge.Config.Renderer`.
+  - `title` — window title; defaults to `"Emerge"`.
+  - `size` — initial `{width, height}` in positive integer surface pixels;
+    defaults to `{800, 600}`. The window manager can choose a different size.
+  - `always_on_top` — macOS floating-window preference; defaults to `false`.
+    It has no effect on Wayland.
+
+  ## Changing settings
+
+  `title` can change through the viewport's `config` callback on Wayland and macOS.
+  Changing the other fields requires starting a new viewport. `size` is not a
+  command to resize an existing window.
   """
   defstruct backend: :auto,
             title: "Emerge",

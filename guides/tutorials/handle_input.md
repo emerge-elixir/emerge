@@ -90,6 +90,6 @@ Availability is backend-dependent:
 - IME capabilities vary. The macOS host supports commit/preedit/clear, but does not
   currently emit surrounding-text deletion notifications through its observer path.
 
-For the old-to-new tuple mapping see [Migrate to 0.5](../migrations/0.5.md#raw-input).
+For changed callback names and actions, see [Migrate to 0.5.0](../migrations/0.5.md).
 For subscriptions, replacement and recovery see
 [viewport configuration](../reference/viewport-configuration.md).

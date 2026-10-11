@@ -1,14 +1,30 @@
 defmodule Emerge.Config.RendererCache do
   @moduledoc """
-  Rendering cache policy. `enabled: :auto` enables GPU caching and disables it for explicit raster.
+  Reuse rendered content instead of drawing it again. Set this record as
+  `Emerge.Config.Renderer.cache`. Leave the defaults unless profiling suggests
+  a memory or frame-time problem.
 
-  ## Fields and defaults
+  ```elixir
+  %Emerge.Config{
+    renderer: %Emerge.Config.Renderer{
+      cache: %Emerge.Config.RendererCache{enabled: false}
+    }
+  }
+  ```
 
-  | Field | Default |
-  |---|---|
-  | `enabled` | `:auto` |
-  | `max_new_payloads_per_frame` | `64` |
-  | `paint_layer` | `%Emerge.Config.PaintLayerCache{}` |
+  ## Fields
+
+  - `enabled` — `:auto` (default), `true` or `false`. Automatic enables caching
+    for GPU rendering and disables it for an explicitly selected raster API.
+    `false` disables renderer caching, not the image cache under `assets.cache`.
+  - `max_new_payloads_per_frame` — maximum new paint-cache entries created in one
+    drawn frame; defaults to `64`. Lower values spread cache creation over more
+    frames. `0` prevents new entries while allowing existing entries to be reused.
+  - `paint_layer` — `Emerge.Config.PaintLayerCache`, supplying memory, entry and
+    age limits for reusable painted content.
+
+  These settings apply to each renderer separately and require a new viewport
+  to change. They do not set a total application memory limit.
   """
   defstruct enabled: :auto,
             max_new_payloads_per_frame: 64,

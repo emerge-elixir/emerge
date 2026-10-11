@@ -1,24 +1,35 @@
 defmodule Emerge.Config.Assets do
   @moduledoc """
-  Application assets, fonts, runtime filesystem access and decoding policy.
-  `otp_app` is inferred from the viewport module when possible; standalone
-  `EmergeSkia.start/1` requires it explicitly. Logical paths resolve under that
-  application's `priv/` directory.
+  Fonts, images and filesystem access for one renderer. Set this record as
+  `Emerge.Config.assets`.
 
-  All fields are startup-only and renderer-local. Use `Emerge.Config.Font` or its
-  typed shorthand for registrations, `Emerge.Config.RuntimePaths` for filesystem
-  policy and `Emerge.Config.AssetCache` for image/SVG budgets. These budgets are
-  separate from renderer paint caching. See the [asset guide](use_assets.html).
+  ```elixir
+  %Emerge.Config{
+    assets: %Emerge.Config.Assets{
+      otp_app: :my_app,
+      fonts: [%Emerge.Config.Font{family: "Inter", source: "fonts/Inter-Regular.ttf"}]
+    }
+  }
+  ```
 
-  ## Fields and defaults
+  ## Fields
 
-  | Field | Default |
-  |---|---|
-  | `otp_app` | `nil` |
-  | `fonts` | `[]` |
-  | `decode_at_size` | `false` |
-  | `runtime_paths` | `%Emerge.Config.RuntimePaths{}` |
-  | `cache` | `%Emerge.Config.AssetCache{}` |
+  - `otp_app` — OTP application whose `priv/` directory contains logical asset
+    paths. Defaults to `nil`: a viewport infers its application where possible,
+    but standalone `EmergeSkia.start/1` callers must supply it.
+  - `fonts` — list of `Emerge.Config.Font` registrations; defaults to `[]`.
+    Register each family/weight/italic variant your UI uses.
+  - `decode_at_size` — `false` by default. With `true`, raster images are decoded
+    near their drawn size rather than always retaining the source dimensions.
+    Useful for thumbnails of large images; larger targets can request a larger decode.
+  - `runtime_paths` — `Emerge.Config.RuntimePaths`. Its default disables images
+    loaded from absolute filesystem paths.
+  - `cache` — `Emerge.Config.AssetCache`, limiting retained image pixels and parsed
+    SVGs. These limits are separate from renderer paint caching.
+
+  All fields require a new viewport to change. Lists such as `fonts` replace the
+  previous list rather than append to it. See [Use assets](use_assets.html) for
+  paths, font usage and memory-tuning examples.
   """
   defstruct otp_app: nil,
             fonts: [],

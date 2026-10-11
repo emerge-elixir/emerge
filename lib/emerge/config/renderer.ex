@@ -1,29 +1,41 @@
 defmodule Emerge.Config.Renderer do
   @moduledoc """
-  How frames are rendered. `device` selects the Vulkan device independently
-  of the DRM scanout card.
+  How Emerge draws frames. Set this record as `Emerge.Config.renderer`;
+  choose where the frames go separately with `config.output`.
 
-  `target_fps` caps render admissions, not physical display refresh or application
-  timers. Headless and Wayland outputs support startup and live caps for all redraw sources;
-  pending scenes coalesce, and already admitted frames may finish. `nil` restores
-  backend pacing. Config-only changes do not redraw static content, and shutdown
-  and PRIME lease retirement remain responsive while capped.
+  ```elixir
+  %Emerge.Config{
+    output: %Emerge.Config.Headless{target: self()},
+    renderer: %Emerge.Config.Renderer{api: :raster, target_fps: 30},
+    assets: %Emerge.Config.Assets{otp_app: :my_app}
+  }
+  ```
 
-  Wayland caps apply to raster, raster GPU upload, OpenGL and Vulkan. Compositor
-  callbacks, input and video retirement remain independent of render admission;
-  cap changes do not alter the physical refresh estimate.
+  ## Fields
 
-  macOS and DRM frame caps are not implemented yet and are rejected explicitly.
+  - `api` — `:auto` (default), `:raster`, `:opengl`, `:vulkan` or `:metal`.
+    Automatic selection uses an available API for the output/build. Raster draws
+    on the CPU; the others use a compatible GPU. Metal is macOS-only; OpenGL and
+    Vulkan are available on supported Linux builds. A config cannot enable an API
+    absent from the installed renderer.
+  - `device` — optional absolute DRM device path for Vulkan GPU selection.
+    Defaults to `nil`. Explicit DRM Vulkan requires a device, independently of
+    the display card in `Emerge.Config.DRM`.
+  - `raster_present` — how CPU-drawn frames reach the output: `:auto` (default),
+    `:cpu` or `:gpu_upload`. Automatic uses CPU presentation on DRM and the
+    backend's normal route elsewhere. GPU upload requires OpenGL support.
+    This setting applies to `api: :raster` or `api: :auto`, not an explicit GPU API.
+  - `target_fps` — positive integer frame-rate ceiling, or `nil` (default) for
+    normal backend pacing. It limits drawing, not physical display refresh or
+    application timers. It does not make an idle scene redraw continuously.
+  - `cache` — `Emerge.Config.RendererCache`, controlling reuse of rendered content.
+    Defaults to that record's settings; it is separate from image asset caching.
 
-  ## Fields and defaults
+  ## Changing settings
 
-  | Field | Default |
-  |---|---|
-  | `api` | `:auto` |
-  | `device` | `nil` |
-  | `raster_present` | `:auto` |
-  | `target_fps` | `nil` |
-  | `cache` | `%Emerge.Config.RendererCache{}` |
+  Only `target_fps` can change through `config`, on headless and Wayland outputs.
+  Those outputs also accept it at startup. DRM and macOS do not support frame caps.
+  Changing the API, device, presentation route or cache requires a new viewport.
   """
   defstruct api: :auto,
             device: nil,

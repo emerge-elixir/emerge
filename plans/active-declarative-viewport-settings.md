@@ -281,3 +281,31 @@ compilation emitted upstream Elixir 1.20 warnings; the warm quality run is clean
 Per-snapshot refs/logs and preservation backups are retained under
 `/tmp/emerge-docs-commit-sequence-20261011-182458/`. Unrelated plan/image hashes and
 the Fairphone working tree are preserved. Nothing is pushed or version-bumped.
+
+### Config documentation readability follow-up
+
+- [x] Give every public config record a short purpose, placement example, field
+      meanings/defaults/units and a clearly separated update/backend boundary.
+- [x] Replace the migration's monolithic option table with focused before/after
+      examples and small topic-specific rename lists. Separate live settings,
+      restart-required settings and unsupported backend features.
+- [x] Validate documented examples against normalization, field documentation
+      coverage, Rust/ExUnit, quality and public/internal ExDoc/link checks.
+
+The migration targets ordinary 0.4.2-to-0.5.0 application upgrades: dependency
+update/precompiled downloads, mount, grouped settings, raw input and optional
+live callbacks. Removed native lifecycle/status/protocol/qualification material
+and forced source-build/deploy instructions from that user-facing guide. The
+configuration reference is similarly focused on application use.
+
+All 18 public config records now explain their fields with placement examples.
+Regression checks cover every field and normalize/validate their examples plus
+six migration config examples without opening a renderer. Runtime code, schemas,
+defaults and types are verified unchanged.
+
+Validation: 647 Elixir checks (15 doctests, 632 tests), 13 excluded; 1,580 Rust
+unit tests plus 1 + 13 fixtures; quality passes on 191 files. Public/internal
+ExDoc builds are warning-free, each generates 31 screenshots, and local links
+pass for 67/82 pages. Logs: `/tmp/emerge-config-readable-*.log`.
+
+Runtime behavior, package versions, Fairphone and unrelated files are unchanged.

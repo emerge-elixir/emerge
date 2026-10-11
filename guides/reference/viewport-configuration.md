@@ -1,30 +1,21 @@
 # Viewport configuration
 
-Emerge 0.5 uses one `%Emerge.Config{}` for viewport and standalone renderer startup.
-Return it from `mount/1`; optionally declare live changes through `config/1` or
-`config/2`. Flat keyword configs, the `emerge_skia`/`viewport` namespaces and public
-numeric input masks are removed. See [Migrate to 0.5](../migrations/0.5.md).
+Return `%Emerge.Config{}` from `mount/1` to choose your output and renderer settings.
+For an upgrade from 0.4.2, start with [Migrate to 0.5.0](../migrations/0.5.md).
 
-Application arguments passed to `start_link/1` remain keyword lists that your
-`mount/1` interprets. GenServer options (`name`, `timeout`, `debug`, `spawn_opt`,
-`hibernate_after`) configure the process, not the renderer.
+## Config groups
 
-## Six groups
+You only need to set the fields you customize. The others use defaults.
 
-| Field | Record | Responsibility |
-|---|---|---|
-| `output` | `Emerge.Config.Window`, `DRM` or `Headless` | Where frames go |
-| `renderer` | `Emerge.Config.Renderer` | Drawing API/device, raster presentation, cap and paint cache |
-| `input` | `Emerge.Config.Input` | Raw observers, scroll-step distance and cursor policy |
-| `assets` | `Emerge.Config.Assets` | App asset root, fonts, runtime paths, decode policy and image caches |
-| `diagnostics` | `Emerge.Config.Diagnostics` | Structured stats, extra logs and diagnostic GPU waits |
-| `runtime` | `Emerge.Config.Runtime` | Health/retry policy and advanced custom adapters |
+- `output` — a `Window`, `DRM` display or `Headless` frame receiver.
+- `renderer` — drawing API, frame-rate limit and renderer cache.
+- `input` — raw input subscriptions, scroll distance and cursor appearance.
+- `assets` — application asset root, fonts, image caches and filesystem access.
+- `diagnostics` — measurements and extra logging.
+- `runtime` — health checks, startup retries and custom renderer selection.
 
-Each record's module documentation lists all fields, defaults and types. `%Emerge.Config{}`
-uses a platform-default desktop window. Fixed-shape groups accept typed keyword
-shorthand; output and binary/PRIME frame variants require explicit structs. Unknown
-or duplicate fields, wrong records and invalid values are rejected with a field path.
-Struct construction itself does not validate: normalization happens at the runtime boundary.
+These records live under `Emerge.Config`. Their module docs describe each field,
+its default and whether it can change while the viewport is running.
 
 ## Desktop window
 
@@ -32,18 +23,16 @@ Struct construction itself does not validate: normalization happens at the runti
 ```elixir
 %Emerge.Config{
   output: %Emerge.Config.Window{title: "My App", size: {1024, 768}},
-  renderer: [api: :raster],
-  input: [events: [:key, :resize]]
+  renderer: %Emerge.Config.Renderer{api: :raster},
+  input: %Emerge.Config.Input{events: [:key, :resize]}
 }
 ```
 
-`Window.backend: :auto` chooses the platform default (macOS or Wayland).
-`renderer.api` is independent: macOS supports `:auto`, `:metal` and `:raster`;
-Wayland supports `:auto`, `:opengl`, `:raster` and `:vulkan` when compiled.
-`Window.size` is the requested initial surface size. `always_on_top` is a macOS
-window option, not DRM output policy. Only the title is live in the window record.
+`Window.backend` defaults to the platform's window backend: Wayland on Linux,
+macOS on macOS. The drawing API is selected separately. Window titles can change
+while running; other window settings require a new viewport.
 
-## Direct DRM
+## Direct DRM display
 
 <!-- emerge-config:drm -->
 ```elixir
@@ -51,59 +40,34 @@ window option, not DRM output policy. Only the title is live in the window recor
   output: %Emerge.Config.DRM{
     card: "/dev/dri/card0",
     connector: "DSI-1",
-    backlight: [device: "/sys/class/backlight/panel", brightness: 0.5],
+    backlight: %Emerge.Config.Backlight{
+      device: "/sys/class/backlight/panel",
+      brightness: 0.5
+    },
     hotplug_interval_ms: nil
   },
-  renderer: [api: :opengl]
+  renderer: %Emerge.Config.Renderer{api: :opengl}
 }
 ```
 
-The example backlight path must be replaced with your device's actual path.
-`card` is the KMS primary node, preferably a stable `/dev/dri/by-path/...-card`
-path. Query `EmergeSkia.drm_outputs(drm_card: card)` for connector names and exact
-advertised mode IDs/maps; discovery remains a keyword query, not renderer startup.
-An explicit `mode` requires `connector`. Explicit selections do not silently fall
-back. `preferred_size` is only a mode-selection hint; the selected mode sets the
-actual output dimensions. Connector/mode changes are startup-only in practice:
-live changes are explicitly rejected.
+Replace the backlight path with your panel's actual device. Discover connectors
+and modes with `EmergeSkia.drm_outputs(drm_card: path)`.
 
-The connector is polled every `hotplug_interval_ms` (default `750`) to detect hotplug; built-in panels can set it to `nil`.
+The connector is polled every `hotplug_interval_ms` milliseconds (default `750`)
+to detect hotplug; built-in panels can set it to `nil` to disable polling.
 
-For CPU-only presentation use `renderer: [api: :raster, raster_present: :cpu]`.
-Raster's `:auto` route also selects CPU on DRM; `:gpu_upload` explicitly uses the
-OpenGL-backed upload presenter. A compatible compiled backend and driver are
-required. Explicit DRM Vulkan additionally requires an absolute `renderer.device`
-path, independently of the scanout `card`.
+For CPU raster, use `%Emerge.Config.Renderer{api: :raster, raster_present: :cpu}`.
+Display on/off and brightness can change with explicit OpenGL or CPU raster.
+Vulkan and raster GPU upload do not support those controls.
 
-### Display power and backlight
+Set `display: :off` to blank the display and ignore its UI input. Your application
+continues running, and brightness changes made while off apply on wake. Provide
+an independent wake source, such as a power-button reader. Brightness `0` is not
+display-off; brightness `nil` restores the original requested level.
 
-Power/brightness controls require **explicit `api: :opengl`** or
-`api: :raster` with `raster_present: :auto | :cpu`. `api: :auto` is not an explicit
-power-support declaration; Vulkan and raster GPU-upload power remain rejected.
+See `Emerge.Config.DRM` and `Emerge.Config.Backlight` for selection and brightness.
 
-- `display: :off` ignores native UI input, suppresses a managed backlight and
-  retires the presenter. The public owner, tree, desired settings and output/
-  backlight reservations survive; GPU resources do not.
-- `display: :on` creates a fresh presenter, requests the latest retained tree and
-  enables the managed backlight after its first application presentation.
-- Initially-off viewports still acquire ownership/routing, without a render
-  callback or tree upload. Config reconciliation and application messages continue.
-- `backlight.device: :auto` requires a proven, unambiguous connector association.
-  No associated device means KMS-only operation unless brightness was requested;
-  ambiguity is an error. `nil` opts out; an absolute path binds explicitly.
-- `brightness` is finite `0..1`, rounded to the device's integer range. Zero is
-  brightness zero, **not display-off**. `nil` restores the original requested
-  brightness captured before suppression and retained across renderer recovery.
-- Brightness changes while off retain intent without illumination. Clean stop
-  leaves a managed lamp dark. Unsafe teardown retains/quarantines ownership.
-
-Applications own power-button/wake policy. Off does not suspend the BEAM, OS,
-networking, application timers or camera producers. Software support is not a
-physical no-flash, no-stale-input or panel-driver timing guarantee. See
-[config reconciliation](https://github.com/emerge-elixir/emerge/blob/main/guides/internals/config-reconciliation.md) for ownership and
-completion details.
-
-## Headless owned binary frames
+## Headless binary frames
 
 <!-- emerge-config:binary -->
 ```elixir
@@ -113,17 +77,14 @@ completion details.
     size: {400, 300},
     frames: %Emerge.Config.BinaryFrames{pixel_format: :bw1, dither: true}
   },
-  renderer: [api: :raster, target_fps: 30],
-  assets: [otp_app: :my_app]
+  renderer: %Emerge.Config.Renderer{api: :raster, target_fps: 30},
+  assets: %Emerge.Config.Assets{otp_app: :my_app}
 }
 ```
 
-`target` must be a live local PID; it is not inferred. Frames arrive as
-`{frame_message, %VideoInterop.Frame{}}`, with `:emerge_skia_frame` as the default
-tag. Binary frames own their storage and have no lease. Formats are `:rgba8888`,
-`:bgra8888`, `:rgb888`, `:gray8`, `:gray2` and `:bw1`. Packed rows are MSB-first;
-`bw1_polarity` chooses whether a set bit is black or white. Dithering is supported
-for raster BW1/Gray2 output, not arbitrary formats or GPU APIs.
+The target receives `{:emerge_skia_frame, %VideoInterop.Frame{}}`. These frames own
+their pixel data and need no release. Set `Headless.frame_message` to change the
+message tag. `BinaryFrames` describes the available pixel formats and dithering.
 
 ## Headless PRIME frames
 
@@ -135,104 +96,88 @@ for raster BW1/Gray2 output, not arbitrary formats or GPU APIs.
     size: {640, 480},
     frames: %Emerge.Config.PrimeFrames{
       device: "/dev/dri/renderD128",
-      max_in_flight: 2,
-      on_backpressure: :drop_new
+      max_in_flight: 2
     }
   },
-  renderer: [api: :opengl, target_fps: 30],
-  assets: [otp_app: :my_app]
+  renderer: %Emerge.Config.Renderer{api: :opengl, target_fps: 30},
+  assets: %Emerge.Config.Assets{otp_app: :my_app}
 }
 ```
 
-PRIME is a Linux DMA-BUF output path for a compatible GPU build/device, not
-CPU raster. The recipient must retire the frame's lease using `VideoInterop`.
-When all pool slots are held, `:drop_new` drops new output rather than creating
-unbounded storage. PRIME output is separate from video frames submitted *into*
-an Emerge viewport. See [video interoperability](https://github.com/emerge-elixir/emerge/blob/main/guides/internals/video-interop-architecture.md).
+This Linux GPU output sends DMA-BUF frames. Release each frame's lease through
+`VideoInterop` when finished. When all output buffers are held, new frames are
+dropped. See `Emerge.Config.PrimeFrames` for device selection and pool size.
 
-## Declare live changes
+## Structs and shorthand
 
-Implement neither config callback or exactly one arity. `config(previous)`
-receives previous config; `config(previous, state)` also receives viewport state.
-Both return a complete root config, not a tuple or patch.
+Use explicit structs for `output` and `Headless.frames` to choose a variant.
+Other records accept either structs or keyword shorthand. These are equivalent:
+
+```elixir
+%Emerge.Config{input: %Emerge.Config.Input{events: [:key]}}
+%Emerge.Config{input: [events: [:key]]}
+```
+
+Unknown fields and invalid values are errors. New records use defaults for omitted
+fields, not values from a previous config. Lists replace rather than append.
+The callback's previous config always contains nested structs, even if mount
+used shorthand.
+
+## Change settings while running
+
+Mount-only configuration needs no extra callback. To derive settings from local
+state, optionally implement `config(previous, state)`; use `config(previous)`
+when no local state is needed. Implement only one arity.
 
 ```elixir
 @impl Viewport
-def config(%Emerge.Config{output: %Emerge.Config.Window{} = output} = previous, state) do
-  output = %Emerge.Config.Window{output | title: state.title}
-  %Emerge.Config{previous | output: output}
+def config(previous, state) do
+  output = %{previous.output | title: state.title}
+  %{previous | output: output}
 end
 ```
 
-The first invocation receives normalized mount config before renderer creation.
-Later invocations run before render during coalesced rerenders, including config-only
-updates and while a DRM display is off. Nested records in `previous` are always
-structs. Previous means **desired intent**, not hardware readback or the last
-confirmed revision. Recovery replays that latest intent, not mount defaults.
+Call `Viewport.rerender(state)` after updating state, as for UI changes. The config
+callback runs before rendering, including when the UI tree is unchanged. It also
+runs while a DRM display is off. It receives your latest requested config, not a
+hardware readback. Update existing records to preserve their other fields.
 
-New records replace old records. For example, assigning `backlight: [brightness: 0.2]`
-resets `device` to its default `:auto`; it does not preserve a previously explicit
-path. Use one typed struct update at a time when preservation is intended:
+For a DRM brightness update:
 
 ```elixir
-@impl Viewport
-def config(%Emerge.Config{output: %Emerge.Config.DRM{} = output} = previous, state) do
-  backlight = %Emerge.Config.Backlight{output.backlight | brightness: state.brightness}
-  output = %Emerge.Config.DRM{output | display: state.display, backlight: backlight}
-  %Emerge.Config{previous | output: output}
-end
+backlight = %{previous.output.backlight | brightness: new_level}
+output = %{previous.output | backlight: backlight}
+%{previous | output: output}
 ```
 
-Lists (events, fonts, allowlists, logs) replace, never append implicitly. An unchanged
-normalized config does no native work. A cap/title/input/brightness change does not
-require changing the UI tree. Application state changes still request a cycle with
-`Viewport.rerender(state)`.
+### Settings that can change
 
-### Live/static support
+- Raw input subscriptions and the health-check interval.
+- Window titles on Wayland and macOS.
+- Frame-rate limits on headless and Wayland.
+- DRM display on/off and brightness with explicit OpenGL or CPU raster.
 
-| Field | Current support |
-|---|---|
-| `input.events` | Live raw-observer replacement; does not disable element interactions |
-| `runtime.health_check_interval_ms` | Runtime-owned live update |
-| `Window.title` | Live on Wayland and macOS |
-| `renderer.target_fps` | Startup/live on headless and Wayland only; `nil` restores backend pacing |
-| `DRM.display`, `DRM.backlight.brightness` | Live for explicit OpenGL and CPU raster only |
-| `DRM.connector`, `DRM.mode` | Live changes rejected |
-| Other fields | Startup-only; create a new viewport/session |
+### Settings that require a new viewport
 
-A frame cap bounds render admissions, not physical refresh, callbacks, producers or
-application timers. Already admitted work can finish; idle scenes remain idle and
-missed deadlines do not cause catch-up bursts. See [frame pacing](https://github.com/emerge-elixir/emerge/blob/main/guides/internals/frame-pacing.md).
-Vulkan is an available compiled API, but the separately recorded Wayland acquire
-synchronization defect remains deferred; functional test passes do not qualify it.
+Output type/device/connector/mode, size, drawing API/device, caches, cursor
+appearance, assets, diagnostics, startup retry policy and adapter settings.
+Unsupported changes return an error instead of restarting your viewport.
 
-Callback/schema/capability failures preserve previous intent. Operational configure
-failures preserve desired intent for retry/recovery; a subsequent rerender retries
-the complete live snapshot. Native admission returns a session/revision token, not
-proof of presentation. `EmergeSkia.config_status/1` distinguishes pending/applied/
-failed revisions; applied history is not rollback or independent hardware readback.
-macOS host revision reporting is not implemented. See
-[config reconciliation](https://github.com/emerge-elixir/emerge/blob/main/guides/internals/config-reconciliation.md).
+### Backend limitations
 
-## Assets, diagnostics and advanced runtime
+DRM and macOS do not support frame-rate caps, even at startup. DRM Vulkan and
+raster GPU upload do not support display power/brightness controls.
 
-`assets.otp_app` is inferred from a viewport module where possible. Standalone
-`EmergeSkia.start(%Emerge.Config{})` requires it explicitly. Fonts, source policy,
-decode settings and cache budgets are startup-only and renderer-local. See
-[Use assets](../tutorials/use_assets.md), `Emerge.Config.Assets` and its nested records.
+## Assets and diagnostics
 
-`diagnostics: [stats: true]` collects structured counters/timings for
-`EmergeSkia.stats/2`, without periodic stats output. `diagnostics: [logs: [:stats]]`
-enables both collection and summaries; using both is redundant for logging.
-Stats logs reset the same native window read by the API. macOS supports summaries,
-not that API. Other log categories do not enable collection. `force_gpu_finish`
-adds diagnostic blocking DRM EGL waits and distorts timings; keep it false normally.
-See `Emerge.Config.Diagnostics` for categories, destinations and backend limits.
+Viewports infer `assets.otp_app` where possible. Standalone `EmergeSkia.start/1`
+callers must supply it. See [Use assets](../tutorials/use_assets.md).
 
-`Emerge.Config.Runtime` contains health intervals, DRM startup retry policy, and
-custom `adapter`/`adapter_opts`. Native owner/baseline resources are internal, not
-config fields. Custom adapters implement the new typed startup and full-snapshot
-configure contract; see the [migration guide](../migrations/0.5.md#custom-renderer-adapters).
+Use `Diagnostics.stats: true` for measurements read through `EmergeSkia.stats/2`.
+Use `Diagnostics.logs: [:stats]` for printed summaries instead; this also enables
+collection. macOS supports summaries, not the stats API. See
+`Emerge.Config.Diagnostics` for categories and examples.
 
-Compile-time backend/artifact selection is separate from runtime config; a record
-cannot enable code absent from the NIF. See [Build the native renderer](native-renderer-builds.md).
+Build-time backend selection is separate from runtime config. For uncommon
+backend selections or source builds, see
+[Build the native renderer](native-renderer-builds.md).

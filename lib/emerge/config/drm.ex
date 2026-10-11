@@ -1,28 +1,46 @@
 defmodule Emerge.Config.DRM do
   @moduledoc """
-  Direct DRM output. `display: :off` requests no scanout/illumination. Connector and mode selections are exact when provided; brightness is retained while off. `preferred_size` is only a mode-selection hint.
+  A display connected directly to Linux DRM/KMS, without a window manager.
+  Set this record as `Emerge.Config.output`.
 
-  Display/backlight controls support explicit OpenGL or CPU raster presentation.
-  Raster's `raster_present: :auto` selects CPU scanout on DRM. Vulkan/gpu-upload
-  power and live connector/mode changes remain rejected.
+  ```elixir
+  %Emerge.Config{
+    output: %Emerge.Config.DRM{card: "/dev/dri/card0", connector: "DSI-1"},
+    renderer: %Emerge.Config.Renderer{api: :opengl}
+  }
+  ```
 
-  Off retains output ownership and application state but suspends native UI
-  interaction and destroys presenter resources. Applications own their independent
-  wake-key policy. On creates a fresh presenter and presents the latest tree
-  before enabling a managed backlight. Panel-driver
-  errors are reported rather than treated as successful hardware application.
+  ## Fields
 
-  ## Fields and defaults
+  - `card` — absolute path to the display's KMS device; defaults to
+    `"/dev/dri/card0"`. A stable `/dev/dri/by-path/...-card` path is also accepted.
+  - `connector` — connector name, such as `"DSI-1"` or `"DP-1"`. The default `nil`
+    selects an available output automatically.
+  - `mode` — an advertised mode ID or a mode map returned by
+    `EmergeSkia.drm_outputs/1`. Defaults to `nil` for automatic mode selection.
+    An explicit mode also requires an explicit connector. Invalid selections
+    return an error rather than silently choosing another display or mode.
+  - `preferred_size` — optional `{width, height}` hint for automatic mode selection.
+    Defaults to `nil`. The selected mode determines the actual display size.
+  - `display` — `:on` (default) or `:off`. Off blanks the display and ignores its
+    UI input; it does not suspend your application or the operating system.
+  - `backlight` — `Emerge.Config.Backlight`, defaulting to automatic association.
+    Use it to select a panel backlight and request brightness.
+  - `hotplug_interval_ms` — connector hotplug polling interval in milliseconds;
+    defaults to `750`. Set it to `nil` to disable polling for built-in panels.
 
-  | Field | Default |
-  |---|---|
-  | `card` | `"/dev/dri/card0"` |
-  | `connector` | `nil` |
-  | `mode` | `nil` |
-  | `preferred_size` | `nil` |
-  | `display` | `:on` |
-  | `backlight` | `%Emerge.Config.Backlight{}` |
-  | `hotplug_interval_ms` | `750` |
+  Discover connector names and modes with `EmergeSkia.drm_outputs(drm_card: path)`.
+
+  ## Changing settings
+
+  `display` and backlight brightness can change through `config` with an explicit
+  OpenGL renderer or CPU raster renderer. For raster, use `raster_present: :cpu`
+  or its `:auto` default. Vulkan and raster GPU upload do not support these controls.
+
+  Changing the card, connector, mode, size hint, backlight device or hotplug polling
+  interval requires a new viewport. Applications using off/on need an independent
+  wake source, such as a power-button reader; input from the blanked display cannot
+  wake it.
   """
   defstruct card: "/dev/dri/card0",
             connector: nil,
