@@ -78,12 +78,17 @@ Skia shaders, select CPU-only DRM at dependency compilation time:
 config :emerge, compiled_backends: [drm: [:raster]]
 ```
 
-Return these options from your viewport's `mount/1` callback:
+Return a typed config from your viewport's `mount/1` callback:
 
 ```elixir
-[otp_app: :my_app, backend: :drm, rendering_api: :raster,
- drm_card: "/dev/dri/card0"]
+output = %Emerge.Config.DRM{card: "/dev/dri/card0"}
+config = %Emerge.Config{output: output, renderer: [api: :raster]}
+{:ok, config}
 ```
+
+The output record selects DRM; `renderer.api` selects how Skia draws. The viewport
+infers `assets.otp_app`, while standalone `EmergeSkia.start/1` requires it explicitly.
+See [viewport configuration](viewport-configuration.md).
 
 The Cargo profile is `--no-default-features --features drm-raster`. It uses the
 DRM ioctl and evdev/input stack, with no GBM, EGL, OpenGL, Vulkan or Wayland
@@ -97,15 +102,15 @@ manifest; older releases do not contain it. Recompile Emerge after changing
 configuration (`mix deps.compile emerge --force`). For an unreleased checkout or
 a target outside the matrix, use the source-build instructions above.
 
-`rendering_api: :auto` selects raster in a DRM build without OpenGL. Explicit
-`:opengl` and `[raster: [present: :gpu_upload]]` require an OpenGL-enabled build.
-In all DRM builds, raster's default presentation is CPU; `:gpu_upload` remains
-available explicitly for compatibility.
+`renderer: [api: :auto]` selects raster in a DRM build without OpenGL. Explicit
+`api: :opengl` and `renderer: [api: :raster, raster_present: :gpu_upload]` require
+an OpenGL-enabled build. In all DRM builds, `raster_present: :auto` means CPU;
+GPU upload must be requested explicitly.
 
 The KMS driver must expose dumb buffers, an XRGB8888 primary plane, atomic
 modesetting and DRM leasing. This does not add a legacy-KMS or fbdev backend.
 CPU presentation uses double-buffered, blocking atomic commits and a software
-cursor (including when `hw_cursor: true`). Screenshots remain RGBA; CPU binary
+cursor (including when `input.cursor.hardware` is `true`). Screenshots remain RGBA; CPU binary
 video is supported, but DMA-BUF/PRIME video import is not. On disconnect or a
 removed mode, the backend detaches and exits so the viewport can recover through
 its normal lifecycle. Output selection uses `EmergeSkia.drm_outputs/1` as with
@@ -172,8 +177,9 @@ or `[drm: [:opengl, :vulkan]]` includes both APIs and selects the dedicated
 `drm_all` artifact, not the desktop `vulkan` bundle. The legacy combination
 `compiled_backends: [:drm], compiled_vulkan_backends: [:drm]` selects the same
 DRM-only archive. Custom combinations not covered by the release matrix build
-from source. See `EmergeSkia.start/1` for valid backend and rendering API
-combinations.
+from source. See [viewport configuration](viewport-configuration.md) and `EmergeSkia.start/1`
+for runtime output/API combinations. Compile-time `compiled_backends` is separate
+from `%Emerge.Config{}`; changing a runtime record does not add native features.
 
 Every DRM Cargo profile inherits embedded FreeType from `drm-core`, including
 source builds and combined Wayland/DRM profiles. No separate Cargo feature or
@@ -193,7 +199,7 @@ replaced: 0.4.0's combined DRM API selection downloads the desktop Vulkan bundle
 and its standalone GNU DRM builds can still require fontconfig.
 
 Stock RPi5 2.0.1 provides Mesa V3D/OpenGL ES, not a Vulkan driver stack. Use
-`compiled_backends: [drm: [:opengl]]` and `rendering_api: :opengl` on that system.
+`compiled_backends: [drm: [:opengl]]` and `renderer: [api: :opengl]` on that system.
 A Vulkan renderer additionally requires a system with the Vulkan loader and
 appropriate GPU driver/extensions. Successfully loading the NIF does not qualify
 Vulkan support or physical display/input operation.
@@ -246,14 +252,15 @@ config :emerge, compiled_backends: []
 At runtime, retain the existing headless frame sink:
 
 ```elixir
-EmergeSkia.start(
-  otp_app: :my_app,
-  backend: :headless,
-  rendering_api: :raster,
-  width: 400,
-  height: 300,
-  headless: [target: self(), pixel_format: :bw1, dither: true]
-)
+EmergeSkia.start(%Emerge.Config{
+  output: %Emerge.Config.Headless{
+    target: self(),
+    size: {400, 300},
+    frames: %Emerge.Config.BinaryFrames{pixel_format: :bw1, dither: true}
+  },
+  renderer: [api: :raster],
+  assets: [otp_app: :my_app]
+})
 ```
 
 RGBA, RGB, grayscale, BW1 and Gray2 output use the existing CPU pipeline,

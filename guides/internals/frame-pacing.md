@@ -77,4 +77,5 @@ The 2026-10-10 run on Hyprland/RADV RX 7900 XTX passed the functional checks but
 failed synchronization validation with acquired-image layout-transition hazards
 (`SYNC-HAZARD-WRITE-AFTER-READ`; 4 errors, 0 warnings). Vulkan qualification remains
 blocked until those hazards are fixed. The reproduction and environment record
-is in `plans/active-linux-gpu-qualification.md` in the repository.
+is in `plans/active-vulkan-acquire-synchronization.md` in the repository,
+separate from the already-closed general Linux GPU/PRIME/reconnect qualification.

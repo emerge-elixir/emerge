@@ -5,6 +5,23 @@ runtime used by Emerge. Elixir owns application state and encodes UI trees into
 EMRG. Rust owns the decoded tree, layout, render-scene construction, event
 hit-testing metadata, assets, text editing state, and backend rendering.
 
+## Declarative configuration
+
+Viewport mount returns `%Emerge.Config{}`; optional `config(previous)` or
+`config(previous, state)` callbacks declare supported live updates. Previous is
+normalized desired intent, independent of native accepted/applied revisions.
+Configuration-only changes use bounded native control admission, not an empty
+or synthetic tree upload. The lifecycle owner replays latest intent on recovery.
+See [configuration](../reference/viewport-configuration.md) and
+[config reconciliation](config-reconciliation.md).
+
+DRM has a retained output/backlight owner and disposable internal presenters.
+Off ignores native UI input and retires presenter resources, while preserving the
+tree, ownership and requested settings. On creates a fresh presenter and requests
+the latest tree; GPU resources are not restored. Explicit OpenGL and CPU raster
+support power/brightness; Vulkan/GPU-upload power remains guarded. Basic resource
+readiness precedes application upload, separately from first presentation.
+
 ## System Shape
 
 The runtime is split into three ownership areas:
@@ -73,7 +90,8 @@ Windowed and DRM runs use long-lived native threads:
 |-----------------|------|-------------------|
 | Tree actor | `TreeUpdateEngine`, `ElementTree`, cached registry rebuild, animation runtime | Event actor, render queue, assets actor, backend wake |
 | Event actor | Event registry, hit testing, cursor decisions, scroll/text/focus dispatch | Tree actor and Elixir process |
-| Backend render loop | Skia surface/context, `SceneRenderer`, renderer paint-layer cache | Render queue and backend compositor/presenter |
+| Backend render loop | Skia surface/context, `SceneRenderer`, renderer paint-layer cache; DRM presenter lifetime ends on off | Render queue and backend compositor/presenter |
+| DRM power owner | Output lease, backlight binding/baseline, requested settings and presenter lifecycle | Independent bounded control lane, input gate and presenter wake |
 | Backend input capture | Native pointer/keyboard/touch events | Event actor |
 | Assets actor | Source path resolution and async asset state | Tree actor |
 | Heartbeat/stats | Running state and optional renderer stats logging | Runtime resource |

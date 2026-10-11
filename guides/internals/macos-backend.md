@@ -72,6 +72,10 @@ macOS uses the shared renderer selection option:
 
 `:auto` prefers Metal and falls back to raster when Metal is unavailable.
 Legacy keyword renderer configuration has been replaced by `Emerge.Config`.
+Titles and raw subscriptions can change through `config`; frame caps remain
+unsupported. `diagnostics.logs: [:stats]` enables periodic cumulative summaries,
+but `EmergeSkia.stats/2` and `stats: true` alone are not supported by this host.
+Native config revisions/status are also not yet implemented for the transport.
 
 ## Live Window Titles
 
@@ -151,9 +155,11 @@ commands.
 The macOS host accepts owned RGBA8888 binary frames through `Emerge.submit_video_frame/3`.
 Protocol version 15 carries cropped, packed pixels and their alpha mode; the host normalizes
 them to premultiplied RGBA and uses the shared CPU video renderer. Hidden targets discard frames.
-DMA-BUF import remains unsupported. Applications that also run a headless producer on macOS
-must compile with `config :emerge, load_macos_nif: true`; desktop-only applications can continue
-using the external host without loading the NIF.
+DMA-BUF import remains unsupported. Applications using only a headless raster
+producer select `config :emerge, compiled_backends: []`, which loads the matching
+Darwin raster NIF without a separate opt-in. Desktop window applications continue
+using the external host; mixed host/NIF development setups can explicitly request
+`load_macos_nif: true`. See the [native build guide](../reference/native-renderer-builds.md).
 
 ## Validation
 
@@ -165,7 +171,8 @@ standalone probe or wrapper binaries.
 
 ## Distribution
 
-`macos_host` is the only supported macOS runtime artifact.
+`macos_host` is the supported **window** runtime artifact. Headless CPU rendering
+uses a separate Darwin raster NIF, available in the release matrix since 0.4.2.
 
 The intended release flow is:
 
@@ -181,8 +188,8 @@ When developing the native host from a source checkout, run the demo with
 `native/emerge_skia/target/debug/macos_host`, even when an older bundled or
 downloaded host binary is present.
 
-Darwin Rustler NIFs are not the supported distribution path for normal runtime
-use.
+Darwin raster NIFs support headless output, not in-process AppKit windows. Their
+output/config contract is the same typed `Config.Headless` path used on Linux.
 
 ## Next Work
 

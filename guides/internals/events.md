@@ -763,7 +763,18 @@ acknowledgment protocol.
 
 ## Observer Input And Elixir Responsibilities
 
-Raw input forwarding is separate from listener dispatch.
+Raw input forwarding is separate from listener dispatch. Applications subscribe
+with `config.input.events`, an atom list defaulting to `[]`; numeric masks remain
+private to native/transport code. The viewport converts native `:cursor_pos`,
+`:cursor_button`, `:resized` and similar names, plus numeric actions, into the
+`Emerge.Input` callback contract. See the [input guide](../tutorials/handle_input.md)
+for the full table; standalone `EmergeSkia.set_input_target/2` retains its native
+message envelope. Window close bypasses observer subscriptions.
+
+Subscription replacement does not disable element listeners or native text/scroll
+processing. DRM display-off uses a separate backend gate to ignore UI input and
+clear transient buffered interactions; it is not an observer mask or a strict
+power-cycle epoch guarantee. The application's independent wake reader stays active.
 
 Observer input:
 
