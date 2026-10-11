@@ -1,22 +1,33 @@
 defmodule Emerge.Config.PrimeFrames do
   @moduledoc """
-  Leased headless Linux DMA-BUF frames. Use this explicit variant in
-  `Emerge.Config.Headless.frames` with a compatible GPU build/device, not CPU
-  raster. The recipient must retire the `VideoInterop.Frame` lease before its
-  buffer becomes reusable.
+  Linux DMA-BUF frames for a headless GPU renderer. Set this record as
+  `Emerge.Config.Headless.frames`; CPU raster does not support this output.
 
-  `device` selects the export DRM node; `nil` leaves backend selection automatic.
-  `max_in_flight` bounds pool slots. `on_backpressure: :drop_new` drops new output
-  when all slots are held rather than allocating an unbounded pool. These fields
-  are startup-only; the live cap is `Emerge.Config.Renderer.target_fps`.
+  ```elixir
+  %Emerge.Config{
+    output: %Emerge.Config.Headless{
+      target: self(),
+      frames: %Emerge.Config.PrimeFrames{device: "/dev/dri/renderD128"}
+    },
+    renderer: %Emerge.Config.Renderer{api: :opengl},
+    assets: %Emerge.Config.Assets{otp_app: :my_app}
+  }
+  ```
 
-  ## Fields and defaults
+  ## Fields
 
-  | Field | Default |
-  |---|---|
-  | `device` | `nil` |
-  | `max_in_flight` | `2` |
-  | `on_backpressure` | `:drop_new` |
+  - `device` — absolute path to the export DRM device. Defaults to `nil` for
+    automatic device selection. The selected device must support the GPU/output
+    combination. This is separate from the Vulkan renderer's `device` setting.
+  - `max_in_flight` — positive number of output buffers available at once;
+    defaults to `2`. Increasing it allows the recipient to hold more frames,
+    at the cost of memory.
+  - `on_backpressure` — currently only `:drop_new` (default). When every buffer
+    is held by a recipient, new frames are dropped rather than growing the pool.
+
+  Each `VideoInterop.Frame` has a lease. Release it through `VideoInterop` when
+  finished; holding leases prevents their buffers from being reused.
+  All fields require a new viewport to change.
   """
   defstruct device: nil,
             max_in_flight: 2,

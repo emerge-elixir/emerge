@@ -1,28 +1,36 @@
 defmodule Emerge.Config.Input do
   @moduledoc """
-  Raw observer subscriptions delivered to `c:Emerge.handle_input/2`. These do not
-  disable element interactions, scrolling or native text editing. See
-  `Emerge.Input` and the [input guide](handle_input.html) for exact payloads.
+  Raw input observation, scroll distance and cursor settings. Set this record as
+  `Emerge.Config.input`. Ordinary element interactions do not require subscriptions.
 
-  `events: []` (the default) observes nothing; `all_events/0` returns all eight
-  categories. Use a list of category atoms, not a numeric mask or `:all`/`:none`.
-  Duplicate categories are deduplicated and order is insignificant. Live updates
-  replace the subscriptions, but cannot retract already-forwarded mailbox messages.
-  Window close goes to `c:Emerge.handle_close/2` independently of this list.
+  ```elixir
+  %Emerge.Config{
+    input: %Emerge.Config.Input{events: [:key, :pointer_button, :resize]}
+  }
+  ```
 
-      %Emerge.Config{input: [events: [:key, :pointer_button, :resize]]}
+  ## Fields
 
-  Subscription names describe backend window/surface input, not element events.
-  Headless has no physical input source; DRM has no desktop window enter/focus
-  lifecycle. IME availability is backend-dependent.
+  - `events` — raw categories forwarded to `c:Emerge.handle_input/2`; defaults to
+    `[]` (none). Choose `:key`, `:text`, `:pointer_move`, `:pointer_button`,
+    `:pointer_scroll`, `:pointer_enter`, `:resize` and/or `:focus`.
+    `all_events/0` returns all eight. Duplicates and order do not matter.
+    Integers, `nil`, `:all` and `:none` are not accepted.
+  - `scroll_line_pixels` — positive pixel distance per wheel/line-scroll step;
+    defaults to `30.0`. Precise pixel-scroll input is not converted into line steps.
+  - `cursor` — `Emerge.Config.Cursor`, defaulting to its built-in cursor settings.
 
-  ## Fields and defaults
+  Subscriptions filter only raw callbacks, not buttons, element key bindings,
+  text editing, scrolling or `c:Emerge.handle_close/2`. The `:text` category includes
+  committed text and IME updates. Enter/focus describe a window, not an element.
+  See the [input guide](handle_input.html) and `Emerge.Input` for callback values
+  and which events each backend can provide.
 
-  | Field | Default |
-  |---|---|
-  | `events` | `[]` |
-  | `scroll_line_pixels` | `30.0` |
-  | `cursor` | `%Emerge.Config.Cursor{}` |
+  ## Changing settings
+
+  `events` can change through `config` and replaces the entire subscription list.
+  Messages already in your mailbox are not retracted. Scroll distance and cursor
+  settings require a new viewport to change.
   """
   defstruct events: [],
             scroll_line_pixels: 30.0,

@@ -1,95 +1,78 @@
 defmodule Emerge.Config.Diagnostics do
   @moduledoc """
-  Controls diagnostic data collection and extra trace output at renderer startup.
+  Optional renderer measurements and logging. Set this record as
+  `Emerge.Config.diagnostics`. It does not create an on-screen overlay.
 
-  **`stats` collects data; `logs` requests output.** Neither creates an on-screen
-  overlay. All fields are startup-only: changing them requires a new viewport.
+  ```elixir
+  %Emerge.Config{
+    diagnostics: %Emerge.Config.Diagnostics{logs: [:stats]}
+  }
+  ```
 
-  ## Fields and defaults
+  ## Fields
 
-  | Field | Default | Effect |
-  |---|---|---|
-  | `stats` | `false` | Collect renderer counters and timings for `EmergeSkia.stats/2`, without enabling periodic stats logs. |
-  | `logs` | `[]` | Enable the extra trace categories listed below. `:stats` also enables stats collection. |
-  | `force_gpu_finish` | `false` | Add blocking GPU waits before and after each DRM EGL buffer swap; see the warning below. |
+  - `stats` — `false` by default. With `true`, collect counters/timings for
+    `EmergeSkia.stats/2` without printing periodic summaries.
+  - `logs` — opt-in log categories; defaults to `[]`. See the categories below.
+    `:stats` enables both collection and printed summaries, even if `stats` is false.
+  - `force_gpu_finish` — `false` by default. A DRM OpenGL diagnostic that adds
+    blocking GPU waits around presentation. It can severely slow rendering and
+    distort measurements; leave it off for normal use.
 
-  ## Stats versus stats logs
+  All fields require a new viewport to change.
 
-  On native Wayland, DRM and headless renderers:
+  ## Read measurements or print them
 
-  | `stats` | `:stats` in `logs`? | Result |
-  |---|---|---|
-  | `false` | No | No collection or periodic stats output; the stats API reports `enabled: false`. |
-  | `true` | No | Collect data for the stats API, but do not print periodic summaries. |
-  | `false` | Yes | Collect data **and** emit periodic summaries. |
-  | `true` | Yes | Same as the previous row; `stats: true` is redundant here. |
+  To read measurements yourself, use `stats: true` and leave `:stats` out of `logs`:
 
-  Collected data includes frame counts, layout/render/presentation timings and
-  cache counters. Available metrics depend on the backend and rendering API.
-  Collection adds measurement overhead.
+  ```elixir
+  %Emerge.Config{
+    diagnostics: %Emerge.Config.Diagnostics{stats: true}
+  }
+  ```
 
-  For measurements you read yourself, use:
+  After starting the viewport:
 
-      %Emerge.Config{diagnostics: %Emerge.Config.Diagnostics{stats: true}}
+  ```elixir
+  renderer = Emerge.renderer(viewport)
+  {:ok, snapshot} = EmergeSkia.stats(renderer, :peek)
+  ```
 
-  After the viewport has acquired its renderer:
+  `:peek` reads without resetting; `:take` reads and resets the measurement window;
+  `:reset` discards it. Available counters depend on the backend. Collection cannot
+  be enabled later through the stats API.
 
-      renderer = Emerge.renderer(viewport)
-      {:ok, snapshot} = EmergeSkia.stats(renderer, :peek)
+  For printed summaries, use `logs: [:stats]`; setting `stats: true` as well is
+  unnecessary. Summaries are logged at info level about every five seconds.
+  Native summaries reset the same window read by the stats API, so choose one
+  approach when you need predictable measurement intervals.
 
-  `:peek` reads without resetting; `:take` reads and resets the measurement window.
-  Stats collection cannot be switched on or off through `EmergeSkia.stats/2` after
-  renderer startup.
-
-  For automatic summaries instead, use:
-
-      %Emerge.Config{diagnostics: %Emerge.Config.Diagnostics{logs: [:stats]}}
-
-  Summaries use the `renderer_stats` log source at info level, approximately every
-  five seconds. Pending asynchronous GPU measurements can delay a summary. Native
-  stats logging reads and resets the **same measurement window** as the stats API,
-  so leave `:stats` out of `logs` when you need to control window boundaries yourself.
-
-  The macOS host currently supports `logs: [:stats]`, but not `EmergeSkia.stats/2`
-  (`{:error, :not_supported}`). Its periodic summaries are cumulative rather than
-  resetting windows. `stats: true` alone is not currently forwarded to that host.
+  macOS supports printed summaries but not `EmergeSkia.stats/2`. Its summaries are
+  cumulative; `stats: true` alone has no effect there.
 
   ## Log categories
 
-  These categories are independent switches, not verbosity levels:
+  - `:input` — input-device and input-processing traces. It does not subscribe
+    your viewport to input callbacks.
+  - `:render` — tree processing, drawing and presentation traces; potentially verbose.
+  - `:close` — window-close handling traces.
+  - `:stats` — periodic performance summaries, also enabling collection.
+  - `:animation` — Wayland animation/pacing traces.
 
-  | Category | Extra output |
-  |---|---|
-  | `:input` | DRM input-device discovery/add/remove details, cursor-motion enqueue traces and input-queue/poll problems. It does not subscribe your viewport to input events. |
-  | `:render` | Native tree/event processing and frame drawing/presentation traces. Can be very verbose. |
-  | `:close` | Wayland close/unmap/delivery traces and viewport close handling. |
-  | `:stats` | Periodic renderer performance summaries, as described above. |
-  | `:animation` | Wayland animation scene, pulse, draw and frame-callback traces; useful for investigating pacing. |
+  Categories are independent, not verbosity levels. Only `:stats` enables collection.
+  The macOS host currently ignores `:input`, `:render` and `:animation`.
+  `logs: []` disables extra traces, not ordinary warnings or errors.
 
-  `:input`, `:render` and `:animation` have no effect on the macOS host currently.
-  Categories other than `:stats` do not enable stats collection. `logs: []` disables
-  these opt-in traces, **not** ordinary startup, warning or error messages.
+  Viewports forward logs to Elixir `Logger`. With standalone `EmergeSkia.start/1`,
+  the starting process receives `{:emerge_skia_log, level, source, message}`;
+  use `EmergeSkia.set_log_target/2` to choose another recipient. Some low-level
+  traces go directly to stderr and do not obey Logger filtering or redirection.
 
-  Relayed native messages arrive as `{:emerge_skia_log, level, source, message}`.
-  An Emerge viewport forwards these to Elixir `Logger`; its level/filter settings
-  still apply. When using `EmergeSkia.start/1` directly, the starting process receives
-  the messages; use `EmergeSkia.set_log_target/2` to choose another recipient.
-  Some low-level input, render and close traces go directly to native stderr and
-  cannot be redirected with `set_log_target/2` or filtered by Elixir `Logger`.
+  ## Forced GPU waits
 
-  ## Forced GPU completion
-
-  `force_gpu_finish: true` calls OpenGL `glFinish` before **and** after each
-  `eglSwapBuffers` in the DRM EGL presenter. These calls block the presenting
-  thread until submitted GPU work finishes. This applies to DRM OpenGL and raster
-  GPU-upload presentation, not CPU raster, Wayland or macOS. Explicit DRM Vulkan
-  rejects the option.
-
-  Use it only to investigate driver/presentation problems: it reduces CPU/GPU
-  overlap, can severely slow rendering and changes the timings you are measuring.
-  It does not enable stats collection or periodic stats logs, and is not a normal
-  synchronization setting or a production fix. Normal safe presenter teardown
-  performs its required GPU completion independently of this option.
+  `force_gpu_finish` affects DRM OpenGL and raster GPU-upload presentation only.
+  It has no effect on CPU raster, Wayland or macOS; DRM Vulkan rejects it.
+  It does not enable measurements/logs and is not a production synchronization fix.
   """
   defstruct stats: false,
             logs: [],

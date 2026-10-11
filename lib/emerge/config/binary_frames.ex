@@ -1,18 +1,32 @@
 defmodule Emerge.Config.BinaryFrames do
   @moduledoc """
-  Owned headless `VideoInterop.Frame` output with no lease. Use this explicit
-  variant in `Emerge.Config.Headless.frames`; its fields are startup-only.
-  BW1/Gray2 rows are packed MSB-first. `bw1_polarity` chooses the meaning of a set
-  bit in BW1. `dither` is supported for raster BW1/Gray2 output, not every format
-  or GPU renderer. BGRA8888 is premultiplied B, G, R, A byte order.
+  Owned pixel data for headless output. Set this record as
+  `Emerge.Config.Headless.frames`. The recipient does not need to release frames.
 
-  ## Fields and defaults
+  ```elixir
+  %Emerge.Config{
+    output: %Emerge.Config.Headless{
+      target: self(),
+      frames: %Emerge.Config.BinaryFrames{pixel_format: :bw1, dither: true}
+    },
+    renderer: %Emerge.Config.Renderer{api: :raster},
+    assets: %Emerge.Config.Assets{otp_app: :my_app}
+  }
+  ```
 
-  | Field | Default |
-  |---|---|
-  | `pixel_format` | `:rgba8888` |
-  | `bw1_polarity` | `:one_is_black` |
-  | `dither` | `false` |
+  ## Fields
+
+  - `pixel_format` — `:rgba8888` (default), `:bgra8888`, `:rgb888`, `:gray8`,
+    `:gray2` or `:bw1`. RGBA/BGRA use four bytes per pixel; RGB uses three;
+    Gray8 uses one. Gray2 packs four pixels per byte and BW1 packs eight,
+    most-significant pixel first in each row. BGRA uses premultiplied alpha.
+  - `bw1_polarity` — `:one_is_black` (default) or `:one_is_white`. This chooses
+    what a set bit means in BW1 output; it does not affect other formats.
+  - `dither` — `false` by default. Set `true` to improve grayscale approximation
+    in raster BW1/Gray2 output. Other formats and GPU renderers do not support it.
+
+  Read the frame's stride rather than assuming tightly packed rows.
+  All fields require a new viewport to change.
   """
   defstruct pixel_format: :rgba8888,
             bw1_polarity: :one_is_black,

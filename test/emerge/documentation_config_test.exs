@@ -4,6 +4,65 @@ defmodule Emerge.DocumentationConfigTest do
 
   @root Path.expand("../..", __DIR__)
   @config_guide "guides/reference/viewport-configuration.md"
+  @records [
+    Config.Window,
+    Config.DRM,
+    Config.Backlight,
+    Config.Headless,
+    Config.BinaryFrames,
+    Config.PrimeFrames,
+    Config.Renderer,
+    Config.RendererCache,
+    Config.PaintLayerCache,
+    Config.Input,
+    Config.Cursor,
+    Config.CursorIcon,
+    Config.Assets,
+    Config.Font,
+    Config.RuntimePaths,
+    Config.AssetCache,
+    Config.Diagnostics,
+    Config.Runtime
+  ]
+
+  test "each public config record explains every field and has a valid placement example" do
+    for module <- @records do
+      {:docs_v1, _, _, _, %{"en" => doc}, _, _} = Code.fetch_docs(module)
+
+      assert String.contains?(doc, "## Fields"),
+             "missing field documentation in #{inspect(module)}"
+
+      for {field, _type} <- module.__schema__() do
+        assert String.contains?(doc, "- `#{field}` —"),
+               "missing explanation for #{inspect(module)}.#{field}"
+      end
+
+      examples =
+        Enum.filter(code_blocks(doc), &String.starts_with?(String.trim(&1), "%Emerge.Config{"))
+
+      assert examples != [], "missing placement example in #{inspect(module)}"
+
+      for source <- examples do
+        {literal, _binding} = Code.eval_string(source, [], __ENV__)
+        config = Config.Normalize.config!(literal, Emerge)
+        assert :ok = EmergeSkia.validate_config!(config)
+      end
+    end
+  end
+
+  test "migration config examples validate without opening a renderer" do
+    sources = "guides/migrations/0.5.md" |> read() |> code_blocks()
+    examples = Enum.filter(sources, &String.starts_with?(String.trim(&1), "%Emerge.Config{"))
+    assert length(examples) == 6
+
+    for source <- sources, do: assert(match?({:ok, _}, Code.string_to_quoted(source)))
+
+    for source <- examples do
+      {literal, _binding} = Code.eval_string(source, [], __ENV__)
+      config = Config.Normalize.config!(literal, Emerge)
+      assert :ok = EmergeSkia.validate_config!(config)
+    end
+  end
 
   test "configuration reference examples normalize and adapt without opening hardware" do
     examples =

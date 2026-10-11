@@ -1,24 +1,43 @@
 defmodule Emerge.Config.Backlight do
   @moduledoc """
-  DRM backlight binding and requested brightness for explicit OpenGL or CPU raster.
-  `device: :auto` requires a proven, unambiguous connector association; `nil` opts
-  out, and an absolute sysfs device path binds explicitly. Device selection is
-  startup-only. Missing automatic association permits KMS-only output unless
-  brightness is requested; ambiguity or unavailable explicit devices report errors.
+  The panel backlight managed by a DRM output. Set this record as
+  `Emerge.Config.DRM.backlight`; it does not apply to desktop windows.
 
-  `brightness` is a live, finite `0..1` request, quantized to the device's integer
-  range. `nil` restores the original requested brightness captured before darkening
-  and preserved across viewport renderer recovery, not `actual_brightness` readback.
-  Changes while off retain intent without illumination. Zero is not display-off;
-  use `Emerge.Config.DRM.display` for power. Clean stop leaves a managed lamp dark.
-  Reservations protect against other Emerge owners, not external sysfs writers.
+  ```elixir
+  %Emerge.Config{
+    output: %Emerge.Config.DRM{
+      backlight: %Emerge.Config.Backlight{
+        device: "/sys/class/backlight/panel",
+        brightness: 0.5
+      }
+    },
+    renderer: %Emerge.Config.Renderer{api: :opengl}
+  }
+  ```
 
-  ## Fields and defaults
+  Replace the example device path with your panel's actual backlight path.
 
-  | Field | Default |
-  |---|---|
-  | `device` | `:auto` |
-  | `brightness` | `nil` |
+  ## Fields
+
+  - `device` — `:auto` (default), an absolute sysfs backlight path, or `nil` to
+    leave brightness unmanaged. Automatic selection requires a clear association
+    with the chosen connector. No associated backlight is acceptable unless you
+    request brightness; an ambiguous association is an error.
+  - `brightness` — a number from `0` to `1`, rounded to the device's supported
+    levels. `0.5` requests half its numeric range, not a perceptual brightness curve.
+    The default `nil` uses the original requested brightness. Returning to `nil`
+    restores that original value, including after renderer recovery.
+
+  Brightness `0` is **not** display-off. Set `DRM.display` to `:off` to blank the
+  display. A brightness change while off is used when the display turns on again.
+  Requesting brightness with `device: nil` is invalid.
+
+  ## Changing settings
+
+  Brightness can change through `config` with explicit OpenGL or CPU raster.
+  Changing `device` requires a new viewport. Avoid writing the same backlight
+  from another process while Emerge manages it. Stopping a managed display leaves
+  its backlight dark.
   """
   defstruct device: :auto,
             brightness: nil

@@ -1,57 +1,57 @@
 defmodule Emerge.Config do
   @moduledoc """
-  Declarative viewport configuration.
+  Configuration returned by a viewport's `mount/1` callback, or passed to
+  `EmergeSkia.start/1` when using a renderer directly.
 
-  All groups have defaults. Output variants use explicit structs; fixed-shape
-  groups also accept typed keyword shorthand:
+  ```elixir
+  %Emerge.Config{
+    output: %Emerge.Config.Window{title: "My App"},
+    renderer: %Emerge.Config.Renderer{api: :raster}
+  }
+  ```
 
-      %Emerge.Config{
-        output: %Emerge.Config.Window{title: "My App"},
-        renderer: [api: :raster],
-        input: [events: [:key, :resize]]
-      }
+  ## Groups
 
-  `c:Emerge.mount/1` supplies the initial config. The optional `c:Emerge.config/2`
-  receives the previous **normalized desired config**, not physical hardware
-  state. Nested records in that argument are always structs. Prefer typed
-  updates with intermediate variables:
+  - `output` — `Emerge.Config.Window` (default), `Emerge.Config.DRM` or
+    `Emerge.Config.Headless`. Chooses where frames go.
+  - `renderer` — `Emerge.Config.Renderer`. Chooses how frames are drawn.
+  - `input` — `Emerge.Config.Input`. Raw input subscriptions default to none;
+    ordinary UI element interactions still work.
+  - `assets` — `Emerge.Config.Assets`. Application asset paths, fonts and images.
+  - `diagnostics` — `Emerge.Config.Diagnostics`. Optional measurements and logs.
+  - `runtime` — `Emerge.Config.Runtime`. Health checks and advanced renderer options.
 
-      def config(%Emerge.Config{output: %Emerge.Config.Window{} = output} = previous, state) do
-        output = %Emerge.Config.Window{output | title: state.title}
-        %Emerge.Config{previous | output: output}
-      end
+  All groups have defaults. Use explicit structs to choose the `output` and
+  headless frame variant. Other records also accept keyword shorthand:
 
-  A newly supplied nested record replaces that record. Keyword shorthand fills
-  omitted fields from defaults, not from the previous config. Collections are
-  replaced, never implicitly appended. Configuration does not interpret the
-  cause of a display-state change.
+  ```elixir
+  %Emerge.Config{input: [events: [:key, :resize]]}
+  ```
 
-  ## Outputs and supported live changes
+  A viewport infers the asset application where possible. Direct renderer callers
+  must supply `assets.otp_app`; headless output also needs a live target PID.
 
-  - `Emerge.Config.Window` selects a desktop window; `backend: :auto` uses the
-    platform default, independently of `renderer.api`.
-  - `Emerge.Config.DRM` selects a KMS output; `preferred_size` is a mode-selection
-    hint, not a guaranteed framebuffer size.
-  - `Emerge.Config.Headless` sends frames to a required live local PID; use an
-    explicit `Emerge.Config.BinaryFrames` or `Emerge.Config.PrimeFrames` variant.
+  ## Change settings while running
 
-  Input subscriptions and runtime health intervals can change without restarting.
-  Window titles are live on Wayland/macOS; render-admission caps are live on
-  headless/Wayland. DRM display/brightness controls support explicit OpenGL and
-  CPU raster (`raster_present: :auto | :cpu`). Off retains ownership/tree/intent
-  while destroying the presenter; on creates fresh resources and enables a managed
-  backlight after first presentation. Backlight `:auto` requires proven connector
-  association, `nil` opts out, and an explicit path selects a device.
+  An optional `c:Emerge.config/1` or `c:Emerge.config/2` callback receives the previous
+  requested config, with all nested records expanded to structs. Return a config
+  with the changes you want:
 
-  DRM connector/mode changes, Vulkan/raster GPU-upload power controls and DRM/macOS
-  frame caps remain rejected. Output type, rendering API/device, assets, diagnostics,
-  cursor policy and adapter identity/options are startup-only. Unsupported changes
-  report errors instead of silently restarting or claiming hardware success.
+  ```elixir
+  def config(previous, state) do
+    output = %{previous.output | title: state.title}
+    %{previous | output: output}
+  end
+  ```
 
-  This is the breaking 0.5 API: old mount/start keyword configurations and public
-  numeric input masks are removed. See the [configuration reference](viewport-configuration.html),
-  [input guide](handle_input.html) and [0.5 migration guide](0-5.html). Software
-  support does not establish panel timing or device qualification.
+  Updating an existing record preserves its other fields. Supplying a new record
+  uses defaults for omitted fields; it does not merge with the previous record.
+  Lists replace rather than append. Not all fields can change while running:
+  each module explains which changes need a new viewport and its backend limits.
+
+  See [viewport configuration](viewport-configuration.html) for complete examples,
+  [raw input](handle_input.html) for callbacks, and
+  [Migrate from 0.4.2 to 0.5.0](0-5.html) for the breaking changes.
   """
 
   alias Emerge.Config.{Assets, Diagnostics, Input, Renderer, Runtime, Window}
