@@ -45,7 +45,7 @@ In EMRG v3 these are encoded as typed image sources:
 
 Startup/config flow:
 
-- `EmergeSkia.start/1` requires `otp_app` and calls `configure_assets_nif` with `<otp_app>/priv` as the source root, runtime-path policy, raster-cache limits, and sized-decode policy.
+- `EmergeSkia.start/1` requires `config.assets.otp_app` and calls `configure_assets_nif` with `<otp_app>/priv` as the source root, runtime-path policy, raster-cache limits, and sized-decode policy.
 - `EmergeSkia.start/1` preloads configured font assets (`assets.fonts`) from `<otp_app>/priv` and registers them in the native font cache.
 - Rust stores normalized config in the renderer's asset runtime and applies raster-cache limits to that renderer's decoded LRU.
 - Reconfiguration clears that renderer's source state and SVG caches so paths and SVG parsing are revalidated under the new policy. Other renderers are unaffected.
@@ -76,7 +76,7 @@ errors. Runtime failures always render the failed placeholder.
 
 ## Source Root
 
-Logical sources are resolved directly from the `priv` root of the `otp_app` passed to `EmergeSkia.start/1`.
+Logical sources are resolved directly from the `priv` root of `config.assets.otp_app` passed to `EmergeSkia.start/1`.
 
 Path safety rules for logical sources:
 
@@ -237,7 +237,7 @@ that renderer's asset state.
 
 ## Memory Diagnostics
 
-`renderer_stats_log` includes:
+`diagnostics: [logs: [:stats]]` in `%Emerge.Config{}` enables periodic summaries including:
 
 - retained encoded source count and bytes;
 - decoded raster entries, bytes, and configured limits;
@@ -265,12 +265,15 @@ Each entry supports:
 
 Duplicate variants (`{family, weight, italic}`) are rejected at startup.
 
-## Start Options
+## Startup configuration
+
+The same assets record can be returned by `mount/1`. Assets are startup-only;
+new records replace rather than deep-merge previous settings.
 
 ```elixir
-EmergeSkia.start(
-  otp_app: :my_app,
+EmergeSkia.start(%Emerge.Config{
   assets: [
+    otp_app: :my_app,
     decode_at_size: true,
     cache: [
       max_entries: 32,
@@ -291,5 +294,5 @@ EmergeSkia.start(
       extensions: [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg"]
     ]
   ]
-)
+})
 ```

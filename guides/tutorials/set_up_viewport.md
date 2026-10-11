@@ -16,7 +16,12 @@ defmodule MyApp.View.Counter do
 
   @impl Viewport
   def mount(opts) do
-    {:ok, %{count: 0}, Keyword.merge([title: "Counter"], opts)}
+    output = %Emerge.Config.Window{
+      title: Keyword.get(opts, :title, "Counter"),
+      size: Keyword.get(opts, :size, {800, 600})
+    }
+
+    {:ok, %{count: 0}, %Emerge.Config{output: output}}
   end
 
   @impl Viewport
@@ -62,22 +67,27 @@ end
 `use Emerge` makes the UI helpers available and aliases `Emerge` as
 `Viewport` inside the module.
 
-## Mount state and options
+## Mount state and configuration
 
-`mount/1` receives the options passed when the viewport starts. This example
-returns:
+`mount/1` receives your application-defined startup arguments as a keyword list.
+It returns state and a typed configuration:
 
 ```elixir
-{:ok, %{count: 0}, Keyword.merge([title: "Counter"], opts)}
+output = %Emerge.Config.Window{title: "Counter", size: {800, 600}}
+{:ok, %{count: 0}, %Emerge.Config{output: output}}
 ```
 
-The state is passed to `render/1` and callback functions. It must be a map.
+State must be a map and is passed to `render/1` and event callbacks. The
+`:__emerge__` key is reserved for Emerge.
 
-The third tuple item contains viewport configuration. Merging `opts` after the
-default title lets callers override that title when starting the viewport.
+The third tuple item must be `%Emerge.Config{}`, not the startup arguments or a
+renderer keyword list. The example deliberately translates its `:title` and
+`:size` arguments into a window record. Callers cannot override arbitrary renderer
+fields unless your `mount/1` chooses to expose them.
 
-A viewport without local state can instead return `{:ok, viewport_options}` and
-implement `render/0`.
+A viewport without local state can return `{:ok, %Emerge.Config{}}` and implement
+`render/0`. All config groups have defaults; fixed-shape groups accept shorthand
+such as `renderer: [api: :raster]`. Output choices always use explicit structs.
 
 ## Render UI
 
@@ -107,7 +117,8 @@ end
 ```
 
 Update the state, pass it to `Viewport.rerender/1`, and return the resulting
-state. `rerender/1` schedules another call to `render/1`.
+state. `rerender/1` schedules a coalesced config/render cycle; it does not call
+`render/1` immediately.
 
 To send an event to another process, pass `{pid, message}`:
 
@@ -131,14 +142,15 @@ Override mounted defaults when needed:
 {:ok, viewport} =
   MyApp.View.Counter.start_link(
     title: "Counter Example",
-    width: 1024,
-    height: 768
+    size: {1024, 768}
   )
 ```
 
-The `Emerge.Runtime.Viewport` module documentation lists viewport configuration
-for DRM, headless output, raw input, and renderer diagnostics. You do not need
-those options for this example.
+Here `title` and `size` are arguments interpreted by this particular module's
+`mount/1`, not globally recognized renderer options. GenServer startup options
+such as `name: MyApp.Counter` remain separate from the returned configuration.
+See [viewport configuration](../reference/viewport-configuration.md) for DRM,
+headless output, live fields, assets and diagnostics.
 
 ## Supervise the viewport
 
@@ -168,11 +180,35 @@ Pass startup options through `child_spec/1`:
 children = [
   MyApp.View.Counter.child_spec(
     title: "Counter In App",
-    width: 1024,
-    height: 768
+    size: {1024, 768}
   )
 ]
 ```
+
+## Live configuration
+
+An optional `config(previous)` or `config(previous, state)` callback returns a
+complete `%Emerge.Config{}` during the same coalesced cycle. Implement at most one
+arity. It runs before the first render, and again on rerenders, even if the UI tree
+is unchanged. `previous` is normalized desired intent; nested records are structs.
+For example, a stateful viewport can declare a title without replacing its window:
+
+```elixir
+@impl Viewport
+def config(%Emerge.Config{output: %Emerge.Config.Window{} = output} = previous, state) do
+  output = %Emerge.Config.Window{output | title: "Count: #{state.count}"}
+  %Emerge.Config{previous | output: output}
+end
+```
+
+New nested records replace rather than merge with previous records. Use typed
+struct updates to preserve other values. Only supported live fields can change;
+output type, renderer API, assets and other startup-only changes require a new
+viewport. See the [configuration reference](../reference/viewport-configuration.md)
+for the supported matrix and failure/recovery semantics.
+
+Raw input is opt-in and separate from the buttons above. Continue with
+[Observe raw input](handle_input.md) when you need `handle_input/2`.
 
 ## Next
 

@@ -58,9 +58,9 @@ def render(%{count: count}) do
       # Sets font color to white using same color helper
       Font.color(color(:white)),
       # Sets padding to 12px, padding is space between edges of
-      # the row and children, in emrege there are no margins
+      # the row and children; in Emerge there are no margins,
       # only padding and spacing
-      padding(12)
+      padding(12),
       # Sets spacing between children to 12px
       spacing(12),
     ],
