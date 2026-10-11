@@ -102,7 +102,8 @@ defmodule Emerge.Runtime.Viewport do
               diff_state: nil,
               renderer_generation: generation,
               retiring_renderer_generation: nil,
-              renderer_relay: relay
+              renderer_relay: relay,
+              renderer_bound?: false
           }
         )
 
@@ -132,7 +133,8 @@ defmodule Emerge.Runtime.Viewport do
              diff_state: nil,
              renderer_generation: nil,
              retiring_renderer_generation: generation,
-             renderer_relay: nil
+             renderer_relay: nil,
+             renderer_bound?: false
          }
        )}
     else
@@ -608,10 +610,16 @@ defmodule Emerge.Runtime.Viewport do
   defp render_frame(state, phase) when is_map(state) do
     case safe_invoke(fn -> reconcile_config(state, phase) end) do
       {:ok, next_state} ->
-        if runtime!(next_state).config_error != nil or
-             Emerge.Config.Changes.display_off?(runtime!(next_state).config),
-           do: clear_pending_rerender(next_state),
-           else: render_tree_frame(next_state, phase)
+        cond do
+          runtime!(next_state).config_error != nil ->
+            clear_pending_rerender(next_state)
+
+          Emerge.Config.Changes.display_off?(runtime!(next_state).config) ->
+            acquire_off_renderer(next_state, phase)
+
+          true ->
+            render_tree_frame(next_state, phase)
+        end
 
       {:error, failure} ->
         log_render_failure(runtime!(state).module, phase, failure)
@@ -673,14 +681,24 @@ defmodule Emerge.Runtime.Viewport do
         {:ok, :ok} ->
           update_runtime(
             state,
-            &%{&1 | renderer_config: &1.config, config_error: nil, config_pending: nil}
+            &%{
+              &1
+              | renderer_config: &1.config,
+                config_error: nil,
+                config_pending: nil
+            }
           )
 
         {:ok, {:pending, {session, revision} = token}}
         when is_integer(session) and session >= 0 and is_integer(revision) and revision > 0 ->
           update_runtime(
             state,
-            &%{&1 | renderer_config: &1.config, config_error: nil, config_pending: token}
+            &%{
+              &1
+              | renderer_config: &1.config,
+                config_error: nil,
+                config_pending: token
+            }
           )
 
         {:ok, {:error, reason}} ->
@@ -742,7 +760,7 @@ defmodule Emerge.Runtime.Viewport do
     if not is_nil(runtime.renderer) and not is_nil(runtime.diff_state) do
       patch_existing_renderer(state, runtime, tree)
     else
-      start_and_upload_renderer(state, runtime, tree)
+      start_and_upload_renderer(state, tree)
     end
   end
 
@@ -768,7 +786,46 @@ defmodule Emerge.Runtime.Viewport do
     end
   end
 
-  defp start_and_upload_renderer(state, runtime, tree) do
+  # Off defers render/serialization, not ownership. A native owner is still
+  # necessary to suppress inherited scanout and keep the output reserved.
+  defp acquire_off_renderer(state, phase) do
+    result =
+      if runtime!(state).renderer_bound?,
+        do: {:ok, state},
+        else: acquire_renderer(state)
+
+    case result do
+      {:ok, state} ->
+        clear_pending_rerender(state)
+
+      {:error, failure} ->
+        log_render_failure(runtime!(state).module, phase, failure)
+        clear_pending_rerender(state)
+    end
+  end
+
+  defp start_and_upload_renderer(state, tree) do
+    with {:ok, state} <- acquire_renderer(state) do
+      runtime = runtime!(state)
+
+      if runtime.config_error do
+        {:ok, state}
+      else
+        case upload_initial_tree(state, runtime.renderer, tree) do
+          {:ok, next_state} ->
+            {:ok, next_state}
+
+          {:error, failure} ->
+            _ = safe_stop_renderer(runtime.renderer_module, runtime.renderer)
+            {:error, failure}
+        end
+      end
+    end
+  end
+
+  defp acquire_renderer(state) do
+    runtime = runtime!(state)
+
     case safe_invoke(fn ->
            Lifecycle.acquire(runtime.lifecycle)
          end) do
@@ -788,23 +845,20 @@ defmodule Emerge.Runtime.Viewport do
                   if(runtime.renderer_generation == generation, do: runtime.config_pending),
                 config_applied:
                   if(runtime.renderer_generation == generation, do: runtime.config_applied),
+                diff_state: if(runtime.renderer_generation == generation, do: runtime.diff_state),
                 renderer_generation: generation,
-                renderer_relay: relay
+                retiring_renderer_generation: nil,
+                renderer_relay: relay,
+                renderer_bound?:
+                  runtime.renderer_generation == generation and runtime.renderer_bound?
             }
           )
           |> reconcile_renderer_config()
 
-        if runtime!(state).config_error do
+        if runtime!(state).config_error != nil or runtime!(state).renderer_bound? do
           {:ok, state}
         else
-          case upload_initial_tree(state, renderer, tree) do
-            {:ok, next_state} ->
-              {:ok, next_state}
-
-            {:error, failure} ->
-              _ = safe_stop_renderer(runtime.renderer_module, renderer)
-              {:error, failure}
-          end
+          bind_renderer(state)
         end
 
       {:ok, {:error, reason}} ->
@@ -818,8 +872,9 @@ defmodule Emerge.Runtime.Viewport do
     end
   end
 
-  defp upload_initial_tree(state, renderer, tree) when is_map(state) do
+  defp bind_renderer(state) do
     runtime = runtime!(state)
+    renderer = runtime.renderer
 
     case safe_invoke(fn ->
            target = runtime.renderer_relay || self()
@@ -830,8 +885,26 @@ defmodule Emerge.Runtime.Viewport do
              :ok = runtime.renderer_module.set_input_mask(renderer, runtime.input_mask)
            end
 
-           runtime.renderer_module.upload_tree(renderer, tree)
+           :ok
          end) do
+      {:ok, :ok} ->
+        {:ok,
+         state
+         |> update_runtime(
+           &%{&1 | renderer_bound?: true, last_renderer_heartbeat_at_ms: monotonic_ms()}
+         )
+         |> maybe_schedule_renderer_check()}
+
+      {:error, failure} ->
+        _ = safe_stop_renderer(runtime.renderer_module, renderer)
+        {:error, failure}
+    end
+  end
+
+  defp upload_initial_tree(state, renderer, tree) when is_map(state) do
+    runtime = runtime!(state)
+
+    case safe_invoke(fn -> runtime.renderer_module.upload_tree(renderer, tree) end) do
       {:ok, {diff_state, _assigned}} ->
         state =
           state
@@ -843,7 +916,6 @@ defmodule Emerge.Runtime.Viewport do
                 last_renderer_heartbeat_at_ms: monotonic_ms()
             }
           end)
-          |> maybe_schedule_renderer_check()
 
         :ok = VideoEndpoints.register(self(), renderer)
         {:ok, state}

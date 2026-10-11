@@ -2,6 +2,16 @@ defmodule Emerge.Config.DRM do
   @moduledoc """
   Direct DRM output. `display: :off` requests no scanout/illumination. Connector and mode selections are exact when provided; brightness is retained while off. `preferred_size` is only a mode-selection hint.
 
+  Display/backlight controls support explicit OpenGL or CPU raster presentation.
+  Raster's `raster_present: :auto` selects CPU scanout on DRM. Vulkan/gpu-upload
+  power and live connector/mode changes remain rejected.
+
+  Off retains output ownership and application state but suspends native UI
+  interaction and destroys presenter resources. Applications own their independent
+  wake-key policy. On creates a fresh presenter and presents the latest tree
+  before enabling a managed backlight. Panel-driver
+  errors are reported rather than treated as successful hardware application.
+
   ## Fields and defaults
 
   | Field | Default |

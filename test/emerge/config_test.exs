@@ -86,9 +86,11 @@ defmodule Emerge.ConfigTest do
         ] do
       config = Normalize.config!(%Config{output: output})
 
-      assert_raise ArgumentError, ~r/display\/backlight control is not implemented/, fn ->
-        EmergeSkia.validate_config!(config)
-      end
+      assert_raise ArgumentError,
+                   ~r/display\/backlight control requires OpenGL or CPU raster presentation/,
+                   fn ->
+                     EmergeSkia.validate_config!(config)
+                   end
     end
 
     for output <- [%Config.DRM{}, %Config.Window{backend: :macos}] do

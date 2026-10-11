@@ -149,14 +149,17 @@ defmodule EmergeSkia do
     end
   end
 
-  # Fail closed until the native control/first-frame barrier is implemented for
-  # every presenter. In particular, skipping render callbacks is NOT display-off.
+  # Explicit OpenGL and CPU raster support safe stop/recreate lifecycles.
+  # Vulkan and raster GPU-upload power controls remain unsupported.
   @doc false
   def validate_config!(%Emerge.Config{} = config) do
     case config.output do
       %Emerge.Config.DRM{display: display, backlight: backlight}
       when display != :on or not is_nil(backlight.brightness) or is_binary(backlight.device) ->
-        raise ArgumentError, "DRM display/backlight control is not implemented yet"
+        unless supports_drm_power?(config.renderer) do
+          raise ArgumentError,
+                "DRM display/backlight control requires OpenGL or CPU raster presentation"
+        end
 
       _ ->
         :ok
@@ -169,6 +172,13 @@ defmodule EmergeSkia do
 
     :ok
   end
+
+  defp supports_drm_power?(%Emerge.Config.Renderer{api: :opengl}), do: true
+
+  defp supports_drm_power?(%Emerge.Config.Renderer{api: :raster, raster_present: present}),
+    do: present in [:auto, :cpu]
+
+  defp supports_drm_power?(_renderer), do: false
 
   defp supports_frame_cap?(%Emerge.Config.Headless{}), do: true
   defp supports_frame_cap?(%Emerge.Config.Window{backend: :wayland}), do: true
@@ -215,7 +225,15 @@ defmodule EmergeSkia do
       Native.configure(Transport.Native.native_renderer(renderer), %{
         title: title,
         target_fps: config.renderer.target_fps,
-        input_mask: Emerge.Config.Native.input_mask(config.input)
+        input_mask: Emerge.Config.Native.input_mask(config.input),
+        drm_power:
+          case config.output do
+            %Emerge.Config.DRM{} = output ->
+              %{display_on: output.display == :on, brightness: output.backlight.brightness}
+
+            _ ->
+              nil
+          end
       })
     end
   end
@@ -227,8 +245,9 @@ defmodule EmergeSkia do
   owner application, and `applied_revision` is the last confirmed live-control
   revision. Failures include `failed_revision` and `error`; a failed update may
   have partial effects, so the last applied revision is not a rollback guarantee.
-  Revision zero means no live submission (startup settings are not counted). This does not report frame presentation or DRM power/KMS
-  completion. macOS host revision reporting is not implemented.
+  Revision zero means no live submission (startup settings are not counted). This
+  reports native owner processing, not independent verification of physical display
+  state. macOS host revision reporting is not implemented.
 
   Native `configure/3` submissions send `{:emerge_skia_config, {session_id, revision},
   :ok | {:error, reason}}` to the submitting process. Session shutdown can end
@@ -251,7 +270,10 @@ defmodule EmergeSkia do
           not supports_frame_cap?(config.output) ->
         {:error, {:unsupported_live_config, :target_fps}}
 
-      match?(%Emerge.Config.DRM{}, config.output) and previous.output != config.output ->
+      match?(%Emerge.Config.DRM{}, config.output) and
+          (previous.output.connector != config.output.connector or
+             previous.output.mode != config.output.mode or
+             (previous.output != config.output and not supports_drm_power?(config.renderer))) ->
         {:error, {:unsupported_live_config, :drm_output}}
 
       true ->
@@ -730,12 +752,16 @@ defmodule EmergeSkia do
 
   - `:peek` reads the current window without resetting it;
   - `:take` returns and resets the current window;
-  - `:reset` discards the current window;
-  - `{:configure, %{enabled: boolean}}` changes collection at runtime.
+  - `:reset` discards the current window.
 
-  `:take` reads and resets the current window. On DRM it may return a draining
-  error while asynchronous GPU samples finish; retry `:take` to receive the
-  exact closed snapshot. The 0.4 stats schema version is `25`.
+  When collection is disabled, the snapshot reports `enabled: false` and empty
+  counters. Renderer collection is startup-only; `{:configure, %{enabled: boolean}}`
+  is not supported for renderer handles.
+
+  `:take` and `:reset` may return a draining error while asynchronous GPU samples
+  finish; retry the same command to complete the closed window. The stats schema
+  version is `25`. The macOS host returns `{:error, :not_supported}` for this API;
+  use `diagnostics: [logs: [:stats]]` for its periodic summaries instead.
   """
   @spec stats(renderer(), Native.stats_command()) ::
           {:ok, Native.stats_snapshot()} | {:error, term()}

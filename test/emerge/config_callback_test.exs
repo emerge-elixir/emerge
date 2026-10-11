@@ -13,11 +13,21 @@ defmodule Emerge.ConfigCallbackTest do
     def configure(renderer, _old, config), do: Agent.update(renderer, fn _ -> config end)
     def stop(renderer), do: Agent.stop(renderer)
     def running?(renderer), do: Process.alive?(renderer)
-    def set_input_target(_, _), do: :ok
-    def set_log_target(_, _), do: :ok
-    def set_input_mask(_, _), do: :ok
 
-    def upload_tree(_, tree) do
+    def set_input_target(renderer, target),
+      do: notify(renderer, {:input_target, renderer, target})
+
+    def set_log_target(renderer, target), do: notify(renderer, {:log_target, renderer, target})
+    def set_input_mask(renderer, mask), do: notify(renderer, {:input_mask, renderer, mask})
+
+    defp notify(renderer, message) do
+      config = Agent.get(renderer, & &1)
+      send(Keyword.fetch!(config.runtime.adapter_opts, :observer), message)
+      :ok
+    end
+
+    def upload_tree(renderer, tree) do
+      notify(renderer, {:uploaded, renderer})
       diff = Emerge.Engine.diff_state_new(tree)
       {diff, diff.tree}
     end
@@ -189,23 +199,80 @@ defmodule Emerge.ConfigCallbackTest do
     GenServer.stop(pid)
   end
 
-  test "initial off config does not start renderer or call render; on uses latest desired config" do
+  test "initial off acquires and binds once without rendering; on reuses the owner" do
     {:ok, pid} = Screen.start_link(observer: self(), display: :off)
-    assert Emerge.renderer(pid) == nil
+    renderer = Emerge.renderer(pid)
+    assert is_pid(renderer)
     assert_receive {:previous, _}
-    refute_receive {:started, _}, 30
+    assert_receive {:started, started}
+    assert started.output.display == :off
+    assert_receive {:input_target, ^renderer, ^pid}
+    assert_receive {:log_target, ^renderer, ^pid}
+    assert_receive {:input_mask, ^renderer, 0}
+    assert :sys.get_state(pid).__emerge__.renderer_bound?
+    assert :sys.get_state(pid).__emerge__.diff_state == nil
     refute_receive :rendered, 30
+    refute_receive {:uploaded, _}, 30
+
     send(pid, {:change, %{brightness: 0.1}})
     assert_receive {:previous, previous}
     assert previous.output.display == :off
+    assert Emerge.renderer(pid) == renderer
+    assert Agent.get(renderer, & &1.output.backlight.brightness) == 0.1
     refute_receive :rendered, 30
+    refute_receive {:input_target, _, _}, 30
+    refute_receive {:uploaded, _}, 30
+
     send(pid, {:change, %{display: :on}})
     assert_receive {:previous, previous}
     assert previous.output.backlight.brightness == 0.1
     assert_receive :rendered
-    assert_receive {:started, started}
-    assert started.output.backlight.brightness == 0.1
-    assert started.output.display == :on
+    assert_receive {:uploaded, ^renderer}
+    assert Emerge.renderer(pid) == renderer
+    assert Agent.get(renderer, & &1.output.display) == :on
+    refute_receive {:started, _}, 30
+    refute_receive {:input_target, _, _}, 30
+    GenServer.stop(pid)
+    refute Process.alive?(renderer)
+  end
+
+  test "stop before first upload releases the off owner" do
+    {:ok, pid} = Screen.start_link(observer: self(), display: :off)
+    renderer = Emerge.renderer(pid)
+    assert is_pid(renderer)
+    GenServer.stop(pid)
+    refute Process.alive?(renderer)
+    refute_receive :rendered, 30
+    refute_receive {:uploaded, _}, 30
+  end
+
+  test "recovered off owners are rebound without rendering or reusing a diff" do
+    alias Emerge.Runtime.Viewport.Lifecycle
+    {:ok, pid} = Screen.start_link(observer: self(), display: :off)
+    renderer = Emerge.renderer(pid)
+    assert_receive {:started, _}
+    assert_receive {:input_target, ^renderer, ^pid}
+    runtime = :sys.get_state(pid).__emerge__
+    :ok = Lifecycle.discard(runtime.lifecycle)
+
+    send(
+      pid,
+      {:emerge_viewport, :renderer_unavailable, runtime.lifecycle, runtime.renderer_generation,
+       :ok}
+    )
+
+    assert Emerge.renderer(pid) == nil
+    # Custom adapters do not auto-retry; drive the lifecycle's actual retry path.
+    send(runtime.lifecycle, :retry)
+    assert_receive {:started, config}
+    assert config.output.display == :off
+    assert_receive {:input_target, replacement, ^pid}
+    assert replacement != renderer
+    assert Emerge.renderer(pid) == replacement
+    assert :sys.get_state(pid).__emerge__.renderer_bound?
+    assert :sys.get_state(pid).__emerge__.diff_state == nil
+    refute_receive :rendered, 30
+    refute_receive {:uploaded, _}, 30
     GenServer.stop(pid)
   end
 
