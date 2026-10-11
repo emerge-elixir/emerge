@@ -1,167 +1,67 @@
 # Plans
 
-Last updated: 2026-09-28.
+Keep open implementation/qualification work and research that supports it here.
+Completed feature designs, validation logs, and superseded release checklists
+belong in Git history, tests, `CHANGELOG.md`, and the maintained guides—not in an
+archive subdirectory or a permanently active plan.
 
-This directory contains only open implementation plans and durable design/research
-notes. Completed implementation logs belong in Git history, the changelog, tests,
-or `guides/internals/`, not under an `active-` filename.
+## Open work
 
-## Active implementation plans
+- [Embedded artifact follow-up](active-embedded-artifact-qualification.md):
+  musl/RISC-V package and target checks; Trellis acceptance is complete.
+- [Headless grayscale output](active-headless-grayscale-output.md): Gray4/Gray8
+  expansion of the accepted BW1/Gray2 pipeline.
+- [Linux platform follow-up](active-linux-gpu-qualification.md): specific
+  device-loss/presenter-panic checks, Nexus 7 CPU-DRM cadence, and Vulkan-only
+  artifact dependency closure—not repeat GPU/PRIME, reconnect, or FP3 testing.
+- [Low-resource animation smoothness](active-low-resource-animation-smoothness.md):
+  constrained-device profiling, registry geometry work, safe patch coalescing,
+  and final cadence acceptance.
+- [macOS-specific follow-up](active-macos-runtime-qualification.md): independent
+  asset/font sessions, gradient coverage, and packaged raster-NIF checks;
+  Metal/raster playback acceptance is complete.
+- [RPi5 Camera 60 FPS](active-rpi5-camera-60fps.md): production NV12 correctness,
+  ownership, and sustained rendering/headroom targets.
+- [Universal gradient qualification](active-universal-gradient-colors.md):
+  constrained-device gradient performance and the outstanding screenshot-cache
+  benchmark issue.
 
-### `active-armv7-release-artifacts.md`
+## Research and roadmaps
 
-ARMv7 cross-image and release-artifact qualification, with automatic Trellis
-artifact selection from its existing Nerves toolchain.
+- [Screenshot cache investigation](screenshot-cache-benchmark-investigation.md):
+  unresolved coverage accounting and cached/direct text/shadow pixel differences.
+- [Low-memory grayscale research](headless-low-memory-grayscale-investigation.md):
+  pinned-Skia evidence and memory constraints for the remaining output work.
+- [Layout caching roadmap](layout-caching-roadmap.md) and
+  [cross-engine insights](layout-caching-engine-insights.md): retained-layout
+  direction beyond the completed foundation.
+- [Platform runtime differences](platform-runtime-architecture-differences.md):
+  Linux actor versus macOS host orchestration.
+- [Skia recording/DDL](skia-ddl-paint-layer-note.md): possible future paint-layer
+  recording work.
 
-### `active-direct-video-frame-submission.md`
+## Completed work: authoritative references
 
-Replace renderer-owned video targets and connection sessions with atom target
-identifiers, direct viewport frame submission, storage-neutral VideoInterop
-frames, unified binary/PRIME headless output, and Membrane-based
-headless-to-Emerge transport applied to `../emerge_demo`.
+Maintainer-confirmed testing closes Trellis operation/pictures, Linux GPU/PRIME,
+Vulkan unplug/replug, FP3, and macOS Metal/raster playback. Do not reopen those
+qualification reminders just because an old plan lacks the test log.
 
-### `active-picture-asset-memory-validation.md`
+- [Events and controlled-input reconciliation](../guides/internals/events.md)
+- [Tree wire format](../guides/internals/emrg-format.md)
+- [DRM output selection and viewport lifecycle](../guides/internals/drm-outputs-and-lifecycle.md)
+- [Native builds, artifacts, and release gates](../guides/reference/native-renderer-builds.md)
+- [Video submission and ownership](../guides/internals/video-interop-architecture.md)
+- [Renderer-local asset ownership](../guides/internals/assets-images.md)
+- [Headless frame-copy measurements](../bench/headless_frame_copy.md)
+- [Corrected borders-cache benchmark](../bench/README.md#rich-borders-cache-workload)
+- [Release history](../CHANGELOG.md) and [0.4 migration](../guides/migrations/0.4.md)
 
-Trellis picture-grid validation for bounded target-sized raster decoding and
-per-asset encoded/decode/cache memory diagnostics.
+## Maintenance
 
-### `active-per-renderer-asset-runtime.md`
-
-Release-gate validation for renderer-local asset workers, policies, registered
-fonts, decoded caches, generations, diagnostics, and macOS host sessions.
-
-### `active-headless-grayscale-output.md`
-
-Gray4 and Gray8 expansion on the accepted direct-Gray8 raster foundation. BW1
-and Gray2 implementation and Trellis qualification are complete.
-
-### `active-linux-gpu-qualification.md`
-
-Remaining hardware and publication gates for the implemented Linux rendering and
-PRIME stack: four-route Wayland PRIME, OpenGL explicit sync, Vulkan lifecycle,
-DRM/Vulkan target proof, and Vulkan-only dependency cleanup.
-
-This is the sole plan for general backend/Vulkan/headless PRIME qualification.
-
-### `active-low-resource-animation-smoothness.md`
-
-Remaining constrained-device work after animation correctness, transform-only
-payload reuse, partial attr preparation, and combined refresh traversal landed.
-It focuses on target re-baselining, registry geometry updates, safe patch
-coalescing, and final cadence validation.
-
-### `active-rpi5-camera-60fps.md`
-
-Authoritative pinned-RPi5 Camera plan. It combines production NV12 validation,
-the XRGB candidate decision, active-scene GPU work reduction, exact ownership,
-and the 60 FPS / 30% headroom gates.
-
-### `active-universal-gradient-colors.md`
-
-Remaining macOS host/Metal and constrained-device performance qualification for
-the implemented universal gradient colors. The shared color/brush model, every
-UI consumer, SVG alpha/validation, animation and EMRG v9 migration are complete.
-Tracks the independently reproduced renderer benchmark qualification issues.
-
-## Durable references
-
-### `borders-cache-benchmark-investigation.md`
-
-Good/bad commit reproduction for the borders cache benchmark: ordered paint-run
-payloads outgrew its warm-up assumption, and topology-based viewport selection
-lost visible animation coverage. Includes controls and a scoped correction.
-
-### `screenshot-cache-benchmark-investigation.md`
-
-Large Borders screenshot failure: bounded cold fill plus intentional direct
-animated-shadow admission fallback omitted by the coverage assertion. Includes
-an adjacent good/bad commit pair, pause/frozen controls and pixel-quality findings.
-
-### `release-0.4.0-readiness.md`
-
-Current 0.4.0 release checklist at `976e058` plus local preparation fixes:
-corrected public docs, package closure, asset notices, clean dependency audits,
-and exact-SHA publication gates. Tracks final CI/artifacts, integration, release
-approval and hardware follow-up; supersedes the earlier release audits.
-
-### `release-0.4.0-audit.md`
-
-Commit-range and release-readiness audit from `v0.3.4` through the packed
-headless grayscale baseline, including dependency, packaging, lifecycle, CI,
-and qualification findings.
-
-### `release-0.4-documentation-audit.md`
-
-Feature audit and completed user-facing documentation coverage for the 0.4
-release, including the ordered tutorial path, viewport and renderer API
-reference, migration notes, native builds, and package validation.
-
-### `headless-low-memory-grayscale-investigation.md`
-
-Pinned-Skia and local-probe evidence for direct opaque Gray8 rendering, memory
-estimates, alpha behavior, dithering direction, and remaining asset/cache risks.
-
-### `layout-caching-roadmap.md`
-
-Long-term retained-layout/cache roadmap. It is not a single active implementation
-slice.
-
-### `layout-caching-engine-insights.md`
-
-Cross-engine research from Taffy, Yoga, Flutter, Slint, Iced, and Servo.
-
-### `platform-runtime-architecture-differences.md`
-
-Reference comparing Linux actor-backed runtime orchestration with macOS host
-session orchestration.
-
-### `skia-ddl-paint-layer-note.md`
-
-Reference on possible future Skia DDL/picture recording for paint-layer work.
-
-## Consolidation performed
-
-The following implemented plans were removed rather than kept as perpetual
-hardware-validation logs:
-
-- backend/renderer unification
-- combined render/registry traversal and tree-walk cleanup
-- transient enter-animation completion
-- DRM physical-framerate cadence correction
-- DRM GLES2 compatibility
-- semantic paint-layer simplification
-- executed cross-repository commit sequencing
-
-The following overlapping plans were consolidated into
-`active-linux-gpu-qualification.md`:
-
-- Linux headless PRIME output
-- headless PRIME explicit synchronization
-- truthful Vulkan PRIME allocation sizing
-- broad Vulkan rendering API implementation/qualification
-- generic VideoInterop migration and shutdown rollout notes owned primarily by
-  the external VideoInterop repositories
-
-The following overlapping Camera plans were consolidated into
-`active-rpi5-camera-60fps.md`:
-
-- V3DV NV12 interop qualification
-- Camera-native packed RGB interop
-- Camera semantic-layer/performance work
-
-Implemented details remain discoverable through Git history, tests,
-`CHANGELOG.md`, and `guides/internals/`.
-
-## Maintenance rules
-
-- Use `active-*.md` only for work with concrete unfinished implementation or
-  acceptance gates.
-- Remove an active plan when implementation is complete; target smoke testing
-  alone is not enough reason to retain a large design log indefinitely.
-- Consolidate plans that share one implementation path, target, or acceptance
-  matrix.
-- Keep completed measurements only when they define the baseline for remaining
-  work.
-- Prefer links to authoritative cross-repository plans over copying their full
-  lifecycle design here.
-- Keep plans concise and update status when code lands.
+- Use `active-*.md` only for concrete unfinished work or acceptance gates.
+- Remove completed implementation logs; preserve evidence in Git history.
+- Consolidate overlapping follow-up gates instead of retaining whole completed
+  designs for a pending hardware smoke test.
+- Keep measurements only when they inform remaining work.
+- Prefer maintained guides and authoritative cross-repository plans over copies.
+- Update this index and repair links whenever a plan is removed.

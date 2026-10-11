@@ -158,8 +158,9 @@ scripts/performance-lock.sh exclusive cargo bench --manifest-path native/emerge_
 CPU contract and raster coverage regressions run in `cargo test` through
 `tests/borders_cache_benchmark.rs`. Re-baseline this corrected workload: historical
 results could sample an offscreen-animation/static viewport and only enqueue GPU
-work. See `plans/borders-cache-benchmark-investigation.md` for the history and the
-separate, still-failing large screenshot benchmark assertion.
+work. Historical investigation is retained in Git history. The separate,
+still-failing large screenshot benchmark assertion is tracked in
+[`plans/screenshot-cache-benchmark-investigation.md`](../plans/screenshot-cache-benchmark-investigation.md).
 
 ## Naming
 
