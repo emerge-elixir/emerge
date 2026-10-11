@@ -43,11 +43,12 @@ side effects; it does **not** imply rollback to the previous settings.
 ## Owner operations and bounds
 
 Linux/native reconciliation uses one NIF with the complete supported live
-snapshot: title, frame cap, and private input mask. It validates capabilities
-before accepting a revision. The DirtyIo wrapper uses a nonblocking enqueue;
-a full/disconnected event queue returns an error without advancing the revision.
-The event actor applies input subscriptions, then dispatches backend controls.
-Stale requests are discarded before their next side effect.
+snapshot: title, frame cap, private input mask, and DRM power/brightness. It
+validates capabilities before accepting a revision. The DirtyIo wrapper uses a
+nonblocking enqueue; a full/disconnected queue returns an error without advancing
+the revision. Non-DRM controls pass through the event actor; DRM uses an independent
+64-entry owner lane and joins input/output acknowledgements. Stale requests are
+discarded before their next side effect.
 
 Wayland has a one-slot latest-config mailbox and coalescing calloop wake. The
 window owner publishes the cap and calls the title setter before reporting
@@ -57,8 +58,9 @@ rejects producers and fails its pending request.
 
 Headless publishes the existing atomic cap on the event owner. Future render
 admissions read that control directly; no render is needed for acknowledgement.
-This adds no new pacing policy. DRM currently supports only input changes through
-this path. Its power/backlight/output controls remain fail-closed.
+This adds no new pacing policy. DRM OpenGL and CPU raster support display power
+and brightness through an independent owner lane. Vulkan/gpu-upload power,
+connector/mode changes, and DRM frame caps remain rejected.
 
 Submission, current-revision checks and short owner-side effects are serialized.
 Do not extend these critical sections to GPU/KMS waits. Native owner threads send
@@ -67,41 +69,55 @@ On session shutdown, completion delivery may end with the worker. Status treats
 pending work as failed once stopping; renderer lifecycle/cleanup remains the
 terminal ownership authority and recovery replays desired intent.
 
-## Backlight foundations (not yet wired to presenters)
+## Display off/on
 
-`native/emerge_skia/src/backend/backlight/` contains tested owner-side primitives,
-not additional supported config controls. Discovery uses proven connector ancestry;
-a shared GPU parent or a single globally discovered device is not sufficient for
-`:auto`. Ambiguous associations require explicit selection. Explicit bindings may
-override unknown association, but not a proven different connector. Discovery and
-attribute descriptors are pinned; class aliases share one identity reservation.
-Reservations cover Emerge siblings, not external backlight managers or different
-driver interfaces that happen to control the same physical lamp.
+Off defers the viewport render callback and serialization, not acquisition of the
+output/backlight owner. Routing is bound once per renderer generation; recovery
+can rebind while off without uploading a tree. The native tree actor retains the
+latest tree. The viewport sends a fresh tree/diff when on requires it.
 
-Managed takeover deliberately suppresses both `bl_power` and brightness. Brightness
-changes while dark retain intent without writing it. `nil` resolves to a captured
-initial **requested** level, not `actual_brightness`; recovery must carry that
-baseline rather than recapturing Emerge's zero. This follows the Linux
+As off starts, native UI input is ignored and the presenter is stopped. Its queued
+frames and GPU state are discarded, not saved for restoration. KMS is detached
+before buffers are released; OpenGL work is finished once at teardown, not once
+per frame. On creates a new presenter, asks the tree actor to render its latest
+tree, and enables the managed backlight after the first frame is presented.
+Initial-off does not require a tree upload. The app's independent wake-key reader
+is not suspended.
+
+There are no config-tree markers, frame receipts, presentation proof mailboxes,
+power input epochs, or custom commit-cookie protocol. This is a simple
+stop/recreate lifecycle, not strict config-to-frame provenance or a promise to
+preserve interactions across a power cycle.
+
+## Backlight ownership
+
+Discovery uses proven connector ancestry; ambiguous associations require an
+explicit device. Pinned descriptors and an identity reservation prevent another
+Emerge owner from taking the same backlight. Other processes are outside that
+reservation contract.
+
+Takeover suppresses both `bl_power` and brightness. Brightness changes while dark
+retain intent without illuminating. `nil` uses the initial requested brightness,
+not `actual_brightness`; a viewport-owned native resource preserves that baseline
+across renderer recovery. This follows the Linux
 [backlight sysfs ABI](https://github.com/torvalds/linux/blob/master/Documentation/ABI/stable/sysfs-class-backlight).
-A failed enable attempts both suppression mechanisms and never reports success.
-Unknown state cannot acknowledge a later brightness update as applied.
 
-Clean stop leaves a managed device dark. Explicit release requires cancelled
-pending enables and safe KMS/GPU detach; uncertain cleanup retains admission.
-Destructors perform no backlight writes and never restore illumination. These
-primitives do **not** establish presentation completion or current-intent authority:
-the future presenter must supply those before illumination. Tests use private
-filesystem trees and injected attribute failures; they are not hardware qualification.
+The output/backlight owner stays alive across presenter recreation. It receives
+config snapshots on an independent bounded lane and joins input/output control
+acknowledgements. Admission alone does not mean application. Clean stop leaves a
+managed device dark. Failed enable attempts suppression again; driver errors are
+reported. Destructors do no backlight I/O and never restore illumination.
+Unsafe KMS/GPU cleanup retains/quarantines ownership instead of freeing resources
+still used by the driver. Ordinary off/on destroys and recreates GPU resources.
 
 ## Remaining boundaries
 
 - macOS keeps its existing acknowledged host title/input operations; native
   revision reporting for that transport is not yet implemented.
-- Power/backlight and output/mode changes need matching config/tree/layout
-  revisions, KMS completion, stale-enable protection and ownership-safe cleanup.
-  Live-control acknowledgements above are not those guarantees.
-- Power controls must stay independently wakeable even when event/tree work is
-  blocked. This slice uses the existing bounded event queue for input ordering;
-  its acceptance/completion is not a latency guarantee for future power controls.
+- Connector/mode changes, Vulkan power, and raster GPU-upload power remain
+  unsupported. Vulkan acquisition synchronization repair is separately deferred.
+- Panel-driver DCS behavior while unprepared needs device testing. Native sysfs
+  errors remain failures; the implementation does not silently ignore them.
+- Control admission is not a latency guarantee for GPU/KMS or sysfs operations.
 - Hardware qualification, including backlight flash observation, remains required.
   The separately planned Vulkan acquisition synchronization repair is deferred.

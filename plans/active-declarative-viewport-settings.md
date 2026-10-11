@@ -2,7 +2,7 @@
 
 Status: **implementation in progress**, authorized by the user. This branch is not release-ready.
 Target release: **0.5.0**, intentionally breaking. No backward-compatibility layer for the replaced config/input APIs.
-Branch: `feat/declarative-viewport-settings`, from `feat/drm-raster-without-gpu` at `b8a03a1`.
+Branch: `feat/declarative-viewport-settings`, originally from `feat/drm-raster-without-gpu` at `b8a03a1`, rebased onto `main` at `6b81166`.
 
 ## Implementation progress
 
@@ -15,60 +15,37 @@ Implemented:
 - Native live-control revisions/completions for the currently supported Linux/native controls: one full-snapshot NIF, bounded nonblocking event admission, current-revision checks before owner effects, session/revision-tagged completion, and `EmergeSkia.config_status/1`. Wayland coalesces controls in a one-slot owner mailbox; headless publishes its existing atomic control. Viewports track pending/confirmed tokens, ignore stale replies and retain desired intent on asynchronous failure. See `guides/internals/config-reconciliation.md`; this is not KMS/presentation completion or startup revision tracking.
 - Live window titles on the Wayland event-loop thread and macOS AppKit thread. macOS protocol 17 acknowledges application and rejects stale host/session handles; socket/protocol tests cover errors and host loss.
 - All DRM presenters acknowledge resource readiness before first presentation. Explicit successful-upload readiness survives scene coalescing; resize, capture and cursor wakes cannot activate a placeholder. GL/GPU-upload raster also request a layout-scoped replay barrier on session recreation, rejecting queued stale scenes. Vulkan sleeps instead of spinning before upload. A valid empty tree counts as application content.
-- Headless binary/PRIME startup and live frame caps now gate all render admissions, not just animation pulses. Bounded latest-scene coalescing preserves earliest pending pipeline latency; an independent control lane rebases deadlines without catch-up frames. Static config changes stay idle, and stop/PRIME retirement remain wakeable. Tests cover cap changes, burst coalescing, terminal-frame retry, native output and config-only recovery. PRIME hardware qualification remains pending.
+- Headless binary/PRIME startup and live frame caps now gate all render admissions, not just animation pulses. Bounded latest-scene coalescing preserves earliest pending pipeline latency; an independent control lane rebases deadlines without catch-up frames. Static config changes stay idle, and stop/PRIME retirement remain wakeable. Tests cover cap changes, burst coalescing, terminal-frame retry, native output and config-only recovery. General Linux GPU/PRIME/reconnect qualification was closed upstream; the specific Vulkan acquire synchronization failure remains separately deferred.
 - Wayland startup/live caps across CPU raster, raster GPU upload, GL and Vulkan. A coalescing calloop ping wakes updates; deadlines only arm for presentable work. Input, callback/cleanup handling and stop remain independent. Physical refresh estimation ignores capped callback intervals, and animation sampling accounts for the next admission. Private startup FPS is now shared, not headless-specific. See `guides/internals/frame-pacing.md`.
 - Migrated affected test fixtures and artifact smoke probe; added normalization, callback, config-only native recovery and upload-readiness tests.
-- Backlight foundations in `native/emerge_skia/src/backend/backlight/`: conservative connector association, alias-safe process-wide reservations, pinned directory/attribute descriptors, requested-brightness baselines, quantization, dark-state intent retention and failure-safe leave-dark cleanup. Twenty-one fake-filesystem/fault/concurrency tests pass. These are **not wired to presenters** and do not enable any public control.
+- Backlight foundations in `native/emerge_skia/src/backend/backlight/`: conservative connector association, alias-safe process-wide reservations, pinned directory/attribute descriptors, requested-brightness baselines, quantization, dark-state intent retention and failure-safe leave-dark cleanup. Private-filesystem/fault/concurrency tests pass. These are wired to the retained DRM owner for explicit OpenGL and CPU raster power/brightness.
 
 Still required (not merely unverified):
 
-- Startup/DRM power/output config-to-frame revisions and presentation completion reporting; macOS host config revisions. The supported live-control tracker above does not replace these gates.
-- Wire backlight binding, baseline persistence and sysfs primitives into DRM startup/recovery/owner cleanup; implement display-off/on KMS transitions, native off-state work suppression, stale enable protection and safe mode/output reconfiguration.
+- macOS host config revisions; safe DRM mode/output reconfiguration.
+- Remaining backend controls and hardware qualification; strict config-to-frame proof is no longer part of DRM power scope.
 - macOS/DRM live frame caps.
 - Remaining guides/demo migration, full input transport contract coverage, release version changes and hardware qualification.
 
-Unsupported explicit native display/backlight requests and macOS/DRM frame caps currently raise rather than silently accepting intent. `backlight.device: :auto` does not yet manage a device. Live DRM output and macOS/DRM frame-cap updates report unsupported. Off-state callback deferral is tested with a custom adapter; it is **not** native display-off support. The package version remains 0.4.2 until the remaining 0.5 release work is complete.
+DRM power/brightness now supports explicit OpenGL and CPU raster. Vulkan/gpu-upload
+power, live connector/mode changes and DRM/macOS frame caps remain unsupported.
+The package version remains 0.4.2 until remaining 0.5 release work is complete.
 
-Latest backlight-foundation validation: `EMERGE_SKIA_BUILD=true mix test --warnings-as-errors` (627 passed, 13 excluded); default Rust (1530 unit tests), CPU-only DRM (1501 passed, 1 ignored), combined Wayland-all/DRM-all (1649 passed, 2 ignored), plus fixture suites; combined all-targets Clippy with warnings denied, `./ci-tests.sh quality`, and `mix docs --warnings-as-errors`. No real sysfs writes or DRM power hardware qualification were performed.
+DRM power uses a simple stop/recreate lifecycle, as requested by the user: off
+ignores native UI input and pending presenter work, suppresses illumination,
+detaches KMS and destroys GPU resources. The tree actor retains its latest tree.
+On creates a new presenter and presents that tree before illuminating. The
+viewport can send fresh UI; no GPU state is restored. There are no tree markers,
+frame receipts, proof mailboxes, power input epochs or custom commit cookies.
 
-Previous native-config validation: `mix test --warnings-as-errors` (627 passed, 13 excluded), default `cargo test` (1509 unit tests plus fixture suites), combined Wayland-all/DRM-all Rust tests (1628 passed, 2 ignored plus fixtures), CPU-only DRM Rust tests (1480 passed, 1 ignored plus fixtures), combined and CPU-only Clippy, `./ci-tests.sh quality`, `mix docs --warnings-as-errors`, and the live Wayland OpenGL smoke with owner acknowledgements. Earlier slices also passed Wayland-all and DRM-raster-only Rust tests, combined Wayland-all/DRM-all and CPU-only Clippy, and `mix docs --warnings-as-errors`. The opt-in live Wayland test passed on the available compositor for CPU raster, GPU-upload raster and OpenGL. Wayland Vulkan functional frame-cap checks also passed on Hyprland/RADV RX 7900 XTX, but synchronization validation reports acquire-to-layout-transition hazards (4 errors, 0 warnings in the native-validation run). Qualification is blocked pending a fix; details are in `active-linux-gpu-qualification.md`. DRM and headless PRIME hardware tests remain unrun; macOS was not built or qualified.
+Binding/baseline ownership, independent control admission and initial-off
+acquisition are implemented. See `active-native-drm-power.md` for the current
+contract and software checks. FP3 has returned to explicit OpenGL. The user
+reported CPU raster working; OpenGL device qualification remains their next step.
+Vulkan acquisition synchronization repair remains separately deferred in
+`active-vulkan-acquire-synchronization.md`.
 
-The Vulkan synchronization failure is separately tracked in
-[the deferred fix plan](active-vulkan-acquire-synchronization.md); do not expand
-config implementation into that graphics repair.
-
-Completed foundation slice: backlight discovery, binding primitives, pinned sysfs
-I/O, exclusive identity reservation, retained initial requested brightness and
-failure cleanup are implemented/tested separately from presenters. For managed
-devices, use deliberate dark takeover and leave-dark clean stop; never restore
-illumination from a destructor. Unmanaged (`device: nil`) devices receive no Emerge
-backlight attribute writes. Auto association must be proven by
-connector ancestry, not a shared GPU parent or enumeration order. Explicit unknown
-association is an operator override; a proven different connector is rejected.
-Use both power-down and zero brightness for suppression, attempt both on failure,
-and retain uncertain ownership rather than allowing sibling reuse. Tests use only
-private fake sysfs trees/in-memory attributes, not host display controls.
-
-This foundation is not public power support: config guards remain until native
-control wakeups, matching-frame/presentation barriers, and all relevant owner
-cleanup paths are integrated. `brightness: nil` recovery must reuse the captured
-baseline, never recapture a level Emerge already darkened. Power controls need a
-wake lane independent of blocked input/tree work, not just the bounded event
-admission used for existing live controls above.
-
-Next: carry binding/baseline ownership through startup/recovery and connect the
-power lane to config/tree/layout/presentation barriers. Persist the baseline before
-first darkening, including startup failures before the readiness/handle reply—not
-only recovery of successfully started renderers. A native replay request
-alone can replay the pre-off application tree before BEAM submits its latest UI.
-Require a revision-tagged acknowledgement after successful tree reconciliation
-(including a no-op diff), plus matching native layout/frame completion, before
-illumination. Recheck current intent at the final effect; do not hold its lock
-across GPU/KMS waits. The new sysfs helpers deliberately do not invent that proof.
-macOS retains its acknowledged host operations until its revision protocol lands.
-Native stop/status and recovery remain the ownership authority.
-
-The following sections retain the target design; they must not be read as claims that the pending features have shipped.
+The remaining design below describes broader release work, not shipped coverage.
 
 ## Goals
 
@@ -95,7 +72,7 @@ The following sections retain the target design; they must not be read as claims
 | Updates / transports | Viewport renderer adapters and `lib/emerge_skia/transport.ex` have no general settings-update contract. macOS uses its own host protocol and main-thread window ownership. |
 | Existing options | `drm_output` and exact `drm_mode` already exist at startup. `target_fps` currently belongs to `headless`. No backlight control was found in DRM presenters. |
 
-Build on the actual lifecycle implementation; older proposals in [DRM lifecycle](drm-renderer-lifecycle-recovery.md) are not evidence that every proposed mechanism landed. See also [implementation progress](drm-implementation-progress.md) and [CPU DRM](drm-raster.md).
+Build on the actual lifecycle implementation; historical proposals are not evidence that every proposed mechanism landed. See the current [DRM output and lifecycle guide](../guides/internals/drm-outputs-and-lifecycle.md).
 
 ## Proposed callback contract
 
@@ -108,7 +85,7 @@ alias Emerge.Config
 def mount(_opts) do
   config = %Config{
     output: %Config.DRM{connector: "DSI-1", backlight: [brightness: 0.7]},
-    renderer: [target_fps: 30]
+    renderer: [api: :opengl]
   }
 
   {:ok, %{display: :on, brightness: 0.7}, config}
@@ -132,7 +109,7 @@ The callback name `config`, receiving previous config, defaulted structs and `di
 - Evaluate `config` on the initial render, before renderer creation, as well as rerenders/reloads. Mount alone remains sufficient. This prevents creating an initially-on session when current application state requests off.
 - Normalize/validate one canonical struct config and diff by responsibility. Remove old renderer keyword config, duplicate `emerge_skia`/`viewport` namespaces and deprecated config aliases rather than converting them. Application-defined mount arguments and GenServer process-start options are separate from renderer config and may remain keyword lists.
 - Settings-only changes must work when the tree diff is empty. Unchanged normalized settings cause no native work.
-- Validate a settings revision before applying it. Callback/validation failures retain the last valid settings and report the error. A valid off/dim request must not depend on successful UI rendering; an on/reconfigure request must wait for a matching valid frame.
+- Validate a settings revision before applying it. Callback/validation failures retain the last valid settings and report the error. A valid off/dim request must not depend on successful UI rendering; an on request recreates the presenter and presents the latest tree.
 
 ### Config structure
 
@@ -156,8 +133,8 @@ Struct organization does not make every field mutable. Classify all fields and v
 - Keep initial and latest valid desired configuration in viewport state; synchronize the desired restart configuration with the lifecycle owner. Recovery must not resurrect old title/output/brightness/power values.
 - Keep desired, pending and applied settings distinct. Native queue acceptance is not KMS completion. Report revision-tagged success/failure through existing session-aware routing; expose enough status to diagnose requested versus applied power/output.
 - Use one internal settings reconciliation entry point through the renderer adapter/transport, rather than one NIF per property. Normal-scheduler NIF work only validates/enqueues bounded work; KMS/sysfs/GPU work stays on owning native threads. Blocking waits, if needed, use the appropriate dirty scheduler.
-- Associate enabling/reconfiguration with a settings revision and a tree/layout revision. Sending settings and a tree down independent queues without a dependency can expose the previous frame. Preserve the dependency across scene coalescing and acknowledge a no-op tree diff explicitly.
-- Backend control must remain wakeable when scenes stop arriving or scene queues are full. Coalesce desired updates, but never let a stale enable completion turn on the backlight after a newer off request. Session/revision checks precede delayed side effects.
+- On creates a fresh presenter and requests the latest retained tree. Do not add config-tree receipts or no-op diff acknowledgement machinery.
+- Backend control remains independently wakeable and coalesces desired updates. Off stops the current presenter; no old presenter state is reused on wake.
 - Reuse current lifecycle generations and cleanup gates; do not invent a competing recovery owner. A quarantined session is not reusable merely because the desired display changed.
 
 ## DRM startup and power sequence
@@ -170,13 +147,13 @@ Struct organization does not make every field mutable. Classify all fields and v
 4. If current desired power is on, submit an atomic enable containing mode/routing, primary framebuffer and geometry together. Preserve each presenter's GPU completion/fence requirements.
 5. After matching presentation completion (blocking completion or the applicable page-flip/out-fence), enable the managed backlight at the latest requested brightness. Ioctl submission alone is insufficient. Keep cursors hidden until the primary frame is valid.
 
-Suggested states: `prepared_dark -> waiting_for_frame -> enabling -> on`, with `off`, `reconfiguring`, failure and stopping branches. Keep frame validity separate from desired power.
+Keep startup readiness separate from first presentation; do not add a proof state machine.
 
 ### On, off and reconfiguration
 
 - **Off:** suppress managed illumination promptly, quiesce/resolve in-flight work, disable the selected CRTC/planes safely. Retain the lease, viewport state and desired brightness. Do not rely on receiving ordinary page flips from an inactive CRTC.
 - **While off:** accept application state/settings updates and defer routine tree building/layout/rendering. Display state changes only through config; input does not implicitly turn it on. Avoid continuous drawing/presentation, cursor-only commits and false liveness timeouts. Retire video frames safely; explicit capture, if supported while off, is bounded on-demand work and must not turn on the display.
-- **On:** render the latest accepted scene for the current layout/settings revision, then enable and illuminate in the same order as startup. An unchanged UI must still supply/validate a frame; it cannot wait indefinitely for a nonempty patch.
+- **On:** create a fresh presenter and render the latest tree, then illuminate after first presentation. Do not restore GPU resources from before off.
 - **Brightness:** changing it while off only updates desired state; it cannot wake the display. Power off preserves requested brightness. Explicit brightness zero remains zero on wake; it is not equivalent to KMS power off.
 - **Mode/output:** validate availability and reserve target resources before destructive changes where possible. Quiesce the old output, rebuild size-dependent buffers/layout/input geometry, and gate target activation on a correctly sized frame. A dark transition is acceptable; placeholder flashes are not. Preserve the old working output on preflight failure; report failures after teardown honestly rather than promise unconditional rollback.
 - **Recovery/hotplug:** reconcile the latest desired selection/power, reset frame readiness and reject stale completions. Never migrate an explicit output to another viewport's output. Reuse existing safe cleanup/quarantine rules.
@@ -200,7 +177,7 @@ Battery savings are a consequence of the display being off, not a second applica
 - **Updates while off:** evaluate settings when requested and retain latest application state without building intermediate trees. Coalesce deferred native work; do not queue missed frames/animation ticks. Consume/release video frames safely without an unbounded backlog.
 - **On:** render current state, refresh layout/event state, prepare a current frame, then activate and illuminate at the retained desired brightness. Render failure leaves the output dark. Initially-off sessions and recovery must also remain dark and quiescent until config requests on.
 - **Incidental wakeups:** audit heartbeat/liveness checks, hotplug polling, stats logging, asset/loading-indicator timers and fence/video cleanup. Prefer notifications or display-state-aware deadlines; preserve necessary ownership/failure detection without treating intentional inactivity as a stall. One off display must not pause another viewport.
-- **Scope:** display off does not suspend the BEAM, OS or device, or automatically pause application timers, camera/decoder producers or networking. Retained GPU resources may affect driver runtime power management; measure rather than promise complete GPU power-off.
+- **Scope:** display off does not suspend the BEAM, OS or device, or automatically pause application timers, camera/decoder producers or networking. Presenter GPU resources are destroyed while off; measure rather than promise complete device power-off.
 - **Acceptance:** test extended display-off periods with an animating/video scene and application state changes, then declare `display: :on` through config. Verify no recurring render/layout/presentation work, bounded frames, responsive reconciliation and first-frame-before-light ordering. Measure CPU use, wakeups, off-to-on latency and battery/current draw against active and static-screen baselines on the target device. No physical button is required for Emerge's acceptance tests. Record unavoidable periodic work rather than claiming zero CPU use.
 
 ## Windowed backends and cadence
@@ -212,7 +189,7 @@ Battery savings are a consequence of the display being off, not a second applica
 ## Delivery slices and acceptance gates
 
 1. **Settle 0.5.0 contract/schema:** approve typed groups/output variants, full-config callback semantics, input payloads and defaults without compatibility constraints; classify mutable/startup-only fields and document errors/capabilities.
-2. **First-frame startup:** pure power/readiness state machine plus split native startup handshake; integrate CPU raster, GL/GPU-upload raster and Vulkan. Prove startup returns without a tree and performs no placeholder activation.
+2. **First-frame startup:** basic application-upload gating and layout-scoped tree replay plus split native startup handshake; integrate CPU raster, GL/GPU-upload raster and Vulkan. Test that startup returns without a tree and performs no placeholder activation.
 3. **Declarative plumbing and typed input:** callbacks, normalization, diffing, adapter/transport updates, revision/completion reporting and lifecycle replay. Add `input.events`, public category/payload types and exact callback documentation; remove the public numeric-mask API. Numeric encoding may remain internal. Establish title/config-only and raw-input filtering tests before hardware effects.
 4. **DRM display/backlight and low-power off state:** safe device binding, per-output control, first-frame illumination, off/on races, deferred UI work, responsive settings reconciliation and incidental timer audit across all DRM presenters.
 5. **Cadence and output/mode changes:** live pacing, resource-safe reconfiguration and layout/frame barriers; preserve independent outputs and latest settings through recovery.
@@ -221,7 +198,7 @@ Battery savings are a consequence of the display being off, not a second applica
 Tests required as implementation lands:
 
 - **ExUnit:** absent/1-/2-arity callbacks; previous-config/state argument order; mount config on first call and latest desired config thereafter (including pending application/off/recovery); invalid results retain previous config; conflicting arities/malformed returns; struct defaults, shorthand/explicit-struct equivalence, idempotent normalization, normalized callback arguments, minimal construction, standard nested update preservation, explicit record/collection replacement and no mutation; rejection of removed config forms; initial evaluation; nil/static-field rules; coalescing/no-op config; the new custom-adapter contract; recovery preserves PID/state.
-- **Pure Rust/fakes:** no enable before explicit valid tree/frame; completion precedes illumination; off during pending enable suppresses stale backlight writes; frame/layout revision coalescing; no-op tree wake; brightness quantization; sysfs absence/ambiguity/permission failures; retry, stop and quarantine transitions. Inject filesystem/KMS interfaces rather than requiring hardware.
+- **Pure Rust/fakes:** basic startup/tree replay, control admission/status and brightness/binding contracts. Keep tests hardware-free; do not rebuild the deleted power proof/fault model.
 - **Input contract:** test every atom category, empty/all/default/duplicate/invalid lists, order-insensitive comparison, live replacement and recovery. Validate actual `handle_input/2` tuples against public types/docs on native/macOS; raw filtering must not disable element events or text/scroll behavior. Document backend availability and verify all closed config enums have named types.
 - **Native integration:** start without upload, upload later, initially off, capture/cursor/video before first tree, queue pressure, session loss and revision-tagged acknowledgements. Ensure no startup deadlock and no idle/off watchdog failure.
 - **Hardware, explicitly opted in:** CPU DRM, GL, raster GPU upload and Vulkan; backlit panel and external monitor; delayed first tree; repeated off/on, brightness zero, rapid toggles, mode/output changes, unplug/reconnect and two independent outputs. Use visual/optical observation as well as commit/write traces; logs alone cannot prove absence of flashes.
@@ -239,3 +216,11 @@ Tests required as implementation lands:
 - [DRM/KMS state and commit semantics](https://docs.kernel.org/gpu/drm-kms.html): CRTC `active` controls hardware activity; resource reservation and commit completion are separate concerns.
 - [Backlight sysfs ABI](https://github.com/torvalds/linux/blob/master/Documentation/ABI/stable/sysfs-class-backlight): brightness range, actual versus requested brightness and backlight power values.
 - [Backlight driver model](https://docs.kernel.org/gpu/backlight.html): blanking and display association are driver-dependent.
+
+## Phone-test scope
+
+Explicit OpenGL and CPU raster support DRM power/brightness. FP3 selects OpenGL;
+the user already reported CPU raster working. Vulkan/gpu-upload power, connector/
+mode changes and DRM caps remain guarded. See `active-native-drm-power.md` and
+`active-fairphone-display-controls.md` for the simple lifecycle and test handoff.
+Hardware testing is performed by the user; assistant device access is not needed.
