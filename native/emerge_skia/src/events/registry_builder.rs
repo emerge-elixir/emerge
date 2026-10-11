@@ -669,7 +669,7 @@ impl PointerRegion {
         }
     }
 
-    fn contains(&self, x: f32, y: f32) -> bool {
+    pub(crate) fn contains(&self, x: f32, y: f32) -> bool {
         if !self.visible {
             return false;
         }

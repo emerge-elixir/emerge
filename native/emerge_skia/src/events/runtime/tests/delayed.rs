@@ -1,5 +1,7 @@
 use super::*;
 
+mod touch;
+
 fn editable_tree(mount_focus: bool) -> ElementTree {
     let mut tree = ElementTree::new();
     tree.set_revision(1);

@@ -133,3 +133,71 @@ fn tapping_a_scrollable_list_row_still_emits_its_press_once() {
         );
     }
 }
+
+#[test]
+fn libinput_primary_touch_preserves_row_taps_and_scroll_capture() {
+    use crate::input::TouchPhase;
+    let assets = crate::assets::AssetRuntime::new();
+    let _assets = assets.enter();
+    for styled in [false, true] {
+        let policy = TreeUpdateDecodePolicy::ReturnErr;
+        let mut engine = TreeUpdateEngine::new(pressable_list(styled), 200, 100);
+        let (mut host, recorder) = recorded_host();
+        host.install_rebuild(response(
+            &mut engine,
+            vec![TreeMsg::RebuildRegistry],
+            policy,
+        ));
+        let touch = |phase, y| InputEvent::Touch {
+            id: 42,
+            phase,
+            x: 20.0,
+            y,
+        };
+        host.handle_input(touch(TouchPhase::Down, 50.0));
+        settle(&mut host, &mut engine, policy);
+        host.handle_input(touch(TouchPhase::Up, 50.0));
+        settle(&mut host, &mut engine, policy);
+        assert_eq!(
+            recorder
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, kind)| *kind == ElementEventKind::Press)
+                .count(),
+            1
+        );
+        host.handle_input(touch(TouchPhase::Down, 75.0));
+        settle(&mut host, &mut engine, policy);
+        host.handle_input(touch(TouchPhase::Move, 50.0));
+        settle(&mut host, &mut engine, policy);
+        host.handle_input(touch(TouchPhase::Move, 25.0));
+        settle(&mut host, &mut engine, policy);
+        assert_eq!(
+            host.driver.runtime.drag_motion.as_ref().unwrap().element_id,
+            NodeId(9)
+        );
+        assert!(
+            !engine
+                .tree()
+                .get(&NodeId(10))
+                .unwrap()
+                .runtime
+                .mouse_down_active
+        );
+        host.handle_input(touch(TouchPhase::Cancel, 25.0));
+        settle(&mut host, &mut engine, policy);
+        assert!(host.driver.runtime.inertial_scroll.is_none());
+        assert_eq!(
+            recorder
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, kind)| *kind == ElementEventKind::Press)
+                .count(),
+            1
+        );
+    }
+}
