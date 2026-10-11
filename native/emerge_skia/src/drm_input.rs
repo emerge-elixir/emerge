@@ -1,57 +1,32 @@
-use evdev::{
-    AbsoluteAxisCode as AbsoluteAxisType, Device, EventSummary, KeyCode as Key, PropType,
-    RelativeAxisCode as RelativeAxisType, SynchronizationCode as Synchronization,
+//! DRM input uses a statically bundled libinput path context. No udev daemon.
+use crate::{
+    actors::EventMsg,
+    backend::wake::BackendWakeHandle,
+    cursor::{CursorState, SharedCursorState},
+    input::{
+        ACTION_PRESS, ACTION_RELEASE, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
+        TouchPhase,
+    },
+    keys::CanonicalKey,
+    linux_wait::{EventFd, poll_fds},
 };
-use libc::input_absinfo;
-use std::collections::HashSet;
-use std::fs;
-use std::io::ErrorKind;
-use std::os::fd::AsRawFd;
-use std::path::{Path, PathBuf};
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
-use std::time::{Duration, Instant};
-
 use crossbeam_channel::{Receiver, SendTimeoutError, Sender, TrySendError};
-
-use crate::actors::EventMsg;
-use crate::backend::wake::BackendWakeHandle;
-use crate::cursor::{CursorState, SharedCursorState};
-use crate::input::{
-    ACTION_PRESS, ACTION_RELEASE, InputEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
+use emerge_input::{Context, Event};
+use evdev::KeyCode as Key;
+use std::{
+    collections::HashMap,
+    fs,
+    os::{
+        fd::{AsRawFd, FromRawFd, OwnedFd},
+        unix::fs::MetadataExt,
+    },
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
 };
-use crate::keys::CanonicalKey;
-use crate::linux_wait::{EventFd, poll_fds};
-
-struct InputDevice {
-    path: PathBuf,
-    device: Device,
-    abs_x: Option<AbsAxisState>,
-    abs_y: Option<AbsAxisState>,
-    abs_x_dirty: bool,
-    abs_y_dirty: bool,
-    abs_mode: AbsMode,
-    last_abs_scaled: Option<(f32, f32)>,
-    touch_active: bool,
-    touch_tracking: bool,
-    pending_direct_touch_button: Option<u8>,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct AbsAxisState {
-    value: i32,
-    min: i32,
-    max: i32,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AbsMode {
-    AbsolutePointer,
-    RelativeFromAbs,
-    DirectTouch,
-}
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Modifiers {
@@ -60,14 +35,12 @@ struct Modifiers {
     alt: bool,
     meta: bool,
 }
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PrintableText {
     Letter(char),
     ShiftPair { base: char, shifted: char },
     Literal(char),
 }
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum KeyKind {
     Printable {
@@ -77,11 +50,90 @@ enum KeyKind {
     Key(CanonicalKey),
 }
 
+#[derive(Default)]
+struct Contacts {
+    next_id: u64,
+    active: HashMap<(u64, i32), (u64, (f32, f32))>,
+}
+impl Contacts {
+    fn event(&mut self, event: Event) -> Vec<InputEvent> {
+        let slot = (event.device, event.slot);
+        let position = (event.x as f32, event.y as f32);
+        let touch = |id, phase, (x, y)| InputEvent::Touch { id, phase, x, y };
+        match event.kind {
+            8 => {
+                self.next_id = self.next_id.wrapping_add(1).max(1);
+                let id = self.next_id;
+                self.active
+                    .insert(slot, (id, position))
+                    .map(|(old, pos)| touch(old, TouchPhase::Cancel, pos))
+                    .into_iter()
+                    .chain(Some(touch(id, TouchPhase::Down, position)))
+                    .collect()
+            }
+            9 => self
+                .active
+                .get_mut(&slot)
+                .map(|(id, pos)| {
+                    *pos = position;
+                    touch(*id, TouchPhase::Move, position)
+                })
+                .into_iter()
+                .collect(),
+            10 | 11 => self
+                .active
+                .remove(&slot)
+                .map(|(id, pos)| {
+                    touch(
+                        id,
+                        if event.kind == 10 {
+                            TouchPhase::Up
+                        } else {
+                            TouchPhase::Cancel
+                        },
+                        pos,
+                    )
+                })
+                .into_iter()
+                .collect(),
+            1 => {
+                let mut removed: Vec<_> = self
+                    .active
+                    .iter()
+                    .filter(|((device, _), _)| *device == event.device)
+                    .map(|(slot, _)| *slot)
+                    .collect();
+                removed.sort_unstable();
+                removed
+                    .into_iter()
+                    .filter_map(|slot| {
+                        self.active
+                            .remove(&slot)
+                            .map(|(id, pos)| touch(id, TouchPhase::Cancel, pos))
+                    })
+                    .collect()
+            }
+            _ => vec![],
+        }
+    }
+}
+
+struct KeyboardRepeat {
+    device: u64,
+    key: Key,
+    deadline: Instant,
+}
+
 pub struct DrmInput {
-    devices: Vec<InputDevice>,
+    context: Option<Context>,
+    devices: HashMap<PathBuf, (u64, u64)>,
+    discovery: Option<OwnedFd>,
+    contacts: Contacts,
     cursor_pos: (f32, f32),
     modifiers: Modifiers,
     caps_lock: bool,
+    repeat_key: Option<KeyboardRepeat>,
+    pressed_keys: std::collections::HashSet<(u64, u16)>,
     screen_size: (u32, u32),
     screen_rx: Receiver<(u32, u32)>,
     event_tx: Sender<EventMsg>,
@@ -95,7 +147,6 @@ pub struct DrmInput {
     rescan_interval: Duration,
     log_enabled: bool,
 }
-
 impl DrmInput {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -108,13 +159,19 @@ impl DrmInput {
         input_wake: EventFd,
         log_enabled: bool,
     ) -> Self {
-        let devices = enumerate_devices(log_enabled);
-        let rescan_interval = Duration::from_millis(500);
-        Self {
-            devices,
+        let context = Context::new()
+            .map_err(|err| eprintln!("drm_input: cannot initialize bundled libinput: {err}"))
+            .ok();
+        let mut input = Self {
+            context,
+            devices: HashMap::new(),
+            discovery: None,
+            contacts: Contacts::default(),
             cursor_pos: (0.0, 0.0),
             modifiers: Modifiers::default(),
             caps_lock: false,
+            repeat_key: None,
+            pressed_keys: Default::default(),
             screen_size,
             screen_rx,
             event_tx,
@@ -123,206 +180,305 @@ impl DrmInput {
             backend_wake,
             input_wake,
             pending_cursor_pos: None,
-            pending_pointer_buttons: Vec::new(),
-            next_rescan_at: Instant::now() + rescan_interval,
-            rescan_interval,
+            pending_pointer_buttons: vec![],
+            next_rescan_at: Instant::now(),
+            rescan_interval: Duration::from_millis(500),
             log_enabled,
+        };
+        if let Some(ctx) = input.context.as_mut() {
+            ctx.set_logging(log_enabled);
         }
+        input.rescan_devices();
+        input
     }
-
     pub fn run(&mut self) {
         while !self.stop.load(Ordering::Relaxed) {
-            let mut poll_fds_buf = self.build_pollfds();
-            let timeout = Some(self.next_wait_timeout());
-
-            if let Err(err) = poll_fds(&mut poll_fds_buf, timeout) {
-                if self.log_enabled {
-                    eprintln!("drm_input poll error: {err}");
-                }
-                self.poll();
-                continue;
-            }
-
-            if poll_fds_buf
-                .last()
-                .map(|pollfd| (pollfd.revents & libc::POLLIN) != 0)
-                .unwrap_or(false)
+            let mut fds: Vec<_> = self
+                .context
+                .iter()
+                .map(AsRawFd::as_raw_fd)
+                .chain(self.discovery.iter().map(AsRawFd::as_raw_fd))
+                .chain(Some(self.input_wake.as_raw_fd()))
+                .map(|fd| libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                })
+                .collect();
+            let deadline = self.repeat_key.as_ref().map_or(self.next_rescan_at, |key| {
+                key.deadline.min(self.next_rescan_at)
+            });
+            let timeout = deadline.saturating_duration_since(Instant::now());
+            if let Err(err) = poll_fds(&mut fds, Some(timeout))
+                && self.log_enabled
             {
+                eprintln!("drm_input poll: {err}");
+            }
+            if fds.last().is_some_and(|fd| fd.revents & libc::POLLIN != 0) {
                 let _ = self.input_wake.drain();
             }
-
             if self.stop.load(Ordering::Relaxed) {
                 break;
             }
-
+            if self.discovery.as_ref().is_some_and(drain_discovery) {
+                self.rescan_devices();
+            }
             self.poll();
         }
     }
-
     pub fn poll(&mut self) {
         while let Ok(size) = self.screen_rx.try_recv() {
             self.screen_size = size;
         }
-
-        let now = Instant::now();
-        if now >= self.next_rescan_at {
+        if Instant::now() >= self.next_rescan_at {
             self.rescan_devices();
-            self.next_rescan_at = now + self.rescan_interval;
         }
-
-        let screen_size = self.screen_size;
-        let mut idx = 0;
-        while idx < self.devices.len() {
-            let fetched_events = {
-                let device = &mut self.devices[idx];
-                match device.device.fetch_events() {
-                    Ok(events) => Ok(events.collect::<Vec<_>>()),
-                    Err(err) if should_remove_device_on_fetch_error(&err) => Err(err),
-                    Err(_) => Ok(Vec::new()),
-                }
+        if !self.backend_wake.input_enabled() {
+            self.modifiers = Modifiers::default();
+            self.pressed_keys.clear();
+            self.contacts.active.clear();
+            self.pending_cursor_pos = None;
+            self.pending_pointer_buttons.clear();
+        }
+        if let Some(ctx) = self.context.as_mut()
+            && let Err(err) = ctx.dispatch()
+            && self.log_enabled
+        {
+            eprintln!("drm_input dispatch: {err}");
+        }
+        while !self.stop.load(Ordering::Relaxed) {
+            let Some(event) = self
+                .context
+                .as_mut()
+                .and_then(|ctx| ctx.next_event(self.screen_size))
+            else {
+                break;
             };
-            let events = match fetched_events {
-                Ok(events) => events,
-                Err(err) => {
-                    self.remove_device(idx, Some(err));
-                    continue;
-                }
-            };
-
             if !self.backend_wake.input_enabled() {
+                if event.kind == 1 {
+                    self.handle_event(event);
+                }
                 self.modifiers = Modifiers::default();
+                self.pressed_keys.clear();
+                self.contacts.active.clear();
                 self.pending_cursor_pos = None;
                 self.pending_pointer_buttons.clear();
-                self.devices[idx].pending_direct_touch_button = None;
-                idx += 1;
                 continue;
             }
-            for event in events {
-                match event.destructure() {
-                    EventSummary::Key(_, key, value) => {
-                        self.handle_key_event_with_device(idx, key, value);
-                    }
-                    EventSummary::RelativeAxis(_, axis, value) => {
-                        self.handle_rel_event(axis, value, screen_size);
-                    }
-                    EventSummary::AbsoluteAxis(_, axis, value) => {
-                        let device = &mut self.devices[idx];
-                        update_abs_state(device, axis, value, screen_size);
-                    }
-                    EventSummary::Synchronization(_, Synchronization::SYN_REPORT, _) => {
-                        let (abs_mode, action, pending_direct_touch_button) = {
-                            let device = &mut self.devices[idx];
-                            (
-                                device.abs_mode,
-                                consume_abs_action(device, screen_size),
-                                device.pending_direct_touch_button.take(),
-                            )
-                        };
-
-                        let direct_touch_had_position = matches!(action, AbsAction::Absolute(_, _));
-
-                        match (abs_mode, action) {
-                            (AbsMode::AbsolutePointer, AbsAction::Absolute(x, y)) => {
-                                self.handle_abs_position(x, y, true)
-                            }
-                            (AbsMode::RelativeFromAbs, AbsAction::Relative(dx, dy)) => {
-                                self.handle_abs_relative(dx, dy, screen_size)
-                            }
-                            (AbsMode::DirectTouch, AbsAction::Absolute(x, y)) => {
-                                self.handle_abs_position(x, y, false)
-                            }
-                            _ => {}
-                        }
-
-                        if abs_mode == AbsMode::DirectTouch {
-                            if pending_direct_touch_button.is_some() && !direct_touch_had_position {
-                                self.set_cursor_visible(false);
-                            }
-
-                            if let Some(action) = pending_direct_touch_button {
-                                self.push_left_button(action);
-                            }
-                        }
-
-                        self.flush_pending_pointer_buttons_blocking();
-                    }
-                    _ => {}
-                }
-            }
-
-            idx += 1;
+            self.handle_event(event);
         }
-
+        self.repeat_keyboard(Instant::now());
         self.flush_pending_cursor_pos_nonblocking();
     }
-
-    fn rescan_devices(&mut self) {
-        let discovered_paths = list_event_device_paths();
-        let existing_paths = self
-            .devices
-            .iter()
-            .map(|device| device.path.clone())
-            .collect::<Vec<_>>();
-        let (removed_paths, added_paths) =
-            reconcile_device_paths(&existing_paths, &discovered_paths);
-        let removed_set = removed_paths.into_iter().collect::<HashSet<_>>();
-
-        self.devices.retain(|device| {
-            let remove = removed_set.contains(&device.path);
-            if remove && self.log_enabled {
-                eprintln!("drm_input remove device={:?}", device.path);
-            }
-            !remove
-        });
-
-        for path in added_paths {
-            if let Some(device) = open_input_device(&path, self.log_enabled, Some("add")) {
-                self.devices.push(device);
-            }
-        }
-    }
-
-    fn remove_device(&mut self, idx: usize, error: Option<std::io::Error>) {
-        if idx >= self.devices.len() {
+    fn repeat_keyboard(&mut self, now: Instant) {
+        if !self.backend_wake.input_enabled() {
+            self.repeat_key = None;
             return;
         }
-
-        let device = self.devices.remove(idx);
-        if self.log_enabled {
-            if let Some(err) = error {
-                eprintln!("drm_input remove device={:?} error={err}", device.path);
-            } else {
-                eprintln!("drm_input remove device={:?}", device.path);
-            }
+        if let Some(repeat) = self.repeat_key.as_mut()
+            && repeat.deadline <= now
+        {
+            repeat.deadline = now + Duration::from_millis(40);
+            let key = repeat.key;
+            self.handle_key_event(key, 2);
         }
     }
-
-    fn next_wait_timeout(&self) -> Duration {
-        self.next_rescan_at
-            .saturating_duration_since(Instant::now())
-    }
-
-    fn build_pollfds(&self) -> Vec<libc::pollfd> {
-        let mut poll_fds_buf = self
+    fn rescan_devices(&mut self) {
+        self.next_rescan_at = Instant::now() + self.rescan_interval;
+        if self.context.is_none() {
+            self.context = Context::new().ok();
+            if let Some(ctx) = self.context.as_mut() {
+                ctx.set_logging(self.log_enabled);
+            }
+        }
+        let paths = list_event_device_paths();
+        let removed: Vec<_> = self
             .devices
             .iter()
-            .map(|device| libc::pollfd {
-                fd: device.device.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            })
-            .collect::<Vec<_>>();
-        poll_fds_buf.push(libc::pollfd {
-            fd: self.input_wake.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        });
-        poll_fds_buf
+            .filter(|(path, identity)| device_identity(path) != Some(**identity))
+            .map(|(path, _)| path.clone())
+            .collect();
+        if let Some(ctx) = self.context.as_mut() {
+            for path in removed {
+                ctx.remove(&path);
+                self.devices.remove(&path);
+            }
+            // Removal events must precede new devices at reused paths/addresses.
+            let _ = ctx.dispatch();
+        }
+        while let Some(event) = self
+            .context
+            .as_mut()
+            .and_then(|ctx| ctx.next_event(self.screen_size))
+        {
+            if self.backend_wake.input_enabled() || event.kind == 1 {
+                self.handle_event(event);
+            }
+        }
+        if let Some(ctx) = self.context.as_mut() {
+            for path in paths {
+                if !self.devices.contains_key(&path)
+                    && let Some(identity) = device_identity(&path)
+                    && ctx.add(&path)
+                {
+                    self.devices.insert(path, identity);
+                }
+            }
+        }
+        // Recreate the watch as well: /dev/input can appear late or be replaced.
+        self.discovery = discovery_watch();
     }
-
+    fn handle_event(&mut self, mut event: Event) {
+        // Never pass non-finite floats to BEAM encoders. Malformed touch
+        // coordinates cancel only that contact rather than committing a tap.
+        if !(event.x as f32).is_finite() || !(event.y as f32).is_finite() {
+            if matches!(event.kind, 8 | 9) {
+                event.kind = 11;
+                event.x = 0.0;
+                event.y = 0.0;
+            } else {
+                return;
+            }
+        }
+        match event.kind {
+            1 => {
+                if self
+                    .repeat_key
+                    .as_ref()
+                    .is_some_and(|key| key.device == event.device)
+                {
+                    self.repeat_key = None;
+                }
+                if let Some(ctx) = self.context.as_mut() {
+                    for path in ctx.removed_device(event.device) {
+                        self.devices.remove(&path);
+                    }
+                }
+                self.pressed_keys
+                    .retain(|(device, _)| *device != event.device);
+                self.recompute_modifiers();
+                for contact in self.contacts.event(event) {
+                    self.push_input_blocking(contact);
+                }
+            }
+            2 => {
+                let key = Key::new(event.code as u16);
+                if event.state != 0 && repeatable_key(key) {
+                    self.repeat_key = Some(KeyboardRepeat {
+                        device: event.device,
+                        key,
+                        deadline: Instant::now() + Duration::from_millis(400),
+                    });
+                } else if event.state == 0
+                    && self
+                        .repeat_key
+                        .as_ref()
+                        .is_some_and(|repeat| repeat.device == event.device && repeat.key == key)
+                {
+                    self.repeat_key = None;
+                }
+                if event.state != 0 {
+                    self.pressed_keys.insert((event.device, event.code as u16));
+                } else {
+                    self.pressed_keys.remove(&(event.device, event.code as u16));
+                }
+                self.recompute_modifiers();
+                self.handle_key_event(Key::new(event.code as u16), event.state as i32);
+            }
+            3 => self.handle_abs_relative(event.x as f32, event.y as f32, self.screen_size),
+            4 => self.handle_abs_position(event.x as f32, event.y as f32, true),
+            5 => {
+                self.handle_key_event(Key::new(event.code as u16), event.state as i32);
+                self.flush_pending_pointer_buttons_blocking();
+            }
+            6 | 7 => {
+                self.set_cursor_visible(true);
+                self.flush_pending_cursor_pos_blocking();
+                let (x, y) = self.cursor_pos;
+                let (dx, dy) = (-event.x as f32, -event.y as f32);
+                self.push_input_blocking(if event.kind == 6 {
+                    InputEvent::CursorScrollLines { dx, dy, x, y }
+                } else {
+                    InputEvent::CursorScroll { dx, dy, x, y }
+                });
+            }
+            8..=11 => {
+                event.x = event.x.clamp(0.0, self.screen_size.0.max(1) as f64 - 1.0);
+                event.y = event.y.clamp(0.0, self.screen_size.1.max(1) as f64 - 1.0);
+                self.set_cursor_visible(false);
+                self.flush_pending_cursor_pos_blocking();
+                for contact in self.contacts.event(event) {
+                    self.push_input_blocking(contact);
+                }
+            }
+            _ => {}
+        }
+    }
+    fn recompute_modifiers(&mut self) {
+        let held = |left: Key, right: Key| {
+            self.pressed_keys
+                .iter()
+                .any(|(_, code)| *code == left.code() || *code == right.code())
+        };
+        self.modifiers = Modifiers {
+            shift: held(Key::KEY_LEFTSHIFT, Key::KEY_RIGHTSHIFT),
+            ctrl: held(Key::KEY_LEFTCTRL, Key::KEY_RIGHTCTRL),
+            alt: held(Key::KEY_LEFTALT, Key::KEY_RIGHTALT),
+            meta: held(Key::KEY_LEFTMETA, Key::KEY_RIGHTMETA),
+        };
+    }
+    fn handle_abs_position(&mut self, x: f32, y: f32, visible: bool) {
+        let x = x.clamp(0.0, self.screen_size.0.saturating_sub(1) as f32);
+        let y = y.clamp(0.0, self.screen_size.1.saturating_sub(1) as f32);
+        self.set_cursor_state(x, y, visible);
+        self.pending_cursor_pos = Some((x, y));
+    }
+    fn handle_abs_relative(&mut self, dx: f32, dy: f32, _size: (u32, u32)) {
+        self.handle_abs_position(self.cursor_pos.0 + dx, self.cursor_pos.1 + dy, true);
+    }
+    fn set_cursor_state(&mut self, x: f32, y: f32, visible: bool) {
+        let previous = self.cursor_state.snapshot();
+        self.cursor_pos = (x, y);
+        let snapshot = self.cursor_state.update(CursorState {
+            pos: (x, y),
+            visible,
+        });
+        if snapshot.version != previous.version {
+            self.backend_wake.request_redraw();
+        }
+    }
+    fn set_cursor_visible(&mut self, visible: bool) {
+        self.set_cursor_state(self.cursor_pos.0, self.cursor_pos.1, visible);
+    }
+    fn flush_pending_cursor_pos_nonblocking(&mut self) {
+        let Some((x, y)) = self.pending_cursor_pos else {
+            return;
+        };
+        match self.try_push_input(InputEvent::CursorPos { x, y }) {
+            Ok(()) | Err(TrySendError::Disconnected(_)) => self.pending_cursor_pos = None,
+            Err(TrySendError::Full(_)) => {}
+        }
+    }
+    fn flush_pending_cursor_pos_blocking(&mut self) {
+        if let Some((x, y)) = self.pending_cursor_pos.take() {
+            self.push_input_blocking(InputEvent::CursorPos { x, y });
+        }
+    }
+    fn flush_pending_pointer_buttons_blocking(&mut self) {
+        self.flush_pending_cursor_pos_blocking();
+        let (x, y) = self.cursor_pos;
+        for (button, action, mods) in std::mem::take(&mut self.pending_pointer_buttons) {
+            self.push_input_blocking(InputEvent::CursorButton {
+                button,
+                action,
+                mods,
+                x,
+                y,
+            });
+        }
+    }
     fn handle_key_event(&mut self, key: Key, value: i32) {
         let pressed = value != 0;
-        self.update_modifiers(key, pressed);
         if key == Key::KEY_CAPSLOCK && pressed {
             self.caps_lock = !self.caps_lock;
         }
@@ -362,155 +518,6 @@ impl DrmInput {
             self.push_input_blocking(InputEvent::TextCommit {
                 text: codepoint.to_string(),
                 mods,
-            });
-        }
-    }
-
-    fn handle_rel_event(&mut self, axis: RelativeAxisType, value: i32, screen_size: (u32, u32)) {
-        let (mut x, mut y) = self.cursor_pos;
-        match axis {
-            RelativeAxisType::REL_X => {
-                x += value as f32;
-            }
-            RelativeAxisType::REL_Y => {
-                y += value as f32;
-            }
-            RelativeAxisType::REL_WHEEL => {
-                self.set_cursor_visible(true);
-                let (cx, cy) = self.cursor_pos;
-                self.flush_pending_cursor_pos_blocking();
-                self.push_input_blocking(InputEvent::CursorScrollLines {
-                    dx: 0.0,
-                    dy: value as f32,
-                    x: cx,
-                    y: cy,
-                });
-                return;
-            }
-            RelativeAxisType::REL_HWHEEL => {
-                self.set_cursor_visible(true);
-                let (cx, cy) = self.cursor_pos;
-                self.flush_pending_cursor_pos_blocking();
-                self.push_input_blocking(InputEvent::CursorScrollLines {
-                    dx: value as f32,
-                    dy: 0.0,
-                    x: cx,
-                    y: cy,
-                });
-                return;
-            }
-            _ => return,
-        }
-
-        let (width, height) = screen_size;
-        x = x.clamp(0.0, width.saturating_sub(1) as f32);
-        y = y.clamp(0.0, height.saturating_sub(1) as f32);
-        self.set_cursor_state(x, y, true);
-        self.queue_cursor_pos(x, y);
-    }
-
-    fn handle_abs_position(&mut self, x: f32, y: f32, visible: bool) {
-        self.set_cursor_state(x, y, visible);
-        self.queue_cursor_pos(x, y);
-    }
-
-    fn handle_abs_relative(&mut self, dx: f32, dy: f32, screen_size: (u32, u32)) {
-        let (mut x, mut y) = self.cursor_pos;
-        x += dx;
-        y += dy;
-        let (width, height) = screen_size;
-        x = x.clamp(0.0, width.saturating_sub(1) as f32);
-        y = y.clamp(0.0, height.saturating_sub(1) as f32);
-        self.set_cursor_state(x, y, true);
-        self.queue_cursor_pos(x, y);
-    }
-
-    fn set_cursor_state(&mut self, x: f32, y: f32, visible: bool) {
-        let previous = self.cursor_state.snapshot();
-        self.cursor_pos = (x, y);
-        let snapshot = self.cursor_state.update(CursorState {
-            pos: (x, y),
-            visible,
-        });
-        if snapshot.version != previous.version {
-            self.backend_wake.request_redraw();
-        }
-    }
-
-    fn set_cursor_visible(&mut self, visible: bool) {
-        let previous = self.cursor_state.snapshot();
-        let snapshot = self.cursor_state.update(CursorState {
-            pos: self.cursor_pos,
-            visible,
-        });
-        if snapshot.version != previous.version {
-            self.backend_wake.request_redraw();
-        }
-    }
-
-    fn push_left_button(&mut self, action: u8) {
-        self.flush_pending_cursor_pos_blocking();
-        let (x, y) = self.cursor_pos;
-        self.push_input_blocking(InputEvent::CursorButton {
-            button: "left".to_string(),
-            action,
-            mods: modifiers_to_mask(self.modifiers),
-            x,
-            y,
-        });
-    }
-
-    fn update_modifiers(&mut self, key: Key, pressed: bool) {
-        match key {
-            Key::KEY_LEFTSHIFT | Key::KEY_RIGHTSHIFT => self.modifiers.shift = pressed,
-            Key::KEY_LEFTCTRL | Key::KEY_RIGHTCTRL => self.modifiers.ctrl = pressed,
-            Key::KEY_LEFTALT | Key::KEY_RIGHTALT => self.modifiers.alt = pressed,
-            Key::KEY_LEFTMETA | Key::KEY_RIGHTMETA => self.modifiers.meta = pressed,
-            _ => {}
-        }
-    }
-
-    fn queue_cursor_pos(&mut self, x: f32, y: f32) {
-        self.pending_cursor_pos = Some((x, y));
-    }
-
-    fn flush_pending_cursor_pos_nonblocking(&mut self) {
-        let Some((x, y)) = self.pending_cursor_pos else {
-            return;
-        };
-
-        match self.try_push_input(InputEvent::CursorPos { x, y }) {
-            Ok(()) | Err(TrySendError::Disconnected(_)) => {
-                self.pending_cursor_pos = None;
-            }
-            Err(TrySendError::Full(_)) => {}
-        }
-    }
-
-    fn flush_pending_cursor_pos_blocking(&mut self) {
-        let Some((x, y)) = self.pending_cursor_pos.take() else {
-            return;
-        };
-
-        self.push_input_blocking(InputEvent::CursorPos { x, y });
-    }
-
-    fn flush_pending_pointer_buttons_blocking(&mut self) {
-        if self.pending_pointer_buttons.is_empty() {
-            return;
-        }
-
-        self.flush_pending_cursor_pos_blocking();
-        let (x, y) = self.cursor_pos;
-        let pending_buttons = std::mem::take(&mut self.pending_pointer_buttons);
-
-        for (button, action, mods) in pending_buttons {
-            self.push_input_blocking(InputEvent::CursorButton {
-                button,
-                action,
-                mods,
-                x,
-                y,
             });
         }
     }
@@ -562,816 +569,76 @@ impl DrmInput {
     }
 }
 
+fn device_identity(path: &Path) -> Option<(u64, u64)> {
+    let metadata = fs::metadata(path).ok()?;
+    use std::os::unix::fs::FileTypeExt;
+    metadata
+        .file_type()
+        .is_char_device()
+        .then_some((metadata.ino(), metadata.rdev()))
+}
 fn list_event_device_paths() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    let entries = match fs::read_dir("/dev/input") {
-        Ok(entries) => entries,
-        Err(_) => return paths,
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if is_event_device(&path) {
-            paths.push(path);
-        }
-    }
-
+    let mut paths: Vec<_> = fs::read_dir("/dev/input")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.strip_prefix("event"))
+                .is_some_and(|suffix| {
+                    !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit())
+                })
+        })
+        .collect();
     paths.sort();
     paths
 }
-
-fn enumerate_devices(log_enabled: bool) -> Vec<InputDevice> {
-    list_event_device_paths()
-        .into_iter()
-        .filter_map(|path| open_input_device(&path, log_enabled, None))
-        .collect()
-}
-
-fn open_input_device(path: &Path, log_enabled: bool, action: Option<&str>) -> Option<InputDevice> {
-    let device = match Device::open(path) {
-        Ok(device) => device,
-        Err(_) => return None,
-    };
-    set_non_blocking(device.as_raw_fd());
-    let (abs_mode, info) = detect_abs_mode(&device);
-    let (abs_x, abs_y) = init_abs_axes(&device);
-    if log_enabled {
-        let name = device.name().unwrap_or("unknown");
-        if let Some(action) = action {
-            eprintln!(
-                "drm_input {action} device={:?} name=\"{}\" abs_mode={:?} {}",
-                path, name, abs_mode, info
-            );
-        } else {
-            eprintln!(
-                "drm_input device={:?} name=\"{}\" abs_mode={:?} {}",
-                path, name, abs_mode, info
-            );
-        }
+fn discovery_watch() -> Option<OwnedFd> {
+    // SAFETY: owned nonblocking FD; path is a static terminated string.
+    let fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+    if fd < 0 {
+        return None;
     }
-
-    Some(InputDevice {
-        path: path.to_path_buf(),
-        device,
-        abs_x,
-        abs_y,
-        abs_x_dirty: false,
-        abs_y_dirty: false,
-        abs_mode,
-        last_abs_scaled: None,
-        touch_active: false,
-        touch_tracking: false,
-        pending_direct_touch_button: None,
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    let mask = libc::IN_CREATE
+        | libc::IN_DELETE
+        | libc::IN_MOVED_FROM
+        | libc::IN_MOVED_TO
+        | libc::IN_ATTRIB
+        | libc::IN_DELETE_SELF
+        | libc::IN_MOVE_SELF;
+    if unsafe { libc::inotify_add_watch(fd.as_raw_fd(), c"/dev/input".as_ptr(), mask) } < 0 {
+        return None;
+    }
+    Some(fd)
+}
+fn drain_discovery(fd: &OwnedFd) -> bool {
+    let mut bytes = [0_u8; 4096];
+    let mut changed = false;
+    // SAFETY: writable buffer covers the supplied size; read is nonblocking.
+    while unsafe { libc::read(fd.as_raw_fd(), bytes.as_mut_ptr().cast(), bytes.len()) } > 0 {
+        changed = true;
+    }
+    changed
+}
+fn repeatable_key(key: Key) -> bool {
+    evdev_key_to_kind(key).is_some_and(|kind| {
+        !matches!(
+            key_kind_to_canonical_key(kind),
+            CanonicalKey::Shift
+                | CanonicalKey::Control
+                | CanonicalKey::Alt
+                | CanonicalKey::AltGraph
+                | CanonicalKey::Super
+                | CanonicalKey::CapsLock
+                | CanonicalKey::NumLock
+                | CanonicalKey::ScrollLock
+                | CanonicalKey::PrintScreen
+                | CanonicalKey::Pause
+        )
     })
-}
-
-fn is_event_device(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .map(|name| name.starts_with("event"))
-        .unwrap_or(false)
-}
-
-fn reconcile_device_paths(
-    existing_paths: &[PathBuf],
-    discovered_paths: &[PathBuf],
-) -> (Vec<PathBuf>, Vec<PathBuf>) {
-    let existing = existing_paths.iter().cloned().collect::<HashSet<_>>();
-    let discovered = discovered_paths.iter().cloned().collect::<HashSet<_>>();
-
-    let removed = existing_paths
-        .iter()
-        .filter(|path| !discovered.contains(*path))
-        .cloned()
-        .collect();
-    let added = discovered_paths
-        .iter()
-        .filter(|path| !existing.contains(*path))
-        .cloned()
-        .collect();
-
-    (removed, added)
-}
-
-fn should_remove_device_on_fetch_error(err: &std::io::Error) -> bool {
-    !matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted)
-}
-
-enum AbsAction {
-    None,
-    Absolute(f32, f32),
-    Relative(f32, f32),
-}
-
-fn update_abs_state(
-    device: &mut InputDevice,
-    axis: AbsoluteAxisType,
-    value: i32,
-    screen_size: (u32, u32),
-) {
-    let fallback = (
-        screen_size.0.saturating_sub(1) as i32,
-        screen_size.1.saturating_sub(1) as i32,
-    );
-    match axis {
-        AbsoluteAxisType::ABS_X | AbsoluteAxisType::ABS_MT_POSITION_X => {
-            device.abs_x = Some(update_axis_state(device.abs_x, value, fallback.0));
-            device.abs_x_dirty = true;
-        }
-        AbsoluteAxisType::ABS_Y | AbsoluteAxisType::ABS_MT_POSITION_Y => {
-            device.abs_y = Some(update_axis_state(device.abs_y, value, fallback.1));
-            device.abs_y_dirty = true;
-        }
-        _ => {}
-    }
-}
-
-fn consume_abs_action(device: &mut InputDevice, screen_size: (u32, u32)) -> AbsAction {
-    if !(device.abs_x_dirty || device.abs_y_dirty) {
-        return AbsAction::None;
-    }
-
-    let (abs_x, abs_y) = match (device.abs_x, device.abs_y) {
-        (Some(abs_x), Some(abs_y)) => (abs_x, abs_y),
-        _ => return AbsAction::None,
-    };
-
-    let (scaled_x, scaled_y) = (
-        scale_abs_value(abs_x, screen_size.0),
-        scale_abs_value(abs_y, screen_size.1),
-    );
-    let last = device.last_abs_scaled.unwrap_or((scaled_x, scaled_y));
-    let scaled = (
-        if device.abs_x_dirty { scaled_x } else { last.0 },
-        if device.abs_y_dirty { scaled_y } else { last.1 },
-    );
-    device.abs_x_dirty = false;
-    device.abs_y_dirty = false;
-
-    if device.abs_mode == AbsMode::RelativeFromAbs {
-        if device.touch_tracking && !device.touch_active {
-            device.last_abs_scaled = Some(scaled);
-            return AbsAction::None;
-        }
-        let (dx, dy) = match device.last_abs_scaled {
-            Some((last_x, last_y)) => (scaled.0 - last_x, scaled.1 - last_y),
-            None => (0.0, 0.0),
-        };
-        device.last_abs_scaled = Some(scaled);
-        AbsAction::Relative(dx, dy)
-    } else {
-        AbsAction::Absolute(scaled.0, scaled.1)
-    }
-}
-
-fn update_axis_state(current: Option<AbsAxisState>, value: i32, fallback_max: i32) -> AbsAxisState {
-    match current {
-        Some(mut state) => {
-            state.value = value;
-            state
-        }
-        None => AbsAxisState {
-            value,
-            min: 0,
-            max: fallback_max,
-        },
-    }
-}
-
-fn scale_abs_value(state: AbsAxisState, screen_max: u32) -> f32 {
-    let screen_max = screen_max.saturating_sub(1) as f32;
-    if screen_max <= 0.0 {
-        return 0.0;
-    }
-    let min = state.min as f32;
-    let max = state.max as f32;
-    if max <= min {
-        return (state.value as f32).clamp(0.0, screen_max);
-    }
-    let norm = ((state.value as f32 - min) / (max - min)).clamp(0.0, 1.0);
-    norm * screen_max
-}
-
-fn init_abs_axes(device: &Device) -> (Option<AbsAxisState>, Option<AbsAxisState>) {
-    let Ok(abs_state) = device.get_abs_state() else {
-        return (None, None);
-    };
-
-    let abs_x =
-        axis_state_from_abs(abs_state.get(AbsoluteAxisType::ABS_X.0 as usize)).or_else(|| {
-            axis_state_from_abs(abs_state.get(AbsoluteAxisType::ABS_MT_POSITION_X.0 as usize))
-        });
-    let abs_y =
-        axis_state_from_abs(abs_state.get(AbsoluteAxisType::ABS_Y.0 as usize)).or_else(|| {
-            axis_state_from_abs(abs_state.get(AbsoluteAxisType::ABS_MT_POSITION_Y.0 as usize))
-        });
-    (abs_x, abs_y)
-}
-
-fn axis_state_from_abs(info: Option<&input_absinfo>) -> Option<AbsAxisState> {
-    info.map(|info| AbsAxisState {
-        value: info.value,
-        min: info.minimum,
-        max: info.maximum,
-    })
-}
-
-#[allow(clippy::too_many_arguments)]
-fn classify_abs_mode(
-    direct_prop: bool,
-    pointer_prop: bool,
-    buttonpad_prop: bool,
-    topbuttonpad_prop: bool,
-    semi_mt_prop: bool,
-    touchpad_key_hint: bool,
-    touch_key_hint: bool,
-    mt_position_hint: bool,
-    name_touchpad_hint: bool,
-    name_touch_hint: bool,
-) -> AbsMode {
-    let touchpad = !direct_prop
-        && ((pointer_prop
-            && (buttonpad_prop || topbuttonpad_prop || semi_mt_prop || touchpad_key_hint))
-            || name_touchpad_hint);
-
-    let direct_touch =
-        direct_prop || name_touch_hint || (!touchpad && (mt_position_hint || touch_key_hint));
-
-    if direct_touch {
-        AbsMode::DirectTouch
-    } else if touchpad {
-        AbsMode::RelativeFromAbs
-    } else {
-        AbsMode::AbsolutePointer
-    }
-}
-
-fn detect_abs_mode(device: &Device) -> (AbsMode, String) {
-    let (has_abs_xy, has_mt_position) = device
-        .supported_absolute_axes()
-        .map(|axes| {
-            (
-                axes.contains(AbsoluteAxisType::ABS_X) && axes.contains(AbsoluteAxisType::ABS_Y),
-                axes.contains(AbsoluteAxisType::ABS_MT_POSITION_X)
-                    && axes.contains(AbsoluteAxisType::ABS_MT_POSITION_Y),
-            )
-        })
-        .unwrap_or((false, false));
-    let has_abs = has_abs_xy || has_mt_position;
-    if !has_abs {
-        return (AbsMode::AbsolutePointer, "abs_axes=none".to_string());
-    }
-
-    let props = device.properties();
-    let direct_prop = props.contains(PropType::DIRECT);
-    let buttonpad_prop = props.contains(PropType::BUTTONPAD);
-    let topbuttonpad_prop = props.contains(PropType::TOPBUTTONPAD);
-    let semi_mt_prop = props.contains(PropType::SEMI_MT);
-    let pointer_prop = props.contains(PropType::POINTER);
-
-    let touchpad_key_hint = device.supported_keys().is_some_and(|keys| {
-        keys.contains(Key::BTN_TOOL_FINGER)
-            || keys.contains(Key::BTN_TOOL_DOUBLETAP)
-            || keys.contains(Key::BTN_TOOL_TRIPLETAP)
-            || keys.contains(Key::BTN_TOOL_QUADTAP)
-            || keys.contains(Key::BTN_TOOL_QUINTTAP)
-    });
-    let touch_key_hint = device.supported_keys().is_some_and(|keys| {
-        keys.contains(Key::BTN_TOUCH)
-            || keys.contains(Key::BTN_TOOL_FINGER)
-            || keys.contains(Key::BTN_TOOL_DOUBLETAP)
-            || keys.contains(Key::BTN_TOOL_TRIPLETAP)
-            || keys.contains(Key::BTN_TOOL_QUADTAP)
-            || keys.contains(Key::BTN_TOOL_QUINTTAP)
-    });
-
-    let name = device
-        .name()
-        .map(str::to_ascii_lowercase)
-        .unwrap_or_default();
-    let name_touchpad_hint = name.contains("touchpad");
-    let name_touch_hint = !name_touchpad_hint
-        && (name.contains("touchscreen")
-            || name.contains("touch screen")
-            || name.contains("touch")
-            || name.contains("waveshare"));
-
-    let info = format!(
-        "abs_xy={} mt_xy={} direct={} pointer={} buttonpad={} topbuttonpad={} semi_mt={} touchpad_key={} touch_key={} name_touchpad={} name_touch={}",
-        has_abs_xy,
-        has_mt_position,
-        direct_prop,
-        pointer_prop,
-        buttonpad_prop,
-        topbuttonpad_prop,
-        semi_mt_prop,
-        touchpad_key_hint,
-        touch_key_hint,
-        name_touchpad_hint,
-        name_touch_hint
-    );
-
-    (
-        classify_abs_mode(
-            direct_prop,
-            pointer_prop,
-            buttonpad_prop,
-            topbuttonpad_prop,
-            semi_mt_prop,
-            touchpad_key_hint,
-            touch_key_hint,
-            has_mt_position,
-            name_touchpad_hint,
-            name_touch_hint,
-        ),
-        info,
-    )
-}
-
-fn direct_touch_button_action(abs_mode: AbsMode, key: Key, pressed: bool) -> Option<u8> {
-    (abs_mode == AbsMode::DirectTouch && key == Key::BTN_TOUCH).then_some(if pressed {
-        ACTION_PRESS
-    } else {
-        ACTION_RELEASE
-    })
-}
-
-impl DrmInput {
-    fn handle_key_event_with_device(&mut self, idx: usize, key: Key, value: i32) {
-        let pressed = value != 0;
-        if let Some(device) = self.devices.get_mut(idx) {
-            if let Some(action) = direct_touch_button_action(device.abs_mode, key, pressed) {
-                device.pending_direct_touch_button = Some(action);
-                return;
-            }
-
-            if device.abs_mode == AbsMode::RelativeFromAbs && is_touch_tracking_key(key) {
-                device.touch_tracking = true;
-                device.touch_active = pressed;
-                if pressed {
-                    device.last_abs_scaled = None;
-                }
-            }
-        }
-
-        self.handle_key_event(key, value);
-    }
-}
-
-#[cfg(test)]
-#[allow(clippy::items_after_test_module)]
-mod tests {
-    use super::*;
-    use crate::cursor::SharedCursorState;
-    use crossbeam_channel::bounded;
-
-    fn test_input(event_capacity: usize) -> (DrmInput, Receiver<EventMsg>, Arc<SharedCursorState>) {
-        let (_screen_tx, screen_rx) = bounded(1);
-        let (event_tx, event_rx) = bounded(event_capacity);
-        let cursor_state = Arc::new(SharedCursorState::new(CursorState {
-            pos: (0.0, 0.0),
-            visible: false,
-        }));
-
-        let input = DrmInput {
-            devices: Vec::new(),
-            cursor_pos: (0.0, 0.0),
-            modifiers: Modifiers::default(),
-            caps_lock: false,
-            screen_size: (640, 480),
-            screen_rx,
-            event_tx,
-            cursor_state: Arc::clone(&cursor_state),
-            stop: Arc::new(AtomicBool::new(false)),
-            backend_wake: BackendWakeHandle::noop(),
-            input_wake: EventFd::new().expect("eventfd available for tests"),
-            pending_cursor_pos: None,
-            pending_pointer_buttons: Vec::new(),
-            next_rescan_at: Instant::now() + Duration::from_millis(500),
-            rescan_interval: Duration::from_millis(500),
-            log_enabled: false,
-        };
-
-        (input, event_rx, cursor_state)
-    }
-
-    #[test]
-    fn poll_flushes_only_latest_pending_cursor_position() {
-        let (mut input, event_rx, cursor_state) = test_input(8);
-
-        input.handle_abs_position(10.0, 12.0, true);
-        input.handle_abs_position(24.0, 36.0, true);
-        input.poll();
-
-        assert!(matches!(
-            event_rx.try_recv(),
-            Ok(EventMsg::InputEvent(InputEvent::CursorPos { x, y }))
-                if (x - 24.0).abs() < f32::EPSILON && (y - 36.0).abs() < f32::EPSILON
-        ));
-        assert!(event_rx.try_recv().is_err());
-
-        let snapshot = cursor_state.snapshot();
-        assert_eq!(snapshot.state.pos, (24.0, 36.0));
-        assert!(snapshot.state.visible);
-    }
-
-    #[test]
-    fn cursor_starts_hidden_until_pointer_activity() {
-        let (_, _, cursor_state) = test_input(8);
-
-        let snapshot = cursor_state.snapshot();
-        assert_eq!(snapshot.state.pos, (0.0, 0.0));
-        assert!(!snapshot.state.visible);
-    }
-
-    #[test]
-    fn cursor_motion_flushes_before_button_event() {
-        let (mut input, event_rx, _) = test_input(8);
-
-        input.handle_abs_position(14.0, 18.0, true);
-        input.handle_key_event(Key::BTN_LEFT, 1);
-        input.flush_pending_pointer_buttons_blocking();
-
-        assert!(matches!(
-            event_rx.try_recv(),
-            Ok(EventMsg::InputEvent(InputEvent::CursorPos { x, y }))
-                if (x - 14.0).abs() < f32::EPSILON && (y - 18.0).abs() < f32::EPSILON
-        ));
-        assert!(matches!(
-            event_rx.try_recv(),
-            Ok(EventMsg::InputEvent(InputEvent::CursorButton { button, action, x, y, .. }))
-                if button == "left"
-                    && action == ACTION_PRESS
-                    && (x - 14.0).abs() < f32::EPSILON
-                    && (y - 18.0).abs() < f32::EPSILON
-        ));
-    }
-
-    #[test]
-    fn button_press_makes_hidden_cursor_visible() {
-        let (mut input, event_rx, cursor_state) = test_input(8);
-
-        input.handle_key_event(Key::BTN_LEFT, 1);
-        input.flush_pending_pointer_buttons_blocking();
-
-        let snapshot = cursor_state.snapshot();
-        assert_eq!(snapshot.state.pos, (0.0, 0.0));
-        assert!(snapshot.state.visible);
-        assert!(matches!(
-            event_rx.try_recv(),
-            Ok(EventMsg::InputEvent(InputEvent::CursorButton { button, action, x, y, .. }))
-                if button == "left"
-                    && action == ACTION_PRESS
-                    && x.abs() < f32::EPSILON
-                    && y.abs() < f32::EPSILON
-        ));
-    }
-
-    #[test]
-    fn cursor_motion_flushes_before_scroll_event() {
-        let (mut input, event_rx, _) = test_input(8);
-
-        input.handle_abs_position(30.0, 40.0, true);
-        input.handle_rel_event(RelativeAxisType::REL_WHEEL, 2, (640, 480));
-
-        assert!(matches!(
-            event_rx.try_recv(),
-            Ok(EventMsg::InputEvent(InputEvent::CursorPos { x, y }))
-                if (x - 30.0).abs() < f32::EPSILON && (y - 40.0).abs() < f32::EPSILON
-        ));
-        assert!(matches!(
-            event_rx.try_recv(),
-            Ok(EventMsg::InputEvent(InputEvent::CursorScrollLines { dx, dy, x, y }))
-                if dx.abs() < f32::EPSILON
-                    && (dy - 2.0).abs() < f32::EPSILON
-                    && (x - 30.0).abs() < f32::EPSILON
-                    && (y - 40.0).abs() < f32::EPSILON
-        ));
-    }
-
-    #[test]
-    fn wheel_scroll_makes_hidden_cursor_visible() {
-        let (mut input, event_rx, cursor_state) = test_input(8);
-
-        input.handle_rel_event(RelativeAxisType::REL_WHEEL, 2, (640, 480));
-
-        let snapshot = cursor_state.snapshot();
-        assert_eq!(snapshot.state.pos, (0.0, 0.0));
-        assert!(snapshot.state.visible);
-        assert!(matches!(
-            event_rx.try_recv(),
-            Ok(EventMsg::InputEvent(InputEvent::CursorScrollLines { dx, dy, x, y }))
-                if dx.abs() < f32::EPSILON
-                    && (dy - 2.0).abs() < f32::EPSILON
-                    && x.abs() < f32::EPSILON
-                    && y.abs() < f32::EPSILON
-        ));
-    }
-
-    #[test]
-    fn pointer_button_report_uses_final_cursor_position_when_motion_arrives_later() {
-        let (mut input, event_rx, _) = test_input(8);
-
-        input.handle_abs_position(10.0, 12.0, true);
-        input.flush_pending_cursor_pos_blocking();
-        assert!(matches!(
-            event_rx.try_recv(),
-            Ok(EventMsg::InputEvent(InputEvent::CursorPos { x, y }))
-                if (x - 10.0).abs() < f32::EPSILON && (y - 12.0).abs() < f32::EPSILON
-        ));
-
-        input.handle_key_event(Key::BTN_LEFT, 0);
-        input.handle_abs_position(24.0, 36.0, true);
-        input.flush_pending_pointer_buttons_blocking();
-
-        assert!(matches!(
-            event_rx.try_recv(),
-            Ok(EventMsg::InputEvent(InputEvent::CursorPos { x, y }))
-                if (x - 24.0).abs() < f32::EPSILON && (y - 36.0).abs() < f32::EPSILON
-        ));
-        assert!(matches!(
-            event_rx.try_recv(),
-            Ok(EventMsg::InputEvent(InputEvent::CursorButton { button, action, x, y, .. }))
-                if button == "left"
-                    && action == ACTION_RELEASE
-                    && (x - 24.0).abs() < f32::EPSILON
-                    && (y - 36.0).abs() < f32::EPSILON
-        ));
-    }
-
-    #[test]
-    fn direct_touch_position_hides_cursor() {
-        let (mut input, _, cursor_state) = test_input(8);
-
-        input.handle_abs_position(12.0, 18.0, true);
-        input.handle_abs_position(24.0, 36.0, false);
-
-        let snapshot = cursor_state.snapshot();
-        assert_eq!(snapshot.state.pos, (24.0, 36.0));
-        assert!(!snapshot.state.visible);
-    }
-
-    #[test]
-    fn nonblocking_cursor_flush_keeps_latest_pending_position_when_queue_is_full() {
-        let (mut input, event_rx, _) = test_input(1);
-
-        input
-            .event_tx
-            .send(EventMsg::InputEvent(InputEvent::Key {
-                key: CanonicalKey::A,
-                action: ACTION_PRESS,
-                mods: 0,
-            }))
-            .unwrap();
-
-        input.handle_abs_position(50.0, 60.0, true);
-        input.flush_pending_cursor_pos_nonblocking();
-
-        assert_eq!(input.pending_cursor_pos, Some((50.0, 60.0)));
-        assert!(matches!(
-            event_rx.try_recv(),
-            Ok(EventMsg::InputEvent(InputEvent::Key { key, .. })) if key == CanonicalKey::A
-        ));
-
-        input.flush_pending_cursor_pos_nonblocking();
-
-        assert!(input.pending_cursor_pos.is_none());
-        assert!(matches!(
-            event_rx.try_recv(),
-            Ok(EventMsg::InputEvent(InputEvent::CursorPos { x, y }))
-                if (x - 50.0).abs() < f32::EPSILON && (y - 60.0).abs() < f32::EPSILON
-        ));
-    }
-
-    #[test]
-    fn evdev_key_to_kind_exposes_canonical_keys_for_symbols_and_keypad_operators() {
-        assert_eq!(
-            key_kind_to_canonical_key(evdev_key_to_kind(Key::KEY_EQUAL).expect("equal key")),
-            CanonicalKey::Equal
-        );
-        assert_eq!(
-            key_kind_to_canonical_key(evdev_key_to_kind(Key::KEY_8).expect("digit 8 key")),
-            CanonicalKey::Digit8
-        );
-        assert_eq!(
-            key_kind_to_canonical_key(evdev_key_to_kind(Key::KEY_KPPLUS).expect("kp plus key")),
-            CanonicalKey::Plus
-        );
-        assert_eq!(
-            key_kind_to_canonical_key(
-                evdev_key_to_kind(Key::KEY_KPASTERISK).expect("kp asterisk key")
-            ),
-            CanonicalKey::Asterisk
-        );
-        assert_eq!(
-            key_kind_to_canonical_key(evdev_key_to_kind(Key::KEY_KPDOT).expect("kp dot key")),
-            CanonicalKey::Period
-        );
-    }
-
-    #[test]
-    fn key_to_codepoint_preserves_shifted_and_keypad_text_output() {
-        let shift_mods = Modifiers {
-            shift: true,
-            ..Modifiers::default()
-        };
-
-        assert_eq!(
-            key_to_codepoint(
-                evdev_key_to_kind(Key::KEY_EQUAL).expect("equal key"),
-                shift_mods,
-                false
-            ),
-            Some('+')
-        );
-        assert_eq!(
-            key_to_codepoint(
-                evdev_key_to_kind(Key::KEY_8).expect("digit 8 key"),
-                shift_mods,
-                false
-            ),
-            Some('*')
-        );
-        assert_eq!(
-            key_to_codepoint(
-                evdev_key_to_kind(Key::KEY_LEFTBRACE).expect("left brace key"),
-                shift_mods,
-                false
-            ),
-            Some('{')
-        );
-        assert_eq!(
-            key_to_codepoint(
-                evdev_key_to_kind(Key::KEY_KPPLUS).expect("kp plus key"),
-                Modifiers::default(),
-                false
-            ),
-            Some('+')
-        );
-        assert_eq!(
-            key_to_codepoint(
-                evdev_key_to_kind(Key::KEY_KPASTERISK).expect("kp asterisk key"),
-                shift_mods,
-                false
-            ),
-            Some('*')
-        );
-    }
-
-    #[test]
-    fn handle_key_event_emits_canonical_key_and_shifted_text_commit() {
-        let (mut input, event_rx, _) = test_input(8);
-        input.modifiers.shift = true;
-
-        input.handle_key_event(Key::KEY_EQUAL, 1);
-
-        assert!(matches!(
-            event_rx.try_recv(),
-            Ok(EventMsg::InputEvent(InputEvent::Key { key, action, mods }))
-                if key == CanonicalKey::Equal && action == ACTION_PRESS && mods == MOD_SHIFT
-        ));
-        assert!(matches!(
-            event_rx.try_recv(),
-            Ok(EventMsg::InputEvent(InputEvent::TextCommit { text, mods }))
-                if text == "+" && mods == MOD_SHIFT
-        ));
-    }
-
-    #[test]
-    fn handle_key_event_emits_keypad_plus_text_without_shift() {
-        let (mut input, event_rx, _) = test_input(8);
-
-        input.handle_key_event(Key::KEY_KPPLUS, 1);
-
-        assert!(matches!(
-            event_rx.try_recv(),
-            Ok(EventMsg::InputEvent(InputEvent::Key { key, action, mods }))
-                if key == CanonicalKey::Plus && action == ACTION_PRESS && mods == 0
-        ));
-        assert!(matches!(
-            event_rx.try_recv(),
-            Ok(EventMsg::InputEvent(InputEvent::TextCommit { text, mods }))
-                if text == "+" && mods == 0
-        ));
-    }
-
-    #[test]
-    fn classify_abs_mode_keeps_touchpad_devices_relative_from_abs() {
-        assert_eq!(
-            classify_abs_mode(
-                false, true, true, false, false, true, true, true, false, false
-            ),
-            AbsMode::RelativeFromAbs
-        );
-        assert_eq!(
-            classify_abs_mode(
-                false, false, false, false, false, false, false, false, true, false
-            ),
-            AbsMode::RelativeFromAbs
-        );
-    }
-
-    #[test]
-    fn classify_abs_mode_marks_direct_touch_devices_as_direct_touch() {
-        assert_eq!(
-            classify_abs_mode(
-                true, true, false, false, false, false, true, true, false, false
-            ),
-            AbsMode::DirectTouch
-        );
-        assert_eq!(
-            classify_abs_mode(
-                false, true, false, false, false, false, true, true, false, false
-            ),
-            AbsMode::DirectTouch
-        );
-        assert_eq!(
-            classify_abs_mode(
-                false, true, false, false, false, false, true, false, false, true
-            ),
-            AbsMode::DirectTouch
-        );
-    }
-
-    #[test]
-    fn direct_touch_button_action_only_synthesizes_for_direct_touch_btn_touch() {
-        assert_eq!(
-            direct_touch_button_action(AbsMode::DirectTouch, Key::BTN_TOUCH, true),
-            Some(ACTION_PRESS)
-        );
-        assert_eq!(
-            direct_touch_button_action(AbsMode::DirectTouch, Key::BTN_TOUCH, false),
-            Some(ACTION_RELEASE)
-        );
-        assert_eq!(
-            direct_touch_button_action(AbsMode::RelativeFromAbs, Key::BTN_TOUCH, true),
-            None
-        );
-        assert_eq!(
-            direct_touch_button_action(AbsMode::DirectTouch, Key::BTN_TOOL_FINGER, true),
-            None
-        );
-    }
-
-    #[test]
-    fn reconcile_device_paths_reports_removed_and_added_paths() {
-        let existing = vec![
-            PathBuf::from("/dev/input/event0"),
-            PathBuf::from("/dev/input/event1"),
-        ];
-        let discovered = vec![
-            PathBuf::from("/dev/input/event1"),
-            PathBuf::from("/dev/input/event2"),
-        ];
-
-        let (removed, added) = reconcile_device_paths(&existing, &discovered);
-
-        assert_eq!(removed, vec![PathBuf::from("/dev/input/event0")]);
-        assert_eq!(added, vec![PathBuf::from("/dev/input/event2")]);
-    }
-
-    #[test]
-    fn reconcile_device_paths_preserves_existing_devices_without_duplicates() {
-        let existing = vec![PathBuf::from("/dev/input/event0")];
-        let discovered = vec![PathBuf::from("/dev/input/event0")];
-
-        let (removed, added) = reconcile_device_paths(&existing, &discovered);
-
-        assert!(removed.is_empty());
-        assert!(added.is_empty());
-    }
-
-    #[test]
-    fn should_remove_device_on_fetch_error_ignores_would_block() {
-        let would_block = std::io::Error::from(ErrorKind::WouldBlock);
-        let interrupted = std::io::Error::from(ErrorKind::Interrupted);
-        let other = std::io::Error::from(ErrorKind::BrokenPipe);
-
-        assert!(!should_remove_device_on_fetch_error(&would_block));
-        assert!(!should_remove_device_on_fetch_error(&interrupted));
-        assert!(should_remove_device_on_fetch_error(&other));
-    }
-}
-
-fn is_touch_tracking_key(key: Key) -> bool {
-    matches!(
-        key,
-        Key::BTN_TOUCH
-            | Key::BTN_TOOL_FINGER
-            | Key::BTN_TOOL_DOUBLETAP
-            | Key::BTN_TOOL_TRIPLETAP
-            | Key::BTN_TOOL_QUADTAP
-            | Key::BTN_TOOL_QUINTTAP
-    )
-}
-
-fn set_non_blocking(fd: i32) {
-    unsafe {
-        let flags = libc::fcntl(fd, libc::F_GETFL);
-        if flags >= 0 {
-            let _ = libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
-        }
-    }
 }
 
 fn modifiers_to_mask(mods: Modifiers) -> u8 {
@@ -1584,4 +851,570 @@ fn printable_text_to_codepoint(
         }
         PrintableText::Literal(ch) => ch,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossbeam_channel::bounded;
+    fn test_input(capacity: usize) -> (DrmInput, Receiver<EventMsg>, Arc<SharedCursorState>) {
+        let (_screen_tx, screen_rx) = bounded(1);
+        let (event_tx, event_rx) = bounded(capacity);
+        let cursor = Arc::new(SharedCursorState::new(CursorState {
+            pos: (0.0, 0.0),
+            visible: false,
+        }));
+        let input = DrmInput {
+            context: Some(Context::new().unwrap()),
+            devices: HashMap::new(),
+            discovery: None,
+            contacts: Contacts::default(),
+            cursor_pos: (0.0, 0.0),
+            modifiers: Modifiers::default(),
+            caps_lock: false,
+            repeat_key: None,
+            pressed_keys: Default::default(),
+            screen_size: (640, 480),
+            screen_rx,
+            event_tx,
+            cursor_state: cursor.clone(),
+            stop: Arc::new(AtomicBool::new(false)),
+            backend_wake: BackendWakeHandle::noop(),
+            input_wake: EventFd::new().unwrap(),
+            pending_cursor_pos: None,
+            pending_pointer_buttons: vec![],
+            next_rescan_at: Instant::now() + Duration::from_secs(1),
+            rescan_interval: Duration::from_millis(500),
+            log_enabled: false,
+        };
+        (input, event_rx, cursor)
+    }
+    #[test]
+    fn touch_edges_are_clamped_and_invalid_coordinates_cancel_without_activation() {
+        let (mut input, rx, _) = test_input(8);
+        input.handle_event(Event {
+            kind: 8,
+            device: 1,
+            slot: 0,
+            x: 640.0,
+            y: 480.0,
+            ..Default::default()
+        });
+        assert!(
+            matches!(rx.try_recv().unwrap(), EventMsg::InputEvent(InputEvent::Touch { id: 1, phase: crate::input::TouchPhase::Down, x, y }) if x == 639.0 && y == 479.0)
+        );
+        input.handle_event(Event {
+            kind: 9,
+            device: 1,
+            slot: 0,
+            x: f64::NAN,
+            ..Default::default()
+        });
+        assert!(
+            matches!(rx.try_recv().unwrap(), EventMsg::InputEvent(InputEvent::Touch { id: 1, phase: crate::input::TouchPhase::Cancel, x, y }) if x == 639.0 && y == 479.0)
+        );
+        input.handle_event(Event {
+            kind: 10,
+            device: 1,
+            slot: 0,
+            ..Default::default()
+        });
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn keyboard_repeat_preserves_press_actions_and_stops_on_release_or_removal() {
+        let (mut input, rx, _) = test_input(16);
+        for termination in [0, 1] {
+            input.handle_event(Event {
+                kind: 2,
+                device: 1,
+                code: Key::KEY_A.code().into(),
+                state: 1,
+                ..Default::default()
+            });
+            assert_eq!(rx.try_iter().count(), 2);
+            let deadline = input.repeat_key.as_ref().unwrap().deadline;
+            input.repeat_keyboard(deadline);
+            assert!(matches!(
+                rx.try_recv().unwrap(),
+                EventMsg::InputEvent(InputEvent::Key {
+                    action: ACTION_PRESS,
+                    ..
+                })
+            ));
+            assert!(
+                matches!(rx.try_recv().unwrap(), EventMsg::InputEvent(InputEvent::TextCommit { text, .. }) if text == "a")
+            );
+            input.handle_event(Event {
+                kind: if termination == 0 { 2 } else { 1 },
+                device: 1,
+                code: Key::KEY_A.code().into(),
+                state: 0,
+                ..Default::default()
+            });
+            rx.try_iter().for_each(drop);
+            assert!(input.repeat_key.is_none());
+            input.repeat_keyboard(deadline + Duration::from_secs(1));
+            assert!(rx.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn ordered_input_backpressure_does_not_prevent_owner_shutdown() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let (mut input, _rx, _) = test_input(1);
+            input.stop = worker_stop;
+            ready_tx.send(()).unwrap();
+            // The key fills the channel; its ordered text commit must wait.
+            input.handle_event(Event {
+                kind: 2,
+                device: 1,
+                code: Key::KEY_A.code().into(),
+                state: 1,
+                ..Default::default()
+            });
+            done_tx.send(()).unwrap();
+        });
+        ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        stop.store(true, Ordering::Relaxed);
+        done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("input owner did not stop under backpressure");
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn poll_flushes_only_latest_pending_cursor_position() {
+        let (mut input, event_rx, cursor_state) = test_input(8);
+
+        input.handle_abs_position(10.0, 12.0, true);
+        input.handle_abs_position(24.0, 36.0, true);
+        input.poll();
+
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::CursorPos { x, y }))
+                if (x - 24.0).abs() < f32::EPSILON && (y - 36.0).abs() < f32::EPSILON
+        ));
+        assert!(event_rx.try_recv().is_err());
+
+        let snapshot = cursor_state.snapshot();
+        assert_eq!(snapshot.state.pos, (24.0, 36.0));
+        assert!(snapshot.state.visible);
+    }
+
+    #[test]
+    fn cursor_starts_hidden_until_pointer_activity() {
+        let (_, _, cursor_state) = test_input(8);
+
+        let snapshot = cursor_state.snapshot();
+        assert_eq!(snapshot.state.pos, (0.0, 0.0));
+        assert!(!snapshot.state.visible);
+    }
+
+    #[test]
+    fn cursor_motion_flushes_before_button_event() {
+        let (mut input, event_rx, _) = test_input(8);
+
+        input.handle_abs_position(14.0, 18.0, true);
+        input.handle_key_event(Key::BTN_LEFT, 1);
+        input.flush_pending_pointer_buttons_blocking();
+
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::CursorPos { x, y }))
+                if (x - 14.0).abs() < f32::EPSILON && (y - 18.0).abs() < f32::EPSILON
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::CursorButton { button, action, x, y, .. }))
+                if button == "left"
+                    && action == ACTION_PRESS
+                    && (x - 14.0).abs() < f32::EPSILON
+                    && (y - 18.0).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn button_press_makes_hidden_cursor_visible() {
+        let (mut input, event_rx, cursor_state) = test_input(8);
+
+        input.handle_key_event(Key::BTN_LEFT, 1);
+        input.flush_pending_pointer_buttons_blocking();
+
+        let snapshot = cursor_state.snapshot();
+        assert_eq!(snapshot.state.pos, (0.0, 0.0));
+        assert!(snapshot.state.visible);
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::CursorButton { button, action, x, y, .. }))
+                if button == "left"
+                    && action == ACTION_PRESS
+                    && x.abs() < f32::EPSILON
+                    && y.abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn cursor_motion_flushes_before_scroll_event() {
+        let (mut input, event_rx, _) = test_input(8);
+
+        input.handle_abs_position(30.0, 40.0, true);
+        input.handle_event(Event {
+            kind: 6,
+            y: -2.0,
+            ..Default::default()
+        });
+
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::CursorPos { x, y }))
+                if (x - 30.0).abs() < f32::EPSILON && (y - 40.0).abs() < f32::EPSILON
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::CursorScrollLines { dx, dy, x, y }))
+                if dx.abs() < f32::EPSILON
+                    && (dy - 2.0).abs() < f32::EPSILON
+                    && (x - 30.0).abs() < f32::EPSILON
+                    && (y - 40.0).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn wheel_scroll_makes_hidden_cursor_visible() {
+        let (mut input, event_rx, cursor_state) = test_input(8);
+
+        input.handle_event(Event {
+            kind: 6,
+            y: -2.0,
+            ..Default::default()
+        });
+
+        let snapshot = cursor_state.snapshot();
+        assert_eq!(snapshot.state.pos, (0.0, 0.0));
+        assert!(snapshot.state.visible);
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::CursorScrollLines { dx, dy, x, y }))
+                if dx.abs() < f32::EPSILON
+                    && (dy - 2.0).abs() < f32::EPSILON
+                    && x.abs() < f32::EPSILON
+                    && y.abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn pointer_button_report_uses_final_cursor_position_when_motion_arrives_later() {
+        let (mut input, event_rx, _) = test_input(8);
+
+        input.handle_abs_position(10.0, 12.0, true);
+        input.flush_pending_cursor_pos_blocking();
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::CursorPos { x, y }))
+                if (x - 10.0).abs() < f32::EPSILON && (y - 12.0).abs() < f32::EPSILON
+        ));
+
+        input.handle_key_event(Key::BTN_LEFT, 0);
+        input.handle_abs_position(24.0, 36.0, true);
+        input.flush_pending_pointer_buttons_blocking();
+
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::CursorPos { x, y }))
+                if (x - 24.0).abs() < f32::EPSILON && (y - 36.0).abs() < f32::EPSILON
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::CursorButton { button, action, x, y, .. }))
+                if button == "left"
+                    && action == ACTION_RELEASE
+                    && (x - 24.0).abs() < f32::EPSILON
+                    && (y - 36.0).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn direct_touch_position_hides_cursor() {
+        let (mut input, _, cursor_state) = test_input(8);
+
+        input.handle_abs_position(12.0, 18.0, true);
+        input.handle_abs_position(24.0, 36.0, false);
+
+        let snapshot = cursor_state.snapshot();
+        assert_eq!(snapshot.state.pos, (24.0, 36.0));
+        assert!(!snapshot.state.visible);
+    }
+
+    #[test]
+    fn nonblocking_cursor_flush_keeps_latest_pending_position_when_queue_is_full() {
+        let (mut input, event_rx, _) = test_input(1);
+
+        input
+            .event_tx
+            .send(EventMsg::InputEvent(InputEvent::Key {
+                key: CanonicalKey::A,
+                action: ACTION_PRESS,
+                mods: 0,
+            }))
+            .unwrap();
+
+        input.handle_abs_position(50.0, 60.0, true);
+        input.flush_pending_cursor_pos_nonblocking();
+
+        assert_eq!(input.pending_cursor_pos, Some((50.0, 60.0)));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::Key { key, .. })) if key == CanonicalKey::A
+        ));
+
+        input.flush_pending_cursor_pos_nonblocking();
+
+        assert!(input.pending_cursor_pos.is_none());
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::CursorPos { x, y }))
+                if (x - 50.0).abs() < f32::EPSILON && (y - 60.0).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn evdev_key_to_kind_exposes_canonical_keys_for_symbols_and_keypad_operators() {
+        assert_eq!(
+            key_kind_to_canonical_key(evdev_key_to_kind(Key::KEY_EQUAL).expect("equal key")),
+            CanonicalKey::Equal
+        );
+        assert_eq!(
+            key_kind_to_canonical_key(evdev_key_to_kind(Key::KEY_8).expect("digit 8 key")),
+            CanonicalKey::Digit8
+        );
+        assert_eq!(
+            key_kind_to_canonical_key(evdev_key_to_kind(Key::KEY_KPPLUS).expect("kp plus key")),
+            CanonicalKey::Plus
+        );
+        assert_eq!(
+            key_kind_to_canonical_key(
+                evdev_key_to_kind(Key::KEY_KPASTERISK).expect("kp asterisk key")
+            ),
+            CanonicalKey::Asterisk
+        );
+        assert_eq!(
+            key_kind_to_canonical_key(evdev_key_to_kind(Key::KEY_KPDOT).expect("kp dot key")),
+            CanonicalKey::Period
+        );
+    }
+
+    #[test]
+    fn key_to_codepoint_preserves_shifted_and_keypad_text_output() {
+        let shift_mods = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+
+        assert_eq!(
+            key_to_codepoint(
+                evdev_key_to_kind(Key::KEY_EQUAL).expect("equal key"),
+                shift_mods,
+                false
+            ),
+            Some('+')
+        );
+        assert_eq!(
+            key_to_codepoint(
+                evdev_key_to_kind(Key::KEY_8).expect("digit 8 key"),
+                shift_mods,
+                false
+            ),
+            Some('*')
+        );
+        assert_eq!(
+            key_to_codepoint(
+                evdev_key_to_kind(Key::KEY_LEFTBRACE).expect("left brace key"),
+                shift_mods,
+                false
+            ),
+            Some('{')
+        );
+        assert_eq!(
+            key_to_codepoint(
+                evdev_key_to_kind(Key::KEY_KPPLUS).expect("kp plus key"),
+                Modifiers::default(),
+                false
+            ),
+            Some('+')
+        );
+        assert_eq!(
+            key_to_codepoint(
+                evdev_key_to_kind(Key::KEY_KPASTERISK).expect("kp asterisk key"),
+                shift_mods,
+                false
+            ),
+            Some('*')
+        );
+    }
+
+    #[test]
+    fn handle_key_event_emits_canonical_key_and_shifted_text_commit() {
+        let (mut input, event_rx, _) = test_input(8);
+        input.modifiers.shift = true;
+
+        input.handle_key_event(Key::KEY_EQUAL, 1);
+
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::Key { key, action, mods }))
+                if key == CanonicalKey::Equal && action == ACTION_PRESS && mods == MOD_SHIFT
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::TextCommit { text, mods }))
+                if text == "+" && mods == MOD_SHIFT
+        ));
+    }
+
+    #[test]
+    fn handle_key_event_emits_keypad_plus_text_without_shift() {
+        let (mut input, event_rx, _) = test_input(8);
+
+        input.handle_key_event(Key::KEY_KPPLUS, 1);
+
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::Key { key, action, mods }))
+                if key == CanonicalKey::Plus && action == ACTION_PRESS && mods == 0
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::TextCommit { text, mods }))
+                if text == "+" && mods == 0
+        ));
+    }
+
+    fn contact(device: u64, slot: i32, kind: u32, x: f64, y: f64) -> Event {
+        Event {
+            device,
+            slot,
+            kind,
+            x,
+            y,
+            ..Default::default()
+        }
+    }
+    #[test]
+    fn overlapping_contact_positions_and_releases_never_share_a_cursor() {
+        for reverse in [false, true] {
+            let mut contacts = Contacts::default();
+            let a = contacts.event(contact(1, 0, 8, 10.0, 20.0));
+            let b = contacts.event(contact(1, 1, 8, 80.0, 90.0));
+            let InputEvent::Touch { id: a, .. } = a[0] else {
+                panic!()
+            };
+            let InputEvent::Touch { id: b, .. } = b[0] else {
+                panic!()
+            };
+            assert_ne!(a, b);
+            assert_eq!(
+                contacts.event(contact(1, 1, 9, 85.0, 90.0)),
+                [InputEvent::Touch {
+                    id: b,
+                    phase: TouchPhase::Move,
+                    x: 85.0,
+                    y: 90.0
+                }]
+            );
+            for slot in if reverse { [1, 0] } else { [0, 1] } {
+                let expected = if slot == 0 {
+                    InputEvent::Touch {
+                        id: a,
+                        phase: TouchPhase::Up,
+                        x: 10.0,
+                        y: 20.0,
+                    }
+                } else {
+                    InputEvent::Touch {
+                        id: b,
+                        phase: TouchPhase::Up,
+                        x: 85.0,
+                        y: 90.0,
+                    }
+                };
+                assert_eq!(contacts.event(contact(1, slot, 10, 0.0, 0.0)), [expected]);
+            }
+            assert!(contacts.active.is_empty());
+        }
+    }
+    #[test]
+    fn slot_reuse_cancels_old_identity_and_removal_cancels_only_its_device() {
+        let mut contacts = Contacts::default();
+        contacts.event(contact(1, 0, 8, 10.0, 20.0));
+        contacts.event(contact(2, 0, 8, 30.0, 40.0));
+        let reused = contacts.event(contact(1, 0, 8, 50.0, 60.0));
+        assert!(
+            matches!(reused.as_slice(), [InputEvent::Touch { id: old, phase: TouchPhase::Cancel, .. }, InputEvent::Touch { id: new, phase: TouchPhase::Down, .. }] if old != new)
+        );
+        assert_eq!(contacts.event(contact(1, 0, 1, 0.0, 0.0)).len(), 1);
+        assert_eq!(contacts.active.len(), 1);
+        assert!(contacts.event(contact(1, 0, 10, 0.0, 0.0)).is_empty());
+        assert!(matches!(
+            contacts.event(contact(2, 0, 11, 0.0, 0.0))[0],
+            InputEvent::Touch {
+                phase: TouchPhase::Cancel,
+                x: 30.0,
+                y: 40.0,
+                ..
+            }
+        ));
+    }
+    #[test]
+    fn precise_scroll_does_not_apply_wheel_line_scaling() {
+        let (mut input, rx, _) = test_input(4);
+        input.handle_event(Event {
+            kind: 7,
+            x: 1.5,
+            y: -2.25,
+            ..Default::default()
+        });
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(EventMsg::InputEvent(InputEvent::CursorScroll {
+                dx: -1.5,
+                dy: 2.25,
+                ..
+            }))
+        ));
+    }
+    #[test]
+    fn modifier_release_and_removal_preserve_other_devices_and_sides() {
+        let (mut input, _, _) = test_input(32);
+        for (device, code) in [(1, Key::KEY_LEFTSHIFT), (2, Key::KEY_RIGHTSHIFT)] {
+            input.handle_event(Event {
+                kind: 2,
+                device,
+                code: u32::from(code.code()),
+                state: 1,
+                ..Default::default()
+            });
+        }
+        input.handle_event(Event {
+            kind: 1,
+            device: 1,
+            ..Default::default()
+        });
+        assert!(input.modifiers.shift);
+        input.handle_event(Event {
+            kind: 2,
+            device: 2,
+            code: u32::from(Key::KEY_RIGHTSHIFT.code()),
+            state: 0,
+            ..Default::default()
+        });
+        assert!(!input.modifiers.shift);
+    }
 }
