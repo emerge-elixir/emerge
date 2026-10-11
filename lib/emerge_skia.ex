@@ -18,7 +18,9 @@ defmodule EmergeSkia do
       {_state, _assigned_tree} = EmergeSkia.upload_tree(renderer, tree)
       :ok = EmergeSkia.stop(renderer)
 
-  `start/1` documents renderer and output options. `renderer_info/1` reports the
+  `start/1` accepts only `Emerge.Config`; see the
+  [configuration reference](viewport-configuration.html) and
+  [0.5 migration guide](0-5.html). `renderer_info/1` reports the
   backend and rendering API actually selected. `stats/2` and the capture
   functions provide on-demand diagnostics for a running renderer.
 
@@ -26,8 +28,9 @@ defmodule EmergeSkia do
   unsigned `0xRRGGBBAA` values for low-level interfaces.
 
   When an input target is registered with `set_input_target/2`, Wayland close
-  requests arrive as `{:emerge_skia_close, :window_close_requested}` and are
-  not filtered by the input mask.
+  requests arrive as `{:emerge_skia_close, :window_close_requested}` independently
+  of `config.input.events`. Native payload names/actions differ from the typed
+  `Emerge.Input` values passed to a viewport's `handle_input/2`.
   """
 
   alias EmergeSkia.Assets
@@ -652,7 +655,13 @@ defmodule EmergeSkia do
   Set the target process to receive renderer events.
 
   Events are sent directly to the target process as
-  `{:emerge_skia_event, event}` messages.
+  `{:emerge_skia_event, event}` messages. Subscribe with `config.input.events` at
+  startup; the default empty list forwards no raw input. Element events and close
+  notifications remain independent.
+
+  This is the **low-level native payload contract**, not the typed first argument
+  to `c:Emerge.handle_input/2`. A viewport translates names/actions through
+  `Emerge.Input`; do not match its callbacks against this table.
 
   Raw input event payloads include:
 
@@ -660,10 +669,10 @@ defmodule EmergeSkia do
   - `{:cursor_button, {button, action, mods, {x, y}}}`
   - `{:cursor_scroll, {{dx, dy}, {x, y}}}`
   - `{:key, {key, action, mods}}`
-  - `{:codepoint, {char, mods}}`
   - `{:text_commit, {text, mods}}`
   - `{:text_preedit, {text, cursor}}`
   - `:text_preedit_clear`
+  - `{:delete_surrounding, {before_bytes, after_bytes}}` (where the backend supports it)
   - `{:cursor_entered, entered}`
   - `{:resized, {width, height, scale}}`
   - `{:focused, focused}`

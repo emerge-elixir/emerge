@@ -2,10 +2,25 @@
 
 ## [Unreleased]
 
+Target: **0.5.0**. See the [0.5 migration guide](guides/migrations/0.5.md).
+The package/artifact version bump and remaining qualification are separate release work.
+
+### Breaking changes
+
+- Viewport `mount/1` and `EmergeSkia.start/1` now require `%Emerge.Config{}` with
+  typed output/renderer/input/assets/diagnostics/runtime groups. Flat keyword
+  configurations, `emerge_skia`/`viewport` namespaces, positional startup arities
+  and replaced renderer aliases are removed without compatibility shims.
+- Raw viewport input is opt-in through `input.events`, defaulting to `[]`.
+  Public numeric masks/setters are removed. Callback tuples use pointer/resize/
+  focus names and `:press | :release` actions; element interactions remain enabled.
+- Custom adapters accept normalized config at startup and implement complete
+  snapshot `configure/3`, with session/revision-tagged asynchronous completion.
+
 ### Added
 
 - CPU-only DRM presentation via `compiled_backends: [drm: [:raster]]` and
-  `rendering_api: :raster`. Skia renders into double-buffered DRM dumb buffers
+  `renderer: [api: :raster]` in `%Emerge.Config{}`. Skia renders into double-buffered DRM dumb buffers
   without GBM/EGL/OpenGL or per-frame BEAM transfers. Includes software cursors,
   CPU video and RGBA screenshots; requires atomic KMS, DRM leasing and XRGB8888.
   Dedicated `drm_raster` precompiled artifacts cover all supported Linux targets,
@@ -19,11 +34,20 @@
   little-endian DRM `ARGB8888`/`XRGB8888` scanout buffers or framebuffers without
   a per-frame channel swap. Requires `video_interop` with `:bgra8888` support.
 
+- Optional `config(previous)` or `config(previous, state)` callbacks reconcile
+  normalized desired intent, including config-only updates and renderer recovery.
+  Live Wayland/macOS titles and headless/Wayland admission caps require no tree diff.
+- Declarative DRM display/brightness controls for explicit OpenGL and CPU raster.
+  Off retains output/backlight/tree ownership but destroys the presenter; on creates
+  fresh resources. Managed illumination follows first application presentation.
+  Initial-off acquisition needs no application upload. Vulkan/GPU-upload power,
+  live connector/mode changes and DRM/macOS caps remain rejected.
+
 ### Changed
 
 - All DRM Cargo profiles now embed FreeType, including source builds and mixed
   Wayland/DRM builds. Nerves builds need no system FreeType package.
-- DRM raster presentation now defaults to CPU. Explicit `present: :gpu_upload`
+- DRM raster presentation now defaults to CPU. Explicit `raster_present: :gpu_upload`
   retains the OpenGL upload path. GPU-free DRM builds select raster for `:auto`.
 - Require `video_interop ~> 0.1.3` for BGRA frame validation.
 - Raster frames are copied out of the Skia surface once instead of being
@@ -33,6 +57,11 @@
 
 ### Fixed
 
+- Tree upload/patch NIFs return queue-full/stopped errors instead of waiting for
+  tree admission. OpenGL startup drains only already-readable DRM events, avoiding
+  a blocking page-flip read before resource readiness.
+- Managed backlight recovery preserves the original requested brightness, and
+  already-dark cleanup avoids redundant post-detach DCS writes.
 - Controlled text inputs preserve newer edits and cursor/selection state when
   controller echoes arrive after native updates. Elixir content proposals are
   processed once per mount; native and animation rebuilds no longer resend or

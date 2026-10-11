@@ -1,6 +1,10 @@
 defmodule Emerge.Config.BinaryFrames do
   @moduledoc """
-  Owned headless frames. Dithering requires supported grayscale raster output.
+  Owned headless `VideoInterop.Frame` output with no lease. Use this explicit
+  variant in `Emerge.Config.Headless.frames`; its fields are startup-only.
+  BW1/Gray2 rows are packed MSB-first. `bw1_polarity` chooses the meaning of a set
+  bit in BW1. `dither` is supported for raster BW1/Gray2 output, not every format
+  or GPU renderer. BGRA8888 is premultiplied B, G, R, A byte order.
 
   ## Fields and defaults
 

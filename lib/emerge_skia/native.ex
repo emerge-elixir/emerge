@@ -133,18 +133,18 @@ defmodule EmergeSkia.Native do
   def stop_timeout(_renderer, _timeout_ms), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
-  Start the Skia renderer with a window.
-
-  Returns a renderer resource that can be used with other functions.
+  Private window NIF binding. Application startup uses
+  `EmergeSkia.start(%Emerge.Config{})`, not this positional transport entrypoint.
+  Returns a renderer resource for internal operations.
   """
   @spec start(String.t(), non_neg_integer(), non_neg_integer()) ::
           reference() | {:ok, reference()} | {:error, term()}
   def start(_title, _width, _height), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
-  Start the Skia renderer with backend and rendering API options.
+  Start through the private native map ABI.
 
-  Mirrors `EmergeSkia.start/1` keyword options.
+  Internal config/option adapters derive this map from normalized config. These transport names are not accepted public startup keywords.
   """
   @spec start_opts(%{
           required(:owner) => pid() | nil,
@@ -329,8 +329,9 @@ defmodule EmergeSkia.Native do
   @doc """
   Render a tree to an RGBA pixel buffer (synchronous, no window).
 
-  The tree is provided as an encoded EMRG binary. Asset policy mirrors
-  `EmergeSkia.start/1`, with an additional offscreen asset mode.
+  The tree is an encoded EMRG binary. Offline tree-rendering helpers build the
+  private map; it is not the public renderer-start config.
+  It shares asset policy with `Emerge.Config.Assets` and adds offscreen asset mode.
   """
   @spec render_tree_to_pixels_nif(
           binary(),
@@ -342,8 +343,9 @@ defmodule EmergeSkia.Native do
   @doc """
   Render a tree to an encoded PNG binary (synchronous, no window).
 
-  The tree is provided as an encoded EMRG binary. Asset policy mirrors
-  `EmergeSkia.start/1`, with an additional offscreen asset mode.
+  The tree is an encoded EMRG binary. Offline tree-rendering helpers build the
+  private map; it is not the public renderer-start config.
+  It shares asset policy with `Emerge.Config.Assets` and adds offscreen asset mode.
   """
   @spec render_tree_to_png_nif(
           binary(),
@@ -357,11 +359,12 @@ defmodule EmergeSkia.Native do
   # ===========================================================================
 
   @doc """
-  Set the input event mask to filter which events are sent.
+  Private observer-mask transport; applications declare `config.input.events`.
+  This filters raw forwarding only, not element interactions or window close.
 
   Mask bits:
   - 0x01: Key events
-  - 0x02: Codepoint (text input) events
+  - 0x02: Text commit/preedit/clear/surrounding deletion events
   - 0x04: Cursor position events
   - 0x08: Cursor button events
   - 0x10: Cursor scroll events

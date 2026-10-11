@@ -16,7 +16,8 @@ defmodule Emerge.Mix.Docs do
       extras: public_docs_extras(root) ++ internal,
       groups_for_extras: docs_groups_for_extras(internal),
       groups_for_modules: [
-        Viewport: [Emerge, Emerge.Runtime.Viewport],
+        Viewport: [Emerge, Emerge.Input, Emerge.Runtime.Viewport],
+        Configuration: ~r/^Emerge\.Config(\.|$)/,
         UI: ~r/^Emerge\.UI(\.|$)/,
         Assets: ~r/^Emerge\.Assets(\.|$)/,
         Runtime: ~r/^Emerge\.Runtime\./,
@@ -41,7 +42,10 @@ defmodule Emerge.Mix.Docs do
       "guides/tutorials/describe_ui.md",
       "guides/tutorials/use_assets.md",
       "guides/tutorials/state_management.md",
+      "guides/tutorials/handle_input.md",
+      "guides/migrations/0.5.md",
       "guides/migrations/0.4.md",
+      "guides/reference/viewport-configuration.md",
       "guides/reference/native-renderer-builds.md"
     ]
     |> Enum.filter(&File.exists?(Path.join(root, &1)))

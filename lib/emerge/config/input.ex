@@ -1,6 +1,20 @@
 defmodule Emerge.Config.Input do
   @moduledoc """
-  Raw observer subscriptions delivered to `c:Emerge.handle_input/2`. These do not disable element interactions, scrolling or native text editing. See the input guide and `Emerge.Input` for exact payloads. The default is no raw subscriptions.
+  Raw observer subscriptions delivered to `c:Emerge.handle_input/2`. These do not
+  disable element interactions, scrolling or native text editing. See
+  `Emerge.Input` and the [input guide](handle_input.html) for exact payloads.
+
+  `events: []` (the default) observes nothing; `all_events/0` returns all eight
+  categories. Use a list of category atoms, not a numeric mask or `:all`/`:none`.
+  Duplicate categories are deduplicated and order is insignificant. Live updates
+  replace the subscriptions, but cannot retract already-forwarded mailbox messages.
+  Window close goes to `c:Emerge.handle_close/2` independently of this list.
+
+      %Emerge.Config{input: [events: [:key, :pointer_button, :resize]]}
+
+  Subscription names describe backend window/surface input, not element events.
+  Headless has no physical input source; DRM has no desktop window enter/focus
+  lifecycle. IME availability is backend-dependent.
 
   ## Fields and defaults
 

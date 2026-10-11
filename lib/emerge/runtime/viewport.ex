@@ -34,6 +34,15 @@ defmodule Emerge.Runtime.Viewport do
 
   Adapter selection and liveness policy live in `Emerge.Config.Runtime`.
   Native ownership is managed internally, not configured by applications.
+  See the [configuration reference](viewport-configuration.html),
+  [input guide](handle_input.html) and [0.5 migration guide](0-5.html).
+
+  Initially-off DRM viewports still acquire and bind output ownership without
+  rendering/uploading. Off preserves application messages, config reconciliation,
+  latest tree/intent and ownership, while suspending native UI input and destroying
+  the presenter. On recreates resources; no GPU state is restored. Power/brightness
+  controls require explicit OpenGL or CPU raster; unsupported live/startup controls
+  report errors. Software support does not qualify physical panel behavior.
   """
 
   use GenServer

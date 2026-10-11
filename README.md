@@ -9,12 +9,17 @@ Write native GUI directly from Elixir using a declarative API.
 
 ## Installation
 
-Add `:emerge` to your dependencies:
+This branch documents the breaking **0.5.0 API**. See the
+[0.5 migration guide](guides/migrations/0.5.md) when upgrading from 0.4.
+The package version is still 0.4.2 while release work is in progress; until 0.5
+is published, use a source checkout (`{:emerge, path: "../emerge"}`) for these APIs.
+
+For the 0.5 release, add `:emerge` to your dependencies:
 
 ```elixir
 defp deps do
   [
-    {:emerge, "~> 0.4.2"}
+    {:emerge, "~> 0.5.0"}
   ]
 end
 ```
@@ -33,7 +38,10 @@ defmodule MyApp.View.Counter do
   use Solve.Lookup
 
   @impl Viewport
-  def mount(opts), do: {:ok, Keyword.merge([title: "Counter"], opts)}
+  def mount(opts) do
+    output = %Emerge.Config.Window{title: Keyword.get(opts, :title, "Counter")}
+    {:ok, %Emerge.Config{output: output}}
+  end
 
   @impl Viewport
   def render() do
@@ -154,7 +162,7 @@ For nerves example take a look at [`nerves_emerge_demo`](https://github.com/emer
 
 - **macOS** provides desktop windows through the external `macos_host`, using Metal when available and falling back to raster.
 - **Wayland** provides Linux desktop windows with OpenGL or raster presentation.
-- **DRM** provides direct embedded, kiosk, and Nerves output with OpenGL ES 2 as the supported minimum or raster GPU upload.
+- **DRM** provides direct embedded, kiosk, and Nerves output with CPU raster, OpenGL ES 2 or newer, or Vulkan. Raster GPU upload is an explicit OpenGL-backed alternative.
 - **Headless** produces retained frame binaries or Linux PRIME/DMA-BUF output.
 - **Vulkan** provides supported rendering for Wayland, DRM, and headless PRIME when compiled for those backends.
 
@@ -166,9 +174,11 @@ Each native renderer owns its asset source worker, source policy, registered
 fonts, decoded raster cache, and rendered vector cache. Concurrent renderers can
 use different asset roots, fonts, and cache limits without affecting each other.
 
-Viewport modes and configuration examples are documented by
-[`Emerge`](https://hexdocs.pm/emerge/Emerge.html) and
-[`Emerge.Runtime.Viewport`](https://hexdocs.pm/emerge/Emerge.Runtime.Viewport.html).
+Return `%Emerge.Config{}` from `mount/1`; use optional `config(previous)` or
+`config(previous, state)` callbacks for declarative live changes. Raw input
+observation is opt-in through `input: [events: [:key, :resize]]`, separately from
+ordinary UI interactions. See [viewport configuration](guides/reference/viewport-configuration.md)
+and [raw input](guides/tutorials/handle_input.md) for examples and backend limits.
 Exact renderer and frame contracts are documented by
 [`EmergeSkia`](https://hexdocs.pm/emerge/EmergeSkia.html).
 
@@ -176,7 +186,7 @@ Exact renderer and frame contracts are documented by
 
 - Elixir 1.19+
 - macOS for the `:macos` backend, or Linux with Wayland/DRM for Linux on-screen backends
-- OpenGL ES 2 or newer for DRM; no GLES version option is required
+- OpenGL ES 2 or newer for GPU DRM presentation; CPU raster requires no GPU driver
 - Rust 1.91 or newer when a source build is required
 
 On macOS, Emerge downloads and caches the matching versioned `macos_host` runtime artifact automatically.
@@ -196,7 +206,10 @@ The tutorials build on one another:
 
 Other documentation:
 
-- [Migrate to Emerge 0.4](guides/migrations/0.4.md)
+- [Viewport configuration](guides/reference/viewport-configuration.md)
+- [Observe raw input](guides/tutorials/handle_input.md)
+- [Migrate to Emerge 0.5](guides/migrations/0.5.md)
+- [Historical migration to Emerge 0.4](guides/migrations/0.4.md)
 - [Build the native renderer](guides/reference/native-renderer-builds.md)
 
 Run `mix docs` to build the full docs locally.

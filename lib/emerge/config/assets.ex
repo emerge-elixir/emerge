@@ -1,6 +1,14 @@
 defmodule Emerge.Config.Assets do
   @moduledoc """
-  Application assets, fonts, runtime filesystem access and decoding policy. `otp_app` is inferred from the viewport module when omitted.
+  Application assets, fonts, runtime filesystem access and decoding policy.
+  `otp_app` is inferred from the viewport module when possible; standalone
+  `EmergeSkia.start/1` requires it explicitly. Logical paths resolve under that
+  application's `priv/` directory.
+
+  All fields are startup-only and renderer-local. Use `Emerge.Config.Font` or its
+  typed shorthand for registrations, `Emerge.Config.RuntimePaths` for filesystem
+  policy and `Emerge.Config.AssetCache` for image/SVG budgets. These budgets are
+  separate from renderer paint caching. See the [asset guide](use_assets.html).
 
   ## Fields and defaults
 

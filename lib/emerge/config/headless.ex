@@ -1,6 +1,13 @@
 defmodule Emerge.Config.Headless do
   @moduledoc """
-  Offscreen output to a live local process. `frames` selects binary or PRIME delivery.
+  Offscreen output to a live local process. Supply `target` explicitly: its `nil`
+  default is not valid at startup. `frames` requires an explicit
+  `Emerge.Config.BinaryFrames` or `Emerge.Config.PrimeFrames` variant.
+
+  Frames arrive as `{frame_message, %VideoInterop.Frame{}}`. Binary output owns its
+  storage; PRIME output has a lease the recipient must retire. `size` is the output
+  buffer size. The drawing cap lives in `Emerge.Config.Renderer.target_fps`, not
+  this record. Output fields are startup-only. Headless has no physical input.
 
   ## Fields and defaults
 
