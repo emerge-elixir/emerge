@@ -11,9 +11,9 @@ This file retains only open qualification work, not an implementation log.
 
 ## Remaining gates
 
-- [ ] On macOS, build the v13 host and run Metal/raster rendering and lifecycle
-  tests with EMRG v9. Linux protocol tests cover acceptance/rejection, but are not
-  a replacement for running the actual host.
+- [ ] Complete the gradient rendering gates in
+  [macOS runtime qualification](active-macos-runtime-qualification.md).
+  Linux protocol tests do not replace running the actual host.
 - [ ] Qualify constrained-device performance and memory with gradient text,
   borders, shadows and SVGs. Compare pinned solid baselines, cold/warm cache
   behavior, SVG temporary-layer area, and three/many-stop gradients. Local
@@ -32,9 +32,9 @@ without accounting for intentional direct admission fallback; ordered runs later
 outgrew the fixed warm-up. It remains unchanged. A correction must validate the
 specific changing shadow runs, not count arbitrary rejections as cache coverage.
 See [`screenshot-cache-benchmark-investigation.md`](screenshot-cache-benchmark-investigation.md)
-for the good/bad boundary, convergence controls and separate pixel-quality findings;
-[`borders-cache-benchmark-investigation.md`](borders-cache-benchmark-investigation.md)
-records the already-corrected synthetic case.
+for the good/bad boundary, convergence controls and separate pixel-quality findings.
+The corrected synthetic workload and its regression coverage are documented in
+[the benchmark guide](../bench/README.md#rich-borders-cache-workload).
 
 ## Constraints
 
