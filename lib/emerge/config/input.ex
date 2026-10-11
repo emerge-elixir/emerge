@@ -46,6 +46,7 @@ defmodule Emerge.Config.Input do
           | :pointer_enter
           | :resize
           | :focus
+          | :touch
   @type t :: %__MODULE__{
           events: [event_kind()],
           scroll_line_pixels: number(),
@@ -78,7 +79,8 @@ defmodule Emerge.Config.Input do
             :pointer_scroll,
             :pointer_enter,
             :resize,
-            :focus
+            :focus,
+            :touch
           ]}},
       scroll_line_pixels: :positive_number,
       cursor: {:record, Emerge.Config.Cursor}
@@ -95,6 +97,7 @@ defmodule Emerge.Config.Input do
       :pointer_scroll,
       :pointer_enter,
       :resize,
-      :focus
+      :focus,
+      :touch
     ]
 end

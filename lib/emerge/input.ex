@@ -15,6 +15,7 @@ defmodule Emerge.Input do
   | `:pointer_enter` | `{:pointer_enter, entered?}` (window enter/leave, not element hover) |
   | `:resize` | `{:resize, {width, height, scale}}` |
   | `:focus` | `{:focus, focused?}` (window focus, not element focus) |
+  | `:touch` | `{:touch, {contact_id, :down \| :move \| :up \| :cancel, {x, y}}}` |
 
   Keys identify canonical keys, not inserted characters; use `:text` for text
   input and IME composition. Repeated key presses are delivered as `:press`.
@@ -31,6 +32,11 @@ defmodule Emerge.Input do
   focus/enter lifecycle; headless has no physical input source. IME operations
   depend on platform support. Subscribing does not synthesize missing events.
   Window-close requests go to `handle_close/2`, never this callback.
+
+  DRM touchscreens deliver contact-local `:touch` events, not mouse button
+  emulation to raw observers. Contact IDs identify one lifetime; reused hardware
+  slots receive new IDs. Up/cancel carry that contact's last position. A cancel
+  never activates a virtual key. Mouse subscriptions remain unchanged.
 
       def handle_input({:key, {:escape, :press, _modifiers}}, state) do
         {:noreply, state}
@@ -161,6 +167,7 @@ defmodule Emerge.Input do
           key_event()
           | text_event()
           | pointer_event()
+          | {:touch, {non_neg_integer(), :down | :move | :up | :cancel, position()}}
           | {:resize, {non_neg_integer(), non_neg_integer(), number()}}
           | {:focus, boolean()}
 

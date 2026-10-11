@@ -135,7 +135,8 @@ defmodule Emerge.Config.Native do
     pointer_scroll: 0x10,
     pointer_enter: 0x20,
     resize: 0x40,
-    focus: 0x80
+    focus: 0x80,
+    touch: 0x100
   }
   def input_mask(%Config.Input{events: events}) do
     Enum.reduce(events, 0, fn event, mask -> Bitwise.bor(mask, Map.fetch!(@masks, event)) end)
