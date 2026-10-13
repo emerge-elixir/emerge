@@ -143,7 +143,10 @@ struct Harness {
     actor_raster: RasterHeadlessRenderer,
     retained: Option<(crate::render_scene::RenderScene, Vec<u8>)>,
     frames: usize,
-    render_tap: Option<Sender<RenderMsg>>,
+    render_tap: Option<(
+        Sender<RenderMsg>,
+        crate::backend::production::AnimationRequests,
+    )>,
     last_pixels: Vec<u8>,
     defer_install: bool,
     deferred: std::collections::VecDeque<(
@@ -269,14 +272,18 @@ impl Harness {
                     else {
                         panic!("scene");
                     };
-                    if let Some(tap) = &self.render_tap {
+                    if let Some((tap, requests)) = &self.render_tap {
                         tap.send(RenderMsg::Scene {
                             application_frame,
                             frame_request,
                             scene: scene.clone(),
                             version,
                             animate,
-                            animation_frame: Default::default(),
+                            animation_frame: requests.frame(
+                                animate,
+                                vec![],
+                                BackendWakeHandle::noop(),
+                            ),
                             ime_enabled,
                             ime_cursor_area,
                             ime_text_state: ime_text_state.clone(),
