@@ -144,6 +144,14 @@ impl TreeUpdateEngine {
         (self.width, self.height)
     }
 
+    pub fn presentation_anchors(&self) -> Vec<crate::backend::production::PresentationAnchor> {
+        self.animation_runtime.presentation_anchors()
+    }
+
+    pub(crate) fn animation_retry_deadline(&self) -> Option<Instant> {
+        self.animation_retry.next
+    }
+
     pub fn animation_runtime_is_empty(&self) -> bool {
         self.animation_runtime.is_empty()
     }
@@ -162,6 +170,7 @@ impl TreeUpdateEngine {
         options: TreeUpdateOptions<'_>,
         tree_batch_started_at: Instant,
     ) -> Result<TreeUpdateEffect, String> {
+        self.animation_runtime.observe_presentations();
         let mut flat = Vec::new();
         messages
             .into_iter()
@@ -178,13 +187,17 @@ impl TreeUpdateEngine {
         }
 
         let pulse_only = !flat.is_empty()
-            && flat
-                .iter()
-                .all(|msg| matches!(msg, TreeMsg::AnimationPulse { .. }));
+            && flat.iter().all(|msg| {
+                matches!(
+                    msg,
+                    TreeMsg::AnimationPulse { .. } | TreeMsg::SampleAnimation { .. }
+                )
+            });
         let attempt_at = flat
             .iter()
             .filter_map(|msg| match msg {
                 TreeMsg::AnimationPulse { presented_at, .. } => Some(*presented_at),
+                TreeMsg::SampleAnimation { .. } => Some(tree_batch_started_at),
                 _ => None,
             })
             .max()
@@ -470,6 +483,23 @@ impl TreeUpdateEngine {
                         update_invalidation,
                     );
                     invalidation.add(update_invalidation);
+                }
+                TreeMsg::SampleAnimation { sample_at } => {
+                    // A stale predecessor's credit must not advance a newly
+                    // mounted transition whose initial scene has not progressed.
+                    if self
+                        .presentation_anchors()
+                        .iter()
+                        .all(|anchor| anchor.observed_at().is_some())
+                    {
+                        animation_trace_previous_sample_time = animation_sample_time;
+                        animation_sample_time = Some(
+                            animation_sample_time
+                                .map_or(sample_at, |previous| previous.max(sample_at)),
+                        );
+                        animation_predicted_next_present_at = Some(sample_at);
+                        animation_sample_requested = true;
+                    }
                 }
                 TreeMsg::AnimationPulse {
                     presented_at,
@@ -2034,6 +2064,122 @@ mod tests {
         tree.insert(element);
         tree.set_root_id(id);
         tree
+    }
+
+    #[test]
+    fn predictive_samples_cannot_anchor_or_finish_an_unpresented_enter() {
+        let mut engine = TreeUpdateEngine::new(sidepane_enter_tree_at_start(), 360, 240);
+        let options = || TreeUpdateOptions::new(None, TreeUpdateDecodePolicy::ReturnErr);
+        let initial = layout_output(
+            engine
+                .process_messages(
+                    vec![TreeMsg::Resize {
+                        width: 360.0,
+                        height: 240.0,
+                        scale: 1.0,
+                    }],
+                    options(),
+                )
+                .unwrap(),
+        );
+        assert_scene_has_translate_x(&initial.scene, 499.0, 501.0);
+        let anchors = engine.presentation_anchors();
+        assert!(!anchors.is_empty());
+        let admitted_sample = engine.latest_animation_sample_time;
+        let delayed = Instant::now() + Duration::from_secs(5);
+        let result = engine
+            .process_messages(
+                vec![TreeMsg::SampleAnimation { sample_at: delayed }],
+                options(),
+            )
+            .unwrap();
+        if let TreeUpdateEffect::Layout { output, .. } = result {
+            assert_scene_has_translate_x(&output.scene, 499.0, 501.0);
+        }
+        assert_eq!(engine.latest_animation_sample_time, admitted_sample);
+        assert!(anchors.iter().all(|anchor| anchor.observed_at().is_none()));
+        anchors.iter().for_each(|anchor| anchor.observe(delayed));
+        let mid = layout_output(
+            engine
+                .process_messages(
+                    vec![TreeMsg::SampleAnimation {
+                        sample_at: delayed + Duration::from_millis(64),
+                    }],
+                    options(),
+                )
+                .unwrap(),
+        );
+        assert!(mid.animations_active);
+        assert_scene_has_translate_x(&mid.scene, 300.0, 499.0);
+        let final_frame = layout_output(
+            engine
+                .process_messages(
+                    vec![TreeMsg::SampleAnimation {
+                        sample_at: delayed + Duration::from_secs(1),
+                    }],
+                    options(),
+                )
+                .unwrap(),
+        );
+        assert!(!final_frame.animations_active);
+        assert_scene_has_no_visible_translate_x(&final_frame.scene);
+    }
+
+    #[test]
+    fn replaced_mount_does_not_inherit_its_predecessors_presentation_anchor() {
+        let mut engine = TreeUpdateEngine::new(sidepane_enter_tree_at_start(), 360, 240);
+        let options = || TreeUpdateOptions::new(None, TreeUpdateDecodePolicy::ReturnErr);
+        layout_output(
+            engine
+                .process_messages(
+                    vec![TreeMsg::Resize {
+                        width: 360.0,
+                        height: 240.0,
+                        scale: 1.0,
+                    }],
+                    options(),
+                )
+                .unwrap(),
+        );
+        let old = engine.presentation_anchors();
+        let tree = host_only_tree_at_start();
+        engine
+            .process_messages(
+                vec![TreeMsg::UploadTree {
+                    bytes: crate::tree::serialize::encode_tree(&tree),
+                    submitted_at: None,
+                }],
+                options(),
+            )
+            .unwrap();
+        layout_output(
+            engine
+                .process_messages(
+                    vec![TreeMsg::PatchTree {
+                        bytes: encoded_insert_nearby_sidepane_patch(),
+                        submitted_at: None,
+                    }],
+                    options(),
+                )
+                .unwrap(),
+        );
+        let new = engine.presentation_anchors();
+        assert!(!new.is_empty());
+        old.iter().for_each(|anchor| anchor.observe(Instant::now()));
+        assert!(new.iter().all(|anchor| anchor.observed_at().is_none()));
+        let admitted_sample = engine.latest_animation_sample_time;
+        let result = engine
+            .process_messages(
+                vec![TreeMsg::SampleAnimation {
+                    sample_at: Instant::now() + Duration::from_secs(5),
+                }],
+                options(),
+            )
+            .unwrap();
+        if let TreeUpdateEffect::Layout { output, .. } = result {
+            assert_scene_has_translate_x(&output.scene, 499.0, 501.0);
+        }
+        assert_eq!(engine.latest_animation_sample_time, admitted_sample);
     }
 
     #[test]

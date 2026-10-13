@@ -317,3 +317,76 @@ fn loading_indicator_deadline_progresses_with_blocked_registry_and_stop_stays_se
     assert_eq!(actor.registry.len(), 1);
     actor.stop();
 }
+
+#[test]
+fn slow_output_gets_one_prepared_successor_without_waiting_for_completion() {
+    use crate::backend::production::FrameProduction;
+    let h = TreeActorHarness::new(coupled_publication_tree(false), 600, 60);
+    h.send(TreeMsg::Resize {
+        width: 600.0,
+        height: 60.0,
+        scale: 1.0,
+    });
+    let RenderMsg::Scene {
+        animation_frame,
+        version: first,
+        ..
+    } = h.recv_scene()
+    else {
+        panic!("scene");
+    };
+    h.recv_registry_update();
+    let mut production = FrameProduction::default();
+    let target = Instant::now() + Duration::from_millis(250);
+    production.submitted(animation_frame.clone(), target);
+    // No simulated flip/delivery has occurred. Tree work is already available.
+    let RenderMsg::Scene {
+        version: next,
+        animation_trace,
+        ..
+    } = h.recv_scene()
+    else {
+        panic!("successor");
+    };
+    assert!(next > first);
+    assert_eq!(animation_trace.unwrap().presented_at, None);
+    animation_frame.observed(target);
+    production.progress(target + Duration::from_millis(16));
+    production.poll(target);
+    assert!(h.render_rx.recv_timeout(Duration::from_millis(25)).is_err());
+    assert!(production.deadline().is_none());
+    h.stop();
+}
+
+#[test]
+fn outstanding_credit_is_acknowledged_while_registry_publication_is_blocked() {
+    use crate::backend::production::FrameProduction;
+    let actor = BlockedActor::new(coupled_publication_tree(false));
+    actor
+        .tx
+        .send(TreeMsg::Resize {
+            width: 600.0,
+            height: 60.0,
+            scale: 1.0,
+        })
+        .unwrap();
+    actor.wait_constructed(1);
+    actor.registry.recv().unwrap(); // Permit the first scene, leaving its registry queued.
+    let RenderMsg::Scene {
+        animation_frame, ..
+    } = actor.renders.recv_timeout(Duration::from_secs(5)).unwrap()
+    else {
+        panic!("scene");
+    };
+    let mut production = FrameProduction::default();
+    production.submitted(animation_frame, Instant::now() + Duration::from_millis(250));
+    actor.wait_constructed(2);
+    production.poll(Instant::now());
+    assert!(production.deadline().is_none());
+    assert!(
+        actor.renders.is_empty(),
+        "registry must be published before its scene"
+    );
+    assert_eq!(actor.registry.len(), 1);
+    actor.stop();
+}

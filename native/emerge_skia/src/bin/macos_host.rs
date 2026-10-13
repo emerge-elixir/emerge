@@ -830,6 +830,7 @@ mod app {
                 animation_trace: animation_trace
                     .map(|trace| Box::new(trace.queued_at(pipeline.render_queued_at))),
                 animate: output.animations_active,
+                animation_frame: Default::default(),
                 ime_enabled: output.ime_enabled,
                 ime_cursor_area: output.ime_cursor_area,
                 ime_text_state: Box::new(output.ime_text_state),
@@ -843,6 +844,7 @@ mod app {
                 pipeline_submitted_at,
                 pipeline_render_queued_at,
                 animate,
+                animation_frame,
                 ..
             } = msg
             else {
@@ -854,6 +856,7 @@ mod app {
             self.render_state.pipeline_render_queued_at = pipeline_render_queued_at;
             self.render_state.render_version = version;
             self.render_state.animate = animate;
+            self.render_state.animation_frame = animation_frame;
             self.dirty = true;
         }
     }

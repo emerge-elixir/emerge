@@ -875,6 +875,7 @@ fn tree_msg_label(msg: &TreeMsg) -> &'static str {
         TreeMsg::SetTextInputContent { .. } => "set_text_input_content",
         TreeMsg::SetTextInputRuntime { .. } => "set_text_input_runtime",
         TreeMsg::SetSliderValue { .. } => "set_slider_value",
+        TreeMsg::SampleAnimation { .. } => "sample_animation",
         TreeMsg::AnimationPulse { .. } => "animation_pulse",
         TreeMsg::Batch(_) => "batch",
         TreeMsg::EventBatch { .. } => "event_batch",

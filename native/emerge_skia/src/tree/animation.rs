@@ -73,6 +73,7 @@ pub struct EnterAnimationRuntimeEntry {
     pub spec: Arc<AnimationSpec>,
     pub started_at: Instant,
     pub presentation_anchor_pending: bool,
+    presentation_anchor: crate::backend::production::PresentationAnchor,
 }
 
 #[derive(Clone, Debug)]
@@ -85,6 +86,7 @@ pub struct ExitAnimationRuntimeEntry {
     pub started_at: Instant,
     pub capture_scale: f32,
     pub presentation_anchor_pending: bool,
+    presentation_anchor: crate::backend::production::PresentationAnchor,
 }
 
 #[derive(Debug, Default)]
@@ -515,6 +517,7 @@ impl AnimationRuntime {
                             started_at,
                             capture_scale: element.lifecycle.ghost_capture_scale.unwrap_or(1.0),
                             presentation_anchor_pending: true,
+                            presentation_anchor: Default::default(),
                         },
                     );
                 }
@@ -548,6 +551,7 @@ impl AnimationRuntime {
                             spec: Arc::new(spec.clone()),
                             started_at,
                             presentation_anchor_pending: true,
+                            presentation_anchor: Default::default(),
                         },
                     );
                 } else {
@@ -734,37 +738,62 @@ impl AnimationRuntime {
             && self.changes.is_empty()
     }
 
+    pub fn presentation_anchors(&self) -> Vec<crate::backend::production::PresentationAnchor> {
+        self.enter_entries
+            .iter()
+            .filter(|(_, e)| e.presentation_anchor_pending)
+            .map(|(_, e)| e.presentation_anchor.clone())
+            .chain(
+                self.exit_entries
+                    .iter()
+                    .filter(|(_, e)| e.presentation_anchor_pending)
+                    .map(|(_, e)| e.presentation_anchor.clone()),
+            )
+            .collect()
+    }
+
     pub fn anchor_pending_transient_entries_to_present(&mut self, presented_at: Instant) {
+        self.presentation_anchors()
+            .iter()
+            .for_each(|anchor| anchor.observe(presented_at));
+        self.observe_presentations();
+    }
+
+    pub fn observe_presentations(&mut self) {
         let enters: Vec<_> = self
             .enter_entries
             .iter()
-            .filter_map(|(id, e)| e.presentation_anchor_pending.then_some(*id))
+            .filter(|(_, e)| e.presentation_anchor_pending)
+            .filter_map(|(id, e)| e.presentation_anchor.observed_at().map(|at| (*id, at)))
             .collect();
         let exits: Vec<_> = self
             .exit_entries
             .iter()
-            .filter_map(|(id, e)| e.presentation_anchor_pending.then_some(*id))
+            .filter(|(_, e)| e.presentation_anchor_pending)
+            .filter_map(|(id, e)| e.presentation_anchor.observed_at().map(|at| (*id, at)))
             .collect();
-        let anchor = |started: &mut Instant, pending: &mut bool| {
-            let changed = *started != presented_at;
-            *started = presented_at;
+        let anchor = |started: &mut Instant, pending: &mut bool, at| {
+            let changed = *started != at;
+            *started = at;
             *pending = false;
             changed
         };
-        // Non-short-circuit OR: every pending entry must be anchored.
-        let enter_changed = enters.into_iter().fold(false, |changed, id| {
+        // Non-short-circuit OR: every observed entry must be anchored.
+        let enter_changed = enters.into_iter().fold(false, |changed, (id, at)| {
             self.enter_entries.get_mut(&id).is_some_and(|entry| {
                 anchor(
                     &mut entry.started_at,
                     &mut entry.presentation_anchor_pending,
+                    at,
                 )
             }) | changed
         });
-        let exit_changed = exits.into_iter().fold(false, |changed, id| {
+        let exit_changed = exits.into_iter().fold(false, |changed, (id, at)| {
             self.exit_entries.get_mut(&id).is_some_and(|entry| {
                 anchor(
                     &mut entry.started_at,
                     &mut entry.presentation_anchor_pending,
+                    at,
                 )
             }) | changed
         });
