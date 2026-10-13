@@ -2,6 +2,7 @@ defmodule EmergeSkia.FirstFrameFontsTest do
   use ExUnit.Case
   use Emerge.UI
 
+  alias Emerge.Config
   alias VideoInterop.{Binary, Frame}
 
   @width 180
@@ -18,15 +19,15 @@ defmodule EmergeSkia.FirstFrameFontsTest do
       )
 
     {:ok, renderer} =
-      EmergeSkia.start(
-        otp_app: :emerge,
-        backend: :headless,
-        rendering_api: :raster,
-        width: @width,
-        height: @height,
-        assets: [fonts: @fonts],
-        headless: [target: self(), pixel_format: :rgba8888]
-      )
+      EmergeSkia.start(%Config{
+        output: %Config.Headless{
+          target: self(),
+          size: {@width, @height},
+          frames: %Config.BinaryFrames{pixel_format: :rgba8888}
+        },
+        renderer: %Config.Renderer{api: :raster},
+        assets: %Config.Assets{otp_app: :emerge, fonts: @fonts}
+      })
 
     on_exit(fn -> EmergeSkia.stop(renderer) end)
 
