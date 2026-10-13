@@ -118,6 +118,66 @@ fn test_layout_multiline_wraps_and_auto_grows_height() {
 }
 
 #[test]
+fn multiline_word_wrap_grows_padded_fill_input_and_repositions_sibling_on_each_edit() {
+    let mut tree = ElementTree::new();
+    let input = make_element(
+        "multiline",
+        ElementKind::Multiline,
+        Attrs {
+            width: Some(Length::Fill),
+            padding: Some(Padding::Uniform(32.0)),
+            font_size: Some(44.0),
+            content: Some(String::new()),
+            ..Attrs::default()
+        },
+    );
+    let input_id = input.id;
+    let sibling = make_element("sibling", ElementKind::El, fixed_box_attrs(10.0, 10.0));
+    let sibling_id = sibling.id;
+    let mut column = make_element(
+        "column",
+        ElementKind::Column,
+        Attrs {
+            width: Some(Length::Fill),
+            spacing: Some(8.0),
+            ..Attrs::default()
+        },
+    );
+    let root_id = column.id;
+    column.children = vec![input_id, sibling_id];
+    tree.set_root_id(root_id);
+    tree.insert(column);
+    tree.insert(input);
+    tree.insert(sibling);
+
+    // 96px outer width - 64px padding = four 8px mock glyphs. Each word fits.
+    for (text, lines) in [
+        ("a abc ", 2),
+        ("a abc d", 3),
+        ("a abc de", 3),
+        ("a abc ", 2),
+    ] {
+        tree.set_text_input_content(&input_id, text.into());
+        layout_tree(
+            &mut tree,
+            Constraint::new(96.0, 600.0),
+            1.0,
+            &MockTextMeasurer,
+        );
+        let input_frame = tree.get(&input_id).unwrap().layout.frame.unwrap();
+        let sibling_frame = tree.get(&sibling_id).unwrap().layout.frame.unwrap();
+        let root_frame = tree.get(&root_id).unwrap().layout.frame.unwrap();
+        let height = lines as f32 * 44.0 + 64.0;
+        assert_eq!(input_frame.width, 96.0, "{text:?}");
+        assert_eq!(input_frame.content_width, 96.0, "{text:?}");
+        assert_eq!(input_frame.height, height, "{text:?}");
+        assert_eq!(input_frame.content_height, height, "{text:?}");
+        assert_eq!(sibling_frame.y, input_frame.y + height + 8.0, "{text:?}");
+        assert_eq!(root_frame.height, height + 8.0 + 10.0, "{text:?}");
+    }
+}
+
+#[test]
 fn test_layout_multiline_respects_explicit_height_override() {
     let mut tree = ElementTree::new();
 
