@@ -14,7 +14,6 @@ impl RetryDelay {
 
 pub(super) fn run_binary_loop(
     render_rx: &Receiver<RenderMsg>,
-    tree_tx: &Sender<TreeMsg>,
     running: &AtomicBool,
     pixel_format: &str,
     control: (FrameRateControl, Receiver<()>),
@@ -23,13 +22,11 @@ pub(super) fn run_binary_loop(
     let (frame_rate, control_rx) = control;
     let mut pacer = FramePacer::new(frame_rate);
     let mut sequence = 0u64;
-    let mut animation_at = None;
+    let mut production = FrameProduction::default();
     let mut retry_at = None;
     let mut retry_delay = RetryDelay::default();
     let mut pending = None;
     while running.load(Ordering::Relaxed) {
-        // Bounded draining keeps the latest scene without starving admission or
-        // stop. Superseded retained scenes are released on this owner thread.
         for _ in 0..64 {
             match render_rx.try_recv() {
                 Ok(message) => {
@@ -39,7 +36,7 @@ pub(super) fn run_binary_loop(
                         return;
                     };
                     if !state.animate {
-                        animation_at = None;
+                        production.reset();
                     }
                     pending = Some(state);
                     retry_at = None;
@@ -49,15 +46,10 @@ pub(super) fn run_binary_loop(
             }
         }
         let now = Instant::now();
-        // Video/tree traffic must not continually postpone the animation pulse.
-        if animation_at.is_some_and(|deadline| deadline <= now) {
-            animation_at = None;
-            maybe_send_animation_pulse(tree_tx, true, pacer.control.animation_interval());
-        }
-        let now = Instant::now();
+        production.poll(now);
         let render_at = pending
             .as_ref()
-            .map(|_| pacer.render_at(now).max(retry_at.unwrap_or(now)));
+            .map(|state| headless_render_at(&pacer, state, now).max(retry_at.unwrap_or(now)));
         if render_at.is_some_and(|at| at <= now) {
             let Some(state) = pending.take() else {
                 continue;
@@ -71,12 +63,13 @@ pub(super) fn run_binary_loop(
                     sequence = sequence.wrapping_add(1);
                     retry_at = None;
                     retry_delay = RetryDelay::default();
-                    animation_at =
-                        next_animation_tick(state.animate, animation_at, &pacer, Instant::now());
+                    let delivered_at = Instant::now();
+                    state.animation_frame.observed(delivered_at);
+                    production.submitted(state.animation_frame, pacer.animation_at(delivered_at));
                 }
                 Err(error) => {
                     eprintln!("headless render failed: {error}");
-                    animation_at = None;
+                    production.reset();
                     pending = Some(state);
                     retry_at = Some(retry_delay.next(Instant::now()));
                 }
@@ -84,23 +77,15 @@ pub(super) fn run_binary_loop(
             continue;
         }
         let render_tick = render_at.map(at).unwrap_or_else(never);
-        let animation_tick = animation_at.map(at).unwrap_or_else(never);
+        let production_tick = production.deadline().map(at).unwrap_or_else(never);
         select! {
-            recv(control_rx) -> message => {
-                if message.is_err() { break; }
-                if animation_at.is_some() {
-                    animation_at = Some(pacer.animation_at(Instant::now()));
-                }
-            }
-            recv(animation_tick) -> _ => {
-                animation_at = None;
-                maybe_send_animation_pulse(tree_tx, true, pacer.control.animation_interval());
-            }
+            recv(control_rx) -> message => { if message.is_err() { break; } }
+            recv(production_tick) -> _ => {}
             recv(render_tick) -> _ => {}
             recv(render_rx) -> message => {
                 let Ok(message) = message else { break; };
                 let Some(state) = received_scene(message, sequence, pixel_format, pending.take()) else { break; };
-                if !state.animate { animation_at = None; }
+                if !state.animate { production.reset(); }
                 pending = Some(state);
                 retry_at = None;
             }
@@ -111,6 +96,20 @@ pub(super) fn run_binary_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::{
+        production::{AnimationRequests, RequestOutcome},
+        wake::BackendWakeHandle,
+    };
+    fn animated_message(requests: &AnimationRequests) -> RenderMsg {
+        let mut msg = message(true);
+        if let RenderMsg::Scene {
+            animation_frame, ..
+        } = &mut msg
+        {
+            *animation_frame = requests.frame(true, vec![], BackendWakeHandle::noop());
+        }
+        msg
+    }
     fn message(animate: bool) -> RenderMsg {
         RenderMsg::Scene {
             application_frame: true,
@@ -130,7 +129,7 @@ mod tests {
     #[test]
     fn cap_coalesces_bursts_and_renders_only_the_latest_pending_scene() {
         let (tx, rx) = bounded(64);
-        let (tree_tx, _tree_rx) = unbounded();
+        let (_tree_tx, _tree_rx) = unbounded::<TreeMsg>();
         let (control, control_rx) = FrameRateControl::new(Some(20));
         let (output, frames) = unbounded();
         let (gate, release) = bounded(1);
@@ -138,7 +137,6 @@ mod tests {
             let mut first = true;
             run_binary_loop(
                 &rx,
-                &tree_tx,
                 &AtomicBool::new(true),
                 "rgba",
                 (control, control_rx),
@@ -189,14 +187,13 @@ mod tests {
     #[test]
     fn live_cap_removal_wakes_pending_frames_but_does_not_redraw_static_content() {
         let (tx, rx) = bounded(4);
-        let (tree_tx, _tree_rx) = unbounded();
+        let (_tree_tx, _tree_rx) = unbounded::<TreeMsg>();
         let (control, control_rx) = FrameRateControl::new(Some(1));
         let (output, frames) = unbounded();
         let render_control = control.clone();
         let handle = thread::spawn(move || {
             run_binary_loop(
                 &rx,
-                &tree_tx,
                 &AtomicBool::new(true),
                 "rgba",
                 (render_control, control_rx),
@@ -224,12 +221,11 @@ mod tests {
     #[test]
     fn continuous_animated_scenes_do_not_starve_presentation_pulses() {
         let (tx, rx) = bounded(4);
-        let (tree_tx, tree_rx) = unbounded();
+        let (requests, tree_rx) = AnimationRequests::channel();
         let (output, frames) = unbounded();
         let handle = thread::spawn(move || {
             run_binary_loop(
                 &rx,
-                &tree_tx,
                 &AtomicBool::new(true),
                 "rgba",
                 FrameRateControl::new(Some(100)),
@@ -240,28 +236,31 @@ mod tests {
             );
         });
         for _ in 0..5 {
-            tx.send(message(true)).unwrap();
+            tx.send(animated_message(&requests)).unwrap();
             frames.recv_timeout(Duration::from_secs(5)).unwrap();
+            tree_rx
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .complete(RequestOutcome::Scene);
         }
         tx.send(RenderMsg::Stop).unwrap();
         handle.join().unwrap();
         assert!(
-            tree_rx.len() >= 4,
-            "scene traffic must not reset each pending pulse"
+            tree_rx.is_empty(),
+            "each accepted scene spends exactly one credit"
         );
     }
 
     #[test]
     fn capped_static_scene_cancels_an_older_animation_pulse() {
         let (tx, rx) = bounded(4);
-        let (tree_tx, tree_rx) = unbounded();
+        let (requests, tree_rx) = AnimationRequests::channel();
         let (output, frames) = unbounded();
         let (gate, release) = bounded(1);
         let handle = thread::spawn(move || {
             let mut first = true;
             run_binary_loop(
                 &rx,
-                &tree_tx,
                 &AtomicBool::new(true),
                 "rgba",
                 FrameRateControl::new(Some(30)),
@@ -274,20 +273,23 @@ mod tests {
                 },
             );
         });
-        tx.send(message(true)).unwrap();
+        tx.send(animated_message(&requests)).unwrap();
         assert!(frames.recv_timeout(Duration::from_secs(5)).unwrap());
         tx.send(message(false)).unwrap();
         gate.send(()).unwrap();
         assert!(!frames.recv_timeout(Duration::from_secs(5)).unwrap());
         tx.send(RenderMsg::Stop).unwrap();
         handle.join().unwrap();
-        assert!(tree_rx.is_empty());
+        assert!(
+            tree_rx.len() <= 1,
+            "a queued static scene cancels retries, not already spent credits"
+        );
     }
 
     #[test]
     fn failed_terminal_binary_frame_recovers_without_another_tree_message() {
         let (tx, rx) = bounded(4);
-        let (tree_tx, tree_rx) = bounded(4);
+        let (_tree_tx, tree_rx) = bounded::<TreeMsg>(4);
         let (output, frames) = bounded(4);
         let (attempt_tx, attempts) = bounded(4);
         let handle = thread::spawn(move || {
@@ -295,7 +297,6 @@ mod tests {
             let mut fail = true;
             run_binary_loop(
                 &rx,
-                &tree_tx,
                 &running,
                 "rgba",
                 FrameRateControl::new(None),
@@ -372,14 +373,13 @@ mod tests {
     #[test]
     fn superseded_failed_scene_drops_synchronously_and_success_leaves_no_retry_history() {
         let (tx, rx) = bounded(4);
-        let (tree_tx, _) = unbounded();
+        let (_tree_tx, _) = unbounded::<TreeMsg>();
         let (attempt_tx, attempts) = unbounded();
         let fail = Arc::new(AtomicBool::new(true));
         let failing = fail.clone();
         let handle = thread::spawn(move || {
             run_binary_loop(
                 &rx,
-                &tree_tx,
                 &AtomicBool::new(true),
                 "rgba",
                 FrameRateControl::new(None),
@@ -448,14 +448,13 @@ mod tests {
     fn stop_and_disconnect_release_pending_frames_without_waiting_for_retry() {
         for disconnect in [false, true] {
             let (tx, rx) = bounded(4);
-            let (tree_tx, _) = unbounded();
+            let (_tree_tx, _) = unbounded::<TreeMsg>();
             let (attempt_tx, attempts) = bounded(4);
             let (gate, release) = bounded(1);
             let (done, stopped) = bounded(1);
             let handle = thread::spawn(move || {
                 run_binary_loop(
                     &rx,
-                    &tree_tx,
                     &AtomicBool::new(true),
                     "rgba",
                     FrameRateControl::new(None),
@@ -486,7 +485,7 @@ mod tests {
     #[test]
     fn recovered_animated_frame_resumes_native_pulses_without_restarting_its_scene() {
         let (tx, rx) = bounded(4);
-        let (tree_tx, tree_rx) = unbounded();
+        let (requests, tree_rx) = AnimationRequests::channel();
         let (attempt_tx, attempts) = unbounded();
         let (gate, release) = bounded(1);
         let submitted = Instant::now() - Duration::from_secs(1);
@@ -494,7 +493,6 @@ mod tests {
             let mut first = true;
             run_binary_loop(
                 &rx,
-                &tree_tx,
                 &AtomicBool::new(true),
                 "rgba",
                 FrameRateControl::new(None),
@@ -511,7 +509,7 @@ mod tests {
                 },
             );
         });
-        let mut msg = message(true);
+        let mut msg = animated_message(&requests);
         if let RenderMsg::Scene {
             pipeline_submitted_at,
             ..
@@ -525,8 +523,11 @@ mod tests {
         gate.send(()).unwrap();
         attempts.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(matches!(
-            tree_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
-            TreeMsg::AnimationPulse { .. }
+            tree_rx
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .message(),
+            TreeMsg::SampleAnimation { .. }
         ));
         tx.send(RenderMsg::Stop).unwrap();
         handle.join().unwrap();

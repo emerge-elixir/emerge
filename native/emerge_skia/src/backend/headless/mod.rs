@@ -26,6 +26,7 @@ use crate::{
     assets,
     backend::{
         cadence::{FramePacer, FrameRateControl},
+        production::FrameProduction,
         raster::{RasterBackend, RasterConfig, RasterPixelFormat},
         wake::{BackendWake, BackendWakeHandle},
     },
@@ -232,7 +233,6 @@ pub(crate) fn start_renderer_with_config(
     let headless = config.headless.clone();
     let latest_frame_for_thread = Arc::clone(&latest_frame);
     let stats_for_thread = renderer_stats.clone();
-    let tree_tx_for_thread = tree_tx.clone();
     let running_for_thread = Arc::clone(&running_flag);
     let width = config.width;
     let height = config.height;
@@ -255,7 +255,6 @@ pub(crate) fn start_renderer_with_config(
             frame_rate,
             control_rx,
             release_rx,
-            tree_tx_for_thread,
             running_for_thread,
             latest_frame_for_thread,
             stats_for_thread,
@@ -420,7 +419,6 @@ fn run_render_loop(
     frame_rate: FrameRateControl,
     control_rx: Receiver<()>,
     release_rx: Receiver<HeadlessReleaseMsg>,
-    tree_tx: Sender<TreeMsg>,
     running_flag: Arc<AtomicBool>,
     latest_frame: Arc<LatestFrameStore>,
     stats: Option<Arc<RendererStatsCollector>>,
@@ -465,12 +463,11 @@ fn run_render_loop(
     }
 
     let mut sequence = 0_u64;
-    let mut pending_prime_animation = false;
+    let mut prime_blocked = false;
     let mut pacer = FramePacer::new(frame_rate.clone());
     if mode == HeadlessMode::Binary {
         binary::run_binary_loop(
             &render_rx,
-            &tree_tx,
             &running_flag,
             &headless.pixel_format,
             (frame_rate.clone(), control_rx),
@@ -534,69 +531,51 @@ fn run_render_loop(
                     }
                 }
 
-                match converted {
-                    Ok((data, stride_bytes)) => send_binary_frame(
-                        target,
-                        &headless.frame_message,
-                        sequence,
-                        frame.width,
-                        frame.height,
-                        &headless.pixel_format,
-                        &headless.bw1_polarity,
-                        stride_bytes,
-                        data,
-                    ),
-                    Err(err) => eprintln!("headless frame conversion failed: {err}"),
-                }
+                let (data, stride_bytes) = converted?;
+                send_binary_frame(
+                    target,
+                    &headless.frame_message,
+                    sequence,
+                    frame.width,
+                    frame.height,
+                    &headless.pixel_format,
+                    &headless.bw1_polarity,
+                    stride_bytes,
+                    data,
+                );
                 Ok(())
             },
         );
         running_flag.store(false, Ordering::Relaxed);
         return;
     }
-    let mut animation_at = None;
+    let mut production = FrameProduction::default();
     let prime_completion_rx = renderer.prime_completion_receiver();
     let mut pending_scene = None;
 
     'render: while running_flag.load(Ordering::Relaxed) {
         let frame_interval = frame_rate.animation_interval();
-        let animation_tick = animation_at.map(at).unwrap_or_else(never);
+        production.poll(Instant::now());
+        let animation_tick = production.deadline().map(at).unwrap_or_else(never);
         let render_tick = pending_scene
             .as_ref()
-            .map(|_| at(pacer.render_at(Instant::now())))
+            .filter(|_| !prime_blocked)
+            .map(|state| at(headless_render_at(&pacer, state, Instant::now())))
             .unwrap_or_else(never);
         select! {
             recv(control_rx) -> message => {
                 if message.is_err() { break; }
-                if animation_at.is_some() {
-                    animation_at = Some(pacer.animation_at(Instant::now()));
-                }
             }
-            recv(animation_tick) -> _ => {
-                animation_at = None;
-                maybe_send_animation_pulse(&tree_tx, true, frame_interval);
-            }
+            recv(animation_tick) -> _ => {}
             recv(prime_completion_rx) -> completion => {
                 let Ok(release_id) = completion else { break; };
-                if renderer.complete_prime_retirement(release_id)
-                    && let Some(deadline) = resume_prime_animation_tick(
-                        &mut pending_prime_animation, &pacer, Instant::now(),
-                    )
-                {
-                    animation_at = Some(deadline);
-                }
+                if renderer.complete_prime_retirement(release_id) { prime_blocked = false; }
                 if renderer.terminal_prime_shutdown_ready() { break; }
             }
             recv(release_rx) -> msg => {
                 match msg {
                     Ok(HeadlessReleaseMsg::PrimeFrame(release_id)) => {
-                        if renderer.release_prime(release_id)
-                            && let Some(deadline) = resume_prime_animation_tick(
-                                &mut pending_prime_animation, &pacer, Instant::now(),
-                            )
-                        {
-                            animation_at = Some(deadline);
-                        }
+                        if renderer.release_prime(release_id) { prime_blocked = false; }
                         if renderer.terminal_prime_shutdown_ready() { break; }
                     }
                     Err(_) => break,
@@ -605,22 +584,20 @@ fn run_render_loop(
             recv(render_rx) -> msg => {
                 let Ok(msg) = msg else { break; };
                 let Some(state) = received_scene(msg, sequence, &headless.pixel_format, pending_scene.take()) else { break; };
-                if !state.animate { animation_at = None; }
+                if !state.animate { production.reset(); }
                 pending_scene = Some(state);
-                pending_prime_animation = false;
             }
             recv(render_tick) -> _ => {
                 // Refresh the pending scene before admission, bounded so continuous
                 // producers cannot starve the control and lease-retirement lanes.
                 for msg in render_rx.try_iter().take(64) {
                     let Some(state) = received_scene(msg, sequence, &headless.pixel_format, pending_scene.take()) else { break 'render; };
-                    if !state.animate { animation_at = None; }
+                    if !state.animate { production.reset(); }
                     pending_scene = Some(state);
-                    pending_prime_animation = false;
                 }
                 let render_started_at = Instant::now();
                 // A lower live cap may have invalidated the timer while it fired.
-                if pacer.render_at(render_started_at) > render_started_at { continue; }
+                if pending_scene.as_ref().is_some_and(|state| headless_render_at(&pacer, state, render_started_at) > render_started_at) { continue; }
                 if !running_flag.load(Ordering::Relaxed) { break; }
                 let Some(state) = pending_scene.take() else { continue; };
                 pacer.started(render_started_at);
@@ -638,16 +615,19 @@ fn run_render_loop(
                         }
                         sequence = sequence.wrapping_add(1);
                         send_prime_frame(target, &headless.frame_message, sequence, frame, release_tx.clone());
-                        animation_at = next_animation_tick(state.animate, animation_at, &pacer, Instant::now());
+                        let delivered_at = Instant::now();
+                        state.animation_frame.observed(delivered_at);
+                        production.submitted(state.animation_frame, pacer.animation_at(delivered_at));
                     }
                     Ok(None) => {
-                        animation_at = None;
-                        pending_prime_animation = state.animate;
+                        // Retain exactly the latest prepared scene while leases
+                        // or GPU retirement prevent another export.
+                        prime_blocked = true;
+                        pending_scene = Some(state);
                     }
                     Err(err) => {
                         eprintln!("headless PRIME render failed terminally: {err}");
-                        animation_at = None;
-                        pending_prime_animation = false;
+                        production.reset();
                         if renderer.terminal_prime_shutdown_ready() { break; }
                     }
                 }
@@ -689,23 +669,14 @@ fn record_render_stats(
     }
 }
 
-// Preserve an outstanding pulse across unrelated redraws, including when it is
-// already due. Resetting it after each video frame can starve native animation.
-fn next_animation_tick(
-    animate: bool,
-    current: Option<Instant>,
-    pacer: &FramePacer,
-    now: Instant,
-) -> Option<Instant> {
-    animate.then(|| current.unwrap_or_else(|| pacer.animation_at(now)))
-}
-
-fn resume_prime_animation_tick(
-    pending: &mut bool,
-    pacer: &FramePacer,
-    now: Instant,
-) -> Option<Instant> {
-    std::mem::take(pending).then(|| pacer.animation_at(now))
+fn headless_render_at(pacer: &FramePacer, state: &RenderState, now: Instant) -> Instant {
+    // Look-ahead must not become an uncapped feedback loop. External mutations
+    // remain immediate when uncapped; animation-derived scenes keep 16ms pacing.
+    if state.animation_sample {
+        pacer.animation_at(now)
+    } else {
+        pacer.render_at(now)
+    }
 }
 
 fn received_scene(
@@ -717,6 +688,8 @@ fn received_scene(
     let RenderMsg::Scene {
         scene,
         animate,
+        animation_frame,
+        animation_trace,
         pipeline_submitted_at,
         pipeline_render_queued_at,
         ..
@@ -735,22 +708,9 @@ fn received_scene(
         previous.and_then(|state| state.pipeline_submitted_at),
     );
     state.pipeline_render_queued_at = pipeline_render_queued_at;
+    state.animation_frame = animation_frame;
+    state.animation_sample = animation_trace.is_some_and(|trace| trace.pulse_requested_sample);
     Some(state)
-}
-
-fn maybe_send_animation_pulse(tree_tx: &Sender<TreeMsg>, animate: bool, frame_interval: Duration) {
-    if animate {
-        let now = Instant::now();
-        send_tree(
-            tree_tx,
-            TreeMsg::AnimationPulse {
-                presented_at: now,
-                predicted_next_present_at: now + frame_interval,
-                trace: None,
-            },
-            false,
-        );
-    }
 }
 
 fn effective_renderer_cache_config(
@@ -1429,43 +1389,29 @@ mod tests {
     }
 
     #[test]
-    fn redraws_preserve_due_animation_ticks_but_static_content_cancels_them() {
+    fn prepared_animation_scenes_preserve_cadence_and_rebase_on_live_caps() {
         let now = Instant::now();
         let (control, _rx) = FrameRateControl::new(None);
-        let mut pacer = FramePacer::new(control);
-        pacer.started(now);
-        let first = next_animation_tick(true, None, &pacer, now);
-        assert_eq!(first, Some(now + Duration::from_millis(16)));
-        let later = now + Duration::from_millis(50);
-        pacer.started(later);
-        assert_eq!(next_animation_tick(true, first, &pacer, later), first);
-        assert_eq!(next_animation_tick(false, first, &pacer, later), None);
-    }
-
-    #[test]
-    fn prime_release_resumes_once_at_the_current_cap_without_replaying_missed_ticks() {
-        let now = Instant::now();
-        let (control, _rx) = FrameRateControl::new(Some(10));
         let mut pacer = FramePacer::new(control.clone());
         pacer.started(now);
-        let mut pending = true;
+        let mut scene = RenderState::default();
+        assert_eq!(headless_render_at(&pacer, &scene, now), now);
+        scene.animation_sample = true;
         assert_eq!(
-            resume_prime_animation_tick(&mut pending, &pacer, now),
-            Some(now + Duration::from_millis(100))
+            headless_render_at(&pacer, &scene, now),
+            now + Duration::from_millis(16)
         );
-        assert!(!pending);
-        assert!(resume_prime_animation_tick(&mut pending, &pacer, now).is_none());
-        control.set(Some(1)).unwrap();
-        pending = true;
+        control.set(Some(10)).unwrap();
         assert_eq!(
-            resume_prime_animation_tick(&mut pending, &pacer, now),
-            Some(now + Duration::from_secs(1))
+            headless_render_at(&pacer, &scene, now),
+            now + Duration::from_millis(100)
         );
-        pending = true;
         let later = now + Duration::from_secs(10);
+        assert_eq!(headless_render_at(&pacer, &scene, later), later);
+        pacer.started(later);
         assert_eq!(
-            resume_prime_animation_tick(&mut pending, &pacer, later),
-            Some(later)
+            headless_render_at(&pacer, &scene, later),
+            later + Duration::from_millis(100)
         );
     }
 

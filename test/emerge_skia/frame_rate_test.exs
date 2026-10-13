@@ -44,6 +44,53 @@ defmodule EmergeSkia.FrameRateTest do
     assert {:error, "renderer is stopping"} = EmergeSkia.Native.set_frame_rate(renderer, 30)
   end
 
+  test "native look-ahead preserves the first and final enter poses and becomes idle" do
+    config = %Config{
+      output: %Config.Headless{
+        target: self(),
+        size: {2, 2},
+        frame_message: "rate_frame",
+        frames: %Config.BinaryFrames{pixel_format: :rgb888}
+      },
+      renderer: [api: :raster],
+      assets: [otp_app: :emerge]
+    }
+
+    {:ok, renderer} = EmergeSkia.start(config)
+    on_exit(fn -> EmergeSkia.stop(renderer) end)
+    upload_color(renderer, {0, 255, 0})
+    await_color(<<0, 255, 0>>, 5_000)
+    refute_receive {"rate_frame", _}, 40
+
+    blue = Background.color(Emerge.UI.Color.color_rgb(0, 0, 255))
+    red = Background.color(Emerge.UI.Color.color_rgb(255, 0, 0))
+
+    EmergeSkia.upload_tree(
+      renderer,
+      el(
+        [
+          width(px(2)),
+          height(px(2)),
+          red,
+          Animation.animate_enter([[blue], [red]], 200, :linear)
+        ],
+        none()
+      )
+    )
+
+    initial = :binary.copy(<<0, 0, 255>>, 4)
+    final = :binary.copy(<<255, 0, 0>>, 4)
+
+    assert_receive {"rate_frame",
+                    %VideoInterop.Frame{storage: %VideoInterop.Binary{data: ^initial}}},
+                   5_000
+
+    # No application timer or manually injected pulse advances this animation.
+    count = count_until_final(final, System.monotonic_time(:millisecond) + 5_000, 1)
+    assert count in 2..32
+    refute_receive {"rate_frame", _}, 80
+  end
+
   test "equal config snapshots repair partial backend changes instead of skipping replay" do
     config =
       Normalize.config!(%Config{
@@ -96,6 +143,20 @@ defmodule EmergeSkia.FrameRateTest do
       assert :ok = EmergeSkia.Native.set_frame_rate(renderer, nil)
     after
       EmergeSkia.stop(renderer)
+    end
+  end
+
+  defp count_until_final(expected, deadline, count) do
+    timeout = Kernel.max(deadline - System.monotonic_time(:millisecond), 0)
+
+    receive do
+      {"rate_frame", %VideoInterop.Frame{storage: %VideoInterop.Binary{data: ^expected}}} ->
+        count + 1
+
+      {"rate_frame", _other} ->
+        count_until_final(expected, deadline, count + 1)
+    after
+      timeout -> flunk("native animation did not reach its final frame")
     end
   end
 

@@ -5,13 +5,14 @@ struct FaultRenderer {
     fail: Arc<AtomicBool>,
     attempts: Receiver<(bool, usize)>,
     outputs: Receiver<Vec<u8>>,
-    pulses: Receiver<TreeMsg>,
+    requests: crate::backend::production::AnimationRequests,
+    pulses: Receiver<crate::backend::production::FrameRequest>,
     handle: Option<thread::JoinHandle<()>>,
 }
 impl FaultRenderer {
     fn new(context: assets::AssetContext, after_paint: bool) -> Self {
         let (tx, rx) = bounded(64);
-        let (tree_tx, pulses) = unbounded();
+        let (requests, pulses) = crate::backend::production::AnimationRequests::channel();
         let (output, outputs) = unbounded();
         let (attempt, attempts) = unbounded();
         let fail = Arc::new(AtomicBool::new(false));
@@ -22,7 +23,6 @@ impl FaultRenderer {
             let running = AtomicBool::new(true);
             binary::run_binary_loop(
                 &rx,
-                &tree_tx,
                 &running,
                 "rgba",
                 super::super::super::FrameRateControl::new(None),
@@ -46,6 +46,7 @@ impl FaultRenderer {
             fail,
             attempts,
             outputs,
+            requests,
             pulses,
             handle: Some(handle),
         }
@@ -67,7 +68,7 @@ fn interaction_and_remount_during_failed_output_recover_only_latest_native_pixel
             for remount in [false, true] {
                 let worker = FaultRenderer::new(assets.context(), after_paint);
                 let mut h = Harness::new(assets.context());
-                h.render_tap = Some(worker.tx.clone());
+                h.render_tap = Some((worker.tx.clone(), worker.requests.clone()));
                 let now = Instant::now();
                 let pulse = |us| TreeMsg::AnimationPulse {
                     presented_at: now + Duration::from_micros(us),
