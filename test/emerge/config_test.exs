@@ -119,6 +119,33 @@ defmodule Emerge.ConfigTest do
     end
   end
 
+  test "DRM hotplug polling defaults to 750 ms and can be retuned or disabled" do
+    native = fn config ->
+      config |> Config.Native.options() |> EmergeSkia.Options.build_start_native_opts!()
+    end
+
+    default = Normalize.config!(%Config{output: %Config.DRM{}})
+    assert default.output.hotplug_interval_ms == 750
+    assert native.(default).drm_hotplug_interval_ms == 750
+
+    tuned = Normalize.config!(%Config{output: %Config.DRM{hotplug_interval_ms: 2_000}})
+    assert native.(tuned).drm_hotplug_interval_ms == 2_000
+
+    disabled = Normalize.config!(%Config{output: %Config.DRM{hotplug_interval_ms: nil}})
+    assert disabled.output.hotplug_interval_ms == nil
+    assert native.(disabled).drm_hotplug_interval_ms == nil
+
+    for invalid <- [0, -1, 1.5, :off] do
+      assert_raise ArgumentError, ~r/config.output.hotplug_interval_ms/, fn ->
+        Normalize.config!(%Config{output: %Config.DRM{hotplug_interval_ms: invalid}})
+      end
+    end
+
+    assert_raise ArgumentError, ~r/startup-only/, fn ->
+      Config.Changes.validate!(default, disabled)
+    end
+  end
+
   test "all input categories map to internal bits and no subscriptions means zero" do
     assert Config.Native.input_mask(%Config.Input{}) == 0
     assert Config.Native.input_mask(%Config.Input{events: Config.Input.all_events()}) == 255
