@@ -35,9 +35,9 @@ archive subdirectory or a permanently active plan.
   and [Fairphone display controls](active-fairphone-display-controls.md); this does
   not reopen the already-closed general FP3 renderer qualification.
 
-- [Vulkan acquire synchronization](active-vulkan-acquire-synchronization.md):
-  deferred acquired-image layout-transition fix discovered in Wayland frame-cap
-  validation; separate from config implementation.
+- [Wayland Vulkan acquire synchronization](active-vulkan-acquire-synchronization.md):
+  implemented acquisition waits and native validation gate; targeted Hyprland/RADV
+  regression passes, with interactive lifecycle/performance qualification still open.
 
 ## Research and roadmaps
 

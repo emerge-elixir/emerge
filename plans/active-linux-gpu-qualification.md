@@ -61,3 +61,20 @@ Logs and the temporary validation-layer installation are under
 `VK_LAYER_SETTINGS_PATH`. Temporary project configuration was removed and the
 default test NIF rebuilt afterward. No system packages were installed.
 
+### Acquire-wait fix follow-up
+
+The native same-queue acquire-wait fix was tested with explicit permission on
+this Hyprland/RADV GPU using Khronos validation 1.4.363. The same three tests
+(capture, no-readback reuse, and frame caps) on `main` at `c641a9d` passed ExUnit
+but reproduced **14 native synchronization errors** (5/5/4), zero warnings.
+With the fix, Vulkan-only and combined Wayland builds each passed all three
+tests with **zero errors and zero warnings for every instance through teardown**.
+The new enforcing runner rejects nonzero or missing native reports.
+
+Logs: `/tmp/emerge-wayland-vulkan-hardware.s3tZz4/`, including
+`baseline-native.log`, `vulkan-only-native.log`, and `combined-native.log`.
+See [the implementation/validation record](active-vulkan-acquire-synchronization.md)
+for remaining interactive resize/occlusion, additional-target and performance
+checks. This closes the reproduced acquire-transition regression on the tested
+target, not a new general GPU/PRIME qualification matrix.
+
