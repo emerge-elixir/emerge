@@ -27,6 +27,7 @@ use libloading::Library;
 use skia_safe::{Paint, Rect, gpu::gl::FramebufferInfo};
 
 use crate::actors::{EventMsg, RenderMsg, TreeMsg};
+use crate::backend::production::{AnimationFrame, FrameProduction};
 use crate::backend::raster::{RasterBackend, RasterConfig};
 use crate::backend::skia_gpu::GlFrameSurface;
 use crate::cursor::CursorState;
@@ -737,24 +738,16 @@ struct PrimaryFrames {
 struct InFlightCommit {
     primary: Option<PreparedPrimaryFrame>,
     cursor: Option<SubmittedCursorState>,
-    emit_animation_pulse: bool,
 }
 struct CompletedCommit {
     primary: bool,
     cursor: Option<SubmittedCursorState>,
-    emit_animation_pulse: bool,
 }
 impl PrimaryFrames {
-    fn submitted(
-        &mut self,
-        primary: bool,
-        cursor: Option<SubmittedCursorState>,
-        emit_animation_pulse: bool,
-    ) {
+    fn submitted(&mut self, primary: bool, cursor: Option<SubmittedCursorState>) {
         self.in_flight = Some(InFlightCommit {
             primary: if primary { self.prepared.take() } else { None },
             cursor,
-            emit_animation_pulse,
         });
     }
     fn completed(&mut self) -> Option<CompletedCommit> {
@@ -766,7 +759,6 @@ impl PrimaryFrames {
         Some(CompletedCommit {
             primary,
             cursor: commit.cursor,
-            emit_animation_pulse: commit.emit_animation_pulse,
         })
     }
 }
@@ -774,6 +766,7 @@ impl PrimaryFrames {
 struct PreparedPrimaryFrame {
     generation: u64,
     render_version: u64,
+    animation_frame: AnimationFrame,
     pipeline_submitted_at: Option<Instant>,
     pipeline_swap_done_at: Option<Instant>,
     bo: BufferObject<PrimaryFramebuffer>,
@@ -1174,30 +1167,6 @@ fn add_cursor_plane_properties(
     Ok(())
 }
 
-fn send_animation_pulse(
-    tree_tx: &Sender<TreeMsg>,
-    presented_at: Instant,
-    predicted_next_present_at: Instant,
-    log_render: bool,
-) -> bool {
-    let msg = TreeMsg::AnimationPulse {
-        presented_at,
-        predicted_next_present_at,
-        trace: None,
-    };
-
-    match tree_tx.try_send(msg) {
-        Ok(()) => true,
-        Err(TrySendError::Full(_)) => {
-            if log_render {
-                eprintln!("tree channel full, coalescing animation pulse");
-            }
-            true
-        }
-        Err(TrySendError::Disconnected(_)) => false,
-    }
-}
-
 fn send_present_timing(
     event_tx: &Sender<EventMsg>,
     presented_at: Instant,
@@ -1315,6 +1284,17 @@ fn should_submit_prepared_primary(
         && prepared_generation
             .map(|generation| generation != committed_generation)
             .unwrap_or(false)
+}
+
+fn atomic_commit_ready(
+    submit_primary: bool,
+    submit_cursor: bool,
+    defer_cursor: bool,
+    retry_at: Option<Instant>,
+    now: Instant,
+) -> bool {
+    retry_at.is_none_or(|deadline| now >= deadline)
+        && (submit_primary || (submit_cursor && !defer_cursor))
 }
 
 fn should_schedule_video_cleanup(
@@ -1743,6 +1723,38 @@ mod tests {
         assert!(!should_submit_prepared_primary(true, 2, Some(3)));
         assert!(!should_submit_prepared_primary(false, 3, Some(3)));
         assert!(!should_submit_prepared_primary(false, 2, None));
+    }
+
+    #[test]
+    fn scene_and_cursor_wakes_cannot_bypass_a_commit_retry_deadline() {
+        let now = Instant::now();
+        let retry_at = now + Duration::from_millis(1);
+        for us in 0..1000 {
+            let wake_at = now + Duration::from_micros(us);
+            assert!(!atomic_commit_ready(
+                true,
+                true,
+                false,
+                Some(retry_at),
+                wake_at
+            ));
+            assert!(!atomic_commit_ready(
+                false,
+                true,
+                false,
+                Some(retry_at),
+                wake_at
+            ));
+        }
+        assert!(atomic_commit_ready(
+            true,
+            true,
+            false,
+            Some(retry_at),
+            retry_at
+        ));
+        assert!(!atomic_commit_ready(false, true, true, None, retry_at));
+        assert!(atomic_commit_ready(false, true, false, None, retry_at));
     }
 
     #[test]
@@ -2581,6 +2593,7 @@ fn prepare_primary_frame(
     Ok(PreparedPrimaryFrame {
         generation,
         render_version: render_state.render_version,
+        animation_frame: render_state.animation_frame.clone(),
         pipeline_submitted_at: render_state.pipeline_submitted_at,
         pipeline_swap_done_at: None,
         bo,
@@ -3397,7 +3410,16 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                     eprintln!("drm present version={}", render_state.render_version);
                 }
 
-                let mut desired_primary_generation = 1u64;
+                let first_presented_at = Instant::now();
+                let mut production = FrameProduction::default();
+                render_state.animation_frame.observed(first_presented_at);
+                production.submitted(render_state.animation_frame.clone(), first_presented_at + frame_interval);
+                // The blocking modeset already displayed generation zero. Only
+                // unfinished video synchronization needs a duplicate draw; an
+                // animation successor arrives independently through production.
+                let mut desired_primary_generation = u64::from(frames.current.as_ref().is_some_and(
+                    |frame| frame.video_needs_cleanup || !frame.video_sync_succeeded,
+                ));
                 let mut committed_primary_generation = 0u64;
                 let mut next_render_profile_at = Instant::now();
                 let mut cursor_snapshot = cursor_state.snapshot();
@@ -3576,18 +3598,10 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                                                 predicted_next_present_at,
                                             );
 
-                                            if submitted.emit_animation_pulse {
-                                                if !send_animation_pulse(
-                                                    &tree_tx,
-                                                    presented_at,
-                                                    predicted_next_present_at,
-                                                    log_render,
-                                                ) {
-                                                    stop_requested = true;
-                                                    break;
-                                                }
-                                                follow_up_primary_until =
-                                                    Some(presented_at + FOLLOW_UP_PRIMARY_WINDOW);
+                                            frame.animation_frame.observed(presented_at);
+                                            production.progress(predicted_next_present_at);
+                                            if frame.animation_frame.active() {
+                                                follow_up_primary_until = Some(presented_at + FOLLOW_UP_PRIMARY_WINDOW);
                                             }
                                         }
 
@@ -3640,7 +3654,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                         next_hotplug_check = hotplug_interval.map(|i| Instant::now() + i);
                     }
 
-                    while let Ok(msg) = render_rx.try_recv() {
+                    for msg in render_rx.try_iter().take(64) {
                         match msg {
                             RenderMsg::Scene {
                                 scene,
@@ -3648,6 +3662,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                                 pipeline_submitted_at,
                                 pipeline_render_queued_at,
                                 animate,
+                                animation_frame,
                                 ..
                             } => {
                                 let received_at = Instant::now();
@@ -3662,6 +3677,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                                 render_state.pipeline_submitted_at = pipeline_submitted_at;
                                 render_state.pipeline_render_queued_at = pipeline_render_queued_at;
                                 render_state.animate = animate;
+                                render_state.animation_frame = animation_frame;
                                 record_drm_pipeline_scene_received(
                                     stats.as_deref(),
                                     pipeline_render_queued_at,
@@ -3699,7 +3715,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                     {
                         follow_up_primary_until = None;
                     }
-                    while let Ok(icon) = cursor_icon_rx.try_recv() {
+                    for icon in cursor_icon_rx.try_iter().take(64) {
                         current_cursor_icon = icon;
                     }
 
@@ -3739,10 +3755,10 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                     }
 
                     let primary_dirty = desired_primary_generation != committed_primary_generation;
-                    // Animation pulses are driven by primary page-flip completions. Even
+                    // Accepted animation frames each grant one successor. Even
                     // when an enter frame is initially visually unchanged (for example
                     // translated outside a clip), it still needs a committed primary so
-                    // the next pulse advances the animation clock.
+                    // look-ahead can advance the animation clock.
                     if capture_request_generation.is_none()
                         && should_consider_unchanged_primary_skip(
                             frames.in_flight.is_some(),
@@ -3879,7 +3895,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                         eprintln!("drm defer cursor-only commit waiting for follow-up primary");
                     }
 
-                    if submit_primary || (submit_cursor && !defer_cursor_only) {
+                    if atomic_commit_ready(submit_primary, submit_cursor, defer_cursor_only, retry_commit_at, now) {
                         let present_submit_started_at = submit_primary.then(Instant::now);
                         let mut commit_req = atomic::AtomicModeReq::new();
                         let primary_fb = frames
@@ -3989,7 +4005,6 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                                     } else {
                                         None
                                     },
-                                    submit_primary && render_state.animate,
                                 );
                                 let swap_done_at = Instant::now();
                                 if let Some(frame) = frames
@@ -3997,6 +4012,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                                     .as_mut()
                                     .and_then(|commit| commit.primary.as_mut())
                                 {
+                                    production.submitted(frame.animation_frame.clone(), atomic_commit_started_at + frame_interval * 2);
                                     frame.atomic_commit_submitted_at =
                                         Some(atomic_commit_started_at);
                                     frame.atomic_commit_monotonic_at = atomic_commit_monotonic_at;
@@ -4119,7 +4135,8 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                         }
                     }
 
-                    let mut next_deadline = next_hotplug_check;
+                    production.poll(Instant::now());
+                    let mut next_deadline = [next_hotplug_check, production.deadline()].into_iter().flatten().min();
                     if let Some(retry_at) = retry_commit_at {
                         next_deadline = Some(
                             next_deadline

@@ -12,8 +12,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::backend::production::{AnimationFrame, FrameProduction};
 use ash::vk;
-use crossbeam_channel::TrySendError;
 use drm::{
     ClientCapability, Device as BasicDevice,
     control::{
@@ -24,7 +24,7 @@ use gbm::{BufferObject, BufferObjectFlags, Device as GbmDevice, Format as GbmFor
 use skia_safe::{Paint, Rect};
 
 use crate::{
-    actors::{EventMsg, RenderMsg, TreeMsg},
+    actors::{EventMsg, RenderMsg},
     backend::vulkan::{
         AcquiredTarget, DMA_BUF_EXTERNAL_QUEUE_FAMILY, ExactDeviceRequirements,
         ExportableSyncFdSemaphore, ImportedDmaBufImage, ImportedPlane, TargetImageState,
@@ -300,6 +300,12 @@ impl ScanoutLifecycle {
         Ok(())
     }
 
+    fn can_prepare(&self, generation: u64) -> bool {
+        self.prepared.is_none()
+            && self.rendering.is_none()
+            && self.in_flight.and_then(|slot| self.slots[slot].generation) != Some(generation)
+    }
+
     fn duplicate_in_fence_for_atomic_attempt(&mut self) -> Result<OwnedFd, String> {
         self.ensure_healthy()?;
         if self.in_flight.is_some() {
@@ -517,7 +523,7 @@ struct ConcreteSlot {
     committed_at: Option<Instant>,
     newest_video_submitted_at: Option<Instant>,
     video_needs_cleanup: bool,
-    animate: bool,
+    animation_frame: AnimationFrame,
 }
 
 struct PresenterSession {
@@ -707,7 +713,7 @@ impl PresenterSession {
                 committed_at: None,
                 newest_video_submitted_at: None,
                 video_needs_cleanup: false,
-                animate: false,
+                animation_frame: AnimationFrame::default(),
             });
         }
         let kms_state = PreparedKmsState::new(&kms, plane_properties)?;
@@ -865,7 +871,7 @@ impl PresenterSession {
         slot.committed_at = None;
         slot.newest_video_submitted_at = video.newest_import_submitted_at;
         slot.video_needs_cleanup = video.needs_cleanup;
-        slot.animate = render_state.animate;
+        slot.animation_frame = render_state.animation_frame.clone();
         self.lifecycle.prepare(
             slot_index,
             generation,
@@ -1350,6 +1356,7 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
     let mut application_frame_ready = false;
     let mut first_present = true;
     let mut render_state = RenderState::default();
+    let mut production = FrameProduction::default();
     let mut desired_generation = 1_u64;
     let mut committed_generation = 0_u64;
     let mut observed_capture_generation = 0_u64;
@@ -1370,7 +1377,7 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
 
     loop {
         let _ = presenter_wake.drain();
-        while let Ok(message) = render_rx.try_recv() {
+        for message in render_rx.try_iter().take(64) {
             match message {
                 RenderMsg::Scene {
                     application_frame,
@@ -1380,6 +1387,7 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
                     pipeline_submitted_at,
                     pipeline_render_queued_at,
                     animate,
+                    animation_frame,
                     ..
                 } => {
                     let received_at = Instant::now();
@@ -1397,6 +1405,7 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
                     render_state.pipeline_submitted_at = pipeline_submitted_at;
                     render_state.pipeline_render_queued_at = pipeline_render_queued_at;
                     render_state.animate = animate;
+                    render_state.animation_frame = animation_frame;
                     if let Some(stats) = stats.as_deref() {
                         stats.record_pipeline_draw_started(pipeline_render_queued_at, received_at);
                         stats.record_drm_scene_selected_for_draw();
@@ -1419,7 +1428,7 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
         if terminal.is_some() || stop_requested || stop.load(Ordering::Acquire) {
             break;
         }
-        while let Ok(icon) = cursor_icon_rx.try_recv() {
+        for icon in cursor_icon_rx.try_iter().take(64) {
             current_cursor_icon = icon;
             desired_generation = desired_generation.wrapping_add(1);
         }
@@ -1518,10 +1527,7 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
             desired_generation,
             committed_generation,
         );
-        if frame_pending
-            && session.lifecycle.prepared.is_none()
-            && session.lifecycle.rendering.is_none()
-        {
+        if frame_pending && session.lifecycle.can_prepare(desired_generation) {
             let profile = config.renderer_stats_log && now >= next_profile;
             if profile {
                 next_profile = now + RENDER_PROFILE_INTERVAL;
@@ -1586,6 +1592,12 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
             commit_retry_policy.record_attempt();
             match session.commit_prepared(initial_commit) {
                 Ok(AtomicAttemptResult::Committed) => {
+                    if let Some(slot) = session.lifecycle.in_flight {
+                        production.submitted(
+                            session.slots[slot].animation_frame.clone(),
+                            started + mode_frame_interval(&session.kms().mode) * 2,
+                        );
+                    }
                     if let Some(stats) = stats.as_deref() {
                         stats.record_drm_atomic_commit_ioctl(started.elapsed());
                         stats.record_drm_primary_committed();
@@ -1681,10 +1693,19 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
             }
         }
 
-        let next_deadline = [next_hotplug, retry_at, page_flip_deadline]
-            .into_iter()
-            .flatten()
-            .min();
+        if session.output_suspended {
+            production.reset();
+        }
+        production.poll(Instant::now());
+        let next_deadline = [
+            next_hotplug,
+            retry_at,
+            page_flip_deadline,
+            production.deadline(),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
         let timeout = if frame_pending
             && session.lifecycle.in_flight.is_none()
             && session.lifecycle.prepared.is_none()
@@ -1793,22 +1814,8 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
                         if slot.video_needs_cleanup {
                             desired_generation = desired_generation.wrapping_add(1);
                         }
-                        if slot.animate {
-                            let message = TreeMsg::AnimationPulse {
-                                presented_at,
-                                predicted_next_present_at: predicted,
-                                trace: None,
-                            };
-                            match tree_tx.try_send(message) {
-                                Ok(()) => {}
-                                Err(TrySendError::Full(message)) => {
-                                    if tree_tx.send(message).is_err() {
-                                        stop_requested = true;
-                                    }
-                                }
-                                Err(TrySendError::Disconnected(_)) => stop_requested = true,
-                            }
-                        }
+                        slot.animation_frame.observed(presented_at);
+                        production.progress(predicted);
                         if first_present {
                             first_present = false;
                             native_log.info(
@@ -2119,6 +2126,23 @@ mod tests {
     fn exactly_three_persistent_slots_are_required_by_trial_owner() {
         assert!(ScanoutLifecycle::new(2).is_err());
         assert_eq!(ScanoutLifecycle::new(3).unwrap().slots.len(), 3);
+    }
+
+    #[test]
+    fn preparation_excludes_the_in_flight_generation_and_keeps_one_successor() {
+        let mut lifecycle = ScanoutLifecycle::new(3).unwrap();
+        let first = prepare(&mut lifecycle, 1);
+        lifecycle
+            .complete_atomic_attempt(AtomicAttemptResult::Committed)
+            .unwrap();
+        assert_eq!(lifecycle.in_flight, Some(first));
+        assert!(!lifecycle.can_prepare(1));
+        assert!(lifecycle.can_prepare(2));
+        let next = prepare(&mut lifecycle, 2);
+        assert!(!lifecycle.can_prepare(3));
+        lifecycle.page_flip().unwrap();
+        assert_eq!(lifecycle.prepared, Some(next));
+        assert!(!lifecycle.can_prepare(3));
     }
 
     #[test]
