@@ -1,6 +1,7 @@
 use super::*;
 
 struct FaultRenderer {
+    start: Option<Sender<()>>,
     tx: Sender<RenderMsg>,
     fail: Arc<AtomicBool>,
     attempts: Receiver<(bool, usize)>,
@@ -11,6 +12,7 @@ struct FaultRenderer {
 }
 impl FaultRenderer {
     fn new(context: assets::AssetContext, after_paint: bool) -> Self {
+        let (start, started) = bounded(1);
         let (tx, rx) = bounded(64);
         let (requests, pulses) = crate::backend::production::AnimationRequests::channel();
         let (output, outputs) = unbounded();
@@ -18,6 +20,9 @@ impl FaultRenderer {
         let fail = Arc::new(AtomicBool::new(false));
         let failing = fail.clone();
         let handle = thread::spawn(move || {
+            if started.recv().is_err() {
+                return;
+            }
             let _assets = context.enter();
             let mut renderer = raster();
             let running = AtomicBool::new(true);
@@ -42,6 +47,7 @@ impl FaultRenderer {
             );
         });
         Self {
+            start: Some(start),
             tx,
             fail,
             attempts,
@@ -51,12 +57,32 @@ impl FaultRenderer {
             handle: Some(handle),
         }
     }
+
+    fn start(&mut self) {
+        self.start.take().unwrap().send(()).unwrap();
+    }
 }
 impl Drop for FaultRenderer {
     fn drop(&mut self) {
+        drop(self.start.take());
         let _ = self.tx.send(RenderMsg::Stop);
         self.handle.take().unwrap().join().unwrap();
     }
+}
+
+#[test]
+fn fault_renderer_can_stop_before_starting() {
+    let assets = assets::AssetRuntime::new();
+    let worker = FaultRenderer::new(assets.context(), false);
+    let (done, stopped) = bounded(1);
+    let handle = thread::spawn(move || {
+        drop(worker);
+        done.send(()).unwrap();
+    });
+    stopped
+        .recv_timeout(Duration::from_secs(5))
+        .expect("dropping an unstarted renderer must release its startup gate");
+    handle.join().unwrap();
 }
 
 #[test]
@@ -66,7 +92,7 @@ fn interaction_and_remount_during_failed_output_recover_only_latest_native_pixel
     for after_paint in [false, true] {
         for backlog in [1, 8, 32] {
             for remount in [false, true] {
-                let worker = FaultRenderer::new(assets.context(), after_paint);
+                let mut worker = FaultRenderer::new(assets.context(), after_paint);
                 let mut h = Harness::new(assets.context());
                 h.render_tap = Some((worker.tx.clone(), worker.requests.clone()));
                 let now = Instant::now();
@@ -75,12 +101,17 @@ fn interaction_and_remount_during_failed_output_recover_only_latest_native_pixel
                     predicted_next_present_at: now + Duration::from_micros(us),
                     trace: None,
                 };
+                // Queue the entire bootstrap before starting output so coalescing
+                // is deterministic. Layout count is not a delivery count: only
+                // the latest queued scene should reach the renderer.
                 h.round_trip(vec![pulse(0)]);
-                let initial = (0..h.frames)
-                    .fold(None, |_, _| {
-                        Some(worker.outputs.recv_timeout(Duration::from_secs(5)).unwrap())
-                    })
-                    .unwrap();
+                h.round_trip(vec![pulse(100_000)]);
+                assert!(h.frames > 1);
+                worker.start();
+                let initial = worker
+                    .outputs
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("latest coalesced bootstrap frame");
                 assert_eq!(initial, h.last_pixels);
                 worker.fail.store(true, Ordering::SeqCst);
                 h.input(InputEvent::CursorEntered { entered: true });
