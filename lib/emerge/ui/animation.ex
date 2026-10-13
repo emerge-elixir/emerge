@@ -16,7 +16,9 @@ defmodule Emerge.UI.Animation do
   - a curve: `:linear`, `:ease_in`, `:ease_out`, or `:ease_in_out`
   - an optional repeat: `:once`, `:loop`, or a positive integer
 
-  A positive integer runs that many times and then clamps to the last keyframe.
+  For `animate/4`, a positive integer (or `:once`) runs that many times and then
+  clamps to the last keyframe. Enter animations instead hand off to the element's
+  plain attrs when they finish; see "Animate Enter".
 
   These examples assume `use Emerge.UI`.
 
@@ -68,6 +70,13 @@ defmodule Emerge.UI.Animation do
 
   The enter spec is captured at mount time, so changing it later does not
   affect the currently running enter animation.
+
+  When the enter animation finishes, the element renders with its plain attrs
+  again; the last keyframe is not held. An enter animation is a transition into
+  the declared state, so the last keyframe should normally match the plain attrs.
+  To end somewhere else, set those values as plain attrs too. For example, an
+  enter animation that ends at `Transform.move_x(-454)` also needs
+  `Transform.move_x(-454)` on the element, or it snaps back to no offset.
 
   If both `animate_enter/4` and `animate/4` are present, the regular animation
   waits for the enter animation to finish and then starts from zero progress.
@@ -198,7 +207,9 @@ defmodule Emerge.UI.Animation do
   @doc """
   Animate animatable attrs when the element first mounts.
 
-  Unlike `animate/4`, this does not start if it is added later to an existing retained node.
+  Unlike `animate/4`, this does not start if it is added later to an existing retained node,
+  and it does not hold its last keyframe: once it finishes, the element renders
+  with its plain attrs again.
   If both `animate_enter/4` and `animate/4` are present, `animate/4` starts after the
   enter animation completes.
   """
