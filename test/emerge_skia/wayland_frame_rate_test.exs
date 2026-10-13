@@ -25,6 +25,15 @@ defmodule EmergeSkia.WaylandFrameRateTest do
 
     assert {:ok, renderer} = EmergeSkia.start(config)
     on_exit(fn -> EmergeSkia.stop(renderer) end)
+
+    if api == :vulkan do
+      assert {:ok,
+              %{rendering_api: %{selected: :vulkan}, vulkan_device: %{software: false} = device}} =
+               EmergeSkia.renderer_info(renderer)
+
+      IO.puts("Wayland Vulkan hardware confirmed: #{inspect(device)}")
+    end
+
     upload_color(renderer, {255, 0, 0})
     await_color(renderer, <<255, 0, 0>>, 5_000)
     Process.sleep(30)
