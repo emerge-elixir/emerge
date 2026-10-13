@@ -7,6 +7,8 @@ archive subdirectory or a permanently active plan.
 
 ## Open work
 
+- [0.5.0 release preparation](active-0.5-release.md): versioned metadata, release
+  notes and local validation; exact-commit CI/artifacts and publication still pending.
 - [Multiline word wrapping](active-multiline-word-wrap.md): scanner fix and
   shared-consumer regressions validated; FP3 hardware acceptance pending.
 - [Embedded artifact follow-up](active-embedded-artifact-qualification.md):
@@ -67,7 +69,8 @@ qualification reminders just because an old plan lacks the test log.
 - [Renderer-local asset ownership](../guides/internals/assets-images.md)
 - [Headless frame-copy measurements](../bench/headless_frame_copy.md)
 - [Corrected borders-cache benchmark](../bench/README.md#rich-borders-cache-workload)
-- [Release history](../CHANGELOG.md) and [0.4 migration](../guides/migrations/0.4.md)
+- [Release history](../CHANGELOG.md), [0.5 migration](../guides/migrations/0.5.md)
+  and [historical 0.4 migration](../guides/migrations/0.4.md)
 
 ## Maintenance
 

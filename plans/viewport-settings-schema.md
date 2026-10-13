@@ -10,7 +10,8 @@ Authoritative user documentation:
 - [Raw input contract](../guides/tutorials/handle_input.md)
 - Module docs/types in `lib/emerge/config*.ex` and `lib/emerge/input.ex`
 
-The package version remains 0.4.2 pending release work; these APIs target 0.5.0.
+The package/artifact manifests target 0.5.0. Publication still requires the exact
+release commit's CI and rebuilt artifacts; see the native build guide.
 No compatibility conversion layer remains for replaced mount/start config, aliases,
 public numeric masks or adapter startup contracts. Build configuration and application
 mount/process arguments are separate APIs and are not removed by this change.
@@ -50,8 +51,8 @@ Previous is normalized desired intent, not hardware/applied state. Typed struct
 updates preserve other fields. Invalid results preserve previous intent; operational
 errors preserve latest desired intent for full-snapshot retry and recovery.
 
-Raw observation defaults to `[]`; `Input.all_events/0` returns the eight category
-atoms. Pointer/resize/focus callback names are coherent with those categories and
+Raw observation defaults to `[]`; `Input.all_events/0` returns the nine category
+atoms, including contact-aware `:touch`. Pointer/resize/focus callback names are coherent with those categories and
 press/release actions are atoms. Numeric masks stay private. Subscriptions do not
 disable element interactions or window close. Backend availability and exact text/
 key/IME/coordinate contracts are in the input guide, not invented by the schema.
