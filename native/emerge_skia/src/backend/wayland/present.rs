@@ -243,7 +243,10 @@ impl PresentState {
             DrawKind::LateReplacement => self.late_replacement_used = true,
             DrawKind::LateVideoReplacement => self.late_video_replacement_used = true,
         }
-        self.redraw_requested = false;
+        // A late video replacement cannot spend the normal submission credit
+        // or anchor newly mounted transitions on an older callback. Give its
+        // active scene a normal opportunity once that callback arrives.
+        self.redraw_requested = kind != DrawKind::Normal && self.latest_received_animation_active;
         self.video_redraw_requested = false;
         self.video_cleanup_requested = video_needs_cleanup;
         self.unsubmitted_present_retry = false;
@@ -594,6 +597,26 @@ mod tests {
         present.queue_redraw();
         present.note_scene_received(3, true, false);
 
+        assert_eq!(
+            present.draw_decision(false, true),
+            DrawDecision::Draw(DrawKind::Normal)
+        );
+    }
+
+    #[test]
+    fn animated_late_video_replacement_keeps_a_normal_opportunity() {
+        let mut present = PresentState::configured_for_test();
+        present.finish_present(1, DrawKind::Normal, false);
+        present.frame_callback_state = FrameCallbackState::Requested;
+        present.note_scene_received(2, true, true);
+        present.queue_video_redraw();
+        assert_eq!(
+            present.draw_decision(false, true),
+            DrawDecision::Draw(DrawKind::LateVideoReplacement)
+        );
+        present.finish_present(2, DrawKind::LateVideoReplacement, false);
+        assert_eq!(present.draw_decision(false, true), DrawDecision::Skip);
+        present.frame_callback_received(Instant::now(), 16, true);
         assert_eq!(
             present.draw_decision(false, true),
             DrawDecision::Draw(DrawKind::Normal)
