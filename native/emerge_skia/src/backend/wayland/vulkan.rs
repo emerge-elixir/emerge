@@ -1,7 +1,12 @@
+mod acquire;
+
 use std::sync::Arc;
 
+use acquire::AcquirePool;
+
 use ash::{khr, vk};
-use wayland_client::{Connection, protocol::wl_surface};
+use smithay_client_toolkit::shell::{WaylandSurface, xdg::window::Window};
+use wayland_client::Connection;
 
 use crate::{
     backend::vulkan::{
@@ -22,6 +27,10 @@ const SWAPCHAIN_USAGE: vk::ImageUsageFlags = GANESH_TARGET_IMAGE_USAGE;
 
 struct SurfaceOwner {
     _instance: Arc<VulkanInstance>,
+    _connection: Connection,
+    // A proxy clone alone cannot prevent SCTK's Window owner from destroying the surface/roles.
+    // Retain that owner too, especially when uncertain WSI work forces native quarantine.
+    _window: Window,
     loader: khr::surface::Instance,
     handle: vk::SurfaceKHR,
 }
@@ -109,10 +118,11 @@ pub(super) struct PresentOutcome {
 }
 
 pub(super) struct WaylandVulkanEnv {
-    surface: Option<SurfaceOwner>,
+    surface: Option<Box<SurfaceOwner>>,
     swapchain_loader: khr::swapchain::Device,
     swapchain: vk::SwapchainKHR,
     images: Vec<SwapchainImage>,
+    acquires: Option<AcquirePool>,
     engine: Option<VulkanEngine>,
     dimensions: (u32, u32),
     generation: u64,
@@ -123,13 +133,13 @@ pub(super) struct WaylandVulkanEnv {
 impl WaylandVulkanEnv {
     pub(super) fn new(
         conn: &Connection,
-        wl_surface: &wl_surface::WlSurface,
+        window: &Window,
         dimensions: (u32, u32),
         renderer_cache_config: RendererCacheConfig,
         compositor_device: Option<DrmNodeId>,
     ) -> Result<Self, String> {
         let display_handle = raw_display_handle(conn)?;
-        let window_handle = raw_window_handle(wl_surface)?;
+        let window_handle = raw_window_handle(window.wl_surface())?;
         let required_instance_extensions =
             ash_window::enumerate_required_extensions(display_handle).map_err(|result| {
                 format!("failed to enumerate Wayland Vulkan instance extensions: {result:?}")
@@ -148,6 +158,8 @@ impl WaylandVulkanEnv {
         .map_err(|result| format!("failed to create Wayland Vulkan surface: {result:?}"))?;
         let surface = SurfaceOwner {
             _instance: Arc::clone(&instance),
+            _connection: conn.clone(),
+            _window: window.clone(),
             loader: surface_loader,
             handle: surface_handle,
         };
@@ -184,10 +196,11 @@ impl WaylandVulkanEnv {
         let swapchain_loader = khr::swapchain::Device::new(device.instance().raw(), device.raw());
         let engine = VulkanEngine::new(Arc::clone(&device), renderer_cache_config)?;
         let mut env = Self {
-            surface: Some(surface),
+            surface: Some(Box::new(surface)),
             swapchain_loader,
             swapchain: vk::SwapchainKHR::null(),
             images: Vec::new(),
+            acquires: None,
             engine: Some(engine),
             dimensions: clamp_dimensions(dimensions),
             generation: 0,
@@ -329,36 +342,21 @@ impl WaylandVulkanEnv {
     fn acquire_next_image(&mut self) -> Result<Option<AcquiredTarget<ImageToken>>, String> {
         let device = Arc::clone(self.engine_ref()?.device());
         for attempt in 0..2 {
-            let acquire_semaphore = create_semaphore(&device, "acquire")?;
-            let result = unsafe {
-                self.swapchain_loader.acquire_next_image(
-                    self.swapchain,
-                    ACQUIRE_TIMEOUT_NS,
-                    acquire_semaphore,
-                    vk::Fence::null(),
-                )
-            };
+            // Success means the same-queue ALL_COMMANDS wait is already submitted. The pool
+            // retains ownership even if an image/state/target check below fails.
+            let result = self
+                .acquires
+                .as_mut()
+                .ok_or_else(|| "Wayland Vulkan acquisition pool is shut down".to_string())?
+                .acquire(self.swapchain, self.generation);
             match result {
-                Ok((image_index, suboptimal)) => {
-                    let image_index = match usize::try_from(image_index) {
-                        Ok(image_index) => image_index,
-                        Err(_) => {
-                            unsafe { device.raw().destroy_semaphore(acquire_semaphore, None) };
-                            return Err("Vulkan acquired image index exceeds usize".to_string());
-                        }
-                    };
-                    let Some(slot) = self.images.get_mut(image_index) else {
-                        unsafe { device.raw().destroy_semaphore(acquire_semaphore, None) };
-                        return Err("Vulkan acquired image index is outside swapchain inventory"
-                            .to_string());
-                    };
-                    let current_layout = match slot.state.acquire() {
-                        Ok(layout) => layout,
-                        Err(error) => {
-                            unsafe { device.raw().destroy_semaphore(acquire_semaphore, None) };
-                            return Err(error);
-                        }
-                    };
+                Ok(Some((image_index, suboptimal))) => {
+                    let image_index = usize::try_from(image_index)
+                        .map_err(|_| "Vulkan acquired image index exceeds usize".to_string())?;
+                    let slot = self.images.get_mut(image_index).ok_or_else(|| {
+                        "Vulkan acquired image index is outside swapchain inventory".to_string()
+                    })?;
+                    let current_layout = slot.state.acquire()?;
                     self.recreate_before_acquire |= suboptimal;
                     return Ok(Some(AcquiredTarget {
                         token: ImageToken {
@@ -371,17 +369,14 @@ impl WaylandVulkanEnv {
                             layout: current_layout,
                             queue_family_index: device.queue_family_index(),
                         },
-                        acquire_semaphore: Some(acquire_semaphore),
+                        // WSI ownership stays with the native pool, never SkSurface::wait.
+                        acquire_semaphore: None,
                         completion_semaphore: slot.render_finished,
                         final_state: wayland_image_state(&device),
                     }));
                 }
-                Err(vk::Result::NOT_READY | vk::Result::TIMEOUT) => {
-                    unsafe { device.raw().destroy_semaphore(acquire_semaphore, None) };
-                    return Ok(None);
-                }
+                Ok(None) => return Ok(None),
                 Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
-                    unsafe { device.raw().destroy_semaphore(acquire_semaphore, None) };
                     if attempt == 0 {
                         self.recreate_swapchain(self.dimensions, true)?;
                         continue;
@@ -392,14 +387,12 @@ impl WaylandVulkanEnv {
                     );
                 }
                 Err(vk::Result::ERROR_DEVICE_LOST) => {
-                    unsafe { device.raw().destroy_semaphore(acquire_semaphore, None) };
                     self.mark_device_lost();
                     return Err("Vulkan device lost while acquiring a Wayland image".to_string());
                 }
                 Err(result) => {
-                    unsafe { device.raw().destroy_semaphore(acquire_semaphore, None) };
                     return Err(format!(
-                        "failed to acquire Wayland Vulkan swapchain image: {result:?}"
+                        "failed to acquire/wait for Wayland Vulkan swapchain image: {result:?}"
                     ));
                 }
             }
@@ -416,6 +409,7 @@ impl WaylandVulkanEnv {
             return Err("cannot recreate Vulkan swapchain with a pending present".to_string());
         }
         if wait_for_old && self.swapchain != vk::SwapchainKHR::null() {
+            self.retire_acquires()?;
             self.engine_ref()?
                 .device()
                 .wait_idle("Wayland swapchain recreation")?;
@@ -478,6 +472,17 @@ impl WaylandVulkanEnv {
             unsafe { self.swapchain_loader.destroy_swapchain(new_swapchain, None) };
             return Err("Wayland Vulkan swapchain has no images".to_string());
         }
+        let generation = self.generation.wrapping_add(1);
+        let new_acquires = match AcquirePool::new(Arc::clone(&device), raw_images.len(), generation)
+        {
+            Ok(pool) => pool,
+            Err(error) => {
+                unsafe { self.swapchain_loader.destroy_swapchain(new_swapchain, None) };
+                return Err(format!(
+                    "failed to allocate Wayland Vulkan acquisition pool: {error:?}"
+                ));
+            }
+        };
         let dimensions = (choice.extent.width, choice.extent.height);
         let new_images = {
             let engine = self
@@ -522,18 +527,44 @@ impl WaylandVulkanEnv {
             }
         };
 
-        // Device idle above makes it safe to retire all old wrapped surfaces and presentation
-        // semaphores. Normal frame operation never waits the queue or device idle.
+        // Keep the existing recreation barrier for wrapped surfaces/presentation semaphores.
+        // Acquisition slots have their own WSI/queue completion proof, separate from presentation.
+        // Normal frame operation never waits the queue or device idle.
+        self.acquires.take();
         self.images.clear();
         if old_swapchain != vk::SwapchainKHR::null() {
             unsafe { self.swapchain_loader.destroy_swapchain(old_swapchain, None) };
         }
         self.swapchain = new_swapchain;
         self.images = new_images;
+        self.acquires = Some(new_acquires);
         self.dimensions = dimensions;
-        self.generation = self.generation.wrapping_add(1);
+        self.generation = generation;
         self.recreate_before_acquire = false;
         Ok(())
+    }
+
+    fn retire_acquires(&mut self) -> Result<(), String> {
+        if let Some(pool) = self.acquires.as_mut() {
+            pool.retire().map_err(|error| {
+                format!("Wayland Vulkan acquisition retirement failed: {error:?}")
+            })?;
+        }
+        Ok(())
+    }
+
+    fn quarantine(&mut self, error: &str) {
+        eprintln!("Wayland Vulkan resources quarantined: {error}");
+        // A failed ownership barrier is not permission to destroy a pending semaphore, its
+        // swapchain, or its device. Retain the whole native graph rather than only leaking handles
+        // whose parent would otherwise be destroyed. This is terminal, never a retry inventory.
+        std::mem::forget((
+            self.acquires.take(),
+            std::mem::take(&mut self.images),
+            self.engine.take(),
+            self.surface.take(),
+        ));
+        self.swapchain = vk::SwapchainKHR::null();
     }
 
     fn engine_ref(&self) -> Result<&VulkanEngine, String> {
@@ -555,9 +586,13 @@ impl WaylandVulkanEnv {
     }
 }
 
-impl Drop for WaylandVulkanEnv {
-    fn drop(&mut self) {
+impl WaylandVulkanEnv {
+    pub(super) fn shutdown(&mut self) -> Result<(), String> {
         self.pending_present.take();
+        if let Err(error) = self.retire_acquires() {
+            self.quarantine(&error);
+            return Err(error);
+        }
         if let Some(engine) = self.engine.as_mut() {
             let shutdown = if engine.device().is_device_lost() {
                 Err("Wayland Vulkan device was already lost at shutdown".to_string())
@@ -579,11 +614,12 @@ impl Drop for WaylandVulkanEnv {
                     engine.drop_scene_renderer();
                 }
                 Err(error) => {
-                    eprintln!("{error}");
-                    engine.mark_device_lost();
+                    self.quarantine(&error);
+                    return Err(error);
                 }
             }
         }
+        self.acquires.take();
         self.images.clear();
         if let Some(engine) = self.engine.as_mut() {
             engine.shutdown_ganesh();
@@ -599,6 +635,13 @@ impl Drop for WaylandVulkanEnv {
         // alive. VkSurfaceKHR is destroyed next; the shared instance is last.
         self.engine.take();
         self.surface.take();
+        Ok(())
+    }
+}
+
+impl Drop for WaylandVulkanEnv {
+    fn drop(&mut self) {
+        let _ = self.shutdown();
     }
 }
 
