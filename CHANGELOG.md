@@ -2,78 +2,86 @@
 
 ## [Unreleased]
 
-Target: **0.5.0**. See the [0.5 migration guide](guides/migrations/0.5.md).
-The package/artifact version bump and remaining qualification are separate release work.
+## [0.5.0] - 2026-10-13
+
+See the [0.5 migration guide](guides/migrations/0.5.md) when upgrading from 0.4.
 
 ### Breaking changes
 
 - Viewport `mount/1` and `EmergeSkia.start/1` now require `%Emerge.Config{}` with
-  typed output/renderer/input/assets/diagnostics/runtime groups. Flat keyword
-  configurations, `emerge_skia`/`viewport` namespaces, positional startup arities
-  and replaced renderer aliases are removed without compatibility shims.
+  typed output, renderer, input, assets, diagnostics and runtime groups. Flat
+  keyword configurations, `emerge_skia`/`viewport` wrappers, positional startup
+  calls and old renderer aliases are removed.
 - Raw viewport input is opt-in through `input.events`, defaulting to `[]`.
   Public numeric masks/setters are removed. Callback tuples use pointer/resize/
-  focus names and `:press | :release` actions; element interactions remain enabled.
-- Custom adapters accept normalized config at startup and implement complete
-  snapshot `configure/3`, with session/revision-tagged asynchronous completion.
+  focus names and `:press | :release` actions; ordinary UI interactions remain enabled.
+- Custom renderer adapters must accept normalized config at startup and implement
+  `configure/3` for complete configuration updates.
 
 ### Added
 
-- `Emerge.Config.DRM.hotplug_interval_ms` (default `750`); `nil` disables connector hotplug polling.
-- CPU-only DRM presentation via `compiled_backends: [drm: [:raster]]` and
-  `renderer: [api: :raster]` in `%Emerge.Config{}`. Skia renders into double-buffered DRM dumb buffers
-  without GBM/EGL/OpenGL or per-frame BEAM transfers. Includes software cursors,
-  CPU video and RGBA screenshots; requires atomic KMS, DRM leasing and XRGB8888.
-  Dedicated `drm_raster` precompiled artifacts cover all supported Linux targets,
-  including ARMv7, with GPU-free dependency checks.
+- Configurable DRM connector polling through `Emerge.Config.DRM.hotplug_interval_ms`
+  (default `750`); `nil` disables polling.
+- CPU-only DRM rendering without a GPU driver. Select
+  `compiled_backends: [drm: [:raster]]` and `renderer: [api: :raster]` in
+  `%Emerge.Config{}`. Supports software cursors, CPU video and RGBA screenshots;
+  requires atomic KMS, DRM leasing and XRGB8888. Precompiled `drm_raster` artifacts
+  are available for all supported Linux targets, including ARMv7.
+- DRM builds include their input libraries and hardware quirks, so devices no
+  longer need system input libraries or a udev daemon. Source builds require
+  network access or a pre-populated offline source cache.
+- Contact-aware DRM touchscreen observations through `input.events: [:touch]`.
+  Virtual keys support simultaneous touches with independent pressed feedback,
+  slide-off cancellation and key repeat. Keys activate on release, never cancel.
 - Controlled scrolling with `scroll_x/1`, `scroll_y/1` (fractions or keyed
-  descendants), and `Event.on_scroll/1` fraction payloads. Event-owned positions
-  resist delayed controller echoes and preserve progress across resizing.
-
-- Headless binary `pixel_format: :bgra8888` (premultiplied B, G, R, A). Raster
-  renderers draw in this byte order, so frames can be copied straight into
-  little-endian DRM `ARGB8888`/`XRGB8888` scanout buffers or framebuffers without
-  a per-frame channel swap. Requires `video_interop` with `:bgra8888` support.
-
-- Optional `config(previous)` or `config(previous, state)` callbacks reconcile
-  normalized desired intent, including config-only updates and renderer recovery.
-  Live Wayland/macOS titles and headless/Wayland admission caps require no tree diff.
-- Declarative DRM display/brightness controls for explicit OpenGL and CPU raster.
-  Off retains output/backlight/tree ownership but destroys the presenter; on creates
-  fresh resources. Managed illumination follows first application presentation.
-  Initial-off acquisition needs no application upload. Vulkan/GPU-upload power,
-  live connector/mode changes and DRM/macOS caps remain rejected.
+  descendants), and `Event.on_scroll/1` fraction payloads. Delayed application
+  updates no longer reset newer user scrolling, and resizing preserves progress.
+- Headless binary `pixel_format: :bgra8888` output with premultiplied B, G, R, A
+  bytes, suitable for little-endian DRM `ARGB8888`/`XRGB8888` frame consumers.
+- Optional `config(previous)` or `config(previous, state)` callbacks to update
+  supported settings from application state and retain them across renderer
+  recovery. Live settings include Wayland/macOS titles and headless/Wayland
+  frame-rate limits.
+- DRM display on/off and brightness controls for explicit OpenGL and CPU raster.
+  Viewport state is preserved while the display is off. Displays can start off;
+  managed backlights illuminate only after the first application frame.
 
 ### Changed
 
-- All DRM Cargo profiles now embed FreeType, including source builds and mixed
-  Wayland/DRM builds. Nerves builds need no system FreeType package.
+- Updated animation pacing on DRM, Wayland and headless outputs to reduce
+  scheduling gaps between frames on slower outputs.
+- DRM builds include FreeType; Nerves applications no longer need a system
+  FreeType package.
 - DRM raster presentation now defaults to CPU. Explicit `raster_present: :gpu_upload`
   retains the OpenGL upload path. GPU-free DRM builds select raster for `:auto`.
-- Require `video_interop ~> 0.1.3` for BGRA frame validation.
-- Raster frames are copied out of the Skia surface once instead of being
-  zero-filled and read back, and headless binary output is written directly into
-  the BEAM binary instead of an intermediate buffer. A full-screen 800x1280
-  RGBA frame now takes two memory passes instead of four.
+- Require `video_interop ~> 0.1.3` for BGRA frame support.
+- Reduced memory copying and temporary allocations for headless binary raster output.
 
 ### Fixed
 
-- Multiline inputs remeasure word prefixes moved after a space wrap, preventing
-  delayed wrapping, underestimated auto-height and text/caret overflow when
-  individual words fit within the input width.
-- Tree upload/patch NIFs return queue-full/stopped errors instead of waiting for
-  tree admission. OpenGL startup drains only already-readable DRM events, avoiding
-  a blocking page-flip read before resource readiness.
-- Managed backlight recovery preserves the original requested brightness, and
-  already-dark cleanup avoids redundant post-detach DCS writes.
+- Fixed a Wayland Vulkan synchronization issue affecting window rendering and screenshots.
+- Fixed DRM source builds from read-only checkouts.
+- Fixed blank initial frames when custom fonts are configured.
+- Fixed `clip_nearby` allowing overlays to escape clipping beneath transformed content.
+- Fixed drag scrolling losing inertia when the gesture starts on a child element.
+- Fixed delayed wrapping, incorrect automatic height and text/caret overflow in
+  multiline inputs.
+- Tree upload/patch calls return errors when the renderer queue is full or stopped
+  instead of blocking. Fixed DRM/OpenGL startup hangs.
+- Fixed requested DRM brightness being lost during renderer recovery.
 - Controlled text inputs preserve newer edits and cursor/selection state when
-  controller echoes arrive after native updates. Elixir content proposals are
-  processed once per mount; native and animation rebuilds no longer resend or
-  overwrite live text. Expected echoes survive native acknowledgments and expire
-  after a fixed five-second window.
-- Text input caret/selection normalization uses the current native content rather
-  than the previous frame's text, so the first keystroke advances the rendered
-  caret immediately without a corrective update.
+  delayed application updates arrive. Rendering and animations no longer overwrite
+  live text with stale values.
+- Fixed the caret position after the first typed character.
+
+### Known limitations
+
+- Live DRM connector/mode changes and DRM/macOS frame-rate limits remain unsupported.
+  DRM power/brightness requires explicit OpenGL or CPU raster, not Vulkan or
+  raster GPU upload.
+- macOS does not support retained-frame capture, `renderer_status/1` or `stop/2`.
+- Hardware compatibility and performance depend on the system and its drivers.
+  Physical-board compatibility on musl/RISC-V targets remains incompletely tested.
 
 ## [0.4.2] - 2026-09-30
 
