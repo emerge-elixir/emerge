@@ -74,6 +74,18 @@ defmodule Emerge.ReleaseWorkflowTest do
     assert build =~ "drm_raster) features=drm-raster; suffix=--drm_raster"
   end
 
+  test "cross mounts the native parent even when the bundled input dependency is disabled" do
+    crate = Path.expand("../native/emerge_skia", __DIR__)
+    cross = File.read!(Path.join(crate, "Cross.toml"))
+    [_, build_env] = Regex.run(~r/\[build\.env\]\n(.*?)(?=\n\[target\.)/s, cross)
+
+    assert build_env =~ ~s(volumes = ["EMERGE_NATIVE_SOURCE=.."])
+    assert File.regular?(Path.expand("../emerge_input/Cargo.toml", crate))
+
+    assert File.read!(Path.join(crate, "Cargo.toml")) =~
+             ~s(emerge_input = { path = "../emerge_input", optional = true })
+  end
+
   test "Linux Cargo cache saves and restores stay within the same matrix job" do
     ci = File.read!(Path.join(@workflows, "ci.yml"))
     [linux, _macos] = String.split(ci, "\n  ci_macos:", parts: 2)

@@ -2,6 +2,10 @@
 # host machine. Local source builds on Arch or other distros still use the host
 # toolchain and system libraries directly.
 [build.env]
+# Run cross from this crate directory. Cargo still reads optional path dependency
+# manifests when they are disabled, but cross 0.2.5 only auto-mounts enabled ones.
+# Mount the native parent so ../emerge_input remains available in raster builds.
+volumes = ["EMERGE_NATIVE_SOURCE=.."]
 passthrough = [
     "RUSTFLAGS",
     "RUSTLER_PRECOMPILED_DEBUG_MODE",
