@@ -39,6 +39,7 @@ fn application_frame(message: RenderMsg, request: u64) -> Option<RenderState> {
             scene,
             version,
             animate,
+            animation_frame,
             pipeline_submitted_at,
             pipeline_render_queued_at,
             ..
@@ -47,6 +48,7 @@ fn application_frame(message: RenderMsg, request: u64) -> Option<RenderState> {
             state.set_scene(*scene);
             state.render_version = version;
             state.animate = animate;
+            state.animation_frame = animation_frame;
             state.pipeline_submitted_at = pipeline_submitted_at;
             state.pipeline_render_queued_at = pipeline_render_queued_at;
             Some(state)
@@ -66,6 +68,7 @@ mod tests {
             scene: Box::new(RenderScene::default()),
             version: 50,
             animate: false,
+            animation_frame: Default::default(),
             pipeline_submitted_at: None,
             pipeline_render_queued_at: None,
             animation_trace: None,

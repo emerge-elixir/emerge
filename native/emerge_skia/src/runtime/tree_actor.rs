@@ -13,7 +13,10 @@ use crate::{
     RenderSender,
     actors::{AnimationFrameTraceSeed, EventMsg, RenderMsg, TreeMsg},
     assets::AssetContext,
-    backend::wake::BackendWakeHandle,
+    backend::{
+        production::{AnimationFrame, AnimationRequests, RequestOutcome},
+        wake::BackendWakeHandle,
+    },
     stats::{RendererStatsCollector, record_pipeline_layout_queued},
     tree::{element::ElementTree, layout::LayoutOutput},
 };
@@ -72,6 +75,7 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
 
         let _asset_context_guard = asset_context.enter();
         let mut engine = TreeUpdateEngine::new(initial_tree, initial_width, initial_height);
+        let (animation_requests, animation_rx) = AnimationRequests::channel();
 
         // At most one unsent full registry and one latest scene. Continue
         // processing input while the event consumer is blocked, especially Stop.
@@ -93,28 +97,47 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                         if let Some(layout)=pending_layout.take() {layout.publish(targets());}
                         continue;
                     }
-                    recv(tree_rx) -> message => {pending_registry=Some(rebuild);message.map(Some)}
-                    recv(deadline) -> _ => {pending_registry=Some(rebuild);Ok(None)}
+                    recv(tree_rx) -> message => {pending_registry=Some(rebuild);message.map(|msg| (Some(msg), None))}
+                    recv(animation_rx) -> request => {pending_registry=Some(rebuild);request.map(|request| (None, Some(request)))}
+                    recv(deadline) -> _ => {pending_registry=Some(rebuild);Ok((None, None))}
                 }
             } else {
                 crossbeam_channel::select! {
-                    recv(tree_rx) -> message => message.map(Some),
-                    recv(deadline) -> _ => Ok(None),
+                    recv(tree_rx) -> message => message.map(|msg| (Some(msg), None)),
+                    recv(animation_rx) -> request => request.map(|request| (None, Some(request))),
+                    recv(deadline) -> _ => Ok((None, None)),
                 }
             };
-            let Ok(message) = message else {
+            let Ok((message, request)) = message else {
                 return;
             };
             // Bound a batch even when producers continuously replenish the queue.
-            let remaining = if message.is_some() { 63 } else { 64 };
+            // Service the credit even under a continuously full mutation queue.
+            let request = request.or_else(|| animation_rx.try_recv().ok());
+            let remaining = 64 - usize::from(message.is_some()) - usize::from(request.is_some());
             let messages = message
                 .into_iter()
                 .chain(tree_rx.try_iter().take(remaining))
+                .chain(request.as_ref().map(|request| request.message()))
                 .collect();
-            match engine.process_messages(
+            let effect = engine.process_messages(
                 messages,
                 TreeUpdateOptions::new(stats.as_ref(), TreeUpdateDecodePolicy::LogAndContinue),
-            ) {
+            );
+            if let Some(request) = request {
+                let outcome = match &effect {
+                    Ok(TreeUpdateEffect::Layout { .. }) => RequestOutcome::Scene,
+                    Ok(TreeUpdateEffect::Stop) => RequestOutcome::Inactive,
+                    _ if engine.animation_runtime_is_empty() => RequestOutcome::Inactive,
+                    _ => {
+                        RequestOutcome::RetryAt(engine.animation_retry_deadline().unwrap_or_else(
+                            || Instant::now() + std::time::Duration::from_millis(16),
+                        ))
+                    }
+                };
+                request.complete(outcome);
+            }
+            match effect {
                 Ok(TreeUpdateEffect::Stop) => return,
                 Ok(TreeUpdateEffect::Skip) => {}
                 Ok(TreeUpdateEffect::RegistryUpdate { rebuild }) => {
@@ -142,6 +165,11 @@ pub(crate) fn spawn_tree_actor_with_initial_tree(
                     let layout = PendingLayout {
                         application_frame: engine.application_tree_initialized(),
                         frame_request: engine.frame_request(),
+                        animation_frame: animation_requests.frame(
+                            output.animations_active,
+                            engine.presentation_anchors(),
+                            window_wake.clone(),
+                        ),
                         output,
                         pipeline_submitted_at,
                         tree_batch_started_at,
@@ -173,22 +201,14 @@ struct PendingLayout {
     application_frame: bool,
     frame_request: u64,
     output: Box<LayoutOutput>,
+    animation_frame: AnimationFrame,
     pipeline_submitted_at: Option<Instant>,
     tree_batch_started_at: Instant,
     animation_trace: Option<AnimationFrameTraceSeed>,
 }
 impl PendingLayout {
     fn publish(self, targets: LayoutOutputPublishTargets<'_>) {
-        queue_layout_output(
-            targets,
-            *self.output,
-            self.application_frame,
-            self.frame_request,
-            self.pipeline_submitted_at,
-            self.pipeline_submitted_at
-                .map(|_| self.tree_batch_started_at),
-            self.animation_trace,
-        );
+        queue_layout_output(targets, self);
     }
 }
 
@@ -199,15 +219,17 @@ struct LayoutOutputPublishTargets<'a> {
     stats: Option<&'a RendererStatsCollector>,
 }
 
-fn queue_layout_output(
-    targets: LayoutOutputPublishTargets<'_>,
-    output: LayoutOutput,
-    application_frame: bool,
-    frame_request: u64,
-    pipeline_submitted_at: Option<Instant>,
-    pipeline_tree_started_at: Option<Instant>,
-    animation_trace: Option<AnimationFrameTraceSeed>,
-) {
+fn queue_layout_output(targets: LayoutOutputPublishTargets<'_>, layout: PendingLayout) {
+    let PendingLayout {
+        output,
+        application_frame,
+        frame_request,
+        pipeline_submitted_at,
+        tree_batch_started_at,
+        animation_trace,
+        animation_frame,
+    } = layout;
+    let pipeline_tree_started_at = pipeline_submitted_at.map(|_| tree_batch_started_at);
     let version = targets.render_counter.fetch_add(1, Ordering::Relaxed) + 1;
     let pipeline = record_pipeline_layout_queued(
         targets.stats,
@@ -227,6 +249,7 @@ fn queue_layout_output(
         animation_trace: animation_trace
             .map(|trace| Box::new(trace.queued_at(pipeline.render_queued_at))),
         animate: output.animations_active,
+        animation_frame,
         ime_enabled: output.ime_enabled,
         ime_cursor_area: output.ime_cursor_area,
         ime_text_state: Box::new(output.ime_text_state),
@@ -718,20 +741,23 @@ mod tests {
                     window_wake: &window_wake,
                     stats: Some(&stats),
                 },
-                LayoutOutput {
-                    scene: RenderScene::default(),
-                    event_rebuild: RegistryRebuildPayload::default(),
-                    event_rebuild_changed: false,
-                    ime_enabled: false,
-                    ime_cursor_area: None,
-                    ime_text_state: None,
-                    animations_active: false,
+                PendingLayout {
+                    output: Box::new(LayoutOutput {
+                        scene: RenderScene::default(),
+                        event_rebuild: RegistryRebuildPayload::default(),
+                        event_rebuild_changed: false,
+                        ime_enabled: false,
+                        ime_cursor_area: None,
+                        ime_text_state: None,
+                        animations_active: false,
+                    }),
+                    application_frame: true,
+                    frame_request: 0,
+                    animation_frame: Default::default(),
+                    pipeline_submitted_at: None,
+                    tree_batch_started_at: Instant::now(),
+                    animation_trace: None,
                 },
-                true,
-                0,
-                None,
-                None,
-                None,
             );
         }
 

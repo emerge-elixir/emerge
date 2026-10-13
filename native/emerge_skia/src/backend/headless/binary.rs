@@ -121,6 +121,7 @@ mod tests {
             pipeline_render_queued_at: None,
             animation_trace: None,
             animate,
+            animation_frame: Default::default(),
             ime_enabled: false,
             ime_cursor_area: None,
             ime_text_state: Box::new(None),

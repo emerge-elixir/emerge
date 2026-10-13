@@ -145,6 +145,10 @@ pub enum TreeMsg {
         element_id: NodeId,
         value: f64,
     },
+    /// Predictive sampling: carries no claim of physical presentation.
+    SampleAnimation {
+        sample_at: Instant,
+    },
     AnimationPulse {
         presented_at: Instant,
         predicted_next_present_at: Instant,
@@ -196,6 +200,7 @@ impl TreeMsg {
             | Self::PatchTree { .. }
             | Self::Resize { .. }
             | Self::AnimationPulse { .. }
+            | Self::SampleAnimation { .. }
             | Self::Batch(_)
             | Self::EventBatch { .. }
             | Self::RebuildRegistry
@@ -227,7 +232,10 @@ impl TreeMsg {
             // immediately by the event runtime, so text dragging must not wait
             // for a registry round trip on every pointer move.
             Self::SetTextInputRuntime { .. } => false,
-            Self::RequestFrame { .. } | Self::AnimationPulse { .. } | Self::Stop => false,
+            Self::RequestFrame { .. }
+            | Self::AnimationPulse { .. }
+            | Self::SampleAnimation { .. }
+            | Self::Stop => false,
             Self::Batch(messages) | Self::EventBatch { messages, .. } => messages
                 .iter()
                 .any(Self::requires_listener_registry_response),
@@ -288,6 +296,7 @@ pub enum RenderMsg {
         pipeline_render_queued_at: Option<Instant>,
         animation_trace: Option<Box<AnimationFrameTrace>>,
         animate: bool,
+        animation_frame: crate::backend::production::AnimationFrame,
         #[cfg_attr(
             not(all(feature = "wayland-core", target_os = "linux")),
             allow(dead_code)

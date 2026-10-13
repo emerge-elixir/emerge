@@ -276,6 +276,7 @@ impl Harness {
                             scene: scene.clone(),
                             version,
                             animate,
+                            animation_frame: Default::default(),
                             ime_enabled,
                             ime_cursor_area,
                             ime_text_state: ime_text_state.clone(),
