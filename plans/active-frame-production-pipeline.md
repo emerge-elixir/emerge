@@ -22,6 +22,26 @@ Each code commit's staged snapshot passed `cargo check` with
 `drm-all,wayland-all,headless-all` and `--all-targets`. Full local CI and the
 Rust feature matrix passed on the final rebased implementation.
 
+## CI recovery regression
+
+- [x] Reproduce the CPU-only release timeout in the headless recovery fixture.
+- [x] Make bootstrap coalescing deterministic and wait for delivered output, not
+  one frame per tree layout; preserve retry/latest-pixels assertions.
+- [x] Run repeated focused release tests, CPU-only release tests and full local CI.
+
+The fixture counted layouts as delivered frames. Holding renderer startup until
+multiple bootstrap scenes were queued reproduced the timeout deterministically:
+the production loop correctly coalesces them into one output. The fixture now
+asserts that output matches the latest scene, without increasing timeouts or
+changing production scheduling. A separate regression covers dropping the
+fixture before opening its startup gate.
+
+Validation on the `a67fc56` base: 50 CPU-only release stress runs with four
+concurrent processes passed (600 recovery cases plus startup-cancellation
+coverage). The full CPU-only release suite passed (1,592 unit tests; one hardware
+test ignored), as did CPU-only all-target Clippy and `./ci-tests.sh` with
+`EMERGE_SKIA_BUILD=1` (664 ExUnit/doctests, 1,614 Rust release unit tests, Dialyzer).
+
 ## Implementation tracking
 
 - [x] Shared bounded frame-request transport, prediction and first-frame anchors.
