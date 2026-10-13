@@ -58,6 +58,9 @@ The package/artifact version bump and remaining qualification are separate relea
 
 ### Fixed
 
+- Multiline inputs remeasure word prefixes moved after a space wrap, preventing
+  delayed wrapping, underestimated auto-height and text/caret overflow when
+  individual words fit within the input width.
 - Tree upload/patch NIFs return queue-full/stopped errors instead of waiting for
   tree admission. OpenGL startup drains only already-readable DRM events, avoiding
   a blocking page-flip read before resource readiness.
