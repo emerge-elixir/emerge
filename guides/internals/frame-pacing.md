@@ -1,4 +1,4 @@
-# Native frame caps
+# Native frame production and caps
 
 `Emerge.Config.Renderer.target_fps` is a positive 32-bit render-admission limit.
 `nil` restores backend pacing; it does not request continuous rendering.
@@ -45,6 +45,48 @@ Capped callback intervals are not used to learn physical refresh. Animation
 sampling predicts at least the next admissible application frame instead of
 sampling a stale pre-cap callback deadline. Queue-latency statistics include the
 admission wait, and pending scenes preserve their earliest submission timestamp.
+
+## Bounded look-ahead
+
+DRM (GL, Vulkan and CPU), Wayland and headless share
+`backend/production.rs`. Successful normal submission grants preparation of one
+successor. Output completion releases presentation capacity; it does **not**
+grant a duplicate sample. Presenters retain their own buffer, fence, callback,
+lease and draw-admission rules. There is no public pacing switch.
+
+The tree actor receives requests through a separate capacity-one lane, with at
+most one request queued or running. It acknowledges scene, inactive and retry
+outcomes, including failures and unchanged output. Retry deadlines preserve the
+existing layout-failure backoff. Registry publication still precedes scene
+publication; a blocked registry cannot block input or Stop. Scenes continue to
+use the capacity-one latest-scene handoff.
+
+A `sample_at` prediction is not a presentation timestamp. Enter/exit transitions
+carry per-admission, one-shot observation tokens in their scene snapshots. Their
+initial poses wait for applicable output progress; an older frame cannot anchor
+a later mount, even when the numeric node id is reused. Predictions never permit
+buffer reuse.
+
+- **DRM:** submission requests the successor before the pending flip finishes.
+  GL and Vulkan retain one prepared frame. CPU scanout uses three dumb buffers
+  and nonblocking page-flip events. Only matching completion (or a successful
+  blocking detach during teardown) permits reuse of a scanout buffer. Cursor-only
+  commits do not grant credits. GL retains its bounded cursor fairness window.
+- **Wayland:** normal submissions grant credits; late replacements do not.
+  Frame callbacks observe the normal submitted scene, not the latest received
+  scene. These callbacks indicate compositor readiness, not physical display or
+  buffer release. A late video replacement containing active animation remains
+  eligible for a normal opportunity.
+- **Headless:** successful delivery grants early tree work. Animation-derived
+  scenes still wait for the cadence deadline (16 ms when uncapped), including
+  the final frame. PRIME exhaustion retains one latest scene and waits for lease
+  retirement rather than sampling again or spinning. Delivery is not evidence
+  that a downstream physical display has presented the frame.
+
+macOS still uses its existing AppKit-local tree preparation and animation clock.
+Moving it to a worker and native frame opportunities remains a separate, open
+stage of `plans/active-frame-production-pipeline.md`. No macOS latency improvement
+or hardware qualification is claimed by the Linux implementation.
 
 ## Validation
 

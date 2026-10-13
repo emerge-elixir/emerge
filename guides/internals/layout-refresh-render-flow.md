@@ -54,8 +54,11 @@ The update engine then folds the batch into a single update plan:
 - Resize updates width, height, and scale.
 - Scroll, drag, hover, focus, text input, slider, and asset-state messages are
   collected and applied once per batch.
-- Animation pulse metadata is kept so the animation runtime can sample the
-  right frame time.
+- Linux presenters grant one successor sample after successful normal submission,
+  using a separate bounded request lane. `SampleAnimation.sample_at` predicts a
+  frame time without asserting presentation. Per-transition observation tokens
+  gate enter/exit bootstrap; replies also acknowledge inactive/unchanged/error
+  outcomes. See [frame pacing](frame-pacing.md).
 
 Each message contributes a `TreeInvalidation`. The invalidation enum is ordered
 from cheapest to most expensive:
