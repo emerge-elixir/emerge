@@ -205,6 +205,11 @@ impl TreeUpdateEngine {
         // event operation against the tree at its actual consumption point.
         flat.reverse();
         while let Some(message) = flat.pop() {
+            // Fonts loaded before the first upload have nothing to remeasure and
+            // must not present an empty frame.
+            if self.tree.is_empty() && matches!(message, TreeMsg::FontMetricsChanged { .. }) {
+                continue;
+            }
             registry_requested |= message.requires_listener_registry_response();
             if let TreeMsg::EventBatch {
                 target_mounts,
