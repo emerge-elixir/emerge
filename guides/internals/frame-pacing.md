@@ -40,6 +40,16 @@ otherwise draw. Waiting for configuration, a compositor callback or an acquire
 retry never creates an expired-deadline spin. The existing 250 ms shutdown poll
 remains; input, callbacks and cleanup are not delayed until the render deadline.
 
+Wayland Vulkan consumes each WSI acquire semaphore in a native, wait-only
+`ALL_COMMANDS` submission on Ganesh's queue before handing over the image. This
+protects Skia's initial layout transition, which `SkSurface::wait`'s narrower
+fragment/transfer wait does not cover. Acquisition stays zero-timeout; a pool
+bounded by the swapchain image count uses separate WSI and submit fences for
+nonblocking retirement. Pool exhaustion uses the existing 1 ms acquire retry.
+There is no ordinary-frame CPU wait or second acquisition wait for capture.
+Failed teardown retains uncertain native ownership and reports the session as
+quarantined; a render fence is not presentation completion.
+
 Wayland keeps compositor/output-derived refresh estimates separate from the cap.
 Capped callback intervals are not used to learn physical refresh. Animation
 sampling predicts at least the next admissible application frame instead of
@@ -108,16 +118,34 @@ It checks burst limits, live uncapping, final pixels, config-only idleness,
 refresh statistics and shutdown while capped. Passing on one compositor does
 not qualify every compositor/GPU or PRIME synchronization path.
 
-For Vulkan validation, install the Khronos validation layer and enable it with
-`EMERGE_VULKAN_VALIDATION=1`. To enable synchronization checks, place
-`khronos_validation.validate_sync = true` in `vk_layer_settings.txt` and point
-`VK_LAYER_SETTINGS_PATH` at its directory. Run the same Vulkan test with these
-settings and inspect native validation output: **an ExUnit pass is insufficient**
-if `Vulkan validation final count` reports errors.
+For Vulkan qualification, install the Khronos validation layer and build this
+checkout with `compiled_backends: [wayland: [:vulkan]]` (also qualify the combined
+Wayland build). With explicit permission to open test windows, run:
 
-The 2026-10-10 run on Hyprland/RADV RX 7900 XTX passed the functional checks but
-failed synchronization validation with acquired-image layout-transition hazards
-(`SYNC-HAZARD-WRITE-AFTER-READ`; 4 errors, 0 warnings). Vulkan qualification remains
-blocked until those hazards are fixed. The reproduction and environment record
-is in `plans/active-vulkan-acquire-synchronization.md` in the repository,
-separate from the already-closed general Linux GPU/PRIME/reconnect qualification.
+```sh
+elixir scripts/check-wayland-vulkan.exs --allow-hardware /tmp/wayland-vulkan-validation.log
+```
+
+The runner forces source builds and Vulkan selection, enables synchronization
+validation programmatically via `EMERGE_VULKAN_SYNC_VALIDATION=1`, and checks the
+complete native output after the test process exits. It requires hardware-device
+confirmation, matching startup/teardown reports for every Vulkan instance, and
+zero errors or warnings. Missing reports and quarantined resources fail the gate.
+An ordinary ExUnit pass alone is **not** synchronization qualification.
+
+The tests cover sustained image reuse without screenshots, explicit capture's
+second flush, caps/uncapping, static idle and Stop. Interactive resize/occlusion,
+suboptimal/out-of-date recreation and additional drivers still need target-device
+qualification; changing a Window's startup size is not a live resize API.
+
+`EMERGE_VULKAN_VALIDATION=1` remains the general validation-layer switch. Manual
+`vk_layer_settings.txt` setup still works, but the gate requires the programmatic
+sync-validation setting rather than trusting an external settings file.
+
+The historical Hyprland/RADV RX 7900 XTX run passed functional checks but reported
+4 acquired-image synchronization errors. With the native handoff fix, the targeted
+hardware gate passes on that GPU in both Vulkan-only and combined Wayland builds:
+3 tests per build, with zero validation errors or warnings through teardown.
+This does not qualify other drivers or the remaining interactive lifecycle cases.
+See `plans/active-vulkan-acquire-synchronization.md`, separate from the
+already-closed general Linux GPU/PRIME/reconnect qualification.
