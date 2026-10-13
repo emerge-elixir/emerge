@@ -11,6 +11,7 @@ use ash::{Entry, Instance, vk};
 use super::capabilities::{extension_map, format_api_version, select_instance_api};
 
 const VALIDATION_LAYER_NAME: &CStr = c"VK_LAYER_KHRONOS_validation";
+static NEXT_VALIDATION_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct VulkanValidationReport {
@@ -26,6 +27,7 @@ struct ValidationCounters {
 }
 
 struct DebugUtilsState {
+    id: u64,
     loader: ash::ext::debug_utils::Instance,
     messenger: vk::DebugUtilsMessengerEXT,
     counters: Box<ValidationCounters>,
@@ -76,10 +78,17 @@ impl VulkanInstance {
                 Ok(name)
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let validation_requested = validation_requested_from_values(
-            std::env::var("EMERGE_VULKAN_VALIDATION").ok().as_deref(),
-            std::env::var("VK_INSTANCE_LAYERS").ok().as_deref(),
+        let sync_validation = validation_requested_from_values(
+            std::env::var("EMERGE_VULKAN_SYNC_VALIDATION")
+                .ok()
+                .as_deref(),
+            None,
         );
+        let validation_requested = sync_validation
+            || validation_requested_from_values(
+                std::env::var("EMERGE_VULKAN_VALIDATION").ok().as_deref(),
+                std::env::var("VK_INSTANCE_LAYERS").ok().as_deref(),
+            );
         if validation_requested {
             let debug_utils_name = ash::ext::debug_utils::NAME
                 .to_str()
@@ -112,7 +121,36 @@ impl VulkanInstance {
             }
         }
 
+        // Programmatic enablement makes qualification independent of a silently missing or
+        // ignored vk_layer_settings.txt. The validation layer supplies this instance extension.
+        if sync_validation {
+            let extensions = unsafe {
+                entry.enumerate_instance_extension_properties(Some(VALIDATION_LAYER_NAME))
+            }
+            .map_err(|error| {
+                format!("failed to enumerate validation-layer extensions: {error:?}")
+            })?;
+            if !extension_map(&extensions).contains_key("VK_EXT_validation_features") {
+                return Err(
+                    "synchronization validation requires VK_EXT_validation_features".to_string(),
+                );
+            }
+            if !enabled_extensions
+                .iter()
+                .any(|name| name == "VK_EXT_validation_features")
+            {
+                enabled_extensions.push("VK_EXT_validation_features".to_string());
+            }
+        }
         let mut extension_names = required_extensions.to_vec();
+        if sync_validation
+            && !required_extensions.iter().any(|name| {
+                !name.is_null()
+                    && unsafe { CStr::from_ptr(*name) == ash::ext::validation_features::NAME }
+            })
+        {
+            extension_names.push(ash::ext::validation_features::NAME.as_ptr());
+        }
         if validation_requested
             && !required_extensions.iter().any(|name| {
                 !name.is_null() && unsafe { CStr::from_ptr(*name) == ash::ext::debug_utils::NAME }
@@ -144,6 +182,12 @@ impl VulkanInstance {
             Some(debug) => create_info.push_next(debug),
             None => create_info,
         };
+        let mut sync_features = synchronization_validation_features();
+        let create_info = if sync_validation {
+            create_info.push_next(&mut sync_features)
+        } else {
+            create_info
+        };
 
         // SAFETY: extension/layer pointers, callback state, and application strings remain valid
         // for the call. The resulting instance is owned by this object and destroyed in `Drop`.
@@ -156,14 +200,22 @@ impl VulkanInstance {
         let debug_utils = match validation_counters {
             Some(counters) => match create_debug_utils_state(&entry, &instance, counters) {
                 Ok(state) => Some(state),
-                Err(error) => {
+                Err((error, counters)) => {
+                    // The creation-time callback also runs during destruction on this error path.
                     unsafe { instance.destroy_instance(None) };
+                    drop(counters);
                     return Err(error);
                 }
             },
             None => None,
         };
 
+        if let Some(debug) = &debug_utils {
+            eprintln!(
+                "Vulkan validation started: id={} sync={sync_validation}",
+                debug.id
+            );
+        }
         Ok(Arc::new(Self {
             entry,
             instance,
@@ -203,26 +255,32 @@ impl VulkanInstance {
 
 impl Drop for VulkanInstance {
     fn drop(&mut self) {
-        if let Some(debug) = self.debug_utils.take() {
-            let report = VulkanValidationReport {
-                enabled: true,
-                errors: debug.counters.errors.load(Ordering::Relaxed),
-                warnings: debug.counters.warnings.load(Ordering::Relaxed),
-            };
-            eprintln!(
-                "Vulkan validation final count: errors={} warnings={}",
-                report.errors, report.warnings
-            );
+        // Keep counters alive through instance destruction: the creation-time pNext callback can
+        // still run there. Report afterward so teardown diagnostics cannot escape the gate.
+        let debug = self.debug_utils.take();
+        if let Some(debug) = &debug {
             unsafe {
                 debug
                     .loader
                     .destroy_debug_utils_messenger(debug.messenger, None)
             };
         }
-        // SAFETY: all child devices and surfaces hold an Arc to this owner, so the instance is the
-        // final object destroyed from this ownership tree.
+        // SAFETY: all child devices/surfaces retain this owner; callback storage is still alive.
         unsafe { self.instance.destroy_instance(None) };
+        if let Some(debug) = debug {
+            eprintln!(
+                "Vulkan validation final count: errors={} warnings={} id={}",
+                debug.counters.errors.load(Ordering::Relaxed),
+                debug.counters.warnings.load(Ordering::Relaxed),
+                debug.id
+            );
+        }
     }
+}
+
+fn synchronization_validation_features() -> vk::ValidationFeaturesEXT<'static> {
+    vk::ValidationFeaturesEXT::default()
+        .enabled_validation_features(&[vk::ValidationFeatureEnableEXT::SYNCHRONIZATION_VALIDATION])
 }
 
 fn validation_requested_from_values(
@@ -263,12 +321,20 @@ fn create_debug_utils_state(
     entry: &Entry,
     instance: &Instance,
     counters: Box<ValidationCounters>,
-) -> Result<DebugUtilsState, String> {
+) -> Result<DebugUtilsState, (String, Box<ValidationCounters>)> {
     let create_info = debug_messenger_create_info(&counters);
     let loader = ash::ext::debug_utils::Instance::new(entry, instance);
-    let messenger = unsafe { loader.create_debug_utils_messenger(&create_info, None) }
-        .map_err(|result| format!("failed to create Vulkan debug-utils messenger: {result:?}"))?;
+    let messenger = match unsafe { loader.create_debug_utils_messenger(&create_info, None) } {
+        Ok(messenger) => messenger,
+        Err(result) => {
+            return Err((
+                format!("failed to create Vulkan debug-utils messenger: {result:?}"),
+                counters,
+            ));
+        }
+    };
     Ok(DebugUtilsState {
+        id: NEXT_VALIDATION_ID.fetch_add(1, Ordering::Relaxed),
         loader,
         messenger,
         counters,
@@ -314,6 +380,17 @@ unsafe extern "system" fn vulkan_debug_callback(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn qualification_requests_synchronization_validation_without_disabling_other_checks() {
+        let features = synchronization_validation_features();
+        assert_eq!(features.enabled_validation_feature_count, 1);
+        assert_eq!(features.disabled_validation_feature_count, 0);
+        assert!(
+            unsafe { *features.p_enabled_validation_features }
+                == vk::ValidationFeatureEnableEXT::SYNCHRONIZATION_VALIDATION
+        );
+    }
 
     #[test]
     fn validation_request_is_explicit_or_layer_driven() {
