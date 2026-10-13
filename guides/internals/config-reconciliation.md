@@ -115,9 +115,10 @@ still used by the driver. Ordinary off/on destroys and recreates GPU resources.
 - macOS keeps its existing acknowledged host title/input operations; native
   revision reporting for that transport is not yet implemented.
 - Connector/mode changes, Vulkan power, and raster GPU-upload power remain
-  unsupported. Vulkan acquisition synchronization repair is separately deferred.
+  unsupported. The Wayland Vulkan acquisition fix does not add DRM power controls.
 - Panel-driver DCS behavior while unprepared needs device testing. Native sysfs
   errors remain failures; the implementation does not silently ignore them.
 - Control admission is not a latency guarantee for GPU/KMS or sysfs operations.
 - Hardware qualification, including backlight flash observation, remains required.
-  The separately planned Vulkan acquisition synchronization repair is deferred.
+  Wayland Vulkan acquisition has a separate implemented fix and targeted Hyprland/
+  RADV validation; interactive lifecycle and additional-driver checks remain open.

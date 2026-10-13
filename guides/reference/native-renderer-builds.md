@@ -96,9 +96,9 @@ dependency. All DRM builds embed FreeType; Nerves builds disable fontconfig
 and use registered font assets. No custom headless frame consumer or
 per-frame BEAM binary is needed.
 
-This selects the dedicated `drm_raster` archive on every supported Linux target,
-including ARMv7. It requires a release containing the new archive and its checksum
-manifest; older releases do not contain it. Recompile Emerge after changing
+Starting with **0.5.0**, this selects the dedicated `drm_raster` archive on every
+supported Linux target, including ARMv7. The release must include that archive and
+its generated checksum manifest; 0.4 releases do not contain it. Recompile Emerge after changing
 configuration (`mix deps.compile emerge --force`). For an unreleased checkout or
 a target outside the matrix, use the source-build instructions above.
 
@@ -109,9 +109,11 @@ GPU upload must be requested explicitly.
 
 The KMS driver must expose dumb buffers, an XRGB8888 primary plane, atomic
 modesetting and DRM leasing. This does not add a legacy-KMS or fbdev backend.
-CPU presentation uses double-buffered, blocking atomic commits and a software
-cursor (including when `input.cursor.hardware` is `true`). Screenshots remain RGBA; CPU binary
-video is supported, but DMA-BUF/PRIME video import is not. On disconnect or a
+CPU presentation uses three dumb buffers and nonblocking atomic page-flip events,
+with at most one prepared successor. This uses one additional pitched framebuffer
+compared with double buffering. A software cursor is used even when
+`input.cursor.hardware` is `true`. Screenshots remain RGBA; CPU binary video is
+supported, but DMA-BUF/PRIME video import is not. On disconnect or a
 removed mode, the backend detaches and exits so the viewport can recover through
 its normal lifecycle. Output selection uses `EmergeSkia.drm_outputs/1` as with
 the GPU presenters.
@@ -146,17 +148,19 @@ Mouse subscriptions are unchanged. General multitouch gesture listeners are not
 introduced here.
 
 For source versions, licenses and a hardware-independent cross-build probe, see
-`native/emerge_input/README.md`. Published precompiled archives must contain this
-implementation; until the next matching release, build the source checkout.
+`native/emerge_input/README.md`. DRM precompiled archives from **0.5.0** contain this
+implementation. Earlier releases do not; use a matching source checkout if their
+artifacts lack the bundled input stack.
 
 No extra precompiled artifact type is needed: the existing target/profile NIF
 archive contains the static input code and immutable quirks. The release workflow
 builds DRM profiles from the tagged sources, and the Hex workflow generates their
 RustlerPrecompiled checksums. RustlerPrecompiled installs the selected NIF into
 Emerge's `priv/native`; the Nerves application release includes it in firmware.
-The Hex source package retains the vendor sources/licenses and quirks for source
-builds. Existing published archives are unchanged: release this implementation
-under a new matching Mix/Cargo version and tag, not replacement hashes.
+The Hex source package retains the downloader, integration code and upstream
+license notices, not the downloaded upstream source trees. Source builds fetch
+and verify those archives before embedding the quirks. Existing published
+archives are unchanged; never replace older release binaries or hashes.
 
 For an unreleased checkout, explicitly select source compilation:
 
@@ -242,7 +246,7 @@ stock Nerves RPi5 2.0.1 rootfs. This checks transitive library dependencies and
 GLIBC/GLIBCXX symbol compatibility, not just matching library filenames.
 
 The GPU DRM archive fixes require **0.4.1 or later**; `drm_raster` additionally
-requires a release containing that new variant. The existing 0.4.0 archives are not
+requires **0.5.0 or later**. The existing 0.4.0 archives are not
 replaced: 0.4.0's combined DRM API selection downloads the desktop Vulkan bundle,
 and its standalone GNU DRM builds can still require fontconfig.
 
@@ -384,6 +388,61 @@ Mach-O, packed-frame, stock-rootfs load, tag/version and packaging checks remain
 mandatory before publishing. Hex publication reuses successful CI and artifact
 workflow results for the same commit, including manual publication, rather than
 invoking CI a third time. Previously published release hashes are never overwritten.
+
+### Prepare and publish 0.5.0
+
+1. Validate the release checkout before integration:
+
+   ```sh
+   EMERGE_SKIA_BUILD=1 ./ci-tests.sh
+   cargo test --locked --manifest-path native/emerge_input/Cargo.toml
+   bash scripts/check-package.sh
+   elixir scripts/release-notes.exs v0.5.0
+   ```
+
+   Mix, the renderer Cargo manifest and its lockfile must all say `0.5.0`.
+   The changelog must contain one dated, finalized `0.5.0` section. Review its
+   known limitations; local software checks are not hardware qualification.
+2. Merge the release preparation into the default branch and wait for successful
+   CI on that exact commit, including macOS. If the release date changes, update
+   the changelog before the final CI run.
+3. Create and push `v0.5.0` only on that validated, integrated commit. The tag
+   starts `Build Release Artifacts`, which builds the complete NIF and macOS-host
+   set and verifies packaged dependencies, macOS raster behavior and stock RPi5
+   userspace loading before publishing the GitHub release.
+4. Let `Hex Release` reuse the exact CI/artifact results, download all published
+   NIFs and generate their checksum manifest before publishing the package/docs.
+   The source package must contain that generated manifest. Never use local build
+   hashes, copied 0.4 checksums or replacement assets to bypass these gates.
+
+Before tag/publish, only source preparation is complete. No artifact/checksum or
+board-qualification claim follows from the version bump alone.
+
+### Wayland Vulkan synchronization in 0.5.0
+
+The Wayland Vulkan acquisition synchronization fix is included in 0.5.0. Recorded
+Hyprland/RADV RX 7900 XTX runs pass in Vulkan-only and combined Wayland builds,
+with zero native validation errors or warnings through teardown. Coverage includes
+sustained rendering, screenshots, live frame-rate limits, idle behavior and stop.
+Interactive resize/occlusion/recreation, other drivers and performance measurements
+remain separate checks; this is not general Vulkan hardware qualification.
+
+To repeat the targeted checks, install the Khronos validation layer and select
+`compiled_backends: [wayland: [:vulkan]]`. Only with permission to open test windows
+on a running compositor, run:
+
+```sh
+elixir scripts/check-wayland-vulkan.exs --allow-hardware /tmp/wayland-vulkan-validation.log
+```
+
+Repeat with `compiled_backends: [wayland: [:opengl, :vulkan]]` for the combined
+build. The runner forces source compilation and Vulkan selection, enables sync
+validation through `EMERGE_VULKAN_SYNC_VALIDATION=1`, and checks hardware selection
+and complete native startup/teardown reports. Missing reports, validation errors,
+warnings or quarantined resources fail even when ExUnit passes. See the
+[frame-pacing validation guide](https://github.com/emerge-elixir/emerge/blob/main/guides/internals/frame-pacing.md#validation)
+for the detailed scope and recorded evidence. This Wayland fix does not add DRM
+Vulkan power controls or change headless/video synchronization contracts.
 
 ## Maintaining build configuration
 

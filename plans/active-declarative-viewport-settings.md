@@ -1,7 +1,8 @@
 # Declarative viewport config and DRM display power
 
-Status: **implementation in progress**, authorized by the user. This branch is not release-ready.
-Target release: **0.5.0**, intentionally breaking. No backward-compatibility layer for the replaced config/input APIs.
+Status: the core config/input contract is implemented for **0.5.0**. Remaining
+backend controls and hardware qualification stay open; release preparation does
+not add them. No backward-compatibility layer for the replaced config/input APIs.
 Branch: `feat/declarative-viewport-settings`, originally from `feat/drm-raster-without-gpu` at `b8a03a1`, rebased onto `main` at `6b81166`.
 
 ## Implementation progress
@@ -25,11 +26,12 @@ Still required (not merely unverified):
 - macOS host config revisions; safe DRM mode/output reconfiguration.
 - Remaining backend controls and hardware qualification; strict config-to-frame proof is no longer part of DRM power scope.
 - macOS/DRM live frame caps.
-- Remaining guides/demo migration, full input transport contract coverage, release version changes and hardware qualification.
+- Standalone demo migration, full input transport contract coverage and hardware qualification.
 
 DRM power/brightness now supports explicit OpenGL and CPU raster. Vulkan/gpu-upload
 power, live connector/mode changes and DRM/macOS frame caps remain unsupported.
-The package version remains 0.4.2 until remaining 0.5 release work is complete.
+The package/artifact manifests are prepared at 0.5.0. CI, rebuilt artifacts and
+publication remain separate release gates in the native build guide.
 
 DRM power uses a simple stop/recreate lifecycle, as requested by the user: off
 ignores native UI input and pending presenter work, suppresses illumination,
@@ -255,8 +257,9 @@ Hardware testing is performed by the user; assistant device access is not needed
 - Logs: `/tmp/emerge-05-docs-{focused,mix,rust,quality,public,internal}.log`.
   Run Mix compilation/docs sequentially: a first concurrent quality/docs attempt
   raced shared build artifacts; sequential public/internal builds passed.
-- No release/version bump, hardware qualification, firmware build, consumer changes
-  or deployment. Package version remains 0.4.2 pending release work.
+- That documentation validation did not bump versions or include hardware
+  qualification, firmware builds, consumer changes or deployment; the package was
+  still 0.4.2 at that point.
 
 ### Documentation commit sequence
 
