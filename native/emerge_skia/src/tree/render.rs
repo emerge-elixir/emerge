@@ -705,8 +705,7 @@ fn build_element_subtree<R: RegistryTraversalSink>(
         local = wrap_with_alpha(local, alpha);
     }
 
-    // Escape nearby layers below a local transform were built without the outer
-    // clip_nearby clips, so apply them here in the untransformed coordinate space.
+    // The local transform context dropped the outer clip_nearby clips.
     let escape_clips: &[ClipShape] = if local_transform_render_ctx.is_some() {
         &traversal.render_ctx.nearby_clip_shapes
     } else {
@@ -720,7 +719,6 @@ fn build_element_subtree<R: RegistryTraversalSink>(
     RenderSubtree {
         local,
         escapes: wrap_with_alpha(escapes, alpha),
-
         text_input_focused: false,
         text_input_cursor_area: None,
     }

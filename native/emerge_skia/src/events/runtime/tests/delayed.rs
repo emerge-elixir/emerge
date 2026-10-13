@@ -230,7 +230,7 @@ fn event_registry_draining_is_bounded_and_stop_does_not_wait_for_a_receipt() {
     let (tx, rx) = unbounded();
     for _ in 0..129 {
         tx.send(EventMsg::registry_update(RegistryRebuildPayload::default()))
-            .unwrap();
+        .unwrap();
     }
     tx.send(EventMsg::Stop).unwrap();
     let mut pending = None;
