@@ -60,7 +60,7 @@ use wayland_protocols::wp::linux_dmabuf::zv1::client::{
 use crate::backend::vulkan::capabilities::DrmNodeId;
 use crate::{
     InputTargetRelay, LatestFrameStore, RasterPresentKind, RenderingApi,
-    actors::{AnimationFrameTrace, AnimationPulseTrace, EventMsg, RenderMsg, TreeMsg},
+    actors::{AnimationFrameTrace, EventMsg, RenderMsg, TreeMsg},
     backend::{
         cadence::{FramePacer, FrameRateControl},
         raster::{RasterBackend, RasterConfig},
@@ -513,12 +513,6 @@ fn try_send_wayland_event(event_tx: &crossbeam_channel::Sender<EventMsg>, msg: E
     }
 }
 
-fn try_send_wayland_tree(tree_tx: &CrossbeamSender<TreeMsg>, msg: TreeMsg) {
-    match tree_tx.try_send(msg) {
-        Ok(()) | Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {}
-    }
-}
-
 fn log_close_signal(enabled: bool, message: impl Into<String>) {
     if enabled {
         let message = message.into();
@@ -630,7 +624,8 @@ pub(super) struct WaylandApp {
     direct_watchdog_log: Option<Arc<WaylandDirectWatchdogLog>>,
     render_state: RenderState,
     render_animation_trace: Option<AnimationFrameTrace>,
-    animation_pulse_sequence: u64,
+    production: crate::backend::production::FrameProduction,
+    callback_animation_frame: Option<crate::backend::production::AnimationFrame>,
     next_render_profile_at: Instant,
     diagnostics: WaylandRenderDiagnostics,
     pending_pipeline_submitted_at: Option<std::time::Instant>,
@@ -745,7 +740,8 @@ impl WaylandApp {
             direct_watchdog_log,
             render_state: RenderState::default(),
             render_animation_trace: None,
-            animation_pulse_sequence: 0,
+            production: Default::default(),
+            callback_animation_frame: None,
             next_render_profile_at: Instant::now(),
             diagnostics: WaylandRenderDiagnostics::default(),
             pending_pipeline_submitted_at: None,
@@ -1003,6 +999,7 @@ impl WaylandApp {
                     pipeline_render_queued_at,
                     animation_trace,
                     animate,
+                    animation_frame,
                     ime_enabled,
                     ime_cursor_area,
                     ime_text_state,
@@ -1025,6 +1022,7 @@ impl WaylandApp {
                     );
                     self.render_state.pipeline_render_queued_at = pipeline_render_queued_at;
                     self.render_state.animate = animate;
+                    self.render_state.animation_frame = animation_frame;
                     self.render_animation_trace = animation_trace;
                     self.diagnostics.last_render_scene_received_at = Some(received_at);
                     self.diagnostics.last_render_scene_version = Some(version);
@@ -1181,14 +1179,22 @@ impl WaylandApp {
                 frame_draw_decision(&self.present, ready, self.exit, late),
                 DrawDecision::Draw(_)
             );
-        self.frame_pacer.dispatch_timeout(
-            work_ready,
-            Instant::now(),
-            WAYLAND_DISPATCH_STOP_POLL_INTERVAL,
-        )
+        self.frame_pacer
+            .dispatch_timeout(
+                work_ready,
+                Instant::now(),
+                WAYLAND_DISPATCH_STOP_POLL_INTERVAL,
+            )
+            .min(
+                self.production
+                    .deadline()
+                    .map(|at| at.saturating_duration_since(Instant::now()))
+                    .unwrap_or(WAYLAND_DISPATCH_STOP_POLL_INTERVAL),
+            )
     }
 
     fn maybe_draw(&mut self) {
+        self.production.poll(Instant::now());
         if self.gpu_acquire_retry_scheduled {
             return;
         }
@@ -1534,9 +1540,12 @@ impl WaylandApp {
 
             self.send_present_timing(presented_at, predicted_next_present_at);
 
-            if self.render_state.animate {
-                self.send_animation_pulse(presented_at, predicted_next_present_at);
-            }
+            self.callback_animation_frame = Some(self.render_state.animation_frame.clone());
+            self.production.submitted(
+                self.render_state.animation_frame.clone(),
+                (predicted_next_present_at + self.present.estimated_frame_interval())
+                    .max(self.frame_pacer.render_at(Instant::now())),
+            );
         }
 
         self.present.finish_present(
@@ -1717,9 +1726,12 @@ impl WaylandApp {
 
             self.send_present_timing(presented_at, predicted_next_present_at);
 
-            if self.render_state.animate {
-                self.send_animation_pulse(presented_at, predicted_next_present_at);
-            }
+            self.callback_animation_frame = Some(self.render_state.animation_frame.clone());
+            self.production.submitted(
+                self.render_state.animation_frame.clone(),
+                (predicted_next_present_at + self.present.estimated_frame_interval())
+                    .max(self.frame_pacer.render_at(Instant::now())),
+            );
         }
 
         self.present
@@ -1946,42 +1958,6 @@ impl WaylandApp {
                 format_present_snapshot(&self.present_snapshot()),
             ));
         }
-    }
-
-    fn send_animation_pulse(
-        &mut self,
-        presented_at: std::time::Instant,
-        predicted_next_present_at: std::time::Instant,
-    ) {
-        // Predict the next admissible application frame without changing the
-        // compositor-derived physical refresh estimate or presentation timing.
-        let predicted_next_present_at =
-            predicted_next_present_at.max(self.frame_pacer.render_at(Instant::now()));
-        self.animation_pulse_sequence = self.animation_pulse_sequence.wrapping_add(1);
-        let trace = AnimationPulseTrace {
-            sequence: self.animation_pulse_sequence,
-            sent_at: std::time::Instant::now(),
-        };
-        if self.renderer_animation_log {
-            self.native_log.info(
-                "renderer_animation",
-                format_animation_pulse_log(
-                    "wayland",
-                    self.render_state.render_version,
-                    trace,
-                    presented_at,
-                    predicted_next_present_at,
-                ),
-            );
-        }
-        try_send_wayland_tree(
-            &self.tree_tx,
-            TreeMsg::AnimationPulse {
-                presented_at,
-                predicted_next_present_at,
-                trace: Some(trace),
-            },
-        );
     }
 
     fn send_present_timing(
@@ -2476,35 +2452,6 @@ fn format_animation_draw_log(input: AnimationDrawLogInput<'_>) -> String {
     )
 }
 
-fn format_animation_pulse_log(
-    backend_label: &str,
-    version: u64,
-    trace: AnimationPulseTrace,
-    presented_at: std::time::Instant,
-    predicted_next_present_at: std::time::Instant,
-) -> String {
-    let presented_to_predicted =
-        duration_ms(predicted_next_present_at.saturating_duration_since(presented_at));
-    let presented_to_send = signed_instant_delta_ms(trace.sent_at, presented_at);
-    let send_to_predicted = signed_instant_delta_ms(predicted_next_present_at, trace.sent_at);
-
-    format!(
-        concat!(
-            "animation pulse\n",
-            "  backend: {backend_label}\n",
-            "  seq: {sequence}\n",
-            "  submitted_version: {version}\n",
-            "  timing: presented->predicted={presented_to_predicted:.3} ms presented->send={presented_to_send:.3} ms send->predicted={send_to_predicted:.3} ms"
-        ),
-        backend_label = backend_label,
-        sequence = trace.sequence,
-        version = version,
-        presented_to_predicted = presented_to_predicted,
-        presented_to_send = presented_to_send,
-        send_to_predicted = send_to_predicted,
-    )
-}
-
 fn format_animation_frame_callback_log(
     backend_label: &str,
     version: u64,
@@ -2585,6 +2532,13 @@ impl CompositorHandler for WaylandApp {
         if let Some(interval) = nominal_display_interval {
             self.present.set_frame_interval(interval);
         }
+        if let Some(frame) = self.callback_animation_frame.take() {
+            frame.observed(received_at);
+        }
+        self.production.progress(
+            (received_at + self.present.estimated_frame_interval())
+                .max(self.frame_pacer.render_at(received_at)),
+        );
         self.diagnostics.last_frame_callback_received_at = Some(received_at);
         self.diagnostics.last_present_skip_log_key = None;
         self.watchdog.mark_frame_callback();
@@ -3463,7 +3417,7 @@ mod tests {
         WaylandVideoImportState, WaylandVideoSyncAction, frame_draw_decision,
         key_text_commit_event, record_wayland_display_frame, refresh_rate_interval,
         renderer_profile_due, requires_ready_renderer_before_startup_ack,
-        should_reconfigure_surface, try_send_wayland_event, try_send_wayland_tree,
+        should_reconfigure_surface, try_send_wayland_event,
     };
     use crate::actors::{EventMsg, TreeMsg};
     use crate::input::{InputEvent, MOD_SHIFT};
@@ -3631,36 +3585,21 @@ mod tests {
     }
 
     #[test]
-    fn wayland_animation_pulse_send_does_not_block_when_tree_channel_is_full() {
+    fn frame_request_uses_a_bounded_lane_independent_of_full_tree_input() {
+        use crate::backend::{
+            production::{AnimationRequests, FrameProduction},
+            wake::BackendWakeHandle,
+        };
         let (tree_tx, tree_rx) = bounded(1);
         tree_tx.send(TreeMsg::Stop).unwrap();
-
-        let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let handle = thread::spawn(move || {
-            try_send_wayland_tree(
-                &tree_tx,
-                TreeMsg::AnimationPulse {
-                    presented_at: std::time::Instant::now(),
-                    predicted_next_present_at: std::time::Instant::now(),
-                    trace: None,
-                },
-            );
-            let _ = done_tx.send(());
-        });
-
-        let completed = done_rx.recv_timeout(Duration::from_millis(100)).is_ok();
-
-        if completed {
-            assert!(matches!(tree_rx.try_recv(), Ok(TreeMsg::Stop)));
-        }
-
-        drop(tree_rx);
-        let _ = handle.join();
-
-        assert!(
-            completed,
-            "wayland tree send should not block when tree channel is full"
+        let (requests, rx) = AnimationRequests::channel();
+        let mut production = FrameProduction::default();
+        production.submitted(
+            requests.frame(true, vec![], BackendWakeHandle::noop()),
+            std::time::Instant::now(),
         );
+        assert!(rx.try_recv().is_ok());
+        assert!(matches!(tree_rx.try_recv(), Ok(TreeMsg::Stop)));
     }
 }
 
