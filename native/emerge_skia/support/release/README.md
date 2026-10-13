@@ -75,6 +75,8 @@ docker run --rm \
 
 Use an immutable patch identity instead of just HEAD for a dirty checkout.
 `CARGO_TARGET_DIR` defaults to `/build/target`; the source mount stays read-only.
+Bundled input downloads and extracted sources stay under Cargo's writable
+`OUT_DIR`.
 The musl build is native inside Alpine and omits Cargo's `--target` so the
 `-crt-static` override also reaches host build scripts: bindgen must dlopen
 libclang. The RISC-V container cross-compiles against GNU libraries with the

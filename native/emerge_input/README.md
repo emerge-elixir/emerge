@@ -18,10 +18,11 @@ include the input libraries and do not download anything at runtime.
 
 ## Download cache and offline builds
 
-The default archive cache is `native/emerge_input/target/input-sources/`, outside
-tracked/package files. Set `EMERGE_INPUT_CACHE_DIR` to an absolute directory to
-share it across source checkouts, target profiles or CI jobs. Downloads are
-published atomically only after verification. Cached archives are hash-checked
+The default archive cache is `input-sources/` inside Cargo's `OUT_DIR`, outside
+tracked/package files. It follows Cargo's target directory and stays writable
+when the source checkout is read-only. Set `EMERGE_INPUT_CACHE_DIR` to an absolute
+directory to share it across source checkouts, target profiles or CI jobs.
+Downloads are published atomically only after verification. Cached archives are hash-checked
 again whenever the build script runs; a corrupt archive fails the build rather
 than being accepted or silently replaced.
 

@@ -37,6 +37,30 @@ const FIXTURE: sources::Source = sources::Source {
 };
 
 #[test]
+fn default_cache_follows_cargo_output_instead_of_the_source_checkout() {
+    let cargo_output = TempDir::new();
+    let out = cargo_output.0.join("release/build/emerge_input/out");
+    let cache = sources::cache_dir(&out, None);
+    assert_eq!(cache, out.join("input-sources"));
+    fs::create_dir_all(&cache).unwrap();
+    let path = cache.join(FIXTURE.archive);
+    fs::write(&path, b"abc").unwrap();
+    assert_eq!(sources::archive(&FIXTURE, &cache, true).unwrap(), path);
+}
+
+#[test]
+fn explicit_cache_override_is_preserved() {
+    let out = PathBuf::from("/cargo-output/out");
+    for configured in ["/shared/input-sources", "relative-input-cache"] {
+        let configured = PathBuf::from(configured);
+        assert_eq!(
+            sources::cache_dir(&out, Some(configured.clone())),
+            configured
+        );
+    }
+}
+
+#[test]
 fn cached_archives_are_verified_even_when_offline() {
     let cache = TempDir::new();
     let path = cache.0.join(FIXTURE.archive);
