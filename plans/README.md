@@ -7,6 +7,8 @@ archive subdirectory or a permanently active plan.
 
 ## Open work
 
+- [Multiline word wrapping](active-multiline-word-wrap.md): scanner fix and
+  shared-consumer regressions validated; FP3 hardware acceptance pending.
 - [Embedded artifact follow-up](active-embedded-artifact-qualification.md):
   musl/RISC-V package and target checks; Trellis acceptance is complete.
 - [Headless grayscale output](active-headless-grayscale-output.md): Gray4/Gray8
