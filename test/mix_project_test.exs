@@ -197,6 +197,13 @@ defmodule Emerge.MixProjectTest do
     end
   end
 
+  test "module navigation puts UI before configuration" do
+    groups = Emerge.Mix.Docs.config(@root, "0.5.0", "https://example.test")[:groups_for_modules]
+
+    assert Keyword.keys(groups) ==
+             [:Viewport, :UI, :Configuration, :Assets, :Runtime, :Rendering, :Engine]
+  end
+
   test "package allowlist includes bootstrap helpers but excludes native build output" do
     root = fixture()
 

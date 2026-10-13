@@ -17,8 +17,8 @@ defmodule Emerge.Mix.Docs do
       groups_for_extras: docs_groups_for_extras(internal),
       groups_for_modules: [
         Viewport: [Emerge, Emerge.Input, Emerge.Runtime.Viewport],
-        Configuration: ~r/^Emerge\.Config(\.|$)/,
         UI: ~r/^Emerge\.UI(\.|$)/,
+        Configuration: ~r/^Emerge\.Config(\.|$)/,
         Assets: ~r/^Emerge\.Assets(\.|$)/,
         Runtime: ~r/^Emerge\.Runtime\./,
         Rendering: ~r/^EmergeSkia(\.|$)/,
