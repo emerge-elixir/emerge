@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod tests;
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TextLayoutStyle {
     pub font_size: f32,
@@ -138,6 +141,9 @@ pub(crate) fn layout_text_lines(
                     &mut glyph_width,
                 ));
                 line_start = break_idx;
+                // Replay the word prefix moved off the previous line, so its
+                // advances participate in the new line's wrap decisions.
+                idx = break_idx;
             } else {
                 lines.push(build_line(
                     &chars,
