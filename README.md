@@ -9,12 +9,10 @@ Write native GUI directly from Elixir using a declarative API.
 
 ## Installation
 
-This branch documents the breaking **0.5.0 API**. See the
+Emerge **0.5.0** introduces breaking configuration and raw-input changes. See the
 [0.5 migration guide](guides/migrations/0.5.md) when upgrading from 0.4.
-The package version is still 0.4.2 while release work is in progress; until 0.5
-is published, use a source checkout (`{:emerge, path: "../emerge"}`) for these APIs.
 
-For the 0.5 release, add `:emerge` to your dependencies:
+Add `:emerge` to your dependencies:
 
 ```elixir
 defp deps do

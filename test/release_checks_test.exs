@@ -15,6 +15,46 @@ defmodule Emerge.ReleaseChecksTest do
     %{directory: directory}
   end
 
+  test "current release manifests, lockfile, changelog and documentation agree" do
+    version = Mix.Project.config()[:version]
+    tag = "v#{version}"
+    notes = ReleaseChecks.release_notes_from_files!(tag, @root)
+    assert notes != ""
+
+    lock = File.read!(Path.join(@root, "native/emerge_skia/Cargo.lock"))
+
+    assert [version] ==
+             Regex.run(
+               ~r/\[\[package\]\]\nname = "emerge_skia"\nversion = "([^"]+)"/,
+               lock,
+               capture: :all_but_first
+             )
+
+    docs = Emerge.Mix.Docs.config(@root, version, Mix.Project.config()[:source_url])
+    assert docs[:source_ref] == tag
+    parsed = Version.parse!(version)
+    assert "guides/migrations/#{parsed.major}.#{parsed.minor}.md" in docs[:extras]
+  end
+
+  test "NIF and macOS host artifact URLs use the current project release" do
+    version = Mix.Project.config()[:version]
+    base = "#{Mix.Project.config()[:source_url]}/releases/download/v#{version}"
+
+    for target <- EmergeSkia.BuildConfig.precompiled_targets() do
+      name = "libemerge_skia-v#{version}-nif-2.15-#{target}.so.tar.gz"
+      assert EmergeSkia.BuildConfig.precompiled_tar_gz_url(name, %{}) == "#{base}/#{name}"
+    end
+
+    for target <- EmergeSkia.BuildConfig.macos_host_targets() do
+      name = "macos_host-v#{version}-#{target}.tar.gz"
+      assert EmergeSkia.BuildConfig.macos_host_archive_name(target) == name
+      assert EmergeSkia.BuildConfig.macos_host_download_url(target, %{}) == "#{base}/#{name}"
+
+      assert EmergeSkia.BuildConfig.macos_host_checksum_url(target, %{}) ==
+               "#{base}/#{name}.sha256"
+    end
+  end
+
   test "extracts only the selected release" do
     changelog = """
     # Changelog
