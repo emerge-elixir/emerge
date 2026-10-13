@@ -5204,3 +5204,80 @@ fn test_host_clip_pushes_once_for_square_border() {
 
     assert_eq!(clip_scope_count, 1, "should have only one host clip scope");
 }
+
+#[test]
+fn test_render_clip_nearby_clips_escape_overlay_under_transformed_descendant() {
+    let frame = Frame {
+        x: 50.0,
+        y: 0.0,
+        width: 200.0,
+        height: 200.0,
+        content_width: 200.0,
+        content_height: 200.0,
+    };
+    let root_id = NodeId::from_u64(920_000);
+    let parent_id = NodeId::from_u64(920_001);
+    let wrapper_id = NodeId::from_u64(920_002);
+    let host_id = NodeId::from_u64(920_003);
+
+    let mut root = Element::with_attrs(
+        root_id,
+        ElementKind::El,
+        Vec::new(),
+        solid_fill_attrs((0, 0, 0)),
+    );
+    root.children = vec![parent_id];
+    root.layout.frame = Some(Frame {
+        x: 0.0,
+        y: 0.0,
+        width: 300.0,
+        height: 200.0,
+        content_width: 300.0,
+        content_height: 200.0,
+    });
+
+    let mut parent_attrs = solid_fill_attrs((0, 0, 255));
+    parent_attrs.border_radius = Some(BorderRadius::Uniform(100.0));
+    parent_attrs.clip_nearby = Some(true);
+    let mut parent = Element::with_attrs(parent_id, ElementKind::El, Vec::new(), parent_attrs);
+    parent.children = vec![wrapper_id];
+    parent.layout.frame = Some(frame);
+
+    let wrapper_attrs = Attrs {
+        move_x: Some(-50.0),
+        ..Attrs::default()
+    };
+    let mut wrapper = Element::with_attrs(wrapper_id, ElementKind::El, Vec::new(), wrapper_attrs);
+    wrapper.children = vec![host_id];
+    wrapper.layout.frame = Some(frame);
+
+    let mut host = Element::with_attrs(host_id, ElementKind::El, Vec::new(), Attrs::default());
+    host.layout.frame = Some(frame);
+
+    let mut tree = ElementTree::new();
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(parent);
+    tree.insert(wrapper);
+    tree.insert(host);
+    mount_nearby(
+        &mut tree,
+        &host_id,
+        NearbySlot::InFront,
+        ElementKind::El,
+        solid_fill_attrs((255, 0, 0)),
+        frame,
+        92,
+    );
+
+    let (_output, pixels) = render_tree_to_pixels(300, 200, &tree);
+
+    // Outside the parent's box.
+    assert_eq!(rgba_at(&pixels, 300, 20, 100), (0, 0, 0, 255));
+    // Inside the parent's box but outside its rounded shape.
+    assert_eq!(rgba_at(&pixels, 300, 60, 5), (0, 0, 0, 255));
+    // Inside the rounded shape, covered by the moved overlay.
+    assert_eq!(rgba_at(&pixels, 300, 150, 100), (255, 0, 0, 255));
+    // Inside the rounded shape, past the moved overlay.
+    assert_eq!(rgba_at(&pixels, 300, 220, 100), (0, 0, 255, 255));
+}
