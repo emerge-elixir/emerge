@@ -41,11 +41,15 @@ renderer: [api: :raster]}` from mount; a CPU-only build also selects raster for
 `renderer.api: :auto`. Use the matching `drm_raster` artifact when available, or
 build from source; see the [native build guide](../reference/native-renderer-builds.md).
 
-Skia draws into the back DRM dumb buffer with its actual row pitch. Two XRGB8888
-buffers alternate only after a blocking atomic commit completes. No per-frame
-BEAM transfer or custom output NIF is involved. Screenshots copy/convert to RGBA
-on demand. Cursor drawing is software-only; CPU video works, PRIME import does
-not. Atomic KMS, DRM leasing and XRGB8888 dumb-buffer support remain required.
+Skia draws into an available DRM dumb buffer with its actual row pitch. Three
+XRGB8888 buffers hold current, in-flight and at most one prepared frame.
+Nonblocking atomic commits request page-flip events; accepting a commit does not
+release its predecessor. Only completion permits normal buffer reuse. Teardown
+uses a blocking disable barrier and retains uncertain ownership on failure.
+No per-frame BEAM transfer or custom output NIF is involved. Screenshots
+copy/convert to RGBA on demand and publish after the corresponding flip.
+Cursor drawing is software-only; CPU video works, PRIME import does not.
+Atomic KMS, DRM leasing and XRGB8888 dumb-buffer support remain required.
 
 Raster `renderer.raster_present: :auto` means CPU on DRM. Explicit `:gpu_upload`
 keeps the old OpenGL upload path when that feature is compiled. A disconnect or
