@@ -161,6 +161,84 @@ fn assert_text(host: &HostEventRuntime, text: &str, cursor: u32) {
 }
 
 #[test]
+fn multiline_word_wrap_updates_height_and_caret_before_controller_echoes() {
+    let assets = crate::assets::AssetRuntime::new();
+    let _assets = assets.enter();
+    let font = crate::renderer::make_font_with_style("default", 400, false, 16.0);
+    let width = 3.0 * font.measure_str("a", None).0 + font.measure_str(" ", None).0;
+    let (_, metrics) = font.metrics();
+    let line_height = (metrics.ascent.abs() + metrics.descent).max(16.0);
+    let raw_attrs = |text: &str| -> Vec<u8> {
+        3u16.to_be_bytes()
+            .into_iter()
+            .chain([1, 2])
+            .chain((width as f64).to_be_bytes())
+            .chain([21])
+            .chain((text.len() as u16).to_be_bytes())
+            .chain(text.bytes())
+            .chain([56, 1])
+            .collect()
+    };
+    let mut tree = input_tree(ElementKind::Multiline, true);
+    let node = tree.get_mut(&NodeId(9)).unwrap();
+    node.spec.attrs_raw = raw_attrs("");
+    node.spec.declared = crate::tree::attrs::decode_attrs(&node.spec.attrs_raw).unwrap();
+    node.layout.effective = node.spec.declared.clone();
+    let (mut engine, mut host, _) = start(tree);
+
+    // All words fit. Each native edit must publish correct geometry without
+    // waiting for any app proposal, including the first character on line three.
+    for (text, lines) in [("a aaa ", 2), ("a", 3), ("a", 3)] {
+        host.handle_input(InputEvent::TextCommit {
+            text: text.into(),
+            mods: 0,
+        });
+        let TreeUpdateEffect::Layout { output, .. } = engine
+            .process_messages(
+                host.drain_tree_messages(),
+                TreeUpdateOptions::new(None, TreeUpdateDecodePolicy::ReturnErr),
+            )
+            .unwrap()
+        else {
+            panic!("typing must publish a rendered scene");
+        };
+        let frame = engine.tree().get(&NodeId(9)).unwrap().layout.frame.unwrap();
+        assert!((frame.height - line_height * lines as f32).abs() < 0.001);
+        let (caret_x, caret_y, _, _) = output.ime_cursor_area.unwrap();
+        assert!((caret_y - frame.y - line_height * (lines - 1) as f32).abs() < 0.001);
+        assert!(caret_x <= frame.x + width + 0.001);
+        host.install_rebuild(output.event_rebuild);
+        settle(&mut engine, &mut host);
+        assert_native_edit_state(&engine, &host);
+    }
+    assert_text(&host, "a aaa aa", 8);
+    for text in ["a aaa ", "a aaa aa"] {
+        host.install_rebuild(response(
+            &mut engine,
+            vec![app_attrs_patch(raw_attrs(text))],
+            TreeUpdateDecodePolicy::ReturnErr,
+        ));
+        settle(&mut engine, &mut host);
+        assert_text(&host, "a aaa aa", 8);
+        let frame = engine.tree().get(&NodeId(9)).unwrap().layout.frame.unwrap();
+        assert!((frame.height - 3.0 * line_height).abs() < 0.001);
+    }
+    for _ in 0..2 {
+        assert!(host.handle_text_input_edit(TextInputEditRequest::Backspace));
+        settle(&mut engine, &mut host);
+    }
+    assert_text(&host, "a aaa ", 6);
+    let frame = engine.tree().get(&NodeId(9)).unwrap().layout.frame.unwrap();
+    assert!((frame.height - 2.0 * line_height).abs() < 0.001);
+    assert!(host.handle_text_input_edit(TextInputEditRequest::Insert("aa".into())));
+    settle(&mut engine, &mut host);
+    assert_native_edit_state(&engine, &host);
+    assert_text(&host, "a aaa aa", 8);
+    let frame = engine.tree().get(&NodeId(9)).unwrap().layout.frame.unwrap();
+    assert!((frame.height - 3.0 * line_height).abs() < 0.001);
+}
+
+#[test]
 fn delayed_fifo_controller_echoes_preserve_newer_native_edits() {
     let assets = crate::assets::AssetRuntime::new();
     let _assets = assets.enter();
