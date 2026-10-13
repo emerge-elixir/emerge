@@ -86,6 +86,24 @@ defmodule Emerge.ReleaseWorkflowTest do
              ~s(emerge_input = { path = "../emerge_input", optional = true })
   end
 
+  test "every cross-build image installs the bundled input archive tools" do
+    crate = Path.expand("../native/emerge_skia", __DIR__)
+    cross = File.read!(Path.join(crate, "Cross.toml"))
+
+    for target <- ~w(aarch64-unknown-linux-gnu armv7-unknown-linux-gnueabihf) do
+      [_, block] =
+        Regex.run(~r/\[target\.#{Regex.escape(target)}\]\n(.*?)(?=\n\[|\z)/s, cross)
+
+      assert block =~ "apt-get install"
+      for tool <- ~w(curl tar gzip xz-utils bzip2), do: assert(block =~ tool)
+    end
+
+    for {image, xz} <- [{"riscv64", "xz-utils"}, {"musl", "xz"}] do
+      dockerfile = File.read!(Path.join(crate, "support/release/Dockerfile.#{image}"))
+      for tool <- ["curl", "tar", "gzip", xz, "bzip2"], do: assert(dockerfile =~ tool)
+    end
+  end
+
   test "Linux Cargo cache saves and restores stay within the same matrix job" do
     ci = File.read!(Path.join(@workflows, "ci.yml"))
     [linux, _macos] = String.split(ci, "\n  ci_macos:", parts: 2)
