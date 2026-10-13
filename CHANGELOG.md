@@ -19,6 +19,9 @@
   little-endian DRM `ARGB8888`/`XRGB8888` scanout buffers or framebuffers without
   a per-frame channel swap. Requires `video_interop` with `:bgra8888` support.
 
+- `drm_animation_pacing: :commit` overlaps OpenGL DRM animation frames with
+  slow page flips.
+
 ### Changed
 
 - All DRM Cargo profiles now embed FreeType, including source builds and mixed

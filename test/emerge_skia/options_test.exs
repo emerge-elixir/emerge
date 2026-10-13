@@ -254,6 +254,24 @@ defmodule EmergeSkia.OptionsTest do
     assert_raise ArgumentError, ~r/:drm_force_gpu_finish must be a boolean/, fn ->
       Options.build_start_native_opts!(drm_force_gpu_finish: :yes)
     end
+
+    assert %{drm_pulse_on_commit: false} = Options.build_start_native_opts!([])
+
+    assert %{drm_pulse_on_commit: true} =
+             Options.build_start_native_opts!(drm_animation_pacing: :commit)
+
+    assert_raise ArgumentError, ~r/:drm_animation_pacing must be :present or :commit/, fn ->
+      Options.build_start_native_opts!(drm_animation_pacing: :vblank)
+    end
+
+    assert_raise ArgumentError, ~r/:commit is OpenGL-only/, fn ->
+      Options.build_start_native_opts!(
+        backend: :drm,
+        rendering_api: :vulkan,
+        vulkan_drm_node: "/dev/dri/renderD128",
+        drm_animation_pacing: :commit
+      )
+    end
   end
 
   test "build_start_native_opts! normalizes always_on_top" do

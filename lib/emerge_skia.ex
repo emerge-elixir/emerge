@@ -165,6 +165,7 @@ defmodule EmergeSkia do
   | `drm_startup_retries` | `40` | DRM startup retry count |
   | `drm_retry_interval_ms` | `250` | Delay between DRM retries |
   | `drm_force_gpu_finish` | `false` | OpenGL-only DRM diagnostic |
+  | `drm_animation_pacing` | `:present` | OpenGL DRM: `:commit` samples animation frames at commit, not page flip, for slow-flipping panels |
   | `hw_cursor` | `true` | Use a DRM hardware cursor when available |
   | `drm_cursor` | built-in theme | DRM cursor source and hotspot overrides |
   | `input_log` | `false` | Log DRM input-device discovery |

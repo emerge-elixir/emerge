@@ -3347,6 +3347,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
         let mut committed_cursor_visible = false;
         let mut committed_cursor_icon: Option<CursorIcon> = None;
         let mut present_state = DrmPresentState::new(frame_interval);
+        let mut commit_to_flip = frame_interval;
         let monotonic_page_flip_timestamps = card
             .get_driver_capability(DriverCapability::MonotonicTimestamp)
             .unwrap_or_default()
@@ -3498,6 +3499,13 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
 
                                         let predicted_next_present_at =
                                             present_state.observe_present(presented_at);
+                                        if let Some(committed_at) = frame.atomic_commit_submitted_at
+                                        {
+                                            commit_to_flip = (commit_to_flip
+                                                + presented_at
+                                                    .saturating_duration_since(committed_at))
+                                                / 2;
+                                        }
 
                                         record_drm_display_interval(
                                             stats.as_deref(),
@@ -3959,8 +3967,24 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                             } else {
                                 None
                             },
-                            emit_animation_pulse: submit_primary && render_state.animate,
+                            emit_animation_pulse: submit_primary
+                                && render_state.animate
+                                && !config.pulse_on_commit,
                         });
+                        // Sample the next frame now, for when this one should flip, so its
+                        // layout and drawing overlap the wait.
+                        if submit_primary && render_state.animate && config.pulse_on_commit {
+                            let presented_at = Instant::now() + commit_to_flip;
+                            if !send_animation_pulse(
+                                &tree_tx,
+                                presented_at,
+                                presented_at + present_state.mode_frame_interval(),
+                                log_render,
+                            ) {
+                                stop_requested = true;
+                                break;
+                            }
+                        }
                     }
                     Err(err) => {
                         if matches!(

@@ -49,6 +49,23 @@ defmodule EmergeSkia.Options do
             ":drm_force_gpu_finish is an OpenGL-only diagnostic and cannot be used with rendering_api: :vulkan"
     end
 
+    drm_pulse_on_commit =
+      case Keyword.get(opts, :drm_animation_pacing, :present) do
+        :present ->
+          false
+
+        :commit ->
+          true
+
+        other ->
+          raise ArgumentError,
+                ":drm_animation_pacing must be :present or :commit, got: #{inspect(other)}"
+      end
+
+    if drm_pulse_on_commit and rendering_api.kind == "vulkan" do
+      raise ArgumentError, "drm_animation_pacing: :commit is OpenGL-only"
+    end
+
     renderer_cache =
       opts
       |> Keyword.get(:renderer_cache, [])
@@ -100,6 +117,7 @@ defmodule EmergeSkia.Options do
         opts
         |> Keyword.get(:drm_force_gpu_finish, false)
         |> normalize_boolean!(":drm_force_gpu_finish"),
+      drm_pulse_on_commit: drm_pulse_on_commit,
       scroll_line_pixels:
         opts
         |> Keyword.get(:scroll_line_pixels, 30.0)

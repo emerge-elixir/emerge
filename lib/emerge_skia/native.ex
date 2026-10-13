@@ -146,6 +146,7 @@ defmodule EmergeSkia.Native do
           required(:drm_startup_retries) => non_neg_integer(),
           required(:drm_retry_interval_ms) => non_neg_integer(),
           required(:drm_force_gpu_finish) => boolean(),
+          required(:drm_pulse_on_commit) => boolean(),
           required(:asset_sources) => [String.t()],
           required(:asset_runtime_enabled) => boolean(),
           required(:asset_allowlist) => [String.t()],

@@ -81,6 +81,8 @@ pub(crate) struct DrmRunConfig {
     pub(crate) cursor_overrides: Vec<DrmCursorOverrideConfig>,
     pub(crate) retry_interval_ms: u32,
     pub(crate) force_gpu_finish: bool,
+    #[cfg_attr(not(feature = "drm"), allow(dead_code))]
+    pub(crate) pulse_on_commit: bool,
     pub(crate) hw_cursor: bool,
     pub(crate) render_log: bool,
     pub(crate) renderer_stats_log: bool,

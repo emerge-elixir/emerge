@@ -2063,6 +2063,8 @@ struct StartConfig {
     #[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
     drm_force_gpu_finish: bool,
     #[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
+    drm_pulse_on_commit: bool,
+    #[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
     drm_hw_cursor: bool,
     #[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
     drm_cursor_overrides: Vec<DrmCursorOverrideConfig>,
@@ -2209,6 +2211,7 @@ struct StartOptsNif {
     drm_startup_retries: u32,
     drm_retry_interval_ms: u32,
     drm_force_gpu_finish: bool,
+    drm_pulse_on_commit: bool,
     hw_cursor: bool,
     input_log: bool,
     render_log: bool,
@@ -2761,6 +2764,7 @@ fn start_native_renderer_with_config(
                 cursor_overrides: config.drm_cursor_overrides.clone(),
                 retry_interval_ms: config.drm_retry_interval_ms,
                 force_gpu_finish: config.drm_force_gpu_finish,
+                pulse_on_commit: config.drm_pulse_on_commit,
                 hw_cursor: config.drm_hw_cursor,
                 render_log: log_render,
                 renderer_stats_log: config.renderer_stats_log,
@@ -3031,6 +3035,7 @@ fn start(
                 drm_startup_retries: 40,
                 drm_retry_interval_ms: 250,
                 drm_force_gpu_finish: false,
+                drm_pulse_on_commit: false,
                 drm_hw_cursor: true,
                 drm_cursor_overrides: Vec::new(),
                 drm_input_log: false,
@@ -3114,6 +3119,7 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
             drm_startup_retries: opts.drm_startup_retries,
             drm_retry_interval_ms: opts.drm_retry_interval_ms,
             drm_force_gpu_finish: opts.drm_force_gpu_finish,
+            drm_pulse_on_commit: opts.drm_pulse_on_commit,
             drm_hw_cursor: opts.hw_cursor,
             drm_cursor_overrides,
             drm_input_log: opts.input_log,
