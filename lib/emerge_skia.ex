@@ -184,12 +184,17 @@ defmodule EmergeSkia do
   defp supports_drm_power?(_renderer), do: false
 
   defp supports_frame_cap?(%Emerge.Config.Headless{}), do: true
-  defp supports_frame_cap?(%Emerge.Config.Window{backend: :wayland}), do: true
 
   defp supports_frame_cap?(%Emerge.Config.Window{backend: :auto}),
-    do: EmergeSkia.BuildConfig.default_runtime_backend() == :wayland
+    do: supports_window_frame_cap?(EmergeSkia.BuildConfig.default_runtime_backend())
+
+  defp supports_frame_cap?(%Emerge.Config.Window{backend: backend}),
+    do: supports_window_frame_cap?(backend)
 
   defp supports_frame_cap?(_output), do: false
+
+  defp supports_window_frame_cap?(:wayland), do: true
+  defp supports_window_frame_cap?(_backend), do: false
 
   @typedoc "Session-scoped native live-control submission token."
   @type config_token :: {non_neg_integer(), pos_integer()}
