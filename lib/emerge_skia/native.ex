@@ -162,6 +162,7 @@ defmodule EmergeSkia.Native do
           required(:drm_output) => String.t() | nil,
           required(:drm_mode) => String.t() | nil,
           required(:vulkan_drm_node) => String.t() | nil,
+          required(:drm_hotplug_interval_ms) => pos_integer() | nil,
           required(:drm_startup_retries) => non_neg_integer(),
           required(:drm_retry_interval_ms) => non_neg_integer(),
           required(:drm_force_gpu_finish) => boolean(),

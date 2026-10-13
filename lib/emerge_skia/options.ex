@@ -93,6 +93,10 @@ defmodule EmergeSkia.Options do
       drm_output: drm_output,
       drm_mode: drm_mode,
       vulkan_drm_node: vulkan_drm_node,
+      drm_hotplug_interval_ms:
+        opts
+        |> Keyword.get(:drm_hotplug_interval_ms, 750)
+        |> normalize_optional_positive_integer!(":drm_hotplug_interval_ms"),
       drm_startup_retries:
         opts
         |> Keyword.get(:drm_startup_retries, 40)

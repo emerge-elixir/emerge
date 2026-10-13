@@ -2070,6 +2070,8 @@ struct StartConfig {
     #[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
     drm_retry_interval_ms: u32,
     #[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
+    drm_hotplug_interval_ms: Option<u32>,
+    #[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
     drm_force_gpu_finish: bool,
     #[cfg_attr(not(all(feature = "drm-core", target_os = "linux")), allow(dead_code))]
     drm_hw_cursor: bool,
@@ -2218,6 +2220,7 @@ struct StartOptsNif {
     drm_cursor: Vec<DrmCursorOverrideNif>,
     drm_startup_retries: u32,
     drm_retry_interval_ms: u32,
+    drm_hotplug_interval_ms: Option<u32>,
     drm_force_gpu_finish: bool,
     hw_cursor: bool,
     input_log: bool,
@@ -2816,6 +2819,9 @@ fn start_native_renderer_with_config(
                 startup_retries: config.drm_startup_retries,
                 cursor_overrides: config.drm_cursor_overrides.clone(),
                 retry_interval_ms: config.drm_retry_interval_ms,
+                hotplug_interval: config
+                    .drm_hotplug_interval_ms
+                    .map(|ms| Duration::from_millis(u64::from(ms))),
                 force_gpu_finish: config.drm_force_gpu_finish,
                 hw_cursor: config.drm_hw_cursor,
                 render_log: log_render,
@@ -3094,6 +3100,7 @@ fn start(
                 vulkan_drm_node: None,
                 drm_startup_retries: 40,
                 drm_retry_interval_ms: 250,
+                drm_hotplug_interval_ms: Some(750),
                 drm_force_gpu_finish: false,
                 drm_hw_cursor: true,
                 drm_cursor_overrides: Vec::new(),
@@ -3181,6 +3188,7 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
             vulkan_drm_node: opts.vulkan_drm_node,
             drm_startup_retries: opts.drm_startup_retries,
             drm_retry_interval_ms: opts.drm_retry_interval_ms,
+            drm_hotplug_interval_ms: opts.drm_hotplug_interval_ms,
             drm_force_gpu_finish: opts.drm_force_gpu_finish,
             drm_hw_cursor: opts.hw_cursor,
             drm_cursor_overrides,

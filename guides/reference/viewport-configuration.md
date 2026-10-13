@@ -51,7 +51,8 @@ window option, not DRM output policy. Only the title is live in the window recor
   output: %Emerge.Config.DRM{
     card: "/dev/dri/card0",
     connector: "DSI-1",
-    backlight: [device: "/sys/class/backlight/panel", brightness: 0.5]
+    backlight: [device: "/sys/class/backlight/panel", brightness: 0.5],
+    hotplug_interval_ms: nil
   },
   renderer: [api: :opengl]
 }
@@ -65,6 +66,8 @@ An explicit `mode` requires `connector`. Explicit selections do not silently fal
 back. `preferred_size` is only a mode-selection hint; the selected mode sets the
 actual output dimensions. Connector/mode changes are startup-only in practice:
 live changes are explicitly rejected.
+
+The connector is polled every `hotplug_interval_ms` (default `750`) to detect hotplug; built-in panels can set it to `nil`.
 
 For CPU-only presentation use `renderer: [api: :raster, raster_present: :cpu]`.
 Raster's `:auto` route also selects CPU on DRM; `:gpu_upload` explicitly uses the

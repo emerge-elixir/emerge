@@ -22,13 +22,15 @@ defmodule Emerge.Config.DRM do
   | `preferred_size` | `nil` |
   | `display` | `:on` |
   | `backlight` | `%Emerge.Config.Backlight{}` |
+  | `hotplug_interval_ms` | `750` |
   """
   defstruct card: "/dev/dri/card0",
             connector: nil,
             mode: nil,
             preferred_size: nil,
             display: :on,
-            backlight: %Emerge.Config.Backlight{}
+            backlight: %Emerge.Config.Backlight{},
+            hotplug_interval_ms: 750
 
   @typedoc "Desired display state, not application or system power state."
   @type display :: :on | :off
@@ -38,7 +40,8 @@ defmodule Emerge.Config.DRM do
           mode: String.t() | map() | nil,
           preferred_size: {pos_integer(), pos_integer()} | nil,
           display: display(),
-          backlight: Emerge.Config.Backlight.t() | Emerge.Config.Backlight.options()
+          backlight: Emerge.Config.Backlight.t() | Emerge.Config.Backlight.options(),
+          hotplug_interval_ms: pos_integer() | nil
         }
   @typedoc "Canonical form after nested keyword records have been expanded."
   @type normalized_t :: %__MODULE__{
@@ -47,7 +50,8 @@ defmodule Emerge.Config.DRM do
           mode: String.t() | map() | nil,
           preferred_size: {pos_integer(), pos_integer()} | nil,
           display: display(),
-          backlight: Emerge.Config.Backlight.normalized_t()
+          backlight: Emerge.Config.Backlight.normalized_t(),
+          hotplug_interval_ms: pos_integer() | nil
         }
 
   @doc false
@@ -58,6 +62,7 @@ defmodule Emerge.Config.DRM do
       mode: :mode,
       preferred_size: {:optional, :size},
       display: {:enum, [:on, :off]},
-      backlight: {:record, Emerge.Config.Backlight}
+      backlight: {:record, Emerge.Config.Backlight},
+      hotplug_interval_ms: {:optional, :positive_integer}
     ]
 end

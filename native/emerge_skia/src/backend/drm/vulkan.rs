@@ -1361,7 +1361,7 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
         CommitRetryPolicy::new(config.startup_retries, config.retry_interval_ms);
     let mut page_flip_deadline = None;
     let mut initial_commit = true;
-    let mut next_hotplug = Instant::now() + HOTPLUG_INTERVAL;
+    let mut next_hotplug = config.hotplug_interval.map(|i| Instant::now() + i);
     let mut next_profile = Instant::now();
     let mut last_presented_scene = None;
     let mut terminal = None;
@@ -1443,7 +1443,7 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
         let now = Instant::now();
         let flip_timed_out = session.lifecycle.in_flight.is_some()
             && page_flip_deadline.is_some_and(|deadline| now >= deadline);
-        if now >= next_hotplug || flip_timed_out {
+        if next_hotplug.is_some_and(|t| now >= t) || flip_timed_out {
             let available = match probe_output_available(
                 &session,
                 session.output_suspended || flip_timed_out,
@@ -1491,7 +1491,10 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
                     "selected output returned; remodesetting latest scene",
                 );
             }
-            next_hotplug = Instant::now() + HOTPLUG_INTERVAL;
+            next_hotplug = config
+                .hotplug_interval
+                .or(session.output_suspended.then_some(HOTPLUG_INTERVAL))
+                .map(|i| Instant::now() + i);
         }
         if retry_at.is_some_and(|deadline| now >= deadline) {
             retry_at = None;
@@ -1602,7 +1605,10 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
                             Ok(()) => {
                                 page_flip_deadline = None;
                                 retry_at = None;
-                                next_hotplug = Instant::now() + HOTPLUG_INTERVAL;
+                                next_hotplug = config
+                                    .hotplug_interval
+                                    .or(session.output_suspended.then_some(HOTPLUG_INTERVAL))
+                                    .map(|i| Instant::now() + i);
                                 native_log.warning(
                                     "drm_vulkan",
                                     "output disappeared during busy commit; scanout suspended",
@@ -1650,7 +1656,7 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
                             Ok(()) => {
                                 page_flip_deadline = None;
                                 retry_at = None;
-                                next_hotplug = Instant::now();
+                                next_hotplug = Some(Instant::now());
                                 native_log.warning(
                                     "drm_vulkan",
                                     "output changed during commit; scanout suspended for remodeset",
@@ -1675,7 +1681,7 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
             }
         }
 
-        let next_deadline = [Some(next_hotplug), retry_at, page_flip_deadline]
+        let next_deadline = [next_hotplug, retry_at, page_flip_deadline]
             .into_iter()
             .flatten()
             .min();
@@ -1683,11 +1689,9 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
             && session.lifecycle.in_flight.is_none()
             && session.lifecycle.prepared.is_none()
         {
-            Duration::ZERO
+            Some(Duration::ZERO)
         } else {
-            next_deadline
-                .map(|deadline| deadline.saturating_duration_since(Instant::now()))
-                .unwrap_or(PAGE_FLIP_TIMEOUT)
+            next_deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()))
         };
         let mut pollfds = [
             libc::pollfd {
@@ -1701,8 +1705,8 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
                 revents: 0,
             },
         ];
-        match poll_fds(&mut pollfds, timeout) {
-            Ok(()) => {}
+        match crate::linux_wait::poll_fds(&mut pollfds, timeout) {
+            Ok(_) => {}
             Err(error) => {
                 terminal = Some(format!("DRM Vulkan poll failed: {error}"));
                 break;

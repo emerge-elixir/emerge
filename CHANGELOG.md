@@ -19,6 +19,7 @@ The package/artifact version bump and remaining qualification are separate relea
 
 ### Added
 
+- `Emerge.Config.DRM.hotplug_interval_ms` (default `750`); `nil` disables connector hotplug polling.
 - CPU-only DRM presentation via `compiled_backends: [drm: [:raster]]` and
   `renderer: [api: :raster]` in `%Emerge.Config{}`. Skia renders into double-buffered DRM dumb buffers
   without GBM/EGL/OpenGL or per-frame BEAM transfers. Includes software cursors,

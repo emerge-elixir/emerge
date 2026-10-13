@@ -32,8 +32,6 @@ use crate::{
     renderer::{RenderFrame, RenderState, RenderTimings, SceneRenderer, text_surface_props},
 };
 
-const HOTPLUG_INTERVAL: Duration = Duration::from_millis(750);
-
 struct DumbFramebuffer {
     card: Arc<Card>,
     buffer: DumbBuffer,
@@ -382,14 +380,14 @@ impl MappedFrame<'_> {
     }
 }
 
-fn wait(context: &DrmRunContext, duration: Duration) -> Result<(), String> {
+fn wait(context: &DrmRunContext, timeout: Option<Duration>) -> Result<(), String> {
     poll_fds(
         &mut [libc::pollfd {
             fd: context.presenter_wake.as_raw_fd(),
             events: libc::POLLIN,
             revents: 0,
         }],
-        Some(duration),
+        timeout,
     )
     .map(|_| ())
     .map_err(|e| format!("DRM raster wait failed: {e}"))
@@ -429,7 +427,7 @@ fn run_inner(
                 let _ = context.presenter_wake.drain();
                 wait(
                     context,
-                    Duration::from_millis(u64::from(config.retry_interval_ms)),
+                    Some(Duration::from_millis(u64::from(config.retry_interval_ms))),
                 )?;
             }
             Err(error) => return Err(error),
@@ -527,7 +525,7 @@ fn run_session(
     let mut icon = CursorIcon::Default;
     let mut dirty = true;
     let mut next_buffer = 0;
-    let mut next_hotplug = Instant::now() + HOTPLUG_INTERVAL;
+    let mut next_hotplug = config.hotplug_interval.map(|i| Instant::now() + i);
     let mut animation_pulse = None;
     let mut next_profile = Instant::now();
     loop {
@@ -583,11 +581,11 @@ fn run_session(
         dirty |= renderer.sync_cpu_video_frames(&context.video_registry)?;
         let capture_generation = context.latest_frame.pending_capture_generation();
         dirty |= capture_generation.is_some();
-        if Instant::now() >= next_hotplug {
+        if next_hotplug.is_some_and(|t| Instant::now() >= t) {
             if !session.kms.output_available()? {
                 return Err("DRM raster output disconnected or selected mode changed".into());
             }
-            next_hotplug = Instant::now() + HOTPLUG_INTERVAL;
+            next_hotplug = config.hotplug_interval.map(|i| Instant::now() + i);
         }
         if dirty && application_frame_ready {
             let started = Instant::now();
@@ -679,9 +677,9 @@ fn run_session(
             }
         }
         let timeout = if animation_pulse.is_some() {
-            Duration::from_millis(5)
+            Some(Duration::from_millis(5))
         } else {
-            next_hotplug.saturating_duration_since(Instant::now())
+            next_hotplug.map(|t| t.saturating_duration_since(Instant::now()))
         };
         wait(context, timeout)?;
     }
