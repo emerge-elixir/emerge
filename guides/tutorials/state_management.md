@@ -56,7 +56,7 @@ Add Solve to your dependencies:
 ```elixir
 def deps do
   [
-    {:solve, "~> 0.2.2"}
+    {:solve, "~> 0.3.1"}
   ]
 end
 ```
@@ -300,18 +300,19 @@ its title:
 
 ```elixir
 @impl Viewport
-def config(%Emerge.Config{output: %Emerge.Config.Window{} = output} = previous) do
+def config(previous) do
   screen = solve(MyApp.App, :screen)
-  output = %Emerge.Config.Window{output | title: "My App — #{screen.current}"}
-  %Emerge.Config{previous | output: output}
+  output = %{previous.output | title: "My App — #{screen.current}"}
+  %{previous | output: output}
 end
 ```
 
-The callback runs before rendering and remains active while a DRM display is off.
-Put subscriptions needed for wake/brightness intent in `config`, not only in a
-render callback that is deferred while off. How a controller changes that intent
-is application policy, not an Emerge power-button API. See
-[viewport configuration](../reference/viewport-configuration.md).
+This lookup subscribes the viewport to screen changes. Its existing
+`handle_solve_updated/2` requests a rerender, updating both the title and UI.
+The callback receives the previous config as nested structs; updating it keeps
+the window's other settings. See
+[viewport configuration](../reference/viewport-configuration.md) for other settings
+that can follow controller state.
 
 ## Decouple concerns into smaller units
 
@@ -350,7 +351,7 @@ interaction behind it can affect:
 
 That interaction should be modeled as one coherent unit.
 
-A small controller looks like this:
+To extend the earlier screen controller with menu state, replace it with:
 
 ```elixir
 defmodule MyApp.Screen do
@@ -480,6 +481,13 @@ defmodule MyApp.RootView do
       [width(fill()), height(fill()), Nearby.in_front(menu_button())],
       active_screen()
     )
+  end
+
+  defp active_screen do
+    case solve(MyApp.App, :screen).current do
+      :tasks -> text("Tasks")
+      :reports -> text("Reports")
+    end
   end
 
   defp menu_button do

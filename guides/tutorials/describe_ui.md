@@ -1,12 +1,11 @@
 # Describe your UI
 
-Emerge uses a declarative API for defining UIs. 
-The API is taken directly from [Elm-ui](https://package.elm-lang.org/packages/mdgriffith/elm-ui/latest/) and it makes designing UIs genuinely pleasant.
-Layout and styling are defined in the same place. You can think of it like using Tailwind, but without all the insanity of CSS.
+The viewport from the previous tutorial returns a UI tree from `render/1`.
+This tutorial explains how to build that tree with `Emerge.UI`.
 
-If you are familiar with HTML, the basic model is similar.
-UI is constructed as a tree of elements starting from a single root elemen.
-Each element has attributes and children.
+The API follows [Elm-ui](https://package.elm-lang.org/packages/mdgriffith/elm-ui/latest/):
+layout and styling are declared together. Each element has attributes and children,
+and the tree starts from one root element.
 
 ## Basic elements
 
@@ -43,7 +42,7 @@ It aliases all other `Emerge.UI` submodules: `Emerge.UI.Background`, `Emerge.UI.
 Using `use Emerge` for a viewport also calls `use Emerge.UI`.
 
 All helpers return data structures that build up to declare full UI tree.
-Every element helper returns `Emerge.UI.elment()` type which is a struct.
+Every element helper returns an `Emerge.UI.element()` struct.
 Every attribute helper returns `Emerge.UI.attr()` type which is just a tuple.
 
 Let's get back to our counter example and explain it line by line.
@@ -62,27 +61,24 @@ def render(%{count: count}) do
       # only padding and spacing
       padding(12),
       # Sets spacing between children to 12px
-      spacing(12),
+      spacing(12)
     ],
     [
-      # Calls my_button that is defined later, as long as
-      # your functions construct valid UI tree at the end you
-      # are free to use any elixir code as you wish
-      my_button([Event.on_press(:decrement)], text("-")),
+      # Calls the button helper defined below.
+      button([Event.on_press(:decrement)], text("-")),
       # Element with padding 10 that shows text
       el([padding(10)], text("Count: #{count}")),
-      my_button([Event.on_press(:increment)], text("+"))
+      button([Event.on_press(:increment)], text("+"))
     ]
   )
 end
 ```
 
-Emerge by itself doesn't impose on user how to make parts of UI
-resuable, use elixir any way you want. Important thing is that
-you construct a valid `Emerge.UI.element()` at the end.
+Extract reusable UI into ordinary Elixir functions. This is the same button
+helper used in the viewport tutorial; it returns one element:
 
 ```elixir
-defp my_button(attrs, content) do
+defp button(attrs, content) do
   Input.button(
     attrs ++ [
       padding(10),
@@ -96,20 +92,20 @@ defp my_button(attrs, content) do
 end
 ```
 
-## Escaping the layout with nearby element
+## Attach a dropdown with nearby elements
 
-For creating dropdowns, tooltips, confirmation dialagos, modals or any other
-UX antipatterns you designer has came up with is intutive with nearby elements.
+Nearby elements let you build dropdowns, tooltips and overlays without moving
+the host's normal layout.
 
-`Nearby.above/1`, `Nearby.below/1`, `Nearby.on_left/1`, `Nearby.on_right/1`, 
+`Nearby.above/1`, `Nearby.below/1`, `Nearby.on_left/1`, `Nearby.on_right/1`,
 and `Nearby.in_front/1` all let content escape the normal layout while staying
 anchored to a host element.
 
 `Nearby.behind_content/1` is a little different: it lives between background and the
 element content. Use it to create placeholders, highlights or any
-UI tree as adecorative layers behind the host content.
+UI tree as a decorative layer behind the host content.
 
-Here is a standard dropdown menu rendered attached to an toolbar button:
+Here is a dropdown attached to a toolbar button:
 
 ```elixir
 def toolbar do

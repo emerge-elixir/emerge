@@ -86,8 +86,8 @@ renderer keyword list. The example deliberately translates its `:title` and
 fields unless your `mount/1` chooses to expose them.
 
 A viewport without local state can return `{:ok, %Emerge.Config{}}` and implement
-`render/0`. All config groups have defaults; fixed-shape groups accept shorthand
-such as `renderer: [api: :raster]`. Output choices always use explicit structs.
+`render/0`. All config groups have defaults. To customize drawing, for example,
+add `renderer: %Emerge.Config.Renderer{api: :raster}` to the root config.
 
 ## Render UI
 
@@ -117,8 +117,7 @@ end
 ```
 
 Update the state, pass it to `Viewport.rerender/1`, and return the resulting
-state. `rerender/1` schedules a coalesced config/render cycle; it does not call
-`render/1` immediately.
+state. `rerender/1` schedules the UI update; it does not call `render/1` immediately.
 
 To send an event to another process, pass `{pid, message}`:
 
@@ -185,27 +184,26 @@ children = [
 ]
 ```
 
-## Live configuration
+## Optional: show the count in the window title
 
-An optional `config(previous)` or `config(previous, state)` callback returns a
-complete `%Emerge.Config{}` during the same coalesced cycle. Implement at most one
-arity. It runs before the first render, and again on rerenders, even if the UI tree
-is unchanged. `previous` is normalized desired intent; nested records are structs.
-For example, a stateful viewport can declare a title without replacing its window:
+Add this callback to the counter module to make the title follow its state:
 
 ```elixir
 @impl Viewport
-def config(%Emerge.Config{output: %Emerge.Config.Window{} = output} = previous, state) do
-  output = %Emerge.Config.Window{output | title: "Count: #{state.count}"}
-  %Emerge.Config{previous | output: output}
+def config(previous, state) do
+  output = %{previous.output | title: "Count: #{state.count}"}
+  %{previous | output: output}
 end
 ```
 
-New nested records replace rather than merge with previous records. Use typed
-struct updates to preserve other values. Only supported live fields can change;
-output type, renderer API, assets and other startup-only changes require a new
-viewport. See the [configuration reference](../reference/viewport-configuration.md)
-for the supported matrix and failure/recovery semantics.
+It runs before the first render and again when you request a rerender. Updating
+`previous.output` preserves the window's size and backend. Supplying a new window
+record instead would use defaults for fields you omit.
+
+Use `config(previous)` when no local state is needed; implement only one arity.
+Window titles can change while running, but settings such as the renderer API,
+assets and initial size require a new viewport. See
+[viewport configuration](../reference/viewport-configuration.md) for other settings.
 
 Raw input is opt-in and separate from the buttons above. Continue with
 [Observe raw input](handle_input.md) when you need `handle_input/2`.

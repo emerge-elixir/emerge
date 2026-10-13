@@ -2,7 +2,8 @@
 
 Most UIs need only element events such as `Event.on_press/1`, `Event.on_change/1`
 and key bindings. Handle those ordinary messages in `handle_info/2`.
-`handle_input/2` is a separate observer for backend surface/window input.
+Use `handle_input/2` when you need window-level input, such as a global keyboard
+shortcut, rather than events attached to a particular element.
 
 ## Subscribe explicitly
 
@@ -15,7 +16,10 @@ defmodule MyApp.KeyboardWindow do
 
   @impl Viewport
   def mount(_opts) do
-    {:ok, %Emerge.Config{input: [events: [:key, :pointer_button, :resize]]}}
+    {:ok,
+     %Emerge.Config{
+       input: %Emerge.Config.Input{events: [:key, :pointer_button, :resize]}
+     }}
   end
 
   @impl Viewport
@@ -31,11 +35,21 @@ end
 ```
 
 Use `Emerge.Config.Input.all_events/0` for all categories or `[]` for none.
-There are no numeric masks or `:all`/`:none` sentinels. Duplicates are deduplicated;
-ordering does not affect the subscription set. `input.events` is live: return
-updated subscriptions from `config(previous)` or `config(previous, state)` and
-request a rerender cycle. New lists replace old lists. Already-forwarded messages
-may still be in the mailbox after an update.
+Use category atoms, not a numeric mask or `:all`/`:none`. Duplicates and order
+do not affect subscriptions. To change the list while running, update the input
+record in a config callback and request a rerender:
+
+```elixir
+@impl Viewport
+def config(previous, state) do
+  input = %{previous.input | events: state.observed_events}
+  %{previous | input: input}
+end
+```
+
+This version assumes a stateful viewport with an `observed_events` list in its
+state; the stateless example above needs no config callback. New lists replace
+old lists. Messages already in your mailbox are not retracted.
 
 ## Exact viewport callback values
 
@@ -79,9 +93,9 @@ scrolling, buttons, keyboard bindings or element callbacks. Observers do not con
 an event or override native dispatch by returning `{:noreply, state}`.
 
 Window close requests go to `handle_close/2` independently of raw subscriptions.
-The default closes the viewport normally. On DRM, display-off separately gates
-native UI input; an application's independent wake-key reader is outside this
-observer subscription mechanism.
+The default closes the viewport normally. A DRM display does not deliver UI input
+while off; applications need an independent source, such as a power-button reader,
+to turn it back on.
 
 Availability is backend-dependent:
 
@@ -91,5 +105,5 @@ Availability is backend-dependent:
   currently emit surrounding-text deletion notifications through its observer path.
 
 For changed callback names and actions, see [Migrate to 0.5.0](../migrations/0.5.md).
-For subscriptions, replacement and recovery see
+For configuration examples, see
 [viewport configuration](../reference/viewport-configuration.md).

@@ -309,3 +309,32 @@ ExDoc builds are warning-free, each generates 31 screenshots, and local links
 pass for 67/82 pages. Logs: `/tmp/emerge-config-readable-*.log`.
 
 Runtime behavior, package versions, Fairphone and unrelated files are unchanged.
+
+### Tutorial consistency follow-up
+
+- [x] Audit the five tutorials for 0.5 examples, obsolete startup/config advice,
+      unexplained renderer-level material and consistency between examples.
+- [x] Rework Use assets around viewport mount, explicit asset/font/path/cache
+      structs and practical application steps; keep reference details in module docs.
+- [x] Exercise tutorial callbacks/configs and validate Rust/ExUnit, quality and
+      generated documentation/links. Preserve the pending sidebar-order changes.
+
+Use assets now starts with a complete gallery viewport rather than standalone
+renderer startup. Short examples cover logical/verified paths, image fitting,
+backgrounds, SVGs, font registration, runtime-file policy and optional cache tuning.
+Other tutorials use explicit records/simple record updates; the state guide targets
+Solve 0.3.1 and its helper example no longer calls an undefined view function.
+
+Regression checks compile the gallery and verified-path helper using existing
+fixture files, validate four asset configurations, exercise the counter's live title,
+reject renderer startup in tutorials and check the renamed nearby-section anchor.
+The state guide's controller graph, lookup, UI and state-derived title were also
+exercised against installed Solve 0.3.1 without starting a viewport.
+
+Validation: 652 Elixir checks (15 doctests, 637 tests), 13 excluded; 1,580 Rust
+unit tests plus 1 + 13 fixtures; quality passes on 191 files. Public/internal
+ExDoc builds are warning-free, each generates 31 screenshots, and local links
+pass for 67/82 pages. The rendered nearby link resolves to the renamed section.
+Logs: `/tmp/emerge-tutorials-*.log`.
+
+No runtime API changes, external consumer changes or device testing in this task.

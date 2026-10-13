@@ -119,6 +119,9 @@ defmodule Emerge.DocumentationConfigTest do
 
       Macro.prewalk(quoted, fn
         {{:., _, [{:__aliases__, _, [:EmergeSkia]}, :start]}, _, args} = call ->
+          refute String.contains?(path, "guides/tutorials/"),
+                 "tutorial should configure its viewport rather than start another renderer: #{path}"
+
           assert length(args) == 1, "positional renderer startup in #{path}"
           refute is_list(hd(args)), "keyword renderer startup in #{path}"
           call
@@ -127,6 +130,18 @@ defmodule Emerge.DocumentationConfigTest do
           other
       end)
     end
+  end
+
+  test "nearby docs link to an existing tutorial section" do
+    {:docs_v1, _, _, _, %{"en" => docs}, _, _} = Code.fetch_docs(Emerge.UI.Nearby)
+    [anchor] = Regex.run(~r/describe_ui\.md#([\w-]+)/, docs, capture: :all_but_first)
+
+    headings =
+      ~r/^## (.+)$/m
+      |> Regex.scan(read("guides/tutorials/describe_ui.md"), capture: :all_but_first)
+      |> Enum.map(fn [heading] -> heading |> String.downcase() |> String.replace(" ", "-") end)
+
+    assert anchor in headings
   end
 
   test "counter tutorial returns typed config and interprets only its mount arguments" do
@@ -150,6 +165,106 @@ defmodule Emerge.DocumentationConfigTest do
     assert changed.size == {1024, 768}
   end
 
+  test "asset tutorial config examples use typed records and valid settings" do
+    examples =
+      Regex.scan(
+        ~r/<!-- emerge-assets:(\w+) -->\s*```elixir\n(.*?)\n```/s,
+        read("guides/tutorials/use_assets.md")
+      )
+
+    assert Enum.map(examples, fn [_, name, _] -> name end) ==
+             ["fonts", "runtime", "cache", "diagnostics"]
+
+    for [_, name, source] <- examples do
+      {literal, _binding} = Code.eval_string(source, [], __ENV__)
+      assert %Config.Assets{} = literal.assets
+      assert %Config.Diagnostics{} = literal.diagnostics
+      config = Config.Normalize.config!(literal)
+      assert config == literal
+      assert :ok = EmergeSkia.validate_config!(config)
+
+      case name do
+        "fonts" ->
+          assert Enum.all?(literal.assets.fonts, &match?(%Config.Font{}, &1))
+
+          assert Enum.map(config.assets.fonts, &{&1.weight, &1.italic}) ==
+                   [{400, false}, {700, false}, {400, true}]
+
+        "runtime" ->
+          assert %Config.RuntimePaths{enabled: true, allowlist: ["/data/photos"]} =
+                   literal.assets.runtime_paths
+
+        "cache" ->
+          assert literal.assets.decode_at_size
+          assert %Config.AssetCache{max_entries: 32, max_bytes: 33_554_432} = literal.assets.cache
+
+        "diagnostics" ->
+          assert literal.diagnostics.logs == [:stats]
+      end
+    end
+  end
+
+  test "asset tutorial viewport and verified-path view build the documented UI" do
+    sources = "guides/tutorials/use_assets.md" |> read() |> code_blocks()
+
+    viewport_source =
+      sources
+      |> Enum.find(&String.contains?(&1, "defmodule MyApp.View.Gallery do"))
+      |> String.replace("MyApp.View.Gallery", "Emerge.DocumentationExamples.Gallery")
+      |> use_test_assets()
+
+    view_source =
+      sources
+      |> Enum.find(&String.contains?(&1, "defmodule MyApp.UI.Gallery do"))
+      |> String.replace("MyApp.UI.Gallery", "Emerge.DocumentationExamples.GalleryView")
+      |> use_test_assets()
+
+    Code.compile_string(viewport_source)
+    Code.compile_string(view_source)
+    viewport = Emerge.DocumentationExamples.Gallery
+    view = Emerge.DocumentationExamples.GalleryView
+
+    assert {:ok, %Config{assets: %Config.Assets{otp_app: :emerge}} = config} =
+             apply(viewport, :mount, [[]])
+
+    assert :ok = EmergeSkia.validate_config!(config)
+
+    assert %Emerge.Engine.Element{type: :column, children: [image, svg]} =
+             apply(viewport, :render, [])
+
+    assert image.attrs.image_src == "sample_assets/static.jpg"
+    assert svg.attrs.image_src == "sample_assets/template_cloud.svg"
+
+    assert %Emerge.Engine.Element{type: :column, children: [verified_image, verified_svg]} =
+             apply(view, :layout, [])
+
+    assert %Emerge.Assets.Ref{path: "sample_assets/static.jpg", verified?: true} =
+             verified_image.attrs.image_src
+
+    assert %Emerge.Assets.Ref{path: "sample_assets/template_cloud.svg", verified?: true} =
+             verified_svg.attrs.image_src
+  end
+
+  test "counter title callback preserves window settings and follows state" do
+    sources = "guides/tutorials/set_up_viewport.md" |> read() |> code_blocks()
+    callback = Enum.find(sources, &String.contains?(&1, "def config(previous, state) do"))
+
+    source =
+      sources
+      |> Enum.find(&String.contains?(&1, "defmodule MyApp.View.Counter do"))
+      |> String.replace("MyApp.View.Counter", "Emerge.DocumentationExamples.CounterTitle")
+      |> String.trim()
+      |> String.replace_suffix("end", callback <> "\nend")
+
+    module = Emerge.DocumentationExamples.CounterTitle
+    Code.compile_string(source)
+    previous = %Config{output: %Config.Window{size: {1024, 768}}}
+    next = apply(module, :config, [previous, %{count: 3}])
+    assert next.output.title == "Count: 3"
+    assert next.output.size == {1024, 768}
+    assert :ok = EmergeSkia.validate_config_change(previous, next)
+  end
+
   test "input tutorial uses atom subscriptions and typed key actions" do
     source =
       "guides/tutorials/handle_input.md"
@@ -169,6 +284,13 @@ defmodule Emerge.DocumentationConfigTest do
 
     assert {:noreply, %{}} =
              apply(module, :handle_input, [{:key, {:escape, :release, []}}, %{}])
+  end
+
+  defp use_test_assets(source) do
+    source
+    |> String.replace(":my_app", ":emerge")
+    |> String.replace("images/logo.png", "sample_assets/static.jpg")
+    |> String.replace("icons/check.svg", "sample_assets/template_cloud.svg")
   end
 
   defp read(path), do: File.read!(Path.expand(path, @root))

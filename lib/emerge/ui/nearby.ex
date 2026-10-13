@@ -59,7 +59,7 @@ defmodule Emerge.UI.Nearby do
   ## Example
 
   See the dropdown example in
-  [`guides/tutorials/describe_ui.md`](guides/tutorials/describe_ui.md#escaping-the-layout-with-nearby-element)
+  [Describe your UI](guides/tutorials/describe_ui.md#attach-a-dropdown-with-nearby-elements)
   for a fuller nearby composition walkthrough.
   """
 
