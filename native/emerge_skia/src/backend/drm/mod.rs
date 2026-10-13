@@ -123,6 +123,7 @@ pub(crate) struct DrmRunConfig {
     pub(crate) startup_retries: u32,
     pub(crate) cursor_overrides: Vec<DrmCursorOverrideConfig>,
     pub(crate) retry_interval_ms: u32,
+    pub(crate) hotplug_interval: Option<std::time::Duration>,
     pub(crate) force_gpu_finish: bool,
     pub(crate) hw_cursor: bool,
     pub(crate) render_log: bool,

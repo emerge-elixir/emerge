@@ -31,6 +31,7 @@ defmodule Emerge.DocumentationConfigTest do
         "drm" ->
           assert native.drm_power == %{display_on: true, brightness: 0.5}
           assert native.drm_backlight == "/sys/class/backlight/panel"
+          assert native.drm_hotplug_interval_ms == nil
 
         "binary" ->
           assert native.backend == "headless"

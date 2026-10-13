@@ -82,6 +82,7 @@ defmodule Emerge.Config.Native do
       drm_backlight: if(drm.backlight.device == :auto, do: "auto", else: drm.backlight.device),
       drm_output: drm.connector,
       drm_mode: drm.mode,
+      drm_hotplug_interval_ms: drm.hotplug_interval_ms,
       width: width,
       height: height
     ]

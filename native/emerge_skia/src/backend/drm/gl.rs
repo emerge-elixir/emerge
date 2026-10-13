@@ -2662,7 +2662,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
     let mut startup_retries_remaining = config.startup_retries;
     let mut last_dimensions: Option<(u32, u32)> = None;
     let mut frame_request = 0u64;
-    let hotplug_interval = Duration::from_millis(750);
+    let hotplug_interval = config.hotplug_interval;
     let mut logged_cursor_info = false;
     let mut logged_mode_info = false;
     let cursor_theme = match DrmCursorTheme::load(&config.asset_config, &config.cursor_overrides) {
@@ -3426,7 +3426,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                 let mut drm_ready = false;
                 let mut presenter_wake_ready = false;
 
-                let mut next_hotplug_check = Instant::now() + hotplug_interval;
+                let mut next_hotplug_check = hotplug_interval.map(|i| Instant::now() + i);
                 let mut last_video_generation = video_registry.generation();
                 // Video submission and fence cleanup mutate renderer-owned resources without changing the
                 // scene fingerprint. Keep this sticky until sync_video_frames() has run so the generic
@@ -3610,7 +3610,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                     }
 
                     let now = Instant::now();
-                    if now >= next_hotplug_check {
+                    if next_hotplug_check.is_some_and(|t| now >= t) {
                         let resources = match card.resource_handles() {
                             Ok(handles) => handles,
                             Err(_) => break,
@@ -3637,7 +3637,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                             }
                             Err(_) => break,
                         }
-                        next_hotplug_check = Instant::now() + hotplug_interval;
+                        next_hotplug_check = hotplug_interval.map(|i| Instant::now() + i);
                     }
 
                     while let Ok(msg) = render_rx.try_recv() {
@@ -4119,7 +4119,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                         }
                     }
 
-                    let mut next_deadline = Some(next_hotplug_check);
+                    let mut next_deadline = next_hotplug_check;
                     if let Some(retry_at) = retry_commit_at {
                         next_deadline = Some(
                             next_deadline
