@@ -1,8 +1,5 @@
 # Embedded artifact follow-up
 
-Status: ARMv7/Trellis operation and picture-scene testing confirmed by the
-maintainer. The ARMv7 implementation and Trellis acceptance plan are complete.
-
 ## Remaining checks outside Trellis
 
 - Verify released x86_64 musl and RISC-V64 packages in fresh Nerves consumers

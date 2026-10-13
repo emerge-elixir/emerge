@@ -1,83 +1,73 @@
 # Plans
 
-Keep open implementation/qualification work and research that supports it here.
-Completed feature designs, validation logs, and superseded release checklists
-belong in Git history, tests, `CHANGELOG.md`, and the maintained guides—not in an
-archive subdirectory or a permanently active plan.
+Keep only concrete unfinished implementation, acceptance gates and research that
+supports them. Completed designs, validation logs and checklists belong in Git
+history, tests, `CHANGELOG.md` and maintained guides—not an archive directory.
 
 ## Open work
 
-- [0.5.0 release preparation](active-0.5-release.md): versioned metadata, release
-  notes and local validation; exact-commit CI/artifacts and publication still pending.
-- [Multiline word wrapping](active-multiline-word-wrap.md): scanner fix and
-  shared-consumer regressions validated; FP3 hardware acceptance pending.
-- [Embedded artifact follow-up](active-embedded-artifact-qualification.md):
-  musl/RISC-V package and target checks; Trellis acceptance is complete.
-- [Headless grayscale output](active-headless-grayscale-output.md): Gray4/Gray8
-  expansion of the accepted BW1/Gray2 pipeline.
-- [Linux platform follow-up](active-linux-gpu-qualification.md): specific
-  device-loss/presenter-panic checks, Nexus 7 CPU-DRM cadence, and Vulkan-only
-  artifact dependency closure—not repeat GPU/PRIME, reconnect, or FP3 testing.
-- [Low-resource animation smoothness](active-low-resource-animation-smoothness.md):
-  constrained-device profiling, registry geometry work, safe patch coalescing,
-  and final cadence acceptance.
-- [macOS-specific follow-up](active-macos-runtime-qualification.md): independent
-  asset/font sessions, gradient coverage, and packaged raster-NIF checks;
-  Metal/raster playback acceptance is complete.
-- [RPi5 Camera 60 FPS](active-rpi5-camera-60fps.md): production NV12 correctness,
-  ownership, and sustained rendering/headroom targets.
-- [Universal gradient qualification](active-universal-gradient-colors.md):
-  constrained-device gradient performance and the outstanding screenshot-cache
-  benchmark issue.
-
-- [Declarative viewport settings](active-declarative-viewport-settings.md):
-  breaking 0.5.0 typed config/input APIs, lifecycle replay, and remaining native
-  controls. Schema/migration reference: [viewport settings](viewport-settings-schema.md).
-  New power-cycle acceptance: [native DRM lifecycle](active-native-drm-power.md)
-  and [Fairphone display controls](active-fairphone-display-controls.md); this does
-  not reopen the already-closed general FP3 renderer qualification.
-
-- [Wayland Vulkan acquire synchronization](active-vulkan-acquire-synchronization.md):
-  implemented acquisition waits and native validation gate; targeted Hyprland/RADV
-  regression passes, with interactive lifecycle/performance qualification still open.
+- [0.5 publication](active-0.5-release.md): exact-integrated-commit CI, artifacts,
+  date confirmation and publication.
+- [Viewport configuration](active-declarative-viewport-settings.md): remaining
+  backend controls, macOS config revisions, input transport coverage and demo migration.
+- [DRM power](active-native-drm-power.md): user-owned FP3 OpenGL/no-flash/power
+  acceptance; Fairphone deployment handoff.
+- [Bundled DRM input](active-drm-libinput.md): full FP3 firmware, physical
+  overlapping-key input and minimal-system/daemonless hotplug acceptance.
+- [Multiline word wrapping](active-multiline-word-wrap.md): FP3 Notes acceptance.
+- [Frame production](active-frame-production-pipeline.md): macOS worker/native
+  opportunities and target-specific cadence/resource measurements.
+- [Linux platform](active-linux-gpu-qualification.md): device-loss/presenter-panic
+  cleanup, Nexus 7 CPU-DRM cadence/faults and Vulkan-only dependency closure.
+- [Wayland Vulkan](active-vulkan-acquire-synchronization.md): interactive
+  resize/occlusion/recreation, other drivers and submit-cost/idle measurements.
+- [macOS runtime](active-macos-runtime-qualification.md): independent asset/font
+  sessions, gradient coverage and packaged Intel/Apple Silicon raster NIFs.
+- [Embedded artifacts](active-embedded-artifact-qualification.md): musl/RISC-V
+  consumer packages and physical targets.
+- [Headless grayscale](active-headless-grayscale-output.md): Gray4/Gray8 output,
+  asset/layer memory follow-up and binary-output backlog controls.
+- [Low-resource animations](active-low-resource-animation-smoothness.md):
+  constrained-device profiling, registry geometry, safe coalescing and cadence.
+- [RPi5 Camera](active-rpi5-camera-60fps.md): production NV12 correctness/ownership
+  and sustained active-scene 60 FPS/GPU headroom.
+- [Gradients](active-universal-gradient-colors.md): constrained-device performance
+  and macOS coverage.
 
 ## Research and roadmaps
 
-- [Screenshot cache investigation](screenshot-cache-benchmark-investigation.md):
-  unresolved coverage accounting and cached/direct text/shadow pixel differences.
-- [Low-memory grayscale research](headless-low-memory-grayscale-investigation.md):
-  pinned-Skia evidence and memory constraints for the remaining output work.
-- [Layout caching roadmap](layout-caching-roadmap.md) and
-  [cross-engine insights](layout-caching-engine-insights.md): retained-layout
-  direction beyond the completed foundation.
-- [Platform runtime differences](platform-runtime-architecture-differences.md):
-  Linux actor versus macOS host orchestration.
-- [Skia recording/DDL](skia-ddl-paint-layer-note.md): possible future paint-layer
-  recording work.
+- [Screenshot cache benchmark](screenshot-cache-benchmark-investigation.md):
+  expected direct-shadow coverage and separate cached/direct pixel differences.
+- [Layout caching](layout-caching-roadmap.md): broader dependency boundaries,
+  cheaper keys/traversal, compatible measurements and viewport/repeater reuse.
+- [Parallel paint recording](skia-ddl-paint-layer-note.md): profiling-led
+  off-thread recording/DDL experiments.
 
-## Completed work: authoritative references
+## Closed qualification and maintained references
 
-Maintainer-confirmed testing closes Trellis operation/pictures, Linux GPU/PRIME,
-Vulkan unplug/replug, FP3, and macOS Metal/raster playback. Do not reopen those
-qualification reminders just because an old plan lacks the test log.
+Maintainer-confirmed Trellis operation/pictures, general Linux GPU/PRIME, Vulkan
+unplug/replug, FP3 renderer and macOS Metal/raster playback acceptance are closed.
+Do not recreate those gates from missing historical logs. New input/power/pacing
+checks above are specific follow-ups, not repeat general qualification.
 
-- [Events and controlled-input reconciliation](../guides/internals/events.md)
-- [Tree wire format](../guides/internals/emrg-format.md)
-- [DRM output selection and viewport lifecycle](../guides/internals/drm-outputs-and-lifecycle.md)
-- [Native builds, artifacts, and release gates](../guides/reference/native-renderer-builds.md)
-- [Video submission and ownership](../guides/internals/video-interop-architecture.md)
-- [Renderer-local asset ownership](../guides/internals/assets-images.md)
-- [Headless frame-copy measurements](../bench/headless_frame_copy.md)
-- [Corrected borders-cache benchmark](../bench/README.md#rich-borders-cache-workload)
-- [Release history](../CHANGELOG.md), [0.5 migration](../guides/migrations/0.5.md)
-  and [historical 0.4 migration](../guides/migrations/0.4.md)
+- [Events/input](../guides/internals/events.md)
+- [Configuration](../guides/reference/viewport-configuration.md)
+- [DRM lifecycle](../guides/internals/drm-outputs-and-lifecycle.md)
+- [Runtime architecture](../guides/internals/architecture.md)
+- [Frame production/synchronization](../guides/internals/frame-pacing.md)
+- [Native builds/release gates](../guides/reference/native-renderer-builds.md)
+- [Video ownership](../guides/internals/video-interop-architecture.md)
+- [Assets](../guides/internals/assets-images.md)
+- [Headless frame copies](../bench/headless_frame_copy.md)
+- [Borders benchmark](../bench/README.md#rich-borders-cache-workload)
+- [Release history](../CHANGELOG.md) and [0.5 migration](../guides/migrations/0.5.md)
 
 ## Maintenance
 
-- Use `active-*.md` only for concrete unfinished work or acceptance gates.
-- Remove completed implementation logs; preserve evidence in Git history.
-- Consolidate overlapping follow-up gates instead of retaining whole completed
-  designs for a pending hardware smoke test.
-- Keep measurements only when they inform remaining work.
-- Prefer maintained guides and authoritative cross-repository plans over copies.
-- Update this index and repair links whenever a plan is removed.
+- Use `active-*.md` only for unfinished work or acceptance.
+- Remove completed sections; retain only measurements informing the next decision.
+- Consolidate overlapping gates and link maintained contracts instead of copying them.
+- Update this index and repair links when removing a plan.
+- Run `cargo test` and `mix test` after changes; prefer `./ci-tests.sh` for local CI.
+- Device access/deployment and performance runs require their explicit opt-in/lock;
+  ordinary checks must not operate host devices.

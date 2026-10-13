@@ -1,7 +1,5 @@
 # Active Plan: RPi5 Camera 60 FPS Qualification
 
-Status: host implementation and initial target proof complete; production NV12 qualification and active-scene GPU headroom remain open
-
 ## Goal
 
 On the pinned RPi5 Camera Focus scene require:
@@ -12,9 +10,9 @@ On the pinned RPi5 Camera Focus scene require:
 - exact pixels, interaction state, DMA-BUF ownership, and shutdown;
 - no sustained missed-vblank, fence, lease, FD, RSS, or V3D/MMU fault.
 
-This plan consolidates the former V3DV NV12, packed-XRGB experiment, semantic
-paint-layer, and Camera stable-60 plans. General Wayland/headless/DRM Vulkan
-qualification lives in `active-linux-gpu-qualification.md`.
+Linux device-loss and artifact follow-up lives in
+[Linux platform qualification](active-linux-gpu-qualification.md); do not reopen
+closed general GPU/PRIME acceptance here.
 
 ## Current baseline
 
@@ -26,25 +24,6 @@ qualification lives in `active-linux-gpu-qualification.md`.
 | cache-off active | 25.8 | 33.22 ms | 170 |
 
 The active path must remove at least 4.66 ms. Renderer caching stays enabled.
-
-## Implemented foundation
-
-- Stable nine-layer Camera topology with direct Video and semantic Nearby/slider
-  layers.
-- Persistent V3DV NV12 source imports, bounded output pools, exact synchronization,
-  early source release, and deterministic retirement/quarantine.
-- Preferred optimal NV12/separate-plane staging with compute-planar and RGBA
-  rollback paths.
-- First planar target run sustained 60 capture FPS with no credit collapse;
-  active presentation remained about 48.6 FPS.
-- Forced RGBA was decisively worse and is not a candidate.
-- Host-complete XRGB8888 producer/import support and bounded
-  linear-buffer-to-optimal-BGRA fallback.
-- Camera `auto|nv12|xrgb8888` selection and exact renderer-format admission.
-- Corrective slider registry state, no-op scene suppression, 20 Hz exposed state,
-  stable paint generations, and transform-only payload reuse.
-- Combined render/registry traversal and paint-layer model cleanup.
-- Current timing, scene-selection, cache, video, fence, and lease diagnostics.
 
 ## Locked constraints
 
