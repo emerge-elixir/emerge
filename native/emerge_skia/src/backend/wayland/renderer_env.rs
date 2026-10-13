@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 #[cfg(feature = "wayland")]
 use glutin::prelude::GlSurface;
-use wayland_client::{Connection, protocol::wl_surface};
+#[cfg(feature = "wayland")]
+use smithay_client_toolkit::shell::WaylandSurface;
+use smithay_client_toolkit::shell::xdg::window::Window;
+use wayland_client::Connection;
 
 #[cfg(feature = "wayland")]
 use crate::video::VideoImportContext;
@@ -99,10 +102,19 @@ impl RendererEnvKind {
 
 #[cfg(any(feature = "wayland", feature = "wayland-vulkan"))]
 impl RendererEnv {
+    pub(super) fn shutdown(&mut self) -> Result<(), String> {
+        match self {
+            #[cfg(feature = "wayland")]
+            Self::OpenGl(_) => Ok(()),
+            #[cfg(feature = "wayland-vulkan")]
+            Self::Vulkan(env) => env.shutdown(),
+        }
+    }
+
     pub(super) fn new(
         rendering_api: RenderingApi,
         conn: &Connection,
-        surface: &wl_surface::WlSurface,
+        window: &Window,
         dimensions: (u32, u32),
         renderer_cache_config: RendererCacheConfig,
         #[cfg(feature = "wayland-vulkan")] compositor_device: Option<DrmNodeId>,
@@ -110,12 +122,13 @@ impl RendererEnv {
         match RendererEnvKind::for_api(rendering_api)? {
             #[cfg(feature = "wayland")]
             RendererEnvKind::OpenGl => {
-                create_gl_env(conn, surface, dimensions, renderer_cache_config).map(Self::OpenGl)
+                create_gl_env(conn, window.wl_surface(), dimensions, renderer_cache_config)
+                    .map(Self::OpenGl)
             }
             #[cfg(feature = "wayland-vulkan")]
             RendererEnvKind::Vulkan => WaylandVulkanEnv::new(
                 conn,
-                surface,
+                window,
                 dimensions,
                 renderer_cache_config,
                 compositor_device,
@@ -302,7 +315,7 @@ impl RendererEnv {
     pub(super) fn new(
         _rendering_api: RenderingApi,
         _conn: &Connection,
-        _surface: &wl_surface::WlSurface,
+        _window: &Window,
         _dimensions: (u32, u32),
         _renderer_cache_config: RendererCacheConfig,
     ) -> Result<Self, String> {

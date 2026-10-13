@@ -141,6 +141,7 @@ struct WaylandAppRuntime {
 
 pub(crate) struct WaylandRunArgs {
     pub config: WaylandConfig,
+    pub lifecycle: Arc<crate::runtime::lifecycle::Lifecycle>,
     pub running_flag: Arc<AtomicBool>,
     pub tree_tx: CrossbeamSender<TreeMsg>,
     pub event_tx: crossbeam_channel::Sender<EventMsg>,
@@ -1753,15 +1754,21 @@ impl WaylandApp {
             Some(env) => match env.initialize_video_import() {
                 Ok(ctx) => {
                     #[cfg(feature = "wayland-vulkan")]
-                    if let RendererVideoImportContext::Vulkan(vulkan) = &ctx
-                        && let Err(error) = self.video_registry.set_vulkan_import_capabilities(
-                            vulkan.rgba_linear_supported(),
-                            vulkan.bgra_import_supported(),
-                            vulkan.nv12_capabilities().to_vec(),
-                        )
-                    {
-                        eprintln!("failed to publish Vulkan NV12 stream capabilities: {error}");
-                        return;
+                    match &ctx {
+                        RendererVideoImportContext::Vulkan(vulkan) => {
+                            if let Err(error) = self.video_registry.set_vulkan_import_capabilities(
+                                vulkan.rgba_linear_supported(),
+                                vulkan.bgra_import_supported(),
+                                vulkan.nv12_capabilities().to_vec(),
+                            ) {
+                                eprintln!(
+                                    "failed to publish Vulkan NV12 stream capabilities: {error}"
+                                );
+                                return;
+                            }
+                        }
+                        #[cfg(feature = "wayland")]
+                        RendererVideoImportContext::OpenGl(_) => {}
                     }
                     WaylandVideoImportState::Ready(Box::new(ctx))
                 }
@@ -1865,7 +1872,7 @@ impl WaylandApp {
             match RendererEnv::new(
                 self.rendering_api,
                 conn,
-                self.window.wl_surface(),
+                &self.window,
                 self.geometry.buffer_size,
                 self.renderer_cache_config,
                 #[cfg(feature = "wayland-vulkan")]
@@ -3021,6 +3028,7 @@ fn fail_startup(
 pub(crate) fn run(args: WaylandRunArgs) {
     let WaylandRunArgs {
         config,
+        lifecycle,
         running_flag,
         tree_tx,
         event_tx,
@@ -3398,9 +3406,16 @@ pub(crate) fn run(args: WaylandRunArgs) {
 
     let env = app.env.take();
     #[cfg(any(feature = "wayland", feature = "wayland-vulkan"))]
-    drop(env);
+    if let Some(mut env) = env {
+        if let Err(error) = env.shutdown() {
+            // A quarantined native graph is not successful session cleanup, even if the worker
+            // can now exit. Keep stop/status honest after the join completes.
+            lifecycle.quarantine(error);
+        }
+        drop(env);
+    }
     #[cfg(not(any(feature = "wayland", feature = "wayland-vulkan")))]
-    let _ = env;
+    let _ = (env, lifecycle);
     drop(app);
     drop(event_loop);
     drop(conn);

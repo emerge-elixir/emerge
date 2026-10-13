@@ -24,8 +24,11 @@ pub struct TargetImageState {
 
 /// Presenter-neutral description of one borrowed output target. The generic token stays opaque to
 /// the engine and can be a Wayland generation/image pair or a future DRM slot id. Acquire
-/// semaphores are one-shot: a successful Skia wait transfers destruction ownership to Skia, while
-/// every pre-wait failure leaves destruction to the engine.
+/// semaphores, when supplied, are one-shot: a successful Skia wait transfers destruction ownership
+/// to Skia, while every pre-wait failure leaves destruction to the engine. A presenter that already
+/// establishes its dependency on Ganesh's queue (Wayland WSI) passes None and retains ownership.
+/// SkSurface::wait only guarantees fragment/transfer-stage blocking; it is not a general WSI
+/// acquisition barrier protecting an initial UNDEFINED layout transition.
 pub struct AcquiredTarget<T> {
     pub token: T,
     pub image: vk::Image,

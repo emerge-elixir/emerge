@@ -2608,6 +2608,7 @@ fn start_native_renderer_with_config(
         BackendKind::Wayland => {
             let (proxy_tx, proxy_rx) = std::sync::mpsc::channel();
             let running_flag_clone = Arc::clone(&running_flag);
+            let wayland_lifecycle = Arc::clone(&lifecycle);
             let tree_tx_clone = tree_tx.clone();
             let event_tx_clone = event_tx.clone();
             let input_target_clone = Arc::clone(&input_target);
@@ -2630,6 +2631,7 @@ fn start_native_renderer_with_config(
                 let _asset_context_guard = asset_context.enter();
                 wayland::run(wayland::WaylandRunArgs {
                     config: wayland_config,
+                    lifecycle: wayland_lifecycle,
                     running_flag: running_flag_clone,
                     tree_tx: tree_tx_clone,
                     event_tx: event_tx_clone,
