@@ -1,7 +1,5 @@
 # Active Plan: Low-Resource Animation Smoothness
 
-Status: correctness and first optimization passes implemented; constrained-device cadence remains open
-
 ## Goal
 
 Make retained transform-only Nearby animations smooth on weak DRM devices without
@@ -14,21 +12,9 @@ Target device budgets:
 - patch-frame tree work during animation: ideally <8 ms, acceptable <12 ms;
 - render/present within one vblank where possible.
 
-## Implemented baseline
+## Profiling signal to re-baseline
 
-- Enter animations start at the first keyframe and settle to base attrs before
-  pulses stop (`fe4ecac` is unrelated centered-text work and also stays covered).
-- Transform-only animation dirtying preserves content paint generations and
-  cached payloads while updating wrappers/registry geometry.
-- Active move-x/move-y Nearby roots reuse retained moving payloads.
-- Active transient pulses prepare only active animation nodes.
-- Patch recompute prepares known dirty/inserted roots rather than the full tree.
-- Combined render/registry traversal replaces duplicate production walks.
-- Patch/animation timing and Macaw/sidepane Criterion fixtures exist.
-- Rejected patch-decode cache, detached-layout restore, and unsafe refresh-local
-  Nearby insertion experiments were removed.
-
-Latest constrained-device evidence after partial attr preparation:
+Constrained-device evidence after partial attr preparation:
 
 - patch actor about 17.4 ms;
 - patch refresh about 6.6 ms;
@@ -100,12 +86,12 @@ animation is active:
   completion;
 - do not add a scheduler if scene construction already tracks selected draws.
 
-### 5. Pacing check after CPU work
+### 5. Measure pacing alongside CPU work
 
-Keep DRM page-flip backpressure and physical mode interval prediction. Revisit
-backend timing only after tree/refresh work is under budget and cadence still
-jumps. Validate that `display` remains physical refresh while achieved frame
-rate is reported separately.
+Use the default bounded look-ahead pipeline; do not wait for a layout rewrite
+before measuring output-ready-to-submit gaps. Target cadence/resource acceptance
+is tracked in [frame production](active-frame-production-pipeline.md). Keep
+page-flip backpressure and physical refresh separate from achieved frame rate.
 
 ## Acceptance
 

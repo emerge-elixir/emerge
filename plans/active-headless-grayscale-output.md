@@ -1,65 +1,53 @@
-# Active Plan: Headless Gray4 and Gray8 Output
+# Headless grayscale follow-up
 
-Status: BW1 and Gray2 implemented and accepted on Trellis; Gray4 and Gray8 remain
+## Gray4
 
-## Goal
+Extend the accepted BW1/Gray2 pipeline without regressing protected text/SVG,
+white-background alpha composition, deterministic diffusion or row packing:
 
-Extend the accepted low-memory raster pipeline from BW1/Gray2 to exact packed
-Gray4 and byte-per-pixel Gray8 output without regressing row packing, alpha
-composition, protected text/SVG coverage, or deterministic dithering.
+- Define two pixels per byte, high nibble first, levels `0..15` black to white.
+- Restart each row; clear the unused low nibble for odd widths.
+- Composite over white before nearest-level quantization; extend the boolean
+  Atkinson option without receiving/propagating error through protected pixels.
+- Test exact polarity, tails, alpha, quantization, determinism, text and SVG;
+  verify Elixir metadata, stride and malformed-buffer checks.
 
-## Accepted foundation
+## Gray8
 
-- Skia renders packed-output scenes directly into opaque Gray8 CPU storage.
-- Alpha is composited over white before quantization.
-- Packed rows restart independently and clear unused tail bits.
-- BW1 and Gray2 are MSB-first and accepted end-to-end on the UC8276 Trellis
-  target.
-- Atkinson diffusion is deterministic and excludes protected text/SVG coverage
-  from both receiving and propagating error.
-- Registered fonts and CPU-rendered SVG remain available in `embedded-cpu`
-  builds.
-- BW1 output uses full-frame partial refresh at approximately 1.71 FPS; Gray2
-  full refresh runs at approximately 1 FPS.
+- Deliver one opaque grayscale byte per pixel with stride equal to width.
+- Avoid a redundant quantization/packing copy when rendered storage can be
+  delivered directly; preserve ownership/lifetime safety.
+- Keep dithering unsupported at source precision.
+- Test alpha, stride, lifetime, text/SVG and deterministic output.
 
-## Remaining work
+## Integration and acceptance
 
-### 1. Gray4
+- Update format validation/docs only where declarations are incomplete; keep
+  RGB/RGBA and PRIME unchanged.
+- Compare peak memory and frame CPU cost against Gray2. No full-frame RGBA
+  allocation in the raster Gray4/Gray8 output path.
+- Exact bytes must cover even/odd widths and multiple rows; protected text/SVG
+  remains directly quantized and isolated from diffusion error.
+- Keep canonical output independent of controller plane formats/waveforms;
+  panel-specific transport needs available hardware and explicit consent.
+- Run `cargo test`, warnings-as-errors Clippy and `mix test` after implementation.
 
-- Define two pixels per byte, high nibble first, levels `0..15` from black to
-  white.
-- Restart packing per row and clear an unused low nibble for odd widths.
-- Composite over white before nearest-level quantization.
-- Extend the accepted boolean Atkinson option while preserving protected-pixel
-  behavior.
-- Add exact polarity, row-tail, alpha, quantization, determinism, text, and SVG
-  tests.
-- Verify Elixir metadata, stride, and malformed-buffer checks.
+## Later low-memory work
 
-### 2. Gray8
+Prioritize only measured dominant costs; the Gray8 framebuffer does not bound
+asset, temporary-layer or consumer-mailbox memory.
 
-- Deliver one opaque grayscale byte per pixel with row stride equal to width.
-- Avoid a redundant quantization or packing copy when the rendered Gray8 storage
-  can be delivered directly.
-- Keep dithering unsupported because Gray8 is already the source precision.
-- Add alpha, stride, ownership/lifetime, text, SVG, and deterministic-output
-  tests.
+- Evaluate direct Gray8 decoding of opaque JPEG/PNG assets for grayscale raster,
+  with codec downsampling, output-sized limits and RGBA fallback for real alpha.
+  Qualify existing asset budgets/eviction under a constrained-memory picture scene.
+- Measure SVG variant-cache memory; use existing configurable limits/direct
+  drawing first. Consider Gray8 variants only with semantic/pixel parity.
+- Bound N32 temporary save-layer/filter allocations. Extend direct-alpha drawing
+  only with exact pixel tests; retain useful transparency, shadows and SVG support.
+- Design bounded binary-frame acknowledgement/admission and duplicate packed-frame
+  suppression for slow consumers. Preserve deterministic output; consider changed
+  regions separately without coupling renderer contracts to a panel waveform.
 
-### 3. Integration
-
-- Extend `EmergeSkia` option validation and documentation only where the existing
-  public format declarations are incomplete.
-- Keep RGB/RGBA and PRIME paths unchanged.
-- Measure peak memory and per-frame CPU cost against the accepted Gray2 path.
-- Add panel-specific transport support only when hardware exists; renderer
-  contracts must not encode controller plane formats or waveforms.
-
-## Acceptance
-
-- `cargo test`, warnings-as-errors Clippy, and `mix test` pass.
-- Exact expected bytes cover even/odd widths and multiple rows.
-- No full-frame RGBA allocation is introduced for raster Gray4/Gray8 output.
-- Protected text/SVG coverage remains directly quantized and does not exchange
-  diffusion error with surrounding raster content.
-- Documentation describes canonical renderer output independently of any panel
-  controller.
+Current asset ownership and copy measurements are maintained in
+[asset internals](../guides/internals/assets-images.md) and
+[headless frame copies](../bench/headless_frame_copy.md).

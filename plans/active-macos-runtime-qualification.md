@@ -1,8 +1,5 @@
 # macOS-specific follow-up
 
-Status: Metal/raster playback confirmed working by the maintainer. General host
-rendering and RGBA playback qualification reminders are closed.
-
 ## Remaining specific checks
 
 - Exercise two host sessions with different asset roots and registered fonts.
@@ -21,7 +18,8 @@ rendering and RGBA playback qualification reminders are closed.
 
 - [Native builds and artifact gates](../guides/reference/native-renderer-builds.md)
 - [Asset ownership](../guides/internals/assets-images.md)
-- [Platform orchestration differences](platform-runtime-architecture-differences.md)
+- [Runtime architecture](../guides/internals/architecture.md)
+- [macOS worker/pacing follow-up](active-frame-production-pipeline.md)
 
 macOS host sessions do not implement the native Linux owner/status/bounded-stop
 contract. Do not turn qualification into an undocumented requirement to add it.
