@@ -40,6 +40,12 @@ pub const SOURCES: &[Source] = &[
     },
 ];
 
+pub fn cache_dir(out: &Path, configured: Option<PathBuf>) -> PathBuf {
+    // Cargo guarantees OUT_DIR is writable, even when the checkout is mounted
+    // read-only or an external CARGO_TARGET_DIR is used.
+    configured.unwrap_or_else(|| out.join("input-sources"))
+}
+
 fn error(message: impl Into<String>) -> io::Error {
     io::Error::other(message.into())
 }

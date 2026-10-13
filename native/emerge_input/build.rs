@@ -38,9 +38,10 @@ fn main() {
     );
     let root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
-    let cache = env::var_os("EMERGE_INPUT_CACHE_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| root.join("target/input-sources"));
+    let cache = sources::cache_dir(
+        &out,
+        env::var_os("EMERGE_INPUT_CACHE_DIR").map(PathBuf::from),
+    );
     let offline = ["EMERGE_INPUT_OFFLINE", "CARGO_NET_OFFLINE"]
         .iter()
         .any(|name| env::var(name).is_ok_and(|value| value == "1" || value == "true"));
