@@ -1,9 +1,10 @@
 //! CPU-only KMS presenter. No GBM, EGL, OpenGL, or Vulkan objects.
 //!
-//! Two mapped dumb buffers alternate behind blocking atomic commits. A successful
-//! commit is the reuse boundary: the previous front is never drawn into early.
+//! Three mapped dumb buffers allow one prepared frame behind a nonblocking flip.
+//! Only a matching page-flip event retires the previous front buffer.
 use std::{
     collections::HashMap,
+    os::fd::AsRawFd,
     sync::{Arc, atomic::Ordering},
     time::{Duration, Instant},
 };
@@ -24,7 +25,8 @@ use super::{
     cursor_theme::{CursorVisual, DrmCursorTheme},
 };
 use crate::{
-    actors::{EventMsg, RenderMsg, TreeMsg},
+    actors::{EventMsg, RenderMsg},
+    backend::production::{AnimationFrame, FrameProduction},
     cursor::CursorState,
     events::CursorIcon,
     input::InputEvent,
@@ -74,6 +76,7 @@ struct Kms {
     plane_props: Properties,
     mode_blob: u64,
     touched: bool,
+    initialized: bool,
 }
 
 impl Kms {
@@ -141,6 +144,7 @@ impl Kms {
             plane_props,
             mode_blob,
             touched: false,
+            initialized: false,
         })
     }
 
@@ -149,14 +153,14 @@ impl Kms {
         (u32::from(width), u32::from(height))
     }
 
-    fn present(&mut self, fb: framebuffer::Handle) -> Result<(), String> {
+    fn present(&mut self, fb: framebuffer::Handle) -> Result<bool, String> {
         let mut req = atomic::AtomicModeReq::new();
         req.add_property(
             self.plane,
             prop_handle(&self.plane_props, "FB_ID")?,
             property::Value::Framebuffer(Some(fb)),
         );
-        if !self.touched {
+        if !self.initialized {
             req.add_property(
                 self.connector,
                 prop_handle(&self.connector_props, "CRTC_ID")?,
@@ -195,16 +199,27 @@ impl Kms {
                 );
             }
         }
-        let flags = if self.touched {
-            AtomicCommitFlags::empty()
-        } else {
-            AtomicCommitFlags::ALLOW_MODESET
-        };
+        let mut flags = AtomicCommitFlags::NONBLOCK | AtomicCommitFlags::PAGE_FLIP_EVENT;
+        if !self.initialized {
+            flags |= AtomicCommitFlags::ALLOW_MODESET;
+        }
         // Even a failed ioctl may leave uncertain ownership; teardown must run.
         self.touched = true;
-        self.card
-            .atomic_commit(flags, req)
-            .map_err(|e| format!("DRM raster atomic commit failed: {e}"))
+        match self.card.atomic_commit(flags, req) {
+            Ok(()) => {
+                self.initialized = true;
+                Ok(true)
+            }
+            Err(error)
+                if matches!(
+                    core::classify_atomic_commit_error(&error),
+                    core::AtomicCommitErrorKind::Busy
+                ) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(format!("DRM raster atomic commit failed: {error}")),
+        }
     }
 
     fn detach(&mut self) -> Result<(), String> {
@@ -240,7 +255,19 @@ impl Kms {
         self.card
             .atomic_commit(AtomicCommitFlags::ALLOW_MODESET, req)
             .map_err(|e| format!("DRM raster detach failed: {e}"))?;
+        // The blocking disable orders after accepted flips. Drain their events
+        // before a power/reconnect session can reuse the shared DRM file.
+        let mut fds = [libc::pollfd {
+            fd: self.card.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        }];
+        poll_fds(&mut fds, Some(Duration::ZERO)).map_err(|e| e.to_string())?;
+        if fds[0].revents & libc::POLLIN != 0 {
+            self.card.receive_events().map_err(|e| e.to_string())?;
+        }
         self.touched = false;
+        self.initialized = false;
         Ok(())
     }
 
@@ -272,7 +299,7 @@ struct Session {
 impl Session {
     fn new(context: &DrmRunContext, config: &DrmRunConfig) -> Result<Self, String> {
         let kms = Kms::new(context, config)?;
-        let buffers = (0..2)
+        let buffers = (0..3)
             .map(|_| DumbFramebuffer::new(Arc::clone(&kms.card), kms.dimensions()))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
@@ -473,26 +500,23 @@ fn run_session(
 ) -> Result<(), String> {
     let dimensions = session.kms.dimensions();
     let interval = core::mode_frame_interval(&session.kms.mode);
-    let [first, second] = session.buffers.as_mut_slice() else {
-        return Err("DRM raster requires exactly two scanout buffers".into());
-    };
-    let pitches = [
-        first.buffer.pitch() as usize,
-        second.buffer.pitch() as usize,
-    ];
-    let framebuffers = [first.fb, second.fb];
-    let mut mappings = [
-        session
-            .kms
-            .card
-            .map_dumb_buffer(&mut first.buffer)
-            .map_err(|e| e.to_string())?,
-        session
-            .kms
-            .card
-            .map_dumb_buffer(&mut second.buffer)
-            .map_err(|e| e.to_string())?,
-    ];
+    let pitches: Vec<_> = session
+        .buffers
+        .iter()
+        .map(|buffer| buffer.buffer.pitch() as usize)
+        .collect();
+    let framebuffers: Vec<_> = session.buffers.iter().map(|buffer| buffer.fb).collect();
+    let mut mappings = session
+        .buffers
+        .iter_mut()
+        .map(|buffer| {
+            session
+                .kms
+                .card
+                .map_dumb_buffer(&mut buffer.buffer)
+                .map_err(|e| e.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let _ = context.screen_tx.try_send(dimensions);
     let _ = context.input_wake.signal();
     let _ = context
@@ -524,16 +548,20 @@ fn run_session(
     let mut cursor = context.cursor_state.snapshot();
     let mut icon = CursorIcon::Default;
     let mut dirty = true;
-    let mut next_buffer = 0;
+    let mut frames = RasterFrames::default();
+    let mut retry_at = None;
+    let mut flip_deadline = None;
+    let mut drm_ready = false;
+    let mut observed_capture = None;
     let mut next_hotplug = config.hotplug_interval.map(|i| Instant::now() + i);
-    let mut animation_pulse = None;
+    let mut production = FrameProduction::default();
     let mut next_profile = Instant::now();
     loop {
         let _ = context.presenter_wake.drain();
         if context.stop.load(Ordering::Acquire) {
             return Ok(());
         }
-        while let Ok(message) = context.render_rx.try_recv() {
+        for message in context.render_rx.try_iter().take(64) {
             match message {
                 RenderMsg::Stop => return Ok(()),
                 RenderMsg::Scene {
@@ -542,6 +570,7 @@ fn run_session(
                     scene,
                     version,
                     animate,
+                    animation_frame,
                     pipeline_submitted_at,
                     pipeline_render_queued_at,
                     ..
@@ -552,6 +581,7 @@ fn run_session(
                     state.set_scene(*scene);
                     state.render_version = version;
                     state.animate = animate;
+                    state.animation_frame = animation_frame;
                     state.pipeline_submitted_at = pipeline_submitted_at;
                     state.pipeline_render_queued_at = pipeline_render_queued_at;
                     context
@@ -564,14 +594,11 @@ fn run_session(
                         );
                         stats.record_drm_scene_selected_for_draw();
                     }
-                    if !animate {
-                        animation_pulse = None;
-                    }
                     dirty = true;
                 }
             }
         }
-        while let Ok(new_icon) = context.cursor_icon_rx.try_recv() {
+        for new_icon in context.cursor_icon_rx.try_iter().take(64) {
             dirty |= icon != new_icon;
             icon = new_icon;
         }
@@ -580,14 +607,73 @@ fn run_session(
         cursor = new_cursor;
         dirty |= renderer.sync_cpu_video_frames(&context.video_registry)?;
         let capture_generation = context.latest_frame.pending_capture_generation();
-        dirty |= capture_generation.is_some();
+        dirty |= capture_generation.is_some() && capture_generation != observed_capture;
+        observed_capture = capture_generation;
         if next_hotplug.is_some_and(|t| Instant::now() >= t) {
             if !session.kms.output_available()? {
                 return Err("DRM raster output disconnected or selected mode changed".into());
             }
             next_hotplug = config.hotplug_interval.map(|i| Instant::now() + i);
         }
-        if dirty && application_frame_ready {
+        if drm_ready {
+            drm_ready = false;
+            for event in session
+                .kms
+                .card
+                .receive_events()
+                .map_err(|e| e.to_string())?
+            {
+                let control::Event::PageFlip(event) = event else {
+                    continue;
+                };
+                if event.crtc != session.kms.crtc {
+                    continue;
+                }
+                let Some(frame) = frames.completed() else {
+                    continue;
+                };
+                flip_deadline = None;
+                first_present = false;
+                if let Some(presenter) = &context.presenter {
+                    presenter.presented();
+                }
+                let presented = Instant::now();
+                frame.animation_frame.observed(presented);
+                production.progress(presented + interval);
+                if config.render_log {
+                    context
+                        .native_log
+                        .info("drm_raster", format!("presented version={}", frame.version));
+                }
+                if let Some(stats) = context.stats.as_deref() {
+                    stats.record_frame_present();
+                    stats.record_display_interval(interval);
+                    if let Some(submitted) = frame.pipeline_submitted_at {
+                        stats.record_pipeline(submitted, presented);
+                    }
+                }
+                if let Some((generation, pixels)) = frame.capture {
+                    context.latest_frame.publish_requested_capture(
+                        generation,
+                        dimensions.0,
+                        dimensions.1,
+                        1.0,
+                        pixels,
+                    );
+                }
+                let _ = context.event_tx.try_send(EventMsg::PresentTiming {
+                    presented_at: presented,
+                    predicted_next_present_at: presented + interval,
+                });
+            }
+        }
+        if flip_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err("DRM raster page-flip timeout".into());
+        }
+        if dirty
+            && application_frame_ready
+            && let Some(next_buffer) = frames.writable_slot()
+        {
             let started = Instant::now();
             let profile = config.renderer_stats_log && started >= next_profile;
             if profile {
@@ -615,73 +701,98 @@ fn run_session(
                     ),
                 );
             }
-            // Blocking commit waits for flip completion, so the former front is
-            // safe to reuse only after this succeeds. Never rotate on an error.
-            let render_duration = started.elapsed();
-            let commit_started = Instant::now();
-            session.kms.present(framebuffers[next_buffer])?;
-            first_present = false;
-            if let Some(presenter) = &context.presenter {
-                presenter.presented();
-            }
-            next_buffer ^= 1;
-            dirty = false;
-            let presented = Instant::now();
-            if config.render_log {
-                context.native_log.info(
-                    "drm_raster",
-                    format!(
-                        "presented version={} latest={} render_us={} commit_us={}",
-                        state.render_version,
-                        context.render_counter.load(Ordering::Relaxed),
-                        render_duration.as_micros(),
-                        commit_started.elapsed().as_micros(),
-                    ),
-                );
-            }
             if let Some(stats) = context.stats.as_deref() {
-                stats.record_render_timings(render_duration, &timings);
-                stats.record_drm_atomic_commit_ioctl(commit_started.elapsed());
-                stats.record_frame_present();
-                stats.record_display_interval(interval);
-                if let Some(submitted) = state.pipeline_submitted_at {
-                    stats.record_pipeline(submitted, presented);
-                }
+                stats.record_render_timings(started.elapsed(), &timings);
             }
-            if let (Some(generation), Some(pixels)) = (capture_generation, capture) {
-                context.latest_frame.publish_requested_capture(
-                    generation,
-                    dimensions.0,
-                    dimensions.1,
-                    1.0,
-                    pixels,
-                );
-            }
-            let _ = context.event_tx.try_send(EventMsg::PresentTiming {
-                presented_at: presented,
-                predicted_next_present_at: presented + interval,
+            frames.prepared = Some(PreparedRaster {
+                slot: next_buffer,
+                version: state.render_version,
+                animation_frame: state.animation_frame.clone(),
+                pipeline_submitted_at: state.pipeline_submitted_at.take(),
+                capture: capture_generation.zip(capture),
             });
-            if state.animate {
-                animation_pulse = Some((presented, presented + interval));
+            dirty = false;
+        }
+        let now = Instant::now();
+        if frames.in_flight.is_none()
+            && retry_at.is_none_or(|at| now >= at)
+            && let Some(frame) = &frames.prepared
+        {
+            let started = Instant::now();
+            let accepted = session.kms.present(framebuffers[frame.slot])?;
+            if let Some(stats) = context.stats.as_deref() {
+                stats.record_drm_atomic_commit_ioctl(started.elapsed());
+            }
+            if accepted {
+                production.submitted(frame.animation_frame.clone(), started + interval * 2);
+                frames.in_flight = frames.prepared.take();
+                retry_at = None;
+                flip_deadline = Some(Instant::now() + Duration::from_secs(2));
+            } else {
+                retry_at = Some(Instant::now() + Duration::from_millis(1));
             }
         }
-        if let Some((presented_at, predicted_next_present_at)) = animation_pulse {
-            match context.tree_tx.try_send(TreeMsg::AnimationPulse {
-                presented_at,
-                predicted_next_present_at,
-                trace: None,
-            }) {
-                Ok(()) => animation_pulse = None,
-                Err(crossbeam_channel::TrySendError::Disconnected(_)) => return Ok(()),
-                Err(crossbeam_channel::TrySendError::Full(_)) => {}
-            }
-        }
-        let timeout = if animation_pulse.is_some() {
-            Some(Duration::from_millis(5))
+        production.poll(Instant::now());
+        let deadline = [next_hotplug, retry_at, flip_deadline, production.deadline()]
+            .into_iter()
+            .flatten()
+            .min();
+        let timeout = if dirty && application_frame_ready && frames.writable_slot().is_some() {
+            Some(Duration::ZERO)
         } else {
-            next_hotplug.map(|t| t.saturating_duration_since(Instant::now()))
+            deadline.map(|at| at.saturating_duration_since(Instant::now()))
         };
-        wait(context, timeout)?;
+        let mut fds = [
+            libc::pollfd {
+                fd: context.presenter_wake.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: session.kms.card.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        poll_fds(&mut fds, timeout).map_err(|e| e.to_string())?;
+        if fds[1].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+            return Err("DRM raster fd reported a terminal poll error".into());
+        }
+        drm_ready |= fds[1].revents & (libc::POLLIN | libc::POLLPRI) != 0;
+    }
+}
+
+struct PreparedRaster {
+    slot: usize,
+    version: u64,
+    animation_frame: AnimationFrame,
+    pipeline_submitted_at: Option<Instant>,
+    capture: Option<(u64, Vec<u8>)>,
+}
+
+#[derive(Default)]
+struct RasterFrames {
+    current: Option<usize>,
+    in_flight: Option<PreparedRaster>,
+    prepared: Option<PreparedRaster>,
+}
+impl RasterFrames {
+    fn writable_slot(&self) -> Option<usize> {
+        if self.prepared.is_some() {
+            return None;
+        }
+        (0..3).find(|slot| {
+            Some(*slot) != self.current
+                && self
+                    .in_flight
+                    .as_ref()
+                    .is_none_or(|frame| frame.slot != *slot)
+        })
+    }
+    fn completed(&mut self) -> Option<PreparedRaster> {
+        let frame = self.in_flight.take()?;
+        self.current = Some(frame.slot);
+        Some(frame)
     }
 }
 
@@ -690,6 +801,45 @@ mod tests {
     use super::*;
     use crate::{render_scene::RenderScene, renderer::RendererCacheConfig};
     use skia_safe::Color;
+
+    fn prepared(slot: usize) -> PreparedRaster {
+        PreparedRaster {
+            slot,
+            version: slot as u64,
+            animation_frame: Default::default(),
+            pipeline_submitted_at: None,
+            capture: None,
+        }
+    }
+
+    #[test]
+    fn triple_buffering_never_writes_current_in_flight_or_prepared_pixels() {
+        let mut frames = RasterFrames::default();
+        assert_eq!(frames.writable_slot(), Some(0));
+        frames.prepared = Some(prepared(0));
+        assert_eq!(frames.writable_slot(), None);
+        // EBUSY leaves prepared pixels and ownership unchanged.
+        assert!(frames.completed().is_none());
+        assert_eq!(frames.prepared.as_ref().unwrap().slot, 0);
+        frames.in_flight = frames.prepared.take();
+        frames.prepared = Some(prepared(frames.writable_slot().unwrap()));
+        assert_eq!(frames.prepared.as_ref().unwrap().slot, 1);
+        frames.completed().unwrap();
+        assert_eq!(frames.current, Some(0));
+        assert_eq!(frames.writable_slot(), None);
+        frames.in_flight = frames.prepared.take();
+        assert_eq!(frames.writable_slot(), Some(2));
+        frames.prepared = Some(prepared(2));
+        frames.completed().unwrap();
+        assert_eq!(frames.current, Some(1));
+        assert_eq!(frames.writable_slot(), None);
+        frames.in_flight = frames.prepared.take();
+        assert_eq!(
+            frames.writable_slot(),
+            Some(0),
+            "only the retired front becomes writable"
+        );
+    }
 
     #[test]
     fn mapped_scanout_honors_pitch_and_captures_rgba() {
