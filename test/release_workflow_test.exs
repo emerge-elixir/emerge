@@ -79,7 +79,10 @@ defmodule Emerge.ReleaseWorkflowTest do
     cross = File.read!(Path.join(crate, "Cross.toml"))
     [_, build_env] = Regex.run(~r/\[build\.env\]\n(.*?)(?=\n\[target\.)/s, cross)
 
-    assert build_env =~ ~s(volumes = ["EMERGE_NATIVE_SOURCE=.."])
+    assert build_env =~ ~s("EMERGE_NATIVE_SOURCE=..")
+    assert build_env =~ ~s("EMERGE_INPUT_CACHE_DIR")
+    assert build_env =~ ~s("EMERGE_INPUT_OFFLINE")
+    assert build_env =~ ~s("CARGO_NET_OFFLINE")
     assert File.regular?(Path.expand("../emerge_input/Cargo.toml", crate))
 
     assert File.read!(Path.join(crate, "Cargo.toml")) =~
@@ -102,6 +105,52 @@ defmodule Emerge.ReleaseWorkflowTest do
       dockerfile = File.read!(Path.join(crate, "support/release/Dockerfile.#{image}"))
       for tool <- ["curl", "tar", "gzip", xz, "bzip2"], do: assert(dockerfile =~ tool)
     end
+  end
+
+  test "Linux CI and artifact builds share only complete pin-keyed input archives" do
+    ci = File.read!(Path.join(@workflows, "ci.yml"))
+    assert ci =~ "cargo test --locked --manifest-path native/emerge_input/Cargo.toml"
+
+    assert ci =~
+             "cargo clippy --locked --all-targets --manifest-path native/emerge_input/Cargo.toml"
+
+    key = "input-sources-v1-${{ hashFiles('native/emerge_input/sources.rs') }}"
+
+    for file <- ["ci.yml", "build_release_artifacts.yml"] do
+      workflow = File.read!(Path.join(@workflows, file))
+      assert workflow =~ "EMERGE_INPUT_CACHE_DIR: ${{ github.workspace }}/.cache/emerge-input"
+      assert workflow =~ "uses: actions/cache/restore@v5"
+      assert workflow =~ "uses: actions/cache/save@v5"
+      assert workflow =~ "path: ${{ env.EMERGE_INPUT_CACHE_DIR }}/*.tar.*"
+      assert workflow =~ "key: #{key}"
+      assert workflow =~ "key: ${{ steps.input-sources.outputs.cache-primary-key }}"
+      assert workflow =~ "always() && !cancelled()"
+      assert workflow =~ "steps.input-source-cache.outputs.complete == 'true'"
+
+      assert workflow =~
+               ~s|elixir scripts/check-input-source-cache.exs "$EMERGE_INPUT_CACHE_DIR" >> "$GITHUB_OUTPUT"|
+
+      [_, cache] =
+        Regex.run(
+          ~r/- name: Restore verified input source archives\n(.*?)(?=\n      - name:)/s,
+          workflow
+        )
+
+      refute cache =~ "matrix."
+      refute cache =~ "restore-keys:"
+      refute cache =~ "/target"
+    end
+  end
+
+  test "container source cache is writable independently of the read-only checkout" do
+    artifacts = File.read!(Path.join(@workflows, "build_release_artifacts.yml"))
+    assert artifacts =~ ~s|mkdir -p "$EMERGE_INPUT_CACHE_DIR"|
+    assert artifacts =~ "--env EMERGE_INPUT_CACHE_DIR=/input-sources"
+
+    assert artifacts =~
+             ~s|--mount "type=bind,source=$EMERGE_INPUT_CACHE_DIR,target=/input-sources"|
+
+    assert artifacts =~ ~s|--mount "type=bind,source=$GITHUB_WORKSPACE,target=/source,readonly"|
   end
 
   test "Linux Cargo cache saves and restores stay within the same matrix job" do
