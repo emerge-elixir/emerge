@@ -34,8 +34,12 @@ defmodule Emerge.Config.DRM do
   ## Changing settings
 
   `display` and backlight brightness can change through `config` with an explicit
-  OpenGL renderer or CPU raster renderer. For raster, use `raster_present: :cpu`
-  or its `:auto` default. Vulkan and raster GPU upload do not support these controls.
+  OpenGL, Vulkan or raster renderer. Raster supports CPU presentation (including
+  its `:auto` default) and explicit `raster_present: :gpu_upload`, which requires
+  the OpenGL DRM presenter build. Automatic API selection does not support these
+  controls. Off destroys the internal presenter;
+  on recreates it and enables a managed backlight after its first application
+  presentation. GPU resources are not restored.
 
   Changing the card, connector, mode, size hint, backlight device or hotplug polling
   interval requires a new viewport. Applications using off/on need an independent

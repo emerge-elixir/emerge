@@ -58,9 +58,11 @@ rejects producers and fails its pending request.
 
 Headless publishes the existing atomic cap on the event owner. Future render
 admissions read that control directly; no render is needed for acknowledgement.
-This adds no new pacing policy. DRM OpenGL and CPU raster support display power
-and brightness through an independent owner lane. Vulkan/gpu-upload power,
-connector/mode changes, and DRM frame caps remain rejected.
+This adds no new pacing policy. DRM OpenGL, Vulkan and raster (CPU or GPU-upload
+presentation) support display power and brightness through the same independent
+owner lane. GPU upload reuses OpenGL/GBM retirement; CPU-only and Vulkan-only DRM
+builds cannot present it. Automatic API selection, connector/mode changes and
+DRM frame caps remain rejected.
 
 Submission, current-revision checks and short owner-side effects are serialized.
 Do not extend these critical sections to GPU/KMS waits. Native owner threads send
@@ -79,7 +81,10 @@ latest tree. The viewport sends a fresh tree/diff when on requires it.
 As off starts, native UI input is ignored and the presenter is stopped. Its queued
 frames and GPU state are discarded, not saved for restoration. KMS is detached
 before buffers are released; OpenGL work is finished once at teardown, not once
-per frame. On creates a new presenter, asks the tree actor to render its latest
+per frame. Vulkan uses GPU idle, blocking disable and old-event drain for managed
+retirement, then releases imports and destroys the presenter. Drained flips do
+not publish capture, timing or illumination hooks; managed teardown never
+restores inherited scanout. Failed barriers retain/quarantine ownership. On creates a new presenter, asks the tree actor to render its latest
 tree, and enables the managed backlight after the first frame is presented.
 Initial-off does not require a tree upload. The app's independent wake-key reader
 is not suspended.
@@ -114,8 +119,9 @@ still used by the driver. Ordinary off/on destroys and recreates GPU resources.
 
 - macOS keeps its existing acknowledged host title/input operations; native
   revision reporting for that transport is not yet implemented.
-- Connector/mode changes, Vulkan power, and raster GPU-upload power remain
-  unsupported. The Wayland Vulkan acquisition fix does not add DRM power controls.
+- Connector/mode changes and automatic API power remain unsupported. Vulkan and
+  GPU-upload raster DRM use the shared power owner, independently of the Wayland
+  acquisition fix; panel/optical hardware qualification remains open.
 - Panel-driver DCS behavior while unprepared needs device testing. Native sysfs
   errors remain failures; the implementation does not silently ignore them.
 - Control admission is not a latency guarantee for GPU/KMS or sysfs operations.

@@ -105,7 +105,11 @@ a target outside the matrix, use the source-build instructions above.
 `renderer: [api: :auto]` selects raster in a DRM build without OpenGL. Explicit
 `api: :opengl` and `renderer: [api: :raster, raster_present: :gpu_upload]` require
 an OpenGL-enabled build. In all DRM builds, `raster_present: :auto` means CPU;
-GPU upload must be requested explicitly.
+GPU upload must be requested explicitly. Display power/brightness is supported
+with explicit OpenGL, Vulkan and raster APIs, including GPU-upload raster. The
+power owner does not bypass these build-feature checks or fall back to another
+presenter. GPU-upload raster still reports the CPU raster drawing API and does not
+add PRIME video import; only its presentation uses OpenGL/GBM.
 
 The KMS driver must expose dumb buffers, an XRGB8888 primary plane, atomic
 modesetting and DRM leasing. This does not add a legacy-KMS or fbdev backend.
@@ -441,8 +445,9 @@ validation through `EMERGE_VULKAN_SYNC_VALIDATION=1`, and checks hardware select
 and complete native startup/teardown reports. Missing reports, validation errors,
 warnings or quarantined resources fail even when ExUnit passes. See the
 [frame-pacing validation guide](https://github.com/emerge-elixir/emerge/blob/main/guides/internals/frame-pacing.md#validation)
-for the detailed scope and recorded evidence. This Wayland fix does not add DRM
-Vulkan power controls or change headless/video synchronization contracts.
+for the detailed scope and recorded evidence. This Wayland fix is independent of
+[DRM Vulkan power controls](../internals/drm-outputs-and-lifecycle.md#declarative-display-power-and-brightness)
+and does not change headless/video synchronization contracts.
 
 ## Maintaining build configuration
 

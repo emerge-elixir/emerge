@@ -18,9 +18,11 @@ See [configuration](../reference/viewport-configuration.md) and
 DRM has a retained output/backlight owner and disposable internal presenters.
 Off ignores native UI input and retires presenter resources, while preserving the
 tree, ownership and requested settings. On creates a fresh presenter and requests
-the latest tree; GPU resources are not restored. Explicit OpenGL and CPU raster
-support power/brightness; Vulkan/GPU-upload power remains guarded. Basic resource
-readiness precedes application upload, separately from first presentation.
+the latest tree; GPU resources are not restored. Explicit OpenGL, Vulkan and
+raster (CPU or GPU-upload presentation) support power/brightness; automatic API
+power remains guarded. GPU-upload raster reuses the OpenGL/GBM presenter, including
+its retirement barriers. Resource readiness precedes application upload,
+separately from first presentation.
 
 ## System Shape
 
