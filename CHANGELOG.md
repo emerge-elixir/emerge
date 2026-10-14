@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-## [0.5.0] - 2026-10-13
+## [0.5.0] - 2026-10-14
 
 See the [0.5 migration guide](guides/migrations/0.5.md) when upgrading from 0.4.
 
