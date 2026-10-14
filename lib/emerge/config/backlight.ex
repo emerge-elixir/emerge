@@ -34,7 +34,8 @@ defmodule Emerge.Config.Backlight do
 
   ## Changing settings
 
-  Brightness can change through `config` with explicit OpenGL or CPU raster.
+  Brightness can change through `config` with explicit OpenGL, Vulkan or raster
+  (CPU or GPU-upload presentation).
   Changing `device` requires a new viewport. Avoid writing the same backlight
   from another process while Emerge manages it. Stopping a managed display leaves
   its backlight dark.

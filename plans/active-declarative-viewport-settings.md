@@ -11,9 +11,11 @@
   sized first frame and stale-completion rejection. Preserve the old working
   output on preflight failure; do not promise rollback after destructive teardown
   or silently move onto another viewport's output.
-- Vulkan and raster GPU-upload DRM power/brightness. Preserve the existing
-  stop/recreate lifecycle and GPU/KMS ownership; unsupported controls must remain
-  rejected until implemented and qualified.
+- [Vulkan DRM power/brightness](active-vulkan-drm-power-brightness.md) and
+  [raster GPU-upload power](active-raster-gpu-upload-drm-power-brightness.md) reuse
+  the implemented CPU raster/OpenGL power owner. Integrated-GPU evidence is
+  recorded; panel/video qualification remains separate. Preserve stop/recreate
+  and GPU/KMS ownership, and keep automatic API power guarded.
 - Complete input transport contract coverage across native and macOS routes:
   actual callback payloads, category filtering and backend availability. Raw
   subscriptions must not disable element interactions or text/scroll behavior.

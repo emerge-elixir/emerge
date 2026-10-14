@@ -42,7 +42,8 @@ See the [0.5 migration guide](guides/migrations/0.5.md) when upgrading from 0.4.
   supported settings from application state and retain them across renderer
   recovery. Live settings include Wayland/macOS titles and headless/Wayland
   frame-rate limits.
-- DRM display on/off and brightness controls for explicit OpenGL and CPU raster.
+- DRM display on/off and brightness controls for explicit OpenGL, Vulkan and raster
+  (CPU or GPU-upload presentation).
   Viewport state is preserved while the display is off. Displays can start off;
   managed backlights illuminate only after the first application frame.
 
@@ -77,8 +78,9 @@ See the [0.5 migration guide](guides/migrations/0.5.md) when upgrading from 0.4.
 ### Known limitations
 
 - Live DRM connector/mode changes and DRM/macOS frame-rate limits remain unsupported.
-  DRM power/brightness requires explicit OpenGL or CPU raster, not Vulkan or
-  raster GPU upload.
+  DRM power/brightness requires an explicit OpenGL, Vulkan or raster renderer;
+  automatic API selection remains unsupported. Raster GPU upload requires the
+  OpenGL DRM presenter build.
 - macOS does not support retained-frame capture, `renderer_status/1` or `stop/2`.
 - Hardware compatibility and performance depend on the system and its drivers.
   Physical-board compatibility on musl/RISC-V targets remains incompletely tested.

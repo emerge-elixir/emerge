@@ -144,8 +144,11 @@ not a GPU/driver hang, and presenter-panic/hot-unplug fault injection is not yet
 
 ## Declarative display power and brightness
 
-`output.display` and `output.backlight.brightness` are live for explicit OpenGL
-and CPU raster. Vulkan and raster GPU-upload power controls remain rejected.
+`output.display` and `output.backlight.brightness` are live for explicit OpenGL,
+Vulkan and raster (CPU or GPU-upload presentation). Automatic API power controls
+remain rejected. GPU-upload raster requires the OpenGL DRM build feature and
+reuses its existing application-frame gate, KMS detach, GL completion and resource
+retirement; it does not add a separate power or video-import policy.
 Automatic backlight selection requires a proven connector association; `device: nil`
 opts out, and an explicit sysfs path pins a particular device. Brightness is a finite
 `0..1` request; zero is not display-off, and `nil` restores the original requested
@@ -155,9 +158,46 @@ Off retains the public renderer, lease/backlight ownership, tree and desired set
 but ignores native UI input and destroys the presenter. On creates a fresh presenter
 and enables a managed backlight after its first application presentation. There is no
 GPU restoration, strict config/frame provenance or physical no-flash guarantee.
+Vulkan retirement orders backlight suppression, GPU idle, blocking KMS disable
+and old-event drain before destroying scanout/import owners. A managed child
+never restores inherited KMS state or publishes drained frames as presentations.
+Uncertain ownership remains process-terminal quarantine, not a recoverable off/on.
+Identical video capabilities may be republished for retained streams on recreation;
+changed capabilities still fail. Vulkan panel/optical qualification remains open.
 Applications provide their independent wake policy. See
 [config reconciliation](config-reconciliation.md) and the
 [configuration reference](../reference/viewport-configuration.md).
+
+## Opt-in GPU power test
+
+This single-output test modesets only the explicitly selected card/connector.
+`EMERGE_DRM_TEST_POWER_RENDERER=vulkan` (the default) uses an independently selected
+Vulkan node; `gpu_upload` uses explicit raster GPU-upload via OpenGL/GBM. It does
+not manage a backlight unless `EMERGE_DRM_TEST_BACKLIGHT` explicitly names one.
+Use a matching source-built DRM profile and an authorized non-desktop output.
+For Vulkan, enable the Khronos synchronization validation layer:
+
+```sh
+EMERGE_DRM_TEST_CARD=/dev/dri/by-path/your-test-card \
+EMERGE_DRM_TEST_CONNECTOR=DSI-1 \
+EMERGE_DRM_TEST_POWER_RENDERER=vulkan \
+EMERGE_DRM_TEST_VULKAN_NODE=/dev/dri/by-path/your-test-render-node \
+EMERGE_VULKAN_SYNC_VALIDATION=1 \
+mix test test/emerge_skia/drm_gpu_power_hardware_test.exs --include drm_hardware
+```
+
+For GPU upload, select an OpenGL-enabled DRM source profile, use
+`EMERGE_DRM_TEST_POWER_RENDERER=gpu_upload`, and omit the Vulkan-node/validation
+variables. The test requires hardware GL (not llvmpipe/softpipe) and verifies
+kernel enabled/disabled state, captured CPU-raster content and stable ownership.
+
+Only for an authorized panel backlight, also set
+`EMERGE_DRM_TEST_BACKLIGHT=/sys/class/backlight/your-panel`. The test covers initial
+off, delayed first upload, brightness-only updates, repeated/rapid off/on, bounded
+descriptors, extended-off frame counts, stop without upload and output reacquisition. Stats/config completion do not prove optical
+no-flash behavior: observe the panel and retain full native validation output,
+cleanup status and resource/power measurements. Reconnect, video and sibling
+acceptance also require device testing.
 
 ## Opt-in hardware test
 

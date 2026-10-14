@@ -57,8 +57,9 @@ The connector is polled every `hotplug_interval_ms` milliseconds (default `750`)
 to detect hotplug; built-in panels can set it to `nil` to disable polling.
 
 For CPU raster, use `%Emerge.Config.Renderer{api: :raster, raster_present: :cpu}`.
-Display on/off and brightness can change with explicit OpenGL or CPU raster.
-Vulkan and raster GPU upload do not support those controls.
+Display on/off and brightness can change with explicit OpenGL, Vulkan or raster
+(CPU or GPU-upload presentation). GPU upload uses the OpenGL DRM presenter and
+requires its build feature; it does not preserve GPU state while off.
 
 Set `display: :off` to blank the display and ignore its UI input. Your application
 continues running, and brightness changes made while off apply on wake. Provide
@@ -155,7 +156,8 @@ output = %{previous.output | backlight: backlight}
 - Raw input subscriptions and the health-check interval.
 - Window titles on Wayland and macOS.
 - Frame-rate limits on headless and Wayland.
-- DRM display on/off and brightness with explicit OpenGL or CPU raster.
+- DRM display on/off and brightness with explicit OpenGL, Vulkan or raster
+  (CPU or GPU-upload presentation).
 
 ### Settings that require a new viewport
 
@@ -165,8 +167,12 @@ Unsupported changes return an error instead of restarting your viewport.
 
 ### Backend limitations
 
-DRM and macOS do not support frame-rate caps, even at startup. DRM Vulkan and
-raster GPU upload do not support display power/brightness controls.
+DRM and macOS do not support frame-rate caps, even at startup. Automatic DRM API
+selection does not support display power/brightness controls. GPU-upload raster
+requires a build with the OpenGL DRM presenter. Off/on destroys and recreates the
+internal presenter; it does not restore
+GPU state. Device-specific backlight and optical behavior still require hardware
+qualification; display blanking is not a physical monitor power-off guarantee.
 
 ## Assets and diagnostics
 
