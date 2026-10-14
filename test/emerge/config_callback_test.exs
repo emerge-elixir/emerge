@@ -49,6 +49,7 @@ defmodule Emerge.ConfigCallbackTest do
           connector: "DSI-1",
           backlight: [device: "/sys/class/backlight/panel", brightness: 0.7]
         },
+        renderer: Keyword.get(opts, :renderer, []),
         runtime: [
           adapter: Adapter,
           adapter_opts: [observer: observer],
@@ -234,6 +235,48 @@ defmodule Emerge.ConfigCallbackTest do
     refute_receive {:input_target, _, _}, 30
     GenServer.stop(pid)
     refute Process.alive?(renderer)
+  end
+
+  for options <- [
+        [api: :vulkan, device: "/dev/dri/renderD128"],
+        [api: :raster, raster_present: :gpu_upload]
+      ] do
+    test "#{options[:api]} off updates and resume reuse the public owner without off uploads" do
+      options = unquote(Macro.escape(options))
+
+      {:ok, pid} =
+        Screen.start_link(observer: self(), display: :off, renderer: options)
+
+      renderer = Emerge.renderer(pid)
+      assert_receive {:started, config}
+      assert config.renderer.api == options[:api]
+      assert config.output.display == :off
+      assert_receive {:previous, _}
+      assert_receive {:input_target, ^renderer, ^pid}
+      assert_receive {:log_target, ^renderer, ^pid}
+      assert_receive {:input_mask, ^renderer, 0}
+      refute_receive :rendered, 30
+      refute_receive {:uploaded, _}, 30
+
+      for brightness <- [0.0, 0.2, nil] do
+        send(pid, {:change, %{brightness: brightness}})
+        assert_receive {:previous, _}
+        :sys.get_state(pid)
+        assert Agent.get(renderer, & &1.output.backlight.brightness) == brightness
+        assert Emerge.renderer(pid) == renderer
+        refute_receive :rendered, 30
+        refute_receive {:uploaded, _}, 30
+      end
+
+      send(pid, {:change, %{display: :on}})
+      assert_receive {:previous, previous}
+      assert previous.output.backlight.brightness == nil
+      assert_receive :rendered
+      assert_receive {:uploaded, ^renderer}
+      assert Emerge.renderer(pid) == renderer
+      refute_receive {:started, _}, 30
+      GenServer.stop(pid)
+    end
   end
 
   test "stop before first upload releases the off owner" do

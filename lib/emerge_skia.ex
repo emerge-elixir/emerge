@@ -152,8 +152,9 @@ defmodule EmergeSkia do
     end
   end
 
-  # Explicit OpenGL and CPU raster support safe stop/recreate lifecycles.
-  # Vulkan and raster GPU-upload power controls remain unsupported.
+  # Explicit OpenGL, Vulkan and raster share the DRM stop/recreate owner.
+  # Power controls require an explicit renderer API; presentation feature checks
+  # still reject GPU upload in builds without the OpenGL DRM presenter.
   @doc false
   def validate_config!(%Emerge.Config{} = config) do
     case config.output do
@@ -161,7 +162,7 @@ defmodule EmergeSkia do
       when display != :on or not is_nil(backlight.brightness) or is_binary(backlight.device) ->
         unless supports_drm_power?(config.renderer) do
           raise ArgumentError,
-                "DRM display/backlight control requires OpenGL or CPU raster presentation"
+                "DRM display/backlight control requires an explicit OpenGL, Vulkan or raster renderer"
         end
 
       _ ->
@@ -176,10 +177,9 @@ defmodule EmergeSkia do
     :ok
   end
 
-  defp supports_drm_power?(%Emerge.Config.Renderer{api: :opengl}), do: true
-
-  defp supports_drm_power?(%Emerge.Config.Renderer{api: :raster, raster_present: present}),
-    do: present in [:auto, :cpu]
+  defp supports_drm_power?(%Emerge.Config.Renderer{api: api})
+       when api in [:opengl, :vulkan, :raster],
+       do: true
 
   defp supports_drm_power?(_renderer), do: false
 

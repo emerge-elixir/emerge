@@ -720,6 +720,12 @@ pub(crate) enum RenderingApi {
     Vulkan,
 }
 
+impl RenderingApi {
+    fn supports_drm_power(self) -> bool {
+        matches!(self, Self::OpenGl | Self::Vulkan | Self::Raster)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RasterPresentKind {
     Auto,
@@ -2362,12 +2368,10 @@ fn start_with_config(
                 .drm_backlight
                 .as_deref()
                 .is_some_and(|device| device != "auto"))
-        && !(config.rendering_api.kind == RenderingApi::OpenGl
-            || (config.rendering_api.kind == RenderingApi::Raster
-                && config.rendering_api.raster_present != RasterPresentKind::GpuUpload))
+        && !config.rendering_api.kind.supports_drm_power()
     {
         return Err(rustler::Error::Term(Box::new(
-            "DRM display/backlight control requires OpenGL or CPU raster presentation",
+            "DRM display/backlight control requires an explicit OpenGL, Vulkan or raster renderer",
         )));
     }
     ensure_rendering_api_supported(config.backend, config.rendering_api)
@@ -2759,9 +2763,7 @@ fn start_native_renderer_with_config(
                 input_wake.clone(),
                 control_tx,
                 input_gate.clone(),
-                selected_rendering_api == RenderingApi::OpenGl
-                    || (selected_rendering_api == RenderingApi::Raster
-                        && config.rendering_api.raster_present != RasterPresentKind::GpuUpload),
+                selected_rendering_api.supports_drm_power(),
             ));
 
             let (screen_tx, screen_rx) = bounded(1);
@@ -4642,6 +4644,25 @@ mod tests {
     use crate::input::InputEvent;
     use crate::tree::element::NodeId;
     use crossbeam_channel::RecvTimeoutError;
+
+    #[test]
+    fn drm_power_admission_requires_an_explicit_supported_renderer() {
+        for api in [
+            RenderingApi::Auto,
+            RenderingApi::OpenGl,
+            RenderingApi::Vulkan,
+            RenderingApi::Raster,
+            RenderingApi::Metal,
+        ] {
+            assert_eq!(
+                api.supports_drm_power(),
+                matches!(
+                    api,
+                    RenderingApi::OpenGl | RenderingApi::Vulkan | RenderingApi::Raster
+                ),
+            );
+        }
+    }
 
     #[test]
     fn renderer_stats_log_waits_for_pending_gpu_samples_instead_of_logging_empty_window() {

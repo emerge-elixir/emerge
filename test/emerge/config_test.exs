@@ -87,7 +87,7 @@ defmodule Emerge.ConfigTest do
       config = Normalize.config!(%Config{output: output})
 
       assert_raise ArgumentError,
-                   ~r/display\/backlight control requires OpenGL or CPU raster presentation/,
+                   ~r/display\/backlight control requires an explicit OpenGL, Vulkan or raster renderer/,
                    fn ->
                      EmergeSkia.validate_config!(config)
                    end
