@@ -84,7 +84,7 @@ impl BackendWake for DrmBackendWake {
                 .is_some_and(|power| !power.display_on || power.brightness.is_some())
         {
             return Err(
-                "DRM display/backlight control requires OpenGL or CPU raster presentation".into(),
+                "DRM display/backlight control requires an explicit OpenGL, Vulkan or raster renderer".into(),
             );
         }
         if config.title.is_some() || config.target_fps.is_some() {
