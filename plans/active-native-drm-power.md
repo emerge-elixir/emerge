@@ -24,7 +24,11 @@ The existing stop/recreate and ownership contracts are maintained in
 [config reconciliation](../guides/internals/config-reconciliation.md).
 Additional backend controls are tracked in
 [viewport configuration follow-up](active-declarative-viewport-settings.md).
-The Wayland Vulkan synchronization fix does not add DRM Vulkan power support.
+[Vulkan](active-vulkan-drm-power-brightness.md) and
+[raster GPU-upload](active-raster-gpu-upload-drm-power-brightness.md) now reuse the
+shared DRM power owner. Authorized integrated-GPU tests passed; the panel/device
+acceptance above remains open. This work is independent of the Wayland Vulkan
+synchronization fix.
 
 ## Fairphone handoff
 

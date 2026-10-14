@@ -155,6 +155,7 @@ For nerves example take a look at [`nerves_emerge_demo`](https://github.com/emer
 - Render images, SVGs, backgrounds, borders, text, and font assets
 - Use scroll containers, nearby overlays, paint-time and layout-aware transforms, and animation
 - Run the same renderer on macOS, Wayland, DRM, and headless runtimes with Metal, OpenGL, raster, and Vulkan rendering APIs
+- Change DRM display power and brightness with explicit OpenGL, Vulkan or raster, including GPU upload, while retaining viewport state
 
 ## Backends and rendering APIs
 
@@ -177,6 +178,9 @@ Return `%Emerge.Config{}` from `mount/1`; use optional `config(previous)` or
 observation is opt-in through `input: [events: [:key, :resize]]`, separately from
 ordinary UI interactions. See [viewport configuration](guides/reference/viewport-configuration.md)
 and [raw input](guides/tutorials/handle_input.md) for examples and backend limits.
+DRM display/brightness controls require an explicit drawing API. GPU-upload raster
+requires an OpenGL-enabled DRM build; Vulkan requires `renderer.device`. Off/on
+recreates the internal presenter, not the application state or public renderer.
 Exact renderer and frame contracts are documented by
 [`EmergeSkia`](https://hexdocs.pm/emerge/EmergeSkia.html).
 
@@ -184,7 +188,8 @@ Exact renderer and frame contracts are documented by
 
 - Elixir 1.19+
 - macOS for the `:macos` backend, or Linux with Wayland/DRM for Linux on-screen backends
-- OpenGL ES 2 or newer for GPU DRM presentation; CPU raster requires no GPU driver
+- OpenGL ES 2 or newer for OpenGL DRM and raster GPU upload, or a compatible Vulkan
+  driver/device for Vulkan DRM; CPU raster requires no GPU driver
 - Rust 1.91 or newer when a source build is required
 
 On macOS, Emerge downloads and caches the matching versioned `macos_host` runtime artifact automatically.

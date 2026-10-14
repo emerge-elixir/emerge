@@ -41,8 +41,10 @@ defmodule Emerge.Runtime.Viewport do
   rendering/uploading. Off preserves application messages, config reconciliation,
   latest tree/intent and ownership, while suspending native UI input and destroying
   the presenter. On recreates resources; no GPU state is restored. Power/brightness
-  controls require explicit OpenGL or CPU raster; unsupported live/startup controls
-  report errors. Software support does not qualify physical panel behavior.
+  controls require explicit OpenGL, Vulkan or raster (CPU or GPU-upload
+  presentation). GPU upload requires an OpenGL-enabled DRM build; automatic API
+  power controls remain unsupported. Invalid live/startup controls report errors.
+  Software support does not qualify physical panel behavior.
   """
 
   use GenServer
