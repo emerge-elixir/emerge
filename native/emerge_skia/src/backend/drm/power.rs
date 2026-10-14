@@ -24,6 +24,9 @@ use std::{
     time::Duration,
 };
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Clone)]
 pub(crate) struct PresenterControl {
     pub(super) card: Arc<Card>,
@@ -383,6 +386,20 @@ fn run_owner(
     result
 }
 
+fn presenter_readiness(
+    result: Result<DrmBackendStartupInfo, String>,
+    stopped: bool,
+) -> Result<Option<DrmBackendStartupInfo>, String> {
+    match result {
+        Ok(info) => Ok(Some(info)),
+        // A superseding off may cancel the child before it becomes ready. Its
+        // retirement/join still gates completion, and quarantine still stops
+        // the owner globally; cancellation alone must not kill the public owner.
+        Err(_) if stopped => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 fn owner_loop(
     context: &DrmRunContext,
     config: &DrmRunConfig,
@@ -467,8 +484,10 @@ fn owner_loop(
         }
         let stopping = context.stop.load(Ordering::Acquire);
         if let Some(active) = child.as_ref() {
-            if let Ok(info) = active.ready.try_recv() {
-                let info = info?;
+            if let Ok(result) = active.ready.try_recv()
+                && let Some(info) =
+                    presenter_readiness(result, stopping || active.stop.load(Ordering::Acquire))?
+            {
                 if !ready_sent {
                     startup = Some(info);
                 }
