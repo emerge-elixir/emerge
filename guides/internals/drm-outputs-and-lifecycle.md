@@ -194,8 +194,9 @@ kernel enabled/disabled state, captured CPU-raster content and stable ownership.
 Only for an authorized panel backlight, also set
 `EMERGE_DRM_TEST_BACKLIGHT=/sys/class/backlight/your-panel`. The test covers initial
 off, delayed first upload, brightness-only updates, repeated/rapid off/on, bounded
-descriptors, extended-off frame counts, stop without upload and output reacquisition. Stats/config completion do not prove optical
-no-flash behavior: observe the panel and retain full native validation output,
+descriptors, extended-off frame counts, stop without upload and output
+reacquisition. Stats/config completion do not prove optical no-flash behavior:
+observe the panel and retain full native validation output,
 cleanup status and resource/power measurements. Reconnect, video and sibling
 acceptance also require device testing.
 

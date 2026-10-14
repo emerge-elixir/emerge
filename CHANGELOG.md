@@ -42,10 +42,10 @@ See the [0.5 migration guide](guides/migrations/0.5.md) when upgrading from 0.4.
   supported settings from application state and retain them across renderer
   recovery. Live settings include Wayland/macOS titles and headless/Wayland
   frame-rate limits.
-- DRM display on/off and brightness controls for explicit OpenGL, Vulkan and raster
-  (CPU or GPU-upload presentation).
-  Viewport state is preserved while the display is off. Displays can start off;
-  managed backlights illuminate only after the first application frame.
+- DRM display on/off and brightness controls for explicit OpenGL, Vulkan and
+  raster (CPU or GPU-upload presentation). Displays can start off. Off/on recreates
+  the internal presenter while preserving the public renderer and viewport state;
+  managed backlights illuminate only after the first application presentation.
 
 ### Changed
 
@@ -70,6 +70,10 @@ See the [0.5 migration guide](guides/migrations/0.5.md) when upgrading from 0.4.
 - Tree upload/patch calls return errors when the renderer queue is full or stopped
   instead of blocking. Fixed DRM/OpenGL startup hangs.
 - Fixed requested DRM brightness being lost during renderer recovery.
+- Fixed rapid DRM off/on treating cancelled presenter startup as a renderer failure.
+- Vulkan DRM retirement leaves managed outputs disabled and retains GPU/KMS owners
+  when cleanup cannot be proven safe. Retained video streams accept unchanged
+  import capabilities after presenter recreation.
 - Controlled text inputs preserve newer edits and cursor/selection state when
   delayed application updates arrive. Rendering and animations no longer overwrite
   live text with stale values.
@@ -78,9 +82,11 @@ See the [0.5 migration guide](guides/migrations/0.5.md) when upgrading from 0.4.
 ### Known limitations
 
 - Live DRM connector/mode changes and DRM/macOS frame-rate limits remain unsupported.
-  DRM power/brightness requires an explicit OpenGL, Vulkan or raster renderer;
-  automatic API selection remains unsupported. Raster GPU upload requires the
-  OpenGL DRM presenter build.
+- DRM power/brightness requires an explicit OpenGL, Vulkan or raster renderer;
+  automatic API selection remains unsupported. Raster GPU upload requires an
+  OpenGL-enabled DRM build; Vulkan requires an explicitly selected renderer device.
+- DRM backlight/DCS and optical behavior still require panel-specific qualification.
+  Verified display blanking is not a physical monitor or system power-off guarantee.
 - macOS does not support retained-frame capture, `renderer_status/1` or `stop/2`.
 - Hardware compatibility and performance depend on the system and its drivers.
   Physical-board compatibility on musl/RISC-V targets remains incompletely tested.

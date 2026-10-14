@@ -446,7 +446,7 @@ and complete native startup/teardown reports. Missing reports, validation errors
 warnings or quarantined resources fail even when ExUnit passes. See the
 [frame-pacing validation guide](https://github.com/emerge-elixir/emerge/blob/main/guides/internals/frame-pacing.md#validation)
 for the detailed scope and recorded evidence. This Wayland fix is independent of
-[DRM Vulkan power controls](../internals/drm-outputs-and-lifecycle.md#declarative-display-power-and-brightness)
+[DRM Vulkan power controls](viewport-configuration.md)
 and does not change headless/video synchronization contracts.
 
 ## Maintaining build configuration

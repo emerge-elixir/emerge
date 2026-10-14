@@ -84,8 +84,9 @@ before buffers are released; OpenGL work is finished once at teardown, not once
 per frame. Vulkan uses GPU idle, blocking disable and old-event drain for managed
 retirement, then releases imports and destroys the presenter. Drained flips do
 not publish capture, timing or illumination hooks; managed teardown never
-restores inherited scanout. Failed barriers retain/quarantine ownership. On creates a new presenter, asks the tree actor to render its latest
-tree, and enables the managed backlight after the first frame is presented.
+restores inherited scanout. Failed barriers retain/quarantine ownership. On creates
+a new presenter, asks the tree actor to render its latest tree, and enables the
+managed backlight after the first frame is presented.
 Initial-off does not require a tree upload. The app's independent wake-key reader
 is not suspended.
 
