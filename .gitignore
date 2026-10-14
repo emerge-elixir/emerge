@@ -22,6 +22,9 @@ erl_crash.dump
 # Ignore package tarball (built via "mix hex.build").
 /emerge-*.tar
 
+# Verified input source archives shared by CI and cross/container builds
+/.cache/emerge-input/
+
 # Rust build artifacts
 /native/*/target/
 /native/*/target-emerge-nif/

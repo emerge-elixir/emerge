@@ -69,6 +69,7 @@ jobs:
     needs: validate
     env:
       PROJECT_VERSION: ${{ needs.validate.outputs.version }}
+      EMERGE_INPUT_CACHE_DIR: ${{ github.workspace }}/.cache/emerge-input
     name: NIF ${{ matrix.nif }} - ${{ matrix.job.name }}
     runs-on: ${{ matrix.job.os }}
     strategy:
@@ -317,6 +318,18 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v5
 
+      - name: Prepare input source cache mount
+        if: ${{ runner.os == 'Linux' }}
+        run: mkdir -p "$EMERGE_INPUT_CACHE_DIR"
+
+      - name: Restore verified input source archives
+        id: input-sources
+        if: ${{ runner.os == 'Linux' }}
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ env.EMERGE_INPUT_CACHE_DIR }}/*.tar.*
+          key: input-sources-v1-${{ hashFiles('native/emerge_input/sources.rs') }}
+
       - name: Normalize Linux image name for setup-beam
         if: ${{ runner.os == 'Linux' }}
         shell: bash
@@ -406,6 +419,8 @@ jobs:
           artifact_dir="$RUNNER_TEMP/embedded-artifacts"
           mkdir -p "$artifact_dir"
           docker run --rm --env EMERGE_SOURCE_REVISION \
+            --env EMERGE_INPUT_CACHE_DIR=/input-sources \
+            --mount "type=bind,source=$EMERGE_INPUT_CACHE_DIR,target=/input-sources" \
             --mount "type=bind,source=$GITHUB_WORKSPACE,target=/source,readonly" \
             --mount "type=bind,source=$artifact_dir,target=/artifacts" \
             emerge-embedded '${{ matrix.job.target }}' '${{ matrix.job.profile }}' \
@@ -467,6 +482,18 @@ jobs:
           mix deps.get
           mix compile --warnings-as-errors
           mix run --no-start scripts/smoke-raster-artifact.exs "$RASTER_ARCHIVE"
+
+      - name: Verify input source cache before saving
+        id: input-source-cache
+        if: ${{ always() && !cancelled() && runner.os == 'Linux' && steps.input-sources.outputs.cache-hit != 'true' }}
+        run: elixir scripts/check-input-source-cache.exs "$EMERGE_INPUT_CACHE_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Save verified input source archives
+        if: ${{ always() && !cancelled() && steps.input-source-cache.outputs.complete == 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ env.EMERGE_INPUT_CACHE_DIR }}/*.tar.*
+          key: ${{ steps.input-sources.outputs.cache-primary-key }}
 
       - name: Artifact upload
         uses: actions/upload-artifact@v6

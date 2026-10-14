@@ -15,6 +15,8 @@ jobs:
   ci_linux:
     name: Linux CI / ${{ matrix.name }}
     runs-on: ubuntu-24.04
+    env:
+      EMERGE_INPUT_CACHE_DIR: ${{ github.workspace }}/.cache/emerge-input
     strategy:
       fail-fast: false
       matrix:
@@ -89,6 +91,19 @@ jobs:
 
       - name: Install dependencies
         run: mix deps.get
+
+      - name: Restore verified input source archives
+        id: input-sources
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ env.EMERGE_INPUT_CACHE_DIR }}/*.tar.*
+          key: input-sources-v1-${{ hashFiles('native/emerge_input/sources.rs') }}
+
+      - name: Test bundled input source preparation
+        if: ${{ matrix.rust == 'stable' }}
+        run: |
+          cargo test --locked --manifest-path native/emerge_input/Cargo.toml --target-dir native/emerge_skia/target
+          cargo clippy --locked --all-targets --manifest-path native/emerge_input/Cargo.toml --target-dir native/emerge_skia/target -- -D warnings
 
       - name: Run CI test script
         if: ${{ matrix.minimum != true }}
@@ -175,6 +190,18 @@ jobs:
           cargo install cargo-audit --version 0.22.2 --locked
           cargo audit --file native/emerge_skia/Cargo.lock --deny warnings
           mix hex.audit
+
+      - name: Verify input source cache before saving
+        id: input-source-cache
+        if: ${{ always() && !cancelled() && steps.input-sources.outputs.cache-hit != 'true' }}
+        run: elixir scripts/check-input-source-cache.exs "$EMERGE_INPUT_CACHE_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Save verified input source archives
+        if: ${{ always() && !cancelled() && steps.input-source-cache.outputs.complete == 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ env.EMERGE_INPUT_CACHE_DIR }}/*.tar.*
+          key: ${{ steps.input-sources.outputs.cache-primary-key }}
 
   ci_macos:
     name: macOS CI

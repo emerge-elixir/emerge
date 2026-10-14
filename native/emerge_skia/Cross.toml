@@ -5,12 +5,16 @@
 # Run cross from this crate directory. Cargo still reads optional path dependency
 # manifests when they are disabled, but cross 0.2.5 only auto-mounts enabled ones.
 # Mount the native parent so ../emerge_input remains available in raster builds.
-volumes = ["EMERGE_NATIVE_SOURCE=.."]
+# A configured input archive cache must exist before cross canonicalizes/mounts it.
+volumes = ["EMERGE_NATIVE_SOURCE=..", "EMERGE_INPUT_CACHE_DIR"]
 passthrough = [
     "RUSTFLAGS",
     "RUSTLER_PRECOMPILED_DEBUG_MODE",
     "DRY_RUN",
     "EMERGE_SOURCE_REVISION",
+    "EMERGE_INPUT_CACHE_DIR",
+    "EMERGE_INPUT_OFFLINE",
+    "CARGO_NET_OFFLINE",
     "FORCE_SKIA_BUILD",
     "SKIA_GN_ARGS",
     "SDKTARGETSYSROOT",
