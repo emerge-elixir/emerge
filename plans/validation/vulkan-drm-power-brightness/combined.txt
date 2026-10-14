@@ -1,0 +1,181 @@
+Compiling 99 files (.ex)
+Compiling crate emerge_skia in release mode (/workspace/emerge-vulkan-drm-power-brightness/native/emerge_skia)
+Copying /workspace/emerge/native/emerge_skia/target/release/libemerge_skia.so to priv/native/emerge_skia.so
+Compiling lib/emerge_skia/native.ex (it's taking more than 10s)
+Generated emerge app
+Running ExUnit with seed: 713188, max_cases: 1
+Excluding tags: [full_sweep: true, headless_prime_hardware: true, wayland_hardware: true]
+Including tags: [:drm_hardware]
+
+
+EmergeSkia.DrmVulkanPowerHardwareTest [test/emerge_skia/drm_vulkan_power_hardware_test.exs]
+  * test initial-off, delayed upload and repeated power/brightness changes retain the owner [L#45]Vulkan validation started: id=1 sync=true
+Vulkan NV12 staging preference: PreferPlanar
+Vulkan XRGB8888 import strategy: DirectSampledImage
+Vulkan NV12 import capability: modifier=0x0200000000401b03 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0200000000401603 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0200000000000a01 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0200000000000901 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0000000000000000 strategy=LinearBufferToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan validation final count: errors=0 warnings=0 id=1
+DRM Vulkan power test device: %{
+  driver_id: "MESA_RADV",
+  drm_node: %{
+    major: 226,
+    minor: 129,
+    path: "/dev/dri/by-path/pci-0000:6c:00.0-render",
+    match_field: :render
+  },
+  physical_device_name: "AMD Ryzen 9 7950X 16-Core Processor (RADV RAPHAEL_MENDOCINO)",
+  driver_name: "radv",
+  software: false
+}
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+Vulkan validation started: id=2 sync=true
+Vulkan NV12 staging preference: PreferPlanar
+Vulkan XRGB8888 import strategy: DirectSampledImage
+Vulkan NV12 import capability: modifier=0x0200000000401b03 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0200000000401603 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0200000000000a01 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0200000000000901 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0000000000000000 strategy=LinearBufferToOptimalYuvPlanes advertised_memory_planes=2
+DRM KMS /sys/class/drm/card0-DP-4: enabled
+Vulkan validation final count: errors=0 warnings=0 id=2
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+Vulkan validation started: id=3 sync=true
+Vulkan NV12 staging preference: PreferPlanar
+Vulkan XRGB8888 import strategy: DirectSampledImage
+Vulkan NV12 import capability: modifier=0x0200000000401b03 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0200000000401603 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0200000000000a01 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0200000000000901 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0000000000000000 strategy=LinearBufferToOptimalYuvPlanes advertised_memory_planes=2
+DRM KMS /sys/class/drm/card0-DP-4: enabled
+Vulkan validation final count: errors=0 warnings=0 id=3
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+Vulkan validation started: id=4 sync=true
+Vulkan NV12 staging preference: PreferPlanar
+Vulkan XRGB8888 import strategy: DirectSampledImage
+Vulkan NV12 import capability: modifier=0x0200000000401b03 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0200000000401603 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0200000000000a01 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0200000000000901 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0000000000000000 strategy=LinearBufferToOptimalYuvPlanes advertised_memory_planes=2
+DRM KMS /sys/class/drm/card0-DP-4: enabled
+Vulkan validation final count: errors=0 warnings=0 id=4
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+Vulkan validation started: id=5 sync=true
+Vulkan NV12 staging preference: PreferPlanar
+Vulkan XRGB8888 import strategy: DirectSampledImage
+Vulkan NV12 import capability: modifier=0x0200000000401b03 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0200000000401603 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0200000000000a01 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0200000000000901 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0000000000000000 strategy=LinearBufferToOptimalYuvPlanes advertised_memory_planes=2
+DRM KMS /sys/class/drm/card0-DP-4: enabled
+Vulkan validation final count: errors=0 warnings=0 id=5
+Native info drm_vulkan: trial presenter uses software cursor composited into the explicitly fenced primary image
+Native info drm_vulkan: trial presenter admitted: kms_card=/dev/dri/by-path/pci-0000:6c:00.0-card mode=1920x1080 vulkan_node=/dev/dri/by-path/pci-0000:6c:00.0-render (render 226:129) device=AMD Ryzen 9 7950X 16-Core Processor (RADV RAPHAEL_MENDOCINO) driver=Some("radv") allocation=gbm-import slots=3 wsi=false explicit_sync=true modifiers=[0, 144115188075858177, 144115188080057091]
+Native info drm_vulkan: trial presenter uses software cursor composited into the explicitly fenced primary image
+Native info drm_vulkan: trial presenter admitted: kms_card=/dev/dri/by-path/pci-0000:6c:00.0-card mode=1920x1080 vulkan_node=/dev/dri/by-path/pci-0000:6c:00.0-render (render 226:129) device=AMD Ryzen 9 7950X 16-Core Processor (RADV RAPHAEL_MENDOCINO) driver=Some("radv") allocation=gbm-import slots=3 wsi=false explicit_sync=true modifiers=[0, 144115188075858177, 144115188080057091]
+Native info drm_vulkan: initial explicitly fenced page flip accepted: sequence=0
+Native info drm_vulkan: trial presenter uses software cursor composited into the explicitly fenced primary image
+Native info drm_vulkan: trial presenter admitted: kms_card=/dev/dri/by-path/pci-0000:6c:00.0-card mode=1920x1080 vulkan_node=/dev/dri/by-path/pci-0000:6c:00.0-render (render 226:129) device=AMD Ryzen 9 7950X 16-Core Processor (RADV RAPHAEL_MENDOCINO) driver=Some("radv") allocation=gbm-import slots=3 wsi=false explicit_sync=true modifiers=[0, 144115188075858177, 144115188080057091]
+Native info drm_vulkan: initial explicitly fenced page flip accepted: sequence=0
+Native info drm_vulkan: trial presenter uses software cursor composited into the explicitly fenced primary image
+Native info drm_vulkan: trial presenter admitted: kms_card=/dev/dri/by-path/pci-0000:6c:00.0-card mode=1920x1080 vulkan_node=/dev/dri/by-path/pci-0000:6c:00.0-render (render 226:129) device=AMD Ryzen 9 7950X 16-Core Processor (RADV RAPHAEL_MENDOCINO) driver=Some("radv") allocation=gbm-import slots=3 wsi=false explicit_sync=true modifiers=[0, 144115188075858177, 144115188080057091]
+Native info drm_vulkan: initial explicitly fenced page flip accepted: sequence=0
+Native info drm_vulkan: trial presenter uses software cursor composited into the explicitly fenced primary image
+Native info drm_vulkan: trial presenter admitted: kms_card=/dev/dri/by-path/pci-0000:6c:00.0-card mode=1920x1080 vulkan_node=/dev/dri/by-path/pci-0000:6c:00.0-render (render 226:129) device=AMD Ryzen 9 7950X 16-Core Processor (RADV RAPHAEL_MENDOCINO) driver=Some("radv") allocation=gbm-import slots=3 wsi=false explicit_sync=true modifiers=[0, 144115188075858177, 144115188080057091]
+Native info drm_vulkan: initial explicitly fenced page flip accepted: sequence=0
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+Vulkan validation started: id=6 sync=true
+Vulkan NV12 staging preference: PreferPlanar
+Vulkan XRGB8888 import strategy: DirectSampledImage
+Vulkan NV12 import capability: modifier=0x0200000000401b03 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0200000000401603 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0200000000000a01 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0200000000000901 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0000000000000000 strategy=LinearBufferToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan validation final count: errors=0 warnings=0 id=6
+Native info drm_vulkan: trial presenter uses software cursor composited into the explicitly fenced primary image
+Native info drm_vulkan: trial presenter admitted: kms_card=/dev/dri/by-path/pci-0000:6c:00.0-card mode=1920x1080 vulkan_node=/dev/dri/by-path/pci-0000:6c:00.0-render (render 226:129) device=AMD Ryzen 9 7950X 16-Core Processor (RADV RAPHAEL_MENDOCINO) driver=Some("radv") allocation=gbm-import slots=3 wsi=false explicit_sync=true modifiers=[0, 144115188075858177, 144115188080057091]
+  * test initial-off, delayed upload and repeated power/brightness changes retain the owner (3016.9ms) [L#45]
+  * test Stop before first upload works both initially on and off [L#135]Vulkan validation started: id=7 sync=true
+Vulkan NV12 staging preference: PreferPlanar
+Vulkan XRGB8888 import strategy: DirectSampledImage
+Vulkan NV12 import capability: modifier=0x0200000000401b03 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0200000000401603 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0200000000000a01 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0200000000000901 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0000000000000000 strategy=LinearBufferToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan validation final count: errors=0 warnings=0 id=7
+Native info drm_vulkan: trial presenter uses software cursor composited into the explicitly fenced primary image
+Native info drm_vulkan: trial presenter admitted: kms_card=/dev/dri/by-path/pci-0000:6c:00.0-card mode=1920x1080 vulkan_node=/dev/dri/by-path/pci-0000:6c:00.0-render (render 226:129) device=AMD Ryzen 9 7950X 16-Core Processor (RADV RAPHAEL_MENDOCINO) driver=Some("radv") allocation=gbm-import slots=3 wsi=false explicit_sync=true modifiers=[0, 144115188075858177, 144115188080057091]
+Vulkan validation started: id=8 sync=true
+Vulkan NV12 staging preference: PreferPlanar
+Vulkan XRGB8888 import strategy: DirectSampledImage
+Vulkan NV12 import capability: modifier=0x0200000000401b03 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0200000000401603 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0200000000000a01 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0200000000000901 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0000000000000000 strategy=LinearBufferToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan validation final count: errors=0 warnings=0 id=8
+Native info drm_vulkan: trial presenter uses software cursor composited into the explicitly fenced primary image
+Native info drm_vulkan: trial presenter admitted: kms_card=/dev/dri/by-path/pci-0000:6c:00.0-card mode=1920x1080 vulkan_node=/dev/dri/by-path/pci-0000:6c:00.0-render (render 226:129) device=AMD Ryzen 9 7950X 16-Core Processor (RADV RAPHAEL_MENDOCINO) driver=Some("radv") allocation=gbm-import slots=3 wsi=false explicit_sync=true modifiers=[0, 144115188075858177, 144115188080057091]
+  * test Stop before first upload works both initially on and off (1014.4ms) [L#135]
+  * test rapid on/off supersession keeps the owner dark with bounded descriptors [L#145]Vulkan validation started: id=9 sync=true
+Vulkan NV12 staging preference: PreferPlanar
+Vulkan XRGB8888 import strategy: DirectSampledImage
+Vulkan NV12 import capability: modifier=0x0200000000401b03 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0200000000401603 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0200000000000a01 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0200000000000901 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0000000000000000 strategy=LinearBufferToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan validation final count: errors=0 warnings=0 id=9
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM Vulkan off descriptor count: baseline=26 final=26
+Vulkan validation started: id=10 sync=true
+Vulkan NV12 staging preference: PreferPlanar
+Vulkan XRGB8888 import strategy: DirectSampledImage
+Vulkan NV12 import capability: modifier=0x0200000000401b03 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0200000000401603 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0200000000000a01 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0200000000000901 strategy=DirectImageToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan NV12 import capability: modifier=0x0000000000000000 strategy=LinearBufferToOptimalYuvPlanes advertised_memory_planes=2
+Vulkan validation final count: errors=0 warnings=0 id=10
+Native info drm_vulkan: trial presenter uses software cursor composited into the explicitly fenced primary image
+Native info drm_vulkan: trial presenter admitted: kms_card=/dev/dri/by-path/pci-0000:6c:00.0-card mode=1920x1080 vulkan_node=/dev/dri/by-path/pci-0000:6c:00.0-render (render 226:129) device=AMD Ryzen 9 7950X 16-Core Processor (RADV RAPHAEL_MENDOCINO) driver=Some("radv") allocation=gbm-import slots=3 wsi=false explicit_sync=true modifiers=[0, 144115188075858177, 144115188080057091]
+Native info drm_vulkan: initial explicitly fenced page flip accepted: sequence=0
+Native info drm_vulkan: trial presenter uses software cursor composited into the explicitly fenced primary image
+Native info drm_vulkan: trial presenter uses software cursor composited into the explicitly fenced primary image
+Native info drm_vulkan: trial presenter uses software cursor composited into the explicitly fenced primary image
+Native info drm_vulkan: trial presenter uses software cursor composited into the explicitly fenced primary image
+Native info drm_vulkan: trial presenter uses software cursor composited into the explicitly fenced primary image
+Native info drm_vulkan: trial presenter admitted: kms_card=/dev/dri/by-path/pci-0000:6c:00.0-card mode=1920x1080 vulkan_node=/dev/dri/by-path/pci-0000:6c:00.0-render (render 226:129) device=AMD Ryzen 9 7950X 16-Core Processor (RADV RAPHAEL_MENDOCINO) driver=Some("radv") allocation=gbm-import slots=3 wsi=false explicit_sync=true modifiers=[0, 144115188075858177, 144115188080057091]
+Native info drm_vulkan: initial explicitly fenced page flip accepted: sequence=0
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+  * test rapid on/off supersession keeps the owner dark with bounded descriptors (2007.7ms) [L#145]
+
+Finished in 6.1 seconds (0.00s async, 6.1s sync)
+
+Result: 3 passed

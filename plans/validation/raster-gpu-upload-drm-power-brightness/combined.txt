@@ -1,0 +1,188 @@
+Compiling 99 files (.ex)
+Compiling crate emerge_skia in release mode (/workspace/emerge-vulkan-drm-power-brightness/native/emerge_skia)
+Copying /workspace/emerge/native/emerge_skia/target/release/libemerge_skia.so to priv/native/emerge_skia.so
+Compiling lib/emerge_skia/native.ex (it's taking more than 10s)
+Generated emerge app
+Running ExUnit with seed: 545107, max_cases: 1
+Excluding tags: [full_sweep: true, headless_prime_hardware: true, wayland_hardware: true]
+Including tags: [:drm_hardware]
+
+
+EmergeSkia.DrmGpuPowerHardwareTest [test/emerge_skia/drm_gpu_power_hardware_test.exs]
+  * test Stop before first upload works both initially on and off [L#152]Native info drm: DRM driver: name=amdgpu version=Some((3, 64, 0)) description=AMD GPU GBM_backend=drm XRGB8888_scanout_render=true
+Native info drm: DRM capabilities: monotonic_timestamps=1 addfb2_modifiers=1 syncobj=1 syncobj_timeline=1 async_page_flip=1 atomic_async_page_flip=1
+Native info drm: DRM resources: connector=402 encoder=401 crtc=376 plane=206 plane_formats=[875713112, 875713089, 875708754, 808669784, 808665688, 808669761, 808665665, 942953048, 942948952, 942953025, 942948929, 875709016, 875708993, 909199186, 842094158, 808530000, 1211388504, 1211388481, 1211384408, 1211384385] IN_FENCE_FD=true OUT_FENCE_PTR=true
+Native info drm: DRM mode: name=1920x1080 clock=148500kHz H=1920 2008 2052 2200 V=1080 1084 1089 1125 flags=ModeFlags(PHSYNC | NVSYNC) (16.667 ms/frame, 60.000000 Hz computed)
+Native info drm: DRM cursor: hardware plane enabled
+Native info drm: EGL: vendor=Mesa Project version=1.5 APIs=OpenGL OpenGL_ES  visual=0x34325258 swap_range=Some(1)..Some(1) surface=Some(1920)xSome(1080) extensions={native_fence=true, fence=true, wait=true, buffer_age=true, dma_buf_import=true, dma_buf_modifiers=true}
+Native info drm: EGL swap interval=0; atomic KMS page flips own vblank pacing
+Native warning drm: explicit GPU/KMS fencing is available but not yet enabled; atomic commits currently rely on implicit GBM/DRM synchronization
+Native info drm: GL: vendor=AMD renderer=AMD Ryzen 9 7950X 16-Core Processor (radeonsi, raphael_mendocino, ACO, DRM 3.64, 7.2.7-1-cachyos) version=OpenGL ES 3.2 Mesa 26.2.4-arch1.1 shading_language=OpenGL ES GLSL ES 3.20 optional={timer_query=true, external_image=true, core_vao=true, core_sync=true}
+Native info drm: runtime diagnostics: source_revision=worktree-sha256-b36846be91cbd89ccfa9233668288035e3644a644e2851a94799fb9eb5d99847 crate_version=0.5.0 kernel=7.2.7-1-cachyos renderer_cache=RendererCacheConfig { enabled: false, max_new_payloads_per_frame: 64, paint_layer: RendererPaintLayerCacheConfig { max_entries: 512, max_bytes: 671088640, max_entry_bytes: 268435456, min_visible_before_store: 1, max_stale_frames: 120 } } video_retirement=gl_fence
+Native info drm: sampled asynchronous GPU render elapsed profiling enabled via GL_EXT_disjoint_timer_query (every fourth rendered frame, nonblocking pool capacity 8)
+Native error drm: DRM render channel stopped before its first application frame
+Native info drm: DRM driver: name=amdgpu version=Some((3, 64, 0)) description=AMD GPU GBM_backend=drm XRGB8888_scanout_render=true
+Native info drm: DRM capabilities: monotonic_timestamps=1 addfb2_modifiers=1 syncobj=1 syncobj_timeline=1 async_page_flip=1 atomic_async_page_flip=1
+Native info drm: DRM resources: connector=402 encoder=401 crtc=376 plane=206 plane_formats=[875713112, 875713089, 875708754, 808669784, 808665688, 808669761, 808665665, 942953048, 942948952, 942953025, 942948929, 875709016, 875708993, 909199186, 842094158, 808530000, 1211388504, 1211388481, 1211384408, 1211384385] IN_FENCE_FD=true OUT_FENCE_PTR=true
+Native info drm: DRM mode: name=1920x1080 clock=148500kHz H=1920 2008 2052 2200 V=1080 1084 1089 1125 flags=ModeFlags(PHSYNC | NVSYNC) (16.667 ms/frame, 60.000000 Hz computed)
+Native info drm: DRM cursor: hardware plane enabled
+Native info drm: EGL: vendor=Mesa Project version=1.5 APIs=OpenGL OpenGL_ES  visual=0x34325258 swap_range=Some(1)..Some(1) surface=Some(1920)xSome(1080) extensions={native_fence=true, fence=true, wait=true, buffer_age=true, dma_buf_import=true, dma_buf_modifiers=true}
+Native info drm: EGL swap interval=0; atomic KMS page flips own vblank pacing
+Native warning drm: explicit GPU/KMS fencing is available but not yet enabled; atomic commits currently rely on implicit GBM/DRM synchronization
+Native info drm: GL: vendor=AMD renderer=AMD Ryzen 9 7950X 16-Core Processor (radeonsi, raphael_mendocino, ACO, DRM 3.64, 7.2.7-1-cachyos) version=OpenGL ES 3.2 Mesa 26.2.4-arch1.1 shading_language=OpenGL ES GLSL ES 3.20 optional={timer_query=true, external_image=true, core_vao=true, core_sync=true}
+Native info drm: runtime diagnostics: source_revision=worktree-sha256-b36846be91cbd89ccfa9233668288035e3644a644e2851a94799fb9eb5d99847 crate_version=0.5.0 kernel=7.2.7-1-cachyos renderer_cache=RendererCacheConfig { enabled: false, max_new_payloads_per_frame: 64, paint_layer: RendererPaintLayerCacheConfig { max_entries: 512, max_bytes: 671088640, max_entry_bytes: 268435456, min_visible_before_store: 1, max_stale_frames: 120 } } video_retirement=gl_fence
+Native info drm: sampled asynchronous GPU render elapsed profiling enabled via GL_EXT_disjoint_timer_query (every fourth rendered frame, nonblocking pool capacity 8)
+  * test Stop before first upload works both initially on and off (1015.5ms) [L#152]
+  * test rapid on/off supersession keeps the owner dark with bounded descriptors [L#162]DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM raster off descriptor count: baseline=26 final=26
+Native info drm: DRM driver: name=amdgpu version=Some((3, 64, 0)) description=AMD GPU GBM_backend=drm XRGB8888_scanout_render=true
+Native info drm: DRM capabilities: monotonic_timestamps=1 addfb2_modifiers=1 syncobj=1 syncobj_timeline=1 async_page_flip=1 atomic_async_page_flip=1
+Native info drm: DRM resources: connector=402 encoder=401 crtc=376 plane=206 plane_formats=[875713112, 875713089, 875708754, 808669784, 808665688, 808669761, 808665665, 942953048, 942948952, 942953025, 942948929, 875709016, 875708993, 909199186, 842094158, 808530000, 1211388504, 1211388481, 1211384408, 1211384385] IN_FENCE_FD=true OUT_FENCE_PTR=true
+Native info drm: DRM mode: name=1920x1080 clock=148500kHz H=1920 2008 2052 2200 V=1080 1084 1089 1125 flags=ModeFlags(PHSYNC | NVSYNC) (16.667 ms/frame, 60.000000 Hz computed)
+Native info drm: DRM cursor: hardware plane enabled
+Native info drm: EGL: vendor=Mesa Project version=1.5 APIs=OpenGL OpenGL_ES  visual=0x34325258 swap_range=Some(1)..Some(1) surface=Some(1920)xSome(1080) extensions={native_fence=true, fence=true, wait=true, buffer_age=true, dma_buf_import=true, dma_buf_modifiers=true}
+Native info drm: EGL swap interval=0; atomic KMS page flips own vblank pacing
+Native warning drm: explicit GPU/KMS fencing is available but not yet enabled; atomic commits currently rely on implicit GBM/DRM synchronization
+Native info drm: GL: vendor=AMD renderer=AMD Ryzen 9 7950X 16-Core Processor (radeonsi, raphael_mendocino, ACO, DRM 3.64, 7.2.7-1-cachyos) version=OpenGL ES 3.2 Mesa 26.2.4-arch1.1 shading_language=OpenGL ES GLSL ES 3.20 optional={timer_query=true, external_image=true, core_vao=true, core_sync=true}
+Native info drm: runtime diagnostics: source_revision=worktree-sha256-b36846be91cbd89ccfa9233668288035e3644a644e2851a94799fb9eb5d99847 crate_version=0.5.0 kernel=7.2.7-1-cachyos renderer_cache=RendererCacheConfig { enabled: false, max_new_payloads_per_frame: 64, paint_layer: RendererPaintLayerCacheConfig { max_entries: 512, max_bytes: 671088640, max_entry_bytes: 268435456, min_visible_before_store: 1, max_stale_frames: 120 } } video_retirement=gl_fence
+Native info drm: sampled asynchronous GPU render elapsed profiling enabled via GL_EXT_disjoint_timer_query (every fourth rendered frame, nonblocking pool capacity 8)
+Native info drm: created primary framebuffer via AddFB2 modifier=Invalid
+Native info drm: GBM primary BO: 1920x1080 format=DrmFourcc(XR24) bpp=32 modifier=Invalid planes=1 [0:stride=7680 offset=0] framebuffer_api=addfb2_with_linear_legacy_fallback
+Native info drm: DRM driver: name=amdgpu version=Some((3, 64, 0)) description=AMD GPU GBM_backend=drm XRGB8888_scanout_render=true
+Native info drm: DRM capabilities: monotonic_timestamps=1 addfb2_modifiers=1 syncobj=1 syncobj_timeline=1 async_page_flip=1 atomic_async_page_flip=1
+Native info drm: DRM resources: connector=402 encoder=401 crtc=376 plane=206 plane_formats=[875713112, 875713089, 875708754, 808669784, 808665688, 808669761, 808665665, 942953048, 942948952, 942953025, 942948929, 875709016, 875708993, 909199186, 842094158, 808530000, 1211388504, 1211388481, 1211384408, 1211384385] IN_FENCE_FD=true OUT_FENCE_PTR=true
+Native info drm: DRM mode: name=1920x1080 clock=148500kHz H=1920 2008 2052 2200 V=1080 1084 1089 1125 flags=ModeFlags(PHSYNC | NVSYNC) (16.667 ms/frame, 60.000000 Hz computed)
+Native info drm: DRM cursor: hardware plane enabled
+Native info drm: EGL: vendor=Mesa Project version=1.5 APIs=OpenGL OpenGL_ES  visual=0x34325258 swap_range=Some(1)..Some(1) surface=Some(1920)xSome(1080) extensions={native_fence=true, fence=true, wait=true, buffer_age=true, dma_buf_import=true, dma_buf_modifiers=true}
+Native info drm: EGL swap interval=0; atomic KMS page flips own vblank pacing
+Native warning drm: explicit GPU/KMS fencing is available but not yet enabled; atomic commits currently rely on implicit GBM/DRM synchronization
+Native info drm: GL: vendor=AMD renderer=AMD Ryzen 9 7950X 16-Core Processor (radeonsi, raphael_mendocino, ACO, DRM 3.64, 7.2.7-1-cachyos) version=OpenGL ES 3.2 Mesa 26.2.4-arch1.1 shading_language=OpenGL ES GLSL ES 3.20 optional={timer_query=true, external_image=true, core_vao=true, core_sync=true}
+Native info drm: runtime diagnostics: source_revision=worktree-sha256-b36846be91cbd89ccfa9233668288035e3644a644e2851a94799fb9eb5d99847 crate_version=0.5.0 kernel=7.2.7-1-cachyos renderer_cache=RendererCacheConfig { enabled: false, max_new_payloads_per_frame: 64, paint_layer: RendererPaintLayerCacheConfig { max_entries: 512, max_bytes: 671088640, max_entry_bytes: 268435456, min_visible_before_store: 1, max_stale_frames: 120 } } video_retirement=gl_fence
+Native info drm: sampled asynchronous GPU render elapsed profiling enabled via GL_EXT_disjoint_timer_query (every fourth rendered frame, nonblocking pool capacity 8)
+Native info drm: created primary framebuffer via AddFB2 modifier=Invalid
+Native info drm: GBM primary BO: 1920x1080 format=DrmFourcc(XR24) bpp=32 modifier=Invalid planes=1 [0:stride=7680 offset=0] framebuffer_api=addfb2_with_linear_legacy_fallback
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+  * test rapid on/off supersession keeps the owner dark with bounded descriptors (2007.7ms) [L#162]
+  * test initial-off, delayed upload and repeated power/brightness changes retain the owner [L#52]GPU-upload hardware GL: vendor=AMD renderer=AMD Ryzen 9 7950X 16-Core Processor (radeonsi, raphael_mendocino, ACO, DRM 3.64, 7.2.7-1-cachyos) version=OpenGL ES 3.2 Mesa 26.2.4-arch1.1 shading_language=OpenGL ES GLSL ES 3.20 optional={timer_query=true, external_image=true, core_vao=true, core_sync=true}
+DRM power test renderer: %{
+  rendering_api: %{selected: :raster, requested: :raster},
+  backend: :drm,
+  capabilities: %{
+    raster_present: [:gpu_upload, :cpu],
+    renderer_cache: false,
+    gpu: false,
+    screenshot: true,
+    prime_video: false,
+    prime_video_formats: []
+  },
+  vulkan_device: nil
+}
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: enabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: enabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: enabled
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+DRM KMS /sys/class/drm/card0-DP-4: enabled
+Native info drm: DRM driver: name=amdgpu version=Some((3, 64, 0)) description=AMD GPU GBM_backend=drm XRGB8888_scanout_render=true
+Native info drm: DRM capabilities: monotonic_timestamps=1 addfb2_modifiers=1 syncobj=1 syncobj_timeline=1 async_page_flip=1 atomic_async_page_flip=1
+Native info drm: DRM resources: connector=402 encoder=401 crtc=376 plane=206 plane_formats=[875713112, 875713089, 875708754, 808669784, 808665688, 808669761, 808665665, 942953048, 942948952, 942953025, 942948929, 875709016, 875708993, 909199186, 842094158, 808530000, 1211388504, 1211388481, 1211384408, 1211384385] IN_FENCE_FD=true OUT_FENCE_PTR=true
+Native info drm: DRM mode: name=1920x1080 clock=148500kHz H=1920 2008 2052 2200 V=1080 1084 1089 1125 flags=ModeFlags(PHSYNC | NVSYNC) (16.667 ms/frame, 60.000000 Hz computed)
+Native info drm: DRM cursor: hardware plane enabled
+Native info drm: EGL: vendor=Mesa Project version=1.5 APIs=OpenGL OpenGL_ES  visual=0x34325258 swap_range=Some(1)..Some(1) surface=Some(1920)xSome(1080) extensions={native_fence=true, fence=true, wait=true, buffer_age=true, dma_buf_import=true, dma_buf_modifiers=true}
+Native info drm: EGL swap interval=0; atomic KMS page flips own vblank pacing
+Native warning drm: explicit GPU/KMS fencing is available but not yet enabled; atomic commits currently rely on implicit GBM/DRM synchronization
+Native info drm: runtime diagnostics: source_revision=worktree-sha256-b36846be91cbd89ccfa9233668288035e3644a644e2851a94799fb9eb5d99847 crate_version=0.5.0 kernel=7.2.7-1-cachyos renderer_cache=RendererCacheConfig { enabled: false, max_new_payloads_per_frame: 64, paint_layer: RendererPaintLayerCacheConfig { max_entries: 512, max_bytes: 671088640, max_entry_bytes: 268435456, min_visible_before_store: 1, max_stale_frames: 120 } } video_retirement=gl_fence
+Native info drm: sampled asynchronous GPU render elapsed profiling enabled via GL_EXT_disjoint_timer_query (every fourth rendered frame, nonblocking pool capacity 8)
+Native info drm: DRM driver: name=amdgpu version=Some((3, 64, 0)) description=AMD GPU GBM_backend=drm XRGB8888_scanout_render=true
+Native info drm: DRM capabilities: monotonic_timestamps=1 addfb2_modifiers=1 syncobj=1 syncobj_timeline=1 async_page_flip=1 atomic_async_page_flip=1
+Native info drm: DRM resources: connector=402 encoder=401 crtc=376 plane=206 plane_formats=[875713112, 875713089, 875708754, 808669784, 808665688, 808669761, 808665665, 942953048, 942948952, 942953025, 942948929, 875709016, 875708993, 909199186, 842094158, 808530000, 1211388504, 1211388481, 1211384408, 1211384385] IN_FENCE_FD=true OUT_FENCE_PTR=true
+Native info drm: DRM mode: name=1920x1080 clock=148500kHz H=1920 2008 2052 2200 V=1080 1084 1089 1125 flags=ModeFlags(PHSYNC | NVSYNC) (16.667 ms/frame, 60.000000 Hz computed)
+Native info drm: DRM cursor: hardware plane enabled
+Native info drm: EGL: vendor=Mesa Project version=1.5 APIs=OpenGL OpenGL_ES  visual=0x34325258 swap_range=Some(1)..Some(1) surface=Some(1920)xSome(1080) extensions={native_fence=true, fence=true, wait=true, buffer_age=true, dma_buf_import=true, dma_buf_modifiers=true}
+Native info drm: EGL swap interval=0; atomic KMS page flips own vblank pacing
+Native warning drm: explicit GPU/KMS fencing is available but not yet enabled; atomic commits currently rely on implicit GBM/DRM synchronization
+Native info drm: GL: vendor=AMD renderer=AMD Ryzen 9 7950X 16-Core Processor (radeonsi, raphael_mendocino, ACO, DRM 3.64, 7.2.7-1-cachyos) version=OpenGL ES 3.2 Mesa 26.2.4-arch1.1 shading_language=OpenGL ES GLSL ES 3.20 optional={timer_query=true, external_image=true, core_vao=true, core_sync=true}
+Native info drm: runtime diagnostics: source_revision=worktree-sha256-b36846be91cbd89ccfa9233668288035e3644a644e2851a94799fb9eb5d99847 crate_version=0.5.0 kernel=7.2.7-1-cachyos renderer_cache=RendererCacheConfig { enabled: false, max_new_payloads_per_frame: 64, paint_layer: RendererPaintLayerCacheConfig { max_entries: 512, max_bytes: 671088640, max_entry_bytes: 268435456, min_visible_before_store: 1, max_stale_frames: 120 } } video_retirement=gl_fence
+Native info drm: sampled asynchronous GPU render elapsed profiling enabled via GL_EXT_disjoint_timer_query (every fourth rendered frame, nonblocking pool capacity 8)
+Native info drm: created primary framebuffer via AddFB2 modifier=Invalid
+Native info drm: GBM primary BO: 1920x1080 format=DrmFourcc(XR24) bpp=32 modifier=Invalid planes=1 [0:stride=7680 offset=0] framebuffer_api=addfb2_with_linear_legacy_fallback
+Native info drm: DRM driver: name=amdgpu version=Some((3, 64, 0)) description=AMD GPU GBM_backend=drm XRGB8888_scanout_render=true
+Native info drm: DRM capabilities: monotonic_timestamps=1 addfb2_modifiers=1 syncobj=1 syncobj_timeline=1 async_page_flip=1 atomic_async_page_flip=1
+Native info drm: DRM resources: connector=402 encoder=401 crtc=376 plane=206 plane_formats=[875713112, 875713089, 875708754, 808669784, 808665688, 808669761, 808665665, 942953048, 942948952, 942953025, 942948929, 875709016, 875708993, 909199186, 842094158, 808530000, 1211388504, 1211388481, 1211384408, 1211384385] IN_FENCE_FD=true OUT_FENCE_PTR=true
+Native info drm: DRM mode: name=1920x1080 clock=148500kHz H=1920 2008 2052 2200 V=1080 1084 1089 1125 flags=ModeFlags(PHSYNC | NVSYNC) (16.667 ms/frame, 60.000000 Hz computed)
+Native info drm: DRM cursor: hardware plane enabled
+Native info drm: EGL: vendor=Mesa Project version=1.5 APIs=OpenGL OpenGL_ES  visual=0x34325258 swap_range=Some(1)..Some(1) surface=Some(1920)xSome(1080) extensions={native_fence=true, fence=true, wait=true, buffer_age=true, dma_buf_import=true, dma_buf_modifiers=true}
+Native info drm: EGL swap interval=0; atomic KMS page flips own vblank pacing
+Native warning drm: explicit GPU/KMS fencing is available but not yet enabled; atomic commits currently rely on implicit GBM/DRM synchronization
+Native info drm: GL: vendor=AMD renderer=AMD Ryzen 9 7950X 16-Core Processor (radeonsi, raphael_mendocino, ACO, DRM 3.64, 7.2.7-1-cachyos) version=OpenGL ES 3.2 Mesa 26.2.4-arch1.1 shading_language=OpenGL ES GLSL ES 3.20 optional={timer_query=true, external_image=true, core_vao=true, core_sync=true}
+Native info drm: runtime diagnostics: source_revision=worktree-sha256-b36846be91cbd89ccfa9233668288035e3644a644e2851a94799fb9eb5d99847 crate_version=0.5.0 kernel=7.2.7-1-cachyos renderer_cache=RendererCacheConfig { enabled: false, max_new_payloads_per_frame: 64, paint_layer: RendererPaintLayerCacheConfig { max_entries: 512, max_bytes: 671088640, max_entry_bytes: 268435456, min_visible_before_store: 1, max_stale_frames: 120 } } video_retirement=gl_fence
+Native info drm: sampled asynchronous GPU render elapsed profiling enabled via GL_EXT_disjoint_timer_query (every fourth rendered frame, nonblocking pool capacity 8)
+Native info drm: created primary framebuffer via AddFB2 modifier=Invalid
+Native info drm: GBM primary BO: 1920x1080 format=DrmFourcc(XR24) bpp=32 modifier=Invalid planes=1 [0:stride=7680 offset=0] framebuffer_api=addfb2_with_linear_legacy_fallback
+Native info drm: created primary framebuffer via AddFB2 modifier=Invalid
+Native info drm: DRM driver: name=amdgpu version=Some((3, 64, 0)) description=AMD GPU GBM_backend=drm XRGB8888_scanout_render=true
+Native info drm: DRM capabilities: monotonic_timestamps=1 addfb2_modifiers=1 syncobj=1 syncobj_timeline=1 async_page_flip=1 atomic_async_page_flip=1
+Native info drm: DRM resources: connector=402 encoder=401 crtc=376 plane=206 plane_formats=[875713112, 875713089, 875708754, 808669784, 808665688, 808669761, 808665665, 942953048, 942948952, 942953025, 942948929, 875709016, 875708993, 909199186, 842094158, 808530000, 1211388504, 1211388481, 1211384408, 1211384385] IN_FENCE_FD=true OUT_FENCE_PTR=true
+Native info drm: DRM mode: name=1920x1080 clock=148500kHz H=1920 2008 2052 2200 V=1080 1084 1089 1125 flags=ModeFlags(PHSYNC | NVSYNC) (16.667 ms/frame, 60.000000 Hz computed)
+Native info drm: DRM cursor: hardware plane enabled
+Native info drm: EGL: vendor=Mesa Project version=1.5 APIs=OpenGL OpenGL_ES  visual=0x34325258 swap_range=Some(1)..Some(1) surface=Some(1920)xSome(1080) extensions={native_fence=true, fence=true, wait=true, buffer_age=true, dma_buf_import=true, dma_buf_modifiers=true}
+Native info drm: EGL swap interval=0; atomic KMS page flips own vblank pacing
+Native warning drm: explicit GPU/KMS fencing is available but not yet enabled; atomic commits currently rely on implicit GBM/DRM synchronization
+Native info drm: GL: vendor=AMD renderer=AMD Ryzen 9 7950X 16-Core Processor (radeonsi, raphael_mendocino, ACO, DRM 3.64, 7.2.7-1-cachyos) version=OpenGL ES 3.2 Mesa 26.2.4-arch1.1 shading_language=OpenGL ES GLSL ES 3.20 optional={timer_query=true, external_image=true, core_vao=true, core_sync=true}
+Native info drm: runtime diagnostics: source_revision=worktree-sha256-b36846be91cbd89ccfa9233668288035e3644a644e2851a94799fb9eb5d99847 crate_version=0.5.0 kernel=7.2.7-1-cachyos renderer_cache=RendererCacheConfig { enabled: false, max_new_payloads_per_frame: 64, paint_layer: RendererPaintLayerCacheConfig { max_entries: 512, max_bytes: 671088640, max_entry_bytes: 268435456, min_visible_before_store: 1, max_stale_frames: 120 } } video_retirement=gl_fence
+Native info drm: sampled asynchronous GPU render elapsed profiling enabled via GL_EXT_disjoint_timer_query (every fourth rendered frame, nonblocking pool capacity 8)
+Native info drm: created primary framebuffer via AddFB2 modifier=Invalid
+Native info drm: GBM primary BO: 1920x1080 format=DrmFourcc(XR24) bpp=32 modifier=Invalid planes=1 [0:stride=7680 offset=0] framebuffer_api=addfb2_with_linear_legacy_fallback
+Native info drm: created primary framebuffer via AddFB2 modifier=Invalid
+Native info drm: DRM driver: name=amdgpu version=Some((3, 64, 0)) description=AMD GPU GBM_backend=drm XRGB8888_scanout_render=true
+Native info drm: DRM capabilities: monotonic_timestamps=1 addfb2_modifiers=1 syncobj=1 syncobj_timeline=1 async_page_flip=1 atomic_async_page_flip=1
+Native info drm: DRM resources: connector=402 encoder=401 crtc=376 plane=206 plane_formats=[875713112, 875713089, 875708754, 808669784, 808665688, 808669761, 808665665, 942953048, 942948952, 942953025, 942948929, 875709016, 875708993, 909199186, 842094158, 808530000, 1211388504, 1211388481, 1211384408, 1211384385] IN_FENCE_FD=true OUT_FENCE_PTR=true
+Native info drm: DRM mode: name=1920x1080 clock=148500kHz H=1920 2008 2052 2200 V=1080 1084 1089 1125 flags=ModeFlags(PHSYNC | NVSYNC) (16.667 ms/frame, 60.000000 Hz computed)
+Native info drm: DRM cursor: hardware plane enabled
+Native info drm: EGL: vendor=Mesa Project version=1.5 APIs=OpenGL OpenGL_ES  visual=0x34325258 swap_range=Some(1)..Some(1) surface=Some(1920)xSome(1080) extensions={native_fence=true, fence=true, wait=true, buffer_age=true, dma_buf_import=true, dma_buf_modifiers=true}
+Native info drm: EGL swap interval=0; atomic KMS page flips own vblank pacing
+Native warning drm: explicit GPU/KMS fencing is available but not yet enabled; atomic commits currently rely on implicit GBM/DRM synchronization
+Native info drm: GL: vendor=AMD renderer=AMD Ryzen 9 7950X 16-Core Processor (radeonsi, raphael_mendocino, ACO, DRM 3.64, 7.2.7-1-cachyos) version=OpenGL ES 3.2 Mesa 26.2.4-arch1.1 shading_language=OpenGL ES GLSL ES 3.20 optional={timer_query=true, external_image=true, core_vao=true, core_sync=true}
+Native info drm: runtime diagnostics: source_revision=worktree-sha256-b36846be91cbd89ccfa9233668288035e3644a644e2851a94799fb9eb5d99847 crate_version=0.5.0 kernel=7.2.7-1-cachyos renderer_cache=RendererCacheConfig { enabled: false, max_new_payloads_per_frame: 64, paint_layer: RendererPaintLayerCacheConfig { max_entries: 512, max_bytes: 671088640, max_entry_bytes: 268435456, min_visible_before_store: 1, max_stale_frames: 120 } } video_retirement=gl_fence
+Native info drm: sampled asynchronous GPU render elapsed profiling enabled via GL_EXT_disjoint_timer_query (every fourth rendered frame, nonblocking pool capacity 8)
+Native info drm: created primary framebuffer via AddFB2 modifier=Invalid
+Native info drm: GBM primary BO: 1920x1080 format=DrmFourcc(XR24) bpp=32 modifier=Invalid planes=1 [0:stride=7680 offset=0] framebuffer_api=addfb2_with_linear_legacy_fallback
+Native info drm: created primary framebuffer via AddFB2 modifier=Invalid
+DRM KMS /sys/class/drm/card0-DP-4: disabled
+Native info drm: DRM driver: name=amdgpu version=Some((3, 64, 0)) description=AMD GPU GBM_backend=drm XRGB8888_scanout_render=true
+Native info drm: DRM capabilities: monotonic_timestamps=1 addfb2_modifiers=1 syncobj=1 syncobj_timeline=1 async_page_flip=1 atomic_async_page_flip=1
+Native info drm: DRM resources: connector=402 encoder=401 crtc=376 plane=206 plane_formats=[875713112, 875713089, 875708754, 808669784, 808665688, 808669761, 808665665, 942953048, 942948952, 942953025, 942948929, 875709016, 875708993, 909199186, 842094158, 808530000, 1211388504, 1211388481, 1211384408, 1211384385] IN_FENCE_FD=true OUT_FENCE_PTR=true
+Native info drm: DRM mode: name=1920x1080 clock=148500kHz H=1920 2008 2052 2200 V=1080 1084 1089 1125 flags=ModeFlags(PHSYNC | NVSYNC) (16.667 ms/frame, 60.000000 Hz computed)
+Native info drm: DRM cursor: hardware plane enabled
+Native info drm: EGL: vendor=Mesa Project version=1.5 APIs=OpenGL OpenGL_ES  visual=0x34325258 swap_range=Some(1)..Some(1) surface=Some(1920)xSome(1080) extensions={native_fence=true, fence=true, wait=true, buffer_age=true, dma_buf_import=true, dma_buf_modifiers=true}
+Native info drm: EGL swap interval=0; atomic KMS page flips own vblank pacing
+Native warning drm: explicit GPU/KMS fencing is available but not yet enabled; atomic commits currently rely on implicit GBM/DRM synchronization
+Native info drm: GL: vendor=AMD renderer=AMD Ryzen 9 7950X 16-Core Processor (radeonsi, raphael_mendocino, ACO, DRM 3.64, 7.2.7-1-cachyos) version=OpenGL ES 3.2 Mesa 26.2.4-arch1.1 shading_language=OpenGL ES GLSL ES 3.20 optional={timer_query=true, external_image=true, core_vao=true, core_sync=true}
+Native info drm: runtime diagnostics: source_revision=worktree-sha256-b36846be91cbd89ccfa9233668288035e3644a644e2851a94799fb9eb5d99847 crate_version=0.5.0 kernel=7.2.7-1-cachyos renderer_cache=RendererCacheConfig { enabled: false, max_new_payloads_per_frame: 64, paint_layer: RendererPaintLayerCacheConfig { max_entries: 512, max_bytes: 671088640, max_entry_bytes: 268435456, min_visible_before_store: 1, max_stale_frames: 120 } } video_retirement=gl_fence
+Native info drm: sampled asynchronous GPU render elapsed profiling enabled via GL_EXT_disjoint_timer_query (every fourth rendered frame, nonblocking pool capacity 8)
+  * test initial-off, delayed upload and repeated power/brightness changes retain the owner (2519.9ms) [L#52]
+
+Finished in 5.6 seconds (0.00s async, 5.6s sync)
+
+Result: 3 passed
