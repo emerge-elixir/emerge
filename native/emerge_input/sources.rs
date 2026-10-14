@@ -2,6 +2,7 @@ use sha2::{Digest, Sha256};
 use std::{
     fs,
     io::{self, Read},
+    ops::ControlFlow,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -9,7 +10,7 @@ use std::{
 pub struct Source {
     pub directory: &'static str,
     pub archive: &'static str,
-    pub url: &'static str,
+    pub urls: &'static [&'static str],
     pub sha256: &'static str,
 }
 
@@ -17,25 +18,42 @@ pub const SOURCES: &[Source] = &[
     Source {
         directory: "libinput-1.29.2",
         archive: "libinput-1.29.2.tar.gz",
-        url: "https://gitlab.freedesktop.org/libinput/libinput/-/archive/1.29.2/libinput-1.29.2.tar.gz",
+        urls: &[
+            "https://ftp2.osuosl.org/pub/blfs/conglomeration/Xorg/libinput-1.29.2.tar.gz",
+            "https://mirror.freedif.org/pub/blfs/conglomeration/Xorg/libinput-1.29.2.tar.gz",
+            "https://gitlab.freedesktop.org/libinput/libinput/-/archive/1.29.2/libinput-1.29.2.tar.gz",
+        ],
         sha256: "02631a861fc6b9fb9ca6ae51cf863334e0699bf60c91c389ac420f3fa0053bdc",
     },
     Source {
         directory: "libevdev-1.13.4",
         archive: "libevdev-1.13.4.tar.xz",
-        url: "https://www.freedesktop.org/software/libevdev/libevdev-1.13.4.tar.xz",
+        urls: &[
+            "https://sources.voidlinux.org/libevdev-1.13.4/libevdev-1.13.4.tar.xz",
+            "https://ftp2.osuosl.org/pub/blfs/conglomeration/Xorg/libevdev-1.13.4.tar.xz",
+            "https://mirror.freedif.org/pub/blfs/conglomeration/Xorg/libevdev-1.13.4.tar.xz",
+            "https://www.freedesktop.org/software/libevdev/libevdev-1.13.4.tar.xz",
+        ],
         sha256: "f00ab8d42ad8b905296fab67e13b871f1a424839331516642100f82ad88127cd",
     },
     Source {
         directory: "mtdev-1.1.7",
         archive: "mtdev-1.1.7.tar.bz2",
-        url: "https://bitmath.org/code/mtdev/mtdev-1.1.7.tar.bz2",
+        urls: &[
+            "https://sources.voidlinux.org/mtdev-1.1.7/mtdev-1.1.7.tar.bz2",
+            "https://ftp2.osuosl.org/pub/blfs/conglomeration/mtdev/mtdev-1.1.7.tar.bz2",
+            "https://bitmath.org/code/mtdev/mtdev-1.1.7.tar.bz2",
+        ],
         sha256: "a107adad2101fecac54ac7f9f0e0a0dd155d954193da55c2340c97f2ff1d814e",
     },
     Source {
         directory: "libudev-zero-1.0.3",
         archive: "libudev-zero-1.0.3.tar.gz",
-        url: "https://codeload.github.com/illiliti/libudev-zero/tar.gz/refs/tags/1.0.3",
+        urls: &[
+            "https://sources.buildroot.net/libudev-zero/libudev-zero-1.0.3.tar.gz",
+            "https://dev.gateworks.com/sources/libudev-zero-1.0.3.tar.gz",
+            "https://codeload.github.com/illiliti/libudev-zero/tar.gz/refs/tags/1.0.3",
+        ],
         sha256: "0bd89b657d62d019598e6c7ed726ff8fed80e8ba092a83b484d66afb80b77da5",
     },
 ];
@@ -71,7 +89,47 @@ pub fn verify(path: &Path, expected: &str) -> io::Result<()> {
     Ok(())
 }
 
+fn download(url: &str, path: &Path) -> io::Result<()> {
+    eprintln!("Downloading pinned input source {url}");
+    let status = Command::new("curl")
+        .args([
+            "--fail",
+            "--location",
+            "--silent",
+            "--show-error",
+            "--proto",
+            "=https",
+            "--proto-redir",
+            "=https",
+            "--connect-timeout",
+            "15",
+            "--max-time",
+            "300",
+            "--retry",
+            "2",
+            "--output",
+        ])
+        .arg(path)
+        .arg(url)
+        .status()
+        .map_err(|e| error(format!("input source download requires curl: {e}")))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(error(format!("download failed: {url} ({status})")))
+    }
+}
+
 pub fn archive(source: &Source, cache: &Path, offline: bool) -> io::Result<PathBuf> {
+    archive_with_download(source, cache, offline, download)
+}
+
+pub fn archive_with_download(
+    source: &Source,
+    cache: &Path,
+    offline: bool,
+    download: impl Fn(&str, &Path) -> io::Result<()>,
+) -> io::Result<PathBuf> {
     let path = cache.join(source.archive);
     if path.exists() {
         verify(&path, source.sha256)?;
@@ -81,7 +139,7 @@ pub fn archive(source: &Source, cache: &Path, offline: bool) -> io::Result<PathB
         return Err(error(format!(
             "offline input source cache is missing {}; pre-populate it from {} (SHA-256 {}) or rebuild without EMERGE_INPUT_OFFLINE/CARGO_NET_OFFLINE",
             path.display(),
-            source.url,
+            source.urls.join(", "),
             source.sha256
         )));
     }
@@ -94,33 +152,26 @@ pub fn archive(source: &Source, cache: &Path, offline: bool) -> io::Result<PathB
         std::process::id()
     ));
     let result = (|| {
-        eprintln!("Downloading pinned input source {}", source.url);
-        let status = Command::new("curl")
-            .args([
-                "--fail",
-                "--location",
-                "--silent",
-                "--show-error",
-                "--proto",
-                "=https",
-                "--proto-redir",
-                "=https",
-                "--connect-timeout",
-                "15",
-                "--max-time",
-                "300",
-                "--retry",
-                "2",
-                "--output",
-            ])
-            .arg(&partial)
-            .arg(source.url)
-            .status()
-            .map_err(|e| error(format!("input source download requires curl: {e}")))?;
-        if !status.success() {
-            return Err(error(format!("download failed: {} ({status})", source.url)));
+        let attempts = source.urls.iter().try_fold(
+            error("no input source URLs configured"),
+            |_previous, url| match download(url, &partial)
+                .and_then(|()| verify(&partial, source.sha256))
+            {
+                Ok(()) => ControlFlow::Break(()),
+                Err(failure) => {
+                    eprintln!("Input source mirror {url} failed: {failure}");
+                    let _ = fs::remove_file(&partial);
+                    ControlFlow::Continue(failure)
+                }
+            },
+        );
+        if let ControlFlow::Continue(failure) = attempts {
+            return Err(error(format!(
+                "all input source mirrors failed for {} ({}): {failure}",
+                source.archive,
+                source.urls.join(", ")
+            )));
         }
-        verify(&partial, source.sha256)?;
         fs::rename(&partial, &path)?;
         Ok(path)
     })();
