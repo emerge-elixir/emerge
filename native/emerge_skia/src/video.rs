@@ -1832,6 +1832,14 @@ impl VideoRegistry {
             .state
             .lock()
             .map_err(|_| "video registry lock poisoned")?;
+        // DRM off/on recreates the presenter, not the public streams. Revalidate
+        // its freshly probed inventory without renegotiating unchanged streams.
+        if state.vulkan_rgba_linear_supported == rgba_linear_supported
+            && state.vulkan_bgra_import_supported == bgra_import_supported
+            && state.vulkan_nv12_capabilities.as_deref() == Some(nv12_capabilities.as_slice())
+        {
+            return Ok(());
+        }
         if state
             .targets
             .values()
@@ -7656,6 +7664,97 @@ mod tests {
                     ),
                 )
                 .is_ok()
+        );
+    }
+
+    #[cfg(all(
+        target_os = "linux",
+        feature = "vulkan",
+        any(feature = "wayland-core", feature = "drm-core")
+    ))]
+    #[test]
+    fn recreated_vulkan_presenter_can_republish_only_identical_active_stream_capabilities() {
+        let (release_tx, _release_rx) = unbounded();
+        let registry = test_registry(release_tx, None);
+        registry
+            .set_prime_stream_requirements(Some(PrimeStreamRequirements::Vulkan))
+            .unwrap();
+        let capability = generic_nv12_capability(0);
+        registry
+            .set_vulkan_import_capabilities(true, true, vec![capability])
+            .unwrap();
+        let incarnation = registry
+            .create_target(VideoTargetSpec {
+                id: "preview".into(),
+                width: 64,
+                height: 32,
+                mode: VideoMode::Prime,
+            })
+            .unwrap();
+        let stream = registry
+            .open_stream(
+                "preview",
+                incarnation,
+                stream_format(
+                    DRM_FORMAT_ABGR8888,
+                    StreamModifierPolicy::Explicit(0),
+                    StreamAcquireSyncPolicy::SyncFile,
+                ),
+            )
+            .unwrap();
+        for _ in 0..10 {
+            registry.set_prime_video_available(false).unwrap();
+            registry
+                .set_vulkan_import_capabilities(true, true, vec![capability])
+                .unwrap();
+            registry.set_prime_video_available(true).unwrap();
+        }
+        assert!(
+            registry
+                .set_vulkan_import_capabilities(false, true, vec![capability])
+                .is_err()
+        );
+        assert!(
+            registry
+                .set_vulkan_import_capabilities(true, false, vec![capability])
+                .is_err()
+        );
+        assert!(
+            registry
+                .set_vulkan_import_capabilities(true, true, Vec::new())
+                .is_err()
+        );
+        let mut changed_device = capability;
+        changed_device.active_device_identity.device_uuid[0] ^= 1;
+        assert!(
+            registry
+                .set_vulkan_import_capabilities(true, true, vec![changed_device])
+                .is_err()
+        );
+        let mut changed_limits = capability.interop();
+        changed_limits.max_extent.width += 1;
+        assert!(
+            registry
+                .set_vulkan_import_capabilities(
+                    true,
+                    true,
+                    vec![Nv12ModifierCapability::from_interop(
+                        capability.active_device_identity,
+                        changed_limits
+                    )]
+                )
+                .is_err()
+        );
+        registry
+            .set_vulkan_import_capabilities(true, true, vec![capability])
+            .unwrap();
+        assert_eq!(
+            registry.state.lock().unwrap().targets["preview"]
+                .active_stream
+                .as_ref()
+                .unwrap()
+                .id,
+            stream
         );
     }
 
