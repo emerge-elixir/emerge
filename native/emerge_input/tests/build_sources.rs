@@ -5,7 +5,8 @@ mod sources;
 
 use sha2::{Digest, Sha256};
 use std::{
-    fs,
+    cell::RefCell,
+    fs, io,
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -32,7 +33,10 @@ impl Drop for TempDir {
 const FIXTURE: sources::Source = sources::Source {
     directory: "fixture",
     archive: "fixture.tar.gz",
-    url: "https://invalid.example/fixture.tar.gz",
+    urls: &[
+        "https://mirror.example/fixture.tar.gz",
+        "https://upstream.example/fixture.tar.gz",
+    ],
     sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
 };
 
@@ -83,7 +87,9 @@ fn missing_offline_archive_fails_without_creating_or_extracting_files() {
         err.to_string()
             .contains("offline input source cache is missing")
     );
-    assert!(err.to_string().contains(FIXTURE.url));
+    for url in FIXTURE.urls {
+        assert!(err.to_string().contains(url));
+    }
     assert!(!output.exists());
     assert_eq!(fs::read_dir(&cache.0).unwrap().count(), 0);
 }
@@ -102,12 +108,128 @@ fn corrupt_archive_is_rejected_before_extraction() {
 fn sources_are_immutable_https_archives_with_sha256_pins() {
     assert_eq!(sources::SOURCES.len(), 4);
     for source in sources::SOURCES {
-        assert!(source.url.starts_with("https://"));
+        // At least two independent mirrors plus upstream for every archive.
+        assert!(source.urls.len() >= 3);
+        assert!(source.urls.iter().all(|url| url.starts_with("https://")));
         assert!(source.archive.starts_with(source.directory));
         assert_eq!(source.sha256.len(), 64);
         assert!(source.sha256.chars().all(|c| c.is_ascii_hexdigit()));
-        assert!(!source.url.contains("latest"));
+        assert!(source.urls.iter().all(|url| !url.contains("latest")));
     }
+}
+
+#[test]
+fn failed_download_or_checksum_tries_the_next_mirror_and_caches_verified_bytes() {
+    for corrupt in [false, true] {
+        let cache = TempDir::new();
+        let attempts = RefCell::new(Vec::new());
+        let path = sources::archive_with_download(&FIXTURE, &cache.0, false, |url, partial| {
+            attempts.borrow_mut().push(url.to_owned());
+            assert!(!partial.exists());
+            assert!(!cache.0.join(FIXTURE.archive).exists());
+            if url == FIXTURE.urls[0] {
+                fs::write(partial, b"bad response")?;
+                if corrupt {
+                    Ok(())
+                } else {
+                    Err(io::Error::other("connection timeout"))
+                }
+            } else {
+                fs::write(partial, b"abc")
+            }
+        })
+        .unwrap();
+        assert_eq!(attempts.into_inner(), FIXTURE.urls);
+        assert_eq!(fs::read(&path).unwrap(), b"abc");
+        assert_eq!(fs::read_dir(&cache.0).unwrap().count(), 1);
+        for offline in [false, true] {
+            assert_eq!(
+                sources::archive_with_download(&FIXTURE, &cache.0, offline, |_, _| {
+                    panic!("verified cache must not download")
+                })
+                .unwrap(),
+                path
+            );
+        }
+    }
+}
+
+#[test]
+fn fallback_reaches_a_third_url_after_network_and_checksum_failures() {
+    let cache = TempDir::new();
+    let source = sources::Source {
+        urls: &[
+            "https://first.example/fixture.tar.gz",
+            "https://second.example/fixture.tar.gz",
+            "https://third.example/fixture.tar.gz",
+            "https://unused.example/fixture.tar.gz",
+        ],
+        ..FIXTURE
+    };
+    let attempts = RefCell::new(Vec::new());
+    sources::archive_with_download(&source, &cache.0, false, |url, partial| {
+        attempts.borrow_mut().push(url.to_owned());
+        assert!(!partial.exists());
+        if url == source.urls[0] {
+            Err(io::Error::other("TLS timeout"))
+        } else if url == source.urls[1] {
+            fs::write(partial, b"HTML challenge page")
+        } else {
+            assert_eq!(url, source.urls[2]);
+            fs::write(partial, b"abc")
+        }
+    })
+    .unwrap();
+    assert_eq!(attempts.into_inner(), source.urls[..3]);
+    assert_eq!(fs::read_dir(&cache.0).unwrap().count(), 1);
+}
+
+#[test]
+fn first_verified_mirror_stops_downloads() {
+    let cache = TempDir::new();
+    let path = sources::archive_with_download(&FIXTURE, &cache.0, false, |url, partial| {
+        assert_eq!(url, FIXTURE.urls[0]);
+        fs::write(partial, b"abc")
+    })
+    .unwrap();
+    assert_eq!(fs::read(path).unwrap(), b"abc");
+}
+
+#[test]
+fn exhausted_mirrors_remove_partial_files_and_report_urls_and_last_failure() {
+    let cache = TempDir::new();
+    let attempts = RefCell::new(Vec::new());
+    let failure = sources::archive_with_download(&FIXTURE, &cache.0, false, |url, partial| {
+        attempts.borrow_mut().push(url.to_owned());
+        fs::write(partial, b"not the pinned archive")
+    })
+    .unwrap_err()
+    .to_string();
+    assert_eq!(attempts.into_inner(), FIXTURE.urls);
+    assert!(failure.contains("all input source mirrors failed"));
+    assert!(failure.contains("SHA-256 mismatch"));
+    assert!(FIXTURE.urls.iter().all(|url| failure.contains(url)));
+    assert_eq!(fs::read_dir(&cache.0).unwrap().count(), 0);
+}
+
+#[test]
+fn offline_and_corrupt_cache_never_contact_mirrors() {
+    let cache = TempDir::new();
+    assert!(
+        sources::archive_with_download(&FIXTURE, &cache.0, true, |_, _| {
+            panic!("offline must not download")
+        })
+        .is_err()
+    );
+    fs::write(cache.0.join(FIXTURE.archive), b"corrupt cached bytes").unwrap();
+    assert!(
+        sources::archive_with_download(&FIXTURE, &cache.0, false, |_, _| {
+            panic!("corrupt cache must fail closed")
+        })
+        .unwrap_err()
+        .to_string()
+        .contains("SHA-256 mismatch")
+    );
 }
 
 #[test]
