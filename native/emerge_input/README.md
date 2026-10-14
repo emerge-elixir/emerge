@@ -22,9 +22,13 @@ The default archive cache is `input-sources/` inside Cargo's `OUT_DIR`, outside
 tracked/package files. It follows Cargo's target directory and stays writable
 when the source checkout is read-only. Set `EMERGE_INPUT_CACHE_DIR` to an absolute
 directory to share it across source checkouts, target profiles or CI jobs.
-Downloads are published atomically only after verification. Cached archives are hash-checked
-again whenever the build script runs; a corrupt archive fails the build rather
-than being accepted or silently replaced.
+Each archive has an ordered list of HTTPS mirrors, with upstream last. Failed
+requests and responses that do not match the pinned SHA-256 (including HTML
+challenge pages) fall through to the next URL. Every configured mirror was
+verified against the existing pin; no versions or checksums are changed.
+Downloads are published atomically only after verification. Cached archives are
+hash-checked again whenever the build script runs; a corrupt cached archive fails
+the build rather than being accepted or silently replaced.
 
 Set `EMERGE_INPUT_OFFLINE=1` or `CARGO_NET_OFFLINE=true` to forbid downloads.
 A missing archive then fails with its expected cache filename, source URL and
@@ -38,6 +42,16 @@ Verified archives are extracted into Cargo's `OUT_DIR` on each build-script run.
 Patches and generated files are kept separately, leaving the upstream originals
 unchanged. Cleaning Cargo's target directory removes the default download cache;
 use an external `EMERGE_INPUT_CACHE_DIR` to retain it across clean builds.
+
+Linux CI and release artifact jobs restore/save the same GitHub Actions
+archive-only cache, keyed by `sources.rs` rather than renderer, target or Rust
+version. Main-branch CI seeds a cache that tag builds can restore. A complete
+cache is checked against the authoritative Rust pins before saving, including
+when later compilation fails; partial or corrupt caches are never published.
+Cross builds mount/pass through `EMERGE_INPUT_CACHE_DIR`; release Docker builds
+mount it writable at `/input-sources` independently of the read-only checkout.
+GitHub's cache scope, retention and eviction rules still apply: a cache miss
+uses the mirror fallback normally.
 
 ## Runtime integration
 
@@ -70,12 +84,14 @@ absolute paths nor extraction or environment changes. The upstream explicit
 | mtdev | 1.1.7 | MIT | `a107adad2101fecac54ac7f9f0e0a0dd155d954193da55c2340c97f2ff1d814e` |
 | libudev-zero | 1.0.3 | ISC | `0bd89b657d62d019598e6c7ed726ff8fed80e8ba092a83b484d66afb80b77da5` |
 
-Sources (the authoritative pins are in `sources.rs`):
+Download order (exact URLs and authoritative pins are in `sources.rs`):
 
-- https://gitlab.freedesktop.org/libinput/libinput/-/archive/1.29.2/libinput-1.29.2.tar.gz
-- https://www.freedesktop.org/software/libevdev/libevdev-1.13.4.tar.xz
-- https://bitmath.org/code/mtdev/mtdev-1.1.7.tar.bz2
-- https://codeload.github.com/illiliti/libudev-zero/tar.gz/refs/tags/1.0.3
+| Archive | Mirrors, then upstream |
+|---|---|
+| libinput | OSUOSL BLFS → FreeDif BLFS → freedesktop GitLab |
+| libevdev | Void Linux → OSUOSL BLFS → FreeDif BLFS → freedesktop |
+| mtdev | Void Linux → OSUOSL BLFS → bitmath.org |
+| libudev-zero | Buildroot → Gateworks → GitHub codeload |
 
 Full upstream library license notices are retained under `licenses/`. Downloaded
 Linux UAPI headers retain their original notices. `event_names.rs` generates

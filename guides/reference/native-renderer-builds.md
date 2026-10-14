@@ -130,8 +130,10 @@ Applications do not need to add these packages or a udev daemon to their
 and use the existing cross C compiler. The build host needs `curl` and `tar` with
 gzip/xz/bzip2 support, but not pkg-config, Meson or Python. Set
 `EMERGE_INPUT_CACHE_DIR` to share the archive cache and `EMERGE_INPUT_OFFLINE=1`
-to require pre-populated archives without network access; see the input crate's
-README for cache filenames and offline setup. Hardware quirks from the downloaded
+to require pre-populated archives without network access. Downloads try multiple
+checksum-verified mirrors before upstream; Linux CI and artifact jobs share a
+pin-keyed GitHub Actions archive cache, including cross/container builds. See the
+input crate's README for download order, cache filenames and offline setup. Hardware quirks from the downloaded
 libinput archive are embedded into the NIF, so deployment needs neither network
 access, `/usr/share/libinput` nor writable extraction paths. Precompiled NIFs
 already contain this bundle.
