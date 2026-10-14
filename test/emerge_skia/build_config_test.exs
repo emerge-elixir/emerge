@@ -616,10 +616,12 @@ defmodule EmergeSkia.BuildConfigTest do
     refute BuildConfig.checksum_only_mode?(%{})
   end
 
+  # Explicit artifact fixtures must not inherit the source-build Vulkan profile.
   test "force_precompiled_build? forces builds when checksum is missing" do
     assert BuildConfig.force_precompiled_build?(
              checksum_path: "/tmp/emerge-missing-checksum",
              compiled_backends: [:wayland],
+             compiled_vulkan_backends: [],
              env: %{},
              target_resolver: fn _targets, _nif_versions ->
                {:ok, "nif-2.15-x86_64-unknown-linux-gnu"}
@@ -632,6 +634,7 @@ defmodule EmergeSkia.BuildConfigTest do
              BuildConfig.force_precompiled_build?(
                checksum_path: __ENV__.file,
                compiled_backends: [:wayland],
+               compiled_vulkan_backends: [],
                env: %{}
              )
            )
@@ -641,6 +644,7 @@ defmodule EmergeSkia.BuildConfigTest do
     assert BuildConfig.force_precompiled_build?(
              checksum_path: __ENV__.file,
              compiled_backends: [:macos],
+             compiled_vulkan_backends: [],
              env: %{},
              target_resolver: fn _targets, _nif_versions ->
                {:ok, "nif-2.15-x86_64-unknown-linux-gnu"}
@@ -652,6 +656,7 @@ defmodule EmergeSkia.BuildConfigTest do
     refute BuildConfig.force_precompiled_build?(
              checksum_path: __ENV__.file,
              compiled_backends: [:wayland],
+             compiled_vulkan_backends: [],
              env: %{},
              target_resolver: fn _targets, _nif_versions ->
                {:ok, "nif-2.15-x86_64-unknown-linux-gnu"}
@@ -697,6 +702,7 @@ defmodule EmergeSkia.BuildConfigTest do
     refute BuildConfig.force_precompiled_build?(
              checksum_path: __ENV__.file,
              compiled_backends: [:drm],
+             compiled_vulkan_backends: [],
              env: %{},
              target_resolver: fn _targets, _nif_versions ->
                {:ok, "nif-2.15-x86_64-unknown-linux-gnu"}
@@ -706,6 +712,7 @@ defmodule EmergeSkia.BuildConfigTest do
     refute BuildConfig.force_precompiled_build?(
              checksum_path: __ENV__.file,
              compiled_backends: [:wayland, :drm],
+             compiled_vulkan_backends: [],
              env: %{},
              target_resolver: fn _targets, _nif_versions ->
                {:ok, "nif-2.15-x86_64-unknown-linux-gnu"}
@@ -717,6 +724,7 @@ defmodule EmergeSkia.BuildConfigTest do
     refute BuildConfig.force_precompiled_build?(
              checksum_path: __ENV__.file,
              compiled_backends: [:drm],
+             compiled_vulkan_backends: [],
              env: %{
                "NERVES_SDK_SYSROOT" => "/tmp/nerves/staging",
                "TARGET_ARCH" => "aarch64",
@@ -736,6 +744,7 @@ defmodule EmergeSkia.BuildConfigTest do
     refute BuildConfig.force_precompiled_build?(
              checksum_path: __ENV__.file,
              compiled_backends: [],
+             compiled_vulkan_backends: [],
              env: %{"MIX_TARGET" => "trellis"},
              target_resolver: target_resolver
            )
@@ -743,6 +752,7 @@ defmodule EmergeSkia.BuildConfigTest do
     refute BuildConfig.force_precompiled_build?(
              checksum_path: __ENV__.file,
              compiled_backends: [:drm],
+             compiled_vulkan_backends: [],
              env: %{"MIX_TARGET" => "trellis"},
              target_resolver: target_resolver
            )
@@ -752,6 +762,7 @@ defmodule EmergeSkia.BuildConfigTest do
     assert BuildConfig.force_precompiled_build?(
              checksum_path: __ENV__.file,
              compiled_backends: [:wayland],
+             compiled_vulkan_backends: [],
              env: %{BuildConfig.force_precompiled_build_env_key() => "true"},
              target_resolver: fn _targets, _nif_versions ->
                {:ok, "nif-2.15-x86_64-unknown-linux-gnu"}
@@ -763,6 +774,7 @@ defmodule EmergeSkia.BuildConfigTest do
     assert BuildConfig.force_precompiled_build?(
              checksum_path: __ENV__.file,
              compiled_backends: [:wayland],
+             compiled_vulkan_backends: [],
              env: %{},
              target_resolver: fn _targets, _nif_versions -> {:error, :unsupported_target} end
            )
