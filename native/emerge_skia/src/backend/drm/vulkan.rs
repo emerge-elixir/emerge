@@ -35,7 +35,8 @@ use crate::{
     renderer::{RenderState, RenderTimings},
     stats::{format_slow_render_frame_log, render_frame_has_slow_stage},
     video::{
-        VideoStreamIdentity, VulkanVideoImportContext, mark_vulkan_process_quarantine_terminal,
+        VideoStreamIdentity, VulkanVideoImportContext, ensure_vulkan_process_runtime_admission,
+        mark_vulkan_process_quarantine_terminal,
     },
 };
 
@@ -446,6 +447,7 @@ impl ScanoutLifecycle {
     /// whose event was lost during hotplug. Never apply this to poisoned state.
     fn detach_output(
         &mut self,
+        suppress: impl FnOnce(),
         gpu_idle: impl FnOnce() -> Result<(), String>,
         disable_scanout: impl FnOnce() -> Result<(), String>,
         drain_events: impl FnOnce() -> Result<(), String>,
@@ -454,6 +456,7 @@ impl ScanoutLifecycle {
         if self.rendering.is_some() {
             return Err("cannot detach DRM Vulkan output during render submission".into());
         }
+        suppress();
         gpu_idle()?;
         disable_scanout()?;
         drain_events()?;
@@ -530,6 +533,7 @@ struct PresenterSession {
     // Declaration order is the unwind/fallback drop order. Borrowed Skia surfaces and BOs must
     // disappear before Ganesh, GBM, Vulkan, and the KMS card even when startup exits early.
     slots: Vec<ConcreteSlot>,
+    video_context: Option<VulkanVideoImportContext>,
     engine: Option<VulkanEngine>,
     gbm: Option<GbmDevice<super::core::Card>>,
     device: Option<Arc<VulkanDevice>>,
@@ -740,6 +744,7 @@ impl PresenterSession {
                 kms_state: Some(kms_state),
                 gbm: Some(gbm),
                 slots,
+                video_context: None,
                 engine: Some(engine),
                 device: Some(device),
                 instance: Some(instance),
@@ -982,6 +987,7 @@ impl PresenterSession {
     fn suspend_output(
         &mut self,
         video_registry: &Arc<crate::video::VideoRegistry>,
+        presenter: Option<&super::power::PresenterControl>,
     ) -> Result<(), String> {
         if self.output_suspended {
             return Ok(());
@@ -999,6 +1005,11 @@ impl PresenterSession {
             .as_ref()
             .ok_or("DRM Vulkan KMS state already dropped")?;
         self.lifecycle.detach_output(
+            || {
+                if let Some(presenter) = presenter {
+                    presenter.before_detach();
+                }
+            },
             || device.wait_idle("DRM Vulkan display detach"),
             || disable_output(kms, props),
             || drain_detached_events(kms),
@@ -1057,6 +1068,7 @@ impl PresenterSession {
         });
         engine.shutdown_ganesh();
         self.engine.take();
+        self.video_context.take();
 
         if !self.output_suspended
             && let Some(state) = self.kms_state.as_ref()
@@ -1198,21 +1210,9 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
         startup_tx,
         stop,
         running_flag,
-        presenter_wake,
-        input_wake,
-        tree_tx,
-        render_rx,
-        cursor_icon_rx,
-        cursor_state,
-        event_tx,
-        screen_tx,
-        render_counter,
         native_log,
-        stats,
-        latest_frame,
-        video_registry,
         ..
-    } = context;
+    } = &context;
 
     if config.force_gpu_finish {
         let _ = startup_tx.send(Err(
@@ -1221,7 +1221,9 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
         running_flag.store(false, Ordering::Release);
         return;
     }
-    if let Err(error) = ensure_scanout_admitted() {
+    if let Err(error) =
+        ensure_scanout_admitted().and_then(|_| ensure_vulkan_process_runtime_admission())
+    {
         let _ = startup_tx.send(Err(format!("DRM Vulkan backend unavailable: {error}")));
         running_flag.store(false, Ordering::Release);
         return;
@@ -1252,8 +1254,8 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
 
         match PresenterSession::new(
             &config,
-            &native_log,
-            Arc::clone(&lifecycle),
+            native_log,
+            Arc::clone(lifecycle),
             presenter.as_ref(),
         ) {
             Ok(session) => break session,
@@ -1262,7 +1264,7 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
                     "DRM Vulkan backend unavailable: {error} (retrying, {retries_remaining} attempts left)"
                 );
                 retries_remaining -= 1;
-                sleep_with_stop(&stop, retry_interval);
+                sleep_with_stop(stop, retry_interval);
             }
             Err(error) => {
                 let _ = startup_tx.send(Err(format!(
@@ -1274,9 +1276,71 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
             }
         }
     };
-    let (video_context, video_import_error) = optional_video_import(VulkanVideoImportContext::new(
-        Arc::clone(session.device.as_ref().expect("presenter Vulkan device")),
-    ));
+    // Keep concrete owners outside the unwind boundary: a presenter panic must
+    // park them, not run Vulkan/GBM destructors with uncertain driver ownership.
+    let mut video_context = None;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_session(
+            &context,
+            &config,
+            &mut session,
+            &mut video_context,
+            report,
+            cursor_theme,
+        )
+    }))
+    .unwrap_or_else(|_| Err("DRM Vulkan presenter panicked".into()));
+    // Import/sync pools must survive the loop (including unwinding) until GPU
+    // retirement, and remain parked with the session if ownership is uncertain.
+    session.video_context = video_context;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        retire_session(&context, &mut session, result)
+    }))
+    .unwrap_or_else(|_| Err("DRM Vulkan retirement panicked".into()));
+    if let Err(error) = result {
+        native_log.error(
+            "drm_vulkan",
+            format!("quarantining until VM restart: {error}"),
+        );
+        lifecycle.quarantine(error);
+        quarantine_session(session);
+    }
+    running_flag.store(false, Ordering::Release);
+}
+
+fn run_session(
+    context: &DrmRunContext,
+    config: &DrmRunConfig,
+    session: &mut PresenterSession,
+    video_context_owner: &mut Option<VulkanVideoImportContext>,
+    report: VulkanRendererReport,
+    cursor_theme: DrmCursorTheme,
+) -> Result<(), String> {
+    let DrmRunContext {
+        presenter,
+        startup_tx,
+        stop,
+        presenter_wake,
+        input_wake,
+        tree_tx,
+        render_rx,
+        cursor_icon_rx,
+        cursor_state,
+        event_tx,
+        screen_tx,
+        render_counter,
+        native_log,
+        stats,
+        latest_frame,
+        video_registry,
+        ..
+    } = context;
+    let (import_context, video_import_error) =
+        optional_video_import(VulkanVideoImportContext::new(Arc::clone(
+            session.device.as_ref().expect("presenter Vulkan device"),
+        )));
+    *video_context_owner = import_context;
+    let video_context = &*video_context_owner;
     if let Some(error) = video_import_error {
         native_log.warning(
             "video",
@@ -1300,8 +1364,7 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
             let _ = startup_tx.send(Err(format!(
                 "DRM Vulkan backend unavailable: failed to publish active-device video import capabilities: {error}"
             )));
-            running_flag.store(false, Ordering::Release);
-            return;
+            return Ok(());
         }
     }
     let prime_video_supported = video_context
@@ -1318,8 +1381,7 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
         let _ = startup_tx.send(Err(format!(
             "DRM Vulkan backend unavailable: failed to publish PRIME video availability: {error}"
         )));
-        running_flag.store(false, Ordering::Release);
-        return;
+        return Ok(());
     }
     let _ = screen_tx.send(session.kms().dimensions);
     let _ = input_wake.signal();
@@ -1337,17 +1399,11 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
         vulkan_device: Some(report),
     }));
     let required_frame = if let Some(presenter) = &presenter {
-        match presenter.request_frame(&tree_tx, session.kms().dimensions, &stop) {
+        match presenter.request_frame(tree_tx, session.kms().dimensions, stop) {
             Ok(required) => Some(required),
             Err(error) => {
                 native_log.error("drm_vulkan", error);
-                presenter.before_detach();
-                if session.normal_shutdown().is_err() {
-                    lifecycle.quarantine("DRM Vulkan shutdown failed");
-                    quarantine_session(session);
-                }
-                running_flag.store(false, Ordering::Release);
-                return;
+                return Ok(());
             }
         }
     } else {
@@ -1391,9 +1447,12 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
                     ..
                 } => {
                     let received_at = Instant::now();
-                    application_frame_ready = application_frame
-                        && (!first_present
-                            || required_frame.is_none_or(|request| frame_request == request));
+                    application_frame_ready = application_frame_matches(
+                        application_frame,
+                        frame_request,
+                        required_frame,
+                        first_present,
+                    );
                     render_state.set_scene(*scene);
                     if let Err(error) =
                         video_registry.set_active_targets(&render_state.video_target_ids)
@@ -1453,22 +1512,17 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
         let flip_timed_out = session.lifecycle.in_flight.is_some()
             && page_flip_deadline.is_some_and(|deadline| now >= deadline);
         if next_hotplug.is_some_and(|t| now >= t) || flip_timed_out {
-            let available = match probe_output_available(
-                &session,
-                session.output_suspended || flip_timed_out,
-            ) {
-                Ok(available) => available,
-                Err(error) => {
-                    terminal = Some(error);
-                    break;
-                }
-            };
+            let available =
+                match probe_output_available(session, session.output_suspended || flip_timed_out) {
+                    Ok(available) => available,
+                    Err(error) => {
+                        terminal = Some(error);
+                        break;
+                    }
+                };
             let action = output_action(session.output_suspended, available, flip_timed_out);
             if matches!(action, OutputAction::Suspend | OutputAction::Repair) {
-                if let Some(presenter) = &presenter {
-                    presenter.before_detach();
-                }
-                if let Err(error) = session.suspend_output(&video_registry) {
+                if let Err(error) = session.suspend_output(video_registry, presenter.as_ref()) {
                     terminal = Some(format!("DRM Vulkan output detach failed: {error}"));
                     break;
                 }
@@ -1513,7 +1567,7 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
         // reaping without drawing so an unplugged monitor cannot pin all camera
         // producer buffers until somebody reconnects it.
         if session.output_suspended
-            && let Err(error) = session.reap_video_cleanup(&video_registry)
+            && let Err(error) = session.reap_video_cleanup(video_registry)
         {
             terminal = Some(format!(
                 "DRM Vulkan suspended video cleanup failed: {error}"
@@ -1543,7 +1597,7 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
             let video_sync_error = match session.render(
                 desired_generation,
                 &render_state,
-                &video_registry,
+                video_registry,
                 video_context.as_ref(),
                 cursor,
                 capture_generation,
@@ -1612,8 +1666,8 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
                     }
                     // Even a zero EBUSY retry budget must not turn a cable
                     // disconnect into a renderer/camera session replacement.
-                    if matches!(probe_output_available(&session, false), Ok(false)) {
-                        match session.suspend_output(&video_registry) {
+                    if matches!(probe_output_available(session, false), Ok(false)) {
+                        match session.suspend_output(video_registry, presenter.as_ref()) {
                             Ok(()) => {
                                 page_flip_deadline = None;
                                 retry_at = None;
@@ -1625,6 +1679,9 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
                                     "drm_vulkan",
                                     "output disappeared during busy commit; scanout suspended",
                                 );
+                                if presenter.is_some() {
+                                    break;
+                                }
                                 continue;
                             }
                             Err(error) => {
@@ -1659,12 +1716,12 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
                     }
                 }
                 Ok(AtomicAttemptResult::Terminal(kind)) => {
-                    let available = probe_output_available(&session, true);
+                    let available = probe_output_available(session, true);
                     let retry_modeset = available == Ok(true)
                         && !initial_commit
                         && kind == AtomicCommitErrorKind::Invalid;
                     if available == Ok(false) || retry_modeset {
-                        match session.suspend_output(&video_registry) {
+                        match session.suspend_output(video_registry, presenter.as_ref()) {
                             Ok(()) => {
                                 page_flip_deadline = None;
                                 retry_at = None;
@@ -1673,6 +1730,9 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
                                     "drm_vulkan",
                                     "output changed during commit; scanout suspended for remodeset",
                                 );
+                                if presenter.is_some() {
+                                    break;
+                                }
                                 continue;
                             }
                             Err(error) => {
@@ -1732,6 +1792,11 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
                 terminal = Some(format!("DRM Vulkan poll failed: {error}"));
                 break;
             }
+        }
+        // Off/Stop can wake a poll with a queued flip. Leave it to retirement,
+        // without publishing captures, progress or an illumination notification.
+        if stop.load(Ordering::Acquire) {
+            break;
         }
         if pollfds[0].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
             terminal = Some("DRM Vulkan fd reported a terminal poll error".into());
@@ -1838,75 +1903,65 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
         }
     }
 
-    if let Err(error) = video_registry.set_prime_video_available(false) {
-        native_log.warning("video", format!("failed to disable PRIME video: {error}"));
-    }
-    // Stop may race unplug before the periodic probe. Detach safely rather
-    // than waiting for a lost flip or restoring a now-disconnected old mode.
-    if terminal.is_none()
-        && matches!(probe_output_available(&session, true), Ok(false))
-        && let Err(error) = session.suspend_output(&video_registry)
-    {
-        terminal = Some(error);
-    }
-    if terminal.is_none()
-        && session.lifecycle.in_flight.is_some()
-        && let Err(error) = resolve_shutdown_page_flip(&mut session, PAGE_FLIP_TIMEOUT)
-    {
-        terminal = Some(error);
-    }
-    // A frame prepared but never submitted has queue work and an exported fence whose ownership
-    // was never accepted by KMS. An idle repair proves completion before discarding that prepared
-    // identity during an otherwise clean shutdown.
-    if terminal.is_none()
-        && session.lifecycle.prepared.is_some()
-        && let Err(error) = session
-            .repair_unaccepted_prepared_frame("DRM Vulkan uncommitted prepared-frame shutdown")
-    {
-        terminal = Some(error);
-    }
     if let Some(reason) = recovered_error.as_ref() {
         native_log.error(
             "drm_vulkan",
             format!("presenter stopped after ownership-safe recovery: {reason}"),
         );
     }
-    if let Some(presenter) = &presenter {
+    terminal.map_or(Ok(()), Err)
+}
+
+/// Common to startup failure, ordinary off/Stop, disconnect and presenter panic.
+/// A managed child always leaves scanout disabled; only the unowned/probe path
+/// may restore inherited state. Never attempt to repair a poisoned submission.
+fn retire_session(
+    context: &DrmRunContext,
+    session: &mut PresenterSession,
+    result: Result<(), String>,
+) -> Result<(), String> {
+    let video_disabled = context.video_registry.set_prime_video_available(false);
+    if let Some(presenter) = &context.presenter {
         presenter.before_detach();
     }
-    let uncertain = terminal.is_some()
-        || session.lifecycle.in_flight.is_some()
-        || session.lifecycle.prepared.is_some()
-        || session.lifecycle.rendering.is_some()
-        || session
-            .device
-            .as_ref()
-            .is_some_and(|device| device.is_device_lost());
-    if uncertain {
-        let reason = terminal.unwrap_or_else(|| "unresolved DRM Vulkan ownership".into());
-        native_log.error(
-            "drm_vulkan",
-            format!("terminal presenter fault; quarantining session until VM restart: {reason}"),
-        );
-        lifecycle.quarantine("DRM Vulkan ownership is uncertain; restart the VM/process");
-        quarantine_session(session);
+    result?;
+    if session
+        .device
+        .as_ref()
+        .is_some_and(|device| device.is_device_lost())
+    {
+        return Err("DRM Vulkan device lost during retirement".into());
+    }
+    if context.presenter.is_some() || matches!(probe_output_available(session, true), Ok(false)) {
+        // The blocking disable also retires accepted commits with lost events.
+        // It discards their hooks instead of reporting an old frame as visible.
+        session.suspend_output(&context.video_registry, context.presenter.as_ref())?;
     } else {
-        // A clean stop only reaches here with no prepared/in-flight ownership. The explicit KMS
-        // restore is the final authority before Vulkan/GBM owners are destroyed.
-        if let Err(error) = session.normal_shutdown() {
-            native_log.error(
-                "drm_vulkan",
-                format!("clean shutdown became uncertain; quarantining: {error}"),
-            );
-            lifecycle.quarantine("DRM Vulkan ownership is uncertain; restart the VM/process");
-            quarantine_session(session);
+        if session.lifecycle.in_flight.is_some() {
+            resolve_shutdown_page_flip(session, PAGE_FLIP_TIMEOUT)?;
+        }
+        if session.lifecycle.prepared.is_some() {
+            session.repair_unaccepted_prepared_frame(
+                "DRM Vulkan uncommitted prepared-frame shutdown",
+            )?;
         }
     }
-    running_flag.store(false, Ordering::Release);
+    session.normal_shutdown()?;
+    video_disabled
 }
 
 // Shared by the render decision and idle deadline. Capture, cursor and video
 // generations must neither draw default content nor spin the loop before upload.
+fn application_frame_matches(
+    application_frame: bool,
+    frame_request: u64,
+    required_frame: Option<u64>,
+    first_present: bool,
+) -> bool {
+    application_frame
+        && (!first_present || required_frame.is_none_or(|request| frame_request == request))
+}
+
 fn application_frame_pending(ready: bool, suspended: bool, desired: u64, committed: u64) -> bool {
     ready && !suspended && desired != committed
 }
@@ -2072,6 +2127,54 @@ mod tests {
         assert!(!application_frame_pending(true, false, 2, 2));
         assert!(!application_frame_pending(true, true, 3, 2));
         assert!(application_frame_pending(true, false, 3, 2));
+    }
+
+    #[test]
+    fn recreated_presenter_requires_its_own_application_frame_before_first_flip() {
+        assert!(!application_frame_matches(false, 2, Some(2), true));
+        assert!(!application_frame_matches(true, 1, Some(2), true));
+        assert!(application_frame_matches(true, 2, Some(2), true));
+        assert!(application_frame_matches(true, 0, None, true));
+        assert!(application_frame_matches(true, 3, Some(2), false));
+        assert!(!application_frame_matches(false, 2, Some(2), false));
+        for request in 1..=100 {
+            let mut lifecycle = ScanoutLifecycle::new(3).unwrap();
+            assert!(!application_frame_matches(
+                true,
+                request - 1,
+                Some(request),
+                true
+            ));
+            assert!(application_frame_matches(
+                true,
+                request,
+                Some(request),
+                true
+            ));
+            prepare(&mut lifecycle, request);
+            lifecycle
+                .complete_atomic_attempt(AtomicAttemptResult::Committed)
+                .unwrap();
+            // Off may arrive before the flip. Disable retires it without any
+            // presented hooks and makes a late old flip invalid, not visible.
+            lifecycle
+                .detach_output(|| {}, || Ok(()), || Ok(()), || Ok(()))
+                .unwrap();
+            assert!(lifecycle.current.is_none());
+            assert!(lifecycle.page_flip().is_err());
+        }
+    }
+
+    #[test]
+    fn initially_off_can_retire_without_an_application_frame_or_commit() {
+        let mut lifecycle = ScanoutLifecycle::new(3).unwrap();
+        lifecycle
+            .detach_output(|| {}, || Ok(()), || Ok(()), || Ok(()))
+            .unwrap();
+        assert!(lifecycle.current.is_none());
+        assert!(lifecycle.in_flight.is_none());
+        assert!(lifecycle.prepared.is_none());
+        assert_eq!(lifecycle.slots.len(), MIN_SCANOUT_SLOTS);
     }
 
     fn sync_file_fixture() -> OwnedFd {
@@ -2298,8 +2401,8 @@ mod tests {
     }
 
     #[test]
-    fn detach_requires_gpu_idle_then_blocking_disable_then_old_event_drain() {
-        for fail_at in 0..3 {
+    fn detach_requires_suppression_then_gpu_idle_then_disable_then_old_event_drain() {
+        for fail_at in 1..4 {
             let mut lifecycle = ScanoutLifecycle::new(3).unwrap();
             let slot = prepare(&mut lifecycle, 1);
             lifecycle
@@ -2316,7 +2419,12 @@ mod tests {
             };
             assert!(
                 lifecycle
-                    .detach_output(|| step(0), || step(1), || step(2))
+                    .detach_output(
+                        || calls.borrow_mut().push(0),
+                        || step(1),
+                        || step(2),
+                        || step(3)
+                    )
                     .is_err()
             );
             assert_eq!(*calls.borrow(), (0..=fail_at).collect::<Vec<_>>());
@@ -2348,9 +2456,14 @@ mod tests {
             Ok(())
         };
         lifecycle
-            .detach_output(|| step("gpu"), || step("kms"), || step("events"))
+            .detach_output(
+                || calls.borrow_mut().push("suppress"),
+                || step("gpu"),
+                || step("kms"),
+                || step("events"),
+            )
             .unwrap();
-        assert_eq!(*calls.borrow(), vec!["gpu", "kms", "events"]);
+        assert_eq!(*calls.borrow(), vec!["suppress", "gpu", "kms", "events"]);
         assert!(lifecycle.current.is_none());
         assert!(lifecycle.in_flight.is_none());
         assert!(lifecycle.prepared.is_none());
@@ -2373,13 +2486,23 @@ mod tests {
         lifecycle.begin_render().unwrap();
         assert!(
             lifecycle
-                .detach_output(|| panic!("must not attempt repair"), || Ok(()), || Ok(()))
+                .detach_output(
+                    || panic!("must not attempt repair"),
+                    || Ok(()),
+                    || Ok(()),
+                    || Ok(()),
+                )
                 .is_err()
         );
         let _ = lifecycle.poison::<()>("device lost");
         assert!(
             lifecycle
-                .detach_output(|| panic!("must not attempt repair"), || Ok(()), || Ok(()))
+                .detach_output(
+                    || panic!("must not attempt repair"),
+                    || Ok(()),
+                    || Ok(()),
+                    || Ok(()),
+                )
                 .is_err()
         );
         assert!(lifecycle.begin_render().is_err());
@@ -2395,7 +2518,7 @@ mod tests {
                 .unwrap();
             assert_eq!(lifecycle.page_flip().unwrap().generation, generation);
             lifecycle
-                .detach_output(|| Ok(()), || Ok(()), || Ok(()))
+                .detach_output(|| {}, || Ok(()), || Ok(()), || Ok(()))
                 .unwrap();
             assert_eq!(lifecycle.slots.len(), MIN_SCANOUT_SLOTS);
             assert!(lifecycle.terminal_error.is_none());
