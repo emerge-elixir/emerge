@@ -33,6 +33,27 @@ pub struct Nv12ModifierCapability {
     interop: video_interop::vulkan::Nv12ModifierCapability,
 }
 
+impl PartialEq for Nv12ModifierCapability {
+    fn eq(&self, other: &Self) -> bool {
+        let a = self.interop;
+        let b = other.interop;
+        self.modifier == other.modifier
+            && self.active_device_identity == other.active_device_identity
+            && self.target_allocation_proof == other.target_allocation_proof
+            && a.modifier == b.modifier
+            && a.strategy == b.strategy
+            && a.modifier_plane_count == b.modifier_plane_count
+            && a.source_tiling_features == b.source_tiling_features
+            && a.sampled_tiling_features == b.sampled_tiling_features
+            && a.external_features == b.external_features
+            && a.compatible_handle_types == b.compatible_handle_types
+            && (a.max_extent.width, a.max_extent.height, a.max_extent.depth)
+                == (b.max_extent.width, b.max_extent.height, b.max_extent.depth)
+    }
+}
+
+impl Eq for Nv12ModifierCapability {}
+
 impl Nv12ModifierCapability {
     pub fn from_interop(
         active_device_identity: VulkanDeviceIdentity,
