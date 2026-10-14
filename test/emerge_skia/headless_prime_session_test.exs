@@ -3,6 +3,12 @@ defmodule EmergeSkia.HeadlessPrimeSessionTest do
 
   alias EmergeSkia.{Assets, HeadlessPrimeSession, Options}
 
+  # A CPU-only source profile omits PRIME dispatcher NIFs, even on Linux.
+  if Enum.empty?(EmergeSkia.BuildConfig.compiled_opengl_backends()) and
+       Enum.empty?(EmergeSkia.BuildConfig.compiled_vulkan_backends()) do
+    @tag skip: "CPU-only profile has no PRIME dispatcher NIF"
+  end
+
   # PRIME dispatcher NIFs are unavailable on macOS, even with a raster renderer.
   @tag :linux_only
   test "startup returns a shared completion flag and stop proves cleanup even after exit" do

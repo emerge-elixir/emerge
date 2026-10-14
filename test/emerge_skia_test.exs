@@ -464,14 +464,23 @@ defmodule EmergeSkiaTest do
     end
   end
 
-  @tag :linux_only
-  test "start/1 delegates Wayland Vulkan availability to the native feature matrix" do
-    assert {:error, {:error, "Vulkan rendering support is not available in this build"}} =
-             EmergeSkia.start(%Emerge.Config{
-               output: %Emerge.Config.Window{backend: :wayland, size: {800, 600}},
-               renderer: [api: :vulkan],
-               assets: [otp_app: :emerge]
-             })
+  # Availability tests must stay hardware-free in Vulkan-capable source profiles.
+  if :wayland not in EmergeSkia.BuildConfig.compiled_vulkan_backends() do
+    @tag :linux_only
+    test "start/1 delegates Wayland Vulkan availability to the native feature matrix" do
+      reason =
+        if :wayland in EmergeSkia.BuildConfig.compiled_backends(),
+          do: "Vulkan rendering support is not available in this build",
+          else:
+            "Wayland backend is not compiled; add :wayland to config :emerge, compiled_backends: [...]"
+
+      assert {:error, {:error, ^reason}} =
+               EmergeSkia.start(%Emerge.Config{
+                 output: %Emerge.Config.Window{backend: :wayland, size: {800, 600}},
+                 renderer: [api: :vulkan],
+                 assets: [otp_app: :emerge]
+               })
+    end
   end
 
   test "start/1 validates the headless target before native startup" do

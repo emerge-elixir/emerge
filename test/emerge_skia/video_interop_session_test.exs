@@ -81,7 +81,7 @@ defmodule EmergeSkia.DirectVideoFrameTest do
   end
 
   @tag :linux_only
-  test "hidden targets consume and release borrowed frames without GPU setup" do
+  test "hidden borrowed frame ownership follows the compiled video storage support" do
     {fd, file, path} = open_test_fd()
 
     on_exit(fn ->
@@ -124,7 +124,18 @@ defmodule EmergeSkia.DirectVideoFrameTest do
       lease: lease
     }
 
-    assert :ok = EmergeSkia.submit_video_frame(renderer, :preview, frame)
+    if Enum.empty?(EmergeSkia.BuildConfig.compiled_opengl_backends()) and
+         Enum.empty?(EmergeSkia.BuildConfig.compiled_vulkan_backends()) do
+      assert {:error, {:caller_owned, reason}} =
+               EmergeSkia.submit_video_frame(renderer, :preview, frame)
+
+      assert reason =~ "this build accepts VideoInterop.Binary only"
+      refute_receive {:video_interop_release, ^token, _}, 30
+      assert :ok = Lease.release(lease)
+    else
+      assert :ok = EmergeSkia.submit_video_frame(renderer, :preview, frame)
+    end
+
     assert_receive {:video_interop_release, ^token, holder}, 1000
     assert holder == lease.holder
   end
