@@ -11,6 +11,9 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_NET_RETRY: "5"
+
 jobs:
   ci_linux:
     name: Linux CI / ${{ matrix.name }}
@@ -112,7 +115,8 @@ jobs:
       - name: Compile and test the minimum supported Elixir
         if: ${{ matrix.minimum == true }}
         run: |
-          mix compile --warnings-as-errors
+          elixir scripts/retry-build.exs mix compile --warnings-as-errors
+          MIX_ENV=test elixir scripts/retry-build.exs mix compile --warnings-as-errors
           mix test --include full_sweep --warnings-as-errors
 
       - name: Validate source metadata
@@ -169,9 +173,10 @@ jobs:
         run: |
           set -euo pipefail
           manifest=native/emerge_skia/Cargo.toml
-          cargo clippy --manifest-path "$manifest" --no-default-features --features drm -- -D warnings
+          elixir scripts/retry-build.exs cargo clippy --manifest-path "$manifest" --no-default-features --features drm -- -D warnings
+          elixir scripts/retry-build.exs cargo test --release --no-run --manifest-path "$manifest" --no-default-features --features drm
           cargo test --release --manifest-path "$manifest" --no-default-features --features drm
-          cargo build --release --manifest-path "$manifest" --no-default-features --features drm
+          elixir scripts/retry-build.exs cargo build --release --manifest-path "$manifest" --no-default-features --features drm
           cargo tree --manifest-path "$manifest" --no-default-features --features drm \
             --edges normal --prefix none > /tmp/drm-raster-deps.txt
           if grep -E '^(gbm|gbm-sys|gl|glutin|glutin_egl_sys|ash|ash-window|wayland-client) v' /tmp/drm-raster-deps.txt; then

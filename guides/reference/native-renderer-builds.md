@@ -313,6 +313,12 @@ supersets. Each library is verified and packaged before the next build overwrite
 it. Containers reuse their image, Cargo registry and ABI-specific build directory;
 GNU and musl do not share compiled output.
 
+CI and release builds retry transient download failures (including Skia's Git
+HTTP 503 failures) for up to three attempts with 10/20-second backoff. Logs remain
+streamed, and caches are retained between attempts. Compiler, test and integrity
+failures are not retried. CI prepares test binaries separately; actual test runs
+remain single-attempt. Cargo registry downloads also use `CARGO_NET_RETRY=5`.
+
 Release builders consume the catalog-generated matrix, check feature/dependency
 isolation, inspect packaged ELF/Mach-O files and preserve stock-rootfs eager-load
 checks and macOS raster smoke coverage. Source/package tests include standalone

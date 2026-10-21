@@ -6,6 +6,8 @@ history, tests, `CHANGELOG.md` and maintained guides—not an archive directory.
 
 ## Open work
 
+- [CI download retries](active-ci-network-retries.md): clean-runner Linux/macOS
+  acceptance of streamed, bounded native-build retries and cache reuse.
 - [Native build rollout](active-build-capabilities.md): remote cross/macOS artifact
   qualification, next-release archives/checksums and opted-in board acceptance.
 - [0.5 publication](active-0.5-release.md): exact-integrated-commit CI, artifacts,

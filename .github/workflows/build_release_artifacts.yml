@@ -11,6 +11,7 @@ permissions:
 
 env:
   EMERGE_SOURCE_REVISION: ${{ github.sha }}
+  CARGO_NET_RETRY: "5"
 
 concurrency:
   group: release-artifacts-${{ github.ref }}

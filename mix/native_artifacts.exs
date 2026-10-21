@@ -195,6 +195,8 @@ defmodule Emerge.Mix.NativeArtifacts do
       "--env",
       "EMERGE_SOURCE_REVISION",
       "--env",
+      "CARGO_NET_RETRY",
+      "--env",
       "EMERGE_CARGO_FEATURES=#{job.cargo_features}",
       "--env",
       "EMERGE_VERIFY_PROFILE=#{job.qualification_profile}",
@@ -271,7 +273,12 @@ defmodule Emerge.Mix.NativeArtifacts do
     opts = Keyword.merge([cd: context.root, stderr_to_stdout: true], opts)
     opts = if capture, do: opts, else: Keyword.put(opts, :into, IO.stream(:stdio, :line))
 
-    case context.run.(program, args, opts) do
+    result =
+      if program in ["cargo", "cross", "docker"],
+        do: EmergeSkia.BuildRetry.cmd(program, args, opts, run: context.run),
+        else: context.run.(program, args, opts)
+
+    case result do
       {output, 0} -> output
       {_output, status} -> raise "#{program} #{Enum.join(args, " ")} failed (#{status})"
     end
