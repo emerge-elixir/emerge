@@ -425,8 +425,11 @@ defmodule EmergeSkia.BuildConfig do
           path: Keyword.fetch!(opts, :checksum_path)
 
       {:error, reason} ->
-        if Keyword.get(opts, :warn_on_fallback, false) and reason != :explicit_source do
-          IO.warn(
+        if Keyword.get(opts, :report_fallback, false) and reason != :explicit_source do
+          # An expected source fallback is not a compiler warning: strict source
+          # builds must still succeed when release archives are unavailable.
+          IO.puts(
+            :stderr,
             "Emerge native source build: #{inspect(reason)}. " <>
               "A potentially long Skia/Rust build will occur; Rustler is required. " <>
               "Run mix emerge.build_info or elixir deps/emerge/scripts/build-info.exs for feature/target details. " <>
