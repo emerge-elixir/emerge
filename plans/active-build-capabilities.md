@@ -16,6 +16,10 @@ all 46 NIF and two host archives. ExUnit covers shared Cargo output, compatible
 Skia batches, ABI/environment isolation, container cache reuse, archive snapshots,
 NIF ABI validation and failure handling. Remote execution remains a release gate.
 
+Uploads are per archive, not per worker: 48 independent GitHub Actions artifacts,
+with host checksum sidecars paired with their archives. Upload planning, failure
+handling and runtime-credential inheritance have local regression coverage.
+
 ## Remaining gates
 
 - Finalize the next release version/date from `0.5.1` after review. Do not
@@ -24,6 +28,8 @@ NIF ABI validation and failure handling. Remote execution remains a release gate
   GNU batch, both macOS architectures, ARMv7 cross builds, musl/RISC-V containers,
   packaged ELF/Mach-O checks and the stock RPi5 userspace load gate. Local Linux
   tests do not qualify those binaries or measure remote build-cache savings.
+  Verify all 48 independent uploads, host checksum sidecars and filename-based
+  RPi5 downloads through the official uploader bridge.
 - Publish genuinely minimal OpenGL-only AArch64/ARMv7 artifacts with the other
   canonical profiles; generate the matching real checksum manifest before Hex
   publication. Neither local source builds nor catalog entries publish archives.

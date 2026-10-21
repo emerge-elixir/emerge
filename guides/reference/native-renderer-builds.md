@@ -311,7 +311,10 @@ Compatible Skia configurations are batched together. Unchanged dependencies reus
 Cargo output; different API/font features still get their own builds, not renamed
 supersets. Each library is verified and packaged before the next build overwrites
 it. Containers reuse their image, Cargo registry and ABI-specific build directory;
-GNU and musl do not share compiled output.
+GNU and musl do not share compiled output. Every `.tar.gz` is uploaded as its own
+GitHub Actions artifact named after the archive, not grouped into a worker bundle.
+Each macOS host checksum stays with its corresponding host archive. The six
+builders therefore expose 48 separately downloadable native artifacts.
 
 CI and release builds retry transient download failures (including Skia's Git
 HTTP 503 failures) for up to three attempts with 10/20-second backoff. Logs remain

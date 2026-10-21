@@ -184,12 +184,33 @@ jobs:
           path: ${{ env.EMERGE_INPUT_CACHE_DIR }}/*.tar.*
           key: ${{ steps.input-sources.outputs.cache-primary-key }}
 
-      - name: Artifact upload
-        uses: actions/upload-artifact@v6
+      - name: Fetch official artifact uploader
+        uses: actions/checkout@v5
         with:
-          name: native-${{ matrix.builder.name }}
-          path: ${{ runner.temp }}/native-artifacts/*
-          if-no-files-found: error
+          repository: actions/upload-artifact
+          ref: v6
+          path: .ci-tools/upload-artifact
+          persist-credentials: false
+          sparse-checkout: dist/upload
+
+      - name: Artifact upload (one per archive)
+        uses: actions/github-script@v8
+        env:
+          ARCHIVE_DIRECTORY: ${{ runner.temp }}/native-artifacts
+          UPLOAD_ARTIFACT_ENTRY: ${{ github.workspace }}/.ci-tools/upload-artifact/dist/upload/index.js
+          EXPECTED_ARCHIVES: ${{ matrix.builder.artifact_count }}
+        with:
+          # The Node action supplies the runtime token/results endpoint to its children.
+          # Reuse the official bundled uploader, once for each archive, without npm installs.
+          script: |
+            const {execFileSync} = require('node:child_process');
+            execFileSync('elixir', [
+              'scripts/upload-native-artifacts.exs',
+              process.env.ARCHIVE_DIRECTORY,
+              process.env.UPLOAD_ARTIFACT_ENTRY,
+              process.execPath,
+              process.env.EXPECTED_ARCHIVES
+            ], {stdio: 'inherit'});
 
   verify_rpi5:
     name: Load packaged DRM NIFs on stock RPi5 userspace
@@ -201,7 +222,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/download-artifact@v8
         with:
-          pattern: native-linux_aarch64
+          pattern: libemerge_skia-*-aarch64-unknown-linux-gnu--drm*.so.tar.gz
           path: release-assets
           merge-multiple: true
       - name: Fetch checksum-pinned stock Nerves RPi5 rootfs

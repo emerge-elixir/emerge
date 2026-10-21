@@ -25,7 +25,7 @@ defmodule Emerge.ReleaseWorkflowTest do
 
     assert hex =~ ~s|require-workflow.exs "$(git rev-parse HEAD)" build_release_artifacts.yml|
     assert artifacts =~ "needs: [validate, build_release, verify_rpi5]"
-    assert artifacts =~ "pattern: native-linux_aarch64"
+    assert artifacts =~ "pattern: libemerge_skia-*-aarch64-unknown-linux-gnu--drm*.so.tar.gz"
     assert artifacts =~ "sha256sum --check"
 
     [[package]] =
@@ -38,6 +38,18 @@ defmodule Emerge.ReleaseWorkflowTest do
     assert artifacts =~ "#{package}/images/rootfs.squashfs"
     assert artifacts =~ "for profile in drm drm_opengl drm_vulkan drm_opengl_vulkan; do"
     assert artifacts =~ ~s(sudo chroot "$root" /emerge-smoke/load-nif)
+  end
+
+  test "grouped builders upload each archive independently through the official uploader" do
+    workflow = File.read!(Path.join(@workflows, "build_release_artifacts.yml"))
+    assert workflow =~ "repository: actions/upload-artifact"
+    assert workflow =~ "ref: v6"
+    assert workflow =~ "uses: actions/github-script@v8"
+    assert workflow =~ "scripts/upload-native-artifacts.exs"
+    assert workflow =~ "process.execPath"
+    assert workflow =~ "EXPECTED_ARCHIVES: ${{ matrix.builder.artifact_count }}"
+    refute workflow =~ "name: native-${{ matrix.builder.name }}"
+    assert workflow =~ "merge-multiple: true"
   end
 
   test "CPU DRM has a separate exact artifact on every supported Linux target" do
