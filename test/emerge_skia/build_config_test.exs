@@ -211,6 +211,33 @@ defmodule EmergeSkia.BuildConfigTest do
              )
   end
 
+  test "automatic source fallback is reported without producing compiler diagnostics" do
+    path = checksum_file(%{})
+    File.rm!(path)
+
+    output =
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        {result, diagnostics} =
+          Code.with_diagnostics([log: true], fn ->
+            BuildConfig.force_precompiled_build?(
+              env: %{},
+              report_fallback: true,
+              compiled_backends: [],
+              compiled_vulkan_backends: [],
+              compiled_opengl_backends: [],
+              checksum_path: path,
+              target_resolver: fn _, _ -> {:ok, "nif-2.15-aarch64-unknown-linux-gnu"} end
+            )
+          end)
+
+        assert result
+        assert diagnostics == []
+      end)
+
+    assert output =~ "Emerge native source build: :missing_checksum_file"
+    assert output =~ "mix emerge.build_info"
+  end
+
   test "source fallback distinguishes unsupported features and invalid checksum metadata" do
     opts = [
       env: %{},

@@ -82,7 +82,7 @@ defmodule EmergeSkia.Native do
         end
 
         @force_build EmergeSkia.BuildConfig.force_precompiled_build?(
-                       warn_on_fallback: true,
+                       report_fallback: true,
                        checksum_path: @checksum_path,
                        compiled_backends: @compiled_backends,
                        compiled_vulkan_backends: @compiled_vulkan_backends,
