@@ -99,11 +99,25 @@ defmodule Emerge.NativeUploadsTest do
     for name <- names, do: File.write!(Path.join(context.directory, name), name)
     log = Path.join(context.directory, "uploads.log")
 
-    File.write!(context.uploader, """
-    test "$ACTIONS_RUNTIME_TOKEN" = fixture-runtime-token || exit 1
-    test "$ACTIONS_RESULTS_URL" = https://example.invalid/results || exit 1
-    test "$(printenv INPUT_INCLUDE-HIDDEN-FILES)" = false || exit 1
-    printf '%s\\n' "$INPUT_NAME" >> "$UPLOAD_LOG"
+    # Match the uploader's direct-exec behavior: dash discards environment keys
+    # containing hyphens, unlike Node or Elixir, so a shell is not a valid probe.
+    probe = Path.join(context.directory, "upload-probe.exs")
+
+    File.write!(probe, """
+    for {key, expected} <- [
+          {"ACTIONS_RUNTIME_TOKEN", "fixture-runtime-token"},
+          {"ACTIONS_RESULTS_URL", "https://example.invalid/results"},
+          {"INPUT_INCLUDE-HIDDEN-FILES", "false"}
+        ] do
+      unless System.get_env(key) == expected,
+        do: raise("Upload environment was not preserved for " <> key)
+    end
+
+    File.write!(
+      System.fetch_env!("UPLOAD_LOG"),
+      System.fetch_env!("INPUT_NAME") <> "\\n",
+      [:append]
+    )
     """)
 
     {output, status} =
@@ -112,8 +126,8 @@ defmodule Emerge.NativeUploadsTest do
         [
           "scripts/upload-native-artifacts.exs",
           context.directory,
-          context.uploader,
-          System.find_executable("sh"),
+          probe,
+          System.find_executable("elixir"),
           "2"
         ],
         cd: Path.expand("..", __DIR__),
