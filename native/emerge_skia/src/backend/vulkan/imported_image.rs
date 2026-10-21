@@ -79,10 +79,7 @@ impl Nv12ModifierCapability {
         self.interop.allocation_recipe()
     }
 
-    #[cfg_attr(
-        not(any(feature = "wayland-core", feature = "drm-core")),
-        allow(dead_code)
-    )]
+    #[cfg_attr(not(any(feature = "wayland", feature = "drm")), allow(dead_code))]
     pub(crate) fn interop(self) -> video_interop::vulkan::Nv12ModifierCapability {
         self.interop
     }

@@ -53,8 +53,19 @@ defmodule EmergeSkia.Native do
       @platform_cargo_features EmergeSkia.BuildConfig.rustler_platform_features(
                                  System.get_env(),
                                  @compiled_backends,
-                                 @compiled_vulkan_backends
+                                 @compiled_vulkan_backends,
+                                 @compiled_opengl_backends
                                )
+      :ok =
+        EmergeSkia.BuildProfiles.validate_target!(
+          @rustler_opts[:target] || EmergeSkia.BuildProfiles.rust_target(System.get_env()),
+          EmergeSkia.BuildConfig.canonical_features(
+            @compiled_backends,
+            @compiled_vulkan_backends,
+            @compiled_opengl_backends
+          )
+        )
+
       @cargo_features EmergeSkia.BuildConfig.compiled_backends_to_rustler_features(
                         @compiled_backends,
                         @compiled_vulkan_backends,
@@ -71,6 +82,7 @@ defmodule EmergeSkia.Native do
         end
 
         @force_build EmergeSkia.BuildConfig.force_precompiled_build?(
+                       warn_on_fallback: true,
                        checksum_path: @checksum_path,
                        compiled_backends: @compiled_backends,
                        compiled_vulkan_backends: @compiled_vulkan_backends,

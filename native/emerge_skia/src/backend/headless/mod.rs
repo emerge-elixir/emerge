@@ -41,10 +41,10 @@ use crate::{
 };
 
 mod binary;
-#[cfg(all(target_os = "linux", feature = "headless-opengl"))]
+#[cfg(all(target_os = "linux", feature = "opengl"))]
 mod offscreen_gl;
 mod output;
-#[cfg(all(target_os = "linux", feature = "headless-vulkan"))]
+#[cfg(all(target_os = "linux", feature = "vulkan"))]
 mod vulkan;
 
 struct HeadlessBackendWake {
@@ -778,9 +778,9 @@ struct PrimePlaneMeta {
 
 enum HeadlessRenderer {
     Raster(Box<RasterHeadlessRenderer>),
-    #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
+    #[cfg(all(target_os = "linux", feature = "opengl"))]
     Gl(Box<offscreen_gl::GlHeadlessRenderer>),
-    #[cfg(all(target_os = "linux", feature = "headless-vulkan"))]
+    #[cfg(all(target_os = "linux", feature = "vulkan"))]
     Vulkan(Box<vulkan::VulkanHeadlessRenderer>),
 }
 
@@ -813,7 +813,7 @@ impl HeadlessRenderer {
 
         match (mode, rendering_api) {
             (HeadlessMode::Binary, RenderingApi::Auto) => {
-                #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
+                #[cfg(all(target_os = "linux", feature = "opengl"))]
                 {
                     match offscreen_gl::GlHeadlessRenderer::new(width, height, renderer_cache_config) {
                         Ok(renderer) => return Ok(Self::Gl(Box::new(renderer))),
@@ -842,7 +842,7 @@ impl HeadlessRenderer {
                 .map(Self::Raster)
             }
             (HeadlessMode::Prime, RenderingApi::Auto | RenderingApi::OpenGl) => {
-                #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
+                #[cfg(all(target_os = "linux", feature = "opengl"))]
                 {
                     offscreen_gl::GlHeadlessRenderer::new_prime(
                         width,
@@ -854,7 +854,7 @@ impl HeadlessRenderer {
                     .map(Box::new)
                     .map(Self::Gl)
                 }
-                #[cfg(not(all(target_os = "linux", feature = "headless-opengl")))]
+                #[cfg(not(all(target_os = "linux", feature = "opengl")))]
                 {
                     Err("headless PRIME output requires Linux headless GL".to_string())
                 }
@@ -864,13 +864,13 @@ impl HeadlessRenderer {
                     .to_string(),
             ),
             (_, RenderingApi::OpenGl) => {
-                #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
+                #[cfg(all(target_os = "linux", feature = "opengl"))]
                 {
                     offscreen_gl::GlHeadlessRenderer::new(width, height, renderer_cache_config)
                         .map(Box::new)
                         .map(Self::Gl)
                 }
-                #[cfg(not(all(target_os = "linux", feature = "headless-opengl")))]
+                #[cfg(not(all(target_os = "linux", feature = "opengl")))]
                 {
                     Err("rendering_api :opengl is not available for backend :headless in this build".to_string())
                 }
@@ -883,7 +883,7 @@ impl HeadlessRenderer {
                     .to_string(),
             ),
             (HeadlessMode::Prime, RenderingApi::Vulkan) => {
-                #[cfg(all(target_os = "linux", feature = "headless-vulkan"))]
+                #[cfg(all(target_os = "linux", feature = "vulkan"))]
                 {
                     vulkan::VulkanHeadlessRenderer::new_prime(
                         width,
@@ -895,7 +895,7 @@ impl HeadlessRenderer {
                     .map(Box::new)
                     .map(Self::Vulkan)
                 }
-                #[cfg(not(all(target_os = "linux", feature = "headless-vulkan")))]
+                #[cfg(not(all(target_os = "linux", feature = "vulkan")))]
                 {
                     Err("Vulkan rendering support is not available in this build".to_string())
                 }
@@ -906,9 +906,9 @@ impl HeadlessRenderer {
     fn selected_rendering_api(&self) -> RenderingApi {
         match self {
             Self::Raster(_) => RenderingApi::Raster,
-            #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
+            #[cfg(all(target_os = "linux", feature = "opengl"))]
             Self::Gl(_) => RenderingApi::OpenGl,
-            #[cfg(all(target_os = "linux", feature = "headless-vulkan"))]
+            #[cfg(all(target_os = "linux", feature = "vulkan"))]
             Self::Vulkan(_) => RenderingApi::Vulkan,
         }
     }
@@ -916,7 +916,7 @@ impl HeadlessRenderer {
     #[cfg(feature = "vulkan")]
     fn vulkan_renderer_report(&self) -> Option<crate::backend::vulkan::VulkanRendererReport> {
         match self {
-            #[cfg(all(target_os = "linux", feature = "headless-vulkan"))]
+            #[cfg(all(target_os = "linux", feature = "vulkan"))]
             Self::Vulkan(renderer) => Some(renderer.renderer_report()),
             _ => None,
         }
@@ -925,9 +925,9 @@ impl HeadlessRenderer {
     fn sync_cpu_video_frames(&mut self, registry: &Arc<VideoRegistry>) -> Result<bool, String> {
         match self {
             Self::Raster(renderer) => renderer.renderer.sync_cpu_video_frames(registry),
-            #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
+            #[cfg(all(target_os = "linux", feature = "opengl"))]
             Self::Gl(_renderer) => Ok(false),
-            #[cfg(all(target_os = "linux", feature = "headless-vulkan"))]
+            #[cfg(all(target_os = "linux", feature = "vulkan"))]
             Self::Vulkan(_renderer) => Ok(false),
         }
     }
@@ -935,9 +935,9 @@ impl HeadlessRenderer {
     fn render_binary(&mut self, state: &RenderState) -> Result<HeadlessRgbaFrame, String> {
         match self {
             Self::Raster(renderer) => Ok(renderer.render(state)),
-            #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
+            #[cfg(all(target_os = "linux", feature = "opengl"))]
             Self::Gl(renderer) => renderer.render_binary(state),
-            #[cfg(all(target_os = "linux", feature = "headless-vulkan"))]
+            #[cfg(all(target_os = "linux", feature = "vulkan"))]
             Self::Vulkan(_) => Err("headless Vulkan does not support binary output".to_string()),
         }
     }
@@ -950,9 +950,9 @@ impl HeadlessRenderer {
             Self::Raster(_) => {
                 Err("raster headless renderer cannot export PRIME frames".to_string())
             }
-            #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
+            #[cfg(all(target_os = "linux", feature = "opengl"))]
             Self::Gl(renderer) => renderer.render_prime(_state),
-            #[cfg(all(target_os = "linux", feature = "headless-vulkan"))]
+            #[cfg(all(target_os = "linux", feature = "vulkan"))]
             Self::Vulkan(renderer) => renderer.render_prime(_state),
         }
     }
@@ -960,32 +960,32 @@ impl HeadlessRenderer {
     fn release_prime(&mut self, _release_id: u64) -> bool {
         match self {
             Self::Raster(_) => false,
-            #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
+            #[cfg(all(target_os = "linux", feature = "opengl"))]
             Self::Gl(renderer) => {
                 renderer.release_prime(_release_id);
                 true
             }
-            #[cfg(all(target_os = "linux", feature = "headless-vulkan"))]
+            #[cfg(all(target_os = "linux", feature = "vulkan"))]
             Self::Vulkan(renderer) => renderer.release_prime(_release_id),
         }
     }
 
     fn prime_completion_receiver(&self) -> Receiver<u64> {
         match self {
-            #[cfg(all(target_os = "linux", feature = "headless-vulkan"))]
+            #[cfg(all(target_os = "linux", feature = "vulkan"))]
             Self::Vulkan(renderer) => renderer.completion_receiver(),
             Self::Raster(_) => never(),
-            #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
+            #[cfg(all(target_os = "linux", feature = "opengl"))]
             Self::Gl(_) => never(),
         }
     }
 
     fn complete_prime_retirement(&mut self, _release_id: u64) -> bool {
         match self {
-            #[cfg(all(target_os = "linux", feature = "headless-vulkan"))]
+            #[cfg(all(target_os = "linux", feature = "vulkan"))]
             Self::Vulkan(renderer) => renderer.complete_retirement(_release_id),
             Self::Raster(_) => false,
-            #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
+            #[cfg(all(target_os = "linux", feature = "opengl"))]
             Self::Gl(_) => false,
         }
     }
@@ -993,11 +993,11 @@ impl HeadlessRenderer {
     fn render_grayscale_dither_policy(&self, state: &RenderState) -> Result<Vec<u8>, String> {
         match self {
             Self::Raster(renderer) => renderer.renderer.render_grayscale_dither_policy(state),
-            #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
+            #[cfg(all(target_os = "linux", feature = "opengl"))]
             Self::Gl(_) => {
                 Err("grayscale dithering currently requires raster rendering".to_string())
             }
-            #[cfg(all(target_os = "linux", feature = "headless-vulkan"))]
+            #[cfg(all(target_os = "linux", feature = "vulkan"))]
             Self::Vulkan(_) => {
                 Err("grayscale dithering is unavailable for Vulkan PRIME".to_string())
             }
@@ -1007,9 +1007,9 @@ impl HeadlessRenderer {
     fn terminal_prime_shutdown_ready(&self) -> bool {
         match self {
             Self::Raster(_) => false,
-            #[cfg(all(target_os = "linux", feature = "headless-opengl"))]
+            #[cfg(all(target_os = "linux", feature = "opengl"))]
             Self::Gl(renderer) => renderer.terminal_prime_shutdown_ready(),
-            #[cfg(all(target_os = "linux", feature = "headless-vulkan"))]
+            #[cfg(all(target_os = "linux", feature = "vulkan"))]
             Self::Vulkan(renderer) => renderer.terminal_prime_shutdown_ready(),
         }
     }

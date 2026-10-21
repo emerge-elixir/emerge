@@ -5,9 +5,9 @@ defmodule EmergeSkia.BuildConfig.Schema do
   @presenter_backends [:wayland, :drm, :macos]
   @gpu_api_order [:opengl, :vulkan]
   @backend_apis %{
-    wayland: [:opengl, :vulkan],
+    wayland: [:opengl, :vulkan, :raster],
     drm: [:opengl, :vulkan, :raster],
-    headless: [:opengl, :vulkan],
+    headless: [:opengl, :vulkan, :raster],
     macos: [:metal]
   }
 

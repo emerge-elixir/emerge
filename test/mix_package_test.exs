@@ -15,7 +15,7 @@ defmodule Emerge.MixPackageTest do
     env =
       Enum.map(
         ~w(CC CXX TARGET_ARCH TARGET_OS TARGET_ABI TARGET_VENDOR MIX_TARGET MIX_BUILD_PATH MIX_DEPS_PATH
-      NERVES_SDK_SYSROOT NERVES_TOOLCHAIN EMERGE_SKIA_HOST_PYTHON EMERGE_SKIA_BUILD
+      NERVES_SYSTEM NERVES_SDK_SYSROOT NERVES_TOOLCHAIN EMERGE_SKIA_HOST_PYTHON EMERGE_SKIA_BUILD
       EMERGE_INCLUDE_INTERNAL_DOCS RUSTLER_PRECOMPILED_FORCE_BUILD_ALL),
         &{&1, nil}
       ) ++
@@ -28,7 +28,7 @@ defmodule Emerge.MixPackageTest do
 
     mix!(~w(hex.build --unpack --output) ++ [package], @root, env)
 
-    for name <- ~w(native docs package targets) do
+    for name <- ~w(native docs package targets native_profiles) do
       assert File.regular?(Path.join(package, "mix/#{name}.exs"))
     end
 
@@ -101,6 +101,19 @@ defmodule Emerge.MixPackageTest do
 
     assert mix!(["compile"], consumer, env) =~ "Compiling"
 
+    catalog_path = Path.join(package, "mix/native_profiles.exs")
+    {catalog, _} = Code.eval_file(catalog_path)
+
+    systems =
+      Enum.map(catalog.systems, fn system ->
+        if system.app == "nerves_system_rpi5",
+          do: put_in(system.capabilities.vulkan, true),
+          else: system
+      end)
+
+    File.write!(catalog_path, inspect(%{catalog | systems: systems}, limit: :infinity))
+    assert mix!(["compile"], consumer, env) =~ "Compiling"
+
     mix!(
       [
         "run",
@@ -110,8 +123,11 @@ defmodule Emerge.MixPackageTest do
           :code.purge(mod)
           :code.delete(mod)
         end
-        [:drm] = EmergeSkia.BuildConfig.default_compiled_backends(%{"CC" => "probe-nerves-linux-gnu-gcc"})
+        [] = EmergeSkia.BuildConfig.default_compiled_backends(%{"CC" => "probe-nerves-linux-gnu-gcc"})
         false = Code.ensure_loaded?(Emerge.Mix.Native)
+        [drm: [:vulkan]] = EmergeSkia.BuildConfig.default_compiled_backends(%{
+          "NERVES_SYSTEM" => "/artifacts/nerves_system_rpi5-portable-2.0.1"
+        })
         """
       ],
       consumer,

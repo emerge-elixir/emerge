@@ -2,185 +2,261 @@ defmodule EmergeSkia.BuildConfigTest do
   use ExUnit.Case, async: true
 
   alias EmergeSkia.BuildConfig
+  alias EmergeSkia.BuildConfig.Schema
+  alias EmergeSkia.BuildProfiles, as: Profiles
 
-  @host_default if(:os.type() == {:unix, :darwin}, do: [:macos], else: [:wayland])
+  test "matrix entries resolve to a canonical union, without baseline features" do
+    for {entries, features} <- [
+          {[], []},
+          {[headless: [:raster]], []},
+          {[headless: [:opengl]], ["opengl"]},
+          {[headless: [:vulkan]], ["vulkan"]},
+          {[drm: [:raster]], ["drm"]},
+          {[drm: [:opengl]], ["drm", "opengl"]},
+          {[headless: [:opengl], drm: [:opengl]], ["drm", "opengl"]},
+          {[wayland: [:raster]], ["wayland"]},
+          {[wayland: [:opengl]], ["wayland", "opengl"]},
+          {[drm: :all], ["drm", "opengl", "vulkan"]},
+          {[wayland: [:vulkan], drm: [:opengl]], ["drm", "wayland", "opengl", "vulkan"]},
+          {[macos: [:metal]], ["macos"]}
+        ] do
+      matrix = Schema.normalize!(entries)
+      assert Profiles.features(matrix) == features
+
+      assert BuildConfig.canonical_features(
+               Schema.presenter_backends(matrix),
+               Schema.api_backends(matrix, :vulkan),
+               Schema.api_backends(matrix, :opengl)
+             ) == features
+    end
+  end
+
+  test "shorthand, all and ordering preserve canonical feature identity" do
+    assert Profiles.features(Schema.normalize!([:drm])) == ["drm", "opengl"]
+    assert Profiles.features(Schema.normalize!(headless: :all)) == ["opengl", "vulkan"]
+    assert Profiles.features(Schema.normalize!([:macos])) == ["macos"]
+
+    assert Profiles.features(Schema.normalize!(headless: [:raster], drm: [:opengl])) ==
+             Profiles.features(Schema.normalize!(drm: [:opengl], headless: [:opengl]))
+  end
+
+  test "Cargo features contain only the selected primitives and required dependency glue" do
+    assert BuildConfig.compiled_backends_to_rustler_features([], [], [:headless]) == ["opengl"]
+    assert BuildConfig.compiled_backends_to_rustler_features([:drm], [], []) == ["drm"]
+
+    assert BuildConfig.compiled_backends_to_rustler_features([:drm], [], [:drm, :headless]) == [
+             "drm",
+             "opengl"
+           ]
+
+    assert BuildConfig.compiled_backends_to_rustler_features([:wayland], [], []) == ["wayland"]
+
+    assert BuildConfig.compiled_backends_to_rustler_features([:drm], [:drm], []) ==
+             ["drm", "vulkan", "drm-vulkan-deps"]
+
+    assert BuildConfig.compiled_backends_to_rustler_features([:wayland], [:wayland], []) ==
+             ["wayland", "vulkan", "wayland-vulkan-deps"]
+
+    assert BuildConfig.compiled_backends_to_rustler_features([], [:headless], []) == ["vulkan"]
+  end
+
+  test "input validation rejects duplicate backends, invalid APIs and deferred headless Metal" do
+    assert_raise ArgumentError, ~r/must contain each backend once/, fn ->
+      Schema.normalize!([:drm, drm: [:vulkan]])
+    end
+
+    assert_raise ArgumentError, ~r/unsupported APIs/, fn ->
+      Schema.normalize!(headless: [:metal])
+    end
+
+    assert_raise ArgumentError, ~r/unsupported APIs/, fn ->
+      Schema.normalize!(macos: [:vulkan])
+    end
+
+    assert_raise ArgumentError, ~r/requires at least one API/, fn ->
+      Schema.normalize!(drm: [])
+    end
+
+    assert_raise ArgumentError, ~r/cannot be combined/, fn ->
+      Schema.resolve!([drm: [:vulkan]], [], [:drm])
+    end
+
+    assert_raise ArgumentError, ~r/Unknown native features/, fn ->
+      Profiles.canonical_features(["headless"])
+    end
+  end
+
+  test "legacy API lists still resolve through the same feature union" do
+    matrix = Schema.resolve!([:drm], [], [:drm])
+    assert Profiles.features(matrix) == ["drm", "vulkan"]
+    assert Profiles.features(Schema.resolve!([], [:headless], [])) == ["opengl"]
+  end
+
+  test "headless GL chooses a genuinely GL-only archive on every supported Linux target" do
+    for target <- Profiles.targets(), String.contains?(target, "linux") do
+      assert {:ok, %{variant: :opengl, features: ["opengl"]}} =
+               BuildConfig.precompiled_profile(%{}, [], [], [:headless], target)
+
+      assert {:ok, %{variant: :drm_opengl, features: ["drm", "opengl"]} = drm} =
+               BuildConfig.precompiled_profile(%{}, [:drm], [], [:drm], target)
+
+      assert {:ok, redundant} =
+               BuildConfig.precompiled_profile(%{}, [:drm], [], [:drm, :headless], target)
+
+      assert redundant.variant == drm.variant
+      assert redundant.features == drm.features
+    end
+  end
+
+  test "exact feature sets produce exactly one variant callback, baseline produces none" do
+    for target <- Profiles.targets(), profile <- Profiles.profiles(target) do
+      {backends, vulkan, opengl} = selections(profile.features)
+
+      assert {:ok, selected} =
+               BuildConfig.precompiled_profile(%{}, backends, vulkan, opengl, target)
+
+      assert selected.features == profile.features
+      variants = BuildConfig.precompiled_variants(%{}, backends, vulkan, opengl)[target]
+      matches = for {variant, callback} <- variants, callback.(%{}), do: variant
+      assert matches == if(profile.variant, do: [profile.variant], else: [])
+    end
+  end
+
+  test "unsupported requests never select an archive with extra APIs or backends" do
+    assert {:error, %{reason: :unsupported_features, features: ["wayland", "opengl"]}} =
+             BuildConfig.precompiled_profile(
+               %{},
+               [:wayland],
+               [],
+               [:wayland],
+               "armv7-unknown-linux-gnueabihf"
+             )
+
+    assert {:error, %{reason: :unsupported_features}} =
+             BuildConfig.precompiled_profile(
+               %{},
+               [:drm],
+               [:drm],
+               [],
+               "armv7-unknown-linux-gnueabihf"
+             )
+
+    assert {:error, %{reason: :unsupported_features}} =
+             BuildConfig.precompiled_profile(%{}, [], [], [:headless], "aarch64-apple-darwin")
+
+    assert {:error, %{reason: :unsupported_target}} = Profiles.select("unknown-linux", [])
+  end
+
+  test "defaults distinguish desktop, known Nerves images and unknown systems" do
+    assert BuildConfig.default_compiled_backends(%{"TARGET_OS" => "linux"}) == [
+             wayland: [:opengl]
+           ]
+
+    assert BuildConfig.default_compiled_backends(%{"TARGET_OS" => "darwin"}) == [macos: [:metal]]
+    assert BuildConfig.default_compiled_backends(%{"MIX_TARGET" => "rpi5"}) == []
+    assert BuildConfig.default_compiled_backends(%{"NERVES_SDK_SYSROOT" => "/sysroot"}) == []
+    assert BuildConfig.default_compiled_backends(%{"CC" => "aarch64-nerves-linux-gnu-gcc"}) == []
+
+    assert BuildConfig.default_compiled_backends(%{
+             "NERVES_SYSTEM" => "/artifacts/nerves_system_rpi5-portable-2.0.1"
+           }) == [drm: [:opengl]]
+
+    assert BuildConfig.default_compiled_backends(%{
+             "NERVES_SYSTEM" => "/artifacts/nerves_system_rpi5-portable-99.0.0"
+           }) == []
+
+    assert BuildConfig.nerves_build_env?(%{"NERVES_SYSTEM" => "/custom/image"})
+    refute BuildConfig.nerves_build_env?(%{"MIX_TARGET" => "host"})
+  end
+
+  test "platform modifiers do not mistake headless GL for a CPU-only profile" do
+    env = %{"MIX_TARGET" => "custom"}
+    assert BuildConfig.rustler_platform_features(env, [], [], []) == ["embedded-cpu"]
+
+    assert BuildConfig.rustler_platform_features(env, [], [], [:headless]) == [
+             "embedded-freetype"
+           ]
+
+    assert BuildConfig.rustler_platform_features(env, [:drm], [], []) == ["embedded-freetype"]
+  end
+
+  test "precompiled selection requires the exact version/variant checksum" do
+    target = "aarch64-unknown-linux-gnu"
+
+    name =
+      "libemerge_skia-v#{Mix.Project.config()[:version]}-nif-2.15-#{target}--opengl.so.tar.gz"
+
+    path = checksum_file(%{name => "sha256:" <> String.duplicate("0", 64)})
+
+    opts = [
+      env: %{},
+      compiled_backends: [],
+      compiled_vulkan_backends: [],
+      compiled_opengl_backends: [:headless],
+      checksum_path: path,
+      target_resolver: fn _, _ -> {:ok, "nif-2.15-#{target}"} end
+    ]
+
+    refute BuildConfig.force_precompiled_build?(opts)
+    assert {:ok, %{features: ["opengl"]}} = BuildConfig.precompiled_status(opts)
+    File.write!(path, inspect(%{}))
+    assert {:error, {:missing_checksum, ^name}} = BuildConfig.precompiled_status(opts)
+    assert BuildConfig.force_precompiled_build?(opts)
+    File.rm!(path)
+    assert {:error, :missing_checksum_file} = BuildConfig.precompiled_status(opts)
+
+    assert {:error, :explicit_source} =
+             BuildConfig.precompiled_status(
+               Keyword.put(opts, :env, %{"EMERGE_SKIA_BUILD" => "true"})
+             )
+  end
+
+  test "source fallback distinguishes unsupported features and invalid checksum metadata" do
+    opts = [
+      env: %{},
+      compiled_backends: [],
+      compiled_vulkan_backends: [],
+      compiled_opengl_backends: [:headless],
+      checksum_path: checksum_file(:not_a_map),
+      target_resolver: fn _, _ -> {:ok, "nif-2.15-armv7-unknown-linux-gnueabihf"} end
+    ]
+
+    assert {:error, :invalid_checksum_file} = BuildConfig.precompiled_status(opts)
+
+    assert_raise ArgumentError, ~r/refusing source fallback/, fn ->
+      BuildConfig.force_precompiled_build?(opts)
+    end
+
+    assert {:error, %{reason: :unsupported_features, available: available}} =
+             BuildConfig.precompiled_status(
+               Keyword.merge(opts,
+                 compiled_backends: [:wayland],
+                 compiled_opengl_backends: [:wayland]
+               )
+             )
+
+    assert ["opengl"] in available
+  end
+
+  defp selections(features) do
+    backends =
+      for backend <- [:wayland, :drm, :macos], Atom.to_string(backend) in features, do: backend
+
+    {backends, if("vulkan" in features, do: [:headless], else: []),
+     if("opengl" in features, do: [:headless], else: [])}
+  end
+
+  defp checksum_file(contents) do
+    path =
+      Path.join(System.tmp_dir!(), "emerge-checksums-#{System.unique_integer([:positive])}.exs")
+
+    File.write!(path, inspect(contents))
+    on_exit(fn -> File.rm(path) end)
+    path
+  end
 
   test "normalize_compiled_backends! defaults to canonical backend order" do
     assert BuildConfig.normalize_compiled_backends!([:drm, :wayland, :drm]) == [:wayland, :drm]
-  end
-
-  test "compiled backend matrix selects APIs per backend" do
-    assert BuildConfig.normalize_compiled_backend_matrix!(drm: :all) == [
-             drm: [:opengl, :vulkan, :raster]
-           ]
-
-    assert BuildConfig.normalize_compiled_backend_matrix!(
-             headless: [:vulkan],
-             drm: [:opengl]
-           ) == [drm: [:opengl], headless: [:vulkan]]
-
-    assert BuildConfig.normalize_compiled_backend_matrix!([:drm]) == [drm: [:opengl]]
-
-    matrix = BuildConfig.normalize_compiled_backend_matrix!(drm: [:vulkan])
-    assert EmergeSkia.BuildConfig.Schema.presenter_backends(matrix) == [:drm]
-    assert EmergeSkia.BuildConfig.Schema.api_backends(matrix, :opengl) == []
-    assert EmergeSkia.BuildConfig.Schema.api_backends(matrix, :vulkan) == [:drm]
-  end
-
-  test "compiled backend matrix maps OpenGL, Vulkan, and all selections to Cargo features" do
-    for {matrix_config, expected_features} <- [
-          {[wayland: [:opengl]], ["wayland"]},
-          {[wayland: [:vulkan]], ["wayland-vulkan"]},
-          {[wayland: :all], ["wayland-all"]},
-          {[drm: [:raster]], ["drm-raster"]},
-          {[drm: [:raster, :opengl]], ["drm"]},
-          {[drm: [:raster, :vulkan]], ["drm-vulkan"]},
-          {[drm: [:opengl]], ["drm"]},
-          {[drm: [:vulkan]], ["drm-vulkan"]},
-          {[drm: :all], ["drm-all"]},
-          {[headless: [:opengl]], ["headless-opengl"]},
-          {[headless: [:vulkan]], ["headless-vulkan"]},
-          {[headless: :all], ["headless-all"]},
-          {[macos: :all], ["macos"]}
-        ] do
-      matrix = BuildConfig.normalize_compiled_backend_matrix!(matrix_config)
-      presenters = EmergeSkia.BuildConfig.Schema.presenter_backends(matrix)
-      opengl = EmergeSkia.BuildConfig.Schema.api_backends(matrix, :opengl)
-      vulkan = EmergeSkia.BuildConfig.Schema.api_backends(matrix, :vulkan)
-
-      assert BuildConfig.compiled_backends_to_rustler_features(
-               presenters,
-               vulkan,
-               opengl
-             ) == expected_features
-    end
-  end
-
-  test "compiled backend matrix rejects duplicate backends and unsupported APIs" do
-    assert_raise ArgumentError, ~r/must contain each backend once/, fn ->
-      BuildConfig.normalize_compiled_backend_matrix!([:drm, drm: [:vulkan]])
-    end
-
-    assert_raise ArgumentError, ~r/unsupported APIs for :macos/, fn ->
-      BuildConfig.normalize_compiled_backend_matrix!(macos: [:vulkan])
-    end
-
-    assert_raise ArgumentError, ~r/requires at least one API for :drm/, fn ->
-      BuildConfig.normalize_compiled_backend_matrix!(drm: [])
-    end
-  end
-
-  test "compiled backend matrix cannot be mixed with legacy API lists" do
-    assert_raise ArgumentError, ~r/cannot be combined/, fn ->
-      EmergeSkia.BuildConfig.Schema.resolve!([drm: [:vulkan]], [], [:drm])
-    end
-  end
-
-  test "compiled_backends_to_rustler_features returns stable feature order" do
-    assert BuildConfig.compiled_backends_to_rustler_features([:drm, :wayland]) == [
-             "wayland",
-             "drm"
-           ]
-  end
-
-  test "compiled_backends_to_rustler_features enables Vulkan per backend" do
-    assert BuildConfig.compiled_backends_to_rustler_features([:drm], [:drm]) == ["drm-all"]
-
-    assert BuildConfig.compiled_backends_to_rustler_features(
-             [:drm, :wayland],
-             [:wayland]
-           ) == ["wayland-all", "drm"]
-
-    assert BuildConfig.compiled_backends_to_rustler_features(
-             [:drm, :wayland],
-             [:drm, :wayland]
-           ) == ["wayland-all", "drm-all"]
-  end
-
-  test "compiled_backends_to_rustler_features enables the headless Vulkan producer independently" do
-    assert BuildConfig.compiled_backends_to_rustler_features(
-             [:wayland],
-             [:headless]
-           ) == ["wayland", "headless-all"]
-
-    assert BuildConfig.compiled_backends_to_rustler_features(
-             [:wayland],
-             [:wayland, :headless]
-           ) == ["wayland-all", "headless-all"]
-  end
-
-  test "compiled_backends_to_rustler_features supports Vulkan without OpenGL" do
-    assert BuildConfig.compiled_backends_to_rustler_features(
-             [:wayland],
-             [:wayland],
-             []
-           ) == ["wayland-vulkan"]
-
-    assert BuildConfig.compiled_backends_to_rustler_features([:drm], [:drm], []) == [
-             "drm-vulkan"
-           ]
-
-    assert BuildConfig.compiled_backends_to_rustler_features([], [:headless], []) == [
-             "headless-vulkan"
-           ]
-  end
-
-  test "compiled_backends_to_rustler_features supports CPU-presented Wayland raster" do
-    assert BuildConfig.compiled_backends_to_rustler_features([:wayland], [], []) == [
-             "wayland-core"
-           ]
-  end
-
-  test "DRM raster selects its own archive rather than a GPU or headless archive" do
-    matrix = BuildConfig.normalize_compiled_backend_matrix!(drm: [:raster])
-    assert matrix == [drm: [:raster]]
-    assert EmergeSkia.BuildConfig.Schema.presenter_backends(matrix) == [:drm]
-    assert EmergeSkia.BuildConfig.Schema.api_backends(matrix, :opengl) == []
-    assert EmergeSkia.BuildConfig.Schema.api_backends(matrix, :vulkan) == []
-    assert BuildConfig.compiled_backends_to_rustler_features([:drm], [], []) == ["drm-raster"]
-
-    for target <- [
-          "armv7-unknown-linux-gnueabihf",
-          "aarch64-unknown-linux-gnu",
-          "x86_64-unknown-linux-gnu",
-          "x86_64-unknown-linux-musl",
-          "riscv64gc-unknown-linux-gnu"
-        ],
-        env <- [%{}, %{"MIX_TARGET" => "nerves"}] do
-      assert {:ok,
-              %{variant: :drm_raster, backends: [:drm], opengl_backends: [], vulkan_backends: []}} =
-               BuildConfig.precompiled_profile(env, [:drm], [], [], target)
-
-      variants = BuildConfig.precompiled_variants(env, [:drm], [], [])[target]
-
-      assert Enum.filter(variants, fn {_name, matches?} -> matches?.(%{}) end)
-             |> Keyword.keys() == [:drm_raster]
-
-      refute BuildConfig.force_precompiled_build?(
-               env: env,
-               checksum_path: __ENV__.file,
-               compiled_backends: [:drm],
-               compiled_vulkan_backends: [],
-               compiled_opengl_backends: [],
-               target_resolver: fn _, _ -> {:ok, "nif-2.15-#{target}"} end
-             )
-
-      for {backends, vulkan, opengl} <- [
-            {[], [], []},
-            {[:drm], [], [:drm]},
-            {[:drm], [:drm], []},
-            {[:drm], [:drm], [:drm]}
-          ] do
-        refute BuildConfig.precompiled_variants(env, backends, vulkan, opengl)[target][
-                 :drm_raster
-               ].(%{})
-      end
-    end
-
-    for target <- ["aarch64-apple-darwin", "arm-unknown-linux-gnueabihf"] do
-      assert {:error, :unsupported_profile} =
-               BuildConfig.precompiled_profile(%{}, [:drm], [], [], target)
-    end
   end
 
   test "load_native_runtime? skips Rustler on macOS-only runtime builds" do
@@ -193,10 +269,7 @@ defmodule EmergeSkia.BuildConfigTest do
 
   test "load_native_runtime? respects explicit macOS NIF opt-in" do
     assert BuildConfig.load_native_runtime?(
-             %{
-               "TARGET_OS" => "darwin",
-               BuildConfig.load_macos_nif_env_key() => "true"
-             },
+             %{"TARGET_OS" => "darwin", BuildConfig.load_macos_nif_env_key() => "true"},
              [:macos],
              :prod
            )
@@ -228,106 +301,6 @@ defmodule EmergeSkia.BuildConfigTest do
              "https://github.com/acme/emerge/releases/download/v0.2.1/macos_host-v0.2.1-x86_64-apple-darwin.tar.gz.sha256"
   end
 
-  test "default_compiled_backends uses drm when NERVES_SDK_SYSROOT is present" do
-    assert BuildConfig.default_compiled_backends(%{"NERVES_SDK_SYSROOT" => "/tmp/nerves/staging"}) ==
-             [:drm]
-  end
-
-  test "default_compiled_backends uses drm for non-host MIX_TARGET values" do
-    assert BuildConfig.default_compiled_backends(%{"MIX_TARGET" => "rpi5"}) == [:drm]
-  end
-
-  test "default_compiled_backends uses drm for known Nerves compiler prefixes" do
-    assert BuildConfig.default_compiled_backends(%{"CC" => "aarch64-nerves-linux-gnu-gcc"}) ==
-             [:drm]
-  end
-
-  test "default_compiled_backends does not treat generic target env as nerves" do
-    assert BuildConfig.default_compiled_backends(%{
-             "TARGET_ARCH" => "aarch64",
-             "TARGET_OS" => "linux",
-             "TARGET_ABI" => "gnu"
-           }) == [:wayland]
-  end
-
-  test "default_compiled_backends uses wayland outside Nerves build environments" do
-    assert BuildConfig.default_compiled_backends(%{}) == @host_default
-    assert BuildConfig.default_compiled_backends(%{"MIX_TARGET" => "host"}) == @host_default
-  end
-
-  test "normalize_compiled_backends! accepts an empty backend list" do
-    assert BuildConfig.normalize_compiled_backends!([]) == []
-    assert BuildConfig.compiled_backends_to_rustler_features([]) == []
-  end
-
-  test "Nerves raster-only builds select the minimal embedded CPU Rust profile" do
-    nerves_env = %{"MIX_TARGET" => "trellis"}
-
-    assert BuildConfig.rustler_platform_features(nerves_env, [], []) == ["embedded-cpu"]
-
-    assert BuildConfig.rustler_platform_features(nerves_env, [:drm], []) == [
-             "embedded-freetype"
-           ]
-
-    assert BuildConfig.rustler_platform_features(%{"TARGET_OS" => "linux"}, [], []) == [
-             "video-interop-support"
-           ]
-  end
-
-  test "default_runtime_backend prefers wayland and falls back to drm" do
-    assert BuildConfig.default_runtime_backend([:drm, :wayland]) == :wayland
-    assert BuildConfig.default_runtime_backend([:drm]) == :drm
-    assert BuildConfig.default_runtime_backend([]) == :wayland
-  end
-
-  test "precompiled targets include Linux and both macOS raster architectures" do
-    assert BuildConfig.precompiled_targets() == [
-             "x86_64-unknown-linux-gnu",
-             "aarch64-unknown-linux-gnu",
-             "armv7-unknown-linux-gnueabihf",
-             "x86_64-unknown-linux-musl",
-             "riscv64gc-unknown-linux-gnu",
-             "aarch64-apple-darwin",
-             "x86_64-apple-darwin"
-           ]
-  end
-
-  test "macOS raster uses the NIF, not the window host or a source build" do
-    env = %{"TARGET_OS" => "darwin"}
-
-    assert BuildConfig.rustler_platform_features(env, [], []) == ["embedded-cpu"]
-
-    for mix_env <- [:dev, :test, :prod] do
-      assert BuildConfig.load_native_runtime?(env, [], mix_env)
-    end
-
-    for target <- ["aarch64-apple-darwin", "x86_64-apple-darwin"] do
-      assert {:ok, %{variant: nil, backends: [], opengl_backends: [], vulkan_backends: []}} =
-               BuildConfig.precompiled_profile(env, [], [], [], target)
-
-      refute BuildConfig.force_precompiled_build?(
-               env: env,
-               checksum_path: __ENV__.file,
-               compiled_backends: [],
-               compiled_vulkan_backends: [],
-               target_resolver: fn _, _ -> {:ok, "nif-2.15-#{target}"} end
-             )
-
-      # The raster NIF must not silently stand in for an unsupported GPU NIF.
-      for {backends, vulkan, opengl} <- [
-            {[:macos], [], []},
-            {[], [], [:headless]},
-            {[], [:headless], []},
-            {[:wayland], [], [:wayland]}
-          ] do
-        assert {:error, :unsupported_profile} =
-                 BuildConfig.precompiled_profile(env, backends, vulkan, opengl, target)
-      end
-    end
-
-    refute BuildConfig.load_native_runtime?(env, [:macos], :prod)
-  end
-
   test "Darwin target resolution selects the matching raster archive architecture" do
     for {arch, target} <- [
           {"aarch64", "aarch64-apple-darwin"},
@@ -348,66 +321,8 @@ defmodule EmergeSkia.BuildConfigTest do
     end
   end
 
-  test "Trellis targets retain ARMv7 raster selection on either host OS" do
-    env = %{
-      "MIX_TARGET" => "trellis",
-      "CC" => "armv7-nerves-linux-gnueabihf-gcc",
-      "TARGET_ARCH" => "armv7",
-      "TARGET_OS" => "linux",
-      "TARGET_ABI" => "gnueabihf"
-    }
-
-    for {os_type, system} <- [
-          {{:unix, :darwin}, %{arch: "aarch64", vendor: "apple", os: "darwin25.0.0"}},
-          {{:unix, :linux}, %{arch: "x86_64", vendor: "pc", os: "linux", abi: "gnu"}}
-        ] do
-      target_system = RustlerPrecompiled.maybe_override_with_env_vars(system, &Map.get(env, &1))
-
-      assert {:ok, "nif-2.15-armv7-unknown-linux-gnueabihf"} =
-               RustlerPrecompiled.target(
-                 %{
-                   os_type: os_type,
-                   target_system: target_system,
-                   word_size: 8,
-                   nif_version: "2.15"
-                 },
-                 BuildConfig.precompiled_targets(),
-                 BuildConfig.precompiled_nif_versions()
-               )
-    end
-
-    assert BuildConfig.rustler_platform_features(env, [], []) == ["embedded-cpu"]
-
-    assert {:ok, %{variant: nil}} =
-             BuildConfig.precompiled_profile(env, [], "armv7-unknown-linux-gnueabihf")
-  end
-
-  test "embedded musl and RISC-V targets only select published profiles" do
-    for {compiler, target} <- [
-          {"x86_64-nerves-linux-musl-gcc", "x86_64-unknown-linux-musl"},
-          {"riscv64-nerves-linux-gnu-gcc", "riscv64gc-unknown-linux-gnu"}
-        ] do
-      assert BuildConfig.default_compiled_backends(%{"CC" => compiler}) == [:drm]
-      assert {:ok, %{variant: nil}} = BuildConfig.precompiled_profile(%{}, [], target)
-      assert {:ok, %{variant: :opengl}} = BuildConfig.precompiled_profile(%{}, [:drm], target)
-
-      assert {:error, :unsupported_profile} =
-               BuildConfig.precompiled_profile(%{}, [:wayland], target)
-
-      assert {:error, :unsupported_profile} =
-               BuildConfig.precompiled_profile(%{}, [:drm], [:drm], [], target)
-
-      assert BuildConfig.precompiled_variants(%{}, [:drm])[target][:opengl].(%{})
-      refute BuildConfig.precompiled_variants(%{}, [])[target][:opengl].(%{})
-    end
-  end
-
   test "explicit ARMv7 environment resolves the ARMv7 precompiled target" do
-    env = %{
-      "TARGET_ARCH" => "armv7",
-      "TARGET_OS" => "linux",
-      "TARGET_ABI" => "gnueabihf"
-    }
+    env = %{"TARGET_ARCH" => "armv7", "TARGET_OS" => "linux", "TARGET_ABI" => "gnueabihf"}
 
     target_system =
       RustlerPrecompiled.maybe_override_with_env_vars(
@@ -426,170 +341,6 @@ defmodule EmergeSkia.BuildConfigTest do
                BuildConfig.precompiled_targets(),
                BuildConfig.precompiled_nif_versions()
              )
-  end
-
-  test "Nerves ARMv6 still requires a source build" do
-    env = %{
-      "TARGET_ARCH" => "arm",
-      "TARGET_CPU" => "arm1176jzf_s",
-      "TARGET_OS" => "linux",
-      "TARGET_ABI" => "gnueabihf",
-      "CC" => "/opt/toolchain/bin/armv6-nerves-linux-gnueabihf-gcc"
-    }
-
-    target_system =
-      RustlerPrecompiled.maybe_override_with_env_vars(
-        %{arch: "x86_64", vendor: "pc", os: "linux", abi: "gnu"},
-        &Map.get(env, &1)
-      )
-
-    resolver = fn targets, nif_versions ->
-      RustlerPrecompiled.target(
-        %{
-          os_type: {:unix, :linux},
-          target_system: target_system,
-          word_size: 8,
-          nif_version: "2.15"
-        },
-        targets,
-        nif_versions
-      )
-    end
-
-    assert {:error, _} =
-             resolver.(BuildConfig.precompiled_targets(), BuildConfig.precompiled_nif_versions())
-
-    assert BuildConfig.force_precompiled_build?(
-             env: env,
-             checksum_path: __ENV__.file,
-             compiled_backends: [],
-             compiled_vulkan_backends: [],
-             target_resolver: resolver
-           )
-  end
-
-  test "precompiled_profile resolves x86_64 backend profiles" do
-    assert {:ok, %{variant: nil, backends: [:wayland]}} =
-             BuildConfig.precompiled_profile(%{}, [:wayland], "x86_64-unknown-linux-gnu")
-
-    assert {:ok, %{variant: :drm, backends: [:drm]}} =
-             BuildConfig.precompiled_profile(%{}, [:drm], "x86_64-unknown-linux-gnu")
-
-    assert {:ok, %{variant: :drm_wayland, backends: [:wayland, :drm]}} =
-             BuildConfig.precompiled_profile(%{}, [:wayland, :drm], "x86_64-unknown-linux-gnu")
-  end
-
-  test "precompiled_profile resolves aarch64 host and nerves profiles" do
-    host_env = %{"TARGET_ARCH" => "aarch64", "TARGET_OS" => "linux"}
-
-    nerves_env = %{
-      "NERVES_SDK_SYSROOT" => "/tmp/nerves/staging",
-      "TARGET_ARCH" => "aarch64",
-      "TARGET_OS" => "linux"
-    }
-
-    assert {:ok, %{variant: nil, backends: [:wayland]}} =
-             BuildConfig.precompiled_profile(host_env, [:wayland], "aarch64-unknown-linux-gnu")
-
-    assert {:ok, %{variant: :drm, backends: [:drm]}} =
-             BuildConfig.precompiled_profile(host_env, [:drm], "aarch64-unknown-linux-gnu")
-
-    assert {:ok, %{variant: :drm_wayland, backends: [:wayland, :drm]}} =
-             BuildConfig.precompiled_profile(
-               host_env,
-               [:wayland, :drm],
-               "aarch64-unknown-linux-gnu"
-             )
-
-    assert {:ok, %{variant: :drm, backends: [:drm]}} =
-             BuildConfig.precompiled_profile(nerves_env, [:drm], "aarch64-unknown-linux-gnu")
-  end
-
-  test "precompiled_profile resolves raster, Vulkan, and ARMv7 profiles" do
-    for target <- ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"] do
-      assert {:ok, %{variant: :raster, backends: [], vulkan_backends: []}} =
-               BuildConfig.precompiled_profile(%{}, [], [], target)
-
-      assert {:ok, %{variant: :vulkan, vulkan_backends: [:headless]}} =
-               BuildConfig.precompiled_profile(%{}, [], [:headless], target)
-
-      assert {:ok,
-              %{variant: :headless_vulkan, vulkan_backends: [:headless], opengl_backends: []}} =
-               BuildConfig.precompiled_profile(%{}, [], [:headless], [], target)
-
-      assert {:ok, %{variant: :wayland_vulkan, vulkan_backends: [:wayland], opengl_backends: []}} =
-               BuildConfig.precompiled_profile(%{}, [:wayland], [:wayland], [], target)
-
-      assert {:ok, %{variant: :drm_vulkan, vulkan_backends: [:drm], opengl_backends: []}} =
-               BuildConfig.precompiled_profile(%{}, [:drm], [:drm], [], target)
-    end
-
-    assert {:ok, %{variant: nil, backends: [], vulkan_backends: []}} =
-             BuildConfig.precompiled_profile(
-               %{"MIX_TARGET" => "trellis"},
-               [],
-               [],
-               "armv7-unknown-linux-gnueabihf"
-             )
-
-    assert {:ok, %{variant: :opengl, backends: [:drm], vulkan_backends: []}} =
-             BuildConfig.precompiled_profile(
-               %{"MIX_TARGET" => "trellis"},
-               [:drm],
-               [],
-               "armv7-unknown-linux-gnueabihf"
-             )
-
-    assert {:error, :unsupported_profile} =
-             BuildConfig.precompiled_profile(
-               %{"MIX_TARGET" => "trellis"},
-               [:drm],
-               [:drm],
-               "armv7-unknown-linux-gnueabihf"
-             )
-  end
-
-  test "DRM OpenGL plus Vulkan never selects the desktop bundle" do
-    for target <- ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"],
-        env <- [%{}, %{"MIX_TARGET" => "rpi5"}] do
-      assert {:ok, %{variant: :drm_all, backends: [:drm]}} =
-               BuildConfig.precompiled_profile(env, [:drm], [:drm], target)
-
-      variants = BuildConfig.precompiled_variants(env, [:drm], [:drm])
-      assert variants[target][:drm_all].(%{})
-      refute variants[target][:vulkan].(%{})
-      refute variants[target][:drm_vulkan].(%{})
-    end
-  end
-
-  test "precompiled_variants select exact backend and rendering profiles" do
-    x64_variants = BuildConfig.precompiled_variants(%{}, [:wayland, :drm], [])
-    assert x64_variants["x86_64-unknown-linux-gnu"][:drm_wayland].(%{})
-    refute x64_variants["x86_64-unknown-linux-gnu"][:drm].(%{})
-
-    raster_variants = BuildConfig.precompiled_variants(%{}, [], [])
-    assert raster_variants["x86_64-unknown-linux-gnu"][:raster].(%{})
-    assert raster_variants["aarch64-unknown-linux-gnu"][:raster].(%{})
-    refute raster_variants["x86_64-unknown-linux-gnu"][:vulkan].(%{})
-
-    vulkan_variants = BuildConfig.precompiled_variants(%{}, [], [:headless])
-    assert vulkan_variants["x86_64-unknown-linux-gnu"][:vulkan].(%{})
-    assert vulkan_variants["aarch64-unknown-linux-gnu"][:vulkan].(%{})
-
-    vulkan_only_variants = BuildConfig.precompiled_variants(%{}, [:drm], [:drm], [])
-    assert vulkan_only_variants["x86_64-unknown-linux-gnu"][:drm_vulkan].(%{})
-    assert vulkan_only_variants["aarch64-unknown-linux-gnu"][:drm_vulkan].(%{})
-    refute vulkan_only_variants["x86_64-unknown-linux-gnu"][:vulkan].(%{})
-
-    arm_raster_variants =
-      BuildConfig.precompiled_variants(%{"MIX_TARGET" => "trellis"}, [], [])
-
-    refute arm_raster_variants["armv7-unknown-linux-gnueabihf"][:opengl].(%{})
-
-    arm_opengl_variants =
-      BuildConfig.precompiled_variants(%{"MIX_TARGET" => "trellis"}, [:drm], [])
-
-    assert arm_opengl_variants["armv7-unknown-linux-gnueabihf"][:opengl].(%{})
   end
 
   test "precompiled_tar_gz_url adds github auth headers when token is set" do
@@ -616,170 +367,6 @@ defmodule EmergeSkia.BuildConfigTest do
     refute BuildConfig.checksum_only_mode?(%{})
   end
 
-  # Explicit artifact fixtures must not inherit the source-build Vulkan profile.
-  test "force_precompiled_build? forces builds when checksum is missing" do
-    assert BuildConfig.force_precompiled_build?(
-             checksum_path: "/tmp/emerge-missing-checksum",
-             compiled_backends: [:wayland],
-             compiled_vulkan_backends: [],
-             env: %{},
-             target_resolver: fn _targets, _nif_versions ->
-               {:ok, "nif-2.15-x86_64-unknown-linux-gnu"}
-             end
-           )
-  end
-
-  test "force_precompiled_build? resolves the current target without crashing" do
-    assert is_boolean(
-             BuildConfig.force_precompiled_build?(
-               checksum_path: __ENV__.file,
-               compiled_backends: [:wayland],
-               compiled_vulkan_backends: [],
-               env: %{}
-             )
-           )
-  end
-
-  test "force_precompiled_build? forces builds when backend profile is unsupported" do
-    assert BuildConfig.force_precompiled_build?(
-             checksum_path: __ENV__.file,
-             compiled_backends: [:macos],
-             compiled_vulkan_backends: [],
-             env: %{},
-             target_resolver: fn _targets, _nif_versions ->
-               {:ok, "nif-2.15-x86_64-unknown-linux-gnu"}
-             end
-           )
-  end
-
-  test "force_precompiled_build? uses precompiled artifacts when checksum, target, and backend match" do
-    refute BuildConfig.force_precompiled_build?(
-             checksum_path: __ENV__.file,
-             compiled_backends: [:wayland],
-             compiled_vulkan_backends: [],
-             env: %{},
-             target_resolver: fn _targets, _nif_versions ->
-               {:ok, "nif-2.15-x86_64-unknown-linux-gnu"}
-             end
-           )
-  end
-
-  test "force_precompiled_build? uses 64-bit Vulkan artifacts and rejects ARMv7 Vulkan" do
-    refute BuildConfig.force_precompiled_build?(
-             checksum_path: __ENV__.file,
-             compiled_backends: [:wayland],
-             compiled_vulkan_backends: [:wayland],
-             env: %{},
-             target_resolver: fn _targets, _nif_versions ->
-               {:ok, "nif-2.15-x86_64-unknown-linux-gnu"}
-             end
-           )
-
-    refute BuildConfig.force_precompiled_build?(
-             checksum_path: __ENV__.file,
-             compiled_backends: [:drm],
-             compiled_vulkan_backends: [:drm],
-             compiled_opengl_backends: [],
-             env: %{},
-             target_resolver: fn _targets, _nif_versions ->
-               {:ok, "nif-2.15-aarch64-unknown-linux-gnu"}
-             end
-           )
-
-    assert BuildConfig.force_precompiled_build?(
-             checksum_path: __ENV__.file,
-             compiled_backends: [:drm],
-             compiled_vulkan_backends: [:drm],
-             compiled_opengl_backends: [],
-             env: %{"MIX_TARGET" => "trellis"},
-             target_resolver: fn _targets, _nif_versions ->
-               {:ok, "nif-2.15-armv7-unknown-linux-gnueabihf"}
-             end
-           )
-  end
-
-  test "force_precompiled_build? uses precompiled artifacts for x64 drm and drm_wayland profiles" do
-    refute BuildConfig.force_precompiled_build?(
-             checksum_path: __ENV__.file,
-             compiled_backends: [:drm],
-             compiled_vulkan_backends: [],
-             env: %{},
-             target_resolver: fn _targets, _nif_versions ->
-               {:ok, "nif-2.15-x86_64-unknown-linux-gnu"}
-             end
-           )
-
-    refute BuildConfig.force_precompiled_build?(
-             checksum_path: __ENV__.file,
-             compiled_backends: [:wayland, :drm],
-             compiled_vulkan_backends: [],
-             env: %{},
-             target_resolver: fn _targets, _nif_versions ->
-               {:ok, "nif-2.15-x86_64-unknown-linux-gnu"}
-             end
-           )
-  end
-
-  test "force_precompiled_build? uses precompiled artifacts for generic aarch64 nerves drm" do
-    refute BuildConfig.force_precompiled_build?(
-             checksum_path: __ENV__.file,
-             compiled_backends: [:drm],
-             compiled_vulkan_backends: [],
-             env: %{
-               "NERVES_SDK_SYSROOT" => "/tmp/nerves/staging",
-               "TARGET_ARCH" => "aarch64",
-               "TARGET_OS" => "linux"
-             },
-             target_resolver: fn _targets, _nif_versions ->
-               {:ok, "nif-2.15-aarch64-unknown-linux-gnu"}
-             end
-           )
-  end
-
-  test "force_precompiled_build? uses ARMv7 raster and OpenGL artifacts" do
-    target_resolver = fn _targets, _nif_versions ->
-      {:ok, "nif-2.15-armv7-unknown-linux-gnueabihf"}
-    end
-
-    refute BuildConfig.force_precompiled_build?(
-             checksum_path: __ENV__.file,
-             compiled_backends: [],
-             compiled_vulkan_backends: [],
-             env: %{"MIX_TARGET" => "trellis"},
-             target_resolver: target_resolver
-           )
-
-    refute BuildConfig.force_precompiled_build?(
-             checksum_path: __ENV__.file,
-             compiled_backends: [:drm],
-             compiled_vulkan_backends: [],
-             env: %{"MIX_TARGET" => "trellis"},
-             target_resolver: target_resolver
-           )
-  end
-
-  test "force_precompiled_build? respects the explicit force-build env var" do
-    assert BuildConfig.force_precompiled_build?(
-             checksum_path: __ENV__.file,
-             compiled_backends: [:wayland],
-             compiled_vulkan_backends: [],
-             env: %{BuildConfig.force_precompiled_build_env_key() => "true"},
-             target_resolver: fn _targets, _nif_versions ->
-               {:ok, "nif-2.15-x86_64-unknown-linux-gnu"}
-             end
-           )
-  end
-
-  test "force_precompiled_build? falls back to source builds for unsupported targets" do
-    assert BuildConfig.force_precompiled_build?(
-             checksum_path: __ENV__.file,
-             compiled_backends: [:wayland],
-             compiled_vulkan_backends: [],
-             env: %{},
-             target_resolver: fn _targets, _nif_versions -> {:error, :unsupported_target} end
-           )
-  end
-
   test "normalize_compiled_backends! rejects invalid config shapes" do
     assert_raise ArgumentError, ~r/compiled_backends: .*must be a list of backend atoms/, fn ->
       BuildConfig.normalize_compiled_backends!(:wayland)
@@ -795,17 +382,17 @@ defmodule EmergeSkia.BuildConfigTest do
   test "normalize_compiled_vulkan_backends! accepts the independent headless producer" do
     assert BuildConfig.normalize_compiled_vulkan_backends!([:headless], [:wayland]) == [:headless]
 
-    assert BuildConfig.normalize_compiled_vulkan_backends!(
-             [:headless, :wayland],
-             [:wayland]
-           ) == [:wayland, :headless]
+    assert BuildConfig.normalize_compiled_vulkan_backends!([:headless, :wayland], [:wayland]) == [
+             :wayland,
+             :headless
+           ]
   end
 
   test "normalize_compiled_opengl_backends! accepts presenter and independent headless routes" do
-    assert BuildConfig.normalize_compiled_opengl_backends!(
-             [:headless, :drm],
-             [:drm]
-           ) == [:drm, :headless]
+    assert BuildConfig.normalize_compiled_opengl_backends!([:headless, :drm], [:drm]) == [
+             :drm,
+             :headless
+           ]
   end
 
   test "normalize_compiled_opengl_backends! rejects invalid and unavailable backends" do

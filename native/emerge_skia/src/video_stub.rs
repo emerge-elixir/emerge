@@ -40,7 +40,7 @@ pub enum VideoSubmitResult {
     DroppedInactive,
 }
 
-#[cfg(feature = "wayland-core")]
+#[cfg(feature = "wayland")]
 #[derive(Clone, Debug, Default)]
 pub struct VideoCleanupResult {
     pub needs_cleanup: bool,

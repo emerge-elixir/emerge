@@ -14,17 +14,17 @@ defmodule EmergeSkia.NativePrecompiledTest do
              "/releases/download/v#{fixture.version}/#{fixture.file_name}"
   end
 
-  test "Trellis reuses the OpenGL archive without Rustler or target overrides" do
-    fixture = fixture([:drm], "--opengl")
+  test "Trellis reuses the exact DRM/OpenGL archive without Rustler" do
+    fixture = fixture([:drm], "--drm_opengl")
     File.write!(Path.join(fixture.cache, fixture.file_name), fixture.archive)
     assert_run(fixture, "loaded")
   end
 
   for {backends, vulkan, suffix} <- [
-        {[:drm], [], "--drm"},
+        {[:drm], [], "--drm_opengl"},
         {[drm: [:vulkan]], nil, "--drm_vulkan"},
-        {[drm: :all], nil, "--drm_all"},
-        {[:drm], [:drm], "--drm_all"}
+        {[drm: :all], nil, "--drm_opengl_vulkan"},
+        {[:drm], [:drm], "--drm_opengl_vulkan"}
       ] do
     @backends backends
     @vulkan vulkan
@@ -68,7 +68,11 @@ defmodule EmergeSkia.NativePrecompiledTest do
         {"x86_64-unknown-linux-musl", "x86_64-nerves-linux-musl-gcc", "x86_64", "musl"},
         {"riscv64gc-unknown-linux-gnu", "riscv64-nerves-linux-gnu-gcc", "riscv64", "gnu"}
       ],
-      {backends, suffix} <- [{[], ""}, {[:drm], "--opengl"}] do
+      {backends, suffix} <- [
+        {[], ""},
+        {[headless: [:opengl]], "--opengl"},
+        {[:drm], "--drm_opengl"}
+      ] do
     @target target
     @compiler compiler
     @arch arch
@@ -82,7 +86,7 @@ defmodule EmergeSkia.NativePrecompiledTest do
           compiler: @compiler,
           arch: @arch,
           abi: @abi,
-          default_backends: @backends == [:drm]
+          default_backends: @backends == []
         )
 
       server = serve_archive(fixture.archive)
@@ -120,7 +124,9 @@ defmodule EmergeSkia.NativePrecompiledTest do
     File.mkdir_p!(Path.join(root, "lib/emerge_skia"))
     File.mkdir_p!(Path.join(app_dir, "ebin"))
     File.mkdir_p!(Path.join(app_dir, "priv/native"))
+
     File.cp!(Path.join(@root, "mix.exs"), Path.join(root, "mix.exs"))
+
     File.cp_r!(Path.join(@root, "mix"), Path.join(root, "mix"))
 
     File.cp!(
@@ -218,6 +224,7 @@ defmodule EmergeSkia.NativePrecompiledTest do
           {"TARGET_ABI", fixture.abi},
           {"TARGET_VENDOR", nil},
           {"CC", "/opt/toolchain/bin/#{compiler}"},
+          {"NERVES_SYSTEM", nil},
           {"NERVES_SDK_SYSROOT", nil},
           {"NERVES_TOOLCHAIN", nil},
           {"EMERGE_SKIA_CHECKSUM_ONLY", nil},

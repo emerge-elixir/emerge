@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-21
+
+### Changed
+
+- Keep `compiled_backends`, but resolve it to a canonical union of optional backend
+  and rendering API features. Headless/raster are baseline; DRM/Wayland no longer
+  imply OpenGL. Equivalent matrix spellings select the same exact-feature archive.
+- Generate native artifact variants and release jobs from a shared catalog,
+  including genuinely headless OpenGL profiles. New names belong to the 0.5.1 release;
+  existing release archives and hashes remain unchanged.
+- Known stock Nerves system/version profiles select capability-based defaults;
+  unknown/custom systems conservatively default to headless/raster. Explicit
+  configuration always wins. Add searchable Nerves/device configuration guidance
+  and `mix emerge.build_info` / standalone build-info for pre-compilation diagnosis.
+
+
 ## [0.5.0] - 2026-10-14
 
 See the [0.5 migration guide](guides/migrations/0.5.md) when upgrading from 0.4.

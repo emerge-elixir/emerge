@@ -6,10 +6,10 @@ end
 defmodule Emerge.MixProject do
   use Mix.Project
 
-  @version "0.5.0"
+  @version "0.5.1"
   @source_url "https://github.com/emerge-elixir/emerge"
 
-  for file <- ~w(native.exs package.exs docs.exs targets.exs) do
+  for file <- ~w(native_profiles.exs native.exs package.exs docs.exs targets.exs) do
     @external_resource Path.join([__DIR__, "mix", file])
   end
 

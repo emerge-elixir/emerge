@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
-#[cfg(feature = "wayland")]
+#[cfg(all(feature = "wayland", feature = "opengl"))]
 use glutin::prelude::GlSurface;
-#[cfg(feature = "wayland")]
+#[cfg(all(feature = "wayland", feature = "opengl"))]
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::xdg::window::Window;
 use wayland_client::Connection;
 
-#[cfg(feature = "wayland")]
+#[cfg(all(feature = "wayland", feature = "opengl"))]
 use crate::video::VideoImportContext;
 use crate::{
     RenderingApi,
@@ -15,11 +15,11 @@ use crate::{
     video::{VideoCleanupResult, VideoRegistry},
 };
 
-#[cfg(feature = "wayland")]
+#[cfg(all(feature = "wayland", feature = "opengl"))]
 use super::egl::{GlEnv, create_gl_env, resize_gl_env};
-#[cfg(feature = "wayland-vulkan")]
+#[cfg(all(feature = "wayland", feature = "vulkan"))]
 use super::vulkan::WaylandVulkanEnv;
-#[cfg(feature = "wayland-vulkan")]
+#[cfg(all(feature = "wayland", feature = "vulkan"))]
 use crate::{
     backend::vulkan::{VulkanRendererReport, capabilities::DrmNodeId},
     video::VulkanVideoImportContext,
@@ -28,25 +28,29 @@ use crate::{
 /// Owns the Wayland GPU renderer and brackets acquire, scene traversal, backend-controlled flush,
 /// capture, and presentation. Raster presentation remains separate.
 pub(super) enum RendererEnv {
-    #[cfg(feature = "wayland")]
+    #[cfg(all(feature = "wayland", feature = "opengl"))]
     OpenGl(GlEnv),
-    #[cfg(feature = "wayland-vulkan")]
+    #[cfg(all(feature = "wayland", feature = "vulkan"))]
     Vulkan(WaylandVulkanEnv),
 }
 
-#[cfg(any(feature = "wayland", feature = "wayland-vulkan", test))]
+#[cfg(any(
+    all(feature = "wayland", feature = "opengl"),
+    all(feature = "wayland", feature = "vulkan"),
+    test
+))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RendererEnvKind {
-    #[cfg(feature = "wayland")]
+    #[cfg(all(feature = "wayland", feature = "opengl"))]
     OpenGl,
-    #[cfg(feature = "wayland-vulkan")]
+    #[cfg(all(feature = "wayland", feature = "vulkan"))]
     Vulkan,
 }
 
 pub(super) enum RendererVideoImportContext {
-    #[cfg(feature = "wayland")]
+    #[cfg(all(feature = "wayland", feature = "opengl"))]
     OpenGl(VideoImportContext),
-    #[cfg(feature = "wayland-vulkan")]
+    #[cfg(all(feature = "wayland", feature = "vulkan"))]
     Vulkan(VulkanVideoImportContext),
 }
 
@@ -55,13 +59,17 @@ pub(super) struct PresentOutcome {
     pub(super) capture: Option<(u32, u32, Vec<u8>)>,
 }
 
-#[cfg(any(feature = "wayland", feature = "wayland-vulkan", test))]
+#[cfg(any(
+    all(feature = "wayland", feature = "opengl"),
+    all(feature = "wayland", feature = "vulkan"),
+    test
+))]
 impl RendererEnvKind {
     fn for_api(rendering_api: RenderingApi) -> Result<Self, String> {
         match rendering_api {
-            #[cfg(feature = "wayland")]
+            #[cfg(all(feature = "wayland", feature = "opengl"))]
             RenderingApi::OpenGl => Ok(Self::OpenGl),
-            #[cfg(not(feature = "wayland"))]
+            #[cfg(not(all(feature = "wayland", feature = "opengl")))]
             RenderingApi::OpenGl => {
                 Err("OpenGL Wayland rendering support is not available in this build".to_string())
             }
@@ -70,43 +78,49 @@ impl RendererEnvKind {
                 Err("Wayland raster renderer is not implemented yet".to_string())
             }
             RenderingApi::Metal => Err("Wayland does not support Metal renderer".to_string()),
-            #[cfg(feature = "wayland-vulkan")]
+            #[cfg(all(feature = "wayland", feature = "vulkan"))]
             RenderingApi::Vulkan => Ok(Self::Vulkan),
-            #[cfg(not(feature = "wayland-vulkan"))]
+            #[cfg(not(all(feature = "wayland", feature = "vulkan")))]
             RenderingApi::Vulkan => {
                 Err("Vulkan rendering support is not available in this build".to_string())
             }
         }
     }
 
-    #[cfg(feature = "wayland")]
+    #[cfg(all(feature = "wayland", feature = "opengl"))]
     fn supports_late_replacement(self, swap_buffers_nonblocking: bool) -> bool {
         match self {
-            #[cfg(feature = "wayland")]
+            #[cfg(all(feature = "wayland", feature = "opengl"))]
             Self::OpenGl => swap_buffers_nonblocking,
-            #[cfg(feature = "wayland-vulkan")]
+            #[cfg(all(feature = "wayland", feature = "vulkan"))]
             Self::Vulkan => false,
         }
     }
 
-    #[cfg(any(feature = "wayland", feature = "wayland-vulkan"))]
+    #[cfg(any(
+        all(feature = "wayland", feature = "opengl"),
+        all(feature = "wayland", feature = "vulkan")
+    ))]
     fn requests_frame_callback_before_render(self) -> bool {
         match self {
-            #[cfg(feature = "wayland")]
+            #[cfg(all(feature = "wayland", feature = "opengl"))]
             Self::OpenGl => true,
-            #[cfg(feature = "wayland-vulkan")]
+            #[cfg(all(feature = "wayland", feature = "vulkan"))]
             Self::Vulkan => false,
         }
     }
 }
 
-#[cfg(any(feature = "wayland", feature = "wayland-vulkan"))]
+#[cfg(any(
+    all(feature = "wayland", feature = "opengl"),
+    all(feature = "wayland", feature = "vulkan")
+))]
 impl RendererEnv {
     pub(super) fn shutdown(&mut self) -> Result<(), String> {
         match self {
-            #[cfg(feature = "wayland")]
+            #[cfg(all(feature = "wayland", feature = "opengl"))]
             Self::OpenGl(_) => Ok(()),
-            #[cfg(feature = "wayland-vulkan")]
+            #[cfg(all(feature = "wayland", feature = "vulkan"))]
             Self::Vulkan(env) => env.shutdown(),
         }
     }
@@ -117,15 +131,15 @@ impl RendererEnv {
         window: &Window,
         dimensions: (u32, u32),
         renderer_cache_config: RendererCacheConfig,
-        #[cfg(feature = "wayland-vulkan")] compositor_device: Option<DrmNodeId>,
+        #[cfg(all(feature = "wayland", feature = "vulkan"))] compositor_device: Option<DrmNodeId>,
     ) -> Result<Self, String> {
         match RendererEnvKind::for_api(rendering_api)? {
-            #[cfg(feature = "wayland")]
+            #[cfg(all(feature = "wayland", feature = "opengl"))]
             RendererEnvKind::OpenGl => {
                 create_gl_env(conn, window.wl_surface(), dimensions, renderer_cache_config)
                     .map(Self::OpenGl)
             }
-            #[cfg(feature = "wayland-vulkan")]
+            #[cfg(all(feature = "wayland", feature = "vulkan"))]
             RendererEnvKind::Vulkan => WaylandVulkanEnv::new(
                 conn,
                 window,
@@ -139,20 +153,20 @@ impl RendererEnv {
 
     pub(super) fn requests_frame_callback_before_render(&self) -> bool {
         match self {
-            #[cfg(feature = "wayland")]
+            #[cfg(all(feature = "wayland", feature = "opengl"))]
             Self::OpenGl(_) => RendererEnvKind::OpenGl.requests_frame_callback_before_render(),
-            #[cfg(feature = "wayland-vulkan")]
+            #[cfg(all(feature = "wayland", feature = "vulkan"))]
             Self::Vulkan(_) => RendererEnvKind::Vulkan.requests_frame_callback_before_render(),
         }
     }
 
     pub(super) fn supports_late_replacement(&self) -> bool {
         match self {
-            #[cfg(feature = "wayland")]
+            #[cfg(all(feature = "wayland", feature = "opengl"))]
             Self::OpenGl(env) => {
                 RendererEnvKind::OpenGl.supports_late_replacement(env.swap_buffers_nonblocking)
             }
-            #[cfg(feature = "wayland-vulkan")]
+            #[cfg(all(feature = "wayland", feature = "vulkan"))]
             Self::Vulkan(env) => env.supports_late_replacement(),
         }
     }
@@ -163,11 +177,11 @@ impl RendererEnv {
         dimensions: (u32, u32),
     ) -> bool {
         match self {
-            #[cfg(feature = "wayland")]
+            #[cfg(all(feature = "wayland", feature = "opengl"))]
             Self::OpenGl(env) => env
                 .renderer
                 .can_skip_unchanged_visible_frame(render_state, dimensions),
-            #[cfg(feature = "wayland-vulkan")]
+            #[cfg(all(feature = "wayland", feature = "vulkan"))]
             Self::Vulkan(env) => env.renderer_mut().is_ok_and(|renderer| {
                 renderer.can_skip_unchanged_visible_frame(render_state, dimensions)
             }),
@@ -180,7 +194,7 @@ impl RendererEnv {
         draw: impl FnOnce(&mut SceneRenderer, &mut RenderFrame<'_>) -> R,
     ) -> Result<Option<R>, String> {
         match self {
-            #[cfg(feature = "wayland")]
+            #[cfg(all(feature = "wayland", feature = "opengl"))]
             Self::OpenGl(env) => {
                 let result = {
                     let mut frame = env.frame_surface.frame();
@@ -191,7 +205,7 @@ impl RendererEnv {
                     .flatten();
                 Ok(Some(result))
             }
-            #[cfg(feature = "wayland-vulkan")]
+            #[cfg(all(feature = "wayland", feature = "vulkan"))]
             Self::Vulkan(env) => env.render_frame(capture_requested, draw),
         }
     }
@@ -202,13 +216,13 @@ impl RendererEnv {
         video_import_ctx: Option<&RendererVideoImportContext>,
     ) -> Result<VideoCleanupResult, String> {
         match self {
-            #[cfg(feature = "wayland")]
+            #[cfg(all(feature = "wayland", feature = "opengl"))]
             Self::OpenGl(env) => {
                 let gl_context = match video_import_ctx {
                     Some(RendererVideoImportContext::OpenGl(context)) => Some(context),
-                    #[cfg(feature = "wayland-vulkan")]
+                    #[cfg(all(feature = "wayland", feature = "vulkan"))]
                     Some(RendererVideoImportContext::Vulkan(_)) | None => None,
-                    #[cfg(not(feature = "wayland-vulkan"))]
+                    #[cfg(not(all(feature = "wayland", feature = "vulkan")))]
                     None => None,
                 };
                 let cleanup = env.renderer.reap_video_cleanup(registry, gl_context);
@@ -219,7 +233,7 @@ impl RendererEnv {
                 }
                 Ok(cleanup)
             }
-            #[cfg(feature = "wayland-vulkan")]
+            #[cfg(all(feature = "wayland", feature = "vulkan"))]
             Self::Vulkan(env) => {
                 let active = video_import_ctx.is_some_and(|context| {
                     matches!(context, RendererVideoImportContext::Vulkan(_))
@@ -240,10 +254,10 @@ impl RendererEnv {
         }
     }
 
-    #[cfg(feature = "wayland-vulkan")]
+    #[cfg(all(feature = "wayland", feature = "vulkan"))]
     pub(super) fn vulkan_renderer_report(&self) -> Result<Option<VulkanRendererReport>, String> {
         match self {
-            #[cfg(feature = "wayland")]
+            #[cfg(all(feature = "wayland", feature = "opengl"))]
             Self::OpenGl(_) => Ok(None),
             Self::Vulkan(env) => env
                 .device()
@@ -253,11 +267,11 @@ impl RendererEnv {
 
     pub(super) fn initialize_video_import(&self) -> Result<RendererVideoImportContext, String> {
         match self {
-            #[cfg(feature = "wayland")]
+            #[cfg(all(feature = "wayland", feature = "opengl"))]
             Self::OpenGl(_) => {
                 VideoImportContext::new_current().map(RendererVideoImportContext::OpenGl)
             }
-            #[cfg(feature = "wayland-vulkan")]
+            #[cfg(all(feature = "wayland", feature = "vulkan"))]
             Self::Vulkan(env) => VulkanVideoImportContext::new(Arc::clone(env.device()?))
                 .map(RendererVideoImportContext::Vulkan),
         }
@@ -265,9 +279,9 @@ impl RendererEnv {
 
     pub(super) fn resize(&mut self, dimensions: (u32, u32)) -> Result<(), String> {
         match self {
-            #[cfg(feature = "wayland")]
+            #[cfg(all(feature = "wayland", feature = "opengl"))]
             Self::OpenGl(env) => resize_gl_env(env, dimensions),
-            #[cfg(feature = "wayland-vulkan")]
+            #[cfg(all(feature = "wayland", feature = "vulkan"))]
             Self::Vulkan(env) => env.resize(dimensions)?,
         }
         self.invalidate_visible_frame_fingerprint();
@@ -276,9 +290,9 @@ impl RendererEnv {
 
     pub(super) fn invalidate_visible_frame_fingerprint(&mut self) {
         match self {
-            #[cfg(feature = "wayland")]
+            #[cfg(all(feature = "wayland", feature = "opengl"))]
             Self::OpenGl(env) => env.renderer.invalidate_visible_frame_fingerprint(),
-            #[cfg(feature = "wayland-vulkan")]
+            #[cfg(all(feature = "wayland", feature = "vulkan"))]
             Self::Vulkan(env) => {
                 if let Ok(renderer) = env.renderer_mut() {
                     renderer.invalidate_visible_frame_fingerprint();
@@ -289,7 +303,7 @@ impl RendererEnv {
 
     pub(super) fn present(&mut self) -> Result<PresentOutcome, String> {
         match self {
-            #[cfg(feature = "wayland")]
+            #[cfg(all(feature = "wayland", feature = "opengl"))]
             Self::OpenGl(env) => {
                 env.gl_surface
                     .swap_buffers(&env.gl_context)
@@ -299,7 +313,7 @@ impl RendererEnv {
                     capture: env.pending_capture.take(),
                 })
             }
-            #[cfg(feature = "wayland-vulkan")]
+            #[cfg(all(feature = "wayland", feature = "vulkan"))]
             Self::Vulkan(env) => env.present().map(|outcome| PresentOutcome {
                 submitted: outcome.submitted,
                 capture: outcome
@@ -310,7 +324,10 @@ impl RendererEnv {
     }
 }
 
-#[cfg(not(any(feature = "wayland", feature = "wayland-vulkan")))]
+#[cfg(not(any(
+    all(feature = "wayland", feature = "opengl"),
+    all(feature = "wayland", feature = "vulkan")
+)))]
 impl RendererEnv {
     pub(super) fn new(
         _rendering_api: RenderingApi,
@@ -373,22 +390,22 @@ mod tests {
 
     #[test]
     fn renderer_api_dispatch_keeps_opengl_and_feature_gates_vulkan() {
-        #[cfg(feature = "wayland")]
+        #[cfg(all(feature = "wayland", feature = "opengl"))]
         assert_eq!(
             RendererEnvKind::for_api(RenderingApi::OpenGl),
             Ok(RendererEnvKind::OpenGl)
         );
-        #[cfg(not(feature = "wayland"))]
+        #[cfg(not(all(feature = "wayland", feature = "opengl")))]
         assert_eq!(
             RendererEnvKind::for_api(RenderingApi::OpenGl),
             Err("OpenGL Wayland rendering support is not available in this build".to_string())
         );
-        #[cfg(feature = "wayland-vulkan")]
+        #[cfg(all(feature = "wayland", feature = "vulkan"))]
         assert_eq!(
             RendererEnvKind::for_api(RenderingApi::Vulkan),
             Ok(RendererEnvKind::Vulkan)
         );
-        #[cfg(not(feature = "wayland-vulkan"))]
+        #[cfg(not(all(feature = "wayland", feature = "vulkan")))]
         assert_eq!(
             RendererEnvKind::for_api(RenderingApi::Vulkan),
             Err("Vulkan rendering support is not available in this build".to_string())
@@ -401,17 +418,17 @@ mod tests {
 
     #[test]
     fn late_replacement_remains_gl_only() {
-        #[cfg(feature = "wayland")]
+        #[cfg(all(feature = "wayland", feature = "opengl"))]
         assert!(RendererEnvKind::OpenGl.supports_late_replacement(true));
-        #[cfg(feature = "wayland")]
+        #[cfg(all(feature = "wayland", feature = "opengl"))]
         assert!(!RendererEnvKind::OpenGl.supports_late_replacement(false));
     }
 
     #[test]
     fn vulkan_requests_a_frame_callback_only_after_nonblocking_acquisition() {
-        #[cfg(feature = "wayland")]
+        #[cfg(all(feature = "wayland", feature = "opengl"))]
         assert!(RendererEnvKind::OpenGl.requests_frame_callback_before_render());
-        #[cfg(feature = "wayland-vulkan")]
+        #[cfg(all(feature = "wayland", feature = "vulkan"))]
         assert!(!RendererEnvKind::Vulkan.requests_frame_callback_before_render());
     }
 }
