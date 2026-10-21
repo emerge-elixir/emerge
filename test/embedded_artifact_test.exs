@@ -35,6 +35,11 @@ defmodule Emerge.EmbeddedArtifactTest do
     end
 
     assert_raise ArgumentError, fn -> validate(["libEGL.so.1"], "drm_vulkan") end
+    assert :ok = validate(["libc.so.6", "libvulkan.so.1"], "vulkan")
+
+    for library <- ~w(libgbm.so.1 libdrm.so.2 libEGL.so.1 libGL.so.1) do
+      assert_raise ArgumentError, fn -> validate(["libc.so.6", library], "vulkan") end
+    end
   end
 
   test "rejects wrong architecture, missing NIF entry and unresolved desktop symbols" do
