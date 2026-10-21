@@ -321,8 +321,8 @@ defmodule Emerge.MixProjectTest do
     code = """
     false = Code.ensure_loaded?(Emerge.Mix.Native)
     false = Code.ensure_loaded?(Emerge.Mix.Docs)
-    [:drm] = EmergeSkia.BuildConfig.default_compiled_backends(%{"CC" => "riscv64-nerves-linux-gnu-gcc"})
-    [:wayland] = EmergeSkia.BuildConfig.default_compiled_backends(%{"TARGET_ARCH" => "x86_64", "TARGET_OS" => "linux"})
+    [] = EmergeSkia.BuildConfig.default_compiled_backends(%{"CC" => "riscv64-nerves-linux-gnu-gcc"})
+    [wayland: [:opengl]] = EmergeSkia.BuildConfig.default_compiled_backends(%{"TARGET_ARCH" => "x86_64", "TARGET_OS" => "linux"})
     false = Code.ensure_loaded?(Emerge.Mix.Native)
     IO.puts("runtime ready")
     """

@@ -9,13 +9,13 @@ mod raster;
 mod session;
 pub(crate) use core::outputs;
 mod cursor_theme;
-#[cfg(any(feature = "drm", test))]
+#[cfg(any(all(feature = "drm", feature = "opengl"), test))]
 mod first_frame;
-#[cfg(feature = "drm-vulkan")]
+#[cfg(all(feature = "drm", feature = "vulkan"))]
 pub mod functional_probe;
-#[cfg(feature = "drm")]
+#[cfg(all(feature = "drm", feature = "opengl"))]
 mod gl;
-#[cfg(feature = "drm-vulkan")]
+#[cfg(all(feature = "drm", feature = "vulkan"))]
 mod vulkan;
 
 use std::sync::{
@@ -107,7 +107,7 @@ impl BackendWake for DrmBackendWake {
     }
 }
 
-#[cfg_attr(not(feature = "drm"), allow(dead_code))]
+#[cfg_attr(not(all(feature = "drm", feature = "opengl")), allow(dead_code))]
 #[derive(Clone)]
 pub(crate) struct DrmRunConfig {
     pub(crate) power: crate::runtime::config::DrmPower,
@@ -117,7 +117,7 @@ pub(crate) struct DrmRunConfig {
     pub(crate) card_path: Option<String>,
     pub(crate) output: Option<String>,
     pub(crate) mode: Option<String>,
-    #[cfg_attr(not(feature = "drm-vulkan"), allow(dead_code))]
+    #[cfg_attr(not(all(feature = "drm", feature = "vulkan")), allow(dead_code))]
     pub(crate) vulkan_drm_node: Option<String>,
     pub(crate) asset_config: AssetConfig,
     pub(crate) startup_retries: u32,
@@ -150,7 +150,7 @@ impl DrmBackendStartupInfo {
         }
     }
 
-    #[cfg_attr(not(feature = "drm"), allow(dead_code))]
+    #[cfg_attr(not(all(feature = "drm", feature = "opengl")), allow(dead_code))]
     pub(crate) fn opengl(prime_video_supported: bool) -> Self {
         Self {
             prime_video_supported,
@@ -165,7 +165,7 @@ impl DrmBackendStartupInfo {
     }
 }
 
-#[cfg_attr(not(feature = "drm"), allow(dead_code))]
+#[cfg_attr(not(all(feature = "drm", feature = "opengl")), allow(dead_code))]
 #[derive(Clone)]
 pub(crate) struct DrmRunContext {
     pub(crate) input_gate: Arc<AtomicBool>,
@@ -197,9 +197,9 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
 fn run_presenter(context: DrmRunContext, config: DrmRunConfig) {
     match config.rendering_api {
         RenderingApi::Vulkan => {
-            #[cfg(feature = "drm-vulkan")]
+            #[cfg(all(feature = "drm", feature = "vulkan"))]
             vulkan::run(context, config);
-            #[cfg(not(feature = "drm-vulkan"))]
+            #[cfg(not(all(feature = "drm", feature = "vulkan")))]
             reject_unavailable_runner(
                 context,
                 "Vulkan rendering support is not available in this build".to_string(),
@@ -209,9 +209,9 @@ fn run_presenter(context: DrmRunContext, config: DrmRunConfig) {
             raster::run(context, config);
         }
         RenderingApi::Auto | RenderingApi::OpenGl | RenderingApi::Raster => {
-            #[cfg(feature = "drm")]
+            #[cfg(all(feature = "drm", feature = "opengl"))]
             gl::run(context, config);
-            #[cfg(not(feature = "drm"))]
+            #[cfg(not(all(feature = "drm", feature = "opengl")))]
             reject_unavailable_runner(
                 context,
                 "OpenGL DRM rendering support is not available in this build".to_string(),

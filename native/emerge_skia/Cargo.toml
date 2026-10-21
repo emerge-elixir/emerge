@@ -1,6 +1,6 @@
 [package]
 name = "emerge_skia"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 rust-version = "1.91"
 
@@ -50,7 +50,7 @@ harness = false
 required-features = ["bench-diagnostics"]
 
 [features]
-default = ["wayland"]
+default = ["wayland", "opengl"]
 bench-diagnostics = []
 # Embedded builds provide fonts as registered assets and do not ship
 # desktop fontconfig/freetype development libraries.
@@ -66,7 +66,7 @@ hover-trace = []
 vulkan-probe = []
 # Shared Linux OpenGL dependency bundle. Vulkan-only presenter features do not
 # enable this bundle.
-linux-opengl = [
+opengl = [
     "video-interop-support",
     "dep:gbm",
     "dep:gl",
@@ -77,10 +77,6 @@ linux-opengl = [
     "skia-safe/gl",
     "video-interop/egl",
 ]
-headless-opengl = ["linux-opengl"]
-# Headless Vulkan is a PRIME producer, not a window-system or KMS presenter.
-headless-vulkan = ["vulkan"]
-headless-all = ["headless-opengl", "headless-vulkan"]
 # The macOS host accepts owned CPU video frames. Keep Linux DMA-BUF transport
 # out of this feature so the host remains an Apple-only renderer build.
 macos = [
@@ -93,7 +89,7 @@ macos = [
     "dep:objc2-quartz-core",
     "skia-safe/metal",
 ]
-wayland-core = [
+wayland = [
     "dep:smithay-client-toolkit",
     "dep:wayland-client",
     "dep:wayland-backend",
@@ -101,21 +97,25 @@ wayland-core = [
     "dep:raw-window-handle",
     "dep:arboard",
 ]
-# Compatibility/default feature: Wayland continues to mean the existing OpenGL backend.
-wayland = ["wayland-core", "headless-opengl"]
-# Vulkan-only Wayland build. Use wayland-all when runtime OpenGL fallback is required.
-wayland-vulkan = ["wayland-core", "vulkan", "dep:ash-window"]
-wayland-all = ["wayland", "wayland-vulkan"]
-# Every DRM build embeds FreeType, including source builds and mixed presenters.
-# CPU KMS presentation must not pull in GBM, EGL, or any GPU driver.
-drm-core = ["dep:drm", "dep:evdev", "dep:emerge_input", "embedded-freetype"]
-drm-raster = ["drm-core"]
-# Compatibility feature: DRM continues to mean the existing OpenGL backend.
-drm = ["drm-core", "headless-opengl"]
+# Presenter and rendering API features are independent. Raster/headless are baseline.
+drm = ["dep:drm", "dep:evdev", "dep:emerge_input", "embedded-freetype"]
 vulkan = ["video-interop-support", "dep:ash", "skia-safe/vulkan", "video-interop/vulkan"]
-# Vulkan-only DRM/KMS build. Use drm-all when runtime OpenGL fallback is required.
-drm-vulkan = ["drm-core", "vulkan", "dep:gbm"]
-drm-all = ["drm", "drm-vulkan"]
+# Cargo cannot express dependency activation conditional on two features. The
+# canonical resolver adds these dependency-only glue features for those pairs.
+drm-vulkan-deps = ["dep:gbm"]
+wayland-vulkan-deps = ["dep:ash-window"]
+# Compatibility aliases for native tooling, not artifact identities.
+drm-core = ["drm"]
+drm-raster = ["drm"]
+wayland-core = ["wayland"]
+linux-opengl = ["opengl"]
+headless-opengl = ["opengl"]
+headless-vulkan = ["vulkan"]
+headless-all = ["opengl", "vulkan"]
+wayland-vulkan = ["wayland", "vulkan", "wayland-vulkan-deps"]
+wayland-all = ["wayland", "opengl", "vulkan", "wayland-vulkan-deps"]
+drm-vulkan = ["drm", "vulkan", "drm-vulkan-deps"]
+drm-all = ["drm", "opengl", "vulkan", "drm-vulkan-deps"]
 
 [dependencies]
 rustler = "0.38"

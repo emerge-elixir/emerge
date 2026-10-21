@@ -11,7 +11,7 @@ use std::{
 };
 
 use crossbeam_channel::{Receiver, Sender as CrossbeamSender, TrySendError};
-#[cfg(feature = "wayland")]
+#[cfg(all(feature = "wayland", feature = "opengl"))]
 use glutin::prelude::GlSurface;
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
@@ -50,13 +50,13 @@ use wayland_client::{
     globals::registry_queue_init,
     protocol::{wl_buffer, wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
 };
-#[cfg(feature = "wayland-vulkan")]
+#[cfg(all(feature = "wayland", feature = "vulkan"))]
 use wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1;
 use wayland_protocols::wp::linux_dmabuf::zv1::client::{
     zwp_linux_buffer_params_v1, zwp_linux_dmabuf_feedback_v1,
 };
 
-#[cfg(feature = "wayland-vulkan")]
+#[cfg(all(feature = "wayland", feature = "vulkan"))]
 use crate::backend::vulkan::capabilities::DrmNodeId;
 use crate::{
     InputTargetRelay, LatestFrameStore, RasterPresentKind, RenderingApi,
@@ -81,7 +81,7 @@ use crate::{
     video::VideoRegistry,
 };
 
-#[cfg(feature = "wayland")]
+#[cfg(all(feature = "wayland", feature = "opengl"))]
 use super::egl::{GlEnv, create_gl_env, resize_gl_env};
 use super::{
     geometry::SurfaceGeometry,
@@ -172,7 +172,7 @@ enum RasterWaylandPresentEnv {
     Cpu {
         pool: SlotPool,
     },
-    #[cfg(feature = "wayland")]
+    #[cfg(all(feature = "wayland", feature = "opengl"))]
     GpuUpload {
         gl_env: Box<GlEnv>,
     },
@@ -194,18 +194,18 @@ impl RasterWaylandEnv {
         renderer_cache_config: RendererCacheConfig,
     ) -> Result<Self, String> {
         let size = (size.0.max(1), size.1.max(1));
-        #[cfg(not(feature = "wayland"))]
+        #[cfg(not(all(feature = "wayland", feature = "opengl")))]
         let _ = (conn, surface);
         let present = match raster_present {
             RasterPresentKind::Auto | RasterPresentKind::Cpu => RasterWaylandPresentEnv::Cpu {
                 pool: SlotPool::new(raster_pool_size(size)?, shm)
                     .map_err(|err| format!("failed to create Wayland shm pool: {err}"))?,
             },
-            #[cfg(feature = "wayland")]
+            #[cfg(all(feature = "wayland", feature = "opengl"))]
             RasterPresentKind::GpuUpload => RasterWaylandPresentEnv::GpuUpload {
                 gl_env: Box::new(create_gl_env(conn, surface, size, renderer_cache_config)?),
             },
-            #[cfg(not(feature = "wayland"))]
+            #[cfg(not(all(feature = "wayland", feature = "opengl")))]
             RasterPresentKind::GpuUpload => {
                 return Err(
                     "Wayland raster GPU upload support is not available in this build".to_string(),
@@ -233,7 +233,7 @@ impl RasterWaylandEnv {
             RasterWaylandPresentEnv::Cpu { pool } => pool
                 .resize(raster_pool_size(size)?)
                 .map_err(|err| format!("failed to resize Wayland shm pool: {err}"))?,
-            #[cfg(feature = "wayland")]
+            #[cfg(all(feature = "wayland", feature = "opengl"))]
             RasterWaylandPresentEnv::GpuUpload { gl_env } => resize_gl_env(gl_env, size),
         }
         self.renderer.resize(size.0, size.1)?;
@@ -586,11 +586,11 @@ pub(super) struct WaylandApp {
     pub(super) window: Window,
     shm: Shm,
     dmabuf_state: DmabufState,
-    #[cfg(feature = "wayland-vulkan")]
+    #[cfg(all(feature = "wayland", feature = "vulkan"))]
     vulkan_dmabuf_feedback: Option<ZwpLinuxDmabufFeedbackV1>,
-    #[cfg(feature = "wayland-vulkan")]
+    #[cfg(all(feature = "wayland", feature = "vulkan"))]
     vulkan_feedback_ready: bool,
-    #[cfg(feature = "wayland-vulkan")]
+    #[cfg(all(feature = "wayland", feature = "vulkan"))]
     vulkan_compositor_device: Option<DrmNodeId>,
     env: Option<RendererEnv>,
     raster_env: Option<RasterWaylandEnv>,
@@ -657,7 +657,7 @@ impl WaylandApp {
 
         let protocols = ProtocolHandles::new(globals, &qh, compositor_state, &window);
         let dmabuf_state = DmabufState::new(globals, &qh);
-        #[cfg(feature = "wayland-vulkan")]
+        #[cfg(all(feature = "wayland", feature = "vulkan"))]
         let vulkan_dmabuf_feedback = matches!(runtime.rendering_api, RenderingApi::Vulkan)
             .then(|| {
                 dmabuf_state
@@ -665,7 +665,7 @@ impl WaylandApp {
                     .ok()
             })
             .flatten();
-        #[cfg(feature = "wayland-vulkan")]
+        #[cfg(all(feature = "wayland", feature = "vulkan"))]
         let vulkan_feedback_ready = vulkan_dmabuf_feedback.is_none();
 
         window.commit();
@@ -702,11 +702,11 @@ impl WaylandApp {
             window,
             shm,
             dmabuf_state,
-            #[cfg(feature = "wayland-vulkan")]
+            #[cfg(all(feature = "wayland", feature = "vulkan"))]
             vulkan_dmabuf_feedback,
-            #[cfg(feature = "wayland-vulkan")]
+            #[cfg(all(feature = "wayland", feature = "vulkan"))]
             vulkan_feedback_ready,
-            #[cfg(feature = "wayland-vulkan")]
+            #[cfg(all(feature = "wayland", feature = "vulkan"))]
             vulkan_compositor_device: None,
             env: None,
             raster_env: None,
@@ -1230,7 +1230,10 @@ impl WaylandApp {
 
         let (video_import, video_registry) = (&self.video_import, &self.video_registry);
         let sync_action = video_import.sync_action();
-        #[cfg(any(feature = "wayland", feature = "wayland-vulkan"))]
+        #[cfg(any(
+            all(feature = "wayland", feature = "opengl"),
+            all(feature = "wayland", feature = "vulkan")
+        ))]
         let video_import_ctx = video_import.context();
         let animation_trace = self.render_animation_trace;
         let draw_started_at = Instant::now();
@@ -1303,23 +1306,29 @@ impl WaylandApp {
             );
         }
 
-        #[cfg(any(feature = "wayland", feature = "wayland-vulkan"))]
+        #[cfg(any(
+            all(feature = "wayland", feature = "opengl"),
+            all(feature = "wayland", feature = "vulkan")
+        ))]
         let mut video_needs_cleanup = false;
-        #[cfg(not(any(feature = "wayland", feature = "wayland-vulkan")))]
+        #[cfg(not(any(
+            all(feature = "wayland", feature = "opengl"),
+            all(feature = "wayland", feature = "vulkan")
+        )))]
         let video_needs_cleanup = false;
 
         let render_outcome = env.render_frame(capture_generation.is_some(), |renderer, frame| {
             match sync_action {
                 WaylandVideoSyncAction::Hold => {}
                 WaylandVideoSyncAction::Import => {
-                    #[cfg(any(feature = "wayland", feature = "wayland-vulkan"))]
+                    #[cfg(any(all(feature = "wayland", feature = "opengl"), all(feature = "wayland", feature = "vulkan")))]
                     {
                         let result = match video_import_ctx {
-                            #[cfg(feature = "wayland")]
+                            #[cfg(all(feature = "wayland", feature = "opengl"))]
                             Some(RendererVideoImportContext::OpenGl(context)) => {
                                 renderer.sync_video_frames(frame, video_registry, Some(context))
                             }
-                            #[cfg(feature = "wayland-vulkan")]
+                            #[cfg(all(feature = "wayland", feature = "vulkan"))]
                             Some(RendererVideoImportContext::Vulkan(context)) => renderer
                                 .sync_vulkan_video_frames(frame, video_registry, context),
                             None => Err("Wayland video import context is unavailable".to_string()),
@@ -1334,7 +1343,7 @@ impl WaylandApp {
                             }
                         }
                     }
-                    #[cfg(not(any(feature = "wayland", feature = "wayland-vulkan")))]
+                    #[cfg(not(any(all(feature = "wayland", feature = "opengl"), all(feature = "wayland", feature = "vulkan"))))]
                     if let Err(err) = video_registry.drain_pending_to_release() {
                         eprintln!("video sync failed: {err}");
                     }
@@ -1643,7 +1652,7 @@ impl WaylandApp {
                     Ok(())
                 })
             }
-            #[cfg(feature = "wayland")]
+            #[cfg(all(feature = "wayland", feature = "opengl"))]
             RasterWaylandPresentEnv::GpuUpload { gl_env } => gl_env
                 .frame_surface
                 .present_rgba_pixels(
@@ -1753,7 +1762,7 @@ impl WaylandApp {
         self.video_import = match self.env.as_ref() {
             Some(env) => match env.initialize_video_import() {
                 Ok(ctx) => {
-                    #[cfg(feature = "wayland-vulkan")]
+                    #[cfg(all(feature = "wayland", feature = "vulkan"))]
                     match &ctx {
                         RendererVideoImportContext::Vulkan(vulkan) => {
                             if let Err(error) = self.video_registry.set_vulkan_import_capabilities(
@@ -1767,7 +1776,7 @@ impl WaylandApp {
                                 return;
                             }
                         }
-                        #[cfg(feature = "wayland")]
+                        #[cfg(all(feature = "wayland", feature = "opengl"))]
                         RendererVideoImportContext::OpenGl(_) => {}
                     }
                     WaylandVideoImportState::Ready(Box::new(ctx))
@@ -1859,7 +1868,7 @@ impl WaylandApp {
                 }
             }
         } else if self.env.is_none() {
-            #[cfg(feature = "wayland-vulkan")]
+            #[cfg(all(feature = "wayland", feature = "vulkan"))]
             if matches!(self.rendering_api, RenderingApi::Vulkan) && !self.vulkan_feedback_ready {
                 self.log_render_diagnostic(
                     "Vulkan renderer initialization deferred until Wayland DMA-BUF feedback",
@@ -1875,7 +1884,7 @@ impl WaylandApp {
                 &self.window,
                 self.geometry.buffer_size,
                 self.renderer_cache_config,
-                #[cfg(feature = "wayland-vulkan")]
+                #[cfg(all(feature = "wayland", feature = "vulkan"))]
                 self.vulkan_compositor_device,
             ) {
                 Ok(env) => {
@@ -2950,7 +2959,7 @@ impl DmabufHandler for WaylandApp {
         proxy: &zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1,
         feedback: DmabufFeedback,
     ) {
-        #[cfg(feature = "wayland-vulkan")]
+        #[cfg(all(feature = "wayland", feature = "vulkan"))]
         {
             if self.vulkan_dmabuf_feedback.as_ref() != Some(proxy) || self.env.is_some() {
                 return;
@@ -2968,7 +2977,7 @@ impl DmabufHandler for WaylandApp {
             ));
             self.reconfigure_surface_geometry(conn);
         }
-        #[cfg(not(feature = "wayland-vulkan"))]
+        #[cfg(not(all(feature = "wayland", feature = "vulkan")))]
         let _ = (conn, proxy, feedback);
     }
 
@@ -3280,7 +3289,7 @@ pub(crate) fn run(args: WaylandRunArgs) {
 
     #[cfg(feature = "vulkan")]
     let vulkan_device = {
-        #[cfg(feature = "wayland-vulkan")]
+        #[cfg(all(feature = "wayland", feature = "vulkan"))]
         {
             match app
                 .env
@@ -3295,7 +3304,7 @@ pub(crate) fn run(args: WaylandRunArgs) {
                 }
             }
         }
-        #[cfg(not(feature = "wayland-vulkan"))]
+        #[cfg(not(all(feature = "wayland", feature = "vulkan")))]
         {
             None
         }
@@ -3315,17 +3324,20 @@ pub(crate) fn run(args: WaylandRunArgs) {
 
     let prime_video_formats = match &app.video_import {
         WaylandVideoImportState::Ready(context) => match context.as_ref() {
-            #[cfg(feature = "wayland")]
+            #[cfg(all(feature = "wayland", feature = "opengl"))]
             RendererVideoImportContext::OpenGl(_) => {
                 vec!["NV12".to_string(), "ABGR8888".to_string()]
             }
-            #[cfg(feature = "wayland-vulkan")]
+            #[cfg(all(feature = "wayland", feature = "vulkan"))]
             RendererVideoImportContext::Vulkan(context) => context
                 .supported_format_names()
                 .into_iter()
                 .map(str::to_string)
                 .collect(),
-            #[cfg(not(any(feature = "wayland", feature = "wayland-vulkan")))]
+            #[cfg(not(any(
+                all(feature = "wayland", feature = "opengl"),
+                all(feature = "wayland", feature = "vulkan")
+            )))]
             _ => Vec::new(),
         },
         WaylandVideoImportState::PendingGpuInit | WaylandVideoImportState::Unavailable => {
@@ -3405,7 +3417,10 @@ pub(crate) fn run(args: WaylandRunArgs) {
     }
 
     let env = app.env.take();
-    #[cfg(any(feature = "wayland", feature = "wayland-vulkan"))]
+    #[cfg(any(
+        all(feature = "wayland", feature = "opengl"),
+        all(feature = "wayland", feature = "vulkan")
+    ))]
     if let Some(mut env) = env {
         if let Err(error) = env.shutdown() {
             // A quarantined native graph is not successful session cleanup, even if the worker
@@ -3414,7 +3429,10 @@ pub(crate) fn run(args: WaylandRunArgs) {
         }
         drop(env);
     }
-    #[cfg(not(any(feature = "wayland", feature = "wayland-vulkan")))]
+    #[cfg(not(any(
+        all(feature = "wayland", feature = "opengl"),
+        all(feature = "wayland", feature = "vulkan")
+    )))]
     let _ = (env, lifecycle);
     drop(app);
     drop(event_loop);

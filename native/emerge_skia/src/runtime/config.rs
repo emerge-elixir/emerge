@@ -177,7 +177,7 @@ impl ConfigRequest {
         );
     }
 
-    #[cfg(any(all(feature = "drm-core", target_os = "linux"), test))]
+    #[cfg(any(all(feature = "drm", target_os = "linux"), test))]
     pub(crate) fn finish_output(&self, result: Result<(), String>) {
         self.finish_part(
             &self.completion.output_done,
@@ -253,9 +253,9 @@ impl ConfigRequest {
     }
 }
 
-#[cfg(any(all(feature = "wayland-core", target_os = "linux"), test))]
+#[cfg(any(all(feature = "wayland", target_os = "linux"), test))]
 mod inbox;
-#[cfg(any(all(feature = "wayland-core", target_os = "linux"), test))]
+#[cfg(any(all(feature = "wayland", target_os = "linux"), test))]
 pub(crate) use inbox::ConfigInbox;
 
 #[cfg(test)]

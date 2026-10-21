@@ -1,18 +1,18 @@
 //! Viewport-lifetime baseline storage. No file descriptors or I/O in this resource.
 //! Persist before suppression so a failed startup cannot recapture our own zero.
-#[cfg(any(all(feature = "drm-core", target_os = "linux"), test))]
+#[cfg(any(all(feature = "drm", target_os = "linux"), test))]
 use std::{collections::HashMap, sync::Mutex};
 
 #[derive(Default)]
 pub(crate) struct BacklightState {
-    #[cfg(any(all(feature = "drm-core", target_os = "linux"), test))]
+    #[cfg(any(all(feature = "drm", target_os = "linux"), test))]
     baselines: Mutex<HashMap<(u64, u64), (u32, u32)>>,
 }
 
 #[rustler::resource_impl]
 impl rustler::Resource for BacklightState {}
 
-#[cfg(any(all(feature = "drm-core", target_os = "linux"), test))]
+#[cfg(any(all(feature = "drm", target_os = "linux"), test))]
 impl BacklightState {
     pub(crate) fn remember(
         &self,

@@ -63,7 +63,7 @@ pub enum InputEvent {
 
     /// IME preedit text update for focused text input
     #[cfg_attr(
-        not(any(all(feature = "wayland-core", target_os = "linux"), feature = "macos")),
+        not(any(all(feature = "wayland", target_os = "linux"), feature = "macos")),
         allow(dead_code)
     )]
     TextPreedit {
@@ -73,14 +73,14 @@ pub enum InputEvent {
 
     /// IME preedit text cleared
     #[cfg_attr(
-        not(any(all(feature = "wayland-core", target_os = "linux"), feature = "macos")),
+        not(any(all(feature = "wayland", target_os = "linux"), feature = "macos")),
         allow(dead_code)
     )]
     TextPreeditClear,
 
     /// IME requests deletion of surrounding text in UTF-8 byte lengths
     #[cfg_attr(
-        not(any(all(feature = "wayland-core", target_os = "linux"), feature = "macos")),
+        not(any(all(feature = "wayland", target_os = "linux"), feature = "macos")),
         allow(dead_code)
     )]
     DeleteSurrounding {
@@ -90,7 +90,7 @@ pub enum InputEvent {
 
     /// Cursor entered/exited window
     #[cfg_attr(
-        not(any(all(feature = "wayland-core", target_os = "linux"), feature = "macos")),
+        not(any(all(feature = "wayland", target_os = "linux"), feature = "macos")),
         allow(dead_code)
     )]
     CursorEntered { entered: bool },
@@ -104,7 +104,7 @@ pub enum InputEvent {
 
     /// Window focused/unfocused
     #[cfg_attr(
-        not(any(all(feature = "wayland-core", target_os = "linux"), feature = "macos")),
+        not(any(all(feature = "wayland", target_os = "linux"), feature = "macos")),
         allow(dead_code)
     )]
     Focused { focused: bool },

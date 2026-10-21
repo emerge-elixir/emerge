@@ -40,7 +40,7 @@ impl FrameRateControl {
         let fps = self.fps.load(Ordering::Acquire);
         (fps != 0).then(|| Duration::from_nanos(1_000_000_000u64.div_ceil(u64::from(fps))))
     }
-    #[cfg(all(feature = "wayland-core", target_os = "linux"))]
+    #[cfg(all(feature = "wayland", target_os = "linux"))]
     pub(crate) fn is_capped(&self) -> bool {
         self.fps.load(Ordering::Acquire) != 0
     }
@@ -72,7 +72,7 @@ impl FramePacer {
     }
     /// Only arm a cap deadline for work that the presenter can actually submit.
     /// Compositor callbacks, acquire retries and input keep their own wakeups.
-    #[cfg(any(all(feature = "wayland-core", target_os = "linux"), test))]
+    #[cfg(any(all(feature = "wayland", target_os = "linux"), test))]
     pub(crate) fn dispatch_timeout(
         &self,
         work_ready: bool,

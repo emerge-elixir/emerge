@@ -297,20 +297,11 @@ pub enum RenderMsg {
         animation_trace: Option<Box<AnimationFrameTrace>>,
         animate: bool,
         animation_frame: crate::backend::production::AnimationFrame,
-        #[cfg_attr(
-            not(all(feature = "wayland-core", target_os = "linux")),
-            allow(dead_code)
-        )]
+        #[cfg_attr(not(all(feature = "wayland", target_os = "linux")), allow(dead_code))]
         ime_enabled: bool,
-        #[cfg_attr(
-            not(all(feature = "wayland-core", target_os = "linux")),
-            allow(dead_code)
-        )]
+        #[cfg_attr(not(all(feature = "wayland", target_os = "linux")), allow(dead_code))]
         ime_cursor_area: Option<(f32, f32, f32, f32)>,
-        #[cfg_attr(
-            not(all(feature = "wayland-core", target_os = "linux")),
-            allow(dead_code)
-        )]
+        #[cfg_attr(not(all(feature = "wayland", target_os = "linux")), allow(dead_code))]
         ime_text_state: Box<Option<TextInputState>>,
     },
     Stop,

@@ -1,50 +1,50 @@
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 use std::cell::{Cell, RefCell};
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux"),
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux"),
     all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     )
 ))]
 use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 use std::ffi::{CStr, CString, c_void};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 use std::os::raw::c_char;
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 use std::ptr;
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 use std::rc::Rc;
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 use std::sync::OnceLock;
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 use std::sync::atomic::AtomicBool;
 use std::sync::{
@@ -53,12 +53,12 @@ use std::sync::{
 };
 use std::thread;
 #[cfg(any(
-    feature = "wayland",
-    feature = "drm",
+    all(feature = "wayland", feature = "opengl"),
+    all(feature = "drm", feature = "opengl"),
     all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     )
 ))]
 use std::time::Duration;
@@ -67,42 +67,45 @@ use std::time::Instant;
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 use ash::vk;
 use crossbeam_channel::{Sender, unbounded};
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 use glutin_egl_sys::egl;
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 use libloading::Library;
 use rustler::env::SavedTerm;
 use rustler::{Decoder, Encoder, Env, LocalPid, NifResult, OwnedEnv, Term};
 use skia_safe::Image;
 #[cfg(any(
-    feature = "linux-opengl",
+    feature = "opengl",
     all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     )
 ))]
 use skia_safe::gpu;
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core"),
-    not(any(feature = "wayland", feature = "drm"))
+    any(feature = "wayland", feature = "drm"),
+    not(any(
+        all(feature = "wayland", feature = "opengl"),
+        all(feature = "drm", feature = "opengl")
+    ))
 ))]
 use skia_safe::{AlphaType, ColorType, gpu::SurfaceOrigin};
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 use skia_safe::{
     AlphaType, ColorType,
@@ -111,15 +114,15 @@ use skia_safe::{
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 use skia_safe::{
     Data, FilterMode, MipmapMode, RuntimeEffect, SamplingOptions, Shader, TileMode,
     runtime_effect::ChildPtr,
 };
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 use video_interop::egl::{
     ClientWaitOutcome, NativeFenceCapabilities, NativeFenceFunctions, ServerWaitOutcome,
@@ -135,14 +138,14 @@ use video_interop::{
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 use crate::stats::VulkanVideoImportPoolStats;
 use crate::{CleanupDispatcher, backend::wake::BackendWakeHandle, stats::RendererStatsCollector};
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 use crate::{
     backend::vulkan::{
@@ -170,111 +173,111 @@ const DRM_FORMAT_NV12: u32 = fourcc(b'N', b'V', b'1', b'2');
 const DRM_FORMAT_ABGR8888: u32 = fourcc(b'A', b'B', b'2', b'4');
 const DRM_FORMAT_XRGB8888: u32 = fourcc(b'X', b'R', b'2', b'4');
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 // musl's ioctl request is c_int; glibc's is c_ulong. Let libc select the ABI.
 const DMA_BUF_IOCTL_SYNC: libc::Ioctl = 0x4008_6200;
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 const DMA_BUF_SYNC_READ: u64 = 1 << 0;
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 const DMA_BUF_SYNC_END: u64 = 1 << 2;
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 const EGL_LINUX_DMA_BUF_EXT: egl::types::EGLenum = 0x3270;
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 const EGL_LINUX_DRM_FOURCC_EXT: egl::types::EGLint = 0x3271;
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 const EGL_DMA_BUF_PLANE0_FD_EXT: egl::types::EGLint = 0x3272;
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 const EGL_DMA_BUF_PLANE0_OFFSET_EXT: egl::types::EGLint = 0x3273;
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 const EGL_DMA_BUF_PLANE0_PITCH_EXT: egl::types::EGLint = 0x3274;
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 const EGL_DMA_BUF_PLANE1_FD_EXT: egl::types::EGLint = 0x3275;
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 const EGL_DMA_BUF_PLANE1_OFFSET_EXT: egl::types::EGLint = 0x3276;
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 const EGL_DMA_BUF_PLANE1_PITCH_EXT: egl::types::EGLint = 0x3277;
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 const EGL_DMA_BUF_PLANE2_FD_EXT: egl::types::EGLint = 0x3278;
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 const EGL_DMA_BUF_PLANE2_OFFSET_EXT: egl::types::EGLint = 0x3279;
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 const EGL_DMA_BUF_PLANE2_PITCH_EXT: egl::types::EGLint = 0x327A;
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 const EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT: egl::types::EGLint = 0x3443;
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 const EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT: egl::types::EGLint = 0x3444;
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 const EGL_DMA_BUF_PLANE1_MODIFIER_LO_EXT: egl::types::EGLint = 0x3445;
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 const EGL_DMA_BUF_PLANE1_MODIFIER_HI_EXT: egl::types::EGLint = 0x3446;
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 const EGL_DMA_BUF_PLANE2_MODIFIER_LO_EXT: egl::types::EGLint = 0x3447;
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 const EGL_DMA_BUF_PLANE2_MODIFIER_HI_EXT: egl::types::EGLint = 0x3448;
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 const GL_TEXTURE_EXTERNAL_OES: u32 = 0x8D65;
 
@@ -767,8 +770,8 @@ impl PrimeDesc {
 
 #[cfg_attr(
     not(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
+        all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+        all(all(feature = "drm", feature = "opengl"), target_os = "linux")
     )),
     allow(dead_code)
 )]
@@ -782,8 +785,8 @@ struct PrimeObjectOwned {
 #[derive(Clone)]
 #[cfg_attr(
     not(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
+        all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+        all(all(feature = "drm", feature = "opengl"), target_os = "linux")
     )),
     allow(dead_code)
 )]
@@ -795,8 +798,8 @@ struct PrimePlaneDesc {
 
 #[cfg_attr(
     not(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
+        all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+        all(all(feature = "drm", feature = "opengl"), target_os = "linux")
     )),
     allow(dead_code)
 )]
@@ -824,12 +827,12 @@ enum PrimeFrameLease {
 
 impl PrimeFrame {
     #[cfg(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux"),
+        all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+        all(all(feature = "drm", feature = "opengl"), target_os = "linux"),
         all(
             target_os = "linux",
             feature = "vulkan",
-            any(feature = "wayland-core", feature = "drm-core")
+            any(feature = "wayland", feature = "drm")
         )
     ))]
     fn record_imported(&self) {
@@ -839,20 +842,20 @@ impl PrimeFrame {
     }
 
     #[cfg(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
+        all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+        all(all(feature = "drm", feature = "opengl"), target_os = "linux")
     ))]
     fn stats(&self) -> Option<Arc<RendererStatsCollector>> {
         self.stats.clone()
     }
 
     #[cfg(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux"),
+        all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+        all(all(feature = "drm", feature = "opengl"), target_os = "linux"),
         all(
             target_os = "linux",
             feature = "vulkan",
-            any(feature = "wayland-core", feature = "drm-core")
+            any(feature = "wayland", feature = "drm")
         )
     ))]
     fn object(&self, index: usize) -> Result<&PrimeObjectOwned, String> {
@@ -862,12 +865,12 @@ impl PrimeFrame {
     }
 
     #[cfg(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux"),
+        all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+        all(all(feature = "drm", feature = "opengl"), target_os = "linux"),
         all(
             target_os = "linux",
             feature = "vulkan",
-            any(feature = "wayland-core", feature = "drm-core")
+            any(feature = "wayland", feature = "drm")
         )
     ))]
     fn plane(&self, index: usize) -> Result<&PrimePlaneDesc, String> {
@@ -877,8 +880,8 @@ impl PrimeFrame {
     }
 
     #[cfg(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
+        all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+        all(all(feature = "drm", feature = "opengl"), target_os = "linux")
     ))]
     fn sample_luma(&self) -> Result<ChannelSample, String> {
         let plane = self.plane(0)?;
@@ -1264,19 +1267,19 @@ fn validate_vulkan_stream_format(
     #[cfg(all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     ))]
     rgba_linear_supported: bool,
     #[cfg(all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     ))]
     bgra_import_supported: bool,
     #[cfg(all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     ))]
     nv12_capabilities: Option<&[Nv12ModifierCapability]>,
 ) -> Result<(), String> {
@@ -1288,7 +1291,7 @@ fn validate_vulkan_stream_format(
             #[cfg(all(
                 target_os = "linux",
                 feature = "vulkan",
-                any(feature = "wayland-core", feature = "drm-core")
+                any(feature = "wayland", feature = "drm")
             ))]
             if !rgba_linear_supported {
                 return Err(
@@ -1318,7 +1321,7 @@ fn validate_vulkan_stream_format(
             #[cfg(all(
                 target_os = "linux",
                 feature = "vulkan",
-                any(feature = "wayland-core", feature = "drm-core")
+                any(feature = "wayland", feature = "drm")
             ))]
             if !bgra_import_supported {
                 return Err(
@@ -1341,7 +1344,7 @@ fn validate_vulkan_stream_format(
             #[cfg(all(
                 target_os = "linux",
                 feature = "vulkan",
-                any(feature = "wayland-core", feature = "drm-core")
+                any(feature = "wayland", feature = "drm")
             ))]
             {
                 let conversion = map_nv12_colorimetry(format.colorimetry)?;
@@ -1362,7 +1365,7 @@ fn validate_vulkan_stream_format(
             #[cfg(not(all(
                 target_os = "linux",
                 feature = "vulkan",
-                any(feature = "wayland-core", feature = "drm-core")
+                any(feature = "wayland", feature = "drm")
             )))]
             {
                 Err("Vulkan NV12 is unavailable in this build".to_string())
@@ -1383,7 +1386,7 @@ fn validate_vulkan_frame_contract(
     #[cfg(all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     ))]
     nv12_capabilities: Option<&[Nv12ModifierCapability]>,
 ) -> Result<(), String> {
@@ -1401,7 +1404,7 @@ fn validate_vulkan_frame_contract(
     #[cfg(all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     ))]
     {
         let layout = validate_nv12_shared_object_topology(
@@ -1440,7 +1443,7 @@ fn validate_vulkan_frame_contract(
     #[cfg(not(all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     )))]
     {
         let _ = layer;
@@ -1504,19 +1507,19 @@ struct VideoRegistryState {
     #[cfg(all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     ))]
     vulkan_rgba_linear_supported: bool,
     #[cfg(all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     ))]
     vulkan_bgra_import_supported: bool,
     #[cfg(all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     ))]
     vulkan_nv12_capabilities: Option<Vec<Nv12ModifierCapability>>,
 }
@@ -1533,19 +1536,19 @@ impl Default for VideoRegistryState {
             #[cfg(all(
                 target_os = "linux",
                 feature = "vulkan",
-                any(feature = "wayland-core", feature = "drm-core")
+                any(feature = "wayland", feature = "drm")
             ))]
             vulkan_rgba_linear_supported: false,
             #[cfg(all(
                 target_os = "linux",
                 feature = "vulkan",
-                any(feature = "wayland-core", feature = "drm-core")
+                any(feature = "wayland", feature = "drm")
             ))]
             vulkan_bgra_import_supported: false,
             #[cfg(all(
                 target_os = "linux",
                 feature = "vulkan",
-                any(feature = "wayland-core", feature = "drm-core")
+                any(feature = "wayland", feature = "drm")
             ))]
             vulkan_nv12_capabilities: None,
         }
@@ -1667,19 +1670,19 @@ impl VideoRegistry {
                     #[cfg(all(
                         target_os = "linux",
                         feature = "vulkan",
-                        any(feature = "wayland-core", feature = "drm-core")
+                        any(feature = "wayland", feature = "drm")
                     ))]
                     state.vulkan_rgba_linear_supported,
                     #[cfg(all(
                         target_os = "linux",
                         feature = "vulkan",
-                        any(feature = "wayland-core", feature = "drm-core")
+                        any(feature = "wayland", feature = "drm")
                     ))]
                     state.vulkan_bgra_import_supported,
                     #[cfg(all(
                         target_os = "linux",
                         feature = "vulkan",
-                        any(feature = "wayland-core", feature = "drm-core")
+                        any(feature = "wayland", feature = "drm")
                     ))]
                     state.vulkan_nv12_capabilities.as_deref(),
                 )?,
@@ -1792,7 +1795,7 @@ impl VideoRegistry {
         #[cfg(all(
             target_os = "linux",
             feature = "vulkan",
-            any(feature = "wayland-core", feature = "drm-core")
+            any(feature = "wayland", feature = "drm")
         ))]
         if requirements == Some(PrimeStreamRequirements::Vulkan)
             && vulkan_process_quarantine_terminal()
@@ -1820,7 +1823,7 @@ impl VideoRegistry {
     #[cfg(all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     ))]
     pub fn set_vulkan_import_capabilities(
         &self,
@@ -1928,19 +1931,19 @@ impl VideoRegistry {
         #[cfg(all(
             target_os = "linux",
             feature = "vulkan",
-            any(feature = "wayland-core", feature = "drm-core")
+            any(feature = "wayland", feature = "drm")
         ))]
         let vulkan_rgba_linear_supported = state.vulkan_rgba_linear_supported;
         #[cfg(all(
             target_os = "linux",
             feature = "vulkan",
-            any(feature = "wayland-core", feature = "drm-core")
+            any(feature = "wayland", feature = "drm")
         ))]
         let vulkan_bgra_import_supported = state.vulkan_bgra_import_supported;
         #[cfg(all(
             target_os = "linux",
             feature = "vulkan",
-            any(feature = "wayland-core", feature = "drm-core")
+            any(feature = "wayland", feature = "drm")
         ))]
         let vulkan_nv12_capabilities = state.vulkan_nv12_capabilities.clone();
         let entry = state
@@ -1968,19 +1971,19 @@ impl VideoRegistry {
                 #[cfg(all(
                     target_os = "linux",
                     feature = "vulkan",
-                    any(feature = "wayland-core", feature = "drm-core")
+                    any(feature = "wayland", feature = "drm")
                 ))]
                 vulkan_rgba_linear_supported,
                 #[cfg(all(
                     target_os = "linux",
                     feature = "vulkan",
-                    any(feature = "wayland-core", feature = "drm-core")
+                    any(feature = "wayland", feature = "drm")
                 ))]
                 vulkan_bgra_import_supported,
                 #[cfg(all(
                     target_os = "linux",
                     feature = "vulkan",
-                    any(feature = "wayland-core", feature = "drm-core")
+                    any(feature = "wayland", feature = "drm")
                 ))]
                 vulkan_nv12_capabilities.as_deref(),
             )?,
@@ -2067,7 +2070,7 @@ impl VideoRegistry {
         #[cfg(all(
             target_os = "linux",
             feature = "vulkan",
-            any(feature = "wayland-core", feature = "drm-core")
+            any(feature = "wayland", feature = "drm")
         ))]
         let vulkan_nv12_capabilities = state.vulkan_nv12_capabilities.clone();
         let entry = state.targets.get_mut(id).ok_or_else(|| {
@@ -2123,7 +2126,7 @@ impl VideoRegistry {
                 #[cfg(all(
                     target_os = "linux",
                     feature = "vulkan",
-                    any(feature = "wayland-core", feature = "drm-core")
+                    any(feature = "wayland", feature = "drm")
                 ))]
                 vulkan_nv12_capabilities.as_deref(),
             )
@@ -2317,7 +2320,7 @@ impl VideoRegistry {
         })
     }
 
-    #[cfg(all(feature = "drm-core", target_os = "linux"))]
+    #[cfg(all(feature = "drm", target_os = "linux"))]
     pub fn generation(&self) -> u64 {
         self.generation.load(Ordering::Relaxed)
     }
@@ -2467,8 +2470,8 @@ impl VideoRegistry {
 
     #[cfg_attr(
         not(any(
-            all(feature = "wayland", target_os = "linux"),
-            all(feature = "drm", target_os = "linux")
+            all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+            all(all(feature = "drm", feature = "opengl"), target_os = "linux")
         )),
         allow(dead_code)
     )]
@@ -2525,15 +2528,18 @@ pub struct PendingVideoFrame {
 pub struct VideoWake(BackendWakeHandle);
 
 impl VideoWake {
-    #[cfg_attr(not(all(feature = "wayland", target_os = "linux")), allow(dead_code))]
+    #[cfg_attr(
+        not(all(all(feature = "wayland", feature = "opengl"), target_os = "linux")),
+        allow(dead_code)
+    )]
     pub fn new(wake: BackendWakeHandle) -> Self {
         Self(wake)
     }
 
     #[cfg_attr(
         not(any(
-            all(feature = "wayland", target_os = "linux"),
-            all(feature = "drm", target_os = "linux")
+            all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+            all(all(feature = "drm", feature = "opengl"), target_os = "linux")
         )),
         allow(dead_code)
     )]
@@ -2548,8 +2554,8 @@ impl VideoWake {
 
 #[cfg_attr(
     not(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
+        all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+        all(all(feature = "drm", feature = "opengl"), target_os = "linux")
     )),
     allow(dead_code)
 )]
@@ -2566,13 +2572,13 @@ pub fn spawn_release_worker() -> std::io::Result<Sender<PrimeFrame>> {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 type GlEglImageTargetTexture2DOes = unsafe extern "system" fn(u32, *const c_void);
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 type RawEglGetProcAddress =
     unsafe extern "system" fn(
@@ -2580,19 +2586,22 @@ type RawEglGetProcAddress =
     ) -> egl::types::__eglMustCastToProperFunctionPointerType;
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum VideoImportPath {
     BlitRgba,
-    #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
+    #[cfg_attr(
+        not(all(all(feature = "drm", feature = "opengl"), target_os = "linux")),
+        allow(dead_code)
+    )]
     DirectExternal,
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct VideoImportCapabilities {
@@ -2602,11 +2611,11 @@ pub(crate) struct VideoImportCapabilities {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 impl VideoImportCapabilities {
-    #[cfg(all(feature = "drm", target_os = "linux"))]
+    #[cfg(all(all(feature = "drm", feature = "opengl"), target_os = "linux"))]
     pub(crate) fn from_gl_report(version: &str, extensions: &str) -> Self {
         Self::classify(
             parse_gles_major(version),
@@ -2631,7 +2640,10 @@ impl VideoImportCapabilities {
         }
     }
 
-    #[cfg(any(test, all(feature = "drm", target_os = "linux")))]
+    #[cfg(any(
+        test,
+        all(all(feature = "drm", feature = "opengl"), target_os = "linux")
+    ))]
     fn classify(
         gles_major: Option<u8>,
         external_image: bool,
@@ -2659,7 +2671,10 @@ impl VideoImportCapabilities {
     }
 }
 
-#[cfg(any(test, all(feature = "drm", target_os = "linux")))]
+#[cfg(any(
+    test,
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
+))]
 fn parse_gles_major(version: &str) -> Option<u8> {
     let version = version.strip_prefix("OpenGL ES")?;
     let version = version.trim_start_matches("-CM").trim_start();
@@ -2668,8 +2683,8 @@ fn parse_gles_major(version: &str) -> Option<u8> {
 
 #[cfg(any(
     test,
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 fn extension_list_contains(extensions: &str, expected: &str) -> bool {
     extensions
@@ -2678,8 +2693,8 @@ fn extension_list_contains(extensions: &str, expected: &str) -> bool {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 pub struct VideoImportContext {
     support: Rc<EglDmabufSupport>,
@@ -2689,8 +2704,8 @@ pub struct VideoImportContext {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 impl VideoImportContext {
     pub fn new_current() -> Result<Self, String> {
@@ -2700,7 +2715,7 @@ impl VideoImportContext {
         )
     }
 
-    #[cfg(all(feature = "drm", target_os = "linux"))]
+    #[cfg(all(all(feature = "drm", feature = "opengl"), target_os = "linux"))]
     pub(crate) fn new_current_direct(
         capabilities: VideoImportCapabilities,
     ) -> Result<Self, String> {
@@ -2750,7 +2765,7 @@ impl VideoImportContext {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 #[derive(Default)]
 struct Nv12RuntimeAttestations {
@@ -2760,7 +2775,7 @@ struct Nv12RuntimeAttestations {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 impl Nv12RuntimeAttestations {
     fn validate(
@@ -2812,7 +2827,7 @@ impl Nv12RuntimeAttestations {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 struct VulkanImportSyncPool {
     device: Arc<VulkanDevice>,
@@ -2823,7 +2838,7 @@ struct VulkanImportSyncPool {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 impl VulkanImportSyncPool {
     fn new(device: Arc<VulkanDevice>, max_lanes: usize) -> Self {
@@ -2862,7 +2877,7 @@ impl VulkanImportSyncPool {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 fn make_nv12_runtime_effect(conversion: Nv12Conversion) -> Result<RuntimeEffect, String> {
     if conversion.model != YcbcrModel::Bt709 {
@@ -2911,7 +2926,7 @@ fn make_nv12_runtime_effect(conversion: Nv12Conversion) -> Result<RuntimeEffect,
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 fn vulkan_nv12_staging_preference_from_value(
     value: Option<&str>,
@@ -2929,7 +2944,7 @@ fn vulkan_nv12_staging_preference_from_value(
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 pub struct VulkanVideoImportContext {
     device: Arc<VulkanDevice>,
@@ -2938,7 +2953,7 @@ pub struct VulkanVideoImportContext {
     nv12_effects: Mutex<HashMap<Nv12Conversion, RuntimeEffect>>,
     rgba_linear_supported: bool,
     bgra_import_strategy: Option<PackedImageImportStrategy>,
-    #[cfg_attr(not(feature = "wayland-vulkan"), allow(dead_code))]
+    #[cfg_attr(not(all(feature = "wayland", feature = "vulkan")), allow(dead_code))]
     nv12_capabilities: Vec<Nv12ModifierCapability>,
     nv12_attestations: Mutex<Nv12RuntimeAttestations>,
 }
@@ -2946,7 +2961,7 @@ pub struct VulkanVideoImportContext {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 impl VulkanVideoImportContext {
     pub fn new(device: Arc<VulkanDevice>) -> Result<Self, String> {
@@ -3119,14 +3134,14 @@ impl VulkanVideoImportContext {
         formats
     }
 
-    #[cfg_attr(not(feature = "drm-vulkan"), allow(dead_code))]
+    #[cfg_attr(not(all(feature = "drm", feature = "vulkan")), allow(dead_code))]
     pub(crate) fn supports_any_format(&self) -> bool {
         self.rgba_linear_supported
             || self.bgra_import_strategy.is_some()
             || !self.nv12_capabilities.is_empty()
     }
 
-    #[cfg_attr(not(feature = "wayland-vulkan"), allow(dead_code))]
+    #[cfg_attr(not(all(feature = "wayland", feature = "vulkan")), allow(dead_code))]
     pub(crate) fn nv12_capabilities(&self) -> &[Nv12ModifierCapability] {
         &self.nv12_capabilities
     }
@@ -3164,14 +3179,14 @@ impl VulkanVideoImportContext {
 }
 
 #[cfg(not(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 )))]
 pub struct VideoImportContext;
 
 #[cfg(not(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 )))]
 impl VideoImportContext {
     pub fn new_current() -> Result<Self, String> {
@@ -3188,8 +3203,8 @@ impl VideoImportContext {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 fn collect_gl_errors() -> Vec<u32> {
     let mut errors = Vec::new();
@@ -3204,8 +3219,8 @@ fn collect_gl_errors() -> Vec<u32> {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 fn gl_step_check(step: &str) -> Result<(), String> {
     let errors = collect_gl_errors();
@@ -3217,8 +3232,8 @@ fn gl_step_check(step: &str) -> Result<(), String> {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 #[derive(Clone, Copy, Debug)]
 struct ChannelSample {
@@ -3234,11 +3249,11 @@ pub struct VideoCleanupResult {
 }
 
 #[cfg(any(
-    feature = "linux-opengl",
+    feature = "opengl",
     all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     )
 ))]
 #[derive(Clone, Debug, Default)]
@@ -3253,12 +3268,12 @@ pub struct VideoSyncResult {
 
 #[cfg(any(
     test,
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux"),
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux"),
     all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     )
 ))]
 fn canonical_import_identity(
@@ -3277,8 +3292,8 @@ fn canonical_import_identity(
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 struct RetiredImport {
     sync: gl::types::GLsync,
@@ -3288,8 +3303,8 @@ struct RetiredImport {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 enum RetiredImportPoll {
     Released,
@@ -3297,8 +3312,8 @@ enum RetiredImportPoll {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 enum RetiredImportPollError {
     WaitFailed,
@@ -3306,16 +3321,16 @@ enum RetiredImportPollError {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 fn retired_import_wait_needs_gl_finish(status: gl::types::GLenum) -> bool {
     status == gl::WAIT_FAILED
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 impl RetiredImport {
     fn poll(&self) -> Result<RetiredImportPoll, RetiredImportPollError> {
@@ -3351,8 +3366,8 @@ impl RetiredImport {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 struct EglDmabufSupport {
     egl: egl::Egl,
@@ -3371,8 +3386,8 @@ struct EglDmabufSupport {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 impl EglDmabufSupport {
     fn new_current() -> Result<Self, String> {
@@ -3730,8 +3745,8 @@ impl EglDmabufSupport {
 
 #[cfg(any(
     test,
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 fn validate_modifier_support(
     supports_modifiers: bool,
@@ -3748,8 +3763,8 @@ fn validate_modifier_support(
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 impl Drop for EglDmabufSupport {
     fn drop(&mut self) {
@@ -3776,8 +3791,8 @@ impl Drop for EglDmabufSupport {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 fn egl_query_string(
     egl: &egl::Egl,
@@ -3795,8 +3810,8 @@ fn egl_query_string(
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 fn gl_string(name: u32) -> String {
     let value = unsafe { gl::GetString(name) };
@@ -3810,8 +3825,8 @@ fn gl_string(name: u32) -> String {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 fn gl_supports_core_egl_sync(version: &str, extensions: &str) -> bool {
     if has_extension(extensions, "GL_ARB_sync") || has_extension(extensions, "GL_OES_EGL_sync") {
@@ -3842,8 +3857,8 @@ fn gl_supports_core_egl_sync(version: &str, extensions: &str) -> bool {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 fn egl_version_at_least_15(version: &str) -> bool {
     version
@@ -3855,8 +3870,8 @@ fn egl_version_at_least_15(version: &str) -> bool {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 fn plane_fd_attr(index: usize) -> Result<egl::types::EGLint, String> {
     match index {
@@ -3868,8 +3883,8 @@ fn plane_fd_attr(index: usize) -> Result<egl::types::EGLint, String> {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 fn plane_offset_attr(index: usize) -> Result<egl::types::EGLint, String> {
     match index {
@@ -3881,8 +3896,8 @@ fn plane_offset_attr(index: usize) -> Result<egl::types::EGLint, String> {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 fn plane_pitch_attr(index: usize) -> Result<egl::types::EGLint, String> {
     match index {
@@ -3894,8 +3909,8 @@ fn plane_pitch_attr(index: usize) -> Result<egl::types::EGLint, String> {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 fn plane_modifier_lo_attr(index: usize) -> Result<egl::types::EGLint, String> {
     match index {
@@ -3907,8 +3922,8 @@ fn plane_modifier_lo_attr(index: usize) -> Result<egl::types::EGLint, String> {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 fn plane_modifier_hi_attr(index: usize) -> Result<egl::types::EGLint, String> {
     match index {
@@ -3920,8 +3935,8 @@ fn plane_modifier_hi_attr(index: usize) -> Result<egl::types::EGLint, String> {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 struct ExternalVideoBlitter {
     program: u32,
@@ -3933,8 +3948,8 @@ struct ExternalVideoBlitter {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 impl ExternalVideoBlitter {
     fn new(use_core_vertex_arrays: bool) -> Result<Self, String> {
@@ -4083,8 +4098,8 @@ void main() {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 fn compile_shader(kind: u32, source: &str) -> Result<u32, String> {
     let shader = unsafe { gl::CreateShader(kind) };
@@ -4108,8 +4123,8 @@ fn compile_shader(kind: u32, source: &str) -> Result<u32, String> {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 fn link_program(vertex_shader: u32, fragment_shader: u32) -> Result<u32, String> {
     let program = unsafe { gl::CreateProgram() };
@@ -4133,8 +4148,8 @@ fn link_program(vertex_shader: u32, fragment_shader: u32) -> Result<u32, String>
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 fn shader_info_log(shader: u32) -> String {
     let mut len = 0;
@@ -4159,8 +4174,8 @@ fn shader_info_log(shader: u32) -> String {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 fn program_info_log(program: u32) -> String {
     let mut len = 0;
@@ -4187,20 +4202,20 @@ fn program_info_log(program: u32) -> String {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 const MAX_RETIRED_VULKAN_VIDEO_IMPORTS: usize = 8;
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 const VULKAN_VIDEO_RETIRE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 #[derive(Default)]
 struct VulkanQuarantinePolicy {
@@ -4212,7 +4227,7 @@ struct VulkanQuarantinePolicy {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum VulkanProcessAdmissionError {
@@ -4223,7 +4238,7 @@ enum VulkanProcessAdmissionError {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 impl VulkanQuarantinePolicy {
     fn admit(&mut self) -> Result<(), VulkanProcessAdmissionError> {
@@ -4258,7 +4273,7 @@ impl VulkanQuarantinePolicy {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 #[derive(Default)]
 struct VulkanProcessQuarantineOwner {
@@ -4269,14 +4284,14 @@ struct VulkanProcessQuarantineOwner {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 static VULKAN_PROCESS_QUARANTINE: OnceLock<Mutex<VulkanProcessQuarantineOwner>> = OnceLock::new();
 
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 fn vulkan_process_quarantine() -> &'static Mutex<VulkanProcessQuarantineOwner> {
     VULKAN_PROCESS_QUARANTINE.get_or_init(|| Mutex::new(VulkanProcessQuarantineOwner::default()))
@@ -4285,7 +4300,7 @@ fn vulkan_process_quarantine() -> &'static Mutex<VulkanProcessQuarantineOwner> {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 fn with_vulkan_process_quarantine<T>(
     operation: impl FnOnce(&mut VulkanProcessQuarantineOwner) -> T,
@@ -4299,7 +4314,7 @@ fn with_vulkan_process_quarantine<T>(
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 fn vulkan_process_quarantine_terminal() -> bool {
     with_vulkan_process_quarantine(|owner| owner.policy.terminal)
@@ -4308,7 +4323,7 @@ fn vulkan_process_quarantine_terminal() -> bool {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 pub(crate) fn ensure_vulkan_process_runtime_admission() -> Result<(), String> {
     if vulkan_process_quarantine_terminal() {
@@ -4324,14 +4339,14 @@ pub(crate) fn ensure_vulkan_process_runtime_admission() -> Result<(), String> {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 struct VulkanImportAdmission;
 
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 impl VulkanImportAdmission {
     fn acquire() -> Result<Self, VulkanProcessAdmissionError> {
@@ -4343,7 +4358,7 @@ impl VulkanImportAdmission {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 impl Drop for VulkanImportAdmission {
     fn drop(&mut self) {
@@ -4354,7 +4369,7 @@ impl Drop for VulkanImportAdmission {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 pub(crate) fn mark_vulkan_process_quarantine_terminal() {
     with_vulkan_process_quarantine(|owner| owner.policy.mark_terminal());
@@ -4363,7 +4378,7 @@ pub(crate) fn mark_vulkan_process_quarantine_terminal() {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 fn retain_vulkan_quarantined_resource(resource: VulkanImportedResource) {
     with_vulkan_process_quarantine(|owner| {
@@ -4383,7 +4398,7 @@ fn retain_vulkan_quarantined_resource(resource: VulkanImportedResource) {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 fn can_enqueue_vulkan_retirement(current_retired: usize) -> bool {
     current_retired < MAX_RETIRED_VULKAN_VIDEO_IMPORTS
@@ -4392,7 +4407,7 @@ fn can_enqueue_vulkan_retirement(current_retired: usize) -> bool {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 fn vulkan_import_capacity_available(
     current_count: usize,
@@ -4412,7 +4427,7 @@ fn vulkan_import_capacity_available(
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 fn vulkan_retirement_timed_out(elapsed: Duration) -> bool {
     elapsed >= VULKAN_VIDEO_RETIRE_TIMEOUT
@@ -4421,7 +4436,7 @@ fn vulkan_retirement_timed_out(elapsed: Duration) -> bool {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum VulkanImportFault {
@@ -4435,7 +4450,7 @@ enum VulkanImportFault {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 fn vulkan_fault_requires_quarantine(fault: VulkanImportFault) -> bool {
     matches!(
@@ -4449,7 +4464,7 @@ fn vulkan_fault_requires_quarantine(fault: VulkanImportFault) -> bool {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum VulkanTicketResourceDisposition {
@@ -4460,7 +4475,7 @@ enum VulkanTicketResourceDisposition {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 fn vulkan_ticket_resource_disposition(
     lock_poisoned: bool,
@@ -4477,7 +4492,7 @@ fn vulkan_ticket_resource_disposition(
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 struct VulkanImportedResource {
     // The staged source frame may retire before the renderer-native output. The cached Vulkan
@@ -4494,7 +4509,7 @@ struct VulkanImportedResource {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 struct VulkanImportTicket {
     resource: Mutex<Option<VulkanImportedResource>>,
@@ -4507,7 +4522,7 @@ struct VulkanImportTicket {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 impl VulkanImportTicket {
     fn record_stats(&self, record: impl FnOnce(&RendererStatsCollector)) {
@@ -4805,7 +4820,7 @@ impl VulkanImportTicket {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 impl BackendPostFlushTask for VulkanImportTicket {
     fn submit_after_flush(&self) -> Result<(), String> {
@@ -4846,7 +4861,7 @@ impl BackendPostFlushTask for VulkanImportTicket {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 impl Drop for VulkanImportTicket {
     fn drop(&mut self) {
@@ -4912,7 +4927,7 @@ impl Drop for VulkanImportTicket {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 struct VulkanRetiredImport {
     ticket: Arc<VulkanImportTicket>,
@@ -4922,7 +4937,7 @@ struct VulkanRetiredImport {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 pub(crate) struct VulkanPlanarVideoFrame {
     effect: RuntimeEffect,
@@ -4935,7 +4950,7 @@ pub(crate) struct VulkanPlanarVideoFrame {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 impl VulkanPlanarVideoFrame {
     pub(crate) fn shader(&self, tile_modes: (TileMode, TileMode)) -> Result<Shader, String> {
@@ -4961,7 +4976,7 @@ impl VulkanPlanarVideoFrame {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 pub(crate) enum VulkanVideoFrameContent<'a> {
     Image(&'a Image),
@@ -4971,7 +4986,7 @@ pub(crate) enum VulkanVideoFrameContent<'a> {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 enum VulkanOwnedVideoFrameContent {
     Image {
@@ -4984,7 +4999,7 @@ enum VulkanOwnedVideoFrameContent {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 struct VulkanDisplayedVideoFrame {
     content: VulkanOwnedVideoFrameContent,
@@ -4994,7 +5009,7 @@ struct VulkanDisplayedVideoFrame {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 impl VulkanDisplayedVideoFrame {
     fn content(&self) -> VulkanVideoFrameContent<'_> {
@@ -5032,7 +5047,7 @@ impl VulkanDisplayedVideoFrame {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 struct VulkanRenderedVideoTarget {
     spec: VideoTargetSpec,
@@ -5044,7 +5059,7 @@ struct VulkanRenderedVideoTarget {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 enum VulkanFrameImport {
     Ready(VulkanDisplayedVideoFrame),
@@ -5057,7 +5072,7 @@ enum VulkanFrameImport {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 fn import_vulkan_frame(
     target_id: &str,
@@ -5387,8 +5402,8 @@ fn import_vulkan_frame(
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 struct ImportedExternalFrame {
     support: Rc<EglDmabufSupport>,
@@ -5398,8 +5413,8 @@ struct ImportedExternalFrame {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 impl ImportedExternalFrame {
     fn new(
@@ -5457,8 +5472,8 @@ impl ImportedExternalFrame {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 impl ImportedExternalFrame {
     fn stats(&self) -> Option<Arc<RendererStatsCollector>> {
@@ -5467,8 +5482,8 @@ impl ImportedExternalFrame {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 impl Drop for ImportedExternalFrame {
     fn drop(&mut self) {
@@ -5480,24 +5495,24 @@ impl Drop for ImportedExternalFrame {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 fn should_sample_luma(diagnostic_requested: bool, acquire_cpu_ready: bool) -> bool {
     diagnostic_requested && acquire_cpu_ready
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 struct RenderedVideoTarget {
     spec: VideoTargetSpec,
     incarnation: u64,
     stream_id: Option<u64>,
     #[cfg(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
+        all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+        all(all(feature = "drm", feature = "opengl"), target_os = "linux")
     ))]
     path: VideoImportPath,
     output_texture: u32,
@@ -5506,21 +5521,21 @@ struct RenderedVideoTarget {
     image: Option<Image>,
     direct_backend_texture: Option<gpu::BackendTexture>,
     #[cfg(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
+        all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+        all(all(feature = "drm", feature = "opengl"), target_os = "linux")
     ))]
     direct_import: Option<ImportedExternalFrame>,
     retired_imports: VecDeque<RetiredImport>,
     #[cfg(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
+        all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+        all(all(feature = "drm", feature = "opengl"), target_os = "linux")
     ))]
     diagnostics_pending: bool,
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 impl RenderedVideoTarget {
     fn new(
@@ -5531,8 +5546,8 @@ impl RenderedVideoTarget {
         path: VideoImportPath,
     ) -> Result<Self, String> {
         #[cfg(not(any(
-            all(feature = "wayland", target_os = "linux"),
-            all(feature = "drm", target_os = "linux")
+            all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+            all(all(feature = "drm", feature = "opengl"), target_os = "linux")
         )))]
         let _ = path;
 
@@ -5600,8 +5615,8 @@ impl RenderedVideoTarget {
             incarnation,
             stream_id,
             #[cfg(any(
-                all(feature = "wayland", target_os = "linux"),
-                all(feature = "drm", target_os = "linux")
+                all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+                all(all(feature = "drm", feature = "opengl"), target_os = "linux")
             ))]
             path,
             output_texture,
@@ -5610,22 +5625,22 @@ impl RenderedVideoTarget {
             image,
             direct_backend_texture: None,
             #[cfg(any(
-                all(feature = "wayland", target_os = "linux"),
-                all(feature = "drm", target_os = "linux")
+                all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+                all(all(feature = "drm", feature = "opengl"), target_os = "linux")
             ))]
             direct_import: None,
             retired_imports: VecDeque::new(),
             #[cfg(any(
-                all(feature = "wayland", target_os = "linux"),
-                all(feature = "drm", target_os = "linux")
+                all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+                all(all(feature = "drm", feature = "opengl"), target_os = "linux")
             ))]
             diagnostics_pending: true,
         })
     }
 
     #[cfg(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
+        all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+        all(all(feature = "drm", feature = "opengl"), target_os = "linux")
     ))]
     fn upload_frame(
         &mut self,
@@ -5640,8 +5655,8 @@ impl RenderedVideoTarget {
     }
 
     #[cfg(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
+        all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+        all(all(feature = "drm", feature = "opengl"), target_os = "linux")
     ))]
     fn upload_blitted_frame(
         &mut self,
@@ -5696,8 +5711,8 @@ impl RenderedVideoTarget {
     }
 
     #[cfg(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
+        all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+        all(all(feature = "drm", feature = "opengl"), target_os = "linux")
     ))]
     fn upload_direct_frame(
         &mut self,
@@ -5768,8 +5783,8 @@ impl RenderedVideoTarget {
     }
 
     #[cfg(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
+        all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+        all(all(feature = "drm", feature = "opengl"), target_os = "linux")
     ))]
     fn fallback_direct_to_blit(
         &mut self,
@@ -5829,8 +5844,8 @@ impl RenderedVideoTarget {
     }
 
     #[cfg(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
+        all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+        all(all(feature = "drm", feature = "opengl"), target_os = "linux")
     ))]
     fn retire_import(&mut self, imported: ImportedExternalFrame, use_gl_fences: bool) {
         if use_gl_fences {
@@ -5863,8 +5878,8 @@ impl RenderedVideoTarget {
     }
 
     #[cfg(not(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
+        all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+        all(all(feature = "drm", feature = "opengl"), target_os = "linux")
     )))]
     fn upload_frame(
         &mut self,
@@ -5935,16 +5950,16 @@ impl RenderedVideoTarget {
     }
 
     #[cfg(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
+        all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+        all(all(feature = "drm", feature = "opengl"), target_os = "linux")
     ))]
     fn direct_import_count(&self) -> usize {
         usize::from(self.direct_import.is_some())
     }
 
     #[cfg(not(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
+        all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+        all(all(feature = "drm", feature = "opengl"), target_os = "linux")
     )))]
     fn direct_import_count(&self) -> usize {
         0
@@ -5956,8 +5971,8 @@ impl RenderedVideoTarget {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 fn sample_rgba_output(
     target_fbo: u32,
@@ -6019,8 +6034,8 @@ fn sample_rgba_output(
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 fn format_frame_diagnostics(
     luma: Option<Result<ChannelSample, String>>,
@@ -6045,8 +6060,8 @@ fn format_frame_diagnostics(
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 fn make_output_image(
     backend_texture: &gpu::BackendTexture,
@@ -6065,8 +6080,8 @@ fn make_output_image(
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 fn paint_video_placeholder(target_fbo: u32, width: u32, height: u32) {
     let background = [0.0_f32, 0.0_f32, 0.0_f32, 1.0_f32];
@@ -6149,8 +6164,8 @@ fn paint_video_placeholder(target_fbo: u32, width: u32, height: u32) {
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 fn clear_scissored_rect(x: i32, y: i32, width: i32, height: i32, color: [f32; 4]) {
     unsafe {
@@ -6161,8 +6176,8 @@ fn clear_scissored_rect(x: i32, y: i32, width: i32, height: i32, color: [f32; 4]
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 impl Drop for RenderedVideoTarget {
     fn drop(&mut self) {
@@ -6175,8 +6190,8 @@ impl Drop for RenderedVideoTarget {
         self.image.take();
         self.direct_backend_texture.take();
         #[cfg(any(
-            all(feature = "wayland", target_os = "linux"),
-            all(feature = "drm", target_os = "linux")
+            all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+            all(all(feature = "drm", feature = "opengl"), target_os = "linux")
         ))]
         self.direct_import.take();
         self.drain_retired_imports();
@@ -6188,7 +6203,7 @@ impl Drop for RenderedVideoTarget {
 }
 
 #[cfg_attr(
-    not(any(feature = "linux-opengl", feature = "vulkan", test)),
+    not(any(feature = "opengl", feature = "vulkan", test)),
     allow(dead_code)
 )]
 pub(crate) enum RenderedVideoFrame<'a> {
@@ -6196,19 +6211,19 @@ pub(crate) enum RenderedVideoFrame<'a> {
     #[cfg(all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     ))]
     Nv12Planes(&'a VulkanPlanarVideoFrame),
 }
 
 #[cfg(any(
     test,
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux"),
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux"),
     all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     )
 ))]
 fn rendered_target_matches_registration(
@@ -6222,7 +6237,7 @@ fn rendered_target_matches_registration(
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 #[derive(Default)]
 struct VulkanRendererVideoState {
@@ -6235,7 +6250,7 @@ struct VulkanRendererVideoState {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 impl VulkanRendererVideoState {
     fn sync_pending(
@@ -6628,23 +6643,20 @@ fn cpu_image<'a>(
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 #[derive(Default)]
 pub struct RendererVideoState {
     cpu: HashMap<String, CpuRenderedVideoFrame>,
     targets: HashMap<String, RenderedVideoTarget>,
-    #[cfg(all(
-        feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
-    ))]
+    #[cfg(all(feature = "vulkan", any(feature = "wayland", feature = "drm")))]
     vulkan: VulkanRendererVideoState,
 }
 
 #[cfg(any(
-    all(feature = "wayland", target_os = "linux"),
-    all(feature = "drm", target_os = "linux")
+    all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+    all(all(feature = "drm", feature = "opengl"), target_os = "linux")
 ))]
 impl RendererVideoState {
     pub fn new() -> Self {
@@ -6822,10 +6834,7 @@ impl RendererVideoState {
         cleanup
     }
 
-    #[cfg(all(
-        feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
-    ))]
+    #[cfg(all(feature = "vulkan", any(feature = "wayland", feature = "drm")))]
     pub fn sync_pending_vulkan(
         &mut self,
         registry: &Arc<VideoRegistry>,
@@ -6837,18 +6846,12 @@ impl RendererVideoState {
             .sync_pending(registry, render_frame, gr_context, context)
     }
 
-    #[cfg(all(
-        feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
-    ))]
+    #[cfg(all(feature = "vulkan", any(feature = "wayland", feature = "drm")))]
     pub fn prepare_vulkan_shutdown(&mut self) -> Result<(), String> {
         self.vulkan.prepare_shutdown()
     }
 
-    #[cfg(all(
-        feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
-    ))]
+    #[cfg(all(feature = "vulkan", any(feature = "wayland", feature = "drm")))]
     pub fn reap_retired_vulkan_imports(
         &mut self,
         registry: &Arc<VideoRegistry>,
@@ -6864,10 +6867,7 @@ impl RendererVideoState {
         if let Some(image) = cpu_image(&self.cpu, id) {
             return Some(image);
         }
-        #[cfg(all(
-            feature = "vulkan",
-            any(feature = "wayland-core", feature = "drm-core")
-        ))]
+        #[cfg(all(feature = "vulkan", any(feature = "wayland", feature = "drm")))]
         if let Some(image) = self.vulkan.image(id) {
             return Some(image);
         }
@@ -6878,8 +6878,11 @@ impl RendererVideoState {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core"),
-    not(any(feature = "wayland", feature = "drm"))
+    any(feature = "wayland", feature = "drm"),
+    not(any(
+        all(feature = "wayland", feature = "opengl"),
+        all(feature = "drm", feature = "opengl")
+    ))
 ))]
 #[derive(Default)]
 pub struct RendererVideoState {
@@ -6890,8 +6893,11 @@ pub struct RendererVideoState {
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core"),
-    not(any(feature = "wayland", feature = "drm"))
+    any(feature = "wayland", feature = "drm"),
+    not(any(
+        all(feature = "wayland", feature = "opengl"),
+        all(feature = "drm", feature = "opengl")
+    ))
 ))]
 impl RendererVideoState {
     pub fn new() -> Self {
@@ -6940,13 +6946,13 @@ impl RendererVideoState {
 
 #[cfg(all(
     not(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
+        all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+        all(all(feature = "drm", feature = "opengl"), target_os = "linux")
     )),
     not(all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     ))
 ))]
 #[derive(Default)]
@@ -6956,13 +6962,13 @@ pub struct RendererVideoState {
 
 #[cfg(all(
     not(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
+        all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+        all(all(feature = "drm", feature = "opengl"), target_os = "linux")
     )),
     not(all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     ))
 ))]
 impl RendererVideoState {
@@ -6974,7 +6980,7 @@ impl RendererVideoState {
         sync_cpu_frames(&mut self.cpu, registry)
     }
 
-    #[cfg(feature = "linux-opengl")]
+    #[cfg(feature = "opengl")]
     pub fn sync_pending(
         &mut self,
         registry: &Arc<VideoRegistry>,
@@ -7004,7 +7010,13 @@ impl RendererVideoState {
 mod tests {
     use super::*;
 
-    #[cfg(all(target_os = "linux", any(feature = "wayland", feature = "drm")))]
+    #[cfg(all(
+        target_os = "linux",
+        any(
+            all(feature = "wayland", feature = "opengl"),
+            all(feature = "drm", feature = "opengl")
+        )
+    ))]
     #[test]
     fn dma_buf_sync_request_matches_the_libc_ioctl_abi() {
         assert_eq!(DMA_BUF_IOCTL_SYNC, libc::_IOW::<u64>(u32::from(b'b'), 0));
@@ -7022,14 +7034,14 @@ mod tests {
     #[cfg(all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     ))]
     use crate::backend::vulkan::{DrmNodeId, VulkanDeviceIdentity};
     use crate::stats::RendererTimingMetric;
     #[cfg(all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     ))]
     use ash::vk;
     use crossbeam_channel::{Receiver, bounded, unbounded};
@@ -7039,8 +7051,8 @@ mod tests {
     use video_interop::{Layer, OwnedDescriptor, OwnedObject, Plane, Rect};
 
     #[cfg(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
+        all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+        all(all(feature = "drm", feature = "opengl"), target_os = "linux")
     ))]
     #[test]
     fn retired_import_wait_failed_requires_gl_finish_fallback() {
@@ -7052,8 +7064,8 @@ mod tests {
     }
 
     #[cfg(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
+        all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+        all(all(feature = "drm", feature = "opengl"), target_os = "linux")
     ))]
     #[test]
     fn core_egl_sync_checks_current_gl_api_capability() {
@@ -7248,8 +7260,8 @@ mod tests {
     }
 
     #[cfg(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
+        all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+        all(all(feature = "drm", feature = "opengl"), target_os = "linux")
     ))]
     #[test]
     fn luma_diagnostic_requires_cpu_acquire_completion() {
@@ -7352,8 +7364,8 @@ mod tests {
     }
 
     #[cfg(any(
-        all(feature = "wayland", target_os = "linux"),
-        all(feature = "drm", target_os = "linux")
+        all(all(feature = "wayland", feature = "opengl"), target_os = "linux"),
+        all(all(feature = "drm", feature = "opengl"), target_os = "linux")
     ))]
     #[test]
     fn es2_disables_core_vao_and_sync_even_with_loaded_entry_points() {
@@ -7610,7 +7622,7 @@ mod tests {
         #[cfg(all(
             target_os = "linux",
             feature = "vulkan",
-            any(feature = "wayland-core", feature = "drm-core")
+            any(feature = "wayland", feature = "drm")
         ))]
         registry
             .set_vulkan_import_capabilities(true, true, Vec::new())
@@ -7670,7 +7682,7 @@ mod tests {
     #[cfg(all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     ))]
     #[test]
     fn recreated_vulkan_presenter_can_republish_only_identical_active_stream_capabilities() {
@@ -7830,7 +7842,7 @@ mod tests {
     #[cfg(all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     ))]
     fn generic_nv12_capability(modifier: u64) -> Nv12ModifierCapability {
         let identity = VulkanDeviceIdentity {
@@ -7876,7 +7888,7 @@ mod tests {
     #[cfg(all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     ))]
     #[test]
     fn vulkan_nv12_stream_rejects_unspecified_or_unsupported_contract_before_open() {
@@ -7944,7 +7956,7 @@ mod tests {
     #[cfg(all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     ))]
     #[test]
     fn vulkan_xrgb_stream_requires_exact_rgb_full_range_contract() {
@@ -7991,7 +8003,7 @@ mod tests {
     #[cfg(all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     ))]
     #[test]
     fn vulkan_nv12_frame_contract_and_runtime_attestation_are_both_exact() {
@@ -8711,7 +8723,7 @@ mod tests {
     #[cfg(all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     ))]
     #[test]
     fn vulkan_retirement_policy_is_hard_bounded_and_times_out() {
@@ -8736,7 +8748,7 @@ mod tests {
     #[cfg(all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     ))]
     #[test]
     fn poisoned_vulkan_ticket_never_selects_normal_resource_drop() {
@@ -8765,7 +8777,7 @@ mod tests {
     #[cfg(all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     ))]
     #[test]
     fn vulkan_process_quarantine_is_bounded_and_rejects_in_vm_restart_admission() {
@@ -8803,7 +8815,7 @@ mod tests {
     #[cfg(all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     ))]
     #[test]
     fn vulkan_fault_policy_preserves_rejected_candidates_and_quarantines_uncertain_release() {
@@ -8829,7 +8841,7 @@ mod tests {
     #[cfg(all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     ))]
     #[test]
     fn vulkan_nv12_staging_preference_is_explicit_and_fail_closed() {
@@ -8855,7 +8867,7 @@ mod tests {
     #[cfg(all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     ))]
     #[test]
     fn exact_nv12_runtime_effect_compiles_for_supported_range_and_siting() {

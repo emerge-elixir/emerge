@@ -1,5 +1,5 @@
 //! Presenter-neutral DRM/KMS discovery and atomic error classification.
-#![cfg_attr(not(feature = "drm"), allow(dead_code))]
+#![cfg_attr(not(all(feature = "drm", feature = "opengl")), allow(dead_code))]
 //!
 //! This module contains no EGL, OpenGL, Vulkan, or Wayland objects. Concrete render owners use
 //! the selected connector/mode/plane handles while KMS page-flip events remain presentation
@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 
-#[cfg(feature = "drm-vulkan")]
+#[cfg(all(feature = "drm", feature = "vulkan"))]
 use drm::ClientCapability;
 use drm::{
     Device as BasicDevice,
@@ -23,11 +23,11 @@ use drm::{
     },
 };
 
-#[cfg(feature = "drm-vulkan")]
+#[cfg(all(feature = "drm", feature = "vulkan"))]
 use crate::backend::vulkan::capabilities::{DrmMatchField, DrmNodeId, SelectionNode};
-#[cfg(feature = "drm-vulkan")]
+#[cfg(all(feature = "drm", feature = "vulkan"))]
 use drm::node::NodeType;
-#[cfg(feature = "drm-vulkan")]
+#[cfg(all(feature = "drm", feature = "vulkan"))]
 use std::{os::unix::fs::FileTypeExt, path::Path};
 
 // The file closes before the lease guard releases its reservation. Duplicates retain the guard.
@@ -104,14 +104,14 @@ pub(super) fn classify_atomic_commit_error(error: &io::Error) -> AtomicCommitErr
     }
 }
 
-#[cfg(feature = "drm-vulkan")]
+#[cfg(all(feature = "drm", feature = "vulkan"))]
 pub(super) struct VulkanSelectionNode {
     _file: File,
     pub(super) path: String,
     pub(super) selection: SelectionNode,
 }
 
-#[cfg(feature = "drm-vulkan")]
+#[cfg(all(feature = "drm", feature = "vulkan"))]
 pub(super) fn open_vulkan_selection_node(path: &str) -> Result<VulkanSelectionNode, String> {
     if !Path::new(path).is_absolute() {
         return Err(format!(
@@ -144,10 +144,10 @@ pub(super) fn open_vulkan_selection_node(path: &str) -> Result<VulkanSelectionNo
     })
 }
 
-#[cfg(feature = "drm-vulkan")]
+#[cfg(all(feature = "drm", feature = "vulkan"))]
 pub(super) struct KmsOutputProbe {
     pub(super) card: Card,
-    #[cfg(feature = "drm-vulkan")]
+    #[cfg(all(feature = "drm", feature = "vulkan"))]
     pub(super) resources: ResourceHandles,
     pub(super) connector: connector::Handle,
     pub(super) mode: control::Mode,
@@ -162,7 +162,7 @@ pub(super) struct KmsOutputProbe {
 /// Opens and validates the KMS card independently from the Vulkan selection node. Vulkan enables
 /// atomic/universal-plane discovery and requires an actual primary plane; the compatibility GL
 /// presenter deliberately retains its historical fallback selector.
-#[cfg(feature = "drm-vulkan")]
+#[cfg(all(feature = "drm", feature = "vulkan"))]
 pub(super) fn probe_kms_output(
     card_path: Option<&str>,
     requested_size: Option<(u32, u32)>,
@@ -188,7 +188,7 @@ pub(super) fn probe_kms_output(
     probe_card(card, requested_size)
 }
 
-#[cfg(feature = "drm-vulkan")]
+#[cfg(all(feature = "drm", feature = "vulkan"))]
 pub(super) fn probe_card(
     card: Card,
     requested_size: Option<(u32, u32)>,
@@ -210,7 +210,7 @@ pub(super) fn probe_card(
     let size = mode.size();
     Ok(KmsOutputProbe {
         card,
-        #[cfg(feature = "drm-vulkan")]
+        #[cfg(all(feature = "drm", feature = "vulkan"))]
         resources,
         connector,
         mode,
@@ -223,7 +223,7 @@ pub(super) fn probe_card(
     })
 }
 
-#[cfg(feature = "drm-vulkan")]
+#[cfg(all(feature = "drm", feature = "vulkan"))]
 fn open_character_device(path: &str, role: &str) -> Result<File, String> {
     let file = OpenOptions::new()
         .read(true)
@@ -603,7 +603,7 @@ pub(super) fn find_primary_plane(
 
 /// Vulkan may not derive its scanout contract from an overlay/cursor fallback. Universal planes
 /// are enabled by the caller before this selector runs, so absence of a typed primary is terminal.
-#[cfg(feature = "drm-vulkan")]
+#[cfg(all(feature = "drm", feature = "vulkan"))]
 fn find_strict_primary_plane(
     card: &Card,
     resources: &ResourceHandles,

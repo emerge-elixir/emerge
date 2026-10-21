@@ -1,10 +1,6 @@
 defmodule EmergeSkia.BuildConfig do
   @moduledoc false
 
-  @targets_path Path.expand("../../mix/targets.exs", __DIR__)
-  @external_resource @targets_path
-  @nerves_compilers elem(Code.eval_file(@targets_path), 0)
-
   @version Mix.Project.config()[:version]
   @force_precompiled_build_env_key "EMERGE_SKIA_BUILD"
   @load_macos_nif_env_key "EMERGE_SKIA_LOAD_MACOS_NIF"
@@ -13,93 +9,23 @@ defmodule EmergeSkia.BuildConfig do
   @checksum_only_env_key "EMERGE_SKIA_CHECKSUM_ONLY"
   @github_token_env_key "EMERGE_SKIA_GITHUB_TOKEN"
   @precompiled_source_url_env_key "EMERGE_SKIA_PRECOMPILED_SOURCE_URL"
-  @linux_64_precompiled_targets [
-    "x86_64-unknown-linux-gnu",
-    "aarch64-unknown-linux-gnu"
-  ]
-  @linux_embedded_precompiled_targets [
-    "armv7-unknown-linux-gnueabihf",
-    "x86_64-unknown-linux-musl",
-    "riscv64gc-unknown-linux-gnu"
-  ]
-  @linux_precompiled_backend_profiles [[], [:wayland], [:drm], [:wayland, :drm]]
-  @macos_host_targets ["aarch64-apple-darwin", "x86_64-apple-darwin"]
-  @precompiled_targets @linux_64_precompiled_targets ++
-                         @linux_embedded_precompiled_targets ++ @macos_host_targets
+  @macos_host_targets EmergeSkia.BuildProfiles.host_targets()
+  @precompiled_targets EmergeSkia.BuildProfiles.targets()
   @precompiled_nif_versions ["2.15"]
   @valid_backends [:wayland, :drm, :macos]
   @valid_opengl_backends [:wayland, :drm, :headless]
   @valid_vulkan_backends [:wayland, :drm, :headless]
   @default_precompiled_source_url Mix.Project.config()[:source_url]
 
-  @default_compiled_backends (
-                               env = System.get_env()
-
-                               cc_prefix =
-                                 env
-                                 |> Map.get("CC")
-                                 |> case do
-                                   nil ->
-                                     nil
-
-                                   compiler ->
-                                     compiler
-                                     |> String.split(~r/\s+/, trim: true)
-                                     |> List.first()
-                                     |> case do
-                                       nil ->
-                                         nil
-
-                                       path ->
-                                         path
-                                         |> Path.basename()
-                                         |> String.split("-")
-                                         |> Enum.drop(-1)
-                                         |> Enum.join("-")
-                                     end
-                                 end
-
-                               has_target_env? =
-                                 case {Map.get(env, "TARGET_ARCH"), Map.get(env, "TARGET_OS")} do
-                                   {arch, os}
-                                   when is_binary(arch) and arch != "" and is_binary(os) and
-                                          os != "" ->
-                                     true
-
-                                   _ ->
-                                     false
-                                 end
-
-                               has_mix_target? =
-                                 case Map.get(env, "MIX_TARGET") do
-                                   target when is_binary(target) and target not in ["", "host"] ->
-                                     true
-
-                                   _ ->
-                                     false
-                                 end
-
-                               if Map.get(env, "NERVES_SDK_SYSROOT") not in [nil, ""] or
-                                    has_mix_target? or
-                                    Map.has_key?(@nerves_compilers, cc_prefix) or has_target_env? do
-                                 [:drm]
-                               else
-                                 case Map.get(env, "TARGET_OS") do
-                                   os when is_binary(os) and os != "" ->
-                                     if os == "darwin", do: [:macos], else: [:wayland]
-
-                                   _ ->
-                                     if :os.type() == {:unix, :darwin},
-                                       do: [:macos],
-                                       else: [:wayland]
-                                 end
-                               end
-                             )
+  @profiles_path Path.expand("../../mix/native_profiles.exs", __DIR__)
+  @external_resource @profiles_path
+  @external_resource Path.expand("../../mix/targets.exs", __DIR__)
+  @default_compiled_backends EmergeSkia.BuildProfiles.defaults(System.get_env()).matrix
 
   @raw_compiled_backends Application.compile_env(
                            :emerge,
                            :compiled_backends,
-                           @default_compiled_backends
+                           :unset
                          )
   @legacy_compiled_opengl_backends Application.compile_env(
                                      :emerge,
@@ -111,8 +37,18 @@ defmodule EmergeSkia.BuildConfig do
                                      :compiled_vulkan_backends,
                                      :unset
                                    )
+  @compiled_backend_entries if(@raw_compiled_backends == :unset,
+                              do:
+                                if(
+                                  @legacy_compiled_opengl_backends != :unset or
+                                    @legacy_compiled_vulkan_backends != :unset,
+                                  do: Keyword.keys(@default_compiled_backends),
+                                  else: @default_compiled_backends
+                                ),
+                              else: @raw_compiled_backends
+                            )
   @compiled_backend_matrix EmergeSkia.BuildConfig.Schema.resolve!(
-                             @raw_compiled_backends,
+                             @compiled_backend_entries,
                              @legacy_compiled_opengl_backends,
                              @legacy_compiled_vulkan_backends
                            )
@@ -183,19 +119,11 @@ defmodule EmergeSkia.BuildConfig do
 
   @doc false
   def default_compiled_backends(env) when is_map(env) do
-    cond do
-      nerves_build_env?(env) -> [:drm]
-      host_darwin?(env) -> [:macos]
-      true -> [:wayland]
-    end
+    EmergeSkia.BuildProfiles.defaults(env).matrix
   end
 
   @doc false
-  def nerves_build_env?(env) when is_map(env) do
-    value_present?(Map.get(env, "NERVES_SDK_SYSROOT")) ||
-      mix_target?(env) ||
-      nerves_compiler?(Map.get(env, "CC"))
-  end
+  def nerves_build_env?(env) when is_map(env), do: EmergeSkia.BuildProfiles.nerves?(env)
 
   @doc false
   def normalize_compiled_backend_matrix!(backends) do
@@ -276,65 +204,30 @@ defmodule EmergeSkia.BuildConfig do
   end
 
   @doc false
-  def rustler_platform_features(env, compiled_backends, compiled_vulkan_backends)
-      when is_map(env) and is_list(compiled_backends) and is_list(compiled_vulkan_backends) do
-    cond do
-      nerves_build_env?(env) and compiled_backends == [] and compiled_vulkan_backends == [] ->
-        ["embedded-cpu"]
-
-      nerves_build_env?(env) ->
-        ["embedded-freetype"]
-
-      host_darwin?(env) and compiled_backends == [] and compiled_vulkan_backends == [] ->
-        ["embedded-cpu"]
-
-      compiled_backends == [] and compiled_vulkan_backends == [] ->
-        ["video-interop-support"]
-
-      true ->
-        []
-    end
+  def rustler_platform_features(env, backends, vulkan, opengl \\ :default) do
+    EmergeSkia.BuildProfiles.platform_features(env, canonical_features(backends, vulkan, opengl))
   end
 
   @doc false
-  def compiled_backends_to_rustler_features(
-        backends,
-        vulkan_backends \\ [],
-        opengl_backends \\ :default
-      ) do
+  def canonical_features(backends, vulkan \\ [], opengl \\ :default) do
     backends = normalize_compiled_backends!(backends)
-    vulkan_backends = normalize_compiled_vulkan_backends!(vulkan_backends, backends)
+    vulkan = normalize_compiled_vulkan_backends!(vulkan, backends)
 
-    opengl_backends =
-      case opengl_backends do
-        :default -> default_opengl_backends(backends, vulkan_backends)
+    opengl =
+      case opengl do
+        :default -> default_opengl_backends(backends, vulkan)
         configured -> normalize_compiled_opengl_backends!(configured, backends)
       end
 
-    backend_features =
-      Enum.map(backends, fn
-        :macos ->
-          "macos"
+    (Enum.map(backends, &Atom.to_string/1) ++
+       if(opengl != [], do: ["opengl"], else: []) ++
+       if(vulkan != [], do: ["vulkan"], else: []))
+    |> EmergeSkia.BuildProfiles.canonical_features()
+  end
 
-        backend ->
-          case {backend in opengl_backends, backend in vulkan_backends} do
-            {true, true} -> "#{backend}-all"
-            {true, false} -> Atom.to_string(backend)
-            {false, true} -> "#{backend}-vulkan"
-            {false, false} when backend == :drm -> "drm-raster"
-            {false, false} -> "#{backend}-core"
-          end
-      end)
-
-    headless_features =
-      case {:headless in opengl_backends, :headless in vulkan_backends} do
-        {true, true} -> ["headless-all"]
-        {true, false} -> ["headless-opengl"]
-        {false, true} -> ["headless-vulkan"]
-        {false, false} -> []
-      end
-
-    backend_features ++ headless_features
+  @doc false
+  def compiled_backends_to_rustler_features(backends, vulkan \\ [], opengl \\ :default) do
+    backends |> canonical_features(vulkan, opengl) |> EmergeSkia.BuildProfiles.cargo_features()
   end
 
   @doc false
@@ -400,64 +293,17 @@ defmodule EmergeSkia.BuildConfig do
       )
       when is_map(env) and is_list(compiled_backends) and
              is_list(compiled_vulkan_backends) do
-    compiled_backends = normalize_compiled_backends!(compiled_backends)
+    features =
+      canonical_features(compiled_backends, compiled_vulkan_backends, compiled_opengl_backends)
 
-    compiled_vulkan_backends =
-      normalize_compiled_vulkan_backends!(compiled_vulkan_backends, compiled_backends)
+    Map.new(@precompiled_targets, fn target ->
+      variants =
+        for profile <- EmergeSkia.BuildProfiles.profiles(target), profile.variant != nil do
+          {profile.variant, fn _config -> profile.features == features end}
+        end
 
-    compiled_opengl_backends =
-      case compiled_opengl_backends do
-        :default -> default_opengl_backends(compiled_backends, compiled_vulkan_backends)
-        configured -> normalize_compiled_opengl_backends!(configured, compiled_backends)
-      end
-
-    variants_for = fn target, variants ->
-      Enum.map(variants, fn variant ->
-        {variant,
-         fn _config ->
-           precompiled_variant?(
-             env,
-             compiled_backends,
-             compiled_vulkan_backends,
-             compiled_opengl_backends,
-             target,
-             variant
-           )
-         end}
-      end)
-    end
-
-    %{
-      "x86_64-unknown-linux-gnu" =>
-        variants_for.("x86_64-unknown-linux-gnu", [
-          :drm,
-          :drm_raster,
-          :drm_wayland,
-          :raster,
-          :vulkan,
-          :wayland_vulkan,
-          :drm_vulkan,
-          :drm_all,
-          :headless_vulkan
-        ]),
-      "aarch64-unknown-linux-gnu" =>
-        variants_for.("aarch64-unknown-linux-gnu", [
-          :drm,
-          :drm_raster,
-          :drm_wayland,
-          :raster,
-          :vulkan,
-          :wayland_vulkan,
-          :drm_vulkan,
-          :drm_all,
-          :headless_vulkan
-        ])
-    }
-    |> Map.merge(
-      Map.new(@linux_embedded_precompiled_targets, fn target ->
-        {target, variants_for.(target, [:opengl, :drm_raster])}
-      end)
-    )
+      {target, variants}
+    end)
   end
 
   @doc false
@@ -480,98 +326,24 @@ defmodule EmergeSkia.BuildConfig do
       )
       when is_map(env) and is_list(compiled_backends) and
              is_list(compiled_vulkan_backends) and is_binary(target) do
-    compiled_backends = normalize_compiled_backends!(compiled_backends)
+    features =
+      canonical_features(compiled_backends, compiled_vulkan_backends, compiled_opengl_backends)
 
-    compiled_vulkan_backends =
-      normalize_compiled_vulkan_backends!(compiled_vulkan_backends, compiled_backends)
-
-    compiled_opengl_backends =
-      case compiled_opengl_backends do
-        :default -> default_opengl_backends(compiled_backends, compiled_vulkan_backends)
-        configured -> normalize_compiled_opengl_backends!(configured, compiled_backends)
-      end
-
-    default_opengl_backends =
-      default_opengl_backends(compiled_backends, compiled_vulkan_backends)
-
-    variant =
-      cond do
-        target in (@linux_64_precompiled_targets ++ @linux_embedded_precompiled_targets) and
-          compiled_backends == [:drm] and compiled_vulkan_backends == [] and
-            compiled_opengl_backends == [] ->
-          {:ok, :drm_raster}
-
-        target in @macos_host_targets and compiled_backends == [] and
-          compiled_vulkan_backends == [] and compiled_opengl_backends == [] ->
-          {:ok, nil}
-
-        target in @linux_64_precompiled_targets and compiled_opengl_backends == [] and
-          compiled_backends == [:wayland] and compiled_vulkan_backends == [:wayland] ->
-          {:ok, :wayland_vulkan}
-
-        target in @linux_64_precompiled_targets and compiled_opengl_backends == [] and
-          compiled_backends == [:drm] and compiled_vulkan_backends == [:drm] ->
-          {:ok, :drm_vulkan}
-
-        target in @linux_64_precompiled_targets and compiled_opengl_backends == [] and
-          compiled_backends == [] and compiled_vulkan_backends == [:headless] ->
-          {:ok, :headless_vulkan}
-
-        target in @linux_64_precompiled_targets and compiled_backends == [:drm] and
-          compiled_vulkan_backends == [:drm] and compiled_opengl_backends == [:drm] ->
-          {:ok, :drm_all}
-
-        target in @linux_64_precompiled_targets and
-          compiled_backends in @linux_precompiled_backend_profiles and
-          compiled_vulkan_backends != [] and
-            compiled_opengl_backends == default_opengl_backends ->
-          {:ok, :vulkan}
-
-        target in @linux_64_precompiled_targets and compiled_backends == [] and
-          compiled_vulkan_backends == [] and compiled_opengl_backends == [] ->
-          {:ok, :raster}
-
-        target in @linux_embedded_precompiled_targets and compiled_vulkan_backends != [] ->
-          :error
-
-        target in @linux_embedded_precompiled_targets and compiled_backends == [] and
-            compiled_opengl_backends == [] ->
-          {:ok, nil}
-
-        target in @linux_embedded_precompiled_targets and compiled_backends == [:drm] and
-            compiled_opengl_backends == [:drm] ->
-          {:ok, :opengl}
-
-        target in @linux_64_precompiled_targets and compiled_backends == [:wayland] and
-          compiled_vulkan_backends == [] and compiled_opengl_backends == [:wayland] ->
-          {:ok, nil}
-
-        target in @linux_64_precompiled_targets and compiled_backends == [:drm] and
-          compiled_vulkan_backends == [] and compiled_opengl_backends == [:drm] ->
-          {:ok, :drm}
-
-        target in @linux_64_precompiled_targets and
-          compiled_backends == [:wayland, :drm] and compiled_vulkan_backends == [] and
-            compiled_opengl_backends == [:wayland, :drm] ->
-          {:ok, :drm_wayland}
-
-        true ->
-          :error
-      end
-
-    case variant do
-      {:ok, variant} ->
+    case EmergeSkia.BuildProfiles.select(target, features) do
+      {:ok, profile} ->
         {:ok,
-         %{
-           target: target,
-           variant: variant,
+         Map.merge(profile, %{
            backends: compiled_backends,
            vulkan_backends: compiled_vulkan_backends,
-           opengl_backends: compiled_opengl_backends
-         }}
+           opengl_backends:
+             case compiled_opengl_backends do
+               :default -> default_opengl_backends(compiled_backends, compiled_vulkan_backends)
+               configured -> configured
+             end
+         })}
 
-      :error ->
-        {:error, :unsupported_profile}
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -638,37 +410,79 @@ defmodule EmergeSkia.BuildConfig do
   end
 
   @doc false
-  def force_precompiled_build?(opts \\ []) when is_list(opts) do
+  def force_precompiled_build?(opts \\ []) do
+    case precompiled_status(opts) do
+      {:ok, _profile} ->
+        false
+
+      {:error, :invalid_checksum_file} ->
+        raise ArgumentError, "Invalid Emerge checksum manifest; refusing source fallback"
+
+      {:error, {:checksum_file, reason}} ->
+        raise File.Error,
+          reason: reason,
+          action: "read checksum manifest",
+          path: Keyword.fetch!(opts, :checksum_path)
+
+      {:error, reason} ->
+        if Keyword.get(opts, :warn_on_fallback, false) and reason != :explicit_source do
+          IO.warn(
+            "Emerge native source build: #{inspect(reason)}. " <>
+              "A potentially long Skia/Rust build will occur; Rustler is required. " <>
+              "Run mix emerge.build_info or elixir deps/emerge/scripts/build-info.exs for feature/target details. " <>
+              "See https://hexdocs.pm/emerge/Emerge.html#module-viewport-configuration. " <>
+              "To request source compilation explicitly: EMERGE_SKIA_BUILD=true mix deps.compile emerge --force"
+          )
+        end
+
+        true
+    end
+  end
+
+  @doc false
+  def precompiled_status(opts) do
     env = Keyword.get(opts, :env, System.get_env())
-    checksum_path = Keyword.fetch!(opts, :checksum_path)
-    compiled_backends = Keyword.get(opts, :compiled_backends, compiled_backends())
-
-    compiled_vulkan_backends =
-      opts
-      |> Keyword.get(:compiled_vulkan_backends, compiled_vulkan_backends())
-      |> normalize_compiled_vulkan_backends!(compiled_backends)
-
-    compiled_opengl_backends =
-      case Keyword.get(opts, :compiled_opengl_backends, :default) do
-        :default -> default_opengl_backends(compiled_backends, compiled_vulkan_backends)
-        configured -> normalize_compiled_opengl_backends!(configured, compiled_backends)
-      end
-
+    backends = Keyword.get(opts, :compiled_backends, compiled_backends())
+    vulkan = Keyword.get(opts, :compiled_vulkan_backends, compiled_vulkan_backends())
+    opengl = Keyword.get(opts, :compiled_opengl_backends, :default)
+    features = canonical_features(backends, vulkan, opengl)
+    resolver = Keyword.get(opts, :target_resolver, &default_precompiled_target_resolver/2)
     targets = Keyword.get(opts, :targets, @precompiled_targets)
-    nif_versions = Keyword.get(opts, :nif_versions, @precompiled_nif_versions)
-    target_resolver = Keyword.get(opts, :target_resolver, &default_precompiled_target_resolver/2)
+    versions = Keyword.get(opts, :nif_versions, @precompiled_nif_versions)
 
-    force_build_requested?(env) ||
-      not File.exists?(checksum_path) ||
-      unsupported_precompiled_profile?(
-        env,
-        compiled_backends,
-        compiled_vulkan_backends,
-        compiled_opengl_backends,
-        target_resolver,
-        targets,
-        nif_versions
-      )
+    if force_build_requested?(env) do
+      {:error, :explicit_source}
+    else
+      with {:ok, nif_target} <- resolver.(targets, versions),
+           {:ok, target} <- target_from_nif_target(nif_target),
+           {:ok, profile} <- EmergeSkia.BuildProfiles.select(target, features),
+           {:ok, checksums} <- read_checksums(Keyword.fetch!(opts, :checksum_path)) do
+        suffix = if profile.variant, do: "--#{profile.variant}", else: ""
+        name = "libemerge_skia-v#{@version}-#{nif_target}#{suffix}.so.tar.gz"
+
+        if Map.has_key?(checksums, name),
+          do: {:ok, profile},
+          else: {:error, {:missing_checksum, name}}
+      end
+    end
+  end
+
+  defp read_checksums(path) do
+    case File.read(path) do
+      {:ok, text} ->
+        case Code.eval_string(text) do
+          {%{} = checksums, _binding} -> {:ok, checksums}
+          _ -> {:error, :invalid_checksum_file}
+        end
+
+      {:error, :enoent} ->
+        {:error, :missing_checksum_file}
+
+      {:error, reason} ->
+        {:error, {:checksum_file, reason}}
+    end
+  rescue
+    _ -> {:error, :invalid_checksum_file}
   end
 
   @doc false
@@ -684,16 +498,6 @@ defmodule EmergeSkia.BuildConfig do
   defp default_opengl_backends(compiled_backends, compiled_vulkan_backends) do
     Enum.filter(compiled_backends, &(&1 in @valid_opengl_backends)) ++
       if(:headless in compiled_vulkan_backends, do: [:headless], else: [])
-  end
-
-  defp nerves_compiler?(nil), do: false
-  defp nerves_compiler?(compiler), do: Map.has_key?(@nerves_compilers, compiler_prefix(compiler))
-
-  defp mix_target?(env) do
-    case Map.get(env, "MIX_TARGET") do
-      target when is_binary(target) and target not in ["", "host"] -> true
-      _ -> false
-    end
   end
 
   defp host_darwin?(env) when is_map(env) do
@@ -824,55 +628,10 @@ defmodule EmergeSkia.BuildConfig do
     end
   end
 
-  defp unsupported_precompiled_profile?(
-         env,
-         compiled_backends,
-         compiled_vulkan_backends,
-         compiled_opengl_backends,
-         target_resolver,
-         targets,
-         nif_versions
-       ) do
-    with {:ok, nif_target} <- target_resolver.(targets, nif_versions),
-         {:ok, target} <- target_from_nif_target(nif_target),
-         {:ok, _profile} <-
-           precompiled_profile(
-             env,
-             compiled_backends,
-             compiled_vulkan_backends,
-             compiled_opengl_backends,
-             target
-           ) do
-      false
-    else
-      _ -> true
-    end
-  end
-
   defp target_from_nif_target(nif_target) when is_binary(nif_target) do
     case String.split(nif_target, "-", parts: 3) do
       ["nif", _nif_version, target] when target != "" -> {:ok, target}
       _ -> {:error, :invalid_nif_target}
-    end
-  end
-
-  defp precompiled_variant?(
-         env,
-         compiled_backends,
-         compiled_vulkan_backends,
-         compiled_opengl_backends,
-         target,
-         variant
-       ) do
-    case precompiled_profile(
-           env,
-           compiled_backends,
-           compiled_vulkan_backends,
-           compiled_opengl_backends,
-           target
-         ) do
-      {:ok, %{variant: ^variant}} -> true
-      _ -> false
     end
   end
 
@@ -889,24 +648,4 @@ defmodule EmergeSkia.BuildConfig do
     :filename.basedir(:user_cache, "", %{os: :darwin})
     |> to_string()
   end
-
-  defp compiler_prefix(compiler) do
-    compiler
-    |> String.split(~r/\s+/, trim: true)
-    |> List.first()
-    |> case do
-      nil ->
-        nil
-
-      path ->
-        path
-        |> Path.basename()
-        |> String.split("-")
-        |> Enum.drop(-1)
-        |> Enum.join("-")
-    end
-  end
-
-  defp value_present?(value) when is_binary(value), do: value != ""
-  defp value_present?(_value), do: false
 end

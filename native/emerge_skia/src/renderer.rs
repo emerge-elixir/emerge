@@ -42,18 +42,18 @@ use crate::tree::attrs::{BorderStyle, ImageFit};
 use crate::tree::geometry::{ClipShape, CornerRadii, Rect as GeometryRect, clamp_radii};
 use crate::tree::transform::Affine2;
 #[cfg(any(
-    feature = "linux-opengl",
+    feature = "opengl",
     all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     )
 ))]
 use crate::video::VideoSyncResult;
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 use crate::video::VulkanPlanarVideoFrame;
 use crate::video::{RenderedVideoFrame, RendererVideoState};
@@ -1995,7 +1995,7 @@ impl<'a> RenderFrame<'a> {
 
         match &mut self.flush {
             RenderFrameFlush::Direct => {
-                #[cfg(any(feature = "linux-opengl", feature = "vulkan", feature = "macos"))]
+                #[cfg(any(feature = "opengl", feature = "vulkan", feature = "macos"))]
                 let (gpu_flush, submit) =
                     if let Some(gr_context) = self.direct_context.as_deref_mut() {
                         let flush_started_at = Instant::now();
@@ -2008,7 +2008,7 @@ impl<'a> RenderFrame<'a> {
                     } else {
                         (Duration::ZERO, Duration::ZERO)
                     };
-                #[cfg(not(any(feature = "linux-opengl", feature = "vulkan", feature = "macos")))]
+                #[cfg(not(any(feature = "opengl", feature = "vulkan", feature = "macos")))]
                 let (gpu_flush, submit) = (Duration::ZERO, Duration::ZERO);
 
                 RenderFlushTimings {
@@ -4491,7 +4491,7 @@ impl SceneRenderer {
         Ok(changed)
     }
 
-    #[cfg(feature = "linux-opengl")]
+    #[cfg(feature = "opengl")]
     pub fn sync_video_frames(
         &mut self,
         frame: &mut RenderFrame<'_>,
@@ -4532,7 +4532,7 @@ impl SceneRenderer {
     #[cfg(all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     ))]
     pub fn sync_vulkan_video_frames(
         &mut self,
@@ -4564,7 +4564,7 @@ impl SceneRenderer {
     #[cfg(all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     ))]
     pub fn reap_vulkan_video_cleanup(
         &mut self,
@@ -4576,7 +4576,7 @@ impl SceneRenderer {
     #[cfg(all(
         target_os = "linux",
         feature = "vulkan",
-        any(feature = "wayland-core", feature = "drm-core")
+        any(feature = "wayland", feature = "drm")
     ))]
     pub fn prepare_vulkan_video_shutdown(&mut self) -> Result<(), String> {
         self.video_state.prepare_vulkan_shutdown()
@@ -4662,7 +4662,7 @@ impl SceneRenderer {
         self.render_with_draw_profile(frame, state, true, None)
     }
 
-    #[cfg(any(test, all(feature = "drm-core", target_os = "linux")))]
+    #[cfg(any(test, all(feature = "drm", target_os = "linux")))]
     pub(crate) fn render_with_before_flush(
         &mut self,
         frame: &mut RenderFrame<'_>,
@@ -4672,7 +4672,7 @@ impl SceneRenderer {
         self.render_with_draw_profile(frame, state, false, Some(before_flush))
     }
 
-    #[cfg(any(test, all(feature = "drm-core", target_os = "linux")))]
+    #[cfg(any(test, all(feature = "drm", target_os = "linux")))]
     pub(crate) fn render_profiled_with_before_flush(
         &mut self,
         frame: &mut RenderFrame<'_>,
@@ -5462,7 +5462,7 @@ impl SceneRenderer {
         subpixel_phase: PaintLayerSubpixelPhase,
         gpu_context: Option<&mut gpu::DirectContext>,
     ) -> Option<PreparedMovingLayerPayload> {
-        #[cfg(any(feature = "linux-opengl", feature = "vulkan", feature = "macos"))]
+        #[cfg(any(feature = "opengl", feature = "vulkan", feature = "macos"))]
         if let Some(gr_context) = gpu_context {
             return Self::prepare_moving_paint_layer_gpu_payload(
                 run,
@@ -5471,13 +5471,13 @@ impl SceneRenderer {
                 gr_context,
             );
         }
-        #[cfg(not(any(feature = "linux-opengl", feature = "vulkan", feature = "macos")))]
+        #[cfg(not(any(feature = "opengl", feature = "vulkan", feature = "macos")))]
         let _ = gpu_context;
 
         Self::rasterize_moving_layer_payload(run, options, subpixel_phase)
     }
 
-    #[cfg(any(feature = "linux-opengl", feature = "vulkan", feature = "macos"))]
+    #[cfg(any(feature = "opengl", feature = "vulkan", feature = "macos"))]
     fn prepare_moving_paint_layer_gpu_payload(
         run: &RenderPaintRun,
         options: RenderTraversalOptions<'_>,
@@ -6297,7 +6297,7 @@ impl SceneRenderer {
                         #[cfg(all(
                             target_os = "linux",
                             feature = "vulkan",
-                            any(feature = "wayland-core", feature = "drm-core")
+                            any(feature = "wayland", feature = "drm")
                         ))]
                         RenderedVideoFrame::Nv12Planes(planes) => draw_nv12_planes_with_fit(
                             canvas,
@@ -6395,7 +6395,7 @@ impl SceneRenderer {
         }
     }
 
-    #[cfg(all(feature = "drm-core", target_os = "linux"))]
+    #[cfg(all(feature = "drm", target_os = "linux"))]
     /// Flush the GPU context after manual drawing.
     pub fn flush(&mut self, frame: &mut RenderFrame<'_>) {
         frame.flush();
@@ -7025,7 +7025,7 @@ fn draw_image_with_fit(
 #[cfg(all(
     target_os = "linux",
     feature = "vulkan",
-    any(feature = "wayland-core", feature = "drm-core")
+    any(feature = "wayland", feature = "drm")
 ))]
 fn draw_nv12_planes_with_fit(
     canvas: &skia_safe::Canvas,

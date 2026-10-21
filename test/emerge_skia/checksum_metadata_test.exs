@@ -33,41 +33,20 @@ defmodule EmergeSkia.ChecksumMetadataTest do
 
     version = Mix.Project.config()[:version]
 
+    expected =
+      for target <- EmergeSkia.BuildProfiles.targets(),
+          profile <- EmergeSkia.BuildProfiles.profiles(target) do
+        suffix = if profile.variant, do: "--#{profile.variant}", else: ""
+        "libemerge_skia-v#{version}-nif-2.15-#{target}#{suffix}.so.tar.gz"
+      end
+
     assert RustlerPrecompiled.available_nifs(EmergeSkia.Native)
            |> Enum.map(&elem(&1, 0))
-           |> Enum.sort() == [
-             "libemerge_skia-v#{version}-nif-2.15-aarch64-apple-darwin.so.tar.gz",
-             "libemerge_skia-v#{version}-nif-2.15-aarch64-unknown-linux-gnu--drm.so.tar.gz",
-             "libemerge_skia-v#{version}-nif-2.15-aarch64-unknown-linux-gnu--drm_all.so.tar.gz",
-             "libemerge_skia-v#{version}-nif-2.15-aarch64-unknown-linux-gnu--drm_raster.so.tar.gz",
-             "libemerge_skia-v#{version}-nif-2.15-aarch64-unknown-linux-gnu--drm_vulkan.so.tar.gz",
-             "libemerge_skia-v#{version}-nif-2.15-aarch64-unknown-linux-gnu--drm_wayland.so.tar.gz",
-             "libemerge_skia-v#{version}-nif-2.15-aarch64-unknown-linux-gnu--headless_vulkan.so.tar.gz",
-             "libemerge_skia-v#{version}-nif-2.15-aarch64-unknown-linux-gnu--raster.so.tar.gz",
-             "libemerge_skia-v#{version}-nif-2.15-aarch64-unknown-linux-gnu--vulkan.so.tar.gz",
-             "libemerge_skia-v#{version}-nif-2.15-aarch64-unknown-linux-gnu--wayland_vulkan.so.tar.gz",
-             "libemerge_skia-v#{version}-nif-2.15-aarch64-unknown-linux-gnu.so.tar.gz",
-             "libemerge_skia-v#{version}-nif-2.15-armv7-unknown-linux-gnueabihf--drm_raster.so.tar.gz",
-             "libemerge_skia-v#{version}-nif-2.15-armv7-unknown-linux-gnueabihf--opengl.so.tar.gz",
-             "libemerge_skia-v#{version}-nif-2.15-armv7-unknown-linux-gnueabihf.so.tar.gz",
-             "libemerge_skia-v#{version}-nif-2.15-riscv64gc-unknown-linux-gnu--drm_raster.so.tar.gz",
-             "libemerge_skia-v#{version}-nif-2.15-riscv64gc-unknown-linux-gnu--opengl.so.tar.gz",
-             "libemerge_skia-v#{version}-nif-2.15-riscv64gc-unknown-linux-gnu.so.tar.gz",
-             "libemerge_skia-v#{version}-nif-2.15-x86_64-apple-darwin.so.tar.gz",
-             "libemerge_skia-v#{version}-nif-2.15-x86_64-unknown-linux-gnu--drm.so.tar.gz",
-             "libemerge_skia-v#{version}-nif-2.15-x86_64-unknown-linux-gnu--drm_all.so.tar.gz",
-             "libemerge_skia-v#{version}-nif-2.15-x86_64-unknown-linux-gnu--drm_raster.so.tar.gz",
-             "libemerge_skia-v#{version}-nif-2.15-x86_64-unknown-linux-gnu--drm_vulkan.so.tar.gz",
-             "libemerge_skia-v#{version}-nif-2.15-x86_64-unknown-linux-gnu--drm_wayland.so.tar.gz",
-             "libemerge_skia-v#{version}-nif-2.15-x86_64-unknown-linux-gnu--headless_vulkan.so.tar.gz",
-             "libemerge_skia-v#{version}-nif-2.15-x86_64-unknown-linux-gnu--raster.so.tar.gz",
-             "libemerge_skia-v#{version}-nif-2.15-x86_64-unknown-linux-gnu--vulkan.so.tar.gz",
-             "libemerge_skia-v#{version}-nif-2.15-x86_64-unknown-linux-gnu--wayland_vulkan.so.tar.gz",
-             "libemerge_skia-v#{version}-nif-2.15-x86_64-unknown-linux-gnu.so.tar.gz",
-             "libemerge_skia-v#{version}-nif-2.15-x86_64-unknown-linux-musl--drm_raster.so.tar.gz",
-             "libemerge_skia-v#{version}-nif-2.15-x86_64-unknown-linux-musl--opengl.so.tar.gz",
-             "libemerge_skia-v#{version}-nif-2.15-x86_64-unknown-linux-musl.so.tar.gz"
-           ]
+           |> Enum.sort() == Enum.sort(expected)
+
+    assert "libemerge_skia-v#{version}-nif-2.15-armv7-unknown-linux-gnueabihf--opengl.so.tar.gz" in expected
+
+    assert "libemerge_skia-v#{version}-nif-2.15-armv7-unknown-linux-gnueabihf--drm_opengl.so.tar.gz" in expected
 
     on_exit(fn -> File.rm_rf!(cache_path) end)
   end

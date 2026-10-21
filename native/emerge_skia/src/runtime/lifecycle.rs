@@ -80,7 +80,7 @@ impl Lifecycle {
         self.quarantine_scoped("process", reason);
     }
 
-    #[cfg(all(feature = "drm-core", target_os = "linux"))]
+    #[cfg(all(feature = "drm", target_os = "linux"))]
     pub fn quarantine_output(&self, reason: impl Into<String>) {
         self.quarantine_scoped("output", reason);
     }
