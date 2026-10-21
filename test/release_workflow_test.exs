@@ -35,43 +35,112 @@ defmodule Emerge.ReleaseWorkflowTest do
       )
 
     assert artifacts =~ "#{package}/images/rootfs.squashfs"
-    assert artifacts =~ "for profile in drm drm_vulkan drm_all drm_raster; do"
+    assert artifacts =~ "for profile in drm drm_opengl drm_vulkan drm_opengl_vulkan; do"
     assert artifacts =~ ~s(sudo chroot "$root" /emerge-smoke/load-nif)
   end
 
-  test "CPU DRM has a separate artifact on every supported Linux target" do
+  test "CPU DRM has a separate exact artifact on every supported Linux target" do
     artifacts = File.read!(Path.join(@workflows, "build_release_artifacts.yml"))
+    jobs = EmergeSkia.BuildProfiles.release_jobs()
 
-    for {platform, target} <- [
-          {"linux", "x86_64-unknown-linux-gnu"},
-          {"linux_aarch64", "aarch64-unknown-linux-gnu"},
-          {"linux_armv7", "armv7-unknown-linux-gnueabihf"},
-          {"linux_musl", "x86_64-unknown-linux-musl"},
-          {"linux_riscv64", "riscv64gc-unknown-linux-gnu"}
-        ] do
-      [block] =
-        Regex.run(
-          ~r/          - name: #{platform}_drm_raster\n.*?(?=          - name:)/s,
-          artifacts
-        )
-
-      assert block =~ "target: #{target}"
-      assert block =~ ~s(variant: "drm_raster")
-
-      if platform in ["linux_musl", "linux_riscv64"] do
-        assert block =~ "profile: drm_raster"
-      else
-        assert block =~ "--no-default-features --features drm-raster"
-        assert block =~ "embedded_skia: true"
-        refute block =~ "raster_only: true"
-      end
+    for target <- EmergeSkia.BuildProfiles.targets(), String.contains?(target, "linux") do
+      job = Enum.find(jobs, &(&1.target == target and &1.variant == "drm"))
+      assert job.cpu_drm
+      assert job.qualification_profile == "drm_raster"
+      assert job.cargo_args =~ "--no-default-features --features drm,embedded-freetype"
+      refute job.raster_only
+      if job.container == "", do: assert(job.embedded_skia)
     end
 
-    assert artifacts =~ "matrix.job.variant == 'drm_raster'"
+    assert artifacts =~ "matrix.job.cpu_drm == true"
     assert artifacts =~ "CPU DRM artifact enables a GPU/window-system dependency"
-
     build = File.read!(Path.expand("../native/emerge_skia/support/release/build.sh", __DIR__))
-    assert build =~ "drm_raster) features=drm-raster; suffix=--drm_raster"
+    assert build =~ "${EMERGE_CARGO_FEATURES:?catalog Cargo features required}"
+    assert build =~ "${EMERGE_VERIFY_PROFILE:?catalog qualification profile required}"
+  end
+
+  test "embedded prebuilds keep the curated common profiles and leave other requests to source" do
+    alias EmergeSkia.BuildConfig
+    alias EmergeSkia.BuildProfiles
+
+    jobs = BuildProfiles.release_jobs()
+
+    for target <-
+          ~w(armv7-unknown-linux-gnueabihf x86_64-unknown-linux-musl riscv64gc-unknown-linux-gnu) do
+      assert for(job <- jobs, job.target == target, do: job.variant) ==
+               ["", "opengl", "drm", "drm_opengl"]
+
+      for {entries, expected} <- [
+            {[], ""},
+            {[headless: [:raster]], ""},
+            {[headless: [:opengl]], "opengl"},
+            {[drm: [:raster]], "drm"},
+            {[drm: [:opengl]], "drm_opengl"},
+            {[:drm], "drm_opengl"},
+            {[drm: [:opengl], headless: [:opengl]], "drm_opengl"}
+          ] do
+        matrix = EmergeSkia.BuildConfig.Schema.normalize!(entries)
+        features = BuildProfiles.features(matrix)
+        assert {:ok, profile} = BuildProfiles.select(target, features)
+        assert if(profile.variant, do: Atom.to_string(profile.variant), else: "") == expected
+        assert Enum.count(jobs, &(&1.target == target and &1.variant == expected)) == 1
+      end
+
+      assert {:error, %{reason: :unsupported_features}} =
+               BuildProfiles.select(target, ["wayland", "opengl"])
+
+      assert {:error, %{reason: :unsupported_features}} =
+               BuildProfiles.select(target, ["vulkan"])
+
+      assert BuildConfig.force_precompiled_build?(
+               env: %{},
+               compiled_backends: [],
+               compiled_vulkan_backends: [:headless],
+               compiled_opengl_backends: [],
+               checksum_path: "not-read-for-a-source-only-profile",
+               target_resolver: fn _, _ -> {:ok, "nif-2.15-#{target}"} end
+             )
+    end
+  end
+
+  test "every release job has the exact versioned archive identity requested by configuration" do
+    alias EmergeSkia.BuildConfig
+    alias EmergeSkia.BuildConfig.Schema
+    alias EmergeSkia.BuildProfiles
+
+    checksum_path =
+      Path.join(System.tmp_dir!(), "emerge-matrix-#{System.unique_integer([:positive])}.exs")
+
+    File.write!(checksum_path, "%{}")
+    on_exit(fn -> File.rm(checksum_path) end)
+
+    for job <- BuildProfiles.release_jobs() do
+      features = String.split(job.cargo_features, ",")
+      apis = for api <- [:opengl, :vulkan], Atom.to_string(api) in features, do: api
+
+      entries =
+        for(
+          presenter <- [:drm, :wayland],
+          Atom.to_string(presenter) in features,
+          do: {presenter, [:raster]}
+        ) ++ if(apis == [], do: [], else: [headless: apis])
+
+      matrix = Schema.normalize!(entries)
+      suffix = if job.variant == "", do: "", else: "--#{job.variant}"
+
+      name =
+        "libemerge_skia-v#{Mix.Project.config()[:version]}-nif-2.15-#{job.target}#{suffix}.so.tar.gz"
+
+      assert {:error, {:missing_checksum, ^name}} =
+               BuildConfig.precompiled_status(
+                 env: %{},
+                 compiled_backends: Schema.presenter_backends(matrix),
+                 compiled_vulkan_backends: Schema.api_backends(matrix, :vulkan),
+                 compiled_opengl_backends: Schema.api_backends(matrix, :opengl),
+                 checksum_path: checksum_path,
+                 target_resolver: fn _, _ -> {:ok, "nif-2.15-#{job.target}"} end
+               )
+    end
   end
 
   test "cross mounts the native parent even when the bundled input dependency is disabled" do
@@ -175,24 +244,46 @@ defmodule Emerge.ReleaseWorkflowTest do
   test "every GNU DRM profile builds embedded Skia and checks the packaged ELF" do
     artifacts = File.read!(Path.join(@workflows, "build_release_artifacts.yml"))
 
-    for platform <- ["linux", "linux_aarch64"], profile <- ["drm", "drm_vulkan", "drm_all"] do
-      [block] =
-        Regex.run(
-          ~r/          - name: #{platform}_#{profile}\n.*?(?=          - name:)/s,
-          artifacts
-        )
-
-      assert block =~ "embedded_skia: true"
-      assert block =~ "embedded-freetype"
-      assert block =~ "--no-default-features"
-      refute block =~ "fontconfig"
-      refute block =~ "xkbcommon"
-      refute block =~ "wayland"
+    for job <- EmergeSkia.BuildProfiles.release_jobs(),
+        job.target in ~w(x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu),
+        String.starts_with?(job.variant, "drm"),
+        not String.contains?(job.variant, "wayland") do
+      assert job.embedded_skia
+      assert job.qualify_embedded
+      assert job.cargo_args =~ "embedded-freetype"
+      assert job.cargo_args =~ "--no-default-features"
+      refute job.system_packages =~ "fontconfig"
+      refute job.system_packages =~ "xkbcommon"
+      refute job.system_packages =~ "wayland"
     end
 
     assert artifacts =~ "SKIA_GN_ARGS=skia_use_fontconfig=false skia_use_system_freetype2=false"
     assert artifacts =~ "FORCE_SKIA_BUILD=1"
     assert artifacts =~ "elixir scripts/check-embedded-artifact.exs"
     assert artifacts =~ "uses: dtolnay/rust-toolchain@1.91.0"
+    assert artifacts =~ "job: ${{ fromJSON(needs.validate.outputs.matrix) }}"
+    assert artifacts =~ "elixir scripts/native-release-matrix.exs"
+  end
+
+  test "standalone release matrix is generated from the same exact feature catalog" do
+    {json, 0} =
+      System.cmd(System.find_executable("elixir"), ["scripts/native-release-matrix.exs"],
+        cd: Path.expand("..", __DIR__),
+        env: [{"ERL_FLAGS", "+S 2:2"}]
+      )
+
+    assert JSON.decode!(json) ==
+             JSON.decode!(JSON.encode!(EmergeSkia.BuildProfiles.release_jobs()))
+
+    {hosts, 0} =
+      System.cmd(
+        System.find_executable("elixir"),
+        ["scripts/native-release-matrix.exs", "--hosts"],
+        cd: Path.expand("..", __DIR__),
+        env: [{"ERL_FLAGS", "+S 2:2"}]
+      )
+
+    assert JSON.decode!(hosts) ==
+             JSON.decode!(JSON.encode!(EmergeSkia.BuildProfiles.host_release_jobs()))
   end
 end

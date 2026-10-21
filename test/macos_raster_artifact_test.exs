@@ -92,17 +92,16 @@ defmodule Emerge.MacosRasterArtifactTest do
     workflow =
       File.read!(Path.expand("../.github/workflows/build_release_artifacts.yml", __DIR__))
 
-    for {name, target, os} <- [
-          {"macos_arm64_raster", "aarch64-apple-darwin", "macos-15"},
-          {"macos_x86_64_raster", "x86_64-apple-darwin", "macos-15-intel"}
+    for {target, os} <- [
+          {"aarch64-apple-darwin", "macos-15"},
+          {"x86_64-apple-darwin", "macos-15-intel"}
         ] do
-      [block] = Regex.run(~r/          - name: #{name}\n.*?(?=          - name:)/s, workflow)
-      assert block =~ "target: #{target}"
-      assert block =~ "os: #{os}\n"
-      assert block =~ "variant: \"\""
-      assert block =~ "--no-default-features --features embedded-cpu"
-      assert block =~ "macos_raster: true"
-      refute block =~ "embedded_skia: true"
+      job = Enum.find(EmergeSkia.BuildProfiles.release_jobs(), &(&1.target == target))
+      assert job.os == os
+      assert job.variant == ""
+      assert job.cargo_args == "--no-default-features --features embedded-cpu"
+      assert job.macos_raster
+      refute job.embedded_skia
     end
 
     assert workflow =~ "MACOSX_DEPLOYMENT_TARGET=11.0"

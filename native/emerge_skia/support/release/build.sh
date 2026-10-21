@@ -4,7 +4,7 @@
 set -euo pipefail
 
 target="${1:?Rust target required}"
-profile="${2:?raster, drm_raster or opengl required}"
+profile="${2:?canonical native variant required}"
 version="${3:?version required}"
 nif_version="${4:-2.15}"
 target_args=(--target "$target")
@@ -23,12 +23,10 @@ case "$target" in
   riscv64gc-unknown-linux-gnu) ;;
   *) echo "Unsupported embedded release target: $target" >&2; exit 1 ;;
 esac
-case "$profile" in
-  raster) features=embedded-cpu; suffix="" ;;
-  drm_raster) features=drm-raster; suffix=--drm_raster ;;
-  opengl) features=drm,embedded-cpu; suffix=--opengl ;;
-  *) echo "Unsupported embedded release profile: $profile" >&2; exit 1 ;;
-esac
+features="${EMERGE_CARGO_FEATURES:?catalog Cargo features required}"
+verify_profile="${EMERGE_VERIFY_PROFILE:?catalog qualification profile required}"
+suffix="--$profile"
+if [[ "$profile" == raster ]]; then suffix=""; fi
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][A-Za-z0-9.+-]+)?$ ]]
 [[ "$nif_version" == 2.15 ]]
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/build/target}"
@@ -41,7 +39,7 @@ export CARGO_PROFILE_RELEASE_STRIP=symbols
 cargo build --locked --release --lib "${target_args[@]}" --no-default-features --features "$features"
 
 artifact="$CARGO_TARGET_DIR/$output_subdir/libemerge_skia.so"
-bash support/release/verify.sh "$artifact" "$target" "$profile"
+bash support/release/verify.sh "$artifact" "$target" "$verify_profile"
 # Check eager dynamic dependency resolution before packaging. This is not a
 # BEAM/renderer smoke, and QEMU is not physical MangoPi qualification.
 loader="$CARGO_TARGET_DIR/load-nif"

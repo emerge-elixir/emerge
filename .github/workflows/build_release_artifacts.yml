@@ -26,6 +26,8 @@ jobs:
       actions: read
     outputs:
       version: ${{ steps.version.outputs.version }}
+      matrix: ${{ steps.matrix.outputs.jobs }}
+      hosts: ${{ steps.matrix.outputs.hosts }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -65,6 +67,12 @@ jobs:
 
           echo "version=$project_version" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve canonical native profiles
+        id: matrix
+        run: |
+          echo "jobs=$(elixir scripts/native-release-matrix.exs)" >> "$GITHUB_OUTPUT"
+          echo "hosts=$(elixir scripts/native-release-matrix.exs --hosts)" >> "$GITHUB_OUTPUT"
+
   build_release:
     needs: validate
     env:
@@ -76,243 +84,7 @@ jobs:
       fail-fast: false
       matrix:
         nif: ["2.15"]
-        job:
-          - name: linux_wayland
-            target: x86_64-unknown-linux-gnu
-            os: ubuntu-24.04
-            use_cross: false
-            variant: ""
-            cargo_args: "--no-default-features --features wayland"
-            system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev"
-          - name: linux_wayland_vulkan
-            target: x86_64-unknown-linux-gnu
-            os: ubuntu-24.04
-            use_cross: false
-            variant: "wayland_vulkan"
-            cargo_args: "--no-default-features --features wayland-vulkan,embedded-freetype"
-            system_packages: "libdrm-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev"
-          - name: linux_drm_raster
-            target: x86_64-unknown-linux-gnu
-            os: ubuntu-24.04
-            use_cross: false
-            variant: "drm_raster"
-            cargo_args: "--no-default-features --features drm-raster"
-            system_packages: ""
-            embedded_skia: true
-          - name: linux_drm
-            target: x86_64-unknown-linux-gnu
-            os: ubuntu-24.04
-            use_cross: false
-            variant: "drm"
-            cargo_args: "--no-default-features --features drm,embedded-freetype"
-            system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev"
-            embedded_skia: true
-          - name: linux_drm_vulkan
-            target: x86_64-unknown-linux-gnu
-            os: ubuntu-24.04
-            use_cross: false
-            variant: "drm_vulkan"
-            cargo_args: "--no-default-features --features drm-vulkan,embedded-freetype"
-            system_packages: "libgbm-dev libdrm-dev"
-            embedded_skia: true
-          - name: linux_drm_all
-            target: x86_64-unknown-linux-gnu
-            os: ubuntu-24.04
-            use_cross: false
-            variant: "drm_all"
-            cargo_args: "--no-default-features --features drm-all,embedded-freetype"
-            system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev"
-            embedded_skia: true
-          - name: linux_drm_wayland
-            target: x86_64-unknown-linux-gnu
-            os: ubuntu-24.04
-            use_cross: false
-            variant: "drm_wayland"
-            cargo_args: "--no-default-features --features wayland,drm"
-            system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev"
-          - name: linux_raster
-            target: x86_64-unknown-linux-gnu
-            os: ubuntu-24.04
-            use_cross: false
-            variant: "raster"
-            cargo_args: "--no-default-features --features embedded-cpu"
-            system_packages: ""
-            embedded_skia: true
-            raster_only: true
-          - name: linux_headless_vulkan
-            target: x86_64-unknown-linux-gnu
-            os: ubuntu-24.04
-            use_cross: false
-            variant: "headless_vulkan"
-            cargo_args: "--no-default-features --features headless-vulkan,embedded-freetype"
-            system_packages: "libfontconfig1-dev libfreetype6-dev"
-          - name: linux_vulkan
-            target: x86_64-unknown-linux-gnu
-            os: ubuntu-24.04
-            use_cross: false
-            variant: "vulkan"
-            cargo_args: "--no-default-features --features wayland-all,drm-all,headless-all,embedded-freetype"
-            system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev"
-          - name: linux_aarch64_wayland
-            target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
-            use_cross: false
-            variant: ""
-            cargo_args: "--no-default-features --features wayland"
-            system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev"
-          - name: linux_aarch64_wayland_vulkan
-            target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
-            use_cross: false
-            variant: "wayland_vulkan"
-            cargo_args: "--no-default-features --features wayland-vulkan,embedded-freetype"
-            system_packages: "libdrm-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev"
-          - name: linux_aarch64_drm_raster
-            target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
-            use_cross: false
-            variant: "drm_raster"
-            cargo_args: "--no-default-features --features drm-raster"
-            system_packages: ""
-            embedded_skia: true
-          - name: linux_aarch64_drm
-            target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
-            use_cross: false
-            variant: "drm"
-            cargo_args: "--no-default-features --features drm,embedded-freetype"
-            system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev"
-            embedded_skia: true
-          - name: linux_aarch64_drm_vulkan
-            target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
-            use_cross: false
-            variant: "drm_vulkan"
-            cargo_args: "--no-default-features --features drm-vulkan,embedded-freetype"
-            system_packages: "libgbm-dev libdrm-dev"
-            embedded_skia: true
-          - name: linux_aarch64_drm_all
-            target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
-            use_cross: false
-            variant: "drm_all"
-            cargo_args: "--no-default-features --features drm-all,embedded-freetype"
-            system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev"
-            embedded_skia: true
-          - name: linux_aarch64_drm_wayland
-            target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
-            use_cross: false
-            variant: "drm_wayland"
-            cargo_args: "--no-default-features --features wayland,drm"
-            system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev"
-          - name: linux_aarch64_raster
-            target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
-            use_cross: false
-            variant: "raster"
-            cargo_args: "--no-default-features --features embedded-cpu"
-            system_packages: ""
-            embedded_skia: true
-            raster_only: true
-          - name: linux_aarch64_headless_vulkan
-            target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
-            use_cross: false
-            variant: "headless_vulkan"
-            cargo_args: "--no-default-features --features headless-vulkan,embedded-freetype"
-            system_packages: "libfontconfig1-dev libfreetype6-dev"
-          - name: linux_aarch64_vulkan
-            target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
-            use_cross: false
-            variant: "vulkan"
-            cargo_args: "--no-default-features --features wayland-all,drm-all,headless-all,embedded-freetype"
-            system_packages: "libegl1-mesa-dev libgbm-dev libdrm-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev"
-          - name: linux_musl_raster
-            target: x86_64-unknown-linux-musl
-            os: ubuntu-24.04
-            container: musl
-            profile: raster
-            variant: ""
-            system_packages: ""
-          - name: linux_musl_drm_raster
-            target: x86_64-unknown-linux-musl
-            os: ubuntu-24.04
-            container: musl
-            profile: drm_raster
-            variant: "drm_raster"
-            system_packages: ""
-          - name: linux_musl_opengl
-            target: x86_64-unknown-linux-musl
-            os: ubuntu-24.04
-            container: musl
-            profile: opengl
-            variant: "opengl"
-            system_packages: ""
-          - name: linux_riscv64_raster
-            target: riscv64gc-unknown-linux-gnu
-            os: ubuntu-24.04
-            container: riscv64
-            profile: raster
-            variant: ""
-            system_packages: ""
-          - name: linux_riscv64_drm_raster
-            target: riscv64gc-unknown-linux-gnu
-            os: ubuntu-24.04
-            container: riscv64
-            profile: drm_raster
-            variant: "drm_raster"
-            system_packages: ""
-          - name: linux_riscv64_opengl
-            target: riscv64gc-unknown-linux-gnu
-            os: ubuntu-24.04
-            container: riscv64
-            profile: opengl
-            variant: "opengl"
-            system_packages: ""
-          - name: macos_arm64_raster
-            target: aarch64-apple-darwin
-            os: macos-15
-            use_cross: false
-            variant: ""
-            cargo_args: "--no-default-features --features embedded-cpu"
-            system_packages: ""
-            macos_raster: true
-          - name: macos_x86_64_raster
-            target: x86_64-apple-darwin
-            os: macos-15-intel
-            use_cross: false
-            variant: ""
-            cargo_args: "--no-default-features --features embedded-cpu"
-            system_packages: ""
-            macos_raster: true
-          - name: linux_armv7_raster
-            target: armv7-unknown-linux-gnueabihf
-            os: ubuntu-24.04
-            use_cross: true
-            variant: ""
-            cargo_args: "--no-default-features --features embedded-cpu"
-            system_packages: ""
-            embedded_skia: true
-            raster_only: true
-          - name: linux_armv7_drm_raster
-            target: armv7-unknown-linux-gnueabihf
-            os: ubuntu-24.04
-            use_cross: true
-            variant: "drm_raster"
-            cargo_args: "--no-default-features --features drm-raster"
-            system_packages: ""
-            embedded_skia: true
-          - name: linux_armv7_opengl
-            target: armv7-unknown-linux-gnueabihf
-            os: ubuntu-24.04
-            use_cross: true
-            variant: "opengl"
-            cargo_args: "--no-default-features --features drm,embedded-cpu"
-            system_packages: ""
-            embedded_skia: true
-            raster_only: false
+        job: ${{ fromJSON(needs.validate.outputs.matrix) }}
 
     steps:
       - name: Checkout source code
@@ -385,7 +157,7 @@ jobs:
           echo "FORCE_SKIA_BUILD=1" >> "$GITHUB_ENV"
 
       - name: Verify Vulkan-only dependency closure
-        if: ${{ matrix.job.variant == 'wayland_vulkan' || matrix.job.variant == 'drm_vulkan' || matrix.job.variant == 'headless_vulkan' }}
+        if: ${{ matrix.job.vulkan_only == true }}
         shell: bash
         run: |
           dependency_tree="$(cargo tree --manifest-path native/emerge_skia/Cargo.toml ${{ matrix.job.cargo_args }} --edges features)"
@@ -395,12 +167,12 @@ jobs:
           fi
 
       - name: Verify CPU-only DRM dependency closure
-        if: ${{ matrix.job.variant == 'drm_raster' }}
+        if: ${{ matrix.job.cpu_drm == true }}
         shell: bash
         run: |
           set -euo pipefail
           cargo tree --manifest-path native/emerge_skia/Cargo.toml --locked \
-            --target '${{ matrix.job.target }}' --no-default-features --features drm-raster \
+            --target '${{ matrix.job.target }}' ${{ matrix.job.cargo_args }} \
             --edges normal --prefix none > /tmp/drm-raster-deps.txt
           if grep -E '^(gbm|gbm-sys|gl|glutin|glutin_egl_sys|ash|ash-window|wayland-client) v' /tmp/drm-raster-deps.txt; then
             echo "CPU DRM artifact enables a GPU/window-system dependency" >&2
@@ -419,6 +191,8 @@ jobs:
           artifact_dir="$RUNNER_TEMP/embedded-artifacts"
           mkdir -p "$artifact_dir"
           docker run --rm --env EMERGE_SOURCE_REVISION \
+            --env EMERGE_CARGO_FEATURES='${{ matrix.job.cargo_features }}' \
+            --env EMERGE_VERIFY_PROFILE='${{ matrix.job.qualification_profile }}' \
             --env EMERGE_INPUT_CACHE_DIR=/input-sources \
             --mount "type=bind,source=$EMERGE_INPUT_CACHE_DIR,target=/input-sources" \
             --mount "type=bind,source=$GITHUB_WORKSPACE,target=/source,readonly" \
@@ -448,7 +222,7 @@ jobs:
           cargo-args: --locked --lib ${{ matrix.job.cargo_args }}
 
       - name: Verify packaged embedded ABI and dependency closure
-        if: ${{ matrix.job.embedded_skia == true }}
+        if: ${{ matrix.job.qualify_embedded == true }}
         shell: bash
         run: |
           set -euo pipefail
@@ -457,8 +231,7 @@ jobs:
           tar -xzf "${{ steps.build-crate.outputs.file-path }}" -C "$artifact_dir"
           artifacts=("$artifact_dir"/*.so)
           test "${#artifacts[@]}" = 1
-          profile='${{ matrix.job.variant }}'
-          if [[ '${{ matrix.job.raster_only }}' == true ]]; then profile=raster; fi
+          profile='${{ matrix.job.qualification_profile }}'
           elixir scripts/check-embedded-artifact.exs "${artifacts[0]}" '${{ matrix.job.target }}' "$profile"
 
       - name: Verify packaged macOS raster NIF
@@ -511,13 +284,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        job:
-          - name: macos_arm64
-            target: aarch64-apple-darwin
-            os: macos-15
-          - name: macos_x86_64
-            target: x86_64-apple-darwin
-            os: macos-15-intel
+        job: ${{ fromJSON(needs.validate.outputs.hosts) }}
 
     steps:
       - name: Checkout source code
@@ -533,8 +300,7 @@ jobs:
         run: >
           cargo build --locked --release
           --bin macos_host
-          --no-default-features
-          --features macos
+          ${{ matrix.job.cargo_args }}
 
       - name: Package macos_host archive
         shell: bash
@@ -592,7 +358,7 @@ jobs:
           # Avoid /tmp and other absolute symlinks inside an extracted rootfs.
           sudo mkdir "$root/emerge-smoke"
           sudo cp "$RUNNER_TEMP/load-nif" "$root/emerge-smoke/"
-          for profile in drm drm_vulkan drm_all drm_raster; do
+          for profile in drm drm_opengl drm_vulkan drm_opengl_vulkan; do
             name="libemerge_skia-v$PROJECT_VERSION-nif-2.15-aarch64-unknown-linux-gnu--$profile.so"
             sudo tar -xzf "release-assets/$name.tar.gz" -C "$root/emerge-smoke" "$name"
             sudo chroot "$root" /emerge-smoke/load-nif "/emerge-smoke/$name"
