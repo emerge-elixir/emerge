@@ -300,10 +300,20 @@ for scope and hardware qualification limits.
 ```sh
 ./ci-tests.sh
 bash scripts/check-package.sh
-elixir scripts/native-release-matrix.exs
+elixir scripts/native-release-matrix.exs             # six architecture/platform builders
+elixir scripts/native-release-matrix.exs --artifacts # 46 exact NIF profiles
 ```
 
-Release jobs consume the catalog-generated matrix, check feature/dependency
+Each builder produces all profiles for its architecture/platform sequentially;
+Linux x86_64 includes GNU and musl, and each macOS builder also produces its Metal
+host. This keeps 46 NIF archives and two host archives without 48 separate jobs.
+Compatible Skia configurations are batched together. Unchanged dependencies reuse
+Cargo output; different API/font features still get their own builds, not renamed
+supersets. Each library is verified and packaged before the next build overwrites
+it. Containers reuse their image, Cargo registry and ABI-specific build directory;
+GNU and musl do not share compiled output.
+
+Release builders consume the catalog-generated matrix, check feature/dependency
 isolation, inspect packaged ELF/Mach-O files and preserve stock-rootfs eager-load
 checks and macOS raster smoke coverage. Source/package tests include standalone
 build-info and checksum-only consumers without Rustler. Physical display/GPU

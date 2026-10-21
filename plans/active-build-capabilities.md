@@ -11,13 +11,19 @@ valid source configuration. Keep the four common ARMv7/musl/RISC-V profiles;
 verify configuration-to-job/archive identity without expanding those targets to
 all 16 Linux feature unions. Unlisted combinations retain exact-set source fallback.
 
+Builder consolidation is implemented: six architecture/platform builders retain
+all 46 NIF and two host archives. ExUnit covers shared Cargo output, compatible
+Skia batches, ABI/environment isolation, container cache reuse, archive snapshots,
+NIF ABI validation and failure handling. Remote execution remains a release gate.
+
 ## Remaining gates
 
 - Finalize the next release version/date from `0.5.1` after review. Do not
   rename/reuse old 0.5.0 archives or hashes for new canonical feature profiles.
-- Run the generated native/host matrices on remote CI: both macOS architectures,
-  ARMv7 cross builds, musl/RISC-V containers, packaged ELF/Mach-O checks and the
-  stock RPi5 userspace load gate. Local Linux tests do not qualify those binaries.
+- Run all six grouped builders on remote CI, including time/disk use for a full
+  GNU batch, both macOS architectures, ARMv7 cross builds, musl/RISC-V containers,
+  packaged ELF/Mach-O checks and the stock RPi5 userspace load gate. Local Linux
+  tests do not qualify those binaries or measure remote build-cache savings.
 - Publish genuinely minimal OpenGL-only AArch64/ARMv7 artifacts with the other
   canonical profiles; generate the matching real checksum manifest before Hex
   publication. Neither local source builds nor catalog entries publish archives.

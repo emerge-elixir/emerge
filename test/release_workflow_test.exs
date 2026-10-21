@@ -19,12 +19,13 @@ defmodule Emerge.ReleaseWorkflowTest do
       assert workflow =~ "actions: read"
     end
 
-    for job <- ["build_release", "build_macos_host"] do
-      assert artifacts =~ "  #{job}:\n    needs: validate\n"
-    end
+    assert artifacts =~ "  build_release:\n    needs: validate\n"
+    refute artifacts =~ "  build_macos_host:"
+    assert artifacts =~ "matrix.builder.name"
 
     assert hex =~ ~s|require-workflow.exs "$(git rev-parse HEAD)" build_release_artifacts.yml|
-    assert artifacts =~ "needs: [validate, build_release, build_macos_host, verify_rpi5]"
+    assert artifacts =~ "needs: [validate, build_release, verify_rpi5]"
+    assert artifacts =~ "pattern: native-linux_aarch64"
     assert artifacts =~ "sha256sum --check"
 
     [[package]] =
@@ -52,8 +53,10 @@ defmodule Emerge.ReleaseWorkflowTest do
       if job.container == "", do: assert(job.embedded_skia)
     end
 
-    assert artifacts =~ "matrix.job.cpu_drm == true"
-    assert artifacts =~ "CPU DRM artifact enables a GPU/window-system dependency"
+    assert artifacts =~ "elixir scripts/build-native-artifacts.exs"
+    runner = File.read!(Path.expand("../mix/native_artifacts.exs", __DIR__))
+    assert runner =~ "if job.cpu_drm and"
+    assert runner =~ "CPU DRM artifact enables a GPU/window-system dependency"
     build = File.read!(Path.expand("../native/emerge_skia/support/release/build.sh", __DIR__))
     assert build =~ "${EMERGE_CARGO_FEATURES:?catalog Cargo features required}"
     assert build =~ "${EMERGE_VERIFY_PROFILE:?catalog qualification profile required}"
@@ -213,13 +216,12 @@ defmodule Emerge.ReleaseWorkflowTest do
 
   test "container source cache is writable independently of the read-only checkout" do
     artifacts = File.read!(Path.join(@workflows, "build_release_artifacts.yml"))
+    runner = File.read!(Path.expand("../mix/native_artifacts.exs", __DIR__))
     assert artifacts =~ ~s|mkdir -p "$EMERGE_INPUT_CACHE_DIR"|
-    assert artifacts =~ "--env EMERGE_INPUT_CACHE_DIR=/input-sources"
-
-    assert artifacts =~
-             ~s|--mount "type=bind,source=$EMERGE_INPUT_CACHE_DIR,target=/input-sources"|
-
-    assert artifacts =~ ~s|--mount "type=bind,source=$GITHUB_WORKSPACE,target=/source,readonly"|
+    assert runner =~ "EMERGE_INPUT_CACHE_DIR=/input-sources"
+    assert runner =~ ~S|type=bind,source=#{input_cache},target=/input-sources|
+    assert runner =~ ~S|type=bind,source=#{context.root},target=/source,readonly|
+    assert runner =~ ~S|type=bind,source=#{cache},target=/build|
   end
 
   test "Linux Cargo cache saves and restores stay within the same matrix job" do
@@ -257,11 +259,12 @@ defmodule Emerge.ReleaseWorkflowTest do
       refute job.system_packages =~ "wayland"
     end
 
-    assert artifacts =~ "SKIA_GN_ARGS=skia_use_fontconfig=false skia_use_system_freetype2=false"
-    assert artifacts =~ "FORCE_SKIA_BUILD=1"
-    assert artifacts =~ "elixir scripts/check-embedded-artifact.exs"
+    runner = File.read!(Path.expand("../mix/native_artifacts.exs", __DIR__))
+    assert runner =~ "skia_use_fontconfig=false skia_use_system_freetype2=false"
+    assert runner =~ "FORCE_SKIA_BUILD"
+    assert runner =~ "scripts/check-embedded-artifact.exs"
     assert artifacts =~ "uses: dtolnay/rust-toolchain@1.91.0"
-    assert artifacts =~ "job: ${{ fromJSON(needs.validate.outputs.matrix) }}"
+    assert artifacts =~ "builder: ${{ fromJSON(needs.validate.outputs.matrix) }}"
     assert artifacts =~ "elixir scripts/native-release-matrix.exs"
   end
 
@@ -273,6 +276,17 @@ defmodule Emerge.ReleaseWorkflowTest do
       )
 
     assert JSON.decode!(json) ==
+             JSON.decode!(JSON.encode!(EmergeSkia.BuildProfiles.release_builders()))
+
+    {artifacts, 0} =
+      System.cmd(
+        System.find_executable("elixir"),
+        ["scripts/native-release-matrix.exs", "--artifacts"],
+        cd: Path.expand("..", __DIR__),
+        env: [{"ERL_FLAGS", "+S 2:2"}]
+      )
+
+    assert JSON.decode!(artifacts) ==
              JSON.decode!(JSON.encode!(EmergeSkia.BuildProfiles.release_jobs()))
 
     {hosts, 0} =

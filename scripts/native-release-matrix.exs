@@ -2,9 +2,10 @@ Code.require_file("../lib/emerge_skia/build_profiles.ex", __DIR__)
 
 jobs =
   case System.argv() do
-    [] -> EmergeSkia.BuildProfiles.release_jobs()
+    [] -> EmergeSkia.BuildProfiles.release_builders()
+    ["--artifacts"] -> EmergeSkia.BuildProfiles.release_jobs()
     ["--hosts"] -> EmergeSkia.BuildProfiles.host_release_jobs()
-    _ -> raise ArgumentError, "usage: native-release-matrix.exs [--hosts]"
+    _ -> raise ArgumentError, "usage: native-release-matrix.exs [--artifacts | --hosts]"
   end
 
 IO.puts(JSON.encode!(jobs))
