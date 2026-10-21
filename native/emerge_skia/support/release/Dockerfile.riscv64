@@ -13,8 +13,11 @@ RUN sed -i '/^Types:/a Architectures: amd64' /etc/apt/sources.list.d/ubuntu.sour
     rm -rf /var/lib/apt/lists/*
 ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo
 ENV PATH=/opt/cargo/bin:$PATH
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- \
-    -y --profile minimal --default-toolchain 1.91.0 --target riscv64gc-unknown-linux-gnu
+RUN curl --proto '=https' --tlsv1.2 -sSf --retry 3 --retry-connrefused \
+      https://sh.rustup.rs -o /tmp/rustup-init.sh && \
+    sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain 1.91.0 \
+      --target riscv64gc-unknown-linux-gnu && \
+    rm /tmp/rustup-init.sh
 ENV CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER=riscv64-linux-gnu-gcc \
     CC="clang --target=riscv64-unknown-linux-gnu --sysroot=/usr/riscv64-linux-gnu" \
     CXX="clang++ --target=riscv64-unknown-linux-gnu --sysroot=/usr/riscv64-linux-gnu" \

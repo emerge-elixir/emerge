@@ -8,14 +8,22 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   native_cargo_args=(--no-default-features --features macos)
 fi
 
+retry_build() {
+  elixir scripts/retry-build.exs "$@"
+}
+
 run_quality() {
   mix format --check-formatted
-  mix compile --force --warnings-as-errors
+  retry_build mix compile --force --warnings-as-errors
   mix credo --strict
-  cargo clippy --manifest-path native/emerge_skia/Cargo.toml "${native_cargo_args[@]}" -- -D warnings
+  retry_build cargo clippy --manifest-path native/emerge_skia/Cargo.toml "${native_cargo_args[@]}" -- -D warnings
 }
 
 run_tests() {
+  # Warm build dependencies with retries, but never rerun failed test executions.
+  MIX_ENV=test retry_build mix compile --warnings-as-errors
+  retry_build cargo test --release --no-run --manifest-path native/emerge_skia/Cargo.toml "${native_cargo_args[@]}"
+
   if [[ "${CI:-}" == "true" || "${CI:-}" == "1" ]]; then
     mix test --warnings-as-errors
   else
