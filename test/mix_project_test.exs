@@ -169,7 +169,7 @@ defmodule Emerge.MixProjectTest do
           "guides/tutorials/handle_input.md",
           "guides/migrations/0.5.md",
           "guides/migrations/0.4.md",
-          "guides/reference/viewport-configuration.md",
+          "guides/reference/native-renderer-builds.md",
           "guides/internals/architecture.md"
         ] do
       File.mkdir_p!(Path.dirname(Path.join(root, file)))
@@ -185,10 +185,15 @@ defmodule Emerge.MixProjectTest do
                  "README.md",
                  "guides/tutorials/handle_input.md",
                  "guides/migrations/0.5.md",
-                 "guides/migrations/0.4.md",
-                 "guides/reference/viewport-configuration.md"
+                 "guides/migrations/0.4.md"
                ] ++
-                 if(internal?, do: ["guides/internals/architecture.md"], else: [])
+                 if(internal?,
+                   do: [
+                     "guides/internals/architecture.md",
+                     "guides/reference/native-renderer-builds.md"
+                   ],
+                   else: []
+                 )
 
       assert :Internals in config.groups == internal?
       assert config.html =~ "mermaid@11/dist/mermaid.esm.min.mjs"
@@ -227,6 +232,9 @@ defmodule Emerge.MixProjectTest do
 
     files = Emerge.Mix.Package.config(root, "https://example.test")[:files]
     assert "mix" in files
+    assert "guides/tutorials" in files
+    refute "guides/reference" in files
+    refute "guides/internals" in files
     assert Enum.count(files, &(&1 == "native/emerge_skia/Cross.toml")) == 1
     assert "native/emerge_skia/support/tool.sh" in files
     assert "native/emerge_skia/benches/layout.rs" in files

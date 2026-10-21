@@ -30,4 +30,4 @@ per-frame queue/device idle, synchronization mode or pacing rewrite.
 
 The shipped synchronization contract, targeted Hyprland/RADV evidence and gate
 procedure are maintained in [frame pacing](../guides/internals/frame-pacing.md)
-and [native build guidance](../guides/reference/native-renderer-builds.md#wayland-vulkan-synchronization-in-050).
+and [native build guidance](../guides/reference/native-renderer-builds.md#wayland-vulkan-validation).

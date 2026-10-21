@@ -6,6 +6,8 @@ history, tests, `CHANGELOG.md` and maintained guides—not an archive directory.
 
 ## Open work
 
+- [Native build rollout](active-build-capabilities.md): remote cross/macOS artifact
+  qualification, next-release archives/checksums and opted-in board acceptance.
 - [0.5 publication](active-0.5-release.md): exact-integrated-commit CI, artifacts,
   date confirmation and publication.
 - [Viewport configuration](active-declarative-viewport-settings.md): remaining
@@ -51,7 +53,7 @@ Do not recreate those gates from missing historical logs. New input/power/pacing
 checks above are specific follow-ups, not repeat general qualification.
 
 - [Events/input](../guides/internals/events.md)
-- [Configuration](../guides/reference/viewport-configuration.md)
+- [Configuration](../lib/emerge/config.ex)
 - [DRM lifecycle](../guides/internals/drm-outputs-and-lifecycle.md)
 - [Runtime architecture](../guides/internals/architecture.md)
 - [Frame production/synchronization](../guides/internals/frame-pacing.md)

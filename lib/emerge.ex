@@ -106,23 +106,257 @@ defmodule Emerge do
   a tuple message or send `{message, payload}` for a non-tuple message. Override
   `wrap_payload/3` when an integration needs another shape.
 
-  ## Configuration and output modes
+  ## Viewport configuration
 
-  `Emerge.Config` groups output, renderer, input, assets, diagnostics and runtime
-  settings. Output variants choose a window, DRM display or headless frame sink.
-  See the [configuration reference](viewport-configuration.html) for complete
-  desktop/DRM/headless examples and the supported live-field matrix.
+  A viewport's `%Emerge.Config{}` chooses its output, drawing API, input, assets,
+  diagnostics and runtime settings. Return it from `c:mount/1`; direct renderer
+  callers pass the same record to `EmergeSkia.start/1`. Each configuration record
+  explains its fields and which can change while running.
 
-  Return `%Emerge.Config{}` from mount. Optional `config/1` or `config/2`
-  callbacks receive the previous normalized config and reconcile desired
-  configuration during rerenders. Raw input subscriptions use
-  `Emerge.Config.Input.events`, defaulting to `[]`; see `Emerge.Input` and the
-  [input guide](handle_input.html) for typed callback payloads. This filter does
-  not disable element interactions.
+  ### Native build support versus runtime selection
 
-  Video elements use viewport-local atom targets. Submit owned binary or
-  borrowed DMA-BUF frames with `submit_video_frame/3`. Vulkan rendering and
-  Vulkan video import are supported where compiled and available.
+  `compiled_backends` belongs in `config/config.exs`, before compiling Emerge. It
+  selects optional native support; `config.output` and `config.renderer.api` choose
+  which available implementation a viewport uses at runtime.
+
+  **Headless output and CPU raster rendering are always present.** DRM and Wayland
+  add presenters; OpenGL and Vulkan add shared rendering APIs. Configuration entries
+  resolve to a deduplicated union:
+
+  | `compiled_backends` | Optional native features |
+  | --- | --- |
+  | `[]` or `[headless: [:raster]]` | None |
+  | `[headless: [:opengl]]` | OpenGL |
+  | `[drm: [:raster]]` | DRM |
+  | `[drm: [:opengl]]` | DRM and OpenGL |
+  | `[headless: [:opengl], drm: [:opengl]]` | The same DRM and OpenGL |
+  | `[wayland: [:opengl]]` | Wayland and OpenGL |
+  | `[drm: [:vulkan]]` | DRM and Vulkan |
+
+  For example, the normal Linux desktop default can be made explicit:
+
+  ```elixir
+  # config/config.exs
+  config :emerge, compiled_backends: [wayland: [:opengl]]
+  ```
+
+  APIs are shared build features, not separate per-backend exclusion masks.
+  `[wayland: [:vulkan], drm: [:opengl]]` enables both presenters and both APIs.
+  Repeated API selections do not create another artifact. Archives match the exact
+  optional feature set: an `opengl` archive does not secretly include DRM/Wayland;
+  `drm_opengl` includes DRM. The baseline archive has no variant suffix.
+  Prebuilt coverage is curated per target for common configurations; accepting a
+  configuration does not mean an archive is published for it. Other combinations
+  require a source build, never an archive with a larger feature set.
+
+  Use `:all` for the supported APIs on an entry. Existing atom shorthand remains:
+  `[:drm]` and `[:wayland]` imply OpenGL, `[:macos]` implies Metal, and legacy
+  `[:headless]` implies OpenGL. Use `[]` or `[headless: [:raster]]` for the minimal
+  baseline. Explicit configuration always overrides defaults.
+
+  Compiling an implementation does not choose a display, start a frame consumer or
+  enable an API in an already-installed binary. Runtime config cannot add missing
+  build features. Prefer explicit runtime APIs for hardware recipes: `:auto` is
+  output-specific and does not promise to choose Vulkan merely because it is built.
+
+  The canonical variants described here require 0.5.1 archives and matching
+  checksums; existing 0.5.0 assets stay unchanged. An unreleased checkout needs an
+  explicit source build rather than assuming its new archives already exist.
+
+  ### Platform defaults
+
+  When `compiled_backends` is unspecified:
+
+  - Normal Linux uses `[wayland: [:opengl]]`.
+  - macOS uses `[macos: [:metal]]` through the separate window host.
+  - Nerves uses a known stock system/version capability profile; unknown/custom
+    systems conservatively use headless/raster (`[]`).
+
+  Headless/raster needs a live frame recipient, not the desktop window configuration
+  used by the introductory counter. Metal remains on the macOS window host;
+  headless Metal is deferred. Darwin headless raster uses its separate NIF.
+
+  ### Nerves and device defaults
+
+  Choose the highest usable tier of the **image and display path**, not just the
+  SoC's advertised API:
+
+  | Established support | Build setting | Runtime API |
+  | --- | --- | --- |
+  | Atomic KMS and a usable Vulkan stack | `[drm: [:vulkan]]` | `:vulkan` with a device |
+  | Atomic KMS and usable OpenGL ES | `[drm: [:opengl]]` | `:opengl` |
+  | Atomic KMS with CPU scanout, no usable GPU renderer | `[drm: [:raster]]` | `:raster` |
+  | No usable atomic KMS, but offscreen EGL/GLES | `[headless: [:opengl]]` | `:opengl` with a frame consumer |
+  | No established path, or unknown system | `[]` | `:raster` with a frame consumer |
+
+  DRM/raster also requires atomic KMS, dumb buffers, a compatible XRGB8888 plane
+  and leasing. It is not a legacy-KMS/fbdev fallback. Headless Vulkan currently
+  exports PRIME frames, not ordinary binary pixels; raster cannot export PRIME.
+
+  Known defaults match Nerves' exported `NERVES_SYSTEM` package/version, such as
+  `nerves_system_rpi5-portable-2.0.1`, not a `MIX_TARGET` nickname or CPU architecture.
+  The initial profiles describe stock-image configuration, not physical-board
+  qualification. They deliberately do not guess about custom or future images:
+
+  #{EmergeSkia.BuildInfo.system_table()}
+
+  These stock Pi 4/5 images configure KMS and Mesa GLES but not a Vulkan stack.
+  Hardware Vulkan support does not install the required loader/driver/extensions.
+  Older stock images without Mesa do not mean the SoC can never render: a custom
+  image may supply a usable EGL/GLES stack. Override the build explicitly when
+  using such an image, or an SPI panel instead of the board's KMS/HDMI path.
+
+  ARMv6 still requires a source build. Determine 32-bit/64-bit ABI from the active
+  system/toolchain, not the board name. GPU rendering still needs suitable target
+  libraries and device access; neither artifact availability nor NIF loading proves
+  hardware support. Build inspection never probes the build host's GPU.
+
+  ### Runtime output examples
+
+  These records can be returned from `c:mount/1` or passed to `EmergeSkia.start/1`.
+  Replace `:my_app` and device paths with your application/system values. A viewport
+  can infer `assets.otp_app`; standalone renderer callers must provide it.
+
+  For the Wayland/OpenGL build above:
+
+  ```elixir
+  %Emerge.Config{
+    output: %Emerge.Config.Window{backend: :wayland, title: "My app"},
+    renderer: [api: :opengl],
+    assets: [otp_app: :my_app]
+  }
+  ```
+
+  For `compiled_backends: [drm: [:opengl]]`:
+
+  ```elixir
+  %Emerge.Config{
+    output: %Emerge.Config.DRM{card: "/dev/dri/card0"},
+    renderer: [api: :opengl],
+    assets: [otp_app: :my_app]
+  }
+  ```
+
+  For `compiled_backends: [drm: [:vulkan]]`, select a compatible GPU device as well
+  as the display card; these paths are examples, not universal numbering:
+
+  ```elixir
+  %Emerge.Config{
+    output: %Emerge.Config.DRM{card: "/dev/dri/card0"},
+    renderer: [api: :vulkan, device: "/dev/dri/renderD128"],
+    assets: [otp_app: :my_app]
+  }
+  ```
+
+  For `compiled_backends: [drm: [:raster]]`, use CPU KMS presentation without a GPU
+  stack. GPU-upload raster is a separate explicit OpenGL-backed route:
+
+  ```elixir
+  %Emerge.Config{
+    output: %Emerge.Config.DRM{card: "/dev/dri/card0"},
+    renderer: [api: :raster, raster_present: :cpu],
+    assets: [otp_app: :my_app]
+  }
+  ```
+
+  For `compiled_backends: [headless: [:opengl]]`, construct the config in the live
+  frame-consumer process (or supply that process's PID instead of `self()`):
+
+  ```elixir
+  %Emerge.Config{
+    output: %Emerge.Config.Headless{
+      target: self(),
+      size: {320, 240},
+      frames: %Emerge.Config.BinaryFrames{pixel_format: :rgb888}
+    },
+    renderer: [api: :opengl],
+    assets: [otp_app: :my_app]
+  }
+  ```
+
+  The recipient handles `{:emerge_skia_frame, %VideoInterop.Frame{}}` and sends pixels
+  to its panel. Honor the format/stride and do panel-specific conversion, such as
+  RGB888 to RGB565 for an SPI/ILI9341 driver, in your application. Owned binary frames
+  need no release; PRIME has a different ownership protocol. This headless GL build
+  needs EGL/GBM/GLES and GPU device access, but no DRM/KMS or Wayland presenter.
+
+  For the minimal `compiled_backends: []` build, use raster instead:
+
+  ```elixir
+  %Emerge.Config{
+    output: %Emerge.Config.Headless{
+      target: self(),
+      size: {320, 240},
+      frames: %Emerge.Config.BinaryFrames{pixel_format: :rgb888}
+    },
+    renderer: [api: :raster],
+    assets: [otp_app: :my_app]
+  }
+  ```
+
+  ### Inspect and rebuild native support
+
+  Once the dependency's Elixir code is available:
+
+  ```sh
+  MIX_TARGET=your_target mix emerge.build_info
+  mix emerge.build_info --systems
+  mix emerge.build_info --profiles
+  ```
+
+  For a desktop, omit `MIX_TARGET`. Before native compilation succeeds, the shipped
+  standalone script needs no NIF, Rustler or compiled dependency code:
+
+  ```sh
+  elixir deps/emerge/scripts/build-info.exs \\
+    --backend headless:opengl --target aarch64-unknown-linux-gnu
+  ```
+
+  In Emerge's own checkout, omit `deps/emerge/`. Without explicit `--backend` values,
+  the standalone script reports environment defaults, not unloaded application
+  config. Inspect firmware inside the bootstrapped Nerves environment so the system
+  and target ABI are available. The report describes the requested build, not a
+  previously installed binary, and does not assert that an archive is published.
+
+  After changing build settings, the system/version, driver stack or ABI:
+
+  ```sh
+  mix deps.compile emerge --force
+  # Firmware:
+  MIX_TARGET=your_target mix deps.compile emerge --force
+  MIX_TARGET=your_target mix firmware
+  ```
+
+  Unsupported exact profiles or missing checksums are explained before a potentially
+  long native fallback. To deliberately build from source, add the optional build
+  dependency to your application:
+
+  ```elixir
+  {:rustler, "~> 0.38.0", runtime: false}
+  ```
+
+  ```sh
+  EMERGE_SKIA_BUILD=true MIX_TARGET=your_target mix deps.compile emerge --force
+  ```
+
+  Source builds need Elixir 1.19+, Rust 1.91+, a C/C++ toolchain and the selected
+  target libraries. Use Nerves' active cross compiler/sysroot, never a host-built
+  NIF in firmware. rust-skia uses host Python; set `EMERGE_SKIA_HOST_PYTHON` to an
+  absolute host executable if `/usr/bin/python3` is unsuitable. Corrupt archives or
+  invalid checksum manifests are errors, not permission to bypass integrity.
+
+  ### Live configuration and events
+
+  Return `%Emerge.Config{}` from mount. Optional `c:config/1` or `c:config/2`
+  callbacks receive the previous normalized desired config and reconcile changes
+  during rerenders. Each `Emerge.Config` record documents its live fields and backend
+  limits. A complete live config is distinct from native application or presentation
+  completion.
+
+  Raw input subscriptions use `Emerge.Config.Input.events`, defaulting to `[]`;
+  see `Emerge.Input` and the [input guide](handle_input.html). This filter does not
+  disable element interactions. Video targets are viewport-local atoms; submit
+  owned binary or borrowed DMA-BUF frames with `submit_video_frame/3`.
   """
 
   alias Emerge.Runtime.Viewport, as: RuntimeViewport

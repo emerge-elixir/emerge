@@ -44,9 +44,7 @@ defmodule Emerge.Mix.Docs do
       "guides/tutorials/state_management.md",
       "guides/tutorials/handle_input.md",
       "guides/migrations/0.5.md",
-      "guides/migrations/0.4.md",
-      "guides/reference/viewport-configuration.md",
-      "guides/reference/native-renderer-builds.md"
+      "guides/migrations/0.4.md"
     ]
     |> Enum.filter(&File.exists?(Path.join(root, &1)))
   end
@@ -67,7 +65,8 @@ defmodule Emerge.Mix.Docs do
       "guides/internals/layout-refresh-render-flow.md",
       "guides/internals/nearby-semantics.md",
       "guides/internals/tree-patching.md",
-      "guides/internals/video-interop-architecture.md"
+      "guides/internals/video-interop-architecture.md",
+      "guides/reference/native-renderer-builds.md"
     ]
     |> Enum.filter(&File.exists?(Path.join(root, &1)))
   end
@@ -75,13 +74,12 @@ defmodule Emerge.Mix.Docs do
   defp docs_groups_for_extras(internal) do
     [
       Tutorials: ~r/guides\/tutorials\/.*/,
-      Migrations: ~r/guides\/migrations\/.*/,
-      Reference: ~r/guides\/reference\/.*/
+      Migrations: ~r/guides\/migrations\/.*/
     ] ++
       if internal == [] do
         []
       else
-        [Internals: ~r/guides\/internals\/.*/]
+        [Internals: ~r/guides\/(internals|reference)\/.*/]
       end
   end
 

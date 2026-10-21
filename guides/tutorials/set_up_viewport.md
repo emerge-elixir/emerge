@@ -6,6 +6,15 @@ events. On macOS and Wayland, a viewport opens a window.
 In this tutorial you will create a small counter viewport, start it, and add it
 to a supervision tree.
 
+## Viewport configuration
+
+This example uses a desktop window: normal Linux defaults to Wayland/OpenGL and
+macOS uses its Metal window host. For DRM, headless output, Nerves/Raspberry Pi,
+rendering API choices or build settings, see the
+[viewport documentation](https://hexdocs.pm/emerge/Emerge.html#module-viewport-configuration).
+It explains compile-time support versus runtime selection, target defaults,
+configuration examples, and inspecting/rebuilding native support.
+
 ## Define the viewport
 
 Create a module that uses `Emerge`:
@@ -148,7 +157,7 @@ Override mounted defaults when needed:
 Here `title` and `size` are arguments interpreted by this particular module's
 `mount/1`, not globally recognized renderer options. GenServer startup options
 such as `name: MyApp.Counter` remain separate from the returned configuration.
-See [viewport configuration](../reference/viewport-configuration.md) for DRM,
+See [configuration records](https://hexdocs.pm/emerge/Emerge.Config.html) for DRM,
 headless output, live fields, assets and diagnostics.
 
 ## Supervise the viewport
@@ -203,7 +212,7 @@ record instead would use defaults for fields you omit.
 Use `config(previous)` when no local state is needed; implement only one arity.
 Window titles can change while running, but settings such as the renderer API,
 assets and initial size require a new viewport. See
-[viewport configuration](../reference/viewport-configuration.md) for other settings.
+[configuration records](https://hexdocs.pm/emerge/Emerge.Config.html) for other settings.
 
 Raw input is opt-in and separate from the buttons above. Continue with
 [Observe raw input](handle_input.md) when you need `handle_input/2`.

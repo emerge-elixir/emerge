@@ -178,4 +178,29 @@ defmodule EmergeSkia.NativeProfilesTest do
 
     assert Profiles.rust_target(%{"MIX_TARGET" => "custom"}) == nil
   end
+
+  test "Nerves runtime recipes validate without opening hardware" do
+    {:docs_v1, _, _, _, %{"en" => guide}, _, _} = Code.fetch_docs(Emerge)
+
+    examples = Regex.scan(~r/```elixir\n(.*?)\n```/s, guide, capture: :all_but_first)
+
+    recipes = for [source] <- examples, String.contains?(source, "%Emerge.Config{"), do: source
+    assert length(recipes) == 6
+
+    for source <- recipes do
+      {literal, _} =
+        source |> String.replace(":my_app", ":emerge") |> Code.eval_string([], __ENV__)
+
+      config = Emerge.Config.Normalize.config!(literal, Emerge)
+      assert :ok = EmergeSkia.validate_config!(config)
+    end
+  end
+
+  test "documentation tables are generated from the same catalog" do
+    {:docs_v1, _, _, _, %{"en" => guide}, _, _} = Code.fetch_docs(Emerge)
+
+    assert guide =~ BuildInfo.system_table()
+    builds = File.read!(Path.expand("../../guides/reference/native-renderer-builds.md", __DIR__))
+    assert builds =~ BuildInfo.profile_table()
+  end
 end

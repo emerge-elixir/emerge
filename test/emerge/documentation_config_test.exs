@@ -3,7 +3,6 @@ defmodule Emerge.DocumentationConfigTest do
   alias Emerge.Config
 
   @root Path.expand("../..", __DIR__)
-  @config_guide "guides/reference/viewport-configuration.md"
   @records [
     Config.Window,
     Config.DRM,
@@ -24,6 +23,47 @@ defmodule Emerge.DocumentationConfigTest do
     Config.Diagnostics,
     Config.Runtime
   ]
+
+  test "release documentation contains tutorials, not internal reference guides or links" do
+    extras =
+      Emerge.Mix.Docs.config(
+        @root,
+        Mix.Project.config()[:version],
+        Mix.Project.config()[:source_url],
+        %{"EMERGE_INCLUDE_INTERNAL_DOCS" => "false"}
+      )[:extras]
+
+    refute File.exists?(Path.join(@root, "guides/reference/viewport-configuration.md"))
+    assert "guides/tutorials/set_up_viewport.md" in extras
+    refute "guides/tutorials/configure_native_renderer.md" in extras
+    refute "guides/tutorials/configure_nerves_graphics.md" in extras
+    {:docs_v1, _, _, _, %{"en" => viewport_docs}, _, _} = Code.fetch_docs(Emerge)
+    assert viewport_docs =~ "## Viewport configuration"
+    assert viewport_docs =~ "### Native build support versus runtime selection"
+    assert viewport_docs =~ "### Nerves and device defaults"
+
+    assert read("guides/tutorials/set_up_viewport.md") =~
+             "Emerge.html#module-viewport-configuration"
+
+    refute Enum.any?(extras, &String.starts_with?(&1, ["guides/reference/", "guides/internals/"]))
+
+    for path <- extras do
+      refute Regex.match?(~r/\]\([^)]*(?:reference|internals)\//, read(path)),
+             "public documentation must not link to internal guides: #{path}"
+    end
+
+    internal_pages =
+      [
+        "viewport-configuration.html"
+        | Path.wildcard(Path.join(@root, "guides/reference/*.md"))
+          |> Enum.map(&(Path.basename(&1, ".md") <> ".html"))
+      ]
+
+    for module <- [Emerge, Config, Emerge.Runtime.Viewport, EmergeSkia] do
+      {:docs_v1, _, _, _, %{"en" => docs}, _, _} = Code.fetch_docs(module)
+      for page <- internal_pages, do: refute(String.contains?(docs, page))
+    end
+  end
 
   test "each public config record explains every field and has a valid placement example" do
     for module <- @records do
@@ -64,11 +104,13 @@ defmodule Emerge.DocumentationConfigTest do
     end
   end
 
-  test "configuration reference examples normalize and adapt without opening hardware" do
+  test "configuration moduledoc examples normalize and adapt without opening hardware" do
+    {:docs_v1, _, _, _, %{"en" => config_docs}, _, _} = Code.fetch_docs(Config)
+
     examples =
       Regex.scan(
         ~r/<!-- emerge-config:(\w+) -->\s*```elixir\n(.*?)\n```/s,
-        read(@config_guide)
+        config_docs
       )
 
     assert Enum.map(examples, fn [_, name, _] -> name end) == ["window", "drm", "binary", "prime"]

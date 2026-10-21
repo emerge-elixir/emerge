@@ -166,7 +166,7 @@ Identical video capabilities may be republished for retained streams on recreati
 changed capabilities still fail. Vulkan panel/optical qualification remains open.
 Applications provide their independent wake policy. See
 [config reconciliation](config-reconciliation.md) and the
-[configuration reference](../reference/viewport-configuration.md).
+[configuration reference](https://hexdocs.pm/emerge/Emerge.html#module-viewport-configuration).
 
 ## Opt-in GPU power test
 

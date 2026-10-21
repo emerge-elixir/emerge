@@ -55,6 +55,10 @@ defmodule Emerge.MixPackageTest do
     end
 
     refute File.exists?(Path.join(package, "guides/internals"))
+    refute File.exists?(Path.join(package, "guides/reference"))
+    assert File.read!(Path.join(package, "lib/emerge.ex")) =~ "## Viewport configuration"
+    refute File.exists?(Path.join(package, "guides/tutorials/configure_native_renderer.md"))
+    refute File.exists?(Path.join(package, "guides/tutorials/configure_nerves_graphics.md"))
 
     # Use already fetched dependency sources, but a fresh build/code path. No
     # registry access, Rustler, ExDoc or compiled checkout modules are required.

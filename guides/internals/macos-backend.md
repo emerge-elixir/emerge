@@ -64,6 +64,10 @@ AppKit lifecycle correctly.
 
 ## Backend Selection
 
+Build-time inclusion and Darwin raster versus window-host artifacts are explained
+in [native renderer builds](../reference/native-renderer-builds.md). Headless Metal
+is deferred; preserve the current AppKit/Metal host path.
+
 macOS uses the shared renderer selection option:
 
 - `renderer: [api: :auto]`

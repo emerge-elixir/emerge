@@ -17,7 +17,6 @@ defmodule Emerge.Mix.Package do
       "bench",
       "guides/tutorials",
       "guides/migrations",
-      "guides/reference",
       "native/emerge_skia/Cargo.toml",
       "native/emerge_skia/Cargo.lock",
       "native/emerge_skia/Cross.toml",

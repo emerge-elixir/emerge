@@ -19,7 +19,7 @@ defmodule EmergeSkia do
       :ok = EmergeSkia.stop(renderer)
 
   `start/1` accepts only `Emerge.Config`; see the
-  [configuration reference](viewport-configuration.html) and
+  [viewport configuration documentation](Emerge.html#module-viewport-configuration) and
   [0.5 migration guide](0-5.html). `renderer_info/1` reports the
   backend and rendering API actually selected. `stats/2` and the capture
   functions provide on-demand diagnostics for a running renderer.

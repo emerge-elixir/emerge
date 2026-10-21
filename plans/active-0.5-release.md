@@ -20,6 +20,6 @@ Local integration validation passed: `EMERGE_SKIA_BUILD=1 ./ci-tests.sh`, public
 and internal `mix docs --warnings-as-errors`, and generated `v0.5.0` release notes.
 This does not replace remote CI or the platform/artifact acceptance gates above.
 
-The maintained [release procedure](../guides/reference/native-renderer-builds.md#prepare-and-publish-050)
+The pinned [0.5 release procedure](https://github.com/emerge-elixir/emerge/blob/v0.5.0/guides/reference/native-renderer-builds.md#prepare-and-publish-050)
 owns the commands and immutable-artifact rules. No tag, push or publication has
 been performed. Docker/macOS/board validation was unavailable locally.

@@ -29,7 +29,7 @@ of config revision reporting. Release/artifact work belongs to
 
 ## Authoritative contracts
 
-- [Viewport configuration](../guides/reference/viewport-configuration.md)
+- [Viewport configuration](../lib/emerge/config.ex)
 - [0.5 migration](../guides/migrations/0.5.md)
 - [Input payloads/subscriptions](../guides/tutorials/handle_input.md)
 - [Config reconciliation](../guides/internals/config-reconciliation.md)
