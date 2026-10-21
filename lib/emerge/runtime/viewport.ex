@@ -34,7 +34,7 @@ defmodule Emerge.Runtime.Viewport do
 
   Adapter selection and liveness policy live in `Emerge.Config.Runtime`.
   Native ownership is managed internally, not configured by applications.
-  See the [configuration reference](viewport-configuration.html),
+  See the [viewport configuration documentation](Emerge.html#module-viewport-configuration),
   [input guide](handle_input.html) and [0.5 migration guide](0-5.html).
 
   Initially-off DRM viewports still acquire and bind output ownership without

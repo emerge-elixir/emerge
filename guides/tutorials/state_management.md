@@ -311,7 +311,7 @@ This lookup subscribes the viewport to screen changes. Its existing
 `handle_solve_updated/2` requests a rerender, updating both the title and UI.
 The callback receives the previous config as nested structs; updating it keeps
 the window's other settings. See
-[viewport configuration](../reference/viewport-configuration.md) for other settings
+[configuration records](https://hexdocs.pm/emerge/Emerge.Config.html) for other settings
 that can follow controller state.
 
 ## Decouple concerns into smaller units

@@ -115,7 +115,13 @@ MacOS
 
 ## Documentation
 
-All docs currently live in `guides/internals/` (architecture, EMRG format, events, scrolling, tree patching).
+For native build/default/artifact changes, read
+`guides/reference/native-renderer-builds.md`. Public viewport configuration,
+including Nerves/Raspberry Pi and SPI panels, lives in the `lib/emerge.ex`
+moduledoc. Inspect resolution
+without a NIF using `elixir scripts/build-info.exs` (`--systems`/`--profiles`).
+
+Public guides live in `guides/tutorials/`. `guides/reference/` and `guides/internals/` are internal-only: do not link to them from release-facing documentation or include them in release packages.
 Run `mix docs` to generate the full ExDoc site.
 
 ## Repository Coding Preferences

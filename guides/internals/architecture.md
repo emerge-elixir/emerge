@@ -12,7 +12,7 @@ Viewport mount returns `%Emerge.Config{}`; optional `config(previous)` or
 normalized desired intent, independent of native accepted/applied revisions.
 Configuration-only changes use bounded native control admission, not an empty
 or synthetic tree upload. The lifecycle owner replays latest intent on recovery.
-See [configuration](../reference/viewport-configuration.md) and
+See [configuration](https://hexdocs.pm/emerge/Emerge.html#module-viewport-configuration) and
 [config reconciliation](config-reconciliation.md).
 
 DRM has a retained output/backlight owner and disposable internal presenters.

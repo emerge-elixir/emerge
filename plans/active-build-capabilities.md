@@ -1,0 +1,37 @@
+# Native build profiles: remaining rollout
+
+Branch: `refactor/build-capabilities`.
+Related: [issue #101](https://github.com/emerge-elixir/emerge/issues/101).
+
+The implementation and software acceptance are now covered by source, tests and
+maintained guides. Keep only unfinished release/platform work here.
+
+Prebuilt coverage is intentionally curated per target, not exhaustive for every
+valid source configuration. Keep the four common ARMv7/musl/RISC-V profiles;
+verify configuration-to-job/archive identity without expanding those targets to
+all 16 Linux feature unions. Unlisted combinations retain exact-set source fallback.
+
+## Remaining gates
+
+- Finalize the next release version/date from `0.5.1` after review. Do not
+  rename/reuse old 0.5.0 archives or hashes for new canonical feature profiles.
+- Run the generated native/host matrices on remote CI: both macOS architectures,
+  ARMv7 cross builds, musl/RISC-V containers, packaged ELF/Mach-O checks and the
+  stock RPi5 userspace load gate. Local Linux tests do not qualify those binaries.
+- Publish genuinely minimal OpenGL-only AArch64/ARMv7 artifacts with the other
+  canonical profiles; generate the matching real checksum manifest before Hex
+  publication. Neither local source builds nor catalog entries publish archives.
+- With explicit device access, validate complete firmware/rendering for the known
+  stock-system defaults and custom headless/SPI OpenGL use case. Image config and
+  successful NIF loading are not physical GPU/presentation qualification.
+- Extend known system/version profiles only with documented image/driver evidence;
+  retain explicit overrides and conservative unknown-system defaults.
+
+Headless Metal remains deferred, outside this implementation's acceptance scope.
+
+## Maintained references
+
+- [Feature resolution, variants and release validation](../guides/reference/native-renderer-builds.md)
+- [Public viewport configuration](../lib/emerge.ex) (moduledoc: build support, Nerves defaults and runtime recipes)
+- `mix/native_profiles.exs`, `EmergeSkia.BuildProfiles`, and the generated
+  `scripts/native-release-matrix.exs` output are the source of profile coverage.

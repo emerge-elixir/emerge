@@ -106,4 +106,4 @@ Availability is backend-dependent:
 
 For changed callback names and actions, see [Migrate to 0.5.0](../migrations/0.5.md).
 For configuration examples, see
-[viewport configuration](../reference/viewport-configuration.md).
+[configuration records](https://hexdocs.pm/emerge/Emerge.Config.html).

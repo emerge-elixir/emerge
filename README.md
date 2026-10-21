@@ -159,6 +159,13 @@ For nerves example take a look at [`nerves_emerge_demo`](https://github.com/emer
 
 ## Backends and rendering APIs
 
+The [viewport documentation](https://hexdocs.pm/emerge/Emerge.html#module-viewport-configuration)
+explains build features versus runtime output/API selection, Nerves/Raspberry Pi
+and SPI configuration, known-system defaults and rebuilding. Use
+`mix emerge.build_info` to inspect a build, or the standalone
+`elixir deps/emerge/scripts/build-info.exs` before native compilation succeeds.
+Canonical variants described there target 0.5.1, not existing 0.5.0 archives.
+
 - **macOS** provides desktop windows through the external `macos_host`, using Metal when available and falling back to raster.
 - **Wayland** provides Linux desktop windows with OpenGL or raster presentation.
 - **DRM** provides direct embedded, kiosk, and Nerves output with CPU raster, OpenGL ES 2 or newer, or Vulkan. Raster GPU upload is an explicit OpenGL-backed alternative.
@@ -176,7 +183,7 @@ use different asset roots, fonts, and cache limits without affecting each other.
 Return `%Emerge.Config{}` from `mount/1`; use optional `config(previous)` or
 `config(previous, state)` callbacks for declarative live changes. Raw input
 observation is opt-in through `input: [events: [:key, :resize]]`, separately from
-ordinary UI interactions. See [viewport configuration](guides/reference/viewport-configuration.md)
+ordinary UI interactions. See [configuration records](https://hexdocs.pm/emerge/Emerge.Config.html)
 and [raw input](guides/tutorials/handle_input.md) for examples and backend limits.
 DRM display/brightness controls require an explicit drawing API. GPU-upload raster
 requires an OpenGL-enabled DRM build; Vulkan requires `renderer.device`. Off/on
@@ -209,11 +216,11 @@ The tutorials build on one another:
 
 Other documentation:
 
-- [Viewport configuration](guides/reference/viewport-configuration.md)
+- [Configuration records](https://hexdocs.pm/emerge/Emerge.Config.html)
 - [Observe raw input](guides/tutorials/handle_input.md)
 - [Migrate to Emerge 0.5](guides/migrations/0.5.md)
 - [Historical migration to Emerge 0.4](guides/migrations/0.4.md)
-- [Build the native renderer](guides/reference/native-renderer-builds.md)
+- [Viewport configuration](https://hexdocs.pm/emerge/Emerge.html#module-viewport-configuration)
 
 Run `mix docs` to build the full docs locally.
 
