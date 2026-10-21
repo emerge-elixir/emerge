@@ -99,15 +99,14 @@ defmodule Emerge.NativeUploadsTest do
     for name <- names, do: File.write!(Path.join(context.directory, name), name)
     log = Path.join(context.directory, "uploads.log")
 
-    # Match the uploader's direct-exec behavior: dash discards environment keys
-    # containing hyphens, unlike Node or Elixir, so a shell is not a valid probe.
+    # Probe runtime credentials here. Node-only hyphenated inputs are checked
+    # in the upload command unit test, not through Elixir's shell launcher.
     probe = Path.join(context.directory, "upload-probe.exs")
 
     File.write!(probe, """
     for {key, expected} <- [
           {"ACTIONS_RUNTIME_TOKEN", "fixture-runtime-token"},
-          {"ACTIONS_RESULTS_URL", "https://example.invalid/results"},
-          {"INPUT_INCLUDE-HIDDEN-FILES", "false"}
+          {"ACTIONS_RESULTS_URL", "https://example.invalid/results"}
         ] do
       unless System.get_env(key) == expected,
         do: raise("Upload environment was not preserved for " <> key)
