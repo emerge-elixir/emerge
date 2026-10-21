@@ -4,19 +4,16 @@
 
 ## [0.5.1] - 2026-10-21
 
+### Added
+
+- Headless OpenGL precompiled builds for supported Linux targets.
+- `mix emerge.build_info` to help diagnose native build configuration.
+
 ### Changed
 
-- Keep `compiled_backends`, but resolve it to a canonical union of optional backend
-  and rendering API features. Headless/raster are baseline; DRM/Wayland no longer
-  imply OpenGL. Equivalent matrix spellings select the same exact-feature archive.
-- Generate native artifact variants and release jobs from a shared catalog,
-  including genuinely headless OpenGL profiles. New names belong to the 0.5.1 release;
-  existing release archives and hashes remain unchanged.
-- Known stock Nerves system/version profiles select capability-based defaults;
-  unknown/custom systems conservatively default to headless/raster. Explicit
-  configuration always wins. Add searchable Nerves/device configuration guidance
-  and `mix emerge.build_info` / standalone build-info for pre-compilation diagnosis.
-
+- Precompiled builds no longer include unrequested graphics backends or rendering APIs.
+- Improved graphics defaults for stock Raspberry Pi Nerves systems. Custom or
+  unrecognized systems default to headless software rendering.
 
 ## [0.5.0] - 2026-10-14
 
