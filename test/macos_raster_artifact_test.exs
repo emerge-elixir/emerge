@@ -104,15 +104,16 @@ defmodule Emerge.MacosRasterArtifactTest do
       refute job.embedded_skia
     end
 
+    runner = File.read!(Path.expand("../mix/native_artifacts.exs", __DIR__))
     assert workflow =~ "MACOSX_DEPLOYMENT_TARGET=11.0"
-    assert workflow =~ "FORCE_SKIA_BUILD=1"
+    assert runner =~ "FORCE_SKIA_BUILD"
     assert workflow =~ "EMERGE_SKIA_CHECKSUM_ONLY: \"true\""
     assert workflow =~ "if: ${{ runner.os == 'Linux' }}"
-    assert workflow =~ "elixir scripts/check-macos-raster-artifact.exs"
+    assert runner =~ "scripts/check-macos-raster-artifact.exs"
     assert workflow =~ "mix run --no-start scripts/smoke-raster-artifact.exs"
 
     [_, verification] =
-      String.split(workflow, "- name: Verify packaged macOS raster NIF", parts: 2)
+      String.split(workflow, "- name: Verify packaged macOS raster NIF in BEAM", parts: 2)
 
     [verification, _] = String.split(verification, "- name: Artifact upload", parts: 2)
     refute verification =~ "continue-on-error"

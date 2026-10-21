@@ -169,6 +169,36 @@ defmodule EmergeSkia.BuildProfiles do
     for target <- targets(), profile <- profiles(target), do: release_job(profile)
   end
 
+  def release_builders do
+    release_jobs()
+    |> Enum.group_by(&builder_name(&1.target))
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.map(fn {name, jobs} ->
+      targets = jobs |> Enum.map(& &1.target) |> Enum.uniq()
+
+      %{
+        name: name,
+        os: hd(jobs).os,
+        targets: targets,
+        use_cross: Enum.any?(jobs, & &1.use_cross),
+        macos: Enum.any?(targets, &(&1 in @darwin)),
+        artifact_count: length(jobs) + Enum.count(host_targets(), &(&1 in targets)),
+        system_packages:
+          jobs
+          |> Enum.flat_map(&String.split(&1.system_packages))
+          |> Enum.uniq()
+          |> Enum.sort()
+          |> Enum.join(" ")
+      }
+    end)
+  end
+
+  defp builder_name(target) do
+    arch = target |> String.split("-") |> hd()
+    platform = if target in @darwin, do: "macos", else: "linux"
+    "#{platform}_#{arch}"
+  end
+
   def host_release_jobs do
     for target <- host_targets(), profile <- profiles(target, :macos_host) do
       %{

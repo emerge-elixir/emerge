@@ -27,7 +27,6 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       matrix: ${{ steps.matrix.outputs.jobs }}
-      hosts: ${{ steps.matrix.outputs.hosts }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -71,20 +70,19 @@ jobs:
         id: matrix
         run: |
           echo "jobs=$(elixir scripts/native-release-matrix.exs)" >> "$GITHUB_OUTPUT"
-          echo "hosts=$(elixir scripts/native-release-matrix.exs --hosts)" >> "$GITHUB_OUTPUT"
 
   build_release:
     needs: validate
     env:
       PROJECT_VERSION: ${{ needs.validate.outputs.version }}
       EMERGE_INPUT_CACHE_DIR: ${{ github.workspace }}/.cache/emerge-input
-    name: NIF ${{ matrix.nif }} - ${{ matrix.job.name }}
-    runs-on: ${{ matrix.job.os }}
+    name: Native - ${{ matrix.builder.name }} (${{ matrix.builder.artifact_count }} archives)
+    runs-on: ${{ matrix.builder.os }}
+    timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
-        nif: ["2.15"]
-        job: ${{ fromJSON(needs.validate.outputs.matrix) }}
+        builder: ${{ fromJSON(needs.validate.outputs.matrix) }}
 
     steps:
       - name: Checkout source code
@@ -114,25 +112,32 @@ jobs:
           elixir-version: "1.20.2"
           otp-version: "29.0.5"
 
-      - name: Install Linux build dependencies
-        if: ${{ matrix.job.system_packages != '' }}
-        shell: bash
+      - name: Install Linux build dependencies once
+        if: ${{ matrix.builder.system_packages != '' }}
         run: |
           sudo apt-get update
-          sudo apt-get install --assume-yes ${{ matrix.job.system_packages }}
+          sudo apt-get install --assume-yes ${{ matrix.builder.system_packages }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.91.0
         with:
-          targets: ${{ matrix.job.target }}
+          targets: ${{ join(matrix.builder.targets, ',') }}
+
+      - name: Install ARMv7 cross builder once
+        if: ${{ matrix.builder.use_cross == true }}
+        uses: giantswarm/install-binary-action@v2.0.0
+        with:
+          binary: cross
+          version: v0.2.5
+          download_url: https://github.com/cross-rs/cross/releases/download/${version}/cross-x86_64-unknown-linux-gnu.tar.gz
+          tarball_binary_path: cross
+          smoke_test: cross --version
 
       - name: Configure ARMv7 cross toolchain
-        if: ${{ matrix.job.target == 'armv7-unknown-linux-gnueabihf' }}
-        shell: bash
+        if: ${{ matrix.builder.use_cross == true }}
         run: |
           sysroot=/usr/arm-linux-gnueabihf
           clang_target="--target=armv7-unknown-linux-gnueabihf --sysroot=$sysroot"
-
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
           echo "PKG_CONFIG_LIBDIR=/usr/lib/arm-linux-gnueabihf/pkgconfig:/usr/share/pkgconfig" >> "$GITHUB_ENV"
           echo "SDKTARGETSYSROOT=$sysroot" >> "$GITHUB_ENV"
@@ -141,120 +146,30 @@ jobs:
           echo "HOST_CC=gcc" >> "$GITHUB_ENV"
           echo "HOST_CXX=g++" >> "$GITHUB_ENV"
 
-      - name: Configure embedded Skia
-        if: ${{ matrix.job.embedded_skia == true }}
-        shell: bash
-        run: |
-          echo "FORCE_SKIA_BUILD=1" >> "$GITHUB_ENV"
-          echo "SKIA_GN_ARGS=skia_use_fontconfig=false skia_use_system_freetype2=false" >> "$GITHUB_ENV"
-          echo "RUSTFLAGS=-Lnative=support/embedded-linux-link-stubs" >> "$GITHUB_ENV"
+      - name: Configure macOS deployment floor
+        if: ${{ matrix.builder.macos == true }}
+        run: echo "MACOSX_DEPLOYMENT_TARGET=11.0" >> "$GITHUB_ENV"
 
-      - name: Configure macOS raster Skia
-        if: ${{ matrix.job.macos_raster == true }}
-        shell: bash
-        run: |
-          echo "MACOSX_DEPLOYMENT_TARGET=11.0" >> "$GITHUB_ENV"
-          echo "FORCE_SKIA_BUILD=1" >> "$GITHUB_ENV"
+      - name: Build and verify all exact profiles with shared Cargo output
+        run: >
+          elixir scripts/build-native-artifacts.exs '${{ matrix.builder.name }}'
+          "$PROJECT_VERSION" "$RUNNER_TEMP/native-artifacts"
 
-      - name: Verify Vulkan-only dependency closure
-        if: ${{ matrix.job.vulkan_only == true }}
-        shell: bash
-        run: |
-          dependency_tree="$(cargo tree --manifest-path native/emerge_skia/Cargo.toml ${{ matrix.job.cargo_args }} --edges features)"
-          if grep --extended-regexp ' gl v[0-9]|glutin|glutin_egl_sys|video-interop feature "egl"|skia-safe feature "gl"|emerge_skia feature "linux-opengl"' <<<"${dependency_tree}"; then
-            echo "Vulkan-only artifact enables an OpenGL dependency or feature" >&2
-            exit 1
-          fi
-
-      - name: Verify CPU-only DRM dependency closure
-        if: ${{ matrix.job.cpu_drm == true }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo tree --manifest-path native/emerge_skia/Cargo.toml --locked \
-            --target '${{ matrix.job.target }}' ${{ matrix.job.cargo_args }} \
-            --edges normal --prefix none > /tmp/drm-raster-deps.txt
-          if grep -E '^(gbm|gbm-sys|gl|glutin|glutin_egl_sys|ash|ash-window|wayland-client) v' /tmp/drm-raster-deps.txt; then
-            echo "CPU DRM artifact enables a GPU/window-system dependency" >&2
-            exit 1
-          fi
-
-      - name: Build embedded musl and RISC-V artifacts
-        if: ${{ matrix.job.container != '' }}
-        id: build-container
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker build -t emerge-embedded \
-            -f native/emerge_skia/support/release/Dockerfile.${{ matrix.job.container }} \
-            native/emerge_skia/support/release
-          artifact_dir="$RUNNER_TEMP/embedded-artifacts"
-          mkdir -p "$artifact_dir"
-          docker run --rm --env EMERGE_SOURCE_REVISION \
-            --env EMERGE_CARGO_FEATURES='${{ matrix.job.cargo_features }}' \
-            --env EMERGE_VERIFY_PROFILE='${{ matrix.job.qualification_profile }}' \
-            --env EMERGE_INPUT_CACHE_DIR=/input-sources \
-            --mount "type=bind,source=$EMERGE_INPUT_CACHE_DIR,target=/input-sources" \
-            --mount "type=bind,source=$GITHUB_WORKSPACE,target=/source,readonly" \
-            --mount "type=bind,source=$artifact_dir,target=/artifacts" \
-            emerge-embedded '${{ matrix.job.target }}' '${{ matrix.job.profile }}' \
-            "$PROJECT_VERSION" '${{ matrix.nif }}'
-          suffix='${{ matrix.job.variant }}'
-          if [[ -n "$suffix" ]]; then suffix="--$suffix"; fi
-          name="libemerge_skia-v$PROJECT_VERSION-nif-${{ matrix.nif }}-${{ matrix.job.target }}$suffix.so.tar.gz"
-          test -s "$artifact_dir/$name"
-          echo "file-name=$name" >> "$GITHUB_OUTPUT"
-          echo "file-path=$artifact_dir/$name" >> "$GITHUB_OUTPUT"
-
-      - name: Build the project
-        if: ${{ matrix.job.container == '' }}
-        id: build-crate
-        uses: philss/rustler-precompiled-action@v1.1.4
-        with:
-          project-name: emerge_skia
-          project-version: ${{ env.PROJECT_VERSION }}
-          target: ${{ matrix.job.target }}
-          nif-version: ${{ matrix.nif }}
-          use-cross: ${{ matrix.job.use_cross && 'true' || '' }}
-          cross-version: "v0.2.5"
-          project-dir: native/emerge_skia
-          variant: ${{ matrix.job.variant }}
-          cargo-args: --locked --lib ${{ matrix.job.cargo_args }}
-
-      - name: Verify packaged embedded ABI and dependency closure
-        if: ${{ matrix.job.qualify_embedded == true }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          artifact_dir="$RUNNER_TEMP/embedded-artifact"
-          mkdir -p "$artifact_dir"
-          tar -xzf "${{ steps.build-crate.outputs.file-path }}" -C "$artifact_dir"
-          artifacts=("$artifact_dir"/*.so)
-          test "${#artifacts[@]}" = 1
-          profile='${{ matrix.job.qualification_profile }}'
-          elixir scripts/check-embedded-artifact.exs "${artifacts[0]}" '${{ matrix.job.target }}' "$profile"
-
-      - name: Verify packaged macOS raster NIF
-        if: ${{ matrix.job.macos_raster == true }}
-        shell: bash
+      - name: Verify packaged macOS raster NIF in BEAM
+        if: ${{ matrix.builder.macos == true }}
         env:
           MIX_ENV: prod
           EMERGE_SKIA_CHECKSUM_ONLY: "true"
-          RASTER_ARCHIVE: ${{ steps.build-crate.outputs.file-path }}
         run: |
           set -euo pipefail
-          artifact_dir="$RUNNER_TEMP/macos-raster-artifact"
-          mkdir -p "$artifact_dir"
-          tar -xzf "$RASTER_ARCHIVE" -C "$artifact_dir"
-          artifacts=("$artifact_dir"/*.so)
-          test "${#artifacts[@]}" = 1
-          elixir scripts/check-macos-raster-artifact.exs "${artifacts[0]}" '${{ matrix.job.target }}'
-          # Compile Elixir only, then load the archive in isolated VMs without Rustler.
+          # The NIF was snapshotted before building the Metal host.
+          archives=("$RUNNER_TEMP/native-artifacts"/libemerge_skia-*.so.tar.gz)
+          test "${#archives[@]}" = 1
           mix local.hex --force
           mix local.rebar --force
           mix deps.get
           mix compile --warnings-as-errors
-          mix run --no-start scripts/smoke-raster-artifact.exs "$RASTER_ARCHIVE"
+          mix run --no-start scripts/smoke-raster-artifact.exs "${archives[0]}"
 
       - name: Verify input source cache before saving
         id: input-source-cache
@@ -271,56 +186,9 @@ jobs:
       - name: Artifact upload
         uses: actions/upload-artifact@v6
         with:
-          name: ${{ steps.build-crate.outputs.file-name || steps.build-container.outputs.file-name }}
-          path: ${{ steps.build-crate.outputs.file-path || steps.build-container.outputs.file-path }}
+          name: native-${{ matrix.builder.name }}
+          path: ${{ runner.temp }}/native-artifacts/*
           if-no-files-found: error
-
-  build_macos_host:
-    needs: validate
-    env:
-      PROJECT_VERSION: ${{ needs.validate.outputs.version }}
-    name: macos_host - ${{ matrix.job.name }}
-    runs-on: ${{ matrix.job.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        job: ${{ fromJSON(needs.validate.outputs.hosts) }}
-
-    steps:
-      - name: Checkout source code
-        uses: actions/checkout@v5
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.91.0
-        with:
-          targets: ${{ matrix.job.target }}
-
-      - name: Build macos_host
-        working-directory: native/emerge_skia
-        run: >
-          cargo build --locked --release
-          --bin macos_host
-          ${{ matrix.job.cargo_args }}
-
-      - name: Package macos_host archive
-        shell: bash
-        run: |
-          mkdir -p dist
-          cp native/emerge_skia/target/release/macos_host dist/macos_host
-          chmod 755 dist/macos_host
-          archive="macos_host-v${PROJECT_VERSION}-${{ matrix.job.target }}.tar.gz"
-          tar -C dist -czf "$archive" macos_host
-          shasum -a 256 "$archive" > "$archive.sha256"
-          echo "ARCHIVE_NAME=$archive" >> "$GITHUB_ENV"
-
-      - name: Artifact upload
-        uses: actions/upload-artifact@v6
-        with:
-          name: macos_host-v${{ env.PROJECT_VERSION }}-${{ matrix.job.target }}
-          if-no-files-found: error
-          path: |
-            ${{ env.ARCHIVE_NAME }}
-            ${{ env.ARCHIVE_NAME }}.sha256
 
   verify_rpi5:
     name: Load packaged DRM NIFs on stock RPi5 userspace
@@ -332,7 +200,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/download-artifact@v8
         with:
-          pattern: libemerge_skia-*-aarch64-unknown-linux-gnu--drm*.so.tar.gz
+          pattern: native-linux_aarch64
           path: release-assets
           merge-multiple: true
       - name: Fetch checksum-pinned stock Nerves RPi5 rootfs
@@ -367,7 +235,7 @@ jobs:
 
   publish:
     name: Publish validated release assets
-    needs: [validate, build_release, build_macos_host, verify_rpi5]
+    needs: [validate, build_release, verify_rpi5]
     if: ${{ startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-24.04
     permissions:
