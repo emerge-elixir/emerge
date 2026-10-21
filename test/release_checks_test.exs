@@ -36,6 +36,29 @@ defmodule Emerge.ReleaseChecksTest do
     assert "guides/migrations/#{parsed.major}.#{parsed.minor}.md" in docs[:extras]
   end
 
+  test "Rust video interop dependencies meet the Elixir package's minimum version" do
+    {:video_interop, requirement} =
+      Enum.find(Mix.Project.config()[:deps], &(elem(&1, 0) == :video_interop))
+
+    lock = File.read!(Path.join(@root, "native/emerge_skia/Cargo.lock"))
+
+    [locked] =
+      Regex.run(~r/\[\[package\]\]\nname = "video-interop"\nversion = "([^"]+)"/, lock,
+        capture: :all_but_first
+      )
+
+    assert Version.match?(locked, requirement)
+    manifest = File.read!(Path.join(@root, "native/emerge_skia/Cargo.toml"))
+
+    minimums =
+      Regex.scan(~r/^video-interop = (?:\{ version = )?"([^"]+)"/m, manifest,
+        capture: :all_but_first
+      )
+
+    assert length(minimums) == 2
+    for [minimum] <- minimums, do: assert(Version.match?(minimum, requirement))
+  end
+
   test "NIF and macOS host artifact URLs use the current project release" do
     version = Mix.Project.config()[:version]
     base = "#{Mix.Project.config()[:source_url]}/releases/download/v#{version}"
