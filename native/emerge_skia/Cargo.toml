@@ -119,7 +119,7 @@ drm-all = ["drm", "opengl", "vulkan", "drm-vulkan-deps"]
 
 [dependencies]
 rustler = "0.38"
-video-interop = { version = "0.1.2", optional = true }
+video-interop = { version = "0.1.3", optional = true }
 ash = { version = "0.38", default-features = false, features = ["loaded", "std"], optional = true }
 ash-window = { version = "0.13", optional = true }
 objc2 = { version = "0.6", optional = true }
@@ -160,5 +160,5 @@ emerge_input = { path = "../emerge_input", optional = true }
 arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"], optional = true }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-video-interop = "0.1.2"
+video-interop = "0.1.3"
 drm-ffi = "0.9"
