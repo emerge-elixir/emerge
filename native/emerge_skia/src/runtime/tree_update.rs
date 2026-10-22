@@ -11,7 +11,7 @@ use crate::{
     stats::{RendererStatsCollector, earliest_pipeline_instant},
     tree::{
         animation::AnimationRuntime,
-        element::{ElementTree, IntrinsicMeasureCacheKey, NodeId},
+        element::{ElementTree, NodeId},
         invalidation::{
             RefreshAvailability, RefreshDecision, TreeInvalidation, decide_refresh_action,
         },
@@ -548,30 +548,11 @@ impl TreeUpdateEngine {
                     }
                 }
                 TreeMsg::AssetStateChanged => {
-                    // Requesting a layout pass alone does not invalidate retained
-                    // subtree measurements. Dirty only paths whose media size changed.
-                    let changed_ids: Vec<_> = self
-                        .tree
-                        .iter_node_pairs()
-                        .filter_map(|(id, element)| {
-                            let cache = element.layout.intrinsic_measure_cache.as_ref()?;
-                            match &cache.key {
-                                IntrinsicMeasureCacheKey::Media {
-                                    image_src: Some(source),
-                                    image_size: None,
-                                    resolved_source_size,
-                                    ..
-                                } if *resolved_source_size != assets::source_dimensions(source) => {
-                                    Some(id)
-                                }
-                                _ => None,
-                            }
-                        })
-                        .collect();
-                    for id in changed_ids {
-                        self.tree.mark_measure_dirty(&id);
-                    }
-                    invalidation.add(TreeInvalidation::Measure);
+                    // Capture fresh asset facts even when geometry is unchanged.
+                    // Preparation dirties affected paint fragments and upgrades to
+                    // measurement only when intrinsic image dimensions changed.
+                    invalidation.add(TreeInvalidation::Paint);
+                    frame_attr_dirty_ids_complete = false;
                 }
             }
         }
@@ -1273,6 +1254,10 @@ pub(crate) fn push_tree_message_flat(msg: TreeMsg, out: &mut Vec<TreeMsg>) {
         other => out.push(other),
     }
 }
+
+#[cfg(test)]
+#[path = "tree_update/asset_tests.rs"]
+mod asset_tests;
 
 #[cfg(test)]
 #[path = "tree_update/long_running_tests.rs"]

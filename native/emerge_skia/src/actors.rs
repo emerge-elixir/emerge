@@ -232,7 +232,11 @@ impl TreeMsg {
             // immediately by the event runtime, so text dragging must not wait
             // for a registry round trip on every pointer move.
             Self::SetTextInputRuntime { .. } => false,
-            Self::RequestFrame { .. }
+            // Asset notices originate outside the event lane. Paint-only
+            // completions need no registry acknowledgement; intrinsic layout
+            // changes still publish their actual registry damage.
+            Self::AssetStateChanged
+            | Self::RequestFrame { .. }
             | Self::AnimationPulse { .. }
             | Self::SampleAnimation { .. }
             | Self::Stop => false,
@@ -253,7 +257,6 @@ impl TreeMsg {
             | Self::SetSliderValue { .. }
             | Self::RebuildRegistry
             | Self::ListenerBarrier(_)
-            | Self::AssetStateChanged
             | Self::FontMetricsChanged { .. } => true,
         }
     }
