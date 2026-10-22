@@ -526,7 +526,7 @@ impl DrmInput {
         if !self.backend_wake.input_enabled() {
             return;
         }
-        let mut msg = EventMsg::InputEvent(event);
+        let mut msg = EventMsg::input_event(event);
         loop {
             match self.event_tx.try_send(msg) {
                 Ok(()) | Err(TrySendError::Disconnected(_)) => break,
@@ -564,7 +564,7 @@ impl DrmInput {
             eprintln!("drm_input enqueue cursor_pos x={x:.2} y={y:.2}");
         }
 
-        let msg = EventMsg::InputEvent(event);
+        let msg = EventMsg::input_event(event);
         self.event_tx.try_send(msg)
     }
 }
@@ -1033,7 +1033,7 @@ mod tests {
         ));
         assert!(matches!(
             event_rx.try_recv(),
-            Ok(EventMsg::InputEvent(InputEvent::CursorButton { button, action, x, y, .. }))
+            Ok(EventMsg::TimedButton { event: InputEvent::CursorButton { button, action, x, y, .. }, .. })
                 if button == "left"
                     && action == ACTION_PRESS
                     && (x - 14.0).abs() < f32::EPSILON
@@ -1053,7 +1053,7 @@ mod tests {
         assert!(snapshot.state.visible);
         assert!(matches!(
             event_rx.try_recv(),
-            Ok(EventMsg::InputEvent(InputEvent::CursorButton { button, action, x, y, .. }))
+            Ok(EventMsg::TimedButton { event: InputEvent::CursorButton { button, action, x, y, .. }, .. })
                 if button == "left"
                     && action == ACTION_PRESS
                     && x.abs() < f32::EPSILON
@@ -1133,7 +1133,7 @@ mod tests {
         ));
         assert!(matches!(
             event_rx.try_recv(),
-            Ok(EventMsg::InputEvent(InputEvent::CursorButton { button, action, x, y, .. }))
+            Ok(EventMsg::TimedButton { event: InputEvent::CursorButton { button, action, x, y, .. }, .. })
                 if button == "left"
                     && action == ACTION_RELEASE
                     && (x - 24.0).abs() < f32::EPSILON

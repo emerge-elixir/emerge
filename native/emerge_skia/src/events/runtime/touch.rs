@@ -40,6 +40,8 @@ impl DirectEventRuntime {
             slider_states: &self.slider_states,
             text_commit_suppressions: &mut self.text_commit_suppressions,
             clipboard: &mut self.clipboard,
+            text_clicks: &mut self.text_clicks,
+            input_time: self.input_time,
         };
         ctx.dispatch_base(&ListenerInput::Raw(event))
     }

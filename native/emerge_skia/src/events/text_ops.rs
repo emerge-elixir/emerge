@@ -1,4 +1,21 @@
 use super::TextInputEditRequest;
+use unicode_segmentation::UnicodeSegmentation;
+
+/// UAX #29 word boundaries, returned in the runtime's Unicode-scalar indices.
+/// Whitespace and punctuation remain selectable; combining sequences/emoji are
+/// never cut at an arbitrary UTF-8 byte or code point inside their segment.
+pub(super) fn word_range(content: &str, character: u32) -> (u32, u32) {
+    let character = character.min(text_char_len(content).saturating_sub(1));
+    content
+        .split_word_bounds()
+        .scan(0_u32, |start, segment| {
+            let range = (*start, *start + segment.chars().count() as u32);
+            *start = range.1;
+            Some(range)
+        })
+        .find(|(_, end)| character < *end)
+        .unwrap_or((0, 0))
+}
 
 pub(super) fn text_char_len(content: &str) -> u32 {
     content.chars().count() as u32
@@ -387,4 +404,31 @@ pub(super) fn cut_selection_content(
     let end_byte = char_to_byte_index(&next, end);
     next.replace_range(start_byte..end_byte, "");
     Some((next, start, selected))
+}
+
+#[cfg(test)]
+mod word_selection_tests {
+    use super::word_range;
+
+    #[test]
+    fn unicode_words_whitespace_punctuation_and_empty_content() {
+        for (text, character, expected) in [
+            ("hello world", 1, (0, 5)),
+            ("hello world", 4, (0, 5)),
+            ("hello  world", 5, (5, 7)),
+            ("hello, world", 5, (5, 6)),
+            ("café déjà", 2, (0, 4)),
+            ("cafe\u{301} noir", 4, (0, 5)),
+            ("hi 👩‍💻!", 4, (3, 6)),
+            ("a\nb", 2, (2, 3)),
+            ("hello", 100, (0, 5)),
+            ("", 0, (0, 0)),
+        ] {
+            assert_eq!(
+                word_range(text, character),
+                expected,
+                "{text:?} at {character}"
+            );
+        }
+    }
 }

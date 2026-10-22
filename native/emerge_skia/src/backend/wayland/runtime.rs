@@ -913,7 +913,7 @@ impl WaylandApp {
     }
 
     pub(super) fn send_input_event(&self, event: InputEvent) {
-        try_send_wayland_event(&self.event_tx, EventMsg::InputEvent(event));
+        try_send_wayland_event(&self.event_tx, EventMsg::input_event(event));
     }
 
     fn emit_key_press(&self, event: &KeyEvent, allow_protocol_text_active_text_commit: bool) {

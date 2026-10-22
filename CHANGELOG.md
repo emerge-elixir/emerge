@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Native double-click word selection for single-line and multiline text inputs.
+
 ### Fixed
 
 - Loaded images and image backgrounds now refresh idle screens, including cached
