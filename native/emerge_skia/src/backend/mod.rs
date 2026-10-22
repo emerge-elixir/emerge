@@ -7,6 +7,8 @@
 #[cfg(all(target_os = "linux", any(feature = "drm", test)))]
 pub mod backlight;
 pub(crate) mod cadence;
+#[cfg(all(target_os = "linux", any(feature = "drm", feature = "wayland")))]
+pub(crate) mod cursor_image;
 #[cfg(all(feature = "drm", target_os = "linux"))]
 pub mod drm;
 pub mod headless;

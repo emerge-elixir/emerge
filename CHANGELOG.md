@@ -6,6 +6,8 @@
 
 - Loaded images and image backgrounds now refresh idle screens, including cached
   Nearby content, without requiring an animation or unrelated tree change.
+- Wayland uses bundled cursors when system cursor themes are missing, avoiding
+  repeated cursor errors on minimal Linux/WSLg installations.
 
 ## [0.5.1] - 2026-10-21
 

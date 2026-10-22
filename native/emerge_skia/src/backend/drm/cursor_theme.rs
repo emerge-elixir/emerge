@@ -8,13 +8,10 @@ use skia_safe::{
 
 use crate::DrmCursorOverrideConfig;
 use crate::assets::{AssetConfig, resolve_configured_path};
+use crate::backend::cursor_image::builtin_cursor;
 use crate::events::CursorIcon;
 
 pub(crate) const CURSOR_PLANE_SIZE: (u32, u32) = (64, 64);
-
-const BUILTIN_DEFAULT_SVG: &str = include_str!("cursors/mocu_black_right/default.svg");
-const BUILTIN_POINTER_SVG: &str = include_str!("cursors/mocu_black_right/pointer.svg");
-const BUILTIN_TEXT_SVG: &str = include_str!("cursors/mocu_black_right/text.svg");
 
 pub(crate) struct CursorVisual {
     image: Image,
@@ -74,9 +71,9 @@ impl DrmCursorTheme {
 
     fn builtin() -> Result<Self, String> {
         Ok(Self {
-            default: load_builtin_svg(BUILTIN_DEFAULT_SVG, (1.0, 1.0))?,
-            pointer: load_builtin_svg(BUILTIN_POINTER_SVG, (7.0, 2.0))?,
-            text: load_builtin_svg(BUILTIN_TEXT_SVG, (11.5, 11.5))?,
+            default: load_builtin_cursor(CursorIcon::Default)?,
+            pointer: load_builtin_cursor(CursorIcon::Pointer)?,
+            text: load_builtin_cursor(CursorIcon::Text)?,
         })
     }
 
@@ -89,7 +86,8 @@ impl DrmCursorTheme {
     }
 }
 
-fn load_builtin_svg(svg: &str, hotspot: (f32, f32)) -> Result<CursorVisual, String> {
+fn load_builtin_cursor(icon: CursorIcon) -> Result<CursorVisual, String> {
+    let (svg, hotspot) = builtin_cursor(icon);
     let tree = parse_svg(svg.as_bytes())?;
     build_visual_from_svg(&tree, hotspot)
 }
