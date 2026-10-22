@@ -169,6 +169,22 @@ defmodule EmergeSkia.BuildConfigTest do
     refute BuildConfig.nerves_build_env?(%{"MIX_TARGET" => "host"})
   end
 
+  test "WSLg can explicitly select Wayland raster without DRM or a GPU API" do
+    env = %{
+      "TARGET_OS" => "linux",
+      "WSL_DISTRO_NAME" => "Ubuntu",
+      "WSL_INTEROP" => "/run/WSL/1_interop"
+    }
+
+    assert BuildConfig.default_compiled_backends(env) == [wayland: [:opengl]]
+    matrix = Schema.normalize!(wayland: [:raster])
+    assert Profiles.features(matrix) == ["wayland"]
+    assert BuildConfig.compiled_backends_to_rustler_features([:wayland], [], []) == ["wayland"]
+
+    assert {:ok, %{variant: :wayland, features: ["wayland"]}} =
+             BuildConfig.precompiled_profile(env, [:wayland], [], [], "x86_64-unknown-linux-gnu")
+  end
+
   test "platform modifiers do not mistake headless GL for a CPU-only profile" do
     env = %{"MIX_TARGET" => "custom"}
     assert BuildConfig.rustler_platform_features(env, [], [], []) == ["embedded-cpu"]

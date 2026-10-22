@@ -5,6 +5,7 @@
 ### Added
 
 - Native double-click word selection for single-line and multiline text inputs.
+- WSLg troubleshooting and an explicit GBM-free Wayland/raster build recipe.
 
 ### Fixed
 
