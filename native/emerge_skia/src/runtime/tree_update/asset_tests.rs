@@ -261,7 +261,10 @@ fn idle_runtime_path_completion_queues_static_scene_and_backend_wake() {
     };
     use crossbeam_channel::{bounded, unbounded};
     use std::sync::atomic::AtomicU64;
-    let file = TestImage(std::env::temp_dir().join(format!(
+    // macOS temp paths can traverse /var -> /private/var. Keep the default
+    // no-symlinks policy by using the canonical directory for both paths.
+    let temp_dir = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+    let file = TestImage(temp_dir.join(format!(
         "emerge-issue-107-{}-{}.jpg",
         std::process::id(),
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
@@ -278,7 +281,7 @@ fn idle_runtime_path_completion_queues_static_scene_and_backend_wake() {
     let _guard = runtime.enter();
     runtime.configure(assets::AssetConfig {
         runtime_enabled: true,
-        runtime_allowlist: vec![std::env::temp_dir().to_string_lossy().into_owned()],
+        runtime_allowlist: vec![temp_dir.to_string_lossy().into_owned()],
         ..Default::default()
     });
     let source = ImageSource::RuntimePath(file.0.to_string_lossy().into_owned());
@@ -339,6 +342,12 @@ fn idle_runtime_path_completion_queues_static_scene_and_backend_wake() {
         };
         wakes.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(!animate);
+        assert_eq!(
+            scene.summary().image_failed,
+            0,
+            "runtime asset failed to load: {:?}",
+            assets::source_status(&source)
+        );
         if scene.summary().images == 0 {
             assert_eq!(scene.summary().image_loading, 1);
             continue;
