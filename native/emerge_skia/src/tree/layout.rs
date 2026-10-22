@@ -628,6 +628,7 @@ pub(crate) struct FrameAttrsPreparation {
 #[derive(Debug)]
 struct PreparedAttrs {
     media_dirty: Vec<NodeId>,
+    paint_dirty: Vec<NodeId>,
     scale: f32,
     samples: super::animation::AnimationFrameSamples,
     ids: Option<Vec<NodeId>>,
@@ -752,6 +753,9 @@ impl FrameAttrsPreparation {
             for id in &self.payload.media_dirty {
                 tree.mark_measure_dirty(id);
             }
+            for id in &self.payload.paint_dirty {
+                tree.mark_refresh_dirty_for_invalidation(id, TreeInvalidation::Paint);
+            }
             let assets = self.assets.enter();
             tree.frame_assets = Some(Arc::clone(&self.assets));
             let fonts = self.fonts.as_ref().map(|fonts| fonts.enter());
@@ -839,6 +843,7 @@ fn prepare_frame_attrs_measured<M: TextMeasurer>(
         trace.fail_query = fail_query;
     }
     let assets = tree.capture_frame_assets();
+    let paint_dirty = assets.paint_invalidations(tree, tree.frame_assets.as_deref());
     let _asset_guard = assets.enter();
     let fonts = measurer.font_snapshot();
     let _font_guard = fonts.as_ref().map(|fonts| fonts.enter());
@@ -939,6 +944,9 @@ fn prepare_frame_attrs_measured<M: TextMeasurer>(
     if !media_dirty.is_empty() {
         samples.result.invalidation.add(TreeInvalidation::Measure);
     }
+    if !paint_dirty.is_empty() {
+        samples.result.invalidation.add(TreeInvalidation::Paint);
+    }
     let token = super::animation::frame::FrameToken::prepare(tree, runtime);
     let commit_required = samples.geometry.is_some()
         || !tree.pending_patch_effects.sources.is_empty()
@@ -948,6 +956,7 @@ fn prepare_frame_attrs_measured<M: TextMeasurer>(
         animation_result: std::mem::take(&mut samples.result),
         payload: PreparedAttrs {
             media_dirty,
+            paint_dirty,
             scale,
             samples,
             ids,

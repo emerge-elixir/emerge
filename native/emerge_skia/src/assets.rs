@@ -1055,18 +1055,8 @@ fn tree_source_refs(
                 )
             })
             .chain(
-                attrs
-                    .background
-                    .iter()
-                    .chain(
-                        attrs
-                            .mouse_over
-                            .iter()
-                            .chain(attrs.mouse_down.iter())
-                            .chain(attrs.focused.iter())
-                            .filter_map(|style| style.background.as_ref()),
-                    )
-                    .filter_map(background_image_source)
+                background_sources(attrs)
+                    .cloned()
                     .map(|source| (source, None)),
             )
     })
@@ -1093,11 +1083,22 @@ impl FrameSourceList {
     }
 }
 
-fn background_image_source(background: &Background) -> Option<ImageSource> {
-    match background {
-        Background::Image { source, .. } => Some(source.clone()),
-        _ => None,
-    }
+fn background_sources(attrs: &crate::tree::attrs::Attrs) -> impl Iterator<Item = &ImageSource> {
+    attrs
+        .background
+        .iter()
+        .chain(
+            attrs
+                .mouse_over
+                .iter()
+                .chain(attrs.mouse_down.iter())
+                .chain(attrs.focused.iter())
+                .filter_map(|style| style.background.as_ref()),
+        )
+        .filter_map(|background| match background {
+            Background::Image { source, .. } => Some(source),
+            _ => None,
+        })
 }
 
 fn snapshot_status_for_source(source: &ImageSource) -> AssetStatus {
@@ -1599,6 +1600,36 @@ impl FrameAssets {
     }
     pub(crate) fn matches_current(&self) -> bool {
         self.owner.ptr_eq(&Arc::downgrade(&current_context().state))
+    }
+    pub(crate) fn paint_invalidations(
+        &self,
+        tree: &ElementTree,
+        other: Option<&Self>,
+    ) -> Vec<crate::tree::element::NodeId> {
+        let Some(old) = other else {
+            return Vec::new();
+        };
+        if self.status_generation == old.status_generation
+            && self.loading_indicators == old.loading_indicators
+        {
+            return Vec::new();
+        }
+        let changed = |source: &ImageSource| {
+            self.sources.get(source) != old.sources.get(source)
+                || self.loading_indicators.contains(source)
+                    != old.loading_indicators.contains(source)
+        };
+        tree.iter_nodes()
+            .filter(|node| {
+                let attrs = &node.spec.declared;
+                attrs
+                    .image_src
+                    .iter()
+                    .chain(background_sources(attrs))
+                    .any(changed)
+            })
+            .map(|node| node.id)
+            .collect()
     }
     pub(crate) fn measure_invalidations(
         &self,
