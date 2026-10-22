@@ -19,6 +19,11 @@ defmodule Emerge.UI.Input do
   multiline text input that defaults to a one-line minimum height and grows with
   its content when height is omitted.
 
+  Both helpers support native double-click word selection, including Unicode
+  word boundaries. Shift-click extends the current selection; ordinary dragging
+  selects a character range. Further rapid clicks keep selecting the word (there
+  is no separate triple-click line-selection behavior).
+
   Both helpers are controlled inputs: the second argument supplies the initial
   value and subsequent application-authored changes. Native editing updates the
   live session immediately. Returning an `on_change` value acknowledges that edit

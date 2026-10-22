@@ -4766,7 +4766,7 @@ mod tests {
         }
 
         fn send_input(&self, event: crate::input::InputEvent) {
-            super::send_event(&self.event_tx, EventMsg::InputEvent(event), false);
+            super::send_event(&self.event_tx, EventMsg::input_event(event), false);
         }
 
         fn wait_for_render_settle(&self) {
@@ -4844,7 +4844,7 @@ mod tests {
         }
 
         fn send_input(&self, event: InputEvent) {
-            super::send_event(&self.event_tx, EventMsg::InputEvent(event), false);
+            super::send_event(&self.event_tx, EventMsg::input_event(event), false);
         }
 
         fn send_rebuild(&self, rebuild: RegistryRebuildPayload) {

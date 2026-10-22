@@ -2043,6 +2043,14 @@ fn runtime_press_region_from_source(source: &Listener) -> Option<PointerRegion> 
 }
 
 pub(crate) trait ListenerComputeCtx {
+    fn text_input_double_click(&mut self, _id: NodeId, _x: f32, _y: f32) -> bool {
+        false
+    }
+
+    fn preserve_word_selection(&self, _id: NodeId, _x: f32, _y: f32) -> bool {
+        false
+    }
+
     fn focused_id(&self) -> Option<&NodeId> {
         None
     }
@@ -2812,6 +2820,7 @@ pub enum SemanticAction {
         x: f32,
         y: f32,
         extend_selection: bool,
+        select_word: bool,
     },
     /// Request a text-input preedit operation.
     TextInputPreedit {
@@ -3157,6 +3166,8 @@ impl ListenerCompute {
                             x: *x,
                             y: *y,
                             extend_selection: *mods & MOD_SHIFT != 0,
+                            select_word: *mods == 0
+                                && ctx.text_input_double_click(*element_id, *x, *y),
                         })
                     }))
                     .chain(text_drag.as_ref().map(|text_drag| {
@@ -3188,6 +3199,7 @@ impl ListenerCompute {
                     input.raw(),
                     element_id,
                     *extend_selection,
+                    ctx,
                 ))
                 .collect(),
             ListenerCompute::StaticWithSliderValueRuntime {
@@ -3525,22 +3537,35 @@ fn text_cursor_action_from_input(
     input: Option<&InputEvent>,
     element_id: &NodeId,
     extend_selection: bool,
+    ctx: &mut impl ListenerComputeCtx,
 ) -> Option<ListenerAction> {
     let action = match input? {
         InputEvent::CursorButton {
-            action, x, y, mods, ..
+            button,
+            action,
+            x,
+            y,
+            mods,
         } if *action == ACTION_PRESS => ListenerAction::Semantic(SemanticAction::TextInputCursor {
             element_id: *element_id,
             x: *x,
             y: *y,
             extend_selection: extend_selection || (*mods & MOD_SHIFT != 0),
+            select_word: button == "left"
+                && *mods == 0
+                && !extend_selection
+                && ctx.text_input_double_click(*element_id, *x, *y),
         }),
         InputEvent::CursorPos { x, y } => {
+            if ctx.preserve_word_selection(*element_id, *x, *y) {
+                return None;
+            }
             ListenerAction::Semantic(SemanticAction::TextInputCursor {
                 element_id: *element_id,
                 x: *x,
                 y: *y,
                 extend_selection,
+                select_word: false,
             })
         }
         _ => return None,
@@ -4636,7 +4661,8 @@ impl<'a, C: ListenerComputeCtx> SemanticComputeState<'a, C> {
                 x,
                 y,
                 extend_selection,
-            } => self.resolve_text_cursor(element_id, x, y, extend_selection),
+                select_word,
+            } => self.resolve_text_cursor(element_id, x, y, extend_selection, select_word),
             SemanticAction::TextInputPreedit {
                 element_id,
                 request,
@@ -4688,21 +4714,28 @@ impl<'a, C: ListenerComputeCtx> SemanticComputeState<'a, C> {
         x: f32,
         y: f32,
         extend_selection: bool,
+        select_word: bool,
     ) -> Vec<ListenerAction> {
         let Some((runtime_actions, primary)) = ({
             let snapshot = match self.snapshot(&element_id) {
                 Some(snapshot) => snapshot,
                 None => return Vec::new(),
             };
-            let next_cursor = cursor_from_click_point(snapshot, x, y);
-            if !move_snapshot_cursor(snapshot, next_cursor, extend_selection) {
-                None
+            let changed = if select_word {
+                let (start, end) = snapshot.word_range_from_click_point(x, y);
+                snapshot.set_selection_range(start, end)
             } else {
-                Some((
+                let next_cursor = cursor_from_click_point(snapshot, x, y);
+                move_snapshot_cursor(snapshot, next_cursor, extend_selection)
+            };
+            changed.then(|| {
+                (
                     text_runtime_actions(&element_id, snapshot),
-                    extend_selection.then(|| selection_text(snapshot)).flatten(),
-                ))
-            }
+                    (extend_selection || select_word)
+                        .then(|| selection_text(snapshot))
+                        .flatten(),
+                )
+            })
         }) else {
             return Vec::new();
         };

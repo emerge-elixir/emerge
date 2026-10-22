@@ -450,7 +450,39 @@ impl TextInputState {
         }
     }
 
+    /// Select the character under the pointer, not the nearest caret. The right
+    /// half of a word's last glyph must not select the following space.
+    pub(super) fn word_range_from_click_point(&self, x: f32, y: f32) -> (u32, u32) {
+        let local = self
+            .screen_to_local
+            .map(|transform| transform.map_point(Point { x, y }))
+            .unwrap_or(Point { x, y });
+        let layout = self.text_layout(&self.content);
+        let line_index = if self.multiline {
+            layout.line_index_for_y((local.y - self.frame_y - self.inset_top).max(0.0))
+        } else {
+            0
+        };
+        let line = &layout.lines[line_index];
+        let offset = if self.multiline {
+            local.x - self.line_x(line.width)
+        } else {
+            self.single_line_click_offset(local.x)
+        };
+        let character = line
+            .positions
+            .windows(2)
+            .position(|pair| offset < pair[1])
+            .map(|index| line.start + index)
+            .unwrap_or(line.visual_end.saturating_sub(1).max(line.start));
+        text_ops::word_range(&self.content, character as u32)
+    }
+
     fn cursor_from_local_x(&self, x: f32) -> u32 {
+        self.nearest_char_index_for_offset(&self.content, self.single_line_click_offset(x))
+    }
+
+    fn single_line_click_offset(&self, x: f32) -> f32 {
         let (text_left_overhang, text_width) = self.measure_text_visual_metrics(&self.content);
         let content_width = (self.frame_width - self.inset_left - self.inset_right).max(0.0);
 
@@ -467,8 +499,7 @@ impl TextInputState {
             }
         };
 
-        let click_x = (x - text_start_x).clamp(0.0, text_width.max(0.0));
-        self.nearest_char_index_for_offset(&self.content, click_x)
+        (x - text_start_x).clamp(0.0, text_width.max(0.0))
     }
 
     fn cursor_from_local_point(&self, x: f32, y: f32) -> u32 {
