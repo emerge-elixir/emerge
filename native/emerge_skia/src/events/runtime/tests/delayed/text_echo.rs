@@ -1,5 +1,7 @@
 use super::*;
 
+mod text_clicks;
+
 #[derive(Default)]
 struct Changes(Mutex<Vec<String>>);
 impl HostEventSink for Changes {

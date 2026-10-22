@@ -55,6 +55,28 @@ The event actor:
 - installs fresh registry rebuilds from the tree actor
 - rebuilds overlay listeners from runtime state after registry changes
 
+### Text multi-click selection
+
+The shared event runtime recognizes repeated unmodified left clicks in editable
+text inputs: at most 500 ms apart, within 5 buffer-coordinate pixels, on the same
+mount, with a release between presses. Further rapid clicks continue selecting
+the word; triple-click line selection is not implemented. Unicode word boundaries
+are computed in scalar-index space, and hit testing uses the character under the
+pointer rather than the nearest caret (including the right half of a final glyph).
+
+Backends use `EventMsg::input_event` to timestamp button edges before channel
+backpressure. `TimedButton` keeps that time through the stale listener queue;
+replay time must not turn unrelated clicks into a double click. Motion/scroll
+still use the existing coalescing path, and raw observer payloads are unchanged.
+Host-owned native dispatch timestamps at entry. Tests inject time without sleeps.
+
+The event-owned click chain resets on other input, edits, focus loss, leaving the
+window, mount replacement, excessive motion or timeout. Cursor jitter during the
+second press does not collapse word selection. Beyond the movement threshold,
+dragging extends a character range from the selected word's start. Selection
+uses the existing runtime/tree synchronization and primary clipboard path, so
+controlled-input echoes cannot collapse it.
+
 ### Render Thread
 
 The render thread only consumes the render scene and IME state. It does not perform

@@ -266,6 +266,12 @@ pub enum EventMsg {
     Configure(crate::runtime::config::ConfigRequest),
     ConfigureInput(crate::runtime::config::ConfigRequest),
     InputEvent(InputEvent),
+    /// Button edges retain backend arrival time across actor/tree backpressure.
+    /// High-rate motion/scroll keeps the existing coalescing path.
+    TimedButton {
+        event: InputEvent,
+        occurred_at: Instant,
+    },
     PresentTiming {
         presented_at: Instant,
         predicted_next_present_at: Instant,
@@ -279,6 +285,17 @@ pub enum EventMsg {
 }
 
 impl EventMsg {
+    pub fn input_event(event: InputEvent) -> Self {
+        if matches!(event, InputEvent::CursorButton { .. }) {
+            Self::TimedButton {
+                event,
+                occurred_at: Instant::now(),
+            }
+        } else {
+            Self::InputEvent(event)
+        }
+    }
+
     pub fn registry_update(rebuild: RegistryRebuildPayload) -> Self {
         Self::RegistryUpdate {
             rebuild: Box::new(rebuild),

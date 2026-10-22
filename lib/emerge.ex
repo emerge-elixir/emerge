@@ -176,6 +176,44 @@ defmodule Emerge do
   used by the introductory counter. Metal remains on the macOS window host;
   headless Metal is deferred. Darwin headless raster uses its separate NIF.
 
+  ### WSLg and minimal Linux desktops
+
+  WSLg uses the Wayland window backend, not direct DRM/KMS. The normal Linux
+  build includes OpenGL and therefore links GBM for the shared headless/PRIME
+  implementation, even when the DRM presenter is not compiled. Source builds
+  need matching Mesa runtime/development packages; disabling DRM alone does not
+  remove this GBM requirement.
+
+  If `mix compile` fails with `unable to find library -lgbm`, use matched distro
+  packages or select a GBM-free software-rendered window build explicitly:
+
+  ```elixir
+  # config/config.exs, before compiling Emerge:
+  config :emerge, compiled_backends: [wayland: [:raster]]
+  ```
+
+  ```elixir
+  # mount/1 result (or EmergeSkia.start/1):
+  %Emerge.Config{
+    output: %Emerge.Config.Window{backend: :wayland},
+    renderer: [api: :raster],
+    assets: [otp_app: :my_app]
+  }
+  ```
+
+  Rebuild with `mix deps.compile emerge --force`; source builds additionally use
+  `EMERGE_SKIA_BUILD=true` and require Rustler. This route still needs Wayland,
+  xkbcommon and a running WSLg compositor, but no GBM or GPU rendering API. It
+  does not silently replace OpenGL or promise the same performance. Inspect the
+  selected features with `mix emerge.build_info`, or before compilation with
+  `elixir deps/emerge/scripts/build-info.exs --backend wayland:raster`.
+
+  Wayland uses compositor-provided cursor shapes or the installed Xcursor theme.
+  If neither the requested icon nor the theme's default exists, Emerge uses
+  bundled cursors and reports the missing theme once per pointer/scale. To restore
+  your preferred theme, check its installation and `XCURSOR_THEME`, `XCURSOR_SIZE`
+  and `XCURSOR_PATH` in the environment that launches the application.
+
   ### Nerves and device defaults
 
   Choose the highest usable tier of the **image and display path**, not just the

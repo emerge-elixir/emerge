@@ -89,7 +89,7 @@ fn charge(lane: &ListenerLaneState) -> QueueCharge {
                 PendingInput::Command(_)
                 | PendingInput::Edit(_)
                 | PendingInput::ReplacementRange { .. } => 0,
-                PendingInput::Raw(event) => match event {
+                PendingInput::Raw(event) | PendingInput::TimedButton { event, .. } => match event {
                     InputEvent::TextCommit { text, .. } | InputEvent::TextPreedit { text, .. } => {
                         text.capacity()
                     }

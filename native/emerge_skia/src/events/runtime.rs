@@ -58,6 +58,7 @@ use super::{
 };
 
 mod scroll;
+mod text_click;
 mod touch;
 
 pub trait HostEventSink: Send + Sync {
@@ -164,6 +165,7 @@ impl EventRuntimeDriver {
         let commands = EventCommands::default();
         if !self.runtime.backend_wake.input_enabled() {
             self.runtime.runtime_overlay = RuntimeOverlayState::default();
+            self.runtime.text_clicks.reset();
             self.runtime.cancel_touch_keys(&commands, self.log_render);
             self.runtime.primary_touch = None;
             self.runtime.overlay_registry = registry_builder::build_runtime_overlay_registry(
@@ -230,6 +232,15 @@ impl EventRuntimeDriver {
             return;
         }
         self.dispatch(|runtime, tx, log| runtime.handle_input_event(event, tx, log));
+    }
+
+    fn handle_input_at(&mut self, event: InputEvent, occurred_at: Instant) {
+        if !self.runtime.backend_wake.input_enabled() {
+            return;
+        }
+        self.dispatch(|runtime, tx, log| {
+            runtime.handle_input_event_at(event, occurred_at, tx, log)
+        });
     }
 
     fn install_rebuild(&mut self, mut rebuild: RegistryRebuildPayload) {
@@ -306,6 +317,10 @@ impl EventRuntimeDriver {
         });
 
         match message {
+            EventMsg::TimedButton { event, occurred_at } => {
+                self.handle_input_at(event, occurred_at);
+                true
+            }
             EventMsg::InputEvent(event) => {
                 let events = drain_fresh_input_events(event, event_rx, pending_message);
                 self.log_event_diagnostic(|| {
@@ -890,7 +905,9 @@ fn tree_msg_label(msg: &TreeMsg) -> &'static str {
 
 fn event_msg_label(msg: &EventMsg) -> &'static str {
     match msg {
-        EventMsg::InputEvent(event) => input_event_label(event),
+        EventMsg::InputEvent(event) | EventMsg::TimedButton { event, .. } => {
+            input_event_label(event)
+        }
         EventMsg::PresentTiming { .. } => "present_timing",
         EventMsg::RegistryUpdate { .. } => "registry_update",
         EventMsg::Configure(_) => "configure",
@@ -925,9 +942,19 @@ struct RuntimeListenerComputeCtx<'a> {
     slider_states: &'a HashMap<NodeId, SliderState>,
     text_commit_suppressions: &'a mut Vec<TextCommitSuppression>,
     clipboard: &'a mut ClipboardManager,
+    text_clicks: &'a mut text_click::TextClicks,
+    input_time: Instant,
 }
 
 impl ListenerComputeCtx for RuntimeListenerComputeCtx<'_> {
+    fn text_input_double_click(&mut self, id: NodeId, x: f32, y: f32) -> bool {
+        self.text_clicks.press(id, (x, y), self.input_time)
+    }
+
+    fn preserve_word_selection(&self, id: NodeId, x: f32, y: f32) -> bool {
+        self.text_clicks.preserve_word(id, (x, y))
+    }
+
     fn focused_id(&self) -> Option<&NodeId> {
         self.focused_id
     }
@@ -992,6 +1019,10 @@ impl ListenerComputeCtx for RuntimeListenerComputeCtx<'_> {
 #[derive(Clone, Debug, PartialEq)]
 enum PendingInput {
     Raw(InputEvent),
+    TimedButton {
+        event: InputEvent,
+        occurred_at: Instant,
+    },
     Command(TextInputCommandRequest),
     Edit(TextInputEditRequest),
     ReplacementRange {
@@ -1024,7 +1055,7 @@ impl RangeGeneration {
 impl PendingInput {
     fn label(&self) -> &'static str {
         match self {
-            Self::Raw(event) => input_event_label(event),
+            Self::Raw(event) | Self::TimedButton { event, .. } => input_event_label(event),
             Self::Command(_) => "text_command",
             Self::Edit(_) => "text_edit",
             Self::ReplacementRange { .. } => "text_replacement_range",
@@ -1138,6 +1169,8 @@ struct DirectEventRuntime {
     cursor_in_window: bool,
     hover_stack: Vec<HoverTracker>,
     current_cursor_icon: CursorIcon,
+    text_clicks: text_click::TextClicks,
+    input_time: Instant,
     virtual_key_deadline: Option<Instant>,
     touch_keys: HashMap<u64, touch::TouchKey>,
     primary_touch: Option<u64>,
@@ -1199,6 +1232,8 @@ impl DirectEventRuntime {
             cursor_in_window: false,
             hover_stack: Vec::new(),
             current_cursor_icon: CursorIcon::Default,
+            text_clicks: text_click::TextClicks::default(),
+            input_time: Instant::now(),
             virtual_key_deadline: None,
             touch_keys: HashMap::new(),
             primary_touch: None,
@@ -1577,6 +1612,16 @@ impl DirectEventRuntime {
     }
 
     fn handle_input_event(&mut self, event: InputEvent, tree_tx: &dyn TreeSink, log_render: bool) {
+        self.handle_input_event_at(event, Instant::now(), tree_tx, log_render);
+    }
+
+    fn handle_input_event_at(
+        &mut self,
+        event: InputEvent,
+        occurred_at: Instant,
+        tree_tx: &dyn TreeSink,
+        log_render: bool,
+    ) {
         let event = event.normalize_scroll_with_line_pixels(self.scroll_line_pixels);
         let label = input_event_label(&event);
         self.log_event_diagnostic(log_render, || {
@@ -1604,7 +1649,12 @@ impl DirectEventRuntime {
 
         if self.listener_lane.is_stale() {
             let buffered_before = self.listener_lane.buffered_inputs.len();
-            self.listener_lane.buffer_input(event);
+            if matches!(event, InputEvent::CursorButton { .. }) {
+                self.listener_lane
+                    .buffer_pending(PendingInput::TimedButton { event, occurred_at });
+            } else {
+                self.listener_lane.buffer_input(event);
+            }
             self.log_event_diagnostic(log_render, || {
                 format!(
                     "input buffered while listener lane stale\n  event: {label}\n  buffered_before: {buffered_before}\n  buffered_after: {}\n  {}",
@@ -1615,7 +1665,13 @@ impl DirectEventRuntime {
             return;
         }
 
-        self.dispatch_event(event, tree_tx, log_render, DispatchMode::Normal);
+        self.dispatch_event_at(
+            event,
+            occurred_at,
+            tree_tx,
+            log_render,
+            DispatchMode::Normal,
+        );
         self.log_event_diagnostic(log_render, || {
             format!(
                 "input end\n  event: {label}\n  {}",
@@ -1645,6 +1701,7 @@ impl DirectEventRuntime {
         tree_tx: &dyn TreeSink,
         log_render: bool,
     ) -> bool {
+        self.text_clicks.reset();
         let Some(element_id) = self
             .focused_id
             .filter(|element_id| self.text_states.contains_key(element_id))
@@ -1663,6 +1720,8 @@ impl DirectEventRuntime {
                 slider_states: &self.slider_states,
                 text_commit_suppressions: &mut self.text_commit_suppressions,
                 clipboard: &mut self.clipboard,
+                text_clicks: &mut self.text_clicks,
+                input_time: self.input_time,
             };
 
             registry_builder::resolve_text_input_command_actions(&element_id, request, &mut ctx)
@@ -1698,6 +1757,7 @@ impl DirectEventRuntime {
         tree_tx: &dyn TreeSink,
         log_render: bool,
     ) -> bool {
+        self.text_clicks.reset();
         let Some(element_id) = self
             .focused_id
             .filter(|element_id| self.text_states.contains_key(element_id))
@@ -1716,6 +1776,8 @@ impl DirectEventRuntime {
                 slider_states: &self.slider_states,
                 text_commit_suppressions: &mut self.text_commit_suppressions,
                 clipboard: &mut self.clipboard,
+                text_clicks: &mut self.text_clicks,
+                input_time: self.input_time,
             };
 
             registry_builder::resolve_text_input_edit_actions(&element_id, request, &mut ctx)
@@ -1858,6 +1920,7 @@ impl DirectEventRuntime {
         self.reconcile_runtime_overlay(&previous_registry, &text_inputs, &sliders);
         self.recompose_overlay_registry();
         if self.focused_id != focused_id {
+            self.text_clicks.reset();
             self.range_generation.invalidate();
         }
         self.focused_id = focused_id;
@@ -1877,6 +1940,7 @@ impl DirectEventRuntime {
         );
         changed_tree |= scroll_changed;
         if accepted_tree_patch {
+            self.text_clicks.reset();
             self.range_generation.invalidate();
         }
         changed_tree |= reconcile_slider_states(
@@ -1968,6 +2032,15 @@ impl DirectEventRuntime {
                         _ => DispatchMode::Normal,
                     };
                     self.dispatch_event(event, tree_tx, log_render, dispatch_mode);
+                }
+                PendingInput::TimedButton { event, occurred_at } => {
+                    self.dispatch_event_at(
+                        event,
+                        occurred_at,
+                        tree_tx,
+                        log_render,
+                        DispatchMode::Normal,
+                    );
                 }
                 PendingInput::Command(request) => {
                     self.dispatch_text_input_command(request, tree_tx, log_render);
@@ -2201,6 +2274,19 @@ impl DirectEventRuntime {
         log_render: bool,
         dispatch_mode: DispatchMode,
     ) {
+        self.dispatch_event_at(event, Instant::now(), tree_tx, log_render, dispatch_mode);
+    }
+
+    fn dispatch_event_at(
+        &mut self,
+        event: InputEvent,
+        occurred_at: Instant,
+        tree_tx: &dyn TreeSink,
+        log_render: bool,
+        dispatch_mode: DispatchMode,
+    ) {
+        self.input_time = occurred_at;
+        self.text_clicks.begin_input(&event);
         if let InputEvent::Touch { id, phase, x, y } = event {
             self.dispatch_touch(id, phase, x, y, tree_tx, log_render);
             return;
@@ -2222,10 +2308,13 @@ impl DirectEventRuntime {
                 slider_states: &self.slider_states,
                 text_commit_suppressions: &mut self.text_commit_suppressions,
                 clipboard: &mut self.clipboard,
+                text_clicks: &mut self.text_clicks,
+                input_time: self.input_time,
             };
             registry_builder::LayeredRegistryView::new(&self.overlay_registry, &self.base_registry)
                 .first_match(&input, &[], &mut ctx)
         };
+        self.text_clicks.end_input();
         let action_count = actions.len();
 
         self.log_event_diagnostic(log_render, || {
@@ -2490,6 +2579,13 @@ impl DirectEventRuntime {
     }
 
     fn apply_text_input_state(&mut self, element_id: &NodeId, state: TextInputState) {
+        if self
+            .text_states
+            .get(element_id)
+            .is_some_and(|previous| previous.content != state.content)
+        {
+            self.text_clicks.reset();
+        }
         if self.focused_id == Some(*element_id)
             && Arc::strong_count(&self.range_generation.0) > 1
             && self.text_states.get(element_id).is_some_and(|previous| {
@@ -2575,6 +2671,7 @@ impl DirectEventRuntime {
             |id: &NodeId, kind| same_mount(id) && base_has_source_listener(base, id, kind);
         // Local edits, anchors and hover belong to a mount, not its reusable ID.
         // Drop old-mount state before incoming native state is reconciled/replayed.
+        self.text_clicks.retain_mount(same_mount);
         self.text_states.retain(|id, _| same_mount(id));
         self.slider_states.retain(|id, _| same_mount(id));
         self.expected_text_echoes.retain(|id, _| same_mount(id));
@@ -4071,7 +4168,7 @@ mod tests {
         ));
         assert!(matches!(
             runtime.listener_lane.buffered_inputs.make_contiguous(),
-            [PendingInput::Raw(InputEvent::CursorButton { action, .. })]
+            [PendingInput::TimedButton { event: InputEvent::CursorButton { action, .. }, .. }]
                 if *action == crate::input::ACTION_RELEASE
         ));
 

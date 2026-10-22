@@ -6,6 +6,8 @@ history, tests, `CHANGELOG.md` and maintained guides—not an archive directory.
 
 ## Open work
 
+- [WSL/Wayland compatibility](active-wsl-compatibility.md): WSLg cursor/input
+  acceptance for #5/#6/#20 and Ubuntu/Mesa build qualification.
 - [CI download retries](active-ci-network-retries.md): clean-runner Linux/macOS
   acceptance of streamed, bounded native-build retries and cache reuse.
 - [Native build rollout](active-build-capabilities.md): remote cross/macOS artifact

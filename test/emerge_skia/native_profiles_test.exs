@@ -179,13 +179,13 @@ defmodule EmergeSkia.NativeProfilesTest do
     assert Profiles.rust_target(%{"MIX_TARGET" => "custom"}) == nil
   end
 
-  test "Nerves runtime recipes validate without opening hardware" do
+  test "viewport runtime recipes validate without opening hardware" do
     {:docs_v1, _, _, _, %{"en" => guide}, _, _} = Code.fetch_docs(Emerge)
 
     examples = Regex.scan(~r/```elixir\n(.*?)\n```/s, guide, capture: :all_but_first)
 
     recipes = for [source] <- examples, String.contains?(source, "%Emerge.Config{"), do: source
-    assert length(recipes) == 6
+    assert length(recipes) == 7
 
     for source <- recipes do
       {literal, _} =
