@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Loaded images and image backgrounds now refresh idle screens, including cached
+  Nearby content, without requiring an animation or unrelated tree change.
+
 ## [0.5.1] - 2026-10-21
 
 ### Added
