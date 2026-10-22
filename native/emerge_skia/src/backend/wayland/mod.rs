@@ -1,5 +1,6 @@
 //! Wayland backend built on smithay-client-toolkit.
 
+mod cursor;
 #[cfg(all(feature = "wayland", feature = "opengl"))]
 mod egl;
 mod geometry;

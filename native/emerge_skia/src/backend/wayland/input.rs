@@ -3,8 +3,7 @@ use smithay_client_toolkit::{
     seat::{
         SeatState,
         pointer::{
-            AxisScroll, BTN_BACK, BTN_EXTRA, BTN_FORWARD, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT,
-            BTN_SIDE, ThemedPointer,
+            AxisScroll, BTN_BACK, BTN_EXTRA, BTN_FORWARD, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, BTN_SIDE,
         },
     },
 };
@@ -12,11 +11,11 @@ use wayland_client::QueueHandle;
 
 use crate::input::{InputEvent, pointer};
 
-use super::runtime::WaylandApp;
+use super::{cursor::WaylandCursor, runtime::WaylandApp};
 
 pub(super) struct PointerInputState {
     pub(super) seat_state: SeatState,
-    pub(super) pointer: Option<ThemedPointer>,
+    pub(super) pointer: Option<WaylandCursor>,
     pub(super) cursor_pos: (f32, f32),
     pub(super) current_mods: u8,
     pub(super) entered: bool,

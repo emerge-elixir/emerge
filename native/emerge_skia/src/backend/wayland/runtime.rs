@@ -31,10 +31,7 @@ use smithay_client_toolkit::{
     seat::{
         Capability, SeatHandler, SeatState,
         keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers},
-        pointer::{
-            CursorIcon as SctkCursorIcon, PointerEvent, PointerEventKind, PointerHandler,
-            PointerThemeError, ThemeSpec,
-        },
+        pointer::{PointerEvent, PointerEventKind, PointerHandler, ThemeSpec},
     },
     shell::{
         WaylandSurface,
@@ -69,7 +66,7 @@ use crate::{
         },
         wayland_config::WaylandConfig,
     },
-    events::{CursorIcon, CursorIconState},
+    events::CursorIcon,
     input::{InputEvent, keyboard::normalize_commit_text},
     native_log::NativeLogRelay,
     renderer::{RenderState, RendererCacheConfig},
@@ -84,6 +81,7 @@ use crate::{
 #[cfg(all(feature = "wayland", feature = "opengl"))]
 use super::egl::{GlEnv, create_gl_env, resize_gl_env};
 use super::{
+    cursor::WaylandCursor,
     geometry::SurfaceGeometry,
     input::{PointerInputState, pointer_button_event, pointer_scroll_event},
     keyboard::{KeyboardInputState, key_from_keysym, mods_from_sctk},
@@ -598,7 +596,7 @@ pub(super) struct WaylandApp {
     pub(super) geometry: SurfaceGeometry,
     present: PresentState,
     input: PointerInputState,
-    cursor_icon_state: CursorIconState,
+    requested_cursor: CursorIcon,
     pub(super) keyboard: KeyboardInputState,
     pub(super) text_input: TextInputProtocolState,
     video_import: WaylandVideoImportState,
@@ -714,7 +712,7 @@ impl WaylandApp {
             geometry: SurfaceGeometry::new(config),
             present: PresentState::default(),
             input: PointerInputState::new(globals, &qh),
-            cursor_icon_state: CursorIconState::default(),
+            requested_cursor: CursorIcon::Default,
             keyboard: KeyboardInputState::new(),
             text_input: TextInputProtocolState::new(globals, &qh),
             video_import: WaylandVideoImportState::PendingGpuInit,
@@ -1074,8 +1072,9 @@ impl WaylandApp {
 
         while let Ok(icon) = self.cursor_icon_rx.try_recv() {
             cursor_count = cursor_count.saturating_add(1);
-            if let Some(cursor) = self.cursor_icon_state.request(icon, self.input.entered) {
-                self.apply_cursor_icon(conn, cursor);
+            self.requested_cursor = icon;
+            if self.input.entered {
+                self.apply_cursor_icon(conn, icon);
             }
         }
 
@@ -1101,30 +1100,9 @@ impl WaylandApp {
         updated
     }
 
-    fn sctk_cursor_icon(icon: CursorIcon) -> SctkCursorIcon {
-        match icon {
-            CursorIcon::Default => SctkCursorIcon::Default,
-            CursorIcon::Text => SctkCursorIcon::Text,
-            CursorIcon::Pointer => SctkCursorIcon::Pointer,
-        }
-    }
-
-    fn apply_cursor_icon(&self, conn: &Connection, icon: CursorIcon) {
-        let Some(pointer) = self.input.pointer.as_ref() else {
-            return;
-        };
-
-        match pointer.set_cursor(conn, Self::sctk_cursor_icon(icon)) {
-            Ok(()) | Err(PointerThemeError::MissingEnterSerial) => {}
-            Err(PointerThemeError::CursorNotFound) if icon != CursorIcon::Default => {
-                if let Err(err) =
-                    pointer.set_cursor(conn, Self::sctk_cursor_icon(CursorIcon::Default))
-                    && !matches!(err, PointerThemeError::MissingEnterSerial)
-                {
-                    eprintln!("failed to apply wayland fallback cursor: {err}");
-                }
-            }
-            Err(err) => eprintln!("failed to apply wayland cursor: {err}"),
+    fn apply_cursor_icon(&mut self, conn: &Connection, icon: CursorIcon) {
+        if let Some(pointer) = self.input.pointer.as_mut() {
+            pointer.apply(conn, &self.shm, icon);
         }
     }
 
@@ -2496,9 +2474,21 @@ impl CompositorHandler for WaylandApp {
         &mut self,
         conn: &Connection,
         _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
+        surface: &wl_surface::WlSurface,
         new_factor: i32,
     ) {
+        if surface != self.window.wl_surface() {
+            if self.input.entered
+                && self
+                    .input
+                    .pointer
+                    .as_ref()
+                    .is_some_and(|pointer| pointer.surface() == surface)
+            {
+                self.apply_cursor_icon(conn, self.requested_cursor);
+            }
+            return;
+        }
         if self.render_log {
             self.log_render_diagnostic(format!(
                 "integer scale factor changed\n  new_factor: {new_factor}\n  before: {}",
@@ -2586,9 +2576,12 @@ impl CompositorHandler for WaylandApp {
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
+        surface: &wl_surface::WlSurface,
         output: &wl_output::WlOutput,
     ) {
+        if surface != self.window.wl_surface() {
+            return;
+        }
         if !self.surface_outputs.contains(output) {
             self.surface_outputs.push(output.clone());
         }
@@ -2603,9 +2596,12 @@ impl CompositorHandler for WaylandApp {
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
+        surface: &wl_surface::WlSurface,
         output: &wl_output::WlOutput,
     ) {
+        if surface != self.window.wl_surface() {
+            return;
+        }
         self.surface_outputs.retain(|current| current != output);
         self.log_render_diagnostic(format!(
             "surface leave\n  geometry: {}\n  {}",
@@ -2726,7 +2722,7 @@ impl SeatHandler for WaylandApp {
                 cursor_surface,
                 ThemeSpec::System,
             ) {
-                Ok(pointer) => self.input.pointer = Some(pointer),
+                Ok(pointer) => self.input.pointer = Some(WaylandCursor::new(pointer)),
                 Err(err) => eprintln!("failed to create wayland pointer: {err}"),
             }
         } else if capability == Capability::Keyboard && self.keyboard.keyboard.is_none() {
@@ -2799,14 +2795,18 @@ impl PointerHandler for WaylandApp {
             match event.kind {
                 Enter { .. } => {
                     self.input.entered = true;
-                    self.cursor_icon_state.pointer_entered();
-                    self.apply_cursor_icon(conn, CursorIcon::Default);
+                    if let Some(pointer) = self.input.pointer.as_mut() {
+                        pointer.invalidate();
+                    }
+                    self.apply_cursor_icon(conn, self.requested_cursor);
                     self.send_input_event(InputEvent::CursorEntered { entered: true });
                     self.send_input_event(InputEvent::CursorPos { x, y });
                 }
                 Leave { .. } => {
                     self.input.entered = false;
-                    self.cursor_icon_state.pointer_left();
+                    if let Some(pointer) = self.input.pointer.as_mut() {
+                        pointer.invalidate();
+                    }
                     self.send_input_event(InputEvent::CursorEntered { entered: false });
                 }
                 Motion { .. } => {
