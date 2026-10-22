@@ -65,6 +65,19 @@ Prepared asset inputs freeze indicator visibility, so retained scenes do not con
 a live clock while painting. Explicit/fill layout is unchanged by visibility;
 unknown intrinsic dimensions still resolve when the asset becomes ready.
 
+With explicit permission to open a window on a running Wayland compositor,
+validate idle asset completion through the real OpenGL presenter:
+
+```sh
+mix test test/emerge_skia/wayland_asset_loading_test.exs --include wayland_hardware
+```
+
+The opt-in test uses large temporary BMPs to observe pending and ready frames in
+cached Nearby content. Native draw logs and presentation counters must advance
+before any screenshot request. It checks successive image pixels, load failure,
+and return to idle without animations or unrelated tree updates. Ordinary tests
+exclude this compositor-dependent check.
+
 Source status state machine:
 
 - missing -> `pending` (request queued)
@@ -134,8 +147,11 @@ dimensions, not full asset snapshots.
 The declared-source index includes inactive interaction backgrounds and is cached
 by model/revision, with unknown mutable access invalidating it. Background-only
 changes do not invalidate intrinsic measurement; changed image dimensions dirty
-image nodes and their native dependency paths. Frames with no image references
-skip asset-cache locking. Lookups during a frozen frame do not register sources or
+image nodes and their native dependency paths. Source readiness, failure and
+loading-indicator visibility changes invalidate consumers' retained paint fragments,
+including cached Nearby ancestors, even when geometry is unchanged. These updates
+capture fresh asset inputs and request a frame without starting an animation loop.
+Frames with no image references skip asset-cache locking. Lookups during a frozen frame do not register sources or
 queue new loads; a new preparation registers live references before capture.
 
 Native tree publication retains the image IDs referenced by its render graph.
