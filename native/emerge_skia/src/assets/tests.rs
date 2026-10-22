@@ -999,3 +999,84 @@ fn loading_indicator_deadlines_are_renderer_and_source_local() {
     assert!(!loading_indicator_visible(&other));
     assert!(loading_indicator_visible(&source));
 }
+
+#[test]
+fn frame_paint_damage_tracks_image_and_interaction_background_consumers_only() {
+    use crate::tree::{
+        attrs::{Attrs, ImageFit, MouseOverAttrs},
+        element::{Element, ElementKind, NodeId},
+    };
+    let runtime = AssetRuntime::new();
+    let _guard = runtime.enter();
+    let source = ImageSource::Id("paint-change".into());
+    let image = Background::Image {
+        source: source.clone(),
+        fit: ImageFit::Contain,
+    };
+    let interaction = Some(MouseOverAttrs {
+        background: Some(image.clone()),
+        ..Default::default()
+    });
+    let mut tree = ElementTree::new();
+    for (id, attrs) in [
+        (
+            1,
+            Attrs {
+                image_src: Some(source.clone()),
+                ..Default::default()
+            },
+        ),
+        (
+            2,
+            Attrs {
+                background: Some(image),
+                ..Default::default()
+            },
+        ),
+        (
+            3,
+            Attrs {
+                mouse_over: interaction.clone(),
+                ..Default::default()
+            },
+        ),
+        (
+            4,
+            Attrs {
+                mouse_down: interaction.clone(),
+                ..Default::default()
+            },
+        ),
+        (
+            5,
+            Attrs {
+                focused: interaction,
+                ..Default::default()
+            },
+        ),
+        (
+            6,
+            Attrs {
+                image_src: Some(ImageSource::Id("unchanged".into())),
+                ..Default::default()
+            },
+        ),
+    ] {
+        tree.insert(Element::with_attrs(
+            NodeId(id),
+            ElementKind::El,
+            vec![],
+            attrs,
+        ));
+    }
+    let before = tree.capture_frame_assets();
+    crate::renderer::insert_test_raster_asset_rgba("paint-change", 1, 1, &[255, 0, 0, 255])
+        .unwrap();
+    let after = tree.capture_frame_assets();
+    assert_eq!(
+        after.paint_invalidations(&tree, Some(&before)),
+        (1..=5).map(NodeId).collect::<Vec<_>>()
+    );
+    assert!(after.paint_invalidations(&tree, Some(&after)).is_empty());
+    assert!(after.paint_invalidations(&tree, None).is_empty());
+}
