@@ -78,6 +78,8 @@ use super::{
     text_ops,
 };
 
+pub(crate) mod pointer_drag;
+
 const RUNTIME_DRAG_DEADZONE: f32 = 10.0;
 const GESTURE_AXIS_DOMINANCE_RATIO: f32 = 1.25;
 const GESTURE_AXIS_MIN_LEAD: f32 = 6.0;
@@ -1118,6 +1120,7 @@ pub struct SwipeTracker {
 /// dragging, and text selection dragging.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct RuntimeOverlayState {
+    pub pointer_capture: Option<pointer_drag::PointerCaptureTracker>,
     pub click_press: Option<ClickPressTracker>,
     pub virtual_key: Option<VirtualKeyTracker>,
     pub key_presses: Vec<KeyPressTracker>,
@@ -1137,6 +1140,10 @@ fn emit_runtime_overlay_listeners(
     // the overlay-side precedence table in code form.
     out.emit_opt(runtime_scroll_input_splitter_listener(base));
     out.emit(runtime_pointer_lifecycle_splitter_listener());
+    out.emit_all(pointer_drag::overlay_listeners(
+        base,
+        runtime.pointer_capture.as_ref(),
+    ));
     out.emit_opt(runtime_drag_active_release_clear_listener(
         base,
         &runtime.drag,
@@ -2861,6 +2868,12 @@ pub enum SemanticAction {
         kind: ElementEventKind,
         coordinates: PointerCoordinates,
     },
+    /// Materialize a captured drag sample in the source element's logical space.
+    PointerDrag {
+        element_id: NodeId,
+        phase: super::DragPhase,
+        coordinates: PointerCoordinates,
+    },
     /// Apply a precomputed focus transition.
     FocusTo {
         next: Option<NodeId>,
@@ -2898,6 +2911,10 @@ pub enum SemanticAction {
 /// Transient event-runtime state changes.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum RuntimeChange {
+    StartPointerCapture {
+        tracker: pointer_drag::PointerCaptureTracker,
+    },
+    ClearPointerCapture,
     /// Begin click/press followup tracking for pointer interaction.
     StartClickPressTracker {
         element_id: NodeId,
@@ -2907,9 +2924,13 @@ pub(crate) enum RuntimeChange {
         clear_mouse_down: bool,
     },
     /// Begin virtual-key press tracking.
-    StartVirtualKeyTracker { tracker: VirtualKeyTracker },
+    StartVirtualKeyTracker {
+        tracker: VirtualKeyTracker,
+    },
     /// Begin completed key-press followup tracking.
-    StartKeyPressTracker { tracker: KeyPressTracker },
+    StartKeyPressTracker {
+        tracker: KeyPressTracker,
+    },
     /// Begin drag threshold tracking.
     StartDragTracker {
         element_id: NodeId,
@@ -2949,7 +2970,9 @@ pub(crate) enum RuntimeChange {
     /// Drop click/press release followup tracking.
     ClearClickPressTracker,
     /// Begin swipe followup tracking.
-    StartSwipeTracker { tracker: SwipeTracker },
+    StartSwipeTracker {
+        tracker: SwipeTracker,
+    },
     /// Drop swipe followup tracking.
     ClearSwipeTracker,
     /// Cancel the active virtual-key gesture until release.
@@ -2957,13 +2980,19 @@ pub(crate) enum RuntimeChange {
     /// Drop virtual-key tracking entirely.
     ClearVirtualKeyTracker,
     /// Drop completed key-press tracking for one key.
-    ClearKeyPressTrackersForKey { key: CanonicalKey },
+    ClearKeyPressTrackersForKey {
+        key: CanonicalKey,
+    },
     /// Drop all completed key-press tracking.
     ClearKeyPressTrackers,
     /// Begin scrollbar thumb-drag tracking.
-    StartScrollbarDrag { tracker: ScrollbarDragTracker },
+    StartScrollbarDrag {
+        tracker: ScrollbarDragTracker,
+    },
     /// Update current scrollbar drag scroll position.
-    UpdateScrollbarDragCurrentScroll { current_scroll: f32 },
+    UpdateScrollbarDragCurrentScroll {
+        current_scroll: f32,
+    },
     /// End scrollbar thumb-drag tracking.
     ClearScrollbarDrag,
     /// End text-selection drag tracking.
@@ -2986,18 +3015,28 @@ pub(crate) enum RuntimeChange {
         key: CanonicalKey,
     },
     /// Track an expected content value coming back from an Elixir tree patch.
-    ExpectTextInputEcho { element_id: NodeId, content: String },
+    ExpectTextInputEcho {
+        element_id: NodeId,
+        content: String,
+    },
     /// Track an expected slider value coming back from an Elixir tree patch.
-    ExpectSliderPatchValue { element_id: NodeId, value: f64 },
+    ExpectSliderPatchValue {
+        element_id: NodeId,
+        value: f64,
+    },
     /// Replace active hover trackers.
-    SetHoverStack { stack: Vec<HoverTracker> },
+    SetHoverStack {
+        stack: Vec<HoverTracker>,
+    },
 }
 
 impl RuntimeChange {
     pub fn requires_registry_recompose(&self) -> bool {
         matches!(
             self,
-            RuntimeChange::StartClickPressTracker { .. }
+            RuntimeChange::StartPointerCapture { .. }
+                | RuntimeChange::ClearPointerCapture
+                | RuntimeChange::StartClickPressTracker { .. }
                 | RuntimeChange::StartVirtualKeyTracker { .. }
                 | RuntimeChange::StartKeyPressTracker { .. }
                 | RuntimeChange::StartDragTracker { .. }
@@ -3029,6 +3068,7 @@ pub enum ElixirEventPayload {
     Float(f64),
     Scroll(super::ScrollPayload),
     Position(super::PointerPosition),
+    Drag(super::DragPayload),
 }
 
 /// Elixir-facing element event.
@@ -4732,6 +4772,26 @@ impl<'a, C: ListenerComputeCtx> SemanticComputeState<'a, C> {
                 })
                 .into_iter()
                 .collect(),
+            SemanticAction::PointerDrag {
+                element_id,
+                phase,
+                coordinates,
+            } => self
+                .pointer_position
+                .and_then(|(x, y)| coordinates.position(x, y))
+                .map(|position| {
+                    ListenerAction::ElixirEvent(ElixirEvent {
+                        element_id,
+                        kind: ElementEventKind::Drag,
+                        payload: Some(ElixirEventPayload::Drag(super::DragPayload {
+                            x: position.x,
+                            y: position.y,
+                            phase,
+                        })),
+                    })
+                })
+                .into_iter()
+                .collect(),
             SemanticAction::FocusTo {
                 next,
                 reveal_scrolls,
@@ -6115,6 +6175,7 @@ fn owns_steady_cursor_inside(element: &Element, has_scrollbar_hover: bool) -> bo
     let attrs = &element.layout.effective;
     cursor_icon_for_element(element).is_some()
         || attrs.on_mouse_move.unwrap_or(false)
+        || attrs.on_drag.unwrap_or(false)
         || tracks_hover_inside(element)
         || attrs.on_mouse_down.unwrap_or(false)
         || attrs.on_mouse_up.unwrap_or(false)
@@ -8027,6 +8088,11 @@ fn slot_primary_left_press(
     let matcher_kind = matcher.kind();
     let actions: Vec<_> = mouse_events::left_press_actions(element, region.coordinates)
         .into_iter()
+        .chain(pointer_drag::start_actions(
+            element,
+            region.coordinates,
+            matcher_kind,
+        ))
         .chain(mouse_down_style::left_press_actions(element))
         .chain(virtual_key::left_press_actions(element, &region))
         .chain(
@@ -8929,7 +8995,7 @@ mod click_press_tracker {
         let clear_mouse_down = attrs.mouse_down.is_some();
         let element_id = element.id;
 
-        (emit_click || emit_press_pointer || clear_mouse_down)
+        (!attrs.on_drag.unwrap_or(false) && (emit_click || emit_press_pointer || clear_mouse_down))
             .then(|| {
                 vec![ListenerAction::RuntimeChange(
                     RuntimeChange::StartClickPressTracker {
@@ -8953,10 +9019,11 @@ mod click_press_tracker {
         let attrs = &element.layout.effective;
         let swipe_handlers = swipe_handlers_for_element(element);
         let scroll_candidate = !scroll_wheel::scroll_directions_for_element(element).is_empty();
-        (attrs.on_click.unwrap_or(false)
-            || attrs.on_press.unwrap_or(false)
-            || swipe_handlers.any()
-            || scroll_candidate)
+        (!attrs.on_drag.unwrap_or(false)
+            && (attrs.on_click.unwrap_or(false)
+                || attrs.on_press.unwrap_or(false)
+                || swipe_handlers.any()
+                || scroll_candidate))
             .then_some(PointerDragBootstrap {
                 element_id: element.id,
                 matcher_kind,
@@ -11937,6 +12004,7 @@ mod tests {
         let base = registry_for_elements(&[element]);
 
         let runtime = RuntimeOverlayState {
+            pointer_capture: None,
             click_press: Some(ClickPressTracker {
                 element_id: NodeId::from_term_bytes(vec![30]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
@@ -11997,6 +12065,7 @@ mod tests {
         let base = registry_for_elements(&[element]);
 
         let runtime = RuntimeOverlayState {
+            pointer_capture: None,
             click_press: Some(ClickPressTracker {
                 element_id: NodeId::from_term_bytes(vec![27]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
@@ -12054,6 +12123,7 @@ mod tests {
         let base = registry_for_elements(&[element]);
 
         let runtime = RuntimeOverlayState {
+            pointer_capture: None,
             click_press: Some(ClickPressTracker {
                 element_id: NodeId::from_term_bytes(vec![99]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
@@ -12103,6 +12173,7 @@ mod tests {
         let base = registry_for_elements(&[element]);
 
         let runtime = RuntimeOverlayState {
+            pointer_capture: None,
             click_press: Some(ClickPressTracker {
                 element_id: NodeId::from_term_bytes(vec![91]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
@@ -12159,6 +12230,7 @@ mod tests {
         let base = registry_for_elements(&[element]);
 
         let runtime = RuntimeOverlayState {
+            pointer_capture: None,
             click_press: Some(ClickPressTracker {
                 element_id: NodeId::from_term_bytes(vec![29]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
@@ -12217,6 +12289,7 @@ mod tests {
         let base = registry_for_elements(&[element]);
 
         let runtime = RuntimeOverlayState {
+            pointer_capture: None,
             click_press: Some(ClickPressTracker {
                 element_id: NodeId::from_term_bytes(vec![31]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
@@ -12273,6 +12346,7 @@ mod tests {
         let base = registry_for_elements(&[element]);
 
         let runtime = RuntimeOverlayState {
+            pointer_capture: None,
             click_press: Some(ClickPressTracker {
                 element_id: NodeId::from_term_bytes(vec![31]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
@@ -12347,6 +12421,7 @@ mod tests {
         let base = registry_for_elements(&[element]);
 
         let candidate_runtime = RuntimeOverlayState {
+            pointer_capture: None,
             click_press: None,
             virtual_key: None,
             key_presses: Vec::new(),
@@ -12390,6 +12465,7 @@ mod tests {
         ));
 
         let active_runtime = RuntimeOverlayState {
+            pointer_capture: None,
             drag: DragTrackerState::Active {
                 element_id: NodeId::from_term_bytes(vec![32]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
@@ -12500,6 +12576,7 @@ mod tests {
         let base = registry_for_elements(&[element]);
 
         let runtime = RuntimeOverlayState {
+            pointer_capture: None,
             click_press: None,
             virtual_key: None,
             key_presses: Vec::new(),
@@ -12557,6 +12634,7 @@ mod tests {
         let base = registry_for_elements(&[element]);
 
         let runtime = RuntimeOverlayState {
+            pointer_capture: None,
             click_press: None,
             virtual_key: None,
             key_presses: Vec::new(),
@@ -12650,6 +12728,7 @@ mod tests {
 
         let base = registry_for_elements(&[parent, child]);
         let runtime = RuntimeOverlayState {
+            pointer_capture: None,
             click_press: None,
             virtual_key: None,
             key_presses: Vec::new(),
@@ -12737,6 +12816,7 @@ mod tests {
 
         let base = registry_for_elements(&[parent, child]);
         let runtime = RuntimeOverlayState {
+            pointer_capture: None,
             click_press: None,
             virtual_key: None,
             key_presses: Vec::new(),
@@ -12797,6 +12877,7 @@ mod tests {
         let base = registry_for_elements(&[element]);
 
         let runtime = RuntimeOverlayState {
+            pointer_capture: None,
             click_press: None,
             virtual_key: None,
             key_presses: Vec::new(),
@@ -12862,6 +12943,7 @@ mod tests {
         let base = registry_for_elements(&[element]);
 
         let runtime = RuntimeOverlayState {
+            pointer_capture: None,
             click_press: None,
             virtual_key: None,
             key_presses: Vec::new(),
@@ -12923,6 +13005,7 @@ mod tests {
         let base = registry_for_elements(&[element]);
 
         let runtime = RuntimeOverlayState {
+            pointer_capture: None,
             click_press: None,
             virtual_key: None,
             key_presses: Vec::new(),
@@ -13141,6 +13224,7 @@ mod tests {
     fn runtime_listeners_for_overlay_virtual_key_release_dispatches_synthetic_input() {
         let base = registry_for_elements(&[]);
         let runtime = RuntimeOverlayState {
+            pointer_capture: None,
             click_press: None,
             virtual_key: Some(VirtualKeyTracker {
                 element_id: NodeId::from_term_bytes(vec![74]),
@@ -13476,6 +13560,7 @@ mod tests {
         let base = registry_for_elements(&[element]);
 
         let runtime = RuntimeOverlayState {
+            pointer_capture: None,
             click_press: None,
             virtual_key: None,
             key_presses: vec![KeyPressTracker {
@@ -14656,6 +14741,7 @@ mod tests {
         let base = registry_for_elements(&[element]);
 
         let runtime = RuntimeOverlayState {
+            pointer_capture: None,
             click_press: None,
             virtual_key: None,
             key_presses: Vec::new(),
@@ -14716,6 +14802,7 @@ mod tests {
     fn runtime_listeners_for_overlay_drops_text_drag_followups_when_source_listener_missing() {
         let base = registry_for_elements(&[]);
         let runtime = RuntimeOverlayState {
+            pointer_capture: None,
             click_press: None,
             virtual_key: None,
             key_presses: Vec::new(),
@@ -15373,6 +15460,7 @@ mod tests {
         );
         let base = registry_for_elements(&[element]);
         let runtime = RuntimeOverlayState {
+            pointer_capture: None,
             click_press: None,
             virtual_key: None,
             key_presses: Vec::new(),
@@ -15442,6 +15530,7 @@ mod tests {
         );
         let base = registry_for_elements(&[element]);
         let runtime = RuntimeOverlayState {
+            pointer_capture: None,
             click_press: None,
             virtual_key: None,
             key_presses: Vec::new(),
@@ -15515,6 +15604,7 @@ mod tests {
         let base = registry_for_elements(&[element]);
 
         let runtime = RuntimeOverlayState {
+            pointer_capture: None,
             click_press: Some(ClickPressTracker {
                 element_id: NodeId::from_term_bytes(vec![83]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
@@ -15584,6 +15674,7 @@ mod tests {
         let base = registry_for_elements(&[element]);
 
         let runtime = RuntimeOverlayState {
+            pointer_capture: None,
             click_press: Some(ClickPressTracker {
                 element_id: NodeId::from_term_bytes(vec![84]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
@@ -15650,6 +15741,7 @@ mod tests {
         let base = registry_for_elements(&[element]);
 
         let runtime = RuntimeOverlayState {
+            pointer_capture: None,
             click_press: None,
             virtual_key: None,
             key_presses: Vec::new(),
@@ -15716,6 +15808,7 @@ mod tests {
         );
         let base = registry_for_elements(&[element]);
         let runtime = RuntimeOverlayState {
+            pointer_capture: None,
             click_press: None,
             virtual_key: None,
             key_presses: Vec::new(),
@@ -15757,6 +15850,7 @@ mod tests {
     #[test]
     fn runtime_listeners_for_overlay_scrollbar_drag_emit_move_and_clear_followups() {
         let runtime = RuntimeOverlayState {
+            pointer_capture: None,
             click_press: None,
             virtual_key: None,
             key_presses: Vec::new(),

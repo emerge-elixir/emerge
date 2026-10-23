@@ -470,6 +470,7 @@ fn attrs_affect_interaction_or_registry(attrs: &Attrs) -> bool {
         || attrs.on_mouse_enter.unwrap_or(false)
         || attrs.on_mouse_leave.unwrap_or(false)
         || attrs.on_mouse_move.unwrap_or(false)
+        || attrs.on_drag.unwrap_or(false)
         || attrs.on_press.unwrap_or(false)
         || attrs.on_swipe_up.unwrap_or(false)
         || attrs.on_swipe_down.unwrap_or(false)
@@ -1803,6 +1804,7 @@ fn sanitize_ghost_visual(kind: ElementKind, source: &Attrs) -> (ElementKind, Att
     attrs.on_mouse_enter = None;
     attrs.on_mouse_leave = None;
     attrs.on_mouse_move = None;
+    attrs.on_drag = None;
     attrs.on_press = None;
     attrs.on_swipe_up = None;
     attrs.on_swipe_down = None;

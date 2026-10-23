@@ -59,6 +59,7 @@ defmodule Emerge.UI.Internal.Validation do
                       :on_mouse_enter,
                       :on_mouse_leave,
                       :on_mouse_move,
+                      :on_drag,
                       :mouse_over,
                       :focused,
                       :mouse_down,
@@ -527,6 +528,7 @@ defmodule Emerge.UI.Internal.Validation do
               :on_mouse_enter,
               :on_mouse_leave,
               :on_mouse_move,
+              :on_drag,
               :on_change,
               :on_scroll,
               :on_focus,
@@ -652,6 +654,29 @@ defmodule Emerge.UI.Internal.Validation do
          (Map.has_key?(attrs, :on_click) or Map.has_key?(attrs, :on_press)) do
       raise ArgumentError,
             "#{attrs_owner} does not allow :virtual_key together with :on_click or :on_press"
+    end
+
+    if Map.has_key?(attrs, :on_drag) and
+         attrs_owner in ["Input.text/2", "Input.multiline/2", "Input.slider/2"] do
+      raise ArgumentError,
+            "#{attrs_owner} owns its native drag behavior; attach :on_drag to a custom element"
+    end
+
+    if Map.has_key?(attrs, :on_drag) and
+         Enum.any?(
+           [
+             :on_click,
+             :on_press,
+             :on_swipe_up,
+             :on_swipe_down,
+             :on_swipe_left,
+             :on_swipe_right,
+             :virtual_key
+           ],
+           &Map.has_key?(attrs, &1)
+         ) do
+      raise ArgumentError,
+            "#{attrs_owner} does not allow :on_drag together with click/press, swipe or virtual-key handlers"
     end
 
     has_layout_scale = attr_or_animation_key?(attrs, :layout_scale)

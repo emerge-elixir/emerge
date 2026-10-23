@@ -4062,6 +4062,7 @@ fn element_affects_registry(element: &Element) -> bool {
         || attrs.on_mouse_enter.unwrap_or(false)
         || attrs.on_mouse_leave.unwrap_or(false)
         || attrs.on_mouse_move.unwrap_or(false)
+        || attrs.on_drag.unwrap_or(false)
         || attrs.on_press.unwrap_or(false)
         || attrs.on_swipe_up.unwrap_or(false)
         || attrs.on_swipe_down.unwrap_or(false)

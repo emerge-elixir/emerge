@@ -1,5 +1,5 @@
 pub const PROTOCOL_NAME: &str = "emerge_skia_macos";
-pub const PROTOCOL_VERSION: u16 = 18;
+pub const PROTOCOL_VERSION: u16 = 19;
 pub const REQUEST_SET_WINDOW_TITLE: u16 = 0x001D;
 
 pub fn decode_window_title(payload: &[u8]) -> Result<String, String> {
@@ -199,6 +199,16 @@ pub fn encode_element_event_payload(
 ) -> Vec<u8> {
     use crate::events::registry_builder::ElixirEventPayload;
     let value = match payload {
+        Some(ElixirEventPayload::Drag(value)) => [match value.phase {
+            crate::events::DragPhase::Start => 0,
+            crate::events::DragPhase::Move => 1,
+            crate::events::DragPhase::End => 2,
+            crate::events::DragPhase::Cancel => 3,
+        }]
+        .into_iter()
+        .chain(value.x.to_be_bytes())
+        .chain(value.y.to_be_bytes())
+        .collect(),
         Some(ElixirEventPayload::Position(value)) => value
             .x
             .to_be_bytes()
@@ -240,6 +250,7 @@ pub fn encode_element_event_kind(kind: crate::events::ElementEventKind) -> u8 {
         ElementEventKind::MouseEnter => ELEMENT_EVENT_MOUSE_ENTER,
         ElementEventKind::MouseLeave => ELEMENT_EVENT_MOUSE_LEAVE,
         ElementEventKind::MouseMove => ELEMENT_EVENT_MOUSE_MOVE,
+        ElementEventKind::Drag => ELEMENT_EVENT_DRAG,
         ElementEventKind::Focus => ELEMENT_EVENT_FOCUS,
         ElementEventKind::Blur => ELEMENT_EVENT_BLUR,
         ElementEventKind::Change => ELEMENT_EVENT_CHANGE,
@@ -265,6 +276,7 @@ const ELEMENT_EVENT_MOUSE_MOVE: u8 = 15;
 const ELEMENT_EVENT_FOCUS: u8 = 16;
 const ELEMENT_EVENT_BLUR: u8 = 17;
 const ELEMENT_EVENT_CHANGE: u8 = 18;
+const ELEMENT_EVENT_DRAG: u8 = 20;
 const ELEMENT_EVENT_SCROLL: u8 = 19;
 
 #[cfg(test)]
@@ -304,5 +316,42 @@ mod position_tests {
                 .chain(0u32.to_be_bytes())
                 .collect::<Vec<_>>()
         );
+    }
+}
+
+#[cfg(test)]
+mod drag_payload_tests {
+    use super::*;
+    use crate::events::{
+        DragPayload, DragPhase, ElementEventKind, registry_builder::ElixirEventPayload,
+    };
+    use crate::tree::element::NodeId;
+
+    #[test]
+    fn drag_wire_payload_encodes_phase_and_two_big_endian_floats() {
+        for (phase, tag) in [
+            (DragPhase::Start, 0),
+            (DragPhase::Move, 1),
+            (DragPhase::End, 2),
+            (DragPhase::Cancel, 3),
+        ] {
+            let payload = ElixirEventPayload::Drag(DragPayload {
+                phase,
+                x: 35.5,
+                y: -2.25,
+            });
+            let encoded =
+                encode_element_event_payload(&NodeId(42), ElementEventKind::Drag, Some(&payload));
+            let expected: Vec<u8> = [20, 1]
+                .into_iter()
+                .chain(8u32.to_be_bytes())
+                .chain(42u64.to_be_bytes())
+                .chain(17u32.to_be_bytes())
+                .chain([tag])
+                .chain(0x4041_c000_0000_0000u64.to_be_bytes())
+                .chain(0xc002_0000_0000_0000u64.to_be_bytes())
+                .collect();
+            assert_eq!(encoded, expected);
+        }
     }
 }

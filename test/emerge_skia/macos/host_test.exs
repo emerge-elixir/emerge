@@ -67,21 +67,48 @@ defmodule EmergeSkia.Macos.HostTest do
 
     assert Protocol.encode_init_payload() ==
              <<byte_size("emerge_skia_macos")::unsigned-big-16, "emerge_skia_macos",
-               18::unsigned-big-16>>
+               19::unsigned-big-16>>
   end
 
-  test "protocol rejects hosts without structured mouse positions" do
+  test "protocol rejects hosts without structured mouse positions and captured drag maps" do
     reply = fn version ->
       <<byte_size("emerge_skia_macos")::unsigned-big-16, "emerge_skia_macos",
         version::unsigned-big-16, 123::unsigned-big-64, 456::unsigned-big-32>>
     end
 
-    assert {:ok, %{host_id: 123, host_pid: 456}} = Protocol.decode_init_ok_payload(reply.(18))
+    assert {:ok, %{host_id: 123, host_pid: 456}} = Protocol.decode_init_ok_payload(reply.(19))
 
-    for version <- [12, 13, 14, 15, 16, 17] do
+    for version <- [12, 13, 14, 15, 16, 17, 18] do
       assert {:error, "unsupported macOS host init response"} =
                Protocol.decode_init_ok_payload(reply.(version))
     end
+  end
+
+  test "captured drag wire maps preserve phases and fractional positions" do
+    id = <<42::64>>
+
+    for {phase, tag} <- [start: 0, move: 1, end: 2, cancel: 3] do
+      body = <<tag, 35.5::float-big-64, -2.25::float-big-64>>
+
+      assert {:ok, {^id, :drag, %{phase: ^phase, x: 35.5, y: -2.25}}} =
+               Protocol.decode_element_event_payload(
+                 <<20, 1, 8::32, id::binary, 17::32, body::binary>>
+               )
+    end
+
+    for body <- [
+          <<>>,
+          <<1, 35.5::float-big-64>>,
+          <<4, 35.5::float-big-64, -2.25::float-big-64>>,
+          "move,35.5,-2.25"
+        ] do
+      assert :error =
+               Protocol.decode_element_event_payload(
+                 <<20, 1, 8::32, id::binary, byte_size(body)::32, body::binary>>
+               )
+    end
+
+    assert :error = Protocol.decode_element_event_payload(<<20, 0, 8::32, id::binary, 0::32>>)
   end
 
   test "window title wire payload uses UTF-8 byte length, including empty titles" do

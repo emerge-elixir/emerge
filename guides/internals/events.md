@@ -518,9 +518,21 @@ border-box origin and divides by the prepared layout scale. Hover stacks resolve
 each element independently; click followups rebind to accepted source geometry.
 Leave coordinates are unclamped. Window leave uses a listener-order snapshot,
 separate from the ingress snapshot which may already contain later buffered input.
-The NIF emits a map; macOS protocol 18 carries two big-endian f64 fields and decodes
+The NIF emits a map; macOS protocol 19 carries two big-endian f64 fields and decodes
 the same map. Normal viewport payload wrapping handles delivery without new routes.
 `press` and raw observer payloads are unchanged.
+
+### Explicit captured drag
+
+`on_drag` adds a separate `drag` route with `%{phase: :start | :move | :end |
+:cancel, x: float, y: float}`. A left press installs a mount-owned pointer-capture
+tracker. Overlay listeners own subsequent real moves and release anywhere; each
+registry rebuild rebinds the source coordinate descriptor. Stationary cursor
+revalidation does not emit drag moves or initiate another feedback cycle.
+Window leave/focus loss cancels at the listener-order last position. Missing,
+removed-handler or remounted sources drop capture; it never transfers to a
+replacement. Physical hover enter/leave and raw observers are unchanged.
+The NIF emits a map; the macOS drag body is a phase byte followed by two f64s.
 
 ### Mouse Down / Mouse Up
 

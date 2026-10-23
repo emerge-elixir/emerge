@@ -118,6 +118,27 @@ Resize reports output dimensions and scale. Enter/focus refer to the **window**,
 not an individual UI element. IME preedit ranges come from the platform; surrounding
 text deletion counts UTF-8 bytes, not characters.
 
+## Drag outside a custom control
+
+Ordinary mouse handlers follow hit testing: `on_mouse_up` targets the release
+location, not necessarily the element pressed. For a color picker or other custom
+control, use `Event.on_drag/1` to retain movement and release outside its bounds:
+
+```elixir
+el([width(px(180)), height(px(120)), Event.on_drag(:picked)], none())
+
+# In the viewport:
+def handle_info({:picked, %{phase: phase, x: x, y: y}}, state) do
+  # :start begins capture; :move updates; :end or :cancel finishes.
+  # x/y are already logical pixels, even outside the control.
+  {:noreply, update_picker(state, phase, x, y) |> Viewport.rerender()}
+end
+```
+
+Clamp the selected value, not the received coordinates. Window leave or focus
+loss cancels capture. Use this on custom elements rather than native text inputs
+or sliders; see `Emerge.UI.Event.on_drag/1` for the full lifecycle and constraints.
+
 ## Observation is not input control
 
 `events: []` stops raw callbacks; it does **not** disable hit testing, text editing,

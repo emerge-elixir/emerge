@@ -701,18 +701,24 @@ impl PendingDispatchEffects {
             ListenerAction::SyntheticInput(events) => self.synthetic_inputs.push(events),
             ListenerAction::SetCursor(icon) => self.requested_cursor = Some(icon),
             ListenerAction::ElixirEvent(event) => {
-                if dispatch_mode == DispatchMode::CursorRevalidate
-                    && event.kind == ElementEventKind::MouseMove
-                {
+                let pointer_move = event.kind == ElementEventKind::MouseMove
+                    || matches!(
+                        event.payload,
+                        Some(ElixirEventPayload::Drag(super::DragPayload {
+                            phase: super::DragPhase::Move,
+                            ..
+                        }))
+                    );
+                if dispatch_mode == DispatchMode::CursorRevalidate && pointer_move {
                     return self;
                 }
 
-                if !matches!(
-                    event.kind,
-                    ElementEventKind::MouseMove
-                        | ElementEventKind::MouseEnter
-                        | ElementEventKind::MouseLeave
-                ) {
+                if !pointer_move
+                    && !matches!(
+                        event.kind,
+                        ElementEventKind::MouseEnter | ElementEventKind::MouseLeave
+                    )
+                {
                     self.elixir_event_requires_rebuild = true;
                 }
                 runtime.send_elixir_event(event);
@@ -2400,6 +2406,9 @@ impl DirectEventRuntime {
 
         let atom = event_kind_to_atom(event.kind);
         match event.payload {
+            Some(ElixirEventPayload::Drag(value)) => {
+                super::send_element_event_with_position(pid, &event.element_id, atom, value)
+            }
             Some(ElixirEventPayload::String(value)) => {
                 send_element_event_with_string_payload(pid, &event.element_id, atom, &value)
             }
@@ -2419,6 +2428,11 @@ impl DirectEventRuntime {
     fn apply_runtime_change(&mut self, change: RuntimeChange) {
         let now = Instant::now();
         match change {
+            RuntimeChange::StartPointerCapture { tracker } => {
+                self.cancel_inertial_scroll();
+                self.runtime_overlay.pointer_capture = Some(tracker);
+            }
+            RuntimeChange::ClearPointerCapture => self.runtime_overlay.pointer_capture = None,
             RuntimeChange::StartClickPressTracker {
                 element_id,
                 matcher_kind,
@@ -2701,6 +2715,12 @@ impl DirectEventRuntime {
             .retain(|suppression| same_mount(&suppression.element_id));
         self.hover_stack
             .retain(|tracker| same_mount(&tracker.element_id));
+        if let Some(capture) = self.runtime_overlay.pointer_capture.as_ref()
+            && (!has_source(&capture.element_id, capture.matcher_kind)
+                || !registry_builder::pointer_drag::has_source(base, capture))
+        {
+            self.runtime_overlay.pointer_capture = None;
+        }
         if let Some(click_press) = self.runtime_overlay.click_press.as_ref()
             && !has_source(&click_press.element_id, click_press.matcher_kind)
         {
@@ -2872,6 +2892,7 @@ fn event_kind_to_atom(kind: ElementEventKind) -> rustler::Atom {
         ElementEventKind::MouseEnter => mouse_enter_atom(),
         ElementEventKind::MouseLeave => mouse_leave_atom(),
         ElementEventKind::MouseMove => mouse_move_atom(),
+        ElementEventKind::Drag => super::drag_atom(),
         ElementEventKind::Focus => focus_atom(),
         ElementEventKind::Blur => blur_atom(),
         ElementEventKind::Change => change_atom(),

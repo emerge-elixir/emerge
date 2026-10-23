@@ -9,7 +9,14 @@
   undone and leave coordinates unclamped. Update bare-message handlers to accept
   the position payload (tuple messages have it appended). Custom `wrap_payload/3`
   callbacks receive the map. `on_press` and raw observer events are unchanged.
-  macOS requires the matching protocol-18 host.
+  macOS requires the matching protocol-19 host.
+
+### Added
+
+- `Event.on_drag/1` for custom controls: captured left-button start/move/end/cancel
+  samples with unclamped element-local logical coordinates. Movement and release
+  remain with the pressed element outside its bounds; ordinary mouse handlers
+  keep their existing hit-testing semantics.
 
 ### Added
 
