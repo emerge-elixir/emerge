@@ -814,3 +814,131 @@ fn captured_drag_does_not_transfer_to_a_replacement_mount_or_removed_handler() {
         assert_eq!(drag_samples(&recorder).len(), 1);
     }
 }
+
+#[test]
+fn stale_hover_snapshots_do_not_revive_a_left_probe_between_sibling_boxes() {
+    let assets = crate::assets::AssetRuntime::new();
+    let _assets = assets.enter();
+    let policy = TreeUpdateDecodePolicy::ReturnErr;
+    let mut tree = ElementTree::new();
+    for (id, kind, flags, width, height) in [
+        (1, ElementKind::Row, vec![], 500.0, 100.0),
+        (9, ElementKind::El, vec![43, 44, 45], 100.0, 60.0),
+        (2, ElementKind::El, vec![], 50.0, 60.0),
+        (10, ElementKind::El, vec![43, 44, 45], 100.0, 60.0),
+    ] {
+        tree.insert(encoded_node(NodeId(id), kind, &flags, width, height));
+    }
+    tree.set_children(&NodeId(1), vec![NodeId(9), NodeId(2), NodeId(10)])
+        .unwrap();
+    tree.set_root_id(NodeId(1));
+    tree.set_revision(1);
+    tree.stamp_all_mounted_at_revision(1);
+    let mut engine = TreeUpdateEngine::new(tree, 500, 100);
+    let (mut host, recorder) = recorded_host();
+    host.install_rebuild(response(
+        &mut engine,
+        vec![TreeMsg::RebuildRegistry],
+        policy,
+    ));
+    host.handle_input(InputEvent::CursorPos { x: 10.0, y: 10.0 });
+    settle(&mut host, &mut engine, policy);
+    assert!(
+        engine
+            .tree()
+            .get(&NodeId(9))
+            .unwrap()
+            .runtime
+            .mouse_over_active
+    );
+    // A legitimate registry published while A is hovered. Paint-only reuse or
+    // an already queued update can republish it after the event runtime left A.
+    let hovered_a = registry_builder::build_registry_rebuild(engine.tree());
+    host.install_rebuild(hovered_a.clone());
+    let leaves = |id| {
+        recorder
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(source, kind)| *source == id && *kind == ElementEventKind::MouseLeave)
+            .count()
+    };
+    for (x, y, owner) in [
+        (300.0, 80.0, None),
+        (320.0, 85.0, None),
+        (170.0, 20.0, Some(NodeId(10))),
+        (180.0, 25.0, Some(NodeId(10))),
+        (330.0, 85.0, None),
+        (350.0, 90.0, None),
+    ] {
+        host.handle_input(InputEvent::CursorPos { x, y });
+        settle(&mut host, &mut engine, policy);
+        let before = recorder.events.lock().unwrap().len();
+        host.install_rebuild(hovered_a.clone());
+        settle(&mut host, &mut engine, policy);
+        assert_eq!(
+            recorder.events.lock().unwrap().len(),
+            before,
+            "a cached registry must not synthesize another leave at ({x}, {y})"
+        );
+        assert_eq!(
+            host.driver
+                .runtime
+                .hover_stack
+                .last()
+                .map(|tracker| tracker.element_id),
+            owner
+        );
+        assert_eq!(
+            leaves(NodeId(9)),
+            1,
+            "A must stay left even when B is left later"
+        );
+    }
+    assert_eq!(leaves(NodeId(10)), 1);
+}
+
+#[test]
+fn cached_hover_flags_cannot_reactivate_a_probe_after_window_leave() {
+    let assets = crate::assets::AssetRuntime::new();
+    let _assets = assets.enter();
+    let policy = TreeUpdateDecodePolicy::ReturnErr;
+    let mut engine = TreeUpdateEngine::new(encoded_tree(ElementKind::El, &[43, 44, 45]), 500, 100);
+    let (mut host, recorder) = recorded_host();
+    host.install_rebuild(response(
+        &mut engine,
+        vec![TreeMsg::RebuildRegistry],
+        policy,
+    ));
+    host.handle_input(InputEvent::CursorPos { x: 10.0, y: 10.0 });
+    settle(&mut host, &mut engine, policy);
+    let hovered = registry_builder::build_registry_rebuild(engine.tree());
+    host.handle_input(InputEvent::CursorEntered { entered: false });
+    // Install the snapshot before the queued native hover-clear reaches the
+    // tree, modeling an application render racing immediate Elixir delivery.
+    host.install_rebuild(hovered.clone());
+    assert!(host.driver.runtime.hover_stack.is_empty());
+    settle(&mut host, &mut engine, policy);
+    host.handle_input(InputEvent::CursorEntered { entered: true });
+    host.handle_input(InputEvent::CursorPos { x: 300.0, y: 80.0 });
+    host.install_rebuild(hovered);
+    settle(&mut host, &mut engine, policy);
+    assert!(host.driver.runtime.hover_stack.is_empty());
+    let events = recorder.events.lock().unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|(_, kind)| *kind == ElementEventKind::MouseLeave)
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|(_, kind)| *kind == ElementEventKind::MouseEnter)
+            .count(),
+        1
+    );
+    assert_eq!(recorder.raw.lock().unwrap().len(), 4);
+}

@@ -543,7 +543,11 @@ The NIF emits a map; the macOS drag body is a phase byte followed by two f64s.
 
 ### Hover
 
-Hover tracking is listener-driven and based on retained hover state.
+Hover tracking is listener-driven. Retained active flags can bootstrap a fresh
+runtime, but after an observed transition the runtime hover stack is authoritative,
+including when empty. Rebuilding or reusing cached listener geometry must not
+reactivate a source that already left. This keeps event-only and paint-only hover
+updates free of forced full-registry rebuilds without replaying stale ownership.
 
 - event-only hover and style hover both retain hover-active state
 - hover enter/leave listeners are built from current retained state

@@ -177,6 +177,7 @@ impl EventRuntimeDriver {
             self.runtime.drag_motion = None;
             self.runtime.inertial_scroll = None;
             self.runtime.hover_stack.clear();
+            self.runtime.hover_tracking_initialized = false;
         }
         let result = operation(&mut self.runtime, &commands, self.log_render);
         let mut messages = self
@@ -1181,6 +1182,9 @@ struct DirectEventRuntime {
     listener_cursor_pos: Option<(f32, f32)>,
     cursor_in_window: bool,
     hover_stack: Vec<HoverTracker>,
+    // Tree hover flags can bootstrap a fresh runtime, but cannot override an
+    // observed enter/leave transition with an old cached snapshot afterward.
+    hover_tracking_initialized: bool,
     current_cursor_icon: CursorIcon,
     text_clicks: text_click::TextClicks,
     input_time: Instant,
@@ -1245,6 +1249,7 @@ impl DirectEventRuntime {
             listener_cursor_pos: None,
             cursor_in_window: false,
             hover_stack: Vec::new(),
+            hover_tracking_initialized: false,
             current_cursor_icon: CursorIcon::Default,
             text_clicks: text_click::TextClicks::default(),
             input_time: Instant::now(),
@@ -2609,6 +2614,7 @@ impl DirectEventRuntime {
             }
             RuntimeChange::SetHoverStack { stack } => {
                 self.hover_stack = stack;
+                self.hover_tracking_initialized = true;
             }
         }
     }
@@ -2821,8 +2827,11 @@ impl DirectEventRuntime {
             self.inertial_scroll = None;
         }
 
-        self.hover_stack =
-            registry_builder::reconcile_hover_stack(&self.base_registry, &self.hover_stack);
+        self.hover_stack = registry_builder::reconcile_hover_stack(
+            &self.base_registry,
+            &self.hover_stack,
+            !self.hover_tracking_initialized,
+        );
     }
 }
 

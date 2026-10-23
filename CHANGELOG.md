@@ -26,6 +26,9 @@
   Nearby content, without requiring an animation or unrelated tree change.
 - Wayland uses bundled cursors when system cursor themes are missing, avoiding
   repeated cursor errors on minimal Linux/WSLg installations.
+- Cached hover snapshots no longer reactivate elements after `mouse_leave`,
+  preventing repeated leave callbacks and coordinate readouts that keep updating
+  outside a box or resume after leaving another box.
 - Building scrollbar press listeners no longer panics when scrollbar metrics
   survive full clipping or a collapsed cross-axis. Hidden thumb/track regions on
   either axis are skipped without dropping retained keyboard or scrollbar state.
