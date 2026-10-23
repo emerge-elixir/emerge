@@ -505,6 +505,20 @@ Raw key events stay canonical and layout-independent. Text input still arrives
 through text commit events, so `Shift+=` matches raw key `:equal` with `:shift`
 while committing the text `"+"`.
 
+### Element-local pointer payloads
+
+`click`, `mouse_down`, `mouse_up`, `mouse_enter`, `mouse_leave` and `mouse_move`
+carry `%{x: float, y: float}` in the receiving element's logical pixels. Cached
+listener actions retain a coordinate descriptor, not a sampled position. Dispatch
+inverse-transforms the surface sample, subtracts the scroll-adjusted painted
+border-box origin and divides by the prepared layout scale. Hover stacks resolve
+each element independently; click followups rebind to accepted source geometry.
+Leave coordinates are unclamped. Window leave uses a listener-order snapshot,
+separate from the ingress snapshot which may already contain later buffered input.
+The NIF emits a map; macOS protocol 18 carries two big-endian f64 fields and decodes
+the same map. Normal viewport payload wrapping handles delivery without new routes.
+`press` and raw observer payloads are unchanged.
+
 ### Mouse Down / Mouse Up
 
 - `on_mouse_down` is left-button only
@@ -849,7 +863,7 @@ Nearby now participates in the retained tree/event model.
 
 - no bubbling or capture propagation
 - no double-click semantics
-- no pointer metadata payloads on element events
+- no button/modifier metadata on element pointer events (only local position)
 - no right/middle element-level down/up events
 - no multi-touch or gesture event model yet
 

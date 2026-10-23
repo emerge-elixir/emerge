@@ -24,8 +24,8 @@ mod app {
             macos::protocol::{
                 DecodedFrame, FRAME_ERROR, FRAME_INIT, FRAME_INIT_OK, FRAME_NOTIFY, FRAME_REPLY,
                 FRAME_REQUEST, PROTOCOL_NAME, PROTOCOL_VERSION, REQUEST_SET_WINDOW_TITLE,
-                decode_frame, decode_init_payload, decode_window_title, encode_frame,
-                encode_init_ok_payload,
+                decode_frame, decode_init_payload, decode_window_title,
+                encode_element_event_payload, encode_frame, encode_init_ok_payload,
             },
             present::PresentPredictionState,
         },
@@ -111,26 +111,6 @@ mod app {
     const NOTIFY_RUNNING: u16 = 0x010D;
 
     const RUNNING_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
-
-    const ELEMENT_EVENT_CLICK: u8 = 1;
-    const ELEMENT_EVENT_PRESS: u8 = 2;
-    const ELEMENT_EVENT_SWIPE_UP: u8 = 3;
-    const ELEMENT_EVENT_SWIPE_DOWN: u8 = 4;
-    const ELEMENT_EVENT_SWIPE_LEFT: u8 = 5;
-    const ELEMENT_EVENT_SWIPE_RIGHT: u8 = 6;
-    const ELEMENT_EVENT_KEY_DOWN: u8 = 7;
-    const ELEMENT_EVENT_KEY_UP: u8 = 8;
-    const ELEMENT_EVENT_KEY_PRESS: u8 = 9;
-    const ELEMENT_EVENT_VIRTUAL_KEY_HOLD: u8 = 10;
-    const ELEMENT_EVENT_MOUSE_DOWN: u8 = 11;
-    const ELEMENT_EVENT_MOUSE_UP: u8 = 12;
-    const ELEMENT_EVENT_MOUSE_ENTER: u8 = 13;
-    const ELEMENT_EVENT_MOUSE_LEAVE: u8 = 14;
-    const ELEMENT_EVENT_MOUSE_MOVE: u8 = 15;
-    const ELEMENT_EVENT_FOCUS: u8 = 16;
-    const ELEMENT_EVENT_BLUR: u8 = 17;
-    const ELEMENT_EVENT_CHANGE: u8 = 18;
-    const ELEMENT_EVENT_SCROLL: u8 = 19;
 
     const LOG_LEVEL_DEBUG: u8 = 0;
     const LOG_LEVEL_INFO: u8 = 1;
@@ -2922,22 +2902,7 @@ mod app {
         kind: ElementEventKind,
         payload: Option<&ElixirEventPayload>,
     ) {
-        let id_bytes = element_id.to_be_bytes();
-        let has_payload = if payload.is_some() { 1 } else { 0 };
-        let payload = match payload {
-            Some(ElixirEventPayload::String(value)) => value.clone(),
-            Some(ElixirEventPayload::Float(value)) => value.to_string(),
-            Some(ElixirEventPayload::Scroll(value)) => format!("{:?},{:?}", value.x, value.y),
-            None => String::new(),
-        };
-        let payload = payload.as_bytes();
-        let mut data = Vec::with_capacity(1 + 1 + 4 + id_bytes.len() + 4 + payload.len());
-        data.push(encode_element_event_kind(kind));
-        data.push(has_payload);
-        data.extend_from_slice(&(id_bytes.len() as u32).to_be_bytes());
-        data.extend_from_slice(&id_bytes);
-        data.extend_from_slice(&(payload.len() as u32).to_be_bytes());
-        data.extend_from_slice(payload);
+        let data = encode_element_event_payload(element_id, kind, payload);
 
         state.send_frame(encode_frame(
             FRAME_NOTIFY,
@@ -3072,30 +3037,6 @@ mod app {
             BUTTON_FORWARD => input_pointer::BUTTON_FORWARD,
             BUTTON_OTHER => input_pointer::BUTTON_OTHER,
             _ => input_pointer::BUTTON_OTHER,
-        }
-    }
-
-    fn encode_element_event_kind(kind: ElementEventKind) -> u8 {
-        match kind {
-            ElementEventKind::Click => ELEMENT_EVENT_CLICK,
-            ElementEventKind::Press => ELEMENT_EVENT_PRESS,
-            ElementEventKind::SwipeUp => ELEMENT_EVENT_SWIPE_UP,
-            ElementEventKind::SwipeDown => ELEMENT_EVENT_SWIPE_DOWN,
-            ElementEventKind::SwipeLeft => ELEMENT_EVENT_SWIPE_LEFT,
-            ElementEventKind::SwipeRight => ELEMENT_EVENT_SWIPE_RIGHT,
-            ElementEventKind::KeyDown => ELEMENT_EVENT_KEY_DOWN,
-            ElementEventKind::KeyUp => ELEMENT_EVENT_KEY_UP,
-            ElementEventKind::KeyPress => ELEMENT_EVENT_KEY_PRESS,
-            ElementEventKind::VirtualKeyHold => ELEMENT_EVENT_VIRTUAL_KEY_HOLD,
-            ElementEventKind::MouseDown => ELEMENT_EVENT_MOUSE_DOWN,
-            ElementEventKind::MouseUp => ELEMENT_EVENT_MOUSE_UP,
-            ElementEventKind::MouseEnter => ELEMENT_EVENT_MOUSE_ENTER,
-            ElementEventKind::MouseLeave => ELEMENT_EVENT_MOUSE_LEAVE,
-            ElementEventKind::MouseMove => ELEMENT_EVENT_MOUSE_MOVE,
-            ElementEventKind::Focus => ELEMENT_EVENT_FOCUS,
-            ElementEventKind::Blur => ELEMENT_EVENT_BLUR,
-            ElementEventKind::Change => ELEMENT_EVENT_CHANGE,
-            ElementEventKind::Scroll => ELEMENT_EVENT_SCROLL,
         }
     }
 

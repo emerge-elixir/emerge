@@ -1,5 +1,5 @@
 pub const PROTOCOL_NAME: &str = "emerge_skia_macos";
-pub const PROTOCOL_VERSION: u16 = 17;
+pub const PROTOCOL_VERSION: u16 = 18;
 pub const REQUEST_SET_WINDOW_TITLE: u16 = 0x001D;
 
 pub fn decode_window_title(payload: &[u8]) -> Result<String, String> {
@@ -187,6 +187,122 @@ mod tests {
         assert_eq!(
             u32::from_be_bytes(payload[12 + name_len..16 + name_len].try_into().unwrap()),
             fixtures::HOST_PID
+        );
+    }
+}
+
+/// Element notification body shared by the native host and codec tests.
+pub fn encode_element_event_payload(
+    id: &crate::tree::element::NodeId,
+    kind: crate::events::ElementEventKind,
+    payload: Option<&crate::events::registry_builder::ElixirEventPayload>,
+) -> Vec<u8> {
+    use crate::events::registry_builder::ElixirEventPayload;
+    let value = match payload {
+        Some(ElixirEventPayload::Position(value)) => value
+            .x
+            .to_be_bytes()
+            .into_iter()
+            .chain(value.y.to_be_bytes())
+            .collect(),
+        Some(ElixirEventPayload::String(value)) => value.as_bytes().to_vec(),
+        Some(ElixirEventPayload::Float(value)) => value.to_string().into_bytes(),
+        Some(ElixirEventPayload::Scroll(value)) => {
+            format!("{:?},{:?}", value.x, value.y).into_bytes()
+        }
+        None => Vec::new(),
+    };
+    let id = id.to_be_bytes();
+    [encode_element_event_kind(kind), u8::from(payload.is_some())]
+        .into_iter()
+        .chain((id.len() as u32).to_be_bytes())
+        .chain(id)
+        .chain((value.len() as u32).to_be_bytes())
+        .chain(value)
+        .collect()
+}
+
+pub fn encode_element_event_kind(kind: crate::events::ElementEventKind) -> u8 {
+    use crate::events::ElementEventKind;
+    match kind {
+        ElementEventKind::Click => ELEMENT_EVENT_CLICK,
+        ElementEventKind::Press => ELEMENT_EVENT_PRESS,
+        ElementEventKind::SwipeUp => ELEMENT_EVENT_SWIPE_UP,
+        ElementEventKind::SwipeDown => ELEMENT_EVENT_SWIPE_DOWN,
+        ElementEventKind::SwipeLeft => ELEMENT_EVENT_SWIPE_LEFT,
+        ElementEventKind::SwipeRight => ELEMENT_EVENT_SWIPE_RIGHT,
+        ElementEventKind::KeyDown => ELEMENT_EVENT_KEY_DOWN,
+        ElementEventKind::KeyUp => ELEMENT_EVENT_KEY_UP,
+        ElementEventKind::KeyPress => ELEMENT_EVENT_KEY_PRESS,
+        ElementEventKind::VirtualKeyHold => ELEMENT_EVENT_VIRTUAL_KEY_HOLD,
+        ElementEventKind::MouseDown => ELEMENT_EVENT_MOUSE_DOWN,
+        ElementEventKind::MouseUp => ELEMENT_EVENT_MOUSE_UP,
+        ElementEventKind::MouseEnter => ELEMENT_EVENT_MOUSE_ENTER,
+        ElementEventKind::MouseLeave => ELEMENT_EVENT_MOUSE_LEAVE,
+        ElementEventKind::MouseMove => ELEMENT_EVENT_MOUSE_MOVE,
+        ElementEventKind::Focus => ELEMENT_EVENT_FOCUS,
+        ElementEventKind::Blur => ELEMENT_EVENT_BLUR,
+        ElementEventKind::Change => ELEMENT_EVENT_CHANGE,
+        ElementEventKind::Scroll => ELEMENT_EVENT_SCROLL,
+    }
+}
+
+const ELEMENT_EVENT_CLICK: u8 = 1;
+const ELEMENT_EVENT_PRESS: u8 = 2;
+const ELEMENT_EVENT_SWIPE_UP: u8 = 3;
+const ELEMENT_EVENT_SWIPE_DOWN: u8 = 4;
+const ELEMENT_EVENT_SWIPE_LEFT: u8 = 5;
+const ELEMENT_EVENT_SWIPE_RIGHT: u8 = 6;
+const ELEMENT_EVENT_KEY_DOWN: u8 = 7;
+const ELEMENT_EVENT_KEY_UP: u8 = 8;
+const ELEMENT_EVENT_KEY_PRESS: u8 = 9;
+const ELEMENT_EVENT_VIRTUAL_KEY_HOLD: u8 = 10;
+const ELEMENT_EVENT_MOUSE_DOWN: u8 = 11;
+const ELEMENT_EVENT_MOUSE_UP: u8 = 12;
+const ELEMENT_EVENT_MOUSE_ENTER: u8 = 13;
+const ELEMENT_EVENT_MOUSE_LEAVE: u8 = 14;
+const ELEMENT_EVENT_MOUSE_MOVE: u8 = 15;
+const ELEMENT_EVENT_FOCUS: u8 = 16;
+const ELEMENT_EVENT_BLUR: u8 = 17;
+const ELEMENT_EVENT_CHANGE: u8 = 18;
+const ELEMENT_EVENT_SCROLL: u8 = 19;
+
+#[cfg(test)]
+mod position_tests {
+    use super::*;
+    use crate::events::{ElementEventKind, PointerPosition, registry_builder::ElixirEventPayload};
+    use crate::tree::element::NodeId;
+
+    #[test]
+    fn element_position_notifications_use_exact_f64_wire_values() {
+        for (kind, tag) in [
+            (ElementEventKind::Click, 1),
+            (ElementEventKind::MouseDown, 11),
+            (ElementEventKind::MouseUp, 12),
+            (ElementEventKind::MouseEnter, 13),
+            (ElementEventKind::MouseLeave, 14),
+            (ElementEventKind::MouseMove, 15),
+        ] {
+            let payload = ElixirEventPayload::Position(PointerPosition { x: 35.5, y: -2.25 });
+            let encoded = encode_element_event_payload(&NodeId(42), kind, Some(&payload));
+            let expected: Vec<u8> = [tag, 1]
+                .into_iter()
+                .chain(8u32.to_be_bytes())
+                .chain(42u64.to_be_bytes())
+                .chain(16u32.to_be_bytes())
+                .chain(0x4041_c000_0000_0000u64.to_be_bytes())
+                .chain(0xc002_0000_0000_0000u64.to_be_bytes())
+                .collect();
+            assert_eq!(encoded, expected);
+        }
+        assert_eq!(
+            encode_element_event_payload(&NodeId(42), ElementEventKind::Press, None),
+            [2u8, 0]
+                .into_iter()
+                .chain(8u32.to_be_bytes())
+                .chain(42u64.to_be_bytes())
+                .chain(0u32.to_be_bytes())
+                .collect::<Vec<_>>()
         );
     }
 }

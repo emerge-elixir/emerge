@@ -67,8 +67,32 @@ defmodule Emerge.UI.Event do
 
   `on_mouse_down/1` and `on_mouse_up/1` are left-button only.
 
-  `on_mouse_enter/1`, `on_mouse_leave/1`, and `on_mouse_move/1` do not include
-  cursor coordinates in the delivered message.
+  `on_click/1`, `on_mouse_down/1`, `on_mouse_up/1`, `on_mouse_enter/1`,
+  `on_mouse_leave/1`, and `on_mouse_move/1` include a `%{x: float(), y: float()}`
+  position payload. The origin is the listener element's outer top-left corner,
+  including its border and padding area. Positions use the element's logical
+  pixels: display and inherited/local layout or paint scaling are undone, along
+  with translation, rotation and ancestor scrolling.
+
+  For example, a 100px-wide element displayed 200 physical pixels wide reports
+  `x: 35.5` at 71 physical pixels from its displayed left edge. Values are always
+  floats, even at scale 1, and are not clamped: a leave position may be negative
+  or beyond the element's logical width/height. Window leave uses the last known
+  pointer position because the backend does not provide an exit position.
+
+  Down uses the press position; up and click use the release position. Enter and
+  leave use the position where the transition is detected, including stationary
+  transitions caused by layout or transform changes. Each payload is relative to
+  the element receiving that event, not a child or the window.
+
+  These six helpers deliver payload-bearing messages through `wrap_payload/3`:
+  `Event.on_mouse_move(:moved)` sends `{:moved, %{x: x, y: y}}`, while
+  `Event.on_click({self(), {:selected, id}})` sends
+  `{:selected, id, %{x: x, y: y}}` with the default wrapper. The same wrapping
+  applies when the destination is another PID. Custom wrappers receive the map
+  and event kind. Update handlers that previously matched only the stored message.
+
+  `on_press/1` remains payload-free, including keyboard activation.
 
   Events do not bubble to parent elements. Attach the handler to the element
   that should react.
@@ -173,6 +197,9 @@ defmodule Emerge.UI.Event do
   `{self(), message}`.
   """
   @type payload :: {pid(), term()}
+
+  @typedoc "Unclamped position from the listener element's outer top-left, in logical pixels."
+  @type pointer_position :: %{x: float(), y: float()}
   @type click_attr :: {:on_click, payload()}
   @type press_attr :: {:on_press, payload()}
   @type swipe_up_attr :: {:on_swipe_up, payload()}
@@ -509,7 +536,10 @@ defmodule Emerge.UI.Event do
   @modifier_mask %{shift: 0x01, ctrl: 0x02, alt: 0x04, meta: 0x08}
 
   @doc """
-  Register a pointer click payload for this element.
+  Register a pointer click handler with an element-local position payload.
+
+  The `%{x: float(), y: float()}` payload uses the completing release position.
+  See the module's pointer events section for coordinate and message wrapping rules.
 
   Use this when you specifically want click behavior from the pointer.
 
@@ -568,27 +598,27 @@ defmodule Emerge.UI.Event do
   def on_swipe_right({pid, _msg} = payload) when is_pid(pid), do: {:on_swipe_right, payload}
   def on_swipe_right(message), do: on_swipe_right({self(), message})
 
-  @doc "Register a mouse-down payload for this element. Left mouse button only."
+  @doc "Register a left-button down handler with the press position in element-local logical pixels."
   @spec on_mouse_down(payload() | term()) :: mouse_down_attr()
   def on_mouse_down({pid, _msg} = payload) when is_pid(pid), do: {:on_mouse_down, payload}
   def on_mouse_down(message), do: on_mouse_down({self(), message})
 
-  @doc "Register a mouse-up payload for this element. Left mouse button only."
+  @doc "Register a left-button up handler with the release position in this element's logical pixels. Targets the element under the release."
   @spec on_mouse_up(payload() | term()) :: mouse_up_attr()
   def on_mouse_up({pid, _msg} = payload) when is_pid(pid), do: {:on_mouse_up, payload}
   def on_mouse_up(message), do: on_mouse_up({self(), message})
 
-  @doc "Register a mouse-enter payload for this element. Delivered without cursor coordinates."
+  @doc "Register an enter handler with `%{x: float(), y: float()}` in element-local logical pixels."
   @spec on_mouse_enter(payload() | term()) :: mouse_enter_attr()
   def on_mouse_enter({pid, _msg} = payload) when is_pid(pid), do: {:on_mouse_enter, payload}
   def on_mouse_enter(message), do: on_mouse_enter({self(), message})
 
-  @doc "Register a mouse-leave payload for this element. Delivered without cursor coordinates."
+  @doc "Register a leave handler with an unclamped element-local position. Window leave uses the last known pointer position."
   @spec on_mouse_leave(payload() | term()) :: mouse_leave_attr()
   def on_mouse_leave({pid, _msg} = payload) when is_pid(pid), do: {:on_mouse_leave, payload}
   def on_mouse_leave(message), do: on_mouse_leave({self(), message})
 
-  @doc "Register a mouse-move payload for this element. Delivered without cursor coordinates."
+  @doc "Register a move handler with `%{x: float(), y: float()}` in element-local logical pixels."
   @spec on_mouse_move(payload() | term()) :: mouse_move_attr()
   def on_mouse_move({pid, _msg} = payload) when is_pid(pid), do: {:on_mouse_move, payload}
   def on_mouse_move(message), do: on_mouse_move({self(), message})

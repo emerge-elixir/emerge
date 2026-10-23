@@ -5,6 +5,38 @@ and key bindings. Handle those ordinary messages in `handle_info/2`.
 Use `handle_input/2` when you need window-level input, such as a global keyboard
 shortcut, rather than events attached to a particular element.
 
+## Element-local mouse positions
+
+Use `Event.on_mouse_move/1`, `on_mouse_down/1`, `on_mouse_up/1`,
+`on_mouse_enter/1`, `on_mouse_leave/1`, or `on_click/1` when you need the
+position within a particular element:
+
+```elixir
+# In render/1:
+el([width(px(100)), height(px(60)), Event.on_mouse_move(:moved)], none())
+
+# With the default payload wrapper:
+def handle_info({:moved, %{x: x, y: y}}, state) do
+  {:noreply, Map.put(state, :pointer, {x, y})}
+end
+```
+
+Positions are always floats in the listener element's logical pixels, measured
+from its outer top-left corner, including border/padding. Scaling and transforms
+are undone: at effective scale 2, 71 physical pixels from the displayed left edge
+becomes `x: 35.5`. Leave positions are not clamped and may be outside the logical
+box. Window leave reports the last known pointer position. Up/click report the
+release position; `on_mouse_up` still targets the element under that release.
+
+These six events now carry a payload instead of delivering only the stored
+message. Change `handle_info(:moved, state)` to the pattern above. Tuple messages
+have the map appended, for example `{:selected, id, position}`. External-PID
+routes follow the same rules; custom `wrap_payload/3` callbacks receive the map.
+`on_press/1` remains payload-free and is still preferred for ordinary actions.
+
+No raw input subscription is needed for element events. The window-level raw
+observers below keep their existing surface coordinates and message shapes.
+
 ## Subscribe explicitly
 
 Raw observation defaults to **none**. Return the categories you need in

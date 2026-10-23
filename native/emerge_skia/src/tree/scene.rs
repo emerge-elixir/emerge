@@ -29,6 +29,7 @@ pub struct SceneContext {
 
 #[derive(Clone, Debug)]
 pub struct ResolvedNodeState {
+    pub layout_scale: f32,
     pub frame: Frame,
     pub adjusted_frame: Frame,
     pub render_frame: Frame,
@@ -122,6 +123,7 @@ pub fn resolve_node_state(element: &Element, ctx: SceneContext) -> Option<Resolv
     );
 
     Some(ResolvedNodeState {
+        layout_scale: element.layout.dimension_facts.scale,
         frame,
         adjusted_frame,
         render_frame,

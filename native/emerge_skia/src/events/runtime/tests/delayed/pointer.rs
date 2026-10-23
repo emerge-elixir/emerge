@@ -3,6 +3,13 @@ use super::*;
 #[derive(Default)]
 pub(super) struct Recorder {
     pub(super) events: Mutex<Vec<(NodeId, ElementEventKind)>>,
+    pub(super) payloads: Mutex<
+        Vec<(
+            NodeId,
+            ElementEventKind,
+            Option<registry_builder::ElixirEventPayload>,
+        )>,
+    >,
     pub(super) raw: Mutex<Vec<InputEvent>>,
 }
 impl HostEventSink for Recorder {
@@ -13,9 +20,13 @@ impl HostEventSink for Recorder {
         &self,
         id: &NodeId,
         kind: ElementEventKind,
-        _: Option<&registry_builder::ElixirEventPayload>,
+        payload: Option<&registry_builder::ElixirEventPayload>,
     ) {
         self.events.lock().unwrap().push((*id, kind));
+        self.payloads
+            .lock()
+            .unwrap()
+            .push((*id, kind, payload.cloned()));
     }
 }
 fn recorded_host() -> (HostEventRuntime, Arc<Recorder>) {
@@ -314,6 +325,19 @@ fn same_mount_release_hit_testing_uses_the_accepted_animated_geometry() {
             .filter(|(_, kind)| *kind == ElementEventKind::Click)
             .count();
         assert_eq!(clicks, usize::from(release_x == 60.0));
+        if release_x == 60.0 {
+            let payloads = recorder.payloads.lock().unwrap();
+            let (_, _, payload) = payloads
+                .iter()
+                .find(|(_, kind, _)| *kind == ElementEventKind::Click)
+                .unwrap();
+            assert_eq!(
+                *payload,
+                Some(registry_builder::ElixirEventPayload::Position(
+                    crate::events::PointerPosition { x: 10.0, y: 10.0 }
+                ))
+            );
+        }
         assert!(!host.driver.runtime.has_active_pointer_overlay());
         assert_eq!(recorder.raw.lock().unwrap().len(), 3);
     }
@@ -530,3 +554,36 @@ fn slider_drag_and_pending_value_belong_to_the_original_mount() {
 mod inflight;
 mod scroll;
 mod styled;
+
+#[test]
+fn window_leave_uses_listener_order_position_not_a_later_ingress_sample() {
+    let assets = crate::assets::AssetRuntime::new();
+    let _assets = assets.enter();
+    let policy = TreeUpdateDecodePolicy::ReturnErr;
+    let mut engine = TreeUpdateEngine::new(encoded_tree(ElementKind::El, &[43, 44]), 200, 30);
+    let (mut host, recorder) = recorded_host();
+    host.install_rebuild(response(
+        &mut engine,
+        vec![TreeMsg::RebuildRegistry],
+        policy,
+    ));
+    host.handle_input(InputEvent::CursorPos { x: 71.0, y: 10.25 });
+    settle(&mut host, &mut engine, policy);
+    host.handle_input(resize());
+    assert!(host.driver.awaiting_registry.is_some());
+    host.handle_input(InputEvent::CursorEntered { entered: false });
+    host.handle_input(InputEvent::CursorPos { x: 180.0, y: 15.0 });
+    settle(&mut host, &mut engine, policy);
+    let payloads = recorder.payloads.lock().unwrap();
+    let (_, _, payload) = payloads
+        .iter()
+        .find(|(_, kind, _)| *kind == ElementEventKind::MouseLeave)
+        .unwrap();
+    assert_eq!(
+        *payload,
+        Some(registry_builder::ElixirEventPayload::Position(
+            crate::events::PointerPosition { x: 71.0, y: 10.25 }
+        ))
+    );
+    assert_eq!(recorder.raw.lock().unwrap().len(), 4);
+}

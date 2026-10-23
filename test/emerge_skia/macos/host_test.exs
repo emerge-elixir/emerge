@@ -67,18 +67,18 @@ defmodule EmergeSkia.Macos.HostTest do
 
     assert Protocol.encode_init_payload() ==
              <<byte_size("emerge_skia_macos")::unsigned-big-16, "emerge_skia_macos",
-               17::unsigned-big-16>>
+               18::unsigned-big-16>>
   end
 
-  test "protocol rejects hosts without live title support" do
+  test "protocol rejects hosts without structured mouse positions" do
     reply = fn version ->
       <<byte_size("emerge_skia_macos")::unsigned-big-16, "emerge_skia_macos",
         version::unsigned-big-16, 123::unsigned-big-64, 456::unsigned-big-32>>
     end
 
-    assert {:ok, %{host_id: 123, host_pid: 456}} = Protocol.decode_init_ok_payload(reply.(17))
+    assert {:ok, %{host_id: 123, host_pid: 456}} = Protocol.decode_init_ok_payload(reply.(18))
 
-    for version <- [12, 13, 14, 15, 16] do
+    for version <- [12, 13, 14, 15, 16, 17] do
       assert {:error, "unsupported macOS host init response"} =
                Protocol.decode_init_ok_payload(reply.(version))
     end
@@ -240,15 +240,46 @@ defmodule EmergeSkia.Macos.HostTest do
   test "protocol decodes element event payloads" do
     id = <<131, 104, 2, 100, 0, 3, 116, 111, 100, 111>>
 
-    assert {:ok, {^id, :mouse_move, "payload"}} =
-             Protocol.decode_element_event_payload(
-               <<15, 1, byte_size(id)::unsigned-big-32, id::binary, 7::unsigned-big-32,
-                 "payload">>
-             )
+    for {tag, kind} <- [
+          {1, :click},
+          {11, :mouse_down},
+          {12, :mouse_up},
+          {13, :mouse_enter},
+          {14, :mouse_leave},
+          {15, :mouse_move}
+        ] do
+      assert {:ok, {^id, ^kind, %{x: 35.5, y: -2.25}}} =
+               Protocol.decode_element_event_payload(
+                 <<tag, 1, byte_size(id)::unsigned-big-32, id::binary, 16::unsigned-big-32,
+                   0x4041C00000000000::64, 0xC002000000000000::64>>
+               )
 
-    assert {:ok, {^id, :click}} =
+      for bad <- [
+            <<>>,
+            "payload",
+            <<35.5::float-64>>,
+            <<0::192>>,
+            <<0x7FF0000000000000::64, 0::64>>,
+            <<0x7FF8000000000000::64, 0::64>>
+          ] do
+        assert :error =
+                 Protocol.decode_element_event_payload(
+                   <<tag, 1, byte_size(id)::32, id::binary, byte_size(bad)::32, bad::binary>>
+                 )
+      end
+
+      assert :error =
+               Protocol.decode_element_event_payload(
+                 <<tag, 0, byte_size(id)::32, id::binary, 0::32>>
+               )
+    end
+
+    assert {:ok, {^id, :press}} =
+             Protocol.decode_element_event_payload(<<2, 0, byte_size(id)::32, id::binary, 0::32>>)
+
+    assert {:ok, {^id, :change, "payload"}} =
              Protocol.decode_element_event_payload(
-               <<1, 0, byte_size(id)::unsigned-big-32, id::binary, 0::unsigned-big-32>>
+               <<18, 1, byte_size(id)::32, id::binary, 7::32, "payload">>
              )
   end
 
@@ -277,7 +308,7 @@ defmodule EmergeSkia.Macos.HostTest do
   test "session buffers element events until input target exists" do
     state =
       %{sessions: %{1 => Session.base_state(0xFF)}}
-      |> Session.buffer_element_event(1, {"todo", :mouse_enter}, 0xFF)
+      |> Session.buffer_element_event(1, {"todo", :mouse_enter, %{x: 35.5, y: 20.0}}, 0xFF)
       |> Session.flush(1, 0x40, 0x80)
 
     refute_receive {:emerge_skia_event, _}
@@ -287,7 +318,7 @@ defmodule EmergeSkia.Macos.HostTest do
       |> Session.update_metadata(1, :input_target, self(), 0xFF)
       |> Session.flush(1, 0x40, 0x80)
 
-    assert_receive {:emerge_skia_event, {"todo", :mouse_enter}}
+    assert_receive {:emerge_skia_event, {"todo", :mouse_enter, %{x: 35.5, y: 20.0}}}
     assert %{sessions: %{1 => %{pending_element_events: []}}} = state
   end
 end

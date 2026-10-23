@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Breaking changes
+
+- `on_click` and the five `on_mouse_*` events now include
+  `%{x: float, y: float}` in the listener element's logical pixels, with scaling
+  undone and leave coordinates unclamped. Update bare-message handlers to accept
+  the position payload (tuple messages have it appended). Custom `wrap_payload/3`
+  callbacks receive the map. `on_press` and raw observer events are unchanged.
+  macOS requires the matching protocol-18 host.
+
 ### Added
 
 - Native double-click word selection for single-line and multiline text inputs.

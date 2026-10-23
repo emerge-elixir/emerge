@@ -402,6 +402,33 @@ defmodule Emerge.ViewportTest do
     end
   end
 
+  defmodule MousePayloadViewport do
+    use Emerge
+
+    @impl Viewport
+    def mount(opts) do
+      {:ok, %{target: Keyword.fetch!(opts, :target), tuple?: Keyword.get(opts, :tuple?, false)},
+       %Emerge.Config{
+         assets: [otp_app: :emerge],
+         runtime: [adapter: Emerge.ViewportTest.FakeRenderer, health_check_interval_ms: nil]
+       }}
+    end
+
+    @impl Viewport
+    def render(state) do
+      attrs =
+        Enum.map(
+          [:click, :mouse_down, :mouse_up, :mouse_move, :mouse_enter, :mouse_leave, :press],
+          fn kind ->
+            message = if state.tuple?, do: {:pointer, kind}, else: kind
+            {String.to_existing_atom("on_#{kind}"), {state.target, message}}
+          end
+        )
+
+      el(attrs, none())
+    end
+  end
+
   defmodule PayloadViewport do
     use Emerge
     @impl Viewport
@@ -415,7 +442,20 @@ defmodule Emerge.ViewportTest do
 
     @impl Viewport
     def render(_state) do
-      Input.text([key(:field), Event.on_change(:input_changed), Event.on_scroll(:scrolled)], "")
+      Input.text(
+        [
+          key(:field),
+          Event.on_change(:input_changed),
+          Event.on_scroll(:scrolled),
+          Event.on_click(:click),
+          Event.on_mouse_down(:mouse_down),
+          Event.on_mouse_up(:mouse_up),
+          Event.on_mouse_move(:mouse_move),
+          Event.on_mouse_enter(:mouse_enter),
+          Event.on_mouse_leave(:mouse_leave)
+        ],
+        ""
+      )
     end
 
     @impl Viewport
@@ -431,6 +471,12 @@ defmodule Emerge.ViewportTest do
 
     def handle_info({:wrapped, :input_changed, payload, :change}, state) do
       send(state.test_pid, {:wrapped_payload, payload})
+      {:noreply, state}
+    end
+
+    def handle_info({:wrapped, message, payload, kind}, state)
+        when kind in [:click, :mouse_down, :mouse_up, :mouse_move, :mouse_enter, :mouse_leave] do
+      send(state.test_pid, {:wrapped_mouse, message, payload, kind})
       {:noreply, state}
     end
   end
@@ -868,6 +914,40 @@ defmodule Emerge.ViewportTest do
 
     send(pid, {:emerge_skia_event, {id_bin, :scroll, %{x: 0.25, y: 0.75}}})
     assert_receive {:wrapped_scroll, %{x: 0.25, y: 0.75}}
+
+    GenServer.stop(pid)
+  end
+
+  test "mouse positions route to external PIDs with default atom and tuple wrapping" do
+    for tuple? <- [false, true] do
+      {:ok, pid} = MousePayloadViewport.start_link(target: self(), tuple?: tuple?)
+      state = :sys.get_state(pid)
+      [{id, _}] = Map.to_list(state.__emerge__.diff_state.event_registry)
+      position = %{x: 35.5, y: -2.25}
+
+      for kind <- [:click, :mouse_down, :mouse_up, :mouse_move, :mouse_enter, :mouse_leave] do
+        send(pid, {:emerge_skia_event, {id, kind, position}})
+        expected = if tuple?, do: {:pointer, kind, position}, else: {kind, position}
+        assert_receive ^expected
+      end
+
+      send(pid, {:emerge_skia_event, {id, :press}})
+      expected = if tuple?, do: {:pointer, :press}, else: :press
+      assert_receive ^expected
+      GenServer.stop(pid)
+    end
+  end
+
+  test "all mouse positions use custom wrap_payload callbacks" do
+    {:ok, pid} = PayloadViewport.start_link(test_pid: self())
+    state = :sys.get_state(pid)
+    [{id, _}] = Map.to_list(state.__emerge__.diff_state.event_registry)
+    position = %{x: -2.25, y: 103.5}
+
+    for kind <- [:click, :mouse_down, :mouse_up, :mouse_move, :mouse_enter, :mouse_leave] do
+      send(pid, {:emerge_skia_event, {id, kind, position}})
+      assert_receive {:wrapped_mouse, ^kind, ^position, ^kind}
+    end
 
     GenServer.stop(pid)
   end
