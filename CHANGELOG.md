@@ -22,6 +22,9 @@
   Nearby content, without requiring an animation or unrelated tree change.
 - Wayland uses bundled cursors when system cursor themes are missing, avoiding
   repeated cursor errors on minimal Linux/WSLg installations.
+- Real mouse movement buffered during a listener-registry refresh now emits its
+  coalesced move callback on replay instead of being treated as stationary
+  revalidation and silently discarded.
 
 ## [0.5.1] - 2026-10-21
 

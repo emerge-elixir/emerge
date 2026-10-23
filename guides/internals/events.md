@@ -381,8 +381,11 @@ Obsolete registry crossings skipped during a causal wait do not generate histori
 hover callbacks. After a matching response, stationary hover is revalidated against
 accepted geometry when no pointer capture is active. Ordinary fresh crossings still
 emit enter/leave, and buffered motion remains ordered before its release. Raw
-observers are not called again by revalidation/replay. Fresh cursor batching can
-coalesce intermediate positions before observer forwarding.
+observers are not called again by revalidation/replay. Real buffered cursor
+movement emits its retained/coalesced mouse-move callback once during ordered
+replay; only stationary geometry revalidation suppresses synthetic mouse-move
+callbacks. Fresh cursor batching can coalesce intermediate positions before
+observer forwarding.
 
 This is event-request causality, not a renderer/compositor installation
 acknowledgment. Scene enqueue-before-render ordering still does not prove that input

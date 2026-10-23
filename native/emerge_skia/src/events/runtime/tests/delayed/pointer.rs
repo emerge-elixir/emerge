@@ -587,3 +587,52 @@ fn window_leave_uses_listener_order_position_not_a_later_ingress_sample() {
     );
     assert_eq!(recorder.raw.lock().unwrap().len(), 4);
 }
+
+#[test]
+fn buffered_mouse_moves_deliver_latest_position_before_release_without_synthetic_duplicates() {
+    let assets = crate::assets::AssetRuntime::new();
+    let _assets = assets.enter();
+    let policy = TreeUpdateDecodePolicy::ReturnErr;
+    let mut engine = TreeUpdateEngine::new(encoded_tree(ElementKind::El, &[41, 42, 45]), 200, 30);
+    let (mut host, recorder) = recorded_host();
+    host.install_rebuild(response(
+        &mut engine,
+        vec![TreeMsg::RebuildRegistry],
+        policy,
+    ));
+    host.handle_input(button(ACTION_PRESS, 20.0, 10.0));
+    assert!(host.driver.awaiting_registry.is_some());
+    host.handle_input(InputEvent::CursorPos { x: 50.0, y: 11.0 });
+    host.handle_input(InputEvent::CursorPos { x: 71.5, y: 12.25 });
+    host.handle_input(button(ACTION_RELEASE, 71.5, 12.25));
+    settle(&mut host, &mut engine, policy);
+
+    use crate::events::PointerPosition;
+    use registry_builder::ElixirEventPayload::Position;
+    assert_eq!(
+        *recorder.payloads.lock().unwrap(),
+        vec![
+            (
+                NodeId(9),
+                ElementEventKind::MouseDown,
+                Some(Position(PointerPosition { x: 20.0, y: 10.0 }))
+            ),
+            (
+                NodeId(9),
+                ElementEventKind::MouseMove,
+                Some(Position(PointerPosition { x: 71.5, y: 12.25 }))
+            ),
+            (
+                NodeId(9),
+                ElementEventKind::MouseUp,
+                Some(Position(PointerPosition { x: 71.5, y: 12.25 }))
+            ),
+        ],
+        "real coalesced movement must be delivered; stationary revalidation must not duplicate it"
+    );
+    assert_eq!(
+        recorder.raw.lock().unwrap().len(),
+        4,
+        "raw input is not forwarded again on replay"
+    );
+}

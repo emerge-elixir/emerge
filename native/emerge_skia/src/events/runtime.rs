@@ -2037,11 +2037,9 @@ impl DirectEventRuntime {
             };
             match event {
                 PendingInput::Raw(event) => {
-                    let dispatch_mode = match event {
-                        InputEvent::CursorPos { .. } => DispatchMode::CursorRevalidate,
-                        _ => DispatchMode::Normal,
-                    };
-                    self.dispatch_event(event, tree_tx, log_render, dispatch_mode);
+                    // Buffered movement is real input, not stationary geometry
+                    // revalidation. Deliver its coalesced position exactly once.
+                    self.dispatch_event(event, tree_tx, log_render, DispatchMode::Normal);
                 }
                 PendingInput::TimedButton { event, occurred_at } => {
                     self.dispatch_event_at(

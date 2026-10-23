@@ -6,7 +6,7 @@ defmodule Emerge.MouseCoordinatesTest do
   alias Emerge.UI.Event
   alias EmergeSkia.TestHarness
 
-  test "native press and release deliver logical float maps through the NIF" do
+  test "native press, movement and release deliver logical float maps through the NIF" do
     tree =
       el(
         [
@@ -29,8 +29,11 @@ defmodule Emerge.MouseCoordinatesTest do
     assert :ok = TestHarness.await_render(harness, 1000)
     assert :ok = TestHarness.cursor_button(harness, :press, 71.0, 40.5)
     assert_receive {:emerge_skia_event, {^id, :mouse_down, %{x: 35.5, y: 20.25}}}, 1000
+    assert :ok = TestHarness.cursor_pos(harness, 91.0, 44.5)
     assert :ok = TestHarness.cursor_button(harness, :release, 91.0, 44.5)
+    assert_receive {:emerge_skia_event, {^id, :mouse_move, %{x: 45.5, y: 22.25}}}, 1000
     assert_receive {:emerge_skia_event, {^id, :mouse_up, %{x: 45.5, y: 22.25}}}, 1000
+    refute_receive {:emerge_skia_event, {^id, :mouse_move, _position}}
   end
 
   test "mouse helpers keep their signatures, routes and encoded presence flags" do
