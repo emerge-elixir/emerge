@@ -17,9 +17,6 @@
   samples with unclamped element-local logical coordinates. Movement and release
   remain with the pressed element outside its bounds; ordinary mouse handlers
   keep their existing hit-testing semantics.
-
-### Added
-
 - Native double-click word selection for single-line and multiline text inputs.
 - WSLg troubleshooting and an explicit GBM-free Wayland/raster build recipe.
 
@@ -29,6 +26,9 @@
   Nearby content, without requiring an animation or unrelated tree change.
 - Wayland uses bundled cursors when system cursor themes are missing, avoiding
   repeated cursor errors on minimal Linux/WSLg installations.
+- Building scrollbar press listeners no longer panics when scrollbar metrics
+  survive full clipping or a collapsed cross-axis. Hidden thumb/track regions on
+  either axis are skipped without dropping retained keyboard or scrollbar state.
 - Real mouse movement buffered during a listener-registry refresh now emits its
   coalesced move callback on replay instead of being treated as stationary
   revalidation and silently discarded.

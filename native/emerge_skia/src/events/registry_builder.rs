@@ -7987,72 +7987,77 @@ fn slot_scrollbar_thumb_press_y(
     element: &Element,
     state: Option<&ResolvedNodeState>,
 ) -> Option<Listener> {
-    let (_, scrollbar_y) = live_scrollbar_nodes_for_element(element, state?);
+    let state = state?;
+    let (_, scrollbar_y) = live_scrollbar_nodes_for_element(element, state);
     let scrollbar = scrollbar_y?;
-    Some(scrollbar_press_listener(
+    scrollbar_press_listener(
         element,
         state,
         scrollbar,
         ScrollbarHitArea::Thumb,
         scrollbar.thumb_rect,
-    ))
+    )
 }
 
 fn slot_scrollbar_thumb_press_x(
     element: &Element,
     state: Option<&ResolvedNodeState>,
 ) -> Option<Listener> {
-    let (scrollbar_x, _) = live_scrollbar_nodes_for_element(element, state?);
+    let state = state?;
+    let (scrollbar_x, _) = live_scrollbar_nodes_for_element(element, state);
     let scrollbar = scrollbar_x?;
-    Some(scrollbar_press_listener(
+    scrollbar_press_listener(
         element,
         state,
         scrollbar,
         ScrollbarHitArea::Thumb,
         scrollbar.thumb_rect,
-    ))
+    )
 }
 
 fn slot_scrollbar_track_press_y(
     element: &Element,
     state: Option<&ResolvedNodeState>,
 ) -> Option<Listener> {
-    let (_, scrollbar_y) = live_scrollbar_nodes_for_element(element, state?);
+    let state = state?;
+    let (_, scrollbar_y) = live_scrollbar_nodes_for_element(element, state);
     let scrollbar = scrollbar_y?;
-    Some(scrollbar_press_listener(
+    scrollbar_press_listener(
         element,
         state,
         scrollbar,
         ScrollbarHitArea::Track,
         scrollbar.track_rect,
-    ))
+    )
 }
 
 fn slot_scrollbar_track_press_x(
     element: &Element,
     state: Option<&ResolvedNodeState>,
 ) -> Option<Listener> {
-    let (scrollbar_x, _) = live_scrollbar_nodes_for_element(element, state?);
+    let state = state?;
+    let (scrollbar_x, _) = live_scrollbar_nodes_for_element(element, state);
     let scrollbar = scrollbar_x?;
-    Some(scrollbar_press_listener(
+    scrollbar_press_listener(
         element,
         state,
         scrollbar,
         ScrollbarHitArea::Track,
         scrollbar.track_rect,
-    ))
+    )
 }
 
 fn scrollbar_press_listener(
     element: &Element,
-    state: Option<&ResolvedNodeState>,
+    state: &ResolvedNodeState,
     scrollbar: ScrollbarNode,
     area: ScrollbarHitArea,
     rect: Rect,
-) -> Listener {
-    let region = pointer_region_for_subregion(state.expect("scrollbar press needs state"), rect)
-        .expect("scrollbar press needs interaction");
-    Listener {
+) -> Option<Listener> {
+    // Metrics can survive clipping or a collapsed cross-axis. Keep them for
+    // retained runtime state, but only create press listeners for visible regions.
+    let region = pointer_region_for_subregion(state, rect)?;
+    Some(Listener {
         element_id: Some(element.id),
         matcher: ListenerMatcher::CursorButtonLeftPressInside { region },
         compute: ListenerCompute::ScrollbarPressToRuntime {
@@ -8069,7 +8074,7 @@ fn scrollbar_press_listener(
                 screen_to_local: scrollbar.screen_to_local,
             },
         },
-    }
+    })
 }
 
 /// Build primary left-press listener.
@@ -9098,6 +9103,10 @@ mod scroll_wheel {
 #[cfg(test)]
 #[path = "registry_builder/position_tests.rs"]
 mod position_tests;
+
+#[cfg(test)]
+#[path = "registry_builder/scrollbar_visibility_tests.rs"]
+mod scrollbar_visibility_tests;
 
 #[cfg(test)]
 mod tests {
