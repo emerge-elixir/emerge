@@ -33,6 +33,8 @@ message. Change `handle_info(:moved, state)` to the pattern above. Tuple message
 have the map appended, for example `{:selected, id, position}`. External-PID
 routes follow the same rules; custom `wrap_payload/3` callbacks receive the map.
 `on_press/1` remains payload-free and is still preferred for ordinary actions.
+See the [0.6 migration guide](../migrations/0.6.md) for handler and adapter updates
+when upgrading from 0.5.
 
 No raw input subscription is needed for element events. The window-level raw
 observers below keep their existing surface coordinates and message shapes.

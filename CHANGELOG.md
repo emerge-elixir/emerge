@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+See the [0.6 migration guide](guides/migrations/0.6.md) for the pointer-event
+message changes when upgrading from 0.5.
+
 ### Breaking changes
 
 - `on_click` and the five `on_mouse_*` events now include
