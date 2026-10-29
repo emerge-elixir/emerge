@@ -3,21 +3,30 @@ defmodule Emerge.UI.Event do
   Event handler helpers for interactive elements.
 
   Event helpers attach process messages to elements. When the event fires,
-  Emerge sends the stored message to the target process.
+  Emerge sends the stored message, with any event payload, to the target process.
 
-  All helpers accept either:
+  Message-based helpers accept either:
 
   - a bare `message`
   - a `{pid, message}` tuple
 
   Passing only a `message` is shorthand for `{self(), message}`. Inside a
   viewport `render/0` or `render/1` callback, that means the viewport process, so the
-  message arrives in `handle_info/2`.
+  message arrives in `handle_info/2`. Keyboard helpers take a matcher before the
+  message; `virtual_key/1` takes an action specification instead.
+
+  Element events do not require raw input subscriptions. `Emerge.Input` describes
+  the separate window-level observer API.
 
   ## Payload Routing
 
-  Some element events include a payload. The main public example is
-  `on_change/1` for text-input and slider value changes.
+  | Helpers | Runtime payload |
+  | --- | --- |
+  | `on_click/1`, `on_mouse_down/1`, `on_mouse_up/1`, `on_mouse_move/1`, `on_mouse_enter/1`, `on_mouse_leave/1` | `%{x: float(), y: float()}` in element-local logical pixels |
+  | `on_drag/1` | `%{phase: :start \\| :move \\| :end \\| :cancel, x: float(), y: float()}` |
+  | `on_change/1` | Updated text binary or numeric slider value |
+  | `on_scroll/1` | `%{x: float(), y: float()}` scroll fractions in `[0, 1]`, **not** pointer coordinates |
+  | `on_press/1`, swipe, focus/blur and keyboard helpers | None: the stored message is delivered unchanged |
 
   When a payload-bearing event is delivered through a viewport, the payload is
   wrapped into the stored message using the viewport's `wrap_payload/3`
@@ -26,7 +35,10 @@ defmodule Emerge.UI.Event do
   - non-tuple message: `{message, payload}`
   - tuple message: append the payload to the tuple
 
-  For example:
+  This also applies to external-PID destinations: the rendering viewport's
+  wrapper runs before delivery to the recipient. A custom `c:Emerge.wrap_payload/3`
+  receives the stored message, runtime payload and event kind, such as
+  `:mouse_move`, `:drag`, `:change` or `:scroll`.
 
   This field sends the new value back to the viewport whenever the text changes.
 
@@ -61,7 +73,9 @@ defmodule Emerge.UI.Event do
   Prefer `on_press/1` for normal button-like activation. It is the default for
   actions such as save, submit, open, and delete.
 
-  Use `on_click/1` when you specifically want pointer click behavior.
+  Use `on_click/1` when you specifically want pointer click behavior: a press
+  inside followed by release inside the same element, unless the gesture is
+  cancelled. It does not provide keyboard activation.
 
   Swipe helpers emit once a pointer gesture resolves to that direction.
 
@@ -77,13 +91,17 @@ defmodule Emerge.UI.Event do
   For example, a 100px-wide element displayed 200 physical pixels wide reports
   `x: 35.5` at 71 physical pixels from its displayed left edge. Values are always
   floats, even at scale 1, and are not clamped: a leave position may be negative
-  or beyond the element's logical width/height. Window leave uses the last known
-  pointer position because the backend does not provide an exit position.
+  or beyond the element's logical width/height. Do not divide by scale again or
+  clamp the received coordinates; clamp application values derived from them.
+  Window leave uses the last known pointer position because the backend does not
+  provide an exit position.
 
   Down uses the press position; up and click use the release position. Enter and
   leave use the position where the transition is detected, including stationary
-  transitions caused by layout or transform changes. Each payload is relative to
-  the element receiving that event, not a child or the window.
+  transitions caused by layout or transform changes. Move callbacks require real
+  pointer movement; stationary layout revalidation does not synthesize moves.
+  `on_mouse_up/1` targets the element under the release, not necessarily the one
+  pressed. Each payload is relative to its own listener, not a child or the window.
 
   These six helpers deliver payload-bearing messages through `wrap_payload/3`:
   `Event.on_mouse_move(:moved)` sends `{:moved, %{x: x, y: y}}`, while
@@ -96,13 +114,41 @@ defmodule Emerge.UI.Event do
   `on_drag/1` and its start/move/end/cancel phases. Ordinary mouse helpers do not
   capture the pointer.
 
-  `on_press/1` remains payload-free, including keyboard activation.
+  `on_press/1` remains payload-free, including keyboard activation. See the
+  [0.6 migration guide](guides/migrations/0.6.md) for upgrading existing handlers
+  and fixed-argument payload adapters.
 
   Events do not bubble to parent elements. Attach the handler to the element
   that should react.
 
   If you only want visual hover, focus, or pressed styling, use
   `Emerge.UI.Interactive` instead of event handlers.
+
+  ## Captured Dragging
+
+  `on_drag/1` is opt-in left-button capture for custom controls such as color
+  pickers. With the default wrapper, `Event.on_drag(:picked)` delivers
+  `{:picked, %{phase: phase, x: x, y: y}}` through event kind `:drag`.
+
+  | Phase | Meaning |
+  | --- | --- |
+  | `:start` | Press inside the source; capture begins immediately |
+  | `:move` | Real pointer movement while captured, including outside the source |
+  | `:end` | Left-button release, including outside the source; capture ends |
+  | `:cancel` | Window leave or focus loss; capture ends at the last known position |
+
+  Coordinates follow the pointer rules above and use the source's **current**
+  geometry after patches, scrolling or transforms, not its press-time rectangle.
+  Stationary layout changes do not emit `:move`. Removing the handler, removing
+  or remounting the source, or losing its interactive geometry drops capture
+  without a terminal callback or transfer to a replacement. Reset application
+  drag state when removing or hiding a control.
+
+  Use drag phases for captured movement/release; ordinary enter/leave still use
+  physical hit testing. Primary touch uses the existing mouse emulation; keyboard
+  activation never starts a drag. Capture cannot be combined on the same element
+  with click/press, swipe or virtual-key handlers, or attached to native text
+  inputs or sliders, which own their drag behavior. See `on_drag/1` for an example.
 
   ## Input And Focus
 
@@ -160,8 +206,9 @@ defmodule Emerge.UI.Event do
   - `hold_ms: 350`
   - `repeat_ms: 40`
 
-  `virtual_key/1` cannot be combined with `on_click/1` or `on_press/1` on the
-  same element.
+  `virtual_key/1` cannot be combined with `on_click/1`, `on_press/1` or `on_drag/1`
+  on the same element. A hold event sends its stored message unchanged; it does
+  not receive pointer coordinates.
 
   ## Examples
 
@@ -195,15 +242,22 @@ defmodule Emerge.UI.Event do
   """
 
   @typedoc """
-  Destination process and message sent when the event fires.
+  Configured destination process and stored message, not the runtime event payload.
 
-  Most helpers also accept a bare `message`, which is shorthand for
+  Message-based helpers also accept a bare `message`, which is shorthand for
   `{self(), message}`.
   """
   @type payload :: {pid(), term()}
 
   @typedoc "Unclamped position from the listener element's outer top-left, in logical pixels."
   @type pointer_position :: %{x: float(), y: float()}
+
+  @typedoc "Lifecycle phase of an explicitly captured pointer drag."
+  @type drag_phase :: :start | :move | :end | :cancel
+
+  @typedoc "Captured drag phase and unclamped position in the source element's logical pixels."
+  @type drag_position :: %{x: float(), y: float(), phase: drag_phase()}
+
   @type click_attr :: {:on_click, payload()}
   @type press_attr :: {:on_press, payload()}
   @type swipe_up_attr :: {:on_swipe_up, payload()}
@@ -215,7 +269,6 @@ defmodule Emerge.UI.Event do
   @type mouse_enter_attr :: {:on_mouse_enter, payload()}
   @type mouse_leave_attr :: {:on_mouse_leave, payload()}
   @type mouse_move_attr :: {:on_mouse_move, payload()}
-  @type drag_position :: %{x: float(), y: float(), phase: :start | :move | :end | :cancel}
   @type drag_attr :: {:on_drag, payload()}
   @type scroll_attr :: {:on_scroll, payload()}
   @type change_attr :: {:on_change, payload()}
@@ -422,6 +475,7 @@ defmodule Emerge.UI.Event do
           | mouse_enter_attr()
           | mouse_leave_attr()
           | mouse_move_attr()
+          | drag_attr()
           | change_attr()
           | scroll_attr()
           | focus_attr()
@@ -545,9 +599,12 @@ defmodule Emerge.UI.Event do
   Register a pointer click handler with an element-local position payload.
 
   The `%{x: float(), y: float()}` payload uses the completing release position.
-  See the module's pointer events section for coordinate and message wrapping rules.
+  Press and release must both hit this element and the gesture must not be
+  cancelled. `Event.on_click(:clicked)` delivers `{:clicked, position}` with the
+  default wrapper; tuple messages have the position appended.
 
-  Use this when you specifically want click behavior from the pointer.
+  See the module documentation for coordinate rules. This is pointer-only;
+  keyboard activation does not emit a click.
 
   For normal button-like activation, prefer `on_press/1`.
   """
@@ -556,8 +613,9 @@ defmodule Emerge.UI.Event do
   def on_click(message), do: on_click({self(), message})
 
   @doc """
-  Register a press payload for this element.
+  Register an activation handler without a runtime payload.
 
+  The stored message is delivered unchanged, without pointer coordinates.
   This is the recommended default for buttons and other action controls.
   For standard activation, prefer `on_press/1` over `on_click/1` because it
   also works with focused `Enter`.
@@ -604,27 +662,60 @@ defmodule Emerge.UI.Event do
   def on_swipe_right({pid, _msg} = payload) when is_pid(pid), do: {:on_swipe_right, payload}
   def on_swipe_right(message), do: on_swipe_right({self(), message})
 
-  @doc "Register a left-button down handler with the press position in element-local logical pixels."
+  @doc """
+  Register a left-button down handler with the press position.
+
+  Delivers `%{x: float(), y: float()}` in this element's logical pixels through
+  `wrap_payload/3`. This does not capture later movement or release; use
+  `on_drag/1` for a captured gesture. See the module documentation for coordinate rules.
+  """
   @spec on_mouse_down(payload() | term()) :: mouse_down_attr()
   def on_mouse_down({pid, _msg} = payload) when is_pid(pid), do: {:on_mouse_down, payload}
   def on_mouse_down(message), do: on_mouse_down({self(), message})
 
-  @doc "Register a left-button up handler with the release position in this element's logical pixels. Targets the element under the release."
+  @doc """
+  Register a left-button up handler with the release position.
+
+  Targets the element under the release, even if the press was elsewhere.
+  Delivers `%{x: float(), y: float()}` relative to this listener through
+  `wrap_payload/3`. It does not capture the element originally pressed; use
+  `on_drag/1` to receive releases outside the source.
+  """
   @spec on_mouse_up(payload() | term()) :: mouse_up_attr()
   def on_mouse_up({pid, _msg} = payload) when is_pid(pid), do: {:on_mouse_up, payload}
   def on_mouse_up(message), do: on_mouse_up({self(), message})
 
-  @doc "Register an enter handler with `%{x: float(), y: float()}` in element-local logical pixels."
+  @doc """
+  Register an enter handler with the transition position.
+
+  Delivers `%{x: float(), y: float()}` in this listener's logical pixels through
+  `wrap_payload/3`. A stationary pointer can enter after a layout or transform
+  change; such revalidation does not also synthesize `on_mouse_move/1` callbacks.
+  """
   @spec on_mouse_enter(payload() | term()) :: mouse_enter_attr()
   def on_mouse_enter({pid, _msg} = payload) when is_pid(pid), do: {:on_mouse_enter, payload}
   def on_mouse_enter(message), do: on_mouse_enter({self(), message})
 
-  @doc "Register a leave handler with an unclamped element-local position. Window leave uses the last known pointer position."
+  @doc """
+  Register a leave handler with the transition position.
+
+  Delivers `%{x: float(), y: float()}` through `wrap_payload/3`, in this listener's
+  logical pixels. Values are not clamped and can be outside the box. A stationary
+  pointer can leave after layout or transform changes. Leaving only the element's
+  box does not cancel an `on_drag/1` capture. Window leave does cancel capture and
+  uses the last known pointer position.
+  """
   @spec on_mouse_leave(payload() | term()) :: mouse_leave_attr()
   def on_mouse_leave({pid, _msg} = payload) when is_pid(pid), do: {:on_mouse_leave, payload}
   def on_mouse_leave(message), do: on_mouse_leave({self(), message})
 
-  @doc "Register a move handler with `%{x: float(), y: float()}` in element-local logical pixels."
+  @doc """
+  Register a move handler with `%{x: float(), y: float()}` in logical pixels.
+
+  Real movement inside this element delivers the position through `wrap_payload/3`.
+  Stationary layout revalidation does not emit moves. This does not capture
+  movement outside the element; use `on_drag/1` for custom dragging.
+  """
   @spec on_mouse_move(payload() | term()) :: mouse_move_attr()
   def on_mouse_move({pid, _msg} = payload) when is_pid(pid), do: {:on_mouse_move, payload}
   def on_mouse_move(message), do: on_mouse_move({self(), message})
@@ -640,8 +731,9 @@ defmodule Emerge.UI.Event do
 
   Press inside starts capture; subsequent movement and release belong to this
   element until `:end`. Window leave or focus loss emits `:cancel` at the last
-  known position. Removing/remounting the element or removing its handler drops
-  capture without delivering to a replacement mount. Primary touch follows the
+  known position. Removing/remounting the element, removing its handler or losing
+  its interactive geometry drops capture without a final sample or delivery to a
+  replacement mount. Primary touch follows the
   existing mouse emulation; keyboard activation does not start a drag.
 
   Use drag phases instead of mouse-move/up handlers during capture. Ordinary
@@ -649,10 +741,30 @@ defmodule Emerge.UI.Event do
   element with click/press, swipe or virtual-key handlers. Attach it to custom
   elements, not text inputs or sliders, which own their native drag behavior.
 
-      el([width(px(180)), height(px(120)), Event.on_drag(:picked)], none())
+  ## Example
 
-      # handle_info({:picked, %{phase: :move, x: x, y: y}}, state)
+  Inside a viewport, store raw positions separately from application values.
+  This handler ends the gesture on both release and cancellation:
 
+  ```elixir
+  def render(_state) do
+    el([width(px(180)), height(px(120)), Event.on_drag(:picked)], none())
+  end
+
+  def handle_info({:picked, %{phase: phase, x: x, y: y}}, state)
+      when phase in [:start, :move, :end] do
+    state =
+      state
+      |> Map.put(:pointer, {x, y})
+      |> Map.put(:dragging?, phase != :end)
+
+    {:noreply, Viewport.rerender(state)}
+  end
+
+  def handle_info({:picked, %{phase: :cancel}}, state) do
+    {:noreply, state |> Map.put(:dragging?, false) |> Viewport.rerender()}
+  end
+  ```
   """
   @spec on_drag(payload() | term()) :: drag_attr()
   def on_drag({pid, _msg} = payload) when is_pid(pid), do: {:on_drag, payload}
@@ -698,7 +810,15 @@ defmodule Emerge.UI.Event do
   def on_change({pid, _msg} = payload) when is_pid(pid), do: {:on_change, payload}
   def on_change(message), do: on_change({self(), message})
 
-  @doc "Receive event-owned scroll progress as `%{x: float, y: float}` in [0, 1]. App jumps do not emit feedback callbacks."
+  @doc """
+  Receive event-owned scroll progress as `%{x: float(), y: float()}`.
+
+  Values are normalized fractions in `[0, 1]`, not pointer coordinates or pixel
+  offsets. They use the usual `wrap_payload/3` routing: `Event.on_scroll(:scrolled)`
+  delivers `{:scrolled, %{x: x, y: y}}` with the default wrapper.
+
+  Application-authored scroll jumps do not emit feedback callbacks.
+  """
   @spec on_scroll(term()) :: scroll_attr()
   def on_scroll({pid, _msg} = payload) when is_pid(pid), do: {:on_scroll, payload}
   def on_scroll(message), do: on_scroll({self(), message})
@@ -784,8 +904,9 @@ defmodule Emerge.UI.Event do
   The spec must include `:tap`. Optional keys are `:hold`, `:hold_ms`, and
   `:repeat_ms`.
 
-  `virtual_key/1` cannot be combined with `on_click/1` or `on_press/1` on the
-  same element.
+  `virtual_key/1` cannot be combined with `on_click/1`, `on_press/1` or `on_drag/1`
+  on the same element. Its hold event delivers the configured message unchanged,
+  without a pointer position payload.
 
   ## Example
 

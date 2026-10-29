@@ -30,12 +30,15 @@ defmodule Emerge.Runtime.Viewport do
 
   Raw input observation is opt-in through `Emerge.Config.Input.events`.
   `Emerge.Input` documents every callback payload. This filter does not disable
-  element interactions or window-close notifications.
+  element interactions or window-close notifications. `Emerge.UI.Event` documents
+  element-local mouse positions and opt-in captured dragging; these use ordinary
+  `handle_info/2` messages and the viewport's `c:Emerge.wrap_payload/3` callback.
 
   Adapter selection and liveness policy live in `Emerge.Config.Runtime`.
   Native ownership is managed internally, not configured by applications.
   See the [viewport configuration documentation](Emerge.html#module-viewport-configuration),
-  [input guide](handle_input.html) and [0.5 migration guide](0-5.html).
+  [input guide](handle_input.html), [0.6 pointer migration guide](0-6.html) and
+  [0.5 configuration migration guide](0-5.html).
 
   Initially-off DRM viewports still acquire and bind output ownership without
   rendering/uploading. Off preserves application messages, config reconciliation,
