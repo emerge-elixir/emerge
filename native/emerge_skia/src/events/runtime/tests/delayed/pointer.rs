@@ -3,6 +3,13 @@ use super::*;
 #[derive(Default)]
 pub(super) struct Recorder {
     pub(super) events: Mutex<Vec<(NodeId, ElementEventKind)>>,
+    pub(super) payloads: Mutex<
+        Vec<(
+            NodeId,
+            ElementEventKind,
+            Option<registry_builder::ElixirEventPayload>,
+        )>,
+    >,
     pub(super) raw: Mutex<Vec<InputEvent>>,
 }
 impl HostEventSink for Recorder {
@@ -13,9 +20,13 @@ impl HostEventSink for Recorder {
         &self,
         id: &NodeId,
         kind: ElementEventKind,
-        _: Option<&registry_builder::ElixirEventPayload>,
+        payload: Option<&registry_builder::ElixirEventPayload>,
     ) {
         self.events.lock().unwrap().push((*id, kind));
+        self.payloads
+            .lock()
+            .unwrap()
+            .push((*id, kind, payload.cloned()));
     }
 }
 fn recorded_host() -> (HostEventRuntime, Arc<Recorder>) {
@@ -314,6 +325,19 @@ fn same_mount_release_hit_testing_uses_the_accepted_animated_geometry() {
             .filter(|(_, kind)| *kind == ElementEventKind::Click)
             .count();
         assert_eq!(clicks, usize::from(release_x == 60.0));
+        if release_x == 60.0 {
+            let payloads = recorder.payloads.lock().unwrap();
+            let (_, _, payload) = payloads
+                .iter()
+                .find(|(_, kind, _)| *kind == ElementEventKind::Click)
+                .unwrap();
+            assert_eq!(
+                *payload,
+                Some(registry_builder::ElixirEventPayload::Position(
+                    crate::events::PointerPosition { x: 10.0, y: 10.0 }
+                ))
+            );
+        }
         assert!(!host.driver.runtime.has_active_pointer_overlay());
         assert_eq!(recorder.raw.lock().unwrap().len(), 3);
     }
@@ -530,3 +554,391 @@ fn slider_drag_and_pending_value_belong_to_the_original_mount() {
 mod inflight;
 mod scroll;
 mod styled;
+
+#[test]
+fn window_leave_uses_listener_order_position_not_a_later_ingress_sample() {
+    let assets = crate::assets::AssetRuntime::new();
+    let _assets = assets.enter();
+    let policy = TreeUpdateDecodePolicy::ReturnErr;
+    let mut engine = TreeUpdateEngine::new(encoded_tree(ElementKind::El, &[43, 44]), 200, 30);
+    let (mut host, recorder) = recorded_host();
+    host.install_rebuild(response(
+        &mut engine,
+        vec![TreeMsg::RebuildRegistry],
+        policy,
+    ));
+    host.handle_input(InputEvent::CursorPos { x: 71.0, y: 10.25 });
+    settle(&mut host, &mut engine, policy);
+    host.handle_input(resize());
+    assert!(host.driver.awaiting_registry.is_some());
+    host.handle_input(InputEvent::CursorEntered { entered: false });
+    host.handle_input(InputEvent::CursorPos { x: 180.0, y: 15.0 });
+    settle(&mut host, &mut engine, policy);
+    let payloads = recorder.payloads.lock().unwrap();
+    let (_, _, payload) = payloads
+        .iter()
+        .find(|(_, kind, _)| *kind == ElementEventKind::MouseLeave)
+        .unwrap();
+    assert_eq!(
+        *payload,
+        Some(registry_builder::ElixirEventPayload::Position(
+            crate::events::PointerPosition { x: 71.0, y: 10.25 }
+        ))
+    );
+    assert_eq!(recorder.raw.lock().unwrap().len(), 4);
+}
+
+#[test]
+fn buffered_mouse_moves_deliver_latest_position_before_release_without_synthetic_duplicates() {
+    let assets = crate::assets::AssetRuntime::new();
+    let _assets = assets.enter();
+    let policy = TreeUpdateDecodePolicy::ReturnErr;
+    let mut engine = TreeUpdateEngine::new(encoded_tree(ElementKind::El, &[41, 42, 45]), 200, 30);
+    let (mut host, recorder) = recorded_host();
+    host.install_rebuild(response(
+        &mut engine,
+        vec![TreeMsg::RebuildRegistry],
+        policy,
+    ));
+    host.handle_input(button(ACTION_PRESS, 20.0, 10.0));
+    assert!(host.driver.awaiting_registry.is_some());
+    host.handle_input(InputEvent::CursorPos { x: 50.0, y: 11.0 });
+    host.handle_input(InputEvent::CursorPos { x: 71.5, y: 12.25 });
+    host.handle_input(button(ACTION_RELEASE, 71.5, 12.25));
+    settle(&mut host, &mut engine, policy);
+
+    use crate::events::PointerPosition;
+    use registry_builder::ElixirEventPayload::Position;
+    assert_eq!(
+        *recorder.payloads.lock().unwrap(),
+        vec![
+            (
+                NodeId(9),
+                ElementEventKind::MouseDown,
+                Some(Position(PointerPosition { x: 20.0, y: 10.0 }))
+            ),
+            (
+                NodeId(9),
+                ElementEventKind::MouseMove,
+                Some(Position(PointerPosition { x: 71.5, y: 12.25 }))
+            ),
+            (
+                NodeId(9),
+                ElementEventKind::MouseUp,
+                Some(Position(PointerPosition { x: 71.5, y: 12.25 }))
+            ),
+        ],
+        "real coalesced movement must be delivered; stationary revalidation must not duplicate it"
+    );
+    assert_eq!(
+        recorder.raw.lock().unwrap().len(),
+        4,
+        "raw input is not forwarded again on replay"
+    );
+}
+
+fn drag_samples(recorder: &Recorder) -> Vec<crate::events::DragPayload> {
+    recorder
+        .payloads
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|(_, _, payload)| match payload {
+            Some(registry_builder::ElixirEventPayload::Drag(value)) => Some(*value),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn captured_drag_replays_real_moves_once_and_ends_outside_the_source() {
+    use crate::events::DragPhase;
+    let assets = crate::assets::AssetRuntime::new();
+    let _assets = assets.enter();
+    let policy = TreeUpdateDecodePolicy::ReturnErr;
+    for scale in [1.0, 1.6, 2.0] {
+        let mut tree = encoded_tree(ElementKind::El, &[88]);
+        tree.get_mut(&NodeId(9)).unwrap().spec.declared.layout_scale = Some(scale);
+        let mut engine = TreeUpdateEngine::new(tree, 800, 300);
+        let (mut host, recorder) = recorded_host();
+        host.install_rebuild(response(
+            &mut engine,
+            vec![TreeMsg::RebuildRegistry],
+            policy,
+        ));
+        let scale = scale as f32;
+        host.handle_input(button(ACTION_PRESS, 35.5 * scale, 8.25 * scale));
+        assert!(
+            host.driver
+                .runtime
+                .runtime_overlay
+                .pointer_capture
+                .is_some()
+        );
+        host.handle_input(InputEvent::CursorPos {
+            x: 60.0 * scale,
+            y: 50.0 * scale,
+        });
+        host.handle_input(InputEvent::CursorPos {
+            x: 95.5 * scale,
+            y: -12.25 * scale,
+        });
+        host.handle_input(button(ACTION_RELEASE, 201.5 * scale, 80.25 * scale));
+        settle(&mut host, &mut engine, policy);
+        let samples = drag_samples(&recorder);
+        assert_eq!(
+            samples.len(),
+            3,
+            "no stationary or duplicate replay samples: {samples:?}"
+        );
+        for (sample, (phase, x, y)) in samples.iter().zip([
+            (DragPhase::Start, 35.5, 8.25),
+            (DragPhase::Move, 95.5, -12.25),
+            (DragPhase::End, 201.5, 80.25),
+        ]) {
+            assert_eq!(sample.phase, phase);
+            assert!((sample.x - x).abs() < 0.0001, "{sample:?}");
+            assert!((sample.y - y).abs() < 0.0001, "{sample:?}");
+        }
+        assert!(
+            host.driver
+                .runtime
+                .runtime_overlay
+                .pointer_capture
+                .is_none()
+        );
+        host.handle_input(InputEvent::CursorPos { x: 40.0, y: 10.0 });
+        settle(&mut host, &mut engine, policy);
+        assert_eq!(
+            drag_samples(&recorder).len(),
+            3,
+            "hover must not resume dragging"
+        );
+        assert_eq!(recorder.raw.lock().unwrap().len(), 5);
+    }
+}
+
+#[test]
+fn captured_drag_cancel_uses_the_ordered_last_position_and_preserves_hover_leave() {
+    use crate::events::DragPhase;
+    let assets = crate::assets::AssetRuntime::new();
+    let _assets = assets.enter();
+    let policy = TreeUpdateDecodePolicy::ReturnErr;
+    for cancel in [
+        InputEvent::Focused { focused: false },
+        InputEvent::CursorEntered { entered: false },
+    ] {
+        let mut engine =
+            TreeUpdateEngine::new(encoded_tree(ElementKind::El, &[88, 43, 44]), 500, 300);
+        let (mut host, recorder) = recorded_host();
+        host.install_rebuild(response(
+            &mut engine,
+            vec![TreeMsg::RebuildRegistry],
+            policy,
+        ));
+        host.handle_input(InputEvent::CursorPos { x: 35.5, y: 8.25 });
+        settle(&mut host, &mut engine, policy);
+        host.handle_input(button(ACTION_PRESS, 35.5, 8.25));
+        host.handle_input(cancel.clone());
+        host.handle_input(InputEvent::CursorPos { x: 400.0, y: 250.0 });
+        settle(&mut host, &mut engine, policy);
+        let samples = drag_samples(&recorder);
+        assert_eq!(samples.len(), 2, "{cancel:?}: {samples:?}");
+        assert_eq!(
+            samples[1],
+            crate::events::DragPayload {
+                phase: DragPhase::Cancel,
+                x: 35.5,
+                y: 8.25
+            }
+        );
+        assert!(
+            host.driver
+                .runtime
+                .runtime_overlay
+                .pointer_capture
+                .is_none()
+        );
+        if matches!(cancel, InputEvent::CursorEntered { .. }) {
+            assert!(
+                recorder
+                    .events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|(_, kind)| *kind == ElementEventKind::MouseLeave)
+            );
+        }
+    }
+}
+
+#[test]
+fn captured_drag_does_not_transfer_to_a_replacement_mount_or_removed_handler() {
+    let assets = crate::assets::AssetRuntime::new();
+    let _assets = assets.enter();
+    let policy = TreeUpdateDecodePolicy::ReturnErr;
+    for remount in [false, true] {
+        let mut tree = encoded_tree(ElementKind::El, &[88, 41]);
+        let mut engine = TreeUpdateEngine::new(tree.clone(), 500, 300);
+        let (mut host, recorder) = recorded_host();
+        host.install_rebuild(response(
+            &mut engine,
+            vec![TreeMsg::RebuildRegistry],
+            policy,
+        ));
+        host.handle_input(button(ACTION_PRESS, 35.5, 8.25));
+        settle(&mut host, &mut engine, policy);
+        assert!(
+            host.driver
+                .runtime
+                .runtime_overlay
+                .pointer_capture
+                .is_some()
+        );
+        if remount {
+            host.install_rebuild(response(&mut engine, vec![upload(&tree)], policy));
+        } else {
+            tree.set_revision(2);
+            tree.get_mut(&NodeId(9)).unwrap().spec.declared.on_drag = None;
+            host.install_rebuild(native_rebuild(&mut tree));
+        }
+        assert!(
+            host.driver
+                .runtime
+                .runtime_overlay
+                .pointer_capture
+                .is_none()
+        );
+        host.handle_input(button(ACTION_RELEASE, 250.0, 100.0));
+        settle(&mut host, &mut engine, policy);
+        assert_eq!(drag_samples(&recorder).len(), 1);
+    }
+}
+
+#[test]
+fn stale_hover_snapshots_do_not_revive_a_left_probe_between_sibling_boxes() {
+    let assets = crate::assets::AssetRuntime::new();
+    let _assets = assets.enter();
+    let policy = TreeUpdateDecodePolicy::ReturnErr;
+    let mut tree = ElementTree::new();
+    for (id, kind, flags, width, height) in [
+        (1, ElementKind::Row, vec![], 500.0, 100.0),
+        (9, ElementKind::El, vec![43, 44, 45], 100.0, 60.0),
+        (2, ElementKind::El, vec![], 50.0, 60.0),
+        (10, ElementKind::El, vec![43, 44, 45], 100.0, 60.0),
+    ] {
+        tree.insert(encoded_node(NodeId(id), kind, &flags, width, height));
+    }
+    tree.set_children(&NodeId(1), vec![NodeId(9), NodeId(2), NodeId(10)])
+        .unwrap();
+    tree.set_root_id(NodeId(1));
+    tree.set_revision(1);
+    tree.stamp_all_mounted_at_revision(1);
+    let mut engine = TreeUpdateEngine::new(tree, 500, 100);
+    let (mut host, recorder) = recorded_host();
+    host.install_rebuild(response(
+        &mut engine,
+        vec![TreeMsg::RebuildRegistry],
+        policy,
+    ));
+    host.handle_input(InputEvent::CursorPos { x: 10.0, y: 10.0 });
+    settle(&mut host, &mut engine, policy);
+    assert!(
+        engine
+            .tree()
+            .get(&NodeId(9))
+            .unwrap()
+            .runtime
+            .mouse_over_active
+    );
+    // A legitimate registry published while A is hovered. Paint-only reuse or
+    // an already queued update can republish it after the event runtime left A.
+    let hovered_a = registry_builder::build_registry_rebuild(engine.tree());
+    host.install_rebuild(hovered_a.clone());
+    let leaves = |id| {
+        recorder
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(source, kind)| *source == id && *kind == ElementEventKind::MouseLeave)
+            .count()
+    };
+    for (x, y, owner) in [
+        (300.0, 80.0, None),
+        (320.0, 85.0, None),
+        (170.0, 20.0, Some(NodeId(10))),
+        (180.0, 25.0, Some(NodeId(10))),
+        (330.0, 85.0, None),
+        (350.0, 90.0, None),
+    ] {
+        host.handle_input(InputEvent::CursorPos { x, y });
+        settle(&mut host, &mut engine, policy);
+        let before = recorder.events.lock().unwrap().len();
+        host.install_rebuild(hovered_a.clone());
+        settle(&mut host, &mut engine, policy);
+        assert_eq!(
+            recorder.events.lock().unwrap().len(),
+            before,
+            "a cached registry must not synthesize another leave at ({x}, {y})"
+        );
+        assert_eq!(
+            host.driver
+                .runtime
+                .hover_stack
+                .last()
+                .map(|tracker| tracker.element_id),
+            owner
+        );
+        assert_eq!(
+            leaves(NodeId(9)),
+            1,
+            "A must stay left even when B is left later"
+        );
+    }
+    assert_eq!(leaves(NodeId(10)), 1);
+}
+
+#[test]
+fn cached_hover_flags_cannot_reactivate_a_probe_after_window_leave() {
+    let assets = crate::assets::AssetRuntime::new();
+    let _assets = assets.enter();
+    let policy = TreeUpdateDecodePolicy::ReturnErr;
+    let mut engine = TreeUpdateEngine::new(encoded_tree(ElementKind::El, &[43, 44, 45]), 500, 100);
+    let (mut host, recorder) = recorded_host();
+    host.install_rebuild(response(
+        &mut engine,
+        vec![TreeMsg::RebuildRegistry],
+        policy,
+    ));
+    host.handle_input(InputEvent::CursorPos { x: 10.0, y: 10.0 });
+    settle(&mut host, &mut engine, policy);
+    let hovered = registry_builder::build_registry_rebuild(engine.tree());
+    host.handle_input(InputEvent::CursorEntered { entered: false });
+    // Install the snapshot before the queued native hover-clear reaches the
+    // tree, modeling an application render racing immediate Elixir delivery.
+    host.install_rebuild(hovered.clone());
+    assert!(host.driver.runtime.hover_stack.is_empty());
+    settle(&mut host, &mut engine, policy);
+    host.handle_input(InputEvent::CursorEntered { entered: true });
+    host.handle_input(InputEvent::CursorPos { x: 300.0, y: 80.0 });
+    host.install_rebuild(hovered);
+    settle(&mut host, &mut engine, policy);
+    assert!(host.driver.runtime.hover_stack.is_empty());
+    let events = recorder.events.lock().unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|(_, kind)| *kind == ElementEventKind::MouseLeave)
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|(_, kind)| *kind == ElementEventKind::MouseEnter)
+            .count(),
+        1
+    );
+    assert_eq!(recorder.raw.lock().unwrap().len(), 4);
+}

@@ -101,6 +101,7 @@ pub fn classify_attrs_change(before: &Attrs, after: &Attrs) -> TreeInvalidation 
         || before.on_mouse_enter != after.on_mouse_enter
         || before.on_mouse_leave != after.on_mouse_leave
         || before.on_mouse_move != after.on_mouse_move
+        || before.on_drag != after.on_drag
         || before.on_press != after.on_press
         || before.on_swipe_up != after.on_swipe_up
         || before.on_swipe_down != after.on_swipe_down
@@ -300,6 +301,7 @@ fn registry_attrs_changed(before: &Attrs, after: &Attrs) -> bool {
         || before.on_mouse_enter != after.on_mouse_enter
         || before.on_mouse_leave != after.on_mouse_leave
         || before.on_mouse_move != after.on_mouse_move
+        || before.on_drag != after.on_drag
         || before.on_press != after.on_press
         || before.on_swipe_up != after.on_swipe_up
         || before.on_swipe_down != after.on_swipe_down

@@ -35,6 +35,7 @@ defmodule Emerge.DocumentationConfigTest do
 
     refute File.exists?(Path.join(@root, "guides/reference/viewport-configuration.md"))
     assert "guides/tutorials/set_up_viewport.md" in extras
+    assert "guides/migrations/0.6.md" in extras
     refute "guides/tutorials/configure_native_renderer.md" in extras
     refute "guides/tutorials/configure_nerves_graphics.md" in extras
     {:docs_v1, _, _, _, %{"en" => viewport_docs}, _, _} = Code.fetch_docs(Emerge)
@@ -102,6 +103,46 @@ defmodule Emerge.DocumentationConfigTest do
       config = Config.Normalize.config!(literal, Emerge)
       assert :ok = EmergeSkia.validate_config!(config)
     end
+  end
+
+  test "0.6 migration handlers accept float positions and appended tuple fields" do
+    sources = "guides/migrations/0.6.md" |> read() |> code_blocks()
+    for source <- sources, do: assert(match?({:ok, _}, Code.string_to_quoted(source)))
+
+    source = Enum.find(sources, &String.contains?(&1, "def handle_info({:clicked, _position}"))
+    module = Emerge.DocumentationExamples.PointerMigrationHandlers
+    Code.compile_string("defmodule #{inspect(module)} do\n#{source}\nend")
+    position = %{x: 35.5, y: -2.25}
+
+    assert {:noreply, %{clicks: 1}} =
+             apply(module, :handle_info, [{:clicked, position}, %{clicks: 0}])
+
+    assert {:noreply, %{pointer: {35.5, -2.25}}} =
+             apply(module, :handle_info, [{:pointer, :pad, position}, %{}])
+  end
+
+  test "0.6 migration adapter retains fixed arguments and delegates other payloads" do
+    source =
+      "guides/migrations/0.6.md"
+      |> read()
+      |> code_blocks()
+      |> Enum.find(&String.contains?(&1, "def wrap_payload({:solve_event, event, argument}"))
+
+    module = Emerge.DocumentationExamples.PointerMigrationAdapter
+    Code.compile_string("defmodule #{inspect(module)} do\n#{source}\nend")
+    position = %{x: 35.5, y: 20.25}
+
+    for kind <- [:click, :mouse_down, :mouse_up, :mouse_move, :mouse_enter, :mouse_leave, :drag] do
+      payload = if kind == :drag, do: Map.put(position, :phase, :move), else: position
+
+      assert apply(module, :wrap_payload, [{:solve_event, :moved, :pad}, payload, kind]) ==
+               {:solve_event, :moved, {:pad, payload}}
+    end
+
+    assert apply(module, :wrap_payload, [{:solve_event, :moved}, position, :mouse_move]) ==
+             {:solve_event, :moved, position}
+
+    assert apply(module, :wrap_payload, [:changed, "text", :change]) == {:changed, "text"}
   end
 
   test "configuration moduledoc examples normalize and adapt without opening hardware" do

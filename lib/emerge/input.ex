@@ -23,7 +23,12 @@ defmodule Emerge.Input do
   lengths are UTF-8 bytes. A preedit cursor range is optional and is supplied by
   the platform's IME, not a selection in the application's committed text.
 
-  Pointer positions are backend surface coordinates. Discrete scroll steps
+  Pointer positions are backend surface coordinates, not the logical positions
+  delivered by `Emerge.UI.Event` mouse or drag handlers. Use element events for
+  control-local coordinates and captured dragging; raw observers do not capture
+  a control or change native dispatch.
+
+  Discrete scroll steps
   are normalized using `scroll_line_pixels`; precise scrolling uses backend
   deltas. Positive deltas follow the backend's normalized scroll direction.
   Resize includes output dimensions and the backend scale factor.

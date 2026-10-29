@@ -4526,6 +4526,44 @@ fn test_harness_patch(harness: ResourceArc<TestHarnessResource>, data: Binary) -
 }
 
 #[rustler::nif]
+fn test_harness_set_input_target(
+    harness: ResourceArc<TestHarnessResource>,
+    target: LocalPid,
+) -> Atom {
+    send_event(
+        &harness.event_tx,
+        EventMsg::SetInputTarget(Some(target)),
+        false,
+    );
+    atoms::ok()
+}
+
+#[rustler::nif]
+fn test_harness_cursor_button(
+    harness: ResourceArc<TestHarnessResource>,
+    pressed: bool,
+    x: f64,
+    y: f64,
+) -> Atom {
+    send_event(
+        &harness.event_tx,
+        EventMsg::InputEvent(input::InputEvent::CursorButton {
+            button: "left".into(),
+            action: if pressed {
+                input::ACTION_PRESS
+            } else {
+                input::ACTION_RELEASE
+            },
+            mods: 0,
+            x: x as f32,
+            y: y as f32,
+        }),
+        false,
+    );
+    atoms::ok()
+}
+
+#[rustler::nif]
 fn test_harness_cursor_pos(harness: ResourceArc<TestHarnessResource>, x: f64, y: f64) -> Atom {
     send_event(
         &harness.event_tx,

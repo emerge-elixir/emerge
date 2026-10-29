@@ -217,7 +217,8 @@ The tutorials build on one another:
 Other documentation:
 
 - [Configuration records](https://hexdocs.pm/emerge/Emerge.Config.html)
-- [Observe raw input](guides/tutorials/handle_input.md)
+- [Handle input](guides/tutorials/handle_input.md)
+- [Migrate to Emerge 0.6 (upcoming)](guides/migrations/0.6.md)
 - [Migrate to Emerge 0.5](guides/migrations/0.5.md)
 - [Historical migration to Emerge 0.4](guides/migrations/0.4.md)
 - [Viewport configuration](https://hexdocs.pm/emerge/Emerge.html#module-viewport-configuration)

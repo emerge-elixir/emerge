@@ -177,6 +177,7 @@ impl EventRuntimeDriver {
             self.runtime.drag_motion = None;
             self.runtime.inertial_scroll = None;
             self.runtime.hover_stack.clear();
+            self.runtime.hover_tracking_initialized = false;
         }
         let result = operation(&mut self.runtime, &commands, self.log_render);
         let mut messages = self
@@ -701,18 +702,24 @@ impl PendingDispatchEffects {
             ListenerAction::SyntheticInput(events) => self.synthetic_inputs.push(events),
             ListenerAction::SetCursor(icon) => self.requested_cursor = Some(icon),
             ListenerAction::ElixirEvent(event) => {
-                if dispatch_mode == DispatchMode::CursorRevalidate
-                    && event.kind == ElementEventKind::MouseMove
-                {
+                let pointer_move = event.kind == ElementEventKind::MouseMove
+                    || matches!(
+                        event.payload,
+                        Some(ElixirEventPayload::Drag(super::DragPayload {
+                            phase: super::DragPhase::Move,
+                            ..
+                        }))
+                    );
+                if dispatch_mode == DispatchMode::CursorRevalidate && pointer_move {
                     return self;
                 }
 
-                if !matches!(
-                    event.kind,
-                    ElementEventKind::MouseMove
-                        | ElementEventKind::MouseEnter
-                        | ElementEventKind::MouseLeave
-                ) {
+                if !pointer_move
+                    && !matches!(
+                        event.kind,
+                        ElementEventKind::MouseEnter | ElementEventKind::MouseLeave
+                    )
+                {
                     self.elixir_event_requires_rebuild = true;
                 }
                 runtime.send_elixir_event(event);
@@ -938,6 +945,7 @@ struct RuntimeListenerComputeCtx<'a> {
     overlay_registry: &'a registry_builder::Registry,
     focused_id: Option<&'a NodeId>,
     hover_stack: &'a [HoverTracker],
+    pointer_position: Option<(f32, f32)>,
     text_states: &'a HashMap<NodeId, TextInputState>,
     slider_states: &'a HashMap<NodeId, SliderState>,
     text_commit_suppressions: &'a mut Vec<TextCommitSuppression>,
@@ -961,6 +969,10 @@ impl ListenerComputeCtx for RuntimeListenerComputeCtx<'_> {
 
     fn hover_stack(&self) -> &[HoverTracker] {
         self.hover_stack
+    }
+
+    fn pointer_position(&self) -> Option<(f32, f32)> {
+        self.pointer_position
     }
 
     fn text_input_state(&self, element_id: &NodeId) -> Option<TextInputState> {
@@ -1166,8 +1178,13 @@ struct DirectEventRuntime {
     backend_cursor_tx: Option<Sender<CursorIcon>>,
     backend_wake: BackendWakeHandle,
     last_cursor_pos: Option<(f32, f32)>,
+    // Listener-order snapshot: ingress can already be ahead of buffered leave.
+    listener_cursor_pos: Option<(f32, f32)>,
     cursor_in_window: bool,
     hover_stack: Vec<HoverTracker>,
+    // Tree hover flags can bootstrap a fresh runtime, but cannot override an
+    // observed enter/leave transition with an old cached snapshot afterward.
+    hover_tracking_initialized: bool,
     current_cursor_icon: CursorIcon,
     text_clicks: text_click::TextClicks,
     input_time: Instant,
@@ -1229,8 +1246,10 @@ impl DirectEventRuntime {
             backend_cursor_tx,
             backend_wake,
             last_cursor_pos: None,
+            listener_cursor_pos: None,
             cursor_in_window: false,
             hover_stack: Vec::new(),
+            hover_tracking_initialized: false,
             current_cursor_icon: CursorIcon::Default,
             text_clicks: text_click::TextClicks::default(),
             input_time: Instant::now(),
@@ -1716,6 +1735,7 @@ impl DirectEventRuntime {
                 overlay_registry: &self.overlay_registry,
                 focused_id: self.focused_id.as_ref(),
                 hover_stack: &self.hover_stack,
+                pointer_position: self.listener_cursor_pos,
                 text_states: &self.text_states,
                 slider_states: &self.slider_states,
                 text_commit_suppressions: &mut self.text_commit_suppressions,
@@ -1772,6 +1792,7 @@ impl DirectEventRuntime {
                 overlay_registry: &self.overlay_registry,
                 focused_id: self.focused_id.as_ref(),
                 hover_stack: &self.hover_stack,
+                pointer_position: self.listener_cursor_pos,
                 text_states: &self.text_states,
                 slider_states: &self.slider_states,
                 text_commit_suppressions: &mut self.text_commit_suppressions,
@@ -2027,11 +2048,9 @@ impl DirectEventRuntime {
             };
             match event {
                 PendingInput::Raw(event) => {
-                    let dispatch_mode = match event {
-                        InputEvent::CursorPos { .. } => DispatchMode::CursorRevalidate,
-                        _ => DispatchMode::Normal,
-                    };
-                    self.dispatch_event(event, tree_tx, log_render, dispatch_mode);
+                    // Buffered movement is real input, not stationary geometry
+                    // revalidation. Deliver its coalesced position exactly once.
+                    self.dispatch_event(event, tree_tx, log_render, DispatchMode::Normal);
                 }
                 PendingInput::TimedButton { event, occurred_at } => {
                     self.dispatch_event_at(
@@ -2295,6 +2314,15 @@ impl DirectEventRuntime {
             self.cancel_touch_keys(tree_tx, log_render);
             self.primary_touch = None;
         }
+        match &event {
+            InputEvent::CursorPos { x, y }
+            | InputEvent::CursorButton { x, y, .. }
+            | InputEvent::CursorScroll { x, y, .. }
+            | InputEvent::CursorScrollLines { x, y, .. } => {
+                self.listener_cursor_pos = Some((*x, *y));
+            }
+            _ => {}
+        }
         let started_at = Instant::now();
         let event_label = input_event_label(&event);
         let input = ListenerInput::Raw(event);
@@ -2304,6 +2332,7 @@ impl DirectEventRuntime {
                 overlay_registry: &self.overlay_registry,
                 focused_id: self.focused_id.as_ref(),
                 hover_stack: &self.hover_stack,
+                pointer_position: self.listener_cursor_pos,
                 text_states: &self.text_states,
                 slider_states: &self.slider_states,
                 text_commit_suppressions: &mut self.text_commit_suppressions,
@@ -2382,8 +2411,14 @@ impl DirectEventRuntime {
 
         let atom = event_kind_to_atom(event.kind);
         match event.payload {
+            Some(ElixirEventPayload::Drag(value)) => {
+                super::send_element_event_with_position(pid, &event.element_id, atom, value)
+            }
             Some(ElixirEventPayload::String(value)) => {
                 send_element_event_with_string_payload(pid, &event.element_id, atom, &value)
+            }
+            Some(ElixirEventPayload::Position(value)) => {
+                super::send_element_event_with_position(pid, &event.element_id, atom, value)
             }
             Some(ElixirEventPayload::Scroll(value)) => {
                 super::send_element_event_with_scroll_payload(pid, &event.element_id, value)
@@ -2398,6 +2433,11 @@ impl DirectEventRuntime {
     fn apply_runtime_change(&mut self, change: RuntimeChange) {
         let now = Instant::now();
         match change {
+            RuntimeChange::StartPointerCapture { tracker } => {
+                self.cancel_inertial_scroll();
+                self.runtime_overlay.pointer_capture = Some(tracker);
+            }
+            RuntimeChange::ClearPointerCapture => self.runtime_overlay.pointer_capture = None,
             RuntimeChange::StartClickPressTracker {
                 element_id,
                 matcher_kind,
@@ -2574,6 +2614,7 @@ impl DirectEventRuntime {
             }
             RuntimeChange::SetHoverStack { stack } => {
                 self.hover_stack = stack;
+                self.hover_tracking_initialized = true;
             }
         }
     }
@@ -2680,6 +2721,12 @@ impl DirectEventRuntime {
             .retain(|suppression| same_mount(&suppression.element_id));
         self.hover_stack
             .retain(|tracker| same_mount(&tracker.element_id));
+        if let Some(capture) = self.runtime_overlay.pointer_capture.as_ref()
+            && (!has_source(&capture.element_id, capture.matcher_kind)
+                || !registry_builder::pointer_drag::has_source(base, capture))
+        {
+            self.runtime_overlay.pointer_capture = None;
+        }
         if let Some(click_press) = self.runtime_overlay.click_press.as_ref()
             && !has_source(&click_press.element_id, click_press.matcher_kind)
         {
@@ -2780,8 +2827,11 @@ impl DirectEventRuntime {
             self.inertial_scroll = None;
         }
 
-        self.hover_stack =
-            registry_builder::reconcile_hover_stack(&self.base_registry, &self.hover_stack);
+        self.hover_stack = registry_builder::reconcile_hover_stack(
+            &self.base_registry,
+            &self.hover_stack,
+            !self.hover_tracking_initialized,
+        );
     }
 }
 
@@ -2851,6 +2901,7 @@ fn event_kind_to_atom(kind: ElementEventKind) -> rustler::Atom {
         ElementEventKind::MouseEnter => mouse_enter_atom(),
         ElementEventKind::MouseLeave => mouse_leave_atom(),
         ElementEventKind::MouseMove => mouse_move_atom(),
+        ElementEventKind::Drag => super::drag_atom(),
         ElementEventKind::Focus => focus_atom(),
         ElementEventKind::Blur => blur_atom(),
         ElementEventKind::Change => change_atom(),

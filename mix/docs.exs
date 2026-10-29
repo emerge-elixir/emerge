@@ -43,6 +43,7 @@ defmodule Emerge.Mix.Docs do
       "guides/tutorials/use_assets.md",
       "guides/tutorials/state_management.md",
       "guides/tutorials/handle_input.md",
+      "guides/migrations/0.6.md",
       "guides/migrations/0.5.md",
       "guides/migrations/0.4.md"
     ]

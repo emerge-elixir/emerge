@@ -681,6 +681,11 @@ defmodule EmergeSkia do
   - `{:cursor_entered, entered}`
   - `{:resized, {width, height, scale}}`
   - `{:focused, focused}`
+  - `{:touch, {contact_id, :down | :move | :up | :cancel, {x, y}}}` (DRM touchscreens)
+
+  Raw pointer/touch positions use backend surface coordinates, not element-local
+  logical pixels. Touch observers receive contacts independently of primary-touch
+  mouse emulation used for element interactions.
 
   On Wayland, close notifications are sent separately as:
 
@@ -698,12 +703,24 @@ defmodule EmergeSkia do
   - `{id_bin, event_type}`
   - `{id_bin, event_type, payload}`
 
-  where `id_bin` is an opaque element id and `event_type` is an atom such as
-  `:press`, `:click`, `:swipe_up`, `:swipe_down`, `:swipe_left`,
-  `:swipe_right`, `:change`, `:key_down`, `:key_up`, or `:key_press`.
+  where `id_bin` is an opaque element id. Payload contracts are:
 
-  Text-input `:change` payloads are binaries. Slider `:change` payloads are
-  floats.
+  - `:click`, `:mouse_down`, `:mouse_up`, `:mouse_move`, `:mouse_enter` and
+    `:mouse_leave`: `%{x: float(), y: float()}` from the listener's outer top-left,
+    including border/padding, in element-local logical pixels. Display/layout/paint
+    scaling, transforms and ancestor scrolling are undone; values are never clamped.
+  - `:drag`: `%{phase: :start | :move | :end | :cancel, x: float(), y: float()}`
+    in the same logical coordinates, using the captured source's current geometry.
+    See `Emerge.UI.Event.on_drag/1` for capture lifetime and cancellation.
+  - `:change`: a binary for text inputs or a float for sliders.
+  - `:scroll`: `%{x: float(), y: float()}` scroll fractions in `[0, 1]`, not positions.
+  - `:press`, `:swipe_up`, `:swipe_down`, `:swipe_left`, `:swipe_right`, `:focus`,
+    `:blur` and `:virtual_key_hold`: no runtime payload, using the two-field form.
+
+  Mouse down uses the press position; up/click use the release position. Enter/leave
+  use the transition position; window leave uses the last known pointer position.
+  Each position is relative to its own listener. Unlike `:drag`, ordinary mouse
+  events do not capture the pointer.
 
   Routed `:key_down`, `:key_up`, and `:key_press` payloads currently carry an
   opaque binding route id used by higher-level runtimes.

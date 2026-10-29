@@ -40,6 +40,11 @@ defmodule Emerge.UI.Input do
   values, and with `Emerge.UI.Event.on_focus/1` or `Emerge.UI.Event.on_blur/1`
   when you care about focus changes.
 
+  Text inputs and sliders own their native selection/drag behavior and reject
+  `Emerge.UI.Event.on_drag/1`. Use that helper on custom elements built with
+  `Emerge.UI.el/2` instead; native inputs continue to report values through
+  `Emerge.UI.Event.on_change/1`.
+
   ## Buttons
 
   `button/2` wraps exactly one child element and gives it button-like

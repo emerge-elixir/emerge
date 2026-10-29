@@ -214,8 +214,9 @@ Window titles can change while running, but settings such as the renderer API,
 assets and initial size require a new viewport. See
 [configuration records](https://hexdocs.pm/emerge/Emerge.Config.html) for other settings.
 
-Raw input is opt-in and separate from the buttons above. Continue with
-[Observe raw input](handle_input.md) when you need `handle_input/2`.
+Raw input is opt-in and separate from the buttons above. See
+[Handle input](handle_input.md) for element-local mouse positions, captured dragging
+and window-level observation with `handle_input/2`.
 
 ## Next
 

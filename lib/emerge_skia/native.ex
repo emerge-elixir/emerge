@@ -737,6 +737,15 @@ defmodule EmergeSkia.Native do
   def test_harness_patch(_harness, _data), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc false
+  @spec test_harness_set_input_target(reference(), pid()) :: :ok
+  def test_harness_set_input_target(_harness, _pid), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec test_harness_cursor_button(reference(), boolean(), number(), number()) :: :ok
+  def test_harness_cursor_button(_harness, _pressed, _x, _y),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
   @spec test_harness_cursor_pos(reference(), number(), number()) ::
           :ok
   def test_harness_cursor_pos(_harness, _x, _y), do: :erlang.nif_error(:nif_not_loaded)

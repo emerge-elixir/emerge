@@ -2,8 +2,24 @@
 
 ## [Unreleased]
 
+See the [0.6 migration guide](guides/migrations/0.6.md) for the pointer-event
+message changes when upgrading from 0.5.
+
+### Breaking changes
+
+- `on_click` and the five `on_mouse_*` events now include
+  `%{x: float, y: float}` in the listener element's logical pixels, with scaling
+  undone and leave coordinates unclamped. Update bare-message handlers to accept
+  the position payload (tuple messages have it appended). Custom `wrap_payload/3`
+  callbacks receive the map. `on_press` and raw observer events are unchanged.
+  macOS requires the matching protocol-19 host.
+
 ### Added
 
+- `Event.on_drag/1` for custom controls: captured left-button start/move/end/cancel
+  samples with unclamped element-local logical coordinates. Movement and release
+  remain with the pressed element outside its bounds; ordinary mouse handlers
+  keep their existing hit-testing semantics.
 - Native double-click word selection for single-line and multiline text inputs.
 - WSLg troubleshooting and an explicit GBM-free Wayland/raster build recipe.
 
@@ -13,6 +29,15 @@
   Nearby content, without requiring an animation or unrelated tree change.
 - Wayland uses bundled cursors when system cursor themes are missing, avoiding
   repeated cursor errors on minimal Linux/WSLg installations.
+- Cached hover snapshots no longer reactivate elements after `mouse_leave`,
+  preventing repeated leave callbacks and coordinate readouts that keep updating
+  outside a box or resume after leaving another box.
+- Building scrollbar press listeners no longer panics when scrollbar metrics
+  survive full clipping or a collapsed cross-axis. Hidden thumb/track regions on
+  either axis are skipped without dropping retained keyboard or scrollbar state.
+- Real mouse movement buffered during a listener-registry refresh now emits its
+  coalesced move callback on replay instead of being treated as stationary
+  revalidation and silently discarded.
 
 ## [0.5.1] - 2026-10-21
 

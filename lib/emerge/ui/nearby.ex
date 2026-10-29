@@ -56,6 +56,17 @@ defmodule Emerge.UI.Nearby do
   sibling branches, and nearby attached to an ancestor host paints above nearby
   attached deeper in that host subtree.
 
+  ## Pointer Hit Testing
+
+  Front nearby overlays such as `in_front/1` form their own hit-test scope and
+  can block the host even when they have no event handlers. Use
+  `behind_content/1` for decorative backgrounds, and ordinary noninteractive
+  children for markers that must not cover a control with a front nearby scope.
+  Keep front nearby content for actual overlays such as menus and popups.
+
+  An event's coordinates belong to its listener element, not the nearby host.
+  See `Emerge.UI.Event` for coordinate and captured-drag rules.
+
   ## Example
 
   See the dropdown example in

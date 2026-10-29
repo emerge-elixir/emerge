@@ -381,8 +381,11 @@ Obsolete registry crossings skipped during a causal wait do not generate histori
 hover callbacks. After a matching response, stationary hover is revalidated against
 accepted geometry when no pointer capture is active. Ordinary fresh crossings still
 emit enter/leave, and buffered motion remains ordered before its release. Raw
-observers are not called again by revalidation/replay. Fresh cursor batching can
-coalesce intermediate positions before observer forwarding.
+observers are not called again by revalidation/replay. Real buffered cursor
+movement emits its retained/coalesced mouse-move callback once during ordered
+replay; only stationary geometry revalidation suppresses synthetic mouse-move
+callbacks. Fresh cursor batching can coalesce intermediate positions before
+observer forwarding.
 
 This is event-request causality, not a renderer/compositor installation
 acknowledgment. Scene enqueue-before-render ordering still does not prove that input
@@ -505,6 +508,32 @@ Raw key events stay canonical and layout-independent. Text input still arrives
 through text commit events, so `Shift+=` matches raw key `:equal` with `:shift`
 while committing the text `"+"`.
 
+### Element-local pointer payloads
+
+`click`, `mouse_down`, `mouse_up`, `mouse_enter`, `mouse_leave` and `mouse_move`
+carry `%{x: float, y: float}` in the receiving element's logical pixels. Cached
+listener actions retain a coordinate descriptor, not a sampled position. Dispatch
+inverse-transforms the surface sample, subtracts the scroll-adjusted painted
+border-box origin and divides by the prepared layout scale. Hover stacks resolve
+each element independently; click followups rebind to accepted source geometry.
+Leave coordinates are unclamped. Window leave uses a listener-order snapshot,
+separate from the ingress snapshot which may already contain later buffered input.
+The NIF emits a map; macOS protocol 19 carries two big-endian f64 fields and decodes
+the same map. Normal viewport payload wrapping handles delivery without new routes.
+`press` and raw observer payloads are unchanged.
+
+### Explicit captured drag
+
+`on_drag` adds a separate `drag` route with `%{phase: :start | :move | :end |
+:cancel, x: float, y: float}`. A left press installs a mount-owned pointer-capture
+tracker. Overlay listeners own subsequent real moves and release anywhere; each
+registry rebuild rebinds the source coordinate descriptor. Stationary cursor
+revalidation does not emit drag moves or initiate another feedback cycle.
+Window leave/focus loss cancels at the listener-order last position. Missing,
+removed-handler or remounted sources drop capture; it never transfers to a
+replacement. Physical hover enter/leave and raw observers are unchanged.
+The NIF emits a map; the macOS drag body is a phase byte followed by two f64s.
+
 ### Mouse Down / Mouse Up
 
 - `on_mouse_down` is left-button only
@@ -514,7 +543,11 @@ while committing the text `"+"`.
 
 ### Hover
 
-Hover tracking is listener-driven and based on retained hover state.
+Hover tracking is listener-driven. Retained active flags can bootstrap a fresh
+runtime, but after an observed transition the runtime hover stack is authoritative,
+including when empty. Rebuilding or reusing cached listener geometry must not
+reactivate a source that already left. This keeps event-only and paint-only hover
+updates free of forced full-registry rebuilds without replaying stale ownership.
 
 - event-only hover and style hover both retain hover-active state
 - hover enter/leave listeners are built from current retained state
@@ -849,7 +882,7 @@ Nearby now participates in the retained tree/event model.
 
 - no bubbling or capture propagation
 - no double-click semantics
-- no pointer metadata payloads on element events
+- no button/modifier metadata on element pointer events (only local position)
 - no right/middle element-level down/up events
 - no multi-touch or gesture event model yet
 

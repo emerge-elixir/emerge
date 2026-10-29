@@ -4,7 +4,7 @@ defmodule EmergeSkia.Macos.Protocol do
   import Bitwise
 
   @protocol_name "emerge_skia_macos"
-  @protocol_version 17
+  @protocol_version 19
 
   @log_level_debug 0
   @log_level_info 1
@@ -121,12 +121,23 @@ defmodule EmergeSkia.Macos.Protocol do
     <<id::binary-size(^id_len), payload_len::unsigned-big-32, payload::binary-size(payload_len)>> =
       rest
 
-    true = has_payload in [0, 1] and (kind_tag != 19 or has_payload == 1)
+    true =
+      has_payload in [0, 1] and
+        (kind_tag not in [1, 11, 12, 13, 14, 15, 19, 20] or has_payload == 1)
 
     event =
       case has_payload do
         0 ->
           {id, decode_element_event_kind(kind_tag)}
+
+        1 when kind_tag in [1, 11, 12, 13, 14, 15] ->
+          <<x::float-big-64, y::float-big-64>> = payload
+          {id, decode_element_event_kind(kind_tag), %{x: x, y: y}}
+
+        1 when kind_tag == 20 ->
+          <<phase, x::float-big-64, y::float-big-64>> = payload
+          true = phase in 0..3
+          {id, :drag, %{phase: elem({:start, :move, :end, :cancel}, phase), x: x, y: y}}
 
         1 when kind_tag == 19 ->
           [x, y] = String.split(payload, ",", parts: 2)
