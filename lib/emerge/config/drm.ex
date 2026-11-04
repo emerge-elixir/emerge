@@ -31,15 +31,33 @@ defmodule Emerge.Config.DRM do
 
   Discover connector names and modes with `EmergeSkia.drm_outputs(drm_card: path)`.
 
+  ## Startup and boot splash
+
+  When starting with `display: :on`, Emerge leaves any image already on the
+  display, such as a boot splash, visible while it prepares the first application
+  frame. It also leaves the backlight unchanged until that frame is presented.
+  No special configuration is needed.
+
+  If the active output and display mode match the selected output and mode,
+  Emerge replaces the image without requesting a modeset. A mode change may
+  cause a brief blank when the first frame is presented. The result also depends
+  on the display hardware and driver; a seamless transition cannot be guaranteed
+  on every device.
+
+  Input is enabled and any requested brightness is applied after the first frame
+  is presented. Starting with `display: :off`, turning the display off, stopping,
+  or cleaning up after a failure can blank the display. Stopping does not restore
+  the previous image or backlight level.
+
   ## Changing settings
 
   `display` and backlight brightness can change through `config` with an explicit
   OpenGL, Vulkan or raster renderer. Raster supports CPU presentation (including
   its `:auto` default) and explicit `raster_present: :gpu_upload`, which requires
   the OpenGL DRM presenter build. Automatic API selection does not support these
-  controls. Off destroys the internal presenter;
-  on recreates it and enables a managed backlight after its first application
-  presentation. GPU resources are not restored.
+  controls. Turning the display off destroys the internal presenter. Turning it
+  on creates a new one and enables a managed backlight after the first application
+  frame is presented. GPU resources are not restored.
 
   Changing the card, connector, mode, size hint, backlight device or hotplug polling
   interval requires a new viewport. Applications using off/on need an independent

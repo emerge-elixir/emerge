@@ -154,6 +154,29 @@ opts out, and an explicit sysfs path pins a particular device. Brightness is a f
 `0..1` request; zero is not display-off, and `nil` restores the original requested
 level retained across renderer recovery.
 
+When starting on, Emerge leaves inherited scanout and backlight state untouched
+while it prepares the renderer and waits for a request-matched application frame.
+Startup returns before that frame is presented, so the caller can upload a tree.
+An intentionally empty application frame is valid; startup and stale scenes are not.
+
+For active routing with matching mode timings, the presenter tests the replacement
+with `TEST_ONLY` and no `ALLOW_MODESET`. The blocking first commit replaces the
+primary and retires any inherited cursor without rewriting connector routing,
+`MODE_ID` or `ACTIVE`. GL uses the blocking commit as its completion proof; CPU
+raster and Vulkan wait for the matching page-flip event. Emerge neither copies nor
+destroys the inherited framebuffer. It leases a cursor plane even for a software
+cursor so an inherited cursor can be retired with the replacement frame.
+
+If routing or mode must change, or the output is inactive, Emerge waits for the
+replacement frame before enabling it. A required modeset is logged and may cause a
+visible blank; backlight suppression is acknowledged before the transition to preserve
+DCS ordering. After presentation, Emerge adopts a lit managed backlight without a
+power cycle or temporary zero-brightness write when readback supports it. It uses
+power and requested-brightness readback, plus actual brightness when available. An
+already-dark backlight is illuminated normally. Requested brightness and input are
+applied only after presentation. Initial-off, off-before-upload, stop and failure
+cleanup still suppress and detach the output; shutdown does not restore its old state.
+
 Off retains the public renderer, lease/backlight ownership, tree and desired settings,
 but ignores native UI input and destroys the presenter. On creates a fresh presenter
 and enables a managed backlight after its first application presentation. There is no
@@ -167,6 +190,48 @@ changed capabilities still fail. Vulkan panel/optical qualification remains open
 Applications provide their independent wake policy. See
 [config reconciliation](config-reconciliation.md) and the
 [configuration reference](https://hexdocs.pm/emerge/Emerge.html#module-viewport-configuration).
+
+## Boot-splash hardware qualification
+
+The handoff has been confirmed working on hardware by a user; the device, renderer
+and boot cases were not recorded. That confirmation does not establish behavior on
+other hardware or cover the cases below.
+
+For a Loon qualification run, use an authorized cold or warm boot with the fbdev
+splash already visible. Build and release the normal `drm_opengl` artifact from the
+integrated source revision, then update Emerge through its native-artifact flow; do
+not patch an application's generated `deps/` checkout. Delay the first tree upload
+and check that scanout and backlight readbacks remain unchanged. Then upload a frame
+using the existing mode. Record KMS and backlight operations and observe the panel
+for a placeholder, disabled interval or power cycle.
+
+Also test a different requested mode (a brief blank during the final transition is
+allowed), initial-off, off-before-upload, stop without an upload, failures and a
+sibling output. Qualify CPU raster, GPU-upload raster and Vulkan separately on the
+hardware that will use them.
+
+Run the dedicated smoke test alone, before any other DRM test has detached the
+boot output. Set `EMERGE_DRM_TEST_MODE` to the inherited exact advertised mode ID;
+this test requires compatible handoff rather than silently accepting a modeset:
+
+```sh
+EMERGE_DRM_TEST_CARD=/dev/dri/by-path/your-test-card \
+EMERGE_DRM_TEST_CONNECTOR=DSI-1 \
+EMERGE_DRM_TEST_MODE='<inherited exact mode id>' \
+EMERGE_DRM_TEST_API=opengl \
+mix test test/emerge_skia/drm_boot_splash_hardware_test.exs --include drm_hardware
+```
+
+Optionally set `EMERGE_DRM_TEST_BACKLIGHT` to the authorized panel's sysfs device.
+The API selector also accepts `raster`, `gpu_upload` or `vulkan` (the latter needs
+`EMERGE_DRM_TEST_VULKAN_NODE`). The test checks delayed-upload readbacks, the
+no-modeset report, application pixels and clean stop. It cannot measure an
+intermediate disable/brightness write, so operation traces and optical checks remain
+needed to assess those effects.
+
+A successful `TEST_ONLY` or application capture alone cannot establish optical
+seamlessness. Record the device, driver, renderer and boot conditions with any
+hardware results. Automated tests do not acquire DRM master without explicit opt-in.
 
 ## Opt-in GPU power test
 
