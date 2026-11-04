@@ -1,4 +1,6 @@
 //! DRM input uses a statically bundled libinput path context. No udev daemon.
+#[cfg(test)]
+mod touch_wake;
 use crate::{
     actors::EventMsg,
     backend::wake::BackendWakeHandle,
