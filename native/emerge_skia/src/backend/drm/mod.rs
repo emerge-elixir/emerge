@@ -79,10 +79,9 @@ impl BackendWake for DrmBackendWake {
 
     fn validate_config(&self, config: &crate::runtime::config::LiveConfig) -> Result<(), String> {
         if !self.power_supported
-            && config
-                .drm_power
-                .as_ref()
-                .is_some_and(|power| !power.display_on || power.brightness.is_some())
+            && config.drm_power.as_ref().is_some_and(|power| {
+                !power.display_on || power.brightness.is_some() || power.wake_on_touch.is_some()
+            })
         {
             return Err(
                 "DRM display/backlight control requires an explicit OpenGL, Vulkan or raster renderer".into(),
@@ -171,6 +170,10 @@ impl DrmBackendStartupInfo {
 pub(crate) struct DrmRunContext {
     pub(crate) input_gate: Arc<AtomicBool>,
     pub(crate) control_rx: Receiver<crate::runtime::config::ConfigRequest>,
+    pub(crate) control_tx: Sender<crate::runtime::config::ConfigRequest>,
+    pub(crate) config_control: Arc<crate::runtime::config::ConfigControl>,
+    pub(crate) input_target: Arc<crate::InputTargetRelay>,
+    pub(crate) wake_control: Arc<crate::runtime::touch_wake::TouchWakeControl>,
     pub(crate) presenter: Option<power::PresenterControl>,
     pub(crate) lifecycle: Arc<crate::runtime::lifecycle::Lifecycle>,
     pub(crate) startup_tx: StartupSender<Result<DrmBackendStartupInfo, String>>,
@@ -251,12 +254,14 @@ mod power_admission_tests {
                 drm_power: Some(DrmPower {
                     display_on: false,
                     brightness: Some(0.5),
+                    wake_on_touch: None,
                 }),
             };
             assert_eq!(wake.validate_config(&config).is_ok(), supported);
             config.drm_power = Some(DrmPower {
                 display_on: true,
                 brightness: None,
+                wake_on_touch: None,
             });
             assert!(wake.validate_config(&config).is_ok());
         }

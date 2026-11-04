@@ -30,7 +30,7 @@ defmodule EmergeSkia.DRMPowerConfigTest do
       config = config(renderer, display, brightness)
       assert :ok = EmergeSkia.validate_config!(config)
       native = config |> Config.Native.options() |> Keyword.fetch!(:drm_power)
-      assert native == %{display_on: display == :on, brightness: brightness}
+      assert native == %{display_on: display == :on, brightness: brightness, wake_on_touch: nil}
     end
   end
 

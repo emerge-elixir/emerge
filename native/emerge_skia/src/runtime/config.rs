@@ -8,6 +8,7 @@ use std::sync::{
 use crossbeam_channel::Sender;
 use rustler::{LocalPid, OwnedEnv};
 
+use super::touch_wake::WakeGesture;
 use crate::actors::EventMsg;
 
 #[derive(Clone, Debug, rustler::NifMap)]
@@ -22,6 +23,7 @@ pub(crate) struct LiveConfig {
 pub(crate) struct DrmPower {
     pub display_on: bool,
     pub brightness: Option<f64>,
+    pub wake_on_touch: Option<WakeGesture>,
 }
 
 impl DrmPower {
@@ -44,7 +46,7 @@ impl LiveConfig {
         if let Some(power) = &self.drm_power {
             power.validate()?;
         }
-        if self.input_mask & !0xff != 0 {
+        if self.input_mask & !0x1ff != 0 {
             return Err("input mask contains unknown event categories".into());
         }
         Ok(())
@@ -62,17 +64,37 @@ pub(crate) struct Status {
 }
 
 #[derive(Debug)]
+struct ControlState {
+    status: Status,
+    latest: Option<Arc<LiveConfig>>,
+}
+impl std::ops::Deref for ControlState {
+    type Target = Status;
+    fn deref(&self) -> &Status {
+        &self.status
+    }
+}
+impl std::ops::DerefMut for ControlState {
+    fn deref_mut(&mut self) -> &mut Status {
+        &mut self.status
+    }
+}
+
+#[derive(Debug)]
 pub(crate) struct ConfigControl {
-    state: Mutex<Status>,
+    state: Mutex<ControlState>,
     stop: Arc<AtomicBool>,
 }
 
 impl ConfigControl {
     pub(crate) fn new(session_id: u64, stop: Arc<AtomicBool>) -> Arc<Self> {
         Arc::new(Self {
-            state: Mutex::new(Status {
-                session_id,
-                ..Status::default()
+            state: Mutex::new(ControlState {
+                status: Status {
+                    session_id,
+                    ..Status::default()
+                },
+                latest: None,
             }),
             stop,
         })
@@ -111,13 +133,26 @@ impl ConfigControl {
         if self.stop.load(Ordering::Acquire) {
             return Err("renderer is stopping".into());
         }
+        self.submit_locked(&mut state, config, target, None, enqueue)
+    }
+
+    fn submit_locked(
+        self: &Arc<Self>,
+        state: &mut ControlState,
+        config: LiveConfig,
+        target: CompletionTarget,
+        wake_gesture: Option<WakeGesture>,
+        enqueue: impl FnOnce(ConfigRequest) -> Result<(), String>,
+    ) -> Result<(u64, u64), String> {
         let revision = state
             .desired_revision
             .checked_add(1)
             .ok_or("config revision exhausted")?;
         let token = (state.session_id, revision);
+        let config = Arc::new(config);
         let request = ConfigRequest {
-            config: Arc::new(config),
+            config: Arc::clone(&config),
+            wake_gesture,
             token,
             control: Arc::clone(self),
             completion: Arc::new(Completion {
@@ -128,6 +163,7 @@ impl ConfigControl {
             }),
         };
         enqueue(request)?;
+        state.latest = Some(config);
         state.desired_revision = revision;
         state.pending_revision = Some(revision);
         state.failed_revision = None;
@@ -135,8 +171,59 @@ impl ConfigControl {
         Ok(token)
     }
 
+    /// Seed revision zero with startup settings; no live revision is manufactured.
+    pub(crate) fn initialize(&self, config: LiveConfig) {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        if state.latest.is_none() {
+            state.latest = Some(Arc::new(config));
+        }
+    }
+
+    #[cfg(any(all(feature = "drm", target_os = "linux"), test))]
+    pub(crate) fn off_policy(&self) -> Option<(u64, WakeGesture)> {
+        let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        if self.stop.load(Ordering::Acquire) || state.pending_revision.is_some() {
+            return None;
+        }
+        let power = state.latest.as_ref()?.drm_power.as_ref()?;
+        (!power.display_on).then_some((state.desired_revision, power.wake_on_touch?))
+    }
+
+    #[cfg(any(all(feature = "drm", target_os = "linux"), test))]
+    pub(crate) fn submit_wake_to(
+        self: &Arc<Self>,
+        expected: u64,
+        gesture: WakeGesture,
+        target: CompletionTarget,
+        enqueue: impl FnOnce(ConfigRequest) -> Result<(), String>,
+    ) -> Result<(u64, u64), String> {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        if self.stop.load(Ordering::Acquire)
+            || state.desired_revision != expected
+            || state.pending_revision.is_some()
+        {
+            return Err("touch wake superseded".into());
+        }
+        let mut config = state
+            .latest
+            .as_deref()
+            .cloned()
+            .ok_or("missing startup config")?;
+        let power = config.drm_power.as_mut().ok_or("touch wake requires DRM")?;
+        if power.display_on || power.wake_on_touch != Some(gesture) {
+            return Err("touch wake disabled".into());
+        }
+        power.display_on = true;
+        self.submit_locked(&mut state, config, target, Some(gesture), enqueue)
+    }
+
     pub(crate) fn status(&self) -> Status {
-        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .status
+            .clone();
         if self.stop.load(Ordering::Acquire)
             && let Some(revision) = state.pending_revision.take()
         {
@@ -149,6 +236,8 @@ impl ConfigControl {
 
 pub(crate) enum CompletionTarget {
     Beam(LocalPid),
+    #[cfg(all(feature = "drm", target_os = "linux"))]
+    Input(Arc<crate::InputTargetRelay>),
     #[cfg(test)]
     Test(Sender<((u64, u64), Result<(), String>)>),
 }
@@ -163,6 +252,7 @@ struct Completion {
 #[derive(Clone)]
 pub struct ConfigRequest {
     pub(crate) config: Arc<LiveConfig>,
+    pub(crate) wake_gesture: Option<WakeGesture>,
     token: (u64, u64),
     control: Arc<ConfigControl>,
     completion: Arc<Completion>,
@@ -235,16 +325,13 @@ impl ConfigRequest {
         }
         drop(state);
         match &self.completion.target {
-            CompletionTarget::Beam(pid) => {
-                let _ = OwnedEnv::new().send_and_clear(pid, |env| {
-                    use rustler::Encoder;
-                    let result = match &result {
-                        Ok(()) => crate::atoms::ok().encode(env),
-                        Err(reason) => (crate::atoms::error(), reason).encode(env),
-                    };
-                    (crate::atoms::emerge_skia_config(), self.token, result).encode(env)
-                });
+            #[cfg(all(feature = "drm", target_os = "linux"))]
+            CompletionTarget::Input(relay) => {
+                if let Some(pid) = relay.target() {
+                    send_completion(pid, self.token, result);
+                }
             }
+            CompletionTarget::Beam(pid) => send_completion(*pid, self.token, result),
             #[cfg(test)]
             CompletionTarget::Test(sender) => {
                 let _ = sender.send((self.token, result));
@@ -253,10 +340,24 @@ impl ConfigRequest {
     }
 }
 
+fn send_completion(pid: LocalPid, token: (u64, u64), result: Result<(), String>) {
+    let _ = OwnedEnv::new().send_and_clear(&pid, |env| {
+        use rustler::Encoder;
+        let result = match &result {
+            Ok(()) => crate::atoms::ok().encode(env),
+            Err(reason) => (crate::atoms::error(), reason).encode(env),
+        };
+        (crate::atoms::emerge_skia_config(), token, result).encode(env)
+    });
+}
+
 #[cfg(any(all(feature = "wayland", target_os = "linux"), test))]
 mod inbox;
 #[cfg(any(all(feature = "wayland", target_os = "linux"), test))]
 pub(crate) use inbox::ConfigInbox;
+
+#[cfg(test)]
+mod touch_wake_tests;
 
 #[cfg(test)]
 mod tests {
@@ -331,7 +432,7 @@ mod tests {
         );
         assert!(
             LiveConfig {
-                input_mask: 256,
+                input_mask: 512,
                 ..config()
             }
             .validate()

@@ -30,7 +30,9 @@ defmodule Emerge.Runtime.Viewport do
 
   Raw input observation is opt-in through `Emerge.Config.Input.events`.
   `Emerge.Input` documents every callback payload. This filter does not disable
-  element interactions or window-close notifications.
+  element interactions or window-close notifications. Include `:display_wake` in
+  `input.events` to receive configured DRM wakes as `{:display_wake, gesture}`
+  through `handle_input/2`.
 
   Adapter selection and liveness policy live in `Emerge.Config.Runtime`.
   Native ownership is managed internally, not configured by applications.
@@ -110,6 +112,7 @@ defmodule Emerge.Runtime.Viewport do
               config_error: nil,
               config_pending: nil,
               config_applied: nil,
+              config_accepted: nil,
               diff_state: nil,
               renderer_generation: generation,
               retiring_renderer_generation: nil,
@@ -141,6 +144,7 @@ defmodule Emerge.Runtime.Viewport do
              config_error: nil,
              config_pending: nil,
              config_applied: nil,
+             config_accepted: nil,
              diff_state: nil,
              renderer_generation: nil,
              retiring_renderer_generation: generation,
@@ -158,6 +162,51 @@ defmodule Emerge.Runtime.Viewport do
       do: Logger.warning("renderer restart failed: #{inspect(reason)}")
 
     {:noreply, state}
+  end
+
+  def handle_info({:emerge_skia_display_wake, {session, revision} = token, gesture}, state)
+      when is_integer(session) and session >= 0 and is_integer(revision) and revision > 0 and
+             gesture in [:single_tap, :double_tap, :long_press] do
+    runtime = runtime!(state)
+
+    if runtime.renderer && runtime.renderer_config == runtime.config &&
+         match?(%Emerge.Config.DRM{display: :off, wake_on_touch: ^gesture}, runtime.config.output) &&
+         fresh_wake_token?(runtime, token) do
+      config = %{runtime.config | output: %{runtime.config.output | display: :on}}
+      parsed = Config.parse!(runtime.module, config)
+      :ok = Lifecycle.configure(runtime.lifecycle, parsed)
+
+      state =
+        state
+        |> put_mount_config(parsed)
+        |> update_runtime(
+          &%{
+            &1
+            | renderer_config: parsed.config,
+              config_pending: token,
+              config_accepted: token,
+              config_error: nil
+          }
+        )
+
+      case safe_invoke(fn ->
+             if :display_wake in runtime.config.input.events,
+               do: handle_skia_event({:display_wake, gesture}, state),
+               else: {:noreply, state}
+           end) do
+        {:ok, {:noreply, next}} ->
+          {:noreply, render_frame(next, :display_wake)}
+
+        {:ok, {:stop, reason, next}} ->
+          {:stop, reason, next}
+
+        {:error, failure} ->
+          log_render_failure(runtime.module, :display_wake, failure)
+          {:noreply, render_frame(state, :display_wake)}
+      end
+    else
+      {:noreply, state}
+    end
   end
 
   def handle_info({:emerge_skia_config, token, result}, state) do
@@ -708,7 +757,8 @@ defmodule Emerge.Runtime.Viewport do
               &1
               | renderer_config: &1.config,
                 config_error: nil,
-                config_pending: token
+                config_pending: token,
+                config_accepted: token
             }
           )
 
@@ -723,6 +773,24 @@ defmodule Emerge.Runtime.Viewport do
       end
     else
       state
+    end
+  end
+
+  defp fresh_wake_token?(runtime, {session, revision} = token) do
+    newer? =
+      case runtime.config_accepted do
+        nil -> true
+        {^session, old_revision} -> revision > old_revision
+        _ -> false
+      end
+
+    if newer? and runtime.renderer_module == Skia do
+      case safe_invoke(fn -> EmergeSkia.config_status(runtime.renderer) end) do
+        {:ok, {:ok, %{session_id: ^session, desired_revision: ^revision}}} -> true
+        _ -> false
+      end
+    else
+      newer? and token != runtime.config_pending
     end
   end
 
@@ -856,6 +924,8 @@ defmodule Emerge.Runtime.Viewport do
                   if(runtime.renderer_generation == generation, do: runtime.config_pending),
                 config_applied:
                   if(runtime.renderer_generation == generation, do: runtime.config_applied),
+                config_accepted:
+                  if(runtime.renderer_generation == generation, do: runtime.config_accepted),
                 diff_state: if(runtime.renderer_generation == generation, do: runtime.diff_state),
                 renderer_generation: generation,
                 retiring_renderer_generation: nil,
@@ -1047,6 +1117,7 @@ defmodule Emerge.Runtime.Viewport do
   defp phase_label(:config), do: "config reconciliation"
   defp phase_label(:initial_render), do: "initial render"
   defp phase_label(:rerender), do: "rerender"
+  defp phase_label(:display_wake), do: "display wake"
   defp phase_label(:renderer_recovery), do: "renderer recovery"
 
   defp safe_stop_renderer(renderer_module, renderer) do

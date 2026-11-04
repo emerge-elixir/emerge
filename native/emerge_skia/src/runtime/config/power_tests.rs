@@ -12,6 +12,7 @@ fn power() -> LiveConfig {
         drm_power: Some(DrmPower {
             display_on: false,
             brightness: Some(0.5),
+            wake_on_touch: None,
         }),
     }
 }
@@ -157,7 +158,8 @@ fn brightness_is_validated_before_admission() {
         assert!(
             DrmPower {
                 display_on: true,
-                brightness
+                brightness,
+                wake_on_touch: None,
             }
             .validate()
             .is_ok()

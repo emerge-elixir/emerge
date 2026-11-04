@@ -146,13 +146,38 @@ defmodule Emerge.ConfigTest do
     end
   end
 
-  test "all input categories map to internal bits and no subscriptions means zero" do
+  test "input categories preserve native bits and display wake is viewport-filtered" do
     assert Config.Native.input_mask(%Config.Input{}) == 0
     assert Config.Native.input_mask(%Config.Input{events: Config.Input.all_events()}) == 511
 
-    for {event, bit} <- Enum.zip(Config.Input.all_events(), [1, 2, 4, 8, 16, 32, 64, 128, 256]) do
+    masks = [
+      key: 1,
+      text: 2,
+      pointer_move: 4,
+      pointer_button: 8,
+      pointer_scroll: 16,
+      pointer_enter: 32,
+      resize: 64,
+      focus: 128,
+      touch: 256,
+      display_wake: 0
+    ]
+
+    assert Config.Input.all_events() == Keyword.keys(masks)
+
+    for {event, bit} <- masks do
       assert Config.Native.input_mask(%Config.Input{events: [event]}) == bit
     end
+  end
+
+  test "wake input subscription normalizes and can be replaced live" do
+    previous = Normalize.config!(%Config{input: [events: [:display_wake, :display_wake, :touch]]})
+    assert previous.input.events == [:display_wake, :touch]
+    assert Config.Native.input_mask(previous.input) == 256
+
+    next = Normalize.config!(%{previous | input: [events: []]})
+    assert :ok = Config.Changes.validate!(previous, next)
+    assert :ok = Config.Changes.validate!(next, previous)
   end
 
   test "input payloads have consistent names and typed actions" do

@@ -158,8 +158,9 @@ defmodule EmergeSkia do
   @doc false
   def validate_config!(%Emerge.Config{} = config) do
     case config.output do
-      %Emerge.Config.DRM{display: display, backlight: backlight}
-      when display != :on or not is_nil(backlight.brightness) or is_binary(backlight.device) ->
+      %Emerge.Config.DRM{display: display, backlight: backlight, wake_on_touch: wake}
+      when display != :on or not is_nil(backlight.brightness) or is_binary(backlight.device) or
+             not is_nil(wake) ->
         unless supports_drm_power?(config.renderer) do
           raise ArgumentError,
                 "DRM display/backlight control requires an explicit OpenGL, Vulkan or raster renderer"
@@ -237,7 +238,11 @@ defmodule EmergeSkia do
         drm_power:
           case config.output do
             %Emerge.Config.DRM{} = output ->
-              %{display_on: output.display == :on, brightness: output.backlight.brightness}
+              %{
+                display_on: output.display == :on,
+                brightness: output.backlight.brightness,
+                wake_on_touch: output.wake_on_touch
+              }
 
             _ ->
               nil
@@ -260,6 +265,11 @@ defmodule EmergeSkia do
   Native `configure/3` submissions send `{:emerge_skia_config, {session_id, revision},
   :ok | {:error, reason}}` to the submitting process. Session shutdown can end
   delivery; use renderer status/recovery as the terminal ownership authority.
+
+  An enabled DRM touch wake also admits a new revision. The registered input target
+  first receives `{:emerge_skia_display_wake, token, gesture}`, then the usual config
+  completion. This control notification is independent of raw input subscriptions.
+  It changes only display intent; brightness and subscription settings are retained.
   """
   @spec config_status(renderer()) :: {:ok, config_control_status()} | {:error, :unsupported}
   def config_status(%Renderer{}), do: {:error, :unsupported}

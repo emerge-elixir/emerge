@@ -304,6 +304,7 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
         let _ = context.startup_tx.send(Err(error.clone()));
         context.native_log.error("drm_power", error);
     }
+    context.wake_control.disarm();
     context.input_gate.store(false, Ordering::Release);
     context.stop.store(true, Ordering::Release);
     context.running_flag.store(false, Ordering::Release);
@@ -456,6 +457,30 @@ fn owner_loop(
     let mut ready_sent = false;
     loop {
         let _ = context.presenter_wake.drain();
+        if let Some(wake) = context.wake_control.take_request()
+            && !desired.display_on
+            && child.is_none()
+            && context.input_target.target().is_some()
+            && !context.stop.load(Ordering::Acquire)
+        {
+            let target =
+                crate::runtime::config::CompletionTarget::Input(context.input_target.clone());
+            if let Ok(token) = context.config_control.submit_wake_to(
+                wake.revision,
+                wake.gesture,
+                target,
+                |request| {
+                    context
+                        .control_tx
+                        .try_send(request)
+                        .map_err(|_| "DRM control queue unavailable".into())
+                },
+            ) {
+                // This owner cannot consume/complete the queued request before
+                // notifying its current recipient, even with a busy event actor.
+                context.input_target.send_display_wake(token, wake.gesture);
+            }
+        }
         if let Some(child) = child.as_ref() {
             let _ = child.wake.signal();
         }
@@ -471,6 +496,8 @@ fn owner_loop(
                     Some(next)
                 });
         if let Some(next) = incoming {
+            context.wake_control.disarm();
+            let _ = context.input_wake.signal();
             let applied = next.apply(|| {
                 if let Some(power) = &next.config.drm_power {
                     desired = power.clone();
@@ -607,6 +634,19 @@ fn owner_loop(
             } else if let Some(pending) = pending.as_ref() {
                 pending.finish_output(Ok(()));
             }
+        }
+        if !desired.display_on
+            && child.is_none()
+            && !stopping
+            && context.input_target.target().is_some()
+        {
+            if let Some((revision, gesture)) = context.config_control.off_policy()
+                && context.wake_control.arm(revision, gesture)
+            {
+                let _ = context.input_wake.signal();
+            }
+        } else {
+            context.wake_control.disarm();
         }
         poll_fds(
             &mut [libc::pollfd {

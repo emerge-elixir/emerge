@@ -40,7 +40,7 @@ defmodule EmergeSkia.ConfigControlTest do
   test "invalid or unsupported controls do not enter native desired state", %{renderer: renderer} do
     for invalid <- [
           %{title: nil, target_fps: 0, input_mask: 1},
-          %{title: nil, target_fps: nil, input_mask: 256},
+          %{title: nil, target_fps: nil, input_mask: 512},
           %{title: "not a window", target_fps: nil, input_mask: 1}
         ] do
       assert {:error, _} = Native.configure(renderer, invalid)

@@ -130,7 +130,7 @@ defmodule Emerge.DocumentationConfigTest do
           assert config.input.events == [:key, :resize]
 
         "drm" ->
-          assert native.drm_power == %{display_on: true, brightness: 0.5}
+          assert native.drm_power == %{display_on: true, brightness: 0.5, wake_on_touch: nil}
           assert native.drm_backlight == "/sys/class/backlight/panel"
           assert native.drm_hotplug_interval_ms == nil
 
