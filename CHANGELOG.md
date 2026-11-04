@@ -13,6 +13,8 @@
 
 ### Fixed
 
+- `Interactive.mouse_down/1` feedback now works on repeated mouse presses and
+  touches on the same button, even when its listeners are reused after release.
 - Loaded images and image backgrounds now refresh idle screens, including cached
   Nearby content, without requiring an animation or unrelated tree change.
 - Wayland uses bundled cursors when system cursor themes are missing, avoiding
