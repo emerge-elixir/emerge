@@ -668,6 +668,7 @@ mod atoms {
         error,
         emerge_skia_frame,
         emerge_skia_config,
+        emerge_skia_display_wake,
         caller_owned,
         transferred,
         released,
@@ -916,6 +917,20 @@ impl InputTargetRelay {
     fn new(target: Option<LocalPid>) -> Self {
         Self {
             target: Mutex::new(target),
+        }
+    }
+
+    #[cfg(all(feature = "drm", target_os = "linux"))]
+    pub(crate) fn target(&self) -> Option<LocalPid> {
+        *self.target.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    #[cfg(all(feature = "drm", target_os = "linux"))]
+    fn send_display_wake(&self, token: (u64, u64), gesture: runtime::touch_wake::WakeGesture) {
+        if let Some(pid) = self.target() {
+            let _ = rustler::OwnedEnv::new().send_and_clear(&pid, |env| {
+                (atoms::emerge_skia_display_wake(), token, gesture).encode(env)
+            });
         }
     }
 
@@ -2363,14 +2378,12 @@ fn start_with_config(
         )));
     }
     if config.backend.as_str() == "drm"
-        && (config
-            .drm_power
-            .as_ref()
-            .is_some_and(|power| !power.display_on || power.brightness.is_some())
-            || config
-                .drm_backlight
-                .as_deref()
-                .is_some_and(|device| device != "auto"))
+        && (config.drm_power.as_ref().is_some_and(|power| {
+            !power.display_on || power.brightness.is_some() || power.wake_on_touch.is_some()
+        }) || config
+            .drm_backlight
+            .as_deref()
+            .is_some_and(|device| device != "auto"))
         && !config.rendering_api.kind.supports_drm_power()
     {
         return Err(rustler::Error::Term(Box::new(
@@ -2513,6 +2526,12 @@ fn start_native_renderer_with_config(
     let running_flag = Arc::clone(&lifecycle.running);
     let stop_flag = Arc::clone(&lifecycle.stop);
     let config_control = runtime::config::ConfigControl::new(lifecycle.id, Arc::clone(&stop_flag));
+    config_control.initialize(runtime::config::LiveConfig {
+        title: None,
+        target_fps: config.target_fps,
+        input_mask: 0,
+        drm_power: config.drm_power.clone(),
+    });
     let render_counter = Arc::new(AtomicU64::new(0));
     let input_target = Arc::new(InputTargetRelay::new(None));
     let native_log = Arc::new(NativeLogRelay::new(initial_log_target));
@@ -2760,11 +2779,12 @@ fn start_native_renderer_with_config(
                 rustler::Error::Term(Box::new(format!("creating DRM input wake failed: {err}")))
             })?;
             let (control_tx, control_rx) = bounded(64);
+            let wake_control = Arc::new(runtime::touch_wake::TouchWakeControl::default());
             let input_gate = Arc::new(AtomicBool::new(false));
             backend_wake = BackendWakeHandle::new(drm::DrmBackendWake::new(
                 presenter_wake.clone(),
                 input_wake.clone(),
-                control_tx,
+                control_tx.clone(),
                 input_gate.clone(),
                 selected_rendering_api.supports_drm_power(),
             ));
@@ -2780,6 +2800,7 @@ fn start_native_renderer_with_config(
             let input_wake_for_input = input_wake.clone();
             let latest_frame_for_backend = Arc::clone(&latest_frame);
             let video_registry_clone = Arc::clone(&video_registry);
+            let wake_control_for_input = Arc::clone(&wake_control);
 
             handles.input_handle = Some(thread::spawn(move || {
                 let mut input = DrmInput::new(
@@ -2791,6 +2812,7 @@ fn start_native_renderer_with_config(
                     backend_wake_for_input,
                     input_wake_for_input,
                     input_log,
+                    wake_control_for_input,
                 );
                 input.run();
             }));
@@ -2812,6 +2834,7 @@ fn start_native_renderer_with_config(
                     .unwrap_or(runtime::config::DrmPower {
                         display_on: true,
                         brightness: None,
+                        wake_on_touch: None,
                     }),
                 backlight: config.drm_backlight.clone(),
                 backlight_state: config.backlight_state.clone().unwrap_or_else(|| {
@@ -2840,12 +2863,18 @@ fn start_native_renderer_with_config(
 
             let asset_context = asset_runtime.context();
             let drm_lifecycle = Arc::clone(&lifecycle);
+            let drm_config_control = Arc::clone(&config_control);
+            let drm_input_target = Arc::clone(&input_target);
             handles.backend_handle = Some(thread::spawn(move || {
                 let _asset_context_guard = asset_context.enter();
                 drm::run(
                     drm::DrmRunContext {
                         input_gate,
                         control_rx,
+                        control_tx,
+                        config_control: drm_config_control,
+                        input_target: drm_input_target,
+                        wake_control,
                         presenter: None,
                         lifecycle: drm_lifecycle,
                         startup_tx,
@@ -3752,7 +3781,8 @@ fn is_running(renderer: ResourceArc<RendererResource>) -> bool {
 /// - 0x20: Cursor enter/exit events
 /// - 0x40: Resize events
 /// - 0x80: Focus events
-/// - 0xFF: All events
+/// - 0x100: Touch events
+/// - 0x1FF: All events
 #[rustler::nif]
 fn set_input_mask(renderer: ResourceArc<RendererResource>, mask: u32) -> Atom {
     send_event(
@@ -3835,6 +3865,10 @@ fn set_input_target(
     pid: Option<LocalPid>,
 ) -> Atom {
     renderer.input_target.set_target(pid);
+    #[cfg(all(feature = "drm", target_os = "linux"))]
+    if matches!(renderer.info.backend, BackendKind::Drm) {
+        renderer.backend_wake.request_redraw();
+    }
 
     if let Some(target) = pid {
         events::send_running_message_in_env(env, target);

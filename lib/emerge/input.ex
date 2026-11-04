@@ -1,9 +1,10 @@
 defmodule Emerge.Input do
   @moduledoc """
-  Raw input values passed as the first argument to `c:Emerge.handle_input/2`.
+  Input values passed as the first argument to `c:Emerge.handle_input/2`.
 
-  Subscribe using `Emerge.Config.Input.events`. These observers are independent
-  of element events (`handle_info/2`); disabling them does not disable UI input.
+  Subscribe using `Emerge.Config.Input.events`. These observers are
+  independent of element events (`handle_info/2`); disabling them does not disable
+  UI input.
 
   | Subscription | Callback argument |
   |---|---|
@@ -16,6 +17,7 @@ defmodule Emerge.Input do
   | `:resize` | `{:resize, {width, height, scale}}` |
   | `:focus` | `{:focus, focused?}` (window focus, not element focus) |
   | `:touch` | `{:touch, {contact_id, :down \| :move \| :up \| :cancel, {x, y}}}` |
+  | `:display_wake` | `{:display_wake, :single_tap \| :double_tap \| :long_press}` |
 
   Keys identify canonical keys, not inserted characters; use `:text` for text
   input and IME composition. Repeated key presses are delivered as `:press`.
@@ -37,6 +39,25 @@ defmodule Emerge.Input do
   emulation to raw observers. Contact IDs identify one lifetime; reused hardware
   slots receive new IDs. Up/cancel carry that contact's last position. A cancel
   never activates a virtual key. Mouse subscriptions remain unchanged.
+
+  ## Display wake
+
+  With `Emerge.Config.DRM.wake_on_touch` enabled, subscribe to `:display_wake` in
+  `input.events` to receive `{:display_wake, gesture}` through this callback. The
+  gesture is `:single_tap`, `:double_tap` or `:long_press`. An empty subscription
+  list or `:touch` alone does not deliver wake notifications. Waking itself does
+  not require a subscription. The default `wake_on_touch: nil` disables touch wake,
+  even when subscribed.
+
+  Desired display state is already `:on` when the callback runs, before config
+  and rendering are reconciled. Update any application state used by `config/2`
+  here. The notification signals accepted wake intent, not physical presentation.
+  The waking contact sequence is consumed rather than forwarded to UI elements
+  or raw touch observers.
+
+      def handle_input({:display_wake, _gesture}, state) do
+        {:noreply, %{state | sleeping?: false}}
+      end
 
       def handle_input({:key, {:escape, :press, _modifiers}}, state) do
         {:noreply, state}
@@ -163,8 +184,11 @@ defmodule Emerge.Input do
           | {:pointer_button, {button(), action(), [modifier()], position()}}
           | {:pointer_scroll, {position(), position()}}
           | {:pointer_enter, boolean()}
+  @typedoc "Accepted DRM touch wake, delivered only with a `:display_wake` subscription."
+  @type display_wake_event :: {:display_wake, Emerge.Config.DRM.wake_gesture()}
   @type event ::
-          key_event()
+          display_wake_event()
+          | key_event()
           | text_event()
           | pointer_event()
           | {:touch, {non_neg_integer(), :down | :move | :up | :cancel, position()}}

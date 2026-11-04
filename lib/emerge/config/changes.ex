@@ -29,7 +29,7 @@ defmodule Emerge.Config.Changes do
 
   defp static_output(%Config.DRM{} = output) do
     output
-    |> Map.drop([:connector, :mode, :display])
+    |> Map.drop([:connector, :mode, :display, :wake_on_touch])
     |> Map.put(:backlight, Map.drop(output.backlight, [:brightness]))
   end
 

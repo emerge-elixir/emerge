@@ -24,6 +24,9 @@ defmodule Emerge.Config.DRM do
     Defaults to `nil`. The selected mode determines the actual display size.
   - `display` — `:on` (default) or `:off`. Off blanks the display and ignores its
     UI input; it does not suspend your application or the operating system.
+  - `wake_on_touch` — `nil` (default), `:single_tap`, `:double_tap` or
+    `:long_press`. `nil` disables touch wake. When enabled, the chosen gesture
+    turns an off display on without activating the UI underneath it.
   - `backlight` — `Emerge.Config.Backlight`, defaulting to automatic association.
     Use it to select a panel backlight and request brightness.
   - `hotplug_interval_ms` — connector hotplug polling interval in milliseconds;
@@ -51,7 +54,7 @@ defmodule Emerge.Config.DRM do
 
   ## Changing settings
 
-  `display` and backlight brightness can change through `config` with an explicit
+  `display`, `wake_on_touch` and backlight brightness can change through `config` with an explicit
   OpenGL, Vulkan or raster renderer. Raster supports CPU presentation (including
   its `:auto` default) and explicit `raster_present: :gpu_upload`, which requires
   the OpenGL DRM presenter build. Automatic API selection does not support these
@@ -60,26 +63,81 @@ defmodule Emerge.Config.DRM do
   frame is presented. GPU resources are not restored.
 
   Changing the card, connector, mode, size hint, backlight device or hotplug polling
-  interval requires a new viewport. Applications using off/on need an independent
-  wake source, such as a power-button reader; input from the blanked display cannot
-  wake it.
+  interval requires a new viewport.
+
+  ## Waking by touch
+
+  Set `wake_on_touch: :single_tap`, `:double_tap` or `:long_press` to wake an off
+  display. The default `nil` disables all touch wake gestures. Raw touch
+  subscriptions are not required. The waking contact sequence is consumed, so it
+  cannot also activate a UI element. Mouse and keyboard input do not trigger wake.
+
+  ```elixir
+  %Emerge.Config.DRM{display: :off, wake_on_touch: :double_tap}
+  ```
+
+  A tap must end within 250 ms and move no more than 12 output-coordinate pixels.
+  A double tap allows 300 ms between taps and 24 pixels between their starting
+  positions. A long press wakes after 600 ms within the same 12-pixel movement
+  limit. Multiple simultaneous contacts cancel recognition.
+
+  A wake changes the desired `display` to `:on`. To also receive
+  `{:display_wake, gesture}` through `c:Emerge.handle_input/2`, subscribe explicitly:
+
+  ```elixir
+  %Emerge.Config{
+    output: %Emerge.Config.DRM{display: :off, wake_on_touch: :double_tap},
+    renderer: [api: :opengl],
+    input: [events: [:display_wake]]
+  }
+  ```
+
+  With `input.events: []` or `:touch` alone, waking still works but no wake event
+  reaches your handler. If your `config/2` derives display state from application
+  state, subscribe and update that state in this handler. A later explicit `:off`
+  still wins. Requested brightness is preserved, including zero. This event signals
+  accepted wake intent, not physical presentation.
+
+  ```elixir
+  def handle_input({:display_wake, _gesture}, state) do
+    {:noreply, %{state | sleeping?: false}}
+  end
+
+  def handle_input(_event, state), do: {:noreply, state}
+  ```
+
+  This does not resume a suspended system: the touchscreen must keep producing
+  events while the display is off. Keep another wake source available if the
+  driver powers down touch with the panel. Touch sources follow existing DRM
+  input routing; a shared touchscreen can wake multiple opted-in viewports.
+
+  Standalone `EmergeSkia` callers must register an input target with
+  `EmergeSkia.set_input_target/2` to enable touch wake. That target receives
+  `{:emerge_skia_display_wake, {session_id, revision}, gesture}` when the on intent
+  is accepted, followed by the ordinary config completion. Keep your stored config
+  in sync with that intent. An initially-off standalone renderer still needs its
+  first tree upload before it can present a frame. Neither notification guarantees
+  physical panel behavior.
   """
   defstruct card: "/dev/dri/card0",
             connector: nil,
             mode: nil,
             preferred_size: nil,
             display: :on,
+            wake_on_touch: nil,
             backlight: %Emerge.Config.Backlight{},
             hotplug_interval_ms: 750
 
   @typedoc "Desired display state, not application or system power state."
   @type display :: :on | :off
+  @type wake_gesture :: :single_tap | :double_tap | :long_press
   @type t :: %__MODULE__{
           card: String.t(),
           connector: String.t() | nil,
           mode: String.t() | map() | nil,
           preferred_size: {pos_integer(), pos_integer()} | nil,
           display: display(),
+          wake_on_touch: wake_gesture() | nil,
           backlight: Emerge.Config.Backlight.t() | Emerge.Config.Backlight.options(),
           hotplug_interval_ms: pos_integer() | nil
         }
@@ -90,6 +148,7 @@ defmodule Emerge.Config.DRM do
           mode: String.t() | map() | nil,
           preferred_size: {pos_integer(), pos_integer()} | nil,
           display: display(),
+          wake_on_touch: wake_gesture() | nil,
           backlight: Emerge.Config.Backlight.normalized_t(),
           hotplug_interval_ms: pos_integer() | nil
         }
@@ -102,6 +161,7 @@ defmodule Emerge.Config.DRM do
       mode: :mode,
       preferred_size: {:optional, :size},
       display: {:enum, [:on, :off]},
+      wake_on_touch: {:optional, {:enum, [:single_tap, :double_tap, :long_press]}},
       backlight: {:record, Emerge.Config.Backlight},
       hotplug_interval_ms: {:optional, :positive_integer}
     ]

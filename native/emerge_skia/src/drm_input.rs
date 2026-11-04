@@ -1,6 +1,6 @@
 //! DRM input uses a statically bundled libinput path context. No udev daemon.
-#[cfg(test)]
 mod touch_wake;
+use crate::runtime::touch_wake::{TouchWakeControl, monotonic_usec};
 use crate::{
     actors::EventMsg,
     backend::wake::BackendWakeHandle,
@@ -82,7 +82,7 @@ impl Contacts {
                 })
                 .into_iter()
                 .collect(),
-            10 | 11 => self
+            10 | 11 if event.slot >= 0 => self
                 .active
                 .remove(&slot)
                 .map(|(id, pos)| {
@@ -98,7 +98,7 @@ impl Contacts {
                 })
                 .into_iter()
                 .collect(),
-            1 => {
+            1 | 11 => {
                 let mut removed: Vec<_> = self
                     .active
                     .iter()
@@ -131,6 +131,8 @@ pub struct DrmInput {
     devices: HashMap<PathBuf, (u64, u64)>,
     discovery: Option<OwnedFd>,
     contacts: Contacts,
+    touch_wake: touch_wake::TouchWake,
+    wake_control: Arc<TouchWakeControl>,
     cursor_pos: (f32, f32),
     modifiers: Modifiers,
     caps_lock: bool,
@@ -160,6 +162,7 @@ impl DrmInput {
         backend_wake: BackendWakeHandle,
         input_wake: EventFd,
         log_enabled: bool,
+        wake_control: Arc<TouchWakeControl>,
     ) -> Self {
         let context = Context::new()
             .map_err(|err| eprintln!("drm_input: cannot initialize bundled libinput: {err}"))
@@ -169,6 +172,8 @@ impl DrmInput {
             devices: HashMap::new(),
             discovery: None,
             contacts: Contacts::default(),
+            touch_wake: touch_wake::TouchWake::default(),
+            wake_control,
             cursor_pos: (0.0, 0.0),
             modifiers: Modifiers::default(),
             caps_lock: false,
@@ -211,6 +216,11 @@ impl DrmInput {
                 key.deadline.min(self.next_rescan_at)
             });
             let timeout = deadline.saturating_duration_since(Instant::now());
+            let timeout = self.touch_wake.deadline().map_or(timeout, |deadline| {
+                timeout.min(Duration::from_micros(
+                    deadline.saturating_sub(monotonic_usec()),
+                ))
+            });
             if let Err(err) = poll_fds(&mut fds, Some(timeout))
                 && self.log_enabled
             {
@@ -230,8 +240,15 @@ impl DrmInput {
     }
     pub fn poll(&mut self) {
         while let Ok(size) = self.screen_rx.try_recv() {
+            if self.screen_size != size {
+                self.touch_wake.reset();
+            }
             self.screen_size = size;
         }
+        self.touch_wake.configure(
+            self.wake_control.snapshot(),
+            self.backend_wake.input_enabled(),
+        );
         if Instant::now() >= self.next_rescan_at {
             self.rescan_devices();
         }
@@ -244,9 +261,11 @@ impl DrmInput {
         }
         if let Some(ctx) = self.context.as_mut()
             && let Err(err) = ctx.dispatch()
-            && self.log_enabled
         {
-            eprintln!("drm_input dispatch: {err}");
+            if self.log_enabled {
+                eprintln!("drm_input dispatch: {err}");
+            }
+            self.touch_wake.reset();
         }
         while !self.stop.load(Ordering::Relaxed) {
             let Some(event) = self
@@ -256,18 +275,16 @@ impl DrmInput {
             else {
                 break;
             };
-            if !self.backend_wake.input_enabled() {
-                if event.kind == 1 {
-                    self.handle_event(event);
-                }
-                self.modifiers = Modifiers::default();
-                self.pressed_keys.clear();
-                self.contacts.active.clear();
-                self.pending_cursor_pos = None;
-                self.pending_pointer_buttons.clear();
-                continue;
-            }
-            self.handle_event(event);
+            self.dispatch_event(event);
+        }
+        self.touch_wake.configure(
+            self.wake_control.snapshot(),
+            self.backend_wake.input_enabled(),
+        );
+        if let Some(armed) = self.touch_wake.tick(monotonic_usec())
+            && self.wake_control.request(armed)
+        {
+            self.backend_wake.request_redraw();
         }
         self.repeat_keyboard(Instant::now());
         self.flush_pending_cursor_pos_nonblocking();
@@ -313,9 +330,7 @@ impl DrmInput {
             .as_mut()
             .and_then(|ctx| ctx.next_event(self.screen_size))
         {
-            if self.backend_wake.input_enabled() || event.kind == 1 {
-                self.handle_event(event);
-            }
+            self.dispatch_event(event);
         }
         if let Some(ctx) = self.context.as_mut() {
             for path in paths {
@@ -330,6 +345,28 @@ impl DrmInput {
         // Recreate the watch as well: /dev/input can appear late or be replaced.
         self.discovery = discovery_watch();
     }
+    fn dispatch_event(&mut self, event: Event) {
+        let enabled = self.backend_wake.input_enabled();
+        if !enabled {
+            self.modifiers = Modifiers::default();
+            self.pressed_keys.clear();
+            self.contacts.active.clear();
+            self.pending_cursor_pos = None;
+            self.pending_pointer_buttons.clear();
+        }
+        self.touch_wake
+            .configure(self.wake_control.snapshot(), enabled);
+        let (consume, wake) = self.touch_wake.event(event, enabled, monotonic_usec());
+        if let Some(armed) = wake
+            && self.wake_control.request(armed)
+        {
+            self.backend_wake.request_redraw();
+        }
+        if !consume && (enabled || event.kind == 1) {
+            self.handle_event(event);
+        }
+    }
+
     fn handle_event(&mut self, mut event: Event) {
         // Never pass non-finite floats to BEAM encoders. Malformed touch
         // coordinates cancel only that contact rather than committing a tap.
@@ -871,6 +908,8 @@ mod tests {
             devices: HashMap::new(),
             discovery: None,
             contacts: Contacts::default(),
+            touch_wake: touch_wake::TouchWake::default(),
+            wake_control: Arc::default(),
             cursor_pos: (0.0, 0.0),
             modifiers: Modifiers::default(),
             caps_lock: false,
@@ -891,6 +930,125 @@ mod tests {
         };
         (input, event_rx, cursor)
     }
+    struct Gate(Arc<AtomicBool>);
+    impl crate::backend::wake::BackendWake for Gate {
+        fn input_enabled(&self) -> bool {
+            self.0.load(Ordering::Acquire)
+        }
+        fn request_stop(&self) {}
+        fn request_redraw(&self) {}
+        fn notify_video_frame(&self) {}
+    }
+
+    #[test]
+    fn wake_is_independent_of_ui_backpressure_and_never_forwards_the_consumed_sequence() {
+        use crate::runtime::touch_wake::WakeGesture;
+        let (mut input, rx, _) = test_input(1);
+        let gate = Arc::new(AtomicBool::new(false));
+        input.backend_wake = BackendWakeHandle::new(Gate(gate.clone()));
+        input.event_tx.try_send(EventMsg::SetInputMask(0)).unwrap();
+        input.wake_control.arm(0, WakeGesture::SingleTap);
+        for kind in [8, 10] {
+            input.dispatch_event(Event {
+                kind,
+                device: 2,
+                slot: 0,
+                time_usec: monotonic_usec(),
+                x: 10.0,
+                y: 10.0,
+                ..Default::default()
+            });
+        }
+        assert!(input.wake_control.take_request().is_some());
+        assert_eq!(rx.len(), 1, "wake must not depend on the full event queue");
+        rx.recv().unwrap();
+        input.wake_control.arm(1, WakeGesture::LongPress);
+        let down_at = monotonic_usec();
+        input.dispatch_event(Event {
+            kind: 8,
+            device: 2,
+            slot: 0,
+            time_usec: down_at,
+            ..Default::default()
+        });
+        let armed = input.touch_wake.tick(down_at + 600_000).unwrap();
+        assert!(input.wake_control.request(armed));
+        gate.store(true, Ordering::Release);
+        input.wake_control.disarm();
+        for kind in [9, 10] {
+            input.dispatch_event(Event {
+                kind,
+                device: 2,
+                slot: 0,
+                time_usec: monotonic_usec(),
+                ..Default::default()
+            });
+        }
+        assert!(
+            rx.try_recv().is_err(),
+            "held wake contact must not leak after presentation"
+        );
+        input.dispatch_event(Event {
+            kind: 8,
+            device: 2,
+            slot: 0,
+            time_usec: monotonic_usec(),
+            ..Default::default()
+        });
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            EventMsg::InputEvent(InputEvent::Touch {
+                phase: TouchPhase::Down,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn pointer_keyboard_and_unarmed_touch_do_not_request_wake() {
+        let (mut input, rx, _) = test_input(8);
+        input.backend_wake = BackendWakeHandle::new(Gate(Arc::new(AtomicBool::new(false))));
+        for kind in [2, 3, 4, 5, 6, 7, 8, 10] {
+            input.dispatch_event(Event {
+                kind,
+                device: 2,
+                slot: 0,
+                time_usec: monotonic_usec(),
+                ..Default::default()
+            });
+        }
+        assert!(input.wake_control.take_request().is_none());
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn device_wide_cancel_clears_all_slots_without_canceling_a_sibling() {
+        let mut contacts = Contacts::default();
+        for (device, slot) in [(1, 0), (1, 1), (2, 0)] {
+            contacts.event(Event {
+                kind: 8,
+                device,
+                slot,
+                ..Default::default()
+            });
+        }
+        let cancelled = contacts.event(Event {
+            kind: 11,
+            device: 1,
+            slot: -1,
+            ..Default::default()
+        });
+        assert_eq!(cancelled.len(), 2);
+        assert!(cancelled.iter().all(|e| matches!(
+            e,
+            InputEvent::Touch {
+                phase: TouchPhase::Cancel,
+                ..
+            }
+        )));
+        assert_eq!(contacts.active.len(), 1);
+    }
+
     #[test]
     fn touch_edges_are_clamped_and_invalid_coordinates_cancel_without_activation() {
         let (mut input, rx, _) = test_input(8);

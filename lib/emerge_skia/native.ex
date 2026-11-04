@@ -125,8 +125,14 @@ defmodule EmergeSkia.Native do
   def set_frame_rate(_renderer, _fps), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc false
-  def configure(renderer, config),
-    do: configure_nif(renderer, Map.put_new(config, :drm_power, nil))
+  def configure(renderer, config) do
+    config = Map.put_new(config, :drm_power, nil)
+    configure_nif(renderer, Map.update!(config, :drm_power, &power_defaults/1))
+  end
+
+  @doc false
+  def power_defaults(nil), do: nil
+  def power_defaults(power), do: Map.put_new(power, :wake_on_touch, nil)
 
   @doc false
   def configure_nif(_renderer, _config), do: :erlang.nif_error(:nif_not_loaded)

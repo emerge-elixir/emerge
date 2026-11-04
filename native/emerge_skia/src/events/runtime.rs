@@ -385,7 +385,11 @@ impl EventRuntimeDriver {
             }
             EventMsg::ConfigureInput(request) => {
                 let result = request.apply(|| {
-                    self.set_input_mask(request.config.input_mask);
+                    // Wake changes only display intent; preserve direct/startup
+                    // subscriptions even before the first live config submission.
+                    if request.wake_gesture.is_none() {
+                        self.set_input_mask(request.config.input_mask);
+                    }
                     Ok(())
                 });
                 request.finish_input(result);

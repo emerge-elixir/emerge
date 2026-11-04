@@ -78,7 +78,11 @@ defmodule Emerge.Config.Native do
     [
       backend: :drm,
       drm_card: drm.card,
-      drm_power: %{display_on: drm.display == :on, brightness: drm.backlight.brightness},
+      drm_power: %{
+        display_on: drm.display == :on,
+        brightness: drm.backlight.brightness,
+        wake_on_touch: drm.wake_on_touch
+      },
       drm_backlight: if(drm.backlight.device == :auto, do: "auto", else: drm.backlight.device),
       drm_output: drm.connector,
       drm_mode: drm.mode,
@@ -136,7 +140,9 @@ defmodule Emerge.Config.Native do
     pointer_enter: 0x20,
     resize: 0x40,
     focus: 0x80,
-    touch: 0x100
+    touch: 0x100,
+    # The viewport filters this control notification, not the native raw-input lane.
+    display_wake: 0
   }
   def input_mask(%Config.Input{events: events}) do
     Enum.reduce(events, 0, fn event, mask -> Bitwise.bor(mask, Map.fetch!(@masks, event)) end)
