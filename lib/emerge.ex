@@ -72,9 +72,9 @@ defmodule Emerge do
   `render/0` or `render/1` returns an `Emerge.tree()` built with `Emerge.UI`.
 
   Implement `handle_info/2` for messages and element events. Implement
-  `handle_input/2` only when you need raw renderer input. Implement
-  `handle_close/2` to customize window-close behavior; the default stops the
-  viewport normally.
+  `handle_input/2` to observe renderer input or handle display wake notifications.
+  Implement `handle_close/2` to customize window-close behavior; the default stops
+  the viewport normally.
 
   Callback handlers return `{:noreply, state}` or
   `{:stop, reason, state}`.
@@ -391,7 +391,7 @@ defmodule Emerge do
   limits. A complete live config is distinct from native application or presentation
   completion.
 
-  Raw input subscriptions use `Emerge.Config.Input.events`, defaulting to `[]`;
+  Input subscriptions use `Emerge.Config.Input.events`, defaulting to `[]`;
   see `Emerge.Input` and the [input guide](handle_input.html). This filter does not
   disable element interactions. Video targets are viewport-local atoms; submit
   owned binary or borrowed DMA-BUF frames with `submit_video_frame/3`.

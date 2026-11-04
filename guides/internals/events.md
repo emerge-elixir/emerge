@@ -799,6 +799,13 @@ Subscription replacement does not disable element listeners or native text/scrol
 processing. DRM display-off uses a separate backend gate to ignore UI input and
 clear transient buffered interactions; it is not an observer mask or a strict
 power-cycle epoch guarantee. The application's independent wake reader stays active.
+Optional DRM touch wake runs before this gate and never forwards its consumed
+contacts to observers or elements. Its accepted-wake control notification bypasses
+raw subscriptions to synchronize viewport intent. The viewport delivers
+`{:display_wake, gesture}` to `handle_input/2` only when `input.events` includes
+`:display_wake`. This category has no native raw-input mask bit: filtering it must
+not suppress the internal control notification or intent/recovery updates.
+It does not reopen UI input before presentation.
 
 Observer input:
 

@@ -187,9 +187,40 @@ never restores inherited KMS state or publishes drained frames as presentations.
 Uncertain ownership remains process-terminal quarantine, not a recoverable off/on.
 Identical video capabilities may be republished for retained streams on recreation;
 changed capabilities still fail. Vulkan panel/optical qualification remains open.
-Applications provide their independent wake policy. See
+Applications can opt into touch wake with `output.wake_on_touch`; `nil` keeps it
+disabled. Single tap, double tap and long press use the existing revisioned on path,
+not a separate presenter or brightness policy. The touchscreen must still deliver
+input while off. Other wake sources and system suspend remain application concerns. See
 [config reconciliation](config-reconciliation.md) and the
 [configuration reference](https://hexdocs.pm/emerge/Emerge.html#module-viewport-configuration).
+
+## Touch-wake hardware check
+
+The interactive test requires an explicitly authorized DRM output and a touchscreen
+that remains active while the panel is off. Run it alone, not on an in-use desktop
+output. Set the renderer to match the source-built native profile:
+
+```sh
+EMERGE_DRM_TEST_CARD=/dev/dri/by-path/your-test-card \
+EMERGE_DRM_TEST_CONNECTOR=DSI-1 \
+EMERGE_DRM_TEST_API=opengl \
+EMERGE_DRM_TEST_WAKE_GESTURE=double_tap \
+mix test test/emerge_skia/drm_touch_wake_hardware_test.exs --include drm_hardware
+```
+
+After the prompt, perform only the selected gesture and release it when the screen
+lights. Do not touch again during the activation check. Repeat with `single_tap`,
+`long_press` and `nil`; for `nil`, try the gestures and verify the screen stays off.
+For long press, keep the contact down through presentation before releasing it.
+Optionally select an authorized panel backlight with `EMERGE_DRM_TEST_BACKLIGHT`.
+The API selector also supports `raster`, `gpu_upload` and `vulkan` (the latter needs
+`EMERGE_DRM_TEST_VULKAN_NODE`).
+
+The test checks config intent, presentation completion, raw-touch suppression,
+no activation of the underlying full-screen target, and clean stop. Observe the
+panel as well: source timestamps and control completions cannot establish physical
+touch delivery while off or electrical/panel behavior. Check repeated off/on,
+policy changes, hotplug and multiple outputs separately on the target device.
 
 ## Boot-splash hardware qualification
 

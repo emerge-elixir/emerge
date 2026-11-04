@@ -5,6 +5,10 @@
 ### Added
 
 - Native double-click word selection for single-line and multiline text inputs.
+- Optional DRM touch wake through `wake_on_touch`: single tap, double tap or long
+  press. The default `nil` disables touch wake; wake gestures do not activate the UI.
+  Subscribe with `input.events: [:display_wake]` to receive accepted wakes as
+  `{:display_wake, gesture}` through `handle_input/2`.
 - WSLg troubleshooting and an explicit GBM-free Wayland/raster build recipe.
 
 ### Fixed

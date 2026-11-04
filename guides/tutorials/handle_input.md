@@ -7,7 +7,7 @@ shortcut, rather than events attached to a particular element.
 
 ## Subscribe explicitly
 
-Raw observation defaults to **none**. Return the categories you need in
+Input observation defaults to **none**. Return the categories you need in
 `config.input.events`:
 
 ```elixir
@@ -65,6 +65,8 @@ The first argument of `handle_input/2` is an `Emerge.Input.event()`:
 | `:pointer_enter` | `{:pointer_enter, entered?}` |
 | `:resize` | `{:resize, {width, height, scale}}` |
 | `:focus` | `{:focus, focused?}` |
+| `:touch` | `{:touch, {contact_id, :down \| :move \| :up \| :cancel, {x, y}}}` |
+| `:display_wake` | `{:display_wake, :single_tap \| :double_tap \| :long_press}` |
 
 These are the **viewport** values, not the low-level `{:emerge_skia_event, event}`
 envelope sent to `EmergeSkia.set_input_target/2`. The viewport normalizes native
@@ -86,16 +88,54 @@ Resize reports output dimensions and scale. Enter/focus refer to the **window**,
 not an individual UI element. IME preedit ranges come from the platform; surrounding
 text deletion counts UTF-8 bytes, not characters.
 
+## DRM display wake
+
+An off DRM display can opt into touch wake with
+`%Emerge.Config.DRM{wake_on_touch: :double_tap}`. The choices are `:single_tap`,
+`:double_tap` and `:long_press`; the default `nil` disables wake. This uses the
+existing DRM power controls and requires an explicit OpenGL, Vulkan or raster
+renderer and a touchscreen that continues delivering events while the panel is off.
+
+To observe accepted wakes through `handle_input/2`, include `:display_wake` in
+`input.events`:
+
+```elixir
+%Emerge.Config{
+  output: %Emerge.Config.DRM{display: :off, wake_on_touch: :double_tap},
+  renderer: [api: :opengl],
+  input: [events: [:display_wake]]
+}
+```
+
+An empty list or `:touch` alone does not deliver wake events. The display still
+wakes without an observer subscription; `wake_on_touch: nil` disables waking even
+when subscribed. If your config derives display state from application state,
+subscribe and update that state here:
+
+```elixir
+def handle_input({:display_wake, _gesture}, state) do
+  {:noreply, %{state | sleeping?: false}}
+end
+
+def handle_input(_event, state), do: {:noreply, state}
+```
+
+Desired display state is already `:on` before this event, and config/render
+reconciliation follows it. A later explicit off still wins. The event reports
+accepted wake intent, not physical presentation. The waking contacts are consumed:
+they do not also press an element or appear as raw touch events.
+
 ## Observation is not input control
 
-`events: []` stops raw callbacks; it does **not** disable hit testing, text editing,
+`events: []` stops input callbacks, including wake notifications; it does **not**
+disable configured touch wake, hit testing, text editing,
 scrolling, buttons, keyboard bindings or element callbacks. Observers do not consume
 an event or override native dispatch by returning `{:noreply, state}`.
 
 Window close requests go to `handle_close/2` independently of raw subscriptions.
-The default closes the viewport normally. A DRM display does not deliver UI input
-while off; applications need an independent source, such as a power-button reader,
-to turn it back on.
+The default closes the viewport normally. A DRM display does not deliver ordinary
+UI input while off. Configured touch wake uses the control notification described
+above; otherwise use an independent source, such as a power-button reader, to wake it.
 
 Availability is backend-dependent:
 
