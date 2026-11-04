@@ -172,6 +172,11 @@ impl ConfigControl {
     }
 
     /// Seed revision zero with startup settings; no live revision is manufactured.
+    #[cfg(any(
+        all(feature = "wayland", target_os = "linux"),
+        all(feature = "drm", target_os = "linux"),
+        test
+    ))]
     pub(crate) fn initialize(&self, config: LiveConfig) {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         if state.latest.is_none() {
