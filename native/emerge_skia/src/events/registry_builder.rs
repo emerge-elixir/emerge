@@ -8707,18 +8707,18 @@ mod mouse_down_style {
     }
 
     pub(super) fn left_press_actions(element: &Element) -> Vec<ListenerAction> {
-        let element_id = element.id;
-        let (has_mouse_down_style, mouse_down_active) = has_and_active(element);
-
-        (has_mouse_down_style && !mouse_down_active)
-            .then(|| {
-                vec![ListenerAction::TreeMsg(TreeMsg::SetMouseDownActive {
-                    element_id,
-                    active: true,
-                })]
-            })
+        // A listener built while pressed can survive a paint-only release.
+        // Always request activation; the tree setter ignores unchanged state.
+        element
+            .layout
+            .effective
+            .mouse_down
+            .is_some()
+            .then_some(ListenerAction::TreeMsg(TreeMsg::SetMouseDownActive {
+                element_id: element.id,
+                active: true,
+            }))
             .into_iter()
-            .flatten()
             .collect()
     }
 
