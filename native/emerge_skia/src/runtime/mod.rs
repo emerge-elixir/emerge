@@ -6,3 +6,5 @@ pub mod host_feedback;
 pub(crate) mod backlight;
 pub(crate) mod config;
 pub(crate) mod lifecycle;
+#[cfg(test)]
+pub(crate) mod touch_wake;
