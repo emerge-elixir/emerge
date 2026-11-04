@@ -34,6 +34,8 @@ pub(crate) struct PresenterControl {
     presented: Arc<AtomicBool>,
     retiring: Arc<AtomicBool>,
     dark_ack: Arc<AtomicBool>,
+    modeset_pending: Arc<AtomicBool>,
+    modeset_ack: Arc<AtomicBool>,
     wake: EventFd,
 }
 
@@ -70,6 +72,23 @@ impl PresenterControl {
         let _ = self.wake.signal();
     }
 
+    /// A required startup modeset may unprepare the panel. Suppress DCS first,
+    /// but only after a replacement application frame exists, without retiring.
+    pub fn before_modeset(&self, stop: &AtomicBool) -> Result<(), String> {
+        self.modeset_pending.store(true, Ordering::Release);
+        let _ = self.wake.signal();
+        while !self.modeset_ack.load(Ordering::Acquire) {
+            if stop.load(Ordering::Acquire) {
+                return Err("DRM handoff cancelled".into());
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        if stop.load(Ordering::Acquire) {
+            return Err("DRM handoff cancelled".into());
+        }
+        Ok(())
+    }
+
     pub fn before_detach(&self) {
         self.retiring.store(true, Ordering::Release);
         let _ = self.wake.signal();
@@ -104,6 +123,8 @@ fn spawn_presenter(
         presented: Arc::new(AtomicBool::new(false)),
         retiring: Arc::new(AtomicBool::new(false)),
         dark_ack: Arc::new(AtomicBool::new(false)),
+        modeset_pending: Arc::new(AtomicBool::new(false)),
+        modeset_ack: Arc::new(AtomicBool::new(false)),
         wake: context.presenter_wake.clone(),
     };
     let child_context = DrmRunContext {
@@ -306,9 +327,14 @@ fn run_inner(context: &DrmRunContext, config: &DrmRunConfig) -> Result<(), Strin
         Some(context.lifecycle.clone()),
     )?);
     let mut light = bind(&card, config)?;
-    // Detach inherited scanout even when suppression fails. No presenter exists.
-    let suppressed = darken(&mut light);
-    if let Err(error) = detach(&card) {
+    // Initial-on preparation is read-only: keep inherited scanout and current
+    // backlight levels even when the eventual application mode will differ.
+    let preparation = prepare_output(
+        config.power.display_on,
+        || darken(&mut light),
+        || detach(&card),
+    );
+    if let Err(error) = preparation {
         context.lifecycle.quarantine_output(error.clone());
         if let Some(light) = &mut light {
             light.retain();
@@ -316,7 +342,6 @@ fn run_inner(context: &DrmRunContext, config: &DrmRunConfig) -> Result<(), Strin
         std::mem::forget(card);
         return Err(error);
     }
-    suppressed?;
     let result = run_owner(context, config, &card, &mut light);
     let suppressed = darken(&mut light);
     if let Err(error) = detach(&card) {
@@ -343,6 +368,21 @@ fn run_inner(context: &DrmRunContext, config: &DrmRunConfig) -> Result<(), Strin
         light.release_after_detach()?;
     }
     result
+}
+
+/// Explicit initial-off is the only startup reason to suppress/detach. Always
+/// attempt detach after suppression failure, just as during final cleanup.
+fn prepare_output(
+    display_on: bool,
+    suppress: impl FnOnce() -> Result<(), String>,
+    detach: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    if display_on {
+        return Ok(());
+    }
+    let suppressed = suppress();
+    detach()?;
+    suppressed
 }
 
 fn run_owner(
@@ -508,6 +548,14 @@ fn owner_loop(
                     return Err("DRM presenter stopped".into());
                 }
             }
+            if active.control.modeset_pending.load(Ordering::Acquire)
+                && !active.control.modeset_ack.load(Ordering::Acquire)
+            {
+                // A suppression error must cancel the child, never acknowledge
+                // permission to modeset. run_owner then stops/joins it safely.
+                darken(light)?;
+                active.control.modeset_ack.store(true, Ordering::Release);
+            }
             if desired.display_on
                 && !stopping
                 && !visible
@@ -516,7 +564,7 @@ fn owner_loop(
                 && !active.handle.is_finished()
             {
                 if let Some(light) = light {
-                    light.illuminate_after_present()?;
+                    light.adopt_or_illuminate_after_present()?;
                 }
                 visible = true;
                 context.input_gate.store(true, Ordering::Release);
