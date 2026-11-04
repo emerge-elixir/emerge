@@ -323,6 +323,7 @@ pub struct Attrs {
     pub on_mouse_enter: Option<bool>,
     pub on_mouse_leave: Option<bool>,
     pub on_mouse_move: Option<bool>,
+    pub on_drag: Option<bool>,
     pub on_press: Option<bool>,
     pub on_swipe_up: Option<bool>,
     pub on_swipe_down: Option<bool>,
@@ -498,6 +499,7 @@ const TAG_SLIDER_STEP: u8 = 83;
 const TAG_SCROLL_POSITION_X: u8 = 85;
 const TAG_SCROLL_POSITION_Y: u8 = 86;
 const TAG_ON_SCROLL: u8 = 87;
+const TAG_ON_DRAG: u8 = 88;
 const TAG_ANIMATE_CHANGE: u8 = 84;
 
 // =============================================================================
@@ -607,6 +609,7 @@ fn decode_attr(cursor: &mut AttrCursor, tag: u8, attrs: &mut Attrs) -> Result<()
         TAG_SLIDER_STEP => attrs.slider_step = Some(cursor.read_f64()?),
         TAG_SCROLL_POSITION_X => attrs.scroll_position_x = Some(decode_scroll_position(cursor)?),
         TAG_SCROLL_POSITION_Y => attrs.scroll_position_y = Some(decode_scroll_position(cursor)?),
+        TAG_ON_DRAG => attrs.on_drag = Some(cursor.read_bool()?),
         TAG_ON_SCROLL => attrs.on_scroll = Some(cursor.read_bool()?),
         TAG_PADDING => attrs.padding = Some(decode_padding(cursor)?),
         TAG_SPACING => attrs.spacing = Some(cursor.read_f64()?),

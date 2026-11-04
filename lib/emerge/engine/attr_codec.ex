@@ -87,7 +87,8 @@ defmodule Emerge.Engine.AttrCodec do
     slider_step: 83,
     scroll_position_x: 85,
     scroll_position_y: 86,
-    on_scroll: 87
+    on_scroll: 87,
+    on_drag: 88
   }
 
   @tag_type Map.new(@type_tag, fn {type, tag} -> {tag, type} end)
@@ -175,6 +176,7 @@ defmodule Emerge.Engine.AttrCodec do
     end
   end
 
+  defp encode_value(:on_drag, _value), do: encode_bool(true)
   defp encode_value(:on_scroll, _value), do: encode_bool(true)
   defp encode_value(:scroll_x, value), do: encode_f64(value)
   defp encode_value(:scroll_y, value), do: encode_f64(value)
@@ -261,6 +263,7 @@ defmodule Emerge.Engine.AttrCodec do
        when axis in [:scroll_position_x, :scroll_position_y],
        do: {%ScrollTarget{key: nil, declaration: declaration, id: id}, rest}
 
+  defp decode_value(:on_drag, rest), do: decode_bool(rest)
   defp decode_value(:on_scroll, rest), do: decode_bool(rest)
   defp decode_value(:scroll_x, rest), do: decode_f64(rest)
   defp decode_value(:scroll_y, rest), do: decode_f64(rest)
