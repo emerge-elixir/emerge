@@ -106,13 +106,15 @@ fn master(path: Option<&str>) -> Result<Arc<Master>, String> {
 }
 
 /// Returns a lease with exactly one connector, CRTC, primary and optional cursor plane.
+/// Lease the cursor even for software presentation so inherited cursor scanout can
+/// be retired with the first application frame, never during preparation.
 /// Encoders are reserved in userspace (the kernel includes them implicitly, not as lease objects).
 pub(super) fn open_output(
     path: Option<&str>,
     output: Option<&str>,
     mode_id: Option<&str>,
     requested: Option<(u32, u32)>,
-    cursor: bool,
+    _cursor: bool,
     lifecycle: Option<Arc<crate::runtime::lifecycle::Lifecycle>>,
 ) -> Result<Card, String> {
     let master = master(path)?;
@@ -130,6 +132,16 @@ pub(super) fn open_output(
         .map(|handle| {
             card.get_connector(*handle, false)
                 .map_err(|e| format!("failed to read connector: {e}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let routes = connectors
+        .iter()
+        .filter_map(|info| {
+            info.current_encoder().map(|encoder| {
+                card.get_encoder(encoder)
+                    .map(|state| (info.handle(), encoder, state.crtc()))
+                    .map_err(|e| format!("failed to inspect inherited DRM routing: {e}"))
+            })
         })
         .collect::<Result<Vec<_>, _>>()?;
     let candidates = connectors
@@ -174,28 +186,28 @@ pub(super) fn open_output(
                 .chain(compatible.iter().copied())
                 .filter(|crtc| compatible.contains(crtc) && !reserved.contains(&u32::from(*crtc)));
             for crtc in crtcs {
-                let planes = core::compatible_planes(card, &resources, crtc)?;
-                let primary = planes
-                    .iter()
-                    .copied()
-                    .filter(|p| !reserved.contains(&u32::from(*p)))
-                    .map(|p| core::is_primary_plane(card, p).map(|yes| yes.then_some(p)))
-                    .find_map(Result::transpose)
-                    .transpose()?;
+                if !routing_available(info.handle(), encoder, crtc, &routes) {
+                    continue;
+                }
+                let planes = core::compatible_planes(card, &resources, crtc)?
+                    .into_iter()
+                    .map(|plane| {
+                        card.get_plane(plane)
+                            .map(|state| {
+                                state
+                                    .crtc()
+                                    .is_none_or(|bound| bound == crtc)
+                                    .then_some(state)
+                            })
+                            .map_err(|e| format!("failed to inspect inherited DRM plane: {e}"))
+                    })
+                    .filter_map(Result::transpose)
+                    .collect::<Result<Vec<_>, _>>()?;
+                let primary = select_plane(card, &planes, &reserved, core::is_primary_plane)?;
                 let Some(primary) = primary else {
                     continue;
                 };
-                let cursor_plane = if cursor {
-                    planes
-                        .iter()
-                        .copied()
-                        .filter(|p| !reserved.contains(&u32::from(*p)))
-                        .map(|p| core::is_cursor_plane(card, p).map(|yes| yes.then_some(p)))
-                        .find_map(Result::transpose)
-                        .transpose()?
-                } else {
-                    None
-                };
+                let cursor_plane = select_plane(card, &planes, &reserved, core::is_cursor_plane)?;
                 let objects: Vec<control::RawResourceHandle> =
                     [info.handle().into(), crtc.into(), primary.into()]
                         .into_iter()
@@ -237,9 +249,89 @@ pub(super) fn open_output(
     Err(last_error)
 }
 
+// Prefer the inherited plane over an unused compatible one. Leaving an active
+// cursor outside the lease would make it impossible to retire during handoff.
+fn select_plane(
+    card: &Card,
+    planes: &[control::plane::Info],
+    reserved: &HashSet<u32>,
+    matches: fn(&Card, control::plane::Handle) -> Result<bool, String>,
+) -> Result<Option<control::plane::Handle>, String> {
+    let candidates = planes
+        .iter()
+        .filter(|state| !reserved.contains(&u32::from(state.handle())))
+        .map(|state| {
+            matches(card, state.handle())
+                .map(|yes| yes.then_some((state.crtc().is_none(), state.handle())))
+        })
+        .filter_map(Result::transpose)
+        .collect::<Result<Vec<_>, _>>()?;
+    select_inherited_plane(candidates)
+}
+
+fn select_inherited_plane(
+    candidates: Vec<(bool, control::plane::Handle)>,
+) -> Result<Option<control::plane::Handle>, String> {
+    if candidates.iter().filter(|(unused, _)| !unused).count() > 1 {
+        return Err(
+            "multiple inherited DRM planes of the same type; independent handoff is ambiguous"
+                .into(),
+        );
+    }
+    Ok(candidates
+        .into_iter()
+        .min_by_key(|(unused, _)| *unused)
+        .map(|(_, handle)| handle))
+}
+
+// Never steal routing from another output, even if it has no Emerge owner.
+// Shared/cloned active CRTCs are not independently leasable handoff targets.
+fn routing_available(
+    selected: connector::Handle,
+    encoder: encoder::Handle,
+    crtc: crtc::Handle,
+    routes: &[(connector::Handle, encoder::Handle, Option<crtc::Handle>)],
+) -> bool {
+    routes.iter().all(|(other, bound_encoder, bound_crtc)| {
+        *other == selected || (*bound_encoder != encoder && *bound_crtc != Some(crtc))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn handle<T: From<control::RawResourceHandle>>(value: u32) -> T {
+        control::RawResourceHandle::new(value).unwrap().into()
+    }
+
+    #[test]
+    fn inherited_planes_take_priority_and_ambiguous_active_planes_fail_without_writes() {
+        assert_eq!(select_inherited_plane(vec![]).unwrap(), None);
+        assert_eq!(
+            select_inherited_plane(vec![(true, handle(1)), (false, handle(2))]).unwrap(),
+            Some(handle(2))
+        );
+        assert_eq!(
+            select_inherited_plane(vec![(true, handle(1)), (true, handle(2))]).unwrap(),
+            Some(handle(1))
+        );
+        assert!(select_inherited_plane(vec![(false, handle(1)), (false, handle(2))]).is_err());
+    }
+
+    #[test]
+    fn unowned_sibling_routing_cannot_be_stolen_or_cloned() {
+        let a = handle(1);
+        let b = handle(2);
+        let encoder = handle(3);
+        let crtc = handle(4);
+        let routes = [(a, encoder, Some(crtc))];
+        assert!(routing_available(a, encoder, crtc, &routes));
+        assert!(!routing_available(b, encoder, crtc, &routes));
+        assert!(!routing_available(b, handle(5), crtc, &routes));
+        assert!(!routing_available(b, encoder, handle(6), &routes));
+        assert!(routing_available(b, handle(5), handle(6), &routes));
+    }
 
     #[test]
     #[ignore = "requires explicit EMERGE_DRM_TEST_CARD and two connected displays; acquires DRM master"]
