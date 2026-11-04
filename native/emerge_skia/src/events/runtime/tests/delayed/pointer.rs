@@ -89,6 +89,87 @@ fn settle(
 }
 
 #[test]
+fn repeated_presses_repaint_the_same_button_after_release() {
+    use crate::input::TouchPhase;
+    use crate::renderer::{RenderFrame, RenderState, SceneRenderer};
+    use crate::tree::attrs::{Background, Color, MouseOverAttrs};
+
+    let assets = crate::assets::AssetRuntime::new();
+    let _assets = assets.enter();
+    let policy = TreeUpdateDecodePolicy::ReturnErr;
+    let background = |r| Background::Color(Color::Rgb { r, g: 0, b: 0 });
+    let pixel = |tree: &ElementTree| {
+        let scene = crate::tree::render::render_tree(tree).scene;
+        let state = RenderState::new(scene, skia_safe::Color::TRANSPARENT, 1, false);
+        let mut surface = skia_safe::surfaces::raster_n32_premul((200, 30)).unwrap();
+        SceneRenderer::new().render(&mut RenderFrame::new(&mut surface, None), &state);
+        let info = skia_safe::ImageInfo::new(
+            (1, 1),
+            skia_safe::ColorType::RGBA8888,
+            skia_safe::AlphaType::Premul,
+            None,
+        );
+        let mut rgba = [0; 4];
+        assert!(surface.read_pixels(&info, &mut rgba, 4, (100, 15)));
+        rgba
+    };
+
+    for touch in [true, false] {
+        let mut tree = encoded_tree(ElementKind::El, &[61]);
+        let attrs = &mut tree.get_mut(&NodeId(9)).unwrap().spec.declared;
+        attrs.rotate = Some(90.0);
+        attrs.background = Some(background(200));
+        attrs.mouse_down = Some(MouseOverAttrs {
+            background: Some(background(100)),
+            ..Default::default()
+        });
+        let mut engine = TreeUpdateEngine::new(tree, 200, 30);
+        let (mut host, recorder) = recorded_host();
+        host.install_rebuild(response(
+            &mut engine,
+            vec![TreeMsg::RebuildRegistry],
+            policy,
+        ));
+        settle(&mut host, &mut engine, policy);
+        assert_eq!(pixel(engine.tree()), [200, 0, 0, 255]);
+
+        for tap in 1..=3 {
+            for (phase, action, red) in [
+                (TouchPhase::Down, ACTION_PRESS, 100),
+                (TouchPhase::Up, ACTION_RELEASE, 200),
+            ] {
+                host.handle_input(if touch {
+                    InputEvent::Touch {
+                        id: tap,
+                        phase,
+                        x: 100.0,
+                        y: 15.0,
+                    }
+                } else {
+                    button(action, 100.0, 15.0)
+                });
+                settle(&mut host, &mut engine, policy);
+                assert_eq!(
+                    pixel(engine.tree()),
+                    [red, 0, 0, 255],
+                    "touch={touch}, tap={tap}, phase={phase:?}"
+                );
+            }
+            assert_eq!(
+                recorder
+                    .events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|(_, kind)| *kind == ElementEventKind::Press)
+                    .count(),
+                tap as usize,
+            );
+        }
+    }
+}
+
+#[test]
 fn buffered_release_cannot_click_a_replacement_with_the_same_numeric_id() {
     let assets = crate::assets::AssetRuntime::new();
     let _assets = assets.enter();
