@@ -518,9 +518,19 @@ border-box origin and divides by the prepared layout scale. Hover stacks resolve
 each element independently; click followups rebind to accepted source geometry.
 Leave coordinates are unclamped. Window leave uses a listener-order snapshot,
 separate from the ingress snapshot which may already contain later buffered input.
-The NIF emits a map; macOS protocol 19 carries two big-endian f64 fields and decodes
+The NIF emits a map; macOS protocol 20 carries two big-endian f64 fields and decodes
 the same map. Normal viewport payload wrapping handles delivery without new routes.
 `press` and raw observer payloads are unchanged.
+
+### Completed swipe metadata
+
+All four swipe directions carry `%{start: %{x: float, y: float}, end: %{x: float,
+y: float}, duration_ms: float}`. The candidate stores the local press position
+and monotonic input time; promotion retains them. Release uses the current
+source coordinates and elapsed press-to-release milliseconds. Mouse/touch edges
+retain ingress timestamps through buffering and touch-to-pointer emulation.
+The macOS protocol 20 swipe body is five big-endian f64s in order:
+start x/y, end x/y, duration_ms. Older hosts are rejected during initialization.
 
 ### Explicit captured drag
 

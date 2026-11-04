@@ -12,6 +12,10 @@
   [0.6 migration guide](guides/migrations/0.6.md). `Event.on_press/1` and raw
   input callbacks are unchanged.
 
+- Swipe handlers now receive local `:start` and `:end` coordinates and
+  press-to-release `:duration_ms`. Update message patterns and custom payload
+  wrappers for these events too.
+
 ### Added
 
 - `Event.on_drag/1` lets custom controls receive drag movement and release even
