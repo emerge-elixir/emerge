@@ -935,6 +935,7 @@ fn teardown_drm_output(
     cursor_plane: Option<&CursorPlaneCommit>,
 ) -> Result<(), String> {
     let mut req = atomic::AtomicModeReq::new();
+    super::handoff::retire_cursors(card, crtc_handle, &mut req)?;
 
     if let Some(cursor_plane) = cursor_plane {
         if let Ok(fb_handle) = prop_handle(&cursor_plane.props, "FB_ID") {
@@ -2898,6 +2899,23 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             }
         };
 
+        let handoff =
+            match super::handoff::Handoff::read(&card, connector, crtc_handle, plane, &mode) {
+                Ok(handoff) => handoff,
+                Err(error) => {
+                    if handle_startup_failure(
+                        &mut startup_tx,
+                        &running_flag,
+                        &stop,
+                        &mut startup_retries_remaining,
+                        retry_interval,
+                        error,
+                    ) {
+                        break;
+                    }
+                    continue;
+                }
+            };
         let (width, height) = mode.size();
         let dimensions = (width as u32, height as u32);
         let refresh_hz = mode_refresh_hz(&mode);
@@ -3372,21 +3390,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
 
                 let mut atomic_req = atomic::AtomicModeReq::new();
                 if let Err(e) = (|| -> Result<(), String> {
-                    atomic_req.add_property(
-                        connector,
-                        prop_handle(&con_props, "CRTC_ID")?,
-                        property::Value::CRTC(Some(crtc_handle)),
-                    );
-                    atomic_req.add_property(
-                        crtc_handle,
-                        prop_handle(&crtc_props, "MODE_ID")?,
-                        mode_blob,
-                    );
-                    atomic_req.add_property(
-                        crtc_handle,
-                        prop_handle(&crtc_props, "ACTIVE")?,
-                        property::Value::Boolean(true),
-                    );
+                    handoff.append(&mut atomic_req, mode_blob);
                     add_plane_properties(&mut atomic_req, plane, &plane_props, crtc_handle, fb)?;
                     add_plane_geometry(&mut atomic_req, plane, &plane_props, &mode)
                 })() {
@@ -3396,8 +3400,11 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                 if stop.load(Ordering::Acquire) {
                     return Ok(true);
                 }
-                card.atomic_commit(AtomicCommitFlags::ALLOW_MODESET, atomic_req)
-                    .map_err(|error| format!("initial atomic commit failed: {error}"))?;
+                if !handoff.commit(&card, atomic_req, AtomicCommitFlags::empty(),
+                    &stop, &native_log, presenter.as_ref())
+                    .map_err(|error| format!("initial atomic commit failed: {error}"))? {
+                    return Ok(true);
+                }
                 frames.current = frames.prepared.take();
 
                 if let Some(presenter) = &presenter { presenter.presented(); }
@@ -3414,7 +3421,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                 let mut production = FrameProduction::default();
                 render_state.animation_frame.observed(first_presented_at);
                 production.submitted(render_state.animation_frame.clone(), first_presented_at + frame_interval);
-                // The blocking modeset already displayed generation zero. Only
+                // The blocking first commit already displayed generation zero. Only
                 // unfinished video synchronization needs a duplicate draw; an
                 // animation successor arrives independently through production.
                 let mut desired_primary_generation = u64::from(frames.current.as_ref().is_some_and(

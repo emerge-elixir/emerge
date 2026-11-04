@@ -8,6 +8,8 @@ fn control(sequence: Arc<AtomicU64>) -> PresenterControl {
         presented: Arc::new(AtomicBool::new(false)),
         retiring: Arc::new(AtomicBool::new(false)),
         dark_ack: Arc::new(AtomicBool::new(false)),
+        modeset_pending: Arc::new(AtomicBool::new(false)),
+        modeset_ack: Arc::new(AtomicBool::new(false)),
         wake: EventFd::new().unwrap(),
     }
 }
@@ -28,6 +30,8 @@ fn recreated_presenters_share_frame_sequence_but_not_presentation_or_dark_ack() 
         assert!(!next.presented.load(Ordering::Acquire));
         assert!(!next.dark_ack.load(Ordering::Acquire));
         assert!(!next.retiring.load(Ordering::Acquire));
+        assert!(!next.modeset_pending.load(Ordering::Acquire));
+        assert!(!next.modeset_ack.load(Ordering::Acquire));
         // Even a late notification from the old child cannot mark next visible.
         old.presented();
         assert!(!next.presented.load(Ordering::Acquire));
@@ -58,6 +62,64 @@ fn detach_waits_for_parent_suppression_acknowledgement() {
     done_rx.recv_timeout(Duration::from_secs(1)).unwrap();
     handle.join().unwrap();
     control.before_detach(); // Repeated retirement cannot strand the child.
+}
+
+#[test]
+fn initial_on_never_suppresses_or_detaches_even_without_an_upload() {
+    prepare_output(
+        true,
+        || panic!("startup darken"),
+        || panic!("startup detach"),
+    )
+    .unwrap();
+    let trace = std::cell::RefCell::new(Vec::new());
+    for fail in [false, true] {
+        trace.borrow_mut().clear();
+        let result = prepare_output(
+            false,
+            || {
+                trace.borrow_mut().push("dark");
+                if fail {
+                    Err("suppression failed".into())
+                } else {
+                    Ok(())
+                }
+            },
+            || {
+                trace.borrow_mut().push("detach");
+                Ok(())
+            },
+        );
+        assert_eq!(result.is_err(), fail);
+        assert_eq!(*trace.borrow(), ["dark", "detach"]);
+    }
+}
+
+#[test]
+fn required_modeset_waits_for_suppression_without_retiring_and_cancels_on_stop() {
+    let control = control(Arc::default());
+    let child = control.clone();
+    let stop = Arc::new(AtomicBool::new(false));
+    let child_stop = stop.clone();
+    let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+    let handle = thread::spawn(move || done_tx.send(child.before_modeset(&child_stop)).unwrap());
+    while !control.modeset_pending.load(Ordering::Acquire) {
+        thread::yield_now();
+    }
+    assert!(!control.retiring.load(Ordering::Acquire));
+    assert!(done_rx.try_recv().is_err());
+    control.modeset_ack.store(true, Ordering::Release);
+    done_rx
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap()
+        .unwrap();
+    handle.join().unwrap();
+    assert!(
+        !control.dark_ack.load(Ordering::Acquire),
+        "later retirement still requires fresh suppression"
+    );
+    stop.store(true, Ordering::Release);
+    assert!(control.before_modeset(&stop).is_err());
 }
 
 #[test]

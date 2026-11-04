@@ -4,6 +4,7 @@
 //! OpenGL and Vulkan remain narrow concrete render owners.
 
 mod core;
+mod handoff;
 mod power;
 mod raster;
 mod session;

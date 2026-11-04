@@ -75,6 +75,7 @@ struct Kms {
     crtc_props: Properties,
     plane_props: Properties,
     mode_blob: u64,
+    handoff: super::handoff::Handoff,
     touched: bool,
     initialized: bool,
 }
@@ -127,6 +128,7 @@ impl Kms {
             .get_properties(plane)
             .and_then(|props| props.as_hashmap(card.as_ref()))
             .map_err(|e| e.to_string())?;
+        let handoff = super::handoff::Handoff::read(&card, connector, crtc, plane, &mode)?;
         let property::Value::Blob(mode_blob) = card
             .create_property_blob(&mode)
             .map_err(|e| format!("creating DRM mode blob failed: {e}"))?
@@ -143,6 +145,7 @@ impl Kms {
             crtc_props,
             plane_props,
             mode_blob,
+            handoff,
             touched: false,
             initialized: false,
         })
@@ -153,7 +156,11 @@ impl Kms {
         (u32::from(width), u32::from(height))
     }
 
-    fn present(&mut self, fb: framebuffer::Handle) -> Result<bool, String> {
+    fn present(
+        &mut self,
+        fb: framebuffer::Handle,
+        context: &DrmRunContext,
+    ) -> Result<bool, String> {
         let mut req = atomic::AtomicModeReq::new();
         req.add_property(
             self.plane,
@@ -161,21 +168,8 @@ impl Kms {
             property::Value::Framebuffer(Some(fb)),
         );
         if !self.initialized {
-            req.add_property(
-                self.connector,
-                prop_handle(&self.connector_props, "CRTC_ID")?,
-                property::Value::CRTC(Some(self.crtc)),
-            );
-            req.add_property(
-                self.crtc,
-                prop_handle(&self.crtc_props, "MODE_ID")?,
-                property::Value::Blob(self.mode_blob),
-            );
-            req.add_property(
-                self.crtc,
-                prop_handle(&self.crtc_props, "ACTIVE")?,
-                property::Value::Boolean(true),
-            );
+            self.handoff
+                .append(&mut req, property::Value::Blob(self.mode_blob));
             req.add_property(
                 self.plane,
                 prop_handle(&self.plane_props, "CRTC_ID")?,
@@ -199,16 +193,29 @@ impl Kms {
                 );
             }
         }
-        let mut flags = AtomicCommitFlags::NONBLOCK | AtomicCommitFlags::PAGE_FLIP_EVENT;
-        if !self.initialized {
-            flags |= AtomicCommitFlags::ALLOW_MODESET;
-        }
         // Even a failed ioctl may leave uncertain ownership; teardown must run.
         self.touched = true;
-        match self.card.atomic_commit(flags, req) {
-            Ok(()) => {
-                self.initialized = true;
-                Ok(true)
+        let result = if self.initialized {
+            self.card
+                .atomic_commit(
+                    AtomicCommitFlags::NONBLOCK | AtomicCommitFlags::PAGE_FLIP_EVENT,
+                    req,
+                )
+                .map(|()| true)
+        } else {
+            self.handoff.commit(
+                &self.card,
+                req,
+                AtomicCommitFlags::PAGE_FLIP_EVENT,
+                &context.stop,
+                &context.native_log,
+                context.presenter.as_ref(),
+            )
+        };
+        match result {
+            Ok(accepted) => {
+                self.initialized |= accepted;
+                Ok(accepted)
             }
             Err(error)
                 if matches!(
@@ -223,10 +230,11 @@ impl Kms {
     }
 
     fn detach(&mut self) -> Result<(), String> {
-        if !self.touched {
-            return Ok(());
-        }
+        // Explicit off/stop/failure must also detach inherited scanout when no
+        // application frame was uploaded. The caller has acknowledged DCS dark.
+        self.touched = true;
         let mut req = atomic::AtomicModeReq::new();
+        super::handoff::retire_cursors(&self.card, self.crtc, &mut req)?;
         req.add_property(
             self.plane,
             prop_handle(&self.plane_props, "FB_ID")?,
@@ -312,7 +320,12 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        // Also protect scanout during unwinding, before any buffer owners drop.
+        // A construction failure has not written KMS and has no DCS ack yet;
+        // the power owner performs its explicit inherited-output cleanup instead.
+        if !self.kms.touched {
+            return;
+        }
+        // Also protect our scanout during unwinding, before buffer owners drop.
         if let Err(error) = self.kms.detach() {
             self.lifecycle.quarantine(error);
             // Each retained buffer holds the card/lease. The kernel retains an
@@ -719,7 +732,7 @@ fn run_session(
             && let Some(frame) = &frames.prepared
         {
             let started = Instant::now();
-            let accepted = session.kms.present(framebuffers[frame.slot])?;
+            let accepted = session.kms.present(framebuffers[frame.slot], context)?;
             if let Some(stats) = context.stats.as_deref() {
                 stats.record_drm_atomic_commit_ioctl(started.elapsed());
             }

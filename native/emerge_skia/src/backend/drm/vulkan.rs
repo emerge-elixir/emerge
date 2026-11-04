@@ -542,6 +542,7 @@ struct PresenterSession {
     kms: Option<KmsOutputProbe>,
     lifecycle: ScanoutLifecycle,
     output_suspended: bool,
+    handoff: super::handoff::Handoff,
 }
 
 impl PresenterSession {
@@ -574,6 +575,13 @@ impl PresenterSession {
                 )?
             },
             config.requested_size,
+        )?;
+        let handoff = super::handoff::Handoff::read(
+            &kms.card,
+            kms.connector,
+            kms.crtc,
+            kms.primary,
+            &kms.mode,
         )?;
         if !kms.primary_supports_xrgb8888 {
             return Err("selected KMS primary plane does not advertise DRM XRGB8888".into());
@@ -750,6 +758,7 @@ impl PresenterSession {
                 instance: Some(instance),
                 lifecycle: ScanoutLifecycle::new(MIN_SCANOUT_SLOTS)?,
                 output_suspended: false,
+                handoff,
             },
             report,
         ))
@@ -891,11 +900,27 @@ impl PresenterSession {
         Ok(video_sync_error)
     }
 
-    fn commit_prepared(&mut self, initial: bool) -> Result<AtomicAttemptResult, String> {
+    fn commit_prepared(
+        &mut self,
+        initial: bool,
+        context: &DrmRunContext,
+    ) -> Result<AtomicAttemptResult, String> {
         let slot_index = self
             .lifecycle
             .prepared
             .ok_or_else(|| "no prepared DRM Vulkan slot".to_string())?;
+        // A hotplug/off cycle may have disabled a previously compatible CRTC.
+        // Reinspect before each first-commit attempt, without touching scanout.
+        if initial {
+            let kms = self.kms();
+            self.handoff = super::handoff::Handoff::read(
+                &kms.card,
+                kms.connector,
+                kms.crtc,
+                kms.primary,
+                &kms.mode,
+            )?;
+        }
         let attempt_fence = self.lifecycle.duplicate_in_fence_for_atomic_attempt()?;
         let props = self
             .kms_state
@@ -903,21 +928,7 @@ impl PresenterSession {
             .ok_or_else(|| "DRM Vulkan KMS property state is unavailable".to_string())?;
         let mut request = atomic::AtomicModeReq::new();
         if initial {
-            request.add_property(
-                self.kms().connector,
-                prop_handle(props.connector_infos(), "CRTC_ID")?,
-                property::Value::CRTC(Some(self.kms().crtc)),
-            );
-            request.add_property(
-                self.kms().crtc,
-                prop_handle(props.crtc_infos(), "MODE_ID")?,
-                props.probe_mode_blob,
-            );
-            request.add_property(
-                self.kms().crtc,
-                prop_handle(props.crtc_infos(), "ACTIVE")?,
-                property::Value::Boolean(true),
-            );
+            self.handoff.append(&mut request, props.probe_mode_blob);
         }
         add_primary_properties(
             self.kms(),
@@ -930,15 +941,32 @@ impl PresenterSession {
             prop_handle(props.plane_infos(), "IN_FENCE_FD")?,
             property::Value::SignedRange(i64::from(attempt_fence.as_raw_fd())),
         );
-        let flags = AtomicCommitFlags::NONBLOCK
-            | AtomicCommitFlags::PAGE_FLIP_EVENT
-            | if initial {
-                AtomicCommitFlags::ALLOW_MODESET
-            } else {
-                AtomicCommitFlags::empty()
-            };
-        let result = self.kms().card.atomic_commit(flags, request);
+        let result = if initial {
+            self.handoff.commit(
+                &self.kms().card,
+                request,
+                AtomicCommitFlags::PAGE_FLIP_EVENT,
+                &context.stop,
+                &context.native_log,
+                context.presenter.as_ref(),
+            )
+        } else {
+            self.kms()
+                .card
+                .atomic_commit(
+                    AtomicCommitFlags::NONBLOCK | AtomicCommitFlags::PAGE_FLIP_EVENT,
+                    request,
+                )
+                .map(|()| true)
+        };
         drop(attempt_fence);
+        // Cancelled before the real ioctl: retain the prepared slot/fence for
+        // ordinary ownership-safe retirement, not terminal quarantine.
+        let result = match result {
+            Ok(false) => return Ok(AtomicAttemptResult::Busy),
+            Ok(true) => Ok(()),
+            Err(error) => Err(error),
+        };
         let classified = AtomicAttemptResult::from_io_result(&result);
         // A rejected commit may race an ordinary disconnect. Keep the prepared
         // identity/fence until the caller checks the connector and either proves
@@ -1644,7 +1672,7 @@ fn run_session(
             }
             let started = Instant::now();
             commit_retry_policy.record_attempt();
-            match session.commit_prepared(initial_commit) {
+            match session.commit_prepared(initial_commit, context) {
                 Ok(AtomicAttemptResult::Committed) => {
                     if let Some(slot) = session.lifecycle.in_flight {
                         production.submitted(
@@ -1660,6 +1688,9 @@ fn run_session(
                     initial_commit = false;
                 }
                 Ok(AtomicAttemptResult::Busy) => {
+                    if stop.load(Ordering::Acquire) {
+                        break;
+                    }
                     if let Some(stats) = stats.as_deref() {
                         stats.record_drm_atomic_commit_ioctl(started.elapsed());
                         stats.record_drm_primary_commit_ebusy();
@@ -2040,6 +2071,7 @@ fn probe_output_available(session: &PresenterSession, force_probe: bool) -> Resu
 
 fn disable_output(kms: &KmsOutputProbe, props: &PreparedKmsState) -> Result<(), String> {
     let mut request = atomic::AtomicModeReq::new();
+    super::handoff::retire_cursors(&kms.card, kms.crtc, &mut request)?;
     request.add_property(
         kms.primary,
         prop_handle(props.plane_infos(), "FB_ID")?,
