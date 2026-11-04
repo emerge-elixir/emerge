@@ -55,7 +55,9 @@ defmodule Emerge.MouseCoordinatesTest do
     assert_position(parent_id, :mouse_enter, 69.5, 41.0)
     :ok = TestHarness.cursor_button(harness, :press, 139.0, 82.0)
     assert_position(id, :mouse_down, 35.5, 20.25)
+    :ok = TestHarness.cursor_pos(harness, 135.0, 86.0)
     :ok = TestHarness.cursor_button(harness, :release, 135.0, 86.0)
+    assert_position(id, :mouse_move, 36.5, 21.25)
     assert_position(id, :mouse_up, 36.5, 21.25)
     assert_position(id, :click, 36.5, 21.25)
     assert_receive {:emerge_skia_event, {^id, :press}}, 1000
