@@ -81,6 +81,7 @@ pub enum ElementEventKind {
     MouseEnter,
     MouseLeave,
     MouseMove,
+    Drag,
     Focus,
     Blur,
     Change,
@@ -1418,11 +1419,26 @@ pub struct PointerPosition {
     pub y: f64,
 }
 
-pub(crate) fn send_element_event_with_position(
+#[derive(Clone, Copy, Debug, PartialEq, Eq, rustler::NifUnitEnum)]
+pub enum DragPhase {
+    Start,
+    Move,
+    End,
+    Cancel,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, rustler::NifMap)]
+pub struct DragPayload {
+    pub x: f64,
+    pub y: f64,
+    pub phase: DragPhase,
+}
+
+pub(crate) fn send_element_event_with_position<T: Encoder>(
     pid: LocalPid,
     id: &NodeId,
     event: Atom,
-    position: PointerPosition,
+    position: T,
 ) {
     let bytes = id.to_be_bytes();
     let Some(mut bin) = OwnedBinary::new(bytes.len()) else {
@@ -1541,6 +1557,7 @@ rustler::atoms! {
     mouse_enter,
     mouse_leave,
     mouse_move,
+    drag,
     window_close_requested,
     debug,
     info,
@@ -1622,6 +1639,10 @@ pub(crate) fn mouse_leave_atom() -> Atom {
 
 pub(crate) fn mouse_move_atom() -> Atom {
     mouse_move()
+}
+
+pub(crate) fn drag_atom() -> Atom {
+    drag()
 }
 
 #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]

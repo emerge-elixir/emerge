@@ -92,6 +92,10 @@ defmodule Emerge.UI.Event do
   applies when the destination is another PID. Custom wrappers receive the map
   and event kind. Update handlers that previously matched only the stored message.
 
+  For a custom control that must keep dragging outside its bounds, use
+  `on_drag/1` and its start/move/end/cancel phases. Ordinary mouse helpers do not
+  capture the pointer.
+
   `on_press/1` remains payload-free, including keyboard activation.
 
   Events do not bubble to parent elements. Attach the handler to the element
@@ -211,6 +215,8 @@ defmodule Emerge.UI.Event do
   @type mouse_enter_attr :: {:on_mouse_enter, payload()}
   @type mouse_leave_attr :: {:on_mouse_leave, payload()}
   @type mouse_move_attr :: {:on_mouse_move, payload()}
+  @type drag_position :: %{x: float(), y: float(), phase: :start | :move | :end | :cancel}
+  @type drag_attr :: {:on_drag, payload()}
   @type scroll_attr :: {:on_scroll, payload()}
   @type change_attr :: {:on_change, payload()}
   @type focus_attr :: {:on_focus, payload()}
@@ -622,6 +628,35 @@ defmodule Emerge.UI.Event do
   @spec on_mouse_move(payload() | term()) :: mouse_move_attr()
   def on_mouse_move({pid, _msg} = payload) when is_pid(pid), do: {:on_mouse_move, payload}
   def on_mouse_move(message), do: on_mouse_move({self(), message})
+
+  @doc """
+  Track a left-button drag, including movement and release outside this element.
+
+  Delivers `%{phase: :start | :move | :end | :cancel, x: float(), y: float()}`
+  through `wrap_payload/3` with kind `:drag`. Coordinates use the same unclamped,
+  element-local logical pixels as the mouse helpers, using current geometry even
+  after tree patches. Only real movement emits `:move`; stationary layout changes
+  do not generate drag samples.
+
+  Press inside starts capture; subsequent movement and release belong to this
+  element until `:end`. Window leave or focus loss emits `:cancel` at the last
+  known position. Removing/remounting the element or removing its handler drops
+  capture without delivering to a replacement mount. Primary touch follows the
+  existing mouse emulation; keyboard activation does not start a drag.
+
+  Use drag phases instead of mouse-move/up handlers during capture. Ordinary
+  enter/leave still follow physical hit testing. Cannot be combined on the same
+  element with click/press, swipe or virtual-key handlers. Attach it to custom
+  elements, not text inputs or sliders, which own their native drag behavior.
+
+      el([width(px(180)), height(px(120)), Event.on_drag(:picked)], none())
+
+      # handle_info({:picked, %{phase: :move, x: x, y: y}}, state)
+
+  """
+  @spec on_drag(payload() | term()) :: drag_attr()
+  def on_drag({pid, _msg} = payload) when is_pid(pid), do: {:on_drag, payload}
+  def on_drag(message), do: on_drag({self(), message})
 
   @doc """
   Register a value-change payload for a controlled input.
