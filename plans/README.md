@@ -9,15 +9,13 @@ history, tests, `CHANGELOG.md` and maintained guides—not an archive directory.
 - [WSL/Wayland compatibility](active-wsl-compatibility.md): WSLg cursor/input
   acceptance for #5/#6/#20 and Ubuntu/Mesa build qualification.
 - [CI download retries](active-ci-network-retries.md): clean-runner Linux/macOS
-  acceptance of streamed, bounded native-build retries and cache reuse.
+  acceptance of native-build retries and input-source cache reuse.
 - [Native build rollout](active-build-capabilities.md): remote cross/macOS artifact
   qualification, next-release archives/checksums and opted-in board acceptance.
-- [0.5 publication](active-0.5-release.md): exact-integrated-commit CI, artifacts,
-  date confirmation and publication.
 - [Viewport configuration](active-declarative-viewport-settings.md): remaining
   backend controls, macOS config revisions, input transport coverage and demo migration.
-- [DRM power](active-native-drm-power.md): user-owned FP3 OpenGL/no-flash/power
-  acceptance; Fairphone deployment handoff.
+- [DRM power](active-native-drm-power.md): panel/backlight, video, failure and
+  power acceptance across presenters; user-owned Fairphone deployment.
 - [Bundled DRM input](active-drm-libinput.md): full FP3 firmware, physical
   overlapping-key input and minimal-system/daemonless hotplug acceptance.
 - [Multiline word wrapping](active-multiline-word-wrap.md): FP3 Notes acceptance.
