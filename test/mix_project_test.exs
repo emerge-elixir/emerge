@@ -167,6 +167,7 @@ defmodule Emerge.MixProjectTest do
     for file <- [
           "README.md",
           "guides/tutorials/handle_input.md",
+          "guides/migrations/0.6.md",
           "guides/migrations/0.5.md",
           "guides/migrations/0.4.md",
           "guides/reference/native-renderer-builds.md",
@@ -184,6 +185,7 @@ defmodule Emerge.MixProjectTest do
                [
                  "README.md",
                  "guides/tutorials/handle_input.md",
+                 "guides/migrations/0.6.md",
                  "guides/migrations/0.5.md",
                  "guides/migrations/0.4.md"
                ] ++

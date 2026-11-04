@@ -104,7 +104,15 @@ defmodule Emerge do
 
   To send elsewhere, pass `{pid, message}`. Payload events append the payload to
   a tuple message or send `{message, payload}` for a non-tuple message. Override
-  `wrap_payload/3` when an integration needs another shape.
+  `wrap_payload/3` when an integration needs another shape. The rendering
+  viewport's wrapper also applies to external recipients.
+
+  `Event.on_click/1` and the five `on_mouse_*` helpers carry element-local
+  `%{x: float(), y: float()}` positions. `Event.on_drag/1` adds a phase and opts
+  into movement/release capture outside a custom control. `Event.on_press/1`
+  remains payload-free and supports keyboard activation. These element events
+  do not require raw input subscriptions. See `Emerge.UI.Event` for message
+  shapes, coordinate rules and drag lifecycle.
 
   ## Viewport configuration
 
@@ -424,7 +432,18 @@ defmodule Emerge do
   @callback handle_close(term(), state()) ::
               {:noreply, state()} | {:stop, term(), state()}
 
-  @callback wrap_payload(term(), term(), term()) :: term()
+  @doc """
+  Wraps a runtime element payload into its stored message before delivery.
+
+  Runs in the rendering viewport, including for external-PID recipients. `kind`
+  identifies the event, such as `:change`, `:scroll`, `:click`, `:mouse_move` or
+  `:drag`; `Emerge.UI.Event` documents the payloads. Payload-free events bypass
+  this callback, including `on_press`, keyboard and focus/blur handlers.
+
+  The default appends the payload to tuple messages and otherwise returns
+  `{message, payload}`. Delegate unmatched cases to `default_wrap_payload/3`.
+  """
+  @callback wrap_payload(message :: term(), payload :: term(), kind :: term()) :: term()
 
   @optional_callbacks config: 1,
                       config: 2,

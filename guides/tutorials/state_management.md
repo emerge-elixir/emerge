@@ -637,6 +637,36 @@ wrapped content.
 
 The viewport should not become a generic event router for application logic.
 
+## Route pointer payloads to controllers
+
+Use `event/2` for handlers whose payload comes from Emerge, including mouse
+positions and captured drags:
+
+```elixir
+def pointer_pad do
+  picker = solve(MyApp.App, :picker)
+
+  el(
+    [width(px(180)), height(px(120)), Event.on_drag(event(picker, :pick))],
+    none()
+  )
+end
+```
+
+This assumes a `:picker` controller with a registered `:pick` event. Its handler
+receives `%{phase: phase, x: x, y: y}` as its payload; ordinary mouse handlers
+receive `%{x: x, y: y}`. Coordinates are already logical floats. Keep lifecycle
+and selected-value state in the controller, including ending on `:cancel`.
+
+`event/3` adds a fixed argument. For a payload-bearing event, the default wrapper
+appends another tuple field; it does **not** combine the fixed argument and the
+runtime payload into Solve's single payload slot. Use a custom `wrap_payload/3`
+adapter to preserve both; see the
+[0.6 migration guide](../migrations/0.6.md#3-check-custom-payload-adapters).
+Payload-free actions such as `on_press` still use `event/3` unchanged. See
+[Handle input](handle_input.md#drag-outside-a-custom-control) for drag lifecycle
+and handler examples.
+
 ## Derive state from dependencies
 
 Not all state should be stored directly. Some state is better derived from other
