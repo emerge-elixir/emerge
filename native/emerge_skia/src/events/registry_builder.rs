@@ -369,12 +369,20 @@ impl<'a> RegistryView<'a> {
 pub(crate) fn reconcile_hover_stack(
     base: &Registry,
     current: &[HoverTracker],
+    allow_bootstrap: bool,
 ) -> Vec<HoverTracker> {
-    let active = active_hover_trackers(base);
-
     if current.is_empty() {
-        return active;
+        // Retained flags may come from a cached or already queued registry.
+        // Once the runtime has observed a leave, empty is authoritative: don't
+        // resurrect old owners and repeatedly deliver leave outside their boxes.
+        return if allow_bootstrap {
+            active_hover_trackers(base)
+        } else {
+            Vec::new()
+        };
     }
+
+    let active = active_hover_trackers(base);
 
     let active_reconciled = current
         .iter()
