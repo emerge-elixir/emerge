@@ -88,7 +88,26 @@ restores inherited scanout. Failed barriers retain/quarantine ownership. On crea
 a new presenter, asks the tree actor to render its latest tree, and enables the
 managed backlight after the first frame is presented.
 Initial-off does not require a tree upload. The app's independent wake-key reader
-is not suspended.
+is not suspended. DRM can also opt into `wake_on_touch` (`:single_tap`, `:double_tap`
+or `:long_press`); its default `nil` disables all touch wake. Recognition runs on the
+surviving input thread only after off retirement completes, independently of raw
+input subscriptions. It consumes the gesture and any held contacts across wake.
+
+A touch wake admits a normal native config revision against the current off revision,
+changing only display intent. The input target receives
+`{:emerge_skia_display_wake, token, gesture}` before its normal config completion.
+The viewport checks generation/session/revision, records on intent in desired,
+accepted and recovery snapshots, and dispatches `{:display_wake, gesture}` through
+`handle_input/2` only when `input.events` includes `:display_wake`. It then reconciles
+and renders regardless of the subscription. A state-driven `config/2` can still
+explicitly choose off. Newer config or stop wins over a stale recognition. Initial-off remains revision zero until the
+first accepted live transition; no frame-provenance protocol is added.
+
+The recognizer uses libinput's monotonic source timestamps and an input-poll deadline
+for long press, not UI event timers. It does not open the ordinary input gate or
+write KMS/backlight state. Presentation still gates illumination and normal UI input.
+The device must continue emitting touch events while its display is off; this does
+not implement OS suspend/resume or touchscreen-to-connector assignment.
 
 There are no config-tree markers, frame receipts, presentation proof mailboxes,
 power input epochs, or custom commit-cookie protocol. This is a simple

@@ -16,6 +16,8 @@ history, tests, `CHANGELOG.md` and maintained guides—not an archive directory.
   backend controls, macOS config revisions, input transport coverage and demo migration.
 - [DRM power](active-native-drm-power.md): panel/backlight, video, failure and
   power acceptance across presenters; user-owned Fairphone deployment.
+- [DRM touch wake](active-drm-touch-wake.md): config-selectable single tap, double
+  tap or long press to wake a blanked display without activating the UI beneath it.
 - [Bundled DRM input](active-drm-libinput.md): full FP3 firmware, physical
   overlapping-key input and minimal-system/daemonless hotplug acceptance.
 - [Multiline word wrapping](active-multiline-word-wrap.md): FP3 Notes acceptance.
