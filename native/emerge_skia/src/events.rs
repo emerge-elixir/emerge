@@ -1419,6 +1419,14 @@ pub struct PointerPosition {
     pub y: f64,
 }
 
+/// Completed swipe in local logical pixels, timed from press to release.
+#[derive(Clone, Copy, Debug, PartialEq, rustler::NifMap)]
+pub struct SwipePayload {
+    pub start: PointerPosition,
+    pub end: PointerPosition,
+    pub duration_ms: f64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, rustler::NifUnitEnum)]
 pub enum DragPhase {
     Start,

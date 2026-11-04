@@ -4,7 +4,7 @@ defmodule EmergeSkia.Macos.Protocol do
   import Bitwise
 
   @protocol_name "emerge_skia_macos"
-  @protocol_version 19
+  @protocol_version 20
 
   @log_level_debug 0
   @log_level_info 1
@@ -123,7 +123,7 @@ defmodule EmergeSkia.Macos.Protocol do
 
     true =
       has_payload in [0, 1] and
-        (kind_tag not in [1, 11, 12, 13, 14, 15, 19, 20] or has_payload == 1)
+        (kind_tag not in [1, 3, 4, 5, 6, 11, 12, 13, 14, 15, 19, 20] or has_payload == 1)
 
     event =
       case has_payload do
@@ -133,6 +133,19 @@ defmodule EmergeSkia.Macos.Protocol do
         1 when kind_tag in [1, 11, 12, 13, 14, 15] ->
           <<x::float-big-64, y::float-big-64>> = payload
           {id, decode_element_event_kind(kind_tag), %{x: x, y: y}}
+
+        1 when kind_tag in 3..6 ->
+          <<start_x::float-big-64, start_y::float-big-64, end_x::float-big-64,
+            end_y::float-big-64, duration_ms::float-big-64>> = payload
+
+          true = duration_ms >= 0.0
+
+          {id, decode_element_event_kind(kind_tag),
+           %{
+             start: %{x: start_x, y: start_y},
+             end: %{x: end_x, y: end_y},
+             duration_ms: duration_ms
+           }}
 
         1 when kind_tag == 20 ->
           <<phase, x::float-big-64, y::float-big-64>> = payload

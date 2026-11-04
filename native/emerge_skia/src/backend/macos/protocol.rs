@@ -1,5 +1,5 @@
 pub const PROTOCOL_NAME: &str = "emerge_skia_macos";
-pub const PROTOCOL_VERSION: u16 = 19;
+pub const PROTOCOL_VERSION: u16 = 20;
 pub const REQUEST_SET_WINDOW_TITLE: u16 = 0x001D;
 
 pub fn decode_window_title(payload: &[u8]) -> Result<String, String> {
@@ -199,6 +199,16 @@ pub fn encode_element_event_payload(
 ) -> Vec<u8> {
     use crate::events::registry_builder::ElixirEventPayload;
     let value = match payload {
+        Some(ElixirEventPayload::Swipe(value)) => [
+            value.start.x,
+            value.start.y,
+            value.end.x,
+            value.end.y,
+            value.duration_ms,
+        ]
+        .into_iter()
+        .flat_map(f64::to_be_bytes)
+        .collect(),
         Some(ElixirEventPayload::Drag(value)) => [match value.phase {
             crate::events::DragPhase::Start => 0,
             crate::events::DragPhase::Move => 1,
@@ -284,6 +294,36 @@ mod position_tests {
     use super::*;
     use crate::events::{ElementEventKind, PointerPosition, registry_builder::ElixirEventPayload};
     use crate::tree::element::NodeId;
+
+    #[test]
+    fn swipe_wire_payload_contains_local_endpoints_and_elapsed_milliseconds() {
+        let payload = ElixirEventPayload::Swipe(crate::events::SwipePayload {
+            start: PointerPosition { x: 35.5, y: -2.25 },
+            end: PointerPosition { x: 120.5, y: 30.25 },
+            duration_ms: 375.25,
+        });
+        let expected: Vec<u8> = [6, 1]
+            .into_iter()
+            .chain(8u32.to_be_bytes())
+            .chain(42u64.to_be_bytes())
+            .chain(40u32.to_be_bytes())
+            .chain(
+                [
+                    0x4041_c000_0000_0000u64,
+                    0xc002_0000_0000_0000,
+                    0x405e_2000_0000_0000,
+                    0x403e_4000_0000_0000,
+                    0x4077_7400_0000_0000,
+                ]
+                .into_iter()
+                .flat_map(u64::to_be_bytes),
+            )
+            .collect();
+        assert_eq!(
+            encode_element_event_payload(&NodeId(42), ElementEventKind::SwipeRight, Some(&payload)),
+            expected,
+        );
+    }
 
     #[test]
     fn element_position_notifications_use_exact_f64_wire_values() {

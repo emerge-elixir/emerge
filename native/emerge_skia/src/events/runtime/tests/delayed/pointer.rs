@@ -772,6 +772,76 @@ fn buffered_mouse_moves_deliver_latest_position_before_release_without_synthetic
     );
 }
 
+#[test]
+fn swipe_metadata_preserves_press_geometry_and_edge_times_through_replay() {
+    use crate::input::TouchPhase;
+    let assets = crate::assets::AssetRuntime::new();
+    let _assets = assets.enter();
+    let policy = TreeUpdateDecodePolicy::ReturnErr;
+    for touch in [false, true] {
+        let mut tree = encoded_tree(ElementKind::El, &[74, 41]);
+        tree.get_mut(&NodeId(9)).unwrap().spec.declared.layout_scale = Some(2.0);
+        animate_move(&mut tree, &[10.0, 30.0]);
+        let mut engine = TreeUpdateEngine::new(tree, 500, 300);
+        let (mut host, recorder) = recorded_host();
+        let start = Instant::now();
+        host.install_rebuild(response(&mut engine, vec![pulse(start, 0)], policy));
+        for (phase, x, y, micros) in [
+            (TouchPhase::Down, 40.5, 20.25, 0),
+            (TouchPhase::Move, 140.5, 20.25, 100_000),
+            (TouchPhase::Up, 250.5, 60.5, 375_250),
+        ] {
+            let event = if touch {
+                InputEvent::Touch { id: 1, phase, x, y }
+            } else {
+                match phase {
+                    TouchPhase::Down => button(ACTION_PRESS, x, y),
+                    TouchPhase::Move => InputEvent::CursorPos { x, y },
+                    _ => button(ACTION_RELEASE, x, y),
+                }
+            };
+            host.driver
+                .handle_input_at(event, start + Duration::from_micros(micros));
+        }
+        // Complete the delayed press rebuild with the source translated further.
+        let messages = host
+            .drain_tree_messages()
+            .into_iter()
+            .chain([pulse(start, 500)])
+            .collect();
+        host.install_rebuild(response(&mut engine, messages, policy));
+        settle(&mut host, &mut engine, policy);
+        let swipes: Vec<_> = recorder
+            .payloads
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(_, kind, payload)| match payload {
+                Some(registry_builder::ElixirEventPayload::Swipe(value)) => Some((*kind, *value)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(swipes.len(), 1, "touch={touch}: {swipes:?}");
+        let (kind, value) = swipes[0];
+        assert_eq!(kind, ElementEventKind::SwipeRight);
+        assert_eq!(
+            value.start,
+            crate::events::PointerPosition {
+                x: 10.25,
+                y: 10.125
+            }
+        );
+        assert_eq!(
+            value.end,
+            crate::events::PointerPosition {
+                x: 105.25,
+                y: 30.25
+            }
+        );
+        assert!((value.duration_ms - 375.25).abs() < 0.000001, "{value:?}");
+    }
+}
+
 fn drag_samples(recorder: &Recorder) -> Vec<crate::events::DragPayload> {
     recorder
         .payloads

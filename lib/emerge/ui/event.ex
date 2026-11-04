@@ -26,7 +26,8 @@ defmodule Emerge.UI.Event do
   | `on_drag/1` | `%{phase: :start \\| :move \\| :end \\| :cancel, x: float(), y: float()}` |
   | `on_change/1` | Updated text binary or numeric slider value |
   | `on_scroll/1` | `%{x: float(), y: float()}` scroll fractions in `[0, 1]`, **not** pointer coordinates |
-  | `on_press/1`, swipe, focus/blur and keyboard helpers | None: the stored message is delivered unchanged |
+  | Swipe helpers | `%{start: %{x: float(), y: float()}, end: %{x: float(), y: float()}, duration_ms: float()}` |
+  | `on_press/1`, focus/blur and keyboard helpers | None: the stored message is delivered unchanged |
 
   When a payload-bearing event is delivered through a viewport, the payload is
   wrapped into the stored message using the viewport's `wrap_payload/3`
@@ -77,7 +78,13 @@ defmodule Emerge.UI.Event do
   inside followed by release inside the same element, unless the gesture is
   cancelled. It does not provide keyboard activation.
 
-  Swipe helpers emit once a pointer gesture resolves to that direction.
+  Swipe helpers emit on release when a pointer gesture resolves to that direction.
+  Their `t:swipe_metadata/0` payload contains `:start` and `:end` positions in the
+  element-local logical coordinates described below, plus `:duration_ms`, a float
+  measured from the original press to release using a monotonic clock. Start is
+  captured on press; end uses the element's current release geometry, even outside
+  its bounds. Primary-touch swipes use the same metadata. For example,
+  `Event.on_swipe_right(:swiped)` delivers `{:swiped, metadata}` with the default wrapper.
 
   `on_mouse_down/1` and `on_mouse_up/1` are left-button only.
 
@@ -251,6 +258,13 @@ defmodule Emerge.UI.Event do
 
   @typedoc "Unclamped position from the listener element's outer top-left, in logical pixels."
   @type pointer_position :: %{x: float(), y: float()}
+
+  @typedoc "Completed swipe endpoints in logical pixels and press-to-release duration in milliseconds."
+  @type swipe_metadata :: %{
+          start: pointer_position(),
+          end: pointer_position(),
+          duration_ms: float()
+        }
 
   @typedoc "Lifecycle phase of an explicitly captured pointer drag."
   @type drag_phase :: :start | :move | :end | :cancel
@@ -642,22 +656,22 @@ defmodule Emerge.UI.Event do
   def on_press({pid, _msg} = payload) when is_pid(pid), do: {:on_press, payload}
   def on_press(message), do: on_press({self(), message})
 
-  @doc "Register a swipe-up payload for this element. Fires when the gesture resolves upward."
+  @doc "Register a swipe-up handler delivering `t:swipe_metadata/0` on release."
   @spec on_swipe_up(payload() | term()) :: swipe_up_attr()
   def on_swipe_up({pid, _msg} = payload) when is_pid(pid), do: {:on_swipe_up, payload}
   def on_swipe_up(message), do: on_swipe_up({self(), message})
 
-  @doc "Register a swipe-down payload for this element. Fires when the gesture resolves downward."
+  @doc "Register a swipe-down handler delivering `t:swipe_metadata/0` on release."
   @spec on_swipe_down(payload() | term()) :: swipe_down_attr()
   def on_swipe_down({pid, _msg} = payload) when is_pid(pid), do: {:on_swipe_down, payload}
   def on_swipe_down(message), do: on_swipe_down({self(), message})
 
-  @doc "Register a swipe-left payload for this element. Fires when the gesture resolves leftward."
+  @doc "Register a swipe-left handler delivering `t:swipe_metadata/0` on release."
   @spec on_swipe_left(payload() | term()) :: swipe_left_attr()
   def on_swipe_left({pid, _msg} = payload) when is_pid(pid), do: {:on_swipe_left, payload}
   def on_swipe_left(message), do: on_swipe_left({self(), message})
 
-  @doc "Register a swipe-right payload for this element. Fires when the gesture resolves rightward."
+  @doc "Register a swipe-right handler delivering `t:swipe_metadata/0` on release."
   @spec on_swipe_right(payload() | term()) :: swipe_right_attr()
   def on_swipe_right({pid, _msg} = payload) when is_pid(pid), do: {:on_swipe_right, payload}
   def on_swipe_right(message), do: on_swipe_right({self(), message})
