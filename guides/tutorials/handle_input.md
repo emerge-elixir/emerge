@@ -48,6 +48,25 @@ when upgrading from 0.5.
 No raw input subscription is needed for element events. The window-level raw
 observers below keep their existing surface coordinates and message shapes.
 
+## Swipe coordinates and duration
+
+`Event.on_swipe_up/1`, `on_swipe_down/1`, `on_swipe_left/1` and
+`on_swipe_right/1` emit once on release with local endpoints and duration:
+
+```elixir
+# Register with Event.on_swipe_right(:swiped).
+def handle_info({:swiped, %{start: start, end: finish, duration_ms: elapsed}}, state) do
+  {:noreply, Map.put(state, :last_swipe, {start, finish, elapsed})}
+end
+```
+
+Each endpoint is an unclamped `%{x: float(), y: float()}` in the source element's
+logical pixels. Start is captured on press; end uses the element's current
+release geometry, even outside its bounds. `duration_ms` is a float measured
+from the original press to release, not just after crossing the swipe threshold.
+It uses monotonic input timestamps, including when UI updates delay delivery.
+Mouse and primary-touch swipes share this payload and normal message wrapping.
+
 ## Subscribe to raw input explicitly
 
 Input observation defaults to **none**. Return the categories you need in
