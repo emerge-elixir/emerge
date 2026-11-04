@@ -1672,7 +1672,7 @@ impl DirectEventRuntime {
 
         if self.listener_lane.is_stale() {
             let buffered_before = self.listener_lane.buffered_inputs.len();
-            if matches!(event, InputEvent::CursorButton { .. }) {
+            if event.is_pointer_edge() {
                 self.listener_lane
                     .buffer_pending(PendingInput::TimedButton { event, occurred_at });
             } else {

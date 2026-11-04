@@ -266,7 +266,7 @@ pub enum EventMsg {
     Configure(crate::runtime::config::ConfigRequest),
     ConfigureInput(crate::runtime::config::ConfigRequest),
     InputEvent(InputEvent),
-    /// Button edges retain backend arrival time across actor/tree backpressure.
+    /// Mouse and touch button edges retain arrival time across actor/tree backpressure.
     /// High-rate motion/scroll keeps the existing coalescing path.
     TimedButton {
         event: InputEvent,
@@ -286,7 +286,7 @@ pub enum EventMsg {
 
 impl EventMsg {
     pub fn input_event(event: InputEvent) -> Self {
-        if matches!(event, InputEvent::CursorButton { .. }) {
+        if event.is_pointer_edge() {
             Self::TimedButton {
                 event,
                 occurred_at: Instant::now(),

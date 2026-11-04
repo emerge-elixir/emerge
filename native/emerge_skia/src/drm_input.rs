@@ -997,10 +997,13 @@ mod tests {
         });
         assert!(matches!(
             rx.try_recv().unwrap(),
-            EventMsg::InputEvent(InputEvent::Touch {
-                phase: TouchPhase::Down,
+            EventMsg::TimedButton {
+                event: InputEvent::Touch {
+                    phase: TouchPhase::Down,
+                    ..
+                },
                 ..
-            })
+            }
         ));
     }
 
@@ -1061,7 +1064,7 @@ mod tests {
             ..Default::default()
         });
         assert!(
-            matches!(rx.try_recv().unwrap(), EventMsg::InputEvent(InputEvent::Touch { id: 1, phase: crate::input::TouchPhase::Down, x, y }) if x == 639.0 && y == 479.0)
+            matches!(rx.try_recv().unwrap(), EventMsg::TimedButton { event: InputEvent::Touch { id: 1, phase: crate::input::TouchPhase::Down, x, y }, .. } if x == 639.0 && y == 479.0)
         );
         input.handle_event(Event {
             kind: 9,
@@ -1071,7 +1074,7 @@ mod tests {
             ..Default::default()
         });
         assert!(
-            matches!(rx.try_recv().unwrap(), EventMsg::InputEvent(InputEvent::Touch { id: 1, phase: crate::input::TouchPhase::Cancel, x, y }) if x == 639.0 && y == 479.0)
+            matches!(rx.try_recv().unwrap(), EventMsg::TimedButton { event: InputEvent::Touch { id: 1, phase: crate::input::TouchPhase::Cancel, x, y }, .. } if x == 639.0 && y == 479.0)
         );
         input.handle_event(Event {
             kind: 10,
