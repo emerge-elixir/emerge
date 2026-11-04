@@ -20,6 +20,13 @@ defmodule EmergeSkia.TestHarness do
   def apply_patch_bin(harness, patch_bin),
     do: unwrap_ok(Native.test_harness_patch(harness, patch_bin))
 
+  @spec set_input_target(reference(), pid()) :: :ok
+  def set_input_target(harness, pid), do: Native.test_harness_set_input_target(harness, pid)
+
+  @spec cursor_button(reference(), :press | :release, number(), number()) :: :ok
+  def cursor_button(harness, action, x, y) when action in [:press, :release],
+    do: Native.test_harness_cursor_button(harness, action == :press, x, y)
+
   @spec cursor_pos(reference(), number(), number()) :: :ok | {:error, String.t()}
   def cursor_pos(harness, x, y), do: unwrap_ok(Native.test_harness_cursor_pos(harness, x, y))
 

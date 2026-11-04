@@ -36,6 +36,7 @@ impl DirectEventRuntime {
             overlay_registry: &self.overlay_registry,
             focused_id: self.focused_id.as_ref(),
             hover_stack: &self.hover_stack,
+            pointer_position: self.listener_cursor_pos,
             text_states: &self.text_states,
             slider_states: &self.slider_states,
             text_commit_suppressions: &mut self.text_commit_suppressions,

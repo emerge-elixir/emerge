@@ -1411,6 +1411,30 @@ pub(crate) fn send_element_event_with_string_payload(
     });
 }
 
+/// Unclamped position in the listener element's logical pixels.
+#[derive(Clone, Copy, Debug, PartialEq, rustler::NifMap)]
+pub struct PointerPosition {
+    pub x: f64,
+    pub y: f64,
+}
+
+pub(crate) fn send_element_event_with_position(
+    pid: LocalPid,
+    id: &NodeId,
+    event: Atom,
+    position: PointerPosition,
+) {
+    let bytes = id.to_be_bytes();
+    let Some(mut bin) = OwnedBinary::new(bytes.len()) else {
+        return;
+    };
+    bin.as_mut_slice().copy_from_slice(&bytes);
+    let mut env = OwnedEnv::new();
+    let _ = env.send_and_clear(&pid, |env| {
+        (emerge_skia_event(), (bin.release(env), event, position)).encode(env)
+    });
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, rustler::NifMap)]
 pub struct ScrollPayload {
     pub x: f64,
