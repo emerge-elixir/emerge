@@ -67,18 +67,18 @@ defmodule EmergeSkia.Macos.HostTest do
 
     assert Protocol.encode_init_payload() ==
              <<byte_size("emerge_skia_macos")::unsigned-big-16, "emerge_skia_macos",
-               19::unsigned-big-16>>
+               20::unsigned-big-16>>
   end
 
-  test "protocol rejects hosts without structured mouse positions and captured drag maps" do
+  test "protocol rejects hosts without structured pointer and swipe payloads" do
     reply = fn version ->
       <<byte_size("emerge_skia_macos")::unsigned-big-16, "emerge_skia_macos",
         version::unsigned-big-16, 123::unsigned-big-64, 456::unsigned-big-32>>
     end
 
-    assert {:ok, %{host_id: 123, host_pid: 456}} = Protocol.decode_init_ok_payload(reply.(19))
+    assert {:ok, %{host_id: 123, host_pid: 456}} = Protocol.decode_init_ok_payload(reply.(20))
 
-    for version <- [12, 13, 14, 15, 16, 17, 18] do
+    for version <- [12, 13, 14, 15, 16, 17, 18, 19] do
       assert {:error, "unsupported macOS host init response"} =
                Protocol.decode_init_ok_payload(reply.(version))
     end
@@ -109,6 +109,32 @@ defmodule EmergeSkia.Macos.HostTest do
     end
 
     assert :error = Protocol.decode_element_event_payload(<<20, 0, 8::32, id::binary, 0::32>>)
+  end
+
+  test "swipe wire maps carry endpoints and duration for every direction" do
+    id = <<42::64>>
+
+    body =
+      <<0x4041C00000000000::64, 0xC002000000000000::64, 0x405E200000000000::64,
+        0x403E400000000000::64, 0x4077740000000000::64>>
+
+    for {tag, kind} <- [{3, :swipe_up}, {4, :swipe_down}, {5, :swipe_left}, {6, :swipe_right}] do
+      assert {:ok,
+              {^id, ^kind,
+               %{start: %{x: 35.5, y: -2.25}, end: %{x: 120.5, y: 30.25}, duration_ms: 375.25}}} =
+               Protocol.decode_element_event_payload(
+                 <<tag, 1, 8::32, id::binary, 40::32, body::binary>>
+               )
+
+      assert :error = Protocol.decode_element_event_payload(<<tag, 0, 8::32, id::binary, 0::32>>)
+    end
+
+    for bad <- [binary_part(body, 0, 32), <<0::256, -1.0::float-big-64>>] do
+      assert :error =
+               Protocol.decode_element_event_payload(
+                 <<6, 1, 8::32, id::binary, byte_size(bad)::32, bad::binary>>
+               )
+    end
   end
 
   test "window title wire payload uses UTF-8 byte length, including empty titles" do

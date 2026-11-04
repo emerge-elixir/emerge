@@ -724,8 +724,13 @@ defmodule EmergeSkia do
     See `Emerge.UI.Event.on_drag/1` for capture lifetime and cancellation.
   - `:change`: a binary for text inputs or a float for sliders.
   - `:scroll`: `%{x: float(), y: float()}` scroll fractions in `[0, 1]`, not positions.
-  - `:press`, `:swipe_up`, `:swipe_down`, `:swipe_left`, `:swipe_right`, `:focus`,
-    `:blur` and `:virtual_key_hold`: no runtime payload, using the two-field form.
+  - `:swipe_up`, `:swipe_down`, `:swipe_left`, `:swipe_right`:
+    `%{start: %{x: float(), y: float()}, end: %{x: float(), y: float()}, duration_ms: float()}`.
+    Start is captured on press; end uses the source's current release geometry.
+    Both are unclamped local logical positions. Duration is monotonic elapsed
+    milliseconds from press to release, including time before swipe recognition.
+  - `:press`, `:focus`, `:blur` and `:virtual_key_hold`: no runtime payload,
+    using the two-field form.
 
   Mouse down uses the press position; up/click use the release position. Enter/leave
   use the transition position; window leave uses the last known pointer position.

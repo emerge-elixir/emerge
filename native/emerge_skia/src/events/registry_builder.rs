@@ -44,6 +44,7 @@ use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+use std::time::Instant;
 
 use crate::actors::TreeMsg;
 use crate::clipboard::ClipboardTarget;
@@ -1057,6 +1058,7 @@ pub enum DragTrackerState {
         matcher_kind: ListenerMatcherKind,
         origin_x: f32,
         origin_y: f32,
+        start: SwipeStart,
         swipe_handlers: SwipeHandlers,
         scroll_candidate: bool,
     },
@@ -1111,8 +1113,15 @@ pub struct SliderDragTracker {
     pub matcher_kind: ListenerMatcherKind,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SwipeStart {
+    pub position: super::PointerPosition,
+    pub at: Instant,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SwipeTracker {
+    pub start: SwipeStart,
     pub element_id: NodeId,
     pub matcher_kind: ListenerMatcherKind,
     pub origin_x: f32,
@@ -1514,13 +1523,14 @@ fn runtime_drag_candidate_threshold_listener(
     base: &Registry,
     drag: &DragTrackerState,
 ) -> Option<Listener> {
-    let (element_id, matcher_kind, origin_x, origin_y, swipe_handlers, scroll_candidate) =
+    let (element_id, matcher_kind, origin_x, origin_y, start, swipe_handlers, scroll_candidate) =
         match drag {
             DragTrackerState::Candidate {
                 element_id,
                 matcher_kind,
                 origin_x,
                 origin_y,
+                start,
                 swipe_handlers,
                 scroll_candidate,
             } => (
@@ -1528,6 +1538,7 @@ fn runtime_drag_candidate_threshold_listener(
                 *matcher_kind,
                 *origin_x,
                 *origin_y,
+                *start,
                 *swipe_handlers,
                 *scroll_candidate,
             ),
@@ -1548,6 +1559,7 @@ fn runtime_drag_candidate_threshold_listener(
             matcher_kind,
             origin_x,
             origin_y,
+            start,
             swipe_handlers,
             scroll_candidate,
         },
@@ -1669,13 +1681,15 @@ fn runtime_click_press_release_listener(
 }
 
 fn runtime_swipe_release_listener(base: &Registry, tracker: &SwipeTracker) -> Option<Listener> {
-    runtime_source_listener(base, &tracker.element_id, tracker.matcher_kind)?;
+    let source = runtime_source_listener(base, &tracker.element_id, tracker.matcher_kind)?;
+    let coordinates = runtime_press_region_from_source(source)?.coordinates;
 
     Some(Listener {
         element_id: Some(tracker.element_id),
         matcher: ListenerMatcher::CursorButtonLeftReleaseAnywhere,
         compute: ListenerCompute::SwipeReleaseFollowupToBase {
             tracker: tracker.clone(),
+            coordinates,
         },
     })
 }
@@ -2059,6 +2073,7 @@ fn runtime_text_drag_window_leave_clear_listener(
 pub(crate) struct PointerDragBootstrap {
     element_id: NodeId,
     matcher_kind: ListenerMatcherKind,
+    coordinates: PointerCoordinates,
     swipe_handlers: SwipeHandlers,
     scroll_candidate: bool,
 }
@@ -2101,6 +2116,10 @@ fn runtime_press_region_from_source(source: &Listener) -> Option<PointerRegion> 
 }
 
 pub(crate) trait ListenerComputeCtx {
+    fn input_time(&self) -> Instant {
+        Instant::now()
+    }
+
     fn text_input_double_click(&mut self, _id: NodeId, _x: f32, _y: f32) -> bool {
         false
     }
@@ -2945,6 +2964,7 @@ pub(crate) enum RuntimeChange {
         matcher_kind: ListenerMatcherKind,
         origin_x: f32,
         origin_y: f32,
+        start: SwipeStart,
         swipe_handlers: SwipeHandlers,
         scroll_candidate: bool,
     },
@@ -3077,6 +3097,7 @@ pub enum ElixirEventPayload {
     Scroll(super::ScrollPayload),
     Position(super::PointerPosition),
     Drag(super::DragPayload),
+    Swipe(super::SwipePayload),
 }
 
 /// Elixir-facing element event.
@@ -3132,7 +3153,10 @@ pub(crate) enum ListenerCompute {
         clear_mouse_down: bool,
     },
     /// Redispatch base release listeners, then emit a completed swipe gesture.
-    SwipeReleaseFollowupToBase { tracker: SwipeTracker },
+    SwipeReleaseFollowupToBase {
+        tracker: SwipeTracker,
+        coordinates: PointerCoordinates,
+    },
     /// Redispatch base key-up listeners, optionally emit completed key-press actions, then clear tracking.
     KeyPressReleaseFollowupToBase {
         key: CanonicalKey,
@@ -3144,6 +3168,7 @@ pub(crate) enum ListenerCompute {
         matcher_kind: ListenerMatcherKind,
         origin_x: f32,
         origin_y: f32,
+        start: SwipeStart,
         swipe_handlers: SwipeHandlers,
         scroll_candidate: bool,
     },
@@ -3262,15 +3287,21 @@ impl ListenerCompute {
                 }) if button == "left" && *action == ACTION_PRESS => actions
                     .iter()
                     .cloned()
-                    .chain(pointer_drag.as_ref().map(|pointer_drag| {
-                        ListenerAction::RuntimeChange(RuntimeChange::StartDragTracker {
-                            element_id: pointer_drag.element_id,
-                            matcher_kind: pointer_drag.matcher_kind,
-                            origin_x: *x,
-                            origin_y: *y,
-                            swipe_handlers: pointer_drag.swipe_handlers,
-                            scroll_candidate: pointer_drag.scroll_candidate,
-                        })
+                    .chain(pointer_drag.as_ref().and_then(|pointer_drag| {
+                        Some(ListenerAction::RuntimeChange(
+                            RuntimeChange::StartDragTracker {
+                                element_id: pointer_drag.element_id,
+                                matcher_kind: pointer_drag.matcher_kind,
+                                origin_x: *x,
+                                origin_y: *y,
+                                start: SwipeStart {
+                                    position: pointer_drag.coordinates.position(*x, *y)?,
+                                    at: ctx.input_time(),
+                                },
+                                swipe_handlers: pointer_drag.swipe_handlers,
+                                scroll_candidate: pointer_drag.scroll_candidate,
+                            },
+                        ))
                     }))
                     .chain(text_cursor_element_id.as_ref().map(|element_id| {
                         ListenerAction::Semantic(SemanticAction::TextInputCursor {
@@ -3377,7 +3408,10 @@ impl ListenerCompute {
                 }
                 _ => Vec::new(),
             },
-            ListenerCompute::SwipeReleaseFollowupToBase { tracker } => match input.raw() {
+            ListenerCompute::SwipeReleaseFollowupToBase {
+                tracker,
+                coordinates,
+            } => match input.raw() {
                 Some(InputEvent::CursorButton {
                     button,
                     action,
@@ -3387,12 +3421,20 @@ impl ListenerCompute {
                 }) if button == "left" && *action == ACTION_RELEASE => ctx
                     .dispatch_base(input)
                     .into_iter()
-                    .chain(swipe_event_from_release(tracker, *x, *y).map(|kind| {
-                        ListenerAction::ElixirEvent(ElixirEvent {
+                    .chain(swipe_event_from_release(tracker, *x, *y).and_then(|kind| {
+                        Some(ListenerAction::ElixirEvent(ElixirEvent {
                             element_id: tracker.element_id,
                             kind,
-                            payload: None,
-                        })
+                            payload: Some(ElixirEventPayload::Swipe(super::SwipePayload {
+                                start: tracker.start.position,
+                                end: coordinates.position(*x, *y)?,
+                                duration_ms: ctx
+                                    .input_time()
+                                    .saturating_duration_since(tracker.start.at)
+                                    .as_secs_f64()
+                                    * 1000.0,
+                            })),
+                        }))
                     }))
                     .chain([ListenerAction::RuntimeChange(
                         RuntimeChange::ClearSwipeTracker,
@@ -3426,6 +3468,7 @@ impl ListenerCompute {
                 matcher_kind,
                 origin_x,
                 origin_y,
+                start,
                 swipe_handlers,
                 scroll_candidate,
             } => match input {
@@ -3460,6 +3503,7 @@ impl ListenerCompute {
                             ListenerAction::RuntimeChange(RuntimeChange::ClearDragTracker),
                             ListenerAction::RuntimeChange(RuntimeChange::StartSwipeTracker {
                                 tracker: SwipeTracker {
+                                    start: *start,
                                     element_id: *element_id,
                                     matcher_kind: *matcher_kind,
                                     origin_x: *origin_x,
@@ -8118,7 +8162,8 @@ fn slot_primary_left_press(
             matcher_kind,
         ))
         .collect();
-    let pointer_drag = click_press_tracker::left_press_drag_bootstrap(element, matcher_kind);
+    let pointer_drag =
+        click_press_tracker::left_press_drag_bootstrap(element, matcher_kind, region.coordinates);
     let text_cursor_element_id = element
         .spec
         .kind
@@ -9028,6 +9073,7 @@ mod click_press_tracker {
     pub(super) fn left_press_drag_bootstrap(
         element: &Element,
         matcher_kind: ListenerMatcherKind,
+        coordinates: PointerCoordinates,
     ) -> Option<PointerDragBootstrap> {
         let attrs = &element.layout.effective;
         let swipe_handlers = swipe_handlers_for_element(element);
@@ -9040,6 +9086,7 @@ mod click_press_tracker {
             .then_some(PointerDragBootstrap {
                 element_id: element.id,
                 matcher_kind,
+                coordinates,
                 swipe_handlers,
                 scroll_candidate,
             })
@@ -9199,6 +9246,13 @@ mod tests {
     use crate::events::{
         CursorIcon, ElementEventKind, RegistryRebuildPayload, SliderState, TextInputState,
     };
+
+    fn swipe_start(x: f64, y: f64) -> super::SwipeStart {
+        super::SwipeStart {
+            position: crate::events::PointerPosition { x, y },
+            at: Instant::now(),
+        }
+    }
 
     fn make_element(id: u8, attrs: Attrs) -> Element {
         Element::with_attrs(
@@ -12024,6 +12078,7 @@ mod tests {
             virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Candidate {
+                start: swipe_start(10.0, 10.0),
                 element_id: NodeId::from_term_bytes(vec![30]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 origin_x: 10.0,
@@ -12313,6 +12368,7 @@ mod tests {
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 origin_x: 10.0,
                 origin_y: 10.0,
+                start: swipe_start(10.0, 10.0),
                 swipe_handlers: SwipeHandlers::default(),
                 scroll_candidate: false,
             },
@@ -12370,6 +12426,7 @@ mod tests {
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 origin_x: 10.0,
                 origin_y: 10.0,
+                start: swipe_start(10.0, 10.0),
                 swipe_handlers: SwipeHandlers::default(),
                 scroll_candidate: true,
             },
@@ -12435,6 +12492,7 @@ mod tests {
             virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Candidate {
+                start: swipe_start(50.0, 50.0),
                 element_id: NodeId::from_term_bytes(vec![32]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 origin_x: 50.0,
@@ -12554,6 +12612,7 @@ mod tests {
                 origin_y,
                 swipe_handlers,
                 scroll_candidate,
+                ..
             })] if element_id == &NodeId::from_term_bytes(vec![71])
                 && *kind == matcher_kind
                 && *origin_x == 10.0
@@ -12590,6 +12649,7 @@ mod tests {
             virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Candidate {
+                start: swipe_start(10.0, 10.0),
                 element_id: NodeId::from_term_bytes(vec![72]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 origin_x: 10.0,
@@ -12648,6 +12708,7 @@ mod tests {
             virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Candidate {
+                start: swipe_start(10.0, 10.0),
                 element_id: NodeId::from_term_bytes(vec![75]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 origin_x: 10.0,
@@ -12742,6 +12803,7 @@ mod tests {
             virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Candidate {
+                start: swipe_start(40.0, 40.0),
                 element_id: NodeId::from_term_bytes(vec![77]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 origin_x: 40.0,
@@ -12830,6 +12892,7 @@ mod tests {
             virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Candidate {
+                start: swipe_start(40.0, 40.0),
                 element_id: NodeId::from_term_bytes(vec![79]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 origin_x: 40.0,
@@ -12892,6 +12955,7 @@ mod tests {
             key_presses: Vec::new(),
             drag: DragTrackerState::Inactive,
             swipe: Some(SwipeTracker {
+                start: swipe_start(10.0, 10.0),
                 element_id: NodeId::from_term_bytes(vec![73]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 origin_x: 10.0,
@@ -12935,7 +12999,7 @@ mod tests {
                 ListenerAction::ElixirEvent(ElixirEvent {
                     element_id,
                     kind: ElementEventKind::SwipeRight,
-                    payload: None,
+                    payload: Some(ElixirEventPayload::Swipe(_)),
                 }),
                 ListenerAction::RuntimeChange(RuntimeChange::ClearSwipeTracker),
             ] if *element_id == NodeId::from_term_bytes(vec![73])
@@ -12958,6 +13022,7 @@ mod tests {
             key_presses: Vec::new(),
             drag: DragTrackerState::Inactive,
             swipe: Some(SwipeTracker {
+                start: swipe_start(10.0, 10.0),
                 element_id: NodeId::from_term_bytes(vec![74]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 origin_x: 10.0,
@@ -12997,7 +13062,7 @@ mod tests {
                 ListenerAction::ElixirEvent(ElixirEvent {
                     element_id,
                     kind: ElementEventKind::SwipeRight,
-                    payload: None,
+                    payload: Some(ElixirEventPayload::Swipe(_)),
                 }),
                 ListenerAction::RuntimeChange(RuntimeChange::ClearSwipeTracker),
             ] if *element_id == NodeId::from_term_bytes(vec![74])
@@ -13020,6 +13085,7 @@ mod tests {
             key_presses: Vec::new(),
             drag: DragTrackerState::Inactive,
             swipe: Some(SwipeTracker {
+                start: swipe_start(10.0, 10.0),
                 element_id: NodeId::from_term_bytes(vec![80]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 origin_x: 10.0,
@@ -15624,6 +15690,7 @@ mod tests {
             virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Candidate {
+                start: swipe_start(10.0, 10.0),
                 element_id: NodeId::from_term_bytes(vec![83]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 origin_x: 10.0,
@@ -15694,6 +15761,7 @@ mod tests {
             virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Candidate {
+                start: swipe_start(0.0, 0.0),
                 element_id: NodeId::from_term_bytes(vec![84]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 origin_x: 0.0,
@@ -15755,6 +15823,7 @@ mod tests {
             virtual_key: None,
             key_presses: Vec::new(),
             drag: DragTrackerState::Candidate {
+                start: swipe_start(10.0, 10.0),
                 element_id: NodeId::from_term_bytes(vec![85]),
                 matcher_kind: ListenerMatcherKind::CursorButtonLeftPressInside,
                 origin_x: 10.0,

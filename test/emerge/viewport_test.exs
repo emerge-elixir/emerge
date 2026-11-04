@@ -418,7 +418,7 @@ defmodule Emerge.ViewportTest do
     def render(state) do
       attrs =
         Enum.map(
-          [:mouse_move, :press],
+          [:mouse_move, :swipe_right, :press],
           fn kind ->
             message = if state.tuple?, do: {:pointer, kind}, else: kind
             {String.to_existing_atom("on_#{kind}"), {state.target, message}}
@@ -912,16 +912,21 @@ defmodule Emerge.ViewportTest do
     GenServer.stop(pid)
   end
 
-  test "mouse positions route to external PIDs with default atom and tuple wrapping" do
+  test "pointer payloads route to external PIDs with default atom and tuple wrapping" do
     for tuple? <- [false, true] do
       {:ok, pid} = MousePayloadViewport.start_link(target: self(), tuple?: tuple?)
       state = :sys.get_state(pid)
       [{id, _}] = Map.to_list(state.__emerge__.diff_state.event_registry)
       position = %{x: 35.5, y: -2.25}
 
-      send(pid, {:emerge_skia_event, {id, :mouse_move, position}})
-      expected = if tuple?, do: {:pointer, :mouse_move, position}, else: {:mouse_move, position}
-      assert_receive ^expected
+      for {kind, payload} <- [
+            mouse_move: position,
+            swipe_right: %{start: position, end: %{x: 120.5, y: 30.25}, duration_ms: 375.25}
+          ] do
+        send(pid, {:emerge_skia_event, {id, kind, payload}})
+        expected = if tuple?, do: {:pointer, kind, payload}, else: {kind, payload}
+        assert_receive ^expected
+      end
 
       send(pid, {:emerge_skia_event, {id, :press}})
       expected = if tuple?, do: {:pointer, :press}, else: :press

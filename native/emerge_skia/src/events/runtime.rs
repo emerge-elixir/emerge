@@ -959,6 +959,10 @@ struct RuntimeListenerComputeCtx<'a> {
 }
 
 impl ListenerComputeCtx for RuntimeListenerComputeCtx<'_> {
+    fn input_time(&self) -> Instant {
+        self.input_time
+    }
+
     fn text_input_double_click(&mut self, id: NodeId, x: f32, y: f32) -> bool {
         self.text_clicks.press(id, (x, y), self.input_time)
     }
@@ -2418,6 +2422,9 @@ impl DirectEventRuntime {
             Some(ElixirEventPayload::Drag(value)) => {
                 super::send_element_event_with_position(pid, &event.element_id, atom, value)
             }
+            Some(ElixirEventPayload::Swipe(value)) => {
+                super::send_element_event_with_position(pid, &event.element_id, atom, value)
+            }
             Some(ElixirEventPayload::String(value)) => {
                 send_element_event_with_string_payload(pid, &event.element_id, atom, &value)
             }
@@ -2477,6 +2484,7 @@ impl DirectEventRuntime {
                 matcher_kind,
                 origin_x,
                 origin_y,
+                start,
                 swipe_handlers,
                 scroll_candidate,
             } => {
@@ -2486,6 +2494,7 @@ impl DirectEventRuntime {
                     matcher_kind,
                     origin_x,
                     origin_y,
+                    start,
                     swipe_handlers,
                     scroll_candidate,
                 };
