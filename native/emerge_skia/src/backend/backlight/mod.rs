@@ -314,9 +314,47 @@ impl<A: Attributes> Backlight<A> {
         }
     }
 
-    /// The presenter must hold its current-intent guard and have observed matching
-    /// frame/presentation completion before calling this. This primitive does not
-    /// manufacture that proof. Public controls stay disabled until that wiring lands.
+    /// Adopt inherited illumination only after the matching application frame is
+    /// presented. Read back power/requested brightness and, when available, actual
+    /// brightness. A lit device never receives a power write or a temporary zero.
+    /// A dark device follows the ordinary dark-to-visible path instead.
+    pub fn adopt_or_illuminate_after_present(&mut self) -> Result<(), String> {
+        if self.phase != Phase::Untouched {
+            return self.illuminate_after_present();
+        }
+        self.release_safe = false;
+        self.phase = Phase::Unknown;
+        let power = self
+            .attributes
+            .read(Attribute::Power)?
+            .ok_or("bl_power is missing")?;
+        let requested = self
+            .attributes
+            .read(Attribute::Brightness)?
+            .ok_or("brightness is missing")?;
+        let actual = self.attributes.read(Attribute::Actual)?;
+        if power > 4
+            || requested > self.baseline.maximum
+            || actual.is_some_and(|value| value > self.baseline.maximum)
+        {
+            return Err("invalid inherited backlight readback".into());
+        }
+        if power == 0 && requested > 0 && actual.is_none_or(|level| level > 0) {
+            if requested != self.desired
+                && let Err(error) = self.attributes.write(Attribute::Brightness, self.desired)
+            {
+                return self.failed_enable(error);
+            }
+            self.phase = Phase::Visible;
+            Ok(())
+        } else {
+            self.phase = Phase::Dark;
+            self.illuminate_after_present()
+        }
+    }
+
+    /// The owner must have observed matching frame/presentation completion before
+    /// calling this. This primitive does not manufacture that proof.
     pub fn illuminate_after_present(&mut self) -> Result<(), String> {
         if self.phase != Phase::Dark {
             return Err(

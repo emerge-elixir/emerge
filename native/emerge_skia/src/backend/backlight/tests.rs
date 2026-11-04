@@ -104,6 +104,78 @@ fn preparation_is_read_only_and_uses_requested_not_actual_brightness() {
 }
 
 #[test]
+fn inherited_lit_backlight_adoption_never_power_cycles_or_temporarily_zeros() {
+    use Attribute::*;
+    for actual in [Some(5), None] {
+        for desired in [None, Some(0.7), Some(0.0)] {
+            let fake = Fake::new();
+            if actual.is_none() {
+                fake.0.lock().unwrap().values.remove(&Actual);
+            }
+            let registry = Reservations::new();
+            let mut light = managed(&fake, &registry);
+            light.set_brightness(desired).unwrap();
+            assert!(
+                fake.writes().is_empty(),
+                "delayed upload must not change the splash brightness"
+            );
+            light.adopt_or_illuminate_after_present().unwrap();
+            let expected = desired
+                .map(|value| vec![(Brightness, quantize(value, 100).unwrap())])
+                .unwrap_or_default();
+            assert_eq!(fake.writes(), expected);
+            light.release_after_detach().unwrap();
+        }
+    }
+}
+
+#[test]
+fn inherited_dark_readback_uses_ordinary_illumination_only_after_presentation() {
+    use Attribute::*;
+    for (attribute, value) in [(Power, 4), (Brightness, 0), (Actual, 0)] {
+        let fake = Fake::new();
+        fake.0.lock().unwrap().values.insert(attribute, value);
+        let registry = Reservations::new();
+        let mut light = managed(&fake, &registry);
+        light.set_brightness(Some(0.7)).unwrap();
+        assert!(fake.writes().is_empty());
+        light.adopt_or_illuminate_after_present().unwrap();
+        assert_eq!(fake.writes(), [(Brightness, 70), (Power, 0)]);
+        light.release_after_detach().unwrap();
+    }
+}
+
+#[test]
+fn failed_adoption_readback_or_brightness_never_grants_visible_state() {
+    use Attribute::*;
+    for fail_read in [false, true] {
+        let fake = Fake::new();
+        let registry = Reservations::new();
+        let mut light = managed(&fake, &registry);
+        light.set_brightness(Some(0.7)).unwrap();
+        if fail_read {
+            fake.0.lock().unwrap().read_failure = Some(Power);
+        } else {
+            fake.fail(Brightness, 70, true);
+        }
+        assert!(light.adopt_or_illuminate_after_present().is_err());
+        assert!(!fake.writes().contains(&(Power, 0)));
+        if fail_read {
+            assert!(light.illuminate_after_present().is_err());
+            assert!(fake.writes().is_empty());
+        } else {
+            assert_eq!(
+                fake.writes(),
+                [(Brightness, 70), (Power, 4), (Brightness, 0)]
+            );
+        }
+        fake.0.lock().unwrap().read_failure = None;
+        light.release_after_detach().unwrap();
+        assert!(registry.reserve(id(1)).is_ok());
+    }
+}
+
+#[test]
 fn dark_updates_preserve_intent_and_enable_sets_brightness_before_power() {
     use Attribute::*;
     let fake = Fake::new();
