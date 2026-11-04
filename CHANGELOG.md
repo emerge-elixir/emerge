@@ -2,8 +2,20 @@
 
 ## [Unreleased]
 
+### Breaking changes
+
+- `Event.on_click/1`, `on_mouse_down/1`, `on_mouse_up/1`, `on_mouse_move/1`,
+  `on_mouse_enter/1` and `on_mouse_leave/1` now include an element-local position
+  in their messages. For example, `:clicked` becomes
+  `{:clicked, %{x: x, y: y}}` with the default wrapper. Update affected message
+  patterns and custom `wrap_payload/3` callbacks; see the
+  [0.6 migration guide](guides/migrations/0.6.md). `Event.on_press/1` and raw
+  input callbacks are unchanged.
+
 ### Added
 
+- `Event.on_drag/1` lets custom controls receive drag movement and release even
+  outside the element. Messages include the drag phase and element-local position.
 - Native double-click word selection for single-line and multiline text inputs.
 - Optional DRM touch wake through `wake_on_touch`: single tap, double tap or long
   press. The default `nil` disables touch wake; wake gestures do not activate the UI.
@@ -19,6 +31,10 @@
   Nearby content, without requiring an animation or unrelated tree change.
 - Wayland uses bundled cursors when system cursor themes are missing, avoiding
   repeated cursor errors on minimal Linux/WSLg installations.
+- Fixed repeated mouse-leave callbacks and mouse-move updates continuing after
+  the pointer leaves an element.
+- Fixed a crash when a scrollbar is clipped or has no visible track.
+- Fixed missing mouse-move callbacks during UI updates.
 
 ## [0.5.1] - 2026-10-21
 
@@ -130,8 +146,6 @@ See the [0.5 migration guide](guides/migrations/0.5.md) when upgrading from 0.4.
   `compiled_backends: []` preserves headless packed-frame previews, including
   BW1/Gray2 dithering, without building Rust/Skia or opening a window. Native
   window applications continue to use the separate `macos_host` executable.
-- Release checks for packaged macOS raster architecture, system-only dependencies
-  and deployment version, plus isolated BEAM load/render/cache/integrity probes.
 
 ### Fixed
 
@@ -141,10 +155,6 @@ See the [0.5 migration guide](guides/migrations/0.5.md) when upgrading from 0.4.
   static content. Completed video resources continue to retire while disconnected.
   Initial startup still requires a display; GPU/device loss and failed ownership
   barriers remain terminal.
-- Checksum-only NIF compilation no longer emits an unused-attribute warning,
-  allowing release probes to compile with warnings treated as errors.
-- Linux CI Cargo caches are isolated by matrix job so the minimum-Elixir job
-  cannot claim the full Rust job's immutable cache or restore its build output.
 
 ## [0.4.1] - 2026-09-30
 
@@ -153,11 +163,6 @@ See the [0.5 migration guide](guides/migrations/0.5.md) when upgrading from 0.4.
 - GNU DRM precompiled artifacts embed FreeType and disable fontconfig. DRM
   OpenGL+Vulkan configurations select a dedicated `drm_all` archive instead of
   the desktop Vulkan bundle, avoiding xkbcommon/Wayland dependencies on Nerves.
-- Release builds check embedded ELF dependencies and load AArch64 DRM archives
-  against a checksum-pinned stock RPi5 rootfs before publishing.
-- Release and Hex workflows reuse successful CI for the exact source commit
-  instead of rerunning the standard test matrix. Native builds wait for that
-  gate; the full-sweep CI step runs only the additional tagged tests.
 
 ## [0.4.0] - 2026-09-29
 
@@ -301,7 +306,6 @@ See the [0.4 migration guide](guides/migrations/0.4.md) for upgrade examples.
 - Reworked the DRM PRIME/DMA-BUF video pipeline to own frames safely across page flips and improve import compatibility, synchronization, and release handling.
 - Improved retained paint-layer caching for dynamic, animated, scrolling, and visibility-changing content.
 - Upgraded Skia to 0.99 and Rustler to 0.38.
-- Upgraded the development, CI, and release toolchain to Elixir 1.20.2 and Erlang/OTP 29.0.4.
 
 ### Fixed
 
@@ -366,9 +370,8 @@ See the [0.4 migration guide](guides/migrations/0.4.md) for upgrade examples.
 
 ### Changed
 
-- Hardened native video target and NIF boundary handling, including the `submit_prime` path.
-- Reduced CI noise and flakiness by gating heavier hover timing tests, relaxing one tail-clear tolerance, and downgrading routine macOS tree update logs to Elixir debug level.
-- Updated macOS release and documentation flow so published HexDocs excludes internal guides and release asset verification reports visible release assets more clearly.
+- Improved the safety of video frame submission, including PRIME frames.
+- Reduced routine macOS tree update logs to debug level.
 
 ## [0.2.0] - 2026-04-17
 

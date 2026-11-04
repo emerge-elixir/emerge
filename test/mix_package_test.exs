@@ -37,7 +37,8 @@ defmodule Emerge.MixPackageTest do
     # Include the inputs as well as their consumers. Source builds and docs may
     # otherwise pass while feature-gated benches fail or examples paint fallbacks.
     required =
-      ~w(priv/sample_assets/static.jpg priv/sample_assets/fallback.jpg
+      ~w(guides/migrations/0.6.md
+        priv/sample_assets/static.jpg priv/sample_assets/fallback.jpg
         priv/sample_assets/template_cloud.svg priv/sample_assets/SOURCES.md
         priv/test_assets/gradient_mask.svg licenses/Unsplash.txt
         licenses/Tabler-icons-MIT.txt NOTICE THIRD_PARTY_ASSETS.md) ++

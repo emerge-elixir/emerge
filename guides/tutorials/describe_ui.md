@@ -105,6 +105,13 @@ anchored to a host element.
 element content. Use it to create placeholders, highlights or any
 UI tree as a decorative layer behind the host content.
 
+Front nearby overlays such as `in_front/1` have their own pointer hit-test
+scope and can block the underlying host even without event handlers. Use
+`behind_content/1` for decorative backgrounds and ordinary noninteractive children
+for control markers; reserve front nearby content for actual overlays. Mouse/drag
+coordinates are always relative to the listener element, not the nearby host.
+See [Handle input](handle_input.md) and `Emerge.UI.Event` for pointer interactions.
+
 Here is a dropdown attached to a toolbar button:
 
 ```elixir
