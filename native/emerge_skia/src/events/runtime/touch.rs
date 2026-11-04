@@ -104,7 +104,7 @@ impl DirectEventRuntime {
                 let event = pointer(ACTION_PRESS, x, y);
                 self.record_pointer_snapshot(&event);
                 self.cancel_inertial_scroll_for_input(&event);
-                self.dispatch_event(event, tx, log, DispatchMode::Normal);
+                self.dispatch_event_at(event, self.input_time, tx, log, DispatchMode::Normal);
             }
             return;
         }
@@ -159,7 +159,7 @@ impl DirectEventRuntime {
             };
             self.record_pointer_snapshot(&event);
             self.cancel_inertial_scroll_for_input(&event);
-            self.dispatch_event(event, tx, log, DispatchMode::Normal);
+            self.dispatch_event_at(event, self.input_time, tx, log, DispatchMode::Normal);
         }
     }
 

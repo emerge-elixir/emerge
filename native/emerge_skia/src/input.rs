@@ -390,6 +390,18 @@ impl Default for InputHandler {
 // ============================================================================
 
 impl InputEvent {
+    /// Gesture endpoints need their ingress time even when dispatch is delayed.
+    pub(crate) fn is_pointer_edge(&self) -> bool {
+        matches!(
+            self,
+            Self::CursorButton { .. }
+                | Self::Touch {
+                    phase: TouchPhase::Down | TouchPhase::Up | TouchPhase::Cancel,
+                    ..
+                }
+        )
+    }
+
     pub fn normalize_scroll(self) -> InputEvent {
         self.normalize_scroll_with_line_pixels(SCROLL_LINE_PIXELS)
     }
