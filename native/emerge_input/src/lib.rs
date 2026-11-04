@@ -18,6 +18,7 @@ use std::{
 #[repr(C)]
 pub struct Event {
     pub device: u64,
+    pub time_usec: u64,
     pub kind: u32,
     pub code: u32,
     pub state: u32,
@@ -136,6 +137,7 @@ mod tests {
     use super::*;
     unsafe extern "C" {
         fn emerge_input_test_open(path: *const libc::c_char) -> i32;
+        fn emerge_input_test_event(out: *mut Event);
         fn emerge_input_classify(
             ev: *const libc::c_char,
             abs: *const libc::c_char,
@@ -144,6 +146,19 @@ mod tests {
             props: *const libc::c_char,
         ) -> i32;
     }
+    #[test]
+    fn owned_touch_event_preserves_source_time_and_c_layout() {
+        let mut event = Event::default();
+        // SAFETY: C initializes the complete repr(C) event through this pointer.
+        unsafe { emerge_input_test_event(&mut event) };
+        assert_eq!(
+            (event.device, event.time_usec, event.kind, event.slot),
+            (17, 1_234_567_890_123, 8, -2)
+        );
+        assert_eq!((event.x, event.y), (12.5, 31.25));
+        assert_eq!(std::mem::offset_of!(Event, time_usec), 8);
+    }
+
     fn bits(codes: &[usize]) -> CString {
         let width = std::mem::size_of::<libc::c_ulong>() * 8;
         let n = codes.iter().max().map_or(1, |code| code / width + 1);

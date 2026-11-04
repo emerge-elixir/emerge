@@ -11,10 +11,22 @@
 
 struct emerge_input_event {
     uint64_t device;
+    uint64_t time_usec;
     uint32_t kind, code, state;
     int32_t slot;
     double x, y;
 };
+
+/* Exercise the owned-event ABI without opening a physical input device. */
+void emerge_input_test_event(struct emerge_input_event *out) {
+    memset(out, 0, sizeof(*out));
+    out->device = 17;
+    out->time_usec = UINT64_C(1234567890123);
+    out->kind = 8;
+    out->slot = -2;
+    out->x = 12.5;
+    out->y = 31.25;
+}
 
 static int restricted_open(const char *path, int flags, void *data) {
     (void)data;
@@ -110,6 +122,7 @@ int emerge_input_next(struct libinput *ctx, uint32_t width, uint32_t height, str
     case LIBINPUT_EVENT_TOUCH_UP:
     case LIBINPUT_EVENT_TOUCH_CANCEL:
         t = libinput_event_get_touch_event(event);
+        out->time_usec = libinput_event_touch_get_time_usec(t);
         out->kind = type == LIBINPUT_EVENT_TOUCH_DOWN ? 8 : type == LIBINPUT_EVENT_TOUCH_MOTION ? 9 : type == LIBINPUT_EVENT_TOUCH_UP ? 10 : 11;
         out->slot = libinput_event_touch_get_seat_slot(t);
         if (out->kind == 8 || out->kind == 9) {
