@@ -606,7 +606,7 @@ impl PresenterSession {
             Arc::clone(&instance),
             ExactDeviceRequirements {
                 required_extensions: &extensions,
-                require_timestamps: true,
+                require_timestamps: false,
                 selection_node: selection.selection,
             },
         )?;

@@ -173,7 +173,7 @@ fn run_with_master(
         Arc::clone(&instance),
         ExactDeviceRequirements {
             required_extensions: &REQUIRED_EXTENSIONS,
-            require_timestamps: true,
+            require_timestamps: false,
             selection_node: selection.selection,
         },
     )?;
