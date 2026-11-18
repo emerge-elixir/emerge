@@ -335,6 +335,57 @@ fn rejecting_a_strike_keeps_pending_inputs_and_layout() {
 }
 
 #[test]
+fn output_sink_failure_preserves_installed_pixels_hit_geometry_and_attachment() {
+    let mut r = Raster::default();
+    let rect = |rgb, click| block(&[px(1, 30.), px(2, 20.), color(rgb), vec![40, click]]);
+    r.tree
+        .upload(&upload(&[node(1, 4, rect([255, 0, 0], 1), &[])]))
+        .unwrap();
+    let fail = |_: &[u8], _: bool| Err("presentation refused".to_owned());
+    assert!(r.prepare(10., 10., 1.).unwrap().submit(fail).is_err());
+    assert!(r.pixels().is_empty() && r.target_at(5., 5.).is_none());
+    let old = r.draw(10., 10., 1.).unwrap().to_vec();
+    let hit = r.target_at(5., 5.).unwrap();
+    r.tree.patch(&set(1, 4, rect([0, 0, 255], 0))).unwrap();
+    // An unavailable sink may decline even before submission. Both that
+    // preparation and a failed submit leave the previous installation alone.
+    drop(r.prepare(20., 20., 2.).unwrap());
+    assert!(r.prepare(20., 20., 2.).unwrap().submit(fail).is_err());
+    assert_eq!(r.pixels(), old);
+    assert_eq!(r.target_at(5., 5.), Some(hit));
+    assert!(r.target_at(15., 5.).is_none());
+    r.tree.patch(&set(1, 4, rect([0, 255, 0], 1))).unwrap();
+    r.prepare(20., 20., 2.)
+        .unwrap()
+        .submit(|buf, reuse| {
+            assert!(!reuse);
+            assert_eq!(&buf[..4], &[0, 255, 0, 255]);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(r.target_at(15., 5.).unwrap().2, 7.5);
+    r.tree.patch(&set(1, 4, rect([0, 255, 0], 0))).unwrap();
+    assert!(
+        r.prepare(20., 20., 2.)
+            .unwrap()
+            .submit(|p, reuse| {
+                assert!(reuse);
+                fail(p, reuse)
+            })
+            .is_err()
+    );
+    assert_eq!(r.target_at(5., 5.).unwrap().0, hit.0);
+    r.prepare(20., 20., 2.)
+        .unwrap()
+        .submit(|_, reuse| {
+            assert!(reuse);
+            Ok(())
+        })
+        .unwrap();
+    assert!(r.target_at(5., 5.).is_none());
+}
+
+#[test]
 fn failed_draw_and_layout_query_never_install_pixels_or_hits() {
     let square = |rgb, top| {
         upload(&[

@@ -1,11 +1,11 @@
 //! Native tree boundary for the clean slice. No legacy producer or paint engine
 //! is linked into this library. See plans/README.md for the supported wire subset.
-mod headless;
 pub mod input;
 pub mod keys;
 #[path = "runtime/lifecycle.rs"]
 mod lifecycle;
 mod services;
+mod session;
 pub mod tree;
 use rustler::{Atom, Binary, Env, NewBinary, ResourceArc, Term};
 use std::sync::{Mutex, MutexGuard};

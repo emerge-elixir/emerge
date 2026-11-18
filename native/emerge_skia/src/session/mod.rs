@@ -1,8 +1,10 @@
-//! Binary CPU headless session. The session lock orders edits, successful draws
-//! and raw input. A wake carries no tree or hit data; a pending edit is not a draw.
+//! The session lock orders accepted edits, successful output and raw input.
+//! A wake carries no tree or hit data; a pending edit is not a draw.
 mod capture;
 mod dispatch;
 mod frame;
+#[cfg(all(target_os = "linux", feature = "wayland"))]
+mod wayland;
 use crate::{
     atoms, binary, input,
     lifecycle::{Lifecycle, Status},
@@ -40,6 +42,8 @@ struct Api {
 #[derive(rustler::NifMap)]
 struct Start {
     backend: String,
+    #[cfg(all(target_os = "linux", feature = "wayland"))]
+    title: String,
     rendering_api: Api,
     headless: Output,
     width: u32,
@@ -49,18 +53,62 @@ struct Start {
     tree_headroom_percent: u16,
 }
 struct Live {
+    #[cfg(all(target_os = "linux", feature = "wayland"))]
+    toplevel: Option<wayland::Toplevel>,
     raster: Raster,
     input: Dispatcher,
     route_target: Option<LocalPid>,
     log: Option<LocalPid>,
-    output: LocalPid,
-    message: String,
-    channels: Channels,
     width: u32,
     height: u32,
     request: bool,
     last: Option<Instant>,
     interval: Option<Duration>,
+}
+impl Live {
+    fn title(&self, _title: String) -> Result<(), String> {
+        #[cfg(all(target_os = "linux", feature = "wayland"))]
+        if let Some(top) = &self.toplevel {
+            top.set_title(_title);
+            return Ok(());
+        }
+        Err("invalid headless control".into())
+    }
+    fn present(
+        &mut self,
+        env: &mut OwnedEnv,
+        size: (u32, u32),
+        scale: f32,
+        backend: &'static str,
+        submit: impl FnOnce(&mut OwnedEnv, &[u8], bool) -> Result<(), String>,
+    ) -> Result<bool, String> {
+        self.request = false;
+        let prepared = match self.raster.prepare(size.0 as f32, size.1 as f32, scale) {
+            Ok(prepared) => prepared,
+            Err(why) => {
+                self.log_frame_error(env, backend, why);
+                return Ok(false);
+            }
+        };
+        prepared.submit(|pixels, reuse| submit(env, pixels, reuse))?;
+        (self.width, self.height) = size;
+        self.input.after_draw(&self.raster);
+        if let Some(target) = self.route_target.take() {
+            let _ = env.send_and_clear(&target, |_| emerge_skia_install_routes());
+        }
+        self.last = Some(Instant::now());
+        Ok(true)
+    }
+    fn log_frame_error(&self, env: &mut OwnedEnv, backend: &'static str, why: String) {
+        if let Some(log) = self.log {
+            let _ = env.send_and_clear(&log, |_| (emerge_skia_log(), error(), backend, why));
+        }
+    }
+}
+struct BinarySink {
+    output: LocalPid,
+    message: String,
+    channels: Channels,
 }
 struct Owner {
     lifecycle: Lifecycle,
@@ -68,9 +116,25 @@ struct Owner {
     revision: AtomicU64,
     api: String,
 }
+enum Wake {
+    Binary(Sender<()>),
+    #[cfg(all(target_os = "linux", feature = "wayland"))]
+    Window(wayland::Ping),
+}
+impl Wake {
+    fn notify(&self) {
+        match self {
+            Self::Binary(tx) => {
+                let _ = tx.try_send(());
+            }
+            #[cfg(all(target_os = "linux", feature = "wayland"))]
+            Self::Window(w) => w.ping(),
+        }
+    }
+}
 struct Session {
     owner: Arc<Owner>,
-    wake: Sender<()>,
+    wake: Wake,
 }
 impl Session {
     fn live<T>(&self, f: impl FnOnce(&mut Live) -> Result<T, String>) -> Result<T, String> {
@@ -85,7 +149,7 @@ impl Session {
     }
     fn request_stop(&self) {
         if self.owner.lifecycle.begin_cleanup() {
-            let _ = self.wake.try_send(());
+            self.wake.notify();
         }
     }
     fn stop(&self, ms: u32) -> Result<(), String> {
@@ -111,7 +175,7 @@ impl Session {
             live.request = true;
             Ok(())
         })?;
-        let _ = self.wake.try_send(());
+        self.wake.notify();
         Ok(())
     }
 }
@@ -132,7 +196,7 @@ fn interval(fps: Option<u32>) -> Result<Option<Duration>, String> {
         _ => Ok(fps.map(|value| Duration::from_secs_f64(1. / f64::from(value)))),
     }
 }
-fn run(owner: &Owner, rx: Receiver<()>) -> Result<(), String> {
+fn run_binary(owner: &Owner, rx: Receiver<()>, sink: BinarySink) -> Result<(), String> {
     let mut env = OwnedEnv::new();
     loop {
         let deadline = {
@@ -147,36 +211,14 @@ fn run(owner: &Owner, rx: Receiver<()>) -> Result<(), String> {
             } else if deadline.is_some_and(|d| d > Instant::now()) {
                 deadline
             } else {
-                live.request = false;
-                let Live {
-                    raster,
-                    width,
-                    height,
-                    output,
-                    message,
-                    channels,
-                    ..
-                } = live;
-                match raster.draw(*width as f32, *height as f32, 1.) {
-                    Ok(pixels) => {
-                        env.send_and_clear(output, |e| {
-                            channels.message(e, message, *width, *height, pixels)
-                        })
-                        .map_err(|_| "headless output target is gone")?;
-                        live.input.after_draw(raster);
-                        if let Some(target) = live.route_target.take() {
-                            let _ = env.send_and_clear(&target, |_| emerge_skia_install_routes());
-                        }
-                        live.last = Some(Instant::now());
-                    }
-                    Err(why) => {
-                        if let Some(log) = live.log {
-                            let _ = env.send_and_clear(&log, |_| {
-                                (emerge_skia_log(), error(), "headless", why)
-                            });
-                        }
-                    }
-                }
+                let size = (live.width, live.height);
+                live.present(&mut env, size, 1., "headless", |env, pixels, _| {
+                    env.send_and_clear(&sink.output, |e| {
+                        sink.channels
+                            .message(e, &sink.message, size.0, size.1, pixels)
+                    })
+                    .map_err(|_| "headless output target is gone".to_string())
+                })?;
                 None
             }
         };
@@ -192,38 +234,41 @@ fn run(owner: &Owner, rx: Receiver<()>) -> Result<(), String> {
         }
     }
 }
+// The layout/raster boundary uses f32 device extents. Never advertise a
+// buffer whose integer stride or height differs after that conversion.
+fn valid_size((w, h): (u32, u32)) -> bool {
+    w != 0
+        && h != 0
+        && u64::from(w) * u64::from(h) <= 64 * 1024 * 1024
+        && w as f32 as u32 == w
+        && h as f32 as u32 == h
+}
 fn start(env: Env, opts: Start) -> Result<ResourceArc<Session>, String> {
-    if opts.backend != "headless"
-        || opts.headless.mode != "binary"
-        || !matches!(opts.rendering_api.kind.as_str(), "auto" | "raster")
-        || !matches!(opts.rendering_api.raster_present.as_str(), "auto" | "cpu")
-    {
-        return Err("only binary headless raster is supported in this build".into());
-    }
     if opts.tree_headroom_percent > 1000 {
         return Err("tree_headroom_percent exceeds 1000".into());
     }
-    if opts.headless.dither {
-        return Err("dithered output is not in the first slice".into());
+    if !valid_size((opts.width, opts.height)) {
+        return Err("invalid raster output size".into());
     }
-    if opts.width == 0
-        || opts.height == 0
-        || u64::from(opts.width) * u64::from(opts.height) > 64 * 1024 * 1024
-    {
-        return Err("invalid headless output size".into());
-    }
+    let driver = Driver::select(&opts)?;
+    // Interrupt a compositor that accepts a connection but never answers the
+    // registry roundtrip. A startup deadline must not strand a worker thread.
+    #[cfg(all(target_os = "linux", feature = "wayland"))]
+    let interrupt = match &driver {
+        Driver::Wayland { conn, .. } => Some(wayland::startup_socket(conn)?),
+        _ => None,
+    };
     let owner = Arc::new(Owner {
         lifecycle: Lifecycle::default(),
         revision: AtomicU64::new(0),
         api: opts.rendering_api.kind,
         live: Mutex::new(Some(Live {
+            #[cfg(all(target_os = "linux", feature = "wayland"))]
+            toplevel: None,
             raster: Raster::with_tree(Tree::with_headroom(opts.tree_headroom_percent)),
             input: Dispatcher::default(),
             route_target: None,
             log: Some(env.pid()),
-            output: opts.headless.target.ok_or("missing headless target")?,
-            message: opts.headless.frame_message,
-            channels: Channels::parse(&opts.headless.pixel_format)?,
             width: opts.width,
             height: opts.height,
             request: false,
@@ -231,31 +276,95 @@ fn start(env: Env, opts: Start) -> Result<ResourceArc<Session>, String> {
             interval: interval(opts.target_fps)?,
         })),
     });
-    let (wake, rx) = bounded(1);
-    let session = ResourceArc::new(Session {
-        owner: owner.clone(),
-        wake,
-    });
+    let (ready, rx) = bounded(1);
+    let worker = owner.clone();
+    std::thread::Builder::new()
+        .name(format!("emerge-{}", opts.backend))
+        .spawn(move || {
+            let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                driver.run(&worker, &ready)
+            }))
+            .unwrap_or_else(|_| Err("renderer worker panicked".into()));
+            if let Err(e) = run {
+                let _ = ready.try_send(Err(e.clone()));
+                worker.lifecycle.fail(e);
+            }
+            worker.lifecycle.request_stop();
+            worker.live.lock().unwrap_or_else(|p| p.into_inner()).take();
+            worker.lifecycle.complete(Ok(()));
+        })
+        .map_err(|e| e.to_string())?;
+    let wake = rx.recv_timeout(Duration::from_secs(5)).map_err(|_| {
+        owner.lifecycle.request_stop();
+        #[cfg(all(target_os = "linux", feature = "wayland"))]
+        if let Some(socket) = interrupt {
+            let _ = socket.shutdown(std::net::Shutdown::Both);
+        }
+        "renderer startup did not complete"
+    })??;
+    let session = ResourceArc::new(Session { owner, wake });
     if let Some(pid) = opts.owner
         && session.monitor(Some(env), &pid).is_none()
     {
         return Err("renderer owner is not alive".into());
     }
-    std::thread::Builder::new()
-        .name("emerge-headless".into())
-        .spawn(move || {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&owner, rx)));
-            match result {
-                Ok(Err(e)) => owner.lifecycle.fail(e),
-                Err(_) => owner.lifecycle.fail("headless renderer panicked"),
-                Ok(Ok(())) => (),
-            }
-            owner.lifecycle.request_stop();
-            owner.live.lock().unwrap_or_else(|p| p.into_inner()).take();
-            owner.lifecycle.complete(Ok(()));
-        })
-        .map_err(|e| e.to_string())?;
     Ok(session)
+}
+type Ready = Sender<Result<Wake, String>>;
+enum Driver {
+    Binary(BinarySink),
+    #[cfg(all(target_os = "linux", feature = "wayland"))]
+    Wayland {
+        conn: wayland_client::Connection,
+        title: String,
+        size: (u32, u32),
+    },
+}
+impl Driver {
+    fn select(s: &Start) -> Result<Self, String> {
+        if !matches!(s.rendering_api.raster_present.as_str(), "cpu" | "auto") {
+            return Err("GPU presentation is not supported in this build".into());
+        }
+        match s.backend.as_str() {
+            "headless"
+                if s.headless.mode == "binary"
+                    && matches!(s.rendering_api.kind.as_str(), "auto" | "raster") =>
+            {
+                if s.headless.dither {
+                    return Err("dithered output is not in the first slice".into());
+                }
+                Ok(Self::Binary(BinarySink {
+                    output: s.headless.target.ok_or("missing headless target")?,
+                    message: s.headless.frame_message.clone(),
+                    channels: Channels::parse(&s.headless.pixel_format)?,
+                }))
+            }
+            #[cfg(all(target_os = "linux", feature = "wayland"))]
+            "wayland" if s.rendering_api.kind == "raster" => Ok(Self::Wayland {
+                conn: wayland_client::Connection::connect_to_env()
+                    .map_err(|e| format!("Wayland: {e}"))?,
+                title: s.title.clone(),
+                size: (s.width, s.height),
+            }),
+            "wayland" => Err(
+                "Wayland requires the wayland feature and an explicit CPU raster renderer".into(),
+            ),
+            _ => Err("unsupported output: expected binary headless raster".into()),
+        }
+    }
+    fn run(self, owner: &Arc<Owner>, ready: &Ready) -> Result<(), String> {
+        match self {
+            Self::Binary(sink) => {
+                let (tx, rx) = bounded(1);
+                ready
+                    .send(Ok(Wake::Binary(tx)))
+                    .map_err(|_| "startup cancelled")?;
+                run_binary(owner, rx, sink)
+            }
+            #[cfg(all(target_os = "linux", feature = "wayland"))]
+            Self::Wayland { conn, title, size } => wayland::run(owner, ready, conn, title, size),
+        }
+    }
 }
 #[rustler::nif(schedule = "DirtyIo")]
 fn start_opts(env: Env, opts: Start) -> NifResult<ResourceArc<Session>> {
@@ -284,6 +393,12 @@ fn renderer_patch(r: ResourceArc<Session>, submission: Term) -> NifResult<Atom> 
 }
 #[rustler::nif(schedule = "DirtyCpu")]
 fn send_input(env: Env, r: ResourceArc<Session>, raw: Term) -> NifResult<Atom> {
+    #[cfg(all(target_os = "linux", feature = "wayland"))]
+    if !matches!(r.wake, Wake::Binary(_)) {
+        return submitted(Err(
+            "send_input is only available for binary headless output".into(),
+        ));
+    }
     let event = dispatch::decode(raw)
         .map_err(|_| rustler::Error::Term(Box::new("invalid or unsupported raw input")))?;
     submitted(r.live(|live| {
@@ -351,7 +466,7 @@ fn stop_timeout(r: ResourceArc<Session>, ms: u32) -> NifResult<Atom> {
 fn set_frame_rate(r: ResourceArc<Session>, fps: Option<u32>) -> NifResult<Atom> {
     submitted(r.live(|s| {
         s.interval = interval(fps)?;
-        let _ = r.wake.try_send(());
+        r.wake.notify();
         Ok(())
     }))
 }
@@ -364,17 +479,21 @@ struct Control {
 #[rustler::nif(schedule = "DirtyIo")]
 fn configure_nif(env: Env, r: ResourceArc<Session>, config: Control) -> Result<(u64, u64), String> {
     r.live(|s| {
-        if config.title.is_some() || config.input_mask > input::INPUT_MASK_ALL {
-            return Err("invalid headless control".into());
+        if config.input_mask > input::INPUT_MASK_ALL {
+            return Err("invalid input mask".into());
         }
-        s.interval = interval(config.target_fps)?;
+        let limit = interval(config.target_fps)?;
+        if let Some(title) = config.title {
+            s.title(title)?;
+        }
+        s.interval = limit;
         s.input.observer.set_mask(config.input_mask);
         let token = (
             r.owner.lifecycle.id,
             r.owner.revision.fetch_add(1, Ordering::AcqRel) + 1,
         );
         let _ = env.send(&env.pid(), (emerge_skia_config(), token, atoms::ok()));
-        let _ = r.wake.try_send(());
+        r.wake.notify();
         Ok(token)
     })
 }
@@ -423,7 +542,12 @@ struct RendererInfo {
 #[rustler::nif]
 fn renderer_info(r: ResourceArc<Session>) -> Result<RendererInfo, String> {
     Ok(RendererInfo {
-        backend: "headless".into(),
+        backend: match r.wake {
+            Wake::Binary(_) => "headless",
+            #[cfg(all(target_os = "linux", feature = "wayland"))]
+            Wake::Window(_) => "wayland",
+        }
+        .into(),
         rendering_api: RenderingApi {
             requested: r.owner.api.clone(),
             selected: "raster".into(),

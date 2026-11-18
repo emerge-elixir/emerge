@@ -22,7 +22,7 @@ impl Capture<'_> {
         }
         let pixels = live.raster.pixels();
         if pixels.is_empty() {
-            return Err("no presented frame".into());
+            return Err("no presented frame is available yet".into());
         }
         let (x, y, w, h) = match (
             self.region_x,

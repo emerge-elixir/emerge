@@ -341,22 +341,53 @@ impl Raster {
         self.pixels
     }
     pub fn draw(&mut self, w: f32, h: f32, scale: f32) -> Result<&[u8], String> {
+        self.prepare(w, h, scale)?.submit(|_, _| Ok(()))?;
+        Ok(&self.pixels)
+    }
+    pub(crate) fn prepare(&mut self, w: f32, h: f32, scale: f32) -> Result<Prepared<'_>, String> {
         self.tree.refresh(w, h, scale)?;
         let v = self.tree.layers.viewport;
         let output = &mut self.tree.output;
-        if self.viewport != v
+        let redraw = self.viewport != v
             || self.pixels.is_empty()
-            || (output.dirty[0] && output.draw[0] != output.draw[1])
-        {
-            self.pixels = rasterize(v, output.drawing())?;
+            || (output.dirty[0] && output.draw[0] != output.draw[1]);
+        let next = redraw.then(|| rasterize(v, output.drawing())).transpose()?;
+        Ok(Prepared {
+            raster: self,
+            viewport: v,
+            next,
+        })
+    }
+}
+/// Borrows the session's only raster. Dropping a preparation or failing its
+/// sink leaves pixels, viewport and hit attachments at their last installation.
+/// `reuse` describes actual pixels, not whether this sink has submitted them.
+#[must_use]
+pub(crate) struct Prepared<'a> {
+    raster: &'a mut Raster,
+    viewport: Rect,
+    next: Option<Vec<u8>>,
+}
+impl Prepared<'_> {
+    pub(crate) fn submit(
+        self,
+        sink: impl FnOnce(&[u8], bool) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let r = self.raster;
+        sink(
+            self.next.as_deref().unwrap_or(&r.pixels),
+            self.next.is_none(),
+        )?;
+        if let Some(next) = self.next {
+            r.pixels = next;
             #[cfg(test)]
             {
-                self.draws += 1;
+                r.draws += 1;
             }
         }
-        self.viewport = v;
-        output.install();
-        Ok(&self.pixels)
+        r.viewport = self.viewport;
+        r.tree.output.install();
+        Ok(())
     }
 }
 fn rasterize(viewport: Rect, draw: &Drawing) -> Result<Vec<u8>, String> {
