@@ -352,12 +352,23 @@ impl Layers {
     }
     fn context(&mut self, e: &Elements, k: Key) {
         let ctx = e.slots[k].admitted;
-        let scale_changed = self.context.get(k).is_none_or(|p| p.scale != ctx.scale);
+        let old_scale = self.context.get(k).map(|p| p.scale);
+        let scale_changed = old_scale != Some(ctx.scale);
         if changed(&mut self.context, k, ctx) {
             if e.slots[k].shape.uses_glyphs() || scale_changed {
                 self.enqueue(Measure, k, e);
             }
             if scale_changed {
+                // The parent's split reads the bound at the child's scale,
+                // even if the child's intrinsic box remains exactly the same.
+                if let Some(old) = old_scale {
+                    let moved = |l: Length| {
+                        l.bound_px()
+                            .is_some_and(|n| pixels(n, old) != pixels(n, ctx.scale))
+                    };
+                    let b = e.attrs[k].sizing;
+                    self.invalidate_split(e, k, moved(b.width), moved(b.height));
+                }
                 for p in [Flow, Reflow, PaintContext] {
                     self.enqueue(p, k, e);
                 }
@@ -394,8 +405,8 @@ impl Layers {
             );
             let [t, r, d, l] = b.padding.map(|v| pixels(v, c.scale));
             let m = Size {
-                w: b.width.intrinsic(content.w + (l + r), c.scale),
-                h: b.height.intrinsic(content.h + (t + d), c.scale),
+                w: b.width.resolve(content.w + (l + r), || c.scale),
+                h: b.height.resolve(content.h + (t + d), || c.scale),
             };
             if let Some((slot, _)) = memo {
                 self.intrinsic.store(
@@ -434,16 +445,16 @@ impl Layers {
     fn flow(&mut self, e: &Elements, k: Key) {
         let b = e.attrs[k].sizing;
         let shape = e.slots[k].shape;
+        let scale = self.context[k].scale;
         let outer = if shape.uses_offer(e, k) {
             if e.slots[k].parent.is_some() {
                 self.offers[k]
             } else {
-                self.viewport.width
+                b.width.resolve(self.viewport.width, || scale)
             }
         } else {
             self.measure[k].w
         };
-        let scale = self.context[k].scale;
         let [_, r, _, l] = b.padding.map(|v| pixels(v, scale));
         let inner = (outer - (r + l)).max(0.);
         let old = self.width.insert(
@@ -512,6 +523,7 @@ impl Layers {
     }
     fn place(&mut self, e: &Elements, k: Key) {
         let s = self.fit[k];
+        let scale = self.context[k].scale;
         let (x, y, height) = if let Some(p) = e.slots[k].parent {
             let base = self.frames[p];
             let edge = self.placement[k];
@@ -521,8 +533,9 @@ impl Layers {
                 edge.height.unwrap_or(s.h),
             )
         } else {
-            let h = if e.attrs[k].sizing.height.weight().is_some() {
-                self.viewport.height
+            let policy = e.attrs[k].sizing.height;
+            let h = if policy.weight().is_some() {
+                policy.resolve(self.viewport.height, || scale)
             } else {
                 s.h
             };
@@ -541,7 +554,6 @@ impl Layers {
         ) {
             self.enqueue(PaintContext, k, e);
         }
-        let scale = self.context[k].scale;
         e.slots[k].shape.place_children(
             e,
             k,

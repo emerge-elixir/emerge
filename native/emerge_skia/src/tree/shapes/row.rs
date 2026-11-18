@@ -29,10 +29,11 @@ impl LayoutBehaviour for Row {
             children,
             |c| cx.policy_of(c),
             |c| cx.measured_width(c),
+            |c| node.elements.slots[c].admitted.scale,
         );
         for &c in children {
             let w = split
-                .and_then(|s| s.offer(cx.policy_of(c)))
+                .and_then(|s| s.offer(cx.policy_of(c), || node.elements.slots[c].admitted.scale))
                 .unwrap_or_else(|| cx.measured_width(c));
             cx.offer(c, w);
         }

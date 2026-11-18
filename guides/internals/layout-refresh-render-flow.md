@@ -48,6 +48,11 @@ A Row divides spare width, and a Column divides spare height, in proportion
 to the children's weights. `fill()` and `fill(1)` both take one share. A
 weight-only edit invalidates the distributing parent, not the child's
 intrinsic measurement. An unchanged offer stops propagation to that child.
+A capped or floored child consumes its actual outer size. The fill siblings
+that can still grow or shrink divide the remainder by weight. In a 120px Row,
+`min(px(20), fill())` and `fill()` take **20px and 100px**; in a 30px Row they
+take **15px each**. All caps can leave unused space, and unavoidable floors
+can overflow. Neither case changes the host clip.
 
 Wayland uses the preferred fractional scale with a logical viewport destination
 when both protocols are available, or integer buffer scaling otherwise. Layout

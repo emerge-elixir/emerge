@@ -36,30 +36,65 @@ enum Length {
     Px(f64),
     Fill,
     Weighted(f64),
+    Capped {
+        px: f64,
+        weight: f64,
+    },
+    Floored {
+        px: f64,
+        weight: f64,
+    },
 }
 impl Length {
     fn weight(self) -> Option<f64> {
         match self {
             Self::Fill => Some(1.),
-            Self::Weighted(n) => Some(n),
+            Self::Weighted(w)
+            | Self::Capped { weight: w, .. }
+            | Self::Floored { weight: w, .. } => Some(w),
             _ => None,
         }
     }
+    // The splitter reads both leaves, but not operand order or the spelling of one share.
+    fn split_policy(self) -> Option<Self> {
+        match self {
+            Self::Weighted(1.) => Some(Self::Fill),
+            policy => policy.weight().map(|_| policy),
+        }
+    }
     fn without_weight(self) -> Self {
-        if matches!(self, Self::Weighted(_)) {
-            Self::Fill
+        match self {
+            Self::Weighted(_) => Self::Fill,
+            Self::Capped { px, .. } => Self::Capped { px, weight: 1. },
+            Self::Floored { px, .. } => Self::Floored { px, weight: 1. },
+            other => other,
+        }
+    }
+    fn bound_px(self) -> Option<f64> {
+        match self {
+            Self::Capped { px, .. } | Self::Floored { px, .. } => Some(px),
+            _ => None,
+        }
+    }
+    fn authored_px(self) -> Option<f64> {
+        if let Self::Px(px) = self {
+            Some(px)
         } else {
-            self
+            self.bound_px()
         }
     }
     fn definite(self) -> bool {
-        matches!(self, Self::Px(_) | Self::Fill | Self::Weighted(_))
+        !matches!(self, Self::Auto | Self::Content)
     }
-    fn intrinsic(self, demand: f32, scale: f32) -> f32 {
-        if let Self::Px(px) = self {
-            scale::pixels(px, scale)
-        } else {
-            demand
+    // The basis is already an outer extent in device pixels: intrinsic, a
+    // parent's proportional share, or the viewport for a fill root. Only a
+    // pixel operand needs to look up the declaring site's scale.
+    fn resolve(self, basis: f32, scale: impl FnOnce() -> f32) -> f32 {
+        match self {
+            Self::Px(px) => scale::pixels(px, scale()),
+            Self::Capped { px, .. } => basis.min(scale::pixels(px, scale())),
+            Self::Floored { px, .. } => basis.max(scale::pixels(px, scale())),
+            _ => basis,
         }
     }
 }

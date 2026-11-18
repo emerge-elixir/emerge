@@ -52,7 +52,31 @@ impl<'a> Reader<'a> {
         self.take(n * 8)
     }
     fn length(&mut self) -> Result<Length> {
-        match self.byte()? {
+        let tag = self.byte()?;
+        if !matches!(tag, 4 | 5) {
+            return self.simple_length(tag);
+        }
+        // This slice admits one px leaf and one fill leaf. Never recurse on
+        // untrusted operand tags. Keep the original bytes for tree encoding.
+        let mut operand = || {
+            let tag = self.byte()?;
+            self.simple_length(tag)
+        };
+        let (px, fill) = match (operand()?, operand()?) {
+            (Length::Px(px), fill) | (fill, Length::Px(px)) => (px, fill),
+            _ => return Err(format!("unsupported length {tag}")),
+        };
+        let weight = fill
+            .weight()
+            .ok_or_else(|| format!("unsupported length {tag}"))?;
+        Ok(if tag == 4 {
+            Length::Capped { px, weight }
+        } else {
+            Length::Floored { px, weight }
+        })
+    }
+    fn simple_length(&mut self, tag: u8) -> Result<Length> {
+        match tag {
             0 => Ok(Length::Fill),
             1 => Ok(Length::Content),
             2 => Ok(Length::Px(self.number()?)),

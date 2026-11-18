@@ -53,10 +53,12 @@ impl LayoutBehaviour for Column {
             children,
             length,
             |c| cx.basis(c),
+            |c| node.elements.slots[c].admitted.scale,
         );
         let mut y = 0.;
         for &c in children {
-            let allotted = split.and_then(|s| s.offer(length(c)));
+            let allotted =
+                split.and_then(|s| s.offer(length(c), || node.elements.slots[c].admitted.scale));
             cx.place(c, [left, top + y], allotted);
             y += allotted.unwrap_or_else(|| cx.basis(c));
             y += gap;

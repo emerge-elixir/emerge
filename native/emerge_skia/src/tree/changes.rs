@@ -187,22 +187,27 @@ impl Layers {
         if shape.uses_glyphs() && &old_raw[old.text.clone()] != e.text(k).as_bytes() {
             self.text_changed(k, depth)
         }
-        // A parent's split reads effective weights even when all intrinsic
-        // sizes and fill memberships stay the same.
-        if old.sizing.height.weight() != next.sizing.height.weight()
-            && let Some(p) = e.slots[k].parent
-            && e.slots[p].shape.allots_height()
-            && e.attrs[p].sizing.height.definite()
-        {
+        self.invalidate_split(
+            e,
+            k,
+            old.sizing.width.split_policy() != next.sizing.width.split_policy(),
+            old.sizing.height.split_policy() != next.sizing.height.split_policy(),
+        );
+    }
+    // The splitter can change a sibling's offer or offset even if neither
+    // the host frame nor this child's intrinsic box changes.
+    pub(super) fn invalidate_split(&mut self, e: &Elements, k: Key, width: bool, height: bool) {
+        if !width && !height {
+            return;
+        }
+        let Some(p) = e.slots[k].parent else { return };
+        let shape = e.slots[p].shape;
+        let b = e.attrs[p].sizing;
+        if height && shape.allots_height() && b.height.definite() {
             self.invalidate(Pass::Place, p, e.depth(p));
         }
-        if old.sizing.width.weight() != next.sizing.width.weight()
-            && let Some(p) = e.slots[k].parent
-            && e.slots[p]
-                .shape
-                .reads_flow(e.attrs[p].sizing.width, FlowInput::ChildFill)
-        {
-            self.invalidate(Pass::Flow, p, e.depth(p))
+        if width && shape.reads_flow(b.width, FlowInput::ChildFill) {
+            self.invalidate(Pass::Flow, p, e.depth(p));
         }
     }
 }

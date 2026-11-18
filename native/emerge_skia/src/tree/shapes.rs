@@ -7,7 +7,9 @@ use super::{
     text::Run,
     *,
 };
+mod fill;
 mod payload;
+use fill::FillShares;
 use payload::{Children, NoData, OnlyChild, Payload, Utf8};
 
 trait ShapeMeta {
@@ -164,9 +166,8 @@ impl Shape {
     }
     pub fn uses_offer(self, e: &Elements, k: Key) -> bool {
         match e.attrs[k].sizing.width {
-            Length::Fill | Length::Weighted(_) => true,
             Length::Auto => with_shape!(self, |S| S::auto_fills(Mounted::new(e, k))),
-            _ => false,
+            length => length.weight().is_some(),
         }
     }
     pub fn reads_flow(self, width: Length, input: FlowInput) -> bool {
@@ -216,72 +217,6 @@ impl Shape {
             ctx,
             run
         ))
-    }
-}
-
-/// A scalar split, never a second child list. Ordinary weights follow the
-/// layout engine's f32 sum → divide → multiply (including its edge rounding).
-#[derive(Clone, Copy)]
-enum FillShares {
-    Device(f32),
-    Relative { largest: f64, pixels_per_unit: f64 },
-}
-impl FillShares {
-    fn split(
-        policy: Length,
-        inner: f32,
-        gap: f32,
-        children: &[Key],
-        length: impl Fn(Key) -> Length,
-        basis: impl Fn(Key) -> f32,
-    ) -> Option<Self> {
-        if !policy.definite() {
-            return None;
-        }
-        let (mut fixed, mut total, mut largest) = (0., 0., 0f64);
-        let mut device_weights = true;
-        for &c in children {
-            if let Some(w) = length(c).weight() {
-                largest = largest.max(w);
-                let w = w as f32;
-                total += w;
-                device_weights &= w.is_normal();
-            } else {
-                fixed += basis(c);
-            }
-        }
-        if largest == 0. {
-            return None;
-        }
-        let gaps = gap * children.len().saturating_sub(1) as f32;
-        let remaining = (inner - fixed - gaps).max(0.);
-        if device_weights && total.is_finite() {
-            let unit = remaining / total;
-            if (unit.is_normal() || remaining == 0.) && (unit * largest as f32).is_finite() {
-                return Some(Self::Device(unit));
-            }
-        }
-        // Do not turn a finite positive wire weight into 0 or infinity, or
-        // lose the split when only the sum or intermediate unit is out of range.
-        let units: f64 = children
-            .iter()
-            .filter_map(|&c| length(c).weight())
-            .map(|w| w / largest)
-            .sum();
-        Some(Self::Relative {
-            largest,
-            pixels_per_unit: f64::from(remaining) / units,
-        })
-    }
-    fn offer(self, length: Length) -> Option<f32> {
-        let w = length.weight()?;
-        Some(match self {
-            Self::Device(unit) => unit * w as f32,
-            Self::Relative {
-                largest,
-                pixels_per_unit,
-            } => (pixels_per_unit * (w / largest)) as f32,
-        })
     }
 }
 

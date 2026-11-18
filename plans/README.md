@@ -1,10 +1,9 @@
 # Retained tree: slice plan and results
 
 Current checklist: [Elements and attributes still to port](retained-ui-port-tracker.md).
+Keep [bugs found on main and verified fixes for the changelog](retained-changelog-candidates.md) alongside it.
 
-Next (planned): [Pixel caps and floors on Row widths and Column heights](bounded-main-axis-fill.md).
-
-Implemented: [Unweighted height fill in columns](column-height-fill.md), then [weighted Row widths and Column heights](weighted-fill.md), with allocation and submitted-frame checks.
+Implemented: [Unweighted height fill in columns](column-height-fill.md), [weighted Row widths and Column heights](weighted-fill.md), then [redistribution when those fills reach a pixel cap or floor](bounded-main-axis-fill.md#redistribution-correction), with allocation and submitted-frame checks.
 
 Implemented: [Subtree layout scale and fractional Wayland display scale](scale.md) · [parity, compositor checks and limits](scale-results.md).
 

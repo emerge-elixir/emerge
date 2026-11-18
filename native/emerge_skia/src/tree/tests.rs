@@ -1,5 +1,6 @@
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 mod allocations;
+mod bounded;
 mod column;
 mod identity;
 mod row;

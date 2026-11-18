@@ -100,6 +100,70 @@ fn weighted_splits(c: &Counter) {
     }
 }
 
+fn bounded_splits(c: &Counter) {
+    use bounded::bound;
+    for axis in [1, 2] {
+        let mut r = Raster::default();
+        let cap = |w| bound(axis, 4, 20., Some(w), false);
+        let edit = |l| set(3, 4, weighted::panel(axis, 3, l));
+        r.tree.upload(&weighted::pair(axis, cap(1.))).unwrap();
+        c.zero("first bounded split after reservation", || {
+            assert!(r.settle(180., 170., 1.).unwrap());
+        });
+        draw(&mut r);
+        let add = patch(
+            1,
+            1,
+            &[
+                edges(1, weighted::host(axis), &[2, 5, 3]),
+                node(
+                    5,
+                    4,
+                    block(&[bound(axis, 5, 10., None, true), number(78, 1.5)]),
+                    &[],
+                ),
+            ],
+        );
+        for p in [
+            edit(cap(3.)),
+            edit(bound(axis, 4, 30., Some(3.), true)),
+            edit(bound(axis, 5, 80., Some(f64::MAX), true)),
+            add,
+            patch(5, 0, &[]),
+            edit(cap(1.)),
+        ] {
+            c.zero(
+                "fitting bounded edit through prepared paint/hit inputs",
+                || {
+                    r.tree.patch(&p).unwrap();
+                    r.settle(180., 170., 1.).unwrap();
+                },
+            );
+            draw(&mut r);
+        }
+        let (x, y) = if axis == 1 { (65., 5.) } else { (5., 65.) };
+        let visible = r.pixels().to_vec();
+        r.tree
+            .patch(&edit(bound(axis, 4, 30., Some(3.), true)))
+            .unwrap();
+        let pending = r.tree.encode();
+        let over = set(4, 5, text(&"W".repeat(512)));
+        (c.fail_next_reserve)();
+        assert_eq!(
+            r.tree.patch(&over).unwrap_err(),
+            "tree workspace capacity exceeded"
+        );
+        assert_eq!(r.tree.encode(), pending);
+        assert_eq!(r.pixels(), visible);
+        assert_eq!(r.target_at(x, y).unwrap().1, 2);
+        c.zero("pending bounded split survives refused growth", || {
+            assert!(r.settle(180., 170., 1.).unwrap());
+        });
+        draw(&mut r);
+        assert_eq!(r.target_at(x, y).unwrap().1, 3);
+    }
+}
+
 #[test]
 fn fitting_wire_through_draw_inputs_uses_no_heap() {
     if std::env::var_os("EMERGE_TREE_HEAP_CHILD").is_none() {
@@ -375,6 +439,7 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
         assert!(stack.settle(180., 53., 1.).unwrap());
     });
     weighted_splits(&c);
+    bounded_splits(&c);
     // 100 slots + 80% = 180. The inserted subtree and edited parent's
     // first input coexist with the old glyph/command buffers and batch scratch.
     let ids: Vec<u64> = (2..=100).collect();

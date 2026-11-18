@@ -37,7 +37,7 @@ impl Intrinsic {
         (shape as u8, scale.to_bits()).hash(&mut h);
         for length in [style.width, style.height] {
             std::mem::discriminant(&length).hash(&mut h);
-            if let Length::Px(n) = length {
+            if let Some(n) = length.authored_px() {
                 n.to_bits().hash(&mut h);
             }
         }

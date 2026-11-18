@@ -7,10 +7,10 @@ pub(super) fn host(axis: u8) -> u8 {
 pub(super) fn weight(axis: u8, n: f64) -> Bytes {
     [axis, 3].into_iter().chain(n.to_be_bytes()).collect()
 }
-fn size(axis: u8, length: Bytes) -> Bytes {
+pub(super) fn size(axis: u8, length: Bytes) -> Bytes {
     block(&[length, px(3 - axis, 12.)])
 }
-fn panel(axis: u8, id: u64, length: Bytes) -> Bytes {
+pub(super) fn panel(axis: u8, id: u64, length: Bytes) -> Bytes {
     block(&[
         length,
         px(3 - axis, 12.),
@@ -29,7 +29,7 @@ pub(super) fn pair(axis: u8, second: Bytes) -> Bytes {
         node(4, 5, text("Pay"), &[]),
     ])
 }
-fn span(r: &Raster, axis: u8, id: u64) -> (f32, f32) {
+pub(super) fn span(r: &Raster, axis: u8, id: u64) -> (f32, f32) {
     let f = bounds(r, id);
     if axis == 1 {
         (f.x, f.width)

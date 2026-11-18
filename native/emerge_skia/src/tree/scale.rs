@@ -46,10 +46,7 @@ impl Inputs {
         let b = a.sizing;
         if ![b.width, b.height]
             .into_iter()
-            .filter_map(|v| match v {
-                Length::Px(x) => Some(x),
-                _ => None,
-            })
+            .filter_map(Length::authored_px)
             .chain(b.padding)
             .chain(b.spacing)
             .all(|v| pixels(v, scale).is_finite())
