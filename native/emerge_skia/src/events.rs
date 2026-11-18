@@ -574,6 +574,20 @@ impl TextInputState {
         layout.lines[next_line_index].nearest_cursor_for_x(target_x) as u32
     }
 
+    /// IME geometry is derived from the compiled input record, independently of
+    /// whether paint output was rebuilt, retained, or culled this frame.
+    pub(crate) fn ime_cursor_area(&self) -> Option<(f32, f32, f32, f32)> {
+        if !self.focused {
+            return None;
+        }
+        let text = self.displayed_text();
+        let cursor = self
+            .preedit_selection_char_range()
+            .map_or(self.cursor, |(_, end)| end)
+            .min(text_ops::text_char_len(&text));
+        self.rect_for_char_range_in_text(&text, cursor, cursor)
+    }
+
     pub fn appkit_selected_range_utf16(&self) -> (usize, usize) {
         let displayed_text = self.displayed_text();
 
@@ -1164,52 +1178,10 @@ pub struct FocusOnMountTarget {
     pub mounted_at_revision: u64,
 }
 
-#[derive(Clone, Debug)]
-/// Tree-to-event rebuild payload installed by the event actor.
-///
-/// The tree actor produces this during the fused render/rebuild walk. It
-/// contains the rebuilt base listener registry plus retained metadata that the
-/// event actor needs to reconcile transient runtime state:
-///
-/// - `base_registry` for normal listener matching
-/// - `text_inputs` for focused text editing reconciliation
-/// - `scrollbars` for active scrollbar drag reconciliation
-/// - `focused_id` for focus reconciliation
-/// - `focus_on_mount` for one-shot mount-time focus requests
-#[derive(Default)]
-pub struct RegistryRebuildPayload {
-    /// Latest event request fence covered by this successful tree output.
-    pub listener_barrier: Option<crate::actors::ListenerBarrier>,
-    /// Eligible mounts with current native focus-reveal geometry, including old
-    /// revisions whose one-shot request may still be waiting in a channel.
-    pub mount_focus_targets: Option<std::sync::Arc<HashMap<NodeId, FocusOnMountTarget>>>,
-    pub base_registry: registry_builder::Registry,
-    pub scrolls: HashMap<NodeId, scroll::ScrollNode>,
-    pub text_inputs: HashMap<NodeId, TextInputState>,
-    pub sliders: HashMap<NodeId, SliderState>,
-    pub scrollbars: HashMap<(NodeId, ScrollbarAxis), ScrollbarNode>,
-    pub focused_id: Option<NodeId>,
-    pub focus_on_mount: Option<FocusOnMountTarget>,
-}
-impl RegistryRebuildPayload {
-    pub(crate) fn carry_mount_focus(
-        &mut self,
-        pending: Option<FocusOnMountTarget>,
-        previous_focused: Option<NodeId>,
-    ) {
-        if self.focus_on_mount.is_none()
-            && (self.focused_id.is_none() || self.focused_id == previous_focused)
-        {
-            self.focus_on_mount = pending.and_then(|pending| {
-                self.mount_focus_targets
-                    .as_ref()?
-                    .get(&pending.element_id)
-                    .filter(|current| current.mounted_at_revision == pending.mounted_at_revision)
-                    .cloned()
-            });
-        }
-    }
-}
+mod registry_data;
+pub use registry_data::{CompiledRegistryData, FocusKey, RegistryRebuildPayload};
+#[cfg(test)]
+pub(crate) use registry_data::{RebuildFixture, rebuild_payload};
 
 fn text_input_state(
     element: &Element,
@@ -1346,7 +1318,7 @@ fn font_info_from_attrs(attrs: &crate::tree::attrs::Attrs) -> (String, u16, bool
         .font
         .as_ref()
         .map(|font| match font {
-            Font::Atom(name) | Font::String(name) => name.clone(),
+            Font::Atom(name) | Font::String(name) => name.to_string(),
         })
         .unwrap_or_else(|| "default".to_string());
 

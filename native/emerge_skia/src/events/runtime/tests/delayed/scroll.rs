@@ -300,7 +300,12 @@ fn scroll_thumb_drag_publishes_event_owned_progress_and_one_callback_per_motion(
     let assets = crate::assets::AssetRuntime::new();
     let _guard = assets.enter();
     let (mut engine, mut host, events) = start(Some(fraction(0.5)), true);
-    let thumb = host.driver.runtime.scrollbar_nodes[&(NodeId(1), ScrollbarAxis::Y)].thumb_rect;
+    let thumb = host
+        .driver
+        .runtime
+        .current_scrollbar_node(&(NodeId(1), ScrollbarAxis::Y))
+        .unwrap()
+        .thumb_rect;
     let (x, y) = (thumb.x + thumb.width / 2.0, thumb.y + thumb.height / 2.0);
     host.handle_input(super::pointer::button(ACTION_PRESS, x, y));
     settle(&mut engine, &mut host);

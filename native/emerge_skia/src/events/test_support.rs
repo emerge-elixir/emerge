@@ -105,7 +105,9 @@ impl AnimatedNearbyHitCase {
                 let elements: Vec<_> = tree.iter_nodes().cloned().collect();
                 registry_builder::registry_for_elements(&elements)
             }
-            SampledRegistrySource::RenderRebuild => self.rebuild_at(sample_ms, false).base_registry,
+            SampledRegistrySource::RenderRebuild => {
+                self.rebuild_at(sample_ms, false).base_registry.clone()
+            }
         }
     }
 

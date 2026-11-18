@@ -244,10 +244,9 @@ fn coalesced_mount_focus_survives_revision_changes_but_not_remount_or_removal() 
     let merged = coalesce_registry(Some(first), next);
     assert!(merged.focus_on_mount.is_some());
     let pending = merged.clone();
-    let mut previously_focused = merged.clone();
-    previously_focused.focused_id = Some(NodeId(2));
-    let mut lost_focus = merged.clone();
-    lost_focus.focused_id = None;
+    let previously_focused =
+        crate::events::rebuild_payload! { focused_id: Some(NodeId(2)), ..merged.clone() };
+    let mut lost_focus = crate::events::rebuild_payload! { focused_id: None, ..merged.clone() };
     lost_focus.focus_on_mount = None;
     assert!(
         coalesce_registry(Some(previously_focused), lost_focus)
@@ -255,9 +254,9 @@ fn coalesced_mount_focus_survives_revision_changes_but_not_remount_or_removal() 
             .is_some(),
         "removing an unrelated focused node must not lose the eligible pending mount"
     );
-    let mut explicitly_focused = merged.clone();
+    let mut explicitly_focused =
+        crate::events::rebuild_payload! { focused_id: Some(NodeId(2)), ..merged.clone() };
     explicitly_focused.focus_on_mount = None;
-    explicitly_focused.focused_id = Some(NodeId(2));
     assert!(
         coalesce_registry(Some(merged.clone()), explicitly_focused)
             .focus_on_mount

@@ -106,7 +106,7 @@ const HOST_TREE_BATCH_LIMIT: usize = 512;
 struct EventRuntimeDriver {
     runtime: DirectEventRuntime,
     awaiting_registry: Option<crate::actors::ListenerBarrier>,
-    pending_mount_focus: Option<(super::FocusOnMountTarget, Option<NodeId>)>,
+    pending_mount_focus: Option<(super::FocusKey, Option<NodeId>)>,
     tree_tx: Sender<TreeMsg>,
     outbox: VecDeque<TreeMsg>,
     log_render: bool,
@@ -1178,7 +1178,7 @@ struct DirectEventRuntime {
     text_commit_suppressions: Vec<TextCommitSuppression>,
     expected_text_echoes: HashMap<NodeId, VecDeque<ExpectedTextEcho>>,
     pending_slider_patches: HashMap<NodeId, VecDeque<PendingSliderPatch>>,
-    scrollbar_nodes: HashMap<(NodeId, ScrollbarAxis), ScrollbarNode>,
+    registry_data: Arc<super::CompiledRegistryData>,
     input_handler: InputHandler,
     input_target: Option<LocalPid>,
     host_event_sink: Option<Arc<dyn HostEventSink>>,
@@ -1227,7 +1227,8 @@ impl DirectEventRuntime {
         native_log: Arc<NativeLogRelay>,
         stats: Option<Arc<RendererStatsCollector>>,
     ) -> Self {
-        let base_registry = registry_builder::Registry::default();
+        let registry_data = Arc::new(super::CompiledRegistryData::default());
+        let base_registry = registry_data.base_registry.clone();
         let runtime_overlay = RuntimeOverlayState::default();
         let overlay_registry =
             registry_builder::build_runtime_overlay_registry(&base_registry, &runtime_overlay);
@@ -1246,7 +1247,7 @@ impl DirectEventRuntime {
             text_commit_suppressions: Vec::new(),
             expected_text_echoes: HashMap::new(),
             pending_slider_patches: HashMap::new(),
-            scrollbar_nodes: HashMap::new(),
+            registry_data,
             input_handler: InputHandler::new(),
             input_target: None,
             host_event_sink: None,
@@ -1485,7 +1486,7 @@ impl DirectEventRuntime {
         velocity: f32,
     ) -> bool {
         let key = scrollbar_key(element_id, axis);
-        let Some(node) = self.scrollbar_nodes.get(&key) else {
+        let Some(node) = self.current_scrollbar_node(&key) else {
             return false;
         };
 
@@ -1512,7 +1513,7 @@ impl DirectEventRuntime {
         axis: ScrollbarAxis,
         delta: f32,
     ) -> (f32, bool) {
-        let Some(node) = self.scrollbar_nodes.get(&scrollbar_key(element_id, axis)) else {
+        let Some(node) = self.current_scrollbar_node(&scrollbar_key(element_id, axis)) else {
             return (delta, false);
         };
 
@@ -1925,16 +1926,20 @@ impl DirectEventRuntime {
         log_render: bool,
     ) {
         let RegistryRebuildPayload {
-            listener_barrier: _,
-            mount_focus_targets: _,
+            compiled,
+            focus_on_mount,
+            ..
+        } = rebuild;
+        let super::CompiledRegistryData {
             base_registry,
             scrolls,
             text_inputs,
             sliders,
             scrollbars,
             focused_id,
-            focus_on_mount,
-        } = rebuild;
+            ..
+        } = compiled.as_ref();
+        let focused_id = *focused_id;
 
         let text_input_count = text_inputs.len();
         let slider_count = sliders.len();
@@ -1942,11 +1947,11 @@ impl DirectEventRuntime {
 
         self.prune_expired_expected_text_echoes();
         self.prune_expired_pending_slider_patches();
-        let previous_registry = std::mem::replace(&mut self.base_registry, base_registry);
-        self.scrollbar_nodes = scrollbars;
+        let previous_registry = std::mem::replace(&mut self.base_registry, base_registry.clone());
+        self.registry_data = Arc::clone(&compiled);
         let scroll_changed = self.reconcile_scrolls(scrolls, tree_tx, log_render);
 
-        self.reconcile_runtime_overlay(&previous_registry, &text_inputs, &sliders);
+        self.reconcile_runtime_overlay(&previous_registry, text_inputs, sliders);
         self.recompose_overlay_registry();
         if self.focused_id != focused_id {
             self.text_clicks.reset();
@@ -1960,7 +1965,7 @@ impl DirectEventRuntime {
         });
 
         let (mut changed_tree, accepted_tree_patch) = reconcile_text_input_states(
-            &text_inputs,
+            text_inputs,
             &mut self.text_states,
             &mut self.expected_text_echoes,
             &self.focused_id,
@@ -1973,14 +1978,14 @@ impl DirectEventRuntime {
             self.range_generation.invalidate();
         }
         changed_tree |= reconcile_slider_states(
-            &sliders,
+            sliders,
             &mut self.slider_states,
             &mut self.pending_slider_patches,
             tree_tx,
             log_render,
         );
 
-        if let Some(target) = focus_on_mount
+        if let Some(target) = compiled.focus_target(focus_on_mount)
             && target.mounted_at_revision > self.last_focus_on_mount_revision
         {
             self.last_focus_on_mount_revision = target.mounted_at_revision;
@@ -2811,14 +2816,12 @@ impl DirectEventRuntime {
             self.runtime_overlay.slider_drag = None;
         }
 
-        if let Some(ref mut tracker) = self.runtime_overlay.scrollbar {
-            let key = scrollbar_key(&tracker.element_id, tracker.axis);
-            if let Some(node) = self
-                .scrollbar_nodes
-                .get(&key)
-                .copied()
+        let current_scrollbar = self.runtime_overlay.scrollbar.as_ref().and_then(|tracker| {
+            self.current_scrollbar_node(&scrollbar_key(&tracker.element_id, tracker.axis))
                 .filter(|_| same_mount(&tracker.element_id))
-            {
+        });
+        if let Some(ref mut tracker) = self.runtime_overlay.scrollbar {
+            if let Some(node) = current_scrollbar {
                 tracker.track_start = node.track_start;
                 tracker.track_len = node.track_len;
                 tracker.thumb_len = node.thumb_len;
@@ -2834,7 +2837,8 @@ impl DirectEventRuntime {
         if self.inertial_scroll.as_ref().is_some_and(|inertia| {
             !same_mount(&inertia.element_id)
                 || !self
-                    .scrollbar_nodes
+                    .registry_data
+                    .scrollbars
                     .contains_key(&scrollbar_key(&inertia.element_id, inertia.axis))
         }) {
             self.inertial_scroll = None;
@@ -3670,7 +3674,7 @@ mod tests {
         state: TextInputState,
         focused_id: Option<NodeId>,
     ) -> RegistryRebuildPayload {
-        RegistryRebuildPayload {
+        crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -3853,7 +3857,7 @@ mod tests {
     }
 
     fn rebuild_with_focus(id: u8) -> RegistryRebuildPayload {
-        RegistryRebuildPayload {
+        crate::events::rebuild_payload! {
             focused_id: Some(NodeId::from_term_bytes(vec![id])),
             ..RegistryRebuildPayload::default()
         }
@@ -4171,7 +4175,7 @@ mod tests {
             ..Attrs::default()
         };
         let element = with_interaction(make_element(219, ElementKind::El, attrs));
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -4602,7 +4606,7 @@ mod tests {
         let input_id = NodeId::from_term_bytes(vec![1]);
         let descriptor = make_text_input_state("hello", 2, None, true);
         let base_registry = registry_builder::Registry::default();
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -4628,7 +4632,7 @@ mod tests {
     #[test]
     fn install_rebuild_applies_focus_on_mount_once_for_new_target() {
         let input_id = NodeId::from_term_bytes(vec![9]);
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             text_inputs: HashMap::from([(
                 input_id,
                 make_text_input_state("hello", 5, None, false),
@@ -4671,7 +4675,7 @@ mod tests {
     fn install_rebuild_focus_on_mount_steals_existing_focus() {
         let previous_id = NodeId::from_term_bytes(vec![10]);
         let next_id = NodeId::from_term_bytes(vec![11]);
-        let initial_rebuild = RegistryRebuildPayload {
+        let initial_rebuild = crate::events::rebuild_payload! {
             text_inputs: HashMap::from([(
                 previous_id,
                 make_text_input_state("prev", 4, None, true),
@@ -4679,7 +4683,7 @@ mod tests {
             focused_id: Some(previous_id),
             ..RegistryRebuildPayload::default()
         };
-        let mount_rebuild = RegistryRebuildPayload {
+        let mount_rebuild = crate::events::rebuild_payload! {
             text_inputs: HashMap::from([
                 (previous_id, make_text_input_state("prev", 4, None, true)),
                 (next_id, make_text_input_state("next", 0, None, false)),
@@ -4731,7 +4735,7 @@ mod tests {
     fn direct_runtime_dispatches_mouse_down_style_activation() {
         let attrs = mouse_down_style_attrs();
         let element = with_interaction(make_element(20, ElementKind::El, attrs));
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -4797,7 +4801,7 @@ mod tests {
             ..Attrs::default()
         };
         let element = with_interaction(make_element(23, ElementKind::El, attrs));
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -4882,7 +4886,7 @@ mod tests {
             ..Attrs::default()
         };
         let element = with_interaction(make_element(22, ElementKind::El, attrs));
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -4947,7 +4951,7 @@ mod tests {
             ..Attrs::default()
         };
         let element = with_interaction(make_element(21, ElementKind::El, attrs.clone()));
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -4987,7 +4991,7 @@ mod tests {
         active_attrs.mouse_down_active = Some(true);
         active_attrs.focused_active = Some(true);
         let active_element = with_interaction(make_element(21, ElementKind::El, active_attrs));
-        let active_rebuild = RegistryRebuildPayload {
+        let active_rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -5034,7 +5038,7 @@ mod tests {
         let second_attrs = on_focus_attrs();
         let second = with_interaction(make_element(31, ElementKind::El, second_attrs));
 
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -5083,7 +5087,7 @@ mod tests {
             ..Attrs::default()
         };
         let element = with_interaction(make_element(40, ElementKind::El, attrs));
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -5120,7 +5124,7 @@ mod tests {
             ..Attrs::default()
         };
         let element = with_interaction(make_element(44, ElementKind::El, attrs));
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -5192,7 +5196,7 @@ mod tests {
             ..Attrs::default()
         };
         let element = with_interaction(make_element(43, ElementKind::El, attrs));
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -5252,7 +5256,7 @@ mod tests {
             ..Attrs::default()
         };
         let element = with_interaction(make_element(89, ElementKind::El, attrs));
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -5316,7 +5320,7 @@ mod tests {
             ..Attrs::default()
         };
         let element = with_interaction(make_element(90, ElementKind::El, attrs));
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -5388,7 +5392,7 @@ mod tests {
                 content_height: 200.0,
             },
         );
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -5492,6 +5496,173 @@ mod tests {
         assert!(inertia.simulation.distance < -4_000.0);
     }
 
+    fn runtime_snapshot(kind: ElementKind, attrs: Attrs, focused: bool) -> RegistryRebuildPayload {
+        let id = NodeId(44);
+        let mut tree = ElementTree::new();
+        let mut root = Element::with_attrs(id, kind, vec![], attrs);
+        root.runtime.focused_active = focused;
+        root.runtime.text_input_focused = focused && kind.is_text_input_family();
+        tree.insert(root);
+        tree.set_root_id(id);
+        crate::tree::layout::layout_and_refresh_default(
+            &mut tree,
+            Constraint::new(100.0, 40.0),
+            1.0,
+        )
+        .event_rebuild
+    }
+
+    #[test]
+    fn shared_compilation_does_not_share_mutable_native_text_or_slider_sessions() {
+        let assets = crate::assets::AssetRuntime::new();
+        let _assets = assets.enter();
+        let id = NodeId(44);
+        let payload = runtime_snapshot(
+            ElementKind::TextInput,
+            Attrs {
+                width: Some(Length::Px(100.0)),
+                height: Some(Length::Px(40.0)),
+                content: Some("seed".into()),
+                ..Attrs::default()
+            },
+            true,
+        );
+        let mut host =
+            HostEventRuntime::new(false, SCROLL_LINE_PIXELS, false, noop_host_sink(), None);
+        host.install_rebuild(payload.clone());
+        assert!(host.handle_text_input_edit(TextInputEditRequest::Insert("X".into())));
+        assert_eq!(host.focused_text_state().unwrap().content, "seedX");
+        assert_eq!(payload.text_inputs[&id].content, "seed");
+        assert!(Arc::ptr_eq(
+            &host.driver.runtime.registry_data,
+            &payload.compiled
+        ));
+
+        let slider = runtime_snapshot(
+            ElementKind::Slider,
+            Attrs {
+                width: Some(Length::Px(100.0)),
+                height: Some(Length::Px(40.0)),
+                slider_value: Some(0.25),
+                slider_min: Some(0.0),
+                slider_max: Some(1.0),
+                on_change: Some(true),
+                ..Attrs::default()
+            },
+            false,
+        );
+        let mut slider_host =
+            HostEventRuntime::new(false, SCROLL_LINE_PIXELS, false, noop_host_sink(), None);
+        slider_host.install_rebuild(slider.clone());
+        slider_host.handle_input(InputEvent::CursorButton {
+            button: "left".into(),
+            action: ACTION_PRESS,
+            mods: 0,
+            x: 75.0,
+            y: 20.0,
+        });
+        assert!(slider_host.driver.runtime.slider_states[&id].value > 0.25);
+        assert_eq!(slider.sliders[&id].value, 0.25);
+        assert!(Arc::ptr_eq(
+            &slider_host.driver.runtime.registry_data,
+            &slider.compiled
+        ));
+    }
+
+    #[test]
+    fn native_wheel_projects_live_scrollbar_offsets_without_mutating_shared_metadata() {
+        let assets = crate::assets::AssetRuntime::new();
+        let _assets = assets.enter();
+        let root = NodeId(1);
+        let child = NodeId(2);
+        let mut tree = ElementTree::new();
+        tree.insert(Element::with_attrs(
+            root,
+            ElementKind::Column,
+            vec![],
+            Attrs {
+                width: Some(Length::Px(100.0)),
+                height: Some(Length::Px(100.0)),
+                scrollbar_y: Some(true),
+                on_scroll: Some(true),
+                ..Attrs::default()
+            },
+        ));
+        tree.insert(Element::with_attrs(
+            child,
+            ElementKind::El,
+            vec![],
+            Attrs {
+                width: Some(Length::Px(100.0)),
+                height: Some(Length::Px(300.0)),
+                ..Attrs::default()
+            },
+        ));
+        tree.set_root_id(root);
+        tree.set_children(&root, vec![child]).unwrap();
+        let payload = crate::tree::layout::layout_and_refresh_default(
+            &mut tree,
+            Constraint::new(100.0, 100.0),
+            1.0,
+        )
+        .event_rebuild;
+        let key = (root, ScrollbarAxis::Y);
+        let frozen = payload.scrollbars[&key].scroll_offset;
+        let mut host =
+            HostEventRuntime::new(false, SCROLL_LINE_PIXELS, false, noop_host_sink(), None);
+        host.install_rebuild(payload.clone());
+        host.handle_input(InputEvent::CursorScroll {
+            dx: 0.0,
+            dy: -20.0,
+            x: 10.0,
+            y: 10.0,
+        });
+        let live = host.driver.runtime.current_scrollbar_node(&key).unwrap();
+        assert!(live.scroll_offset > frozen);
+        assert_eq!(payload.scrollbars[&key].scroll_offset, frozen);
+        assert!(Arc::ptr_eq(
+            &host.driver.runtime.registry_data,
+            &payload.compiled
+        ));
+        let fence = host
+            .drain_tree_messages()
+            .into_iter()
+            .find_map(|message| match message {
+                TreeMsg::ListenerBarrier(fence) => Some(fence),
+                _ => None,
+            });
+        let mut repeat = payload.clone();
+        repeat.listener_barrier = fence;
+        host.install_rebuild(repeat);
+        assert_eq!(
+            host.driver
+                .runtime
+                .current_scrollbar_node(&key)
+                .unwrap()
+                .scroll_offset,
+            live.scroll_offset
+        );
+        assert_eq!(payload.scrollbars[&key].scroll_offset, frozen);
+        assert!(Arc::ptr_eq(
+            &host.driver.runtime.registry_data,
+            &payload.compiled
+        ));
+    }
+
+    fn insert_scrollbar_fixture(
+        runtime: &mut DirectEventRuntime,
+        key: (NodeId, ScrollbarAxis),
+        node: ScrollbarNode,
+    ) {
+        let mut fixture = crate::events::RebuildFixture::from(RegistryRebuildPayload {
+            compiled: Arc::clone(&runtime.registry_data),
+            listener_barrier: None,
+            focus_on_mount: runtime.registry_data.initial_mount_focus,
+        });
+        fixture.scrollbars.insert(key, node);
+        runtime.registry_data = fixture.finish().compiled;
+    }
+
     #[test]
     fn direct_runtime_present_timing_steps_inertia_with_adaptive_decay() {
         let element_id = NodeId::from_term_bytes(vec![212]);
@@ -5499,7 +5670,8 @@ mod tests {
         let mut runtime = DirectEventRuntime::new(false);
         let now = Instant::now();
 
-        runtime.scrollbar_nodes.insert(
+        insert_scrollbar_fixture(
+            &mut runtime,
             scrollbar_key(&element_id, ScrollbarAxis::X),
             ScrollbarNode {
                 axis: ScrollbarAxis::X,
@@ -5586,7 +5758,8 @@ mod tests {
             let mut runtime = DirectEventRuntime::new(false);
             let now = Instant::now();
 
-            runtime.scrollbar_nodes.insert(
+            insert_scrollbar_fixture(
+                &mut runtime,
                 scrollbar_key(&element_id, ScrollbarAxis::Y),
                 ScrollbarNode {
                     axis: ScrollbarAxis::Y,
@@ -5669,7 +5842,8 @@ mod tests {
             }),
         );
 
-        runtime.driver.runtime.scrollbar_nodes.insert(
+        insert_scrollbar_fixture(
+            &mut runtime.driver.runtime,
             scrollbar_key(&element_id, ScrollbarAxis::X),
             ScrollbarNode {
                 axis: ScrollbarAxis::X,
@@ -5742,7 +5916,8 @@ mod tests {
         let mut runtime = DirectEventRuntime::new(false);
         let now = Instant::now();
 
-        runtime.scrollbar_nodes.insert(
+        insert_scrollbar_fixture(
+            &mut runtime,
             scrollbar_key(&element_id, ScrollbarAxis::Y),
             ScrollbarNode {
                 axis: ScrollbarAxis::Y,
@@ -5879,7 +6054,7 @@ mod tests {
         };
         let child = with_interaction(make_element(74, ElementKind::El, child_attrs));
 
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -5941,7 +6116,7 @@ mod tests {
         };
         let child = with_interaction(make_element(76, ElementKind::El, child_attrs));
 
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -5988,7 +6163,7 @@ mod tests {
             ..Attrs::default()
         };
         let element = with_interaction(make_element(88, ElementKind::El, attrs));
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -6060,7 +6235,7 @@ mod tests {
         };
         let child = with_interaction(make_element(78, ElementKind::El, child_attrs));
 
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -6172,7 +6347,7 @@ mod tests {
             ..Attrs::default()
         };
         let element = with_interaction(make_element(41, ElementKind::El, attrs));
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -6237,7 +6412,7 @@ mod tests {
     fn direct_runtime_elixir_only_mouse_move_stays_fresh_without_rebuild() {
         let attrs = on_mouse_move_attrs();
         let element = with_interaction(make_element(42, ElementKind::El, attrs));
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -6273,7 +6448,7 @@ mod tests {
             ..Attrs::default()
         };
         let element = with_interaction(make_element(50, ElementKind::TextInput, attrs));
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -6367,7 +6542,7 @@ mod tests {
             ..Attrs::default()
         };
         let element = with_interaction(make_element(158, ElementKind::TextInput, attrs));
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -6438,7 +6613,7 @@ mod tests {
             .text_states
             .insert(input_id, make_text_input_state("abcd", 3, Some(0), true));
 
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -6615,7 +6790,7 @@ mod tests {
             ..Attrs::default()
         };
         let element = with_interaction(make_element(150, ElementKind::TextInput, attrs));
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -6694,7 +6869,7 @@ mod tests {
         let element = with_interaction(make_element(151, ElementKind::Multiline, attrs));
         let mut state = make_text_input_state("ab", 2, None, true);
         state.multiline = true;
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -6742,7 +6917,7 @@ mod tests {
         let mut state = make_text_input_state("ab", 2, None, true);
         state.multiline = true;
         let element_id = NodeId::from_term_bytes(vec![153]);
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -6809,7 +6984,7 @@ mod tests {
         let element = with_interaction(make_element(152, ElementKind::Multiline, attrs));
         let mut state = make_text_input_state("ab", 2, None, true);
         state.multiline = true;
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -6863,7 +7038,7 @@ mod tests {
             ..Attrs::default()
         };
         let element = with_interaction(make_element(154, ElementKind::TextInput, attrs));
-        let initial_rebuild = RegistryRebuildPayload {
+        let initial_rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -6874,7 +7049,7 @@ mod tests {
             focused_id: Some(input_id),
             focus_on_mount: None,
         };
-        let reset_patch_rebuild = RegistryRebuildPayload {
+        let reset_patch_rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -6901,7 +7076,7 @@ mod tests {
         cleared_attrs.text_input_cursor = Some(0);
         let cleared_element =
             with_interaction(make_element(154, ElementKind::TextInput, cleared_attrs));
-        let reset_applied_rebuild = RegistryRebuildPayload {
+        let reset_applied_rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -6991,7 +7166,7 @@ mod tests {
             40.0,
         );
 
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -7090,7 +7265,7 @@ mod tests {
             40.0,
         );
 
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -7179,7 +7354,7 @@ mod tests {
             40.0,
         );
 
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -7241,7 +7416,7 @@ mod tests {
                 if *element_id == NodeId::from_term_bytes(vec![82]) && content == "abx"
         )));
 
-        let repeat_rebuild = RegistryRebuildPayload {
+        let repeat_rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -7302,7 +7477,7 @@ mod tests {
             ..Attrs::default()
         };
         let element = with_interaction(make_element(51, ElementKind::TextInput, attrs));
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -7360,7 +7535,7 @@ mod tests {
         };
         let element = with_interaction(make_element(53, ElementKind::TextInput, attrs));
 
-        let rebuild_ab = RegistryRebuildPayload {
+        let rebuild_ab = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -7372,7 +7547,7 @@ mod tests {
             focus_on_mount: None,
         };
 
-        let rebuild_abc = RegistryRebuildPayload {
+        let rebuild_abc = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -7663,7 +7838,7 @@ mod tests {
     #[test]
     fn slider_tree_patch_matching_pending_value_preserves_runtime_value() {
         let slider_id = NodeId::from_term_bytes(vec![58]);
-        let rebuild_echo = RegistryRebuildPayload {
+        let rebuild_echo = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -7714,7 +7889,7 @@ mod tests {
                 if *element_id == slider_id && (*value - 60.0).abs() < f64::EPSILON
         )));
 
-        let corrected = RegistryRebuildPayload {
+        let corrected = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -7743,7 +7918,7 @@ mod tests {
     #[test]
     fn slider_tree_patch_matching_current_value_does_not_echo_back_to_tree() {
         let slider_id = NodeId::from_term_bytes(vec![60]);
-        let rebuild_echo = RegistryRebuildPayload {
+        let rebuild_echo = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -7794,7 +7969,7 @@ mod tests {
     #[test]
     fn slider_tree_patch_non_pending_value_is_accepted() {
         let slider_id = NodeId::from_term_bytes(vec![59]);
-        let rebuild_remote = RegistryRebuildPayload {
+        let rebuild_remote = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -7850,7 +8025,7 @@ mod tests {
     #[test]
     fn unfocused_rebuild_preserves_expected_text_echoes() {
         let input_id = NodeId::from_term_bytes(vec![58]);
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -7896,7 +8071,7 @@ mod tests {
             ..Attrs::default()
         };
         let element = with_interaction(make_element(54, ElementKind::TextInput, attrs));
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -7949,7 +8124,7 @@ mod tests {
             ..Attrs::default()
         };
         let element = with_interaction(make_element(52, ElementKind::El, attrs));
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -7996,7 +8171,7 @@ mod tests {
             ..Attrs::default()
         };
         let element = with_interaction(make_element(53, ElementKind::El, attrs.clone()));
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -8034,7 +8209,7 @@ mod tests {
         )));
 
         let patched_before_hover_state = with_interaction(make_element(53, ElementKind::El, attrs));
-        let patch_rebuild = RegistryRebuildPayload {
+        let patch_rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -8082,7 +8257,7 @@ mod tests {
         let child_attrs = on_mouse_move_attrs();
         let child = with_interaction(make_element(63, ElementKind::El, child_attrs));
 
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -8135,7 +8310,7 @@ mod tests {
         };
         let child = with_interaction(make_element(65, ElementKind::El, child_attrs));
 
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -8193,7 +8368,7 @@ mod tests {
             40.0,
         );
 
-        let initial_rebuild = RegistryRebuildPayload {
+        let initial_rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -8269,7 +8444,7 @@ mod tests {
             24.0,
         );
 
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -8318,7 +8493,7 @@ mod tests {
             40.0,
             40.0,
         );
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -8337,7 +8512,7 @@ mod tests {
             40.0,
             40.0,
         );
-        let moved_rebuild = RegistryRebuildPayload {
+        let moved_rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -8395,7 +8570,7 @@ mod tests {
             40.0,
         );
 
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -8446,7 +8621,7 @@ mod tests {
             40.0,
         );
 
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -8500,7 +8675,7 @@ mod tests {
             40.0,
         );
 
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -8547,7 +8722,7 @@ mod tests {
             40.0,
             40.0,
         );
-        let initial_rebuild = RegistryRebuildPayload {
+        let initial_rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -8571,7 +8746,7 @@ mod tests {
             40.0,
             40.0,
         );
-        let moved_rebuild = RegistryRebuildPayload {
+        let moved_rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -8615,7 +8790,7 @@ mod tests {
             40.0,
             40.0,
         );
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -8648,7 +8823,7 @@ mod tests {
             40.0,
             40.0,
         );
-        let active_rebuild = RegistryRebuildPayload {
+        let active_rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -8670,7 +8845,7 @@ mod tests {
             40.0,
             40.0,
         );
-        let moved_away_rebuild = RegistryRebuildPayload {
+        let moved_away_rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -8883,7 +9058,7 @@ mod tests {
             40.0,
             40.0,
         );
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -8911,7 +9086,7 @@ mod tests {
             40.0,
             40.0,
         );
-        let active_rebuild = RegistryRebuildPayload {
+        let active_rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -8943,7 +9118,7 @@ mod tests {
             40.0,
             40.0,
         );
-        let inactive_rebuild = RegistryRebuildPayload {
+        let inactive_rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -8977,7 +9152,7 @@ mod tests {
             40.0,
             40.0,
         );
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -8996,7 +9171,7 @@ mod tests {
             40.0,
             40.0,
         );
-        let moved_rebuild = RegistryRebuildPayload {
+        let moved_rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -9039,7 +9214,7 @@ mod tests {
             40.0,
             40.0,
         );
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -9058,7 +9233,7 @@ mod tests {
             40.0,
             40.0,
         );
-        let moved_rebuild = RegistryRebuildPayload {
+        let moved_rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -9095,7 +9270,7 @@ mod tests {
             40.0,
             40.0,
         );
-        let hovered_rebuild = RegistryRebuildPayload {
+        let hovered_rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),
@@ -9160,7 +9335,7 @@ mod tests {
             },
         );
 
-        let rebuild = RegistryRebuildPayload {
+        let rebuild = crate::events::rebuild_payload! {
             scrolls: Default::default(),
             listener_barrier: None,
             mount_focus_targets: Default::default(),

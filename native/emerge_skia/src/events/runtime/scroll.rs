@@ -4,7 +4,7 @@ use crate::events::scroll::{ScrollNode, ScrollSession};
 impl DirectEventRuntime {
     pub(super) fn reconcile_scrolls(
         &mut self,
-        nodes: HashMap<NodeId, ScrollNode>,
+        nodes: &HashMap<NodeId, ScrollNode>,
         tx: &dyn TreeSink,
         log: bool,
     ) -> bool {
@@ -14,16 +14,15 @@ impl DirectEventRuntime {
                 .is_some_and(|node| node.mount == session.node.mount)
         });
         let now = Instant::now();
-        nodes.into_iter().fold(false, |changed, (id, node)| {
+        nodes.iter().fold(false, |changed, (&id, node)| {
             let session = self
                 .scroll_sessions
                 .entry(id)
                 .or_insert_with(|| ScrollSession::new(node.clone()));
             let before = session.position;
-            let unresolved = session.has_new_unresolved_target(&node);
-            let replaced = session.reconcile(node, now);
+            let unresolved = session.has_new_unresolved_target(node);
+            let replaced = session.reconcile(node.clone(), now);
             let position = session.position;
-            self.refresh_scrollbar_offsets(id, position);
             if unresolved {
                 self.log_event_diagnostic(log, || format!("unresolved scroll target for {id:?}: expected a live descendant in the same scroll content; preserving position"));
             }
@@ -71,13 +70,19 @@ impl DirectEventRuntime {
         })
     }
 
-    // Inertia and drag anchors must not regress to an older native receipt.
-    fn refresh_scrollbar_offsets(&mut self, id: NodeId, position: [f64; 2]) {
-        for (axis, slot) in [ScrollbarAxis::X, ScrollbarAxis::Y].into_iter().enumerate() {
-            if let Some(node) = self.scrollbar_nodes.get_mut(&(id, slot)) {
-                node.scroll_offset = (position[axis] * node.scroll_range as f64) as f32;
-            }
+    // Geometry is immutable snapshot data; live offsets belong to the event
+    // session. Derive this fixed-size projection instead of mutating/COWing a
+    // whole incoming scrollbar map on wheel, drag or inertia updates.
+    pub(super) fn current_scrollbar_node(
+        &self,
+        key: &(NodeId, ScrollbarAxis),
+    ) -> Option<ScrollbarNode> {
+        let mut node = *self.registry_data.scrollbars.get(key)?;
+        if let Some(session) = self.scroll_sessions.get(&key.0) {
+            let axis = usize::from(key.1 == ScrollbarAxis::Y);
+            node.scroll_offset = (session.position[axis] * node.scroll_range as f64) as f32;
         }
+        Some(node)
     }
 
     // The driver's operation boundary covers wheel, keys, gestures, timers and
@@ -123,7 +128,6 @@ impl DirectEventRuntime {
                 if emit {
                     session.expect_echo(Instant::now());
                 }
-                self.refresh_scrollbar_offsets(id, position);
                 if emit {
                     self.send_elixir_event(registry_builder::ElixirEvent {
                         element_id: id,

@@ -437,33 +437,31 @@ refresh, not one refresh per command. Diagnostic command views may inspect envel
 but delivery must never strip their mount evidence. Collection, target sorting/checks,
 queue retention and synchronous disposal still require cost qualification.
 
-### Cached Registry Rebuilds
+### Retained Registry Output
 
-The tree actor caches the latest `RegistryRebuildPayload`.
+The tree owns per-node event contributions and persistent ordering records in
+`events/registry_builder/retained.rs`. Changed inputs update affected records;
+a changed contribution version materializes a complete flat
+`RegistryRebuildPayload`. Unchanged versions retain the listener allocation.
+Ordering storage reuses identical records, not just equal contribution versions:
+neutral records may still need to replace dependencies or release removed owners.
 
-If it receives only `TreeMsg::RebuildRegistry` and the tree did not actually
-change, it can resend the cached rebuild to the event actor without rerunning
-layout/render/rebuild.
-
-If no cached rebuild exists yet, it falls back to a full refresh.
+`TreeUpdateEngine.cached_rebuild` tracks the last successfully admitted output.
+It is distinct from the tree's compiled candidate: a failed frame can leave
+reusable candidate records that a retry must still publish. Explicit
+`TreeMsg::RebuildRegistry` requests publish the current candidate, including
+mount/fence metadata, without requiring paint when layout remains valid. Input,
+scroll and slider state use the same contribution compiler, not a second scan of
+the old payload's maps. IME ownership is compiled independently of painting.
 
 ## Hit Testing And Interaction Geometry
 
-Hit testing uses `tree::interaction` as the source of truth.
-
-Current matching is:
-
-- clip-aware
-- rounded-corner-aware
-- scroll-aware
-- based on retained interaction geometry computed before refresh
-
-Refresh begins with an interaction pre-pass:
-
-- `populate_interaction(tree)`
-
-The combined render/rebuild walk then consumes that interaction data for both
-drawing and listener accumulation.
+The tree-side compiler resolves frames and `tree::scene` context into listener
+regions, clips and coordinate transforms. Matching is clip-, rounded-corner-,
+scroll- and transform-aware. The event actor dispatches directly through the
+flat registry; it never walks the element tree, retained scene or property graph.
+Paint and event compilation are independent, with shared geometry conventions
+rather than a fused render/rebuild traversal.
 
 ## Pointer Behavior
 

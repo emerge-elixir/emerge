@@ -383,10 +383,14 @@ fn accepted_external_value_invalidates_old_range_and_destruction_releases_tokens
     assert!(host.prepare_text_input_replacement_range(Some((0, 1))));
     assert!(host.handle_text_input_edit(TextInputEditRequest::Insert("Z".into())));
     let old = Arc::downgrade(&host.driver.runtime.range_generation.0);
-    let mut rebuild = response(&mut engine, first, TreeUpdateDecodePolicy::ReturnErr);
+    let mut fixture = crate::events::RebuildFixture::from(response(
+        &mut engine,
+        first,
+        TreeUpdateDecodePolicy::ReturnErr,
+    ));
     // Reconciliation unit: inject the metadata carried by an authoritative
     // focused-value replacement, not a claim of a public codec/BEAM trace.
-    rebuild
+    fixture
         .text_inputs
         .get_mut(&NodeId(9))
         .unwrap()
@@ -394,7 +398,7 @@ fn accepted_external_value_invalidates_old_range_and_destruction_releases_tokens
         id: 1,
         content: "reset".into(),
     });
-    host.install_rebuild(rebuild);
+    host.install_rebuild(fixture.finish());
     settle(&mut engine, &mut host);
     let content = host.focused_text_state().unwrap().content;
     assert_eq!(content.matches('Z').count(), 1);
