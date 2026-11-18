@@ -133,6 +133,43 @@ defmodule EmergeSkia.LayoutScaleTest do
     refute_receive {:application, _}
   end
 
+  test "shrinking a column leaves the lane gap unpainted and routes its clicks to the row" do
+    view = fn w ->
+      card =
+        el(
+          [width(px(104)), height(px(36)), Background.color(:red), Event.on_click(:card)],
+          none()
+        )
+
+      lane = [width(fill()), height(px(36))]
+
+      row([width(px(w)), spacing(8), scale(1.5), Event.on_click(:row)], [
+        column(lane, [card]),
+        column([Background.color(:blue) | lane], [])
+      ])
+    end
+
+    {pid, r} = Headless.mount({324, 54}, fn -> view.(216) end, [:pointer_button])
+
+    for {edit_width, lane_px, target} <- [{nil, 156, :card}, {136, 96, :row}, {216, 156, :card}] do
+      if edit_width, do: edit(pid, fn -> view.(edit_width) end)
+
+      line =
+        :binary.copy(<<255, 0, 0, 255>>, lane_px) <>
+          :binary.copy(<<0::32>>, 12) <>
+          :binary.copy(<<0, 0, 255, 255>>, lane_px) <>
+          :binary.copy(<<0::32>>, 324 - 2 * lane_px - 12)
+
+      assert Headless.pixels() == :binary.copy(line, 54)
+
+      for {x, owner, lx} <- [{90.0, :card, 60.0}, {102.0, target, 68.0}] do
+        button(r, :press, x, 30.0)
+        button(r, :release, x, 30.0)
+        assert_receive {:application, {^owner, %{x: ^lx, y: 20.0}}}
+      end
+    end
+  end
+
   test "a pressed card moves into a differently scaled lane and releases in its new logical box" do
     view = fn side ->
       card =

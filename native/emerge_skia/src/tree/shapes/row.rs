@@ -4,7 +4,7 @@ pub(super) struct Row;
 impl ShapeMeta for Row {
     const TAG: u8 = 1;
     type Payload = Children;
-    type Paint = RowPaint;
+    type Paint = ClippedBoxPaint;
 }
 impl LayoutBehaviour for Row {
     fn measure(children: &[Key], cx: &mut Measuring<'_>) -> Size {

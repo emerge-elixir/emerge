@@ -88,10 +88,10 @@ trait PaintBehaviour<P: Payload> {
 struct BoxPaint;
 impl<P: Payload> PaintBehaviour<P> for BoxPaint {}
 
-// Row contents are clipped to the host. In particular, antialiased fills
-// at a fractional last line must not bleed into the following sibling.
-struct RowPaint;
-impl PaintBehaviour<Children> for RowPaint {
+// Intersect the inherited paint and hit clip with the container's frame.
+// An oversized child keeps its layout size without spilling into a sibling's gap.
+struct ClippedBoxPaint;
+impl PaintBehaviour<Children> for ClippedBoxPaint {
     const CLIP_CHILDREN: bool = true;
 }
 

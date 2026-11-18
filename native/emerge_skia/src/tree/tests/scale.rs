@@ -266,6 +266,35 @@ fn a_scaled_chip_wraps_and_displaces_but_does_not_reshape_its_siblings() {
 }
 
 #[test]
+fn shrinking_a_column_clips_nested_glyphs_without_remeasuring_or_resizing_them() {
+    let mut r = Raster::default();
+    let host = |w, h| block(&[px(1, w), px(2, h)]);
+    r.tree
+        .upload(&upload(&[
+            node(1, 3, host(120., 40.), &[2]),
+            node(2, 4, block(&[px(1, 120.), px(2, 40.), vec![40, 1]]), &[3]),
+            node(3, 5, text("WWWWWW"), &[]),
+        ]))
+        .unwrap();
+    let wide = draw(&mut r).to_vec();
+    let frames = [bounds(&r, 2), bounds(&r, 3)];
+    let mut clipped = wide.clone();
+    for (y, line) in clipped.chunks_exact_mut(180 * 4).enumerate() {
+        let right = if y < 10 { 21 } else { 0 };
+        line[4 * right..].fill(0);
+    }
+    assert!(clipped != wide && clipped.iter().any(|&v| v != 0));
+    for (w, h, expected) in [(20.5, 10., &clipped), (120., 40., &wide)] {
+        r.tree.patch(&set(1, 3, host(w, h))).unwrap();
+        assert!(draw(&mut r) == expected, "nested glyphs at column {w}×{h}");
+        assert_eq!([bounds(&r, 2), bounds(&r, 3)], frames);
+        assert!(!ran(&r, Measure, 3));
+        assert_eq!(r.hit_at(20.5, 5.), Some((2, 20.5, 5.)));
+        assert_eq!(r.hit_at(20.75, 5.).is_some(), w > 20.75);
+    }
+}
+
+#[test]
 fn fractional_threshold_scales_a_length_before_narrowing_and_uses_the_actual_line_height() {
     let mut r = Raster::default();
     // (authored as f32) * 1.25 rounds down; main scales the f64 length first.

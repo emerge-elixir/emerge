@@ -249,6 +249,27 @@ fn reorder_and_viewport_clip_use_paint_order_for_hits() {
             target(33, [0, 0, 255]),
         ]))
         .unwrap();
+    // The two short wrappers make an auto-height column only 10px tall.
+    let clipped = [
+        [255, 0, 0, 255].repeat(24 * 5),
+        [0, 0, 255, 255].repeat(24 * 5),
+        vec![0; 4 * 24 * 10],
+    ]
+    .concat();
+    assert_eq!(r.draw(24., 20., 1.).unwrap(), clipped);
+    assert_eq!(r.hit_at(23., 9.), Some((33, 23., 4.)));
+    assert_eq!(r.hit_at(23., 19.), None);
+
+    // Grow past the viewport so the viewport, not the column, limits the overlap.
+    r.tree.patch(&set(1, 3, block(&[px(2, 30.)]))).unwrap();
+    assert!(
+        r.prepare(24., 20., 1.)
+            .unwrap()
+            .submit(|_, _| Err("presentation refused".into()))
+            .is_err()
+    );
+    assert_eq!(r.pixels(), clipped);
+    assert_eq!(r.hit_at(23., 19.), None);
     for (id, upper, lower) in [
         (33, [255, 0, 0, 255], [0, 0, 255, 255]),
         (22, [0, 0, 255, 255], [255, 0, 0, 255]),
@@ -262,6 +283,7 @@ fn reorder_and_viewport_clip_use_paint_order_for_hits() {
         );
         assert_eq!(r.hit_at(23., 19.), Some((id, 23., 14.)));
         assert_eq!(r.hit_at(24., 19.), None);
+        assert_eq!(r.hit_at(23., 20.), None);
     }
 }
 
