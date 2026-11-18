@@ -497,11 +497,10 @@ defmodule Emerge.UI do
   @doc """
   Provide a stable semantic key for identity in the tree.
 
-  Keys must be globally unique across the full UI tree, including nearby mounts.
-
-  Use `key/1` when an element should retain its semantic identity across updates
-  or when it may need to be addressed by future semantic APIs such as focus or
-  drag-and-drop targeting.
+  Keys must be unique across the viewport's entire declaration, including
+  nearby mounts. A keyed element of the same kind keeps its identity when it
+  changes parent or becomes the root. Once absent from an accepted declaration,
+  that occurrence ends; reusing its key later starts a new occurrence.
   """
   @spec key(key()) :: key_attr()
   def key(value), do: {:key, value}

@@ -337,17 +337,17 @@ defmodule EmergeSkiaTest do
     # The cold load may show a placeholder. Wait for its completed image first.
     initial = scene.(24, :blue)
     expected = reference.(initial)
-    EmergeSkia.upload_tree(renderer, initial)
+    {state, _} = EmergeSkia.upload_tree(renderer, initial)
     await_svg_cache_frame(fn data -> data == expected end)
     blank = el([width(px(240)), height(px(220)), Emerge.UI.Background.color(:green)], none())
     blank_pixels = reference.(blank)
 
-    for size <- [68, 200, 24, 68, 200] do
-      EmergeSkia.upload_tree(renderer, blank)
+    Enum.reduce([68, 200, 24, 68, 200], state, fn size, state ->
+      {state, _} = EmergeSkia.patch_tree(renderer, state, blank)
       await_svg_cache_frame(fn data -> data == blank_pixels end)
       tree = scene.(size, :blue)
       expected = reference.(tree)
-      EmergeSkia.upload_tree(renderer, tree)
+      {state, _} = EmergeSkia.patch_tree(renderer, state, tree)
       # Find the first frame of the new scene by its blue sibling, not by
       # whether the SVG has finished loading. A placeholder must fail here.
       data =
@@ -357,7 +357,8 @@ defmodule EmergeSkiaTest do
         end)
 
       assert data == expected
-    end
+      state
+    end)
   end
 
   defp await_svg_cache_frame(predicate, deadline \\ nil) do
@@ -590,7 +591,7 @@ defmodule EmergeSkiaTest do
     tree = image([width(px(4)), height(px(4))], "shared.svg")
     {_state, _assigned} = EmergeSkia.upload_tree(red_renderer, tree)
     assert_frame_color("red_asset_frame", {255, 0, 0})
-    {_state, _assigned} = EmergeSkia.upload_tree(blue_renderer, tree)
+    {blue_state, _} = EmergeSkia.upload_tree(blue_renderer, tree)
     assert_frame_color("blue_asset_frame", {0, 0, 255})
     assert :ok = EmergeSkia.stop(red_renderer)
     write_solid_svg(Path.join(blue_root, "shared.svg"), "#00ff00")
@@ -601,7 +602,7 @@ defmodule EmergeSkiaTest do
                Map.put(base_config, :priv_dir, blue_root)
              )
 
-    {_state, _assigned} = EmergeSkia.upload_tree(blue_renderer, tree)
+    EmergeSkia.patch_tree(blue_renderer, blue_state, tree)
     assert_frame_color("blue_asset_frame", {0, 255, 0})
   end
 
@@ -847,7 +848,7 @@ defmodule EmergeSkiaTest do
              EmergeSkia.render_to_png(renderer)
 
     tree = el([width(px(4)), height(px(4)), Emerge.UI.Background.color(:red)], none())
-    {_state, _assigned} = EmergeSkia.upload_tree(renderer, tree)
+    {state, _} = EmergeSkia.upload_tree(renderer, tree)
     assert_receive {:emerge_skia_frame, dma_buf}, 1000
 
     assert %VideoInterop.Frame{
@@ -889,12 +890,12 @@ defmodule EmergeSkiaTest do
     refute child_lease.abandonment_guard == lease.abandonment_guard
     assert :ok = VideoInterop.release(dma_buf)
     blocked_tree = el([width(px(4)), height(px(4)), Emerge.UI.Background.color(:blue)], none())
-    {_state, _assigned} = EmergeSkia.upload_tree(renderer, blocked_tree)
+    {state, _} = EmergeSkia.patch_tree(renderer, state, blocked_tree)
     refute_receive {:emerge_skia_frame, _frame}, 100
     assert :ok = VideoInterop.release(child_lease)
     assert eventually(fn -> VideoInterop.LeaseOwner.stats(lease.owner).active_leases == 0 end)
     next_tree = el([width(px(4)), height(px(4)), Emerge.UI.Background.color(:green)], none())
-    {_state, _assigned} = EmergeSkia.upload_tree(renderer, next_tree)
+    EmergeSkia.patch_tree(renderer, state, next_tree)
     assert_receive {:emerge_skia_frame, %VideoInterop.Frame{} = next_dma_buf}, 1000
     [%VideoInterop.DMABuf.Object{fd: next_fd}] = next_dma_buf.storage.objects
     session_monitor = Process.monitor(renderer.pid)
@@ -930,7 +931,7 @@ defmodule EmergeSkiaTest do
 
     assert {:ok, %{rendering_api: %{selected: :vulkan}}} = EmergeSkia.renderer_info(renderer)
     tree = el([width(px(640)), height(px(420)), Emerge.UI.Background.color(:red)], none())
-    {_state, _assigned} = EmergeSkia.upload_tree(renderer, tree)
+    {state, _} = EmergeSkia.upload_tree(renderer, tree)
     assert_receive {:emerge_skia_frame, dma_buf}, 5000
 
     assert %VideoInterop.Frame{
@@ -956,7 +957,7 @@ defmodule EmergeSkiaTest do
     assert :ok = VideoInterop.validate(dma_buf)
     assert :ok = VideoInterop.release(dma_buf)
     next_tree = el([width(px(640)), height(px(420)), Emerge.UI.Background.color(:blue)], none())
-    {_state, _assigned} = EmergeSkia.upload_tree(renderer, next_tree)
+    EmergeSkia.patch_tree(renderer, state, next_tree)
     assert_receive {:emerge_skia_frame, %VideoInterop.Frame{} = next_dma_buf}, 5000
     assert :ok = VideoInterop.release(next_dma_buf)
     assert :ok = EmergeSkia.stop(renderer)

@@ -85,10 +85,11 @@ defmodule EmergeSkia.DrmGpuPowerHardwareTest do
       refute_receive {:emerge_skia_config, ^token, :ok}, 100
       assert frames(renderer) == 0
 
-      EmergeSkia.upload_tree(
-        renderer,
-        application_tree(size, "First GPU-presented application frame", {30, 80, 220})
-      )
+      {state, _} =
+        EmergeSkia.upload_tree(
+          renderer,
+          application_tree(size, "First GPU-presented application frame", {30, 80, 220})
+        )
 
       await_config(token)
       assert frames(renderer) > 0
@@ -97,9 +98,9 @@ defmodule EmergeSkia.DrmGpuPowerHardwareTest do
 
       levels = if managed?, do: [0.0, 0.5, 1.0, nil], else: [nil]
 
-      final =
-        Enum.reduce(1..3, on, fn cycle, on ->
-          Enum.reduce(levels, on, fn brightness, on ->
+      {final, _} =
+        Enum.reduce(1..3, {on, state}, fn cycle, acc ->
+          Enum.reduce(levels, acc, fn brightness, {on, state} ->
             before = frames(renderer)
             dimmed = power(on, :on, brightness)
             apply_config(renderer, on, dimmed)
@@ -123,14 +124,20 @@ defmodule EmergeSkia.DrmGpuPowerHardwareTest do
             assert_kms(kms_status, "enabled")
             color = {40 * cycle, 180, 40}
 
-            EmergeSkia.upload_tree(
-              renderer,
-              application_tree(size, "GPU power cycle #{cycle}", color)
-            )
+            {state, _} =
+              EmergeSkia.patch_tree(
+                renderer,
+                state,
+                application_tree(
+                  size,
+                  "GPU power cycle #{cycle}, level #{inspect(brightness)}",
+                  color
+                )
+              )
 
             assert eventually(fn -> frames(renderer) > before + 1 end)
             assert_capture(renderer, size, color)
-            resumed
+            {resumed, state}
           end)
         end)
 

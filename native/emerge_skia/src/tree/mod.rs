@@ -1,6 +1,7 @@
 //! Wire IDs name declarations, keys name cache slots, and attachments name live input targets.
 mod capacity;
 mod changes;
+mod intrinsic;
 mod layers;
 mod paint;
 mod pool;
@@ -13,7 +14,7 @@ use layers::{Layers, Pass};
 pub(crate) use paint::{Attachment, Raster};
 use pool::{Budget, Pool, Span};
 use slotmap::{SecondaryMap, SlotMap, new_key_type};
-use std::{collections::HashMap, ops::Range};
+use std::{cell::Cell, collections::HashMap, ops::Range};
 pub use text::{Family, TextMeasurer};
 new_key_type! { pub(crate) struct Key; }
 /// Root is at depth zero. Enforced during upload, before mounting.
@@ -56,12 +57,34 @@ struct Attrs {
     text: Range<usize>,
     glyph_count: usize,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Subtree {
+    count: usize,
+    height: usize,
+}
+impl Default for Subtree {
+    fn default() -> Self {
+        Self {
+            count: 1,
+            height: 0,
+        }
+    }
+}
+impl Subtree {
+    fn over(children: impl Iterator<Item = Self>) -> Self {
+        children.fold(Self::default(), |s, c| Self {
+            count: s.count + c.count,
+            height: s.height.max(1 + c.height),
+        })
+    }
+}
 #[derive(Debug)]
 struct Mount {
     id: u64,
     shape: Shape,
     parent: Option<Key>,
-    depth: usize,
+    depth: Cell<(u64, usize)>,
+    stats: Subtree,
     index: usize,
     // Some only while this slot is in the detached cache.
     detached: Option<usize>,
@@ -81,8 +104,27 @@ struct Elements {
     detached: Vec<Key>,
     free_indices: Vec<usize>,
     live_bytes: usize,
+    topology: u64,
 }
 impl Elements {
+    fn live(&self, id: u64) -> Option<Key> {
+        self.ids
+            .get(&id)
+            .copied()
+            .filter(|&k| self.slots[k].detached.is_none())
+    }
+    // Read final parent links, not the old depth of a moved kept branch. Only
+    // paths read by admission or a scheduled pass get a current memo.
+    fn depth(&self, k: Key) -> usize {
+        let m = &self.slots[k];
+        let (epoch, d) = m.depth.get();
+        if epoch == self.topology {
+            return d;
+        }
+        let d = m.parent.map_or(0, |p| 1 + self.depth(p));
+        m.depth.set((self.topology, d));
+        d
+    }
     fn attached_count(&self) -> usize {
         self.slots.len() - self.detached.len()
     }
@@ -134,17 +176,6 @@ impl Tree {
             budget: Budget(usize::from(percent)),
             ..Self::default()
         }
-    }
-    fn clear(&mut self) {
-        self.elements.slots.clear(); // retain generations, invalidate every old key
-        self.elements.ids.clear();
-        self.elements.attrs.clear();
-        self.elements.child_pool.clear();
-        self.elements.detached.clear();
-        self.elements.touched.clear();
-        self.elements.free_indices.clear();
-        self.elements.bytes.clear();
-        self.root = None;
     }
     pub fn frames(&self) -> impl Iterator<Item = (u64, Rect)> + '_ {
         self.elements

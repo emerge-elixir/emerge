@@ -16,7 +16,7 @@ defmodule Emerge.ControlledScrollTest do
     encoded = Serialization.encode_tree(assigned)
     assert Serialization.decode(encoded).attrs.scroll_position_y == 0.0
     {_, patches, _} = Reconcile.reconcile_patches(old, view(0.5), next)
-    assert [{:set_attrs, _, %{scroll_position_y: 0.5}}] = patches
+    assert [{:patch, id, {:node, id, :column, %{scroll_position_y: 0.5}, :same}}] = patches
     assert Patch.decode(Patch.encode(patches)) == patches
     assert {:scroll_position_x, 1.0} = scroll_x(1.0)
 
@@ -35,8 +35,9 @@ defmodule Emerge.ControlledScrollTest do
     encoded = Patch.encode(patches)
 
     assert Enum.any?(Patch.decode(encoded), fn
-             {:set_attrs, _,
-              %{scroll_position_y: %ScrollTarget{key: nil, declaration: ^token, id: ^id}}} ->
+             {:patch, root,
+              {:node, root, :column,
+               %{scroll_position_y: %ScrollTarget{key: nil, declaration: ^token, id: ^id}}, _}} ->
                true
 
              _ ->

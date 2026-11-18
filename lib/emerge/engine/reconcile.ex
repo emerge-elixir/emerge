@@ -1,955 +1,472 @@
 defmodule Emerge.Engine.Reconcile do
-  @moduledoc """
-  Reconcile Emerge.Engine.Element trees into stable node ids and patch operations.
-  """
+  @moduledoc "Match occurrences on entry, compare exact local inputs and fold a sparse replacement on exit."
+  alias Emerge.Engine.{
+    AttrCodec,
+    AttrValidation,
+    Element,
+    EventRegistry,
+    Patch,
+    ScrollTarget,
+    VNode
+  }
 
-  alias Emerge.Engine.Element
-  alias Emerge.Engine.EventRegistry
-  alias Emerge.Engine.Patch
-  alias Emerge.Engine.ScrollTarget
-  alias Emerge.Engine.Tree.Attrs, as: TreeAttrs
-  alias Emerge.Engine.VNode
+  alias Emerge.Engine.Reconcile.{Children, Labels}
 
-  @type scope_ref :: :root | {:children, non_neg_integer()} | {:nearby, non_neg_integer()}
+  defmodule Index do
+    @moduledoc false
+    defstruct nodes: %{},
+              keys: %{},
+              routes: %{},
+              own: %Labels{},
+              branch: %Labels{},
+              ancestry: %Labels{},
+              next_id: 1
 
-  @type ctx :: %{
-          next_id: non_neg_integer(),
-          seen: MapSet.t(),
-          old_key_index: %{optional(term()) => %{scope: scope_ref(), vnode: VNode.t()}}
-        }
-
-  @type result :: {VNode.t(), [Patch.patch()], Element.t()}
-
-  @doc """
-  Assign fresh node ids to a tree without a previous version.
-  """
-  @spec assign_ids(Element.t()) :: {VNode.t(), Element.t()}
-  def assign_ids(%Element{} = element) do
-    {vnode, assigned, _next_node_id} = assign_ids(element, 1)
-    {vnode, assigned}
+    def vacate(index) do
+      %__MODULE__{
+        own: %Labels{next: index.own.next},
+        branch: %Labels{next: index.branch.next},
+        ancestry: %Labels{next: index.ancestry.next},
+        next_id: index.next_id
+      }
+    end
   end
 
-  @spec assign_ids(Element.t(), non_neg_integer()) :: {VNode.t(), Element.t(), non_neg_integer()}
-  def assign_ids(%Element{} = element, next_id)
-      when is_integer(next_id) and next_id > 0 do
-    validate_viewport_root!(element)
-
-    ctx = %{next_id: next_id, seen: MapSet.new(), old_key_index: %{}}
-    {vnode, assigned, ctx} = build_fresh_subtree(element, ctx)
-    {vnode, assigned, ctx.next_id}
+  defmodule Fold do
+    @moduledoc false
+    defstruct [:node, :assigned, :body, :cover, :stable]
   end
 
-  @doc """
-  Reconcile a new tree against the previous vdom.
-  """
-  @spec reconcile(VNode.t() | nil, Element.t()) :: result()
-  def reconcile(old_vnode, %Element{} = element) do
-    {vnode, patches, assigned, _next_node_id} = reconcile(old_vnode, element, 1)
-    {vnode, patches, assigned}
+  @axes [:scroll_position_x, :scroll_position_y]
+  @inherited ~w(font font_size font_weight font_style font_color font_underline font_strike font_letter_spacing font_word_spacing text_align snap_text_metrics)a
+  @max_id 0xFFFFFFFFFFFFFFFF
+
+  def assign_ids(tree) do
+    {v, e, _} = assign_ids(tree, 1)
+    {v, e}
   end
 
-  @spec reconcile(VNode.t() | nil, Element.t(), non_neg_integer()) ::
-          {VNode.t(), [Patch.patch()], Element.t(), non_neg_integer()}
-  def reconcile(nil, %Element{} = element, next_id)
-      when is_integer(next_id) and next_id > 0 do
-    validate_viewport_root!(element)
-
-    ctx = %{next_id: next_id, seen: MapSet.new(), old_key_index: %{}}
-    {vnode, assigned, ctx} = build_fresh_subtree(element, ctx)
-    {vnode, [], assigned, ctx.next_id}
+  def assign_ids(tree, next_id) do
+    {v, _, e, _, next} = update(nil, tree, next_id, %{}, :assigned)
+    {v, e, next}
   end
 
-  def reconcile(%VNode{} = old_vnode, %Element{} = element, next_id)
-      when is_integer(next_id) and next_id > 0 do
-    validate_viewport_root!(element)
+  def reconcile(old, tree) do
+    {v, ops, e, _} = reconcile(old, tree, if(old, do: old.index.next_id, else: 1))
+    {v, ops, e}
+  end
+
+  def reconcile(old, tree, next_id) do
+    {v, ops, e, _, next} = update(old, tree, next_id, routes(old), :assigned)
+    {v, public(ops), e, next}
+  end
+
+  def reconcile_patches(old, tree, next_id) do
+    {v, ops, _, _, next} = update(old, tree, next_id, routes(old), :binary)
+    {v, public(ops), next}
+  end
+
+  def reconcile_patches_and_event_registry(old, tree, next_id) do
+    reconcile_patches_and_event_registry(old, tree, next_id, routes(old))
+  end
+
+  def reconcile_patches_and_event_registry(old, tree, next_id, routes) do
+    {v, ops, _, routes, next} = update(old, tree, next_id, routes, :binary)
+    {v, public(ops), routes, next}
+  end
+
+  defp routes(nil), do: %{}
+  defp routes(root), do: root.index.routes
+
+  # Detached callers already own assigned trees, but have no saved index. Only
+  # this interface has to import the first declaration; DiffState never does.
+  def diff_assigned(old, new) do
+    {v, _, _, _, next} = update(nil, old, 1, %{}, :import)
+    {_, ops, _, _, _} = update(v, new, next, %{}, :import)
+    public(ops)
+  end
+
+  defp public(ops),
+    do: Enum.map(ops, fn {:patch, target, body} -> Patch.patch(target, public_body(body)) end)
+
+  defp public_body({:node, id, kind, attrs, edges}),
+    do:
+      {:node, id, kind, if(is_binary(attrs), do: AttrCodec.decode_attrs(attrs), else: attrs),
+       if(is_list(edges),
+         do: Enum.map(edges, fn {tag, c} -> {tag, public_body(c)} end),
+         else: edges
+       )}
+
+  defp public_body(ref), do: ref
+
+  @doc false
+  def update(root, %Element{} = tree, next_id, routes, mode, vacant \\ %Index{}) do
+    if Map.has_key?(tree.attrs, :animate_exit),
+      do: raise(ArgumentError, "animate_exit is not allowed on the viewport root")
+
+    old = if root, do: root.index, else: vacant
 
     ctx = %{
-      next_id: next_id,
-      seen: MapSet.new(),
-      old_key_index: build_old_key_index(old_vnode)
+      old: old,
+      index: old,
+      claims: MapSet.new(),
+      displaced: [],
+      seen_keys: %{},
+      routes: routes,
+      mode: mode,
+      next: max(old.next_id, next_id)
     }
 
-    if reusable_root?(old_vnode, element) do
-      {vnode, patches, assigned, ctx} = reconcile_matched_node(old_vnode, element, ctx)
-      {vnode, patches, assigned, ctx.next_id}
-    else
-      {vnode, assigned, ctx} = build_fresh_subtree(element, ctx)
+    pos = if root, do: Map.fetch!(old.nodes, root.id)
+    {result, ctx} = enter(tree, pos, nil, :root, ctx)
+    {result, ctx} = settle(result, ctx)
+    id = result.node.id
+    ctx = if root && root.id != id, do: retire(pos, ctx), else: ctx
+    ctx = Enum.reduce(ctx.displaced, ctx, &retire/2)
+    idx = ctx.index
 
-      {vnode, [{:remove, old_vnode.id}, {:insert_subtree, nil, 0, assigned}], assigned,
-       ctx.next_id}
-    end
-  end
-
-  @doc """
-  Reconcile a new tree against the previous vdom without constructing a full
-  assigned `%Element{}` tree.
-
-  This is the runtime hot path: it returns the next vdom, patch list, and next
-  id counter. Insert patches still carry assigned inserted subtrees because the
-  patch wire format needs ids for new nodes.
-  """
-  @spec reconcile_patches(VNode.t() | nil, Element.t(), non_neg_integer()) ::
-          {VNode.t(), [Patch.patch()], non_neg_integer()}
-  def reconcile_patches(old_vnode, %Element{} = element, next_id)
-      when is_integer(next_id) and next_id > 0 do
-    {vnode, patches, _event_registry, next_id} =
-      reconcile_patches_optional_event_registry(old_vnode, element, next_id, nil)
-
-    {vnode, patches, next_id}
-  end
-
-  @doc false
-  @spec reconcile_patches_and_event_registry(VNode.t() | nil, Element.t(), non_neg_integer()) ::
-          {VNode.t(), [Patch.patch()], EventRegistry.t(), non_neg_integer()}
-  def reconcile_patches_and_event_registry(old_vnode, %Element{} = element, next_id)
-      when is_integer(next_id) and next_id > 0 do
-    {vnode, patches, next_id} = reconcile_patches(old_vnode, element, next_id)
-    {vnode, patches, EventRegistry.build(vnode), next_id}
-  end
-
-  @doc false
-  @spec reconcile_patches_and_event_registry(
-          VNode.t() | nil,
-          Element.t(),
-          non_neg_integer(),
-          acc
-        ) :: {VNode.t(), [Patch.patch()], acc, non_neg_integer()}
-        when acc: EventRegistry.accumulator()
-  def reconcile_patches_and_event_registry(
-        old_vnode,
-        %Element{} = element,
-        next_id,
-        event_registry
-      )
-      when is_integer(next_id) and next_id > 0 and is_map(event_registry) do
-    reconcile_patches_optional_event_registry(old_vnode, element, next_id, event_registry)
-  end
-
-  defp reconcile_patches_optional_event_registry(old_vnode, element, next_id, event_registry) do
-    validate_viewport_root!(element)
-
-    ctx =
-      %{
-        next_id: next_id,
-        seen: MapSet.new(),
-        assign_tree?: false,
-        old_key_index: if(is_nil(old_vnode), do: %{}, else: build_old_key_index(old_vnode))
-      }
-      |> maybe_init_event_registry(event_registry)
-
-    case old_vnode do
-      nil ->
-        ctx = reset_event_registry(ctx)
-        {vnode, _assigned, ctx} = build_fresh_subtree_for_patches(element, ctx)
-        {vnode, [], event_registry(ctx), ctx.next_id}
-
-      %VNode{} = old ->
-        if reusable_root?(old, element) do
-          {vnode, patches, _assigned, ctx} = reconcile_matched_node(old, element, ctx)
-          {vnode, patches, event_registry(ctx), ctx.next_id}
-        else
-          ctx = reset_event_registry(ctx)
-          {vnode, assigned, ctx} = build_fresh_subtree_for_patches(element, ctx)
-
-          {vnode, [{:remove, old.id}, {:insert_subtree, nil, 0, assigned}], event_registry(ctx),
-           ctx.next_id}
-        end
-    end
-  end
-
-  defp maybe_init_event_registry(ctx, nil), do: ctx
-
-  defp maybe_init_event_registry(ctx, event_registry) when is_map(event_registry),
-    do: Map.put(ctx, :event_registry, event_registry)
-
-  defp reset_event_registry(%{event_registry: registry} = ctx),
-    do: %{ctx | event_registry: EventRegistry.reset(registry)}
-
-  defp reset_event_registry(ctx), do: ctx
-
-  defp event_registry(%{event_registry: registry}), do: registry
-  defp event_registry(_ctx), do: %{}
-
-  defp reconcile_matched_node(%VNode{} = old, %Element{} = element, ctx) do
-    key = element_key(element)
-    ctx = ctx |> ensure_unique_key!(key) |> collect_scroll_keys(element.attrs)
-
-    {child_vnodes, child_elements, child_patches, ctx} =
-      reconcile_children(old.children, element.children, old.id, ctx)
-
-    {nearby_vnodes, nearby_elements, nearby_patches, ctx} =
-      reconcile_nearby(old.nearby, element.nearby, old.id, ctx)
-
-    {new_attrs, ctx} = resolve_scroll_attrs(element.attrs, old.attrs, ctx)
-    ctx = remember_key(ctx, key, old.id)
-    events = vnode_events(old, new_attrs)
-
-    parent_patches =
-      []
-      |> maybe_set_nearby_mounts(old, nearby_vnodes)
-      |> maybe_set_children(old, child_vnodes)
-      |> maybe_set_attrs(old, new_attrs, old.id)
-
-    patches_rev =
-      []
-      |> prepend_many(nearby_patches)
-      |> prepend_many(child_patches)
-      |> prepend_many(parent_patches)
-
-    patches = Enum.reverse(patches_rev)
-
-    vnode = %VNode{
-      id: old.id,
-      kind: element.type,
-      key: key,
-      attrs: new_attrs,
-      events: events,
-      children: child_vnodes,
-      nearby: nearby_vnodes
+    idx = %{
+      idx
+      | own: Labels.finish(idx.own),
+        branch: Labels.finish(idx.branch),
+        ancestry: Labels.finish(idx.ancestry),
+        routes:
+          case ctx.routes do
+            %EventRegistry.Changes{registry: registry} -> registry
+            registry -> registry
+          end,
+        next_id: ctx.next
     }
 
-    assigned =
-      maybe_assign_element(ctx, element, old.id, new_attrs, child_elements, nearby_elements)
+    ops =
+      cond do
+        is_nil(root) -> [Patch.patch(0, result.body)]
+        root.id != id -> [Patch.patch(root.id, result.body)]
+        is_nil(result.cover) -> []
+        true -> [result.cover]
+      end
 
-    {vnode, patches, assigned, maybe_update_event_node(ctx, old.id, old.events, events)}
+    {%{result.node | index: idx}, ops, result.assigned, ctx.routes, ctx.next}
   end
 
-  defp reconcile_children(old_children, new_children, parent_node_id, ctx) do
-    case children_mode(new_children) do
-      :keyed -> reconcile_children_keyed(old_children, new_children, parent_node_id, ctx)
-      :unkeyed -> reconcile_children_unkeyed(old_children, new_children, parent_node_id, ctx)
-    end
-  end
+  defp enter(element, pos, parent, site, ctx) do
+    old = occurrence(element, pos, ctx)
 
-  defp reconcile_children_keyed(old_children, new_children, parent_node_id, ctx) do
-    scope = {:children, parent_node_id}
+    {id, ctx} =
+      cond do
+        ctx.mode == :import and element.id in 1..@max_id ->
+          {element.id, %{ctx | next: max(ctx.next, element.id + 1)}}
 
-    {vnodes_rev, elements_rev, patches_rev, used_old_ids, ctx} =
-      do_reconcile_children_keyed(
-        new_children,
-        0,
-        scope,
-        parent_node_id,
-        ctx,
-        [],
-        [],
-        [],
-        %{}
-      )
+        old ->
+          {old.id, ctx}
 
-    {patches_rev, ctx} = prepend_removed_children(old_children, used_old_ids, patches_rev, ctx)
+        true ->
+          fresh(ctx)
+      end
 
-    {Enum.reverse(vnodes_rev), Enum.reverse(elements_rev), Enum.reverse(patches_rev), ctx}
-  end
+    ctx = claim(ctx, element.key, id)
 
-  defp do_reconcile_children_keyed(
-         [],
-         _index,
-         _scope,
-         _parent_node_id,
-         ctx,
-         vnodes_rev,
-         elements_rev,
-         patches_rev,
-         used_old_ids
-       ) do
-    {vnodes_rev, elements_rev, patches_rev, used_old_ids, ctx}
-  end
+    {ancestry, ctx} =
+      if site == :root,
+        do: {0, drop_site(ctx, old)},
+        else: bind(ctx, :ancestry, part(old, :ancestry), site)
 
-  defp do_reconcile_children_keyed(
-         [child | rest],
-         index,
-         scope,
-         parent_node_id,
-         ctx,
-         vnodes_rev,
-         elements_rev,
-         patches_rev,
-         used_old_ids
-       ) do
-    key = element_key(child)
-
-    case Map.get(ctx.old_key_index, key) do
-      %{scope: ^scope, vnode: %VNode{kind: kind} = old_child} when kind == child.type ->
-        {vnode, child_patches, assigned, ctx} = reconcile_matched_node(old_child, child, ctx)
-
-        do_reconcile_children_keyed(
-          rest,
-          index + 1,
-          scope,
-          parent_node_id,
+    {inherited, ctx} =
+      if old && old.attrs === element.attrs do
+        {old.inherited, ctx}
+      else
+        bind(
           ctx,
-          [vnode | vnodes_rev],
-          prepend_assigned(ctx, assigned, elements_rev),
-          prepend_many(patches_rev, child_patches),
-          Map.put(used_old_ids, old_child.id, true)
+          :own,
+          old && old.inherited,
+          AttrCodec.encode_attrs(Map.take(element.attrs, @inherited))
         )
+      end
 
-      _ ->
-        {vnode, assigned, ctx} = build_fresh_subtree_for_patches(child, ctx)
+    parent_site = {ancestry, id, inherited}
 
-        do_reconcile_children_keyed(
-          rest,
-          index + 1,
-          scope,
-          parent_node_id,
-          ctx,
-          [vnode | vnodes_rev],
-          prepend_assigned(ctx, assigned, elements_rev),
-          [{:insert_subtree, parent_node_id, index, assigned} | patches_rev],
-          used_old_ids
-        )
-    end
-  end
+    {cs, pending_cs, ctx} =
+      walk(element.children, if(old, do: old.children, else: []), :child, parent_site, ctx)
 
-  defp reconcile_children_unkeyed(old_children, new_children, parent_node_id, ctx) do
-    {vnodes_rev, elements_rev, patches_rev, ctx} =
-      do_reconcile_children_unkeyed(
-        old_children,
-        new_children,
-        0,
-        parent_node_id,
-        ctx,
-        [],
-        [],
-        []
-      )
+    {ns, pending_ns, ctx} =
+      walk(element.nearby, if(old, do: old.nearby, else: []), :nearby, parent_site, ctx)
 
-    {Enum.reverse(vnodes_rev), Enum.reverse(elements_rev), Enum.reverse(patches_rev), ctx}
-  end
+    {attrs, ctx} = scroll_declarations(element.attrs, old, ctx)
 
-  defp do_reconcile_children_unkeyed(
-         [],
-         [],
-         _index,
-         _parent_node_id,
-         ctx,
-         vnodes_rev,
-         elements_rev,
-         patches_rev
-       ) do
-    {vnodes_rev, elements_rev, patches_rev, ctx}
-  end
-
-  defp do_reconcile_children_unkeyed(
-         [%VNode{} = old_child | old_rest],
-         [%Element{} = child | new_rest],
-         index,
-         parent_node_id,
-         ctx,
-         vnodes_rev,
-         elements_rev,
-         patches_rev
-       ) do
-    if old_child.kind == child.type and old_child.key == nil and not has_key?(child) do
-      {vnode, child_patches, assigned, ctx} = reconcile_matched_node(old_child, child, ctx)
-
-      do_reconcile_children_unkeyed(
-        old_rest,
-        new_rest,
-        index + 1,
-        parent_node_id,
-        ctx,
-        [vnode | vnodes_rev],
-        prepend_assigned(ctx, assigned, elements_rev),
-        prepend_many(patches_rev, child_patches)
-      )
-    else
-      {vnode, assigned, ctx} = build_fresh_subtree_for_patches(child, ctx)
-      ctx = maybe_delete_event_tree(ctx, old_child)
-
-      do_reconcile_children_unkeyed(
-        old_rest,
-        new_rest,
-        index + 1,
-        parent_node_id,
-        ctx,
-        [vnode | vnodes_rev],
-        prepend_assigned(ctx, assigned, elements_rev),
-        [
-          {:insert_subtree, parent_node_id, index, assigned},
-          {:remove, old_child.id} | patches_rev
-        ]
-      )
-    end
-  end
-
-  defp do_reconcile_children_unkeyed(
-         [],
-         [%Element{} = child | new_rest],
-         index,
-         parent_node_id,
-         ctx,
-         vnodes_rev,
-         elements_rev,
-         patches_rev
-       ) do
-    {vnode, assigned, ctx} = build_fresh_subtree_for_patches(child, ctx)
-
-    do_reconcile_children_unkeyed(
-      [],
-      new_rest,
-      index + 1,
-      parent_node_id,
-      ctx,
-      [vnode | vnodes_rev],
-      prepend_assigned(ctx, assigned, elements_rev),
-      [{:insert_subtree, parent_node_id, index, assigned} | patches_rev]
-    )
-  end
-
-  defp do_reconcile_children_unkeyed(
-         [%VNode{} = old_child | old_rest],
-         [],
-         index,
-         parent_node_id,
-         ctx,
-         vnodes_rev,
-         elements_rev,
-         patches_rev
-       ) do
-    ctx = maybe_delete_event_tree(ctx, old_child)
-
-    do_reconcile_children_unkeyed(
-      old_rest,
-      [],
-      index + 1,
-      parent_node_id,
-      ctx,
-      vnodes_rev,
-      elements_rev,
-      [{:remove, old_child.id} | patches_rev]
-    )
-  end
-
-  defp reconcile_nearby(old_nearby, new_nearby, host_node_id, ctx) do
-    case nearby_mode(new_nearby) do
-      :keyed -> reconcile_nearby_keyed(old_nearby, new_nearby, host_node_id, ctx)
-      :unkeyed -> reconcile_nearby_unkeyed(old_nearby, new_nearby, host_node_id, ctx)
-    end
-  end
-
-  defp reconcile_nearby_keyed(old_nearby, new_nearby, host_node_id, ctx) do
-    scope = {:nearby, host_node_id}
-
-    {vnodes_rev, elements_rev, patches_rev, used_old_ids, ctx} =
-      do_reconcile_nearby_keyed(
-        new_nearby,
-        0,
-        scope,
-        host_node_id,
-        ctx,
-        [],
-        [],
-        [],
-        %{}
-      )
-
-    {patches_rev, ctx} = prepend_removed_nearby(old_nearby, used_old_ids, patches_rev, ctx)
-
-    {Enum.reverse(vnodes_rev), Enum.reverse(elements_rev), Enum.reverse(patches_rev), ctx}
-  end
-
-  defp do_reconcile_nearby_keyed(
-         [],
-         _index,
-         _scope,
-         _host_node_id,
-         ctx,
-         vnodes_rev,
-         elements_rev,
-         patches_rev,
-         used_old_ids
-       ) do
-    {vnodes_rev, elements_rev, patches_rev, used_old_ids, ctx}
-  end
-
-  defp do_reconcile_nearby_keyed(
-         [{slot, element} | rest],
-         index,
-         scope,
-         host_node_id,
-         ctx,
-         vnodes_rev,
-         elements_rev,
-         patches_rev,
-         used_old_ids
-       ) do
-    key = element_key(element)
-
-    case Map.get(ctx.old_key_index, key) do
-      %{scope: ^scope, vnode: %VNode{kind: kind} = old_vnode} when kind == element.type ->
-        {vnode, mount_patches, assigned, ctx} = reconcile_matched_node(old_vnode, element, ctx)
-
-        do_reconcile_nearby_keyed(
-          rest,
-          index + 1,
-          scope,
-          host_node_id,
-          ctx,
-          [{slot, vnode} | vnodes_rev],
-          prepend_nearby_assigned(ctx, slot, assigned, elements_rev),
-          prepend_many(patches_rev, mount_patches),
-          Map.put(used_old_ids, old_vnode.id, true)
-        )
-
-      _ ->
-        {vnode, assigned, ctx} = build_fresh_subtree_for_patches(element, ctx)
-
-        do_reconcile_nearby_keyed(
-          rest,
-          index + 1,
-          scope,
-          host_node_id,
-          ctx,
-          [{slot, vnode} | vnodes_rev],
-          prepend_nearby_assigned(ctx, slot, assigned, elements_rev),
-          [{:insert_nearby_subtree, host_node_id, index, slot, assigned} | patches_rev],
-          used_old_ids
-        )
-    end
-  end
-
-  defp reconcile_nearby_unkeyed(old_nearby, new_nearby, host_node_id, ctx) do
-    {vnodes_rev, elements_rev, patches_rev, ctx} =
-      do_reconcile_nearby_unkeyed(old_nearby, new_nearby, 0, host_node_id, ctx, [], [], [])
-
-    {Enum.reverse(vnodes_rev), Enum.reverse(elements_rev), Enum.reverse(patches_rev), ctx}
-  end
-
-  defp do_reconcile_nearby_unkeyed(
-         [],
-         [],
-         _index,
-         _host_node_id,
-         ctx,
-         vnodes_rev,
-         elements_rev,
-         patches_rev
-       ) do
-    {vnodes_rev, elements_rev, patches_rev, ctx}
-  end
-
-  defp do_reconcile_nearby_unkeyed(
-         [{_old_slot, %VNode{} = old_vnode} | old_rest],
-         [{slot, %Element{} = element} | new_rest],
-         index,
-         host_node_id,
-         ctx,
-         vnodes_rev,
-         elements_rev,
-         patches_rev
-       ) do
-    if old_vnode.kind == element.type and old_vnode.key == nil and not has_key?(element) do
-      {vnode, mount_patches, assigned, ctx} = reconcile_matched_node(old_vnode, element, ctx)
-
-      do_reconcile_nearby_unkeyed(
-        old_rest,
-        new_rest,
-        index + 1,
-        host_node_id,
-        ctx,
-        [{slot, vnode} | vnodes_rev],
-        prepend_nearby_assigned(ctx, slot, assigned, elements_rev),
-        prepend_many(patches_rev, mount_patches)
-      )
-    else
-      {vnode, assigned, ctx} = build_fresh_subtree_for_patches(element, ctx)
-      ctx = maybe_delete_event_tree(ctx, old_vnode)
-
-      do_reconcile_nearby_unkeyed(
-        old_rest,
-        new_rest,
-        index + 1,
-        host_node_id,
-        ctx,
-        [{slot, vnode} | vnodes_rev],
-        prepend_nearby_assigned(ctx, slot, assigned, elements_rev),
-        [
-          {:insert_nearby_subtree, host_node_id, index, slot, assigned},
-          {:remove, old_vnode.id}
-          | patches_rev
-        ]
-      )
-    end
-  end
-
-  defp do_reconcile_nearby_unkeyed(
-         [],
-         [{slot, %Element{} = element} | new_rest],
-         index,
-         host_node_id,
-         ctx,
-         vnodes_rev,
-         elements_rev,
-         patches_rev
-       ) do
-    {vnode, assigned, ctx} = build_fresh_subtree_for_patches(element, ctx)
-
-    do_reconcile_nearby_unkeyed(
-      [],
-      new_rest,
-      index + 1,
-      host_node_id,
-      ctx,
-      [{slot, vnode} | vnodes_rev],
-      prepend_nearby_assigned(ctx, slot, assigned, elements_rev),
-      [{:insert_nearby_subtree, host_node_id, index, slot, assigned} | patches_rev]
-    )
-  end
-
-  defp do_reconcile_nearby_unkeyed(
-         [{_old_slot, %VNode{} = old_vnode} | old_rest],
-         [],
-         index,
-         host_node_id,
-         ctx,
-         vnodes_rev,
-         elements_rev,
-         patches_rev
-       ) do
-    ctx = maybe_delete_event_tree(ctx, old_vnode)
-
-    do_reconcile_nearby_unkeyed(
-      old_rest,
-      [],
-      index + 1,
-      host_node_id,
-      ctx,
-      vnodes_rev,
-      elements_rev,
-      [{:remove, old_vnode.id} | patches_rev]
-    )
-  end
-
-  defp maybe_assign_element(
-         %{assign_tree?: false},
-         _element,
-         _id,
-         _attrs,
-         _child_elements,
-         _nearby_elements
-       ),
-       do: nil
-
-  defp maybe_assign_element(_ctx, element, id, attrs, child_elements, nearby_elements) do
-    %{element | id: id, attrs: attrs, children: child_elements, nearby: nearby_elements}
-  end
-
-  defp prepend_assigned(%{assign_tree?: false}, _assigned, elements_rev), do: elements_rev
-  defp prepend_assigned(_ctx, assigned, elements_rev), do: [assigned | elements_rev]
-
-  defp prepend_nearby_assigned(%{assign_tree?: false}, _slot, _assigned, elements_rev),
-    do: elements_rev
-
-  defp prepend_nearby_assigned(_ctx, slot, assigned, elements_rev),
-    do: [{slot, assigned} | elements_rev]
-
-  defp build_fresh_subtree_for_patches(%Element{} = element, ctx) do
-    {vnode, assigned, ctx} = build_fresh_subtree(element, ctx)
-    {vnode, assigned, maybe_register_event_tree(ctx, vnode)}
-  end
-
-  defp maybe_register_event_tree(%{event_registry: registry} = ctx, %VNode{} = vnode) do
-    %{ctx | event_registry: EventRegistry.merge_tree(registry, vnode)}
-  end
-
-  defp maybe_register_event_tree(ctx, _vnode), do: ctx
-
-  defp maybe_update_event_node(%{event_registry: _registry} = ctx, _id, events, events), do: ctx
-
-  defp maybe_update_event_node(%{event_registry: registry} = ctx, id, _old_events, events) do
-    %{ctx | event_registry: EventRegistry.put_events(registry, id, events)}
-  end
-
-  defp maybe_update_event_node(ctx, _id, _old_events, _events), do: ctx
-
-  defp maybe_delete_event_tree(%{event_registry: registry} = ctx, %VNode{} = vnode) do
-    %{ctx | event_registry: EventRegistry.delete_vnode_subtree(registry, vnode)}
-  end
-
-  defp maybe_delete_event_tree(ctx, _vnode), do: ctx
-
-  defp vnode_events(%VNode{attrs: attrs, events: events}, attrs) when is_map(events), do: events
-  defp vnode_events(%VNode{attrs: attrs}, attrs), do: EventRegistry.node_events(attrs)
-  defp vnode_events(_old, attrs), do: EventRegistry.node_events(attrs)
-
-  defp build_fresh_subtree(%Element{} = element, ctx) do
-    key = element_key(element)
-    ctx = ctx |> ensure_unique_key!(key) |> collect_scroll_keys(element.attrs)
-    _ = children_mode(element.children)
-    _ = nearby_mode(element.nearby)
-
-    {id, ctx} = alloc_id(ctx)
-
-    {child_vnodes_rev, child_elements_rev, ctx} =
-      Enum.reduce(element.children, {[], [], ctx}, fn child, {vnodes_rev, elements_rev, ctx} ->
-        {child_vnode, child_element, ctx} = build_fresh_subtree(child, ctx)
-        {[child_vnode | vnodes_rev], [child_element | elements_rev], ctx}
-      end)
-
-    {nearby_vnodes_rev, nearby_elements_rev, ctx} =
-      Enum.reduce(element.nearby, {[], [], ctx}, fn {slot, child},
-                                                    {vnodes_rev, elements_rev, ctx} ->
-        {nearby_vnode, nearby_element, ctx} = build_fresh_subtree(child, ctx)
-
-        {
-          [{slot, nearby_vnode} | vnodes_rev],
-          [{slot, nearby_element} | elements_rev],
-          ctx
-        }
-      end)
-
-    {attrs, ctx} = resolve_scroll_attrs(element.attrs, %{}, ctx)
-    ctx = remember_key(ctx, key, id)
-    element = %{element | attrs: attrs}
-    child_vnodes = Enum.reverse(child_vnodes_rev)
-    child_elements = Enum.reverse(child_elements_rev)
-    nearby_vnodes = Enum.reverse(nearby_vnodes_rev)
-    nearby_elements = Enum.reverse(nearby_elements_rev)
-
-    vnode = %VNode{
+    node = %VNode{
       id: id,
       kind: element.type,
-      key: key,
-      attrs: element.attrs,
-      events: EventRegistry.node_events(element.attrs),
-      children: child_vnodes,
-      nearby: nearby_vnodes
+      key: element.key,
+      attrs: attrs,
+      owner: parent,
+      inherited: inherited
     }
 
-    assigned = %{
-      element
-      | id: id,
-        children: child_elements,
-        nearby: nearby_elements
+    exit = fn ctx -> close(node, old, element, ancestry, cs, ns, ctx) end
+
+    if pending_cs or pending_ns or waiting?(attrs, ctx.seen_keys),
+      do: {exit, ctx},
+      else: exit.(ctx)
+  end
+
+  defp occurrence(%{id: id, type: kind}, _, %{mode: :import, old: old}) do
+    case old.nodes do
+      %{^id => %{kind: ^kind} = v} -> v
+      %{^id => _} -> raise ArgumentError, "assigned ID changed kind"
+      _ -> nil
+    end
+  end
+
+  defp occurrence(%{key: nil, type: kind}, %{key: nil, kind: kind} = old, _), do: old
+  defp occurrence(%{key: nil}, _, _), do: nil
+
+  defp occurrence(%{key: key, type: kind}, _, ctx) do
+    with {:ok, id} <- Map.fetch(ctx.old.keys, key),
+         %{kind: ^kind} = old <- Map.fetch!(ctx.old.nodes, id) do
+      old
+    else
+      _ -> nil
+    end
+  end
+
+  defp fresh(%{next: id} = ctx) when id in 1..@max_id, do: {id, %{ctx | next: id + 1}}
+  defp fresh(_), do: raise(ArgumentError, "occurrence ID exhausted")
+
+  defp claim(ctx, key, id) do
+    if key != nil and Map.has_key?(ctx.seen_keys, key),
+      do: raise(ArgumentError, "duplicate explicit key: #{inspect(key)}")
+
+    if MapSet.member?(ctx.claims, id), do: raise(ArgumentError, "duplicate occurrence ID")
+    ctx = %{ctx | claims: MapSet.put(ctx.claims, id)}
+
+    if is_nil(key) do
+      ctx
+    else
+      index = ctx.index
+
+      keys =
+        if Map.get(index.keys, key) === id, do: index.keys, else: Map.put(index.keys, key, id)
+
+      %{ctx | index: %{index | keys: keys}, seen_keys: Map.put(ctx.seen_keys, key, id)}
+    end
+  end
+
+  defp walk(items, old, group, site, ctx),
+    do: siblings(items, old, group, site, 0, nil, [], false, ctx)
+
+  defp siblings([], _, _, _, _, _, acc, pending, ctx), do: {Enum.reverse(acc), pending, ctx}
+
+  defp siblings([entry | tail], cursor, group, site, i, keyed, acc, pending, ctx) do
+    {tag, child} = Children.edge(entry)
+    mode = not is_nil(child.key)
+
+    if keyed != nil and keyed != mode do
+      raise ArgumentError,
+            if(group == :child,
+              do: "All siblings must have key when any key is provided",
+              else: "All nearby mounts on a host must have key when any key is provided"
+            )
+    end
+
+    {pos, cursor} =
+      case cursor do
+        [] -> {nil, []}
+        [head | rest] -> {elem(Children.edge(head), 1), rest}
+      end
+
+    {ancestry, parent, inherited} = site
+    {child, ctx} = enter(child, pos, parent, {ancestry, parent, inherited, tag, i}, ctx)
+    entry = if group == :child, do: child, else: {tag, child}
+
+    siblings(
+      tail,
+      cursor,
+      group,
+      site,
+      i + 1,
+      mode,
+      [entry | acc],
+      pending or is_function(child, 1),
+      ctx
+    )
+  end
+
+  defp settle(fun, ctx) when is_function(fun, 1), do: fun.(ctx)
+  defp settle(done, ctx), do: {done, ctx}
+
+  defp close(%VNode{} = node, old, element, ancestry, cs, ns, ctx) do
+    {cs, ctx} = Children.close(cs, if(old, do: old.children, else: []), ctx, &settle/2)
+    {ns, ctx} = Children.close(ns, if(old, do: old.nearby, else: []), ctx, &settle/2)
+
+    attrs = resolve(node.attrs, ctx.seen_keys)
+    same_attrs = old != nil and old.attrs === attrs
+    raw = if same_attrs, do: old.native, else: AttrCodec.encode_attrs(attrs)
+    {own, ctx} = if same_attrs, do: {old.own, ctx}, else: bind(ctx, :own, old && old.own, raw)
+    own_equal = old != nil and old.own == own
+    if old && !own_equal, do: AttrValidation.validate_change_update!(old.attrs, attrs)
+    events = if same_attrs, do: old.events, else: EventRegistry.node_events(attrs)
+
+    old_events = if old, do: old.events, else: %{}
+
+    routes =
+      if events === old_events,
+        do: ctx.routes,
+        else: EventRegistry.put_events(ctx.routes, node.id, events)
+
+    order_equal = old != nil and cs.order_equal and ns.order_equal
+    changed = Children.merge(cs.cover, ns.cover)
+    list_same = order_equal and changed == nil
+
+    values = %VNode{
+      node
+      | attrs: attrs,
+        events: events,
+        native: raw,
+        own: own,
+        children: cs.nodes,
+        nearby: ns.nodes
     }
 
-    {vnode, assigned, ctx}
+    {branch, ctx} =
+      if list_same and own_equal do
+        {part(old, :branch), ctx}
+      else
+        bind(
+          ctx,
+          :branch,
+          part(old, :branch),
+          {node.kind, own, Patch.edges(values, &part(&1, :branch))}
+        )
+      end
+
+    node = %{values | stamp: <<branch::32, ancestry::32>>}
+
+    {body, cover} =
+      if list_same and own_equal do
+        {node.id, nil}
+      else
+        body =
+          {:node, node.id, node.kind, if(own_equal, do: :same, else: raw),
+           if(list_same, do: :same, else: Children.emit(cs, Children.emit(ns, [])))}
+
+        cover =
+          if own_equal and order_equal and is_tuple(changed),
+            do: changed,
+            else: Patch.patch(node.id, body)
+
+        {body, cover}
+      end
+
+    stable =
+      same_attrs and order_equal and old.owner == node.owner and old.stamp == node.stamp and
+        cs.stable and ns.stable
+
+    idx = ctx.index
+
+    {node, idx} =
+      if stable, do: {old, idx}, else: {node, %{idx | nodes: Map.put(idx.nodes, node.id, node)}}
+
+    assigned =
+      if ctx.mode == :assigned,
+        do: %{
+          element
+          | id: node.id,
+            attrs: attrs,
+            children: cs.assigned,
+            nearby: ns.assigned
+        }
+
+    {%Fold{node: node, assigned: assigned, body: body, cover: cover, stable: stable},
+     %{ctx | index: idx, routes: routes}}
   end
 
-  defp collect_scroll_keys(ctx, attrs) do
-    if Enum.any?([:scroll_position_x, :scroll_position_y], fn axis ->
-         Map.has_key?(attrs, axis) and not is_float(Map.fetch!(attrs, axis))
-       end), do: Map.put(ctx, :collect_scroll_keys?, true), else: ctx
+  defp part(nil, _), do: nil
+  defp part(%{stamp: <<b::32, _::32>>}, :branch), do: b
+  defp part(%{stamp: <<_::32, a::32>>}, :ancestry), do: a
+
+  defp bind(ctx, pool, old, descriptor) do
+    {id, labels} = Labels.bind(Map.fetch!(ctx.index, pool), old, descriptor)
+    {id, %{ctx | index: Map.put(ctx.index, pool, labels)}}
   end
 
-  defp remember_key(ctx, nil, _id), do: ctx
+  defp drop_site(ctx, old),
+    do: put_in(ctx.index.ancestry, Labels.release(ctx.index.ancestry, part(old, :ancestry)))
 
-  defp remember_key(%{collect_scroll_keys?: true} = ctx, key, id),
-    do: Map.update(ctx, :new_key_ids, %{key => id}, &Map.put(&1, key, id))
+  defp retire(node, ctx) do
+    if MapSet.member?(ctx.claims, node.id) or not Map.has_key?(ctx.index.nodes, node.id) do
+      ctx
+    else
+      idx = ctx.index
 
-  defp remember_key(ctx, _key, _id), do: ctx
+      keys =
+        if node.key != nil and Map.get(idx.keys, node.key) == node.id,
+          do: Map.delete(idx.keys, node.key),
+          else: idx.keys
 
-  defp resolve_scroll_attrs(attrs, old, ctx) do
-    Enum.reduce([:scroll_position_x, :scroll_position_y], {attrs, ctx}, fn axis, {attrs, ctx} ->
+      idx = %{
+        idx
+        | nodes: Map.delete(idx.nodes, node.id),
+          keys: keys,
+          branch: Labels.release(idx.branch, part(node, :branch)),
+          ancestry: Labels.release(idx.ancestry, part(node, :ancestry)),
+          own: idx.own |> Labels.release(node.own) |> Labels.release(node.inherited)
+      }
+
+      routes =
+        if map_size(node.events) > 0,
+          do: EventRegistry.delete_node(ctx.routes, node.id),
+          else: ctx.routes
+
+      ctx = Enum.reduce(node.children, %{ctx | index: idx, routes: routes}, &retire/2)
+      Enum.reduce(node.nearby, ctx, fn {_, c}, ctx -> retire(c, ctx) end)
+    end
+  end
+
+  defp scroll_declarations(attrs, old, ctx) do
+    Enum.reduce(@axes, {attrs, ctx}, fn axis, {attrs, ctx} ->
       case Map.fetch(attrs, axis) do
-        :error ->
-          {attrs, ctx}
-
-        {:ok, value} when is_float(value) ->
-          {Map.put(attrs, axis, Emerge.UI.Scroll.validate_position!(value)), ctx}
-
         {:ok, %ScrollTarget{}} ->
           {attrs, ctx}
 
-        {:ok, key} ->
+        {:ok, key} when not is_float(key) ->
           Emerge.UI.Scroll.validate_position!(key)
 
           {token, ctx} =
-            case Map.get(old, axis) do
+            case old && Map.get(old.attrs, axis) do
               %ScrollTarget{key: ^key, declaration: token} -> {token, ctx}
-              _ -> alloc_id(ctx)
+              _ -> fresh(ctx)
             end
 
-          target = ctx |> Map.get(:new_key_ids, %{}) |> Map.get(key, 0)
-          {Map.put(attrs, axis, %ScrollTarget{key: key, declaration: token, id: target}), ctx}
+          {Map.put(attrs, axis, %ScrollTarget{key: key, declaration: token, id: 0}), ctx}
+
+        {:ok, fraction} ->
+          Emerge.UI.Scroll.validate_position!(fraction)
+          {attrs, ctx}
+
+        :error ->
+          {attrs, ctx}
       end
     end)
   end
 
-  defp build_old_key_index(%VNode{} = old_root) do
-    build_old_key_index(old_root, :root, %{})
-  end
-
-  defp build_old_key_index(%VNode{key: key, id: id} = vnode, scope, acc) do
-    acc = if is_nil(key), do: acc, else: Map.put(acc, key, %{scope: scope, vnode: vnode})
-
-    acc =
-      Enum.reduce(vnode.children, acc, fn child, next_acc ->
-        build_old_key_index(child, {:children, id}, next_acc)
-      end)
-
-    Enum.reduce(vnode.nearby, acc, fn {_slot, nearby_vnode}, next_acc ->
-      build_old_key_index(nearby_vnode, {:nearby, id}, next_acc)
-    end)
-  end
-
-  defp reusable_root?(%VNode{kind: kind, key: key}, %Element{} = element) do
-    kind == element.type and key == element_key(element)
-  end
-
-  defp children_mode(children) do
-    sibling_mode(children, &has_key?/1, "All siblings must have key when any key is provided")
-  end
-
-  defp nearby_mode(nearby) do
-    sibling_mode(
-      nearby,
-      fn {_slot, element} -> has_key?(element) end,
-      "All nearby mounts on a host must have key when any key is provided"
-    )
-  end
-
-  defp sibling_mode(items, has_key_fun, mixed_error) do
-    mode =
-      Enum.reduce(items, :unknown, fn item, mode ->
-        case {mode, has_key_fun.(item)} do
-          {:unknown, true} -> :keyed
-          {:unknown, false} -> :unkeyed
-          {:keyed, true} -> :keyed
-          {:unkeyed, false} -> :unkeyed
-          _ -> raise ArgumentError, mixed_error
+  defp waiting?(attrs, seen),
+    do:
+      Enum.any?(@axes, fn axis ->
+        case attrs do
+          %{^axis => %ScrollTarget{key: key}} when key != nil -> not Map.has_key?(seen, key)
+          _ -> false
         end
       end)
 
-    case mode do
-      :keyed -> :keyed
-      _ -> :unkeyed
-    end
-  end
+  defp resolve(attrs, seen),
+    do:
+      Enum.reduce(@axes, attrs, fn axis, attrs ->
+        case attrs do
+          %{^axis => %ScrollTarget{key: key} = ref} when key != nil ->
+            Map.put(attrs, axis, %{ref | id: Map.get(seen, key, 0)})
 
-  defp prepend_removed_children(old_children, used_old_ids, patches_rev, ctx) do
-    Enum.reduce(old_children, {patches_rev, ctx}, fn child, {acc, ctx} ->
-      if Map.has_key?(used_old_ids, child.id) do
-        {acc, ctx}
-      else
-        {[{:remove, child.id} | acc], maybe_delete_event_tree(ctx, child)}
-      end
-    end)
-  end
-
-  defp prepend_removed_nearby(old_nearby, used_old_ids, patches_rev, ctx) do
-    Enum.reduce(old_nearby, {patches_rev, ctx}, fn {_slot, vnode}, {acc, ctx} ->
-      if Map.has_key?(used_old_ids, vnode.id) do
-        {acc, ctx}
-      else
-        {[{:remove, vnode.id} | acc], maybe_delete_event_tree(ctx, vnode)}
-      end
-    end)
-  end
-
-  defp maybe_set_attrs(patches, %VNode{attrs: old_attrs}, new_attrs, id) do
-    if old_attrs == new_attrs do
-      patches
-    else
-      old_filtered = TreeAttrs.strip_runtime_attrs(old_attrs)
-      new_filtered = TreeAttrs.strip_runtime_attrs(new_attrs)
-
-      if old_filtered != new_filtered do
-        Emerge.Engine.AttrValidation.validate_change_update!(old_filtered, new_filtered)
-        [{:set_attrs, id, new_filtered} | patches]
-      else
-        patches
-      end
-    end
-  end
-
-  defp maybe_set_children(patches, %VNode{id: id, children: old_children}, new_children) do
-    old_ids = Enum.map(old_children, & &1.id)
-    new_ids = Enum.map(new_children, & &1.id)
-
-    if ordered_refs_need_set?(old_ids, new_ids, & &1) do
-      [{:set_children, id, new_ids} | patches]
-    else
-      patches
-    end
-  end
-
-  defp maybe_set_nearby_mounts(
-         patches,
-         %VNode{id: id, nearby: old_nearby},
-         new_nearby
-       ) do
-    old_refs = mount_refs(old_nearby)
-    new_refs = mount_refs(new_nearby)
-
-    if ordered_refs_need_set?(old_refs, new_refs, fn {_slot, mount_id} -> mount_id end) do
-      [{:set_nearby_mounts, id, new_refs} | patches]
-    else
-      patches
-    end
-  end
-
-  defp ordered_refs_need_set?(old_refs, new_refs, key_fun) do
-    old_refs != new_refs and do_ordered_refs_need_set?(old_refs, new_refs, key_fun)
-  end
-
-  defp do_ordered_refs_need_set?(old_refs, new_refs, key_fun)
-       when length(old_refs) + length(new_refs) >= 32 do
-    old_keys = MapSet.new(old_refs, key_fun)
-    new_keys = MapSet.new(new_refs, key_fun)
-    inserted_keys = MapSet.difference(new_keys, old_keys)
-    removed_keys = MapSet.difference(old_keys, new_keys)
-
-    if MapSet.size(inserted_keys) > 0 and MapSet.size(removed_keys) > 0 do
-      true
-    else
-      old_remaining = Enum.reject(old_refs, &MapSet.member?(removed_keys, key_fun.(&1)))
-      new_remaining = Enum.reject(new_refs, &MapSet.member?(inserted_keys, key_fun.(&1)))
-
-      old_remaining != new_remaining
-    end
-  end
-
-  defp do_ordered_refs_need_set?(old_refs, new_refs, key_fun) do
-    old_keys = Enum.map(old_refs, key_fun)
-    new_keys = Enum.map(new_refs, key_fun)
-
-    inserted_keys = new_keys -- old_keys
-    removed_keys = old_keys -- new_keys
-
-    if inserted_keys != [] and removed_keys != [] do
-      true
-    else
-      old_remaining = Enum.reject(old_refs, &(key_fun.(&1) in removed_keys))
-      new_remaining = Enum.reject(new_refs, &(key_fun.(&1) in inserted_keys))
-
-      old_remaining != new_remaining
-    end
-  end
-
-  defp prepend_many(acc, patches) when is_list(patches) do
-    Enum.reverse(patches, acc)
-  end
-
-  defp alloc_id(%{next_id: id} = ctx) do
-    {id, %{ctx | next_id: id + 1}}
-  end
-
-  defp mount_refs(nearby) do
-    Enum.map(nearby, fn {slot, vnode} -> {slot, vnode.id} end)
-  end
-
-  defp element_key(%Element{key: key}) when not is_nil(key), do: key
-  defp element_key(_), do: nil
-
-  defp has_key?(%Element{key: key}) when not is_nil(key), do: true
-  defp has_key?(_), do: false
-
-  defp ensure_unique_key!(ctx, nil), do: ctx
-
-  defp ensure_unique_key!(%{seen: seen} = ctx, key) do
-    if MapSet.member?(seen, key) do
-      raise ArgumentError, "duplicate explicit key: #{inspect(key)}"
-    end
-
-    %{ctx | seen: MapSet.put(seen, key)}
-  end
-
-  defp validate_viewport_root!(%Element{attrs: attrs}) do
-    if Map.has_key?(attrs, :animate_exit) do
-      raise ArgumentError, "animate_exit is not allowed on the viewport root"
-    end
-  end
+          _ ->
+            attrs
+        end
+      end)
 end

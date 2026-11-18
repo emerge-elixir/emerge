@@ -197,14 +197,14 @@ defmodule EmergeSkia.RetainedTreeSliceTest do
     assert_receive {:application, {:box, %{x: 5.0, y: 5.0}}}
   end
 
-  test "a pending edit does not retarget input, and a full upload cancels an old press" do
+  test "a pending edit does not retarget input, and an accepted absence cancels an old press" do
     # A normal frame cap keeps the accepted patch pending. Public renderer
     # input and capture must still agree with the first frame, not the edit.
     r = start_renderer(1)
     :ok = EmergeSkia.set_input_target(r, self())
     {state, _} = EmergeSkia.upload_tree(r, wrapped(170))
     wide = receive_pixels()
-    EmergeSkia.patch_tree(r, state, wrapped(100))
+    {state, _} = EmergeSkia.patch_tree(r, state, wrapped(100))
     :ok = Headless.button(r, :press, 5, 45)
     :ok = Headless.button(r, :release, 5, 45)
     assert_receive {:emerge_skia_event, {id, :click, %{x: 5.0, y: 5.0}}}
@@ -212,13 +212,15 @@ defmodule EmergeSkia.RetainedTreeSliceTest do
     narrow = receive_pixels()
     refute narrow == wide
     :ok = Headless.button(r, :press, 5, 125)
-    EmergeSkia.upload_tree(r, wrapped(100))
+    {empty, _} = EmergeSkia.patch_tree(r, state, none())
+    {_next, _} = EmergeSkia.patch_tree(r, empty, wrapped(100))
     assert receive_pixels() == narrow
     :ok = Headless.button(r, :release, 5, 125)
     refute_receive {:emerge_skia_event, {_, :click, _}}
     :ok = Headless.button(r, :press, 5, 125)
     :ok = Headless.button(r, :release, 5, 125)
-    assert_receive {:emerge_skia_event, {^id, :click, %{x: 5.0, y: 5.0}}}
+    assert_receive {:emerge_skia_event, {new_id, :click, %{x: 5.0, y: 5.0}}}
+    refute new_id == id
     assert :ok = EmergeSkia.stop(r)
     assert {:error, _} = Headless.move(r, 0, 0)
   end

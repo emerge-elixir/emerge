@@ -105,7 +105,7 @@ defmodule Emerge.Engine.EventRegistry do
     key = NodeId.encode(id)
     value = if map_size(events) != 0, do: events
 
-    if Map.get(changes.registry, key) == value do
+    if Map.get(changes.registry, key) === value do
       changes
     else
       %Changes{

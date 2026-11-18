@@ -63,7 +63,7 @@ defmodule Emerge.Engine.ReconcileTest do
     roundtrip_tree = Emerge.Engine.Serialization.decode(roundtrip_bin)
 
     assert extract_stable_rows(roundtrip_tree) == expected
-    assert <<"EMRG", 9, ^expected_count::32, _records::binary>> = roundtrip_bin
+    assert <<"EMRG", 10, 0::64, _root::64, ^expected_count::32, _records::binary>> = roundtrip_bin
     assert count_nodes(roundtrip_tree) == expected_count
   end
 

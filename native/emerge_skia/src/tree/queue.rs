@@ -46,6 +46,7 @@ impl WorkSet {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn clear(&mut self) {
         // A full replacement can discard pending work. A drained pass has
         // nothing to reset; never sweep retained key slots or empty buckets.

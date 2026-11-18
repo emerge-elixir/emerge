@@ -22,10 +22,10 @@ defmodule EmergeSkia.FrameRateTest do
 
     {:ok, renderer} = EmergeSkia.start(config)
     on_exit(fn -> EmergeSkia.stop(renderer) end)
-    upload_color(renderer, {255, 0, 0})
+    {state, _} = EmergeSkia.upload_tree(renderer, panel({255, 0, 0}))
     await_color(<<255, 0, 0>>, 5_000)
-    upload_color(renderer, {0, 0, 255})
-    upload_color(renderer, {0, 255, 0})
+    {state, _} = EmergeSkia.patch_tree(renderer, state, panel({0, 0, 255}))
+    {state, _} = EmergeSkia.patch_tree(renderer, state, panel({0, 255, 0}))
     refute_receive {"rate_frame", _}, 100
     %Config{renderer: %Config.Renderer{} = rendering} = config
     rendering = %Config.Renderer{rendering | target_fps: nil}
@@ -37,7 +37,7 @@ defmodule EmergeSkia.FrameRateTest do
     assert {:ok, token} = EmergeSkia.configure(renderer, uncapped, capped)
     assert_receive {:emerge_skia_config, ^token, :ok}, 5_000
     refute_receive {"rate_frame", _}, 60
-    upload_color(renderer, {0, 0, 255})
+    EmergeSkia.patch_tree(renderer, state, panel({0, 0, 255}))
     stop = Task.async(fn -> EmergeSkia.stop(renderer) end)
     assert :ok = Task.await(stop, 750)
     assert {:ok, %{cleanup_complete: true}} = EmergeSkia.renderer_status(renderer)
@@ -58,17 +58,19 @@ defmodule EmergeSkia.FrameRateTest do
 
     {:ok, renderer} = EmergeSkia.start(config)
     on_exit(fn -> EmergeSkia.stop(renderer) end)
-    upload_color(renderer, {0, 255, 0})
+    {state, _} = EmergeSkia.upload_tree(renderer, panel({0, 255, 0}))
     await_color(<<0, 255, 0>>, 5_000)
     refute_receive {"rate_frame", _}, 40
 
     blue = Background.color(Emerge.UI.Color.color_rgb(0, 0, 255))
     red = Background.color(Emerge.UI.Color.color_rgb(255, 0, 0))
 
-    EmergeSkia.upload_tree(
+    EmergeSkia.patch_tree(
       renderer,
+      state,
       el(
         [
+          key(:entering),
           width(px(2)),
           height(px(2)),
           red,
@@ -109,9 +111,9 @@ defmodule EmergeSkia.FrameRateTest do
 
     # Model a setter that succeeded before a later part of configure failed.
     assert :ok = EmergeSkia.Native.set_frame_rate(renderer, 1)
-    upload_color(renderer, {255, 0, 0})
+    {state, _} = EmergeSkia.upload_tree(renderer, panel({255, 0, 0}))
     await_color(<<255, 0, 0>>, 5_000)
-    upload_color(renderer, {0, 255, 0})
+    EmergeSkia.patch_tree(renderer, state, panel({0, 255, 0}))
     refute_receive {"rate_frame", _}, 100
 
     assert {:ok, token} = EmergeSkia.configure(renderer, config, config)
@@ -160,13 +162,10 @@ defmodule EmergeSkia.FrameRateTest do
     end
   end
 
-  defp upload_color(renderer, {r, g, b}) do
-    EmergeSkia.upload_tree(
-      renderer,
-      el(
-        [width(px(2)), height(px(2)), Background.color(Emerge.UI.Color.color_rgb(r, g, b))],
-        none()
-      )
+  defp panel({r, g, b}) do
+    el(
+      [width(px(2)), height(px(2)), Background.color(Emerge.UI.Color.color_rgb(r, g, b))],
+      none()
     )
   end
 

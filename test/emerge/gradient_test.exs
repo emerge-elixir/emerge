@@ -188,26 +188,20 @@ defmodule Emerge.GradientTest do
     end
   end
 
-  test "full trees and inserted subtrees use v9, while attr patches carry the new value" do
+  test "full declarations and sparse attribute replacements use the same version" do
     tree = el([Background.color(gradient([:red, :green, :blue]))], none())
     {encoded, assigned} = Serialization.encode(tree)
-    assert <<"EMRG", 9, _::binary>> = encoded
+    assert <<"EMRG", 10, _::binary>> = encoded
     assert Serialization.decode(encoded).attrs.background == assigned.attrs.background
-    <<"EMRG", 9, body::binary>> = encoded
+    <<"EMRG", 10, body::binary>> = encoded
     assert_raise ArgumentError, fn -> Serialization.decode(<<"EMRG", 7, body::binary>>) end
 
-    patches = [
-      {:set_attrs, assigned.id, %{background: gradient([:white, :black])}},
-      {:insert_subtree, nil, 0, assigned}
-    ]
-
-    decoded = patches |> Patch.encode() |> Patch.decode()
+    node = {:node, assigned.id, :el, %{background: gradient([:white, :black])}, :same}
 
     assert [
-             {:set_attrs, _, %{background: {:color_gradient, [:white, :black], +0.0}}},
-             {:insert_subtree, nil, 0, inserted}
-           ] = decoded
-
-    assert inserted.attrs.background == assigned.attrs.background
+             {:patch, id,
+              {:node, id, :el, %{background: {:color_gradient, [:white, :black], +0.0}}, :same}}
+           ] =
+             Patch.patch(assigned.id, node) |> Patch.encode() |> Patch.decode()
   end
 end

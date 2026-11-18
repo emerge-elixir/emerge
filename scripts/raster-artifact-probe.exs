@@ -23,11 +23,14 @@ defmodule RasterArtifactProbe do
         dither <- [false, true] do
       renderer = start!(format, width, 2, dither)
 
-      for {color, expected} <- [white: white, black: <<0, 0, 0, 0>>] do
-        tree = el([width(px(width)), height(px(2)), Background.color(color)], none())
-        {_state, _assigned} = EmergeSkia.upload_tree(renderer, tree)
-        %Binary{planes: [%Plane{stride: 2}]} = await_frame!(format, &(&1 == expected))
+      panel = fn color ->
+        el([width(px(width)), height(px(2)), Background.color(color)], none())
       end
+
+      {state, _} = EmergeSkia.upload_tree(renderer, panel.(:white))
+      %Binary{planes: [%Plane{stride: 2}]} = await_frame!(format, &(&1 == white))
+      EmergeSkia.patch_tree(renderer, state, panel.(:black))
+      %Binary{planes: [%Plane{stride: 2}]} = await_frame!(format, &(&1 == <<0, 0, 0, 0>>))
 
       :ok = EmergeSkia.stop(renderer)
       drain_frames()

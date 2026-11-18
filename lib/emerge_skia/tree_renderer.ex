@@ -19,8 +19,8 @@ defmodule EmergeSkia.TreeRenderer do
     {state, assigned}
   end
 
-  @spec patch_tree(reference(), Emerge.Engine.diff_state(), Emerge.Engine.Element.t()) ::
-          {Emerge.Engine.diff_state(), Emerge.Engine.Element.t()}
+  @spec patch_tree(reference(), Emerge.Engine.diff_state(), Emerge.Engine.Element.t() | nil) ::
+          {Emerge.Engine.diff_state(), Emerge.Engine.Element.t() | nil}
   def patch_tree(renderer, state, tree) do
     {patch_bin, state, assigned} = Emerge.Engine.diff_state_update(state, tree)
 

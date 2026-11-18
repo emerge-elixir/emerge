@@ -4,15 +4,16 @@ defmodule EmergeSkia.TreeTest do
   alias Emerge.Engine.NodeId
   alias EmergeSkia.Native
 
-  # Helper to build EMRG header (version 9)
-  defp make_header(node_count) do
-    "EMRG" <> <<9, node_count::unsigned-32>>
+  # Fully explicit first mount through the ordinary v10 operation.
+  defp make_header(root, node_count) do
+    <<"EMRG", 10, 0::64, root::64, node_count::32>>
   end
 
   defp encode_node(id, type_tag, attrs, child_ids \\ [], nearby \\ []) do
     <<
       id::unsigned-big-64,
       type_tag::unsigned-8,
+      3,
       byte_size(attrs)::unsigned-32,
       attrs::binary,
       length(child_ids)::unsigned-16,
@@ -60,7 +61,7 @@ defmodule EmergeSkia.TreeTest do
 
       node_data = encode_node(id, 4, attrs)
 
-      data = make_header(1) <> node_data
+      data = make_header(id, 1) <> node_data
       assert {:ok, true} = Native.tree_upload(tree, data)
 
       {:ok, frames} = Native.tree_layout(tree, 800.0, 600.0, 1.0)
@@ -88,7 +89,7 @@ defmodule EmergeSkia.TreeTest do
       child1_node = encode_node(child1_id, 4, child_attrs)
       child2_node = encode_node(child2_id, 4, child_attrs)
 
-      data = make_header(3) <> row_node <> child1_node <> child2_node
+      data = make_header(row_id, 3) <> row_node <> child1_node <> child2_node
       assert {:ok, true} = Native.tree_upload(tree, data)
 
       {:ok, frames} = Native.tree_layout(tree, 800.0, 600.0, 1.0)
@@ -124,7 +125,7 @@ defmodule EmergeSkia.TreeTest do
       child1_node = encode_node(child1_id, 4, child_attrs)
       child2_node = encode_node(child2_id, 4, child_attrs)
 
-      data = make_header(3) <> col_node <> child1_node <> child2_node
+      data = make_header(col_id, 3) <> col_node <> child1_node <> child2_node
       assert {:ok, true} = Native.tree_upload(tree, data)
 
       {:ok, frames} = Native.tree_layout(tree, 800.0, 600.0, 1.0)
@@ -151,7 +152,7 @@ defmodule EmergeSkia.TreeTest do
 
       node_data = encode_node(id, 4, attrs)
 
-      data = make_header(1) <> node_data
+      data = make_header(id, 1) <> node_data
       assert {:ok, true} = Native.tree_upload(tree, data)
 
       # With scale=2.0, width should be 200, height should be 100
@@ -177,7 +178,7 @@ defmodule EmergeSkia.TreeTest do
       child1_node = encode_node(child1_id, 4, child_attrs)
       child2_node = encode_node(child2_id, 4, child_attrs)
 
-      data = make_header(3) <> root_node <> child1_node <> child2_node
+      data = make_header(root_id, 3) <> root_node <> child1_node <> child2_node
       assert {:ok, true} = Native.tree_upload(tree, data)
 
       {:ok, disabled_stats} = Native.stats(tree, :peek)
@@ -282,7 +283,7 @@ defmodule EmergeSkia.TreeTest do
       c2_node = encode_node(c2_id, 4, child_attrs)
       c3_node = encode_node(c3_id, 4, child_attrs)
 
-      data = make_header(4) <> row_node <> c1_node <> c2_node <> c3_node
+      data = make_header(row_id, 4) <> row_node <> c1_node <> c2_node <> c3_node
       assert {:ok, true} = Native.tree_upload(tree, data)
 
       {:ok, frames} = Native.tree_layout(tree, 800.0, 600.0, 1.0)
@@ -328,7 +329,7 @@ defmodule EmergeSkia.TreeTest do
       c3_node = encode_node(c3_id, 4, child_attrs)
       c4_node = encode_node(c4_id, 4, child_attrs)
 
-      data = make_header(5) <> row_node <> c1_node <> c2_node <> c3_node <> c4_node
+      data = make_header(row_id, 5) <> row_node <> c1_node <> c2_node <> c3_node <> c4_node
       assert {:ok, true} = Native.tree_upload(tree, data)
 
       {:ok, frames} = Native.tree_layout(tree, 800.0, 600.0, 1.0)
@@ -383,7 +384,10 @@ defmodule EmergeSkia.TreeTest do
       c3_node = encode_node(c3_id, 4, child_attrs)
       below_node = encode_node(below_id, 4, below_attrs)
 
-      data = make_header(6) <> col_node <> row_node <> c1_node <> c2_node <> c3_node <> below_node
+      data =
+        make_header(col_id, 6) <>
+          col_node <> row_node <> c1_node <> c2_node <> c3_node <> below_node
+
       assert {:ok, true} = Native.tree_upload(tree, data)
 
       {:ok, frames} = Native.tree_layout(tree, 800.0, 600.0, 1.0)

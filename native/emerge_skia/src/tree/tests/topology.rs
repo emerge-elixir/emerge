@@ -1,16 +1,12 @@
 use super::*;
 
-pub(super) fn insert(parent: u64, index: u16, nodes: &[Bytes]) -> Bytes {
-    let sub = upload(nodes);
-    [3].into_iter()
-        .chain(parent.to_be_bytes())
-        .chain(index.to_be_bytes())
-        .chain((sub.len() as u32).to_be_bytes())
-        .chain(sub)
-        .collect()
+fn children(parent: u64, kind: u8, ids: &[u64], defs: &[Bytes]) -> Bytes {
+    let mut records = vec![edges(parent, kind, ids)];
+    records.extend_from_slice(defs);
+    patch(parent, parent, &records)
 }
-pub(super) fn remove(id: u64) -> Bytes {
-    [4].into_iter().chain(id.to_be_bytes()).collect()
+fn remove(id: u64) -> Bytes {
+    patch(id, 0, &[])
 }
 fn box_attrs(width: f64, rgb: [u8; 3]) -> Bytes {
     block(&[px(1, width), px(2, 20.), color(rgb), vec![40, 1]])
@@ -25,7 +21,7 @@ fn line(c: [u8; 3]) -> Bytes {
         box_node(4, 40., c),
     ])
 }
-fn cold_match(r: &mut Raster, full: &[u8]) {
+pub(super) fn cold_match(r: &mut Raster, full: &[u8]) {
     let mut cold = Raster::default();
     cold.tree.upload(full).unwrap();
     assert_eq!(draw(r), draw(&mut cold));
@@ -51,8 +47,8 @@ fn apply_the_entire_patch_cycle_then_invalidate_once() {
     let press = r.target_at(25., 5.).unwrap().0;
     let pass = r.tree.layers.invalidation_passes;
     for p in [
-        insert(1, 1, &[box_node(3, 20., [0, 255, 0])]),
-        set(4, box_attrs(40., yellow)),
+        children(1, 1, &[2, 3, 4], &[box_node(3, 20., [0, 255, 0])]),
+        set(4, 4, box_attrs(40., yellow)),
         remove(3),
     ] {
         r.tree.patch(&p).unwrap();
@@ -69,10 +65,10 @@ fn apply_the_entire_patch_cycle_then_invalidate_once() {
     assert_eq!(r.tree.elements.ids[&4], c);
     // Net-zero declaration and order edits have no downstream work either.
     for p in [
-        order(1, &[4, 2]),
-        set(4, box_attrs(40., blue)),
-        order(1, &[2, 4]),
-        set(4, box_attrs(40., yellow)),
+        order(1, 1, &[4, 2]),
+        set(4, 4, box_attrs(40., blue)),
+        order(1, 1, &[2, 4]),
+        set(4, 4, box_attrs(40., yellow)),
     ] {
         r.tree.patch(&p).unwrap();
     }
@@ -89,9 +85,10 @@ fn detached_cache_reuses_glyphs_not_attachment_or_inherited_inputs() {
         ])
     };
     let subtree = |s| {
-        insert(
+        children(
             1,
-            u16::MAX,
+            1,
+            &[2],
             &[
                 node(2, 4, block(&[vec![40, 1]]), &[3]),
                 node(3, 5, text(s), &[]),
@@ -108,7 +105,8 @@ fn detached_cache_reuses_glyphs_not_attachment_or_inherited_inputs() {
     // Remove and reattach without an intervening draw: pixels may be accepted,
     // but a press held against the old attachment must not match its new one.
     let draws = r.draws;
-    r.tree.patch(&[remove(2), subtree("WW")].concat()).unwrap();
+    r.tree.patch(&remove(2)).unwrap();
+    r.tree.patch(&subtree("WW")).unwrap();
     assert!(r.has_target(target));
     assert_eq!(draw(&mut r), old);
     assert_eq!(r.draws, draws);
@@ -125,15 +123,16 @@ fn detached_cache_reuses_glyphs_not_attachment_or_inherited_inputs() {
     assert!(!ran(&r, Measure, 3));
     // Edit while attached, detach before that edit is computed, change the
     // inherited font while absent, then reinsert with the pending declaration.
-    r.tree.patch(&set(3, text("i"))).unwrap();
-    r.tree.patch(&[remove(2), remove(3)].concat()).unwrap();
+    r.tree.patch(&set(3, 5, text("i"))).unwrap();
+    r.tree.patch(&remove(2)).unwrap();
+    assert!(r.tree.patch(&remove(3)).is_err());
     r.tree
-        .patch(&set(1, block(&[px(1, 110.), number(16, 30.)])))
+        .patch(&set(1, 1, block(&[px(1, 110.), number(16, 30.)])))
         .unwrap();
     draw(&mut r);
     assert_eq!(r.tree.frames().count(), 1);
     assert!(r.hit_at(5., 5.).is_none());
-    assert!(r.tree.patch(&set(3, text("absent"))).is_err());
+    assert!(r.tree.patch(&set(3, 5, text("absent"))).is_err());
     r.tree.patch(&subtree("i")).unwrap();
     cold_match(&mut r, &doc(30., "i"));
     assert_eq!(r.tree.elements.ids[&3], slot);
@@ -141,8 +140,9 @@ fn detached_cache_reuses_glyphs_not_attachment_or_inherited_inputs() {
     assert!(ran(&r, Measure, 3));
     // An incompatible declaration is cold, including its typed payload.
     let green = box_node(3, 20., [0, 255, 0]);
+    r.tree.patch(&remove(3)).unwrap();
     r.tree
-        .patch(&[remove(3), insert(2, 0, std::slice::from_ref(&green))].concat())
+        .patch(&children(2, 4, &[3], std::slice::from_ref(&green)))
         .unwrap();
     cold_match(
         &mut r,
@@ -166,7 +166,7 @@ fn membership_supplies_fill_offers_even_when_parent_bounds_are_equal() {
         r.tree.upload(&base).unwrap();
         draw(&mut r);
         r.tree
-            .patch(&insert(1, 99, std::slice::from_ref(&fill)))
+            .patch(&children(1, kind, &[4], std::slice::from_ref(&fill)))
             .unwrap();
         cold_match(
             &mut r,
@@ -175,7 +175,7 @@ fn membership_supplies_fill_offers_even_when_parent_bounds_are_equal() {
         assert_eq!(bounds(&r, 4).width, 100.);
         if kind != 4 {
             r.tree
-                .patch(&insert(1, 0, std::slice::from_ref(&fixed)))
+                .patch(&children(1, kind, &[3, 4], std::slice::from_ref(&fixed)))
                 .unwrap();
             cold_match(
                 &mut r,
@@ -198,39 +198,44 @@ fn mixed_batches_resolve_intermediate_ids_and_reject_atomically() {
     draw(&mut r);
     let fresh = node(7, 3, block(&[]), &[9]);
     let leaf = node(9, 5, text("old"), &[]);
-    let nested = insert(1, 1, &[fresh.clone(), leaf]);
+    let nested = children(1, 1, &[2, 7, 4], &[leaf, fresh.clone()]);
     r.tree.patch(&nested).unwrap();
     let before = r.tree.encode();
     let pending = r.tree.elements.touched.clone();
     for bad in [
-        insert(1, 0, std::slice::from_ref(&fresh)),
-        insert(1, 0, &[node(2, 6, block(&[]), &[])]),
-        insert(0, 0, &[node(8, 6, block(&[]), &[])]),
-        insert(9, 0, &[node(8, 6, block(&[]), &[])]),
-        insert(8, 0, &[node(8, 6, block(&[]), &[])]),
-        remove(1),
-        order(1, &[2, 7, 7]),
-        order(1, &[2, 9, 4]),
-        [set(9, block(&[vec![65]])), set(9, text("valid"))].concat(),
+        patch(1, 2, &[fresh]),                       // unreachable record
+        patch(1, 2, &[node(2, 6, block(&[]), &[])]), // incompatible live kind
+        patch(0, 8, &[node(8, 6, block(&[]), &[])]),
+        children(9, 5, &[8], &[node(8, 6, block(&[]), &[])]), // leaf arity
+        order(7, 3, &[2]),                                    // outside capture
+        patch(8, 0, &[]),                                     // absent target
+        order(1, 1, &[2, 7, 7]),
+        order(1, 1, &[7, 9]), // #7 closes over #9
+        patch(1, 1, &[edges(1, 1, &[7, 9]), attr_record(7, 3, block(&[]))]),
+        patch(
+            7,
+            7,
+            &[edges(7, 3, &[9]), attr_record(9, 5, block(&[vec![65]]))],
+        ),
+        patch(7, 8, &[edges(8, 3, &[9])]), // fresh attrs: :same
+        patch(7, 8, &[attr_record(8, 3, block(&[]))]), // fresh children: :same
         vec![3, 0],
     ] {
-        assert!(
-            r.tree
-                .patch(&[set(4, box_attrs(80., [0, 0, 0])), bad].concat())
-                .is_err()
-        );
+        assert!(r.tree.patch(&bad).is_err());
         assert_eq!(r.tree.encode(), before);
         assert_eq!(r.tree.elements.touched, pending);
         assert!(r.tree.layers.worksets_empty());
     }
-    let mixed = [
-        set(9, text("new")),
-        insert(7, 0, &[node(8, 6, block(&[]), &[])]),
-        remove(2),
-        order(1, &[4, 7]),
-        order(7, &[9, 8]),
-    ]
-    .concat();
+    let mixed = patch(
+        1,
+        1,
+        &[
+            attr_record(9, 5, text("new")),
+            node(8, 6, block(&[]), &[]),
+            edges(1, 1, &[4, 7]),
+            edges(7, 3, &[9, 8]),
+        ],
+    );
     r.tree.patch(&mixed).unwrap();
     cold_match(
         &mut r,
@@ -259,12 +264,22 @@ fn live_depth_limit_and_churn_through_fresh_ids() {
         .collect();
     t.upload(&upload(&deep)).unwrap();
     let last = MAX_DEPTH as u64;
-    t.patch(&insert(last, 0, &[node(last + 1, 3, block(&[]), &[])]))
-        .unwrap();
+    t.patch(&children(
+        last,
+        3,
+        &[last + 1],
+        &[node(last + 1, 3, block(&[]), &[])],
+    ))
+    .unwrap();
     let before = t.encode();
     assert_eq!(
-        t.patch(&insert(last + 1, 0, &[node(last + 2, 3, block(&[]), &[])]))
-            .unwrap_err(),
+        t.patch(&children(
+            last + 1,
+            3,
+            &[last + 2],
+            &[node(last + 2, 3, block(&[]), &[])]
+        ))
+        .unwrap_err(),
         "tree depth exceeds 512"
     );
     assert_eq!(t.encode(), before);
@@ -279,13 +294,7 @@ fn live_depth_limit_and_churn_through_fresh_ids() {
     draw(&mut r);
     for id in 3..203 {
         r.tree
-            .patch(
-                &[
-                    insert(1, 0, &[box_node(id, 20., [0, 0, 255])]),
-                    remove(id - 1),
-                ]
-                .concat(),
-            )
+            .patch(&patch(id - 1, id, &[box_node(id, 20., [0, 0, 255])]))
             .unwrap();
         assert_eq!(r.tree.elements.slots.len(), 2);
         if id % 11 == 0 {

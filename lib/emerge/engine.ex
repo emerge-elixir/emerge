@@ -4,7 +4,6 @@ defmodule Emerge.Engine do
   """
 
   alias Emerge.Engine.DiffState
-  alias Emerge.Engine.Reconcile
   alias Emerge.Engine.Serialization
 
   @typedoc "Incremental diff state used between tree uploads and patches."
@@ -21,13 +20,14 @@ defmodule Emerge.Engine do
   @doc """
   Compute patches for a new tree and return {patch_binary, next_state, assigned_tree}.
   """
-  @spec diff_state_update(diff_state(), Emerge.tree()) :: {binary(), diff_state(), Emerge.tree()}
+  @spec diff_state_update(diff_state(), Emerge.tree() | nil) ::
+          {binary(), diff_state(), Emerge.tree() | nil}
   def diff_state_update(state, tree) do
     DiffState.diff_and_encode(state, tree)
   end
 
   @doc false
-  @spec diff_state_update_binary(diff_state(), Emerge.tree()) :: {binary(), diff_state()}
+  @spec diff_state_update_binary(diff_state(), Emerge.tree() | nil) :: {binary(), diff_state()}
   def diff_state_update_binary(state, tree) do
     DiffState.diff_and_encode_binary(state, tree)
   end
@@ -37,19 +37,8 @@ defmodule Emerge.Engine do
   """
   @spec encode_full(diff_state(), Emerge.tree()) :: {binary(), diff_state(), Emerge.tree()}
   def encode_full(%DiffState{} = state, tree) do
-    {vdom, assigned, next_id} = Reconcile.assign_ids(tree, state.next_id)
-
-    {
-      Serialization.encode_tree(assigned),
-      %DiffState{
-        state
-        | tree: assigned,
-          vdom: vdom,
-          event_registry: DiffState.build_event_registry(assigned),
-          next_id: next_id
-      },
-      assigned
-    }
+    {bytes, next, assigned} = DiffState.diff_and_encode(state, tree)
+    {if(state.vdom, do: Serialization.encode_tree(assigned), else: bytes), next, assigned}
   end
 
   @doc """

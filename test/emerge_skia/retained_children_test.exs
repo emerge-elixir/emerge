@@ -38,6 +38,57 @@ defmodule EmergeSkia.RetainedChildrenTest do
     end
   end
 
+  test "a continuous keyed move changes the drawn site and route, not the press attachment" do
+    view = fn site ->
+      card =
+        el(
+          [
+            key(:card),
+            width(px(20)),
+            height(px(20)),
+            Background.color(:red),
+            Event.on_click(site)
+          ],
+          none()
+        )
+
+      parents =
+        for k <- [:left, :right],
+            do: column([key(k), width(px(60))], if(k == site, do: [card], else: []))
+
+      row([], parents)
+    end
+
+    {pid, r} =
+      Headless.mount({120, 20}, fn -> view.(:left) end, [:pointer_move, :pointer_button],
+        target_fps: 1
+      )
+
+    red = :binary.copy(<<255, 0, 0, 255>>, 20)
+    blank = fn w -> :binary.copy(<<0::32>>, w) end
+    left = :binary.copy(red <> blank.(100), 20)
+    right = :binary.copy(blank.(60) <> red <> blank.(40), 20)
+    assert Headless.pixels() == left
+
+    send(
+      pid,
+      {:scene,
+       fn ->
+         send(self(), :moved)
+         view.(:right)
+       end}
+    )
+
+    assert_receive {:application, :moved}
+    click(r, 5, :left)
+    button(r, :press, 5)
+    assert Headless.pixels(2500) == right
+    button(r, :release, 65)
+    assert_receive {:application, {:right, %{x: 5.0, y: 5.0}}}
+    click(r, 5, nil)
+    click(r, 65, :right)
+  end
+
   test "several callback edits install together even when the pixels are reused" do
     view = fn label ->
       el([width(px(80)), height(px(20)), Background.color(:red), Event.on_click(label)], none())

@@ -53,12 +53,15 @@ defmodule EmergeSkia.GradientTest do
     assert {:ok, roundtrip} = Native.tree_upload_roundtrip(tree, bytes)
     assert Serialization.decode(roundtrip).attrs.background == assigned.attrs.background
     attrs = Map.put(assigned.attrs, :background, gradient([:red, :white, :blue], 90))
-    patch = Patch.encode([{:set_attrs, assigned.id, attrs}])
+
+    patch =
+      Patch.encode(Patch.patch(assigned.id, {:node, assigned.id, assigned.type, attrs, :same}))
+
     assert {:ok, updated} = Native.tree_patch_roundtrip(tree, patch)
     decoded = Serialization.decode(updated)
     assert decoded.attrs.background == attrs.background
     assert render(decoded) == render(panel(gradient([:red, :white, :blue], 90)))
-    <<"EMRG", 9, rest::binary>> = bytes
+    <<"EMRG", 10, rest::binary>> = bytes
     assert {:error, _} = Native.tree_upload(tree, <<"EMRG", 7, rest::binary>>)
     assert {:error, _} = Native.tree_patch(tree, <<1, assigned.id::64, 4::32, 0, 1, 12, 1>>)
   end
@@ -206,7 +209,12 @@ defmodule EmergeSkia.GradientTest do
       attrs = Map.put(assigned.attrs, key, changed)
 
       assert {:ok, bytes} =
-               Native.tree_patch_roundtrip(tree, Patch.encode([{:set_attrs, assigned.id, attrs}]))
+               Native.tree_patch_roundtrip(
+                 tree,
+                 Patch.encode(
+                   Patch.patch(assigned.id, {:node, assigned.id, assigned.type, attrs, :same})
+                 )
+               )
 
       assert Serialization.decode(bytes).attrs ==
                Emerge.Engine.Tree.Attrs.strip_runtime_attrs(attrs)

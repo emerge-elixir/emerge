@@ -113,13 +113,14 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     });
     draw(&mut r);
     for s in ["BB", "BBBB", "BBBB"] {
-        let patch = set(2, text(s));
+        let patch = set(2, 5, text(s));
         c.zero("fitting text patch", || {
             r.tree.patch(&patch).unwrap();
             r.tree.refresh(180., 170., 1.).unwrap()
         });
         draw(&mut r);
     }
+    let full = at(full, 1);
     c.zero("fitting full replacement", || {
         r.tree.upload(&full).unwrap();
         r.tree.refresh(180., 170., 1.).unwrap()
@@ -127,7 +128,7 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     draw(&mut r);
     let first_key = r.tree.root.unwrap();
     let before = r.tree.encode();
-    let big = upload(&[node(8, 5, text(&"Q".repeat(512)), &[])]);
+    let big = patch(1, 8, &[node(8, 5, text(&"Q".repeat(512)), &[])]);
     (c.fail_next_reserve)();
     assert_eq!(
         r.tree.upload(&big).unwrap_err(),
@@ -151,14 +152,14 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     // At the last fit the 180 installed glyphs and 180 different candidate
     // glyphs coexist in the 360-slot run pool; the draw buffer also uses 180/180.
     for (s, n) in [("X", 140), ("Y", 180), ("Z", 180)] {
-        let p = set(1, text(&s.repeat(n)));
+        let p = set(1, 5, text(&s.repeat(n)));
         c.zero("spend headroom", || {
             r.tree.patch(&p).unwrap();
             r.tree.refresh(180., 170., 1.).unwrap()
         });
         draw(&mut r);
     }
-    let p = set(1, text(&"Z".repeat(181)));
+    let p = set(1, 5, text(&"Z".repeat(181)));
     let before = r.tree.encode();
     let pixels = r.pixels().to_vec();
     let draws = r.draws;
@@ -179,7 +180,7 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
         r.tree.refresh(180., 170., 1.).unwrap()
     });
     draw(&mut r);
-    let p = set(1, text(&"A".repeat(181)));
+    let p = set(1, 5, text(&"A".repeat(181)));
     c.zero("subsequent fit", || {
         r.tree.patch(&p).unwrap();
         r.tree.refresh(180., 170., 1.).unwrap()
@@ -201,9 +202,11 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     draw(&mut r);
     let previous = r.target_at(5., 45.).unwrap().0;
     let draws = r.draws;
+    let clear = patch(1, 0, &[]);
     c.zero(
         "full replacement with accepted pixels installs new paint and hit inputs",
         || {
+            r.tree.patch(&clear).unwrap();
             r.tree.upload(&full).unwrap();
             draw(&mut r);
             assert_ne!(r.target_at(5., 45.).unwrap().0, previous)
@@ -211,10 +214,10 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     );
     assert_eq!(r.draws, draws);
     for p in [
-        set(1, col(100.)),
-        set(1, col(170.)),
-        order(2, &[4, 3, 5]),
-        set(6, below([0, 255, 0], 1)),
+        set(1, 3, col(100.)),
+        set(1, 3, col(170.)),
+        order(2, 2, &[4, 3, 5]),
+        set(6, 4, below([0, 255, 0], 1)),
     ] {
         c.zero("width/order/color edit", || {
             r.tree.patch(&p).unwrap();
@@ -222,7 +225,7 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
         });
         draw(&mut r);
     }
-    let listener = set(6, below([0, 255, 0], 0));
+    let listener = set(6, 4, below([0, 255, 0], 0));
     c.zero("listener edit + reuse/install + hit lookup", || {
         r.tree.patch(&listener).unwrap();
         draw(&mut r);
@@ -238,13 +241,13 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     });
     draw(&mut line);
     for p in [
-        set(2, row::red(px(1, 60.))),
-        set(2, row::red(px(1, 20.))),
-        order(1, &[2, 4, 3]),
-        set(2, row::red(vec![1, 0])),
-        set(1, row::row_attrs(px(1, 120.), 8., 7.)),
-        set(1, row::row_attrs(vec![1, 1], 8., 7.)),
-        set(1, row::row_attrs(px(1, 19.5), 5., 5.)),
+        set(2, 4, row::red(px(1, 60.))),
+        set(2, 4, row::red(px(1, 20.))),
+        order(1, 1, &[2, 4, 3]),
+        set(2, 4, row::red(vec![1, 0])),
+        set(1, 1, row::row_attrs(px(1, 120.), 8., 7.)),
+        set(1, 1, row::row_attrs(vec![1, 1], 8., 7.)),
+        set(1, 1, row::row_attrs(px(1, 19.5), 5., 5.)),
     ] {
         c.zero(
             "single-line row: wire edit through paint/hit inputs",
@@ -255,6 +258,7 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
         );
         draw(&mut line);
     }
+    let full = at(full, 1);
     c.zero("fitting row replacement", || {
         line.tree.upload(&full).unwrap();
         line.tree.refresh(180., 170., 1.).unwrap()
@@ -270,8 +274,11 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     let ids: Vec<u64> = (102..=180).collect();
     let mut nodes = vec![node(101, 3, block(&[]), &ids)];
     nodes.extend(ids.iter().map(|&id| node(id, 6, block(&[]), &[])));
-    let add = topology::insert(1, 50, &nodes);
-    let remove = topology::remove(101);
+    let mut children: Vec<_> = (2..=100).collect();
+    children.insert(50, 101);
+    nodes.insert(0, edges(1, 3, &children));
+    let add = patch(1, 1, &nodes);
+    let remove = patch(101, 0, &[]);
     for _ in 0..2 {
         c.zero("insert at the last fitting topology slot", || {
             topology.patch(&add).unwrap();
@@ -288,8 +295,13 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
         }
         topology.refresh(80., 20., 1.).unwrap();
     });
-    topology.patch(&set(1, block(&[px(1, 73.)]))).unwrap();
-    let over = topology::insert(1, 0, &[node(181, 6, block(&[]), &[])]);
+    topology.patch(&set(1, 3, block(&[px(1, 73.)]))).unwrap();
+    children.insert(0, 181);
+    let over = patch(
+        1,
+        1,
+        &[edges(1, 3, &children), node(181, 6, block(&[]), &[])],
+    );
     let pending = topology.encode();
     (c.fail_next_reserve)();
     assert_eq!(
@@ -307,6 +319,33 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     c.zero("first compute after topology growth", || {
         topology.refresh(80., 20., 1.).unwrap()
     });
+    let mut moving = Tree::default();
+    moving
+        .upload(&upload(&[
+            node(1, 1, block(&[]), &[2, 3]),
+            node(2, 3, block(&[px(1, 60.)]), &[17]),
+            node(3, 3, block(&[px(1, 60.)]), &[]),
+            node(17, 4, block(&[vec![40, 1]]), &[18]),
+            node(18, 5, text("Pay"), &[]),
+        ]))
+        .unwrap();
+    moving.refresh(120., 20., 1.).unwrap();
+    let transfer = patch(
+        1,
+        1,
+        &[edges(1, 1, &[2, 3]), edges(2, 3, &[]), edges(3, 3, &[17])],
+    );
+    let promote = patch(1, 17, &[]);
+    for p in [&transfer, &promote] {
+        c.zero(
+            "continuous sparse move or bare promotion through draw inputs",
+            || {
+                moving.patch(p).unwrap();
+                moving.refresh(120., 20., 1.).unwrap();
+            },
+        );
+    }
+    assert_eq!(moving.layers.text.shapes, 1);
     let column_tree = |ids: &[u64], deep| {
         let nodes: Vec<_> = ids
             .iter()
@@ -325,6 +364,7 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
         upload(&nodes)
     };
     for n in [400, MAX_DEPTH + 1] {
+        let mut r = Raster::default();
         let ids: Vec<_> = (1..=n as u64).collect();
         let wide = column_tree(&ids, false);
         let deep = column_tree(&ids, true);
@@ -335,33 +375,38 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
             c.zero(
                 "redistribute fitting work across depths, from wire through compute",
                 || {
+                    r.tree.patch(&clear).unwrap();
                     r.tree.upload(next).unwrap();
                     r.tree.refresh(180., 170., 1.).unwrap();
                 },
             );
-            assert_eq!(r.tree.layers.trace.len(), 7 * n);
+            assert_eq!(r.tree.frames().count(), n);
+            assert_eq!(r.tree.elements.slots[r.tree.root.unwrap()].stats.count, n);
         }
     }
     // Replacement must also discard an undrained workset without allocating.
     let ids: Vec<_> = (1..=(MAX_DEPTH + 1) as u64).collect();
     let deep = column_tree(&ids, true);
     let wide = column_tree(&ids, false);
+    let mut r = Raster::default();
     r.tree.upload(&deep).unwrap();
     let ids: Vec<_> = (1..=(MAX_DEPTH + 2) as u64).collect();
     assert_eq!(
-        r.tree.upload(&column_tree(&ids, true)).unwrap_err(),
+        r.tree.patch(&at(column_tree(&ids, true), 1)).unwrap_err(),
         "tree depth exceeds 512"
     );
     c.zero("drain work preserved by a rejected upload", || {
         r.tree.refresh(180., 170., 1.).unwrap()
     });
-    assert_eq!(r.tree.layers.trace.len(), 7 * (MAX_DEPTH + 1));
+    assert_eq!(r.tree.frames().count(), MAX_DEPTH + 1);
     c.zero("replace pending work", || {
+        r.tree.patch(&clear).unwrap();
         r.tree.upload(&deep).unwrap();
+        r.tree.patch(&clear).unwrap();
         r.tree.upload(&wide).unwrap();
         r.tree.refresh(180., 170., 1.).unwrap();
     });
-    assert_eq!(r.tree.layers.trace.len(), 7 * (MAX_DEPTH + 1));
+    assert_eq!(r.tree.frames().count(), MAX_DEPTH + 1);
     eprintln!(
         "alloc/realloc/free: Rust control {control:?}; Skia control {skia:?}; initial reservation {initial:?}; one-over text growth {growth:?}; one-over topology growth {topology_growth:?}; cold and fitting intervals (including topology) [0, 0, 0]"
     );

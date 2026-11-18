@@ -9,6 +9,7 @@ pub(super) struct Change {
     pub cold: bool,
     pub reattached: bool,
     pub membership: bool,
+    pub old_parent: Option<Option<Key>>,
     pub attrs: Option<(Attrs, Span<u8>)>,
     pub order: Option<Span<Key>>,
 }
@@ -19,7 +20,8 @@ impl Mount {
             shape,
             index,
             parent: None,
-            depth: 0,
+            depth: Cell::new((0, 0)),
+            stats: Subtree::default(),
             children: Span::default(),
             bytes: Span::default(),
             detached: None,
@@ -103,9 +105,9 @@ impl Layers {
             self.invalidation_passes += 1;
         }
         while let Some(k) = e.touched.pop() {
+            let depth = e.depth(k);
             let m = &mut e.slots[k];
             debug_assert!(m.detached.is_none());
-            let depth = m.depth;
             let change = std::mem::take(&mut m.change);
             if change.cold {
                 self.mount(k, depth);
@@ -129,6 +131,13 @@ impl Layers {
                     self.invalidate(p, k, depth);
                 }
                 self.invalidate_composition(k, depth, Outputs::Hit);
+            } else if change.old_parent.is_some_and(|p| p != m.parent) {
+                if let Some(part) = self.parts.get_mut(k) {
+                    part.reattach();
+                }
+                for p in [Pass::Context, Pass::Flow, Pass::Place, Pass::PaintContext] {
+                    self.invalidate(p, k, depth);
+                }
             }
             if let Some((before, span)) = change.attrs {
                 self.invalidate_attrs(e, k, &before, e.bytes.get(&span));
@@ -142,7 +151,7 @@ impl Layers {
     }
     fn invalidate_attrs(&mut self, e: &Elements, k: Key, old: &Attrs, old_raw: &[u8]) {
         let next = &e.attrs[k];
-        let depth = e.slots[k].depth;
+        let depth = e.depth(k);
         let shape = e.slots[k].shape;
         let mut invalidate = |pass| self.invalidate(pass, k, depth);
         if old.family != next.family || old.font_size != next.font_size {
@@ -180,7 +189,7 @@ impl Layers {
                 .shape
                 .reads_flow(e.attrs[p].sizing.width, FlowInput::ChildFill)
         {
-            self.invalidate(Pass::Flow, p, e.slots[p].depth)
+            self.invalidate(Pass::Flow, p, e.depth(p))
         }
     }
 }

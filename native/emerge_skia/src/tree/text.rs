@@ -7,7 +7,12 @@ use super::{
 };
 use skia_safe::{Font, FontHinting, FontMgr, Point, Typeface, font::Edging};
 use skrifa::{FontRef, MetadataProvider, charmap::Charmap};
-use std::sync::OnceLock;
+use slotmap::{SlotMap, new_key_type};
+use std::{
+    hash::{DefaultHasher, Hash, Hasher},
+    sync::OnceLock,
+};
+new_key_type! { struct SharedKey; }
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub enum Family {
     #[default]
@@ -63,6 +68,13 @@ pub(super) struct Run {
     pub span: Span<Glyph>,
     pub revision: u64,
     pub invalid: bool,
+    shared: Option<SharedKey>,
+}
+struct SharedRun {
+    text: Span<u8>,
+    glyphs: Span<Glyph>,
+    metrics: Metrics,
+    refs: usize,
 }
 struct Strike {
     family: Family,
@@ -196,6 +208,11 @@ pub(super) struct TextStore {
     pub sizes: Sizes,
     strikes: Vec<Strike>,
     pub glyphs: Pool<Glyph>,
+    strings: Pool<u8>,
+    values: SlotMap<SharedKey, SharedRun>,
+    lookup: Vec<Option<SharedKey>>,
+    #[cfg(test)]
+    pub shapes: usize,
 }
 impl TextStore {
     pub fn provision(&mut self, sizes: Sizes, scale: f32, has_text: bool) -> Result<(), String> {
@@ -236,7 +253,19 @@ impl TextStore {
         Ok(())
     }
     pub fn ensure(&mut self, peak: usize, blocks: usize, b: Budget) -> Result<(), String> {
-        self.glyphs.ensure(peak, blocks + 1, b)
+        let n = blocks + 1;
+        if self.values.capacity() < n {
+            self.values
+                .try_reserve(b.capacity(n) - self.values.len())
+                .map_err(super::pool::capacity_error)?;
+        }
+        if self.lookup.len() < 2 * n {
+            let cap = b.capacity(2 * n);
+            super::pool::reserve(&mut self.lookup, cap)?;
+            self.lookup.resize(cap, None);
+        }
+        self.strings.ensure(4 * peak, n, b)?;
+        self.glyphs.ensure(peak, n, b)
     }
     pub fn measure(
         &mut self,
@@ -246,26 +275,63 @@ impl TextStore {
         size: f32,
         run: &mut Run,
     ) -> bool {
-        let strike = self
-            .strikes
-            .iter()
-            .find(|s| s.family == family && s.size == size)
-            .expect("provisioned strike");
-        let next = self.glyphs.alloc(n);
-        let metrics = strike.shape(text, self.glyphs.write(next));
-        run.invalid = false;
-        if run.revision != 0
-            && metrics == run.metrics
-            && self.glyphs.get(&next) == self.glyphs.get(&run.span)
-        {
-            self.glyphs.release(next);
-            false
+        let mut h = DefaultHasher::new();
+        (text, family as u8, size.to_bits()).hash(&mut h);
+        let slot = h.finish() as usize % self.lookup.len();
+        let key = if let Some(k) = self.lookup[slot].filter(|&k| {
+            self.values.get(k).is_some_and(|s| {
+                s.metrics.family == family
+                    && s.metrics.size == size
+                    && self.strings.get(&s.text) == text.as_bytes()
+            })
+        }) {
+            self.values[k].refs += 1;
+            k
         } else {
-            let old = std::mem::replace(&mut run.span, next);
-            run.metrics = metrics;
-            run.revision += 1;
-            self.glyphs.release(old);
-            true
+            let strike = self
+                .strikes
+                .iter()
+                .find(|s| s.family == family && s.size == size)
+                .expect("provisioned strike");
+            let glyphs = self.glyphs.alloc(n);
+            let metrics = strike.shape(text, self.glyphs.write(glyphs));
+            #[cfg(test)]
+            {
+                self.shapes += 1;
+            }
+            let k = self.values.insert(SharedRun {
+                text: self.strings.insert(text.as_bytes()),
+                glyphs,
+                metrics,
+                refs: 1,
+            });
+            self.lookup[slot] = Some(k);
+            k
+        };
+        let s = &self.values[key];
+        let changed = run.revision == 0
+            || (run.shared != Some(key)
+                && (s.metrics != run.metrics
+                    || self.glyphs.get(&s.glyphs) != self.glyphs.get(&run.span)));
+        let old = *run;
+        *run = Run {
+            shared: Some(key),
+            metrics: s.metrics,
+            span: s.glyphs,
+            revision: old.revision + u64::from(changed),
+            invalid: false,
+        };
+        self.release(old);
+        changed
+    }
+    pub fn release(&mut self, run: Run) {
+        if let Some(k) = run.shared {
+            self.values[k].refs -= 1;
+            if self.values[k].refs == 0 {
+                let s = self.values.remove(k).unwrap();
+                self.glyphs.release(s.glyphs);
+                self.strings.release(s.text);
+            }
         }
     }
 }

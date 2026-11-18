@@ -51,6 +51,7 @@ pub(super) struct Layers {
     jobs: [WorkSet; 7],
     context: SecondaryMap<Key, ContextValue>,
     measure: SecondaryMap<Key, Size>,
+    pub(super) intrinsic: intrinsic::Intrinsic,
     // Glyph changes and intrinsic size changes have different readers.
     pub(super) runs: SecondaryMap<Key, Run>,
     pub(super) text: TextStore,
@@ -100,7 +101,7 @@ impl Measuring<'_> {
             h: run.metrics.height,
         };
         if changed {
-            l.invalidate_composition(k, self.e.slots[k].depth, Outputs::Draw)
+            l.invalidate_composition(k, self.e.depth(k), Outputs::Draw)
         }
         l.bounds.set(self.e.slots[k].index, len, len, false);
         size
@@ -177,28 +178,9 @@ impl Layers {
         #[cfg(test)]
         pool::reserve(&mut self.trace, 7 * capacity)?;
         self.bounds.reserve(capacity)?;
+        self.intrinsic.reserve(capacity)?;
         self.owners = capacity;
         Ok(())
-    }
-    pub fn clear(&mut self) {
-        for q in &mut self.jobs {
-            q.clear()
-        }
-        self.context.clear();
-        self.measure.clear();
-        self.runs.clear();
-        self.width.clear();
-        self.offers.clear();
-        self.fit.clear();
-        self.offsets.clear();
-        self.frames.clear();
-        self.paint.clear();
-        self.parts.clear();
-        self.text.glyphs.clear();
-        self.viewport = Rect::default();
-        self.scale = 0.;
-        #[cfg(test)]
-        self.trace.clear();
     }
     // Invalidate the value by queuing its owner; keep the old result until comparison.
     pub fn invalidate(&mut self, p: Pass, k: Key, depth: usize) {
@@ -261,7 +243,7 @@ impl Layers {
     }
     pub fn evict(&mut self, k: Key) {
         if let Some(run) = self.runs.remove(k) {
-            self.text.glyphs.release(run.span);
+            self.text.release(run);
         }
         self.context.remove(k);
         self.measure.remove(k);
@@ -274,7 +256,7 @@ impl Layers {
         self.parts.remove(k);
     }
     fn enqueue(&mut self, p: Pass, k: Key, e: &Elements) {
-        self.invalidate(p, k, e.slots[k].depth);
+        self.invalidate(p, k, e.depth(k));
     }
     fn parent(&mut self, p: Pass, k: Key, e: &Elements) {
         if let Some(parent) = e.slots[k].parent {
@@ -327,7 +309,7 @@ impl Layers {
                             requested,
                         ) && let Some(p) = e.slots[k].parent
                         {
-                            self.invalidate_composition(p, e.slots[p].depth, outputs)
+                            self.invalidate_composition(p, e.depth(p), outputs)
                         }
                     }
                 }
@@ -364,20 +346,44 @@ impl Layers {
     fn measure(&mut self, e: &Elements, k: Key) {
         let c = self.context[k];
         let b = e.attrs[k].sizing;
-        let content = e.slots[k].shape.measure(
-            e,
-            k,
-            &mut Measuring {
-                layers: self,
+        let shape = e.slots[k].shape;
+        let memo = (!shape.uses_glyphs()).then(|| {
+            self.intrinsic.lookup(
+                shape,
+                b,
+                c.scale,
+                e.children(k).iter().map(|c| self.measure[*c]),
+            )
+        });
+        let m = if let Some((_, Some(value))) = memo {
+            value
+        } else {
+            let content = shape.measure(
                 e,
                 k,
-                gap: b.spacing.map(|v| v * c.scale),
-            },
-        );
-        let [t, r, d, l] = b.padding.map(|v| v * c.scale);
-        let m = Size {
-            w: b.width.intrinsic(content.w + (l + r), c.scale),
-            h: b.height.intrinsic(content.h + (t + d), c.scale),
+                &mut Measuring {
+                    layers: self,
+                    e,
+                    k,
+                    gap: b.spacing.map(|v| v * c.scale),
+                },
+            );
+            let [t, r, d, l] = b.padding.map(|v| v * c.scale);
+            let m = Size {
+                w: b.width.intrinsic(content.w + (l + r), c.scale),
+                h: b.height.intrinsic(content.h + (t + d), c.scale),
+            };
+            if let Some((slot, _)) = memo {
+                self.intrinsic.store(
+                    slot,
+                    shape,
+                    b,
+                    c.scale,
+                    e.children(k).iter().map(|c| self.measure[*c]),
+                    m,
+                );
+            }
+            m
         };
         let width_changed = self.measure.get(k).is_none_or(|s| s.w != m.w);
         if changed(&mut self.measure, k, m) {
@@ -518,7 +524,7 @@ impl Layers {
         let draw = shape.reads_paint_context(a, old, next);
         let hit = a.click && (geometry_changed || old.is_none_or(|p| p.scale != next.scale));
         if let Some(outputs) = Outputs::changed(draw, hit) {
-            self.invalidate_composition(k, e.slots[k].depth, outputs);
+            self.invalidate_composition(k, e.depth(k), outputs);
         }
         if child_clip_changed || color_changed {
             for &child in e.children(k) {

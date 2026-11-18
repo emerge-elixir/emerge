@@ -465,7 +465,8 @@ defmodule EmergeSkia do
   end
 
   @doc """
-  Upload a full EMRG tree, run layout, and render.
+  Mount a full EMRG tree in a vacant renderer. For subsequent declarations,
+  pass the returned state to `patch_tree/3`, including when replacing the root.
 
   Window dimensions come from the initial start config and are updated
   automatically when the window is resized (handled on the Rust side).
@@ -477,13 +478,15 @@ defmodule EmergeSkia do
   end
 
   @doc """
-  Apply patches for a new tree, run layout, and render.
+  Submit a new declaration against the preceding accepted state. Input keeps
+  using the last successful draw until the new output is installed. Pass `nil`
+  to clear the declaration; `Emerge.UI.none/0` is an element, not a clear.
 
   Window dimensions come from the initial start config and are updated
   automatically when the window is resized (handled on the Rust side).
   """
-  @spec patch_tree(renderer(), Emerge.Engine.diff_state(), Emerge.tree()) ::
-          {Emerge.Engine.diff_state(), Emerge.tree()}
+  @spec patch_tree(renderer(), Emerge.Engine.diff_state(), Emerge.tree() | nil) ::
+          {Emerge.Engine.diff_state(), Emerge.tree() | nil}
   def patch_tree(renderer, state, tree) do
     TreeRenderer.patch_tree(renderer, state, tree)
   end

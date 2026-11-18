@@ -368,7 +368,7 @@ defmodule Emerge.Engine.DiffStateTest do
     assert tip1.id == tip2.id
   end
 
-  test "reparenting a keyed node allocates a fresh id" do
+  test "reparenting a keyed node keeps its id" do
     state = Emerge.Engine.diff_state_new()
 
     layout1 =
@@ -390,7 +390,7 @@ defmodule Emerge.Engine.DiffStateTest do
     ids1 = key_node_id_map(assigned1)
     ids2 = key_node_id_map(assigned2)
 
-    refute ids1[:item] == ids2[:item]
+    assert ids1[:item] == ids2[:item]
   end
 
   test "removed keyed child reinserted in a later update gets a fresh id" do
@@ -451,7 +451,7 @@ defmodule Emerge.Engine.DiffStateTest do
     refute ids1[:tip] == ids3[:tip]
   end
 
-  test "reparenting a keyed nearby node to another host allocates a fresh id" do
+  test "reparenting a keyed nearby node to another host keeps its id" do
     state = Emerge.Engine.diff_state_new()
 
     layout1 =
@@ -475,10 +475,10 @@ defmodule Emerge.Engine.DiffStateTest do
 
     assert ids1[:left] == ids2[:left]
     assert ids1[:right] == ids2[:right]
-    refute ids1[:tip] == ids2[:tip]
+    assert ids1[:tip] == ids2[:tip]
   end
 
-  test "reparenting a keyed nearby node to children allocates a fresh id" do
+  test "reparenting a keyed nearby node to children keeps its id" do
     state = Emerge.Engine.diff_state_new()
 
     layout1 =
@@ -501,7 +501,7 @@ defmodule Emerge.Engine.DiffStateTest do
     ids2 = key_node_id_map(assigned2)
 
     assert ids1[:host] == ids2[:host]
-    refute ids1[:tip] == ids2[:tip]
+    assert ids1[:tip] == ids2[:tip]
   end
 
   test "mixed insert with keys and unkeyed raises" do

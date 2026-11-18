@@ -1,21 +1,21 @@
 # EMRG Binary Format Specification
 
-This document specifies the EMRG binary format used by
-`Emerge.Engine.Serialization.encode_tree/1`.
+`Emerge.Engine.Patch` and `Emerge.Engine.Serialization` use the same format.
 
 ## Overview
 
-EMRG is a compact, self-contained encoding of a retained `Emerge.tree()` value.
-It stores all nodes in a flat list and rebuilds edges by id.
-
-Current format version is `9`.
+EMRG v10 encodes **`patch(target, subtree)`**. The body contains its root ID and
+zero or more shallow definitions. A fully declared first mount targets the
+vacant viewport (`0`). An empty binary means no tree change, not clear.
 
 ## Header
 
 ```text
 "EMRG"            # 4 bytes ASCII magic
-version           # 1 byte unsigned
-node_count        # 4 bytes unsigned, big-endian
+10                # one byte; all multibyte fields below are big-endian
+target            # u64 occurrence being replaced, 0 only when vacant
+body_root         # u64; 0 = empty, no records; a bare live ID can be promoted
+record_count      # u32; counts definitions, not references or live nodes
 ```
 
 ## Node Record
@@ -25,12 +25,15 @@ Each node is encoded as:
 ```text
 id                # 8 bytes unsigned, big-endian
 type_tag          # 1 byte unsigned
-attrs_len         # 4 bytes unsigned
-attrs_bin         # attrs_len bytes (attribute block)
-child_count       # 2 bytes unsigned
-children...       # repeated child ids (8 bytes each)
-nearby_count      # 2 bytes unsigned
-nearby...         # repeated mounted nearby refs: slot_tag + 8-byte id
+fields            # u8; bit 0: replace attrs, bit 1: replace edges; others zero
+if fields & 1:
+  attrs_len       # u32
+  attrs_bin       # entire attribute block; a zero attribute count clears it
+if fields & 2:
+  child_count     # u16
+  children...     # ordered ordinary child IDs, u64 each
+  nearby_count    # u16
+  nearby...       # ordered mounted Nearby refs: slot_tag + u64 id
 ```
 
 Nearby slot tags use the following fixed mapping:
@@ -42,7 +45,14 @@ Nearby slot tags use the following fixed mapping:
 5. `on_left`
 6. `in_front`
 
-Only present mounts are encoded.
+With a field bit clear, that field is `:same`: no length, count or payload is
+sent for it. Fresh occurrences must set both bits. A reachable ID without a
+record keeps its entire live subtree from the last **accepted** declaration.
+Only that reference or a kept edge list closes a branch; kept attributes do
+not. IDs must be positive, uniquely owned and inside the target if already
+live. Definitions can precede or follow their parents. Extra definitions,
+cycles, double owners, outside or detached captures are invalid. Nearby is
+representable in Elixir; native support is limited to the ported shapes/edges.
 
 ## Attribute Block
 
@@ -95,6 +105,11 @@ on_mouse_leave, on_mouse_move, on_change, on_focus, on_blur
 mouse_over, focused, mouse_down
 snap_layout, snap_text_metrics, space_evenly
 ```
+
+Layout scale is tag `78` followed by a finite, positive big-endian `f64`.
+The wire contains the authored factor, never the product with an ancestor or
+the display. An attrs-only replacement can rescale a closed subtree without
+resending child IDs. Paint transform scale (`34`) is a different attribute.
 
 ## Background and Gradient Payloads
 
@@ -160,13 +175,10 @@ An absent policy removes it. First mount does not start an implicit change run.
 
 ## Compatibility Note
 
-Elixir and Rust accept only EMRG v9. Re-encode persisted trees and fixtures;
-changing only the header is not sufficient for old gradient payloads. Rust's
-round-trip serializer preserves raw attr bytes, so byte round-trip tests do not
-substitute for decoded-model and render tests.
-
-Standalone `set_attrs` patches have no EMRG header. Their background tags use the
-same definitions above: retired background tags `1` and `3` are rejected, so
-incompatible patches fail rather than silently changing meaning. Inserted
-subtrees contain complete v9 EMRG trees. Upgrade Elixir, the native library,
-and the macOS host (handshake v14) together.
+The ordinary binary CPU headless producer accepts v10 only. Upgrade its Elixir
+writer and native library together. Re-encode persisted declarations; changing
+only a version byte is insufficient. There is no opcode translator or upload
+fallback. Neither the Elixir branch/site stamp nor a callback address crosses
+this wire. The detached round-trip encoder writes a fully explicit declaration;
+raw-attribute round trips alone do not qualify geometry, paint or input.
+The legacy window hosts are not qualified v10 consumers.

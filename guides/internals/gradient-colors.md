@@ -14,9 +14,10 @@ value validation; the separately validated slider configuration is unaffected.
 
 Native `attrs::Color` includes a gradient whose shared stop array contains only
 `SolidColor`. Backgrounds use `Background::Color` for both solids and gradients;
-there is no separate gradient background model. EMRG v9 encodes a gradient with
-color tag `3`, including inside background variant `0`. Background variants `1`
-and `3` are retired. The macOS handshake is v13.
+there is no separate gradient background model. EMRG v10 retains color tag `3`
+for gradients, including inside background variant `0`. Background variants `1`
+and `3` are retired. The native behavior below describes the pre-cut renderer;
+gradient painting is not ported to the current binary CPU headless path.
 
 A shared `RenderColor` stores resolved RGBA or a linear brush with shared RGBA
 stops, normalized angle and reference box. Font inheritance and paragraph

@@ -53,6 +53,14 @@ fn set_bound(
 }
 impl Tree {
     pub fn patch(&mut self, bytes: &[u8]) -> Result<()> {
+        let scale = if self.layers.prepared_scale > 0. {
+            self.layers.prepared_scale
+        } else {
+            1.
+        };
+        self.apply(bytes, scale)
+    }
+    pub(super) fn apply(&mut self, bytes: &[u8], scale: f32) -> Result<()> {
         if bytes.len() > MAX_BYTES {
             return Err("patch exceeds storage limit".into());
         }
@@ -63,14 +71,15 @@ impl Tree {
         // neither patch bytes nor a tree clone survives this synchronous call.
         let mut b = self.wire.patch.take().unwrap_or_default();
         let result = b
-            .validate(&self.elements, &mut self.wire.upload, bytes, self.budget)
+            .validate(&self.elements, self.root, bytes, self.budget)
             .and_then(|()| {
                 if b.entries.is_empty() {
                     return Ok(());
                 }
                 let dirty = self.layers.bounds.context_dirty;
-                match self.admit(&mut b, bytes) {
+                match self.admit(&mut b, bytes, scale) {
                     Ok(d) => {
+                        self.layers.prepared_scale = scale;
                         self.commit(&mut b, bytes, d);
                         Ok(())
                     }
@@ -86,7 +95,7 @@ impl Tree {
         self.wire.patch = Some(b);
         result
     }
-    fn admit(&mut self, b: &mut Batch, bytes: &[u8]) -> Result<Demand> {
+    fn admit(&mut self, b: &mut Batch, bytes: &[u8], scale: f32) -> Result<Demand> {
         let mut d = Demand::new(self);
         let e = &self.elements;
         let l = &mut self.layers;
@@ -143,6 +152,11 @@ impl Tree {
             }
             if let Some(k) = existing {
                 let m = &e.slots[k];
+                if s.inserted
+                    || m.parent.map(|p| e.slots.get(p).map(|m| m.id)) != s.parent.map(Some)
+                {
+                    l.bounds.context_dirty = true;
+                }
                 if let Some((a, r)) = &s.attrs {
                     if m.change.cold || m.change.attrs.is_some() {
                         d.raw -= e.raw(k).len();
@@ -175,7 +189,7 @@ impl Tree {
             }
         }
         if d.live > 1_000_000
-            || d.live_bytes + 17 * d.live + 8 * d.live.saturating_sub(1) + 9 > MAX_BYTES
+            || d.live_bytes + 18 * d.live + 8 * d.live.saturating_sub(1) + 25 > MAX_BYTES
         {
             return Err("patched declarations exceed storage limit".into());
         }
@@ -207,7 +221,16 @@ impl Tree {
                 set_bound(l, &mut b.undo, e.slots[k].index, 0, 0, false);
             }
         }
-        let peak = l.bounds.peak() + d.new_glyphs;
+        let initial = e.slots.is_empty();
+        let mut peak = l.bounds.peak() + d.new_glyphs;
+        if initial {
+            peak += b
+                .entries
+                .iter()
+                .filter_map(|s| s.attrs.as_ref().map(|(a, _)| a.glyph_count))
+                .max()
+                .unwrap_or(0);
+        }
         let desired = l.bounds.desired() + d.new_glyphs;
         self.reserve_owners(d.resident)?;
         // Removing keys may leave hash tombstones, not insertion capacity.
@@ -216,21 +239,32 @@ impl Tree {
             .try_reserve(d.new_ids)
             .map_err(pool::capacity_error)?;
         b.reserve(self.layers.owners)?;
-        self.elements
-            .bytes
-            .ensure(d.raw, 2 * d.resident, self.budget)?;
-        self.elements
-            .child_pool
-            .ensure(d.edges, 2 * d.resident, self.budget)?;
+        self.elements.bytes.ensure(
+            if initial { 2 * d.raw } else { d.raw },
+            2 * d.resident,
+            self.budget,
+        )?;
+        self.elements.child_pool.ensure(
+            if initial { 2 * d.edges } else { d.edges },
+            2 * d.resident,
+            self.budget,
+        )?;
         self.layers.text.ensure(peak, d.resident, self.budget)?;
         self.output.reserve_for(d.live, desired, self.budget)?;
-        self.layers
-            .text
-            .provision(d.sizes, self.layers.prepared_scale, d.texts != 0)?;
+        self.layers.text.provision(d.sizes, scale, d.texts != 0)?;
         Ok(d)
     }
     fn commit(&mut self, b: &mut Batch, bytes: &[u8], d: Demand) {
         let e = &mut self.elements;
+        let changed_site = b.entries.iter().any(|s| {
+            s.attached
+                && !s.inserted
+                && e.live(s.id)
+                    .is_some_and(|k| e.slots[k].parent.map(|p| e.slots[p].id) != s.parent)
+        });
+        if changed_site {
+            e.topology += 1;
+        }
         for &k in &b.victims {
             self.layers.evict(k);
             e.evict(k);
@@ -276,9 +310,17 @@ impl Tree {
                 continue;
             }
             let k = e.ids[&s.id];
-            if s.inserted {
-                e.slots[k].depth = s.depth;
-                e.slots[k].parent = s.parent.map(|id| e.ids[&id]);
+            let parent = s.parent.map(|id| e.ids[&id]);
+            let m = &mut e.slots[k];
+            let moved = !s.inserted && m.parent != parent;
+            if moved {
+                m.change.old_parent.get_or_insert(m.parent);
+            }
+            m.parent = parent;
+            m.stats = s.stats;
+            m.depth.set((e.topology, s.depth));
+            if moved {
+                e.touch(k);
             }
             if let Some((a, r)) = s.attrs.take() {
                 e.slots[k].bytes = e.bytes.insert(&bytes[r]);
@@ -293,6 +335,7 @@ impl Tree {
                 e.slots[k].children = span;
             }
         }
+        self.root = b.root.map(|id| e.ids[&id]);
         e.live_bytes = d.live_bytes;
         self.layers.text_count = d.texts;
     }

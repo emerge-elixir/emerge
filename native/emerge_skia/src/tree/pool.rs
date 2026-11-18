@@ -77,14 +77,6 @@ impl<T: Copy + Default> Pool<T> {
             self.holes.insert(i, span)
         }
     }
-    pub fn clear(&mut self) {
-        self.blocks.clear();
-        self.holes.clear();
-        self.used = 0;
-        if !self.data.is_empty() {
-            self.holes.push(0..self.data.len())
-        }
-    }
     pub fn alloc(&mut self, n: usize) -> Span<T> {
         if n == 0 {
             return Span::default();

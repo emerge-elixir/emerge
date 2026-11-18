@@ -40,10 +40,6 @@ impl PayloadBounds {
         }
         Ok(())
     }
-    pub fn reset(&mut self) {
-        self.nodes.fill(Bound::default());
-        self.context_dirty = false;
-    }
     pub fn leaf(&self, i: usize) -> Bound {
         self.nodes[self.base + i]
     }
@@ -67,7 +63,7 @@ impl PayloadBounds {
         }
     }
     pub fn peak(&self) -> usize {
-        let b = self.nodes[1];
+        let b = self.nodes.get(1).copied().unwrap_or_default();
         b.live_or_next
             + if self.context_dirty {
                 b.overlap
@@ -80,6 +76,6 @@ impl PayloadBounds {
         b.live_or_next + b.overlap
     }
     pub fn desired(&self) -> usize {
-        self.nodes[1].desired
+        self.nodes.get(1).map_or(0, |b| b.desired)
     }
 }

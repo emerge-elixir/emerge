@@ -3,18 +3,18 @@ defmodule Emerge.Engine.DiffState do
   Stateful diff helper that keeps numeric id assignments stable.
   """
 
-  alias Emerge.Engine.EventRegistry
-  alias Emerge.Engine.Reconcile
-  alias Emerge.Engine.VNode
+  alias Emerge.Engine.{Element, EventRegistry, Patch, Reconcile, VNode}
+  alias Emerge.Engine.Reconcile.Index
 
   @type t :: %__MODULE__{
           tree: Emerge.Engine.Element.t() | nil,
           vdom: VNode.t() | nil,
+          index: %Index{},
           event_registry: %{binary() => %{term() => {pid(), term()}}},
           next_id: non_neg_integer()
         }
 
-  defstruct tree: nil, vdom: nil, event_registry: %{}, next_id: 1
+  defstruct tree: nil, vdom: nil, index: %Index{}, event_registry: %{}, next_id: 1
 
   @doc """
   Initialize diff state with an optional tree.
@@ -24,73 +24,65 @@ defmodule Emerge.Engine.DiffState do
   def new(nil), do: %__MODULE__{}
 
   def new(tree) do
-    {vdom, tree, next_id} = Reconcile.assign_ids(tree, 1)
-
-    %__MODULE__{
-      tree: tree,
-      vdom: vdom,
-      event_registry: build_event_registry(tree),
-      next_id: next_id
-    }
+    {_bytes, state, _assigned} = diff_and_encode(new(), tree)
+    state
   end
 
   @doc """
   Compute patches for a new tree and return {patch_binary, updated_state, assigned_tree}.
   """
-  @spec diff_and_encode(t(), Emerge.Engine.Element.t()) ::
-          {binary(), t(), Emerge.Engine.Element.t()}
+  @spec diff_and_encode(t(), Element.t() | nil) :: {binary(), t(), Element.t() | nil}
   def diff_and_encode(%__MODULE__{} = state, tree) do
-    {vdom, patches, assigned, next_id} =
-      Reconcile.reconcile(state.vdom, tree, state.next_id)
-
-    {
-      Emerge.Engine.Patch.encode(patches),
-      %__MODULE__{
-        tree: assigned,
-        vdom: vdom,
-        event_registry: build_event_registry(assigned),
-        next_id: next_id
-      },
-      assigned
-    }
+    {bytes, next, _} = transition(state, tree, state.event_registry, :assigned)
+    {bytes, next, next.tree}
   end
 
   @doc """
   Compute patches for a new tree without constructing a full assigned tree.
 
   This is intended for runtime renderer updates that only need the patch binary
-  and next diff state. Insert patches still encode assigned inserted subtrees.
+  and next diff state. Intact branches are occurrence references.
   """
-  @spec diff_and_encode_binary(t(), Emerge.Engine.Element.t()) :: {binary(), t()}
+  @spec diff_and_encode_binary(t(), Element.t() | nil) :: {binary(), t()}
   def diff_and_encode_binary(%__MODULE__{} = state, tree) do
-    {bytes, next, _} = encode_update(state, tree, state.event_registry)
+    {bytes, next, _} = transition(state, tree, state.event_registry, :binary)
     {bytes, next}
   end
 
   @doc false
-  @spec diff_and_encode_routed(t(), Emerge.Engine.Element.t()) ::
+  @spec diff_and_encode_routed(t(), Element.t() | nil) ::
           {binary(), t(), EventRegistry.edits()}
   def diff_and_encode_routed(%__MODULE__{} = state, tree),
-    do: encode_update(state, tree, %EventRegistry.Changes{registry: state.event_registry})
+    do: transition(state, tree, %EventRegistry.Changes{registry: state.event_registry}, :binary)
 
-  defp encode_update(%__MODULE__{} = state, tree, registry) do
-    {vdom, patches, event_registry, next_id} =
-      Reconcile.reconcile_patches_and_event_registry(
-        state.vdom,
-        tree,
-        state.next_id,
-        registry
-      )
+  defp transition(state, nil, registry, _mode) do
+    ops = if state.vdom, do: [Patch.patch(state.vdom.id, nil)], else: []
+    {routes, edits} = routes(EventRegistry.reset(registry))
 
-    {routes, edits} =
-      case event_registry do
-        %EventRegistry.Changes{registry: routes, edits: edits} -> {routes, edits}
-        routes -> {routes, %{}}
-      end
-
-    {Emerge.Engine.Patch.encode(patches),
-     %{state | tree: nil, vdom: vdom, event_registry: routes, next_id: next_id}, edits}
+    {Patch.encode(ops),
+     %{state | tree: nil, vdom: nil, index: Index.vacate(state.index), event_registry: routes},
+     edits}
   end
+
+  defp transition(state, tree, registry, mode) do
+    {root, ops, assigned, registry, next} =
+      Reconcile.update(state.vdom, tree, state.next_id, registry, mode, state.index)
+
+    {routes, edits} = routes(registry)
+
+    {Patch.encode(ops),
+     %{
+       state
+       | tree: assigned,
+         vdom: root,
+         index: root.index,
+         event_registry: routes,
+         next_id: next
+     }, edits}
+  end
+
+  defp routes(%EventRegistry.Changes{registry: routes, edits: edits}), do: {routes, edits}
+  defp routes(registry), do: {registry, %{}}
 
   @spec dispatch_click(t(), binary()) :: :ok
   def dispatch_click(%__MODULE__{} = state, id_bin) when is_binary(id_bin) do

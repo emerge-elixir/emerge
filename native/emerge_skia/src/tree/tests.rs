@@ -1,5 +1,6 @@
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 mod allocations;
+mod identity;
 mod row;
 mod topology;
 use super::*;
@@ -30,7 +31,7 @@ fn text(s: &str) -> Bytes {
 fn node(id: u64, kind: u8, raw: Bytes, children: &[u64]) -> Bytes {
     id.to_be_bytes()
         .into_iter()
-        .chain([kind])
+        .chain([kind, 3])
         .chain((raw.len() as u32).to_be_bytes())
         .chain(raw)
         .chain((children.len() as u16).to_be_bytes())
@@ -39,26 +40,47 @@ fn node(id: u64, kind: u8, raw: Bytes, children: &[u64]) -> Bytes {
         .collect()
 }
 fn upload(nodes: &[Bytes]) -> Bytes {
-    b"EMRG\x09"
+    let root = nodes
+        .first()
+        .map_or(0, |r| u64::from_be_bytes(r[..8].try_into().unwrap()));
+    patch(0, root, nodes)
+}
+fn patch(target: u64, root: u64, nodes: &[Bytes]) -> Bytes {
+    b"EMRG\x0a"
         .iter()
         .copied()
+        .chain(target.to_be_bytes())
+        .chain(root.to_be_bytes())
         .chain((nodes.len() as u32).to_be_bytes())
         .chain(nodes.iter().flatten().copied())
         .collect()
 }
-fn set(id: u64, raw: Bytes) -> Bytes {
-    [1].into_iter()
-        .chain(id.to_be_bytes())
+fn attr_record(id: u64, kind: u8, raw: Bytes) -> Bytes {
+    id.to_be_bytes()
+        .into_iter()
+        .chain([kind, 1])
         .chain((raw.len() as u32).to_be_bytes())
         .chain(raw)
         .collect()
 }
-fn order(id: u64, ids: &[u64]) -> Bytes {
-    [2].into_iter()
-        .chain(id.to_be_bytes())
+fn set(id: u64, kind: u8, raw: Bytes) -> Bytes {
+    patch(id, id, &[attr_record(id, kind, raw)])
+}
+fn edges(id: u64, kind: u8, ids: &[u64]) -> Bytes {
+    id.to_be_bytes()
+        .into_iter()
+        .chain([kind, 2])
         .chain((ids.len() as u16).to_be_bytes())
         .chain(ids.iter().flat_map(|i| i.to_be_bytes()))
+        .chain([0, 0])
         .collect()
+}
+fn order(id: u64, kind: u8, ids: &[u64]) -> Bytes {
+    patch(id, id, &[edges(id, kind, ids)])
+}
+fn at(mut full: Bytes, target: u64) -> Bytes {
+    full[5..13].copy_from_slice(&target.to_be_bytes());
+    full
 }
 fn color(rgb: [u8; 3]) -> Bytes {
     [12, 0, 0].into_iter().chain(rgb).collect()
@@ -104,17 +126,17 @@ fn padded_text_updates_glyphs_even_when_measure_stops() {
         [child.width + 8., child.height + 8.]
     );
 
-    r.tree.patch(&set(2, text("BB"))).unwrap();
+    r.tree.patch(&set(2, 5, text("BB"))).unwrap();
     assert_ne!(draw(&mut r), aa);
     assert_eq!(bounds(&r, 1), parent);
     assert!(ran(&r, Measure, 2) && ran(&r, Compose, 2));
     assert!(!ran(&r, Measure, 1) && !ran(&r, Place, 2));
-    r.tree.patch(&set(2, text("BB"))).unwrap();
+    r.tree.patch(&set(2, 5, text("BB"))).unwrap();
     draw(&mut r);
     assert!(r.tree.layers.trace.is_empty());
     assert_eq!(r.draws, 2);
 
-    r.tree.patch(&set(2, text("BBBB"))).unwrap();
+    r.tree.patch(&set(2, 5, text("BBBB"))).unwrap();
     let mut cold = Raster::default();
     cold.tree.upload(&full("BBBB")).unwrap();
     assert_eq!(draw(&mut r), draw(&mut cold));
@@ -145,7 +167,7 @@ fn width_edit_reflows_row_and_moves_the_painted_and_clickable_box_only_on_draw()
         .enumerate()
     {
         if step != 0 {
-            r.tree.patch(&set(1, col(width))).unwrap();
+            r.tree.patch(&set(1, 3, col(width))).unwrap();
             let prev = if step == 1 { 45. } else { 125. };
             assert_eq!(r.hit_at(5., prev), Some((6, 5., 5.)));
             assert_eq!(r.hit_at(5., y + 5.), None);
@@ -187,18 +209,19 @@ fn width_edit_reflows_row_and_moves_the_painted_and_clickable_box_only_on_draw()
         assert_eq!(r.hit_at(width as f32 + 1., y + 5.), None);
     }
     let draws = r.draws;
-    r.tree.patch(&set(6, below(0))).unwrap();
+    r.tree.patch(&set(6, 4, below(0))).unwrap();
     draw(&mut r);
     assert_eq!(
         r.tree.layers.trace,
         [(Compose, 6, Outputs::Hit), (Compose, 1, Outputs::Hit)]
     );
     assert_eq!(r.hit_at(5., 45.), None);
-    r.tree.upload(&full(170.)).unwrap(); // new mounts, identical visible paint
+    r.tree.patch(&patch(1, 0, &[])).unwrap();
+    r.tree.upload(&full(170.)).unwrap(); // true remount, identical visible paint
     draw(&mut r);
     assert_eq!(r.draws, draws);
     assert_eq!(r.hit_at(5., 45.), Some((6, 5., 5.)));
-    r.tree.upload(&upload(&[])).unwrap();
+    r.tree.patch(&patch(1, 0, &[])).unwrap();
     assert_eq!(r.hit_at(5., 45.), Some((6, 5., 5.)));
     assert!(draw(&mut r).iter().all(|&v| v == 0));
     assert_eq!(r.hit_at(5., 45.), None);
@@ -230,7 +253,7 @@ fn reorder_and_viewport_clip_use_paint_order_for_hits() {
         (22, [0, 0, 255, 255], [255, 0, 0, 255]),
     ] {
         if id == 22 {
-            r.tree.patch(&order(1, &[3, 2])).unwrap();
+            r.tree.patch(&order(1, 3, &[3, 2])).unwrap();
         }
         assert_eq!(
             r.draw(24., 20., 1.).unwrap(),
@@ -253,15 +276,15 @@ fn paint_and_input_are_independent_readers_of_one_composition() {
         .unwrap();
     draw(&mut r);
     assert_eq!(r.hit_at(4., 3.), Some((1, 4., 3.))); // listener without paint
-    r.tree.patch(&set(2, attrs([0, 0, 255], 0))).unwrap();
+    r.tree.patch(&set(2, 4, attrs([0, 0, 255], 0))).unwrap();
     assert_eq!(&draw(&mut r)[..4], &[0, 0, 255, 255]);
     assert_eq!(
         r.tree.layers.trace,
         [(Compose, 2, Outputs::Draw), (Compose, 1, Outputs::Draw)]
     );
     assert_eq!(r.draws, 2);
-    r.tree.patch(&set(2, attrs([0, 0, 255], 1))).unwrap();
-    r.tree.patch(&set(2, attrs([0, 255, 0], 1))).unwrap();
+    r.tree.patch(&set(2, 4, attrs([0, 0, 255], 1))).unwrap();
+    r.tree.patch(&set(2, 4, attrs([0, 255, 0], 1))).unwrap();
     assert_eq!(r.hit_at(4., 3.), Some((1, 4., 3.)));
     assert_eq!(&draw(&mut r)[..4], &[0, 255, 0, 255]);
     assert_eq!(
@@ -280,9 +303,16 @@ fn rejecting_a_strike_keeps_pending_inputs_and_layout() {
     ]);
     t.upload_scaled(&base, 2.).unwrap();
     t.refresh(180., 170., 2.).unwrap();
-    t.patch(&set(2, text("BBBB"))).unwrap();
+    t.patch(&set(2, 5, text("BBBB"))).unwrap();
     let before = t.encode();
-    let bad = [set(1, block(&[number(16, 3e38)])), set(2, text("other"))].concat();
+    let bad = patch(
+        1,
+        1,
+        &[
+            node(1, 4, block(&[number(16, 3e38)]), &[2]),
+            attr_record(2, 5, text("other")),
+        ],
+    );
     assert_eq!(t.patch(&bad).unwrap_err(), "font size exceeds device range");
     assert_eq!(t.encode(), before);
     assert_eq!(t.layers.bounds.desired(), 4);
@@ -291,14 +321,14 @@ fn rejecting_a_strike_keeps_pending_inputs_and_layout() {
     assert_eq!(t.layers.runs[k].metrics.size, 24.);
     assert_eq!(t.layers.text.glyphs.get(&t.layers.runs[k].span).len(), 4);
     // Declared sizes are counted, not appended forever as attributes change.
-    let ids: Vec<_> = (2..=66).collect();
-    let mut nodes = vec![node(1, 3, block(&[]), &ids)];
+    let ids: Vec<_> = (102..=166).collect();
+    let mut nodes = vec![node(101, 3, block(&[]), &ids)];
     nodes.extend(
         ids.iter()
             .map(|&i| node(i, 4, block(&[number(16, i as f64)]), &[])),
     );
     assert_eq!(
-        t.upload(&upload(&nodes)).unwrap_err(),
+        t.patch(&at(upload(&nodes), 1)).unwrap_err(),
         "too many distinct declared font sizes"
     );
     assert_eq!(t.encode(), before);
@@ -321,7 +351,7 @@ fn failed_draw_and_layout_query_never_install_pixels_or_hits() {
     let mut r = Raster::default();
     r.tree.upload(&square([255, 0, 0], 0.)).unwrap();
     assert_eq!(&draw(&mut r)[..4], &[255, 0, 0, 255]);
-    r.tree.upload(&square([0, 0, 255], 20.)).unwrap(); // reuses the same wire IDs
+    r.tree.patch(&at(square([0, 0, 255], 20.), 1)).unwrap(); // reuses the same wire IDs
     r.tree.refresh(180., 170., 1.).unwrap();
     assert_eq!(r.hit_at(5., 5.), Some((3, 5., 5.)));
     assert!(r.draw(100_000., 100_000., 1.).is_err());
@@ -351,17 +381,17 @@ fn wire_upload_decodes_attributes_and_children_and_accepts_an_empty_replacement(
         node(11, 4, block(&[px(1, 100.), px(2, 200.)]), &[]),
         node(12, 5, block(&[]), &[]),
     ]);
-    t.upload(&full).unwrap();
+    t.patch(&at(full.clone(), 9)).unwrap();
     let e = &t.elements;
-    assert_eq!(e.slots.len(), 3);
+    assert_eq!(e.attached_count(), 3);
     assert_eq!(t.root, Some(e.ids[&10]));
     assert_eq!(e.children(e.ids[&10]), &[e.ids[&11], e.ids[&12]]);
     assert_eq!(e.attrs[e.ids[&10]].sizing.spacing, [10., 10.]);
     assert_eq!(e.attrs[e.ids[&11]].sizing.width, Length::Px(100.));
     assert_eq!(e.attrs[e.ids[&11]].sizing.height, Length::Px(200.));
     assert_eq!(t.encode(), full);
-    t.upload(&empty).unwrap();
-    assert!(t.root.is_none() && t.elements.slots.is_empty() && t.elements.ids.is_empty());
+    t.patch(&patch(10, 0, &[])).unwrap();
+    assert!(t.root.is_none() && t.elements.attached_count() == 0);
     assert_eq!(t.encode(), empty);
 }
 
@@ -373,11 +403,15 @@ fn invalid_edits_are_atomic_and_stale_keys_cannot_touch_a_new_mount() {
     let old = r.tree.elements.ids[&2];
     draw(&mut r);
     for bad in [
-        set(2, text("lost")).into_iter().chain([4]).collect(),
-        [order(1, &[1]), order(1, &[2])].concat(),
-        [set(2, block(&[vec![65]])), set(2, text("abc"))].concat(),
-        order(1, &[1]),
-        set(2, block(&[vec![65]])),
+        set(2, 5, text("lost")).into_iter().chain([4]).collect(),
+        patch(1, 1, &[edges(1, 4, &[1]), edges(1, 4, &[2])]),
+        patch(
+            1,
+            1,
+            &[edges(1, 4, &[2]), attr_record(2, 5, block(&[vec![65]]))],
+        ),
+        order(1, 4, &[1]),
+        set(2, 5, block(&[vec![65]])),
     ] {
         assert!(r.tree.patch(&bad).is_err());
         assert_eq!(r.tree.encode(), data);
@@ -393,7 +427,13 @@ fn invalid_edits_are_atomic_and_stale_keys_cannot_touch_a_new_mount() {
         assert!(r.tree.upload(&bad).is_err());
         assert_eq!(r.tree.encode(), data);
     }
-    r.tree.upload(&data).unwrap();
+    r.tree.patch(&patch(1, 0, &[])).unwrap();
+    r.tree
+        .upload(&upload(&[
+            node(1, 4, block(&[]), &[2]),
+            node(2, 6, block(&[]), &[]),
+        ]))
+        .unwrap();
     draw(&mut r);
     assert!(!r.tree.elements.slots.contains_key(old));
     r.tree.layers.invalidate(Measure, old, 1);
