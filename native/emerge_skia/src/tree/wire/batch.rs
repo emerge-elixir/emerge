@@ -1,6 +1,8 @@
 //! A replacement proof, scoped to the old target. Only named, displaced or
 //! summary-changing nodes enter this scratch. Closed interiors are not decoded.
 use super::*;
+mod domains;
+use domains::Domains;
 use std::hash::{BuildHasher, RandomState};
 
 pub(super) struct Edit {
@@ -17,6 +19,7 @@ pub(super) struct Edit {
     next_in_bucket: usize,
     visited: bool,
     closed: bool,
+    inputs: Option<scale::Inputs>,
 }
 #[derive(Default)]
 pub(super) struct Batch {
@@ -33,6 +36,7 @@ pub(super) struct Batch {
     pub victims: Vec<Key>,
     pub undo: Vec<(usize, capacity::Bound)>,
     pub root: Option<u64>,
+    domains: Domains,
 }
 impl Batch {
     pub fn reserve(&mut self, n: usize) -> Result<()> {
@@ -52,6 +56,7 @@ impl Batch {
         pool::reserve(&mut self.displaced, n)?;
         pool::reserve(&mut self.victims, n)?;
         pool::reserve(&mut self.undo, n)?;
+        self.domains.reserve(n)?;
         self.orders.ensure(n, n, Budget(0))
     }
     fn reset(&mut self) {
@@ -67,6 +72,7 @@ impl Batch {
         self.displaced.clear();
         self.victims.clear();
         self.undo.clear();
+        self.domains.clear();
     }
     fn position(&self, id: u64) -> Option<usize> {
         let bucket = self.hash.hash_one(id) as usize & self.heads.len().wrapping_sub(1);
@@ -107,6 +113,7 @@ impl Batch {
             order: None,
             visited: false,
             closed: false,
+            inputs: None,
         });
         Ok(i)
     }

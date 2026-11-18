@@ -6,6 +6,7 @@ mod layers;
 mod paint;
 mod pool;
 mod queue;
+mod scale;
 mod shapes;
 mod text;
 mod wire;
@@ -32,13 +33,13 @@ enum Length {
     #[default]
     Auto,
     Content,
-    Px(f32),
+    Px(f64),
     Fill,
 }
 impl Length {
     fn intrinsic(self, demand: f32, scale: f32) -> f32 {
         if let Self::Px(px) = self {
-            px * scale
+            scale::pixels(px, scale)
         } else {
             demand
         }
@@ -48,14 +49,15 @@ impl Length {
 struct BoxStyle {
     width: Length,
     height: Length,
-    padding: [f32; 4],
-    spacing: [f32; 2],
+    padding: [f64; 4],
+    spacing: [f64; 2],
 }
 #[derive(Clone, Debug, Default)]
 struct Attrs {
     sizing: BoxStyle,
     family: Option<Family>,
-    font_size: Option<f32>,
+    font_size: Option<f64>,
+    layout_scale: Option<f64>,
     color: Option<u32>,
     background: Option<u32>,
     click: bool,
@@ -91,6 +93,8 @@ struct Mount {
     parent: Option<Key>,
     depth: Cell<(u64, usize)>,
     stats: Subtree,
+    // Resource inputs of the last accepted declaration, not installed geometry.
+    admitted: scale::Inputs,
     index: usize,
     // Some only while this slot is in the detached cache.
     detached: Option<usize>,
@@ -198,20 +202,12 @@ impl Tree {
         {
             return Err("invalid layout viewport or scale".into());
         }
-        if self.layers.prepared_scale != scale && self.layers.text_count != 0 {
-            self.layers.text.ensure(
-                self.layers.bounds.context_peak(),
-                self.layers.text_count,
-                self.budget,
-            )?;
-            self.layers
-                .text
-                .provision(self.layers.text.sizes, scale, true)?;
+        if self.layers.prepared_scale != scale {
+            self.prepare_display(scale)?;
         }
-        self.layers.prepared_scale = scale;
         self.layers.invalidate_changes(&mut self.elements);
         self.layers
-            .recompute(&self.elements, self.root, width, height, scale);
+            .recompute(&self.elements, self.root, width, height);
         self.layers.bounds.context_dirty = false;
         self.output.collect(&self.elements, self.root, &self.layers);
         Ok(())

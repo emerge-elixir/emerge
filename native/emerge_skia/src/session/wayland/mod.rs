@@ -1,6 +1,7 @@
 //! Window-system adapter only. All tree, raster and target state belongs to the session.
 #[cfg(feature = "vulkan")]
 mod feedback;
+mod geometry;
 #[cfg(feature = "opengl")]
 mod gl;
 #[cfg(any(feature = "opengl", feature = "vulkan"))]
@@ -36,6 +37,7 @@ impl Requested {
 }
 use super::{Owner, Ready, Wake};
 use crate::{input::InputEvent, lock};
+use geometry::{Geometry, Mapping, Protocols, Scale};
 use rustler::OwnedEnv;
 pub(super) use sctk::reexports::calloop::ping::Ping;
 use sctk::{
@@ -56,7 +58,7 @@ use sctk::{
     },
     shm::{Shm, ShmHandler},
 };
-use shm::{Geometry, Slots};
+use shm::Slots;
 use smithay_client_toolkit as sctk;
 use std::{
     sync::{Arc, atomic::Ordering},
@@ -73,6 +75,7 @@ rustler::atoms! {emerge_skia_close, window_close_requested}
 struct WindowApp {
     owner: Arc<Owner>,
     env: OwnedEnv,
+    protocols: Protocols,
     window: Window,
     registry: RegistryState,
     compositor: CompositorState,
@@ -87,7 +90,7 @@ struct WindowApp {
     // A failed preparation is not installed; retry on an edit or different
     // configure, not on every pointer motion or release of an unrelated slot.
     attempted: Option<Geometry>,
-    installed: Option<Geometry>,
+    installed: Option<Mapping>,
     frame_pending: bool,
     buffers: Slots,
     #[cfg(any(feature = "opengl", feature = "vulkan"))]
@@ -135,6 +138,7 @@ pub(super) fn run(
     );
     window.set_title(title);
     window.set_app_id("org.emerge.viewport");
+    let protocols = Protocols::bind(&globals, &qh, window.wl_surface());
     window.commit(); // Empty initial commit solicits configure; no hits or routes yet.
     conn.flush().map_err(err)?;
     lock(&owner.live)?
@@ -144,6 +148,7 @@ pub(super) fn run(
     let mut app = WindowApp {
         owner: owner.clone(),
         env: OwnedEnv::new(),
+        protocols,
         #[cfg(feature = "vulkan")]
         feedback: feedback::Feedback::new(&globals, &qh, &window, api)?,
         allow_cursor_theme: api == Requested::Raster,
@@ -168,7 +173,7 @@ pub(super) fn run(
         configured: false,
         geometry: Geometry {
             logical: size,
-            scale: 1,
+            scale: Scale::Integer(1),
         },
         attempted: None,
         installed: None,
@@ -217,7 +222,7 @@ impl WindowApp {
         });
         #[cfg(not(any(feature = "opengl", feature = "vulkan")))]
         let work = false;
-        let changed_surface = self.installed != Some(self.geometry);
+        let changed_surface = self.installed.is_none_or(|m| m.geometry != self.geometry);
         if !self.configured || (self.frame_pending && !changed_surface) {
             return Ok(None);
         }
@@ -231,8 +236,8 @@ impl WindowApp {
         {
             return Ok(Some(wait));
         }
-        let size = match self.geometry.buffer() {
-            Ok(size) => size,
+        let mapping = match self.geometry.mapping() {
+            Ok(mapping) => mapping,
             Err(why) => {
                 self.attempted = Some(self.geometry);
                 live.request = false;
@@ -240,11 +245,12 @@ impl WindowApp {
                 return Ok(None);
             }
         };
+        let size = mapping.buffer;
         #[cfg(any(feature = "opengl", feature = "vulkan"))]
         if self.gpu.is_some() {
             drop(guard);
             self.attempted = Some(self.geometry);
-            return self.present_gpu(conn, qh, size, changed_surface);
+            return self.present_gpu(conn, qh, mapping, changed_surface);
         }
         // No available slot: don't mutate the installed raster or sample input
         // geometry. A wl_buffer.release wakes this same event loop.
@@ -255,7 +261,7 @@ impl WindowApp {
         let presented = live.present(
             &mut self.env,
             size,
-            self.geometry.scale as f32,
+            self.geometry.nominal(),
             "wayland",
             |_, pixels, reuse| {
                 if reuse && !changed_surface {
@@ -263,9 +269,7 @@ impl WindowApp {
                 }
                 let surface = self.window.wl_surface();
                 let buffer = self.buffers.write(i, &self.shm, size, pixels)?;
-                if surface.version() >= 3 {
-                    surface.set_buffer_scale(self.geometry.scale as i32);
-                }
+                self.protocols.apply(surface, mapping.geometry);
                 if surface.version() >= 4 {
                     surface.damage_buffer(0, 0, size.0 as i32, size.1 as i32)
                 } else {
@@ -286,7 +290,7 @@ impl WindowApp {
             },
         )?;
         if presented {
-            self.installed = Some(self.geometry);
+            self.installed = Some(mapping);
         }
         Ok(None)
     }
@@ -310,12 +314,18 @@ impl WindowApp {
             stats.output_mode(mode.refresh_rate);
         }
     }
+    fn set_scale(&mut self, next: Scale) {
+        if self.geometry.scale != next {
+            self.geometry.scale = next;
+            self.resized();
+        }
+    }
     fn resized(&mut self) {
         if let Ok((width, height)) = self.geometry.buffer() {
             self.input(InputEvent::Resized {
                 width,
                 height,
-                scale_factor: self.geometry.scale as f32,
+                scale_factor: self.geometry.nominal(),
             });
         }
     }
@@ -358,9 +368,11 @@ impl CompositorHandler for WindowApp {
         s: &wl_surface::WlSurface,
         n: i32,
     ) {
-        if s == self.window.wl_surface() && s.version() >= 3 {
-            self.geometry.scale = n.max(1) as u32;
-            self.resized();
+        if s == self.window.wl_surface()
+            && s.version() >= 3
+            && matches!(self.geometry.scale, Scale::Integer(_))
+        {
+            self.set_scale(Scale::Integer(n.max(1) as u32));
         }
     }
     fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, s: &wl_surface::WlSurface, _: u32) {

@@ -9,6 +9,7 @@ struct Demand {
     raw: usize,
     edges: usize,
     texts: usize,
+    scales: usize,
     new_glyphs: usize,
     new_ids: usize,
     sizes: text::Sizes,
@@ -23,6 +24,7 @@ impl Demand {
             raw: e.bytes.len(),
             edges: e.child_pool.len(),
             texts: t.layers.text_count,
+            scales: t.layers.scale_declarations,
             new_glyphs: 0,
             new_ids: 0,
             sizes: t.layers.text.sizes,
@@ -52,6 +54,24 @@ fn set_bound(
     l.bounds.set(i, old, next, dirty);
 }
 impl Tree {
+    pub(in crate::tree) fn prepare_display(&mut self, display: f32) -> Result<()> {
+        let mut b = self.wire.patch.take().unwrap_or_default();
+        b.rebase(self.root.map(|k| self.elements.slots[k].id));
+        let l = &mut self.layers;
+        let result = (|| {
+            if l.text_count != 0 {
+                l.text
+                    .ensure(l.bounds.context_peak(), l.owners, self.budget)?;
+            }
+            let scales = l.scale_declarations;
+            b.prepare_domains(&self.elements, l, display, scales)?;
+            b.publish_domains(&mut self.elements, l);
+            l.prepared_scale = display;
+            Ok(())
+        })();
+        self.wire.patch = Some(b);
+        result
+    }
     pub fn patch(&mut self, bytes: &[u8]) -> Result<()> {
         let scale = if self.layers.prepared_scale > 0. {
             self.layers.prepared_scale
@@ -107,6 +127,7 @@ impl Tree {
                 d.live -= 1;
                 d.live_bytes -= e.raw(k).len();
                 d.texts -= usize::from(e.slots[k].shape.uses_glyphs());
+                d.scales -= usize::from(e.attrs[k].layout_scale.is_some());
                 if let Some(size) = e.attrs[k].font_size {
                     d.sizes.remove(size);
                 }
@@ -147,6 +168,7 @@ impl Tree {
             d.live += 1;
             d.live_bytes += len;
             d.texts += usize::from(s.shape.uses_glyphs());
+            d.scales += usize::from(a.layout_scale.is_some());
             if let Some(size) = a.font_size {
                 d.sizes.add(size)?;
             }
@@ -162,7 +184,10 @@ impl Tree {
                         d.raw -= e.raw(k).len();
                     }
                     d.raw += r.len();
-                    if a.family != e.attrs[k].family || a.font_size != e.attrs[k].font_size {
+                    if a.family != e.attrs[k].family
+                        || a.font_size != e.attrs[k].font_size
+                        || a.layout_scale != e.attrs[k].layout_scale
+                    {
                         l.bounds.context_dirty = true;
                     }
                 }
@@ -193,6 +218,7 @@ impl Tree {
         {
             return Err("patched declarations exceed storage limit".into());
         }
+        l.bounds.context_dirty |= l.prepared_scale != scale || d.scales != l.scale_declarations;
         // Reclaim only under pressure; never scan unrelated attached mounts.
         if d.resident > l.owners
             || d.raw > e.bytes.capacity()
@@ -251,7 +277,7 @@ impl Tree {
         )?;
         self.layers.text.ensure(peak, d.resident, self.budget)?;
         self.output.reserve_for(d.live, desired, self.budget)?;
-        self.layers.text.provision(d.sizes, scale, d.texts != 0)?;
+        b.prepare_domains(&self.elements, &mut self.layers, scale, d.scales)?;
         Ok(d)
     }
     fn commit(&mut self, b: &mut Batch, bytes: &[u8], d: Demand) {
@@ -338,5 +364,8 @@ impl Tree {
         self.root = b.root.map(|id| e.ids[&id]);
         e.live_bytes = d.live_bytes;
         self.layers.text_count = d.texts;
+        self.layers.scale_declarations = d.scales;
+        self.layers.text.sizes = d.sizes;
+        b.publish_domains(e, &mut self.layers);
     }
 }

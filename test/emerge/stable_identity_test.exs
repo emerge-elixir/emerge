@@ -74,6 +74,25 @@ defmodule Emerge.Engine.StableIdentityTest do
     assert <<"EMRG", 10, 1::64, 1::64, 1::32, 1::64, 3, 1, ^len::32, ^raw::binary>> = bytes
   end
 
+  test "layout scale changes descendant sites but keeps IDs and the closed wire branch" do
+    leaves = List.duplicate(none(), 10_000)
+    before = DiffState.new(column([], leaves))
+    {bytes, after_scale} = DiffState.diff_and_encode_binary(before, column([scale(1.25)], leaves))
+    id = before.vdom.id
+
+    assert [{:patch, ^id, {:node, ^id, :column, %{layout_scale: 1.25}, :same}}] =
+             Patch.decode(bytes)
+
+    assert byte_size(bytes) == 50
+
+    for {a, b} <- Enum.zip(before.vdom.children, after_scale.vdom.children) do
+      assert a.id == b.id
+      <<branch::32, site::32>> = a.stamp
+      assert <<^branch::32, new_site::32>> = b.stamp
+      refute site == new_site
+    end
+  end
+
   test "equal branches have separate occurrences; edges and routes still compare exactly" do
     view = fn order, callback ->
       column([], Enum.map(order, fn k -> el([key(k), Event.on_click(callback)], text("Pay")) end))

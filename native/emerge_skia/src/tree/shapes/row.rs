@@ -4,11 +4,7 @@ pub(super) struct Row;
 impl ShapeMeta for Row {
     const TAG: u8 = 1;
     type Payload = Children;
-    type Paint = Self;
-}
-impl PaintBehaviour<Children> for Row {
-    // Overflow keeps its layout extent, but cannot paint or receive input outside the row.
-    const CLIP_CHILDREN: bool = true;
+    type Paint = RowPaint;
 }
 impl LayoutBehaviour for Row {
     fn measure(children: &[Key], cx: &mut Measuring<'_>) -> Size {

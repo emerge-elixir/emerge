@@ -81,7 +81,7 @@ impl Device {
     }
 }
 struct Sealed {
-    geometry: Geometry,
+    mapping: Mapping,
     record: Picture,
     routes: Option<LocalPid>,
 }
@@ -239,18 +239,15 @@ impl WindowApp {
         &mut self,
         conn: &Connection,
         qh: &QueueHandle<Self>,
-        size: (u32, u32),
+        mapping: Mapping,
         changed_surface: bool,
     ) -> Result<Option<Duration>, String> {
+        let size = mapping.buffer;
         let gpu = self.gpu.as_mut().expect("selected GPU");
         let owner = &self.owner;
         let mut guard = lock(&owner.live)?;
         let live = guard.as_mut().ok_or("stopped")?;
-        if gpu
-            .sealed
-            .as_ref()
-            .is_some_and(|s| s.geometry != self.geometry)
-        {
+        if gpu.sealed.as_ref().is_some_and(|s| s.mapping != mapping) {
             gpu.retry(live, &mut self.env);
         }
         if let Some(wait) = gpu
@@ -264,7 +261,7 @@ impl WindowApp {
             let changed =
                 match live
                     .raster
-                    .settle(size.0 as f32, size.1 as f32, self.geometry.scale as f32)
+                    .settle(size.0 as f32, size.1 as f32, mapping.geometry.nominal())
                 {
                     Ok(c) => c,
                     Err(e) => {
@@ -292,7 +289,7 @@ impl WindowApp {
                 let _ = self.env.send_and_clear(&pid, |_| emerge_skia_seal_routes());
             }
             gpu.sealed = Some(Sealed {
-                geometry: self.geometry,
+                mapping,
                 record,
                 routes,
             });
@@ -311,9 +308,7 @@ impl WindowApp {
         }
         gpu.render(size)?;
         let surface = self.window.wl_surface();
-        if surface.version() >= 3 {
-            surface.set_buffer_scale(self.geometry.scale as i32);
-        }
+        self.protocols.apply(surface, mapping.geometry);
         // An unsuccessful present may leave this request pending on wl_surface.
         // Reuse it on retry rather than requesting a second callback.
         if !self.callback_armed {
@@ -336,7 +331,7 @@ impl WindowApp {
             (live.width, live.height) = size;
             live.input.after_draw(&live.raster);
             live.last = Some(Instant::now());
-            self.installed = Some(self.geometry);
+            self.installed = Some(s.mapping);
             self.frame_pending = true;
             if let Some(pid) = s.routes {
                 let _ = self

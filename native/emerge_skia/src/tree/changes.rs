@@ -22,6 +22,7 @@ impl Mount {
             parent: None,
             depth: Cell::new((0, 0)),
             stats: Subtree::default(),
+            admitted: scale::Inputs::default(),
             children: Span::default(),
             bytes: Span::default(),
             detached: None,
@@ -154,7 +155,10 @@ impl Layers {
         let depth = e.depth(k);
         let shape = e.slots[k].shape;
         let mut invalidate = |pass| self.invalidate(pass, k, depth);
-        if old.family != next.family || old.font_size != next.font_size {
+        if old.family != next.family
+            || old.font_size != next.font_size
+            || old.layout_scale != next.layout_scale
+        {
             invalidate(Pass::Context)
         }
         let (a, b) = (old.sizing, next.sizing);

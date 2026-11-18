@@ -13,7 +13,7 @@ use std::{
     sync::OnceLock,
 };
 new_key_type! { struct SharedKey; }
-#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Hash)]
 pub enum Family {
     #[default]
     Sans,
@@ -76,6 +76,8 @@ struct SharedRun {
     metrics: Metrics,
     refs: usize,
 }
+mod strikes;
+pub(super) use strikes::{StrikeDelta, StrikeKey};
 struct Strike {
     family: Family,
     size: f32,
@@ -86,7 +88,11 @@ struct Strike {
     descent: f32,
 }
 impl Strike {
-    fn new(family: Family, size: f32) -> Result<Self, String> {
+    fn new(
+        family: Family,
+        size: f32,
+        reserve_bytes: impl FnOnce(usize) -> Result<(), String>,
+    ) -> Result<Self, String> {
         // Same path canonicalization as SkStrikeSpec::MakeCanonicalized. Sum raw
         // advances before scaling bounds/width; positions scale each advance first.
         let path = size > 256.;
@@ -99,6 +105,10 @@ impl Strike {
             font.set_edging(Edging::AntiAlias);
         }
         let count = font.typeface().count_glyphs();
+        // Charge the temporary IDs as well as both resident metric tables.
+        reserve_bytes(
+            count * (size_of::<f32>() + size_of::<skia_safe::Rect>() + size_of::<u16>()),
+        )?;
         let (mut ids, mut widths, mut bounds) = (Vec::new(), Vec::new(), Vec::new());
         super::pool::reserve(&mut ids, count)?;
         super::pool::reserve(&mut widths, count)?;
@@ -166,7 +176,7 @@ impl Strike {
 const SIZE_LIMIT: usize = 64;
 #[derive(Clone, Copy)]
 pub(super) struct Sizes {
-    entries: [(f32, usize); SIZE_LIMIT],
+    entries: [(f64, usize); SIZE_LIMIT],
 }
 impl Default for Sizes {
     fn default() -> Self {
@@ -176,7 +186,7 @@ impl Default for Sizes {
     }
 }
 impl Sizes {
-    pub fn add(&mut self, size: f32) -> Result<(), String> {
+    pub fn add(&mut self, size: f64) -> Result<(), String> {
         let i = self
             .entries
             .iter()
@@ -186,7 +196,7 @@ impl Sizes {
         self.entries[i] = (size, self.entries[i].1 + 1);
         Ok(())
     }
-    pub fn remove(&mut self, size: f32) {
+    pub fn remove(&mut self, size: f64) {
         let entry = self
             .entries
             .iter_mut()
@@ -194,19 +204,11 @@ impl Sizes {
             .expect("declared font size");
         entry.1 -= 1;
     }
-    fn devices(&self, scale: f32) -> impl Iterator<Item = f32> + '_ {
-        std::iter::once(16.).chain(
-            self.entries
-                .iter()
-                .filter(|(_, n)| *n != 0)
-                .map(move |(s, _)| s * scale),
-        )
-    }
 }
 #[derive(Default)]
 pub(super) struct TextStore {
     pub sizes: Sizes,
-    strikes: Vec<Strike>,
+    pub strikes: strikes::Strikes,
     pub glyphs: Pool<Glyph>,
     strings: Pool<u8>,
     values: SlotMap<SharedKey, SharedRun>,
@@ -215,43 +217,6 @@ pub(super) struct TextStore {
     pub shapes: usize,
 }
 impl TextStore {
-    pub fn provision(&mut self, sizes: Sizes, scale: f32, has_text: bool) -> Result<(), String> {
-        if has_text {
-            if !sizes.devices(scale).all(f32::is_finite) {
-                return Err("font size exceeds device range".into());
-            }
-            let initial = self.strikes.len();
-            for size in sizes.devices(scale) {
-                for family in [Sans, Mono] {
-                    if self
-                        .strikes
-                        .iter()
-                        .any(|s| s.family == family && s.size == size)
-                    {
-                        continue;
-                    }
-                    let next = self
-                        .strikes
-                        .try_reserve(1)
-                        .map_err(super::pool::capacity_error)
-                        .and_then(|_| Strike::new(family, size));
-                    match next {
-                        Ok(s) => self.strikes.push(s),
-                        Err(err) => {
-                            self.strikes.truncate(initial);
-                            return Err(err);
-                        }
-                    }
-                }
-            }
-        }
-        if self.strikes.len() > 2 * (SIZE_LIMIT + 1) {
-            self.strikes
-                .retain(|s| sizes.devices(scale).any(|v| v == s.size));
-        }
-        self.sizes = sizes;
-        Ok(())
-    }
     pub fn ensure(&mut self, peak: usize, blocks: usize, b: Budget) -> Result<(), String> {
         let n = blocks + 1;
         if self.values.capacity() < n {
@@ -288,11 +253,7 @@ impl TextStore {
             self.values[k].refs += 1;
             k
         } else {
-            let strike = self
-                .strikes
-                .iter()
-                .find(|s| s.family == family && s.size == size)
-                .expect("provisioned strike");
+            let strike = self.strikes.get(StrikeKey::new(family, size));
             let glyphs = self.glyphs.alloc(n);
             let metrics = strike.shape(text, self.glyphs.write(glyphs));
             #[cfg(test)]

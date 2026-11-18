@@ -2,6 +2,7 @@
 mod allocations;
 mod identity;
 mod row;
+mod scale;
 mod topology;
 use super::*;
 use layers::Pass::*;

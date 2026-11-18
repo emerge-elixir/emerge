@@ -33,12 +33,7 @@ pub(super) struct Size {
     pub w: f32,
     pub h: f32,
 }
-#[derive(Clone, Copy, PartialEq)]
-struct ContextValue {
-    family: Family,
-    size: f32,
-    scale: f32,
-}
+use scale::{Inputs, pixels};
 #[derive(Clone, Copy, PartialEq)]
 struct Width {
     outer: f32,
@@ -49,7 +44,7 @@ struct Width {
 #[derive(Default)]
 pub(super) struct Layers {
     jobs: [WorkSet; 7],
-    context: SecondaryMap<Key, ContextValue>,
+    context: SecondaryMap<Key, Inputs>,
     measure: SecondaryMap<Key, Size>,
     pub(super) intrinsic: intrinsic::Intrinsic,
     // Glyph changes and intrinsic size changes have different readers.
@@ -67,7 +62,7 @@ pub(super) struct Layers {
     paint: SecondaryMap<Key, PaintContext>,
     pub(super) parts: SecondaryMap<Key, Composition>,
     pub(super) viewport: Rect,
-    pub(super) scale: f32,
+    pub(super) scale_declarations: usize,
     #[cfg(test)]
     pub trace: Vec<(Pass, u64, Outputs)>,
     #[cfg(test)]
@@ -136,6 +131,7 @@ pub(super) struct ReflowCx<'a> {
     pub gap: [f32; 2],
     padding: [f32; 4],
     height: Length,
+    scale: f32,
     pub measured_height: f32,
 }
 impl ReflowCx<'_> {
@@ -152,10 +148,8 @@ impl ReflowCx<'_> {
         }
     }
     pub fn box_height(&self, demand: f32) -> f32 {
-        self.height.intrinsic(
-            demand + self.padding[0] + self.padding[2],
-            self.layers.scale,
-        )
+        self.height
+            .intrinsic(demand + self.padding[0] + self.padding[2], self.scale)
     }
 }
 fn changed<T: PartialEq>(map: &mut SecondaryMap<Key, T>, k: Key, value: T) -> bool {
@@ -263,7 +257,7 @@ impl Layers {
             self.enqueue(p, parent, e);
         }
     }
-    pub fn recompute(&mut self, e: &Elements, root: Option<Key>, w: f32, h: f32, scale: f32) {
+    pub fn recompute(&mut self, e: &Elements, root: Option<Key>, w: f32, h: f32) {
         #[cfg(test)]
         self.trace.clear();
         let vp = Rect {
@@ -276,8 +270,7 @@ impl Layers {
             self.viewport = vp;
             return;
         };
-        if self.scale != scale {
-            self.scale = scale;
+        if self.context.get(root) != Some(&e.slots[root].admitted) {
             self.enqueue(Context, root, e);
         }
         if vp != self.viewport {
@@ -317,17 +310,7 @@ impl Layers {
         }
     }
     fn context(&mut self, e: &Elements, k: Key) {
-        let a = &e.attrs[k];
-        let inherited = e.slots[k].parent.map(|p| self.context[p]);
-        let ctx = ContextValue {
-            family: a.family.or(inherited.map(|p| p.family)).unwrap_or_default(),
-            size: a
-                .font_size
-                .map(|v| v * self.scale)
-                .or(inherited.map(|p| p.size))
-                .unwrap_or(16.),
-            scale: self.scale,
-        };
+        let ctx = e.slots[k].admitted;
         let scale_changed = self.context.get(k).is_none_or(|p| p.scale != ctx.scale);
         if changed(&mut self.context, k, ctx) {
             if e.slots[k].shape.uses_glyphs() || scale_changed {
@@ -365,10 +348,10 @@ impl Layers {
                     layers: self,
                     e,
                     k,
-                    gap: b.spacing.map(|v| v * c.scale),
+                    gap: b.spacing.map(|v| pixels(v, c.scale)),
                 },
             );
-            let [t, r, d, l] = b.padding.map(|v| v * c.scale);
+            let [t, r, d, l] = b.padding.map(|v| pixels(v, c.scale));
             let m = Size {
                 w: b.width.intrinsic(content.w + (l + r), c.scale),
                 h: b.height.intrinsic(content.h + (t + d), c.scale),
@@ -419,7 +402,8 @@ impl Layers {
         } else {
             self.measure[k].w
         };
-        let [_, r, _, l] = b.padding.map(|v| v * self.scale);
+        let scale = self.context[k].scale;
+        let [_, r, _, l] = b.padding.map(|v| pixels(v, scale));
         let inner = (outer - (r + l)).max(0.);
         let old = self.width.insert(
             k,
@@ -440,7 +424,7 @@ impl Layers {
                 inner,
                 offer_children,
                 policy: b.width,
-                gap: b.spacing[0] * self.scale,
+                gap: pixels(b.spacing[0], scale),
                 layers: self,
                 e,
             },
@@ -450,13 +434,15 @@ impl Layers {
         let n = &e.slots[k];
         let b = e.attrs[k].sizing;
         let width = self.width[k];
+        let scale = self.context[k].scale;
         let h = n.shape.reflow(
             e,
             k,
             &mut ReflowCx {
                 inner: width.inner,
-                gap: b.spacing.map(|v| v * self.scale),
-                padding: b.padding.map(|v| v * self.scale),
+                gap: b.spacing.map(|v| pixels(v, scale)),
+                padding: b.padding.map(|v| pixels(v, scale)),
+                scale,
                 height: b.height,
                 measured_height: self.measure[k].h,
                 layers: self,
@@ -505,13 +491,14 @@ impl Layers {
         let [top, _, _, left] = a.sizing.padding;
         let shape = e.slots[k].shape;
         let clip = parent.map_or(self.viewport, |p| self.paint[p].child_clip);
+        let scale = self.context[k].scale;
         let next = PaintContext {
             frame: f,
             clip,
             child_clip: shape.child_clip(clip, f),
             color,
-            scale: self.scale,
-            text_origin: [f.x + left * self.scale, f.y + top * self.scale],
+            scale,
+            text_origin: [f.x + pixels(left, scale), f.y + pixels(top, scale)],
         };
         let old = self.paint.get(k).copied();
         if old == Some(next) {

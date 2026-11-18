@@ -38,7 +38,7 @@ defmodule Emerge.Engine.Reconcile do
   end
 
   @axes [:scroll_position_x, :scroll_position_y]
-  @inherited ~w(font font_size font_weight font_style font_color font_underline font_strike font_letter_spacing font_word_spacing text_align snap_text_metrics)a
+  @inherited ~w(layout_scale font font_size font_weight font_style font_color font_underline font_strike font_letter_spacing font_word_spacing text_align snap_text_metrics)a
   @max_id 0xFFFFFFFFFFFFFFFF
 
   def assign_ids(tree) do

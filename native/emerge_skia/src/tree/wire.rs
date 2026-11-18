@@ -31,8 +31,8 @@ impl<'a> Reader<'a> {
     fn id(&mut self) -> Result<u64> {
         Ok(u64::from_be_bytes(self.array()?))
     }
-    pub(super) fn number(&mut self) -> Result<f32> {
-        let n = f64::from_be_bytes(self.array()?) as f32;
+    fn number(&mut self) -> Result<f64> {
+        let n = f64::from_be_bytes(self.array()?);
         if n.is_finite() && n >= 0. {
             Ok(n)
         } else {
@@ -114,6 +114,13 @@ fn attrs(raw: &[u8], shape: Shape) -> Result<Attrs> {
             5 | 6 | 30 if r.byte()? == 0 => (),
             12 if r.byte()? == 0 => a.background = Some(r.color()?),
             16 => a.font_size = Some(r.number()?),
+            78 => {
+                let s = f64::from_be_bytes(r.array()?);
+                if !s.is_finite() || s <= 0. {
+                    return Err("layout scale must be finite and positive".into());
+                }
+                a.layout_scale = Some(s);
+            }
             17 => a.color = Some(r.color()?),
             18 if r.byte()? <= 1 => {
                 a.family = Some(match r.string()? {

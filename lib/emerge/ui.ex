@@ -508,10 +508,11 @@ defmodule Emerge.UI do
   @doc """
   Scale this element and its subtree during layout.
 
-  This is equivalent to the renderer/window scale applied today, but scoped to
-  this element. Pixel-based attrs such as width, height, padding, border width,
-  shadows, font size, image size, scroll offsets, and motion offsets are scaled
-  before layout measures and places the subtree.
+  The multiplier is positive and composes with parent and display scale.
+  It changes layout, not the viewport size: scaling a `20px` child by `1.5`
+  gives it `30px` at display scale `1`, leaving less room for a fill sibling.
+  Padding, spacing and explicit font sizes scale where they are declared.
+  Descendants inherit the resolved font size unless they declare their own.
 
   Use `Transform.scale/1` when the element should only be painted larger or
   smaller without affecting layout.

@@ -4,25 +4,6 @@ use smithay_client_toolkit::shm::{
     slot::{Buffer, SlotPool},
 };
 use wayland_client::protocol::wl_shm::Format;
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) struct Geometry {
-    pub logical: (u32, u32),
-    pub scale: u32,
-}
-impl Geometry {
-    pub fn buffer(self) -> Result<(u32, u32), String> {
-        let (w, h) = self.logical;
-        let size = w.checked_mul(self.scale).zip(h.checked_mul(self.scale));
-        size.filter(|&size| super::super::valid_size(size))
-            .ok_or_else(|| "invalid Wayland buffer dimensions".into())
-    }
-    pub fn point(self, (x, y): (f64, f64)) -> (f32, f32) {
-        (
-            (x * self.scale as f64) as f32,
-            (y * self.scale as f64) as f32,
-        )
-    }
-}
 struct Slot {
     buffer: Buffer,
     pool: SlotPool,
@@ -93,6 +74,7 @@ fn to_argb(rgba: &[u8], dst: &mut [u8]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::geometry::{Geometry, Scale};
     use super::*;
     #[test]
     fn an_in_flight_slot_cannot_be_used_even_across_a_resize() {
@@ -108,12 +90,19 @@ mod tests {
     fn geometry_and_shm_respect_device_units_checked_sizes_and_native_argb() {
         let g = Geometry {
             logical: (480, 240),
-            scale: 2,
+            scale: Scale::Integer(2),
         };
         assert_eq!(g.buffer().unwrap(), (960, 480));
-        assert_eq!(g.point((5.5, 3.)), (11., 6.));
+        assert_eq!(g.mapping().unwrap().point((5.5, 3.)), (11., 6.));
         for logical in [(0, 1), (u32::MAX, 2), (8192, 8193), (16_777_217, 1)] {
-            assert!(Geometry { logical, scale: 1 }.buffer().is_err());
+            assert!(
+                Geometry {
+                    logical,
+                    scale: Scale::Integer(1)
+                }
+                .buffer()
+                .is_err()
+            );
         }
         assert!(
             Geometry {

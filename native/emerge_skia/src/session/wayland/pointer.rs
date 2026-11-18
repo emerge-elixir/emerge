@@ -204,7 +204,12 @@ impl PointerHandler for WindowApp {
             if &e.surface != self.window.wl_surface() {
                 continue;
             }
-            let (x, y) = self.installed.unwrap_or(self.geometry).point(e.position);
+            // A bufferless surface has no seat-coordinate mapping. Never
+            // interpret a click using a requested but not yet submitted size.
+            let Some(mapping) = self.installed else {
+                continue;
+            };
+            let (x, y) = mapping.point(e.position);
             match e.kind {
                 PointerEventKind::Enter { serial } => {
                     if let Some((_, cursor)) = &self.pointer {
