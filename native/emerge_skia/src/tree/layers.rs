@@ -363,8 +363,8 @@ impl Layers {
                 // even if the child's intrinsic box remains exactly the same.
                 if let Some(old) = old_scale {
                     let moved = |l: Length| {
-                        l.bound_px()
-                            .is_some_and(|n| pixels(n, old) != pixels(n, ctx.scale))
+                        l.bounds()
+                            .is_some_and(|b| b.device(old) != b.device(ctx.scale))
                     };
                     let b = e.attrs[k].sizing;
                     self.invalidate_split(e, k, moved(b.width), moved(b.height));

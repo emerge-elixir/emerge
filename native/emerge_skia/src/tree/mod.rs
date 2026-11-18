@@ -28,6 +28,31 @@ new_key_type! { pub(crate) struct Key; }
 const MAX_DEPTH: usize = 512;
 
 use shapes::{FlowInput, Shape};
+
+/// Endpoints of a monotone pixel clamp. Infinity is the internal open cap,
+/// never an authored pixel value. Folding min/max preserves floor <= cap.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Bounds<T> {
+    floor: T,
+    cap: T,
+}
+impl<T> Bounds<T> {
+    fn map<U>(self, f: impl Fn(T) -> U) -> Bounds<U> {
+        Bounds {
+            floor: f(self.floor),
+            cap: f(self.cap),
+        }
+    }
+}
+impl Bounds<f64> {
+    const OPEN: Self = Self {
+        floor: 0.,
+        cap: f64::INFINITY,
+    };
+    fn device(self, scale: f32) -> Bounds<f32> {
+        self.map(|v| scale::pixels(v, scale))
+    }
+}
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 enum Length {
     #[default]
@@ -36,12 +61,8 @@ enum Length {
     Px(f64),
     Fill,
     Weighted(f64),
-    Capped {
-        px: f64,
-        weight: f64,
-    },
-    Floored {
-        px: f64,
+    Bounded {
+        bounds: Bounds<f64>,
         weight: f64,
     },
 }
@@ -49,13 +70,11 @@ impl Length {
     fn weight(self) -> Option<f64> {
         match self {
             Self::Fill => Some(1.),
-            Self::Weighted(w)
-            | Self::Capped { weight: w, .. }
-            | Self::Floored { weight: w, .. } => Some(w),
+            Self::Weighted(w) | Self::Bounded { weight: w, .. } => Some(w),
             _ => None,
         }
     }
-    // The splitter reads both leaves, but not operand order or the spelling of one share.
+    // The splitter reads the folded interval, not the spelling of its operands.
     fn split_policy(self) -> Option<Self> {
         match self {
             Self::Weighted(1.) => Some(Self::Fill),
@@ -65,22 +84,15 @@ impl Length {
     fn without_weight(self) -> Self {
         match self {
             Self::Weighted(_) => Self::Fill,
-            Self::Capped { px, .. } => Self::Capped { px, weight: 1. },
-            Self::Floored { px, .. } => Self::Floored { px, weight: 1. },
+            Self::Bounded { bounds, .. } => Self::Bounded { bounds, weight: 1. },
             other => other,
         }
     }
-    fn bound_px(self) -> Option<f64> {
-        match self {
-            Self::Capped { px, .. } | Self::Floored { px, .. } => Some(px),
-            _ => None,
-        }
-    }
-    fn authored_px(self) -> Option<f64> {
-        if let Self::Px(px) = self {
-            Some(px)
+    fn bounds(self) -> Option<Bounds<f64>> {
+        if let Self::Bounded { bounds, .. } = self {
+            Some(bounds)
         } else {
-            self.bound_px()
+            None
         }
     }
     fn definite(self) -> bool {
@@ -92,8 +104,10 @@ impl Length {
     fn resolve(self, basis: f32, scale: impl FnOnce() -> f32) -> f32 {
         match self {
             Self::Px(px) => scale::pixels(px, scale()),
-            Self::Capped { px, .. } => basis.min(scale::pixels(px, scale())),
-            Self::Floored { px, .. } => basis.max(scale::pixels(px, scale())),
+            Self::Bounded { bounds, .. } => {
+                let b = bounds.device(scale());
+                basis.clamp(b.floor, b.cap)
+            }
             _ => basis,
         }
     }
@@ -118,6 +132,8 @@ impl BoxStyle {
 #[derive(Clone, Debug, Default)]
 struct Attrs {
     sizing: BoxStyle,
+    // Admission also checks operands masked by a tighter bound. This is not a layout input.
+    largest_length_px: f64,
     family: Option<Family>,
     font_size: Option<f64>,
     layout_scale: Option<f64>,

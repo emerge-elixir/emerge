@@ -1,17 +1,13 @@
 use super::*;
 use std::cell::Cell;
 
-fn extent(raw: f32, bound: Option<Limit>) -> f32 {
-    match bound {
-        Some(Limit::Cap(v)) => raw.min(v),
-        Some(Limit::Floor(v)) => raw.max(v),
-        None => raw,
-    }
+fn extent(raw: f32, bound: Option<Bounds<f32>>) -> f32 {
+    bound.map_or(raw, |b| raw.clamp(b.floor, b.cap))
 }
 
 // Construct a host from an independently chosen feasible allocation. No
 // second search or tolerance to mask a lost or wrongly frozen sibling.
-fn check_unit(fills: &[(f64, Option<Limit>)], unit: f32) {
+fn check_unit(fills: &[(f64, Option<Bounds<f32>>)], unit: f32) {
     let room: f32 = fills.iter().map(|&(w, b)| extent(unit * w as f32, b)).sum();
     let weights: f32 = fills.iter().map(|&(w, _)| w as f32).sum();
     let scans = Cell::new(0);
@@ -29,11 +25,31 @@ fn check_unit(fills: &[(f64, Option<Limit>)], unit: f32) {
 fn mixed_free_and_limited_weights_recover_known_solutions() {
     let bounds = [
         None,
-        Some(Limit::Cap(0.)),
-        Some(Limit::Cap(7.5)),
-        Some(Limit::Cap(29.)),
-        Some(Limit::Floor(11.)),
-        Some(Limit::Floor(39.)),
+        Some(Bounds { floor: 0., cap: 0. }),
+        Some(Bounds {
+            floor: 0.,
+            cap: 7.5,
+        }),
+        Some(Bounds {
+            floor: 0.,
+            cap: 29.,
+        }),
+        Some(Bounds {
+            floor: 11.,
+            cap: f32::INFINITY,
+        }),
+        Some(Bounds {
+            floor: 39.,
+            cap: f32::INFINITY,
+        }),
+        Some(Bounds {
+            floor: 3.,
+            cap: 25.,
+        }),
+        Some(Bounds {
+            floor: 7.5,
+            cap: 7.5,
+        }),
     ];
     for a in bounds {
         for b in bounds {
@@ -56,7 +72,17 @@ fn mixed_free_and_limited_weights_recover_known_solutions() {
 fn a_floor_that_takes_the_whole_host_leaves_zero_even_for_a_much_smaller_peer() {
     let size = f32::MAX;
     let split = FillShares::Device(1.).redistribute(f64::from(size), || {
-        [(f64::from(size), Some(Limit::Floor(size))), (1., None)].into_iter()
+        [
+            (
+                f64::from(size),
+                Some(Bounds {
+                    floor: size,
+                    cap: f32::INFINITY,
+                }),
+            ),
+            (1., None),
+        ]
+        .into_iter()
     });
     assert_eq!(split.share(1.), 0.);
 }

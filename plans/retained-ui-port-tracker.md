@@ -1,6 +1,6 @@
 # Retained renderer: elements and attributes still to port
 
-**Coverage through [pixel-bounded Row/Column fill](bounded-main-axis-fill.md), EMRG v10.** The Elixir producer can
+**Coverage through [nested pixel-bounded Row/Column fill](nested-main-axis-fill.md), EMRG v10.** The Elixir producer can
 encode 13 element kinds; the active native renderer implements six. This is a
 checklist of rendering and input behavior, not just of encodable bytes. An
 unchecked item may already have a DSL helper, patch codec or legacy renderer.
@@ -40,7 +40,7 @@ where declared. `key/1` is supported occurrence identity, not a wire attr.
 
 | Attribute | Works now | Still to port |
 | --- | --- | --- |
-| `width`, `height` | `px`, `content` (`shrink`), unweighted `width(fill())`. [`height(fill())`](../test/emerge_skia/column_height_fill_test.exs) on a root Column or ordinary child of a Column. [Weighted fill](../test/emerge_skia/weighted_fill_test.exs) and [one `min`/`max` of px and plain or weighted fill](../test/emerge_skia/bounded_fill_test.exs), either operand order: width on a root Row or a Row's direct child; height on a root Column or a Column's direct child. | Other fill sites, other operand pairs (including `content()`), and recursive `min`/`max`. |
+| `width`, `height` | `px`, `content` (`shrink`), unweighted `width(fill())`. [`height(fill())`](../test/emerge_skia/column_height_fill_test.exs) on a root Column or ordinary child of a Column. [Weighted fill](../test/emerge_skia/weighted_fill_test.exs) and [nested `min`/`max` with one plain or weighted fill and otherwise px leaves](../test/emerge_skia/bounded_fill_test.exs), either operand order, up to 64 operator levels: width on a root Row or a Row's direct child; height on a root Column or a Column's direct child. | Other fill sites; expressions with `content()`, multiple fills, or no fill. |
 | `align_x`, `align_y`, `text_align` | Leading values: left, top, left respectively | Horizontal center/right, vertical center/bottom, centered/right-aligned text. |
 | `background`, `font_color` | Solid RGB/RGBA; raw wire names `black`, `white`, `red`, `blue`, `transparent`. Palette helpers returning RGB/RGBA work as solids. | Other raw names, gradients; for `background`, image fits and tiling. |
 | `font` | `default` and `sans-serif` use bundled Inter Regular; `monospace` uses bundled JetBrains Mono Regular. | Other families and registered/custom fonts. |

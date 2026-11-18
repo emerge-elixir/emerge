@@ -11,11 +11,6 @@ pub(super) enum FillShares {
     // sqrt(unit) at a boundary of a flat or exhausted interval.
     Boundary(f64),
 }
-#[derive(Clone, Copy)]
-enum Limit {
-    Cap(f32),
-    Floor(f32),
-}
 impl FillShares {
     pub(super) fn split(
         policy: Length,
@@ -39,7 +34,7 @@ impl FillShares {
                 let w = w as f32;
                 total += w;
                 device_weights &= w.is_normal();
-                bounded |= l.bound_px().is_some();
+                bounded |= l.bounds().is_some();
             } else {
                 fixed += basis(c);
             }
@@ -75,12 +70,7 @@ impl FillShares {
             children.iter().filter_map(|&c| {
                 let l = length(c);
                 let w = l.weight()?;
-                let bound = match l {
-                    Length::Capped { px, .. } => Some(Limit::Cap(scale::pixels(px, scale(c)))),
-                    Length::Floored { px, .. } => Some(Limit::Floor(scale::pixels(px, scale(c)))),
-                    _ => None,
-                };
-                Some((w, bound))
+                Some((w, l.bounds().map(|bounds| bounds.device(scale(c)))))
             })
         }))
     }
@@ -113,7 +103,7 @@ impl FillShares {
     }
     fn redistribute<I>(self, room: f64, fills: impl Fn() -> I) -> Self
     where
-        I: Iterator<Item = (f64, Option<Limit>)>,
+        I: Iterator<Item = (f64, Option<Bounds<f32>>)>,
     {
         // Between successive limit/weight breakpoints, the equation is linear:
         // room = sum(locked pixel sizes) + unit * sum(free weights). Search
@@ -131,33 +121,25 @@ impl FillShares {
             let mut changed = false;
             for (w, bound) in fills() {
                 if let Some(bound) = bound {
-                    let px = match bound {
-                        Limit::Cap(px) | Limit::Floor(px) => px,
-                    };
-                    let at = f64::from(px).abs().sqrt() / w.sqrt();
-                    let past = at <= probe;
-                    if past {
-                        left = left.max(at);
-                    } else {
-                        right = right.min(at);
+                    if first {
+                        let raw = self.share(w);
+                        changed |= raw < bound.floor || raw > bound.cap;
+                        floors.add(f64::from(bound.floor));
                     }
-                    let frozen = match bound {
-                        Limit::Cap(_) => {
-                            changed |= first && self.share(w) > px;
-                            past
-                        }
-                        Limit::Floor(_) => {
-                            if first {
-                                floors.add(f64::from(px));
-                                changed |= self.share(w) < px;
-                            }
-                            !past
-                        }
-                    };
-                    if frozen {
-                        locked.add(f64::from(px));
+                    let root_weight = w.sqrt();
+                    let at = bound.map(|px| f64::from(px).abs().sqrt() / root_weight);
+                    if probe < at.floor {
+                        right = right.min(at.floor);
+                        locked.add(f64::from(bound.floor));
                         continue;
                     }
+                    if probe >= at.cap {
+                        left = left.max(at.cap);
+                        locked.add(f64::from(bound.cap));
+                        continue;
+                    }
+                    left = left.max(at.floor);
+                    right = right.min(at.cap);
                 }
                 free.add(w);
             }

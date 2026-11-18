@@ -26,7 +26,7 @@ defmodule EmergeSkia.BoundedFillTest do
       [
         Background.color(color_rgb(0, 255, 0)),
         Event.on_click(:host),
-        spacing(Keyword.get(opts, :gap, 0)) | dims(axis, px(120))
+        spacing(Keyword.get(opts, :gap, 0)) | dims(axis, px(Keyword.get(opts, :extent, 120)))
       ],
       [a, b]
     )
@@ -96,6 +96,55 @@ defmodule EmergeSkia.BoundedFillTest do
           {_, cold} = Headless.mount(size, scene, [:pointer_button])
           assert Headless.pixels() == expected
           click(cold, axis, point, after_key, new)
+          expected
+        end
+      )
+    end
+
+    test "#{axis}: nested fill moves from floor to free share to cap only on submission" do
+      axis = unquote(axis)
+      size = size(axis, 120)
+
+      scene = fn extent, policy ->
+        el([Background.color(:white) | dims(axis, px(120))], view(axis, policy, extent: extent))
+      end
+
+      {pid, r} =
+        Headless.mount(size, fn -> scene.(120, fill()) end, [:pointer_button], target_fps: 1)
+
+      installed = bands(axis, [60, 60, 0, 0])
+      assert Headless.pixels() == installed
+      range = min(px(50), max(px(20), fill()))
+
+      Enum.reduce(
+        [
+          {30, range, 20, 25.0, {:a, 25.0}, {:b, 5.0}},
+          {80, range, 40, 25.0, {:b, 5.0}, {:a, 25.0}},
+          {120, range, 50, 45.0, {:b, 5.0}, {:a, 45.0}},
+          {120, min(max(fill(), px(20)), min(px(90), px(35))), 35, 45.0, {:a, 45.0}, {:b, 10.0}}
+        ],
+        installed,
+        fn {extent, policy, a, point, {prior, old_local}, {next, local}}, old_frame ->
+          build = fn -> scene.(extent, policy) end
+
+          send(
+            pid,
+            {:scene,
+             fn ->
+               send(self(), :submitted)
+               build.()
+             end}
+          )
+
+          assert_receive {:application, :submitted}
+          assert {:ok, ^old_frame} = EmergeSkia.render_to_pixels(r)
+          click(r, axis, point, prior, old_local)
+          expected = bands(axis, [a, extent - a, 0, 120 - extent])
+          assert Headless.pixels(2500) == expected
+          click(r, axis, point, next, local)
+          {_, cold} = Headless.mount(size, build, [:pointer_button])
+          assert Headless.pixels() == expected
+          click(cold, axis, point, next, local)
           expected
         end
       )

@@ -3,6 +3,7 @@ mod allocations;
 mod bounded;
 mod column;
 mod identity;
+mod nested;
 mod row;
 mod scale;
 mod topology;

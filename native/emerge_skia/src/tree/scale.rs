@@ -1,6 +1,6 @@
 //! Resource inputs at the most recently accepted site. No geometry, glyph run,
 //! drawing, or callback is computed or installed by admission.
-use super::{Attrs, Family, Length, Shape};
+use super::{Attrs, Family, Shape};
 
 pub(super) fn pixels(authored: f64, factor: f32) -> f32 {
     (authored * f64::from(factor)) as f32
@@ -44,9 +44,7 @@ impl Inputs {
             return Err("font size exceeds device range".into());
         }
         let b = a.sizing;
-        if ![b.width, b.height]
-            .into_iter()
-            .filter_map(Length::authored_px)
+        if !std::iter::once(a.largest_length_px)
             .chain(b.padding)
             .chain(b.spacing)
             .all(|v| pixels(v, scale).is_finite())

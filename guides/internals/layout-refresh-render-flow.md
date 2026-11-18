@@ -54,6 +54,14 @@ that can still grow or shrink divide the remainder by weight. In a 120px Row,
 take **15px each**. All caps can leave unused space, and unavoidable floors
 can overflow. Neither case changes the host clip.
 
+Nested `min`/`max` can put both a floor and a cap on one fill. With no padding
+or gap, `min(px(50), max(px(20), fill()))` next to `fill()` takes 20/10 in a
+30px host, 40/40 in an 80px host, and 50/70 in a 120px host. Nothing is left
+unused in these examples. Nesting order matters: `min(20, max(80, share))`
+always gives 20, while `max(80, min(20, share))` always gives 80. The renderer
+folds pixel operands when accepting the declaration; it does not traverse the
+expression again during layout.
+
 Wayland uses the preferred fractional scale with a logical viewport destination
 when both protocols are available, or integer buffer scaling otherwise. Layout
 uses the nominal factor; seat input uses the submitted buffer's actual width

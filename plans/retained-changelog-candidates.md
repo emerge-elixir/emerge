@@ -19,6 +19,10 @@ that proves the fix. Only copy **verified fixes** to `Unreleased → Fixed` in
 - **Fixed on retained:** A is 20px and B is **100px**. Cold mount and an edit
   from `width(px(20))` agree; `x=90` reaches B at local `x=70`. At a Row width
   of 30px, the cap no longer binds and the labels share 15/15.
+- The same bug affects [nested bounds](nested-main-axis-fill.md#results): with
+  A bounded to 20–50px, B plain fill, no padding or gap, pinned `main` gives
+  **20/15** in a 30px host (5px overflow) and **50/60** in a 120px host
+  (10px unused). Retained gives **20/10** and **50/70** on both axes.
 - [Delivered-frame and raw-click regressions](../test/emerge_skia/bounded_fill_test.exs) ·
   [allocation and Wayland checks](bounded-main-axis-fill.md#redistribution-correction).
 

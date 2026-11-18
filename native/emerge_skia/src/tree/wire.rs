@@ -1,6 +1,7 @@
 //! EMRG v10. One replacement proof and commit for all declaration entry points.
 use super::*;
 mod batch;
+mod length;
 mod patch;
 mod upload;
 #[derive(Default)]
@@ -51,46 +52,6 @@ impl<'a> Reader<'a> {
         let n = self.count()?;
         self.take(n * 8)
     }
-    fn length(&mut self) -> Result<Length> {
-        let tag = self.byte()?;
-        if !matches!(tag, 4 | 5) {
-            return self.simple_length(tag);
-        }
-        // This slice admits one px leaf and one fill leaf. Never recurse on
-        // untrusted operand tags. Keep the original bytes for tree encoding.
-        let mut operand = || {
-            let tag = self.byte()?;
-            self.simple_length(tag)
-        };
-        let (px, fill) = match (operand()?, operand()?) {
-            (Length::Px(px), fill) | (fill, Length::Px(px)) => (px, fill),
-            _ => return Err(format!("unsupported length {tag}")),
-        };
-        let weight = fill
-            .weight()
-            .ok_or_else(|| format!("unsupported length {tag}"))?;
-        Ok(if tag == 4 {
-            Length::Capped { px, weight }
-        } else {
-            Length::Floored { px, weight }
-        })
-    }
-    fn simple_length(&mut self, tag: u8) -> Result<Length> {
-        match tag {
-            0 => Ok(Length::Fill),
-            1 => Ok(Length::Content),
-            2 => Ok(Length::Px(self.number()?)),
-            3 => {
-                let weight = f64::from_be_bytes(self.array()?);
-                if weight.is_finite() && weight > 0. {
-                    Ok(Length::Weighted(weight))
-                } else {
-                    Err("fill weight must be finite and positive".into())
-                }
-            }
-            v => Err(format!("unsupported length {v}")),
-        }
-    }
     fn color(&mut self) -> Result<u32> {
         Ok(match self.byte()? {
             0 => {
@@ -125,10 +86,11 @@ pub(super) fn range(all: &[u8], part: &[u8]) -> Range<usize> {
 fn attrs(raw: &[u8], shape: Shape) -> Result<Attrs> {
     let mut r = Reader(raw);
     let mut a = Attrs::default();
+    let mut largest_px = [0.; 2];
     for _ in 0..r.count()? {
         match r.byte()? {
-            1 => a.sizing.width = r.length()?,
-            2 => a.sizing.height = r.length()?,
+            1 => (a.sizing.width, largest_px[0]) = r.length()?,
+            2 => (a.sizing.height, largest_px[1]) = r.length()?,
             3 => {
                 a.sizing.padding = match r.byte()? {
                     0 => [r.number()?; 4],
@@ -169,6 +131,7 @@ fn attrs(raw: &[u8], shape: Shape) -> Result<Attrs> {
     if !r.0.is_empty() {
         return Err("trailing attribute bytes".into());
     }
+    a.largest_length_px = largest_px[0].max(largest_px[1]);
     Ok(a)
 }
 impl Tree {

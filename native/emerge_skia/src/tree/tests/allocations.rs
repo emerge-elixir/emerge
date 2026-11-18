@@ -100,6 +100,46 @@ fn weighted_splits(c: &Counter) {
     }
 }
 
+fn nested_splits(c: &Counter) {
+    for axis in [1, 2] {
+        let mut r = Raster::default();
+        let edit = |l| set(3, 4, weighted::panel(axis, 3, l));
+        r.tree
+            .upload(&weighted::pair(axis, nested::deep(axis, 64, true)))
+            .unwrap();
+        c.zero("first nested split after reservation", || {
+            r.settle(180., 170., 1.).unwrap();
+        });
+        draw(&mut r);
+        for p in [
+            edit(nested::deep(axis, 64, false)),
+            edit(nested::range(axis, 10., 30., 0.5)),
+            edit(nested::range(axis, 60., 80., 3.)),
+        ] {
+            c.zero("fitting nested expression through paint/hit inputs", || {
+                r.tree.patch(&p).unwrap();
+                r.settle(180., 170., 1.).unwrap();
+            });
+            draw(&mut r);
+        }
+        r.tree
+            .patch(&edit(nested::range(axis, 5., 9., 1.)))
+            .unwrap();
+        let pending = r.tree.encode();
+        let over = set(4, 5, text(&"W".repeat(512)));
+        (c.fail_next_reserve)();
+        assert_eq!(
+            r.tree.patch(&over).unwrap_err(),
+            "tree workspace capacity exceeded"
+        );
+        assert_eq!(r.tree.encode(), pending);
+        c.zero("pending nested split after refused growth", || {
+            r.settle(180., 170., 1.).unwrap();
+        });
+        assert_eq!(weighted::span(&r, axis, 3), (81., 9.));
+    }
+}
+
 fn bounded_splits(c: &Counter) {
     use bounded::bound;
     for axis in [1, 2] {
@@ -440,6 +480,7 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     });
     weighted_splits(&c);
     bounded_splits(&c);
+    nested_splits(&c);
     // 100 slots + 80% = 180. The inserted subtree and edited parent's
     // first input coexist with the old glyph/command buffers and batch scratch.
     let ids: Vec<u64> = (2..=100).collect();

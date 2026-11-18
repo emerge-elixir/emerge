@@ -37,8 +37,12 @@ impl Intrinsic {
         (shape as u8, scale.to_bits()).hash(&mut h);
         for length in [style.width, style.height] {
             std::mem::discriminant(&length).hash(&mut h);
-            if let Some(n) = length.authored_px() {
-                n.to_bits().hash(&mut h);
+            match length {
+                Length::Px(px) => px.to_bits().hash(&mut h),
+                Length::Bounded { bounds, .. } => {
+                    (bounds.floor.to_bits(), bounds.cap.to_bits()).hash(&mut h)
+                }
+                _ => (),
             }
         }
         for n in style.padding.into_iter().chain(style.spacing) {
