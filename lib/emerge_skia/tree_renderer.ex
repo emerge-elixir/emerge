@@ -35,14 +35,18 @@ defmodule EmergeSkia.TreeRenderer do
   @spec patch_tree_runtime(reference(), Emerge.Engine.diff_state(), Emerge.Engine.Element.t()) ::
           {Emerge.Engine.diff_state(), nil}
   def patch_tree_runtime(renderer, state, tree) do
-    {patch_bin, state} = Emerge.Engine.diff_state_update_binary(state, tree)
+    {submission, state} =
+      if is_reference(renderer) do
+        {bytes, next, edits} = Emerge.Engine.DiffState.diff_and_encode_routed(state, tree)
+        {if(map_size(edits) == 0, do: bytes, else: {bytes, edits}), next}
+      else
+        Emerge.Engine.diff_state_update_binary(state, tree)
+      end
 
-    case Transport.for_renderer(renderer).patch_tree(renderer, patch_bin) do
-      :ok -> :ok
+    case Transport.for_renderer(renderer).patch_tree(renderer, submission) do
+      :ok -> {state, nil}
       {:error, reason} -> raise "renderer_patch failed: #{reason}"
     end
-
-    {state, nil}
   end
 
   @spec render_to_pixels(Emerge.Engine.Element.t(), keyword(), pos_integer()) :: binary()

@@ -11,7 +11,7 @@ defmodule Emerge.TestSupport.HeadlessViewport do
     {:ok, %{target: target, scene: Keyword.fetch!(opts, :scene)},
      %Emerge.Config{
        output: %Emerge.Config.Headless{target: target, size: Keyword.fetch!(opts, :size)},
-       renderer: [api: :raster],
+       renderer: [api: :raster] ++ Keyword.take(opts, [:target_fps]),
        input: [events: Keyword.get(opts, :events, [])],
        assets: [otp_app: :emerge]
      }}
@@ -42,11 +42,11 @@ defmodule Emerge.TestSupport.Headless do
   import ExUnit.Callbacks, only: [start_supervised!: 1]
   alias Emerge.TestSupport.HeadlessViewport
 
-  def mount(size, scene, events \\ []) do
+  def mount(size, scene, events \\ [], opts \\ []) do
     pid =
       start_supervised!(
         Supervisor.child_spec(
-          {HeadlessViewport, size: size, target: self(), scene: scene, events: events},
+          {HeadlessViewport, [size: size, target: self(), scene: scene, events: events] ++ opts},
           id: make_ref(),
           restart: :temporary
         )

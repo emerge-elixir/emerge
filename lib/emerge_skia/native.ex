@@ -253,10 +253,11 @@ defmodule EmergeSkia.Native do
   def renderer_upload(_renderer, _data), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
-  Apply EMRG patches, run layout, and render immediately.
+  Submit EMRG patches for the next draw. The viewport can accompany them with
+  changed callback addresses; these do not change the EMRG format.
   Window dimensions come from the initial start config and resize events.
   """
-  @spec renderer_patch(reference(), binary()) :: :ok
+  @spec renderer_patch(reference(), binary() | {binary(), map()}) :: :ok
   def renderer_patch(_renderer, _data), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """

@@ -4,7 +4,7 @@ use crate::{
     binary,
     input::{self, InputEvent, InputHandler},
     keys::CanonicalKey,
-    tree::{Key, Raster},
+    tree::{Attachment, Raster},
 };
 use rustler::{Atom, Env, Error, LocalPid, NifResult, Term};
 
@@ -104,7 +104,7 @@ pub(super) fn decode(raw: Term) -> NifResult<InputEvent> {
 pub(super) struct Dispatcher {
     pub observer: InputHandler,
     pub target: Option<LocalPid>,
-    pressed: Option<Key>,
+    pressed: Option<Attachment>,
 }
 #[derive(rustler::NifMap)]
 struct Position {

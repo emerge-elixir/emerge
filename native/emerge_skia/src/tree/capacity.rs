@@ -27,12 +27,21 @@ pub(super) struct PayloadBounds {
 }
 impl PayloadBounds {
     pub fn reserve(&mut self, capacity: usize) -> Result<(), String> {
-        reserve(&mut self.nodes, 2 * capacity.max(1).next_power_of_two())
+        let base = capacity.max(1).next_power_of_two();
+        if base > self.base {
+            reserve(&mut self.nodes, 2 * base)?;
+            self.nodes.resize(2 * base, Bound::default());
+            self.nodes.copy_within(self.base..2 * self.base, base);
+            self.nodes[base + self.base..].fill(Bound::default());
+            for k in (1..base).rev() {
+                self.nodes[k] = Bound::join(self.nodes[2 * k], self.nodes[2 * k + 1]);
+            }
+            self.base = base;
+        }
+        Ok(())
     }
-    pub fn reset(&mut self, n: usize) {
-        self.base = n.max(1).next_power_of_two();
-        self.nodes.clear();
-        self.nodes.resize(2 * self.base, Bound::default());
+    pub fn reset(&mut self) {
+        self.nodes.fill(Bound::default());
         self.context_dirty = false;
     }
     pub fn leaf(&self, i: usize) -> Bound {

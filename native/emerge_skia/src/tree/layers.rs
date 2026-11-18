@@ -43,6 +43,7 @@ struct ContextValue {
 struct Width {
     outer: f32,
     inner: f32,
+    new_edge: bool,
 }
 
 #[derive(Default)]
@@ -68,6 +69,8 @@ pub(super) struct Layers {
     pub(super) scale: f32,
     #[cfg(test)]
     pub trace: Vec<(Pass, u64, Outputs)>,
+    #[cfg(test)]
+    pub invalidation_passes: usize,
 }
 // Pass views expose only settled inputs and keyed writers. A shape cannot run
 // a child early or install geometry, paint or hits on its own.
@@ -108,7 +111,7 @@ pub(super) struct FlowCx<'a> {
     e: &'a Elements,
     pub policy: Length,
     pub inner: f32,
-    pub inner_changed: bool,
+    pub offer_children: bool,
     pub gap: f32,
 }
 impl FlowCx<'_> {
@@ -204,34 +207,42 @@ impl Layers {
     pub fn invalidate_composition(&mut self, k: Key, depth: usize, outputs: Outputs) {
         self.jobs[Compose as usize].push(depth, k, outputs);
     }
+    #[cfg(test)]
+    pub fn worksets_empty(&self) -> bool {
+        self.jobs.iter().all(WorkSet::is_empty)
+    }
     pub fn mount(&mut self, k: Key, depth: usize) {
         for p in PASSES {
             self.invalidate(p, k, depth);
         }
     }
-    /// Compare before overwriting the single child order. Equal per-ordinal
-    /// measures don't need measuring again; offsets and stacking still read identity.
-    pub fn invalidate_order(
-        &mut self,
-        e: &Elements,
-        k: Key,
-        next: impl Iterator<Item = Key>,
-    ) -> bool {
+    /// Compare the saved input with the final order. A saved edge can name
+    /// an evicted generation; never resolve it as a current attachment.
+    pub fn invalidate_order(&mut self, e: &Elements, k: Key, old_order: &[Key], membership: bool) {
         let node = &e.slots[k];
         let reads_offers = node
             .shape
             .reads_flow(e.attrs[k].sizing.width, FlowInput::Order);
-        let (mut moved, mut measure, mut flow) = (false, false, false);
-        for (&a, b) in e.children(k).iter().zip(next).filter(|(a, b)| **a != *b) {
+        let next = e.children(k);
+        let different_len = old_order.len() != next.len();
+        let (mut moved, mut measure, mut flow) = (different_len, different_len, different_len);
+        for (&a, &b) in old_order.iter().zip(next).filter(|(a, b)| a != b) {
             moved = true;
             let (old, new) = (self.measure.get(a), self.measure.get(b));
             measure |= old != new;
             flow |= reads_offers
                 && (old.map(|m| m.w) != new.map(|m| m.w)
-                    || e.attrs[a].sizing.width != e.attrs[b].sizing.width);
+                    || e.attrs.get(a).map(|v| v.sizing.width) != Some(e.attrs[b].sizing.width));
         }
         if measure {
             self.enqueue(Measure, k, e)
+        }
+        if moved && membership {
+            // An incoming edge needs an offer even if our inner width is unchanged.
+            if let Some(width) = self.width.get_mut(k) {
+                width.new_edge = true;
+            }
+            flow = true;
         }
         if flow {
             self.enqueue(Flow, k, e)
@@ -240,7 +251,27 @@ impl Layers {
             self.enqueue(Reflow, k, e);
             self.enqueue(Compose, k, e)
         }
-        moved
+    }
+    pub fn reattached_container(&mut self, k: Key, e: &Elements) {
+        if let Some(width) = self.width.get_mut(k) {
+            width.new_edge = true;
+        }
+        self.enqueue(Measure, k, e);
+        self.enqueue(Compose, k, e);
+    }
+    pub fn evict(&mut self, k: Key) {
+        if let Some(run) = self.runs.remove(k) {
+            self.text.glyphs.release(run.span);
+        }
+        self.context.remove(k);
+        self.measure.remove(k);
+        self.width.remove(k);
+        self.offers.remove(k);
+        self.fit.remove(k);
+        self.offsets.remove(k);
+        self.frames.remove(k);
+        self.paint.remove(k);
+        self.parts.remove(k);
     }
     fn enqueue(&mut self, p: Pass, k: Key, e: &Elements) {
         self.invalidate(p, k, e.slots[k].depth);
@@ -384,16 +415,24 @@ impl Layers {
         };
         let [_, r, _, l] = b.padding.map(|v| v * self.scale);
         let inner = (outer - (r + l)).max(0.);
-        let available_changed = self.width.get(k).is_none_or(|w| w.inner != inner);
-        if changed(&mut self.width, k, Width { outer, inner }) {
+        let old = self.width.insert(
+            k,
+            Width {
+                outer,
+                inner,
+                new_edge: false,
+            },
+        );
+        if old.is_none_or(|w| w.outer != outer || w.inner != inner) {
             self.enqueue(Reflow, k, e);
         }
+        let offer_children = old.is_none_or(|w| w.inner != inner || w.new_edge);
         shape.offer_widths(
             e,
             k,
             &mut FlowCx {
                 inner,
-                inner_changed: available_changed,
+                offer_children,
                 policy: b.width,
                 gap: b.spacing[0] * self.scale,
                 layers: self,

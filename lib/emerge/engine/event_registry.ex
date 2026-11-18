@@ -8,11 +8,32 @@ defmodule Emerge.Engine.EventRegistry do
 
   @type events :: %{term() => {pid(), term()}}
   @type t :: %{binary() => events()}
+  @type edits :: %{binary() => events() | nil}
+
+  defmodule Changes do
+    @moduledoc false
+    defstruct registry: %{}, edits: %{}
+
+    @type t :: %__MODULE__{
+            registry: Emerge.Engine.EventRegistry.t(),
+            edits: Emerge.Engine.EventRegistry.edits()
+          }
+  end
+
+  @type accumulator :: t() | Changes.t()
+
+  # Only the native viewport needs a sparse transfer of callback addresses.
+  # Detached/public diff states continue to contain just the ordinary map.
+  @doc false
+  def reset(%Changes{registry: registry}),
+    do: %Changes{edits: Map.new(registry, fn {id, _} -> {id, nil} end)}
+
+  def reset(_registry), do: %{}
 
   @spec build(Element.t() | VNode.t() | nil) :: t()
   def build(tree), do: merge_tree(%{}, tree)
 
-  @spec merge_tree(t(), Element.t() | VNode.t() | nil) :: t()
+  @spec merge_tree(acc, Element.t() | VNode.t() | nil) :: acc when acc: accumulator()
   def merge_tree(registry, nil), do: registry
 
   def merge_tree(registry, %VNode{} = vnode) do
@@ -39,7 +60,7 @@ defmodule Emerge.Engine.EventRegistry do
     end)
   end
 
-  @spec delete_vnode_subtree(t(), VNode.t()) :: t()
+  @spec delete_vnode_subtree(acc, VNode.t()) :: acc when acc: accumulator()
   def delete_vnode_subtree(registry, %VNode{} = vnode) do
     registry
     |> delete_node(vnode.id)
@@ -77,16 +98,32 @@ defmodule Emerge.Engine.EventRegistry do
     |> register_key_events(attrs, :on_key_press, :key_press)
   end
 
-  @spec put_events(t(), non_neg_integer() | nil, events()) :: t()
+  @spec put_events(acc, non_neg_integer() | nil, events()) :: acc when acc: accumulator()
   def put_events(registry, nil, _events), do: registry
+
+  def put_events(%Changes{} = changes, id, events) do
+    key = NodeId.encode(id)
+    value = if map_size(events) != 0, do: events
+
+    if Map.get(changes.registry, key) == value do
+      changes
+    else
+      %Changes{
+        registry: put_events(changes.registry, id, events),
+        edits: Map.put(changes.edits, key, value)
+      }
+    end
+  end
+
   def put_events(registry, id, events) when map_size(events) == 0, do: delete_node(registry, id)
 
   def put_events(registry, id, events) when is_integer(id) do
     Map.put(registry, NodeId.encode(id), events)
   end
 
-  @spec delete_node(t(), non_neg_integer() | nil) :: t()
+  @spec delete_node(acc, non_neg_integer() | nil) :: acc when acc: accumulator()
   def delete_node(registry, nil), do: registry
+  def delete_node(%Changes{} = changes, id), do: put_events(changes, id, %{})
   def delete_node(registry, id) when is_integer(id), do: Map.delete(registry, NodeId.encode(id))
 
   # Compatibility wrapper for callers that only know about attrs.

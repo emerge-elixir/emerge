@@ -63,24 +63,33 @@ defmodule Emerge.Engine.DiffState do
   """
   @spec diff_and_encode_binary(t(), Emerge.Engine.Element.t()) :: {binary(), t()}
   def diff_and_encode_binary(%__MODULE__{} = state, tree) do
+    {bytes, next, _} = encode_update(state, tree, state.event_registry)
+    {bytes, next}
+  end
+
+  @doc false
+  @spec diff_and_encode_routed(t(), Emerge.Engine.Element.t()) ::
+          {binary(), t(), EventRegistry.edits()}
+  def diff_and_encode_routed(%__MODULE__{} = state, tree),
+    do: encode_update(state, tree, %EventRegistry.Changes{registry: state.event_registry})
+
+  defp encode_update(%__MODULE__{} = state, tree, registry) do
     {vdom, patches, event_registry, next_id} =
       Reconcile.reconcile_patches_and_event_registry(
         state.vdom,
         tree,
         state.next_id,
-        state.event_registry
+        registry
       )
 
-    {
-      Emerge.Engine.Patch.encode(patches),
-      %__MODULE__{
-        state
-        | tree: nil,
-          vdom: vdom,
-          event_registry: event_registry,
-          next_id: next_id
-      }
-    }
+    {routes, edits} =
+      case event_registry do
+        %EventRegistry.Changes{registry: routes, edits: edits} -> {routes, edits}
+        routes -> {routes, %{}}
+      end
+
+    {Emerge.Engine.Patch.encode(patches),
+     %{state | tree: nil, vdom: vdom, event_registry: routes, next_id: next_id}, edits}
   end
 
   @spec dispatch_click(t(), binary()) :: :ok

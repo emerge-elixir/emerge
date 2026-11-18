@@ -27,9 +27,11 @@ impl PaintContext {
         }
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Attachment(Key, u64);
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Hit {
-    key: Key,
+    key: Attachment,
     id: u64,
     rect: Rect,
     origin: [f32; 2],
@@ -56,7 +58,7 @@ struct Port {
     revision: u64,
     nonempty: bool,
     children: usize,
-    seen_at_parent: (usize, u64),
+    seen_at_parent: Option<(usize, u64)>,
 }
 #[derive(Clone, Copy, PartialEq)]
 pub(super) struct GlyphPaint {
@@ -88,6 +90,13 @@ pub(super) struct Composition {
     hit: Option<Hit>,
     ports: [Port; 2],
 }
+impl Composition {
+    pub(super) fn reattach(&mut self) {
+        for p in &mut self.ports {
+            p.seen_at_parent = None;
+        }
+    }
+}
 // Each child has one parent. Comparing (ordinal among nonempty children, value
 // revision) and the count is exact for its ordered contribution, without a
 // second child list. Children that changed to empty need no comparison by ID.
@@ -117,7 +126,7 @@ pub(super) fn compose(
                 .intersection(ctx.clip)
                 .filter(|_| a.click)
                 .map(|rect| Hit {
-                    key: k,
+                    key: Attachment(k, e.slots[k].attachment),
                     id: e.slots[k].id,
                     rect,
                     origin: [ctx.frame.x, ctx.frame.y],
@@ -131,7 +140,7 @@ pub(super) fn compose(
         for &c in e.children(k) {
             let port = &mut parts[c].ports[side];
             if port.nonempty {
-                let seen = (count, port.revision);
+                let seen = Some((count, port.revision));
                 *changed |= seen != port.seen_at_parent;
                 port.seen_at_parent = seen;
                 count += 1;
@@ -297,10 +306,10 @@ impl Raster {
             ..Default::default()
         }
     }
-    pub(crate) fn has_target(&self, key: Key) -> bool {
+    pub(crate) fn has_target(&self, key: Attachment) -> bool {
         self.tree.output.hits[0].iter().any(|h| h.key == key)
     }
-    pub(crate) fn target_at(&self, x: f32, y: f32) -> Option<(Key, u64, f64, f64)> {
+    pub(crate) fn target_at(&self, x: f32, y: f32) -> Option<(Attachment, u64, f64, f64)> {
         let v = self.viewport;
         if !(x >= 0. && x < v.width && y >= 0. && y < v.height) {
             return None;

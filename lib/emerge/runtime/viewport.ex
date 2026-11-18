@@ -90,7 +90,7 @@ defmodule Emerge.Runtime.Viewport do
         runtime.retiring_renderer_generation == generation
 
     if runtime.renderer_generation == generation or retiring_close do
-      handle_info(message, state)
+      handle_renderer_message(message, state)
     else
       {:noreply, state}
     end
@@ -149,6 +149,8 @@ defmodule Emerge.Runtime.Viewport do
              config_applied: nil,
              config_accepted: nil,
              diff_state: nil,
+             drawn_routes: nil,
+             pending_routes: nil,
              renderer_generation: nil,
              retiring_renderer_generation: generation,
              renderer_relay: nil,
@@ -559,13 +561,39 @@ defmodule Emerge.Runtime.Viewport do
     state
   end
 
+  # These messages and element input arrive in order from this session's relay.
+  # Edits prepare the next addresses; only a successful draw installs them.
+  defp handle_renderer_message({:emerge_skia_route_changes, edits}, state) do
+    {:noreply,
+     update_runtime(state, fn rt ->
+       routes =
+         Enum.reduce(edits, rt.pending_routes || rt.drawn_routes || %{}, fn
+           {id, nil}, routes -> Map.delete(routes, id)
+           {id, events}, routes -> Map.put(routes, id, events)
+         end)
+
+       %{rt | pending_routes: routes}
+     end)}
+  end
+
+  defp handle_renderer_message(:emerge_skia_install_routes, state) do
+    {:noreply,
+     update_runtime(state, fn rt ->
+       %{rt | drawn_routes: rt.pending_routes || rt.drawn_routes, pending_routes: nil}
+     end)}
+  end
+
+  defp handle_renderer_message(message, state), do: handle_info(message, state)
+
   defp route_element_event(state, id_bin, event_ref, payload_mode) do
     runtime = runtime!(state)
 
     if is_nil(runtime.diff_state) do
       :ok
     else
-      case Emerge.Engine.lookup_event(runtime.diff_state, id_bin, event_ref) do
+      routes = runtime.drawn_routes || runtime.diff_state.event_registry
+
+      case Map.fetch(Map.get(routes, id_bin, %{}), event_ref) do
         {:ok, {pid, message}} when is_pid(pid) ->
           routed_message =
             case payload_mode do
@@ -995,6 +1023,13 @@ defmodule Emerge.Runtime.Viewport do
               current
               | renderer: renderer,
                 diff_state: diff_state,
+                drawn_routes:
+                  if(
+                    current.renderer_module == Emerge.Runtime.Viewport.Renderer.Skia and
+                      is_reference(renderer),
+                    do: diff_state.event_registry
+                  ),
+                pending_routes: nil,
                 last_renderer_heartbeat_at_ms: monotonic_ms()
             }
           end)

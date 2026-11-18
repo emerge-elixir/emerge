@@ -22,7 +22,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-rustler::atoms! {emerge_skia_config,emerge_skia_log,error}
+rustler::atoms! {emerge_skia_config,emerge_skia_log,emerge_skia_route_changes,emerge_skia_install_routes,error}
 
 #[derive(rustler::NifMap)]
 struct Output {
@@ -51,6 +51,7 @@ struct Start {
 struct Live {
     raster: Raster,
     input: Dispatcher,
+    route_target: Option<LocalPid>,
     log: Option<LocalPid>,
     output: LocalPid,
     message: String,
@@ -95,9 +96,18 @@ impl Session {
         &self,
         bytes: &[u8],
         edit: fn(&mut Tree, &[u8]) -> Result<(), String>,
+        routes: Option<Term<'_>>,
     ) -> Result<(), String> {
         self.live(|live| {
             edit(&mut live.raster.tree, bytes)?;
+            // Send only changed callback addresses down the same ordered channel
+            // as clicks. No BEAM term is retained by the renderer.
+            if let (Some(edits), Some(target)) = (routes, live.input.target) {
+                let _ = edits
+                    .get_env()
+                    .send(&target, (emerge_skia_route_changes(), edits));
+                live.route_target = Some(target);
+            }
             live.request = true;
             Ok(())
         })?;
@@ -154,6 +164,9 @@ fn run(owner: &Owner, rx: Receiver<()>) -> Result<(), String> {
                         })
                         .map_err(|_| "headless output target is gone")?;
                         live.input.after_draw(raster);
+                        if let Some(target) = live.route_target.take() {
+                            let _ = env.send_and_clear(&target, |_| emerge_skia_install_routes());
+                        }
                         live.last = Some(Instant::now());
                     }
                     Err(why) => {
@@ -206,6 +219,7 @@ fn start(env: Env, opts: Start) -> Result<ResourceArc<Session>, String> {
         live: Mutex::new(Some(Live {
             raster: Raster::with_tree(Tree::with_headroom(opts.tree_headroom_percent)),
             input: Dispatcher::default(),
+            route_target: None,
             log: Some(env.pid()),
             output: opts.headless.target.ok_or("missing headless target")?,
             message: opts.headless.frame_message,
@@ -249,14 +263,23 @@ fn start_opts(env: Env, opts: Start) -> NifResult<ResourceArc<Session>> {
 }
 #[rustler::nif(schedule = "DirtyCpu")]
 fn renderer_upload(r: ResourceArc<Session>, data: Binary) -> NifResult<Atom> {
-    submitted(r.edit(data.as_slice(), Tree::upload))
+    submitted(r.edit(data.as_slice(), Tree::upload, None))
 }
 #[rustler::nif(schedule = "DirtyCpu")]
-fn renderer_patch(r: ResourceArc<Session>, data: Binary) -> NifResult<Atom> {
-    if data.is_empty() {
+fn renderer_patch(r: ResourceArc<Session>, submission: Term) -> NifResult<Atom> {
+    let (data, routes) = if submission.is_binary() {
+        (submission.decode::<Binary>()?, None)
+    } else {
+        let (data, routes): (Binary, Term) = submission.decode()?;
+        if !routes.is_map() {
+            return Err(rustler::Error::BadArg);
+        }
+        (data, Some(routes))
+    };
+    if data.is_empty() && routes.is_none() {
         submitted(r.live(|_| Ok(())))
     } else {
-        submitted(r.edit(data.as_slice(), Tree::patch))
+        submitted(r.edit(data.as_slice(), Tree::patch, routes))
     }
 }
 #[rustler::nif(schedule = "DirtyCpu")]

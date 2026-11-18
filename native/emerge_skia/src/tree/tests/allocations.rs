@@ -259,6 +259,54 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
         line.tree.upload(&full).unwrap();
         line.tree.refresh(180., 170., 1.).unwrap()
     });
+    // 100 slots + 80% = 180. The inserted subtree and edited parent's
+    // first input coexist with the old glyph/command buffers and batch scratch.
+    let ids: Vec<u64> = (2..=100).collect();
+    let mut nodes = vec![node(1, 3, block(&[]), &ids)];
+    nodes.extend(ids.iter().map(|&id| node(id, 6, block(&[]), &[])));
+    let mut topology = Tree::default();
+    topology.upload(&upload(&nodes)).unwrap();
+    topology.refresh(80., 20., 1.).unwrap();
+    let ids: Vec<u64> = (102..=180).collect();
+    let mut nodes = vec![node(101, 3, block(&[]), &ids)];
+    nodes.extend(ids.iter().map(|&id| node(id, 6, block(&[]), &[])));
+    let add = topology::insert(1, 50, &nodes);
+    let remove = topology::remove(101);
+    for _ in 0..2 {
+        c.zero("insert at the last fitting topology slot", || {
+            topology.patch(&add).unwrap();
+            topology.refresh(80., 20., 1.).unwrap();
+        });
+        c.zero("detach subtree including retained declarations", || {
+            topology.patch(&remove).unwrap();
+            topology.refresh(80., 20., 1.).unwrap();
+        });
+    }
+    c.zero("back-to-back topology edits plus pending reattach", || {
+        for p in [&add, &remove, &add] {
+            topology.patch(p).unwrap();
+        }
+        topology.refresh(80., 20., 1.).unwrap();
+    });
+    topology.patch(&set(1, block(&[px(1, 73.)]))).unwrap();
+    let over = topology::insert(1, 0, &[node(181, 6, block(&[]), &[])]);
+    let pending = topology.encode();
+    (c.fail_next_reserve)();
+    assert_eq!(
+        topology.patch(&over).unwrap_err(),
+        "tree workspace capacity exceeded"
+    );
+    assert_eq!(topology.encode(), pending);
+    c.zero(
+        "earlier edit still computes after failed topology admission",
+        || topology.refresh(80., 20., 1.).unwrap(),
+    );
+    assert_eq!(topology.layers.frames[topology.root.unwrap()].width, 73.);
+    let topology_growth = c.count(|| topology.patch(&over).unwrap());
+    assert!(topology_growth[0] + topology_growth[1] > 0);
+    c.zero("first compute after topology growth", || {
+        topology.refresh(80., 20., 1.).unwrap()
+    });
     let column_tree = |ids: &[u64], deep| {
         let nodes: Vec<_> = ids
             .iter()
@@ -315,6 +363,6 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     });
     assert_eq!(r.tree.layers.trace.len(), 7 * (MAX_DEPTH + 1));
     eprintln!(
-        "alloc/realloc/free: Rust control {control:?}; Skia control {skia:?}; initial reservation {initial:?}; one-over growth {growth:?}; cold and fitting intervals (including Row) [0, 0, 0]"
+        "alloc/realloc/free: Rust control {control:?}; Skia control {skia:?}; initial reservation {initial:?}; one-over text growth {growth:?}; one-over topology growth {topology_growth:?}; cold and fitting intervals (including topology) [0, 0, 0]"
     );
 }

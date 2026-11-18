@@ -62,7 +62,7 @@ trait LayoutBehaviour: ShapeMeta {
         false
     }
     fn offer_widths(node: Mounted<'_, Self::Payload>, cx: &mut FlowCx<'_>) {
-        if cx.inner_changed {
+        if cx.offer_children {
             for &child in node.children() {
                 cx.offer(child, cx.inner)
             }

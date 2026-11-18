@@ -21,7 +21,10 @@ defmodule EmergeSkia.Transport do
   @callback capture_png(renderer_handle(), map()) :: {:ok, binary()} | {:error, term()}
   @callback set_input_mask(renderer_handle(), non_neg_integer()) :: :ok
   @callback upload_tree(renderer_handle(), binary()) :: :ok | {:error, term()}
-  @callback patch_tree(renderer_handle(), binary()) :: :ok | {:error, term()}
+  @callback patch_tree(
+              renderer_handle(),
+              binary() | {binary(), Emerge.Engine.EventRegistry.edits()}
+            ) :: :ok | {:error, term()}
   @callback measure_text(String.t(), float()) :: {float(), float(), float(), float()}
   @callback load_font(renderer_handle(), String.t(), non_neg_integer(), boolean(), binary()) ::
               :ok | {:ok, boolean()} | {:error, term()}

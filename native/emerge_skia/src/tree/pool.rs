@@ -39,6 +39,9 @@ pub(super) fn reserve<T>(v: &mut Vec<T>, n: usize) -> Result<(), String> {
     Ok(())
 }
 impl<T: Copy + Default> Pool<T> {
+    pub fn capacity(&self) -> usize {
+        self.data.len()
+    }
     pub fn len(&self) -> usize {
         self.used
     }

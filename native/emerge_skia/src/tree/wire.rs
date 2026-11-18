@@ -1,11 +1,12 @@
 //! EMRG v9. Both entry points validate before changing any live declaration.
 use super::*;
+mod batch;
 mod patch;
 mod upload;
 #[derive(Default)]
 pub(super) struct Scratch {
     upload: upload::Proof,
-    patch: patch::Batch,
+    patch: Option<batch::Batch>,
 }
 type Result<T> = std::result::Result<T, String>;
 const MAX_BYTES: usize = 64 * 1024 * 1024;
@@ -140,7 +141,7 @@ fn attrs(raw: &[u8], shape: Shape) -> Result<Attrs> {
 impl Tree {
     pub fn encode(&self) -> Vec<u8> {
         let mut out = b"EMRG\x09".to_vec();
-        out.extend((self.elements.slots.len() as u32).to_be_bytes());
+        out.extend((self.elements.attached_count() as u32).to_be_bytes());
         let mut stack: Vec<_> = self.root.into_iter().collect();
         while let Some(k) = stack.pop() {
             let e = &self.elements;

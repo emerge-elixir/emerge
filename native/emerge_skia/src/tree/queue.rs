@@ -1,6 +1,6 @@
 //! A pass orders work by depth, not by sibling key. Each nonempty depth is a
 //! stack of mounts; its links double as the generational membership map.
-//! Mount depths are immutable. Full replacement discards work before reusing slots.
+//! Depth is fixed during compute. Wire mutation never seeds a workset.
 use super::{Key, MAX_DEPTH, paint::Outputs, pool};
 use slotmap::SecondaryMap;
 
@@ -28,6 +28,10 @@ pub(super) struct WorkSet {
 }
 
 impl WorkSet {
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.queued.is_empty()
+    }
     pub fn reserve(&mut self, keys: usize, occupancy: usize) -> Result<(), String> {
         self.queued
             .try_set_capacity(keys)

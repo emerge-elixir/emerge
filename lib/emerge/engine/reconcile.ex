@@ -112,8 +112,9 @@ defmodule Emerge.Engine.Reconcile do
           VNode.t() | nil,
           Element.t(),
           non_neg_integer(),
-          EventRegistry.t()
-        ) :: {VNode.t(), [Patch.patch()], EventRegistry.t(), non_neg_integer()}
+          acc
+        ) :: {VNode.t(), [Patch.patch()], acc, non_neg_integer()}
+        when acc: EventRegistry.accumulator()
   def reconcile_patches_and_event_registry(
         old_vnode,
         %Element{} = element,
@@ -161,7 +162,9 @@ defmodule Emerge.Engine.Reconcile do
   defp maybe_init_event_registry(ctx, event_registry) when is_map(event_registry),
     do: Map.put(ctx, :event_registry, event_registry)
 
-  defp reset_event_registry(%{event_registry: _registry} = ctx), do: %{ctx | event_registry: %{}}
+  defp reset_event_registry(%{event_registry: registry} = ctx),
+    do: %{ctx | event_registry: EventRegistry.reset(registry)}
+
   defp reset_event_registry(ctx), do: ctx
 
   defp event_registry(%{event_registry: registry}), do: registry

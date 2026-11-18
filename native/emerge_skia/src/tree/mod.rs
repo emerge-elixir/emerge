@@ -1,5 +1,6 @@
-//! The native producer. Wire IDs name declarations; a Key names one mount.
+//! Wire IDs name declarations, keys name cache slots, and attachments name live input targets.
 mod capacity;
+mod changes;
 mod layers;
 mod paint;
 mod pool;
@@ -9,7 +10,7 @@ mod text;
 mod wire;
 
 use layers::{Layers, Pass};
-pub(crate) use paint::Raster;
+pub(crate) use paint::{Attachment, Raster};
 use pool::{Budget, Pool, Span};
 use slotmap::{SecondaryMap, SlotMap, new_key_type};
 use std::{collections::HashMap, ops::Range};
@@ -62,6 +63,10 @@ struct Mount {
     parent: Option<Key>,
     depth: usize,
     index: usize,
+    // Some only while this slot is in the detached cache.
+    detached: Option<usize>,
+    attachment: u64,
+    change: changes::Change,
     children: Span<Key>,
     bytes: Span<u8>,
 }
@@ -72,8 +77,15 @@ struct Elements {
     attrs: SecondaryMap<Key, Attrs>,
     child_pool: Pool<Key>,
     bytes: Pool<u8>,
+    touched: Vec<Key>,
+    detached: Vec<Key>,
+    free_indices: Vec<usize>,
+    live_bytes: usize,
 }
 impl Elements {
+    fn attached_count(&self) -> usize {
+        self.slots.len() - self.detached.len()
+    }
     fn children(&self, key: Key) -> &[Key] {
         self.child_pool.get(&self.slots[key].children)
     }
@@ -128,6 +140,9 @@ impl Tree {
         self.elements.ids.clear();
         self.elements.attrs.clear();
         self.elements.child_pool.clear();
+        self.elements.detached.clear();
+        self.elements.touched.clear();
+        self.elements.free_indices.clear();
         self.elements.bytes.clear();
         self.root = None;
     }
@@ -135,6 +150,7 @@ impl Tree {
         self.elements
             .slots
             .iter()
+            .filter(|(_, n)| n.detached.is_none())
             .filter_map(|(k, n)| Some((n.id, *self.layers.frames.get(k)?)))
     }
     pub(crate) fn refresh(&mut self, width: f32, height: f32, scale: f32) -> Result<(), String> {
@@ -156,6 +172,7 @@ impl Tree {
                 .provision(self.layers.text.sizes, scale, true)?;
         }
         self.layers.prepared_scale = scale;
+        self.layers.invalidate_changes(&mut self.elements);
         self.layers
             .recompute(&self.elements, self.root, width, height, scale);
         self.layers.bounds.context_dirty = false;
