@@ -1,5 +1,7 @@
 # Retained tree: slice plan and results
 
+Current checklist: [Elements and attributes still to port](retained-ui-port-tracker.md).
+
 Implemented: [Subtree layout scale and fractional Wayland display scale](scale.md) · [parity, compositor checks and limits](scale-results.md).
 
 Delivered follow-ups: [Single-line Row and the per-element shape interface](row.md), then [keyed child insertion/removal and batched invalidation](keyed-insert-remove.md). The first-slice checkpoint below is unchanged.
