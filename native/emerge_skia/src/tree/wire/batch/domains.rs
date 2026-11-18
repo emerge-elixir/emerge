@@ -87,7 +87,7 @@ impl Batch {
                 .and_then(|s| s.attrs.as_ref().map(|(a, _)| a))
                 .unwrap_or_else(|| &e.attrs[e.ids[&id]]);
             let shape = s.map_or_else(|| e.slots[old.unwrap()].shape, |s| s.shape);
-            let next = parent.child(a, nested)?;
+            let next = parent.child(a, shape, nested)?;
             let order = s.and_then(|s| s.order);
             if let Some(i) = i {
                 self.entries[i].inputs = Some(next);

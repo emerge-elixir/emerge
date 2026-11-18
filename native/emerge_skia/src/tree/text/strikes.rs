@@ -15,7 +15,7 @@ impl StrikeKey {
 }
 impl From<Inputs> for StrikeKey {
     fn from(i: Inputs) -> Self {
-        Self::new(i.family, i.size)
+        Self::new(i.family, i.font_size())
     }
 }
 pub(in crate::tree) type StrikeDelta = (Option<StrikeKey>, Option<StrikeKey>);

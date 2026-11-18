@@ -513,6 +513,7 @@ defmodule Emerge.UI do
   gives it `30px` at display scale `1`, leaving less room for a fill sibling.
   Padding, spacing and explicit font sizes scale where they are declared.
   Descendants inherit the resolved font size unless they declare their own.
+  Text with no size declaration uses 16 logical pixels at the text's scale.
 
   Use `Transform.scale/1` when the element should only be painted larger or
   smaller without affecting layout.

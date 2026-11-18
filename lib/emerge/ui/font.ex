@@ -28,7 +28,7 @@ defmodule Emerge.UI.Font do
   - family: `"default"`
   - weight: `400` (`regular/0`)
   - italic: `false`
-  - size: `16`
+  - size: `16` logical pixels at the text's effective layout scale
   - color: black
   - alignment: left
 

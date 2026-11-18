@@ -84,6 +84,66 @@ fn closed_moved_branch_and_promotion_take_the_accepted_not_last_drawn_font_input
 }
 
 #[test]
+fn default_font_scales_at_the_text_site_until_a_size_is_declared() {
+    let mut r = Raster::default();
+    r.tree
+        .upload(&upload(&[
+            node(1, 3, zoom(1.5), &[2, 3]),
+            node(2, 5, text("Pay"), &[]),
+            node(3, 3, zoom(0.5), &[4, 5]),
+            node(4, 5, text("Pay"), &[]),
+            node(5, 5, label("Pay", 16.), &[]),
+        ]))
+        .unwrap();
+    let sizes = |r: &Raster| [2, 4, 5].map(|id| metric(r, id));
+    for display in [1., 1.5, 2., 1.] {
+        r.tree.refresh(180., 170., display).unwrap();
+        assert_eq!(sizes(&r), [24., 12., 12.].map(|s| s * display));
+    }
+    // Equal size at the parent, but its descendants now inherit a declaration.
+    r.tree
+        .patch(&set(1, 3, block(&[number(78, 1.5), number(16, 16.)])))
+        .unwrap();
+    draw(&mut r);
+    assert_eq!(sizes(&r), [24., 24., 12.]);
+    r.tree.patch(&set(1, 3, zoom(1.5))).unwrap();
+    draw(&mut r);
+    assert_eq!(sizes(&r), [24., 12., 12.]);
+}
+
+#[test]
+fn an_unused_default_need_not_fit_but_an_overflowing_text_default_rejects_atomically() {
+    let mut r = Raster::default();
+    r.tree
+        .upload(&upload(&[
+            node(1, 4, zoom(1.5), &[2]),
+            node(2, 5, text("Pay"), &[]),
+        ]))
+        .unwrap();
+    draw(&mut r);
+    // 16 × 2^124 overflows f32, but the actual declaration resolves to 32.
+    let large = 2f64.powi(124);
+    r.tree
+        .patch(&patch(
+            1,
+            1,
+            &[
+                node(1, 4, zoom(large), &[2]),
+                attr_record(2, 5, label("Pay", 32. / large)),
+            ],
+        ))
+        .unwrap();
+    let pending = r.tree.encode();
+    assert_eq!(
+        r.tree.patch(&set(2, 5, text("Pay"))).unwrap_err(),
+        "font size exceeds device range"
+    );
+    assert_eq!(r.tree.encode(), pending);
+    draw(&mut r);
+    assert_eq!(metric(&r, 2), 32.);
+}
+
+#[test]
 fn invalid_or_unrepresentable_scale_preserves_pending_declaration_and_submitted_hits() {
     let mut r = Raster::default();
     let hit = block(&[px(1, 20.), px(2, 10.), vec![40, 1]]);

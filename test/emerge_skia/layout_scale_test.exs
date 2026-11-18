@@ -21,6 +21,25 @@ defmodule EmergeSkia.LayoutScaleTest do
     assert_receive {:application, :submitted}
   end
 
+  test "scaling default-size text delivers the same glyphs and layout as an explicit 16" do
+    view = fn attrs ->
+      column([Font.color(:white) | attrs], [text("Move me"), text("Moves: 0")])
+    end
+
+    {pid, _} = Headless.mount({180, 100}, fn -> view.([]) end)
+    unscaled = Headless.pixels()
+    refute unscaled == :binary.copy(<<0::32>>, 180 * 100)
+
+    {_, _} = Headless.mount({180, 100}, fn -> view.([scale(1.5), Font.size(16)]) end)
+    explicit = Headless.pixels()
+    refute explicit == unscaled
+
+    edit(pid, fn -> view.([scale(1.5)]) end)
+    assert Headless.pixels() == explicit
+    edit(pid, fn -> view.([]) end)
+    assert Headless.pixels() == unscaled
+  end
+
   test "a reused fill box changes the local divisor and route only at submission" do
     view = fn s, label ->
       el(

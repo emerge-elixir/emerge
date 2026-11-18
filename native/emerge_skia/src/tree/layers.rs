@@ -86,11 +86,12 @@ impl Measuring<'_> {
         let ctx = l.context[k];
         let len = self.e.attrs[k].glyph_count;
         let run = l.runs.entry(k).unwrap().or_default();
+        let font_size = ctx.font_size();
         let changed = (run.invalid
             || run.revision == 0
             || run.metrics.family != ctx.family
-            || run.metrics.size != ctx.size)
-            && l.text.measure(text, len, ctx.family, ctx.size, run);
+            || run.metrics.size != font_size)
+            && l.text.measure(text, len, ctx.family, font_size, run);
         let size = Size {
             w: run.metrics.width,
             h: run.metrics.height,

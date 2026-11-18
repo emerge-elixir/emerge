@@ -346,45 +346,55 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
         );
     }
     assert_eq!(moving.layers.text.shapes, 1);
-    let mut scaled = Raster::default();
-    let at_scale = |s| block(&[number(78, s), number(16, 12.)]);
-    let edits = [set(1, 4, at_scale(2.)), set(1, 4, at_scale(1.))];
-    scaled
-        .tree
-        .upload(&upload(&[
-            node(1, 4, at_scale(1.), &[2]),
-            node(2, 5, text("Pay"), &[]),
-        ]))
-        .unwrap();
-    draw(&mut scaled);
-    scaled.tree.patch(&edits[0]).unwrap(); // provision the new strike once
-    c.zero("first compute after admitting a cold scaled strike", || {
-        scaled.tree.refresh(180., 170., 1.).unwrap();
-    });
-    for p in [&edits[1], &edits[0], &edits[1]] {
-        c.zero("warmed scale edit: wire through draw inputs", || {
-            scaled.tree.patch(p).unwrap();
+    for declared in [Some(12.), None] {
+        let mut scaled = Raster::default();
+        let at_scale = |s| match declared {
+            Some(size) => block(&[number(78, s), number(16, size)]),
+            None => block(&[number(78, s)]),
+        };
+        let edits = [set(1, 4, at_scale(2.)), set(1, 4, at_scale(1.))];
+        scaled
+            .tree
+            .upload(&upload(&[
+                node(1, 4, at_scale(1.), &[2]),
+                node(2, 5, text("Pay"), &[]),
+            ]))
+            .unwrap();
+        draw(&mut scaled);
+        let cold = c.count(|| scaled.tree.patch(&edits[0]).unwrap());
+        c.zero("first compute after admitting a cold scaled strike", || {
+            assert!(scaled.settle(180., 170., 1.).unwrap());
+        });
+        draw(&mut scaled); // Rasterization is outside the measured interval.
+        for p in [&edits[1], &edits[0], &edits[1]] {
+            c.zero("warmed scale edit: wire through draw inputs", || {
+                scaled.tree.patch(p).unwrap();
+                assert!(scaled.settle(180., 170., 1.).unwrap());
+            });
+            draw(&mut scaled);
+        }
+        eprintln!(
+            "font {declared:?}: cold scale admission {cold:?}; first settle and warmed edits [0, 0, 0]"
+        );
+        scaled.tree.patch(&edits[0]).unwrap();
+        let rejected = set(1, 4, at_scale(1.25));
+        let pending = scaled.tree.encode();
+        (c.fail_next_reserve)();
+        assert_eq!(
+            scaled.tree.patch(&rejected).unwrap_err(),
+            "tree workspace capacity exceeded"
+        );
+        assert_eq!(scaled.tree.encode(), pending);
+        c.zero("rejected strike leaves previous scale ready", || {
             scaled.tree.refresh(180., 170., 1.).unwrap();
         });
+        assert_eq!(
+            scaled.tree.layers.runs[scaled.tree.elements.ids[&2]]
+                .metrics
+                .size,
+            2. * declared.unwrap_or(16.) as f32
+        );
     }
-    scaled.tree.patch(&edits[0]).unwrap();
-    let rejected = set(1, 4, at_scale(1.25));
-    let pending = scaled.tree.encode();
-    (c.fail_next_reserve)();
-    assert_eq!(
-        scaled.tree.patch(&rejected).unwrap_err(),
-        "tree workspace capacity exceeded"
-    );
-    assert_eq!(scaled.tree.encode(), pending);
-    c.zero("rejected strike leaves previous scale ready", || {
-        scaled.tree.refresh(180., 170., 1.).unwrap();
-    });
-    assert_eq!(
-        scaled.tree.layers.runs[scaled.tree.elements.ids[&2]]
-            .metrics
-            .size,
-        24.
-    );
     let column_tree = |ids: &[u64], deep| {
         let nodes: Vec<_> = ids
             .iter()
