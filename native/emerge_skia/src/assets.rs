@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -72,7 +72,7 @@ pub(crate) enum AssetRecordKind {
 #[derive(Clone)]
 pub(crate) struct AssetRecord {
     owner: std::sync::Weak<Mutex<AssetState>>,
-    pub id: String,
+    pub id: Arc<str>,
     pub source: String,
     pub width: u32,
     pub height: u32,
@@ -82,6 +82,15 @@ pub(crate) struct AssetRecord {
     pub epoch: u64,
     pub decode_at_size: bool,
     pub kind: AssetRecordKind,
+}
+
+impl AssetRecord {
+    /// Share only the actual ID buffer, without pinning pixels or an old epoch.
+    pub(crate) fn share_id(id: &str, record: Option<&Self>) -> Arc<str> {
+        record
+            .filter(|record| record.id.as_ref() == id)
+            .map_or_else(|| Arc::from(id), |record| Arc::clone(&record.id))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -411,23 +420,46 @@ pub fn configure(config: AssetConfig) {
 }
 
 pub fn ensure_tree_sources(tree: &ElementTree) {
-    let sources = collect_tree_sources(tree);
-    let active_sources = sources.iter().cloned().collect::<HashSet<_>>();
+    let sources = tree.frame_source_list();
+    reconcile_sources(&sources);
+    register_sources(&sources, ensure_source);
+}
+
+/// Actor preparation owns pruning; direct capture/layout only registers. The
+/// same retained list is passed into capture, not reacquired/ensured a second time.
+pub(crate) fn prepare_tree_sources(tree: &ElementTree) -> Arc<FrameSourceList> {
+    let sources = tree.frame_source_list();
+    reconcile_sources(&sources);
+    register_live_sources(&sources);
+    sources
+}
+
+pub(crate) fn register_live_sources(sources: &FrameSourceList) {
+    register_sources(sources, ensure_live_source);
+}
+fn register_sources(sources: &FrameSourceList, ensure: fn(&ImageSource)) {
+    #[cfg(any(test, feature = "bench-diagnostics"))]
+    record_source_scope(|work| {
+        work.registration_passes += 1;
+        work.registration_visits += sources.all.len() as u64;
+    });
+    sources.all.iter().for_each(ensure);
+}
+fn reconcile_sources(sources: &FrameSourceList) {
+    #[cfg(any(test, feature = "bench-diagnostics"))]
+    record_source_scope(|work| work.reconcile_passes += 1);
+    let active_sources = &sources.all;
     let context = current_context();
     if let Ok(mut state) = context.state.lock() {
+        let removed = state.sources.len();
         let removed_ids: HashSet<_> = state
             .sources
-            .iter()
-            .filter(|(source, _)| !active_sources.contains(*source))
+            .extract_if(|source, _| !active_sources.contains(source))
             .filter_map(|(_, status)| match status {
-                AssetStatus::Ready(asset) => Some(asset.id.clone()),
+                AssetStatus::Ready(asset) => Some(asset.id),
                 _ => None,
             })
             .collect();
-        let removed = state.sources.len();
-        state
-            .sources
-            .retain(|source, _| active_sources.contains(source));
         state
             .requests
             .retain(|source, _| active_sources.contains(source));
@@ -437,16 +469,23 @@ pub fn ensure_tree_sources(tree: &ElementTree) {
         if removed != state.sources.len() {
             state.status_generation = state.status_generation.wrapping_add(1);
         }
-        let retained_ids: HashSet<_> = state
-            .sources
-            .values()
-            .filter_map(|status| match status {
-                AssetStatus::Ready(asset) => Some(asset.id.clone()),
-                _ => None,
-            })
-            .collect();
-        for id in removed_ids.difference(&retained_ids) {
-            state.records.remove(id);
+        if !removed_ids.is_empty() {
+            let AssetState {
+                sources, records, ..
+            } = &mut *state;
+            let retained_ids: HashSet<_> = sources
+                .values()
+                .filter_map(|status| match status {
+                    AssetStatus::Ready(asset) => Some(asset.id.as_str()),
+                    _ => None,
+                })
+                .collect();
+            for id in removed_ids
+                .iter()
+                .filter(|id| !retained_ids.contains(id.as_str()))
+            {
+                records.remove(id);
+            }
         }
         state.pending_count = state
             .sources
@@ -454,13 +493,12 @@ pub fn ensure_tree_sources(tree: &ElementTree) {
             .filter(|status| matches!(status, AssetStatus::Pending))
             .count();
     }
-    sources.iter().for_each(ensure_source);
 }
 
 pub fn snapshot_tree_sources(tree: &ElementTree) {
     let context = current_context();
     if context.tx.lock().is_ok_and(|tx| tx.is_some()) {
-        collect_tree_sources(tree).iter().for_each(ensure_source);
+        tree.frame_source_list().all.iter().for_each(ensure_source);
     } else {
         snapshot_tree_sources_for_offscreen(tree);
     }
@@ -468,11 +506,13 @@ pub fn snapshot_tree_sources(tree: &ElementTree) {
 
 pub fn snapshot_tree_sources_for_offscreen(tree: &ElementTree) {
     // Metadata lookup may acquire asset state; resolve before taking that lock.
-    let statuses: Vec<_> = collect_tree_sources(tree)
-        .into_iter()
+    let sources = tree.frame_source_list();
+    let statuses: Vec<_> = sources
+        .all
+        .iter()
         .map(|source| {
-            let status = snapshot_status_for_source(&source);
-            (source, status)
+            let status = snapshot_status_for_source(source);
+            (source.clone(), status)
         })
         .collect();
     if let Ok(mut state) = current_context().state.lock() {
@@ -487,7 +527,7 @@ pub fn resolve_tree_sources_sync(
     tree: &ElementTree,
     timeout: Option<Duration>,
 ) -> Result<(), String> {
-    let sources = collect_tree_sources(tree);
+    let sources = tree.frame_source_list();
 
     let context = current_context();
     let state = Arc::clone(&context.state);
@@ -501,9 +541,9 @@ pub fn resolve_tree_sources_sync(
 
     let deadline = timeout.map(|duration| Instant::now() + duration);
 
-    for source in sources {
+    for source in &sources.all {
         ensure_deadline(deadline)?;
-        let status = load_source_in_epoch(&source, &config, epoch, true)
+        let status = load_source_in_epoch(source, &config, epoch, true)
             .map_or(AssetStatus::Failed, AssetStatus::Ready);
         ensure_deadline(deadline)?;
 
@@ -513,7 +553,7 @@ pub fn resolve_tree_sources_sync(
         if state.epoch != epoch {
             return Err("asset configuration changed during load".into());
         }
-        state.set_source_status(source, status);
+        state.set_source_status(source.clone(), status);
         state.pending_count = 0;
     }
 
@@ -600,7 +640,7 @@ pub(crate) fn ensure_live_source(source: &ImageSource) {
                     .svg_cache
                     .get_for_source(&path.display().to_string())
                     .map(|record| ResolvedAsset {
-                        id: record.id.clone(),
+                        id: record.id.to_string(),
                         width: record.width,
                         height: record.height,
                     })
@@ -782,6 +822,46 @@ pub(crate) fn loading_indicator_visible(source: &ImageSource) -> bool {
         .is_ok_and(|state| state.loading_indicators.get(source) == Some(&None))
 }
 
+pub(crate) enum PaintSourceStatus {
+    Ready(Arc<str>),
+    Pending,
+    Failed,
+}
+
+fn paint_status(status: &AssetStatus, id: impl FnOnce(&str) -> Arc<str>) -> PaintSourceStatus {
+    match status {
+        AssetStatus::Ready(asset) => PaintSourceStatus::Ready(id(&asset.id)),
+        AssetStatus::Pending => PaintSourceStatus::Pending,
+        AssetStatus::Failed => PaintSourceStatus::Failed,
+    }
+}
+
+/// Borrow the same status used by the public API; only actual ID ownership
+/// escapes. Do not clone a temporary public ResolvedAsset/String for paint.
+pub(crate) fn paint_source_status(source: &ImageSource) -> Option<PaintSourceStatus> {
+    if let Some(status) = FRAME_ASSETS.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .filter(|frame| frame.matches_current())
+            .map(|frame| {
+                frame.sources.get(source).map(|status| {
+                    paint_status(status, |id| {
+                        frame.images.shared_id(id).unwrap_or_else(|| Arc::from(id))
+                    })
+                })
+            })
+    }) {
+        return status;
+    }
+    let context = current_context();
+    let state = context.state.lock().ok()?;
+    state.sources.get(source).map(|status| {
+        paint_status(status, |id| {
+            AssetRecord::share_id(id, state.records.get(id).map(AsRef::as_ref))
+        })
+    })
+}
+
 pub fn source_status(source: &ImageSource) -> Option<AssetStatus> {
     if let Some(status) = frame_source_status(source) {
         return status;
@@ -789,6 +869,20 @@ pub fn source_status(source: &ImageSource) -> Option<AssetStatus> {
     let context = current_context();
     let state = context.state.lock().ok()?;
     state.sources.get(source).cloned()
+}
+
+pub(crate) fn source_kind(source: &ImageSource) -> Option<crate::renderer::AssetKind> {
+    if let Some(kind) = FRAME_ASSETS.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .map(|frame| frame.source_kind(source))
+    }) {
+        return kind;
+    }
+    match source_status(source) {
+        Some(AssetStatus::Ready(asset)) => crate::renderer::asset_kind(&asset.id),
+        _ => None,
+    }
 }
 
 pub fn source_dimensions(source: &ImageSource) -> Option<(u32, u32)> {
@@ -890,7 +984,7 @@ fn register_raster_asset_in_epoch(
 
     register_asset_record(AssetRecord {
         owner: Arc::downgrade(&current_context().state),
-        id: id.to_string(),
+        id: Arc::from(id),
         source: source.to_string(),
         width,
         height,
@@ -920,7 +1014,7 @@ fn register_vector_asset_in_epoch(
 ) -> Result<Arc<AssetRecord>, String> {
     register_asset_record(AssetRecord {
         owner: Arc::downgrade(&current_context().state),
-        id: id.to_string(),
+        id: Arc::from(id),
         source: source.to_string(),
         width: tree.size().width().ceil().max(1.0) as u32,
         height: tree.size().height().ceil().max(1.0) as u32,
@@ -951,7 +1045,9 @@ fn register_asset_record(record: AssetRecord) -> Result<Arc<AssetRecord>, String
     if matches!(record.kind, AssetRecordKind::Vector(_)) {
         state.svg_cache.insert(Arc::clone(&record), charge);
     }
-    state.records.insert(record.id.clone(), Arc::clone(&record));
+    state
+        .records
+        .insert(record.id.to_string(), Arc::clone(&record));
     Ok(record)
 }
 
@@ -1031,56 +1127,197 @@ impl Worker {
     }
 }
 
-pub(crate) fn collect_tree_sources(tree: &ElementTree) -> Vec<ImageSource> {
-    tree_source_refs(tree)
-        .map(|(source, _)| source)
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect()
+#[cfg(any(test, feature = "bench-diagnostics"))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SourceIndexDiagnostics {
+    pub references_checked: u64,
+    /// Candidate payload bytes submitted to ordered equality (not memcmp reads).
+    pub compared_bytes: u64,
+    /// Source payload bytes cloned into owner records; excludes snapshot assembly.
+    pub owner_copied_bytes: u64,
+    pub retained_list_requests: u64,
+    pub reconcile_passes: u64,
+    pub registration_passes: u64,
+    pub registration_visits: u64,
+    pub frame_asset_captures: u64,
 }
-fn tree_source_refs(
-    tree: &ElementTree,
-) -> impl Iterator<Item = (ImageSource, Option<crate::tree::element::NodeId>)> + '_ {
-    tree.iter_nodes().flat_map(|element| {
-        let attrs = &element.spec.declared;
-        attrs
-            .image_src
-            .iter()
-            .cloned()
-            .map(move |source| {
-                (
-                    source,
-                    (element.spec.kind == crate::tree::element::ElementKind::Image)
-                        .then_some(element.id),
-                )
-            })
-            .chain(
-                background_sources(attrs)
-                    .cloned()
-                    .map(|source| (source, None)),
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+thread_local! {
+    static SOURCE_INDEX_DIAGNOSTICS: std::cell::Cell<Option<SourceIndexDiagnostics>> = const {
+        std::cell::Cell::new(None)
+    };
+}
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+#[doc(hidden)]
+pub fn reset_source_index_diagnostics_for_benchmark() {
+    SOURCE_INDEX_DIAGNOSTICS.set(Some(SourceIndexDiagnostics::default()));
+}
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+#[doc(hidden)]
+pub fn take_source_index_diagnostics_for_benchmark() -> SourceIndexDiagnostics {
+    SOURCE_INDEX_DIAGNOSTICS.take().unwrap_or_default()
+}
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+fn record_source_scope(update: impl FnOnce(&mut SourceIndexDiagnostics)) {
+    SOURCE_INDEX_DIAGNOSTICS.with(|cell| {
+        if let Some(mut work) = cell.get() {
+            update(&mut work);
+            cell.set(Some(work));
+        }
+    });
+}
+
+#[cfg(any(test, feature = "bench-diagnostics"))]
+fn record_source_index_work(source: &ImageSource, copy: bool) {
+    let (ImageSource::Id(payload)
+    | ImageSource::Logical(payload)
+    | ImageSource::RuntimePath(payload)) = source;
+    SOURCE_INDEX_DIAGNOSTICS.with(|cell| {
+        if let Some(mut diagnostics) = cell.get() {
+            if copy {
+                diagnostics.owner_copied_bytes += payload.len() as u64;
+            } else {
+                diagnostics.references_checked += 1;
+                diagnostics.compared_bytes += payload.len() as u64;
+            }
+            cell.set(Some(diagnostics));
+        }
+    });
+}
+
+fn clone_index_source(source: &ImageSource) -> ImageSource {
+    #[cfg(any(test, feature = "bench-diagnostics"))]
+    record_source_index_work(source, true);
+    source.clone()
+}
+
+type SourceRefs = Vec<(ImageSource, Option<crate::tree::element::NodeId>)>;
+
+fn element_source_refs(
+    element: &crate::tree::element::Element,
+) -> impl Iterator<Item = (&ImageSource, Option<crate::tree::element::NodeId>)> {
+    let attrs = &element.spec.declared;
+    attrs
+        .image_src
+        .iter()
+        .map(|source| {
+            (
+                source,
+                (element.spec.kind == crate::tree::element::ElementKind::Image)
+                    .then_some(element.id),
             )
-    })
+        })
+        .chain(background_sources(attrs).map(|source| (source, None)))
 }
-#[derive(Clone, Debug)]
-pub(crate) struct FrameSourceList {
-    pub(crate) all: Vec<ImageSource>,
-    pub(crate) measured: Vec<(crate::tree::element::NodeId, ImageSource)>,
+
+/// Retained declared bindings, including inactive interaction styles. Sparse
+/// source edits inspect only touched owners; geometry/paint edits retain the list.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SourceIndex {
+    structure: Option<u64>,
+    owners: BTreeMap<usize, SourceRefs>,
+    snapshot: Arc<FrameSourceList>,
 }
-impl FrameSourceList {
-    pub(crate) fn capture(tree: &ElementTree) -> Self {
-        let refs = tree_source_refs(tree).collect::<Vec<_>>();
-        let all = refs
-            .iter()
-            .map(|(source, _)| source.clone())
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect();
-        let measured = refs
-            .into_iter()
-            .filter_map(|(source, id)| id.map(|id| (id, source)))
-            .collect();
-        Self { all, measured }
+impl SourceIndex {
+    pub(crate) fn changed_owners(
+        &self,
+        tree: &ElementTree,
+        changed: impl Fn(&ImageSource) -> bool,
+    ) -> Option<Vec<crate::tree::element::NodeId>> {
+        // An unflushed declaration/structural edit may have moved references.
+        // Use the independent existing index only when its authority is current.
+        if self.structure != Some(tree.layout_structure_epoch)
+            || tree
+                .output_changes
+                .touched_owners(tree.nodes.len())
+                .next()
+                .is_some()
+        {
+            return None;
+        }
+        Some(
+            self.owners
+                .iter()
+                .filter(|(_, refs)| refs.iter().any(|(source, _)| changed(source)))
+                .filter_map(|(ix, _)| tree.id_of(*ix))
+                .collect(),
+        )
     }
+
+    pub(crate) fn update(&mut self, tree: &ElementTree) -> Arc<FrameSourceList> {
+        #[cfg(any(test, feature = "bench-diagnostics"))]
+        record_source_scope(|work| work.retained_list_requests += 1);
+        let changed = if self.structure != Some(tree.layout_structure_epoch) {
+            self.owners = tree
+                .nodes
+                .iter()
+                .enumerate()
+                .filter_map(|(ix, node)| {
+                    let refs: SourceRefs = element_source_refs(node.as_ref()?)
+                        .map(|(source, owner)| (clone_index_source(source), owner))
+                        .collect();
+                    (!refs.is_empty()).then_some((ix, refs))
+                })
+                .collect();
+            self.structure = Some(tree.layout_structure_epoch);
+            true
+        } else {
+            tree.output_changes
+                .touched_owners(tree.nodes.len())
+                .fold(false, |changed, ix| {
+                    let refs = || tree.get_ix(ix).into_iter().flat_map(element_source_refs);
+                    let current = refs();
+                    #[cfg(any(test, feature = "bench-diagnostics"))]
+                    let current =
+                        current.inspect(|(source, _)| record_source_index_work(source, false));
+                    let same = current.eq(self
+                        .owners
+                        .get(&ix)
+                        .into_iter()
+                        .flatten()
+                        .map(|(source, owner)| (source, *owner)));
+                    if same {
+                        return changed;
+                    }
+                    let refs: SourceRefs = refs()
+                        .map(|(source, owner)| (clone_index_source(source), owner))
+                        .collect();
+                    if refs.is_empty() {
+                        self.owners.remove(&ix);
+                    } else {
+                        self.owners.insert(ix, refs);
+                    }
+                    true
+                })
+        };
+        if changed {
+            self.snapshot = Arc::new(FrameSourceList {
+                all: self
+                    .owners
+                    .values()
+                    .flatten()
+                    .map(|(source, _)| source.clone())
+                    .collect(),
+                measured: self
+                    .owners
+                    .values()
+                    .flatten()
+                    .filter_map(|(source, id)| id.map(|id| (id, source.clone())))
+                    .collect(),
+            });
+        }
+        self.snapshot.clone()
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct FrameSourceList {
+    pub(crate) all: HashSet<ImageSource>,
+    pub(crate) measured: Vec<(crate::tree::element::NodeId, ImageSource)>,
 }
 
 fn background_sources(attrs: &crate::tree::attrs::Attrs) -> impl Iterator<Item = &ImageSource> {
@@ -1483,6 +1720,41 @@ pub(crate) fn resolve_configured_path(path: &str, config: &AssetConfig) -> Resul
 #[cfg(test)]
 mod tests;
 
+fn resolve_snapshot_dimensions(
+    source: &ImageSource,
+    status: &mut AssetStatus,
+    images: &crate::renderer::ImageSnapshot,
+) {
+    let id = match (source, &*status) {
+        (ImageSource::Id(id), _) => Some(id),
+        (_, AssetStatus::Ready(asset)) => Some(&asset.id),
+        _ => None,
+    };
+    let Some((width, height)) = id.and_then(|id| images.dimensions(id)) else {
+        return;
+    };
+    match status {
+        AssetStatus::Ready(asset) => {
+            if let ImageSource::Id(id) = source
+                && asset.id != *id
+            {
+                asset.id = id.clone();
+            }
+            asset.width = width;
+            asset.height = height;
+        }
+        pending_or_failed => {
+            if let ImageSource::Id(id) = source {
+                *pending_or_failed = AssetStatus::Ready(ResolvedAsset {
+                    id: id.clone(),
+                    width,
+                    height,
+                });
+            }
+        }
+    }
+}
+
 /// One preparation's media facts. It owns no runtime and performs no hydration.
 #[derive(Clone, Debug)]
 pub(crate) struct FrameAssets {
@@ -1495,6 +1767,8 @@ pub(crate) struct FrameAssets {
 }
 impl FrameAssets {
     pub(crate) fn capture(sources: &FrameSourceList) -> Self {
+        #[cfg(any(test, feature = "bench-diagnostics"))]
+        record_source_scope(|work| work.frame_asset_captures += 1);
         let context = current_context();
         if sources.all.is_empty() {
             return Self {
@@ -1507,7 +1781,7 @@ impl FrameAssets {
             };
         }
         let state = context.state.lock().ok();
-        let statuses: HashMap<_, _> = sources
+        let mut statuses: HashMap<_, _> = sources
             .all
             .iter()
             .map(|source| {
@@ -1536,7 +1810,7 @@ impl FrameAssets {
                         .cloned()
                         .or_else(|| state.svg_cache.peek(id))
                 });
-                Some((id.clone(), record))
+                Some((AssetRecord::share_id(id, record.as_deref()), record))
             })
             .collect();
         let images = crate::renderer::ImageSnapshot::capture_records(
@@ -1544,30 +1818,9 @@ impl FrameAssets {
             state.as_ref().map(|state| state.epoch),
             0,
         );
-        let statuses: HashMap<_, _> = statuses
-            .into_iter()
-            .map(|(source, status)| {
-                let id = match &source {
-                    ImageSource::Id(id) => Some(id),
-                    _ => match &status {
-                        AssetStatus::Ready(asset) => Some(&asset.id),
-                        _ => None,
-                    },
-                };
-                let status = id
-                    .and_then(|id| {
-                        images.dimensions(id).map(|(width, height)| {
-                            AssetStatus::Ready(ResolvedAsset {
-                                id: id.clone(),
-                                width,
-                                height,
-                            })
-                        })
-                    })
-                    .unwrap_or(status);
-                (source, status)
-            })
-            .collect();
+        statuses.iter_mut().for_each(|(source, status)| {
+            resolve_snapshot_dimensions(source, status, &images);
+        });
         Self {
             owner: Arc::downgrade(&context.state),
             status_generation: state.as_ref().map_or(0, |state| state.status_generation),
@@ -1601,6 +1854,17 @@ impl FrameAssets {
     pub(crate) fn matches_current(&self) -> bool {
         self.owner.ptr_eq(&Arc::downgrade(&current_context().state))
     }
+    fn source_kind(&self, source: &ImageSource) -> Option<crate::renderer::AssetKind> {
+        let id = match source {
+            ImageSource::Id(id) => id,
+            _ => match self.sources.get(source)? {
+                AssetStatus::Ready(asset) => &asset.id,
+                _ => return None,
+            },
+        };
+        self.images.kind(id)
+    }
+
     pub(crate) fn paint_invalidations(
         &self,
         tree: &ElementTree,
@@ -1611,14 +1875,19 @@ impl FrameAssets {
         };
         if self.status_generation == old.status_generation
             && self.loading_indicators == old.loading_indicators
+            && self.images.same_kinds(&old.images)
         {
             return Vec::new();
         }
         let changed = |source: &ImageSource| {
             self.sources.get(source) != old.sources.get(source)
+                || self.source_kind(source) != old.source_kind(source)
                 || self.loading_indicators.contains(source)
                     != old.loading_indicators.contains(source)
         };
+        if let Some(owners) = tree.changed_source_owners(changed) {
+            return owners;
+        }
         tree.iter_nodes()
             .filter(|node| {
                 let attrs = &node.spec.declared;

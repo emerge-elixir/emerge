@@ -87,7 +87,7 @@ impl SvgTreeCache {
         }
         self.clock = self.clock.wrapping_add(1);
         self.entries.insert(
-            record.id.clone(),
+            record.id.to_string(),
             Entry {
                 record,
                 charge,

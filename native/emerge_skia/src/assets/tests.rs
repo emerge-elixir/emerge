@@ -1,4 +1,7 @@
 use super::*;
+mod snapshot_status;
+mod source_dependents;
+mod source_scope;
 
 fn config() -> AssetConfig {
     AssetConfig {
@@ -674,7 +677,7 @@ fn pending_frame_facts_and_status_generation_do_not_observe_late_readiness() {
     let src = ImageSource::Id("late-frame".into());
     ensure_source(&src);
     let frame = Arc::new(FrameAssets::capture(&FrameSourceList {
-        all: vec![src.clone()],
+        all: HashSet::from([src.clone()]),
         measured: vec![],
     }));
     let generation = source_status_generation();
@@ -706,6 +709,86 @@ fn pending_frame_facts_and_status_generation_do_not_observe_late_readiness() {
     assert_eq!(svg_cache_stats().rasterizations, before.rasterizations);
     let _again = frame.enter();
     assert_eq!(source_dimensions(&src), None);
+}
+
+#[test]
+fn source_index_borrows_unchanged_ordered_refs_including_duplicates_and_measured_owners() {
+    use crate::tree::{
+        attrs::{Attrs, Background, ImageFit, MouseOverAttrs},
+        element::{Element, ElementKind, NodeId},
+    };
+    let background = |name: &str| Background::Image {
+        source: ImageSource::Id(name.into()),
+        fit: ImageFit::Contain,
+    };
+    let mut tree = ElementTree::new();
+    tree.insert(Element::with_attrs(
+        NodeId(1),
+        ElementKind::Image,
+        vec![],
+        Attrs {
+            image_src: Some(ImageSource::Id("same".into())),
+            background: Some(background("same")),
+            mouse_over: Some(MouseOverAttrs {
+                background: Some(background("hover")),
+                ..Default::default()
+            }),
+            mouse_down: Some(MouseOverAttrs {
+                background: Some(background("down")),
+                ..Default::default()
+            }),
+            focused: Some(MouseOverAttrs {
+                background: Some(background("focus")),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    ));
+    tree.set_root_id(NodeId(1));
+    let mut index = SourceIndex::default();
+    let old = index.update(&tree);
+    let ix = tree.ix_of(&NodeId(1)).unwrap();
+    let expected: SourceRefs = [
+        ("same", Some(NodeId(1))),
+        ("same", None),
+        ("hover", None),
+        ("down", None),
+        ("focus", None),
+    ]
+    .into_iter()
+    .map(|(source, owner)| (ImageSource::Id(source.into()), owner))
+    .collect();
+    assert_eq!(index.owners[&ix], expected);
+    assert_eq!(old.all.len(), 4);
+    assert_eq!(
+        old.measured,
+        vec![(NodeId(1), ImageSource::Id("same".into()))]
+    );
+    tree.get_mut(&NodeId(1)).unwrap().spec.declared.alpha = Some(0.5);
+    reset_source_index_diagnostics_for_benchmark();
+    let unchanged = index.update(&tree);
+    let work = take_source_index_diagnostics_for_benchmark();
+    assert!(Arc::ptr_eq(&old, &unchanged));
+    assert_eq!(work.references_checked, 5);
+    assert_eq!(work.compared_bytes, 22);
+    assert_eq!(work.owner_copied_bytes, 0);
+
+    tree.get_mut(&NodeId(1)).unwrap().spec.kind = ElementKind::El;
+    let unmeasured = index.update(&tree);
+    assert!(!Arc::ptr_eq(&old, &unmeasured));
+    assert!(unmeasured.measured.is_empty());
+    assert_eq!(index.owners[&ix][0].1, None);
+    assert_eq!(old.measured.len(), 1, "old source lists remain complete");
+    tree.get_mut(&NodeId(1)).unwrap().spec.declared = Attrs::default();
+    assert!(index.update(&tree).all.is_empty());
+    assert!(!index.owners.contains_key(&ix));
+    reset_source_index_diagnostics_for_benchmark();
+    let empty = index.update(&tree);
+    assert!(empty.all.is_empty());
+    assert_eq!(
+        take_source_index_diagnostics_for_benchmark().owner_copied_bytes,
+        0
+    );
 }
 
 #[test]
@@ -839,7 +922,7 @@ fn frozen_frame_lookups_do_not_resurrect_sources_after_epoch_reset() {
     register_vector_asset("outer-frame", svg()).unwrap();
     ensure_source(&source);
     let outer = Arc::new(FrameAssets::capture(&FrameSourceList {
-        all: vec![source.clone()],
+        all: HashSet::from([source.clone()]),
         measured: vec![],
     }));
     assets.configure(config());
@@ -898,7 +981,7 @@ fn loading_indicator_deadline_is_one_shot_and_frozen_per_preparation() {
     ensure_source(&source); // repeat refreshes must not restart the grace period
     assert_eq!(next_loading_indicator_deadline(), Some(deadline));
     let sources = FrameSourceList {
-        all: vec![source.clone()],
+        all: HashSet::from([source.clone()]),
         measured: vec![],
     };
     let early = Arc::new(FrameAssets::capture(&sources));
