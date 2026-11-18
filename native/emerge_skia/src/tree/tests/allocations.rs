@@ -228,8 +228,38 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
         draw(&mut r);
         assert!(r.target_at(5., 45.).is_none())
     });
-    for deep in [false, true] {
-        let ids: Vec<_> = (1..=400u64).collect();
+    // Row offers and paint clips are keyed results reserved at admission too.
+    let mut line = Raster::default();
+    let attrs = row::row_attrs(px(1, 120.), 5., 5.);
+    let full = row::band(attrs.clone(), row::red(px(1, 20.)), &[2, 3, 4]);
+    line.tree.upload(&full).unwrap();
+    c.zero("cold single-line row", || {
+        line.tree.refresh(180., 170., 1.).unwrap()
+    });
+    draw(&mut line);
+    for p in [
+        set(2, row::red(px(1, 60.))),
+        set(2, row::red(px(1, 20.))),
+        order(1, &[2, 4, 3]),
+        set(2, row::red(vec![1, 0])),
+        set(1, row::row_attrs(px(1, 120.), 8., 7.)),
+        set(1, row::row_attrs(vec![1, 1], 8., 7.)),
+        set(1, row::row_attrs(px(1, 19.5), 5., 5.)),
+    ] {
+        c.zero(
+            "single-line row: wire edit through paint/hit inputs",
+            || {
+                line.tree.patch(&p).unwrap();
+                line.tree.refresh(180., 170., 1.).unwrap()
+            },
+        );
+        draw(&mut line);
+    }
+    c.zero("fitting row replacement", || {
+        line.tree.upload(&full).unwrap();
+        line.tree.refresh(180., 170., 1.).unwrap()
+    });
+    let column_tree = |ids: &[u64], deep| {
         let nodes: Vec<_> = ids
             .iter()
             .enumerate()
@@ -244,11 +274,47 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
                 node(id, 3, block(&[]), kids)
             })
             .collect();
-        r.tree.upload(&upload(&nodes)).unwrap();
-        c.zero("deep/wide cold", || r.tree.refresh(180., 170., 1.).unwrap());
-        assert_eq!(r.tree.layers.trace.len(), 7 * ids.len())
+        upload(&nodes)
+    };
+    for n in [400, MAX_DEPTH + 1] {
+        let ids: Vec<_> = (1..=n as u64).collect();
+        let wide = column_tree(&ids, false);
+        let deep = column_tree(&ids, true);
+        r.tree.upload(&wide).unwrap();
+        c.zero("wide cold", || r.tree.refresh(180., 170., 1.).unwrap());
+        assert_eq!(r.tree.layers.trace.len(), 7 * n);
+        for next in [&deep, &wide] {
+            c.zero(
+                "redistribute fitting work across depths, from wire through compute",
+                || {
+                    r.tree.upload(next).unwrap();
+                    r.tree.refresh(180., 170., 1.).unwrap();
+                },
+            );
+            assert_eq!(r.tree.layers.trace.len(), 7 * n);
+        }
     }
+    // Replacement must also discard an undrained workset without allocating.
+    let ids: Vec<_> = (1..=(MAX_DEPTH + 1) as u64).collect();
+    let deep = column_tree(&ids, true);
+    let wide = column_tree(&ids, false);
+    r.tree.upload(&deep).unwrap();
+    let ids: Vec<_> = (1..=(MAX_DEPTH + 2) as u64).collect();
+    assert_eq!(
+        r.tree.upload(&column_tree(&ids, true)).unwrap_err(),
+        "tree depth exceeds 512"
+    );
+    c.zero("drain work preserved by a rejected upload", || {
+        r.tree.refresh(180., 170., 1.).unwrap()
+    });
+    assert_eq!(r.tree.layers.trace.len(), 7 * (MAX_DEPTH + 1));
+    c.zero("replace pending work", || {
+        r.tree.upload(&deep).unwrap();
+        r.tree.upload(&wide).unwrap();
+        r.tree.refresh(180., 170., 1.).unwrap();
+    });
+    assert_eq!(r.tree.layers.trace.len(), 7 * (MAX_DEPTH + 1));
     eprintln!(
-        "alloc/realloc/free: Rust control {control:?}; Skia control {skia:?}; initial reservation {initial:?}; one-over growth {growth:?}; cold and fitting intervals [0, 0, 0]"
+        "alloc/realloc/free: Rust control {control:?}; Skia control {skia:?}; initial reservation {initial:?}; one-over growth {growth:?}; cold and fitting intervals (including Row) [0, 0, 0]"
     );
 }

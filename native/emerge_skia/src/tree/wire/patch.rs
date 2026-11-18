@@ -42,7 +42,7 @@ impl Batch {
             }
             if tag == 1 {
                 let raw = r.block()?;
-                self.edits[k].attrs = Some((attrs(raw, e.slots[k].kind)?, range(bytes, raw)))
+                self.edits[k].attrs = Some((attrs(raw, e.slots[k].shape)?, range(bytes, raw)))
             } else {
                 let next = r.children()?;
                 self.sequence += 1;
@@ -66,6 +66,7 @@ impl Batch {
 fn invalidate_readers(l: &mut Layers, e: &Elements, k: Key, next: &Attrs, raw: &[u8]) {
     let old = &e.attrs[k];
     let depth = e.slots[k].depth;
+    let shape = e.slots[k].shape;
     let mut invalidate = |pass| l.invalidate(pass, k, depth);
     if old.family != next.family || old.font_size != next.font_size {
         invalidate(Pass::Context)
@@ -74,30 +75,33 @@ fn invalidate_readers(l: &mut Layers, e: &Elements, k: Key, next: &Attrs, raw: &
     if a != b {
         invalidate(Pass::Measure)
     }
-    if a.width != b.width || a.padding[1] != b.padding[1] || a.padding[3] != b.padding[3] {
+    if a.width != b.width
+        || a.padding[1] != b.padding[1]
+        || a.padding[3] != b.padding[3]
+        || (a.spacing[0] != b.spacing[0] && shape.reads_flow(b.width, FlowInput::HorizontalGap))
+    {
         invalidate(Pass::Flow)
     }
     if a.height != b.height || a.spacing != b.spacing || a.padding != b.padding {
         invalidate(Pass::Reflow)
     }
-    if old.color != next.color
-        || (e.slots[k].kind == Kind::Text
-            && (a.padding[0] != b.padding[0] || a.padding[3] != b.padding[3]))
-    {
+    if old.color != next.color || shape.paint_context_attrs_changed(old, next) {
         invalidate(Pass::PaintContext)
     }
-    if let Some(outputs) =
-        paint::Outputs::changed(old.background != next.background, old.click != next.click)
-    {
+    if let Some(outputs) = paint::Outputs::changed(
+        shape.paint_attrs_changed(old, next),
+        old.click != next.click,
+    ) {
         l.invalidate_composition(k, depth, outputs)
     }
-    if e.text(k).as_bytes() != &raw[next.text.clone()] {
+    if shape.uses_glyphs() && e.text(k).as_bytes() != &raw[next.text.clone()] {
         l.text_changed(k, depth)
     }
     if (a.width == Length::Fill) != (b.width == Length::Fill)
         && let Some(p) = e.slots[k].parent
-        && e.slots[p].kind == Kind::Column
-        && e.attrs[p].sizing.width == Length::Auto
+        && e.slots[p]
+            .shape
+            .reads_flow(e.attrs[p].sizing.width, FlowInput::ChildFill)
     {
         l.invalidate(Pass::Flow, p, e.slots[p].depth)
     }
@@ -146,7 +150,7 @@ impl Tree {
                 total = total - e.raw(k).len() + r.len();
                 // A color/listener/box edit does not require another glyph span.
                 // Keep any earlier, still pending text demand in that case.
-                if e.slots[k].kind == Kind::Text
+                if e.slots[k].shape.uses_glyphs()
                     && e.text(k).as_bytes() != &bytes[r.clone()][next.text.clone()]
                 {
                     let old = self
@@ -210,7 +214,10 @@ impl Tree {
             }
             if let Some(r) = edit.order {
                 let next = &bytes[r];
-                if ids(next).eq(e.children(k).iter().map(|&c| e.slots[c].id)) {
+                if !self
+                    .layers
+                    .invalidate_order(e, k, ids(next).map(|id| e.ids[&id]))
+                {
                     continue;
                 }
                 for (to, id) in e
@@ -220,9 +227,6 @@ impl Tree {
                     .zip(ids(next))
                 {
                     *to = e.ids[&id]
-                }
-                for p in [Pass::Measure, Pass::Reflow, Pass::Compose] {
-                    self.layers.invalidate(p, k, e.slots[k].depth)
                 }
             }
         }

@@ -9,9 +9,9 @@ pub(super) struct Scratch {
 }
 type Result<T> = std::result::Result<T, String>;
 const MAX_BYTES: usize = 64 * 1024 * 1024;
-struct Reader<'a>(&'a [u8]);
+pub(super) struct Reader<'a>(&'a [u8]);
 impl<'a> Reader<'a> {
-    fn take(&mut self, n: usize) -> Result<&'a [u8]> {
+    pub(super) fn take(&mut self, n: usize) -> Result<&'a [u8]> {
         let (v, rest) = self.0.split_at_checked(n).ok_or("truncated EMRG data")?;
         self.0 = rest;
         Ok(v)
@@ -19,10 +19,10 @@ impl<'a> Reader<'a> {
     fn array<const N: usize>(&mut self) -> Result<[u8; N]> {
         Ok(self.take(N)?.try_into().unwrap())
     }
-    fn byte(&mut self) -> Result<u8> {
+    pub(super) fn byte(&mut self) -> Result<u8> {
         Ok(self.array::<1>()?[0])
     }
-    fn count(&mut self) -> Result<usize> {
+    pub(super) fn count(&mut self) -> Result<usize> {
         Ok(u16::from_be_bytes(self.array()?) as usize)
     }
     fn long(&mut self) -> Result<usize> {
@@ -31,7 +31,7 @@ impl<'a> Reader<'a> {
     fn id(&mut self) -> Result<u64> {
         Ok(u64::from_be_bytes(self.array()?))
     }
-    fn number(&mut self) -> Result<f32> {
+    pub(super) fn number(&mut self) -> Result<f32> {
         let n = f64::from_be_bytes(self.array()?) as f32;
         if n.is_finite() && n >= 0. {
             Ok(n)
@@ -43,7 +43,7 @@ impl<'a> Reader<'a> {
         let n = self.long()?;
         self.take(n)
     }
-    fn string(&mut self) -> Result<&'a str> {
+    pub(super) fn string(&mut self) -> Result<&'a str> {
         let n = self.count()?;
         std::str::from_utf8(self.take(n)?).map_err(|_| "invalid UTF-8".into())
     }
@@ -86,11 +86,11 @@ fn ids(bytes: &[u8]) -> impl Iterator<Item = u64> + '_ {
         .copied()
         .map(u64::from_be_bytes)
 }
-fn range(all: &[u8], part: &[u8]) -> Range<usize> {
+pub(super) fn range(all: &[u8], part: &[u8]) -> Range<usize> {
     let start = part.as_ptr() as usize - all.as_ptr() as usize;
     start..start + part.len()
 }
-fn attrs(raw: &[u8], kind: Kind) -> Result<Attrs> {
+fn attrs(raw: &[u8], shape: Shape) -> Result<Attrs> {
     let mut r = Reader(raw);
     let mut a = Attrs::default();
     for _ in 0..r.count()? {
@@ -122,14 +122,6 @@ fn attrs(raw: &[u8], kind: Kind) -> Result<Attrs> {
                     v => return Err(format!("unported font family {v}")),
                 })
             }
-            21 if kind == Kind::Text => {
-                let s = r.string()?;
-                if s.contains(['\r', '\n']) {
-                    return Err("multiline text is not in the first slice".into());
-                }
-                a.text = range(raw, s.as_bytes());
-                a.glyph_count = s.chars().count()
-            }
             40 => {
                 a.click = match r.byte()? {
                     0 => false,
@@ -137,7 +129,7 @@ fn attrs(raw: &[u8], kind: Kind) -> Result<Attrs> {
                     _ => return Err("invalid click flag".into()),
                 }
             }
-            tag => return Err(format!("unsupported attribute {tag} in first slice")),
+            tag => shape.decode_attr(tag, &mut r, raw, &mut a)?,
         }
     }
     if !r.0.is_empty() {
@@ -154,7 +146,7 @@ impl Tree {
             let e = &self.elements;
             let n = &e.slots[k];
             out.extend(n.id.to_be_bytes());
-            out.push(n.kind as u8);
+            out.push(n.shape as u8);
             let raw = e.raw(k);
             out.extend((raw.len() as u32).to_be_bytes());
             out.extend(raw);

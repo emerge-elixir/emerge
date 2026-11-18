@@ -1,35 +1,24 @@
 use super::*;
 struct Record<'a> {
     id: u64,
-    kind: Kind,
+    shape: Shape,
     attrs: Attrs,
     raw: &'a [u8],
     children: &'a [u8],
 }
 fn record<'a>(r: &mut Reader<'a>) -> Result<Record<'a>> {
     let id = r.id()?;
-    let kind = match r.byte()? {
-        2 => Kind::Wrap,
-        3 => Kind::Column,
-        4 => Kind::El,
-        5 => Kind::Text,
-        6 => Kind::Empty,
-        t => return Err(format!("unsupported element {t} in first slice")),
-    };
+    let shape = Shape::from_tag(r.byte()?)?;
     let raw = r.block()?;
-    let attrs = attrs(raw, kind)?;
+    let attrs = attrs(raw, shape)?;
     let children = r.children()?;
-    match kind {
-        Kind::Text | Kind::Empty if !children.is_empty() => return Err("leaf has children".into()),
-        Kind::El if children.len() > 8 => return Err("El supports at most one child".into()),
-        _ => (),
-    }
+    shape.check_children(children.len() / 8)?;
     if r.count()? != 0 {
         return Err("Nearby is not in the first slice".into());
     }
     Ok(Record {
         id,
-        kind,
+        shape,
         attrs,
         raw,
         children,
@@ -91,7 +80,7 @@ impl Proof {
             out.raw += rec.raw.len();
             out.glyphs += rec.attrs.glyph_count;
             out.longest = out.longest.max(rec.attrs.glyph_count);
-            out.texts += usize::from(rec.kind == Kind::Text);
+            out.texts += usize::from(rec.shape.uses_glyphs());
         }
         if !r.0.is_empty() {
             return Err("trailing upload bytes".into());
@@ -106,8 +95,8 @@ impl Proof {
             visited += 1;
             let depth = link.depth.unwrap() + 1;
             for c in ids(&bytes[link.edges.clone()]) {
-                if depth > 512 {
-                    return Err("tree depth exceeds 512".into());
+                if depth > MAX_DEPTH {
+                    return Err(format!("tree depth exceeds {MAX_DEPTH}"));
                 }
                 let p = self.links.get_mut(&c).ok_or("unknown child ID")?;
                 if p.depth.replace(depth).is_some() {
@@ -127,7 +116,7 @@ fn mount_id(slots: &mut SlotMap<Key, Mount>, ids: &mut HashMap<u64, Key>, id: u6
     *ids.entry(id).or_insert_with(|| {
         slots.insert(Mount {
             id,
-            kind: Kind::Empty,
+            shape: Shape::Empty,
             parent: None,
             depth: 0,
             index: 0,
@@ -206,7 +195,7 @@ impl Tree {
             let depth = p.depth.unwrap();
             e.slots[k] = Mount {
                 id: rec.id,
-                kind: rec.kind,
+                shape: rec.shape,
                 depth,
                 parent,
                 index,

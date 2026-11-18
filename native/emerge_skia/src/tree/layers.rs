@@ -3,7 +3,10 @@ use super::{
     text::Run,
     *,
 };
-use super::{queue::Queue, text::TextStore};
+use super::{
+    queue::{Direction, WorkSet},
+    text::TextStore,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Pass {
@@ -16,6 +19,14 @@ pub(super) enum Pass {
     Compose,
 }
 use Pass::*;
+impl Pass {
+    fn direction(self) -> Direction {
+        match self {
+            Measure | Reflow | Compose => Direction::DeepFirst,
+            Context | Flow | Place | PaintContext => Direction::ShallowFirst,
+        }
+    }
+}
 const PASSES: [Pass; 7] = [Context, Measure, Flow, Reflow, Place, PaintContext, Compose];
 #[derive(Default, Clone, Copy, Debug, PartialEq)]
 pub(super) struct Size {
@@ -36,7 +47,7 @@ struct Width {
 
 #[derive(Default)]
 pub(super) struct Layers {
-    jobs: [Queue; 7],
+    jobs: [WorkSet; 7],
     context: SecondaryMap<Key, ContextValue>,
     measure: SecondaryMap<Key, Size>,
     // Glyph changes and intrinsic size changes have different readers.
@@ -47,6 +58,7 @@ pub(super) struct Layers {
     pub(super) text_count: usize,
     pub(super) prepared_scale: f32,
     width: SecondaryMap<Key, Width>,
+    offers: SecondaryMap<Key, f32>,
     fit: SecondaryMap<Key, Size>,
     offsets: SecondaryMap<Key, [f32; 2]>,
     pub frames: SecondaryMap<Key, Rect>,
@@ -56,6 +68,91 @@ pub(super) struct Layers {
     pub(super) scale: f32,
     #[cfg(test)]
     pub trace: Vec<(Pass, u64, Outputs)>,
+}
+// Pass views expose only settled inputs and keyed writers. A shape cannot run
+// a child early or install geometry, paint or hits on its own.
+pub(super) struct Measuring<'a> {
+    layers: &'a mut Layers,
+    e: &'a Elements,
+    k: Key,
+    pub gap: [f32; 2],
+}
+impl Measuring<'_> {
+    pub fn child(&self, c: Key) -> Size {
+        self.layers.measure[c]
+    }
+    pub fn glyph_run(&mut self, text: &str) -> Size {
+        let k = self.k;
+        let l = &mut self.layers;
+        let ctx = l.context[k];
+        let len = self.e.attrs[k].glyph_count;
+        let run = l.runs.entry(k).unwrap().or_default();
+        let changed = (run.invalid
+            || run.revision == 0
+            || run.metrics.family != ctx.family
+            || run.metrics.size != ctx.size)
+            && l.text.measure(text, len, ctx.family, ctx.size, run);
+        let size = Size {
+            w: run.metrics.width,
+            h: run.metrics.height,
+        };
+        if changed {
+            l.invalidate_composition(k, self.e.slots[k].depth, Outputs::Draw)
+        }
+        l.bounds.set(self.e.slots[k].index, len, len, false);
+        size
+    }
+}
+pub(super) struct FlowCx<'a> {
+    layers: &'a mut Layers,
+    e: &'a Elements,
+    pub policy: Length,
+    pub inner: f32,
+    pub inner_changed: bool,
+    pub gap: f32,
+}
+impl FlowCx<'_> {
+    pub fn measured_width(&self, c: Key) -> f32 {
+        self.layers.measure[c].w
+    }
+    pub fn policy_of(&self, c: Key) -> Length {
+        self.e.attrs[c].sizing.width
+    }
+    pub fn offer(&mut self, c: Key, width: f32) {
+        if changed(&mut self.layers.offers, c, width) && self.e.slots[c].shape.uses_offer(self.e, c)
+        {
+            self.layers.enqueue(Flow, c, self.e)
+        }
+    }
+}
+pub(super) struct ReflowCx<'a> {
+    layers: &'a mut Layers,
+    e: &'a Elements,
+    pub inner: f32,
+    pub gap: [f32; 2],
+    padding: [f32; 4],
+    height: Length,
+    pub measured_height: f32,
+}
+impl ReflowCx<'_> {
+    pub fn child(&self, c: Key) -> Size {
+        self.layers.fit[c]
+    }
+    pub fn offset(&mut self, c: Key, x: f32, y: f32) {
+        if changed(
+            &mut self.layers.offsets,
+            c,
+            [self.padding[3] + x, self.padding[0] + y],
+        ) {
+            self.layers.enqueue(Place, c, self.e)
+        }
+    }
+    pub fn box_height(&self, demand: f32) -> f32 {
+        self.height.intrinsic(
+            demand + self.padding[0] + self.padding[2],
+            self.layers.scale,
+        )
+    }
 }
 fn changed<T: PartialEq>(map: &mut SecondaryMap<Key, T>, k: Key, value: T) -> bool {
     if map.get(k) == Some(&value) {
@@ -72,7 +169,7 @@ impl Layers {
         }
         macro_rules! room {($($map:ident),+) => {$(self.$map.try_set_capacity(keys).map_err(pool::capacity_error)?;)+}}
         room!(
-            context, measure, runs, width, fit, offsets, frames, paint, parts
+            context, measure, runs, width, offers, fit, offsets, frames, paint, parts
         );
         #[cfg(test)]
         pool::reserve(&mut self.trace, 7 * capacity)?;
@@ -88,6 +185,7 @@ impl Layers {
         self.measure.clear();
         self.runs.clear();
         self.width.clear();
+        self.offers.clear();
         self.fit.clear();
         self.offsets.clear();
         self.frames.clear();
@@ -101,12 +199,7 @@ impl Layers {
     }
     // Invalidate the value by queuing its owner; keep the old result until comparison.
     pub fn invalidate(&mut self, p: Pass, k: Key, depth: usize) {
-        let rank = if matches!(p, Measure | Reflow | Compose) {
-            depth
-        } else {
-            usize::MAX - depth
-        };
-        self.jobs[p as usize].push(rank, k, Outputs::Both);
+        self.jobs[p as usize].push(depth, k, Outputs::Both);
     }
     pub fn invalidate_composition(&mut self, k: Key, depth: usize, outputs: Outputs) {
         self.jobs[Compose as usize].push(depth, k, outputs);
@@ -115,6 +208,39 @@ impl Layers {
         for p in PASSES {
             self.invalidate(p, k, depth);
         }
+    }
+    /// Compare before overwriting the single child order. Equal per-ordinal
+    /// measures don't need measuring again; offsets and stacking still read identity.
+    pub fn invalidate_order(
+        &mut self,
+        e: &Elements,
+        k: Key,
+        next: impl Iterator<Item = Key>,
+    ) -> bool {
+        let node = &e.slots[k];
+        let reads_offers = node
+            .shape
+            .reads_flow(e.attrs[k].sizing.width, FlowInput::Order);
+        let (mut moved, mut measure, mut flow) = (false, false, false);
+        for (&a, b) in e.children(k).iter().zip(next).filter(|(a, b)| **a != *b) {
+            moved = true;
+            let (old, new) = (self.measure.get(a), self.measure.get(b));
+            measure |= old != new;
+            flow |= reads_offers
+                && (old.map(|m| m.w) != new.map(|m| m.w)
+                    || e.attrs[a].sizing.width != e.attrs[b].sizing.width);
+        }
+        if measure {
+            self.enqueue(Measure, k, e)
+        }
+        if flow {
+            self.enqueue(Flow, k, e)
+        }
+        if moved {
+            self.enqueue(Reflow, k, e);
+            self.enqueue(Compose, k, e)
+        }
+        moved
     }
     fn enqueue(&mut self, p: Pass, k: Key, e: &Elements) {
         self.invalidate(p, k, e.slots[k].depth);
@@ -147,7 +273,7 @@ impl Layers {
             self.enqueue(PaintContext, root, e);
         }
         for pass in PASSES {
-            while let Some((k, requested)) = self.jobs[pass as usize].pop() {
+            while let Some((k, requested)) = self.jobs[pass as usize].pop(pass.direction()) {
                 if !e.slots.contains_key(k) {
                     continue;
                 }
@@ -191,7 +317,7 @@ impl Layers {
         };
         let scale_changed = self.context.get(k).is_none_or(|p| p.scale != ctx.scale);
         if changed(&mut self.context, k, ctx) {
-            if e.slots[k].kind == Kind::Text || scale_changed {
+            if e.slots[k].shape.uses_glyphs() || scale_changed {
                 self.enqueue(Measure, k, e);
             }
             if scale_changed {
@@ -207,64 +333,34 @@ impl Layers {
     fn measure(&mut self, e: &Elements, k: Key) {
         let c = self.context[k];
         let b = e.attrs[k].sizing;
-        let children = e.children(k);
-        let sizes = children.iter().map(|&k| self.measure[k]);
-        let [gx, gy] = b.spacing.map(|v| v * c.scale);
-        let gaps = children.len().saturating_sub(1) as f32;
-        let content = match e.slots[k].kind {
-            Kind::Text => {
-                let run = self.runs.entry(k).unwrap().or_default();
-                if (run.invalid
-                    || run.revision == 0
-                    || run.metrics.family != c.family
-                    || run.metrics.size != c.size)
-                    && self
-                        .text
-                        .measure(e.text(k), e.attrs[k].glyph_count, c.family, c.size, run)
-                {
-                    self.invalidate_composition(k, e.slots[k].depth, Outputs::Draw)
-                }
-                let len = e.attrs[k].glyph_count;
-                self.bounds.set(e.slots[k].index, len, len, false);
-                let run = &self.runs[k].metrics;
-                Size {
-                    w: run.width,
-                    h: run.height,
-                }
-            }
-            Kind::Column => sizes.fold(
-                Size {
-                    w: 0.,
-                    h: gaps * gy,
-                },
-                |s, v| Size {
-                    w: s.w.max(v.w),
-                    h: s.h + v.h,
-                },
-            ),
-            Kind::Wrap => sizes.fold(
-                Size {
-                    w: gaps * gx,
-                    h: 0.,
-                },
-                |s, v| Size {
-                    w: s.w + v.w,
-                    h: s.h.max(v.h),
-                },
-            ),
-            Kind::El | Kind::Empty => sizes.fold(Size::default(), |s, v| Size {
-                w: s.w.max(v.w),
-                h: s.h.max(v.h),
-            }),
-        };
+        let content = e.slots[k].shape.measure(
+            e,
+            k,
+            &mut Measuring {
+                layers: self,
+                e,
+                k,
+                gap: b.spacing.map(|v| v * c.scale),
+            },
+        );
         let [t, r, d, l] = b.padding.map(|v| v * c.scale);
         let m = Size {
             w: b.width.intrinsic(content.w + (l + r), c.scale),
             h: b.height.intrinsic(content.h + (t + d), c.scale),
         };
+        let width_changed = self.measure.get(k).is_none_or(|s| s.w != m.w);
         if changed(&mut self.measure, k, m) {
             self.parent(Measure, k, e);
-            self.enqueue(Flow, k, e);
+            if width_changed {
+                self.enqueue(Flow, k, e);
+                if let Some(p) = e.slots[k].parent
+                    && e.slots[p]
+                        .shape
+                        .reads_flow(e.attrs[p].sizing.width, FlowInput::ChildWidth(b.width))
+                {
+                    self.enqueue(Flow, p, e);
+                }
+            }
             self.enqueue(Reflow, k, e);
         }
     }
@@ -274,23 +370,15 @@ impl Layers {
         }
         self.invalidate(Measure, k, depth);
     }
-    fn uses_available(e: &Elements, k: Key) -> bool {
-        match e.attrs[k].sizing.width {
-            Length::Fill => true,
-            Length::Auto if e.slots[k].kind == Kind::Column => e
-                .children(k)
-                .iter()
-                .any(|&c| e.attrs[c].sizing.width == Length::Fill),
-            _ => false,
-        }
-    }
     fn flow(&mut self, e: &Elements, k: Key) {
         let b = e.attrs[k].sizing;
-        let available = e.slots[k]
-            .parent
-            .map_or(self.viewport.width, |p| self.width[p].inner);
-        let outer = if Self::uses_available(e, k) {
-            available
+        let shape = e.slots[k].shape;
+        let outer = if shape.uses_offer(e, k) {
+            if e.slots[k].parent.is_some() {
+                self.offers[k]
+            } else {
+                self.viewport.width
+            }
         } else {
             self.measure[k].w
         };
@@ -300,58 +388,36 @@ impl Layers {
         if changed(&mut self.width, k, Width { outer, inner }) {
             self.enqueue(Reflow, k, e);
         }
-        if available_changed {
-            for &c in e.children(k) {
-                if matches!(e.attrs[c].sizing.width, Length::Fill)
-                    || (e.slots[c].kind == Kind::Column && e.attrs[c].sizing.width == Length::Auto)
-                {
-                    self.enqueue(Flow, c, e);
-                }
-            }
-        }
+        shape.offer_widths(
+            e,
+            k,
+            &mut FlowCx {
+                inner,
+                inner_changed: available_changed,
+                policy: b.width,
+                gap: b.spacing[0] * self.scale,
+                layers: self,
+                e,
+            },
+        );
     }
     fn reflow(&mut self, e: &Elements, k: Key) {
         let n = &e.slots[k];
         let b = e.attrs[k].sizing;
-        let [t, _, d, l] = b.padding.map(|v| v * self.scale);
-        let [gx, gy] = b.spacing.map(|v| v * self.scale);
         let width = self.width[k];
-        let (mut x, mut y, mut line_h, mut demand) = (0f32, 0f32, 0f32, 0f32);
-        // Local line fitting uses only settled child extents. Store each offset
-        // independently: a reorder can move children without changing our fit.
-        for (i, &child) in e.children(k).iter().enumerate() {
-            let s = self.fit[child];
-            match n.kind {
-                Kind::Wrap if i != 0 => {
-                    if x + gx + s.w > width.inner {
-                        y += line_h + gy;
-                        x = 0.;
-                        line_h = 0.;
-                    } else {
-                        x += gx;
-                    }
-                }
-                Kind::Column if i != 0 => y += gy,
-                _ => {}
-            }
-            if changed(&mut self.offsets, child, [l + x, t + y]) {
-                self.enqueue(Place, child, e);
-            }
-            demand = demand.max(y + s.h);
-            match n.kind {
-                Kind::Wrap => {
-                    x += s.w;
-                    line_h = line_h.max(s.h);
-                }
-                Kind::Column => y += s.h,
-                _ => {}
-            }
-        }
-        let h = if n.kind == Kind::Text {
-            self.measure[k].h
-        } else {
-            b.height.intrinsic(demand + t + d, self.scale)
-        };
+        let h = n.shape.reflow(
+            e,
+            k,
+            &mut ReflowCx {
+                inner: width.inner,
+                gap: b.spacing.map(|v| v * self.scale),
+                padding: b.padding.map(|v| v * self.scale),
+                height: b.height,
+                measured_height: self.measure[k].h,
+                layers: self,
+                e,
+            },
+        );
         if changed(&mut self.fit, k, Size { w: width.outer, h }) {
             self.parent(Reflow, k, e);
             self.enqueue(Place, k, e);
@@ -392,11 +458,14 @@ impl Layers {
             .or_else(|| parent.map(|p| self.paint[p].color))
             .unwrap_or(0xff);
         let [top, _, _, left] = a.sizing.padding;
+        let shape = e.slots[k].shape;
+        let clip = parent.map_or(self.viewport, |p| self.paint[p].child_clip);
         let next = PaintContext {
             frame: f,
+            clip,
+            child_clip: shape.child_clip(clip, f),
             color,
             scale: self.scale,
-            viewport: self.viewport,
             text_origin: [f.x + left * self.scale, f.y + top * self.scale],
         };
         let old = self.paint.get(k).copied();
@@ -404,21 +473,17 @@ impl Layers {
             return;
         }
         self.paint.insert(k, next);
-        let viewport_changed = old.is_none_or(|p| p.viewport != next.viewport);
-        let geometry_changed = viewport_changed || old.is_none_or(|p| p.frame != f);
+        let child_clip_changed = old.is_none_or(|p| p.child_clip != next.child_clip);
+        let geometry_changed = old.is_none_or(|p| p.frame != f || p.clip != clip);
         let color_changed = old.is_none_or(|p| p.color != color);
-        let draw = (a.background.is_some() && geometry_changed)
-            || (e.slots[k].kind == Kind::Text
-                && (viewport_changed
-                    || color_changed
-                    || old.is_none_or(|p| p.text_origin != next.text_origin)));
+        let draw = shape.reads_paint_context(a, old, next);
         let hit = a.click && (geometry_changed || old.is_none_or(|p| p.scale != next.scale));
         if let Some(outputs) = Outputs::changed(draw, hit) {
             self.invalidate_composition(k, e.slots[k].depth, outputs);
         }
-        if viewport_changed || color_changed {
+        if child_clip_changed || color_changed {
             for &child in e.children(k) {
-                if viewport_changed || e.attrs[child].color.is_none() {
+                if child_clip_changed || e.attrs[child].color.is_none() {
                     self.enqueue(PaintContext, child, e);
                 }
             }

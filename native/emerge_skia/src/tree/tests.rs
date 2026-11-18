@@ -1,5 +1,6 @@
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 mod allocations;
+mod row;
 use super::*;
 use layers::Pass::*;
 use paint::Outputs;

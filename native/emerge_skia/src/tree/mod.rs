@@ -4,6 +4,7 @@ mod layers;
 mod paint;
 mod pool;
 mod queue;
+mod shapes;
 mod text;
 mod wire;
 
@@ -14,16 +15,10 @@ use slotmap::{SecondaryMap, SlotMap, new_key_type};
 use std::{collections::HashMap, ops::Range};
 pub use text::{Family, TextMeasurer};
 new_key_type! { pub(crate) struct Key; }
+/// Root is at depth zero. Enforced during upload, before mounting.
+const MAX_DEPTH: usize = 512;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u8)]
-enum Kind {
-    Wrap = 2,
-    Column = 3,
-    El = 4,
-    Text = 5,
-    Empty = 6,
-}
+use shapes::{FlowInput, Shape};
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 enum Length {
     #[default]
@@ -63,7 +58,7 @@ struct Attrs {
 #[derive(Debug)]
 struct Mount {
     id: u64,
-    kind: Kind,
+    shape: Shape,
     parent: Option<Key>,
     depth: usize,
     index: usize,

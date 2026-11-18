@@ -6,10 +6,26 @@ use skia_safe::{
 #[derive(Clone, Copy, PartialEq)]
 pub(super) struct PaintContext {
     pub frame: Rect,
-    pub viewport: Rect,
+    pub clip: Rect,
+    pub child_clip: Rect,
     pub color: u32,
     pub scale: f32,
     pub text_origin: [f32; 2],
+}
+impl PaintContext {
+    /// Ordinary rectangular Skia host clips use non-antialiased device edges.
+    /// Hits keep the unrounded clip and the original element-local origin.
+    pub fn pixel_clip(&self) -> Rect {
+        let c = self.clip;
+        let x = c.x.round();
+        let y = c.y.round();
+        Rect {
+            x,
+            y,
+            width: (c.x + c.width).round() - x,
+            height: (c.y + c.height).round() - y,
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Hit {
@@ -42,10 +58,33 @@ struct Port {
     children: usize,
     seen_at_parent: (usize, u64),
 }
+#[derive(Clone, Copy, PartialEq)]
+pub(super) struct GlyphPaint {
+    pub pos: [f32; 2],
+    pub color: u32,
+    pub revision: u64,
+    pub clip: Option<Rect>,
+}
+#[derive(Clone, Copy, Default, PartialEq)]
+pub(super) struct OwnPaint {
+    fill: Option<(Rect, u32)>,
+    pub text: Option<GlyphPaint>,
+}
+impl OwnPaint {
+    pub fn background(a: &Attrs, ctx: &PaintContext) -> Self {
+        let fill = a
+            .background
+            .filter(|v| v & 255 != 0)
+            .and_then(|v| ctx.frame.intersection(ctx.pixel_clip()).map(|r| (r, v)));
+        Self { fill, text: None }
+    }
+    fn nonempty(self) -> bool {
+        self.fill.is_some() || self.text.is_some()
+    }
+}
 #[derive(Clone, Copy, Default)]
 pub(super) struct Composition {
-    fill: Option<(Rect, u32)>,
-    text: Option<([f32; 2], u32, u64)>,
+    paint: OwnPaint,
     hit: Option<Hit>,
     ports: [Port; 2],
 }
@@ -63,41 +102,27 @@ pub(super) fn compose(
     let mut next = parts.get(k).copied().unwrap_or_default();
     let mut delta = [false; 2];
     let a = &e.attrs[k];
-    let vis = ctx.frame.intersection(ctx.viewport);
     for (side, changed) in delta.iter_mut().enumerate() {
         if (side == 0 && requested == Outputs::Hit) || (side == 1 && requested == Outputs::Draw) {
             continue;
         }
         let own = if side == 0 {
-            let fill = a
-                .background
-                .filter(|v| v & 255 != 0)
-                .zip(vis)
-                .map(|(v, r)| (r, v));
-            let text = run.filter(|_| ctx.color & 255 != 0).and_then(|run| {
-                let m = &run.metrics;
-                let [x, y] = ctx.text_origin;
-                let pos = [x + m.left, y + m.ascent];
-                Rect {
-                    x: pos[0] + m.ink.x,
-                    y: pos[1] + m.ink.y,
-                    ..m.ink
-                }
-                .intersection(ctx.viewport)
-                .map(|_| (pos, ctx.color, run.revision))
-            });
-            *changed = next.fill != fill || next.text != text;
-            next.fill = fill;
-            next.text = text;
-            fill.is_some() || text.is_some()
+            let paint = e.slots[k].shape.paint(e, k, ctx, run);
+            *changed = next.paint != paint;
+            next.paint = paint;
+            paint.nonempty()
         } else {
-            let hit = vis.filter(|_| a.click).map(|rect| Hit {
-                key: k,
-                id: e.slots[k].id,
-                rect,
-                origin: [ctx.frame.x, ctx.frame.y],
-                scale: ctx.scale,
-            });
+            let hit = ctx
+                .frame
+                .intersection(ctx.clip)
+                .filter(|_| a.click)
+                .map(|rect| Hit {
+                    key: k,
+                    id: e.slots[k].id,
+                    rect,
+                    origin: [ctx.frame.x, ctx.frame.y],
+                    scale: ctx.scale,
+                });
             *changed = hit != next.hit;
             next.hit = hit;
             hit.is_some()
@@ -128,6 +153,7 @@ enum Command {
     Fill(Rect, u32),
     Glyphs {
         pos: [f32; 2],
+        clip: Option<Rect>,
         family: Family,
         size: f32,
         color: u32,
@@ -209,10 +235,10 @@ impl Output {
                 }
                 if side == 0 {
                     let draw = &mut self.draw[1];
-                    if let Some((r, c)) = p.fill {
+                    if let Some((r, c)) = p.paint.fill {
                         draw.commands.push(Command::Fill(r, c))
                     }
-                    if let Some((pos, color, _)) = p.text {
+                    if let Some(glyphs) = p.paint.text {
                         let run = layers.runs[k];
                         let start = draw.ids.len();
                         for g in layers.text.glyphs.get(&run.span) {
@@ -220,8 +246,9 @@ impl Output {
                             draw.positions.push(g.pos)
                         }
                         draw.commands.push(Command::Glyphs {
-                            pos,
-                            color,
+                            pos: glyphs.pos,
+                            color: glyphs.color,
+                            clip: glyphs.clip,
                             family: run.metrics.family,
                             size: run.metrics.size,
                             range: start..draw.ids.len(),
@@ -365,8 +392,17 @@ fn rasterize(viewport: Rect, draw: &Drawing) -> Result<Vec<u8>, String> {
                     family,
                     size,
                     range,
+                    clip,
                     ..
                 } => {
+                    if let Some(r) = clip {
+                        canvas.save();
+                        canvas.clip_rect(
+                            skia_safe::Rect::from_xywh(r.x, r.y, r.width, r.height),
+                            None,
+                            false,
+                        );
+                    }
                     canvas.draw_glyphs_at(
                         &draw.ids[range.clone()],
                         &draw.positions[range.clone()],
@@ -374,6 +410,9 @@ fn rasterize(viewport: Rect, draw: &Drawing) -> Result<Vec<u8>, String> {
                         &family.font(*size),
                         &paint,
                     );
+                    if clip.is_some() {
+                        canvas.restore();
+                    }
                 }
             }
         }
