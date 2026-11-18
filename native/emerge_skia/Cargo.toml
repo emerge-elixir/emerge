@@ -3,51 +3,13 @@ name = "emerge_skia"
 version = "0.5.1"
 edition = "2024"
 rust-version = "1.91"
+# The native window hosts are not slice targets until their consumer is ported.
+autobins = false
+autobenches = false
 
 [lib]
 name = "emerge_skia"
 crate-type = ["cdylib", "rlib"]
-
-[[bin]]
-name = "macos_host"
-path = "src/bin/macos_host.rs"
-required-features = ["macos"]
-
-[[bin]]
-name = "vulkan_probe"
-path = "src/bin/vulkan_probe.rs"
-required-features = ["drm-vulkan", "vulkan-probe"]
-
-[[bench]]
-name = "layout"
-harness = false
-required-features = ["bench-diagnostics"]
-
-[[bench]]
-name = "patch"
-harness = false
-
-[[bench]]
-name = "emrg"
-harness = false
-
-[[bench]]
-name = "renderer"
-harness = false
-required-features = ["bench-diagnostics"]
-
-[[bench]]
-name = "headless_frame_copy"
-harness = false
-
-[[bench]]
-name = "stats"
-harness = false
-
-[[bench]]
-name = "shared_animation"
-harness = false
-required-features = ["bench-diagnostics"]
 
 [features]
 default = ["wayland", "opengl"]
@@ -119,6 +81,8 @@ drm-all = ["drm", "opengl", "vulkan", "drm-vulkan-deps"]
 
 [dependencies]
 rustler = "0.38"
+slotmap = "1.1.1"
+skrifa = "0.44"
 video-interop = { version = "0.1.3", optional = true }
 ash = { version = "0.38", default-features = false, features = ["loaded", "std"], optional = true }
 ash-window = { version = "0.13", optional = true }

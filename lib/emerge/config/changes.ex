@@ -5,7 +5,7 @@ defmodule Emerge.Config.Changes do
   def validate!(previous, config) do
     if static(previous) != static(config) do
       raise ArgumentError,
-            "config changed a startup-only field (output type/device, rendering API, assets, cursor or adapter); start a new viewport for that change"
+            "config changed a startup-only field (output type/device, renderer workspace/API, assets, cursor or adapter); start a new viewport for that change"
     end
 
     :ok

@@ -1,4 +1,5 @@
 Code.require_file("support/animated_hit_case_helper.exs", __DIR__)
+Code.require_file("support/headless_viewport_helper.exs", __DIR__)
 
 excluded_tags = [
   full_sweep: true,

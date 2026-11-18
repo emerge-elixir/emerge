@@ -1,94 +1,68 @@
 defmodule EmergeSkia.LiveLengthChangeTest do
   use ExUnit.Case, async: false
   use Emerge.UI
+  alias Emerge.TestSupport.Headless
 
-  alias EmergeSkia.TestHarness
-
-  defp tree(length) do
+  defp tree(length, child) do
     row([key(:root), width(px(600)), height(px(60))], [
       el(
         [
           key(:target),
           Animation.change([width(length)], 1000, :linear),
           height(fill()),
-          Interactive.mouse_over([Background.color(:blue)])
+          Font.size(20),
+          Background.color(:red),
+          Interactive.mouse_over([Background.color(:blue)]),
+          Event.on_mouse_enter(:entered)
         ],
-        none()
+        child
       ),
       el([key(:peer), width(fill()), height(fill())], none())
     ])
   end
 
   test "a public pixel-to-fill change advances real actor hit geometry" do
-    {full, state, assigned} =
-      Emerge.Engine.encode_full(Emerge.Engine.diff_state_new(), tree(px(40)))
-
-    [target | _] = assigned.children
-    target_id = Emerge.Engine.NodeId.encode(target.id)
-    {patch, _state, _assigned} = Emerge.Engine.diff_state_update(state, tree(fill()))
-    harness = TestHarness.new(600, 60)
-    on_exit(fn -> TestHarness.stop(harness) end)
-
-    assert :ok = TestHarness.upload_full_bin(harness, full)
-    assert :ok = TestHarness.await_render(harness)
-    assert :ok = TestHarness.cursor_pos(harness, 200, 30)
-    refute {target_id, true} in TestHarness.drain_mouse_over_msgs(harness)
-    assert :ok = TestHarness.reset_clock(harness)
-    assert :ok = TestHarness.apply_patch_bin(harness, patch)
-    assert :ok = TestHarness.await_render(harness)
-
-    activation =
-      Enum.find_value(0..1200//50, fn ms ->
-        assert :ok = TestHarness.animation_pulse(harness, ms, ms)
-        assert :ok = TestHarness.await_render(harness)
-        if {target_id, true} in TestHarness.drain_mouse_over_msgs(harness, 10), do: ms
-      end)
-
-    # Width 40→300 reaches x=200 at ~615ms, not an immediate symbolic switch.
-    assert activation in 600..750
-  end
-
-  defp content_tree(string) do
-    row([key(:root), width(px(600)), height(px(60))], [
-      el(
-        [
-          key(:target),
-          Animation.change([width(content())], 1000, :linear),
-          height(fill()),
-          Font.size(20),
-          Interactive.mouse_over([Background.color(:blue)])
-        ],
-        text(string)
-      ),
-      el([key(:peer), width(fill()), height(fill())], none())
-    ])
+    changes(fn -> tree(px(40), none()) end, fn -> tree(fill(), none()) end, 200)
   end
 
   test "unchanged content width policy animates a descendant-only text update" do
-    {full, state, assigned} =
-      Emerge.Engine.encode_full(Emerge.Engine.diff_state_new(), content_tree("S"))
+    changes(
+      fn -> tree(content(), text("S")) end,
+      fn -> tree(content(), text("Something")) end,
+      50
+    )
+  end
 
-    [target | _] = assigned.children
-    target_id = Emerge.Engine.NodeId.encode(target.id)
-    {patch, _state, _assigned} = Emerge.Engine.diff_state_update(state, content_tree("Something"))
-    harness = TestHarness.new(600, 60)
-    on_exit(fn -> TestHarness.stop(harness) end)
-    assert :ok = TestHarness.upload_full_bin(harness, full)
-    assert :ok = TestHarness.await_render(harness)
-    assert :ok = TestHarness.cursor_pos(harness, 50, 30)
-    refute {target_id, true} in TestHarness.drain_mouse_over_msgs(harness)
-    assert :ok = TestHarness.reset_clock(harness)
-    assert :ok = TestHarness.apply_patch_bin(harness, patch)
-    assert :ok = TestHarness.await_render(harness)
-    refute {target_id, true} in TestHarness.drain_mouse_over_msgs(harness)
+  defp changes(initial, edited, x) do
+    {pid, renderer} = Headless.mount({600, 60}, initial, [:pointer_move])
+    before = Headless.pixels()
+    :ok = Headless.move(renderer, x, 30)
+    assert_receive {:raw, {:pointer_move, _}}
+    refute_receive {:application, {:entered, _}}
+    send(pid, {:scene, edited})
+    # A symbolic switch would skip every intermediate width. Observe the edge
+    # on actual frames; never prescribe times to the animation clock.
+    width = fn pixels ->
+      for(<<r, g, b, 255 <- binary_part(pixels, 600 * 4, 600 * 4)>>, {r, g, b} == {255, 0, 0},
+        do: 1
+      )
+      |> length()
+    end
 
-    activation =
-      Enum.find_value(0..1200//50, fn ms ->
-        assert :ok = TestHarness.animation_pulse(harness, ms, ms)
-        assert :ok = TestHarness.await_render(harness)
-        if {target_id, true} in TestHarness.drain_mouse_over_msgs(harness, 10), do: ms
-      end)
+    deadline = System.monotonic_time(:millisecond) + 2000
+    advance(x, width, width.(before), false, deadline)
+    assert_receive {:application, {:entered, %{x: _, y: _}}}, 500
+  end
 
-    assert activation in 200..900
+  defp advance(x, width, initial, intermediate?, deadline) do
+    pixels = Headless.pixels(Kernel.max(deadline - System.monotonic_time(:millisecond), 0))
+
+    if binary_part(pixels, (30 * 600 + x) * 4, 4) == <<0, 0, 255, 255>> do
+      assert intermediate?, "jumped to hover without rendering an intermediate width"
+    else
+      w = width.(pixels)
+      assert System.monotonic_time(:millisecond) < deadline
+      advance(x, width, initial, intermediate? or (initial < w and w < x), deadline)
+    end
   end
 end

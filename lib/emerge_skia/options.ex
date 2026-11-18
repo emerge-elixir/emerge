@@ -77,6 +77,7 @@ defmodule EmergeSkia.Options do
       owner: normalize_owner!(Keyword.get(opts, :owner)),
       backend: backend,
       rendering_api: rendering_api,
+      tree_headroom_percent: Keyword.get(opts, :tree_headroom_percent, 80),
       target_fps:
         opts |> Keyword.get(:target_fps) |> normalize_optional_positive_integer!(":target_fps"),
       title: Keyword.get(opts, :title, "Emerge"),

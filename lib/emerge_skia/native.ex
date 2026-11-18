@@ -223,6 +223,7 @@ defmodule EmergeSkia.Native do
             }
           },
           required(:target_fps) => pos_integer() | nil,
+          required(:tree_headroom_percent) => 0..1000,
           required(:headless) => %{
             required(:target) => pid() | nil,
             required(:mode) => String.t(),
@@ -315,14 +316,6 @@ defmodule EmergeSkia.Native do
     do: :erlang.nif_error(:nif_not_loaded)
 
   @doc false
-  @spec headless_prime_release_dispatcher_close_with_timeout_for_test(
-          reference(),
-          non_neg_integer()
-        ) :: :ok | {:error, {:timeout | :dispatcher_close_failed, String.t()}}
-  def headless_prime_release_dispatcher_close_with_timeout_for_test(_dispatcher, _timeout_ms),
-    do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc false
   @spec headless_prime_abandonment_guard_new(
           pid(),
           reference(),
@@ -403,6 +396,9 @@ defmodule EmergeSkia.Native do
   """
   @spec set_input_target(reference(), pid() | nil) :: :ok
   def set_input_target(_renderer, _pid), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  def send_input(_renderer, _raw_event), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Set the target process to receive native renderer log messages.
@@ -693,24 +689,6 @@ defmodule EmergeSkia.Native do
   def tree_patch_roundtrip(_tree, _data), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
-  Get the number of nodes in the tree.
-  """
-  @spec tree_node_count(reference()) :: non_neg_integer()
-  def tree_node_count(_tree), do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc """
-  Check if the tree is empty.
-  """
-  @spec tree_is_empty(reference()) :: boolean()
-  def tree_is_empty(_tree), do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc """
-  Clear the tree.
-  """
-  @spec tree_clear(reference()) :: :ok
-  def tree_clear(_tree), do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc """
   Compute layout for the tree with given width/height constraints and scale factor.
 
   Returns a list of `{id_binary, x, y, width, height}` tuples for all elements.
@@ -728,56 +706,4 @@ defmodule EmergeSkia.Native do
   """
   @spec tree_roundtrip(binary()) :: binary() | {:error, String.t()}
   def tree_roundtrip(_data), do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc false
-  @spec test_harness_new(pos_integer(), pos_integer()) ::
-          reference() | {:ok, reference()} | {:error, String.t()}
-  def test_harness_new(_width, _height), do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc false
-  @spec test_harness_upload(reference(), binary()) :: :ok
-  def test_harness_upload(_harness, _data), do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc false
-  @spec test_harness_patch(reference(), binary()) :: :ok
-  def test_harness_patch(_harness, _data), do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc false
-  @spec test_harness_set_input_target(reference(), pid()) :: :ok
-  def test_harness_set_input_target(_harness, _pid), do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc false
-  @spec test_harness_cursor_button(reference(), boolean(), number(), number()) :: :ok
-  def test_harness_cursor_button(_harness, _pressed, _x, _y),
-    do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc false
-  @spec test_harness_cursor_pos(reference(), number(), number()) ::
-          :ok
-  def test_harness_cursor_pos(_harness, _x, _y), do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc false
-  @spec test_harness_animation_pulse(reference(), non_neg_integer(), non_neg_integer()) ::
-          {:ok, boolean()} | {:error, String.t()}
-  def test_harness_animation_pulse(_harness, _presented_ms, _predicted_ms),
-    do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc false
-  @spec test_harness_reset_clock(reference()) :: :ok
-  def test_harness_reset_clock(_harness), do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc false
-  @spec test_harness_await_render(reference(), non_neg_integer()) ::
-          {:ok, boolean()} | {:error, String.t()}
-  def test_harness_await_render(_harness, _timeout_ms), do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc false
-  @spec test_harness_drain_mouse_over_msgs(reference(), non_neg_integer()) ::
-          [{binary(), boolean()}]
-  def test_harness_drain_mouse_over_msgs(_harness, _timeout_ms),
-    do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc false
-  @spec test_harness_stop(reference()) :: :ok
-  def test_harness_stop(_harness), do: :erlang.nif_error(:nif_not_loaded)
 end

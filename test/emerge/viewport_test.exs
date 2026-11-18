@@ -293,66 +293,73 @@ defmodule Emerge.ViewportTest do
     end
   end
 
+  def headless(target, events \\ []) do
+    %Emerge.Config{
+      output: %Emerge.Config.Headless{target: target, size: {300, 160}},
+      renderer: [api: :raster],
+      input: [events: events],
+      assets: [otp_app: :emerge]
+    }
+  end
+
+  defmodule ClickCounter do
+    use Emerge
+    @impl Viewport
+    def mount(opts),
+      do: {:ok, %{count: 0, target: opts[:target]}, Emerge.ViewportTest.headless(opts[:target])}
+
+    @impl Viewport
+    def render(state),
+      do:
+        el(
+          [width(px(40)), height(px(40)), Event.on_click(:increment)],
+          text(Integer.to_string(state.count))
+        )
+
+    @impl Viewport
+    def handle_info({:increment, position}, state) do
+      send(state.target, {:increment, position})
+      {:noreply, Viewport.rerender(%{state | count: state.count + 1})}
+    end
+  end
+
   defmodule KeyViewport do
     use Emerge
     @impl Viewport
     def mount(opts) do
-      {:ok, %{count: Keyword.get(opts, :count, 0)},
-       %Emerge.Config{
-         assets: [otp_app: :emerge],
-         runtime: [adapter: Emerge.ViewportTest.FakeRenderer, health_check_interval_ms: nil]
-       }}
+      {:ok, %{count: 0, target: opts[:target], key: opts[:key]},
+       Emerge.ViewportTest.headless(opts[:target])}
     end
 
     @impl Viewport
     def render(state) do
-      row([spacing(8)], [
-        Input.button(
-          [
-            key(:inc_key),
-            Event.on_key_down(:enter, :increment),
-            Background.color(color(:sky, 500)),
-            Border.rounded(4)
-          ],
-          text("#{state.count}")
-        )
-      ])
+      listener =
+        if state.key == :enter,
+          do: Event.on_key_down(:enter, :increment),
+          else: Event.on_key_press(:space, :increment)
+
+      color = if state.count == 0, do: :red, else: :blue
+
+      Input.button(
+        [
+          width(px(64)),
+          height(px(40)),
+          listener,
+          Event.on_focus(:focused),
+          Background.color(color)
+        ],
+        text("#{state.count}")
+      )
     end
 
     @impl Viewport
+    def handle_info(:focused, state) do
+      send(state.target, :focused)
+      {:noreply, state}
+    end
+
     def handle_info(:increment, state) do
-      {:noreply, %{state | count: state.count + 1} |> Viewport.rerender()}
-    end
-  end
-
-  defmodule KeyPressViewport do
-    use Emerge
-    @impl Viewport
-    def mount(opts) do
-      {:ok, %{count: Keyword.get(opts, :count, 0)},
-       %Emerge.Config{
-         assets: [otp_app: :emerge],
-         runtime: [adapter: Emerge.ViewportTest.FakeRenderer, health_check_interval_ms: nil]
-       }}
-    end
-
-    @impl Viewport
-    def render(state) do
-      row([spacing(8)], [
-        Input.button(
-          [
-            key(:press_key),
-            Event.on_key_press(:space, :increment),
-            Background.color(color(:rose, 500)),
-            Border.rounded(4)
-          ],
-          text("#{state.count}")
-        )
-      ])
-    end
-
-    @impl Viewport
-    def handle_info(:increment, state) do
+      send(state.target, {:incremented, state.count + 1})
       {:noreply, %{state | count: state.count + 1} |> Viewport.rerender()}
     end
   end
@@ -362,10 +369,7 @@ defmodule Emerge.ViewportTest do
     @impl Viewport
     def mount(opts) do
       {:ok, %{events: [], test_pid: Keyword.fetch!(opts, :test_pid)},
-       %Emerge.Config{
-         assets: [otp_app: :emerge],
-         runtime: [adapter: Emerge.ViewportTest.FakeRenderer, health_check_interval_ms: nil]
-       }}
+       Emerge.ViewportTest.headless(opts[:test_pid], [:focus])}
     end
 
     @impl Viewport
@@ -408,10 +412,7 @@ defmodule Emerge.ViewportTest do
     @impl Viewport
     def mount(opts) do
       {:ok, %{target: Keyword.fetch!(opts, :target), tuple?: Keyword.get(opts, :tuple?, false)},
-       %Emerge.Config{
-         assets: [otp_app: :emerge],
-         runtime: [adapter: Emerge.ViewportTest.FakeRenderer, health_check_interval_ms: nil]
-       }}
+       Emerge.ViewportTest.headless(opts[:target])}
     end
 
     @impl Viewport
@@ -425,7 +426,7 @@ defmodule Emerge.ViewportTest do
           end
         )
 
-      el(attrs, none())
+      el([width(px(100)), height(px(80)) | attrs], none())
     end
   end
 
@@ -434,23 +435,24 @@ defmodule Emerge.ViewportTest do
     @impl Viewport
     def mount(opts) do
       {:ok, %{test_pid: Keyword.fetch!(opts, :test_pid)},
-       %Emerge.Config{
-         assets: [otp_app: :emerge],
-         runtime: [adapter: Emerge.ViewportTest.FakeRenderer, health_check_interval_ms: nil]
-       }}
+       Emerge.ViewportTest.headless(opts[:test_pid])}
     end
 
     @impl Viewport
     def render(_state) do
-      Input.text(
-        [
-          key(:field),
-          Event.on_change(:input_changed),
-          Event.on_scroll(:scrolled),
-          Event.on_mouse_move(:mouse_move)
-        ],
-        ""
-      )
+      column([width(px(150)), height(px(60)), scrollbar_y(), Event.on_scroll(:scrolled)], [
+        Input.text(
+          [
+            key(:field),
+            width(px(140)),
+            height(px(40)),
+            Event.on_change(:input_changed),
+            Event.on_mouse_move(:mouse_move)
+          ],
+          ""
+        ),
+        el([key(:spacer), width(px(100)), height(px(120))], none())
+      ])
     end
 
     @impl Viewport
@@ -673,31 +675,12 @@ defmodule Emerge.ViewportTest do
   end
 
   test "self-targeted element events route through mailbox and rerender" do
-    {:ok, pid} = CounterViewport.start_link(count: 0)
-    renderer = Emerge.renderer(pid)
-    state = :sys.get_state(pid)
-
-    {id_bin, _events} =
-      Enum.find(state.__emerge__.diff_state.event_registry, fn {_id_bin, events} ->
-        Map.has_key?(events, :press)
-      end)
-
-    send(pid, {:emerge_skia_event, {id_bin, :press}})
-    assert_eventually(fn -> :sys.get_state(pid).count == 1 end)
-
-    assert_eventually(fn ->
-      patch_count =
-        renderer
-        |> FakeRenderer.ops()
-        |> Enum.count(fn
-          {:patch_tree, _tree} -> true
-          _ -> false
-        end)
-
-      patch_count == 1
-    end)
-
-    GenServer.stop(pid)
+    pid = start_supervised!({ClickCounter, target: self()})
+    r = Emerge.renderer(pid)
+    before = Emerge.TestSupport.Headless.pixels()
+    click(r, 4, 4)
+    assert_receive {:increment, %{x: 4.0, y: 4.0}}
+    refute Emerge.TestSupport.Headless.pixels() == before
   end
 
   test "native renderer log messages are forwarded to Logger" do
@@ -888,26 +871,21 @@ defmodule Emerge.ViewportTest do
 
   test "raw input events flow through handle_input callback" do
     {:ok, pid} = InputViewport.start_link(test_pid: self())
-    send(pid, {:emerge_skia_event, {:focused, true}})
+    Emerge.TestSupport.Headless.pixels()
+    :ok = EmergeSkia.send_input(Emerge.renderer(pid), {:focus, true})
     assert_receive {:input_event, {:focus, true}}
-    assert :sys.get_state(pid).events == [focus: true]
     GenServer.stop(pid)
   end
 
   test "payload wrapping callback is applied before dispatch" do
     {:ok, pid} = PayloadViewport.start_link(test_pid: self())
-    state = :sys.get_state(pid)
-
-    {id_bin, _events} =
-      Enum.find(state.__emerge__.diff_state.event_registry, fn {_id_bin, events} ->
-        Map.has_key?(events, :change)
-      end)
-
-    send(pid, {:emerge_skia_event, {id_bin, :change, "hello"}})
+    r = Emerge.renderer(pid)
+    Emerge.TestSupport.Headless.pixels()
+    click(r, 8, 8)
+    :ok = EmergeSkia.send_input(r, {:text_commit, {"hello", []}})
     assert_receive {:wrapped_payload, "hello"}
-
-    send(pid, {:emerge_skia_event, {id_bin, :scroll, %{x: 0.25, y: 0.75}}})
-    assert_receive {:wrapped_scroll, %{x: 0.25, y: 0.75}}
+    :ok = EmergeSkia.send_input(r, {:pointer_scroll, {{0, -40}, {12, 30}}})
+    assert_receive {:wrapped_scroll, %{y: fraction}} when fraction > 0.0
 
     GenServer.stop(pid)
   end
@@ -915,20 +893,28 @@ defmodule Emerge.ViewportTest do
   test "pointer payloads route to external PIDs with default atom and tuple wrapping" do
     for tuple? <- [false, true] do
       {:ok, pid} = MousePayloadViewport.start_link(target: self(), tuple?: tuple?)
-      state = :sys.get_state(pid)
-      [{id, _}] = Map.to_list(state.__emerge__.diff_state.event_registry)
-      position = %{x: 35.5, y: -2.25}
+      r = Emerge.renderer(pid)
+      Emerge.TestSupport.Headless.pixels()
+      pos = %{x: 35.5, y: 20.25}
+      :ok = Emerge.TestSupport.Headless.move(r, pos.x, pos.y)
+      expected = if tuple?, do: {:pointer, :mouse_move, pos}, else: {:mouse_move, pos}
+      assert_receive ^expected
+      :ok = Emerge.TestSupport.Headless.button(r, :press, pos.x, pos.y)
+      :ok = Emerge.TestSupport.Headless.move(r, 120.5, 30.25)
+      :ok = Emerge.TestSupport.Headless.button(r, :release, 120.5, 30.25)
 
-      for {kind, payload} <- [
-            mouse_move: position,
-            swipe_right: %{start: position, end: %{x: 120.5, y: 30.25}, duration_ms: 375.25}
-          ] do
-        send(pid, {:emerge_skia_event, {id, kind, payload}})
-        expected = if tuple?, do: {:pointer, kind, payload}, else: {kind, payload}
-        assert_receive ^expected
-      end
+      swipe =
+        if tuple? do
+          assert_receive {:pointer, :swipe_right, payload}
+          payload
+        else
+          assert_receive {:swipe_right, payload}
+          payload
+        end
 
-      send(pid, {:emerge_skia_event, {id, :press}})
+      assert %{start: ^pos, end: %{x: 120.5, y: 30.25}, duration_ms: ms} = swipe
+      assert ms >= 0
+      click(r, 10, 10)
       expected = if tuple?, do: {:pointer, :press}, else: :press
       assert_receive ^expected
       GenServer.stop(pid)
@@ -937,44 +923,42 @@ defmodule Emerge.ViewportTest do
 
   test "mouse positions use custom wrap_payload callbacks" do
     {:ok, pid} = PayloadViewport.start_link(test_pid: self())
-    state = :sys.get_state(pid)
-    [{id, _}] = Map.to_list(state.__emerge__.diff_state.event_registry)
-    position = %{x: -2.25, y: 103.5}
-
-    send(pid, {:emerge_skia_event, {id, :mouse_move, position}})
+    Emerge.TestSupport.Headless.pixels()
+    position = %{x: 12.25, y: 13.5}
+    :ok = Emerge.TestSupport.Headless.move(Emerge.renderer(pid), position.x, position.y)
     assert_receive {:wrapped_mouse, ^position}
 
     GenServer.stop(pid)
   end
 
   test "key listener events route through the viewport mailbox" do
-    {:ok, pid} = KeyViewport.start_link(count: 0)
-    state = :sys.get_state(pid)
-    route = Event.key_route_id(:key_down, :enter, [], :exact)
-
-    {id_bin, _events} =
-      Enum.find(state.__emerge__.diff_state.event_registry, fn {_id_bin, events} ->
-        Map.has_key?(events, {:key_down, route})
-      end)
-
-    send(pid, {:emerge_skia_event, {id_bin, :key_down, route}})
-    assert_eventually(fn -> :sys.get_state(pid).count == 1 end)
-    GenServer.stop(pid)
+    key_dispatch(KeyViewport, :enter)
   end
 
   test "key press listener events route through the viewport mailbox" do
-    {:ok, pid} = KeyPressViewport.start_link(count: 0)
-    state = :sys.get_state(pid)
-    route = Event.key_route_id(:key_press, :space, [], :exact)
+    key_dispatch(KeyViewport, :space)
+  end
 
-    {id_bin, _events} =
-      Enum.find(state.__emerge__.diff_state.event_registry, fn {_id_bin, events} ->
-        Map.has_key?(events, {:key_press, route})
-      end)
+  defp click(r, x, y) do
+    :ok = Emerge.TestSupport.Headless.button(r, :press, x, y)
+    :ok = Emerge.TestSupport.Headless.button(r, :release, x, y)
+  end
 
-    send(pid, {:emerge_skia_event, {id_bin, :key_press, route}})
-    assert_eventually(fn -> :sys.get_state(pid).count == 1 end)
-    GenServer.stop(pid)
+  defp key_dispatch(module, key) do
+    pid = start_supervised!({module, target: self(), key: key})
+    r = Emerge.renderer(pid)
+    Emerge.TestSupport.Headless.pixels()
+    click(r, 10, 10)
+    assert_receive :focused
+
+    for action <- [:press, :release],
+        do: :ok = EmergeSkia.send_input(r, {:key, {key, action, []}})
+
+    assert_receive {:incremented, 1}
+
+    Emerge.TestSupport.Headless.pixels_matching(fn pixels ->
+      binary_part(pixels, (8 * 300 + 8) * 4, 4) == <<0, 0, 255, 255>>
+    end)
   end
 
   test "renderer heartbeat watchdog stops viewport when heartbeats go stale" do

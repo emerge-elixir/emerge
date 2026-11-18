@@ -667,6 +667,21 @@ defmodule EmergeSkia do
   # ===========================================================================
 
   @doc """
+  Sends raw input to a binary headless renderer, in backend surface coordinates.
+
+  Use the same pointer, key, text-commit or focus event shapes as `Emerge.Input`.
+  For example, send `{:pointer_button, {:left, :press, [], {5, 45}}}` followed
+  by a release. The normal dispatcher resolves the target against the last drawn
+  output. Raw subscriptions do not enable or disable element listeners. In a
+  viewport, obtain the renderer with `Emerge.renderer/1`.
+  """
+  @spec send_input(renderer(), Emerge.Input.event()) :: :ok | {:error, term()}
+  def send_input(renderer, event) when is_reference(renderer),
+    do: Native.send_input(renderer, event)
+
+  def send_input(_renderer, _event), do: {:error, :unsupported}
+
+  @doc """
   Set the target process to receive renderer events.
 
   Events are sent directly to the target process as

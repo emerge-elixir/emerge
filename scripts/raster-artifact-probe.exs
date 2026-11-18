@@ -7,8 +7,6 @@ Code.compile_file(Path.join(source_root, "lib/emerge_skia/build_config.ex"))
 :code.add_patha(String.to_charlist(Path.join(app_dir, "ebin")))
 false = Code.ensure_loaded?(Rustler)
 Code.compile_file("lib/emerge_skia/native.ex")
-tree = EmergeSkia.Native.tree_new()
-true = EmergeSkia.Native.tree_is_empty(tree)
 
 # Only artifact-specific behavior: this does not rerun the standard CI suite.
 defmodule RasterArtifactProbe do

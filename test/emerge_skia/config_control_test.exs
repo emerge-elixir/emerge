@@ -90,6 +90,38 @@ defmodule EmergeSkia.ConfigControlTest do
     assert_receive {:emerge_skia_config, ^token, :ok}, 5_000
   end
 
+  test "tree headroom is a bounded startup setting, not a live top-up", %{
+    renderer: renderer,
+    config: config
+  } do
+    assert config.renderer.tree_headroom_percent == 80
+
+    for percent <- [0, 25, 1000] do
+      other = put_in(config.renderer.tree_headroom_percent, percent)
+
+      assert percent ==
+               (other
+                |> Config.Native.options()
+                |> EmergeSkia.Options.build_start_native_opts!()).tree_headroom_percent
+
+      assert {:ok, replacement} = EmergeSkia.start(other)
+      assert :ok = EmergeSkia.stop(replacement)
+
+      assert_raise ArgumentError, ~r/startup-only/, fn ->
+        EmergeSkia.configure(renderer, config, other)
+      end
+    end
+
+    for bad <- [-1, 1.5, 1001] do
+      assert_raise ArgumentError, ~r/config.renderer.tree_headroom_percent/, fn ->
+        EmergeSkia.start(put_in(config.renderer.tree_headroom_percent, bad))
+      end
+    end
+
+    opts = config |> Config.Native.options() |> EmergeSkia.Options.build_start_native_opts!()
+    assert {:error, _} = Native.start_opts(%{opts | tree_headroom_percent: 1001})
+  end
+
   defp await_completions(tokens) do
     if MapSet.size(tokens) > 0 do
       receive do

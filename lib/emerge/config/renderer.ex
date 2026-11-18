@@ -28,6 +28,9 @@ defmodule Emerge.Config.Renderer do
   - `target_fps` — positive integer frame-rate ceiling, or `nil` (default) for
     normal backend pacing. It limits drawing, not physical display refresh or
     application timers. It does not make an idle scene redraw continuously.
+  - `tree_headroom_percent` — extra workspace for the native compute tree, from
+    0 to 1,000 (default 80). With 80% headroom, 100 required slots reserve 180.
+    Fitting updates spend the space without topping it up. Startup only.
   - `cache` — `Emerge.Config.RendererCache`, controlling reuse of rendered content.
     Defaults to that record's settings; it is separate from image asset caching.
 
@@ -41,6 +44,7 @@ defmodule Emerge.Config.Renderer do
             device: nil,
             raster_present: :auto,
             target_fps: nil,
+            tree_headroom_percent: 80,
             cache: %Emerge.Config.RendererCache{}
 
   @typedoc "Rendering API, subject to backend/build support."
@@ -54,6 +58,7 @@ defmodule Emerge.Config.Renderer do
           device: String.t() | nil,
           raster_present: raster_present(),
           target_fps: frame_rate() | nil,
+          tree_headroom_percent: 0..1000,
           cache: Emerge.Config.RendererCache.t() | Emerge.Config.RendererCache.options()
         }
   @typedoc "Typed keyword shorthand accepted in this record's parent field."
@@ -62,6 +67,7 @@ defmodule Emerge.Config.Renderer do
           | {:device, String.t() | nil}
           | {:raster_present, raster_present()}
           | {:target_fps, frame_rate() | nil}
+          | {:tree_headroom_percent, 0..1000}
           | {:cache, Emerge.Config.RendererCache.t() | Emerge.Config.RendererCache.options()}
         ]
   @typedoc "Canonical form after nested keyword records have been expanded."
@@ -70,6 +76,7 @@ defmodule Emerge.Config.Renderer do
           device: String.t() | nil,
           raster_present: raster_present(),
           target_fps: frame_rate() | nil,
+          tree_headroom_percent: 0..1000,
           cache: Emerge.Config.RendererCache.normalized_t()
         }
 
@@ -80,6 +87,7 @@ defmodule Emerge.Config.Renderer do
       device: {:optional, :path},
       raster_present: {:enum, [:auto, :cpu, :gpu_upload]},
       target_fps: {:optional, {:integer_range, 1, 4_294_967_295}},
+      tree_headroom_percent: {:integer_range, 0, 1000},
       cache: {:record, Emerge.Config.RendererCache}
     ]
 end

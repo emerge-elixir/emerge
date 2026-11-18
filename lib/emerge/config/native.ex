@@ -32,6 +32,7 @@ defmodule Emerge.Config.Native do
       otp_app: assets.otp_app,
       rendering_api: api,
       target_fps: renderer.target_fps,
+      tree_headroom_percent: renderer.tree_headroom_percent,
       vulkan_drm_node: renderer.device,
       scroll_line_pixels: config.input.scroll_line_pixels,
       hw_cursor: config.input.cursor.hardware,

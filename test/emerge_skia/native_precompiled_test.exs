@@ -176,8 +176,8 @@ defmodule EmergeSkia.NativePrecompiledTest do
     result =
       try do
         Code.compile_file("lib/emerge_skia/native.ex")
-        tree = EmergeSkia.Native.tree_new()
-        true = EmergeSkia.Native.tree_is_empty(tree)
+        {width, height, _, _} = EmergeSkia.measure_text("M", 16)
+        true = width > 0 and height > 0
         "loaded"
       rescue
         error -> Exception.message(error)

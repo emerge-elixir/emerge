@@ -653,6 +653,8 @@ dependencies = [
  "rustler",
  "sha2",
  "skia-safe",
+ "skrifa",
+ "slotmap",
  "smithay-client-toolkit",
  "unicode-segmentation",
  "video-interop",

@@ -2,7 +2,7 @@ defmodule Emerge.PointerDragTest do
   use ExUnit.Case, async: true
   use Emerge.UI
 
-  alias EmergeSkia.TestHarness
+  alias Emerge.TestSupport.Headless
 
   test "captured dragging cannot compete with activation and swipe on the same element" do
     for attr <- [Event.on_click(:click), Event.on_press(:press), Event.on_swipe_left(:swipe)] do
@@ -28,33 +28,25 @@ defmodule Emerge.PointerDragTest do
       )
     end
 
-    {binary, diff, assigned} =
-      Emerge.Engine.encode_full(Emerge.Engine.diff_state_new(), scene.(1.6))
-
-    id = <<assigned.id::64>>
-    harness = TestHarness.new(500, 400)
-    on_exit(fn -> TestHarness.stop(harness) end)
-    assert :ok = TestHarness.set_input_target(harness, self())
-    assert :ok = TestHarness.upload_full_bin(harness, binary)
-    assert :ok = TestHarness.await_render(harness, 1000)
-    assert :ok = TestHarness.cursor_button(harness, :press, 35.5 * 1.6, 20.25 * 1.6)
-    assert_receive {:emerge_skia_event, {^id, :drag, start}}, 1000
+    {pid, r} = Headless.mount({500, 400}, fn -> scene.(1.6) end)
+    Headless.pixels()
+    assert :ok = Headless.button(r, :press, 35.5 * 1.6, 20.25 * 1.6)
+    assert_receive {:application, {:picked, start}}, 1000
     assert_sample(start, :start, 35.5, 20.25)
 
-    {patch, _diff, _tree} = Emerge.Engine.diff_state_update(diff, scene.(2.0))
-    assert :ok = TestHarness.apply_patch_bin(harness, patch)
-    assert :ok = TestHarness.await_render(harness, 1000)
-    refute_receive {:emerge_skia_event, {^id, :drag, _}}
+    send(pid, {:scene, fn -> scene.(2.0) end})
+    Headless.pixels()
+    refute_receive {:application, {:picked, _}}
 
     # Beyond both edges: the fresh 2x geometry, not press-time 1.6x geometry.
-    assert :ok = TestHarness.cursor_pos(harness, 190.25 * 2.0, 130.5 * 2.0)
-    assert_receive {:emerge_skia_event, {^id, :drag, move}}, 1000
+    assert :ok = Headless.move(r, 190.25 * 2.0, 130.5 * 2.0)
+    assert_receive {:application, {:picked, move}}, 1000
     assert_sample(move, :move, 190.25, 130.5)
-    assert :ok = TestHarness.cursor_button(harness, :release, 195.75 * 2.0, 140.25 * 2.0)
-    assert_receive {:emerge_skia_event, {^id, :drag, ending}}, 1000
+    assert :ok = Headless.button(r, :release, 195.75 * 2.0, 140.25 * 2.0)
+    assert_receive {:application, {:picked, ending}}, 1000
     assert_sample(ending, :end, 195.75, 140.25)
-    assert :ok = TestHarness.cursor_pos(harness, 50.0, 50.0)
-    refute_receive {:emerge_skia_event, {^id, :drag, _}}
+    assert :ok = Headless.move(r, 50.0, 50.0)
+    refute_receive {:application, {:picked, _}}
   end
 
   test "capture does not revive after losing usable geometry" do
@@ -71,28 +63,19 @@ defmodule Emerge.PointerDragTest do
       )
     end
 
-    {binary, diff, assigned} =
-      Emerge.Engine.encode_full(Emerge.Engine.diff_state_new(), scene.(1.0))
+    {pid, r} = Headless.mount({300, 200}, fn -> scene.(1.0) end)
+    Headless.pixels()
+    :ok = Headless.button(r, :press, 20.0, 10.0)
+    assert_receive {:application, {:drag, %{phase: :start}}}, 1000
 
-    id = <<assigned.id::64>>
-    harness = TestHarness.new(300, 200)
-    on_exit(fn -> TestHarness.stop(harness) end)
-    :ok = TestHarness.set_input_target(harness, self())
-    :ok = TestHarness.upload_full_bin(harness, binary)
-    :ok = TestHarness.await_render(harness, 1000)
-    :ok = TestHarness.cursor_button(harness, :press, 20.0, 10.0)
-    assert_receive {:emerge_skia_event, {^id, :drag, %{phase: :start}}}, 1000
+    for factor <- [0.0, 1.0] do
+      send(pid, {:scene, fn -> scene.(factor) end})
+      Headless.pixels()
+    end
 
-    Enum.reduce([0.0, 1.0], diff, fn factor, previous ->
-      {patch, next, _} = Emerge.Engine.diff_state_update(previous, scene.(factor))
-      :ok = TestHarness.apply_patch_bin(harness, patch)
-      :ok = TestHarness.await_render(harness, 1000)
-      next
-    end)
-
-    :ok = TestHarness.cursor_pos(harness, 200.0, 100.0)
-    :ok = TestHarness.cursor_button(harness, :release, 200.0, 100.0)
-    refute_receive {:emerge_skia_event, {^id, :drag, _}}, 500
+    :ok = Headless.move(r, 200.0, 100.0)
+    :ok = Headless.button(r, :release, 200.0, 100.0)
+    refute_receive {:application, {:drag, _}}, 500
   end
 
   defp assert_sample(sample, phase, x, y) do

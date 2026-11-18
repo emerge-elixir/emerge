@@ -432,9 +432,7 @@ defmodule EmergeSkia.HeadlessPrimeSession do
 
   defp external_destination(nil), do: {:disconnected, nil}
 
-  @doc false
-  @spec shutdown_result_for_test(term(), term() | nil) :: :ok | {:error, term()}
-  def shutdown_result_for_test(native_result, lease_owner_error) do
+  defp shutdown_result(native_result, lease_owner_error) do
     native_error =
       case native_result do
         {:ok, :ok} -> nil
@@ -467,7 +465,7 @@ defmodule EmergeSkia.HeadlessPrimeSession do
       # Unknown LeaseOwner ownership is permanent quarantine. Closing the
       # dispatcher here would suppress guards that may still be the only path
       # capable of retiring a published holder.
-      result = shutdown_result_for_test(native_result, lease_owner_error)
+      result = shutdown_result(native_result, lease_owner_error)
       :atomics.put(state.completion, 1, 2)
       Enum.each(state.stop_waiters, &GenServer.reply(&1, result))
 
@@ -480,7 +478,7 @@ defmodule EmergeSkia.HeadlessPrimeSession do
     case Native.headless_prime_release_dispatcher_close(state.release_dispatcher) do
       :ok ->
         result =
-          shutdown_result_for_test(
+          shutdown_result(
             state.shutdown_native_result,
             state.shutdown_lease_owner_error
           )
@@ -511,7 +509,7 @@ defmodule EmergeSkia.HeadlessPrimeSession do
   defp append_dispatcher_error(state, reason) do
     dispatcher_error = {:dispatcher_close_failed, reason}
 
-    case shutdown_result_for_test(
+    case shutdown_result(
            state.shutdown_native_result,
            state.shutdown_lease_owner_error
          ) do

@@ -373,9 +373,7 @@ defmodule Emerge.Runtime.Viewport do
     end
   end
 
-  @doc false
-  @spec handle_skia_event(term(), t()) :: {:noreply, t()} | {:stop, term(), t()}
-  def handle_skia_event(event, state) when is_map(state) do
+  defp handle_skia_event(event, state) when is_map(state) do
     case event do
       {id_bin, event_ref} when is_binary(id_bin) ->
         route_element_event(state, id_bin, event_ref, :no_payload)

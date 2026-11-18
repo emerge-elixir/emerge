@@ -63,7 +63,8 @@ defmodule Emerge.Engine.ReconcileTest do
     roundtrip_tree = Emerge.Engine.Serialization.decode(roundtrip_bin)
 
     assert extract_stable_rows(roundtrip_tree) == expected
-    assert EmergeSkia.Native.tree_node_count(tree) == expected_count
+    assert <<"EMRG", 9, ^expected_count::32, _records::binary>> = roundtrip_bin
+    assert count_nodes(roundtrip_tree) == expected_count
   end
 
   test "roundtrip handles reorder with inserts in keyed scroll list" do

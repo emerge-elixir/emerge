@@ -1,16 +1,7 @@
 defmodule EmergeSkia.TestSupport.AnimatedHitCase do
   use Emerge.UI
 
-  alias Emerge.Engine.Element
-  alias Emerge.Engine.NodeId
-
-  @sample_times_ms Enum.to_list(0..1400//50)
-  @probes %{
-    stable_inside: {48.0, 41.0},
-    newly_occupied_inside_host: {110.0, 41.0},
-    newly_occupied_outside_host: {130.0, 41.0},
-    stable_outside: {175.0, 41.0}
-  }
+  def probe(:newly_occupied_outside_host), do: {130, 41}
 
   def tree do
     el(
@@ -36,66 +27,6 @@ defmodule EmergeSkia.TestSupport.AnimatedHitCase do
       ],
       underlying()
     )
-  end
-
-  def replaced_root_placeholder_tree do
-    el(
-      [
-        key(:placeholder_host),
-        width(px(128)),
-        height(px(82)),
-        Background.color(:gray)
-      ],
-      underlying()
-    )
-  end
-
-  def probe(label), do: Map.fetch!(@probes, label)
-
-  def sample_times_ms, do: @sample_times_ms
-
-  def loop_sample_times_ms(loop_count) when is_integer(loop_count) and loop_count >= 1 do
-    duration_ms = 1400
-    Enum.to_list(0..(duration_ms * loop_count)//50)
-  end
-
-  def expected_first_activation_ms(:newly_occupied_inside_host), do: 550
-  def expected_first_activation_ms(:newly_occupied_outside_host), do: 700
-  def expected_first_activation_ms(_label), do: nil
-
-  def expected_first_activation_range_ms(:newly_occupied_inside_host), do: 500..550
-  def expected_first_activation_range_ms(:newly_occupied_outside_host), do: 500..700
-
-  def allowed_clear_tail_start_ms(:newly_occupied_inside_host), do: 1350
-  def allowed_clear_tail_start_ms(:newly_occupied_outside_host), do: 1250
-  def allowed_clear_tail_start_ms(label), do: expected_first_activation_ms(label)
-
-  def target_id_bin(%Element{} = assigned_tree) do
-    target_id_from_tree(assigned_tree) |> NodeId.encode()
-  end
-
-  def target_id_bin_from_state(%Emerge.Engine.DiffState{event_registry: event_registry}) do
-    Enum.find_value(event_registry, fn {id_bin, events} ->
-      case Map.get(events, :mouse_move) do
-        {_pid, {:probe, :target}} -> id_bin
-        _ -> nil
-      end
-    end) || raise "could not find target element id in event registry"
-  end
-
-  def host_id_bin(%Element{} = assigned_tree) do
-    host_id_from_tree(assigned_tree) |> NodeId.encode()
-  end
-
-  def host_id_bin_for_target(%Element{} = assigned_tree, target_id_bin)
-      when is_binary(target_id_bin) do
-    target_id = NodeId.decode(target_id_bin)
-
-    host_id =
-      host_id_from_tree(assigned_tree, target_id) ||
-        raise "could not find host slot element for target id in assigned tree"
-
-    NodeId.encode(host_id)
   end
 
   def page_switch_tree do
@@ -209,6 +140,8 @@ defmodule EmergeSkia.TestSupport.AnimatedHitCase do
           Background.color({:color_rgb, {96, 132, 188}}),
           Font.color(:white)
         ]),
+        Event.on_mouse_enter(:target_enter),
+        Event.on_mouse_leave(:target_leave),
         Event.on_mouse_move({self(), {:probe, :target}})
       ] ++ extra_attrs,
       none()
@@ -386,50 +319,5 @@ defmodule EmergeSkia.TestSupport.AnimatedHitCase do
       ],
       none()
     )
-  end
-
-  defp target_id_from_tree(%Element{
-         id: id,
-         attrs: %{on_mouse_move: {_pid, {:probe, :target}}}
-       }),
-       do: id
-
-  defp target_id_from_tree(%Element{children: children, nearby: nearby}) do
-    Enum.find_value(children, &target_id_from_tree/1) ||
-      Enum.find_value(nearby, fn {_slot, child} ->
-        target_id_from_tree(child)
-      end) ||
-      raise "could not find target element in assigned tree"
-  end
-
-  defp host_id_from_tree(%Element{id: id, children: children, nearby: nearby}) do
-    if match?(
-         {:in_front, %Element{attrs: %{on_mouse_move: {_pid, {:probe, :target}}}}},
-         Enum.find(nearby, fn {slot, _child} -> slot == :in_front end)
-       ) do
-      id
-    else
-      Enum.find_value(children, &host_id_from_tree/1) ||
-        Enum.find_value(nearby, fn {_slot, child} ->
-          host_id_from_tree(child)
-        end) ||
-        raise "could not find host slot element in assigned tree"
-    end
-  end
-
-  defp host_id_from_tree(
-         %Element{id: id, children: children, nearby: nearby},
-         target_id
-       ) do
-    if Enum.any?(nearby, fn {slot, %Element{id: nearby_node_id}} ->
-         slot == :in_front and nearby_node_id == target_id
-       end) do
-      id
-    else
-      Enum.find_value(children, &host_id_from_tree(&1, target_id)) ||
-        Enum.find_value(nearby, fn {_slot, child} ->
-          host_id_from_tree(child, target_id)
-        end)
-    end
   end
 end

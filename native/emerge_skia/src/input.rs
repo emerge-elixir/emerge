@@ -391,7 +391,7 @@ impl Default for InputHandler {
 
 impl InputEvent {
     /// Gesture endpoints need their ingress time even when dispatch is delayed.
-    pub(crate) fn is_pointer_edge(&self) -> bool {
+    pub fn is_pointer_edge(&self) -> bool {
         matches!(
             self,
             Self::CursorButton { .. }
