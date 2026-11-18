@@ -947,16 +947,7 @@ defmodule Emerge.Bench.Scenarios do
     end
   end
 
-  defp patch_operation({operation, _id, _attrs}) when operation in [:set_attrs, :set_children],
-    do: operation
-
-  defp patch_operation({:set_nearby_mounts, _id, _mounts}), do: :set_nearby_mounts
-  defp patch_operation({:insert_subtree, _parent_id, _index, _subtree}), do: :insert_subtree
-
-  defp patch_operation({:insert_nearby_subtree, _host_id, _index, _slot, _subtree}),
-    do: :insert_nearby_subtree
-
-  defp patch_operation({:remove, _id}), do: :remove
+  defp patch_operation({:patch, _target, _subtree}), do: :patch
 
   defp operation_counts(patches) do
     patches
@@ -978,14 +969,7 @@ defmodule Emerge.Bench.Scenarios do
   defp expected_invalidation(:insert_tail, _patches), do: :structure
   defp expected_invalidation(:remove_tail, _patches), do: :structure
 
-  defp expected_invalidation(:nearby_slot_change, patches) do
-    operations = Enum.map(patches, &patch_operation/1)
-
-    cond do
-      operations != [] and Enum.all?(operations, &(&1 == :remove)) -> :paint
-      true -> :resolve
-    end
-  end
+  defp expected_invalidation(:nearby_slot_change, _patches), do: :resolve
 
   defp expected_invalidation(:nearby_reorder, _patches), do: :resolve
 

@@ -43,12 +43,13 @@ Update the tracked fixtures when scenario generation, serialization, patch
 encoding, mutation coverage, or fixture metadata changes. Empty patch binaries
 are valid fixtures for no-op mutations and should stay tracked when generated.
 
-Fixtures use EMRG v9 and shared color tag `3`. Background color variant `0`
-contains either a solid color or a gradient; background tags `1` and `3` are
-retired. External fixtures under `bench/external_fixtures/` use the same contract,
-including attribute patches and embedded subtree payloads. The v9 migration
-preserved decoded trees/patches and re-encoded their values; a header-only edit
-is not a valid migration. No runtime compatibility decoder is retained.
+Fixtures use EMRG v10: a full mount is a fully explicit `patch(0, subtree)`;
+nonempty updates are one sparse replacement. External snapshots retain their
+numeric IDs and decoded values; both text-echo directions use the same patch
+format. No runtime compatibility decoder is retained. The earlier workload
+measurements below concern their pinned producers and original fixtures, not
+v10 or the current six-shape binary headless renderer. Old Criterion targets
+are not active targets in this slice.
 
 After regenerating fixtures, run at least one Elixir retained-layout smoke and
 one Rust Criterion target that reads fixtures before committing the fixture
@@ -158,9 +159,7 @@ scripts/performance-lock.sh exclusive cargo bench --manifest-path native/emerge_
 CPU contract and raster coverage regressions run in `cargo test` through
 `tests/borders_cache_benchmark.rs`. Re-baseline this corrected workload: historical
 results could sample an offscreen-animation/static viewport and only enqueue GPU
-work. Historical investigation is retained in Git history. The separate,
-still-failing large screenshot benchmark assertion is tracked in
-[`plans/screenshot-cache-benchmark-investigation.md`](../plans/screenshot-cache-benchmark-investigation.md).
+work. The separate large screenshot benchmark assertion remains unresolved.
 
 ## Naming
 

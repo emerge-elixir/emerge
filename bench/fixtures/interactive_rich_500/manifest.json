@@ -10,7 +10,7 @@
   "item_count": 100,
   "node_count": 606,
   "text_node_count": 202,
-  "full_emrg_bytes": 54001,
+  "full_emrg_bytes": 54623,
   "element_types": {
     "text": 202,
     "column": 2,
@@ -19,11 +19,11 @@
     "text_input": 100
   },
   "attr_families": {
-    "layout": 1009,
-    "event": 800,
     "nearby": 1,
+    "layout": 1009,
     "paint": 805,
     "measure": 302,
+    "event": 800,
     "interaction": 400
   },
   "patches": {
@@ -35,102 +35,102 @@
       "operations": []
     },
     "paint_attr": {
-      "byte_size": 58,
+      "byte_size": 84,
       "expected_invalidation": "paint",
       "op_count": 1,
       "operation_counts": {
-        "set_attrs": 1
+        "patch": 1
       },
       "operations": [
-        "set_attrs"
+        "patch"
       ]
     },
     "layout_attr": {
-      "byte_size": 58,
+      "byte_size": 84,
       "expected_invalidation": "measure",
       "op_count": 1,
       "operation_counts": {
-        "set_attrs": 1
+        "patch": 1
       },
       "operations": [
-        "set_attrs"
+        "patch"
       ]
     },
     "text_content": {
-      "byte_size": 58,
+      "byte_size": 84,
       "expected_invalidation": "measure",
       "op_count": 1,
       "operation_counts": {
-        "set_attrs": 1
+        "patch": 1
       },
       "operations": [
-        "set_attrs"
+        "patch"
       ]
     },
     "event_attr": {
-      "byte_size": 60,
+      "byte_size": 86,
       "expected_invalidation": "registry",
       "op_count": 1,
       "operation_counts": {
-        "set_attrs": 1
+        "patch": 1
       },
       "operations": [
-        "set_attrs"
+        "patch"
       ]
     },
     "animation_attr": {
-      "byte_size": 135,
+      "byte_size": 161,
       "expected_invalidation": "measure",
       "op_count": 1,
       "operation_counts": {
-        "set_attrs": 1
+        "patch": 1
       },
       "operations": [
-        "set_attrs"
+        "patch"
       ]
     },
     "keyed_reorder": {
-      "byte_size": 811,
+      "byte_size": 839,
       "expected_invalidation": "structure",
       "op_count": 1,
       "operation_counts": {
-        "set_children": 1
+        "patch": 1
       },
       "operations": [
-        "set_children"
+        "patch"
       ]
     },
     "insert_tail": {
-      "byte_size": 555,
+      "byte_size": 1384,
       "expected_invalidation": "structure",
       "op_count": 1,
       "operation_counts": {
-        "insert_subtree": 1
+        "patch": 1
       },
       "operations": [
-        "insert_subtree"
+        "patch"
       ]
     },
     "remove_tail": {
-      "byte_size": 9,
+      "byte_size": 831,
       "expected_invalidation": "structure",
       "op_count": 1,
       "operation_counts": {
-        "remove": 1
+        "patch": 1
       },
       "operations": [
-        "remove"
+        "patch"
       ]
     },
     "nearby_slot_change": {
-      "byte_size": 20,
+      "byte_size": 56,
       "expected_invalidation": "resolve",
       "op_count": 1,
       "operation_counts": {
-        "set_nearby_mounts": 1
+        "patch": 1
       },
       "operations": [
-        "set_nearby_mounts"
+        "patch"
       ]
     },
     "nearby_reorder": {
