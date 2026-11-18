@@ -3,6 +3,7 @@
 mod capture;
 mod dispatch;
 mod frame;
+mod stats;
 #[cfg(all(target_os = "linux", feature = "wayland"))]
 mod wayland;
 use crate::{
@@ -50,6 +51,8 @@ struct Start {
     height: u32,
     owner: Option<LocalPid>,
     target_fps: Option<u32>,
+    stats_enabled: bool,
+    renderer_stats_log: bool,
     tree_headroom_percent: u16,
 }
 struct Live {
@@ -59,6 +62,7 @@ struct Live {
     input: Dispatcher,
     route_target: Option<LocalPid>,
     log: Option<LocalPid>,
+    stats: Option<stats::Samples>,
     width: u32,
     height: u32,
     request: bool,
@@ -80,7 +84,7 @@ impl Live {
         size: (u32, u32),
         scale: f32,
         backend: &'static str,
-        submit: impl FnOnce(&mut OwnedEnv, &[u8], bool) -> Result<(), String>,
+        submit: impl FnOnce(&mut OwnedEnv, &[u8], bool) -> Result<bool, String>,
     ) -> Result<bool, String> {
         self.request = false;
         let prepared = match self.raster.prepare(size.0 as f32, size.1 as f32, scale) {
@@ -90,14 +94,25 @@ impl Live {
                 return Ok(false);
             }
         };
-        prepared.submit(|pixels, reuse| submit(env, pixels, reuse))?;
+        let started = self.stats.as_ref().map(|_| Instant::now());
+        let mut actual = false;
+        prepared.submit(|pixels, reuse| {
+            actual = submit(env, pixels, reuse)?;
+            Ok(())
+        })?;
+        if actual && let (Some(s), Some(t)) = (&mut self.stats, started) {
+            s.submitted(t.elapsed());
+        }
+        self.after_present(env, size);
+        Ok(true)
+    }
+    fn after_present(&mut self, env: &mut OwnedEnv, size: (u32, u32)) {
         (self.width, self.height) = size;
         self.input.after_draw(&self.raster);
         if let Some(target) = self.route_target.take() {
             let _ = env.send_and_clear(&target, |_| emerge_skia_install_routes());
         }
         self.last = Some(Instant::now());
-        Ok(true)
     }
     fn log_frame_error(&self, env: &mut OwnedEnv, backend: &'static str, why: String) {
         if let Some(log) = self.log {
@@ -115,6 +130,55 @@ struct Owner {
     live: Mutex<Option<Live>>,
     revision: AtomicU64,
     api: String,
+    selected: std::sync::OnceLock<Selected>,
+    #[cfg(all(
+        target_os = "linux",
+        feature = "wayland",
+        any(feature = "opengl", feature = "vulkan")
+    ))]
+    readbacks: std::sync::OnceLock<Sender<capture::Readback>>,
+}
+#[derive(Default)]
+enum Selected {
+    #[default]
+    Raster,
+    #[cfg(all(target_os = "linux", feature = "wayland", feature = "opengl"))]
+    Gl,
+    #[cfg(all(target_os = "linux", feature = "wayland", feature = "vulkan"))]
+    Vk(DeviceReport),
+}
+#[derive(Clone, rustler::NifMap)]
+struct DeviceReport {
+    physical_device_name: String,
+    driver_name: Option<String>,
+    driver_id: Option<String>,
+    software: bool,
+    drm_node: Option<DrmReport>,
+}
+#[derive(Clone, rustler::NifMap)]
+struct DrmReport {
+    path: String,
+    match_field: String,
+    major: u32,
+    minor: u32,
+}
+impl Selected {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Raster => "raster",
+            #[cfg(all(target_os = "linux", feature = "wayland", feature = "opengl"))]
+            Self::Gl => "opengl",
+            #[cfg(all(target_os = "linux", feature = "wayland", feature = "vulkan"))]
+            Self::Vk(_) => "vulkan",
+        }
+    }
+    fn device(&self) -> Option<DeviceReport> {
+        match self {
+            #[cfg(all(target_os = "linux", feature = "wayland", feature = "vulkan"))]
+            Self::Vk(d) => Some(d.clone()),
+            _ => None,
+        }
+    }
 }
 enum Wake {
     Binary(Sender<()>),
@@ -217,6 +281,7 @@ fn run_binary(owner: &Owner, rx: Receiver<()>, sink: BinarySink) -> Result<(), S
                         sink.channels
                             .message(e, &sink.message, size.0, size.1, pixels)
                     })
+                    .map(|_| true)
                     .map_err(|_| "headless output target is gone".to_string())
                 })?;
                 None
@@ -262,6 +327,13 @@ fn start(env: Env, opts: Start) -> Result<ResourceArc<Session>, String> {
         lifecycle: Lifecycle::default(),
         revision: AtomicU64::new(0),
         api: opts.rendering_api.kind,
+        selected: Default::default(),
+        #[cfg(all(
+            target_os = "linux",
+            feature = "wayland",
+            any(feature = "opengl", feature = "vulkan")
+        ))]
+        readbacks: Default::default(),
         live: Mutex::new(Some(Live {
             #[cfg(all(target_os = "linux", feature = "wayland"))]
             toplevel: None,
@@ -269,6 +341,7 @@ fn start(env: Env, opts: Start) -> Result<ResourceArc<Session>, String> {
             input: Dispatcher::default(),
             route_target: None,
             log: Some(env.pid()),
+            stats: (opts.stats_enabled || opts.renderer_stats_log).then(stats::Samples::new),
             width: opts.width,
             height: opts.height,
             request: false,
@@ -318,6 +391,7 @@ enum Driver {
         conn: wayland_client::Connection,
         title: String,
         size: (u32, u32),
+        api: wayland::Requested,
     },
 }
 impl Driver {
@@ -340,15 +414,18 @@ impl Driver {
                 }))
             }
             #[cfg(all(target_os = "linux", feature = "wayland"))]
-            "wayland" if s.rendering_api.kind == "raster" => Ok(Self::Wayland {
+            "wayland" => Ok(Self::Wayland {
+                api: wayland::Requested::parse(
+                    &s.rendering_api.kind,
+                    &s.rendering_api.raster_present,
+                )?,
                 conn: wayland_client::Connection::connect_to_env()
                     .map_err(|e| format!("Wayland: {e}"))?,
                 title: s.title.clone(),
                 size: (s.width, s.height),
             }),
-            "wayland" => Err(
-                "Wayland requires the wayland feature and an explicit CPU raster renderer".into(),
-            ),
+            #[cfg(not(all(target_os = "linux", feature = "wayland")))]
+            "wayland" => Err("Wayland requires the wayland feature".into()),
             _ => Err("unsupported output: expected binary headless raster".into()),
         }
     }
@@ -362,7 +439,12 @@ impl Driver {
                 run_binary(owner, rx, sink)
             }
             #[cfg(all(target_os = "linux", feature = "wayland"))]
-            Self::Wayland { conn, title, size } => wayland::run(owner, ready, conn, title, size),
+            Self::Wayland {
+                conn,
+                title,
+                size,
+                api,
+            } => wayland::run(owner, ready, conn, title, size, api),
         }
     }
 }
@@ -518,7 +600,7 @@ fn config_status(r: ResourceArc<Session>) -> ConfigStatus {
         error: None,
     }
 }
-#[derive(rustler::NifMap)]
+#[derive(Clone, Debug, rustler::NifMap)]
 struct RenderingApi {
     requested: String,
     selected: String,
@@ -537,10 +619,12 @@ struct RendererInfo {
     backend: String,
     rendering_api: RenderingApi,
     capabilities: Capabilities,
-    vulkan_device: Option<Atom>,
+    vulkan_device: Option<DeviceReport>,
 }
 #[rustler::nif]
 fn renderer_info(r: ResourceArc<Session>) -> Result<RendererInfo, String> {
+    let selected = r.owner.selected.get().unwrap_or(&Selected::Raster);
+    let gpu = !matches!(selected, Selected::Raster);
     Ok(RendererInfo {
         backend: match r.wake {
             Wake::Binary(_) => "headless",
@@ -550,16 +634,16 @@ fn renderer_info(r: ResourceArc<Session>) -> Result<RendererInfo, String> {
         .into(),
         rendering_api: RenderingApi {
             requested: r.owner.api.clone(),
-            selected: "raster".into(),
+            selected: selected.name().into(),
         },
         capabilities: Capabilities {
-            gpu: false,
+            gpu,
             renderer_cache: false,
             screenshot: true,
-            raster_present: vec!["cpu".into()],
+            raster_present: if gpu { vec![] } else { vec!["cpu".into()] },
             prime_video: false,
             prime_video_formats: vec![],
         },
-        vulkan_device: None,
+        vulkan_device: selected.device(),
     })
 }

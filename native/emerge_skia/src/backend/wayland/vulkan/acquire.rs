@@ -9,7 +9,7 @@ use std::{
 
 use ash::{khr, vk};
 
-use crate::backend::vulkan::VulkanDevice;
+use super::VulkanDevice;
 
 use super::ACQUIRE_TIMEOUT_NS;
 
@@ -314,4 +314,5 @@ impl<A: AcquireApi> AcquirePool<A> {
 }
 
 #[cfg(test)]
+#[path = "acquire/tests.rs"]
 mod tests;

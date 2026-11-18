@@ -344,19 +344,24 @@ impl Raster {
         self.prepare(w, h, scale)?.submit(|_, _| Ok(()))?;
         Ok(&self.pixels)
     }
-    pub(crate) fn prepare(&mut self, w: f32, h: f32, scale: f32) -> Result<Prepared<'_>, String> {
+    /// Only the display worker settles or installs. Edits may reserve the
+    /// candidate stores but never overwrite them during an in-flight submit.
+    pub(crate) fn settle(&mut self, w: f32, h: f32, scale: f32) -> Result<bool, String> {
         self.tree.refresh(w, h, scale)?;
+        let o = &self.tree.output;
+        Ok(self.viewport != self.tree.layers.viewport || (o.dirty[0] && o.draw[0] != o.draw[1]))
+    }
+    pub(crate) fn install(&mut self) {
+        self.viewport = self.tree.layers.viewport;
+        self.tree.output.install();
+    }
+    pub(crate) fn prepare(&mut self, w: f32, h: f32, scale: f32) -> Result<Prepared<'_>, String> {
+        let changed = self.settle(w, h, scale)?;
         let v = self.tree.layers.viewport;
-        let output = &mut self.tree.output;
-        let redraw = self.viewport != v
-            || self.pixels.is_empty()
-            || (output.dirty[0] && output.draw[0] != output.draw[1]);
-        let next = redraw.then(|| rasterize(v, output.drawing())).transpose()?;
-        Ok(Prepared {
-            raster: self,
-            viewport: v,
-            next,
-        })
+        let next = (changed || self.pixels.is_empty())
+            .then(|| rasterize(v, self.tree.output.drawing()))
+            .transpose()?;
+        Ok(Prepared { raster: self, next })
     }
 }
 /// Borrows the session's only raster. Dropping a preparation or failing its
@@ -365,7 +370,6 @@ impl Raster {
 #[must_use]
 pub(crate) struct Prepared<'a> {
     raster: &'a mut Raster,
-    viewport: Rect,
     next: Option<Vec<u8>>,
 }
 impl Prepared<'_> {
@@ -385,8 +389,7 @@ impl Prepared<'_> {
                 r.draws += 1;
             }
         }
-        r.viewport = self.viewport;
-        r.tree.output.install();
+        r.install();
         Ok(())
     }
 }
@@ -412,50 +415,91 @@ fn rasterize(viewport: Rect, draw: &Drawing) -> Result<Vec<u8>, String> {
         let props = SurfaceProps::new(SurfacePropsFlags::default(), PixelGeometry::RGBH);
         let mut surface = surfaces::wrap_pixels(&info, &mut pixels, w * 4, Some(&props))
             .ok_or("invalid raster surface")?;
-        let canvas = surface.canvas();
-        let mut paint = Paint::default();
-        paint.set_anti_alias(true);
-        for cmd in &draw.commands {
-            let [r, g, b, a] = match *cmd {
-                Command::Fill(_, v) | Command::Glyphs { color: v, .. } => v.to_be_bytes(),
-            };
-            paint.set_color(Color::from_argb(a, r, g, b));
-            match cmd {
-                Command::Fill(r, _) => {
-                    canvas.draw_rect(
-                        skia_safe::Rect::from_xywh(r.x, r.y, r.width, r.height),
-                        &paint,
-                    );
-                }
-                Command::Glyphs {
-                    pos,
-                    family,
-                    size,
-                    range,
-                    clip,
-                    ..
-                } => {
-                    if let Some(r) = clip {
-                        canvas.save();
-                        canvas.clip_rect(
-                            skia_safe::Rect::from_xywh(r.x, r.y, r.width, r.height),
-                            None,
-                            false,
-                        );
-                    }
-                    canvas.draw_glyphs_at(
-                        &draw.ids[range.clone()],
-                        &draw.positions[range.clone()],
-                        (pos[0], pos[1]),
-                        &family.font(*size),
-                        &paint,
-                    );
-                    if clip.is_some() {
-                        canvas.restore();
-                    }
-                }
-            }
-        }
+        replay(surface.canvas(), draw, |canvas, run, paint| {
+            canvas.draw_glyphs_at(
+                run.ids,
+                run.positions,
+                (run.origin[0], run.origin[1]),
+                &run.family.font(run.size),
+                paint,
+            );
+            Ok(())
+        })?;
     }
     Ok(pixels)
 }
+
+struct GlyphPaintRun<'a> {
+    ids: &'a [u16],
+    positions: &'a [Point],
+    origin: [f32; 2],
+    family: Family,
+    size: f32,
+}
+fn replay(
+    canvas: &skia_safe::Canvas,
+    draw: &Drawing,
+    mut glyphs: impl FnMut(&skia_safe::Canvas, GlyphPaintRun, &Paint) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut paint = Paint::default();
+    paint.set_anti_alias(true);
+    for cmd in &draw.commands {
+        let [r, g, b, a] = match *cmd {
+            Command::Fill(_, v) | Command::Glyphs { color: v, .. } => v.to_be_bytes(),
+        };
+        paint.set_color(Color::from_argb(a, r, g, b));
+        match cmd {
+            Command::Fill(r, _) => {
+                canvas.draw_rect(
+                    skia_safe::Rect::from_xywh(r.x, r.y, r.width, r.height),
+                    &paint,
+                );
+            }
+            Command::Glyphs {
+                pos,
+                family,
+                size,
+                range,
+                clip,
+                ..
+            } => {
+                if let Some(r) = clip {
+                    canvas.save();
+                    canvas.clip_rect(
+                        skia_safe::Rect::from_xywh(r.x, r.y, r.width, r.height),
+                        None,
+                        false,
+                    );
+                }
+                let result = glyphs(
+                    canvas,
+                    GlyphPaintRun {
+                        ids: &draw.ids[range.clone()],
+                        positions: &draw.positions[range.clone()],
+                        origin: *pos,
+                        family: *family,
+                        size: *size,
+                    },
+                    &paint,
+                );
+                if clip.is_some() {
+                    canvas.restore();
+                }
+                result?;
+            }
+        }
+    }
+    Ok(())
+}
+#[cfg(all(
+    target_os = "linux",
+    feature = "wayland",
+    any(feature = "opengl", feature = "vulkan")
+))]
+mod gpu;
+#[cfg(all(
+    target_os = "linux",
+    feature = "wayland",
+    any(feature = "opengl", feature = "vulkan")
+))]
+pub(crate) use gpu::GeometryPainter;

@@ -7,10 +7,10 @@ defmodule EmergeSkia.WaylandVulkanSyncTest do
 
   test "Vulkan reuses swapchain images without capture or CPU readback" do
     renderer = start_renderer()
-    render_burst(renderer)
+    state = render_burst(renderer)
 
     # Stop with new work outstanding, not after a synchronous screenshot has drained the GPU.
-    upload_color(renderer, {0, 0, 255})
+    update_color(renderer, state, {0, 0, 255})
     stop = Task.async(fn -> EmergeSkia.stop(renderer) end)
     assert :ok = Task.await(stop, 750)
   end
@@ -19,9 +19,12 @@ defmodule EmergeSkia.WaylandVulkanSyncTest do
     renderer = start_renderer()
 
     for _ <- 1..4,
-        {rgb, expected} <- [{{255, 0, 0}, <<255, 0, 0>>}, {{0, 255, 0}, <<0, 255, 0>>}] do
-      upload_color(renderer, rgb)
-      await_color(renderer, expected, System.monotonic_time(:millisecond) + 5_000)
+        {rgb, expected} <- [{{255, 0, 0}, <<255, 0, 0>>}, {{0, 255, 0}, <<0, 255, 0>>}],
+        reduce: nil do
+      state ->
+        state = update_color(renderer, state, rgb)
+        await_color(renderer, expected, System.monotonic_time(:millisecond) + 5_000)
+        state
     end
   end
 
@@ -50,13 +53,13 @@ defmodule EmergeSkia.WaylandVulkanSyncTest do
   end
 
   defp render_burst(renderer) do
-    # Wait only for native frame statistics, never render_to_pixels. Repeated uploads cannot
-    # coalesce the entire regression down to one image, even on a slow compositor.
-    for value <- 1..48 do
+    # Wait only for successful submissions, never read pixels during the burst.
+    Enum.reduce(1..48, nil, fn value, state ->
       before = frame_count(renderer)
-      upload_color(renderer, {value, 255 - value, 0})
+      state = update_color(renderer, state, {value, 255 - value, 0})
       await_frame(renderer, before, System.monotonic_time(:millisecond) + 5_000)
-    end
+      state
+    end)
   end
 
   defp await_frame(renderer, before, deadline) do
@@ -72,15 +75,19 @@ defmodule EmergeSkia.WaylandVulkanSyncTest do
     snapshot.frames.frame_count
   end
 
-  defp upload_color(renderer, {r, g, b}) do
+  defp update_color(renderer, state, {r, g, b}) do
     tree =
       el(
-        [width(fill()), height(fill()), Background.color(Emerge.UI.Color.color_rgb(r, g, b))],
+        [width(fill()), height(px(64)), Background.color(Emerge.UI.Color.color_rgb(r, g, b))],
         none()
       )
 
-    assert {%Emerge.Engine.DiffState{}, %Emerge.Engine.Element{}} =
-             EmergeSkia.upload_tree(renderer, tree)
+    {state, _} =
+      if state,
+        do: EmergeSkia.patch_tree(renderer, state, tree),
+        else: EmergeSkia.upload_tree(renderer, tree)
+
+    state
   end
 
   defp await_color(renderer, expected, deadline) do

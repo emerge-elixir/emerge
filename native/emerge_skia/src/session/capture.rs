@@ -11,8 +11,26 @@ struct Capture<'a> {
     png_compression: &'a str,
     timeout_ms: u32,
 }
+type Rect = (u32, u32, u32, u32);
+#[derive(Clone, Copy)]
+struct Region(Option<Rect>);
+impl Region {
+    fn bounds(self, (width, height): (u32, u32)) -> Result<Rect, String> {
+        let (x, y, w, h) = self.0.unwrap_or((0, 0, width, height));
+        if w == 0
+            || h == 0
+            || x.checked_add(w).is_none_or(|v| v > width)
+            || y.checked_add(h).is_none_or(|v| v > height)
+        {
+            Err("invalid screenshot region".into())
+        } else {
+            Ok((x, y, w, h))
+        }
+    }
+}
+type Pixels = (u32, u32, Vec<u8>);
 impl Capture<'_> {
-    fn read(&self, live: &Live, png: bool) -> Result<Vec<u8>, String> {
+    fn region(&self) -> Result<Region, String> {
         if self.scale != 1.
             || self.background != "transparent"
             || self.png_compression != "default"
@@ -20,74 +38,130 @@ impl Capture<'_> {
         {
             return Err("unsupported screenshot options".into());
         }
-        let pixels = live.raster.pixels();
-        if pixels.is_empty() {
-            return Err("no presented frame is available yet".into());
-        }
-        let (x, y, w, h) = match (
+        match (
             self.region_x,
             self.region_y,
             self.region_width,
             self.region_height,
         ) {
-            (None, None, None, None) => (0, 0, live.width, live.height),
-            (Some(x), Some(y), Some(w), Some(h))
-                if w > 0
-                    && h > 0
-                    && x.checked_add(w).is_some_and(|v| v <= live.width)
-                    && y.checked_add(h).is_some_and(|v| v <= live.height) =>
-            {
-                (x, y, w, h)
-            }
-            _ => return Err("invalid screenshot region".into()),
-        };
-        let rgb = !png && self.pixel_format == "rgb888";
-        let bpp = if rgb { 3 } else { 4 };
-        let mut dst = vec![0; w as usize * h as usize * bpp];
-        for (dy, out) in dst.chunks_exact_mut(w as usize * bpp).enumerate() {
-            let offset = ((dy + y as usize) * live.width as usize + x as usize) * 4;
-            let rgba = &pixels[offset..offset + w as usize * 4];
-            if rgb {
-                Channels::Rgb.convert(rgba, out)
-            } else {
-                out.copy_from_slice(rgba)
-            }
+            (None, None, None, None) => Ok(Region(None)),
+            (Some(x), Some(y), Some(w), Some(h)) => Ok(Region(Some((x, y, w, h)))),
+            _ => Err("invalid screenshot region".into()),
         }
+    }
+    fn encode(&self, (w, h, mut rgba): Pixels, png: bool) -> Result<Vec<u8>, String> {
         if png {
-            crate::services::png(w, h, &mut dst)
+            crate::services::png(w, h, &mut rgba)
+        } else if self.pixel_format == "rgb888" {
+            let mut rgb = vec![0; w as usize * h as usize * 3];
+            Channels::Rgb.convert(&rgba, &mut rgb);
+            Ok(rgb)
         } else {
-            Ok(dst)
+            Ok(rgba)
         }
     }
 }
+#[cfg(all(
+    target_os = "linux",
+    feature = "wayland",
+    any(feature = "opengl", feature = "vulkan")
+))]
+pub(super) struct Readback {
+    deadline: Instant,
+    region: Region,
+    reply: Sender<Result<Pixels, String>>,
+}
+#[cfg(all(
+    target_os = "linux",
+    feature = "wayland",
+    any(feature = "opengl", feature = "vulkan")
+))]
+impl Readback {
+    pub(super) fn read(self, front: Option<&mut skia_safe::Surface>) {
+        if Instant::now() > self.deadline {
+            return;
+        }
+        let pixels = (|| {
+            let surface = front.ok_or("no presented frame is available yet")?;
+            let (x, y, w, h) = self
+                .region
+                .bounds((surface.width() as u32, surface.height() as u32))?;
+            let info = skia_safe::ImageInfo::new(
+                (w as i32, h as i32),
+                skia_safe::ColorType::RGBA8888,
+                skia_safe::AlphaType::Premul,
+                None,
+            );
+            let stride = w as usize * 4;
+            let mut pixels = vec![0; stride * h as usize];
+            if !surface.read_pixels(&info, &mut pixels, stride, (x as i32, y as i32)) {
+                return Err("GPU readback failed".into());
+            }
+            Ok((w, h, pixels))
+        })();
+        let _ = self.reply.try_send(pixels);
+    }
+}
 fn capture(r: &Session, opts: Capture, png: bool) -> Result<Vec<u8>, String> {
-    let start = Instant::now();
-    let max = Duration::from_millis(opts.timeout_ms.into());
-    // A screenshot never requests a draw. Bound contention with an in-flight draw.
+    let deadline = Instant::now() + Duration::from_millis(opts.timeout_ms.into());
+    let region = opts.region()?;
+    #[cfg(all(
+        target_os = "linux",
+        feature = "wayland",
+        any(feature = "opengl", feature = "vulkan")
+    ))]
+    if let Some(requests) = r.owner.readbacks.get() {
+        let (tx, rx) = bounded(1);
+        requests
+            .send_deadline(
+                Readback {
+                    deadline,
+                    region,
+                    reply: tx,
+                },
+                deadline,
+            )
+            .map_err(|_| "GPU capture is unavailable or timed out")?;
+        r.wake.notify();
+        let pixels = rx
+            .recv_deadline(deadline)
+            .map_err(|_| "GPU capture is unavailable or timed out")??;
+        return opts.encode(pixels, png);
+    }
     loop {
         match r.owner.live.try_lock() {
-            Ok(live) => {
-                return opts.read(
-                    live.as_ref()
-                        .filter(|_| r.running())
-                        .ok_or("renderer is stopped")?,
-                    png,
-                );
+            Ok(guard) => {
+                let live = guard
+                    .as_ref()
+                    .filter(|_| r.running())
+                    .ok_or("renderer is stopped")?;
+                let pixels = live.raster.pixels();
+                if pixels.is_empty() {
+                    return Err("no presented frame is available yet".into());
+                }
+                let (x, y, w, h) = region.bounds((live.width, live.height))?;
+                let mut rgba = vec![0; w as usize * h as usize * 4];
+                for (dy, row) in rgba.chunks_exact_mut(w as usize * 4).enumerate() {
+                    let off = ((dy + y as usize) * live.width as usize + x as usize) * 4;
+                    row.copy_from_slice(&pixels[off..off + row.len()]);
+                }
+                drop(guard);
+                return opts.encode((w, h, rgba), png);
             }
             Err(std::sync::TryLockError::Poisoned(_)) => {
                 return Err("renderer is unavailable".into());
             }
             Err(_) => {
-                let remaining = max.saturating_sub(start.elapsed());
-                if remaining.is_zero() {
+                let wait = deadline.saturating_duration_since(Instant::now());
+                if wait.is_zero() {
                     return Err("screenshot timed out".into());
                 }
-                std::thread::park_timeout(remaining.min(Duration::from_millis(1)));
+                std::thread::park_timeout(wait.min(Duration::from_millis(1)));
             }
         }
     }
 }
-#[rustler::nif(schedule = "DirtyCpu")]
+#[rustler::nif(schedule = "DirtyIo")]
 fn renderer_capture_pixels<'a>(
     env: Env<'a>,
     r: ResourceArc<Session>,
@@ -95,7 +169,7 @@ fn renderer_capture_pixels<'a>(
 ) -> Result<Binary<'a>, String> {
     Ok(binary(env, &capture(&r, opts, false)?))
 }
-#[rustler::nif(schedule = "DirtyCpu")]
+#[rustler::nif(schedule = "DirtyIo")]
 fn renderer_capture_png<'a>(
     env: Env<'a>,
     r: ResourceArc<Session>,

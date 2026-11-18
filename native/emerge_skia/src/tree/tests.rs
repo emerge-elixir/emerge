@@ -386,6 +386,31 @@ fn output_sink_failure_preserves_installed_pixels_hit_geometry_and_attachment() 
 }
 
 #[test]
+fn edits_accepted_during_submit_do_not_modify_the_sealed_candidate() {
+    let mut r = Raster::default();
+    let panel =
+        |width, click| block(&[px(1, width), px(2, 20.), color([1, 2, 3]), vec![40, click]]);
+    r.tree
+        .upload(&upload(&[node(1, 4, panel(10., 1), &[])]))
+        .unwrap();
+    r.settle(32., 20., 1.).unwrap();
+    assert!(r.hit_at(5., 5.).is_none());
+    r.install();
+    r.tree.patch(&set(1, 4, panel(20., 1))).unwrap();
+    r.settle(32., 20., 1.).unwrap();
+    r.tree.patch(&set(1, 4, panel(30., 0))).unwrap(); // no second settle during submit
+    assert!(r.hit_at(15., 5.).is_none());
+    r.install();
+    assert_eq!(r.hit_at(15., 5.), Some((1, 15., 5.)));
+    assert!(r.hit_at(25., 5.).is_none());
+    r.settle(32., 20., 1.).unwrap();
+    assert!(r.hit_at(15., 5.).is_some());
+    r.install();
+    assert!(r.hit_at(5., 5.).is_none());
+    assert!(r.pixels().is_empty());
+}
+
+#[test]
 fn failed_draw_and_layout_query_never_install_pixels_or_hits() {
     let square = |rgb, top| {
         upload(&[

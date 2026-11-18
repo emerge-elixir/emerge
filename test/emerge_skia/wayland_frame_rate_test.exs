@@ -26,6 +26,11 @@ defmodule EmergeSkia.WaylandFrameRateTest do
     assert {:ok, renderer} = EmergeSkia.start(config)
     on_exit(fn -> EmergeSkia.stop(renderer) end)
 
+    if api in [:opengl, :vulkan] do
+      assert {:ok, %{rendering_api: %{selected: ^api}, capabilities: %{gpu: true}}} =
+               EmergeSkia.renderer_info(renderer)
+    end
+
     if api == :vulkan do
       assert {:ok,
               %{rendering_api: %{selected: :vulkan}, vulkan_device: %{software: false} = device}} =
@@ -34,16 +39,18 @@ defmodule EmergeSkia.WaylandFrameRateTest do
       IO.puts("Wayland Vulkan hardware confirmed: #{inspect(device)}")
     end
 
-    upload_color(renderer, {255, 0, 0})
+    {state, _} = EmergeSkia.upload_tree(renderer, panel({255, 0, 0}))
     await_color(renderer, <<255, 0, 0>>, 5_000)
     Process.sleep(30)
     before = frame_count(renderer)
     started = System.monotonic_time(:millisecond)
 
-    for value <- 1..20 do
-      upload_color(renderer, {0, value, 0})
-      Process.sleep(5)
-    end
+    state =
+      Enum.reduce(1..20, state, fn value, state ->
+        {state, _} = EmergeSkia.patch_tree(renderer, state, panel({0, value, 0}))
+        Process.sleep(5)
+        state
+      end)
 
     elapsed = System.monotonic_time(:millisecond) - started
     assert frame_count(renderer) - before <= div(elapsed, 1_000) + 1
@@ -61,22 +68,18 @@ defmodule EmergeSkia.WaylandFrameRateTest do
     assert frame_count(renderer) == before
     {:ok, snapshot} = EmergeSkia.stats(renderer)
     assert snapshot.frames.display_frame_ms < 100
-    upload_color(renderer, {0, 0, 255})
+    EmergeSkia.patch_tree(renderer, state, panel({0, 0, 255}))
     stop = Task.async(fn -> EmergeSkia.stop(renderer) end)
     assert :ok = Task.await(stop, 750)
     assert {:error, _} = EmergeSkia.Native.set_frame_rate(renderer, 30)
   end
 
-  defp upload_color(renderer, {r, g, b}) do
-    tree =
+  defp panel({r, g, b}),
+    do:
       el(
-        [width(fill()), height(fill()), Background.color(Emerge.UI.Color.color_rgb(r, g, b))],
+        [width(fill()), height(px(64)), Background.color(Emerge.UI.Color.color_rgb(r, g, b))],
         none()
       )
-
-    assert {%Emerge.Engine.DiffState{}, %Emerge.Engine.Element{}} =
-             EmergeSkia.upload_tree(renderer, tree)
-  end
 
   defp frame_count(renderer) do
     {:ok, snapshot} = EmergeSkia.stats(renderer)

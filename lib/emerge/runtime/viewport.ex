@@ -151,6 +151,7 @@ defmodule Emerge.Runtime.Viewport do
              diff_state: nil,
              drawn_routes: nil,
              pending_routes: nil,
+             submitting_routes: nil,
              renderer_generation: nil,
              retiring_renderer_generation: generation,
              renderer_relay: nil,
@@ -564,23 +565,25 @@ defmodule Emerge.Runtime.Viewport do
   # These messages and element input arrive in order from this session's relay.
   # Edits prepare the next addresses; only a successful draw installs them.
   defp handle_renderer_message({:emerge_skia_route_changes, edits}, state) do
-    {:noreply,
-     update_runtime(state, fn rt ->
-       routes =
-         Enum.reduce(edits, rt.pending_routes || rt.drawn_routes || %{}, fn
-           {id, nil}, routes -> Map.delete(routes, id)
-           {id, events}, routes -> Map.put(routes, id, events)
-         end)
+    {:noreply, update_runtime(state, &State.routes(&1, {:edit, edits}))}
+  end
 
-       %{rt | pending_routes: routes}
-     end)}
+  # A later edit can arrive while the display worker is in swap/present.
+  # Seal the persistent address map by reference, not a tree copy or frame ID.
+  defp handle_renderer_message(:emerge_skia_seal_routes, state) do
+    {:noreply, update_runtime(state, &State.routes(&1, :seal))}
+  end
+
+  defp handle_renderer_message(:emerge_skia_publish_routes, state) do
+    {:noreply, update_runtime(state, &State.routes(&1, :publish))}
+  end
+
+  defp handle_renderer_message(:emerge_skia_retry_routes, state) do
+    {:noreply, update_runtime(state, &State.routes(&1, :retry))}
   end
 
   defp handle_renderer_message(:emerge_skia_install_routes, state) do
-    {:noreply,
-     update_runtime(state, fn rt ->
-       %{rt | drawn_routes: rt.pending_routes || rt.drawn_routes, pending_routes: nil}
-     end)}
+    {:noreply, update_runtime(state, &State.routes(&1, :install))}
   end
 
   defp handle_renderer_message(message, state), do: handle_info(message, state)
@@ -1030,6 +1033,7 @@ defmodule Emerge.Runtime.Viewport do
                     do: diff_state.event_registry
                   ),
                 pending_routes: nil,
+                submitting_routes: nil,
                 last_renderer_heartbeat_at_ms: monotonic_ms()
             }
           end)

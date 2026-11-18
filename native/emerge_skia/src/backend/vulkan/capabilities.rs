@@ -362,6 +362,34 @@ pub fn select_wayland_surface_device(
     require_timestamps: bool,
     candidates: &[WaylandSelectionCandidate],
 ) -> Result<SurfaceDeviceSelection, String> {
+    let selected = probe_surface_device(compositor_device, require_timestamps, candidates)?;
+    selected.ok_or_else(|| match compositor_device {
+        Some(node) => format!("no eligible hardware Vulkan device matches Wayland compositor DRM device {}:{} with a combined graphics/present queue", node.major, node.minor),
+        None => "no eligible hardware Vulkan device has a combined graphics/present queue for the Wayland surface".into(),
+    })
+}
+pub fn probe_surface_device(
+    compositor_device: Option<DrmNodeId>,
+    require_timestamps: bool,
+    candidates: &[WaylandSelectionCandidate],
+) -> Result<Option<SurfaceDeviceSelection>, String> {
+    let combined = |q: &SurfaceQueueCandidate| {
+        q.queue_count > 0
+            && q.graphics
+            && q.present
+            && (!require_timestamps || q.timestamp_valid_bits > 0)
+    };
+    if compositor_device.is_some()
+        && candidates.iter().any(|c| {
+            !c.device.software
+                && c.device.api_eligible
+                && c.device.primary.is_none()
+                && c.device.render.is_none()
+                && c.queue_families.iter().any(combined)
+        })
+    {
+        return Err("unable to verify Vulkan device identity against Wayland DRM feedback".into());
+    }
     let matching = candidates
         .iter()
         .filter(|candidate| !candidate.device.software && candidate.device.api_eligible)
@@ -374,12 +402,7 @@ pub fn select_wayland_surface_device(
             candidate
                 .queue_families
                 .iter()
-                .find(|queue| {
-                    queue.queue_count > 0
-                        && queue.graphics
-                        && queue.present
-                        && (!require_timestamps || queue.timestamp_valid_bits > 0)
-                })
+                .find(|q| combined(q))
                 .map(|queue| SurfaceDeviceSelection {
                     device_index: candidate.device.index,
                     queue_family_index: queue.family_index,
@@ -388,15 +411,8 @@ pub fn select_wayland_surface_device(
         .collect::<Vec<_>>();
 
     match (compositor_device, matching.as_slice()) {
-        (_, [selected]) => Ok(*selected),
-        (Some(node), []) => Err(format!(
-            "no eligible hardware Vulkan device matches Wayland compositor DRM device {}:{} with a combined graphics/present queue",
-            node.major, node.minor,
-        )),
-        (None, []) => Err(
-            "no eligible hardware Vulkan device has a combined graphics/present queue for the Wayland surface"
-                .to_string(),
-        ),
+        (_, [selected]) => Ok(Some(*selected)),
+        (_, []) => Ok(None),
         (Some(node), matches) => Err(format!(
             "Wayland compositor DRM device {}:{} matches {} eligible hardware Vulkan devices; exactly one is required",
             node.major,

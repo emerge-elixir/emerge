@@ -7,6 +7,9 @@ mod lifecycle;
 mod services;
 mod session;
 pub mod tree;
+#[cfg(all(target_os = "linux", feature = "wayland", feature = "vulkan"))]
+#[path = "backend/vulkan/window.rs"]
+mod vk_window;
 use rustler::{Atom, Binary, Env, NewBinary, ResourceArc, Term};
 use std::sync::{Mutex, MutexGuard};
 use tree::Tree;

@@ -6,6 +6,42 @@ use sctk::seat::{
     pointer::{CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec},
 };
 use wayland_client::protocol::wl_pointer::WlPointer;
+use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::{
+    Shape, WpCursorShapeDeviceV1,
+};
+pub(super) enum Pointer {
+    Theme(ThemedPointer),
+    Server(WlPointer, Option<WpCursorShapeDeviceV1>),
+}
+impl Pointer {
+    fn pointer(&self) -> &WlPointer {
+        match self {
+            Self::Theme(p) => p.pointer(),
+            Self::Server(p, _) => p,
+        }
+    }
+    fn enter(&self, conn: &Connection, serial: u32) {
+        match self {
+            Self::Theme(p) => {
+                let _ = p.set_cursor(conn, CursorIcon::Default);
+            }
+            Self::Server(_, Some(d)) => d.set_shape(serial, Shape::Default),
+            Self::Server(_, None) => {}
+        }
+    }
+}
+impl Drop for Pointer {
+    fn drop(&mut self) {
+        if let Self::Server(p, d) = self {
+            if let Some(d) = d.take() {
+                d.destroy();
+            }
+            if p.version() >= 3 {
+                p.release();
+            }
+        }
+    }
+}
 impl SeatHandler for WindowApp {
     fn seat_state(&mut self) -> &mut SeatState {
         &mut self.seats
@@ -20,6 +56,16 @@ impl SeatHandler for WindowApp {
     ) {
         match cap {
             Capability::Pointer if self.pointer.is_none() => {
+                if !self.allow_cursor_theme {
+                    if let Ok(p) = self.seats.get_pointer(qh, &seat) {
+                        let shape = self
+                            .cursor_shapes
+                            .as_ref()
+                            .map(|m| m.get_shape_device(&p, qh));
+                        self.pointer = Some((seat, Pointer::Server(p, shape)));
+                    }
+                    return;
+                }
                 let cursor = self.compositor.create_surface(qh);
                 if let Ok(pointer) = self
                     .seats
@@ -31,7 +77,7 @@ impl SeatHandler for WindowApp {
                         ThemeSpec::default(),
                     )
                 {
-                    self.pointer = Some((seat, pointer));
+                    self.pointer = Some((seat, Pointer::Theme(pointer)));
                 }
             }
             Capability::Keyboard if self.keyboard.is_none() => {
@@ -160,9 +206,9 @@ impl PointerHandler for WindowApp {
             }
             let (x, y) = self.installed.unwrap_or(self.geometry).point(e.position);
             match e.kind {
-                PointerEventKind::Enter { .. } => {
+                PointerEventKind::Enter { serial } => {
                     if let Some((_, cursor)) = &self.pointer {
-                        let _ = cursor.set_cursor(conn, CursorIcon::Default);
+                        cursor.enter(conn, serial);
                     }
                     self.input(CursorEntered { entered: true });
                     self.input(CursorPos { x, y });

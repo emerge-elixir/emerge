@@ -1,6 +1,39 @@
 //! Window-system adapter only. All tree, raster and target state belongs to the session.
+#[cfg(feature = "vulkan")]
+mod feedback;
+#[cfg(feature = "opengl")]
+mod gl;
+#[cfg(any(feature = "opengl", feature = "vulkan"))]
+mod gpu;
+#[cfg(any(feature = "opengl", feature = "vulkan"))]
+#[path = "../../backend/wayland/handles.rs"]
+mod handles;
 mod pointer;
 mod shm;
+#[cfg(feature = "vulkan")]
+mod vulkan;
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Requested {
+    Raster,
+    #[cfg(feature = "opengl")]
+    Gl,
+    #[cfg(feature = "vulkan")]
+    Vk,
+}
+impl Requested {
+    pub(super) fn parse(kind: &str, present: &str) -> Result<Self, String> {
+        match (kind, present) {
+            ("raster", "auto" | "cpu") => Ok(Self::Raster),
+            #[cfg(feature = "opengl")]
+            ("opengl", "auto") => Ok(Self::Gl),
+            #[cfg(feature = "vulkan")]
+            ("vulkan", "auto") => Ok(Self::Vk),
+            _ => Err(format!(
+                "unsupported Wayland renderer {kind}/{present}: check compiled features and explicit renderer options"
+            )),
+        }
+    }
+}
 use super::{Owner, Ready, Wake};
 use crate::{input::InputEvent, lock};
 use rustler::OwnedEnv;
@@ -46,7 +79,7 @@ struct WindowApp {
     outputs: OutputState,
     seats: SeatState,
     shm: Shm,
-    pointer: Option<(wl_seat::WlSeat, ThemedPointer)>,
+    pointer: Option<(wl_seat::WlSeat, pointer::Pointer)>,
     keyboard: Option<(wl_seat::WlSeat, wl_keyboard::WlKeyboard)>,
     mods: u8,
     configured: bool,
@@ -57,6 +90,14 @@ struct WindowApp {
     installed: Option<Geometry>,
     frame_pending: bool,
     buffers: Slots,
+    #[cfg(any(feature = "opengl", feature = "vulkan"))]
+    gpu: Option<gpu::Output>,
+    #[cfg(any(feature = "opengl", feature = "vulkan"))]
+    callback_armed: bool,
+    #[cfg(feature = "vulkan")]
+    feedback: feedback::Feedback,
+    allow_cursor_theme: bool,
+    cursor_shapes: Option<sctk::seat::pointer::cursor_shape::CursorShapeManager>,
 }
 fn err(e: impl std::fmt::Display) -> String {
     format!("Wayland: {e}")
@@ -71,6 +112,7 @@ pub(super) fn run(
     conn: Connection,
     title: String,
     size: (u32, u32),
+    api: Requested,
 ) -> Result<(), String> {
     let (globals, queue) = registry_queue_init(&conn).map_err(err)?;
     let qh = queue.handle();
@@ -102,6 +144,18 @@ pub(super) fn run(
     let mut app = WindowApp {
         owner: owner.clone(),
         env: OwnedEnv::new(),
+        #[cfg(feature = "vulkan")]
+        feedback: feedback::Feedback::new(&globals, &qh, &window, api)?,
+        allow_cursor_theme: api == Requested::Raster,
+        cursor_shapes: (api != Requested::Raster)
+            .then(|| {
+                sctk::seat::pointer::cursor_shape::CursorShapeManager::bind(&globals, &qh).ok()
+            })
+            .flatten(),
+        #[cfg(any(feature = "opengl", feature = "vulkan"))]
+        gpu: None,
+        #[cfg(any(feature = "opengl", feature = "vulkan"))]
+        callback_armed: false,
         window,
         registry: RegistryState::new(&globals),
         compositor,
@@ -121,6 +175,26 @@ pub(super) fn run(
         frame_pending: false,
         buffers: Slots::default(),
     };
+    #[cfg(any(feature = "opengl", feature = "vulkan"))]
+    if api != Requested::Raster {
+        while !app.configured || {
+            #[cfg(feature = "vulkan")]
+            {
+                app.feedback.pending()
+            }
+            #[cfg(not(feature = "vulkan"))]
+            {
+                false
+            }
+        } {
+            if owner.lifecycle.stop.load(Ordering::Acquire) {
+                return Err("Wayland startup cancelled".into());
+            }
+            events.dispatch(None, &mut app).map_err(err)?;
+        }
+        app.init_device(&conn, api)?;
+        app.allow_cursor_theme = app.gpu.is_none();
+    }
     ready
         .send(Ok(Wake::Window(ping)))
         .map_err(|_| "Wayland startup cancelled")?;
@@ -136,13 +210,20 @@ impl WindowApp {
         conn: &Connection,
         qh: &QueueHandle<Self>,
     ) -> Result<Option<Duration>, String> {
+        #[cfg(any(feature = "opengl", feature = "vulkan"))]
+        let work = self.gpu.as_mut().is_some_and(|gpu| {
+            gpu.readback();
+            gpu.pending()
+        });
+        #[cfg(not(any(feature = "opengl", feature = "vulkan")))]
+        let work = false;
         let changed_surface = self.installed != Some(self.geometry);
         if !self.configured || (self.frame_pending && !changed_surface) {
             return Ok(None);
         }
         let mut guard = lock(&self.owner.live)?;
         let live = guard.as_mut().ok_or("renderer stopped")?;
-        if !live.request && self.attempted.is_none_or(|g| g == self.geometry) {
+        if !work && !live.request && self.attempted.is_none_or(|g| g == self.geometry) {
             return Ok(None);
         }
         if let Some(deadline) = live.last.zip(live.interval).map(|(t, d)| t + d)
@@ -159,6 +240,12 @@ impl WindowApp {
                 return Ok(None);
             }
         };
+        #[cfg(any(feature = "opengl", feature = "vulkan"))]
+        if self.gpu.is_some() {
+            drop(guard);
+            self.attempted = Some(self.geometry);
+            return self.present_gpu(conn, qh, size, changed_surface);
+        }
         // No available slot: don't mutate the installed raster or sample input
         // geometry. A wl_buffer.release wakes this same event loop.
         let Some(i) = self.buffers.available(size) else {
@@ -172,7 +259,7 @@ impl WindowApp {
             "wayland",
             |_, pixels, reuse| {
                 if reuse && !changed_surface {
-                    return Ok(());
+                    return Ok(false);
                 }
                 let surface = self.window.wl_surface();
                 let buffer = self.buffers.write(i, &self.shm, size, pixels)?;
@@ -195,7 +282,7 @@ impl WindowApp {
                     self.frame_pending = true;
                 }
                 self.window.commit();
-                conn.flush().map_err(err)
+                conn.flush().map(|_| true).map_err(err)
             },
         )?;
         if presented {
@@ -210,6 +297,17 @@ impl WindowApp {
             self.env
                 .run(|env| live.input.dispatch(env, &live.raster, event));
             self.env.clear();
+        }
+    }
+    fn output_interval(&self, o: &wl_output::WlOutput) {
+        if let Some(mode) = self
+            .outputs
+            .info(o)
+            .and_then(|o| o.modes.into_iter().find(|m| m.current))
+            && let Ok(mut guard) = self.owner.live.lock()
+            && let Some(stats) = guard.as_mut().and_then(|s| s.stats.as_mut())
+        {
+            stats.output_mode(mode.refresh_rate);
         }
     }
     fn resized(&mut self) {
@@ -267,6 +365,10 @@ impl CompositorHandler for WindowApp {
     }
     fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, s: &wl_surface::WlSurface, _: u32) {
         if s == self.window.wl_surface() {
+            #[cfg(any(feature = "opengl", feature = "vulkan"))]
+            {
+                self.callback_armed = false;
+            }
             self.frame_pending = false;
         }
     }
@@ -282,9 +384,12 @@ impl CompositorHandler for WindowApp {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_surface::WlSurface,
-        _: &wl_output::WlOutput,
+        s: &wl_surface::WlSurface,
+        output: &wl_output::WlOutput,
     ) {
+        if s == self.window.wl_surface() {
+            self.output_interval(output);
+        }
     }
     fn surface_leave(
         &mut self,
@@ -300,7 +405,21 @@ impl OutputHandler for WindowApp {
         &mut self.outputs
     }
     fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
-    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+    fn update_output(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        output: wl_output::WlOutput,
+    ) {
+        if self
+            .window
+            .wl_surface()
+            .data::<sctk::compositor::SurfaceData>()
+            .is_some_and(|s| s.outputs().any(|o| o == output))
+        {
+            self.output_interval(&output);
+        }
+    }
     fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
 }
 impl ShmHandler for WindowApp {

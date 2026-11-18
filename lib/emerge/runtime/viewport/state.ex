@@ -19,6 +19,7 @@ defmodule Emerge.Runtime.Viewport.State do
             diff_state: nil,
             drawn_routes: nil,
             pending_routes: nil,
+            submitting_routes: nil,
             dirty?: false,
             flush_scheduled?: false,
             last_renderer_heartbeat_at_ms: nil,
@@ -46,6 +47,7 @@ defmodule Emerge.Runtime.Viewport.State do
           diff_state: Emerge.Engine.diff_state() | nil,
           drawn_routes: map() | nil,
           pending_routes: map() | nil,
+          submitting_routes: map() | nil,
           dirty?: boolean(),
           flush_scheduled?: boolean(),
           last_renderer_heartbeat_at_ms: integer() | nil,
@@ -55,4 +57,29 @@ defmodule Emerge.Runtime.Viewport.State do
           input_mask: non_neg_integer() | nil,
           renderer_check_interval_ms: non_neg_integer() | nil
         }
+
+  # Only one submission may be sealed. Edits after sealing inherit from its
+  # persistent map, not the addresses of the still-visible frame.
+  def routes(rt, {:edit, edits}) do
+    base = rt.pending_routes || rt.submitting_routes || rt.drawn_routes || %{}
+
+    next =
+      Enum.reduce(edits, base, fn
+        {id, nil}, routes -> Map.delete(routes, id)
+        {id, events}, routes -> Map.put(routes, id, events)
+      end)
+
+    %{rt | pending_routes: next}
+  end
+
+  def routes(rt, :seal), do: %{rt | submitting_routes: rt.pending_routes, pending_routes: nil}
+
+  def routes(rt, :publish),
+    do: %{rt | drawn_routes: rt.submitting_routes || rt.drawn_routes, submitting_routes: nil}
+
+  def routes(rt, :retry),
+    do: %{rt | pending_routes: rt.pending_routes || rt.submitting_routes, submitting_routes: nil}
+
+  def routes(rt, :install),
+    do: %{rt | drawn_routes: rt.pending_routes || rt.drawn_routes, pending_routes: nil}
 end

@@ -14,13 +14,7 @@ use super::{
     raw,
 };
 
-/// Presenter-owned image state at an acquisition or completion boundary. This contract uses only
-/// Vulkan state and queue-family values; it does not encode Wayland presentation or DRM ownership.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct TargetImageState {
-    pub layout: vk::ImageLayout,
-    pub queue_family_index: u32,
-}
+pub use super::ganesh::TargetImageState;
 
 /// Presenter-neutral description of one borrowed output target. The generic token stays opaque to
 /// the engine and can be a Wayland generation/image pair or a future DRM slot id. Acquire

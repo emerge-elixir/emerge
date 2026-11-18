@@ -1,6 +1,7 @@
 //! A replacement proof, scoped to the old target. Only named, displaced or
 //! summary-changing nodes enter this scratch. Closed interiors are not decoded.
 use super::*;
+use std::hash::{BuildHasher, RandomState};
 
 pub(super) struct Edit {
     pub id: u64,
@@ -13,12 +14,17 @@ pub(super) struct Edit {
     pub membership: bool,
     pub attrs: Option<(Attrs, Range<usize>)>,
     pub order: Option<Span<u64>>,
+    next_in_bucket: usize,
     visited: bool,
     closed: bool,
 }
 #[derive(Default)]
 pub(super) struct Batch {
-    index: HashMap<u64, usize>,
+    // Removing from an open-addressed HashMap leaves tombstones: reserving the
+    // same high-water mark could reallocate on a fitting detach. These chains
+    // live in the entries themselves. Zero is empty, other links are index+1.
+    hash: RandomState,
+    heads: Vec<usize>,
     pub entries: Vec<Edit>,
     pub orders: Pool<u64>,
     stack: Vec<(u64, Option<u64>, usize)>,
@@ -30,10 +36,15 @@ pub(super) struct Batch {
 }
 impl Batch {
     pub fn reserve(&mut self, n: usize) -> Result<()> {
-        if n > self.index.capacity() {
-            self.index
-                .try_reserve(n - self.index.len())
-                .map_err(pool::capacity_error)?;
+        if n > self.heads.len() {
+            let cap = n.next_power_of_two();
+            pool::reserve(&mut self.heads, cap)?;
+            self.heads.clear();
+            self.heads.resize(cap, 0);
+            for (i, s) in self.entries.iter_mut().enumerate() {
+                let bucket = self.hash.hash_one(s.id) as usize & (cap - 1);
+                s.next_in_bucket = std::mem::replace(&mut self.heads[bucket], i + 1);
+            }
         }
         pool::reserve(&mut self.entries, n)?;
         pool::reserve(&mut self.stack, n)?;
@@ -45,7 +56,8 @@ impl Batch {
     }
     fn reset(&mut self) {
         for s in self.entries.drain(..) {
-            self.index.remove(&s.id);
+            let bucket = self.hash.hash_one(s.id) as usize & (self.heads.len() - 1);
+            self.heads[bucket] = 0;
             if let Some(span) = s.order {
                 self.orders.release(span);
             }
@@ -56,20 +68,33 @@ impl Batch {
         self.victims.clear();
         self.undo.clear();
     }
+    fn position(&self, id: u64) -> Option<usize> {
+        let bucket = self.hash.hash_one(id) as usize & self.heads.len().wrapping_sub(1);
+        let mut link = *self.heads.get(bucket)?;
+        while link != 0 {
+            let i = link - 1;
+            let e = &self.entries[i];
+            if e.id == id {
+                return Some(i);
+            }
+            link = e.next_in_bucket;
+        }
+        None
+    }
     pub fn get(&self, id: u64) -> Option<&Edit> {
-        self.index.get(&id).map(|&i| &self.entries[i])
+        self.position(id).map(|i| &self.entries[i])
     }
     fn add(&mut self, id: u64, shape: Shape, b: Budget) -> Result<usize> {
-        if id == 0 || self.index.contains_key(&id) {
+        if id == 0 || self.position(id).is_some() {
             return Err("zero or duplicate element ID".into());
         }
         let i = self.entries.len();
-        if i == self.entries.capacity() {
+        if i == self.entries.capacity() || i >= self.heads.len() {
             self.reserve(b.capacity(i + 1))?;
         }
-        self.index.try_reserve(1).map_err(pool::capacity_error)?;
-        self.index.insert(id, i);
+        let bucket = self.hash.hash_one(id) as usize & (self.heads.len() - 1);
         self.entries.push(Edit {
+            next_in_bucket: std::mem::replace(&mut self.heads[bucket], i + 1),
             id,
             shape,
             parent: None,
@@ -87,7 +112,7 @@ impl Batch {
     }
     fn old(&mut self, e: &Elements, k: Key, b: Budget) -> Result<usize> {
         let m = &e.slots[k];
-        if let Some(&i) = self.index.get(&m.id) {
+        if let Some(i) = self.position(m.id) {
             return Ok(i);
         }
         let i = self.add(m.id, m.shape, b)?;
@@ -143,8 +168,8 @@ impl Batch {
     fn visit(&mut self, e: &Elements, b: Budget) -> Result<()> {
         while let Some((id, parent, depth)) = self.stack.pop() {
             let old = e.live(id);
-            let i = match self.index.get(&id) {
-                Some(&i) => i,
+            let i = match self.position(id) {
+                Some(i) => i,
                 None => self.old(e, old.ok_or("unknown kept occurrence")?, b)?,
             };
             let s = &mut self.entries[i];
@@ -197,7 +222,11 @@ impl Batch {
                 continue;
             };
             let children = self.orders.get(&order);
-            let stats = Subtree::over(children.iter().map(|id| self.entries[self.index[id]].stats));
+            let stats = Subtree::over(
+                children
+                    .iter()
+                    .map(|id| self.get(*id).expect("visited child").stats),
+            );
             self.entries[i].stats = stats;
             if let Some(k) = e.live(self.entries[i].id) {
                 if children

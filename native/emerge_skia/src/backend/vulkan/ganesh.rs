@@ -6,9 +6,21 @@ use skia_safe::{
     gpu::{self, SurfaceOrigin, backend_render_targets, direct_contexts, surfaces, vk as sk_vk},
 };
 
-use crate::renderer::text_surface_props;
+fn text_surface_props() -> skia_safe::SurfaceProps {
+    skia_safe::SurfaceProps::new(
+        skia_safe::SurfacePropsFlags::default(),
+        skia_safe::PixelGeometry::RGBH,
+    )
+}
 
-use super::{capabilities::effective_api, device::VulkanDevice, frame::TargetImageState, raw};
+use super::{capabilities::effective_api, device::VulkanDevice, raw};
+
+/// Layout and queue ownership of a borrowed target at an acquisition or completion boundary.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct TargetImageState {
+    pub layout: vk::ImageLayout,
+    pub queue_family_index: u32,
+}
 
 pub struct GaneshContext {
     direct_context: Option<gpu::DirectContext>,

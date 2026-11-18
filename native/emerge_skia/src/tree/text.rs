@@ -20,7 +20,7 @@ pub enum Family {
     Mono,
 }
 impl Family {
-    fn bytes(self) -> &'static [u8] {
+    pub(super) fn bytes(self) -> &'static [u8] {
         match self {
             Sans => include_bytes!("../fonts/inter/Inter-Regular.ttf"),
             Mono => include_bytes!("../fonts/jetbrains-mono/JetBrainsMonoNL-Regular.ttf"),

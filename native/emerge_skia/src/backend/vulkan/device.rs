@@ -14,8 +14,7 @@ use super::{
         DrmNodeId, EXT_IMAGE_FORMAT_LIST, EXT_PHYSICAL_DEVICE_DRM, EXT_SAMPLER_YCBCR_CONVERSION,
         SelectionCandidate, SelectionNode, SurfaceQueueCandidate, WaylandSelectionCandidate,
         api_at_least, classify_software_device, driver_properties_source, effective_api,
-        extension_map, properties2_available, select_matching_device,
-        select_wayland_surface_device,
+        extension_map, probe_surface_device, properties2_available, select_matching_device,
     },
     instance::VulkanInstance,
 };
@@ -125,8 +124,16 @@ impl VulkanDevice {
     pub fn new_for_surface(
         instance: Arc<VulkanInstance>,
         requirements: DeviceRequirements<'_>,
-        mut presentation_support: impl FnMut(vk::PhysicalDevice, u32) -> Result<bool, String>,
+        presentation_support: impl FnMut(vk::PhysicalDevice, u32) -> Result<bool, String>,
     ) -> Result<Arc<Self>, String> {
+        Self::probe_surface(instance, requirements, presentation_support)?
+            .ok_or_else(|| "no eligible hardware Vulkan device for this surface".into())
+    }
+    pub fn probe_surface(
+        instance: Arc<VulkanInstance>,
+        requirements: DeviceRequirements<'_>,
+        mut presentation_support: impl FnMut(vk::PhysicalDevice, u32) -> Result<bool, String>,
+    ) -> Result<Option<Arc<Self>>, String> {
         let devices = enumerate_devices(&instance, requirements.required_extensions)?;
         let mut selection_candidates = Vec::with_capacity(devices.len());
         for candidate in &devices {
@@ -149,14 +156,26 @@ impl VulkanDevice {
             });
         }
 
-        let selected = select_wayland_surface_device(
+        let Some(selected) = probe_surface_device(
             requirements.compositor_device,
             requirements.require_timestamps,
             &selection_candidates,
-        )?;
+        )?
+        else {
+            return Ok(None);
+        };
         let candidate = devices
             .get(selected.device_index)
             .ok_or_else(|| "selected Vulkan physical-device index is out of bounds".to_string())?;
+        if !matches!(
+            candidate.properties.device_type,
+            vk::PhysicalDeviceType::INTEGRATED_GPU | vk::PhysicalDeviceType::DISCRETE_GPU
+        ) {
+            return Err(format!(
+                "unable to verify hardware acceleration for Vulkan device {}",
+                candidate.report.physical_device_name
+            ));
+        }
         let queue_family_index = u32::try_from(selected.queue_family_index)
             .map_err(|_| "selected Vulkan queue-family index exceeds u32".to_string())?;
         Self::create_logical(
@@ -165,6 +184,7 @@ impl VulkanDevice {
             queue_family_index,
             requirements.required_extensions,
         )
+        .map(Some)
     }
 
     pub fn new_for_drm_node(
@@ -254,6 +274,11 @@ impl VulkanDevice {
             .enabled_extension_names(&extension_ptrs);
         if enable_sampler_ycbcr {
             create_info = create_info.push_next(&mut sampler_ycbcr);
+        }
+        let mut maintenance = vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT::default()
+            .swapchain_maintenance1(true);
+        if required_extensions.contains(&ash::ext::swapchain_maintenance1::NAME) {
+            create_info = create_info.push_next(&mut maintenance);
         }
         // SAFETY: the selected family exists with a queue, advertised/promoted extension and
         // feature requirements were checked, and all create-info slices live for the call. This
@@ -404,9 +429,6 @@ fn enumerate_devices(
 ) -> Result<Vec<EnumeratedDevice>, String> {
     let physical_devices = unsafe { instance.raw().enumerate_physical_devices() }
         .map_err(|result| format!("failed to enumerate Vulkan physical devices: {result:?}"))?;
-    if physical_devices.is_empty() {
-        return Err("Vulkan reported no physical devices".to_string());
-    }
 
     physical_devices
         .into_iter()
@@ -521,11 +543,29 @@ fn enumerate_devices(
             let sampler_ycbcr_eligible =
                 !requires_extension(required_extensions, EXT_SAMPLER_YCBCR_CONVERSION)
                     || sampler_ycbcr_conversion;
-            let api_eligible = api_at_least(
-                effective_api(instance.api_version(), properties.api_version),
-                1,
-                1,
-            ) && required_extensions_available
+            let maintenance_eligible = if required_extensions
+                .contains(&ash::ext::swapchain_maintenance1::NAME)
+                && required_extensions_available
+            {
+                let mut maintenance = vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT::default();
+                let mut features =
+                    vk::PhysicalDeviceFeatures2::default().push_next(&mut maintenance);
+                unsafe {
+                    instance
+                        .raw()
+                        .get_physical_device_features2(physical_device, &mut features)
+                };
+                maintenance.swapchain_maintenance1 == vk::TRUE
+            } else {
+                true
+            };
+            let api_eligible = maintenance_eligible
+                && api_at_least(
+                    effective_api(instance.api_version(), properties.api_version),
+                    1,
+                    1,
+                )
+                && required_extensions_available
                 && sampler_ycbcr_eligible;
             let queue_families = unsafe {
                 instance

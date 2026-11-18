@@ -11,6 +11,12 @@ mod text;
 mod wire;
 
 use layers::{Layers, Pass};
+#[cfg(all(
+    target_os = "linux",
+    feature = "wayland",
+    any(feature = "opengl", feature = "vulkan")
+))]
+pub(crate) use paint::GeometryPainter;
 pub(crate) use paint::{Attachment, Raster};
 use pool::{Budget, Pool, Span};
 use slotmap::{SecondaryMap, SlotMap, new_key_type};

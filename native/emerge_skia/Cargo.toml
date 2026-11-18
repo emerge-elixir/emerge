@@ -29,6 +29,7 @@ vulkan-probe = []
 # Shared Linux OpenGL dependency bundle. Vulkan-only presenter features do not
 # enable this bundle.
 opengl = [
+    "dep:lyon_tessellation",
     "video-interop-support",
     "dep:gbm",
     "dep:gl",
@@ -61,7 +62,7 @@ wayland = [
 ]
 # Presenter and rendering API features are independent. Raster/headless are baseline.
 drm = ["dep:drm", "dep:evdev", "dep:emerge_input", "embedded-freetype"]
-vulkan = ["video-interop-support", "dep:ash", "skia-safe/vulkan", "video-interop/vulkan"]
+vulkan = ["dep:lyon_tessellation", "video-interop-support", "dep:ash", "skia-safe/vulkan", "video-interop/vulkan"]
 # Cargo cannot express dependency activation conditional on two features. The
 # canonical resolver adds these dependency-only glue features for those pairs.
 drm-vulkan-deps = ["dep:gbm"]
@@ -110,6 +111,7 @@ skia-safe = { version = "0.99.0", git = "https://github.com/rust-skia/rust-skia"
 criterion = "0.7"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+lyon_tessellation = { version = "1.0", optional = true }
 glutin = { version = "0.32", optional = true }
 smithay-client-toolkit = { version = "0.20", default-features = false, features = ["calloop", "xkbcommon"], optional = true }
 wayland-client = { version = "0.31", optional = true }

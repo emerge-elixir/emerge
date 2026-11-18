@@ -45,6 +45,14 @@ pub struct VulkanInstance {
 
 impl VulkanInstance {
     pub fn new(required_extensions: &[*const std::ffi::c_char]) -> Result<Arc<Self>, String> {
+        Self::probe(required_extensions)?
+            .ok_or_else(|| "required Vulkan driver or instance extensions unavailable".into())
+    }
+    /// A functioning loader without a compatible ICD/WSI is different from an
+    /// enumeration failure or missing requested validation layer.
+    pub fn probe(
+        required_extensions: &[*const std::ffi::c_char],
+    ) -> Result<Option<Arc<Self>>, String> {
         // SAFETY: ash loads the process Vulkan loader and owns the resulting function table.
         let entry = unsafe { Entry::load() }
             .map_err(|error| format!("failed to load Vulkan loader: {error}"))?;
@@ -70,14 +78,15 @@ impl VulkanInstance {
                     .to_str()
                     .map_err(|_| "Vulkan instance extension name is not UTF-8".to_string())?
                     .to_string();
-                if !available.contains_key(&name) {
-                    return Err(format!(
-                        "required Vulkan instance extension {name} is unavailable"
-                    ));
-                }
                 Ok(name)
             })
             .collect::<Result<Vec<_>, _>>()?;
+        if enabled_extensions
+            .iter()
+            .any(|name| !available.contains_key(name))
+        {
+            return Ok(None);
+        }
         let sync_validation = validation_requested_from_values(
             std::env::var("EMERGE_VULKAN_SYNC_VALIDATION")
                 .ok()
@@ -191,12 +200,16 @@ impl VulkanInstance {
 
         // SAFETY: extension/layer pointers, callback state, and application strings remain valid
         // for the call. The resulting instance is owned by this object and destroyed in `Drop`.
-        let instance = unsafe { entry.create_instance(&create_info, None) }.map_err(|result| {
-            format!(
-                "failed to create Vulkan {} instance: {result:?}",
-                format_api_version(api_version)
-            )
-        })?;
+        let instance = match unsafe { entry.create_instance(&create_info, None) } {
+            Ok(i) => i,
+            Err(vk::Result::ERROR_INCOMPATIBLE_DRIVER) => return Ok(None),
+            Err(e) => {
+                return Err(format!(
+                    "failed to create Vulkan {} instance: {e:?}",
+                    format_api_version(api_version)
+                ));
+            }
+        };
         let debug_utils = match validation_counters {
             Some(counters) => match create_debug_utils_state(&entry, &instance, counters) {
                 Ok(state) => Some(state),
@@ -216,13 +229,13 @@ impl VulkanInstance {
                 debug.id
             );
         }
-        Ok(Arc::new(Self {
+        Ok(Some(Arc::new(Self {
             entry,
             instance,
             debug_utils,
             api_version,
             enabled_extensions,
-        }))
+        })))
     }
 
     pub fn entry(&self) -> &Entry {
