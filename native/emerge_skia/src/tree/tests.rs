@@ -5,6 +5,7 @@ mod identity;
 mod row;
 mod scale;
 mod topology;
+mod weighted;
 use super::*;
 use layers::Pass::*;
 use paint::Outputs;

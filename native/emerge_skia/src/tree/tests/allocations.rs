@@ -43,6 +43,63 @@ impl Counter {
         )
     }
 }
+fn weighted_splits(c: &Counter) {
+    for axis in [1, 2] {
+        let mut r = Raster::default();
+        r.tree
+            .upload(&weighted::pair(axis, weighted::weight(axis, 2.)))
+            .unwrap();
+        c.zero("first weighted split after reservation", || {
+            assert!(r.settle(180., 170., 1.).unwrap());
+        });
+        draw(&mut r);
+        let add = patch(
+            1,
+            1,
+            &[
+                edges(1, weighted::host(axis), &[2, 5, 3]),
+                node(5, 4, block(&[weighted::weight(axis, f64::MAX)]), &[]),
+            ],
+        );
+        for p in [
+            weighted::edit(axis, 3, 1.),
+            weighted::edit(axis, 3, 2.),
+            weighted::edit(axis, 2, 0.5),
+            weighted::edit(axis, 2, f64::MAX),
+            weighted::edit(axis, 3, f64::MAX),
+            add,
+            patch(5, 0, &[]),
+        ] {
+            c.zero(
+                "fitting weighted edit through prepared paint/hit inputs",
+                || {
+                    r.tree.patch(&p).unwrap();
+                    assert!(r.settle(180., 170., 1.).unwrap());
+                },
+            );
+            draw(&mut r);
+        }
+        let (x, y) = if axis == 1 { (55., 5.) } else { (5., 55.) };
+        let visible = r.pixels().to_vec();
+        r.tree.patch(&weighted::edit(axis, 3, 1.)).unwrap();
+        let pending = r.tree.encode();
+        let over = set(4, 5, text(&"W".repeat(512)));
+        (c.fail_next_reserve)();
+        assert_eq!(
+            r.tree.patch(&over).unwrap_err(),
+            "tree workspace capacity exceeded"
+        );
+        assert_eq!(r.tree.encode(), pending);
+        assert_eq!(r.pixels(), visible);
+        assert_eq!(r.target_at(x, y).unwrap().1, 3);
+        c.zero("first weighted split after refused growth", || {
+            assert!(r.settle(180., 170., 1.).unwrap());
+        });
+        draw(&mut r);
+        assert_eq!(r.target_at(x, y).unwrap().1, 2);
+    }
+}
+
 #[test]
 fn fitting_wire_through_draw_inputs_uses_no_heap() {
     if std::env::var_os("EMERGE_TREE_HEAP_CHILD").is_none() {
@@ -317,6 +374,7 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     c.zero("height-only resize through paint/hit inputs", || {
         assert!(stack.settle(180., 53., 1.).unwrap());
     });
+    weighted_splits(&c);
     // 100 slots + 80% = 180. The inserted subtree and edited parent's
     // first input coexist with the old glyph/command buffers and batch scratch.
     let ids: Vec<u64> = (2..=100).collect();

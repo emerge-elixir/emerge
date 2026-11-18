@@ -1,6 +1,6 @@
 # Retained renderer: elements and attributes still to port
 
-**Coverage through [Column height fill](column-height-fill.md), EMRG v10.** The Elixir producer can
+**Coverage through [weighted Row/Column fill](weighted-fill.md), EMRG v10.** The Elixir producer can
 encode 13 element kinds; the active native renderer implements six. This is a
 checklist of rendering and input behavior, not just of encodable bytes. An
 unchecked item may already have a DSL helper, patch codec or legacy renderer.
@@ -9,9 +9,9 @@ unchecked item may already have a DSL helper, patch codec or legacy renderer.
 
 | Implemented kind (wire tag) | Current boundary |
 | --- | --- |
-| `row` (1) | Single horizontal line; unweighted width fills share the remaining space. |
+| `row` (1) | Single horizontal line; fill widths share the remaining space in proportion to their weights. |
 | `wrapped_row` (2) | Wraps at the offered width. Each line advances by its tallest **outer** child plus the vertical gap. |
-| `column` (3) | Vertical stack. A fixed or allocated height lets fill children share the remainder; a content-height stack uses their individual intrinsic heights. Like both row kinds, clips ordinary descendants' paint and hits to its frame. |
+| `column` (3) | Vertical stack. A fixed or allocated height lets fill children share the remainder by weight; a content-height stack uses their individual intrinsic heights. Like both row kinds, clips ordinary descendants' paint and hits to its frame. |
 | `el` (4) | Single-child wrapper in the DSL. `Input.button/2` builds an `el`, not a new kind; it can use `on_click`, but `on_press` is not ported. |
 | `text` (5) | Single-line UTF-8 `content`; CR/LF is rejected. Not paragraph flow or an editable field. |
 | `none` (6) | Empty leaf, not an absent tree or a removal. |
@@ -40,7 +40,7 @@ where declared. `key/1` is supported occurrence identity, not a wire attr.
 
 | Attribute | Works now | Still to port |
 | --- | --- | --- |
-| `width`, `height` | `px`, `content` (`shrink`), unweighted `width(fill())`. Unweighted [`height(fill())`](../test/emerge_skia/column_height_fill_test.exs) on a root Column or an ordinary direct child of a Column. | Height fill in other positions; weighted `fill(n)` and nested `min`/`max` on either axis. |
+| `width`, `height` | `px`, `content` (`shrink`), unweighted `width(fill())`. [`height(fill())`](../test/emerge_skia/column_height_fill_test.exs) on a root Column or ordinary child of a Column. [Weighted `fill(n)`](../test/emerge_skia/weighted_fill_test.exs): width on a root Row or a Row's direct child; height on a root Column or a Column's direct child. | Height fill and weighted widths in other positions; nested `min`/`max` on either axis. |
 | `align_x`, `align_y`, `text_align` | Leading values: left, top, left respectively | Horizontal center/right, vertical center/bottom, centered/right-aligned text. |
 | `background`, `font_color` | Solid RGB/RGBA; raw wire names `black`, `white`, `red`, `blue`, `transparent`. Palette helpers returning RGB/RGBA work as solids. | Other raw names, gradients; for `background`, image fits and tiling. |
 | `font` | `default` and `sans-serif` use bundled Inter Regular; `monospace` uses bundled JetBrains Mono Regular. | Other families and registered/custom fonts. |

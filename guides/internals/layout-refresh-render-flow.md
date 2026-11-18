@@ -44,6 +44,11 @@ padding and gaps. A content-height column instead uses each fill child's own
 intrinsic height. The outer offer and offset share one reserved entry for the
 incoming edge; a nested column distributes its offer without scaling it again.
 
+A Row divides spare width, and a Column divides spare height, in proportion
+to the children's weights. `fill()` and `fill(1)` both take one share. A
+weight-only edit invalidates the distributing parent, not the child's
+intrinsic measurement. An unchanged offer stops propagation to that child.
+
 Wayland uses the preferred fractional scale with a logical viewport destination
 when both protocols are available, or integer buffer scaling otherwise. Layout
 uses the nominal factor; seat input uses the submitted buffer's actual width

@@ -35,10 +35,25 @@ enum Length {
     Content,
     Px(f64),
     Fill,
+    Weighted(f64),
 }
 impl Length {
+    fn weight(self) -> Option<f64> {
+        match self {
+            Self::Fill => Some(1.),
+            Self::Weighted(n) => Some(n),
+            _ => None,
+        }
+    }
+    fn without_weight(self) -> Self {
+        if matches!(self, Self::Weighted(_)) {
+            Self::Fill
+        } else {
+            self
+        }
+    }
     fn definite(self) -> bool {
-        matches!(self, Self::Px(_) | Self::Fill)
+        matches!(self, Self::Px(_) | Self::Fill | Self::Weighted(_))
     }
     fn intrinsic(self, demand: f32, scale: f32) -> f32 {
         if let Self::Px(px) = self {
@@ -54,6 +69,16 @@ struct BoxStyle {
     height: Length,
     padding: [f64; 4],
     spacing: [f64; 2],
+}
+impl BoxStyle {
+    // Weights belong to the distributing parent, not to this intrinsic box.
+    fn without_weights(self) -> Self {
+        Self {
+            width: self.width.without_weight(),
+            height: self.height.without_weight(),
+            ..self
+        }
+    }
 }
 #[derive(Clone, Debug, Default)]
 struct Attrs {

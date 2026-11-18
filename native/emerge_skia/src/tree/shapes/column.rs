@@ -23,7 +23,7 @@ impl LayoutBehaviour for Column {
     fn auto_fills(node: Mounted<'_, Children>) -> bool {
         node.data()
             .iter()
-            .any(|&c| node.elements.attrs[c].sizing.width == Length::Fill)
+            .any(|&c| node.elements.attrs[c].sizing.width.weight().is_some())
     }
     fn reads_flow(width: Length, input: FlowInput) -> bool {
         width == Length::Auto && input == FlowInput::ChildFill
@@ -45,23 +45,18 @@ impl LayoutBehaviour for Column {
         let style = node.attrs().sizing;
         let [top, _, bottom, left] = style.padding.map(|n| scale::pixels(n, cx.scale));
         let gap = scale::pixels(style.spacing[1], cx.scale);
-        let fills = |c: Key| node.elements.attrs[c].sizing.height == Length::Fill;
-        let share = if style.height.definite() {
-            let (fixed, count) = children.iter().fold((0., 0usize), |(h, n), &c| {
-                if fills(c) {
-                    (h, n + 1)
-                } else {
-                    (h + cx.basis(c), n)
-                }
-            });
-            let gaps = gap * children.len().saturating_sub(1) as f32;
-            (count != 0).then(|| (cx.height - (top + bottom) - fixed - gaps).max(0.) / count as f32)
-        } else {
-            None
-        };
+        let length = |c: Key| node.elements.attrs[c].sizing.height;
+        let split = FillShares::split(
+            style.height,
+            cx.height - (top + bottom),
+            gap,
+            children,
+            length,
+            |c| cx.basis(c),
+        );
         let mut y = 0.;
         for &c in children {
-            let allotted = share.filter(|_| fills(c));
+            let allotted = split.and_then(|s| s.offer(length(c)));
             cx.place(c, [left, top + y], allotted);
             y += allotted.unwrap_or_else(|| cx.basis(c));
             y += gap;

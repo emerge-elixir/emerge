@@ -246,11 +246,8 @@ fn site_proof_uses_final_edges_and_accepted_attrs_without_disturbing_pending_or_
     ] {
         assert!(r.tree.patch(&bad).unwrap_err().contains("root Column"));
     }
-    for variant in [3, 4, 5] {
-        let value = match variant {
-            3 => [vec![2, 3], 1f64.to_be_bytes().to_vec()].concat(),
-            _ => vec![2, variant, 0, 1],
-        };
+    for variant in [4, 5] {
+        let value = vec![2, variant, 0, 1];
         assert_eq!(
             r.tree.patch(&set(18, 4, block(&[value]))).unwrap_err(),
             format!("unsupported length {variant}")

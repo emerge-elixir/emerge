@@ -190,12 +190,19 @@ impl Batch {
                 .as_ref()
                 .map(|(a, _)| a)
                 .or_else(|| old.map(|k| &e.attrs[k]));
-            if attrs.is_some_and(|a| a.sizing.height == Length::Fill) {
-                let host = parent.map_or(s.shape, |p| {
-                    self.get(p)
-                        .map_or_else(|| e.slots[e.ids[&p]].shape, |edit| edit.shape)
-                });
-                if !host.allots_height() {
+            if let Some(a) = attrs {
+                let host = || {
+                    parent.map_or(s.shape, |p| {
+                        self.get(p)
+                            .map_or_else(|| e.slots[e.ids[&p]].shape, |edit| edit.shape)
+                    })
+                };
+                if matches!(a.sizing.width, Length::Weighted(_)) && !host().allots_width() {
+                    return Err(
+                        "weighted fill width requires a root Row or a child of a Row".into(),
+                    );
+                }
+                if a.sizing.height.weight().is_some() && !host().allots_height() {
                     return Err(
                         "height(fill()) requires a root Column or a child of a Column".into(),
                     );

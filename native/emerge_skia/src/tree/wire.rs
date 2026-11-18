@@ -56,6 +56,14 @@ impl<'a> Reader<'a> {
             0 => Ok(Length::Fill),
             1 => Ok(Length::Content),
             2 => Ok(Length::Px(self.number()?)),
+            3 => {
+                let weight = f64::from_be_bytes(self.array()?);
+                if weight.is_finite() && weight > 0. {
+                    Ok(Length::Weighted(weight))
+                } else {
+                    Err("fill weight must be finite and positive".into())
+                }
+            }
             v => Err(format!("unsupported length {v}")),
         }
     }

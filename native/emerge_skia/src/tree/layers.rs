@@ -313,7 +313,7 @@ impl Layers {
             if vp.width != self.viewport.width {
                 self.enqueue(Flow, root, e);
             }
-            if vp.height != self.viewport.height && e.attrs[root].sizing.height == Length::Fill {
+            if vp.height != self.viewport.height && e.attrs[root].sizing.height.weight().is_some() {
                 self.enqueue(Place, root, e);
             }
             self.viewport = vp;
@@ -369,7 +369,7 @@ impl Layers {
     }
     fn measure(&mut self, e: &Elements, k: Key) {
         let c = self.context[k];
-        let b = e.attrs[k].sizing;
+        let b = e.attrs[k].sizing.without_weights();
         let shape = e.slots[k].shape;
         let memo = (!shape.uses_glyphs()).then(|| {
             self.intrinsic.lookup(
@@ -504,7 +504,7 @@ impl Layers {
             } else if old.is_none_or(|s| s.h != h) {
                 if !e.attrs[p].sizing.height.definite() {
                     self.enqueue(Reflow, p, e);
-                } else if b.height != Length::Fill {
+                } else if b.height.weight().is_none() {
                     self.enqueue(Place, p, e);
                 }
             }
@@ -521,7 +521,7 @@ impl Layers {
                 edge.height.unwrap_or(s.h),
             )
         } else {
-            let h = if e.attrs[k].sizing.height == Length::Fill {
+            let h = if e.attrs[k].sizing.height.weight().is_some() {
                 self.viewport.height
             } else {
                 s.h
