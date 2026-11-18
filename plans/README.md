@@ -1,79 +1,62 @@
-# Plans
+# Retained tree: slice plan and results
 
-Keep only concrete unfinished implementation, acceptance gates and research that
-supports them. Completed designs, validation logs and checklists belong in Git
-history, tests, `CHANGELOG.md` and maintained guides—not an archive directory.
+Implemented: [Subtree layout scale and fractional Wayland display scale](scale.md) · [parity, compositor checks and limits](scale-results.md).
 
-## Open work
+Delivered follow-ups: [Single-line Row and the per-element shape interface](row.md), then [keyed child insertion/removal and batched invalidation](keyed-insert-remove.md). The first-slice checkpoint below is unchanged.
 
-- [WSL/Wayland compatibility](active-wsl-compatibility.md): WSLg cursor/input
-  acceptance for #5/#6/#20 and Ubuntu/Mesa build qualification.
-- [CI download retries](active-ci-network-retries.md): clean-runner Linux/macOS
-  acceptance of native-build retries and input-source cache reuse.
-- [Native build rollout](active-build-capabilities.md): remote cross/macOS artifact
-  qualification, next-release archives/checksums and opted-in board acceptance.
-- [Viewport configuration](active-declarative-viewport-settings.md): remaining
-  backend controls, macOS config revisions, input transport coverage and demo migration.
-- [DRM power](active-native-drm-power.md): panel/backlight, video, failure and
-  power acceptance across presenters; user-owned Fairphone deployment.
-- [DRM touch wake](active-drm-touch-wake.md): config-selectable single tap, double
-  tap or long press to wake a blanked display without activating the UI beneath it.
-- [Bundled DRM input](active-drm-libinput.md): full FP3 firmware, physical
-  overlapping-key input and minimal-system/daemonless hotplug acceptance.
-- [Multiline word wrapping](active-multiline-word-wrap.md): FP3 Notes acceptance.
-- [Frame production](active-frame-production-pipeline.md): macOS worker/native
-  opportunities and target-specific cadence/resource measurements.
-- [Linux platform](active-linux-gpu-qualification.md): device-loss/presenter-panic
-  cleanup, Nexus 7 CPU-DRM cadence/faults and Vulkan-only dependency closure.
-- [Wayland Vulkan](active-vulkan-acquire-synchronization.md): interactive
-  resize/occlusion/recreation, other drivers and submit-cost/idle measurements.
-- [macOS runtime](active-macos-runtime-qualification.md): independent asset/font
-  sessions, gradient coverage and packaged Intel/Apple Silicon raster NIFs.
-- [Embedded artifacts](active-embedded-artifact-qualification.md): musl/RISC-V
-  consumer packages and physical targets.
-- [Headless grayscale](active-headless-grayscale-output.md): Gray4/Gray8 output,
-  asset/layer memory follow-up and binary-output backlog controls.
-- [Low-resource animations](active-low-resource-animation-smoothness.md):
-  constrained-device profiling, registry geometry, safe coalescing and cadence.
-- [RPi5 Camera](active-rpi5-camera-60fps.md): production NV12 correctness/ownership
-  and sustained active-scene 60 FPS/GPU headroom.
-- [Gradients](active-universal-gradient-colors.md): constrained-device performance
-  and macOS coverage.
+Delivered: [Stable occurrence IDs and sparse `patch(target, subtree)`](stable-node-ids-algorithm.md) · [requirements](stable-node-ids.md) · [qualification and limits](stable-node-ids-results.md).
 
-## Research and roadmaps
+Delivered: [Interactive Wayland CPU-raster demo and compositor checks](wayland-demo.md) · [run the standalone Retained cards project](wayland-demo.md#run-the-standalone-demo).
 
-- [Screenshot cache benchmark](screenshot-cache-benchmark-investigation.md):
-  expected direct-shadow coverage and separate cached/direct pixel differences.
-- [Layout caching](layout-caching-roadmap.md): broader dependency boundaries,
-  cheaper keys/traversal, compatible measurements and viewport/repeater reuse.
-- [Parallel paint recording](skia-ddl-paint-layer-note.md): profiling-led
-  off-thread recording/DDL experiments.
+Implemented: [Wayland OpenGL and Vulkan cards, hardware drawing and warned CPU fallback](wayland-gpu-demo.md). The opt-in Vulkan synchronization-validation gate remains separate.
 
-## Closed qualification and maintained references
+## Delivered first slice: binary CPU headless rendering, input and retained computation
 
-Maintainer-confirmed Trellis operation/pictures, general Linux GPU/PRIME, Vulkan
-unplug/replug, FP3 renderer and macOS Metal/raster playback acceptance are closed.
-Do not recreate those gates from missing historical logs. New input/power/pacing
-checks above are specific follow-ups, not repeat general qualification.
+**Status: implemented and checked together on `refactor/retained-layers`.** An ordinary viewport can upload padded text or a wrapping row, receive the renderer's pixels, patch the tree, send raw input and receive its application callbacks. The first calculation after reservation and the tested fitting updates use no heap calls in the native compute path. This is **not** a product-wide renderer port. The full Mix suite is still red; its failures are part of the evidence below.
 
-- [Events/input](../guides/internals/events.md)
-- [Configuration](../lib/emerge/config.ex)
-- [DRM lifecycle](../guides/internals/drm-outputs-and-lifecycle.md)
-- [Runtime architecture](../guides/internals/architecture.md)
-- [Frame production/synchronization](../guides/internals/frame-pacing.md)
-- [Native builds/release gates](../guides/reference/native-renderer-builds.md)
-- [Video ownership](../guides/internals/video-interop-architecture.md)
-- [Assets](../guides/internals/assets-images.md)
-- [Headless frame copies](../bench/headless_frame_copy.md)
-- [Borders benchmark](../bench/README.md#rich-borders-cache-workload)
-- [Release history](../CHANGELOG.md) and [0.5 migration](../guides/migrations/0.5.md)
+### Plan and delivered boundaries
 
-## Maintenance
+1. **Replace the producer at EMRG v9.** Keep Elixir's IDs and patch format. Use one generational mount key per live element, one authoritative child order and one cache indexed by `(layer, key)`. Do not route simple trees into a fast path in the former engine.
+2. **Reserve, invalidate and recompute.** Size stores in their own units before mutation. Spend existing headroom, including contiguous payload space, metadata, queues, traversal scratch and candidate/installed outputs. Keep the old value when invalidating; queue a key only once per layer. Compare on recompute and invalidate only readers of a changed value. An equal result stops that dependency, not independently queued work.
+3. **Connect the ordinary renderer and migrate its clients.** One binary headless session owns one tree, its CPU raster and raw-input dispatcher. The successful draw (including accepted reuse of actual pixels) installs the inputs for subsequent hit resolution. Remove the test renderer, synthetic clock, externally addressable frame and completed-click API. Verify the library through frames and callbacks; verify internal work and allocation separately.
 
-- Use `active-*.md` only for unfinished work or acceptance.
-- Remove completed sections; retain only measurements informing the next decision.
-- Consolidate overlapping gates and link maintained contracts instead of copying them.
-- Update this index and repair links when removing a plan.
-- Run `cargo test` and `mix test` after changes; prefer `./ci-tests.sh` for local CI.
-- Device access/deployment and performance runs require their explicit opt-in/lock;
-  ordinary checks must not operate host devices.
+#### Wire, capacity and compute
+
+Supported declarations are `El` (zero or one child), `Text` (single line), `Empty`/`none()`, `Column` and `WrappedRow`: leading alignment, padding/gaps, pixel/content lengths, unweighted width fill, solid colors, regular bundled Inter/JetBrains Mono, and click. Edits are full replacement, `SetAttrs` and same-parent reorder; insert/remove/reparent, Nearby, transforms and height fill are outside this slice.
+
+- `native/emerge_skia/src/tree/wire/{upload,patch}.rs`: validate a full upload with reusable ID/offset, parent/depth and stack scratch, then decode borrowed records directly into final mounts. Forward IDs work without an owned `Vec<Record>`. A full replacement invalidates all mount generations, including reused wire IDs. Patch validation checks the **entire** batch (including shadowed edits); keyed scratch records only the last declaration and order per affected mount. Invalid input or rejected capacity leaves the live declarations, pending work and last drawn output intact.
+- `tree/pool.rs`: typed, initialized storage with generational block handles. Coalesce adjacent holes; compact with reserved scratch when enough free slots exist but no single span is large enough. Readers resolve handles, not offsets. `tree/capacity.rs` updates aggregate live/candidate glyph bounds along logarithmic paths instead of sizing the document on a local patch.
+- `config.renderer.tree_headroom_percent` is a startup setting, `0..1000`, default **80**. For example, 100 required slots reserve 180; an update to 140 spends 40 of them without requesting another 80%. Peak overlap is a separate requirement: replacing a live 180-glyph run with 180 different glyphs needs 360 pooled glyph slots while comparing it, but only 180 glyphs per execution buffer. Allocation of a deficient store precedes apply, not recompute. Container granularity can give more physical space than the requested lower bound.
+- `tree/{layers,queue,text,paint}.rs`: context ↓, measure ↑, flow ↓, reflow ↑, placement ↓, paint context ↓, composition ↑. Each layer has a reserved depth-ranked queue with keyed membership; there is no recursive layout to find unsettled inputs. Compare each child's placement even when its parent's bounds stay equal. Glyph payloads have separate paint and measure readers: monospace `AA → BB` changes glyphs, not parent size. Independently compare paint and hit contributions in child order, including unpainted listeners; an equal candidate is recycled.
+- Font preparation is **not free**. On admission the slice provisions real Skia strike metrics for supported families/device sizes. The compute pass maps the actual string and computes its advances, bounds and glyph positions into pooled spans. A previously unavailable strike is new input preparation, not a fitting update. The slice bounds uploads/patches at 64 MiB, uploads at one million nodes and depth 512, and distinct declared font sizes at 64. None of those bounds stands in for measuring the allocation interval.
+
+#### Renderer and input
+
+- `src/headless.rs` and `src/headless/{dispatch,frame,capture}.rs` connect regular `EmergeSkia.start/1`, `upload_tree/2`, `patch_tree/3`, capture, config and shutdown. A bounded wake carries no tree or output. Edits, draw, input and capture are serialized on the live renderer. Binary RGBA/BGRA/RGB frames carry real `VideoInterop.Frame` storage; capture reads the installed raster and never requests a draw. A frame cap can leave a valid edit pending.
+- `EmergeSkia.send_input(Emerge.renderer(viewport), raw_event)` accepts surface-coordinate pointer actions, keys/modifiers, text commits and focus. It cannot accept an ID, a listener or a completed click. The observation mask affects `handle_input/2`, not click eligibility. A left press and release must resolve to the same mount, using the latest drawn hit data. Removing a listener, remounting the element, leaving the surface, losing focus or rebinding the target cancels the press. Element-local coordinates and the normal viewport payload wrapping reach `handle_info/2`.
+- Preparing or comparing is not drawing: no hit before the first draw; failed or pending work leaves the installed hit set in force; successfully drawing an empty tree clears it. Paint-only changes do not rebuild hits; listener-only changes can install targets without rasterizing. No public hit query, frame selector or acknowledgement is needed. Keeping a delivered binary does not give input access to its historical tree.
+- Migrated `mouse_coordinates`, `pointer_drag`, `scrollbar_visibility`, `swipe_metadata`, `live_length_change`, `live_animation_hover`, and the viewport tests that fabricated resolved element events. They now use actual frames, raw ingress and application callbacks. Animation regressions use visible paint and deadlines, not a forced animation time or queue drain. The harness module and its eleven NIF stubs are gone. Adapter lifecycle tests remain adapter tests. Detached `tree_new/upload/patch/layout/*roundtrip` still serve distinct codec, structural and benchmark clients; they are not used to locate clicks in renderer tests.
+
+### Qualification
+
+| Check | Result |
+| --- | --- |
+| Release Cargo test/build and strict Clippy | **22 Rust tests passed**; release build and `clippy -- -Dwarnings` passed. |
+| Ordinary headless acceptance | **6/6** in `test/emerge_skia/retained_tree_slice_test.exs`; **14/14 selected** with supported config and frame-rate controls. Padded text, actual channel order/alpha, capture, local clicks, misses, raw observations, cap ordering, listener removal and same-ID remounts. |
+| Wire parity against the pre-cut retained overlay | **7/7** sorted geometry dumps, **7/7** whole 180×170 RGBA buffers (both delivered and exported), **15/15** target/miss/local-position probes. `AA → BB → BBBB → BBBB` and six-record wrap `170 → 100 → 170`. The final no-op is checked by capture, not a demand for a redundant frame. |
+| Wrapped-row dependency check | Row height **30 → 110 → 30**; sibling y **40 → 120 → 40**; no chip remeasurement. In the extra public DSL fixture with `none()` inside each chip the narrow sibling is red and clickable at y=125, not y=45. That intentionally fixes the old producer's cold narrow y=40 rather than claiming parity for it. |
+| Migration check, including `:full_sweep` | On a private copy of the **pre-cut** producer with only a raw-ingress bridge to its ordinary event actor, the six migrated files plus `viewport_test.exs` pass **56/56**. On this slice: **33/56**; the 23 extended-feature failures remain tests of the requested behavior. The reference bridge is not linked into the candidate. |
+| NIF loader | **14/14** isolated loader tests. This is host loading under test archive names, not a target hardware test. |
+| Whole private `mix test --seed 0` | **618/727 passed** (15/15 doctests, 603/712 tests), **109 failed**, **21 excluded**. No new exclusions. |
+
+**Allocation evidence.** Linux/glibc test executable only; `tests/heap_calls.c` interposes allocation, reallocation and free on the compute thread, including linked Skia calls. In that order, the Rust positive control was **[1, 1, 1]** and native Skia's was **[1, 0, 1]**. First padded-text upload/reservation (including initial font resources): **[72,430, 9,782, 72,174]**. The following first padded-text and wrap computations were **[0, 0, 0]**. Fitting text, width, order, color, listener and full-replacement updates measured **[0, 0, 0]** starting **before wire decoding** through layout and prepared paint/hit execution inputs. Listener-only pixel reuse and identical-paint remount, including successful installation and hit resolution, also measured zero. First computes on 400-wide/deep fixtures visited `7N` entries without heap calls; that is not a bound on child reads, wire work or rendering.
+
+For `100 → 140 → 180 → different 180` glyphs each fitting edit used zero calls. The one-over edit to 181 needed **[0, 5, 0]** during admission; its first recompute and a subsequent fitting edit again used zero. An injected reserve failure before patch/full replacement left the prior tree drawable. Fragmented-span compaction retained live readers. This does **not** count raster execution, PNG, BEAM messages, error construction, initial reservation or new font resources as allocation-free. No speedup or end-to-end allocation claim.
+
+**What is still red.** Among the 124 named failures before this port and 109 now, 99 names are common. Five hover cases were renamed and remain red; five formerly simulated viewport tests now expose unsupported key, mouse/swipe, text and scroll behavior. The other 20 former failures (including the replaced row acceptance case) are no longer failing: the ordinary CPU startup, binary delivery, ownership, config, frame-cap and first-slice paths work. The final 109 names match the intermediate run; detailed errors are retained, not reclassified as passing rejection tests. Failures include unsupported rows, lengths, paint/gradient attributes, animation, scrolling, IME, assets/fonts, video/PRIME and unported native services (`:nif_not_loaded`). A test whose Row fixture fails to upload is not evidence of a channel conversion failure or success.
+
+### Provenance and next boundary
+
+- Worktree base `5b389e7f9a79a9f9a9e8fb156d11fc188a5320bf` **plus the pre-cut uncommitted retained overlay**. The earlier immutable-frame prototype and the subsequent 598-pass/124-failure headless-startup checkpoint are historical, not proof of this build. Previous bytes, failures and rejected experiments remain outside the worktree. In particular, the old retained skip/culling and image-argument regressions are not qualified by this simpler slice.
+- Evidence: `/workspace/emerge-investigation-artifacts/headless-first-slice-gy84Vb` (`logs/final-{identity,heap,mix}`, `logs/{test,clippy,comparison,reference-final,migrated-final}`, manifests, name diffs and raw controls). `producer.sources` SHA-256 **`d9fd1638cd64881d3c15d93eb7bb033e4e189cf2d9262441095fb690cad5c417`**. Verified using BEAM's `/proc/self/maps` and comparison to the private Cargo output: NIF **`b02682a19978925c894cbf8e6554da7767f58a2402e834d0578b51bc8891ffda`**. The reference bytes in `keyed-first-slice-M0DhaO/reference` and the API-audit checkpoint in `renderer-api-audit-MlbxLX` were not overwritten.
+- Next ports should take one unsupported behavior at a time, starting from a failing user-path regression, with the same capacity/atomicity and frame/input checks. Keep comparison separate from successful output. No legacy engine, compositor change, hardware result or performance qualification is implied by this delivery.

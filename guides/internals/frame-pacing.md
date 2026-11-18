@@ -94,9 +94,8 @@ buffer reuse.
   that a downstream physical display has presented the frame.
 
 macOS still uses its existing AppKit-local tree preparation and animation clock.
-Moving it to a worker and native frame opportunities remains a separate, open
-stage of `plans/active-frame-production-pipeline.md`. No macOS latency improvement
-or hardware qualification is claimed by the Linux implementation.
+Moving it to a worker with native frame opportunities remains separate work.
+The Linux implementation does not qualify macOS hardware or latency.
 
 ## Validation
 
@@ -147,5 +146,3 @@ The historical Hyprland/RADV RX 7900 XTX run passed functional checks but report
 hardware gate passes on that GPU in both Vulkan-only and combined Wayland builds:
 3 tests per build, with zero validation errors or warnings through teardown.
 This does not qualify other drivers or the remaining interactive lifecycle cases.
-See `plans/active-vulkan-acquire-synchronization.md`, separate from the
-already-closed general Linux GPU/PRIME/reconnect qualification.

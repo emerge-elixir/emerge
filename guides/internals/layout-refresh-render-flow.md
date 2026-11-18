@@ -5,9 +5,46 @@ pixels. It focuses on the Rust-side tree traversals, invalidation decisions, and
 cache boundaries used by layout, refresh, render-scene construction, and the
 renderer paint-layer cache.
 
-## Entry Points
+## Current retained path: binary headless and Wayland
 
-The public Elixir calls eventually send `TreeMsg` values to the Rust tree actor:
+The ordinary session admits one [sparse EMRG v10 replacement](emrg-format.md)
+against the preceding accepted declaration. It applies all accepted edits before
+invalidating once and recomputing in dependency order. Keyed reparenting and
+promotion preserve occurrence identity. Context, offers, placement, clip and
+hits are checked against the new site. The raster separates preparation from
+installation. Headless installs after binary frame delivery. Wayland installs
+after attaching and committing a `wl_shm` buffer and flushing the connection,
+or reusing actual pixels already submitted to that surface at that geometry.
+
+Explicit hardware Wayland sessions use the same ordered fill/glyph commands.
+Glyph outlines become triangles; color and coverage are produced on a Ganesh
+multisampled device target. Before swap/present the display worker seals the
+drawing, hit list and callback route changes. Only a successful handoff (or
+reuse of a still-valid submission) publishes that candidate. A later edit
+cannot change its addresses. Capture reads the retained submitted target on
+demand, not the swapchain. Configure, a blocked acquire, and a frame callback
+are not installations. See the [CPU demo](../../plans/wayland-demo.md) and
+[GPU demo and qualification boundaries](../../plans/wayland-gpu-demo.md).
+
+`Emerge.UI.scale/1` changes layout before measurement. Admission proves each
+changed site's effective scale and provisions the font sizes used there. At
+refresh a scale change propagates down the context pass; intrinsic sizes and
+fit propagate back up. Fill offers remain in device pixels. A successful
+submission installs the effective scale with the listener's origin and clip,
+so a click is local to the box that was drawn, even across a keyed move.
+Columns, rows and wrapped rows clip ordinary descendants' paint and hits to
+intersecting host frames. Clipping does not shrink the child or change the
+wrapped-line height: spacing is measured between the laid-out child boxes.
+
+Wayland uses the preferred fractional scale with a logical viewport destination
+when both protocols are available, or integer buffer scaling otherwise. Layout
+uses the nominal factor; seat input uses the submitted buffer's actual width
+and height ratios after rounding. A local scale edit does not resize the window.
+
+## Reference actor path
+
+The following sections describe the pre-cut actor/presenter reference, not a
+second producer running alongside the retained renderer. In that path:
 
 - `EmergeSkia.upload_tree/2` sends a complete EMRG tree.
 - `EmergeSkia.patch_tree/3` sends incremental EMRG patch operations.
@@ -287,9 +324,11 @@ Refresh produces `LayoutOutput` from an already-laid-out tree:
 
 ```text
 refresh or refresh_reusing_clean_registry
-  -> render_tree_scene_with_scroll_layers
-  -> build_registry_rebuild_cached if registry is dirty
-  -> clear_refresh_dirty or clear_render_refresh_dirty
+  -> build_scene: update affected retained paint/composition records
+  -> registry_snapshot: update affected event records and ordering
+  -> compare compiled registry identity with last admitted output
+  -> derive IME from compiled input ownership
+  -> record publication metadata and clear the consumed output journal
   -> LayoutOutput
 ```
 
@@ -301,63 +340,60 @@ refresh or refresh_reusing_clean_registry
 - IME state and cursor area
 - `animations_active`
 
-When `cached_rebuild` exists and the tree has no registry refresh damage,
-`refresh_reusing_clean_registry` skips `build_registry_rebuild_cached`. It still
-builds a fresh render scene, because paint and animation output may have changed.
+`refresh_reusing_clean_registry` compares actual compiled identity with the
+last admitted `cached_rebuild`, rather than selecting a rebuild mode from dirty
+severity. It borrows unchanged compiled metadata without cloning or scanning its
+input maps. IME ownership is selected when the registry is materialized.
 
-When a registry rebuild does happen, the resulting rebuild is stored in
-`TreeUpdateEngine.cached_rebuild` by `layout_effect`.
+`layout_effect` records successfully admitted registry output. Explicit consumer
+requests still publish a complete current payload with current mount/fence
+metadata. A compiled-but-unadmitted candidate does not suppress retry publication.
+Transaction validation, animation admission and final samples remain authoritative.
 
-## Event Registry Traversal
+## Event Registry Maintenance
 
-The event registry describes hit-test and event-dispatch metadata for the event
-actor. It is built from the laid-out tree after render-scene construction.
+`events/registry_builder/retained.rs` maintains one event record per owner: inputs,
+local contributions, child contexts, and bounded persistent normal/overlay order.
+Touched paths update owners and actual context dependents. Unchanged inputs are
+compared without cloning attrs or resolving unrelated slider geometry. Hover
+ancestry compares compiled actions and geometry rather than encoded-attr hashes.
+Context-only owners retain a geometry projection and routing records, without
+unused runtime/content payloads or listener candidates. Interactive inputs remain
+conservative; front Nearby roots still compile implicit blockers. Contribution
+ranges preserve logical slots but omit references to neutral records; tree-owned
+records and the existing affected-path journal still route first contributions,
+including simultaneous context changes. Empty order/link storage is allocation-free. Resolved host state is retained only for Nearby edges, and
+ordinary child context only where children exist; acquiring either edge kind
+invalidates that context selection.
 
-`build_registry_rebuild_cached` traverses registry-relevant subtrees. Each node
-can hold a `RegistrySubtreeCache`:
+A changed contribution version materializes a complete flat registry, including
+scroll, focus, slider and text-input metadata. This changed-output work is O(R)
+in registry size; dispatch still uses the flat registry directly. Ordinary and
+Nearby ordering, including deferred overlay draining, is preserved. Equal
+contribution versions do not imply equal record ownership: neutral record
+replacement must still release removed descendants.
 
-| Field | Meaning |
-|-------|---------|
-| `RegistrySubtreeKey.kind` | Element kind at the subtree root. |
-| `attrs_hash` | Effective attrs that affect registry output. |
-| `runtime_hash` | Runtime state that affects registry output. |
-| `frame_hash` | Frame and hit geometry input. |
-| `hover_stack_hash` | Hover ancestry input. |
-| `scene_context_hash` | Scroll/transform/clip context input. |
-| `scroll_contexts_hash` | Active scroll context stack. |
-| `topology` | Topology dependency key. |
-
-Registry traversal uses three pruning layers:
-
-1. If a subtree is known to not affect the registry, it is skipped.
-2. If a clean cached subtree key matches, the cached registry chunk is merged.
-3. If a clean eligible subtree has no cache, a local chunk is built and stored.
-
-Nearby mounts can defer traversal because they render and hit-test in a
-different scene context from their host.
-
-Scroll refresh is intentionally conservative for registry chunks. Scroll changes
-shift hit-test geometry, so scroll damage bypasses subtree chunk reuse rather
-than churning scroll-dependent cache keys. The full scroll registry traversal
-still uses the retained `registry_subtree_affects` prepass for clean subtrees,
-so neutral branches are skipped without recursively rediscovering whether they
-contain event-visible state.
+The old registry subtree chunks, keys, budget and cached runtime-input scan were
+deleted. An uncached traversal remains only as a test/benchmark semantic oracle.
+Registry eligibility is maintained by per-owner contributions and ancestor counts;
+structural changes can rebuild it. Geometry changes are recorded at their owners,
+not rediscovered by a layout-wide before/after geometry-map comparison.
 
 ## Render-Scene Construction
 
-Render-scene construction is a tree traversal over laid-out elements:
+Scene production updates retained owner output from laid-out elements:
 
 ```text
-render_tree_scene_with_scroll_layers
+build_scene
   -> build_element_subtree(root)
-  -> wrap the result in the unconditional Root layer
+  -> reuse, path-copy affected ports, or recompile an owner's changed inputs
+  -> complete shared scene snapshot, including the retained Root boundary
 ```
 
-`build_element_subtree` reads effective layout, scene state, scroll state, and
-runtime visual state. It culls invisible subtrees, builds ordinary paint in
-order, and establishes boundaries only for semantic roles. Dirty flags may
-control traversal and Nearby fragment reuse, but they never create or remove a
-paint layer.
+`build_element_subtree` reads effective layout, inherited fonts, scene/clip context,
+scroll state, and runtime visuals. It preserves culling, paint order and semantic
+raster boundaries. Shared composition groups are transparent, not new raster
+layers. Dirty flags never create or remove a semantic paint layer.
 
 The result is a `RenderScene`; the renderer never traverses the `ElementTree`.
 
@@ -388,7 +424,8 @@ A layer contains an ordered tree of:
 
 - own paint runs;
 - semantic child layers;
-- clip, relaxed-clip, transform, alpha, and shadow-pass scopes.
+- clip, relaxed-clip, transform, alpha, and shadow-pass scopes;
+- immutable shared composition groups, with fanout-eight ordering storage.
 
 Own runs and child layers may interleave. A shared scope surrounds both exactly
 once, preserving cases such as parent paint, a child layer, and later parent
@@ -403,13 +440,69 @@ layers and composition scopes containing child layers preserve their structural
 boundaries. This avoids multiplying GPU payloads merely because ordinary own
 content uses nested clip, transform, alpha, or shadow scopes.
 
-## Nearby Render-Fragment Cache
+## Retained Owner Output
 
-Nearby roots retain a semantic render fragment so a clean mounted subtree can
-skip reconstruction. Its key includes paint generation, topology, bounds, and
-Nearby/clip context. This cache stores scene structure and focus outputs; it is
-separate from renderer image payloads. Arbitrary inferred subtree layer caches
-are not stored on elements.
+Ordinary and Nearby owners use `tree/render/retained.rs::NodeOutput`; the old
+Nearby fragment cache, keys and context hashes have been removed. Immutable
+shared records allow complete snapshots to survive coalescing and replacement
+without deltas or renderer acknowledgements. Paint never supplies IME side effects.
+
+Owner-local command chunks and child ordering are retained independently. A
+non-inherited paint edit reuses the child sequence and its port index. Missing-frame
+and culled children keep a consuming slot in their parent; leaves/culled owners
+need no child-order record of their own. Sparse replacements are grouped by path
+before copying records and folding summaries, so a batch shares ancestor work.
+Leading/trailing own spans remain outside the layer-containing middle: storage
+balancing must not create extra raster runs. Structural or raster-boundary changes
+still repartition explicitly. Unchanged descendant paint preserves scene identity.
+Recursive construction returns shared owner-output handles, not singleton command
+Vecs. Read-only child/paint-child/Nearby topology is borrowed. Local paint parts
+are optional Shared handles; their bookkeeping lives in the owner record and is
+borrowed on reuse. Port paths use ranges into one owner-local buffer, with linked
+multiple uses per key; they retain arbitrary scope depth and local/escape uses.
+Leaves cannot have escaping descendants and roots have already collected escapes,
+so neither needs an escape carrier. Other owners retain that port even when its paint is empty; visibility
+does not remove consuming slots, while topology changes can repartition them.
+
+After fresh viewport culling, an already-culled ordinary non-root owner can reuse
+its physically empty local/escape handles when identity, topology and non-spatial
+consumed inputs still match. Missing frames are not evidence of culling. Pending
+full or descendant output work blocks this shortcut: inline-child decorations can
+change culling, and acknowledging a hidden mutation must not leave an older
+context's proof reusable on an A→B→A transition. Reuse neither retags old context
+proofs nor acknowledges output; first visible-to-culled retirement stays ordinary.
+
+Resolved properties are retained with the owner. Descendant edits and decorative
+paint changes with unchanged geometry do not rebuild clip contexts. Consumed paint
+attributes and caret/scrollbar runtime inputs are projected rather than copying
+unrelated handlers, interaction styles and source metadata. Command-input equality
+is separate from placement, rotation, scale and opacity; those properties reuse
+local commands when
+visible geometry/dependencies permit. Paint contexts retain coordinate/culling
+facts but do not build the event compiler's interaction-clip chains. They retain
+the nearest self clip, complete normal clip shapes, and only scroll boundaries
+for escaping shadows; Nearby clip inheritance remains separate. Leaf owners do
+not construct unused child contexts. Paragraph
+inline decorations affect culling even when the paragraph's own inputs match;
+their journal still triggers property resolution and scope-dependent paint.
+
+Run metrics/bounds/hash/shadow facts are derived together from local commands when
+a run is prepared. An all-own sequence moves its command buffer into the run;
+semantic own/child/own partitions remain unchanged. Content metadata folds those
+facts and immediate Shared summaries without allocating own-node
+views, recounting child layers or re-reading descendant primitives. Semantic
+child-layer contents do not change parent own-payload facts. Folded transformed
+bounds may be conservative; raw-command pixel controls cover clipping, reflections,
+alpha and shadow escape. Generation fields supply payload keys; they are not
+proof of executable-input equality. Slot assignment does not repeat metric
+derivation. Clipping, paragraph shadow scoping, semantic partitioning and retained
+port replacement preserve each prepared program together with its supplied image
+arguments. A shared call must not reopen callee defaults when moved into a new
+composition. Old snapshots and unchanged command buffers remain shared.
+
+Necessary coordinate conversion, changed composition, resource acquisition and
+retirement remain paid work. Passing functional tests does not establish a net
+pipeline benefit or a cold-path win; measure both cold and incremental updates.
 
 ## Renderer Paint-Layer Cache
 
@@ -422,7 +515,7 @@ but still compose cacheable children.
 The payload key includes:
 
 - typed semantic identity `(node_id, role)`;
-- own-run slot and exact run-content hash;
+- own-run slot and content generation;
 - payload pixel size and scale/subpixel phase;
 - font/image resource generation.
 
@@ -476,6 +569,22 @@ The cache model is backend-neutral:
 Correctness must not depend on Wayland-specific behavior. Wayland, DRM, macOS,
 and raster paths should see the same scene semantics.
 
+### Visible Execution Comparison
+
+`can_skip_unchanged_visible_frame` compares actual installed order, commands,
+text geometry and image arguments. It saves the current ready inputs **before
+DRAW**, including when comparison returns false: A → B → B can return false,
+false, true without drawing B. Readiness is still checked after a difference.
+Unready input discards the saved comparison. Backend failure, missing drawable,
+resize and context/resource invalidation call
+`invalidate_visible_execution_inputs`; this is not a last-successful-frame API.
+
+Current scenes and in-flight acquisitions own resources. Saved image selections
+own only nonpixel selectors and weak headers. Lookup distinguishes no active scope
+from a scoped miss and a scoped value; a scoped miss cannot select a later live
+source. Captured vector variants win over matching global variants. Later global
+variants retain their own epoch/revision/pixel validation and in-flight pins.
+
 ## Dirty Flags and Cache Invalidations
 
 `NodeRefreshState` tracks render and registry damage:
@@ -485,36 +594,59 @@ render_dirty
 render_descendant_dirty
 registry_dirty
 registry_descendant_dirty
-registry_cache
-render_fragment_cache
+rendered
+events
 registry_subtree_affects
+registry_own_affects
+registry_contributions
 paint_generation
 ```
 
 Marking render dirty:
 
 - increments `paint_generation` once for the dirty cycle
-- clears the node's semantic Nearby `render_fragment_cache`
+- records the origin/ancestor edges in the touched-output journal
 - sets `render_dirty` on the origin
 - bubbles `render_descendant_dirty` to ancestors
 
 Marking registry dirty:
 
-- clears the node's `registry_cache`
+- records the same output path for independent event maintenance
 - sets `registry_dirty` on the origin
 - bubbles `registry_descendant_dirty` to ancestors
 
-`clear_refresh_dirty` clears render and registry damage after a full refresh.
-`clear_render_refresh_dirty` clears only render damage when the registry was
-reused.
+Owner records remain available for value comparison and structural sharing;
+dirty marking does not select a separate cache engine. `clear_refresh_dirty`
+updates source bindings before consuming the journal after both output compilers.
+Paint-only diagnostic construction clears render flags but leaves the journal
+for event compilation, even when no coarse registry damage flag was set.
+
+### Output and Scratch Lifecycles
+
+1. Request: mutations enqueue owners/edges in `ElementTree::output_changes`.
+2. Prepare: exclusive attempt scratch selects work; failed/abandoned preparation
+   may return its capacity without clearing pending output.
+3. Produce: paint and event compilers maintain independent retained candidates.
+   Render port/context leases and event geometry scratch have their own borrowing
+   lifetimes; they are not a generic pool or additional dirty authorities.
+4. Acknowledge tree work: `clear_refresh_dirty` follows both output compilers.
+   `OutputJournal::mark_work` records routing bits, not output completion; `reset`
+   clears only that instance's membership. Tree clear also resets its journal.
+5. Publish/admit: registry publication compares with the last admitted version.
+   Failed/deferred delivery and coalescing do not turn compiled output into an
+   acknowledgement; metadata-only publication still participates in this protocol.
+6. Retire: immutable old scenes/registries survive independently. Dropping any
+   scratch lease releases references and returns capacity, never acknowledges
+   output or changes publication state.
 
 ## Common Update Scenarios
 
 ### Registry-Only Request
 
-If the event actor asks for the registry and `cached_rebuild` is clean,
-`UseCachedRebuild` sends `TreeUpdateEffect::RegistryUpdate`. There is no layout
-and no render scene.
+When the event actor requests a registry and layout/paint remain valid,
+`UseCachedRebuild` sends `TreeUpdateEffect::RegistryUpdate` using the current
+retained candidate. This plan requires neither layout nor scene construction;
+its historical action name does not bypass changed input metadata.
 
 ### Paint-Only Hover or Focus
 
@@ -526,13 +658,13 @@ Expected traversals:
 
 - frame attr preparation for affected state
 - render-scene construction
-- registry traversal only if registry-affecting state changed
+- retained event checks; affected-owner compilation and changed-version materialization
 - render-node traversal in the renderer
 
 Expected cache behavior:
 
-- unchanged paint layers hit
-- changed paint layers miss or bypass
+- eligible unchanged paint payloads may hit
+- changed paint payloads miss or bypass
 - child paint layers survive parent redraws
 
 ### Layout Animation in a Scroll Container
@@ -570,7 +702,7 @@ Expected behavior:
 - paint-only attr patch refreshes without layout
 - geometry attr patch recomputes resolve or measure as needed
 - structural patch invalidates topology-sensitive caches
-- event-affecting patch invalidates registry cache for that subtree
+- event-affecting patches update owning event records and dependent ordering/context
 
 ## Traversal Inventory
 
@@ -579,25 +711,27 @@ Expected behavior:
 | Message flattening | `push_tree_message_flat` | Message tree | Every batch | None |
 | Patch application | `apply_patches` | Patch list plus affected nodes | Patch messages | Tree topology and dirty flags |
 | Frame attr preparation | `prepare_frame_attrs_for_update` | Flat tree or active nodes | Dirty frame or animation sample | Animation samples |
-| Registry-affects prepass | `refresh_registry_subtree_affects_cache` | Tree | Layout recompute | `registry_subtree_affects` |
+| Registry eligibility | `refresh_registry_subtree_affects_cache` | Affected owners/ancestors; tree on structure changes | Layout recompute | Contribution counts |
 | Measure | `measure_element` | Bottom-up | Recompute requiring measure | Intrinsic and subtree measure caches |
 | Resolve | `resolve_element` | Top-down | Recompute requiring resolve | Resolve cache |
-| Render scene | `build_element_subtree` | Top-down with child recursion | Every refresh | Semantic Nearby fragment cache |
-| Event registry | `build_registry_rebuild_cached` | Top-down with deferred nearby | Registry damage | Registry subtree cache and whole cached rebuild |
+| Render scene | `build_element_subtree` | Affected owner paths and dependencies | Output production | Immutable owner records and ordering ports |
+| Event registry | `registry_snapshot` | Affected owners/contexts and deferred Nearby order | Output production or explicit request | Contributions, persistent order and compiled flat version |
 | Renderer scene draw | `render_nodes_with_cache_tracking` | Render-node tree | Every rendered scene | Renderer paint-layer payload cache |
 | Visible hash/resource generation | `hash_visible_render_nodes` and resource-generation helpers | Render-node tree | Cache admission/keying | Font/image generation |
-| Dirty cleanup | `clear_refresh_dirty` or `clear_render_refresh_dirty` | Tree | After refresh | Dirty flags |
+| Dirty cleanup | `clear_refresh_dirty` | Touched owners | After both output compilers | Shared output journal |
 
-## Cache Inventory
+## Retained State and Cache Inventory
 
-| Cache | Stored on | Key inputs | Invalidated by | Reuses |
+| State/cache | Stored on | Key inputs | Invalidated by | Reuses |
 |-------|-----------|------------|----------------|--------|
 | Intrinsic measure | Element layout state | Kind, text/media/font/input attrs | Measure/structure damage or key change | Leaf intrinsic size |
 | Subtree measure | Element layout state | Attr subset, inherited font, constraints, topology | Measure/structure damage or key change | Measured subtree frames |
 | Resolve | Element layout state | Resolve attrs, available space, constraints, topology | Resolve/measure/structure damage or key change | Final frames and scroll/nearby geometry |
-| Registry subtree | Element refresh state | Registry attrs/runtime/frame/hover/scene/scroll/topology | Registry damage or key change | Event registry chunks |
-| Whole registry rebuild | `TreeUpdateEngine` | Last clean rebuild | Any registry rebuild replacement | Registry-only response and clean refresh |
-| Nearby render fragment | Element refresh state | Paint generation, topology, bounds, Nearby/clip context | Render damage or key change | Mounted Nearby scene fragment and focus outputs |
+| Event records/order | Element refresh state | Actual event inputs and contexts; topology | Changed inputs/dependencies | Immutable contributions and persistent order |
+| Compiled flat registry | Element tree | Contribution version | Changed version | Complete flat output and compiled IME owner |
+| Last admitted registry | `TreeUpdateEngine` | Last successful output | Successful replacement | Publication identity and explicit replies |
+| Paint/composition records | Element refresh state | Owner inputs, topology, fonts, scene/clip context | Changed inputs/dependencies | Ordinary and Nearby immutable scene records |
+| Declared-source index | Element tree | Touched declarations and structure epoch | Source-binding or structure changes | Immutable source lists |
 | Renderer paint payload | Renderer cache manager | Semantic id, run slot/content hash, own generation, pixel size, scale, resource generation | Store budget, stale frames, resource/content change | GPU/CPU own-run image payload |
 
 ## Correctness Invariants
@@ -609,8 +743,9 @@ Expected behavior:
 - Own runs and child layers retain exact order under shared scopes.
 - A child layer content change does not invalidate unrelated parent own runs.
 - No cacheable own run contains Video.
-- Registry cache reuse is legal only when no registry damage exists and the
-  subtree key matches the current scene and scroll context.
+- Event reuse depends on compiled values and context, not dirty severity alone.
+- Reusing a compiled candidate must not skip publication after a failed transaction.
+- Event dispatch reads only the flat registry, never retained scene/tree records.
 - Renderer cache hits are an optimization only. Bypass or rejection must fall
   back to direct drawing without changing output.
 - Cached layer bounds must include the visual content that belongs to the layer,
@@ -627,15 +762,15 @@ Primary files:
 - `native/emerge_skia/src/tree/invalidation.rs`: invalidation ordering and
   refresh decision.
 - `native/emerge_skia/src/tree/element.rs`: tree state, dirty flags, layout
-  caches, registry caches, and the semantic Nearby fragment cache.
+  caches, output journal and retained owner records.
 - `native/emerge_skia/src/tree/patch.rs`: patch application and patch
   invalidation.
 - `native/emerge_skia/src/tree/layout.rs`: frame attr preparation, measure,
   resolve, refresh, and benchmark profiling entry points.
-- `native/emerge_skia/src/events/registry_builder.rs`: event registry traversal
-  and registry subtree cache.
-- `native/emerge_skia/src/tree/render.rs`: tree-to-render-scene traversal and
-  paint-layer boundary construction.
+- `native/emerge_skia/src/events/registry_builder.rs` and `registry_builder/retained.rs`:
+  event compilation, retained contributions/order and flat output; uncached test oracle.
+- `native/emerge_skia/src/tree/render.rs` and `render/retained.rs`: owner scene
+  production, path-copy updates and semantic paint-layer boundary construction.
 - `native/emerge_skia/src/render_scene.rs`: render scene nodes, ordered scoped
   paint-layer content, own runs, semantic child layers, and metrics.
 - `native/emerge_skia/src/renderer.rs`: render-node traversal, paint-layer
