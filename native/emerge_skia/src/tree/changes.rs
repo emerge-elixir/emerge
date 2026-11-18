@@ -187,6 +187,15 @@ impl Layers {
         if shape.uses_glyphs() && &old_raw[old.text.clone()] != e.text(k).as_bytes() {
             self.text_changed(k, depth)
         }
+        // Equal intrinsic heights can participate differently in a definite
+        // column's split. Its other children's offers depend on membership.
+        if (a.height == Length::Fill) != (b.height == Length::Fill)
+            && let Some(p) = e.slots[k].parent
+            && e.slots[p].shape.allots_height()
+            && e.attrs[p].sizing.height.definite()
+        {
+            self.invalidate(Pass::Place, p, e.depth(p));
+        }
         if (a.width == Length::Fill) != (b.width == Length::Fill)
             && let Some(p) = e.slots[k].parent
             && e.slots[p]

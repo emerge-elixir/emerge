@@ -7,6 +7,7 @@ impl ShapeMeta for Column {
     type Paint = ClippedBoxPaint;
 }
 impl LayoutBehaviour for Column {
+    const ALLOTS_HEIGHT: bool = true;
     fn measure(children: &[Key], cx: &mut Measuring<'_>) -> Size {
         children.iter().map(|&c| cx.child(c)).fold(
             Size {
@@ -28,14 +29,42 @@ impl LayoutBehaviour for Column {
         width == Length::Auto && input == FlowInput::ChildFill
     }
     fn reflow(node: Mounted<'_, Children>, cx: &mut ReflowCx<'_>) -> f32 {
-        let mut y = 0.;
-        for (i, &c) in node.data().iter().enumerate() {
-            if i != 0 {
-                y += cx.gap[1]
-            }
-            cx.offset(c, 0., y);
-            y += cx.child(c).h;
+        if node.attrs().sizing.height.definite() {
+            return cx.measured_height;
         }
-        cx.box_height(y)
+        let demand = node
+            .data()
+            .iter()
+            .map(|&c| cx.child(c).h)
+            .reduce(|y, h| y + cx.gap[1] + h)
+            .unwrap_or(0.);
+        cx.box_height(demand)
+    }
+    fn place_children(node: Mounted<'_, Children>, cx: &mut PlaceCx<'_>) {
+        let children = node.data();
+        let style = node.attrs().sizing;
+        let [top, _, bottom, left] = style.padding.map(|n| scale::pixels(n, cx.scale));
+        let gap = scale::pixels(style.spacing[1], cx.scale);
+        let fills = |c: Key| node.elements.attrs[c].sizing.height == Length::Fill;
+        let share = if style.height.definite() {
+            let (fixed, count) = children.iter().fold((0., 0usize), |(h, n), &c| {
+                if fills(c) {
+                    (h, n + 1)
+                } else {
+                    (h + cx.basis(c), n)
+                }
+            });
+            let gaps = gap * children.len().saturating_sub(1) as f32;
+            (count != 0).then(|| (cx.height - (top + bottom) - fixed - gaps).max(0.) / count as f32)
+        } else {
+            None
+        };
+        let mut y = 0.;
+        for &c in children {
+            let allotted = share.filter(|_| fills(c));
+            cx.place(c, [left, top + y], allotted);
+            y += allotted.unwrap_or_else(|| cx.basis(c));
+            y += gap;
+        }
     }
 }

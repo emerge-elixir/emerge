@@ -41,6 +41,14 @@ struct Width {
     new_edge: bool,
 }
 
+/// Per incoming edge, keyed by its child. A definite column supplies the
+/// outer height for a fill child; None uses the child's bottom-up basis.
+#[derive(Clone, Copy, PartialEq)]
+struct Placement {
+    offset: [f32; 2],
+    height: Option<f32>,
+}
+
 #[derive(Default)]
 pub(super) struct Layers {
     jobs: [WorkSet; 7],
@@ -57,7 +65,7 @@ pub(super) struct Layers {
     width: SecondaryMap<Key, Width>,
     offers: SecondaryMap<Key, f32>,
     fit: SecondaryMap<Key, Size>,
-    offsets: SecondaryMap<Key, [f32; 2]>,
+    placement: SecondaryMap<Key, Placement>,
     pub frames: SecondaryMap<Key, Rect>,
     paint: SecondaryMap<Key, PaintContext>,
     pub(super) parts: SecondaryMap<Key, Composition>,
@@ -132,7 +140,6 @@ pub(super) struct ReflowCx<'a> {
     pub gap: [f32; 2],
     padding: [f32; 4],
     height: Length,
-    scale: f32,
     pub measured_height: f32,
 }
 impl ReflowCx<'_> {
@@ -140,17 +147,45 @@ impl ReflowCx<'_> {
         self.layers.fit[c]
     }
     pub fn offset(&mut self, c: Key, x: f32, y: f32) {
-        if changed(
-            &mut self.layers.offsets,
-            c,
-            [self.padding[3] + x, self.padding[0] + y],
-        ) {
+        let edge = Placement {
+            offset: [self.padding[3] + x, self.padding[0] + y],
+            height: None,
+        };
+        if changed(&mut self.layers.placement, c, edge) {
             self.layers.enqueue(Place, c, self.e)
         }
     }
     pub fn box_height(&self, demand: f32) -> f32 {
-        self.height
-            .intrinsic(demand + self.padding[0] + self.padding[2], self.scale)
+        if self.height.definite() {
+            // Fixed outer extent, or the pre-wrap basis for a fill child.
+            self.measured_height
+        } else {
+            demand + self.padding[0] + self.padding[2]
+        }
+    }
+}
+pub(super) struct PlaceCx<'a> {
+    layers: &'a mut Layers,
+    e: &'a Elements,
+    pub height: f32,
+    pub scale: f32,
+    translated: bool,
+}
+impl PlaceCx<'_> {
+    pub fn basis(&self, c: Key) -> f32 {
+        self.layers.fit[c].h
+    }
+    pub fn place(&mut self, c: Key, offset: [f32; 2], height: Option<f32>) {
+        if changed(&mut self.layers.placement, c, Placement { offset, height }) || self.translated {
+            self.layers.enqueue(Place, c, self.e);
+        }
+    }
+    pub fn translate_children(&mut self, children: &[Key]) {
+        if self.translated {
+            for &c in children {
+                self.layers.enqueue(Place, c, self.e);
+            }
+        }
     }
 }
 fn changed<T: PartialEq>(map: &mut SecondaryMap<Key, T>, k: Key, value: T) -> bool {
@@ -168,7 +203,7 @@ impl Layers {
         }
         macro_rules! room {($($map:ident),+) => {$(self.$map.try_set_capacity(keys).map_err(pool::capacity_error)?;)+}}
         room!(
-            context, measure, runs, width, offers, fit, offsets, frames, paint, parts
+            context, measure, runs, width, offers, fit, placement, frames, paint, parts
         );
         #[cfg(test)]
         pool::reserve(&mut self.trace, 7 * capacity)?;
@@ -245,7 +280,7 @@ impl Layers {
         self.width.remove(k);
         self.offers.remove(k);
         self.fit.remove(k);
-        self.offsets.remove(k);
+        self.placement.remove(k);
         self.frames.remove(k);
         self.paint.remove(k);
         self.parts.remove(k);
@@ -275,8 +310,13 @@ impl Layers {
             self.enqueue(Context, root, e);
         }
         if vp != self.viewport {
+            if vp.width != self.viewport.width {
+                self.enqueue(Flow, root, e);
+            }
+            if vp.height != self.viewport.height && e.attrs[root].sizing.height == Length::Fill {
+                self.enqueue(Place, root, e);
+            }
             self.viewport = vp;
-            self.enqueue(Flow, root, e);
             self.enqueue(PaintContext, root, e);
         }
         for pass in PASSES {
@@ -443,25 +483,51 @@ impl Layers {
                 inner: width.inner,
                 gap: b.spacing.map(|v| pixels(v, scale)),
                 padding: b.padding.map(|v| pixels(v, scale)),
-                scale,
                 height: b.height,
                 measured_height: self.measure[k].h,
                 layers: self,
                 e,
             },
         );
-        if changed(&mut self.fit, k, Size { w: width.outer, h }) {
-            self.parent(Reflow, k, e);
+        // A column writes child edges in Place, even when its own fit is
+        // unchanged (reorder, new edge, padding/gap or policy edit).
+        let fit = Size { w: width.outer, h };
+        let old = self.fit.insert(k, fit);
+        if n.shape.allots_height() || old != Some(fit) {
             self.enqueue(Place, k, e);
+        }
+        if old != Some(fit)
+            && let Some(p) = n.parent
+        {
+            if !e.slots[p].shape.allots_height() {
+                self.enqueue(Reflow, p, e);
+            } else if old.is_none_or(|s| s.h != h) {
+                if !e.attrs[p].sizing.height.definite() {
+                    self.enqueue(Reflow, p, e);
+                } else if b.height != Length::Fill {
+                    self.enqueue(Place, p, e);
+                }
+            }
         }
     }
     fn place(&mut self, e: &Elements, k: Key) {
-        let [x, y] = e.slots[k].parent.map_or([0.; 2], |p| {
-            let base = self.frames[p];
-            let [x, y] = self.offsets[k];
-            [base.x + x, base.y + y]
-        });
         let s = self.fit[k];
+        let (x, y, height) = if let Some(p) = e.slots[k].parent {
+            let base = self.frames[p];
+            let edge = self.placement[k];
+            (
+                base.x + edge.offset[0],
+                base.y + edge.offset[1],
+                edge.height.unwrap_or(s.h),
+            )
+        } else {
+            let h = if e.attrs[k].sizing.height == Length::Fill {
+                self.viewport.height
+            } else {
+                s.h
+            };
+            (0., 0., h)
+        };
         let origin_changed = self.frames.get(k).is_none_or(|f| [f.x, f.y] != [x, y]);
         if changed(
             &mut self.frames,
@@ -470,16 +536,23 @@ impl Layers {
                 x,
                 y,
                 width: s.w,
-                height: s.h,
+                height,
             },
         ) {
             self.enqueue(PaintContext, k, e);
         }
-        if origin_changed {
-            for &child in e.children(k) {
-                self.enqueue(Place, child, e);
-            }
-        }
+        let scale = self.context[k].scale;
+        e.slots[k].shape.place_children(
+            e,
+            k,
+            &mut PlaceCx {
+                layers: self,
+                e,
+                height,
+                scale,
+                translated: origin_changed,
+            },
+        );
     }
     fn paint_context(&mut self, e: &Elements, k: Key) {
         let parent = e.slots[k].parent;

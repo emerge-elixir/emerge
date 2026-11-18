@@ -12,7 +12,7 @@ impl LayoutBehaviour for Row {
     }
 
     fn reads_flow(width: Length, input: FlowInput) -> bool {
-        let definite = matches!(width, Length::Px(_) | Length::Fill);
+        let definite = width.definite();
         match input {
             FlowInput::ChildWidth(child) => !definite || child != Length::Fill,
             FlowInput::ChildFill | FlowInput::HorizontalGap | FlowInput::Order => definite,
@@ -21,7 +21,7 @@ impl LayoutBehaviour for Row {
     fn offer_widths(node: Mounted<'_, Children>, cx: &mut FlowCx<'_>) {
         let children = node.data();
         // A content-sized row gives even a fill child its own intrinsic extent.
-        let share = if matches!(cx.policy, Length::Px(_) | Length::Fill) {
+        let share = if cx.policy.definite() {
             let (fixed, fills) = children.iter().fold((0.0, 0usize), |(w, n), &c| {
                 if cx.policy_of(c) == Length::Fill {
                     (w, n + 1)

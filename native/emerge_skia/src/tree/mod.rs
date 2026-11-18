@@ -37,6 +37,9 @@ enum Length {
     Fill,
 }
 impl Length {
+    fn definite(self) -> bool {
+        matches!(self, Self::Px(_) | Self::Fill)
+    }
     fn intrinsic(self, demand: f32, scale: f32) -> f32 {
         if let Self::Px(px) = self {
             scale::pixels(px, scale)

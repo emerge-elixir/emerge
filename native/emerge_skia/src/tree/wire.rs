@@ -96,12 +96,7 @@ fn attrs(raw: &[u8], shape: Shape) -> Result<Attrs> {
     for _ in 0..r.count()? {
         match r.byte()? {
             1 => a.sizing.width = r.length()?,
-            2 => {
-                a.sizing.height = r.length()?;
-                if a.sizing.height == Length::Fill {
-                    return Err("fill height is not in the first slice".into());
-                }
-            }
+            2 => a.sizing.height = r.length()?,
             3 => {
                 a.sizing.padding = match r.byte()? {
                     0 => [r.number()?; 4],

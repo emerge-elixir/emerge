@@ -36,6 +36,14 @@ Columns, rows and wrapped rows clip ordinary descendants' paint and hits to
 intersecting host frames. Clipping does not shrink the child or change the
 wrapped-line height: spacing is measured between the laid-out child boxes.
 
+A root `column` with `height(fill())` uses the viewport height; any column can
+host ordinary fill-height children. Width flow and bottom-up reflow settle the
+heights of non-fill siblings first, including wrapped lines. Placement splits
+a fixed or allocated height after subtracting those outer heights, vertical
+padding and gaps. A content-height column instead uses each fill child's own
+intrinsic height. The outer offer and offset share one reserved entry for the
+incoming edge; a nested column distributes its offer without scaling it again.
+
 Wayland uses the preferred fractional scale with a logical viewport destination
 when both protocols are available, or integer buffer scaling otherwise. Layout
 uses the nominal factor; seat input uses the submitted buffer's actual width

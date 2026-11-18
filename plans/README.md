@@ -1,6 +1,7 @@
 # Retained tree: slice plan and results
 
 Current checklist: [Elements and attributes still to port](retained-ui-port-tracker.md).
+Implemented: [Unweighted height fill in columns, allocation checks and submitted-frame results](column-height-fill.md).
 
 Implemented: [Subtree layout scale and fractional Wayland display scale](scale.md) · [parity, compositor checks and limits](scale-results.md).
 

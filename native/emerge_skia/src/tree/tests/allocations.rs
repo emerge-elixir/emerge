@@ -263,17 +263,72 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
         line.tree.upload(&full).unwrap();
         line.tree.refresh(180., 170., 1.).unwrap()
     });
+    let mut stack = Raster::default();
+    stack.tree.upload(&column::document()).unwrap();
+    c.zero("first height split after reservation", || {
+        assert!(stack.settle(180., 170., 1.).unwrap());
+    });
+    let visible = draw(&mut stack).to_vec();
+    stack
+        .tree
+        .patch(&set(2, 4, column::header(px(2, 60.))))
+        .unwrap();
+    let pending = stack.tree.encode();
+    let bigger = patch(
+        3,
+        3,
+        &[
+            node(3, 4, column::panel([0, 255, 0]), &[6]),
+            node(6, 5, text(&"W".repeat(512)), &[]),
+        ],
+    );
+    (c.fail_next_reserve)();
+    assert_eq!(
+        stack.tree.patch(&bigger).unwrap_err(),
+        "tree workspace capacity exceeded"
+    );
+    assert_eq!(stack.tree.encode(), pending);
+    assert_eq!(stack.pixels(), visible);
+    assert_eq!(stack.hit_at(10., 80.), Some((4, 5., 5.)));
+    c.zero(
+        "rejected growth keeps the earlier height edit ready",
+        || {
+            assert!(stack.settle(180., 170., 1.).unwrap());
+        },
+    );
+    draw(&mut stack);
+    assert_eq!(stack.hit_at(10., 80.), Some((3, 5., 10.)));
+    for edit in [
+        set(2, 4, column::header(px(2, 20.))),
+        set(2, 4, column::header(vec![2, 0])),
+        order(1, 3, &[2, 4, 3]),
+        set(1, 3, column::stack(vec![2, 1], 4.)),
+        set(1, 3, column::stack(vec![2, 0], 4.)),
+    ] {
+        c.zero(
+            "fitting height split: wire edit through paint/hit inputs",
+            || {
+                stack.tree.patch(&edit).unwrap();
+                assert!(stack.settle(180., 170., 1.).unwrap());
+            },
+        );
+        draw(&mut stack);
+    }
+    c.zero("height-only resize through paint/hit inputs", || {
+        assert!(stack.settle(180., 53., 1.).unwrap());
+    });
     // 100 slots + 80% = 180. The inserted subtree and edited parent's
     // first input coexist with the old glyph/command buffers and batch scratch.
     let ids: Vec<u64> = (2..=100).collect();
-    let mut nodes = vec![node(1, 3, block(&[]), &ids)];
-    nodes.extend(ids.iter().map(|&id| node(id, 6, block(&[]), &[])));
+    let fill = || block(&[vec![2, 0]]);
+    let mut nodes = vec![node(1, 3, fill(), &ids)];
+    nodes.extend(ids.iter().map(|&id| node(id, 6, fill(), &[])));
     let mut topology = Tree::default();
     topology.upload(&upload(&nodes)).unwrap();
     topology.refresh(80., 20., 1.).unwrap();
     let ids: Vec<u64> = (102..=180).collect();
-    let mut nodes = vec![node(101, 3, block(&[]), &ids)];
-    nodes.extend(ids.iter().map(|&id| node(id, 6, block(&[]), &[])));
+    let mut nodes = vec![node(101, 3, fill(), &ids)];
+    nodes.extend(ids.iter().map(|&id| node(id, 6, fill(), &[])));
     let mut children: Vec<_> = (2..=100).collect();
     children.insert(50, 101);
     nodes.insert(0, edges(1, 3, &children));
@@ -295,13 +350,11 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
         }
         topology.refresh(80., 20., 1.).unwrap();
     });
-    topology.patch(&set(1, 3, block(&[px(1, 73.)]))).unwrap();
+    topology
+        .patch(&set(1, 3, block(&[px(1, 73.), px(2, 100.)])))
+        .unwrap();
     children.insert(0, 181);
-    let over = patch(
-        1,
-        1,
-        &[edges(1, 3, &children), node(181, 6, block(&[]), &[])],
-    );
+    let over = patch(1, 1, &[edges(1, 3, &children), node(181, 6, fill(), &[])]);
     let pending = topology.encode();
     (c.fail_next_reserve)();
     assert_eq!(
@@ -314,6 +367,10 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
         || topology.refresh(80., 20., 1.).unwrap(),
     );
     assert_eq!(topology.layers.frames[topology.root.unwrap()].width, 73.);
+    assert_eq!(
+        topology.layers.frames[topology.elements.ids[&101]].height,
+        1.
+    );
     let topology_growth = c.count(|| topology.patch(&over).unwrap());
     assert!(topology_growth[0] + topology_growth[1] > 0);
     c.zero("first compute after topology growth", || {

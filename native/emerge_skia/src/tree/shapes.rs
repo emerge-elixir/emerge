@@ -2,7 +2,7 @@
 //! shared or custom paint, and register the module below. Shapes do not own a
 //! second child order, allocate plans, schedule passes or install output.
 use super::{
-    layers::{FlowCx, Measuring, ReflowCx, Size},
+    layers::{FlowCx, Measuring, PlaceCx, ReflowCx, Size},
     paint::{OwnPaint, PaintContext},
     text::Run,
     *,
@@ -54,6 +54,8 @@ pub(super) enum FlowInput {
     Order,
 }
 trait LayoutBehaviour: ShapeMeta {
+    /// This shape distributes its children's heights during placement.
+    const ALLOTS_HEIGHT: bool = false;
     fn measure(data: Data<'_, Self>, cx: &mut Measuring<'_>) -> Size;
     fn auto_fills(_node: Mounted<'_, Self::Payload>) -> bool {
         false
@@ -69,6 +71,9 @@ trait LayoutBehaviour: ShapeMeta {
         }
     }
     fn reflow(node: Mounted<'_, Self::Payload>, cx: &mut ReflowCx<'_>) -> f32;
+    fn place_children(node: Mounted<'_, Self::Payload>, cx: &mut PlaceCx<'_>) {
+        cx.translate_children(node.children());
+    }
 }
 trait PaintBehaviour<P: Payload> {
     const CLIP_CHILDREN: bool = false;
@@ -144,6 +149,9 @@ impl Shape {
     ) -> Result<(), String> {
         with_shape!(self, |S| PayloadOf::<S>::decode(tag, r, raw, a))
     }
+    pub fn allots_height(self) -> bool {
+        with_shape!(self, |S| S::ALLOTS_HEIGHT)
+    }
     pub fn uses_glyphs(self) -> bool {
         with_shape!(self, |S| PayloadOf::<S>::USES_GLYPHS)
     }
@@ -165,6 +173,9 @@ impl Shape {
     }
     pub fn reflow(self, e: &Elements, k: Key, cx: &mut ReflowCx<'_>) -> f32 {
         with_shape!(self, |S| S::reflow(Mounted::new(e, k), cx))
+    }
+    pub fn place_children(self, e: &Elements, k: Key, cx: &mut PlaceCx<'_>) {
+        with_shape!(self, |S| S::place_children(Mounted::new(e, k), cx))
     }
     pub fn child_clip(self, inherited: Rect, frame: Rect) -> Rect {
         if with_shape!(self, |S| {
