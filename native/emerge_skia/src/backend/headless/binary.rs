@@ -100,6 +100,18 @@ mod tests {
         production::{AnimationRequests, RequestOutcome},
         wake::BackendWakeHandle,
     };
+    fn tracked_layer_id(state: &crate::renderer::RenderState) -> u64 {
+        use crate::render_scene::RenderNode;
+        match state.scene.nodes.as_slice() {
+            [RenderNode::PaintLayer(layer)] => layer.id.node_id,
+            [RenderNode::Shared(group)] => {
+                let layers = group.descendant_layers();
+                assert_eq!(layers.len(), 1, "one tracked semantic layer");
+                layers[0].id.node_id
+            }
+            _ => panic!("tracked layer"),
+        }
+    }
     fn animated_message(requests: &AnimationRequests) -> RenderMsg {
         let mut msg = message(true);
         if let RenderMsg::Scene {
@@ -141,12 +153,12 @@ mod tests {
                 "rgba",
                 (control, control_rx),
                 |state, started| {
-                    let crate::render_scene::RenderNode::PaintLayer(layer) = &state.scene.nodes[0]
-                    else {
-                        panic!("layer");
-                    };
                     output
-                        .send((layer.id.node_id, started, state.pipeline_submitted_at))
+                        .send((
+                            tracked_layer_id(state),
+                            started,
+                            state.pipeline_submitted_at,
+                        ))
                         .unwrap();
                     if std::mem::take(&mut first) {
                         release.recv().unwrap();
@@ -384,13 +396,9 @@ mod tests {
                 "rgba",
                 FrameRateControl::new(None),
                 |state, _| {
-                    let crate::render_scene::RenderNode::PaintLayer(layer) = &state.scene.nodes[0]
-                    else {
-                        panic!("layer");
-                    };
                     let failed = failing.load(Ordering::SeqCst);
                     attempt_tx
-                        .send((layer.id.node_id, state.render_version))
+                        .send((tracked_layer_id(state), state.render_version))
                         .unwrap();
                     if failed {
                         Err("controlled draw failure".into())

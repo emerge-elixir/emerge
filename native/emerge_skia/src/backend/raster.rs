@@ -106,7 +106,7 @@ impl RasterBackend {
         }
 
         self.surface = create_surface(width, height, self.format)?;
-        self.renderer.invalidate_visible_frame_fingerprint();
+        self.renderer.invalidate_visible_execution_inputs();
         self.width = width;
         self.height = height;
         Ok(())

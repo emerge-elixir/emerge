@@ -284,18 +284,18 @@ impl RendererEnv {
             #[cfg(all(feature = "wayland", feature = "vulkan"))]
             Self::Vulkan(env) => env.resize(dimensions)?,
         }
-        self.invalidate_visible_frame_fingerprint();
+        self.invalidate_visible_execution_inputs();
         Ok(())
     }
 
-    pub(super) fn invalidate_visible_frame_fingerprint(&mut self) {
+    pub(super) fn invalidate_visible_execution_inputs(&mut self) {
         match self {
             #[cfg(all(feature = "wayland", feature = "opengl"))]
-            Self::OpenGl(env) => env.renderer.invalidate_visible_frame_fingerprint(),
+            Self::OpenGl(env) => env.renderer.invalidate_visible_execution_inputs(),
             #[cfg(all(feature = "wayland", feature = "vulkan"))]
             Self::Vulkan(env) => {
                 if let Ok(renderer) = env.renderer_mut() {
-                    renderer.invalidate_visible_frame_fingerprint();
+                    renderer.invalidate_visible_execution_inputs();
                 }
             }
         }

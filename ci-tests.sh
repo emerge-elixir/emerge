@@ -23,6 +23,8 @@ run_tests() {
   # Warm build dependencies with retries, but never rerun failed test executions.
   MIX_ENV=test retry_build mix compile --warnings-as-errors
   retry_build cargo test --release --no-run --manifest-path native/emerge_skia/Cargo.toml "${native_cargo_args[@]}"
+  retry_build cargo test --release --no-run --manifest-path native/emerge_skia/Cargo.toml "${native_cargo_args[@]}" \
+    --features bench-diagnostics --test retained_topology_reads
 
   if [[ "${CI:-}" == "true" || "${CI:-}" == "1" ]]; then
     mix test --warnings-as-errors
@@ -31,6 +33,10 @@ run_tests() {
   fi
 
   cargo test --release --manifest-path native/emerge_skia/Cargo.toml "${native_cargo_args[@]}"
+  # This integration target has no tests without diagnostics. Exercise it in CI
+  # and local `test`/`all`, not only in manual performance investigations.
+  cargo test --release --manifest-path native/emerge_skia/Cargo.toml "${native_cargo_args[@]}" \
+    --features bench-diagnostics --test retained_topology_reads
 }
 
 run_dialyzer() {

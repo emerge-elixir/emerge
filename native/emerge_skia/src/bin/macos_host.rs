@@ -2381,7 +2381,7 @@ mod app {
                     .expect("raster fallback surface should resize");
             }
         }
-        session.renderer.invalidate_visible_frame_fingerprint();
+        session.renderer.invalidate_visible_execution_inputs();
     }
 
     fn draw_metal_surface(
@@ -2526,9 +2526,9 @@ mod app {
                     session.runtime.stats.as_deref(),
                 );
                 if !matches!(result, Ok(Some(_))) {
-                    // The skip probe records the candidate fingerprint before Metal acquires a
+                    // The skip probe saves executable inputs before Metal acquires a
                     // drawable. Keep an unpresented frame eligible for the next draw attempt.
-                    session.renderer.invalidate_visible_frame_fingerprint();
+                    session.renderer.invalidate_visible_execution_inputs();
                 }
                 result?
             }

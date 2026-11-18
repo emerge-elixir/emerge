@@ -3458,7 +3458,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                 let mut next_hotplug_check = hotplug_interval.map(|i| Instant::now() + i);
                 let mut last_video_generation = video_registry.generation();
                 // Video submission and fence cleanup mutate renderer-owned resources without changing the
-                // scene fingerprint. Keep this sticky until sync_video_frames() has run so the generic
+                // saved execution inputs. Keep this sticky until sync_video_frames() has run so the generic
                 // unchanged-frame optimization cannot consume the generation and strand a pending frame.
                 let mut video_sync_required = true;
                 let mut stop_requested = false;

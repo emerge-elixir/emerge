@@ -372,7 +372,7 @@ impl MappedFrame<'_> {
                 .ok_or("failed to wrap DRM dumb buffer in Skia")?;
         // The destination alternates; an unchanged scene must still paint the other
         // buffer, and repainting also erases a software cursor's previous position.
-        renderer.invalidate_visible_frame_fingerprint();
+        renderer.invalidate_visible_execution_inputs();
         let mut draw_cursor = |surface: &mut skia_safe::Surface| {
             if let Some((visual, cursor)) = cursor.filter(|(_, cursor)| cursor.visible) {
                 let (width, height) = visual.size();

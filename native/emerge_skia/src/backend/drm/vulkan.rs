@@ -1055,7 +1055,7 @@ impl PresenterSession {
             .as_mut()
             .ok_or("DRM Vulkan engine already dropped")?
             .renderer_mut()?
-            .invalidate_visible_frame_fingerprint();
+            .invalidate_visible_execution_inputs();
         // Retain the current video image (including one-shot submissions), but
         // don't strand completed retirement/source leases while HDMI is absent.
         self.reap_video_cleanup(video_registry)

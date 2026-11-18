@@ -90,7 +90,7 @@ Windowed and DRM runs use long-lived native threads:
 
 | Thread or actor | Owns | Communicates with |
 |-----------------|------|-------------------|
-| Tree actor | `TreeUpdateEngine`, `ElementTree`, cached registry rebuild, animation runtime | Event actor, render queue, assets actor, backend wake |
+| Tree actor | `TreeUpdateEngine`, `ElementTree`, retained outputs, last admitted registry, animation runtime | Event actor, render queue, assets actor, backend wake |
 | Event actor | Event registry, hit testing, cursor decisions, scroll/text/focus dispatch | Tree actor and Elixir process |
 | Backend render loop | Skia surface/context, `SceneRenderer`, renderer paint-layer cache; DRM presenter lifetime ends on off | Render queue and backend compositor/presenter |
 | DRM power owner | Output lease, backlight binding/baseline, requested settings and presenter lifecycle | Independent bounded control lane, input gate and presenter wake |
@@ -118,8 +118,8 @@ Elixir owns declared UI state. Rust owns runtime state derived from it.
   fragments
 - runtime state for hover, mouse down, focus, text input, sliders, scrollbars,
   and nearby mounts
-- layout caches, registry caches, retained render-layer scene caches, and dirty
-  flags
+- layout caches, immutable owner paint/event records, a compiled flat registry,
+  declared-resource bindings, and a touched-output journal
 
 Render backends receive `RenderScene` values. They do not read or mutate
 `ElementTree`.
@@ -183,14 +183,37 @@ The layout passes are:
 Refresh converts the laid-out tree into:
 
 - a `RenderScene` for the renderer
-- an event registry rebuild when registry damage exists
+- a complete flat registry when its compiled version changes or publication is requested
 - IME metadata and text state
 - an animation-active flag
 
-When the cached registry rebuild is clean, refresh skips registry traversal and
-publishes only a render scene. Scroll damage rebuilds the registry because
-hit-test geometry moves, but clean neutral branches are skipped with the
-retained `registry_subtree_affects` prepass.
+Paint and events maintain independent owner records through the touched-output
+journal. Ordinary and Nearby owners use the same mechanism. Registry changes are
+compared with the last admitted output, not merely the last compiled candidate,
+so failed-frame retries still publish. IME comes from compiled input state, not
+paint side effects. Declared resource bindings are maintained from touched owners
+and rebuilt on structural changes.
+
+Owner-local commands, resolved composition properties and child ordering are
+retained separately, including stable empty/culled consuming slots and batched
+path-copy updates. Placement/opacity reuse command chunks; unchanged ancestors
+reuse resolved properties. Paint derives coordinate/culling contexts without
+building event interaction-clip chains. Paragraph inline decorations remain an
+explicit culling/scope dependency.
+
+Run facts are derived locally and content summaries fold prepared run/Shared
+facts without materializing own-node views. Child layers contribute composition
+counts/shadow flags, not parent raster bounds or primitive cost. Generation is
+an internal content hash for payload keys, not a substitute for executable-input
+equality. Installed order, prepared text geometry and actual image call arguments
+are shared with the renderer. Composition rewrites preserve those argument scopes
+without flattening unchanged command buffers.
+
+Visible-frame reuse compares saved executable inputs before drawing. Explicit
+invalidation clears that comparison; it is not a last-successful-frame protocol.
+Scene/in-flight resource scopes own pixels and source records, while saved image
+selectors retain weak headers and nonpixel dispatch data. See the
+[flow and lifecycle contracts](layout-refresh-render-flow.md).
 
 ## Render Architecture
 
@@ -307,26 +330,28 @@ Scaled fields include:
 Render and event code read `layout.effective` and layout frames. They do not
 perform their own high-DPI scaling.
 
-## Cache Layers
+## Retained Outputs and Cache Layers
 
-The architecture has several separate caches with different owners:
+Output records are authoritative state; renderer payload caching is separate:
 
 | Cache | Owner | Scope |
 |-------|-------|-------|
 | Layout measure caches | `ElementTree` node layout state | Intrinsic and subtree measurement reuse |
 | Layout resolve cache | `ElementTree` node layout state | Final frame and geometry reuse |
-| Registry subtree cache | `ElementTree` node refresh state | Event registry chunk reuse |
-| Cached registry rebuild | `TreeUpdateEngine` | Whole clean registry response |
-| Nearby render-fragment cache | `ElementTree` node refresh state | Reuse clean semantic Nearby fragments and focus outputs |
+| Retained event contributions/order | `ElementTree` node refresh state | Affected-owner compilation and versioned flat output |
+| Last admitted registry | `TreeUpdateEngine` | Publication identity, requests and acknowledgements |
+| Retained paint/composition records | `ElementTree` node refresh state | Shared ordinary/Nearby scene snapshots; not raster boundaries |
+| Declared-source index | `ElementTree` | Immutable source-binding snapshots and affected-owner updates |
 | Renderer paint-layer payload cache | `SceneRenderer` | GPU/CPU own-run image reuse |
 | Encoded asset/source status | Renderer asset runtime | Source resolution, generations, and async hydration |
 | Decoded raster LRU | Renderer asset context | Entry/byte-bounded final pixel reuse |
 | Rendered vector variants | Renderer asset context | Bounded SVG rasterization reuse |
 | Font/text metrics caches | Renderer asset context | Typeface and text measurement reuse |
 
-These caches are intentionally owned by the stage that can validate them. The
-tree may reuse a clean semantic Nearby fragment; only the renderer can decide
-whether a concrete own-run GPU/CPU payload should be stored or reused.
+Each stage owns the state it can validate. Tree-side shared records do not create
+GPU layers. Only the renderer decides whether a concrete own-run GPU/CPU image
+payload should be stored or reused. Superseded Nearby fragment and registry chunk
+caches have been removed.
 
 ## Module Structure
 
