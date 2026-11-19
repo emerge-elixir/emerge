@@ -5,6 +5,23 @@ what reproduces it, what `main` does, what should happen, and the regression
 that proves the fix. Only copy **verified fixes** to `Unreleased → Fixed` in
 [CHANGELOG.md](../CHANGELOG.md). A port that merely matches `main` is not a fix.
 
+## Open — Row child heights
+
+Detached observations on `5c71a593`, **not** release notes. Retained
+`2bf82a9` rejects fill heights at this site. [Probe, proposed contract and
+submission tests](row-cross-axis-height.md#two-traps-in-the-reference).
+
+- **Content floor:** 40×120 Row, padding 6, gap 4, two 12px-wide children.
+  At 150px demand `max(content(), fill(3))` gets 108px on main, but
+  `max(content(), px(108))` gets 150px. Proposed: 150px, 42px beyond the
+  offer; B still takes 108px with no slack, no change to the host clip.
+- **Height cap after wrap:** 100 → 99px-wide, 80px-high Row with padding 2
+  and gap 4; A gets 80 → 79px wide, B is 12×76. A's two 36×12 chips (gap
+  4, padding 2) wrap. Main keeps `min(content(), fill(3))` at 16px high
+  despite needing 32px. Proposed: 32, with 44px unused below A. The
+  [verified pixel cap](#capped-wrapped-rows-use-the-height-of-all-lines)
+  is a control, not proof for this fill-bearing site.
+
 ## Verified fixes — ready for the changelog
 
 ### Content floor on the width of a Column child
