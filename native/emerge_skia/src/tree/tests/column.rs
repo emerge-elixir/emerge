@@ -249,8 +249,8 @@ fn site_proof_uses_final_edges_and_accepted_attrs_without_disturbing_pending_or_
     for variant in [4, 5] {
         let value = vec![2, variant, 0, 1];
         assert_eq!(
-            r.tree.patch(&set(18, 4, block(&[value]))).unwrap_err(),
-            format!("unsupported length {variant}")
+            r.tree.patch(&set(3, 4, block(&[value]))).unwrap_err(),
+            "height(fill()) requires a root Column or a child of a Column"
         );
     }
     assert_eq!(r.tree.encode(), pending);

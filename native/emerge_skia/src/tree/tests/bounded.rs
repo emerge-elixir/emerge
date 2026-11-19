@@ -286,13 +286,9 @@ fn admission_proves_the_bounded_leaf_at_its_final_site_before_publishing_anythin
             assert!(r.tree.patch(&p).unwrap_err().contains("requires a root"));
         }
         for (l, err) in [
-            (vec![axis, 4, 0, 1], "unsupported length 4"),
-            (vec![axis, 5, 0, 0], "unsupported length 5"),
-            (
-                [vec![axis, 5], number(2, 5.), number(2, 6.)].concat(),
-                "unsupported length 5",
-            ),
-            (vec![axis, 4, 5, 0, 0, 0], "unsupported length 5"),
+            (vec![axis, 4, 0, 6], "unsupported length 6"),
+            (vec![axis, 5, 0, 255], "unsupported length 255"),
+            (vec![axis, 4, 5, 0, 0], "truncated EMRG data"),
             (vec![axis, 5, 0], "truncated EMRG data"),
             (
                 bound(axis, 4, f64::NAN, None, false),

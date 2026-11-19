@@ -3,6 +3,7 @@ mod allocations;
 mod bounded;
 mod column;
 mod content_bounds;
+mod dimensions;
 mod identity;
 mod nested;
 mod row;

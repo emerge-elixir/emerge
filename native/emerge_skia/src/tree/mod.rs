@@ -53,6 +53,16 @@ impl Bounds<f64> {
         self.map(|v| scale::pixels(v, scale))
     }
 }
+/// Only a mixed expression which cannot be reduced to a single pixel clamp
+/// retains a program. The offsets address *this owner's* validated attr block.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Formula {
+    start: u32,
+    end: u32,
+    natural: Bounds<f64>,
+    weight: f64,
+    reads_content: bool,
+}
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 enum Length {
     #[default]
@@ -62,6 +72,7 @@ enum Length {
     Fill,
     Weighted(f64),
     BoundedContent(Bounds<f64>),
+    Formula(Formula),
     BoundedFill {
         bounds: Bounds<f64>,
         weight: f64,
@@ -70,6 +81,7 @@ enum Length {
 impl Length {
     fn weight(self) -> Option<f64> {
         match self {
+            Self::Formula(f) => Some(f.weight),
             Self::Fill => Some(1.),
             Self::Weighted(w) | Self::BoundedFill { weight: w, .. } => Some(w),
             _ => None,
@@ -82,8 +94,22 @@ impl Length {
             policy => policy.weight().map(|_| policy),
         }
     }
+    fn same_split(self, raw: &[u8], other: Self, other_raw: &[u8]) -> bool {
+        match (self, other) {
+            (Self::Formula(f), Self::Formula(g)) => f.bytes(raw) == g.bytes(other_raw),
+            _ => self.split_policy() == other.split_policy(),
+        }
+    }
+    fn reads_fill_content(self) -> bool {
+        matches!(self, Self::Formula(f) if f.reads_content)
+    }
     fn without_weight(self) -> Self {
         match self {
+            // With no slot, every variable leaf reads the same intrinsic size.
+            Self::Formula(f) => Self::BoundedFill {
+                bounds: f.natural,
+                weight: 1.,
+            },
             Self::Weighted(_) => Self::Fill,
             Self::BoundedFill { bounds, .. } => Self::BoundedFill { bounds, weight: 1. },
             other => other,
@@ -95,6 +121,13 @@ impl Length {
             _ => None,
         }
     }
+    fn natural_bounds(self) -> Bounds<f64> {
+        match self {
+            Self::Px(n) => Bounds { floor: n, cap: n },
+            Self::Formula(f) => f.natural,
+            _ => self.bounds().unwrap_or(Bounds::OPEN),
+        }
+    }
     fn definite(self) -> bool {
         !matches!(self, Self::Auto | Self::Content | Self::BoundedContent(_))
     }
@@ -104,11 +137,27 @@ impl Length {
     fn resolve(self, basis: f32, scale: impl FnOnce() -> f32) -> f32 {
         match self {
             Self::Px(px) => scale::pixels(px, scale()),
-            Self::BoundedContent(bounds) | Self::BoundedFill { bounds, .. } => {
+            Self::Formula(Formula {
+                natural: bounds, ..
+            })
+            | Self::BoundedContent(bounds)
+            | Self::BoundedFill { bounds, .. } => {
                 let b = bounds.device(scale());
                 basis.clamp(b.floor, b.cap)
             }
             _ => basis,
+        }
+    }
+    fn allotted(self, raw: &[u8], basis: f32, scale: f32, share: impl Fn(f64) -> f32) -> f32 {
+        match self {
+            Self::Formula(f) => f.eval(
+                raw,
+                basis,
+                |p| scale::pixels(p, scale),
+                share,
+                |min, a, b| if min { a.min(b) } else { a.max(b) },
+            ),
+            _ => self.resolve(self.weight().map_or(basis, share), || scale),
         }
     }
 }

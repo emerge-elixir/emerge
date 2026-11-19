@@ -59,8 +59,8 @@ or gap, `min(px(50), max(px(20), fill()))` next to `fill()` takes 20/10 in a
 30px host, 40/40 in an 80px host, and 50/70 in a 120px host. Nothing is left
 unused in these examples. Nesting order matters: `min(20, max(80, share))`
 always gives 20, while `max(80, min(20, share))` always gives 80. The renderer
-folds pixel operands when accepting the declaration; it does not traverse the
-expression again during layout.
+folds these single-variable bounds when accepting the declaration; layout
+uses the resulting interval.
 
 With `content()` (also `shrink()`) instead of a fill, these bounds apply to
 **the node’s own outer size, including padding**. In a 240px Row with no gap
@@ -68,6 +68,15 @@ or padding, A `max(px(140), shrink())` beside B `fill()` takes 140/100 when
 A needs 80px, and 180/60 when A needs 180px. A Column uses the actual height
 after wrapping, then gives the fill sibling the remaining space. A content
 bound is not a fill weight or an offer from the viewport.
+
+A limit can itself depend on content. In a 120px Row with no padding or gap,
+`min(content(), fill())` next to `fill()` gives **20/100** when the first
+child needs 20px and **60/60** when it needs 90px. Neither leaves unused
+space. In a definite Column the analogous content limit uses the height
+**after wrapping**. When an expression cannot be folded to a single weight
+and interval, the allocator evaluates its validated length bytes at a shared
+fill unit; each active term contributes either a fixed extent or a weight.
+See the [width/height regression plan](../../plans/dimension-regressions.md).
 
 Wayland uses the preferred fractional scale with a logical viewport destination
 when both protocols are available, or integer buffer scaling otherwise. Layout

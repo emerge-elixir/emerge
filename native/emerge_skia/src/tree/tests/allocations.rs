@@ -140,6 +140,53 @@ fn nested_splits(c: &Counter) {
     }
 }
 
+fn mixed_splits(c: &Counter) {
+    for axis in [1, 2] {
+        let mut r = Raster::default();
+        let switch = |n| [vec![axis, 5, 4], number(3, 3.), number(2, n), vec![4, 1, 0]].concat();
+        r.tree
+            .upload(&content_bounds::doc(axis, switch(30.), 20.))
+            .unwrap();
+        c.zero("first mixed split", || {
+            r.settle(180., 170., 1.).unwrap();
+        });
+        draw(&mut r);
+        for (policy, demand, expected) in [
+            (switch(50.), 80., 80.),
+            (vec![axis, 4, 1, 0], 180., 120.),
+            (vec![axis, 5, 1, 0], 180., 180.),
+        ] {
+            let update = set(2, 4, weighted::panel(axis, 2, policy));
+            let child = set(4, 6, weighted::size(axis, px(axis, demand)));
+            c.zero(
+                "fitting mixed policy and demand through prepared paint/hit inputs",
+                || {
+                    r.tree.patch(&update).unwrap();
+                    r.tree.patch(&child).unwrap();
+                    r.settle(180., 170., 1.).unwrap();
+                },
+            );
+            assert_eq!(weighted::span(&r, axis, 2).1, expected);
+            draw(&mut r);
+        }
+        r.tree
+            .patch(&set(2, 4, weighted::panel(axis, 2, switch(30.))))
+            .unwrap();
+        let pending = r.tree.encode();
+        let over = set(5, 5, text(&"W".repeat(512)));
+        (c.fail_next_reserve)();
+        assert_eq!(
+            r.tree.patch(&over).unwrap_err(),
+            "tree workspace capacity exceeded"
+        );
+        assert_eq!(r.tree.encode(), pending);
+        c.zero("mixed split after refused growth", || {
+            r.settle(180., 170., 1.).unwrap();
+        });
+        assert_eq!(weighted::span(&r, axis, 2).1, 120.);
+    }
+}
+
 fn bounded_content(c: &Counter) {
     for axis in [1, 2] {
         let mut r = Raster::default();
@@ -523,6 +570,7 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     bounded_splits(&c);
     nested_splits(&c);
     bounded_content(&c);
+    mixed_splits(&c);
     // 100 slots + 80% = 180. The inserted subtree and edited parent's
     // first input coexist with the old glyph/command buffers and batch scratch.
     let ids: Vec<u64> = (2..=100).collect();

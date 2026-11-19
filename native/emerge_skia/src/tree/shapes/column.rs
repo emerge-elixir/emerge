@@ -29,13 +29,13 @@ impl LayoutBehaviour for Column {
         width == Length::Auto && input == FlowInput::ChildFill
     }
     fn reflow(node: Mounted<'_, Children>, cx: &mut ReflowCx<'_>) -> f32 {
-        if node.attrs().sizing.height.definite() {
+        if cx.fixed_basis() {
             return cx.measured_height;
         }
         let demand = node
             .data()
             .iter()
-            .map(|&c| cx.child(c).h)
+            .map(|&c| cx.unallotted_height(c))
             .reduce(|y, h| y + cx.gap[1] + h)
             .unwrap_or(0.);
         cx.box_height(demand)
@@ -46,19 +46,21 @@ impl LayoutBehaviour for Column {
         let [top, _, bottom, left] = style.padding.map(|n| scale::pixels(n, cx.scale));
         let gap = scale::pixels(style.spacing[1], cx.scale);
         let length = |c: Key| node.elements.attrs[c].sizing.height;
+        let slot = |c, cx: &PlaceCx<'_>| fill::Slot::new(node.elements, c, length(c), cx.basis(c));
         let split = FillShares::split(
             style.height,
             cx.height - (top + bottom),
             gap,
             children,
-            length,
-            |c| cx.basis(c),
-            |c| node.elements.slots[c].admitted.scale,
+            |c| slot(c, cx),
         );
         let mut y = 0.;
         for &c in children {
-            let allotted =
-                split.and_then(|s| s.offer(length(c), || node.elements.slots[c].admitted.scale));
+            let allotted = split.and_then(|s| s.offer(slot(c, cx))).or_else(|| {
+                length(c)
+                    .reads_fill_content()
+                    .then(|| cx.measured_height(c))
+            });
             cx.place(c, [left, top + y], allotted);
             y += allotted.unwrap_or_else(|| cx.basis(c));
             y += gap;

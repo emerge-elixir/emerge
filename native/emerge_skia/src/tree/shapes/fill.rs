@@ -1,8 +1,88 @@
-//! Solve sum(clamp(weight × unit)) = remaining outer pixels. All shapes read
-//! the same scalar result; there is no second child order or per-child scratch.
+//! Solve sum(child_length(unit)) = remaining outer pixels. A min/max tree is
+//! piecewise either a fixed extent or a ray through zero. Find the interval
+//! containing the shared unit, then divide its residual among the free rays.
+//! No second child order, intermediate layout or per-child scratch.
 use super::*;
 #[cfg(test)]
 mod tests;
+
+#[derive(Clone, Copy)]
+pub(super) struct Slot<'a> {
+    length: Length,
+    content: f32,
+    scale: f32,
+    raw: &'a [u8],
+}
+impl<'a> Slot<'a> {
+    pub(super) fn new(e: &'a Elements, k: Key, length: Length, content: f32) -> Self {
+        Self {
+            length,
+            content,
+            scale: e.slots[k].admitted.scale,
+            raw: if matches!(length, Length::Formula(_)) {
+                e.raw(k)
+            } else {
+                &[]
+            },
+        }
+    }
+    fn eval(self, share: impl Fn(f64) -> f32) -> f32 {
+        self.length
+            .allotted(self.raw, self.content, self.scale, share)
+    }
+    fn active(self, w: f64, r: &mut Region) -> Term {
+        if let Length::Formula(f) = self.length {
+            f.eval(
+                self.raw,
+                Term::Px(self.content),
+                |v| Term::Px(scale::pixels(v, self.scale)),
+                Term::Weight,
+                |min, a, b| r.select(min, a, b),
+            )
+        } else if let Some(b) = self.length.bounds() {
+            let b = b.device(self.scale);
+            let above_floor = r.select(false, Term::Weight(w), Term::Px(b.floor));
+            r.select(true, above_floor, Term::Px(b.cap))
+        } else {
+            Term::Weight(w)
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Term {
+    Px(f32),
+    Weight(f64),
+}
+// Within [left,right), every comparison made at probe picks the same term.
+struct Region {
+    probe: f64,
+    left: f64,
+    right: f64,
+}
+impl Region {
+    fn select(&mut self, min: bool, a: Term, b: Term) -> Term {
+        use Term::*;
+        let smaller_a = match (a, b) {
+            (Px(x), Px(y)) => x <= y,
+            (Weight(x), Weight(y)) => x <= y,
+            (Weight(w), Px(px)) => self.below(w, px),
+            (Px(px), Weight(w)) => !self.below(w, px),
+        };
+        if smaller_a == min { a } else { b }
+    }
+    fn below(&mut self, w: f64, px: f32) -> bool {
+        // sqrt(px / weight) without overflow for any f32 size / finite f64 weight.
+        let at = f64::from(px).abs().sqrt() / w.sqrt();
+        if self.probe < at {
+            self.right = self.right.min(at);
+            true
+        } else {
+            self.left = self.left.max(at);
+            false
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(super) enum FillShares {
@@ -12,14 +92,12 @@ pub(super) enum FillShares {
     Boundary(f64),
 }
 impl FillShares {
-    pub(super) fn split(
+    pub(super) fn split<'a>(
         policy: Length,
         inner: f32,
         gap: f32,
         children: &[Key],
-        length: impl Fn(Key) -> Length,
-        basis: impl Fn(Key) -> f32,
-        scale: impl Fn(Key) -> f32,
+        slot: impl Fn(Key) -> Slot<'a>,
     ) -> Option<Self> {
         if !policy.definite() {
             return None;
@@ -28,15 +106,15 @@ impl FillShares {
         let mut device_weights = true;
         let mut bounded = false;
         for &c in children {
-            let l = length(c);
-            if let Some(w) = l.weight() {
+            let s = slot(c);
+            if let Some(w) = s.length.weight() {
                 largest = largest.max(w);
                 let w = w as f32;
                 total += w;
                 device_weights &= w.is_normal();
-                bounded |= l.bounds().is_some();
+                bounded |= s.length.bounds().is_some() || matches!(s.length, Length::Formula(_));
             } else {
-                fixed += basis(c);
+                fixed += s.content;
             }
         }
         if largest == 0. {
@@ -55,7 +133,7 @@ impl FillShares {
         } else {
             let units: f64 = children
                 .iter()
-                .filter_map(|&c| length(c).weight())
+                .filter_map(|&c| slot(c).length.weight())
                 .map(|w| w / largest)
                 .sum();
             Self::Relative {
@@ -66,17 +144,17 @@ impl FillShares {
         if !bounded {
             return Some(initial);
         }
-        Some(initial.redistribute(f64::from(room), || {
-            children.iter().filter_map(|&c| {
-                let l = length(c);
-                let w = l.weight()?;
-                Some((w, l.bounds().map(|bounds| bounds.device(scale(c)))))
-            })
-        }))
+        Some(initial.redistribute(f64::from(room), || children.iter().map(|&c| slot(c))))
     }
     fn share(self, w: f64) -> f32 {
         match self {
-            Self::Device(unit) => unit * w as f32,
+            Self::Device(unit) => {
+                if (w as f32).is_normal() {
+                    unit * w as f32
+                } else {
+                    (f64::from(unit) * w) as f32
+                }
+            }
             Self::Boundary(root) => (root * w.sqrt()).powi(2) as f32,
             Self::Relative {
                 pixels_per_unit: 0.,
@@ -88,8 +166,8 @@ impl FillShares {
             } => (pixels_per_unit * (w / largest)) as f32,
         }
     }
-    pub(super) fn offer(self, l: Length, scale: impl FnOnce() -> f32) -> Option<f32> {
-        Some(l.resolve(self.share(l.weight()?), scale))
+    pub(super) fn offer(self, s: Slot<'_>) -> Option<f32> {
+        s.length.weight().map(|_| s.eval(|w| self.share(w)))
     }
     fn sqrt_unit(self) -> f64 {
         match self {
@@ -101,15 +179,10 @@ impl FillShares {
             } => pixels_per_unit.sqrt() / largest.sqrt(),
         }
     }
-    fn redistribute<I>(self, room: f64, fills: impl Fn() -> I) -> Self
+    fn redistribute<'a, I>(self, room: f64, slots: impl Fn() -> I) -> Self
     where
-        I: Iterator<Item = (f64, Option<Bounds<f32>>)>,
+        I: Iterator<Item = Slot<'a>>,
     {
-        // Between successive limit/weight breakpoints, the equation is linear:
-        // room = sum(locked pixel sizes) + unit * sum(free weights). Search
-        // for that interval, then divide the actual residual, not a rounded
-        // trial extent. sqrt(unit) orders the breakpoints without overflowing
-        // or underflowing even for a subnormal weight and a maximum f32 cap.
         let mut probe = self.sqrt_unit();
         let (mut low, mut high) = (0, f64::INFINITY.to_bits());
         let mut first = true;
@@ -117,32 +190,24 @@ impl FillShares {
             let mut free = Weights::default();
             let mut locked = Charges::default();
             let mut floors = Charges::default();
-            let (mut left, mut right) = (0f64, f64::INFINITY);
+            let mut region = Region {
+                probe,
+                left: 0.,
+                right: f64::INFINITY,
+            };
             let mut changed = false;
-            for (w, bound) in fills() {
-                if let Some(bound) = bound {
-                    if first {
-                        let raw = self.share(w);
-                        changed |= raw < bound.floor || raw > bound.cap;
-                        floors.add(f64::from(bound.floor));
-                    }
-                    let root_weight = w.sqrt();
-                    let at = bound.map(|px| f64::from(px).abs().sqrt() / root_weight);
-                    if probe < at.floor {
-                        right = right.min(at.floor);
-                        locked.add(f64::from(bound.floor));
-                        continue;
-                    }
-                    if probe >= at.cap {
-                        left = left.max(at.cap);
-                        locked.add(f64::from(bound.cap));
-                        continue;
-                    }
-                    left = left.max(at.floor);
-                    right = right.min(at.cap);
+            for s in slots() {
+                let Some(w) = s.length.weight() else { continue };
+                if first {
+                    changed |= self.share(w) != s.eval(|v| self.share(v));
+                    floors.add(f64::from(s.eval(|_| 0.)));
                 }
-                free.add(w);
+                match s.active(w, &mut region) {
+                    Term::Px(p) => locked.add(f64::from(p)),
+                    Term::Weight(w) => free.add(w),
+                }
             }
+            let Region { left, right, .. } = region;
             if first {
                 if floors.remaining(room) <= 0. {
                     return Self::Boundary(0.);
@@ -160,7 +225,7 @@ impl FillShares {
                         return unit;
                     }
                 } else if residual == 0. || right.is_infinite() {
-                    return Self::Boundary(left); // flat interval, including all caps exhausted
+                    return Self::Boundary(left);
                 }
             }
             if residual >= 0. && target > probe {
@@ -168,13 +233,12 @@ impl FillShares {
             } else {
                 high = left.to_bits();
             }
-            // Includes floors exhausting the host (high = 0). Otherwise,
-            // after one trial of the analytic target, halve the positive f64
-            // bit interval. At most 64 bisections, independent of child count.
             if high.saturating_sub(low) <= 1 {
                 return Self::Boundary(f64::from_bits(low.min(high)));
             }
             let key = target.to_bits();
+            // Try the analytic target once, then bisect positive f64 bit keys:
+            // at most 64 bisections, independent of child count or weights.
             probe = f64::from_bits(if first && key >= low && key < high {
                 key
             } else {

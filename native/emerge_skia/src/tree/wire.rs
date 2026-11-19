@@ -89,8 +89,8 @@ fn attrs(raw: &[u8], shape: Shape) -> Result<Attrs> {
     let mut largest_px = [0.; 2];
     for _ in 0..r.count()? {
         match r.byte()? {
-            1 => (a.sizing.width, largest_px[0]) = r.length()?,
-            2 => (a.sizing.height, largest_px[1]) = r.length()?,
+            1 => (a.sizing.width, largest_px[0]) = r.length(raw)?,
+            2 => (a.sizing.height, largest_px[1]) = r.length(raw)?,
             3 => {
                 a.sizing.padding = match r.byte()? {
                     0 => [r.number()?; 4],

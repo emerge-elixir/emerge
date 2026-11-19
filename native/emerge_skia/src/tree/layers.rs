@@ -156,8 +156,18 @@ impl ReflowCx<'_> {
             self.layers.enqueue(Place, c, self.e)
         }
     }
+    pub fn fixed_basis(&self) -> bool {
+        self.height.definite() && !self.height.reads_fill_content()
+    }
+    pub fn unallotted_height(&self, c: Key) -> f32 {
+        if self.e.attrs[c].sizing.height.reads_fill_content() {
+            self.layers.measure[c].h
+        } else {
+            self.child(c).h
+        }
+    }
     pub fn box_height(&self, demand: f32) -> f32 {
-        if self.height.definite() {
+        if self.fixed_basis() {
             // Fixed outer extent, or the pre-wrap basis for a fill child.
             self.measured_height
         } else {
@@ -177,6 +187,9 @@ pub(super) struct PlaceCx<'a> {
 impl PlaceCx<'_> {
     pub fn basis(&self, c: Key) -> f32 {
         self.layers.fit[c].h
+    }
+    pub fn measured_height(&self, c: Key) -> f32 {
+        self.layers.measure[c].h
     }
     pub fn place(&mut self, c: Key, offset: [f32; 2], height: Option<f32>) {
         if changed(&mut self.layers.placement, c, Placement { offset, height }) || self.translated {
@@ -247,7 +260,11 @@ impl Layers {
             measure |= old != new;
             flow |= reads_offers
                 && (old.map(|m| m.w) != new.map(|m| m.w)
-                    || e.attrs.get(a).map(|v| v.sizing.width) != Some(e.attrs[b].sizing.width));
+                    || e.attrs.get(a).is_none_or(|v| {
+                        !v.sizing
+                            .width
+                            .same_split(e.raw(a), e.attrs[b].sizing.width, e.raw(b))
+                    }));
         }
         if measure {
             self.enqueue(Measure, k, e)
@@ -365,7 +382,10 @@ impl Layers {
                 // The parent's split reads the bound at the child's scale,
                 // even if the child's intrinsic box remains exactly the same.
                 if let Some(old) = old_scale {
-                    let moved = |l: Length| matches!(l, Length::BoundedFill { bounds, .. } if bounds.device(old) != bounds.device(ctx.scale));
+                    let moved = |l: Length| {
+                        matches!(l, Length::Formula(_))
+                            || matches!(l, Length::BoundedFill { bounds, .. } if bounds.device(old) != bounds.device(ctx.scale))
+                    };
                     let b = e.attrs[k].sizing;
                     self.invalidate_split(e, k, moved(b.width), moved(b.height));
                 }
@@ -420,17 +440,29 @@ impl Layers {
             }
             m
         };
-        let width_changed = self.measure.get(k).is_none_or(|s| s.w != m.w);
+        let old = self.measure.get(k).copied();
         if changed(&mut self.measure, k, m) {
             self.parent(Measure, k, e);
-            if width_changed {
+            if old.is_none_or(|s| s.w != m.w) {
                 self.enqueue(Flow, k, e);
                 if let Some(p) = e.slots[k].parent
-                    && e.slots[p]
-                        .shape
-                        .reads_flow(e.attrs[p].sizing.width, FlowInput::ChildWidth(b.width))
+                    && e.slots[p].shape.reads_flow(
+                        e.attrs[p].sizing.width,
+                        FlowInput::ChildWidth(e.attrs[k].sizing.width),
+                    )
                 {
                     self.enqueue(Flow, p, e);
+                }
+            }
+            // A mixed child has two height readers: a natural Column reads its
+            // pre-wrap basis, a definite split reads its width-dependent fit.
+            if old.is_none_or(|s| s.h != m.h)
+                && e.attrs[k].sizing.height.reads_fill_content()
+                && let Some(p) = e.slots[k].parent
+            {
+                let policy = e.attrs[p].sizing.height;
+                if !policy.definite() || policy.reads_fill_content() {
+                    self.enqueue(Reflow, p, e);
                 }
             }
             self.enqueue(Reflow, k, e);
@@ -449,8 +481,11 @@ impl Layers {
         let outer = if shape.uses_offer(e, k) {
             if e.slots[k].parent.is_some() {
                 self.offers[k]
+            } else if b.width == Length::Auto {
+                self.viewport.width
             } else {
-                b.width.resolve(self.viewport.width, || scale)
+                b.width
+                    .allotted(e.raw(k), self.measure[k].w, scale, |_| self.viewport.width)
             }
         } else {
             self.measure[k].w
@@ -514,9 +549,13 @@ impl Layers {
             if !e.slots[p].shape.allots_height() {
                 self.enqueue(Reflow, p, e);
             } else if old.is_none_or(|s| s.h != h) {
-                if !e.attrs[p].sizing.height.definite() {
+                let host = e.attrs[p].sizing.height;
+                if (!host.definite() || host.reads_fill_content()) && !b.height.reads_fill_content()
+                {
                     self.enqueue(Reflow, p, e);
-                } else if b.height.weight().is_none() {
+                }
+                if host.definite() && (b.height.weight().is_none() || b.height.reads_fill_content())
+                {
                     self.enqueue(Place, p, e);
                 }
             }
@@ -536,7 +575,7 @@ impl Layers {
         } else {
             let policy = e.attrs[k].sizing.height;
             let h = if policy.weight().is_some() {
-                policy.resolve(self.viewport.height, || scale)
+                policy.allotted(e.raw(k), s.h, scale, |_| self.viewport.height)
             } else {
                 s.h
             };

@@ -15,25 +15,22 @@ impl LayoutBehaviour for Row {
     fn reads_flow(width: Length, input: FlowInput) -> bool {
         let definite = width.definite();
         match input {
-            FlowInput::ChildWidth(child) => !definite || child.weight().is_none(),
+            FlowInput::ChildWidth(child) => {
+                !definite || child.weight().is_none() || child.reads_fill_content()
+            }
             FlowInput::ChildFill | FlowInput::HorizontalGap | FlowInput::Order => definite,
         }
     }
     fn offer_widths(node: Mounted<'_, Children>, cx: &mut FlowCx<'_>) {
         let children = node.data();
         // A content-sized row gives even a fill child its own intrinsic extent.
-        let split = FillShares::split(
-            cx.policy,
-            cx.inner,
-            cx.gap,
-            children,
-            |c| cx.policy_of(c),
-            |c| cx.measured_width(c),
-            |c| node.elements.slots[c].admitted.scale,
-        );
+        let slot = |c, cx: &FlowCx<'_>| {
+            fill::Slot::new(node.elements, c, cx.policy_of(c), cx.measured_width(c))
+        };
+        let split = FillShares::split(cx.policy, cx.inner, cx.gap, children, |c| slot(c, cx));
         for &c in children {
             let w = split
-                .and_then(|s| s.offer(cx.policy_of(c), || node.elements.slots[c].admitted.scale))
+                .and_then(|s| s.offer(slot(c, cx)))
                 .unwrap_or_else(|| cx.measured_width(c));
             cx.offer(c, w);
         }

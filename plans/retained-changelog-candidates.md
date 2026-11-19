@@ -7,6 +7,23 @@ that proves the fix. Only copy **verified fixes** to `Unreleased → Fixed` in
 
 ## Verified fixes — ready for the changelog
 
+### A content-limited fill leaves room unused
+
+- **Release note:** Fixed unused space beside a fill whose size is limited
+  by its own content. Other fill children receive the remaining space.
+
+- In a **120px-wide Row**, no padding or gap, A is `min(content(), fill())`
+  and B is `fill()`. With 20px of content in A, pinned `main` (`5c71a593`)
+  gives A/B **20/60**, leaving 40px unused; the expected split is **20/100**.
+  With 90px of content it gives the expected **60/60**, with nothing unused.
+- Before the fix, retained (`e411961`) rejected this expression on both
+  upload and patch with `unsupported length 4`; only the pixel-cap control
+  passed. Now all three [viewport regressions](../test/emerge_skia/mixed_content_fill_test.exs)
+  pass: A/B **20/100 → 60/60**, nothing unused, and `x=35` moves from B at
+  local `15` to A at local `35` only after the larger frame is submitted.
+  [Both axes, reflow, generated layouts and real Wayland seat checks](dimension-regressions.md#results).
+  This is a content-derived limit, distinct from the fixed pixel cap below.
+
 ### Capped fill leaves room unused
 
 - **Release note:** Row widths and Column heights now redistribute space among

@@ -88,6 +88,16 @@ defmodule Emerge.Engine.AttrCodecTest do
     assert normalize_attrs(decoded) == normalize_attrs(attrs)
   end
 
+  test "width and height keep every ordered min/max pair and both content spellings" do
+    assert content() === shrink()
+    leaves = [px(0.0), px(2.5), shrink(), fill(), fill(1.0), fill(3.0)]
+
+    for a <- leaves, b <- leaves, op <- [&min/2, &max/2] do
+      attrs = Map.new([width(op.(a, b)), height(op.(b, a))])
+      assert attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs() == attrs
+    end
+  end
+
   test "encode/decode spacing attributes" do
     attrs = %{spacing_xy: {12, 24}, space_evenly: true}
     decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()

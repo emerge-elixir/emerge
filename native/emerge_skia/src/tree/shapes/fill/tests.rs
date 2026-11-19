@@ -1,6 +1,17 @@
 use super::*;
 use std::cell::Cell;
 
+fn slot((weight, b): (f64, Option<Bounds<f32>>)) -> Slot<'static> {
+    Slot {
+        length: b.map_or(Length::Weighted(weight), |b| Length::BoundedFill {
+            bounds: b.map(f64::from),
+            weight,
+        }),
+        content: 0.,
+        scale: 1.,
+        raw: &[],
+    }
+}
 fn extent(raw: f32, bound: Option<Bounds<f32>>) -> f32 {
     bound.map_or(raw, |b| raw.clamp(b.floor, b.cap))
 }
@@ -14,7 +25,7 @@ fn check_unit(fills: &[(f64, Option<Bounds<f32>>)], unit: f32) {
     let split = FillShares::Device(room / weights).redistribute(f64::from(room), || {
         scans.set(scans.get() + 1);
         assert!(scans.get() <= 66);
-        fills.iter().copied()
+        fills.iter().copied().map(slot)
     });
     for &(w, b) in fills {
         assert_eq!(extent(split.share(w), b), extent(unit * w as f32, b));
@@ -83,6 +94,7 @@ fn a_floor_that_takes_the_whole_host_leaves_zero_even_for_a_much_smaller_peer() 
             (1., None),
         ]
         .into_iter()
+        .map(slot)
     });
     assert_eq!(split.share(1.), 0.);
 }

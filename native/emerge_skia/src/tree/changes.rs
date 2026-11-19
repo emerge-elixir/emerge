@@ -187,12 +187,32 @@ impl Layers {
         if shape.uses_glyphs() && &old_raw[old.text.clone()] != e.text(k).as_bytes() {
             self.text_changed(k, depth)
         }
-        self.invalidate_split(
-            e,
-            k,
-            old.sizing.width.split_policy() != next.sizing.width.split_policy(),
-            old.sizing.height.split_policy() != next.sizing.height.split_policy(),
-        );
+        let raw = e.raw(k);
+        let width = !old.sizing.width.same_split(old_raw, next.sizing.width, raw);
+        let height = !old
+            .sizing
+            .height
+            .same_split(old_raw, next.sizing.height, raw);
+        if old.sizing.height.reads_fill_content() != next.sizing.height.reads_fill_content() {
+            self.invalidate(Pass::Reflow, k, depth);
+            if let Some(p) = e.slots[k].parent {
+                self.invalidate(Pass::Reflow, p, e.depth(p));
+            }
+        }
+        if e.slots[k].parent.is_none() {
+            if width
+                && (old.sizing.width.reads_fill_content() || next.sizing.width.reads_fill_content())
+            {
+                self.invalidate(Pass::Flow, k, depth);
+            }
+            if height
+                && (old.sizing.height.reads_fill_content()
+                    || next.sizing.height.reads_fill_content())
+            {
+                self.invalidate(Pass::Place, k, depth);
+            }
+        }
+        self.invalidate_split(e, k, width, height);
     }
     // The splitter can change a sibling's offer or offset even if neither
     // the host frame nor this child's intrinsic box changes.

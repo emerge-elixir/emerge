@@ -214,20 +214,12 @@ fn prefix_depth_and_bad_nested_operands_reject_without_publishing() {
         (deep(axis, 65, true), "length expression depth exceeds 64"),
         (deep(axis, 65, false), "length expression depth exceeds 64"),
         (
-            field(
-                axis,
-                op(4, op(5, p(8.), vec![0]), op(4, p(9.), number(3, 3.))),
-            ),
-            "unsupported length 4",
+            field(axis, op(4, op(5, p(8.), vec![1]), vec![9])),
+            "unsupported length 9",
         ),
         (
-            // The inner content floor is valid; mixing it with a fill is not.
-            field(axis, op(4, op(5, p(8.), vec![1]), vec![0])),
-            "unsupported length 4",
-        ),
-        (
-            field(axis, op(4, op(5, p(8.), p(9.)), p(7.))),
-            "unsupported length 4",
+            field(axis, op(4, op(5, p(8.), p(9.)), vec![4, 1])),
+            "truncated EMRG data",
         ),
         (
             field(axis, op(5, op(4, p(f64::NAN), p(4.)), vec![0])),
