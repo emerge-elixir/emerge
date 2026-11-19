@@ -2,6 +2,7 @@
 mod allocations;
 mod bounded;
 mod column;
+mod column_width;
 mod content_bounds;
 mod dimensions;
 mod identity;

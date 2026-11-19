@@ -199,25 +199,37 @@ impl Layers {
                 self.invalidate(Pass::Reflow, p, e.depth(p));
             }
         }
-        if e.slots[k].parent.is_none() {
-            if width
-                && (old.sizing.width.reads_fill_content() || next.sizing.width.reads_fill_content())
-            {
-                self.invalidate(Pass::Flow, k, depth);
-            }
-            if height
-                && (old.sizing.height.reads_fill_content()
-                    || next.sizing.height.reads_fill_content())
-            {
-                self.invalidate(Pass::Place, k, depth);
-            }
+        if width
+            && (old.sizing.width.reads_fill_content() || next.sizing.width.reads_fill_content())
+            && !e.width_offer_is_resolved(k)
+        {
+            self.invalidate(Pass::Flow, k, depth);
         }
-        self.invalidate_split(e, k, width, height);
+        if height
+            && (old.sizing.height.reads_fill_content() || next.sizing.height.reads_fill_content())
+            && e.slots[k].parent.is_none()
+        {
+            self.invalidate(Pass::Place, k, depth);
+        }
+        let parent_input = width.then(|| {
+            if old.sizing.width.weight().is_some() != next.sizing.width.weight().is_some() {
+                FlowInput::ChildFill
+            } else {
+                FlowInput::ChildSplit
+            }
+        });
+        self.invalidate_split(e, k, parent_input, height);
     }
     // The splitter can change a sibling's offer or offset even if neither
     // the host frame nor this child's intrinsic box changes.
-    pub(super) fn invalidate_split(&mut self, e: &Elements, k: Key, width: bool, height: bool) {
-        if !width && !height {
+    pub(super) fn invalidate_split(
+        &mut self,
+        e: &Elements,
+        k: Key,
+        width: Option<FlowInput>,
+        height: bool,
+    ) {
+        if width.is_none() && !height {
             return;
         }
         let Some(p) = e.slots[k].parent else { return };
@@ -226,7 +238,7 @@ impl Layers {
         if height && shape.allots_height() && b.height.definite() {
             self.invalidate(Pass::Place, p, e.depth(p));
         }
-        if width && shape.reads_flow(b.width, FlowInput::ChildFill) {
+        if width.is_some_and(|input| shape.reads_flow(b.width, input)) {
             self.invalidate(Pass::Flow, p, e.depth(p));
         }
     }

@@ -187,6 +187,43 @@ fn mixed_splits(c: &Counter) {
     }
 }
 
+fn independent_column_widths(c: &Counter) {
+    let mut r = Raster::default();
+    r.tree.upload(&column_width::stack()).unwrap();
+    c.zero("first Column width flow after reservation", || {
+        r.settle(180., 170., 1.).unwrap();
+    });
+    draw(&mut r);
+    let policy = |op| set(2, 4, weighted::panel(1, 2, column_width::mixed(op)));
+    for (p, w) in [(policy(5), 108.), (set(4, 6, block(&[px(1, 150.)])), 150.)] {
+        c.zero("fitting cross-axis edit through paint/hit inputs", || {
+            r.tree.patch(&p).unwrap();
+            r.settle(180., 170., 1.).unwrap();
+        });
+        assert_eq!(bounds(&r, 2).width, w);
+        draw(&mut r);
+    }
+    let target = r.target_at(117., 10.).unwrap();
+    let old = r.pixels().to_vec();
+    r.tree.patch(&policy(4)).unwrap();
+    let pending = r.tree.encode();
+    let over = set(5, 5, text(&"W".repeat(512)));
+    (c.fail_next_reserve)();
+    assert_eq!(
+        r.tree.patch(&over).unwrap_err(),
+        "tree workspace capacity exceeded"
+    );
+    assert_eq!(r.tree.encode(), pending);
+    c.zero("pending Column cap after refused growth", || {
+        r.settle(180., 170., 1.).unwrap();
+    });
+    assert_eq!(bounds(&r, 2).width, 108.);
+    assert_eq!(r.pixels(), old);
+    assert_eq!(r.target_at(117., 10.), Some(target));
+    draw(&mut r);
+    assert_eq!(r.target_at(117., 10.).unwrap().1, 1);
+}
+
 fn bounded_content(c: &Counter) {
     for axis in [1, 2] {
         let mut r = Raster::default();
@@ -571,6 +608,7 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     nested_splits(&c);
     bounded_content(&c);
     mixed_splits(&c);
+    independent_column_widths(&c);
     // 100 slots + 80% = 180. The inserted subtree and edited parent's
     // first input coexist with the old glyph/command buffers and batch scratch.
     let ids: Vec<u64> = (2..=100).collect();

@@ -9,16 +9,16 @@ impl Expr {
             _ => false,
         }
     }
-    fn allowed(&self, axis: u8, site: u8) -> bool {
+    fn allowed(&self, axis: u8, kind: u8, parent: Option<u8>) -> bool {
         !self.has_fill()
-            || site == weighted::host(axis)
-            || (axis == 1 && matches!(self, Fill(None)))
+            || parent.unwrap_or(kind) == weighted::host(axis)
+            || (axis == 1 && (parent == Some(3) || matches!(self, Fill(None))))
     }
-    fn single(&self, natural: f32, host: f64, root: bool) -> f32 {
+    fn single(&self, natural: f32, host: f64, independent_offer: bool) -> f32 {
         let eval = |unit| self.eval(f64::from(natural), 1., |_| unit);
         // One child: if a main-axis slot exists it either takes all the room
-        // or reaches its minimum/maximum. At a root there are no peer weights.
-        if root {
+        // or reaches its minimum/maximum. Roots and cross-axis widths read the offer directly.
+        if independent_offer {
             eval(host) as f32
         } else {
             host.clamp(eval(0.), eval(f64::INFINITY)) as f32
@@ -54,7 +54,6 @@ fn width_by_height_at_roots_and_all_supported_parent_child_sites() {
     for parent in [None, Some(1), Some(2), Some(3), Some(4)] {
         for kind in 1..=6 {
             let (w, h) = (80., 60.);
-            let site = parent.unwrap_or(kind);
             let id = if parent.is_some() { 2 } else { 1 };
             let mut nodes: Vec<_> = parent
                 .into_iter()
@@ -76,7 +75,7 @@ fn width_by_height_at_roots_and_all_supported_parent_child_sites() {
                 for height in &lengths {
                     let edit = set(id, kind, styles(width, height, kind));
                     let result = t.patch(&edit);
-                    if !width.allowed(1, site) || !height.allowed(2, site) {
+                    if !width.allowed(1, kind, parent) || !height.allowed(2, kind, parent) {
                         assert!(result.unwrap_err().contains("requires a root"));
                         assert_eq!(t.encode(), accepted);
                         continue;
@@ -86,7 +85,7 @@ fn width_by_height_at_roots_and_all_supported_parent_child_sites() {
                     let b = t.layers.frames[key];
                     assert_eq!((b.x, b.y), (0., 0.));
                     let expected = (
-                        width.single(natural.width, w, parent.is_none()),
+                        width.single(natural.width, w, parent.is_none() || parent == Some(3)),
                         height.single(natural.height, h, parent.is_none()),
                     );
                     assert_eq!(

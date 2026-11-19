@@ -5,20 +5,24 @@ what reproduces it, what `main` does, what should happen, and the regression
 that proves the fix. Only copy **verified fixes** to `Unreleased → Fixed` in
 [CHANGELOG.md](../CHANGELOG.md). A port that merely matches `main` is not a fix.
 
-## Open — not ready for the changelog
+## Verified fixes — ready for the changelog
 
 ### Content floor on the width of a Column child
+
+- **Release note:** A Column child's width now respects a content minimum
+  combined with fill, even when its content is wider than the Column's offer.
 
 - In a 120×40 Column with 6px padding and a 4px vertical gap, two 12px-high
   children each have 108px of available width. B uses `fill()` and takes all
   108px. A has 150px of content. Pinned `main` (`5c71a593`) gives A 150px
   with `max(content(), px(108))`, but only 108px with `max(content(), fill(3))`.
-- Proposed: both spellings give A 150px (42px past the inner edge); nothing
-  is unused on B's line and the host clip stays fixed. Retained `2c802f6`
-  rejects the fill-bearing policy at this site. This is a detached geometry
-  observation, not a verified pixel or input fix. [Plan and controls](column-cross-axis-width.md).
-
-## Verified fixes — ready for the changelog
+- Retained `2c802f6` rejected the fill-bearing policy on this edge. Both
+  spellings now give A **150px**, 42px past the inner edge. B still takes
+  108px with nothing unused, and the host clip stays at x=120. The [headless
+  regression](../test/emerge_skia/column_cross_width_test.exs) and [Wayland
+  seat checks](column-cross-axis-width.md#results) see A at `(117,10)` in
+  the right padding and only the enclosing view at `(121,10)` outside the
+  host. This is not the main-axis redistribution fix below.
 
 ### A content-limited fill leaves room unused
 

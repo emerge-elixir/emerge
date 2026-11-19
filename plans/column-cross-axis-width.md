@@ -1,44 +1,43 @@
-# Next slice: fill widths on direct children of a Column
+# Fill widths on direct children of a Column
 
-**Proposed after `2c802f6`; not implemented.** Start here because a Column
-already offers its inner width to a child with `width(fill())`, yet the same
-child with `width(fill(1))` is rejected. This is one new site for existing
-lengths, not another distribution algorithm: children stacked vertically do
-not compete for horizontal space.
+**Implemented and checked.** At `2c802f6` a Column already offered its inner
+width to a child with `width(fill())`, yet the same child with `width(fill(1))`
+was rejected. This is one new site for existing lengths, not another
+allocation algorithm: children stacked vertically do not compete for width.
 
 ## Contract and first regression
 
 Use a 120×40 Column, 6px padding on all sides, 4px vertical gap, two 12px-high
 children. Inner width is 108. A starts at `(6,6)`, B at `(6,22)`; there is no
 unused height. B always uses `width(fill())` and is 108px wide. For A, each
-fill leaf should read the same 108px offer regardless of weight; each content
-leaf should read A's padded natural width. Evaluate `min`/`max` literally.
+fill leaf reads the same 108px offer regardless of weight; each content
+leaf reads A's padded natural width. Evaluate `min`/`max` literally.
 
 | A's width | A's demand | A's expected width | Unused width on A's line |
 | --- | ---: | ---: | ---: |
 | `fill(3)` | 30 | 108 | 0 |
 | `min(content(), fill(3))` | 30 → 90 → 150 | 30 → 90 → 108 | 78 → 18 → 0 |
-| `max(content(), fill(3))` | 150 | **150 proposed** | 42 overflow |
+| `max(content(), fill(3))` | 150 | **150** | 42 overflow |
 
 B has no unused width in any case. A floor may overflow; it must not enlarge
 B or the host clip. Do **not** widen admission for root Column widths, El or
 WrappedRow parents, or Row child heights. Keep existing plain-width behavior,
 Row width sharing and Column height sharing unchanged.
 
-**Measured before evidence (detached geometry only).** On `2c802f6` both
-plain-fill children are 108 wide. A weighted or compound fill fails upload
+**Before the change (detached geometry).** On `2c802f6` both plain-fill
+children were 108 wide. A weighted or compound fill failed upload
 with `weighted fill width requires a root Row or a child of a Row` or the
 corresponding `bounded fill width` error. On pinned `5c71a593`, A gets 108
-for `fill(3)` and 30/90/108 for the content cap. One decision needs a named
-regression before porting: pinned main gives **108** for the content floor,
-but **150** for both `content()` and `max(content(), px(108))` in the very
-same scene. Retained also gives 150 for those two controls. Recommend 150:
-replacing the known 108px offer with `px(108)` should not change the result.
-[Open finding, not a verified fix](retained-changelog-candidates.md#content-floor-on-the-width-of-a-column-child).
+for `fill(3)` and 30/90/108 for the content cap. Pinned main gives **108**
+for the content floor, but **150** for both `content()` and
+`max(content(), px(108))` in the same scene. Retained also gave 150 for
+those two controls. The [floor regression](retained-changelog-candidates.md#content-floor-on-the-width-of-a-column-child)
+requires 150: substituting `px(108)` for a known 108px offer must not
+change the result.
 Probe and logs: `/workspace/emerge-investigation-artifacts/column-cross-width-plan-wuhUgE/{probe.exs,pinned-controls.log,retained-controls.log}`.
 Each run used its own producer and verified mapped NIF inode and bytes.
 
-## Implementation order and exit criteria
+## Regression and implementation gates
 
 1. **Start red on an ordinary headless viewport.** Give A a red background,
    B blue, the Column white; make all three clickable and A's demand child
@@ -73,3 +72,51 @@ Each run used its own producer and verified mapped NIF inode and bytes.
    Mix against the **93 named failures / 21 exclusions** baseline. Confirm
    representative pixels and clicks on a private CPU Wayland window before
    claiming window behavior. Only then update port status or promote a fix.
+
+## Results
+
+- **Before implementation:** the plain-fill viewport control passed. The
+  weighted mount, cold cap, sparse cap and oversize floor tests failed with
+  the admission errors above. Four extended native campaign tests were red;
+  seed 0 failed at `ColumnWidth` step 0. These were refusals, not incorrect
+  geometry from a successful layout.
+- **After:** all 11 detached controls from the planning probe met the stated
+  geometry; only the 150px content floor differs from pinned main. The
+  [viewport tests](../test/emerge_skia/column_cross_width_test.exs) check
+  whole delivered frames and raw input: `(76,10)` stays on the Column until
+  the 90px cap is submitted, then reaches A at `(70,4)`. B does not move.
+  A press also follows the same keyed card from a Row to a Column and back,
+  including a rejected sparse move while the legal move is pending.
+- Width flow distinguishes a Row's resolved offer from available space on
+  the final incoming edge. A policy-only cap → floor at equal 30px demand
+  reruns child flow, not the Column's flow or intrinsic measurement. An
+  auto-width Column observes whether a child requests fill, not changes to
+  its weight. [Native tests](../native/emerge_skia/src/tree/tests/column_width.rs)
+  cover natural/auto hosts, zero width, width-driven wrap and following y,
+  masked overflow on a scaled move, refused handoff and attachment identity.
+  No new pass, wire field, renderer API or heap-backed expression.
+- Extended the 4,320 width × height site cases without admitting these
+  widths at root Columns or El/WrappedRow parent sites. **10,000 seeds ×
+  3 sites × 13 = 390,000 settled states**, including 130,000 independent
+  Column-width states, matched literal test math and exact fresh replay.
+  Not a frame count. Two old tests (`tests/{bounded,weighted}.rs`) assumed
+  a move under a Column was illegal. Their width fixtures now use a WrappedRow
+  as the illegal destination and still verify the original rollback and hits.
+- Six release Cargo/strict Clippy profiles passed: **89/92/93/117/117/93**
+  (headless, Wayland, GL, Vulkan, both, matched). First reserved native
+  compute, fitting cross-axis policy/demand edits through prepared paint/hit
+  inputs, and pending compute after a refused growth: **0 alloc / 0 realloc /
+  0 free**. This excludes reservation, rasterization and delivery.
+- **90 focused Mix tests passed** (7 excluded by selection). Full Mix:
+  **677/770 passed**, **93 failures / 21 exclusions**. The 93 failing names
+  are identical to `2c802f6`. No new exclusions. The private CPU Wayland
+  window passed **12 seat clicks**, each bracketed by full compositor crops.
+  This includes the 150px floor in a 160px-wide view: A paints/hits in the
+  right padding at x=117, but neither paints nor receives input at x=121.
+  No new GPU, timing or physical scanout claim.
+- Evidence: `/workspace/emerge-investigation-artifacts/column-cross-width-ke9QpY`.
+  See `logs/red-{live,properties}`, `logs/first-matched`, `logs/final-geometry`,
+  `logs/{qualification-native,qualification-app,final-window,post-suite-mapped}`,
+  failure-name lists and `changed.sha256`. The mapped NIF inode and bytes
+  were checked before/after the full suite and in the Wayland client. Matched
+  NIF SHA-256: `a3105d9006df8e92e615a3c5138b9431d4c7cbe00923220fd716085336932453`.

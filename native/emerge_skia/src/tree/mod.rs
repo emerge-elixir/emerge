@@ -266,6 +266,13 @@ impl Elements {
     fn attached_count(&self) -> usize {
         self.slots.len() - self.detached.len()
     }
+    // A Row sends the final width (even when natural); other parents send
+    // available space, like the viewport. Read the final incoming edge.
+    fn width_offer_is_resolved(&self, k: Key) -> bool {
+        self.slots[k]
+            .parent
+            .is_some_and(|p| self.slots[p].shape.allots_width())
+    }
     fn children(&self, key: Key) -> &[Key] {
         self.child_pool.get(&self.slots[key].children)
     }

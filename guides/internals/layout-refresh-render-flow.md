@@ -44,6 +44,14 @@ padding and gaps. A content-height column instead uses each fill child's own
 intrinsic height. The outer offer and offset share one reserved entry for the
 incoming edge; a nested column distributes its offer without scaling it again.
 
+Direct children of a Column do **not** divide its width. In each child's
+width expression every fill leaf, including `fill(3)`, reads the same inner
+width of the Column. Content reads the child's own padded demand; pixel
+leaves use the child's scale. A content floor can make a child wider than
+its parent without changing a sibling's width or extending the parent clip.
+The child resolves the expression in width flow, never a second time on an
+already resolved offer from a Row. See the [regression scene](../../plans/column-cross-axis-width.md).
+
 A Row divides spare width, and a Column divides spare height, in proportion
 to the children's weights. `fill()` and `fill(1)` both take one share. A
 weight-only edit invalidates the distributing parent, not the child's

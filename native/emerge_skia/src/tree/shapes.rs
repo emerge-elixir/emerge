@@ -51,7 +51,8 @@ impl<'a, P: Payload> Mounted<'a, P> {
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum FlowInput {
     ChildWidth(Length),
-    ChildFill,
+    ChildFill,  // changed whether the child requests fill
+    ChildSplit, // changed the policy or scale of an existing fill
     HorizontalGap,
     Order,
 }

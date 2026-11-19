@@ -197,17 +197,14 @@ impl Batch {
                             .map_or_else(|| e.slots[e.ids[&p]].shape, |edit| edit.shape)
                     })
                 };
-                if matches!(
-                    a.sizing.width,
-                    Length::BoundedFill { .. } | Length::Formula(_)
-                ) && !host().allots_width()
-                {
-                    return Err("bounded fill width requires a root Row or a child of a Row".into());
-                }
-                if matches!(a.sizing.width, Length::Weighted(_)) && !host().allots_width() {
-                    return Err(
-                        "weighted fill width requires a root Row or a child of a Row".into(),
-                    );
+                let width = a.sizing.width;
+                if width != Length::Fill && width.weight().is_some() {
+                    let site = host();
+                    let allowed =
+                        site.allots_width() || (parent.is_some() && site == Shape::Column);
+                    if !allowed {
+                        return Err("weighted or compound fill width requires a root Row or a child of a Row or Column".into());
+                    }
                 }
                 if a.sizing.height.weight().is_some() && !host().allots_height() {
                     return Err(

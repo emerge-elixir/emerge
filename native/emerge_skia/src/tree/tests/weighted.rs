@@ -4,6 +4,16 @@ use super::*;
 pub(super) fn host(axis: u8) -> u8 {
     if axis == 1 { 1 } else { 3 }
 }
+// Keep both lanes at their original positions, but put them under a parent
+// that cannot itself host the weighted/bounded child being moved: a 90px
+// WrappedRow stacks the two width lanes; a Row hosts the two height lanes.
+pub(super) fn wrong_site(axis: u8) -> (u8, Bytes) {
+    if axis == 1 {
+        (2, block(&[px(1, 90.)]))
+    } else {
+        (1, block(&[]))
+    }
+}
 pub(super) fn weight(axis: u8, n: f64) -> Bytes {
     [axis, 3].into_iter().chain(n.to_be_bytes()).collect()
 }
@@ -161,11 +171,11 @@ fn nested_weighted_columns_charge_the_reflowed_nonfill_sibling_once() {
 fn rejection_preserves_pending_weights_and_closed_moves_use_the_new_hosts_split() {
     for axis in [1, 2] {
         let line = host(axis);
-        let cross = host(3 - axis);
+        let (cross, root) = wrong_site(axis);
         let mut r = Raster::default();
         r.tree
             .upload(&upload(&[
-                node(1, cross, block(&[]), &[2, 3]),
+                node(1, cross, root, &[2, 3]),
                 node(2, line, size(axis, px(axis, 90.)), &[10, 20]),
                 node(3, line, size(axis, px(axis, 60.)), &[30]),
                 node(10, 4, panel(axis, 10, vec![axis, 0]), &[11]),
@@ -191,7 +201,7 @@ fn rejection_preserves_pending_weights_and_closed_moves_use_the_new_hosts_split(
             "truncated EMRG data"
         );
         // The kept branch has accepted a weighted policy, even though the last
-        // draw used fill(). It can't be moved under the cross-axis host or
+        // draw used fill(). It can't be moved directly under this outer host or
         // promoted as a root El, as a definition with :same or a bare ref.
         for bad in [
             patch(2, 10, &[]),

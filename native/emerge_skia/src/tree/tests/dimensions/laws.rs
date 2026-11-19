@@ -16,16 +16,16 @@ fn commutation_and_idempotence_preserve_slots_on_either_axis() {
         c.host = rng.next(201) as f64;
         c.kids[0].pad = 2.;
         c.gap = 1.5;
-        for axis in [1, 2] {
+        for site in SITES {
             c.kids[0].expr = l.clone();
-            let original = c.cold(axis).unwrap();
+            let original = c.cold(site).unwrap();
             for equivalent in [
                 reversed(&l),
                 pair(true, l.clone(), l.clone()),
                 pair(false, l.clone(), l.clone()),
             ] {
                 c.kids[0].expr = equivalent;
-                assert_eq!(c.cold(axis).unwrap(), original, "seed {seed} axis {axis}");
+                assert_eq!(c.cold(site).unwrap(), original, "seed {seed} {site:?}");
             }
         }
     }
@@ -42,9 +42,10 @@ fn a_capped_maximum_weight_can_hand_the_slope_to_a_subnormal_weight() {
     let mut c = specimen(a);
     c.kids[1].expr = Fill(Some(tiny));
     c.kids.push(child(4, Fill(Some(3. * tiny)), 0.));
-    for axis in [1, 2] {
+    for site in [RowWidth, ColumnHeight] {
+        let axis = site.axis();
         let mut r = Raster::default();
-        r.tree.upload(&c.upload(axis)).unwrap();
+        r.tree.upload(&c.upload(site)).unwrap();
         for (room, expected) in [
             (20., [20., 0., 0.]),
             (120., [30., 22.5, 67.5]),

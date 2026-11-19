@@ -387,7 +387,12 @@ impl Layers {
                             || matches!(l, Length::BoundedFill { bounds, .. } if bounds.device(old) != bounds.device(ctx.scale))
                     };
                     let b = e.attrs[k].sizing;
-                    self.invalidate_split(e, k, moved(b.width), moved(b.height));
+                    self.invalidate_split(
+                        e,
+                        k,
+                        moved(b.width).then_some(FlowInput::ChildSplit),
+                        moved(b.height),
+                    );
                 }
                 for p in [Flow, Reflow, PaintContext] {
                     self.enqueue(p, k, e);
@@ -479,13 +484,19 @@ impl Layers {
         let shape = e.slots[k].shape;
         let scale = self.context[k].scale;
         let outer = if shape.uses_offer(e, k) {
-            if e.slots[k].parent.is_some() {
-                self.offers[k]
-            } else if b.width == Length::Auto {
-                self.viewport.width
-            } else {
-                b.width
-                    .allotted(e.raw(k), self.measure[k].w, scale, |_| self.viewport.width)
+            let offer = e.slots[k]
+                .parent
+                .map_or(self.viewport.width, |_| self.offers[k]);
+            match b.width {
+                Length::BoundedFill { .. } | Length::Formula(_)
+                    if !e.width_offer_is_resolved(k) =>
+                {
+                    // Every fill leaf reads the same available width, not a
+                    // weighted share. Content and px still belong to the child.
+                    b.width
+                        .allotted(e.raw(k), self.measure[k].w, scale, |_| offer)
+                }
+                _ => offer,
             }
         } else {
             self.measure[k].w

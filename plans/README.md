@@ -5,7 +5,7 @@ Keep [bugs found on main and verified fixes for the changelog](retained-changelo
 
 [Width and height regression plan, seed replay and results](dimension-regressions.md): covers static sizing on the six supported shapes, including mixed `min`/`max` expressions.
 
-Next proposed slice: [fill widths on direct children of a Column](column-cross-axis-width.md).
+Implemented: [fill widths on direct children of a Column](column-cross-axis-width.md#results). Each stacked child uses the full inner-width offer, not a share of its siblings’ width.
 
 Implemented: [Unweighted height fill in columns](column-height-fill.md), [weighted Row widths and Column heights](weighted-fill.md), [redistribution at a pixel cap or floor](bounded-main-axis-fill.md#redistribution-correction), [nested `min`/`max` around one fill](nested-main-axis-fill.md), and [pixel bounds on `content()` / `shrink()`](bounded-content.md).
 

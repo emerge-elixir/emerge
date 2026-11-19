@@ -1,9 +1,25 @@
-//! Replayable, independent model of static main-axis size, not the production
-//! decoder, intrinsic cache or allocator. A case is public length math plus
-//! fixed-size content, so both axes have the same answer before wrapping.
+//! Replayable model of main-axis splits and independent Column widths. Uses
+//! literal length math and fixed-size content, not the decoder or allocator.
 use super::*;
 mod laws;
 mod sites;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Site {
+    RowWidth,
+    ColumnHeight,
+    ColumnWidth,
+}
+use Site::*;
+const SITES: [Site; 3] = [RowWidth, ColumnHeight, ColumnWidth];
+impl Site {
+    fn axis(self) -> u8 {
+        if self == ColumnHeight { 2 } else { 1 }
+    }
+    fn host(self) -> u8 {
+        if self == RowWidth { 1 } else { 3 }
+    }
+}
 
 #[derive(Clone, Debug)]
 enum Expr {
@@ -72,10 +88,10 @@ impl Child {
         fields.extend(self.expr.field(axis));
         block(&fields)
     }
-    fn width(&self, z: f64, unit: f64) -> f64 {
+    fn extent(&self, z: f64, fill: impl Fn(f64) -> f64 + Copy) -> f64 {
         let scale = z * self.zoom;
         self.expr
-            .eval((self.demand + 2. * self.pad) * scale, scale, |w| w * unit)
+            .eval((self.demand + 2. * self.pad) * scale, scale, fill)
     }
 }
 #[derive(Clone, Debug)]
@@ -98,8 +114,9 @@ impl Case {
     fn ids(&self) -> Vec<u64> {
         self.kids.iter().map(|c| c.id).collect()
     }
-    fn upload(&self, axis: u8) -> Bytes {
-        let root = node(1, weighted::host(axis), self.root(axis), &self.ids());
+    fn upload(&self, site: Site) -> Bytes {
+        let axis = site.axis();
+        let root = node(1, site.host(), self.root(axis), &self.ids());
         let nodes = std::iter::once(root)
             .chain(self.kids.iter().flat_map(|c| {
                 [
@@ -113,12 +130,25 @@ impl Case {
     fn settle(&self, t: &mut Tree) -> Result<(), String> {
         t.refresh(512., 512., self.display as f32)
     }
-    fn expected(&self) -> Vec<(f64, f64)> {
+    fn expected(&self, site: Site) -> Vec<(f64, f64)> {
         let z = self.display;
+        if site == ColumnWidth {
+            let inner = ((self.host - 2. * self.pad) * z).max(0.);
+            return self
+                .kids
+                .iter()
+                .map(|c| (self.pad * z, c.extent(z, |_| inner)))
+                .collect();
+        }
         let room =
             ((self.host - 2. * self.pad - self.gap * self.kids.len().saturating_sub(1) as f64) * z)
                 .max(0.);
-        let sum = |unit: f64| self.kids.iter().map(|c| c.width(z, unit)).sum::<f64>();
+        let sum = |unit: f64| {
+            self.kids
+                .iter()
+                .map(|c| c.extent(z, |w| w * unit))
+                .sum::<f64>()
+        };
         let unit = if sum(0.) >= room {
             0.
         } else if sum(f64::INFINITY) <= room {
@@ -144,27 +174,27 @@ impl Case {
         self.kids
             .iter()
             .map(|c| {
-                let w = c.width(z, unit);
+                let w = c.extent(z, |w| w * unit);
                 let x = pos;
                 pos += w + self.gap * z;
                 (x, w)
             })
             .collect()
     }
-    fn verify(&self, axis: u8, t: &Tree) -> Result<Vec<(f32, f32)>, String> {
+    fn verify(&self, site: Site, t: &Tree) -> Result<Vec<(f32, f32)>, String> {
         let spans = self
             .kids
             .iter()
             .map(|c| {
                 let f = t.layers.frames[t.elements.ids[&c.id]];
-                if axis == 1 {
+                if site.axis() == 1 {
                     (f.x, f.width)
                 } else {
                     (f.y, f.height)
                 }
             })
             .collect::<Vec<_>>();
-        for ((x, w), (ex, ew)) in spans.iter().copied().zip(self.expected()) {
+        for ((x, w), (ex, ew)) in spans.iter().copied().zip(self.expected(site)) {
             let close = |a: f32, b: f64| {
                 (f64::from(a) - b).abs() <= 8. * f64::from(f32::EPSILON) * b.abs().max(1.)
             };
@@ -174,18 +204,18 @@ impl Case {
         }
         Ok(spans)
     }
-    fn cold(&self, axis: u8) -> Result<Vec<(f32, f32)>, String> {
+    fn cold(&self, site: Site) -> Result<Vec<(f32, f32)>, String> {
         let mut t = Tree::default();
-        t.upload(&self.upload(axis))?;
+        t.upload(&self.upload(site))?;
         self.settle(&mut t)?;
-        self.verify(axis, &t)
+        self.verify(site, &t)
     }
-    fn reduced_cold_failure(&self, axis: u8) -> Option<Self> {
-        let error = self.cold(axis).err()?;
+    fn reduced_cold_failure(&self, site: Site) -> Option<Self> {
+        let error = self.cold(site).err()?;
         // Do not reduce a geometry failure to e.g. a decoder rejection, or
         // present a cold case as the reproduction of an incremental-only bug.
         let reproduces = |case: &Self| {
-            case.cold(axis).is_err_and(|e| {
+            case.cold(site).is_err_and(|e| {
                 e == error || (error.starts_with("actual (") && e.starts_with("actual ("))
             })
         };
@@ -244,16 +274,16 @@ fn every_ordered_pair_and_leaf_on_both_axes() {
         Fill(Some(3.)),
     ];
     let mut failures = Vec::new();
-    for axis in [1, 2] {
+    for site in SITES {
         for l in [Auto].into_iter().chain(leaves.clone()) {
-            specimen(l).cold(axis).unwrap();
+            specimen(l).cold(site).unwrap();
         }
         for a in &leaves {
             for b in &leaves {
                 for min in [true, false] {
                     let l = pair(min, a.clone(), b.clone());
-                    if let Err(e) = specimen(l.clone()).cold(axis) {
-                        failures.push((axis, l, e));
+                    if let Err(e) = specimen(l.clone()).cold(site) {
+                        failures.push((site, l, e));
                     }
                 }
             }
@@ -294,7 +324,9 @@ fn seeded_dimension_edits_match_math_and_fresh_trees() {
     let first = std::env::var("EMERGE_DIM_SEED").map_or(0, |s| s.parse().unwrap());
     let count = std::env::var("EMERGE_DIM_CASES").map_or(64, |s| s.parse().unwrap());
     for seed in first..first + count {
-        for axis in [1, 2] {
+        for site in SITES {
+            let axis = site.axis();
+            let host = site.host();
             let mut rng = Rng(seed);
             let mut c = specimen(Auto);
             c.kids = (0..2 + rng.next(4))
@@ -311,7 +343,7 @@ fn seeded_dimension_edits_match_math_and_fresh_trees() {
                 let i = rng.next(c.kids.len());
                 let k = &mut c.kids[i];
                 let wire = match step {
-                    0 => c.upload(axis),
+                    0 => c.upload(site),
                     1 | 8 => {
                         k.demand = rng.next(181) as f64;
                         set(k.id + 100, 6, block(&[px(axis, k.demand)]))
@@ -324,7 +356,7 @@ fn seeded_dimension_edits_match_math_and_fresh_trees() {
                         c.pad = rng.next(8) as f64;
                         c.gap = rng.next(6) as f64;
                         c.host = rng.next(240) as f64;
-                        set(1, weighted::host(axis), c.root(axis))
+                        set(1, host, c.root(axis))
                     }
                     4 => {
                         k.zoom = [0.5, 1., 1.5, 2.][rng.next(4)];
@@ -332,7 +364,7 @@ fn seeded_dimension_edits_match_math_and_fresh_trees() {
                     }
                     5 => {
                         c.kids.reverse();
-                        order(1, weighted::host(axis), &c.ids())
+                        order(1, host, &c.ids())
                     }
                     6 => {
                         c.display = [0.5, 1., 1.5, 2.][rng.next(4)];
@@ -340,7 +372,7 @@ fn seeded_dimension_edits_match_math_and_fresh_trees() {
                     }
                     7 | 9 => {
                         c.host = if step == 7 { 0. } else { 160. };
-                        set(1, weighted::host(axis), c.root(axis))
+                        set(1, host, c.root(axis))
                     }
                     10 => {
                         let extra = child(20, rng.expr(3), 30.);
@@ -350,7 +382,7 @@ fn seeded_dimension_edits_match_math_and_fresh_trees() {
                             1,
                             1,
                             &[
-                                edges(1, weighted::host(axis), &c.ids()),
+                                edges(1, host, &c.ids()),
                                 node(20, 4, attrs, &[120]),
                                 node(120, 6, block(&[px(axis, 30.)]), &[]),
                             ],
@@ -365,9 +397,7 @@ fn seeded_dimension_edits_match_math_and_fresh_trees() {
                         k.expr = rng.expr(2);
                         live.patch(&set(k.id, 4, k.attrs(axis)))
                             .unwrap_or_else(|e| {
-                                panic!(
-                                    "seed {seed} axis {axis} step {step}, intermediate patch: {e}"
-                                )
+                                panic!("seed {seed} {site:?} step {step}, intermediate patch: {e}")
                             });
                         k.expr = before;
                         set(k.id, 4, k.attrs(axis))
@@ -380,8 +410,8 @@ fn seeded_dimension_edits_match_math_and_fresh_trees() {
                         live.patch(&wire)?
                     };
                     c.settle(&mut live)?;
-                    let actual = c.verify(axis, &live)?;
-                    let cold = c.cold(axis)?;
+                    let actual = c.verify(site, &live)?;
+                    let cold = c.cold(site)?;
                     if actual != cold {
                         return Err(format!("sparse {actual:?} != cold {cold:?}"));
                     }
@@ -389,8 +419,8 @@ fn seeded_dimension_edits_match_math_and_fresh_trees() {
                 })();
                 if let Err(e) = check {
                     panic!(
-                        "seed {seed} axis {axis} step {step}: {e}; case {c:?}; cold reducer: {:?}",
-                        c.reduced_cold_failure(axis)
+                        "seed {seed} {site:?} step {step}: {e}; case {c:?}; cold reducer: {:?}",
+                        c.reduced_cold_failure(site)
                     );
                 }
             }
@@ -402,10 +432,10 @@ fn seeded_dimension_edits_match_math_and_fresh_trees() {
 fn an_expression_can_change_its_active_fill_weight_twice() {
     // max(min(3u,30),u): 3u below 10, then 30, then u above 30.
     let mut c = specimen(pair(false, pair(true, Fill(Some(3.)), Px(30.)), Fill(None)));
-    for axis in [1, 2] {
+    for site in [RowWidth, ColumnHeight] {
         for (room, a, b) in [(20., 15., 5.), (50., 30., 20.), (120., 60., 60.)] {
             c.host = room;
-            assert_eq!(c.cold(axis).unwrap(), [(0., a), (a, b)]);
+            assert_eq!(c.cold(site).unwrap(), [(0., a), (a, b)]);
         }
     }
 }

@@ -18,7 +18,10 @@ impl LayoutBehaviour for Row {
             FlowInput::ChildWidth(child) => {
                 !definite || child.weight().is_none() || child.reads_fill_content()
             }
-            FlowInput::ChildFill | FlowInput::HorizontalGap | FlowInput::Order => definite,
+            FlowInput::ChildFill
+            | FlowInput::ChildSplit
+            | FlowInput::HorizontalGap
+            | FlowInput::Order => definite,
         }
     }
     fn offer_widths(node: Mounted<'_, Children>, cx: &mut FlowCx<'_>) {
