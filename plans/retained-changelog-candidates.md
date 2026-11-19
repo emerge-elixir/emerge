@@ -5,6 +5,22 @@ what reproduces it, what `main` does, what should happen, and the regression
 that proves the fix. Only copy **verified fixes** to `Unreleased → Fixed` in
 [CHANGELOG.md](../CHANGELOG.md). A port that merely matches `main` is not a fix.
 
+## Open — fill on an El child
+
+Retained `7229d0a` rejects weighted/compound width and fill-bearing height
+on this edge. These pinned `main` (`5c71a593`) findings are **not verified
+fixes**. [Probe, control frames and proposed regressions](el-child-fill.md).
+
+- **Content floor on either axis:** a 120×80 El, padding 6, no gap, offers
+  108×68. For 150×90 demand, `max(content(), fill(3))` on both axes gives
+  only 108×68 on main. Substituting the known pixel offers gives 150×90.
+  Proposed: 150×90, overflow 42/22, subject to the existing ancestor clip.
+- **Height after wrap:** at 84 → 83px wide, an 80px-tall El with padding 2
+  gives a WrappedRow 80 → 79px width. Its two 36×12 chips (padding 2, gap 4)
+  wrap, but main keeps the content/fill cap at 16px high. Proposed: 32px,
+  44px unused below A. In a natural-height wrapper require 36px for the El,
+  including padding, rather than keeping its one-line height of 20px.
+
 ## Verified fixes — ready for the changelog
 
 ### Content floor on the height of a Row child

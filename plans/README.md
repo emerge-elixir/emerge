@@ -9,6 +9,8 @@ Implemented: [fill widths on direct children of a Column](column-cross-axis-widt
 
 Implemented: [fill heights on direct children of a single-line Row](row-cross-axis-height.md#results). Each child gets the Row’s placed inner height as its offer; content limits use demand after wrapping.
 
+Next proposed slice: [fill width and height on the single child of an El](el-child-fill.md). Resolve the two offers independently and keep the wrapper's existing overflow behavior.
+
 Implemented: [Unweighted height fill in columns](column-height-fill.md), [weighted Row widths and Column heights](weighted-fill.md), [redistribution at a pixel cap or floor](bounded-main-axis-fill.md#redistribution-correction), [nested `min`/`max` around one fill](nested-main-axis-fill.md), and [pixel bounds on `content()` / `shrink()`](bounded-content.md).
 
 Implemented: [Subtree layout scale and fractional Wayland display scale](scale.md) · [parity, compositor checks and limits](scale-results.md).
