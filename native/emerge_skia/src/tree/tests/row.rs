@@ -47,7 +47,8 @@ fn row_offers_offsets_and_paint_invalidate_only_their_readers() {
         check_cold(&mut r, band(row(5., 5.), a, &ids));
         assert_eq!(bounds(&r, 1).width, 120.);
         assert_eq!((bounds(&r, 3).width, bounds(&r, 4).width), (share, share));
-        assert!(ran(&r, Flow, 1) && ran(&r, Reflow, 1));
+        // Width shares feed x placement, not the unchanged height basis.
+        assert!(ran(&r, Flow, 1) && ran(&r, Place, 1) && !ran(&r, Reflow, 1));
         assert!((3..=5).all(|id| !ran(&r, Measure, id)));
     }
     r.tree.patch(&order(1, 1, &swap)).unwrap();

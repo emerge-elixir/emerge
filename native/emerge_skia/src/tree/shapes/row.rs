@@ -39,14 +39,30 @@ impl LayoutBehaviour for Row {
         }
     }
     fn reflow(node: Mounted<'_, Children>, cx: &mut ReflowCx<'_>) -> f32 {
-        let mut x = 0.;
-        let mut h = 0f32;
-        for &c in node.data() {
-            let s = cx.child(c);
-            cx.offset(c, x, 0.);
-            h = h.max(s.h);
-            x += s.w + cx.gap[0];
+        if cx.fixed_basis {
+            return cx.measured_height;
         }
+        let h = node
+            .data()
+            .iter()
+            .map(|&c| cx.child(c).h)
+            .fold(0., f32::max);
         cx.box_height(h)
+    }
+    fn place_children(node: Mounted<'_, Children>, cx: &mut PlaceCx<'_>) {
+        let style = node.attrs().sizing;
+        let [top, _, bottom, left] = style.padding.map(|v| scale::pixels(v, cx.scale));
+        let inner = (cx.height - (top + bottom)).max(0.);
+        let gap = scale::pixels(style.spacing[0], cx.scale);
+        let mut x = 0.;
+        for &c in node.data() {
+            let fit = cx.child(c);
+            let policy = node.elements.attrs[c].sizing.height;
+            let height = policy
+                .weight()
+                .map(|_| policy.at_offer(node.elements, c, fit.h, inner));
+            cx.place(c, [left + x, top], height);
+            x += fit.w + gap;
+        }
     }
 }

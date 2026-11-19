@@ -52,6 +52,15 @@ its parent without changing a sibling's width or extending the parent clip.
 The child resolves the expression in width flow, never a second time on an
 already resolved offer from a Row. See the [regression scene](../../plans/column-cross-axis-width.md).
 
+Direct children of a single-line Row likewise do **not** divide its height.
+Width flow settles first. Each child reports its padded height after wrapping;
+with auto or content height the Row fits the tallest such child plus its own
+padding. Placement then uses the Row's actual inner height for every height-fill
+leaf, not the intrinsic estimate or a previously installed height. For example,
+with a 40×120 Row, padding 6, gap 4 and two 12px-wide children, both get a
+108px offer. If A caps fill at 30px of content, its height is 30px (78px unused)
+and B can still take all 108px. See the [wrap and overflow regressions](../../plans/row-cross-axis-height.md#results).
+
 A Row divides spare width, and a Column divides spare height, in proportion
 to the children's weights. `fill()` and `fill(1)` both take one share. A
 weight-only edit invalidates the distributing parent, not the child's

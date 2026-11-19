@@ -9,7 +9,7 @@ unchecked item may already have a DSL helper, patch codec or legacy renderer.
 
 | Implemented kind (wire tag) | Current boundary |
 | --- | --- |
-| `row` (1) | Single horizontal line; widths share the remaining space by weight, redistributing at pixel or content limits. |
+| `row` (1) | Single horizontal line; widths share the remaining space by weight, redistributing at pixel or content limits. Fill-bearing child heights independently use the placed inner height and post-wrap content demand. |
 | `wrapped_row` (2) | Wraps at the offered width. Each line advances by its tallest **outer** child plus the vertical gap. |
 | `column` (3) | Vertical stack. A fixed or allocated height redistributes the remainder among fills not stopped by a cap or floor; a content-height stack uses their individual intrinsic heights. Like both row kinds, clips ordinary descendants' paint and hits to its frame. |
 | `el` (4) | Single-child wrapper in the DSL. `Input.button/2` builds an `el`, not a new kind; it can use `on_click`, but `on_press` is not ported. |
@@ -40,7 +40,7 @@ where declared. `key/1` is supported occurrence identity, not a wire attr.
 
 | Attribute | Works now | Still to port |
 | --- | --- | --- |
-| `width`, `height` | `px`, `content`/`shrink`, and expressions over just these leaves on either axis. Plain `width(fill())` keeps its existing offers. [Weighted and compound fill](dimension-regressions.md#coverage-matrix): width on a root Row, direct Row child (shared), or [direct Column child (independent)](column-cross-axis-width.md#results); any fill-bearing height on a root Column or direct Column child. Both orders of `min`/`max`, including [mixed content/fill](../test/emerge_skia/mixed_content_fill_test.exs), repeated leaves and multiple weights, up to 64 operator levels. | Other weighted/compound width sites (including root Column, El and WrappedRow parents), cross-axis heights and WrappedRow distribution. Animation lengths are separate. |
+| `width`, `height` | `px`, `content`/`shrink`, and expressions over just these leaves on either axis. Plain `width(fill())` keeps its existing offers. [Weighted and compound fill](dimension-regressions.md#coverage-matrix): width on a root Row, direct Row child (shared), or [direct Column child (independent)](column-cross-axis-width.md#results); any fill-bearing height on a root Column, direct Column child (shared), or [direct Row child (independent)](row-cross-axis-height.md#results). Both orders of `min`/`max`, including [mixed content/fill](../test/emerge_skia/mixed_content_fill_test.exs), repeated leaves and multiple weights, up to 64 operator levels. | Other weighted/compound width sites (including root Column, El and WrappedRow parents); other fill-height sites (including root Row, El and WrappedRow parents). No WrappedRow distribution. Animation lengths are separate. |
 | `align_x`, `align_y`, `text_align` | Leading values: left, top, left respectively | Horizontal center/right, vertical center/bottom, centered/right-aligned text. |
 | `background`, `font_color` | Solid RGB/RGBA; raw wire names `black`, `white`, `red`, `blue`, `transparent`. Palette helpers returning RGB/RGBA work as solids. | Other raw names, gradients; for `background`, image fits and tiling. |
 | `font` | `default` and `sans-serif` use bundled Inter Regular; `monospace` uses bundled JetBrains Mono Regular. | Other families and registered/custom fonts. |

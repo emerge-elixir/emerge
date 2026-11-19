@@ -13,11 +13,12 @@ impl Expr {
         !self.has_fill()
             || parent.unwrap_or(kind) == weighted::host(axis)
             || (axis == 1 && (parent == Some(3) || matches!(self, Fill(None))))
+            || (axis == 2 && parent == Some(1))
     }
     fn single(&self, natural: f32, host: f64, independent_offer: bool) -> f32 {
         let eval = |unit| self.eval(f64::from(natural), 1., |_| unit);
         // One child: if a main-axis slot exists it either takes all the room
-        // or reaches its minimum/maximum. Roots and cross-axis widths read the offer directly.
+        // or reaches its minimum/maximum. Roots and cross-axis fills read the offer directly.
         if independent_offer {
             eval(host) as f32
         } else {
@@ -86,7 +87,7 @@ fn width_by_height_at_roots_and_all_supported_parent_child_sites() {
                     assert_eq!((b.x, b.y), (0., 0.));
                     let expected = (
                         width.single(natural.width, w, parent.is_none() || parent == Some(3)),
-                        height.single(natural.height, h, parent.is_none()),
+                        height.single(natural.height, h, parent.is_none() || parent == Some(1)),
                     );
                     assert_eq!(
                         (b.width, b.height),

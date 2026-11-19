@@ -1,9 +1,8 @@
-# Next slice: fill heights on direct children of a Row
+# Fill heights on direct children of a Row
 
-**Proposed after `2bf82a9`; not implemented.** The Column-width slice is
-complete. The next missing case is a single-line Row with two children that
-both need its full inner height. Unlike width, the content height may not be
-known until after wrapping. Do not divide it between horizontal siblings.
+**Implemented and qualified** after `2bf82a9`. A single-line Row offers
+its full inner height to each direct child independently. Unlike width,
+content height may not be known until after wrapping. [Results](#results).
 
 ## Contract and first red test
 
@@ -19,7 +18,7 @@ leaves scale at their own site. B uses `height(fill())`: 108px, no slack.
 | `min(content(), fill(3))` | 30 → 90 → 150 | 30 → 90 → 108 | 78 → 18 → 0 |
 | `max(content(), fill(3))` | 150 | **150** | 42 overflow |
 
-**Start red on ordinary headless output.** Retained rejects even plain fill
+**Start red on ordinary headless output.** Retained `2bf82a9` rejected even plain fill
 at this edge: `height(fill()) requires a root Column or a child of a Column`.
 A detached sparse edit from A/B `px(30)/px(108)` to a mixed A was also
 refused; geometry stayed 30/108. Use that valid starting scene for the patch
@@ -45,13 +44,13 @@ colors/listeners; leave the demand child unpainted and non-listening. At the
   plain content A reaches 32; retained's `min(content(), px(76))` also
   reaches 32. Check A's own pixels and listener, not just the chip position.
 
-These are **detached before measurements**, not verified fixes. [Open
-findings](retained-changelog-candidates.md#open--row-child-heights).
+These are **detached before measurements**. The [submitted evidence](#results)
+verifies the two [changelog candidates](retained-changelog-candidates.md#verified-fixes--ready-for-the-changelog) separately.
 Probe, verified producer/NIF identities and geometry: `/workspace/emerge-investigation-artifacts/row-cross-height-plan-u2l1S6/{probe.exs,retained-final.log,pinned-final.log}`.
 The first probe mixed keyed and unkeyed siblings and never completed; only
 the corrected runs count.
 
-## Implementation order and gates
+## Implementation order and gates (original plan)
 
 1. Extend [final-edge admission](../native/emerge_skia/src/tree/wire/batch.rs)
    to **direct Row children** for plain, weighted and compound fill heights.
@@ -88,3 +87,75 @@ the corrected runs count.
    first/fitting zero-heap controls, six release Cargo/strict Clippy profiles,
    focused/full Mix against **93 named failures / 21 exclusions**, and real
    CPU Wayland crops/seat clicks before updating coverage or promoting a fix.
+
+## Results
+
+- **Before:** the fixed-height headless control passed. Cold admission, the
+  sparse fixed-to-fill patch, the oversize floor and the wrap case all failed:
+  **1/5 passed**. Four native campaign tests failed admission; seed 0,
+  `RowHeight` step 0 reduced to one `fill(0.25)` child. No bad geometry was
+  returned for the rejected trees.
+- **After:** Row width sharing stays in Flow. Reflow reports unallotted
+  demand up; Place writes x/y and the optional resolved height together on
+  the incoming edge. Each fill leaf reads the *placed* inner height, even
+  zero; a child can overflow without enlarging the host clip. No new pass,
+  second child order, wire field, public API or heap-backed expression.
+- All **39 detached expectations** passed. Compared with the pinned planning
+  run, 32 matched. The seven differences are the 150px floor (fixed/fill B)
+  and 99px wrap controls: pixel/fill caps with a fixed host, and plain/capped
+  fills in a natural one. At 99px the natural Row is 36px tall and its
+  width-fill WrappedRow gets 32px, not 16px. The fixed pixel cap was already
+  correct on retained. A Row allocated 100px below a 20px header offers
+  88px after its padding; the natural and auto-height controls offer 60px.
+- [Eight ordinary viewport tests](../test/emerge_skia/row_cross_height_test.exs)
+  check entire delivered frames and raw input. At the 30 → 90 cap edit,
+  `(10,76)` stays on the Row until submission, then reaches A at `(4,70)`;
+  B is unchanged. The floor paints/hits in the bottom padding, not outside
+  the Row. At 100 → 99 → 100 wide the wrapped child's **own** height is
+  16 → 32 → 16. A press follows a keyed Column ↔ scaled Row move across
+  submission despite a rejected sparse move to an El.
+- [Native regressions](../native/emerge_skia/src/tree/tests/row_height.rs)
+  cover a policy-only cap → floor (Place, no Measure/Flow/Reflow), extreme
+  weight-only edits with no work, nested natural/allocated hosts, zero and
+  restore, a closed move between pre- and post-wrap bases at unchanged
+  width, scaled masked-pixel overflow, and refused handoff. The
+  natural Column still uses a fill child's pre-wrap basis. Three existing
+  site tests now use genuinely illegal destinations; the Row work trace
+  requires Place, not Reflow, for changed widths at unchanged child height.
+  The initial failing traces are retained in `logs/first-matched`.
+- **Additional sparse-only failure during implementation:** a keyed move and
+  a cap edit can arrive in either order before refresh. In a 76×40 view, no
+  host padding or gap, two 38×12 chips with gap 4 wrap inside a 76px child.
+  Moving from a content-height Column to a content-height Row while changing
+  `min(px(90), fill())` to `min(px(90), min(content(), fill()))` leaves the
+  same intrinsic bounds. The first candidate painted the card only 12px
+  tall; a fresh tree painted the expected 28px (12px unused below it).
+  Compare the
+  **first policy and parent together** against the final pair to select the
+  pre-/post-wrap basis. Both edit orders and the return move now agree with
+  fresh. The submitted click at `(5,20)` follows host → card → host. See
+  `logs/red-batched-move{,-live}` and `before-batched-move-fix/`. This was
+  a retained implementation bug, not a third pinned-main changelog finding.
+- The 4,320 width × height site matrix still rejects a root Row height fill
+  and El/WrappedRow parent sites. All ten dimension tests passed. Seed 0
+  replay and seeds **0–9,999 × 4 sites × 13 states = 520,000** matched both
+  literal math and exact fresh geometry (130,000 independent Row heights).
+  These are geometry checks, not 520,000 submitted frames.
+- Six release Cargo/strict Clippy profiles passed: **93/96/97/121/121/97**
+  (headless, Wayland, GL, Vulkan, both, matched). First native compute after
+  reservation, fitting policy/demand edits through prepared paint/hit inputs
+  and the pending compute after refused growth used **0 alloc/realloc/free**.
+  This does not include provisioning, rasterization or frame delivery.
+- **98 focused Mix tests passed** (7 selection exclusions). Full Mix:
+  **685/778 passed**, exactly the same **93 failing names / 21 exclusions**
+  as `2bf82a9`. A private CPU Wayland window passed **19 seat clicks**, each
+  bracketed by a full compositor crop, including the clipped floor, both
+  sides of the wrap threshold and the combined move/policy edit. No GPU
+  hardware, timing or scanout claim.
+- Evidence: `/workspace/emerge-investigation-artifacts/row-cross-height-KzwbUD`;
+  see `logs/red-{live,properties}`, `pinned-geometry.diff`,
+  `logs/{geometry-expectations,qualification-native,qualification-app,final-window,post-suite-mapped}`,
+  named failure lists and `changed.sha256`. An intermediate Mix attempt with
+  a stale compile-time file list (`logs/first-move`) did not run tests; the
+  final run synced sources, force-compiled and checked the mapped NIF before
+  and after. Final SHA-256: `507e7c2aadeceae928da97bb967fe0f2017b383a6401f1fe01e70eceb0af732e`.

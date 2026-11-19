@@ -209,7 +209,9 @@ fn site_proof_uses_final_edges_and_accepted_attrs_without_disturbing_pending_or_
     let mut r = Raster::default();
     r.tree
         .upload(&upload(&[
-            node(1, 1, block(&[]), &[2, 3, 4]),
+            // A WrappedRow can keep these lanes side by side but cannot
+            // itself give an incoming child a fill-height offer.
+            node(1, 2, block(&[]), &[2, 3, 4]),
             node(2, 3, host(50.), &[17]),
             node(3, 4, block(&[]), &[]),
             node(4, 3, host(70.), &[]),
@@ -224,7 +226,7 @@ fn site_proof_uses_final_edges_and_accepted_attrs_without_disturbing_pending_or_
     r.tree.patch(&set(18, 4, panel([0, 0, 255]))).unwrap();
     let pending = r.tree.encode();
     let move_to_el = [
-        edges(1, 1, &[2, 3, 4]),
+        edges(1, 2, &[2, 3, 4]),
         edges(2, 3, &[]),
         edges(3, 4, &[17]),
     ];
@@ -250,7 +252,7 @@ fn site_proof_uses_final_edges_and_accepted_attrs_without_disturbing_pending_or_
         let value = vec![2, variant, 0, 1];
         assert_eq!(
             r.tree.patch(&set(3, 4, block(&[value]))).unwrap_err(),
-            "height(fill()) requires a root Column or a child of a Column"
+            "height(fill()) requires a root Column or a child of a Column or Row"
         );
     }
     assert_eq!(r.tree.encode(), pending);
@@ -264,7 +266,7 @@ fn site_proof_uses_final_edges_and_accepted_attrs_without_disturbing_pending_or_
             1,
             1,
             &[
-                edges(1, 1, &[2, 3, 4]),
+                edges(1, 2, &[2, 3, 4]),
                 edges(2, 3, &[]),
                 edges(4, 3, &[17]),
             ],

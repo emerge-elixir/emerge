@@ -1,4 +1,4 @@
-//! Replayable model of main-axis splits and independent Column widths. Uses
+//! Replayable model of main-axis splits and independent cross-axis offers. Uses
 //! literal length math and fixed-size content, not the decoder or allocator.
 use super::*;
 mod laws;
@@ -9,15 +9,22 @@ enum Site {
     RowWidth,
     ColumnHeight,
     ColumnWidth,
+    RowHeight,
 }
 use Site::*;
-const SITES: [Site; 3] = [RowWidth, ColumnHeight, ColumnWidth];
+const SITES: [Site; 4] = [RowWidth, ColumnHeight, ColumnWidth, RowHeight];
 impl Site {
     fn axis(self) -> u8 {
-        if self == ColumnHeight { 2 } else { 1 }
+        match self {
+            RowWidth | ColumnWidth => 1,
+            ColumnHeight | RowHeight => 2,
+        }
     }
     fn host(self) -> u8 {
-        if self == RowWidth { 1 } else { 3 }
+        match self {
+            RowWidth | RowHeight => 1,
+            ColumnWidth | ColumnHeight => 3,
+        }
     }
 }
 
@@ -132,7 +139,7 @@ impl Case {
     }
     fn expected(&self, site: Site) -> Vec<(f64, f64)> {
         let z = self.display;
-        if site == ColumnWidth {
+        if matches!(site, ColumnWidth | RowHeight) {
             let inner = ((self.host - 2. * self.pad) * z).max(0.);
             return self
                 .kids

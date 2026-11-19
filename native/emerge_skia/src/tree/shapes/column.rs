@@ -29,7 +29,7 @@ impl LayoutBehaviour for Column {
         width == Length::Auto && input == FlowInput::ChildFill
     }
     fn reflow(node: Mounted<'_, Children>, cx: &mut ReflowCx<'_>) -> f32 {
-        if cx.fixed_basis() {
+        if cx.fixed_basis {
             return cx.measured_height;
         }
         let demand = node
@@ -46,7 +46,8 @@ impl LayoutBehaviour for Column {
         let [top, _, bottom, left] = style.padding.map(|n| scale::pixels(n, cx.scale));
         let gap = scale::pixels(style.spacing[1], cx.scale);
         let length = |c: Key| node.elements.attrs[c].sizing.height;
-        let slot = |c, cx: &PlaceCx<'_>| fill::Slot::new(node.elements, c, length(c), cx.basis(c));
+        let slot =
+            |c, cx: &PlaceCx<'_>| fill::Slot::new(node.elements, c, length(c), cx.child(c).h);
         let split = FillShares::split(
             style.height,
             cx.height - (top + bottom),
@@ -62,7 +63,7 @@ impl LayoutBehaviour for Column {
                     .then(|| cx.measured_height(c))
             });
             cx.place(c, [left, top + y], allotted);
-            y += allotted.unwrap_or_else(|| cx.basis(c));
+            y += allotted.unwrap_or_else(|| cx.child(c).h);
             y += gap;
         }
     }

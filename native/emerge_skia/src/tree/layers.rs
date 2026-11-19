@@ -41,8 +41,8 @@ struct Width {
     new_edge: bool,
 }
 
-/// Per incoming edge, keyed by its child. A definite column supplies the
-/// outer height for a fill child; None uses the child's bottom-up basis.
+/// Offset and resolved outer height on one incoming edge. None uses the
+/// child's bottom-up fit; a zero height is still an allocation.
 #[derive(Clone, Copy, PartialEq)]
 struct Placement {
     offset: [f32; 2],
@@ -141,6 +141,7 @@ pub(super) struct ReflowCx<'a> {
     padding: [f32; 4],
     height: Length,
     scale: f32,
+    pub fixed_basis: bool,
     pub measured_height: f32,
 }
 impl ReflowCx<'_> {
@@ -156,9 +157,6 @@ impl ReflowCx<'_> {
             self.layers.enqueue(Place, c, self.e)
         }
     }
-    pub fn fixed_basis(&self) -> bool {
-        self.height.definite() && !self.height.reads_fill_content()
-    }
     pub fn unallotted_height(&self, c: Key) -> f32 {
         if self.e.attrs[c].sizing.height.reads_fill_content() {
             self.layers.measure[c].h
@@ -167,7 +165,7 @@ impl ReflowCx<'_> {
         }
     }
     pub fn box_height(&self, demand: f32) -> f32 {
-        if self.fixed_basis() {
+        if self.fixed_basis {
             // Fixed outer extent, or the pre-wrap basis for a fill child.
             self.measured_height
         } else {
@@ -185,8 +183,8 @@ pub(super) struct PlaceCx<'a> {
     translated: bool,
 }
 impl PlaceCx<'_> {
-    pub fn basis(&self, c: Key) -> f32 {
-        self.layers.fit[c].h
+    pub fn child(&self, c: Key) -> Size {
+        self.layers.fit[c]
     }
     pub fn measured_height(&self, c: Key) -> f32 {
         self.layers.measure[c].h
@@ -280,7 +278,15 @@ impl Layers {
             self.enqueue(Flow, k, e)
         }
         if moved {
-            self.enqueue(Reflow, k, e);
+            if node.shape == Shape::Row {
+                // A permutation changes x offsets, not the tallest basis.
+                self.enqueue(Place, k, e);
+                if (different_len || membership) && e.height_uses_reflow(k) {
+                    self.enqueue(Reflow, k, e);
+                }
+            } else {
+                self.enqueue(Reflow, k, e);
+            }
             self.enqueue(Compose, k, e)
         }
     }
@@ -394,6 +400,9 @@ impl Layers {
                         moved(b.height),
                     );
                 }
+                if e.slots[k].shape == Shape::Row {
+                    self.enqueue(Place, k, e); // scaled padding/gap, even at equal fit
+                }
                 for p in [Flow, Reflow, PaintContext] {
                     self.enqueue(p, k, e);
                 }
@@ -464,11 +473,10 @@ impl Layers {
             if old.is_none_or(|s| s.h != m.h)
                 && e.attrs[k].sizing.height.reads_fill_content()
                 && let Some(p) = e.slots[k].parent
+                && e.slots[p].shape.allots_height()
+                && e.height_uses_reflow(p)
             {
-                let policy = e.attrs[p].sizing.height;
-                if !policy.definite() || policy.reads_fill_content() {
-                    self.enqueue(Reflow, p, e);
-                }
+                self.enqueue(Reflow, p, e);
             }
             self.enqueue(Reflow, k, e);
         }
@@ -488,13 +496,10 @@ impl Layers {
                 .parent
                 .map_or(self.viewport.width, |_| self.offers[k]);
             match b.width {
-                Length::BoundedFill { .. } | Length::Formula(_)
-                    if !e.width_offer_is_resolved(k) =>
-                {
+                Length::BoundedFill { .. } | Length::Formula(_) if !e.in_row(k) => {
                     // Every fill leaf reads the same available width, not a
                     // weighted share. Content and px still belong to the child.
-                    b.width
-                        .allotted(e.raw(k), self.measure[k].w, scale, |_| offer)
+                    b.width.at_offer(e, k, self.measure[k].w, offer)
                 }
                 _ => offer,
             }
@@ -542,13 +547,15 @@ impl Layers {
                 padding: b.padding.map(|v| pixels(v, scale)),
                 height: b.height,
                 scale,
+                fixed_basis: !e.height_uses_reflow(k),
                 measured_height: self.measure[k].h,
                 layers: self,
                 e,
             },
         );
-        // A column writes child edges in Place, even when its own fit is
-        // unchanged (reorder, new edge, padding/gap or policy edit).
+        // A Column rechecks its vertical split here even at equal fit. Row
+        // offsets/offers are invalidated by their own inputs, not by a scan
+        // for the tallest child that returned the very same height.
         let fit = Size { w: width.outer, h };
         let old = self.fit.insert(k, fit);
         if n.shape.allots_height() || old != Some(fit) {
@@ -557,18 +564,33 @@ impl Layers {
         if old != Some(fit)
             && let Some(p) = n.parent
         {
-            if !e.slots[p].shape.allots_height() {
-                self.enqueue(Reflow, p, e);
-            } else if old.is_none_or(|s| s.h != h) {
-                let host = e.attrs[p].sizing.height;
-                if (!host.definite() || host.reads_fill_content()) && !b.height.reads_fill_content()
-                {
-                    self.enqueue(Reflow, p, e);
+            let height_changed = old.is_none_or(|s| s.h != h);
+            match e.slots[p].shape {
+                Shape::Row => {
+                    if height_changed && e.height_uses_reflow(p) {
+                        self.enqueue(Reflow, p, e);
+                    }
+                    // Place reads widths for sibling x offsets, and the
+                    // child's reflowed height only for a content-dependent fill.
+                    if old.is_none_or(|s| s.w != fit.w)
+                        || (height_changed && b.height.reads_fill_content())
+                    {
+                        self.enqueue(Place, p, e);
+                    }
                 }
-                if host.definite() && (b.height.weight().is_none() || b.height.reads_fill_content())
-                {
-                    self.enqueue(Place, p, e);
+                Shape::Column => {
+                    if height_changed {
+                        if e.height_uses_reflow(p) && !b.height.reads_fill_content() {
+                            self.enqueue(Reflow, p, e);
+                        }
+                        if e.attrs[p].sizing.height.definite()
+                            && (b.height.weight().is_none() || b.height.reads_fill_content())
+                        {
+                            self.enqueue(Place, p, e);
+                        }
+                    }
                 }
+                _ => self.enqueue(Reflow, p, e),
             }
         }
     }
@@ -586,7 +608,7 @@ impl Layers {
         } else {
             let policy = e.attrs[k].sizing.height;
             let h = if policy.weight().is_some() {
-                policy.allotted(e.raw(k), s.h, scale, |_| self.viewport.height)
+                policy.at_offer(e, k, s.h, self.viewport.height)
             } else {
                 s.h
             };

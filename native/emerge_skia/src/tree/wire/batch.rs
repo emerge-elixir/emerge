@@ -191,24 +191,22 @@ impl Batch {
                 .map(|(a, _)| a)
                 .or_else(|| old.map(|k| &e.attrs[k]));
             if let Some(a) = attrs {
-                let host = || {
-                    parent.map_or(s.shape, |p| {
+                let fill_site = |root_kind| match parent {
+                    None => s.shape == root_kind,
+                    Some(p) => matches!(
                         self.get(p)
-                            .map_or_else(|| e.slots[e.ids[&p]].shape, |edit| edit.shape)
-                    })
+                            .map_or_else(|| e.slots[e.ids[&p]].shape, |edit| edit.shape),
+                        Shape::Row | Shape::Column
+                    ),
                 };
                 let width = a.sizing.width;
-                if width != Length::Fill && width.weight().is_some() {
-                    let site = host();
-                    let allowed =
-                        site.allots_width() || (parent.is_some() && site == Shape::Column);
-                    if !allowed {
-                        return Err("weighted or compound fill width requires a root Row or a child of a Row or Column".into());
-                    }
+                if width != Length::Fill && width.weight().is_some() && !fill_site(Shape::Row) {
+                    return Err("weighted or compound fill width requires a root Row or a child of a Row or Column".into());
                 }
-                if a.sizing.height.weight().is_some() && !host().allots_height() {
+                if a.sizing.height.weight().is_some() && !fill_site(Shape::Column) {
                     return Err(
-                        "height(fill()) requires a root Column or a child of a Column".into(),
+                        "height(fill()) requires a root Column or a child of a Column or Row"
+                            .into(),
                     );
                 }
             }

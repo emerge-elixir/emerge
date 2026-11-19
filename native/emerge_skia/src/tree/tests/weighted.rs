@@ -6,12 +6,13 @@ pub(super) fn host(axis: u8) -> u8 {
 }
 // Keep both lanes at their original positions, but put them under a parent
 // that cannot itself host the weighted/bounded child being moved: a 90px
-// WrappedRow stacks the two width lanes; a Row hosts the two height lanes.
+// WrappedRow stacks the width lanes; a natural WrappedRow puts the height
+// lanes on a single line. Unlike Row, neither can offer a fill height.
 pub(super) fn wrong_site(axis: u8) -> (u8, Bytes) {
     if axis == 1 {
         (2, block(&[px(1, 90.)]))
     } else {
-        (1, block(&[]))
+        (2, block(&[]))
     }
 }
 pub(super) fn weight(axis: u8, n: f64) -> Bytes {

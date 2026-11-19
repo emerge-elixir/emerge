@@ -5,24 +5,37 @@ what reproduces it, what `main` does, what should happen, and the regression
 that proves the fix. Only copy **verified fixes** to `Unreleased → Fixed` in
 [CHANGELOG.md](../CHANGELOG.md). A port that merely matches `main` is not a fix.
 
-## Open — Row child heights
-
-Detached observations on `5c71a593`, **not** release notes. Retained
-`2bf82a9` rejects fill heights at this site. [Probe, proposed contract and
-submission tests](row-cross-axis-height.md#two-traps-in-the-reference).
-
-- **Content floor:** 40×120 Row, padding 6, gap 4, two 12px-wide children.
-  At 150px demand `max(content(), fill(3))` gets 108px on main, but
-  `max(content(), px(108))` gets 150px. Proposed: 150px, 42px beyond the
-  offer; B still takes 108px with no slack, no change to the host clip.
-- **Height cap after wrap:** 100 → 99px-wide, 80px-high Row with padding 2
-  and gap 4; A gets 80 → 79px wide, B is 12×76. A's two 36×12 chips (gap
-  4, padding 2) wrap. Main keeps `min(content(), fill(3))` at 16px high
-  despite needing 32px. Proposed: 32, with 44px unused below A. The
-  [verified pixel cap](#capped-wrapped-rows-use-the-height-of-all-lines)
-  is a control, not proof for this fill-bearing site.
-
 ## Verified fixes — ready for the changelog
+
+### Content floor on the height of a Row child
+
+- **Release note:** A Row child's height now respects a content minimum
+  combined with fill, even when the content is taller than the Row's offer.
+- **Reproduce:** 40×120 Row, padding 6, horizontal gap 4, two 12px-wide
+  children. At 150px demand, pinned `main` (`5c71a593`) gives A **108px**
+  for `max(content(), fill(3))`, but **150px** for `max(content(), px(108))`.
+  Fixing B at 108 instead of using fill does not change that discrepancy.
+- **Fixed:** both floors give **150px**, 42 beyond the inner offer; B still
+  takes 108px with no slack. A paints and receives the click at `(10,117)`
+  in the bottom padding; at `(10,121)` only the enclosing view does. The
+  [headless regressions](../test/emerge_skia/row_cross_height_test.exs) and
+  [Wayland crops and seat input](row-cross-axis-height.md#results) check both.
+
+### Row child height cap after wrapping
+
+- **Release note:** A Row child whose height is capped by both content and
+  fill now grows to fit a second line when its width makes its children wrap.
+- **Reproduce:** 100×80 → 99×80 Row, padding 2, gap 4. A is a width-fill
+  WrappedRow with padding 2, gap 4 and two 36×12 chips; B stays 12×76.
+  A gets 80 → 79px wide. Main (`5c71a593`) moves chip two to `y=20` but
+  keeps `min(content(), fill(3))` at **16px**. Plain content reaches 32px.
+- **Fixed:** A grows **16 → 32px**, leaving 60 → 44 unused below it; widening
+  restores the first line. Its own pixels and click at `(10,24)` move from
+  the Row to A (local `(8,22)`) and back on submitted frames. [Headless](../test/emerge_skia/row_cross_height_test.exs)
+  · [main controls and Wayland seat](row-cross-axis-height.md#results).
+  Retained `2bf82a9` rejected both fill-bearing Row cases above. Its already
+  working [pixel-cap control](#capped-wrapped-rows-use-the-height-of-all-lines)
+  was not evidence for the fill-height fix.
 
 ### Content floor on the width of a Column child
 

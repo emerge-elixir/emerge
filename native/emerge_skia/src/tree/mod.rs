@@ -131,6 +131,9 @@ impl Length {
     fn definite(self) -> bool {
         !matches!(self, Self::Auto | Self::Content | Self::BoundedContent(_))
     }
+    fn reflows_height(self, in_row: bool) -> bool {
+        !self.definite() || self.reads_fill_content() || (in_row && self.weight().is_some())
+    }
     // The basis is already an outer extent in device pixels: intrinsic, a
     // parent's proportional share, or the viewport for a fill root. Only a
     // pixel operand needs to look up the declaring site's scale.
@@ -146,6 +149,15 @@ impl Length {
                 basis.clamp(b.floor, b.cap)
             }
             _ => basis,
+        }
+    }
+    // For a fill policy on a cross axis (or at the root), every fill leaf
+    // sees the same offer. Without a content leaf the folded clamp suffices.
+    fn at_offer(self, e: &Elements, k: Key, basis: f32, offer: f32) -> f32 {
+        if self.reads_fill_content() {
+            self.allotted(e.raw(k), basis, e.slots[k].admitted.scale, |_| offer)
+        } else {
+            self.resolve(offer, || e.slots[k].admitted.scale)
         }
     }
     fn allotted(self, raw: &[u8], basis: f32, scale: f32, share: impl Fn(f64) -> f32) -> f32 {
@@ -266,12 +278,17 @@ impl Elements {
     fn attached_count(&self) -> usize {
         self.slots.len() - self.detached.len()
     }
-    // A Row sends the final width (even when natural); other parents send
-    // available space, like the viewport. Read the final incoming edge.
-    fn width_offer_is_resolved(&self, k: Key) -> bool {
+    // Read the final incoming edge. A Row sends a resolved width (even when
+    // natural) and offers its full inner height on the independent axis.
+    fn in_row(&self, k: Key) -> bool {
         self.slots[k]
             .parent
             .is_some_and(|p| self.slots[p].shape.allots_width())
+    }
+    // A Row sizes naturally before offering height across its line. Even an
+    // unbounded fill on that edge must report its unallotted post-wrap basis.
+    fn height_uses_reflow(&self, k: Key) -> bool {
+        self.attrs[k].sizing.height.reflows_height(self.in_row(k))
     }
     fn children(&self, key: Key) -> &[Key] {
         self.child_pool.get(&self.slots[key].children)

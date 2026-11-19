@@ -132,7 +132,21 @@ impl Layers {
                     self.invalidate(p, k, depth);
                 }
                 self.invalidate_composition(k, depth, Outputs::Hit);
-            } else if change.old_parent.is_some_and(|p| p != m.parent) {
+            } else if let Some(old) = change.old_parent.filter(|p| *p != m.parent) {
+                // A move and a length edit may arrive in either order before
+                // refresh. Compare the first (policy, site) to the final pair;
+                // equal intrinsic bounds do not imply equal post-wrap demand.
+                let before = change
+                    .attrs
+                    .as_ref()
+                    .map_or(e.attrs[k].sizing.height, |(a, _)| a.sizing.height);
+                let was_in_row = old.map_or(Some(false), |p| {
+                    e.slots.get(p).map(|n| n.shape.allots_width())
+                });
+                if was_in_row.map(|row| before.reflows_height(row)) != Some(e.height_uses_reflow(k))
+                {
+                    self.invalidate(Pass::Reflow, k, depth);
+                }
                 if let Some(part) = self.parts.get_mut(k) {
                     part.reattach();
                 }
@@ -172,7 +186,19 @@ impl Layers {
         {
             invalidate(Pass::Flow)
         }
-        if a.height != b.height || a.spacing != b.spacing || a.padding != b.padding {
+        if shape == Shape::Row {
+            if a.height != b.height || a.padding[0] != b.padding[0] || a.padding[2] != b.padding[2]
+            {
+                invalidate(Pass::Reflow)
+            }
+            if a.spacing[0] != b.spacing[0]
+                || a.padding[0] != b.padding[0]
+                || a.padding[2] != b.padding[2]
+                || a.padding[3] != b.padding[3]
+            {
+                invalidate(Pass::Place)
+            }
+        } else if a.height != b.height || a.spacing != b.spacing || a.padding != b.padding {
             invalidate(Pass::Reflow)
         }
         if old.color != next.color || shape.paint_context_attrs_changed(old, next) {
@@ -193,7 +219,9 @@ impl Layers {
             .sizing
             .height
             .same_split(old_raw, next.sizing.height, raw);
-        if old.sizing.height.reads_fill_content() != next.sizing.height.reads_fill_content() {
+        if old.sizing.height.reads_fill_content() != next.sizing.height.reads_fill_content()
+            && !e.in_row(k)
+        {
             self.invalidate(Pass::Reflow, k, depth);
             if let Some(p) = e.slots[k].parent {
                 self.invalidate(Pass::Reflow, p, e.depth(p));
@@ -201,7 +229,7 @@ impl Layers {
         }
         if width
             && (old.sizing.width.reads_fill_content() || next.sizing.width.reads_fill_content())
-            && !e.width_offer_is_resolved(k)
+            && !e.in_row(k)
         {
             self.invalidate(Pass::Flow, k, depth);
         }
@@ -218,6 +246,12 @@ impl Layers {
                 FlowInput::ChildSplit
             }
         });
+        // On the cross axis a changed numeric weight alone is not an input.
+        let height = height
+            && (a.height != b.height
+                || old.sizing.height.reads_fill_content()
+                || next.sizing.height.reads_fill_content()
+                || !e.in_row(k));
         self.invalidate_split(e, k, parent_input, height);
     }
     // The splitter can change a sibling's offer or offset even if neither
@@ -235,7 +269,7 @@ impl Layers {
         let Some(p) = e.slots[k].parent else { return };
         let shape = e.slots[p].shape;
         let b = e.attrs[p].sizing;
-        if height && shape.allots_height() && b.height.definite() {
+        if height && (shape == Shape::Row || (shape.allots_height() && b.height.definite())) {
             self.invalidate(Pass::Place, p, e.depth(p));
         }
         if width.is_some_and(|input| shape.reads_flow(b.width, input)) {

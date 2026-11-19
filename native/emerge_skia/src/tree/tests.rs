@@ -8,6 +8,7 @@ mod dimensions;
 mod identity;
 mod nested;
 mod row;
+mod row_height;
 mod scale;
 mod topology;
 mod weighted;

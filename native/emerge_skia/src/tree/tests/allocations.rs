@@ -224,6 +224,43 @@ fn independent_column_widths(c: &Counter) {
     assert_eq!(r.target_at(117., 10.).unwrap().1, 1);
 }
 
+fn independent_row_heights(c: &Counter) {
+    let mut r = Raster::default();
+    r.tree.upload(&row_height::line()).unwrap();
+    c.zero("first Row height placement after reservation", || {
+        r.settle(180., 170., 1.).unwrap();
+    });
+    draw(&mut r);
+    let edit = |op| set(2, 4, weighted::panel(2, 2, row_height::mixed(op)));
+    for (p, h) in [(edit(5), 108.), (set(4, 6, block(&[px(2, 150.)])), 150.)] {
+        c.zero(
+            "fitting Row height through prepared paint/hit inputs",
+            || {
+                r.tree.patch(&p).unwrap();
+                r.settle(180., 170., 1.).unwrap();
+            },
+        );
+        assert_eq!(bounds(&r, 2).height, h);
+        draw(&mut r);
+    }
+    r.tree.patch(&edit(4)).unwrap();
+    let pending = r.tree.encode();
+    let over = set(5, 5, text(&"W".repeat(512)));
+    (c.fail_next_reserve)();
+    assert_eq!(
+        r.tree.patch(&over).unwrap_err(),
+        "tree workspace capacity exceeded"
+    );
+    assert_eq!(r.tree.encode(), pending);
+    c.zero("Row cap after refused growth", || {
+        r.settle(180., 170., 1.).unwrap();
+    });
+    assert_eq!(bounds(&r, 2).height, 108.);
+    assert_eq!(r.hit_at(10., 117.), Some((2, 4., 111.)));
+    draw(&mut r);
+    assert_eq!(r.hit_at(10., 117.), Some((1, 10., 117.)));
+}
+
 fn bounded_content(c: &Counter) {
     for axis in [1, 2] {
         let mut r = Raster::default();
@@ -609,6 +646,7 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     bounded_content(&c);
     mixed_splits(&c);
     independent_column_widths(&c);
+    independent_row_heights(&c);
     // 100 slots + 80% = 180. The inserted subtree and edited parent's
     // first input coexist with the old glyph/command buffers and batch scratch.
     let ids: Vec<u64> = (2..=100).collect();
