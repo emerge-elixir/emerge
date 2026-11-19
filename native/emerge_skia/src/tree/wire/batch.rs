@@ -197,7 +197,7 @@ impl Batch {
                             .map_or_else(|| e.slots[e.ids[&p]].shape, |edit| edit.shape)
                     })
                 };
-                if a.sizing.width.bounds().is_some() && !host().allots_width() {
+                if matches!(a.sizing.width, Length::BoundedFill { .. }) && !host().allots_width() {
                     return Err("bounded fill width requires a root Row or a child of a Row".into());
                 }
                 if matches!(a.sizing.width, Length::Weighted(_)) && !host().allots_width() {

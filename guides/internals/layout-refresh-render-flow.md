@@ -62,6 +62,13 @@ always gives 20, while `max(80, min(20, share))` always gives 80. The renderer
 folds pixel operands when accepting the declaration; it does not traverse the
 expression again during layout.
 
+With `content()` (also `shrink()`) instead of a fill, these bounds apply to
+**the node’s own outer size, including padding**. In a 240px Row with no gap
+or padding, A `max(px(140), shrink())` beside B `fill()` takes 140/100 when
+A needs 80px, and 180/60 when A needs 180px. A Column uses the actual height
+after wrapping, then gives the fill sibling the remaining space. A content
+bound is not a fill weight or an offer from the viewport.
+
 Wayland uses the preferred fractional scale with a logical viewport destination
 when both protocols are available, or integer buffer scaling otherwise. Layout
 uses the nominal factor; seat input uses the submitted buffer's actual width

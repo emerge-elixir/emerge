@@ -3,7 +3,7 @@
 Current checklist: [Elements and attributes still to port](retained-ui-port-tracker.md).
 Keep [bugs found on main and verified fixes for the changelog](retained-changelog-candidates.md) alongside it.
 
-Implemented: [Unweighted height fill in columns](column-height-fill.md), [weighted Row widths and Column heights](weighted-fill.md), [redistribution at a pixel cap or floor](bounded-main-axis-fill.md#redistribution-correction), and [nested `min`/`max` around one fill](nested-main-axis-fill.md).
+Implemented: [Unweighted height fill in columns](column-height-fill.md), [weighted Row widths and Column heights](weighted-fill.md), [redistribution at a pixel cap or floor](bounded-main-axis-fill.md#redistribution-correction), [nested `min`/`max` around one fill](nested-main-axis-fill.md), and [pixel bounds on `content()` / `shrink()`](bounded-content.md).
 
 Implemented: [Subtree layout scale and fractional Wayland display scale](scale.md) · [parity, compositor checks and limits](scale-results.md).
 

@@ -1,5 +1,5 @@
-//! Reduce a prefix expression once at ingress. Layout only needs the weight
-//! and interval; final-site admission also needs the largest written px leaf.
+//! Reduce a prefix expression once at ingress. Layout needs the basis (content
+//! or weighted fill) and interval; admission also checks the largest px leaf.
 use super::*;
 
 const MAX_LENGTH_DEPTH: usize = 64;
@@ -60,10 +60,11 @@ impl Reader<'_> {
                     depth -= 1;
                 }
                 if depth == 0 {
-                    return if part.bounds().is_some() {
-                        Ok(part)
-                    } else {
-                        Err(format!("unsupported length {root}"))
+                    return match part {
+                        // A non-negative content extent needs no zero floor.
+                        Length::BoundedContent(b) if b == Bounds::OPEN => Ok(Length::Content),
+                        Length::Px(_) => Err(format!("unsupported length {root}")),
+                        length => Ok(length),
                     };
                 }
             }
@@ -77,20 +78,23 @@ fn fold(op: u8, a: Length, b: Length) -> Result<Length> {
     match (a, b) {
         (Length::Px(x), Length::Px(y)) => Ok(Length::Px(f(x, y))),
         (Length::Px(px), l) | (l, Length::Px(px)) => {
-            let weight = l
-                .weight()
-                .ok_or_else(|| format!("unsupported length {op}"))?;
             // Both endpoints see the outer operation. In particular a cap
             // below an inner floor collapses to the cap, not to that floor.
             let bounds = l.bounds().unwrap_or(Bounds::OPEN).map(|end| f(end, px));
-            // A collapsed interval is constant at every offer; its written
-            // weight still round-trips but cannot affect redistribution.
-            let weight = if bounds.floor == bounds.cap {
-                1.
+            if matches!(l, Length::Content | Length::BoundedContent(_)) {
+                Ok(Length::BoundedContent(bounds))
             } else {
-                weight
-            };
-            Ok(Length::Bounded { bounds, weight })
+                let weight = l
+                    .weight()
+                    .ok_or_else(|| format!("unsupported length {op}"))?;
+                // A collapsed fill interval has the same extent for any weight.
+                let weight = if bounds.floor == bounds.cap {
+                    1.
+                } else {
+                    weight
+                };
+                Ok(Length::BoundedFill { bounds, weight })
+            }
         }
         _ => Err(format!("unsupported length {op}")),
     }

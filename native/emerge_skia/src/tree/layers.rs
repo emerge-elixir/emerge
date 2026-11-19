@@ -140,6 +140,7 @@ pub(super) struct ReflowCx<'a> {
     pub gap: [f32; 2],
     padding: [f32; 4],
     height: Length,
+    scale: f32,
     pub measured_height: f32,
 }
 impl ReflowCx<'_> {
@@ -160,7 +161,9 @@ impl ReflowCx<'_> {
             // Fixed outer extent, or the pre-wrap basis for a fill child.
             self.measured_height
         } else {
-            demand + self.padding[0] + self.padding[2]
+            // Width-dependent content may differ from its pre-wrap measurement.
+            self.height
+                .resolve(demand + self.padding[0] + self.padding[2], || self.scale)
         }
     }
 }
@@ -362,10 +365,7 @@ impl Layers {
                 // The parent's split reads the bound at the child's scale,
                 // even if the child's intrinsic box remains exactly the same.
                 if let Some(old) = old_scale {
-                    let moved = |l: Length| {
-                        l.bounds()
-                            .is_some_and(|b| b.device(old) != b.device(ctx.scale))
-                    };
+                    let moved = |l: Length| matches!(l, Length::BoundedFill { bounds, .. } if bounds.device(old) != bounds.device(ctx.scale));
                     let b = e.attrs[k].sizing;
                     self.invalidate_split(e, k, moved(b.width), moved(b.height));
                 }
@@ -495,6 +495,7 @@ impl Layers {
                 gap: b.spacing.map(|v| pixels(v, scale)),
                 padding: b.padding.map(|v| pixels(v, scale)),
                 height: b.height,
+                scale,
                 measured_height: self.measure[k].h,
                 layers: self,
                 e,

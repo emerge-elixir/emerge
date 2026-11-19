@@ -140,6 +140,47 @@ fn nested_splits(c: &Counter) {
     }
 }
 
+fn bounded_content(c: &Counter) {
+    for axis in [1, 2] {
+        let mut r = Raster::default();
+        let floor = |px| content_bounds::bound(axis, 5, px);
+        r.tree
+            .upload(&content_bounds::doc(axis, floor(140.), 80.))
+            .unwrap();
+        c.zero("first content floor after reservation", || {
+            r.settle(180., 170., 1.).unwrap();
+        });
+        draw(&mut r);
+        let demand = |px_value| set(4, 6, weighted::size(axis, px(axis, px_value)));
+        let edit = |l| set(2, 4, weighted::panel(axis, 2, l));
+        for p in [
+            demand(180.),
+            edit(content_bounds::bound(axis, 4, 100.)),
+            edit(floor(150.)),
+            demand(80.),
+        ] {
+            c.zero("fitting content edit through paint/hit inputs", || {
+                r.tree.patch(&p).unwrap();
+                r.settle(180., 170., 1.).unwrap();
+            });
+            draw(&mut r);
+        }
+        r.tree.patch(&demand(180.)).unwrap();
+        let pending = r.tree.encode();
+        let over = set(5, 5, text(&"W".repeat(512)));
+        (c.fail_next_reserve)();
+        assert_eq!(
+            r.tree.patch(&over).unwrap_err(),
+            "tree workspace capacity exceeded"
+        );
+        assert_eq!(r.tree.encode(), pending);
+        c.zero("pending content demand after refused growth", || {
+            r.settle(180., 170., 1.).unwrap();
+        });
+        assert_eq!(weighted::span(&r, axis, 3), (180., 60.));
+    }
+}
+
 fn bounded_splits(c: &Counter) {
     use bounded::bound;
     for axis in [1, 2] {
@@ -481,6 +522,7 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     weighted_splits(&c);
     bounded_splits(&c);
     nested_splits(&c);
+    bounded_content(&c);
     // 100 slots + 80% = 180. The inserted subtree and edited parent's
     // first input coexist with the old glyph/command buffers and batch scratch.
     let ids: Vec<u64> = (2..=100).collect();

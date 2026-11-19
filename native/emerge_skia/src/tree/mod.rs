@@ -61,7 +61,8 @@ enum Length {
     Px(f64),
     Fill,
     Weighted(f64),
-    Bounded {
+    BoundedContent(Bounds<f64>),
+    BoundedFill {
         bounds: Bounds<f64>,
         weight: f64,
     },
@@ -70,7 +71,7 @@ impl Length {
     fn weight(self) -> Option<f64> {
         match self {
             Self::Fill => Some(1.),
-            Self::Weighted(w) | Self::Bounded { weight: w, .. } => Some(w),
+            Self::Weighted(w) | Self::BoundedFill { weight: w, .. } => Some(w),
             _ => None,
         }
     }
@@ -84,19 +85,18 @@ impl Length {
     fn without_weight(self) -> Self {
         match self {
             Self::Weighted(_) => Self::Fill,
-            Self::Bounded { bounds, .. } => Self::Bounded { bounds, weight: 1. },
+            Self::BoundedFill { bounds, .. } => Self::BoundedFill { bounds, weight: 1. },
             other => other,
         }
     }
     fn bounds(self) -> Option<Bounds<f64>> {
-        if let Self::Bounded { bounds, .. } = self {
-            Some(bounds)
-        } else {
-            None
+        match self {
+            Self::BoundedContent(bounds) | Self::BoundedFill { bounds, .. } => Some(bounds),
+            _ => None,
         }
     }
     fn definite(self) -> bool {
-        !matches!(self, Self::Auto | Self::Content)
+        !matches!(self, Self::Auto | Self::Content | Self::BoundedContent(_))
     }
     // The basis is already an outer extent in device pixels: intrinsic, a
     // parent's proportional share, or the viewport for a fill root. Only a
@@ -104,7 +104,7 @@ impl Length {
     fn resolve(self, basis: f32, scale: impl FnOnce() -> f32) -> f32 {
         match self {
             Self::Px(px) => scale::pixels(px, scale()),
-            Self::Bounded { bounds, .. } => {
+            Self::BoundedContent(bounds) | Self::BoundedFill { bounds, .. } => {
                 let b = bounds.device(scale());
                 basis.clamp(b.floor, b.cap)
             }

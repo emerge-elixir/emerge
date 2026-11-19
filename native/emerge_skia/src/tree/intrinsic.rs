@@ -39,7 +39,7 @@ impl Intrinsic {
             std::mem::discriminant(&length).hash(&mut h);
             match length {
                 Length::Px(px) => px.to_bits().hash(&mut h),
-                Length::Bounded { bounds, .. } => {
+                Length::BoundedContent(bounds) | Length::BoundedFill { bounds, .. } => {
                     (bounds.floor.to_bits(), bounds.cap.to_bits()).hash(&mut h)
                 }
                 _ => (),

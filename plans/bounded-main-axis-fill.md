@@ -6,9 +6,9 @@
 on a root Row or a Row's direct child; height on a root Column or a Column's
 direct child. Keep existing plain fill working everywhere it works today.
 This checkpoint deferred recursive expressions; the [next slice](nested-main-axis-fill.md)
-implements nested pixel bounds around one fill. `content()` as an operand,
-cross-axis stretch and WrappedRow distribution remain separate. No DSL, wire,
-NIF or presenter change.
+implements nested pixel bounds around one fill. [Pixel bounds around content](bounded-content.md)
+follow separately. Cross-axis stretch and WrappedRow distribution remain out
+of scope. No DSL, wire, NIF or presenter change.
 
 ## Main-parity checkpoint: same box, different sibling
 

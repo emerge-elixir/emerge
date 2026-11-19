@@ -39,6 +39,22 @@ that proves the fix. Only copy **verified fixes** to `Unreleased → Fixed` in
   **between wrapped lines**. The separate [Column clipping fix](scale-results.md#column-clipping-follow-up)
   restored `main`'s behavior in the horizontal gap between card lanes.
 
+### Capped wrapped rows use the height of all lines
+
+- **Release note:** Fixed a pixel cap on `wrapped_row` content height leaving
+  the row at its one-line height after its children wrapped.
+- **Reproduce:** an 80×120px Column contains a full-width `wrapped_row` with
+  two 48×20px children, followed by a `height(fill())` sibling. No padding;
+  both gaps are 4px. Each child's content and outer height are both 20px.
+  Both renderers start the second line at `y=24`: this is not the line-gap bug.
+- **Observed on `5c71a593`:** `height(min(px(60), content()))` leaves the
+  row at 20px. The sibling starts at `y=24` with 96px instead of following
+  the second line. With plain `content()`, the same row correctly gets 44px.
+- **Fixed on retained:** the 60px cap allows 44px (`20 + 4 + 20`); the sibling
+  starts at `y=48` with 72px. A tighter 36px cap gives 36px and 80px with the
+  same 4px gap. Nothing is unused. [Delivered frames and clicks](../test/emerge_skia/bounded_content_test.exs)
+  · [comparison and controls](bounded-content.md#results).
+
 ### Default-size text scales with its layout
 
 - **Release note:** Fixed text without an explicit font size staying the same

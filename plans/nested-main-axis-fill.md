@@ -4,8 +4,9 @@ Implemented after the [redistributing main-axis split](bounded-main-axis-fill.md
 (`48b37bd`), without changing its sites, producer, EMRG tags or output boundary.
 Row widths and Column heights, at the root or on a direct child, accept nested
 `min`/`max` with exactly one `fill()` or `fill(w)` leaf and otherwise `px`
-leaves, on either side. `content()` operands, multiple fills, and a whole
-expression with no fill are separate features.
+leaves, on either side. [Pixel bounds around one `content()`](bounded-content.md)
+followed separately. Mixed bases, multiple fills, and a wholly pixel-only
+expression are outside this slice.
 
 - Fold the prefix expression once during admission, with bounded depth and no
   heap AST. A pixel-only branch is a constant. The fill branch is its weight

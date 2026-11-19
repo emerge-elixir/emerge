@@ -221,8 +221,9 @@ fn prefix_depth_and_bad_nested_operands_reject_without_publishing() {
             "unsupported length 4",
         ),
         (
+            // The inner content floor is valid; mixing it with a fill is not.
             field(axis, op(4, op(5, p(8.), vec![1]), vec![0])),
-            "unsupported length 5",
+            "unsupported length 4",
         ),
         (
             field(axis, op(4, op(5, p(8.), p(9.)), p(7.))),
