@@ -1,7 +1,7 @@
 # Retained renderer: port overview
 
 The target is what an application can do on Emerge `main`
-(`aef5e42fc789c396505f85c34810b2ca9c008586`). At retained `871659f`, an app can
+(`aef5e42fc789c396505f85c34810b2ca9c008586`). On the retained renderer an app can
 mount a viewport, draw and update a tree, and click what was actually submitted.
 It **cannot** yet run the full `main` UI or renderer API. The
 [API parity tracker](api-parity.md) lists the remaining work and the one slot for
@@ -11,7 +11,7 @@ selected work.
 | --- | --- |
 | `use Emerge`: mount, render, rerender, configure, receive raw input and route clicks; direct renderer startup, status, capture and shutdown | Ordinary binary headless and explicit Wayland sessions. Input uses the **last successfully submitted frame**, not the last accepted tree. |
 | **6 of 13** native element kinds: `el`, single-line `text`, `none`, `row`, `column`, `wrapped_row` | Leading layout, padding/gaps, subtree scale, solid backgrounds/text, bundled regular sans/mono. `Input.button/2` builds an `el`; `svg/2` needs the still-missing image kind. |
-| Static widths and heights on the six kinds | The viewport and an El offer each axis independently. Row shares width, Column shares height. WrappedRow shares plain and weighted widths **per line**; compound fill widths and all fill heights on its direct children remain open. |
+| Static widths and heights on the six kinds | The viewport and an El offer each axis independently. Row shares width, Column shares height. WrappedRow shares widths **per line**: one fill weight, optionally capped or floored by pixels. Widths mixing fill with content or another fill, and all fill heights on its direct children, remain open. |
 | **1 of 19** element `on_*` listeners: `on_click/1` | A left press/release can deliver local coordinates and the current callback for the submitted occurrence. Raw subscriptions are separate; they don't implement key, drag or hover listeners. |
 | **3 of 6** binary headless pixel formats: RGBA8888, BGRA8888, RGB888 | CPU-delivered `VideoInterop.Frame` and installed-frame RGB/RGBA or PNG capture. Producing a binary frame is not video import or PRIME export. |
 | Wayland CPU (`wl_shm`), OpenGL and Vulkan | Compositor pixels and seat input on all three. Fractional display scale was exercised on shm; hardware GPU evidence is at integer scales, not a synchronization or physical scanout qualification. |

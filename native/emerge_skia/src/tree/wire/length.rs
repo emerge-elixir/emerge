@@ -5,27 +5,41 @@ use super::*;
 const MAX_LENGTH_DEPTH: usize = 64;
 
 impl Reader<'_> {
-    pub(super) fn length(&mut self, raw: &[u8]) -> Result<(Length, f64)> {
+    pub(super) fn length(&mut self, raw: &[u8]) -> Result<(Length, f64, LineMinimum)> {
         let start = raw.len() - self.0.len();
         let mut largest = 0f64;
-        let mut l = self.expression(
-            |leaf| match leaf {
-                Leaf::Fill => Length::Fill,
-                Leaf::Weight(w) => Length::Weighted(w),
-                Leaf::Content => Length::Content,
-                Leaf::Px(px) => {
-                    largest = largest.max(px);
-                    Length::Px(px)
-                }
+        let (mut l, minimum) = self.expression(
+            |leaf| {
+                let length = match leaf {
+                    Leaf::Fill => Length::Fill,
+                    Leaf::Weight(w) => Length::Weighted(w),
+                    Leaf::Content => Length::Content,
+                    Leaf::Px(px) => {
+                        largest = largest.max(px);
+                        Length::Px(px)
+                    }
+                };
+                (length, LineMinimum::Auto)
             },
-            fold,
+            |min, (a, left), (b, right)| {
+                let length = fold(min, a, b);
+                // At a wrapped site, only pixel operands may surround one
+                // fill. A max on that branch declares a floor, even at zero.
+                let rule = match (a, b) {
+                    _ if length.weight().is_none() => LineMinimum::Auto,
+                    (Length::Px(_), _) => right.pixel_bound(min),
+                    (_, Length::Px(_)) => left.pixel_bound(min),
+                    _ => LineMinimum::Unsupported,
+                };
+                (length, rule)
+            },
         )?;
         if let Length::Formula(f) = &mut l {
             // An EMRG body is limited to 64 MiB before attr parsing.
             f.start = start as u32;
             f.end = (raw.len() - self.0.len()) as u32;
         }
-        Ok((l, largest))
+        Ok((l, largest, minimum))
     }
     fn leaf(&mut self, tag: u8) -> Result<Leaf> {
         match tag {
@@ -80,6 +94,16 @@ impl Reader<'_> {
         }
     }
 }
+impl LineMinimum {
+    fn pixel_bound(self, min: bool) -> Self {
+        if !min && self == Self::Auto {
+            Self::PixelFloor
+        } else {
+            self
+        }
+    }
+}
+
 enum Leaf {
     Fill,
     Content,

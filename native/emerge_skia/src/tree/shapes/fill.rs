@@ -26,17 +26,16 @@ impl<'a> Slot<'a> {
             },
         }
     }
-    // The automatic minimum is already an outer size in device pixels. Use
-    // the same bounded-share solver as Row without scaling that floor again.
-    pub(super) fn line_fill(weight: f64, minimum: f32) -> Self {
-        let length = if minimum == 0. {
+    // The line break and the allocator use the same device-pixel floor.
+    pub(super) fn line_fill(weight: f64, minimum: f32, cap: f32) -> Self {
+        let length = if minimum == 0. && cap.is_infinite() {
             Length::Weighted(weight)
         } else {
             Length::BoundedFill {
                 weight,
                 bounds: Bounds {
                     floor: f64::from(minimum),
-                    cap: f64::INFINITY,
+                    cap: f64::from(cap),
                 },
             }
         };

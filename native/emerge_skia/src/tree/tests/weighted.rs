@@ -5,7 +5,7 @@ pub(super) fn host(axis: u8) -> u8 {
     if axis == 1 { 1 } else { 3 }
 }
 // Keep both lanes at their original positions, but put them under a parent
-// that cannot itself host a compound fill width or a fill height: a 90px
+// that cannot itself host a mixed fill width or a fill height: a 90px
 // WrappedRow stacks the width lanes; a natural WrappedRow puts the height
 // lanes on a single line. Unlike Row, neither can offer a fill height.
 pub(super) fn wrong_site(axis: u8) -> (u8, Bytes) {
@@ -187,11 +187,11 @@ fn rejection_preserves_pending_weights_and_closed_moves_use_the_new_hosts_split(
             .unwrap();
         let old = draw(&mut r).to_vec();
         let pressed = r.target_at(5., 5.).unwrap().0;
-        // A bare numeric width is legal on a wrapped line now. Include a real
-        // (nonbinding here) pixel cap for the unsupported width-site checks.
+        // Pixel caps are legal here too. Use a second fill operand for a real
+        // width-site refusal; min(w, w) still has weight w at the Row site.
         let policy = |w| {
             if axis == 1 {
-                bounded::bound(1, 4, 300., Some(w), false)
+                [vec![1, 4], number(3, w), number(3, w)].concat()
             } else {
                 weight(2, w)
             }

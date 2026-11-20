@@ -192,9 +192,19 @@ impl BoxStyle {
         }
     }
 }
+/// A folded interval alone can't distinguish an automatic minimum from
+/// max(fill(), px(0)), or a pixel clamp from a masked mixed expression.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum LineMinimum {
+    #[default]
+    Auto,
+    PixelFloor,
+    Unsupported,
+}
 #[derive(Clone, Debug, Default)]
 struct Attrs {
     sizing: BoxStyle,
+    line_minimum: LineMinimum,
     // Admission also checks operands masked by a tighter bound. This is not a layout input.
     largest_length_px: f64,
     family: Option<Family>,
@@ -206,6 +216,12 @@ struct Attrs {
     // Relative to the pooled wire block. No retained String or second copy of UTF-8.
     text: Range<usize>,
     glyph_count: usize,
+}
+impl Attrs {
+    fn line_floor(&self) -> Option<f64> {
+        (self.line_minimum == LineMinimum::PixelFloor)
+            .then(|| self.sizing.width.natural_bounds().floor)
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Subtree {

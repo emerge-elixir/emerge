@@ -4,7 +4,8 @@
 below describe gaps; they are not concurrent plans or a proposed order.
 
 **Reference:** local `main` at `aef5e42fc789c396505f85c34810b2ca9c008586`;
-retained tree and session at `871659fe4f39b8a32c5ba1e04e5df0043e2dfbd6`.
+retained inventory began at `871659f`; the linked implementations and tests
+reflect subsequent ports.
 The [overview](README.md) covers the working subset. **Partial** means an app
 can use the stated subset; **missing** means no retained path for the behavior;
 **verify** means there is a path but the stated result has not been demonstrated.
@@ -30,7 +31,7 @@ be expressed from what can be drawn or receive input.
 | `image/2`, `svg/2`, `image_fit/1`, `Svg.color/1` — missing | Load, measure and paint raster/SVG, aspect-preserving and explicit fits, original SVG colors or template tint. SVG uses the image kind. Asset policy below applies to backgrounds too. |
 | `Input.text/2`, `multiline/2`, `slider/2`, `Input.Slider.config/0,1` — missing | Editable single/multiline text, echo, caret, selection, IME, multiline wrap/scroll; controlled slider range/value/step, track, filled track, thumb and change delivery. A button is already an El, but its keyboard/press behavior is not there. |
 | `video/2` — missing | Layout, fit and paint the latest frame of a renderer-local named target; distinct from sending headless frames *out*. See video submission below. |
-| `Size`, `Space`, `Align` — partial | On a **direct WrappedRow child**: compound fill width (plain/numeric fill already shares per line) and any fill-bearing height. Elsewhere on the six kinds `width/height`, `px`, `shrink/content`, weights and nested `min/max` work within the admission limits. Padding and fixed gaps work; `space_evenly`, non-leading box alignments and low-level layout/text snapping do not. [Sizing sites](../native/emerge_skia/src/tree/tests/dimensions/sites.rs) |
+| `Size`, `Space`, `Align` — partial | On a **direct WrappedRow child**: widths combining fill with content or with another fill, and any fill-bearing height. One plain or numeric fill with nested pixel caps/floors already shares per line. Elsewhere on the six kinds `width/height`, `px`, `shrink/content`, weights and nested `min/max` work within the admission limits. Padding and fixed gaps work; `space_evenly`, non-leading box alignments and low-level layout/text snapping do not. [Sizing sites](../native/emerge_skia/src/tree/tests/dimensions/sites.rs) |
 | `UI.rotate/1`, `Transform` — missing | Layout rotation; separately paint-only move X/Y, rotate, scale and alpha with matching hits. Layout `UI.scale/1` already works; paint scale (tag 34) and screenshot scale are different contracts. |
 | `Nearby`, `clip_nearby/0` — missing | All six mount positions (`behind_content`, `above`, `on_right`, `below`, `on_left`, `in_front`), stacking, escaping/clipped hits and identity on moves. The producer understands the edges; native rejects them. Ordinary Row/Column/WrappedRow clipping is not overlay support. |
 | `Color`, `Background`, `Border` — partial | Solid RGB/RGBA and palette helpers work on backgrounds/text; raw names are limited to black, white, red, blue and transparent. Missing other supported names, gradients including alpha/stops across all color consumers, background image fit/tile, borders (per-edge widths, per-corner radii, colors/styles), outer/inner shadows and glow. |

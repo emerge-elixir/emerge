@@ -10,7 +10,15 @@ impl Expr {
         }
     }
     fn allowed(&self, axis: u8, parent: Option<u8>) -> bool {
-        parent != Some(2) || !self.has_fill() || (axis == 1 && matches!(self, Fill(_)))
+        fn pixels(l: &Expr) -> bool {
+            matches!(l, Px(_)) || matches!(l, Min(a, b) | Max(a, b) if pixels(a) && pixels(b))
+        }
+        fn pixel_bounded(l: &Expr) -> bool {
+            matches!(l, Fill(_))
+                || matches!(l, Min(a, b) | Max(a, b)
+                if (pixels(a) && pixel_bounded(b)) || (pixel_bounded(a) && pixels(b)))
+        }
+        parent != Some(2) || !self.has_fill() || (axis == 1 && pixel_bounded(self))
     }
     fn single(&self, natural: f32, host: f64, independent_offer: bool) -> f32 {
         let eval = |unit| self.eval(f64::from(natural), 1., |_| unit);

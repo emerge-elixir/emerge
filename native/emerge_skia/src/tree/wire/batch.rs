@@ -190,8 +190,8 @@ impl Batch {
                 .as_ref()
                 .map(|(a, _)| a)
                 .or_else(|| old.map(|k| &e.attrs[k]));
-            // Wrapped lines distribute plain/weighted width, not compound
-            // fill expressions or vertical shares.
+            // Wrapped lines can bound a single weight with pixels, not
+            // distribute mixed width expressions or vertical shares.
             if let Some(a) = attrs
                 && parent.is_some_and(|p| {
                     self.get(p)
@@ -199,9 +199,7 @@ impl Batch {
                         == Shape::WrappedRow
                 })
             {
-                let width = a.sizing.width;
-                if width.weight().is_some() && !matches!(width, Length::Fill | Length::Weighted(_))
-                {
+                if a.line_minimum == LineMinimum::Unsupported {
                     return Err("compound fill width is not supported on a WrappedRow child".into());
                 }
                 if a.sizing.height.weight().is_some() {

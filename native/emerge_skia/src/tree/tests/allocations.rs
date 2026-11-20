@@ -293,6 +293,45 @@ fn wrapped_widths(c: &Counter) {
     assert_eq!(bounds(&r, 3).y, 0.);
 }
 
+fn pixel_bounded_lines(c: &Counter) {
+    let mut r = Raster::default();
+    let panel = |width| weighted::panel(1, 2, width);
+    r.tree
+        .upload(&upload(&[
+            node(1, 2, block(&[vec![1, 0], number(4, 4.)]), &[2, 3]),
+            node(2, 4, panel(nested::range(1, 0., 30., 1.)), &[4]),
+            node(4, 6, wrapped_width::chip(20.), &[]),
+            node(3, 4, weighted::panel(1, 3, vec![1, 0]), &[5]),
+            node(5, 6, wrapped_width::chip(20.), &[]),
+        ]))
+        .unwrap();
+    c.zero("first wrapped pixel clamp after reservation", || {
+        r.settle(100., 40., 1.).unwrap();
+    });
+    assert_eq!(bounds(&r, 3).x, 34.);
+    let edit = set(2, 4, panel(nested::range(1, 70., 120., 3.)));
+    c.zero("fitting floor/weight edit changes line membership", || {
+        r.tree.patch(&edit).unwrap();
+        r.settle(93., 40., 1.).unwrap();
+    });
+    assert_eq!(bounds(&r, 3).y, 16.);
+    r.tree
+        .patch(&set(2, 4, panel(bounded::bound(1, 4, 10., None, true))))
+        .unwrap();
+    let pending = r.tree.encode();
+    let over = patch(4, 14, &[node(14, 5, text(&"W".repeat(512)), &[])]);
+    (c.fail_next_reserve)();
+    assert_eq!(
+        r.tree.patch(&over).unwrap_err(),
+        "tree workspace capacity exceeded"
+    );
+    assert_eq!(r.tree.encode(), pending);
+    c.zero("pending cap after refused growth", || {
+        r.settle(34., 40., 1.).unwrap();
+    });
+    assert_eq!((bounds(&r, 3).x, bounds(&r, 3).y), (14., 0.));
+}
+
 fn viewport_offers(c: &Counter) {
     let mut r = Raster::default();
     r.tree.upload(&viewport::wrapped()).unwrap();
@@ -750,6 +789,7 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     independent_column_widths(&c);
     viewport_offers(&c);
     wrapped_widths(&c);
+    pixel_bounded_lines(&c);
     independent_row_heights(&c);
     el_child_offers(&c);
     // 100 slots + 80% = 180. The inserted subtree and edited parent's

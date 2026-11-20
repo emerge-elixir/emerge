@@ -566,6 +566,14 @@ impl Layers {
             }
             m
         };
+        // The memo is site-independent. A wrapped edge with an explicit
+        // floor contributes that outer width instead of the content minimum.
+        let mut m = m;
+        if let Some(floor) = e.attrs[k].line_floor()
+            && e.parent_shape(k) == Some(Shape::WrappedRow)
+        {
+            m.min_w = pixels(floor, c.scale);
+        }
         let old = self.measure.get(k).copied();
         if changed(&mut self.measure, k, m) {
             self.parent(Measure, k, e);

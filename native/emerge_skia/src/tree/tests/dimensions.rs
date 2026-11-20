@@ -4,6 +4,7 @@ use super::*;
 mod laws;
 mod sites;
 mod unary;
+mod wrapped;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Site {
@@ -123,8 +124,10 @@ impl Case {
         self.kids.iter().map(|c| c.id).collect()
     }
     fn upload(&self, site: Site) -> Bytes {
-        let axis = site.axis();
-        let root = node(1, site.host(), self.root(axis), &self.ids());
+        self.under(site.host(), site.axis())
+    }
+    fn under(&self, host: u8, axis: u8) -> Bytes {
+        let root = node(1, host, self.root(axis), &self.ids());
         let nodes = std::iter::once(root)
             .chain(self.kids.iter().flat_map(|c| {
                 [

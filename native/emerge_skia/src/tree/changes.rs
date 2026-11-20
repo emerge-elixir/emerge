@@ -110,6 +110,12 @@ impl Layers {
             let m = &mut e.slots[k];
             debug_assert!(m.detached.is_none());
             let change = std::mem::take(&mut m.change);
+            let moved = change.old_parent.is_some_and(|old| old != m.parent);
+            if (moved || change.reattached) && e.attrs[k].line_floor().is_some() {
+                // The new edge may consume an explicit wrapped minimum even
+                // if scale, preferred width and every child stayed the same.
+                self.invalidate(Pass::Measure, k, depth);
+            }
             if change.cold {
                 self.mount(k, depth);
             } else if change.reattached {
@@ -132,7 +138,7 @@ impl Layers {
                     self.invalidate(p, k, depth);
                 }
                 self.invalidate_composition(k, depth, Outputs::Hit);
-            } else if change.old_parent.is_some_and(|old| old != m.parent) {
+            } else if moved {
                 // Fit is site-independent. The new constraints and origin
                 // can still differ even when width and scale are unchanged.
                 if let Some(part) = self.parts.get_mut(k) {
@@ -164,7 +170,7 @@ impl Layers {
             invalidate(Pass::Context)
         }
         let (a, b) = (old.sizing.without_weights(), next.sizing.without_weights());
-        if a != b {
+        if a != b || old.line_floor() != next.line_floor() {
             invalidate(Pass::Measure)
         }
         if a.width != b.width

@@ -95,8 +95,11 @@ minimum outer width. It divides each line independently by weight, honoring
 those minima. In a 100×40 host with no padding and a 4px gap, two cards with
 20×12 content take 48/48 at equal weights or 24/72 at 1:3, leaving 28px
 below. At 44px the 1:3 pair takes 20/20; at 43px each gets its own 43px
-line, leaving 12px below. Reflow uses those same line breaks and the actual
-child heights. See [why this differs from main](retained-decisions.md#d7-share-fill-widths-per-wrapped-line)
+line, leaving 12px below. A pixel cap limits the automatic minimum; an
+explicit pixel floor replaces it. Both resolve at the child's scale. The
+line split honors the cap as well as the floor: capping A at 30px in the
+100px equal-weight case leaves 66px for B. Reflow uses the same breaks and
+actual child heights. See [why this differs from main](retained-decisions.md#d7-share-fill-widths-per-wrapped-line)
 and the [submitted-frame regression](../../test/emerge_skia/wrapped_row_fill_test.exs).
 
 Nested `min`/`max` can put both a floor and a cap on one fill. With no padding

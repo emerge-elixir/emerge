@@ -113,9 +113,18 @@ share each line by weight from zero bases, respecting those minima. Reflow uses
 the same breaks. Equal fills take **48/48**; 1:3 takes **24/72**, not 34/62;
 at 44px they take 20/20; at 43px each takes its own line. Keep Emerge's
 leading vertical placement and line gap, not CSS cross-axis stretching.
-Existing plain-fill layouts can change. Main geometry was run on `5c71a593`;
-the relevant width logic is unchanged at `aef5e42f`. [Submitted frames and
-clicks](../../test/emerge_skia/wrapped_row_fill_test.exs) · [minimum vs preferred width](../../native/emerge_skia/src/tree/tests/wrapped_width.rs).
+Existing plain-fill layouts can change.
+
+Pixel bounds apply to **one** fill weight. A cap lowers the automatic content
+minimum for breaking; an explicit floor replaces that minimum, even at zero.
+Unused width goes to uncapped siblings **on that line**. On `main` at `aef5e42f`,
+a 30px cap gave A 30px on line one and B 100px on line two. With the elm-ui
+rule the same unpadded cards take **30/66** on one line. A 10px cap on 20px
+content fits beside the peer at 34px, not 33px; a 70px floor fits at 94px,
+not 93px. Keep Emerge's outer-box units: with 6px left/right padding a 10px
+cap is still 10px (as on `main`), not elm-ui's 12px padding minimum.
+[Submitted frames and clicks](../../test/emerge_skia/wrapped_row_fill_test.exs) ·
+[minimum on a moved child](../../native/emerge_skia/src/tree/tests/wrapped_width.rs).
 
 ### D8. Submit the same retained drawing to explicit Wayland presenters
 

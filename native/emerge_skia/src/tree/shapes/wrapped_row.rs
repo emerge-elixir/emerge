@@ -19,7 +19,10 @@ impl LayoutBehaviour for WrappedRow {
         let slot = |c, cx: &FlowCx<'_>| {
             let w = cx.policy_of(c);
             if let Some(weight) = w.weight() {
-                fill::Slot::line_fill(weight, cx.minimum_width(c))
+                let cap = w.bounds().map_or(f32::INFINITY, |b| {
+                    scale::pixels(b.cap, node.elements.slots[c].admitted.scale)
+                });
+                fill::Slot::line_fill(weight, cx.minimum_width(c), cap)
             } else {
                 fill::Slot::new(node.elements, c, w, cx.nonfill_width(c))
             }
