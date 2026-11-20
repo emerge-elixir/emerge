@@ -23,8 +23,8 @@ drawing, hit list and callback route changes. Only a successful handoff (or
 reuse of a still-valid submission) publishes that candidate. A later edit
 cannot change its addresses. Capture reads the retained submitted target on
 demand, not the swapchain. Configure, a blocked acquire, and a frame callback
-are not installations. See the [CPU demo](../../plans/wayland-demo.md) and
-[GPU demo and qualification boundaries](../../plans/wayland-gpu-demo.md).
+are not installations. See the [presenter decision](retained-decisions.md#d8-submit-the-same-retained-drawing-to-explicit-wayland-presenters)
+and the [remaining hardware checks](../../plans/api-parity.md#outputs-platforms-and-distributions).
 
 `Emerge.UI.scale/1` changes layout before measurement. Admission proves each
 changed site's effective scale and provisions the font sizes used there. At
@@ -44,7 +44,7 @@ child its share of the width, and a Column its share of the height. An
 assignment is used as-is, not passed through the child's policy again.
 Resizing the viewport or promoting a subtree replaces its incoming
 constraints; neither changes how that subtree lays out its own children.
-See [viewport constraints and submitted examples](../../plans/viewport-constraints.md#results).
+See the [viewport resize and promotion regressions](../../test/emerge_skia/viewport_constraints_test.exs).
 
 Any Column can host ordinary fill-height children. Width flow and bottom-up reflow settle the
 heights of non-fill siblings first, including wrapped lines. Placement splits
@@ -59,7 +59,7 @@ width of the Column. Content reads the child's own padded demand; pixel
 leaves use the child's scale. A content floor can make a child wider than
 its parent without changing a sibling's width or extending the parent clip.
 The child resolves the expression in width flow, never a second time on an
-already resolved offer from a Row. See the [regression scene](../../plans/column-cross-axis-width.md).
+already resolved offer from a Row. See the [Column child width regression](../../test/emerge_skia/column_cross_width_test.exs).
 
 Direct children of a single-line Row likewise do **not** divide its height.
 Width flow settles first. Each child reports its padded height after wrapping;
@@ -68,7 +68,7 @@ padding. Placement then uses the Row's actual inner height for every height-fill
 leaf, not the intrinsic estimate or a previously installed height. For example,
 with a 40×120 Row, padding 6, gap 4 and two 12px-wide children, both get a
 108px offer. If A caps fill at 30px of content, its height is 30px (78px unused)
-and B can still take all 108px. See the [wrap and overflow regressions](../../plans/row-cross-axis-height.md#results).
+and B can still take all 108px. See the [wrap and overflow regressions](../../test/emerge_skia/row_cross_height_test.exs).
 
 The single child of an `el` does not divide **either** axis. Width flow
 resolves the child's width first. The child reports its height after wrapping;
@@ -78,7 +78,7 @@ placement then offers the El's actual inner height, including zero. For a
 `max(content(), fill(3))` on both axes, the child is 150×90: it overflows
 by 42×22. An offer is not a clip. The El keeps its inherited paint and hit
 clip; an enclosing Column still clips at its own edge. See the [submitted
-examples](../../plans/el-child-fill.md#results).
+examples](../../test/emerge_skia/el_child_fill_test.exs).
 
 A Row divides spare width, and a Column divides spare height, in proportion
 to the children's weights. `fill()` and `fill(1)` both take one share. A
@@ -96,7 +96,8 @@ those minima. In a 100×40 host with no padding and a 4px gap, two cards with
 20×12 content take 48/48 at equal weights or 24/72 at 1:3, leaving 28px
 below. At 44px the 1:3 pair takes 20/20; at 43px each gets its own 43px
 line, leaving 12px below. Reflow uses those same line breaks and the actual
-child heights. See [the before/after comparison](../../plans/wrapped-row-child-width.md).
+child heights. See [why this differs from main](retained-decisions.md#d7-share-fill-widths-per-wrapped-line)
+and the [submitted-frame regression](../../test/emerge_skia/wrapped_row_fill_test.exs).
 
 Nested `min`/`max` can put both a floor and a cap on one fill. With no padding
 or gap, `min(px(50), max(px(20), fill()))` next to `fill()` takes 20/10 in a
@@ -120,7 +121,7 @@ space. In a definite Column the analogous content limit uses the height
 **after wrapping**. When an expression cannot be folded to a single weight
 and interval, the allocator evaluates its validated length bytes at a shared
 fill unit; each active term contributes either a fixed extent or a weight.
-See the [width/height regression plan](../../plans/dimension-regressions.md).
+See the [width/height regression cases](../../test/emerge_skia/dimension_regression_test.exs).
 
 Wayland uses the preferred fractional scale with a logical viewport destination
 when both protocols are available, or integer buffer scaling otherwise. Layout
