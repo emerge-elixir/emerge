@@ -35,7 +35,7 @@ impl LayoutBehaviour for Column {
         let demand = node
             .data()
             .iter()
-            .map(|&c| cx.unallotted_height(c))
+            .map(|&c| cx.column_basis(c))
             .reduce(|y, h| y + cx.gap[1] + h)
             .unwrap_or(0.);
         cx.box_height(demand)
@@ -57,12 +57,14 @@ impl LayoutBehaviour for Column {
         );
         let mut y = 0.;
         for &c in children {
-            let allotted = split.and_then(|s| s.offer(slot(c, cx))).or_else(|| {
-                length(c)
-                    .reads_fill_content()
-                    .then(|| cx.measured_height(c))
-            });
-            cx.place(c, [left, top + y], allotted);
+            let allotted = split
+                .and_then(|s| s.offer(slot(c, cx)))
+                .or_else(|| length(c).weight().map(|_| cx.measured_height(c)));
+            cx.place(
+                c,
+                [left, top + y],
+                allotted.map_or(Constraint::Natural, Constraint::Assigned),
+            );
             y += allotted.unwrap_or_else(|| cx.child(c).h);
             y += gap;
         }

@@ -261,6 +261,35 @@ fn independent_row_heights(c: &Counter) {
     assert_eq!(r.hit_at(10., 117.), Some((1, 10., 117.)));
 }
 
+fn viewport_offers(c: &Counter) {
+    let mut r = Raster::default();
+    r.tree.upload(&viewport::wrapped()).unwrap();
+    for (w, h, expected) in [
+        (80., 80., 16.),
+        (79., 80., 32.),
+        (79., 10., 10.),
+        (0., 0., 0.),
+        (80., 80., 16.),
+    ] {
+        c.zero(
+            "first and resized viewport through prepared draw/hit inputs",
+            || {
+                r.settle(w, h, 1.).unwrap();
+            },
+        );
+        assert_eq!(bounds(&r, 2).height, expected);
+    }
+    let edit = set(3, 6, block(&[px(1, 37.), px(2, 12.)]));
+    c.zero(
+        "fitting edit changes the viewport-constrained root's post-wrap height",
+        || {
+            r.tree.patch(&edit).unwrap();
+            r.settle(80., 80., 1.).unwrap();
+        },
+    );
+    assert_eq!(bounds(&r, 2).height, 32.);
+}
+
 fn el_child_offers(c: &Counter) {
     let mut r = Raster::default();
     r.tree.upload(&el_child::example()).unwrap();
@@ -687,6 +716,7 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     bounded_content(&c);
     mixed_splits(&c);
     independent_column_widths(&c);
+    viewport_offers(&c);
     independent_row_heights(&c);
     el_child_offers(&c);
     // 100 slots + 80% = 180. The inserted subtree and edited parent's

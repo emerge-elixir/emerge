@@ -36,7 +36,7 @@ impl LayoutBehaviour for Row {
             let w = split
                 .and_then(|s| s.offer(slot(c, cx)))
                 .unwrap_or_else(|| cx.measured_width(c));
-            cx.offer(c, w);
+            cx.offer(c, Constraint::Assigned(w));
         }
     }
     fn reflow(node: Mounted<'_, Children>, cx: &mut ReflowCx<'_>) -> f32 {
@@ -48,7 +48,7 @@ impl LayoutBehaviour for Row {
         let gap = scale::pixels(style.spacing[0], cx.scale);
         let mut x = 0.;
         for &c in node.data() {
-            cx.place_with_offer(c, [left + x, top], inner);
+            cx.place(c, [left + x, top], Constraint::Available(inner));
             x += cx.child(c).w + gap;
         }
     }

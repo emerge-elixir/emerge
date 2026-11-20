@@ -7,6 +7,20 @@ that proves the fix. Only copy **verified fixes** to `Unreleased → Fixed` in
 
 ## Verified fixes — ready for the changelog
 
+### Content-limited height on a WrappedRow at the viewport
+
+- **Release note:** A WrappedRow sized to the viewport width now includes
+  the next line in `min(content(), fill(3))` height after a window resize.
+- **Reproduce:** 80×80 viewport, WrappedRow padding 2, gap 4, two 36×12
+  content-height chips. Narrow the viewport to 79×80. On pinned `5c71a593`,
+  chip two moves from `(42,2)` to `(2,18)`. Plain `content()` grows from 16
+  to 32, but the fill cap stays at **16**, leaving line two outside the box.
+- **Fixed:** capped height **16 → 32 → 16** at viewport widths 80 → 79 → 80,
+  leaving 64 → 48 → 64 below the row. Real compositor pixels show line two
+  and the seat click at `(60,24)` reaches the row. [Headless frames](../test/emerge_skia/viewport_constraints_test.exs)
+  · [resize and seat controls](viewport-constraints.md#results). Root site
+  refusals on retained `22488de` were port limits, not a bug on pinned main.
+
 ### Content floors on the child of an El
 
 - **Release note:** An El child with a content minimum combined with fill

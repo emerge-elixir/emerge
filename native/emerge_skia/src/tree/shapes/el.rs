@@ -17,7 +17,7 @@ impl LayoutBehaviour for El {
     fn place_children(node: Mounted<'_, OnlyChild>, cx: &mut PlaceCx<'_>) {
         if let Some(child) = node.data() {
             let (origin, height) = cx.padded_height_offer(node.attrs().sizing);
-            cx.place_with_offer(child, origin, height);
+            cx.place(child, origin, Constraint::Available(height));
         }
     }
 }

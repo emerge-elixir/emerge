@@ -275,7 +275,7 @@ fn admission_proves_the_bounded_leaf_at_its_final_site_before_publishing_anythin
             "scaled length exceeds device range"
         );
         for p in [
-            patch(1, 10, &[]),
+            patch(1, 90, &[node(90, 2, block(&[]), &[10])]),
             patch(2, 10, &[]),
             patch(
                 3,
@@ -283,7 +283,7 @@ fn admission_proves_the_bounded_leaf_at_its_final_site_before_publishing_anythin
                 &[node(31, 4, size(axis, bound(axis, 5, 5., None, true)), &[])],
             ),
         ] {
-            assert!(r.tree.patch(&p).unwrap_err().contains("requires a root"));
+            assert!(r.tree.patch(&p).unwrap_err().contains("WrappedRow child"));
         }
         for (l, err) in [
             (vec![axis, 4, 0, 6], "unsupported length 6"),
@@ -315,5 +315,8 @@ fn admission_proves_the_bounded_leaf_at_its_final_site_before_publishing_anythin
         assert_eq!(span(&r, axis, 10), (40., 20.));
         let (x, y) = if axis == 1 { (45., 17.) } else { (17., 45.) };
         assert_eq!(r.target_at(x, y), Some((pressed, 10, 2.5, 2.5)));
+        r.tree.patch(&patch(1, 10, &[])).unwrap();
+        draw(&mut r);
+        assert_eq!(span(&r, axis, 10), (0., 10.)); // same cap, back at scale 1
     }
 }

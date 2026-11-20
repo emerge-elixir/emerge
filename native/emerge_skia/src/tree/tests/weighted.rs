@@ -202,11 +202,11 @@ fn rejection_preserves_pending_weights_and_closed_moves_use_the_new_hosts_split(
             "truncated EMRG data"
         );
         // The kept branch has accepted a weighted policy, even though the last
-        // draw used fill(). It can't be moved directly under this outer host or
-        // promoted as a root El, as a definition with :same or a bare ref.
+        // draw used fill(). It can't move directly under the wrapping host,
+        // as a definition with :same or a bare ref. Promotion is legal.
         for bad in [
             patch(2, 10, &[]),
-            patch(1, 10, &[]),
+            patch(1, 90, &[node(90, 2, block(&[]), &[10])]),
             patch(
                 1,
                 1,
@@ -218,7 +218,7 @@ fn rejection_preserves_pending_weights_and_closed_moves_use_the_new_hosts_split(
             ),
             patch(3, 9, &[node(9, 4, size(axis, weight(axis, 1.)), &[])]),
         ] {
-            assert!(r.tree.patch(&bad).unwrap_err().contains("requires a root"));
+            assert!(r.tree.patch(&bad).unwrap_err().contains("WrappedRow child"));
         }
         assert_eq!(r.tree.encode(), pending);
         assert!(r.tree.layers.worksets_empty());
@@ -249,5 +249,12 @@ fn rejection_preserves_pending_weights_and_closed_moves_use_the_new_hosts_split(
         assert_eq!(r.target_at(x, y), Some((pressed, 10, 5., 5.)));
         assert!(r.target_at(5., 5.).is_none());
         assert_eq!(r.tree.layers.text.shapes, 1);
+        r.tree.patch(&patch(1, 10, &[])).unwrap();
+        draw(&mut r);
+        assert_eq!(
+            span(&r, axis, 10),
+            (0., if axis == 1 { 180. } else { 170. })
+        );
+        assert_eq!(r.target_at(5., 5.), Some((pressed, 10, 5., 5.)));
     }
 }

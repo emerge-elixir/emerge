@@ -193,7 +193,7 @@ fn row_rejects_unsupported_fields_and_malformed_shapes_without_losing_pending_ed
     r.tree.patch(&set(2, 4, red(px(1, 60.)))).unwrap();
     let pending = r.tree.encode();
     for bad in [
-        block(&[vec![2, 0]]),
+        block(&[vec![2, 255]]),
         block(&[vec![1, 3]]),
         block(&[vec![5, 1]]),
         text("not row data"),

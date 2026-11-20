@@ -9,12 +9,8 @@ impl Expr {
             _ => false,
         }
     }
-    fn allowed(&self, axis: u8, kind: u8, parent: Option<u8>) -> bool {
-        !self.has_fill()
-            || parent.unwrap_or(kind) == weighted::host(axis)
-            || (axis == 1 && (parent == Some(3) || matches!(self, Fill(None))))
-            || (axis == 2 && parent == Some(1))
-            || parent == Some(4)
+    fn allowed(&self, axis: u8, parent: Option<u8>) -> bool {
+        parent != Some(2) || !self.has_fill() || (axis == 1 && matches!(self, Fill(None)))
     }
     fn single(&self, natural: f32, host: f64, independent_offer: bool) -> f32 {
         let eval = |unit| self.eval(f64::from(natural), 1., |_| unit);
@@ -77,8 +73,8 @@ fn width_by_height_at_roots_and_all_supported_parent_child_sites() {
                 for height in &lengths {
                     let edit = set(id, kind, styles(width, height, kind));
                     let result = t.patch(&edit);
-                    if !width.allowed(1, kind, parent) || !height.allowed(2, kind, parent) {
-                        assert!(result.unwrap_err().contains("requires a root"));
+                    if !width.allowed(1, parent) || !height.allowed(2, parent) {
+                        assert!(result.unwrap_err().contains("WrappedRow child"));
                         assert_eq!(t.encode(), accepted);
                         continue;
                     }
@@ -230,9 +226,9 @@ fn a_closed_mixed_child_checks_its_new_site_and_scale_without_installing_a_refus
         let pending = r.tree.encode();
         assert!(
             r.tree
-                .patch(&patch(1, 4, &[]))
+                .patch(&patch(1, 90, &[node(90, 2, block(&[]), &[4])]))
                 .unwrap_err()
-                .contains("requires a root")
+                .contains("WrappedRow child")
         );
         let moved = patch(
             1,

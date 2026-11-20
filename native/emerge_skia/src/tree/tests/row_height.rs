@@ -34,7 +34,7 @@ fn policy_only_edits_reach_the_row_height_offer_not_intrinsic_measure_or_width_s
     assert!(r.tree.layers.worksets_empty());
     draw(&mut r);
     assert_eq!(heights(&r), [108., 108.]);
-    assert!(ran(&r, Place, 1) && ran(&r, Place, 2) && !ran(&r, Place, 3));
+    assert!(!ran(&r, Place, 1) && ran(&r, Place, 2) && !ran(&r, Place, 3));
     assert!(
         !r.tree
             .layers
@@ -123,7 +123,7 @@ pub(super) fn closed_move(independent_host: u8) {
         r.tree
             .patch(&transfer(40, 2))
             .unwrap_err()
-            .contains("height(fill()) requires")
+            .contains("fill height is not supported on a WrappedRow child")
     );
     assert_eq!(
         r.tree.patch(&transfer(30, independent_host)).unwrap_err(),

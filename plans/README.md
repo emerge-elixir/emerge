@@ -5,6 +5,8 @@ Keep [bugs found on main and verified fixes for the changelog](retained-changelo
 
 [Width and height regression plan, seed replay and results](dimension-regressions.md): covers static sizing on the six supported shapes, including mixed `min`/`max` expressions.
 
+Implemented: [the viewport supplies ordinary constraints](viewport-constraints.md#results). All six supported element kinds use the same sizing rules at the viewport as inside a zero-padding El, including after resize or promotion.
+
 Implemented: [fill widths on direct children of a Column](column-cross-axis-width.md#results). Each stacked child uses the full inner-width offer, not a share of its siblings’ width.
 
 Implemented: [fill heights on direct children of a single-line Row](row-cross-axis-height.md#results). Each child gets the Row’s placed inner height as its offer; content limits use demand after wrapping.

@@ -2,7 +2,7 @@
 //! shared or custom paint, and register the module below. Shapes do not own a
 //! second child order, allocate plans, schedule passes or install output.
 use super::{
-    layers::{FlowCx, Measuring, PlaceCx, ReflowCx, Size},
+    layers::{Constraint, FlowCx, Measuring, PlaceCx, ReflowCx, Size},
     paint::{OwnPaint, PaintContext},
     text::Run,
     *,
@@ -72,7 +72,7 @@ trait LayoutBehaviour: ShapeMeta {
     fn offer_widths(node: Mounted<'_, Self::Payload>, cx: &mut FlowCx<'_>) {
         if cx.offer_children {
             for &child in node.children() {
-                cx.offer(child, cx.inner)
+                cx.offer(child, Constraint::Available(cx.inner))
             }
         }
     }

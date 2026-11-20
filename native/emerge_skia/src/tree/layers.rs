@@ -41,12 +41,36 @@ struct Width {
     new_edge: bool,
 }
 
-/// Offset and resolved outer height on one incoming edge. None uses the
-/// child's bottom-up fit; a zero height is still an allocation.
+/// Input on an axis, in device pixels. An available extent is not a cap;
+/// an assigned extent already includes the child's main-axis policy.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum Constraint {
+    Natural,
+    Available(f32),
+    Assigned(f32),
+}
+impl Constraint {
+    fn for_height(self, policy: Length) -> Self {
+        match self {
+            Self::Available(_) if policy.weight().is_none() => Self::Natural,
+            other => other,
+        }
+    }
+    fn resolve(self, e: &Elements, k: Key, policy: Length, fit: f32) -> f32 {
+        match self {
+            Self::Natural => fit,
+            Self::Available(n) => policy.at_offer(e, k, fit, n),
+            Self::Assigned(n) => n,
+        }
+    }
+}
+
+/// The offset is relative to the incoming coordinate system. A zero
+/// constraint is an actual size, distinct from using natural fit.
 #[derive(Clone, Copy, PartialEq)]
 struct Placement {
     offset: [f32; 2],
-    height: Option<f32>,
+    height: Constraint,
 }
 
 #[derive(Default)]
@@ -63,7 +87,7 @@ pub(super) struct Layers {
     pub(super) text_count: usize,
     pub(super) prepared_scale: f32,
     width: SecondaryMap<Key, Width>,
-    offers: SecondaryMap<Key, f32>,
+    offers: SecondaryMap<Key, Constraint>,
     fit: SecondaryMap<Key, Size>,
     placement: SecondaryMap<Key, Placement>,
     pub frames: SecondaryMap<Key, Rect>,
@@ -126,11 +150,8 @@ impl FlowCx<'_> {
     pub fn policy_of(&self, c: Key) -> Length {
         self.e.attrs[c].sizing.width
     }
-    pub fn offer(&mut self, c: Key, width: f32) {
-        if changed(&mut self.layers.offers, c, width) && self.e.slots[c].shape.uses_offer(self.e, c)
-        {
-            self.layers.enqueue(Flow, c, self.e)
-        }
+    pub fn offer(&mut self, c: Key, width: Constraint) {
+        self.layers.offer_width(self.e, c, width);
     }
 }
 pub(super) struct ReflowCx<'a> {
@@ -149,16 +170,16 @@ impl ReflowCx<'_> {
         self.layers.fit[c]
     }
     pub fn offset(&mut self, c: Key, x: f32, y: f32) {
-        let edge = Placement {
-            offset: [self.padding[3] + x, self.padding[0] + y],
-            height: None,
-        };
-        if changed(&mut self.layers.placement, c, edge) {
-            self.layers.enqueue(Place, c, self.e)
-        }
+        self.layers.offer_placement(
+            self.e,
+            c,
+            [self.padding[3] + x, self.padding[0] + y],
+            Constraint::Natural,
+            false,
+        );
     }
-    pub fn unallotted_height(&self, c: Key) -> f32 {
-        if self.e.attrs[c].sizing.height.reads_fill_content() {
+    pub fn column_basis(&self, c: Key) -> f32 {
+        if self.e.attrs[c].sizing.height.weight().is_some() {
             self.layers.measure[c].h
         } else {
             self.child(c).h
@@ -166,7 +187,7 @@ impl ReflowCx<'_> {
     }
     pub fn box_height(&self, demand: f32) -> f32 {
         if self.fixed_basis {
-            // Fixed outer extent, or the pre-wrap basis for a fill child.
+            // A fixed pixel extent does not depend on wrapping.
             self.measured_height
         } else {
             // Width-dependent content may differ from its pre-wrap measurement.
@@ -193,19 +214,9 @@ impl PlaceCx<'_> {
         let [top, _, bottom, left] = style.padding.map(|v| pixels(v, self.scale));
         ([left, top], (self.height - (top + bottom)).max(0.))
     }
-    // An independent offer resolves against the child's fit, not the height
-    // installed by a previous placement. A non-fill child keeps its own fit.
-    pub fn place_with_offer(&mut self, c: Key, offset: [f32; 2], inner_height: f32) {
-        let policy = self.e.attrs[c].sizing.height;
-        let height = policy
-            .weight()
-            .map(|_| policy.at_offer(self.e, c, self.child(c).h, inner_height));
-        self.place(c, offset, height);
-    }
-    pub fn place(&mut self, c: Key, offset: [f32; 2], height: Option<f32>) {
-        if changed(&mut self.layers.placement, c, Placement { offset, height }) || self.translated {
-            self.layers.enqueue(Place, c, self.e);
-        }
+    pub fn place(&mut self, c: Key, offset: [f32; 2], height: Constraint) {
+        self.layers
+            .offer_placement(self.e, c, offset, height, self.translated);
     }
     pub fn translate_children(&mut self, children: &[Key]) {
         if self.translated {
@@ -295,7 +306,7 @@ impl Layers {
                 // Place supplies the new edge. A permutation of the same
                 // children doesn't change the tallest basis.
                 self.enqueue(Place, k, e);
-                if (different_len || membership) && e.height_uses_reflow(k) {
+                if (different_len || membership) && e.attrs[k].sizing.height.fits_content_height() {
                     self.enqueue(Reflow, k, e);
                 }
             } else {
@@ -333,6 +344,35 @@ impl Layers {
             self.enqueue(p, parent, e);
         }
     }
+    fn offer_width(&mut self, e: &Elements, k: Key, width: Constraint) {
+        if changed(&mut self.offers, k, width) && e.slots[k].shape.uses_offer(e, k) {
+            self.enqueue(Flow, k, e);
+        }
+    }
+    fn offer_placement(
+        &mut self,
+        e: &Elements,
+        k: Key,
+        offset: [f32; 2],
+        height: Constraint,
+        translated: bool,
+    ) {
+        let edge = Placement { offset, height };
+        if self.placement.get(k) == Some(&edge) && !translated {
+            return;
+        }
+        let old = self.placement.insert(k, edge);
+        let policy = e.attrs[k].sizing.height;
+        // Compare what the element reads. Losing an assigned extent matters
+        // even if the new policy ignores changes in available height.
+        if translated
+            || old.is_none_or(|p| {
+                p.offset != offset || p.height.for_height(policy) != height.for_height(policy)
+            })
+        {
+            self.enqueue(Place, k, e);
+        }
+    }
     pub fn recompute(&mut self, e: &Elements, root: Option<Key>, w: f32, h: f32) {
         #[cfg(test)]
         self.trace.clear();
@@ -349,13 +389,11 @@ impl Layers {
         if self.context.get(root) != Some(&e.slots[root].admitted) {
             self.enqueue(Context, root, e);
         }
+        // Supply the incoming edge, even on promotion at unchanged viewport
+        // size. There is no synthetic mount or separate root length resolver.
+        self.offer_width(e, root, Constraint::Available(w));
+        self.offer_placement(e, root, [0.; 2], Constraint::Available(h), false);
         if vp != self.viewport {
-            if vp.width != self.viewport.width {
-                self.enqueue(Flow, root, e);
-            }
-            if vp.height != self.viewport.height && e.attrs[root].sizing.height.weight().is_some() {
-                self.enqueue(Place, root, e);
-            }
             self.viewport = vp;
             self.enqueue(PaintContext, root, e);
         }
@@ -371,7 +409,10 @@ impl Layers {
                     Measure => self.measure(e, k),
                     Flow => self.flow(e, k),
                     Reflow => self.reflow(e, k),
-                    Place => self.place(e, k),
+                    Place => {
+                        let base = e.slots[k].parent.map_or(vp, |p| self.frames[p]);
+                        self.place(e, k, [base.x, base.y]);
+                    }
                     PaintContext => self.paint_context(e, k),
                     Compose => {
                         if let Some(outputs) = paint::compose(
@@ -407,7 +448,7 @@ impl Layers {
                             || matches!(l, Length::BoundedFill { bounds, .. } if bounds.device(old) != bounds.device(ctx.scale))
                     };
                     let b = e.attrs[k].sizing;
-                    self.invalidate_parent_offer(
+                    self.invalidate_offer_readers(
                         e,
                         k,
                         moved(b.width).then_some(FlowInput::ChildSplit),
@@ -482,13 +523,13 @@ impl Layers {
                     self.enqueue(Flow, p, e);
                 }
             }
-            // A mixed child has two height readers: a natural Column reads its
-            // pre-wrap basis, a definite split reads its width-dependent fit.
+            // Column's natural demand charges a fill child's measured basis,
+            // independent of the child's width-dependent fit.
             if old.is_none_or(|s| s.h != m.h)
-                && e.attrs[k].sizing.height.reads_fill_content()
+                && e.attrs[k].sizing.height.weight().is_some()
                 && let Some(p) = e.slots[k].parent
                 && e.slots[p].shape.allots_height()
-                && e.height_uses_reflow(p)
+                && e.attrs[p].sizing.height.fits_content_height()
             {
                 self.enqueue(Reflow, p, e);
             }
@@ -506,19 +547,7 @@ impl Layers {
         let shape = e.slots[k].shape;
         let scale = self.context[k].scale;
         let outer = if shape.uses_offer(e, k) {
-            let offer = e.slots[k]
-                .parent
-                .map_or(self.viewport.width, |_| self.offers[k]);
-            match b.width {
-                Length::BoundedFill { .. } | Length::Formula(_)
-                    if !e.parent_shape(k).is_some_and(Shape::allots_width) =>
-                {
-                    // Every fill leaf reads the same available width, not a
-                    // weighted share. Content and px still belong to the child.
-                    b.width.at_offer(e, k, self.measure[k].w, offer)
-                }
-                _ => offer,
-            }
+            self.offers[k].resolve(e, k, b.width, self.measure[k].w)
         } else {
             self.measure[k].w
         };
@@ -563,7 +592,7 @@ impl Layers {
                 padding: b.padding.map(|v| pixels(v, scale)),
                 height: b.height,
                 scale,
-                fixed_basis: !e.height_uses_reflow(k),
+                fixed_basis: !b.height.fits_content_height(),
                 measured_height: self.measure[k].h,
                 layers: self,
                 e,
@@ -583,20 +612,19 @@ impl Layers {
             let height_changed = old.is_none_or(|s| s.h != h);
             match e.slots[p].shape {
                 host if host.offers_inner_height() => {
-                    if height_changed && e.height_uses_reflow(p) {
+                    if height_changed && e.attrs[p].sizing.height.fits_content_height() {
                         self.enqueue(Reflow, p, e);
                     }
-                    // Only a Row needs sibling x offsets. Either host reads
-                    // the child's fit when resolving a content-dependent height.
-                    if (host.allots_width() && old.is_none_or(|s| s.w != fit.w))
-                        || (height_changed && b.height.reads_fill_content())
-                    {
+                    // A Row also reads widths to place the following sibling.
+                    if host.allots_width() && old.is_none_or(|s| s.w != fit.w) {
                         self.enqueue(Place, p, e);
                     }
                 }
                 Shape::Column => {
                     if height_changed {
-                        if e.height_uses_reflow(p) && !b.height.reads_fill_content() {
+                        if e.attrs[p].sizing.height.fits_content_height()
+                            && b.height.weight().is_none()
+                        {
                             self.enqueue(Reflow, p, e);
                         }
                         if e.attrs[p].sizing.height.definite()
@@ -610,26 +638,13 @@ impl Layers {
             }
         }
     }
-    fn place(&mut self, e: &Elements, k: Key) {
+    fn place(&mut self, e: &Elements, k: Key, origin: [f32; 2]) {
         let s = self.fit[k];
         let scale = self.context[k].scale;
-        let (x, y, height) = if let Some(p) = e.slots[k].parent {
-            let base = self.frames[p];
-            let edge = self.placement[k];
-            (
-                base.x + edge.offset[0],
-                base.y + edge.offset[1],
-                edge.height.unwrap_or(s.h),
-            )
-        } else {
-            let policy = e.attrs[k].sizing.height;
-            let h = if policy.weight().is_some() {
-                policy.at_offer(e, k, s.h, self.viewport.height)
-            } else {
-                s.h
-            };
-            (0., 0., h)
-        };
+        let edge = self.placement[k];
+        let [x, y] = [origin[0] + edge.offset[0], origin[1] + edge.offset[1]];
+        let policy = e.attrs[k].sizing.height;
+        let height = edge.height.for_height(policy).resolve(e, k, policy, s.h);
         let origin_changed = self.frames.get(k).is_none_or(|f| [f.x, f.y] != [x, y]);
         if changed(
             &mut self.frames,

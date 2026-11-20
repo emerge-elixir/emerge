@@ -181,9 +181,9 @@ fn masked_pixels_are_still_checked_at_the_final_site_and_fail_atomically() {
         );
         assert!(
             r.tree
-                .patch(&patch(1, 10, &[]))
+                .patch(&patch(1, 90, &[node(90, 2, block(&[]), &[10])]))
                 .unwrap_err()
-                .contains("requires a root")
+                .contains("WrappedRow child")
         );
         assert_eq!(r.tree.encode(), pending);
         assert_eq!(r.pixels(), visible);

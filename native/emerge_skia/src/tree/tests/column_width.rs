@@ -159,7 +159,7 @@ fn a_closed_move_checks_site_and_masked_scale_before_publishing_the_new_width() 
         r.tree
             .patch(&transfer(30, 2))
             .unwrap_err()
-            .contains("requires a root")
+            .contains("WrappedRow child")
     );
     assert_eq!(
         r.tree.patch(&transfer(20, 3)).unwrap_err(),

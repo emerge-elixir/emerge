@@ -59,7 +59,7 @@ impl Wrapper {
             &[vec![edges(1, 4, self.id.as_slice())], self.children()].concat(),
         )
     }
-    fn check(&self, tree: &Tree) -> Vec<Rect> {
+    fn check(&self, tree: &Tree, viewport: [f32; 2]) -> Vec<Rect> {
         let d = self.display;
         let z = d * self.zoom;
         let start = self.inset * d;
@@ -71,7 +71,7 @@ impl Wrapper {
                 .id
                 .map_or(0., |_| self.child[axis].eval(content, z, |_| content));
             host[axis] =
-                self.host[axis].eval(natural + 2. * start, d, |_| unreachable!("no root fill"));
+                self.host[axis].eval(natural + 2. * start, d, |_| f64::from(viewport[axis]));
             let available = (host[axis] - 2. * start).max(0.);
             child[axis] = self.child[axis].eval(content, z, |_| available);
         }
@@ -123,7 +123,8 @@ fn seeded_el_edits_match_two_axis_math_and_fresh_trees() {
             id: Some(2),
         };
         let mut live = Tree::default();
-        for step in 0..14 {
+        let mut viewport = [512., 512.];
+        for step in 0..18 {
             let before = case.id.unwrap_or(0);
             let patch_child = |c: &Wrapper| set(c.id.unwrap(), 4, attrs(&c.child, c.pad, c.zoom));
             let patch_host = |c: &Wrapper| set(1, 4, attrs(&c.host, c.inset, 1.));
@@ -171,6 +172,18 @@ fn seeded_el_edits_match_two_axis_math_and_fresh_trees() {
                     case.id = Some(2);
                     case.replace_child()
                 }
+                14 => {
+                    case.host = [rng.expr(4), rng.expr(4)];
+                    patch_host(&case)
+                }
+                15..=17 => {
+                    viewport = match step {
+                        15 => [rng.next(160) as f32 + 0.5, rng.next(120) as f32 + 0.25],
+                        16 => [0., 0.],
+                        _ => [120., 80.],
+                    };
+                    Vec::new()
+                }
                 _ => {
                     let saved = case.child.clone();
                     case.child = [rng.expr(4), rng.expr(4)];
@@ -187,11 +200,13 @@ fn seeded_el_edits_match_two_axis_math_and_fresh_trees() {
                     live.patch(&update)
                 }
                 .unwrap();
-                live.refresh(512., 512., case.display as f32).unwrap();
+                live.refresh(viewport[0], viewport[1], case.display as f32)
+                    .unwrap();
                 let mut cold = Tree::default();
                 cold.upload(&case.full()).unwrap();
-                cold.refresh(512., 512., case.display as f32).unwrap();
-                assert_eq!(case.check(&live), case.check(&cold));
+                cold.refresh(viewport[0], viewport[1], case.display as f32)
+                    .unwrap();
+                assert_eq!(case.check(&live, viewport), case.check(&cold, viewport));
             };
             if let Err(reason) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(check)) {
                 eprintln!("seed {seed} ElChild step {step}: {case:?}");

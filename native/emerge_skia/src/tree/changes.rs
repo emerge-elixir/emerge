@@ -132,22 +132,9 @@ impl Layers {
                     self.invalidate(p, k, depth);
                 }
                 self.invalidate_composition(k, depth, Outputs::Hit);
-            } else if let Some(old) = change.old_parent.filter(|p| *p != m.parent) {
-                // A move and a length edit may arrive in either order before
-                // refresh. Compare the first (policy, site) to the final pair;
-                // equal intrinsic bounds do not imply equal post-wrap demand.
-                let before = change
-                    .attrs
-                    .as_ref()
-                    .map_or(e.attrs[k].sizing.height, |(a, _)| a.sizing.height);
-                let old_offer = old.map_or(Some(false), |p| {
-                    e.slots.get(p).map(|n| n.shape.offers_inner_height())
-                });
-                if old_offer.map(|independent| before.reflows_height(independent))
-                    != Some(e.height_uses_reflow(k))
-                {
-                    self.invalidate(Pass::Reflow, k, depth);
-                }
+            } else if change.old_parent.is_some_and(|old| old != m.parent) {
+                // Fit is site-independent. The new constraints and origin
+                // can still differ even when width and scale are unchanged.
                 if let Some(part) = self.parts.get_mut(k) {
                     part.reattach();
                 }
@@ -220,26 +207,22 @@ impl Layers {
             .height
             .same_split(old_raw, next.sizing.height, raw);
         let parent = e.parent_shape(k);
-        let independent_height = parent.is_some_and(Shape::offers_inner_height);
-        if old.sizing.height.reads_fill_content() != next.sizing.height.reads_fill_content()
-            && !independent_height
+        let split_height = parent.is_some_and(Shape::allots_height);
+        // When fitting its content, a Column charges measured fill bases
+        // and reflowed nonfills. The choice can change at two equal fits,
+        // including when the Column's own height is a content-limited fill.
+        if split_height
+            && a.height.weight().is_some() != b.height.weight().is_some()
+            && let Some(p) = e.slots[k].parent
+            && e.attrs[p].sizing.height.fits_content_height()
         {
-            self.invalidate(Pass::Reflow, k, depth);
-            if let Some(p) = e.slots[k].parent {
-                self.invalidate(Pass::Reflow, p, e.depth(p));
-            }
+            self.invalidate(Pass::Reflow, p, e.depth(p));
         }
         if width
             && (old.sizing.width.reads_fill_content() || next.sizing.width.reads_fill_content())
             && !parent.is_some_and(Shape::allots_width)
         {
             self.invalidate(Pass::Flow, k, depth);
-        }
-        if height
-            && (old.sizing.height.reads_fill_content() || next.sizing.height.reads_fill_content())
-            && e.slots[k].parent.is_none()
-        {
-            self.invalidate(Pass::Place, k, depth);
         }
         let parent_input = width.then(|| {
             if old.sizing.width.weight().is_some() != next.sizing.width.weight().is_some() {
@@ -253,12 +236,12 @@ impl Layers {
             && (a.height != b.height
                 || old.sizing.height.reads_fill_content()
                 || next.sizing.height.reads_fill_content()
-                || !independent_height);
-        self.invalidate_parent_offer(e, k, parent_input, height);
+                || split_height);
+        self.invalidate_offer_readers(e, k, parent_input, height);
     }
-    // Policy or declaring scale can change an offer even at equal host fit
-    // and equal child measure. Enqueue the parent pass that issues it.
-    pub(super) fn invalidate_parent_offer(
+    // A distributor resolves its children's shares. Otherwise Place on the
+    // element itself reads the height policy and the incoming available size.
+    pub(super) fn invalidate_offer_readers(
         &mut self,
         e: &Elements,
         k: Key,
@@ -268,14 +251,20 @@ impl Layers {
         if width.is_none() && !height {
             return;
         }
-        let Some(p) = e.slots[k].parent else { return };
-        let shape = e.slots[p].shape;
-        let b = e.attrs[p].sizing;
-        if height && (shape.offers_inner_height() || (shape.allots_height() && b.height.definite()))
-        {
-            self.invalidate(Pass::Place, p, e.depth(p));
+        let parent = e.slots[k].parent;
+        if height {
+            if let Some(p) = parent.filter(|&p| e.slots[p].shape.allots_height()) {
+                if e.attrs[p].sizing.height.definite() {
+                    self.invalidate(Pass::Place, p, e.depth(p));
+                }
+            } else {
+                self.invalidate(Pass::Place, k, e.depth(k));
+            }
         }
-        if width.is_some_and(|input| shape.reads_flow(b.width, input)) {
+        if let Some(p) = parent
+            && width
+                .is_some_and(|input| e.slots[p].shape.reads_flow(e.attrs[p].sizing.width, input))
+        {
             self.invalidate(Pass::Flow, p, e.depth(p));
         }
     }

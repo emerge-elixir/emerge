@@ -36,8 +36,17 @@ Columns, rows and wrapped rows clip ordinary descendants' paint and hits to
 intersecting host frames. Clipping does not shrink the child or change the
 wrapped-line height: spacing is measured between the laid-out child boxes.
 
-A root `column` with `height(fill())` uses the viewport height; any column can
-host ordinary fill-height children. Width flow and bottom-up reflow settle the
+The viewport offers its width and height in device pixels at `(0,0)`, just
+as a zero-padding `el` of that size would. The element receiving the offer
+doesn't inspect whether it is the root: on either axis, `fill()` and
+`fill(3)` read the same available extent. A Row can instead **assign** a
+child its share of the width, and a Column its share of the height. An
+assignment is used as-is, not passed through the child's policy again.
+Resizing the viewport or promoting a subtree replaces its incoming
+constraints; neither changes how that subtree lays out its own children.
+See [viewport constraints and submitted examples](../../plans/viewport-constraints.md#results).
+
+Any Column can host ordinary fill-height children. Width flow and bottom-up reflow settle the
 heights of non-fill siblings first, including wrapped lines. Placement splits
 a fixed or allocated height after subtracting those outer heights, vertical
 padding and gaps. A content-height column instead uses each fill child's own

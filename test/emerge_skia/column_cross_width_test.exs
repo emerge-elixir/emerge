@@ -163,9 +163,11 @@ defmodule EmergeSkia.ColumnCrossWidthTest do
     before = Emerge.Engine.diff_state_new(move_scene(:row))
     {_, pending} = Emerge.Engine.diff_state_update_binary(before, move_scene(:column))
 
-    assert_raise RuntimeError, ~r/renderer_patch failed: .*fill width requires/, fn ->
-      EmergeSkia.patch_tree(r, pending, move_scene(:wrap))
-    end
+    assert_raise RuntimeError,
+                 ~r/renderer_patch failed: .*fill width is not supported on a WrappedRow child/,
+                 fn ->
+                   EmergeSkia.patch_tree(r, pending, move_scene(:wrap))
+                 end
 
     assert {:ok, ^top} = EmergeSkia.render_to_pixels(r)
     assert Headless.pixels(2500) == bottom

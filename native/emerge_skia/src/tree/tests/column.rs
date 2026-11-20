@@ -238,21 +238,21 @@ fn site_proof_uses_final_edges_and_accepted_attrs_without_disturbing_pending_or_
             r.tree
                 .patch(&patch(1, 1, &records))
                 .unwrap_err()
-                .contains("child of a Column")
+                .contains("WrappedRow child")
         );
     }
     for bad in [
         patch(2, 17, &[]),
-        patch(1, 18, &[]),
+        patch(1, 90, &[node(90, 2, block(&[]), &[18])]),
         patch(3, 8, &[node(8, 4, panel([1, 2, 3]), &[])]),
     ] {
-        assert!(r.tree.patch(&bad).unwrap_err().contains("root Column"));
+        assert!(r.tree.patch(&bad).unwrap_err().contains("WrappedRow child"));
     }
     for variant in [4, 5] {
         let value = vec![2, variant, 0, 1];
         assert_eq!(
             r.tree.patch(&set(3, 2, block(&[value]))).unwrap_err(),
-            "height(fill()) requires a root Column or a child of a Column, Row or El"
+            "fill height is not supported on a WrappedRow child"
         );
     }
     assert_eq!(r.tree.encode(), pending);
@@ -279,9 +279,11 @@ fn site_proof_uses_final_edges_and_accepted_attrs_without_disturbing_pending_or_
     draw(&mut r);
     assert_eq!(yh(&r, 17), (0., 170.));
     assert_eq!(yh(&r, 18), (0., 170.));
-    // Conversely, once #18 clears fill it can be promoted without a draw.
-    r.tree.patch(&set(18, 4, block(&[px(2, 12.)]))).unwrap();
+    // The same fill-bearing El can now be promoted at unchanged viewport size.
     r.tree.patch(&patch(17, 18, &[])).unwrap();
+    draw(&mut r);
+    assert_eq!(yh(&r, 18), (0., 170.));
+    r.tree.patch(&set(18, 4, block(&[px(2, 12.)]))).unwrap();
     assert_eq!(r.target_at(5., 45.).unwrap().0, pressed.0);
     draw(&mut r);
     assert_eq!(yh(&r, 18), (0., 12.));

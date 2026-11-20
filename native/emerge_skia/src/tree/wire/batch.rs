@@ -190,24 +190,24 @@ impl Batch {
                 .as_ref()
                 .map(|(a, _)| a)
                 .or_else(|| old.map(|k| &e.attrs[k]));
-            if let Some(a) = attrs {
-                let fill_site = |root_kind| match parent {
-                    None => s.shape == root_kind,
-                    Some(p) => matches!(
-                        self.get(p)
-                            .map_or_else(|| e.slots[e.ids[&p]].shape, |edit| edit.shape),
-                        Shape::Row | Shape::Column | Shape::El
-                    ),
-                };
+            // The viewport offers both axes to any kind. Only the wrapping
+            // parent's outgoing edge still lacks distribution semantics.
+            if let Some(a) = attrs
+                && parent.is_some_and(|p| {
+                    self.get(p)
+                        .map_or_else(|| e.slots[e.ids[&p]].shape, |edit| edit.shape)
+                        == Shape::WrappedRow
+                })
+            {
                 let width = a.sizing.width;
-                if width != Length::Fill && width.weight().is_some() && !fill_site(Shape::Row) {
-                    return Err("weighted or compound fill width requires a root Row or a child of a Row, Column or El".into());
-                }
-                if a.sizing.height.weight().is_some() && !fill_site(Shape::Column) {
+                if width != Length::Fill && width.weight().is_some() {
                     return Err(
-                        "height(fill()) requires a root Column or a child of a Column, Row or El"
+                        "weighted or compound fill width is not supported on a WrappedRow child"
                             .into(),
                     );
+                }
+                if a.sizing.height.weight().is_some() {
+                    return Err("fill height is not supported on a WrappedRow child".into());
                 }
             }
             let s = &mut self.entries[i];

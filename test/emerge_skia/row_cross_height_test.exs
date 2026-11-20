@@ -169,9 +169,11 @@ defmodule EmergeSkia.RowCrossHeightTest do
         move_scene(:row)
       )
 
-    assert_raise RuntimeError, ~r/renderer_patch failed: height\(fill\(\)\) requires/, fn ->
-      EmergeSkia.patch_tree(r, pending, move_scene(:wrap))
-    end
+    assert_raise RuntimeError,
+                 ~r/renderer_patch failed: fill height is not supported on a WrappedRow child/,
+                 fn ->
+                   EmergeSkia.patch_tree(r, pending, move_scene(:wrap))
+                 end
 
     assert {:ok, ^shared} = EmergeSkia.render_to_pixels(r)
     assert Headless.pixels(2500) == independent

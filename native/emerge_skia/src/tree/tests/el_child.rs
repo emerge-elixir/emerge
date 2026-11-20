@@ -45,7 +45,13 @@ fn two_axis_policy_and_padding_edits_read_only_the_changed_inputs() {
     assert!(r.tree.layers.worksets_empty());
     draw(&mut r);
     assert_eq!(xywh(&r), [6., 6., 108., 68.]);
-    assert!(ran(&r, Flow, 2) && ran(&r, Place, 1) && !ran(&r, Flow, 1) && !ran(&r, Reflow, 1));
+    assert!(
+        ran(&r, Flow, 2)
+            && ran(&r, Place, 2)
+            && !ran(&r, Place, 1)
+            && !ran(&r, Flow, 1)
+            && !ran(&r, Reflow, 1)
+    );
     assert!(!r.tree.layers.trace.iter().any(|(p, _, _)| *p == Measure));
     // Keep both inner dimensions. Only the padded origin changes.
     r.tree

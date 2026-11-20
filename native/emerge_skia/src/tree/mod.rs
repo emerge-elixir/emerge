@@ -131,10 +131,10 @@ impl Length {
     fn definite(self) -> bool {
         !matches!(self, Self::Auto | Self::Content | Self::BoundedContent(_))
     }
-    fn reflows_height(self, independent_offer: bool) -> bool {
-        !self.definite()
-            || self.reads_fill_content()
-            || (independent_offer && self.weight().is_some())
+    // Unallotted fit describes this box at its settled width, not what an
+    // enclosing allocator will choose to do with that demand.
+    fn fits_content_height(self) -> bool {
+        !matches!(self, Self::Px(_))
     }
     // The basis is already an outer extent in device pixels: intrinsic, a
     // parent's proportional share, or the viewport for a fill root. Only a
@@ -282,14 +282,6 @@ impl Elements {
     }
     fn parent_shape(&self, k: Key) -> Option<Shape> {
         self.slots[k].parent.map(|p| self.slots[p].shape)
-    }
-    // A Row or El sizes naturally before offering its placed inner height.
-    // Even a plain fill there must report its unallotted post-wrap basis.
-    fn height_uses_reflow(&self, k: Key) -> bool {
-        self.attrs[k]
-            .sizing
-            .height
-            .reflows_height(self.parent_shape(k).is_some_and(Shape::offers_inner_height))
     }
     fn children(&self, key: Key) -> &[Key] {
         self.child_pool.get(&self.slots[key].children)
