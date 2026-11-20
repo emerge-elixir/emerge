@@ -12,16 +12,24 @@ impl LayoutBehaviour for WrappedRow {
         measure_line(children, cx, true)
     }
     fn reads_flow(_: Length, input: FlowInput) -> bool {
-        // Fill minima (not preferred widths) have their own dependency.
-        !matches!(input, FlowInput::ChildWidth(w) if w.weight().is_some())
+        // Fill minima have their own dependency. A content cap also reads
+        // preferred width, which can change while the minimum stays equal.
+        match input {
+            FlowInput::ChildWidth(w) => w.weight().is_none() || w.reads_fill_content(),
+            _ => true,
+        }
     }
     fn offer_widths(node: Mounted<'_, Children>, cx: &mut FlowCx<'_>) {
         let slot = |c, cx: &FlowCx<'_>| {
             let w = cx.policy_of(c);
             if let Some(weight) = w.weight() {
-                let cap = w.bounds().map_or(f32::INFINITY, |b| {
-                    scale::pixels(b.cap, node.elements.slots[c].admitted.scale)
-                });
+                let cap = if w.reads_fill_content() {
+                    cx.measured_width(c) // padded, pre-wrap, already in device pixels
+                } else {
+                    w.bounds().map_or(f32::INFINITY, |b| {
+                        scale::pixels(b.cap, node.elements.slots[c].admitted.scale)
+                    })
+                };
                 fill::Slot::line_fill(weight, cx.minimum_width(c), cap)
             } else {
                 fill::Slot::new(node.elements, c, w, cx.nonfill_width(c))

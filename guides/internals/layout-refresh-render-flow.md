@@ -98,8 +98,10 @@ below. At 44px the 1:3 pair takes 20/20; at 43px each gets its own 43px
 line, leaving 12px below. A pixel cap limits the automatic minimum; an
 explicit pixel floor replaces it. Both resolve at the child's scale. The
 line split honors the cap as well as the floor: capping A at 30px in the
-100px equal-weight case leaves 66px for B. Reflow uses the same breaks and
-actual child heights. See [why this differs from main](retained-decisions.md#d7-share-fill-widths-per-wrapped-line)
+100px equal-weight case leaves 66px for B. With `min(content(), fill())`
+on A, its preferred outer width caps the share; its minimum still decides the
+break. Growing A's content from 20px to 40px changes **20/76 to 40/56** when
+B can use the remainder. Reflow uses the same breaks and actual child heights. See [why this differs from main](retained-decisions.md#d7-share-fill-widths-per-wrapped-line)
 and the [submitted-frame regression](../../test/emerge_skia/wrapped_row_fill_test.exs).
 
 Nested `min`/`max` can put both a floor and a cap on one fill. With no padding

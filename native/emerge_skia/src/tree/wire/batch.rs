@@ -190,8 +190,8 @@ impl Batch {
                 .as_ref()
                 .map(|(a, _)| a)
                 .or_else(|| old.map(|k| &e.attrs[k]));
-            // Wrapped lines can bound a single weight with pixels, not
-            // distribute mixed width expressions or vertical shares.
+            // Check the width grammar and vertical policy at the new edge,
+            // including when the child's own declaration is kept.
             if let Some(a) = attrs
                 && parent.is_some_and(|p| {
                     self.get(p)
@@ -199,7 +199,7 @@ impl Batch {
                         == Shape::WrappedRow
                 })
             {
-                if a.line_minimum == LineMinimum::Unsupported {
+                if a.line_width == LineWidth::Unsupported {
                     return Err("compound fill width is not supported on a WrappedRow child".into());
                 }
                 if a.sizing.height.weight().is_some() {

@@ -123,6 +123,14 @@ rule the same unpadded cards take **30/66** on one line. A 10px cap on 20px
 content fits beside the peer at 34px, not 33px; a 70px floor fits at 94px,
 not 93px. Keep Emerge's outer-box units: with 6px left/right padding a 10px
 cap is still 10px (as on `main`), not elm-ui's 12px padding minimum.
+
+For `min(content(), fill())`, break at the child's minimum outer width and cap
+its share at its **preferred** outer width (including padding, before wrapping).
+On `main` at `aef5e42f`, two 20px chips with gap 4 made a 44px-wide card; a
+fixed 20px peer fit beside it at 68px but wrapped at 67px. Retained keeps the
+peer on that line at 67px: A gets 43px and wraps its chips instead. At 44px
+both still fit at 20px each; at 43px the peer wraps. A content edit can change
+the cap without changing the minimum, so the parent reads both measurements.
 [Submitted frames and clicks](../../test/emerge_skia/wrapped_row_fill_test.exs) ·
 [minimum on a moved child](../../native/emerge_skia/src/tree/tests/wrapped_width.rs).
 

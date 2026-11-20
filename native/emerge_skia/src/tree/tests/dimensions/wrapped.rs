@@ -5,7 +5,7 @@ use super::*;
 fn policy(rng: &mut Rng) -> Expr {
     let w = Fill(Some([0.25, 1., 2., 4.][rng.next(4)]));
     let (a, b) = (Px(rng.next(81) as f64), Px(rng.next(81) as f64));
-    match rng.next(8) {
+    match rng.next(9) {
         0 => w,
         1 => pair(true, w, a),
         2 => pair(false, a, w),
@@ -13,6 +13,7 @@ fn policy(rng: &mut Rng) -> Expr {
         4 => pair(false, pair(true, a, w), b),
         5 => a,
         6 => Content,
+        7 => pair(true, w, Content),
         _ => Auto,
     }
 }
@@ -27,6 +28,7 @@ fn expected(case: &Case) -> Vec<(f64, f64, f64)> {
     for c in &mut kids {
         // In the generated grammar only the bare and cap-only fills have an
         // automatic floor. Substitute padded content *inside* the cap.
+        // For these fixed-content children a content cap equals that floor.
         match &c.expr {
             f @ Fill(_) => c.expr = pair(false, f.clone(), Content),
             Min(f, cap) if matches!(**f, Fill(_)) => {

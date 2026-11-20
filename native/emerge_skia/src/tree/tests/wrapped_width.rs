@@ -46,6 +46,65 @@ fn a_new_minimum_at_equal_preferred_width_can_move_a_peer_to_another_line() {
     }
 }
 
+pub(super) fn capped(second_chip: f64) -> Bytes {
+    upload(&[
+        node(1, 2, block(&[vec![1, 0], number(4, 4.)]), &[2, 3]),
+        node(
+            2,
+            2,
+            block(&[
+                vec![1, 4, 1, 0],
+                number(4, 4.),
+                color([255, 0, 0]),
+                vec![40, 1],
+            ]),
+            &[4, 5],
+        ),
+        node(4, 6, chip(20.), &[]),
+        node(5, 6, chip(second_chip), &[]),
+        node(3, 4, weighted::panel(1, 3, vec![1, 0]), &[6]),
+        node(6, 6, chip(20.), &[]),
+    ])
+}
+
+#[test]
+fn a_preferred_only_cap_edit_survives_a_refusal_without_publishing_early() {
+    let mut r = Raster::default();
+    r.tree.upload(&capped(10.)).unwrap();
+    let old = r.draw(100., 40., 1.).unwrap().to_vec();
+    assert_eq!(r.hit_at(42., 6.), Some((3, 4., 6.)));
+    // Widen A's second chip: preferred 34 → 44, minimum stays 20.
+    r.tree.patch(&set(5, 6, chip(20.))).unwrap();
+    let pending = r.tree.encode();
+    for field in [
+        vec![1, 5, 1, 0],       // content floor
+        vec![1, 4, 4, 1, 1, 0], // content is a folded expression, not a leaf
+        vec![1, 4, 1, 5, 0, 0], // two fills
+        vec![2, 4, 1, 0],       // height
+    ] {
+        assert!(
+            r.tree
+                .patch(&set(2, 2, block(&[field])))
+                .unwrap_err()
+                .contains("WrappedRow child")
+        );
+        assert_eq!(r.tree.encode(), pending);
+    }
+    assert!(r.tree.layers.worksets_empty());
+    let err = r
+        .prepare(100., 40., 1.)
+        .unwrap()
+        .submit(|_, _| Err("refused handoff".into()))
+        .unwrap_err();
+    assert_eq!(err, "refused handoff");
+    assert!(ran(&r, Flow, 1) && !ran(&r, Measure, 3));
+    assert_eq!(bounds(&r, 3).x, 48.);
+    assert_eq!(r.pixels(), old);
+    assert_eq!(r.hit_at(42., 6.), Some((3, 4., 6.)));
+    r.draw(100., 40., 1.).unwrap();
+    assert_eq!(r.hit_at(42., 6.), Some((2, 42., 6.)));
+}
+
 #[test]
 fn moving_a_closed_pixel_floor_changes_only_the_minimum_its_new_parent_reads() {
     // At 34, a 10px floor beside a 20px peer fits exactly. Insert an El

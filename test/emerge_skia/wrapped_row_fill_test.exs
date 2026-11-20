@@ -3,24 +3,30 @@ defmodule EmergeSkia.WrappedRowFillTest do
   use Emerge.UI
   alias Emerge.TestSupport.Headless
 
-  defp cards(w, b, a \\ fill(), a_attrs \\ []) do
-    card = fn id, size, color, attrs ->
-      el(
-        [
-          key(id),
-          width(size),
-          height(content()),
-          Background.color(color),
-          Event.on_click(id) | attrs
-        ],
-        el([width(px(20)), height(px(12))], none())
-      )
-    end
+  defp chip(w), do: el([width(px(w)), height(px(12))], none())
 
+  defp card(id, size, color, demand, attrs \\ []) do
+    el(
+      [
+        key(id),
+        width(size),
+        height(content()),
+        Background.color(color),
+        Event.on_click(id) | attrs
+      ],
+      chip(demand)
+    )
+  end
+
+  defp with_peer(w, a, b) do
     wrapped_row(
       [width(px(w)), height(px(40)), spacing(4), Background.color(:white), Event.on_click(:host)],
-      [card.(:a, a, :red, a_attrs), card.(:b, b, :blue, [])]
+      [a, card(:b, b, :blue, 20)]
     )
+  end
+
+  defp cards(w, b, a \\ fill(), a_attrs \\ []) do
+    with_peer(w, card(:a, a, :red, 20, a_attrs), b)
   end
 
   defp pixels(w, aw, bx, by, bw, ah \\ 12) do
@@ -144,6 +150,90 @@ defmodule EmergeSkia.WrappedRowFillTest do
     assert Headless.pixels() == pixels(100, 15, 19, 0, 81, 18)
     click(r, 12.0, 6.0, :a, 8.0, 4.0)
     click(r, 21.0, 6.0, :b, 2.0, 6.0)
+  end
+
+  test "a content-only edit moves the peer's pixels and clicks on the same submission" do
+    build = fn n -> with_peer(100, card(:a, min(content(), fill()), :red, n), fill()) end
+    {p, r} = Headless.mount({100, 40}, fn -> build.(20) end, [:pointer_button], target_fps: 1)
+    before = pixels(100, 20, 24, 0, 76)
+    assert Headless.pixels() == before
+
+    send(
+      p,
+      {:scene,
+       fn ->
+         send(self(), :built)
+         build.(40)
+       end}
+    )
+
+    assert_receive {:application, :built}
+    assert {:ok, ^before} = EmergeSkia.render_to_pixels(r)
+    click(r, 32.0, 6.0, :b, 8.0, 6.0)
+    after_edit = pixels(100, 40, 44, 0, 56)
+    assert Headless.pixels(2500) == after_edit
+    click(r, 32.0, 6.0, :a, 32.0, 6.0)
+    {_, cold} = Headless.mount({100, 40}, fn -> build.(40) end, [:pointer_button])
+    assert Headless.pixels() == after_edit
+    click(cold, 32.0, 6.0, :a, 32.0, 6.0)
+  end
+
+  test "a nested card breaks at its minimum, but caps its share at its preferred width" do
+    build = fn w, chip2, cap, peer ->
+      a =
+        wrapped_row(
+          [
+            key(:a),
+            width(cap),
+            height(content()),
+            spacing(4),
+            Background.color(:red),
+            Event.on_click(:a)
+          ],
+          [chip(20), chip(chip2)]
+        )
+
+      with_peer(w, a, peer)
+    end
+
+    cap = min(content(), fill())
+    {p, r} = Headless.mount({100, 40}, fn -> build.(68, 20, cap, px(20)) end, [:pointer_button])
+    assert Headless.pixels() == pixels(68, 44, 48, 0, 20)
+
+    for {w, chip2, policy, peer, aw, ah, bx, by, bw} <- [
+          {67, 20, cap, px(20), 43, 28, 47, 0, 20},
+          {44, 20, cap, px(20), 20, 28, 24, 0, 20},
+          {43, 20, cap, px(20), 43, 28, 0, 32, 20},
+          {68, 20, cap, fill(), 32, 28, 36, 0, 32},
+          {68, 20, min(fill(3), shrink()), fill(), 44, 12, 48, 0, 20},
+          {100, 20, cap, fill(), 44, 12, 48, 0, 52},
+          {100, 10, cap, fill(), 34, 12, 38, 0, 62},
+          {100, 20, cap, fill(), 44, 12, 48, 0, 52}
+        ] do
+      scene = fn -> build.(w, chip2, policy, peer) end
+      send(p, {:scene, scene})
+      expected = pixels(w, aw, bx, by, bw, ah)
+      assert Headless.pixels() == expected
+      click(r, bx + 3.0, by + 5.0, :b, 3.0, 5.0)
+      {_, cold} = Headless.mount({100, 40}, scene, [:pointer_button])
+      assert Headless.pixels() == expected
+      click(cold, bx + 3.0, by + 5.0, :b, 3.0, 5.0)
+    end
+  end
+
+  test "a content cap includes the child's own scaled padding exactly once" do
+    cap = min(fill(3), shrink())
+
+    scene = fn n ->
+      with_peer(100, card(:a, cap, :red, n, [padding_xy(2, 0), scale(1.5)]), fill())
+    end
+
+    {p, r} = Headless.mount({100, 40}, fn -> scene.(0) end, [:pointer_button])
+    assert Headless.pixels() == pixels(100, 6, 10, 0, 90, 18)
+    send(p, {:scene, fn -> scene.(10) end})
+    assert Headless.pixels() == pixels(100, 21, 25, 0, 75, 18)
+    click(r, 12.0, 6.0, :a, 8.0, 4.0)
+    click(r, 27.0, 6.0, :b, 2.0, 6.0)
   end
 
   test "the minimum decides the break and each new line divides only its own room" do

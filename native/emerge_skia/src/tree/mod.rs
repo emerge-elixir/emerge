@@ -192,19 +192,20 @@ impl BoxStyle {
         }
     }
 }
-/// A folded interval alone can't distinguish an automatic minimum from
-/// max(fill(), px(0)), or a pixel clamp from a masked mixed expression.
+/// A folded interval alone doesn't identify a wrapped child's automatic
+/// minimum, explicit zero floor, or the expression allowed to cap its share.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum LineMinimum {
+enum LineWidth {
     #[default]
     Auto,
     PixelFloor,
+    ContentCap,
     Unsupported,
 }
 #[derive(Clone, Debug, Default)]
 struct Attrs {
     sizing: BoxStyle,
-    line_minimum: LineMinimum,
+    line_width: LineWidth,
     // Admission also checks operands masked by a tighter bound. This is not a layout input.
     largest_length_px: f64,
     family: Option<Family>,
@@ -219,8 +220,7 @@ struct Attrs {
 }
 impl Attrs {
     fn line_floor(&self) -> Option<f64> {
-        (self.line_minimum == LineMinimum::PixelFloor)
-            .then(|| self.sizing.width.natural_bounds().floor)
+        (self.line_width == LineWidth::PixelFloor).then(|| self.sizing.width.natural_bounds().floor)
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

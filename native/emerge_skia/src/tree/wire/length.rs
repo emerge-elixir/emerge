@@ -5,10 +5,10 @@ use super::*;
 const MAX_LENGTH_DEPTH: usize = 64;
 
 impl Reader<'_> {
-    pub(super) fn length(&mut self, raw: &[u8]) -> Result<(Length, f64, LineMinimum)> {
+    pub(super) fn length(&mut self, raw: &[u8]) -> Result<(Length, f64, LineWidth)> {
         let start = raw.len() - self.0.len();
         let mut largest = 0f64;
-        let (mut l, minimum) = self.expression(
+        let (mut l, line) = self.expression(
             |leaf| {
                 let length = match leaf {
                     Leaf::Fill => Length::Fill,
@@ -19,19 +19,25 @@ impl Reader<'_> {
                         Length::Px(px)
                     }
                 };
-                (length, LineMinimum::Auto)
+                (length, None::<LineWidth>) // a bare leaf, not a folded expression
             },
             |min, (a, left), (b, right)| {
                 let length = fold(min, a, b);
-                // At a wrapped site, only pixel operands may surround one
-                // fill. A max on that branch declares a floor, even at zero.
-                let rule = match (a, b) {
-                    _ if length.weight().is_none() => LineMinimum::Auto,
-                    (Length::Px(_), _) => right.pixel_bound(min),
-                    (_, Length::Px(_)) => left.pixel_bound(min),
-                    _ => LineMinimum::Unsupported,
+                use Length::{Content, Fill, Px, Weighted};
+                let rule = match ((a, left), (b, right)) {
+                    _ if length.weight().is_none() => LineWidth::Auto,
+                    ((Px(_), _), (_, rule)) | ((_, rule), (Px(_), _)) => {
+                        rule.unwrap_or_default().pixel_bound(min)
+                    }
+                    ((Content, None), (Fill | Weighted(_), None))
+                    | ((Fill | Weighted(_), None), (Content, None))
+                        if min =>
+                    {
+                        LineWidth::ContentCap
+                    }
+                    _ => LineWidth::Unsupported,
                 };
-                (length, rule)
+                (length, Some(rule))
             },
         )?;
         if let Length::Formula(f) = &mut l {
@@ -39,7 +45,7 @@ impl Reader<'_> {
             f.start = start as u32;
             f.end = (raw.len() - self.0.len()) as u32;
         }
-        Ok((l, largest, minimum))
+        Ok((l, largest, line.unwrap_or_default()))
     }
     fn leaf(&mut self, tag: u8) -> Result<Leaf> {
         match tag {
@@ -94,12 +100,12 @@ impl Reader<'_> {
         }
     }
 }
-impl LineMinimum {
+impl LineWidth {
     fn pixel_bound(self, min: bool) -> Self {
-        if !min && self == Self::Auto {
-            Self::PixelFloor
-        } else {
-            self
+        match self {
+            Self::ContentCap => Self::Unsupported, // no nested mixed width on a wrapped line
+            Self::Auto if !min => Self::PixelFloor, // even an explicit zero replaces the auto minimum
+            other => other,
         }
     }
 }
