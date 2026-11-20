@@ -14,6 +14,7 @@ impl Expr {
             || parent.unwrap_or(kind) == weighted::host(axis)
             || (axis == 1 && (parent == Some(3) || matches!(self, Fill(None))))
             || (axis == 2 && parent == Some(1))
+            || parent == Some(4)
     }
     fn single(&self, natural: f32, host: f64, independent_offer: bool) -> f32 {
         let eval = |unit| self.eval(f64::from(natural), 1., |_| unit);
@@ -86,8 +87,8 @@ fn width_by_height_at_roots_and_all_supported_parent_child_sites() {
                     let b = t.layers.frames[key];
                     assert_eq!((b.x, b.y), (0., 0.));
                     let expected = (
-                        width.single(natural.width, w, parent.is_none() || parent == Some(3)),
-                        height.single(natural.height, h, parent.is_none() || parent == Some(1)),
+                        width.single(natural.width, w, matches!(parent, None | Some(3 | 4))),
+                        height.single(natural.height, h, matches!(parent, None | Some(1 | 4))),
                     );
                     assert_eq!(
                         (b.width, b.height),

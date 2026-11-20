@@ -8,6 +8,7 @@ impl ShapeMeta for Row {
 }
 impl LayoutBehaviour for Row {
     const ALLOTS_WIDTH: bool = true;
+    const OFFERS_INNER_HEIGHT: bool = true;
     fn measure(children: &[Key], cx: &mut Measuring<'_>) -> Size {
         measure_line(children, cx)
     }
@@ -39,30 +40,16 @@ impl LayoutBehaviour for Row {
         }
     }
     fn reflow(node: Mounted<'_, Children>, cx: &mut ReflowCx<'_>) -> f32 {
-        if cx.fixed_basis {
-            return cx.measured_height;
-        }
-        let h = node
-            .data()
-            .iter()
-            .map(|&c| cx.child(c).h)
-            .fold(0., f32::max);
-        cx.box_height(h)
+        line_height(node.data(), cx)
     }
     fn place_children(node: Mounted<'_, Children>, cx: &mut PlaceCx<'_>) {
         let style = node.attrs().sizing;
-        let [top, _, bottom, left] = style.padding.map(|v| scale::pixels(v, cx.scale));
-        let inner = (cx.height - (top + bottom)).max(0.);
+        let ([left, top], inner) = cx.padded_height_offer(style);
         let gap = scale::pixels(style.spacing[0], cx.scale);
         let mut x = 0.;
         for &c in node.data() {
-            let fit = cx.child(c);
-            let policy = node.elements.attrs[c].sizing.height;
-            let height = policy
-                .weight()
-                .map(|_| policy.at_offer(node.elements, c, fit.h, inner));
-            cx.place(c, [left + x, top], height);
-            x += fit.w + gap;
+            cx.place_with_offer(c, [left + x, top], inner);
+            x += cx.child(c).w + gap;
         }
     }
 }

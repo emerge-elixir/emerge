@@ -7,14 +7,17 @@ impl ShapeMeta for El {
     type Paint = BoxPaint;
 }
 impl LayoutBehaviour for El {
+    const OFFERS_INNER_HEIGHT: bool = true;
     fn measure(child: Option<Key>, cx: &mut Measuring<'_>) -> Size {
         child.map_or(Size::default(), |c| cx.child(c))
     }
     fn reflow(node: Mounted<'_, OnlyChild>, cx: &mut ReflowCx<'_>) -> f32 {
-        let h = node.data().map_or(0., |c| {
-            cx.offset(c, 0., 0.);
-            cx.child(c).h
-        });
-        cx.box_height(h)
+        line_height(node.children(), cx)
+    }
+    fn place_children(node: Mounted<'_, OnlyChild>, cx: &mut PlaceCx<'_>) {
+        if let Some(child) = node.data() {
+            let (origin, height) = cx.padded_height_offer(node.attrs().sizing);
+            cx.place_with_offer(child, origin, height);
+        }
     }
 }

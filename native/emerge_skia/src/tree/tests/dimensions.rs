@@ -3,6 +3,7 @@
 use super::*;
 mod laws;
 mod sites;
+mod unary;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Site {
@@ -326,11 +327,14 @@ impl Rng {
         }
     }
 }
+fn seeds() -> std::ops::Range<u64> {
+    let first = std::env::var("EMERGE_DIM_SEED").map_or(0, |s| s.parse().unwrap());
+    let count: u64 = std::env::var("EMERGE_DIM_CASES").map_or(64, |s| s.parse().unwrap());
+    first..first + count
+}
 #[test]
 fn seeded_dimension_edits_match_math_and_fresh_trees() {
-    let first = std::env::var("EMERGE_DIM_SEED").map_or(0, |s| s.parse().unwrap());
-    let count = std::env::var("EMERGE_DIM_CASES").map_or(64, |s| s.parse().unwrap());
-    for seed in first..first + count {
+    for seed in seeds() {
         for site in SITES {
             let axis = site.axis();
             let host = site.host();

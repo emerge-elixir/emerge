@@ -61,6 +61,16 @@ with a 40×120 Row, padding 6, gap 4 and two 12px-wide children, both get a
 108px offer. If A caps fill at 30px of content, its height is 30px (78px unused)
 and B can still take all 108px. See the [wrap and overflow regressions](../../plans/row-cross-axis-height.md#results).
 
+The single child of an `el` does not divide **either** axis. Width flow
+resolves the child's width first. The child reports its height after wrapping;
+placement then offers the El's actual inner height, including zero. For a
+120×80 El with padding 6 and no gap, `fill(3)` / `fill(0.5)` gives the child
+108×68 at `(6,6)`, with nothing unused. With 150×90 of content and
+`max(content(), fill(3))` on both axes, the child is 150×90: it overflows
+by 42×22. An offer is not a clip. The El keeps its inherited paint and hit
+clip; an enclosing Column still clips at its own edge. See the [submitted
+examples](../../plans/el-child-fill.md#results).
+
 A Row divides spare width, and a Column divides spare height, in proportion
 to the children's weights. `fill()` and `fill(1)` both take one share. A
 weight-only edit invalidates the distributing parent, not the child's

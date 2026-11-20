@@ -136,7 +136,7 @@ fn a_closed_move_checks_site_and_masked_scale_before_publishing_the_new_width() 
             node(4, 6, block(&[px(1, 120.)]), &[]),
             node(3, 4, panel(1, 3, vec![1, 0]), &[]),
             node(20, 3, block(&[px(1, 54.), px(2, 12.), number(78, 2.)]), &[]),
-            node(30, 4, block(&[]), &[]),
+            node(30, 2, block(&[]), &[]),
         ]))
         .unwrap();
     let old = draw(&mut r).to_vec();
@@ -157,7 +157,7 @@ fn a_closed_move_checks_site_and_masked_scale_before_publishing_the_new_width() 
     let pending = r.tree.encode();
     assert!(
         r.tree
-            .patch(&transfer(30, 4))
+            .patch(&transfer(30, 2))
             .unwrap_err()
             .contains("requires a root")
     );

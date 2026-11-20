@@ -140,10 +140,11 @@ impl Layers {
                     .attrs
                     .as_ref()
                     .map_or(e.attrs[k].sizing.height, |(a, _)| a.sizing.height);
-                let was_in_row = old.map_or(Some(false), |p| {
-                    e.slots.get(p).map(|n| n.shape.allots_width())
+                let old_offer = old.map_or(Some(false), |p| {
+                    e.slots.get(p).map(|n| n.shape.offers_inner_height())
                 });
-                if was_in_row.map(|row| before.reflows_height(row)) != Some(e.height_uses_reflow(k))
+                if old_offer.map(|independent| before.reflows_height(independent))
+                    != Some(e.height_uses_reflow(k))
                 {
                     self.invalidate(Pass::Reflow, k, depth);
                 }
@@ -186,14 +187,13 @@ impl Layers {
         {
             invalidate(Pass::Flow)
         }
-        if shape == Shape::Row {
-            if a.height != b.height || a.padding[0] != b.padding[0] || a.padding[2] != b.padding[2]
-            {
+        if shape.offers_inner_height() {
+            let vertical_padding = a.padding[0] != b.padding[0] || a.padding[2] != b.padding[2];
+            if a.height != b.height || vertical_padding {
                 invalidate(Pass::Reflow)
             }
-            if a.spacing[0] != b.spacing[0]
-                || a.padding[0] != b.padding[0]
-                || a.padding[2] != b.padding[2]
+            if (shape.allots_width() && a.spacing[0] != b.spacing[0])
+                || vertical_padding
                 || a.padding[3] != b.padding[3]
             {
                 invalidate(Pass::Place)
@@ -219,8 +219,10 @@ impl Layers {
             .sizing
             .height
             .same_split(old_raw, next.sizing.height, raw);
+        let parent = e.parent_shape(k);
+        let independent_height = parent.is_some_and(Shape::offers_inner_height);
         if old.sizing.height.reads_fill_content() != next.sizing.height.reads_fill_content()
-            && !e.in_row(k)
+            && !independent_height
         {
             self.invalidate(Pass::Reflow, k, depth);
             if let Some(p) = e.slots[k].parent {
@@ -229,7 +231,7 @@ impl Layers {
         }
         if width
             && (old.sizing.width.reads_fill_content() || next.sizing.width.reads_fill_content())
-            && !e.in_row(k)
+            && !parent.is_some_and(Shape::allots_width)
         {
             self.invalidate(Pass::Flow, k, depth);
         }
@@ -251,12 +253,12 @@ impl Layers {
             && (a.height != b.height
                 || old.sizing.height.reads_fill_content()
                 || next.sizing.height.reads_fill_content()
-                || !e.in_row(k));
-        self.invalidate_split(e, k, parent_input, height);
+                || !independent_height);
+        self.invalidate_parent_offer(e, k, parent_input, height);
     }
-    // The splitter can change a sibling's offer or offset even if neither
-    // the host frame nor this child's intrinsic box changes.
-    pub(super) fn invalidate_split(
+    // Policy or declaring scale can change an offer even at equal host fit
+    // and equal child measure. Enqueue the parent pass that issues it.
+    pub(super) fn invalidate_parent_offer(
         &mut self,
         e: &Elements,
         k: Key,
@@ -269,7 +271,8 @@ impl Layers {
         let Some(p) = e.slots[k].parent else { return };
         let shape = e.slots[p].shape;
         let b = e.attrs[p].sizing;
-        if height && (shape == Shape::Row || (shape.allots_height() && b.height.definite())) {
+        if height && (shape.offers_inner_height() || (shape.allots_height() && b.height.definite()))
+        {
             self.invalidate(Pass::Place, p, e.depth(p));
         }
         if width.is_some_and(|input| shape.reads_flow(b.width, input)) {

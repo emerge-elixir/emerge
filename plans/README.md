@@ -9,7 +9,7 @@ Implemented: [fill widths on direct children of a Column](column-cross-axis-widt
 
 Implemented: [fill heights on direct children of a single-line Row](row-cross-axis-height.md#results). Each child gets the Row’s placed inner height as its offer; content limits use demand after wrapping.
 
-Next proposed slice: [fill width and height on the single child of an El](el-child-fill.md). Resolve the two offers independently and keep the wrapper's existing overflow behavior.
+Implemented: [fill width and height on the single child of an El](el-child-fill.md#results). The child gets the full inner offer on each axis. Its height can follow wrapping, and the El itself does not clip overflow.
 
 Implemented: [Unweighted height fill in columns](column-height-fill.md), [weighted Row widths and Column heights](weighted-fill.md), [redistribution at a pixel cap or floor](bounded-main-axis-fill.md#redistribution-correction), [nested `min`/`max` around one fill](nested-main-axis-fill.md), and [pixel bounds on `content()` / `shrink()`](bounded-content.md).
 

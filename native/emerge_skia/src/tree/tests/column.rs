@@ -213,7 +213,7 @@ fn site_proof_uses_final_edges_and_accepted_attrs_without_disturbing_pending_or_
             // itself give an incoming child a fill-height offer.
             node(1, 2, block(&[]), &[2, 3, 4]),
             node(2, 3, host(50.), &[17]),
-            node(3, 4, block(&[]), &[]),
+            node(3, 2, block(&[]), &[]),
             node(4, 3, host(70.), &[]),
             node(17, 3, block(&[vec![1, 0], vec![2, 0]]), &[18]),
             node(18, 4, block(&[vec![1, 0], px(2, 50.), vec![40, 1]]), &[]),
@@ -225,14 +225,14 @@ fn site_proof_uses_final_edges_and_accepted_attrs_without_disturbing_pending_or_
     // #18's fill is accepted but never drawn before the attempted promotion.
     r.tree.patch(&set(18, 4, panel([0, 0, 255]))).unwrap();
     let pending = r.tree.encode();
-    let move_to_el = [
+    let to_wrap = [
         edges(1, 2, &[2, 3, 4]),
         edges(2, 3, &[]),
-        edges(3, 4, &[17]),
+        edges(3, 2, &[17]),
     ];
     for records in [
-        move_to_el.to_vec(),
-        [move_to_el.as_slice(), &[edges(17, 3, &[18])]].concat(),
+        to_wrap.to_vec(),
+        [to_wrap.as_slice(), &[edges(17, 3, &[18])]].concat(),
     ] {
         assert!(
             r.tree
@@ -251,8 +251,8 @@ fn site_proof_uses_final_edges_and_accepted_attrs_without_disturbing_pending_or_
     for variant in [4, 5] {
         let value = vec![2, variant, 0, 1];
         assert_eq!(
-            r.tree.patch(&set(3, 4, block(&[value]))).unwrap_err(),
-            "height(fill()) requires a root Column or a child of a Column or Row"
+            r.tree.patch(&set(3, 2, block(&[value]))).unwrap_err(),
+            "height(fill()) requires a root Column or a child of a Column, Row or El"
         );
     }
     assert_eq!(r.tree.encode(), pending);

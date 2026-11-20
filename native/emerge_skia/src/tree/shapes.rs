@@ -60,6 +60,8 @@ trait LayoutBehaviour: ShapeMeta {
     /// Which main-axis length this shape distributes among its children.
     const ALLOTS_WIDTH: bool = false;
     const ALLOTS_HEIGHT: bool = false;
+    /// Each fill child receives the full placed inner height without a split.
+    const OFFERS_INNER_HEIGHT: bool = false;
     fn measure(data: Data<'_, Self>, cx: &mut Measuring<'_>) -> Size;
     fn auto_fills(_node: Mounted<'_, Self::Payload>) -> bool {
         false
@@ -156,6 +158,9 @@ impl Shape {
     pub fn allots_width(self) -> bool {
         with_shape!(self, |S| S::ALLOTS_WIDTH)
     }
+    pub fn offers_inner_height(self) -> bool {
+        with_shape!(self, |S| S::OFFERS_INNER_HEIGHT)
+    }
     pub fn allots_height(self) -> bool {
         with_shape!(self, |S| S::ALLOTS_HEIGHT)
     }
@@ -219,6 +224,15 @@ impl Shape {
             run
         ))
     }
+}
+
+// A Row and a unary El both fit the tallest unallotted child. Only the
+// Row can have a second child, and only the Row shares widths in Flow.
+fn line_height(children: &[Key], cx: &ReflowCx<'_>) -> f32 {
+    if cx.fixed_basis {
+        return cx.measured_height;
+    }
+    cx.box_height(children.iter().map(|&c| cx.child(c).h).fold(0., f32::max))
 }
 
 fn measure_line(children: &[Key], cx: &Measuring<'_>) -> Size {

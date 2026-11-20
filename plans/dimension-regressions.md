@@ -4,8 +4,9 @@ Test the public [size language](../lib/emerge/ui/size.ex) as geometry, pixels
 and input, not just as encodable terms. Scope: static sizes on the six active
 shapes. The original campaign kept the fill sites of `e411961`; the
 [Column-width](column-cross-axis-width.md#results) and [Row-height](row-cross-axis-height.md#results)
-follow-ups add the two independent direct-child offers to the same oracle.
-No WrappedRow distribution or animation lengths.
+follow-ups add independent cross-axis offers. The [El-child campaign](el-child-fill.md#results)
+checks a single child with **simultaneous** width and height policies. No
+WrappedRow distribution or animation lengths.
 
 ## Starting point
 
@@ -32,7 +33,7 @@ No WrappedRow distribution or animation lengths.
 | --- | --- | --- |
 | Leaves, both ops, both operand orders | Test all six samples (px 0 and 50, content, plain fill, weights 1 and 3); both axes, plus omission as a whole policy. Include pairs of constants, repeated content and multiple fills. Preserve the producer's operand order on export. | [Paired declarations](../native/emerge_skia/src/tree/tests/dimensions.rs), [codec and alias](../test/emerge/attr_codec_test.exs), [wire byte controls](../native/emerge_skia/src/tree/tests/nested.rs) |
 | Width **and** height on one node | Cross 12 representative policies per axis at each of six roots and below each legal **parent shape** (Row, WrappedRow, Column, El) × six child shapes. Check actual extents for admitted cases and unchanged accepted bytes on site refusals. Text uses its content-only metric as a control, not a hardcoded font advance. | [4,320 width × height cases](../native/emerge_skia/src/tree/tests/dimensions/sites.rs) |
-| Root, direct, nested and moved sites | Weighted/compound fill width needs a root Row, direct Row parent or direct Column parent; **plain** width fill keeps its broader behavior. Any fill-bearing height needs a root Column or direct Column/Row parent. Pure pixel/content policies need neither. Moves and promotions check the final parent and scale even if the subtree is closed. A root fill reads the viewport once, not viewport × weight. | [Sites and pending/refused candidates](../native/emerge_skia/src/tree/tests/dimensions/sites.rs), [scaled masked operands](../native/emerge_skia/src/tree/tests/nested.rs) |
+| Root, direct, nested and moved sites | Weighted/compound fill width needs a root Row or a direct Row/Column/El parent; **plain** width fill keeps its broader behavior. Any fill-bearing height needs a root Column or a direct Column/Row/El parent. Pure pixel/content policies need neither. Moves and promotions check the final parent and scale even if the subtree is closed. A root fill reads the viewport once, not viewport × weight. | [Sites and pending/refused candidates](../native/emerge_skia/src/tree/tests/dimensions/sites.rs), [scaled masked operands](../native/emerge_skia/src/tree/tests/nested.rs) |
 | Definite vs natural hosts | Subtract host padding, adjacent gaps and non-fill **outer** extents. A content Row offers intrinsic widths; a content Column uses fill children's pre-wrap bases. Auto/content-height Rows fit the tallest unallotted, post-wrap child. An allocated nested host subdivides even a zero offer. Auto is a separate case: an auto-width Column with a width-fill child can consume an offer. | [Row](../native/emerge_skia/src/tree/tests/row.rs), [Column](../native/emerge_skia/src/tree/tests/column.rs), [bounded content](../native/emerge_skia/src/tree/tests/content_bounds.rs) |
 | Width changes the height | Test just below/at/above a wrap threshold. Check second-line origin **and** host height and following sibling. A mixed content limit in a definite Column reads the actual post-wrap padded extent; without a slot a fill uses its pre-wrap basis. Exercise content caps, floors and weight changes separately. | [Wrap matrix](../native/emerge_skia/src/tree/tests/dimensions/sites.rs), [delivered frames and clicks](../test/emerge_skia/dimension_regression_test.exs) |
 | Nested min/max, numeric boundaries | Test crossed/redundant limits, both ends binding, many limited siblings, all caps/slack, impossible floors/overflow, zero room and padding/gaps exceeding the host. Scale authored px once at the declaring site, not an already-device offer. Preserve ordinary f32 split rounding; exercise max finite and minimum subnormal f64 weights, including a tiny surviving slope. | [Expression laws and extremes](../native/emerge_skia/src/tree/tests/dimensions/laws.rs), [scale](../test/emerge_skia/layout_scale_test.exs), [fractional hit edges](../test/emerge_skia/weighted_fill_test.exs) |
@@ -49,7 +50,9 @@ No WrappedRow distribution or animation lengths.
    assert unconditional conservation. In a root expression all fill leaves
    instead get the same viewport extent. On the cross axis each Column child
    reads the same inner width, each Row child the same *placed* inner height,
-   without summing siblings. A Row child's content leaf reads post-wrap demand.
+   without summing siblings. An El offers its single child the inner width
+   and the *placed* inner height. On both Row and El edges, content in the
+   height expression reads the child's post-wrap demand.
    In an intrinsic measurement all variable leaves get the same natural extent.
 2. **Generate and check valid edits.** No property framework was in the
    project manifests. Use a test-only fixed integer PRNG (no clock or new
@@ -66,6 +69,10 @@ No WrappedRow distribution or animation lengths.
    of `8 × f32::EPSILON × max(1, |expected|)`; also compare the sparse result
    **exactly** with a fresh mount of the same declaration. Agreement between
    two renderer runs alone cannot catch a shared mathematical mistake.
+   The [unary generator](../native/emerge_skia/src/tree/tests/dimensions/unary.rs)
+   evaluates **two** independent policies for the one El child. Its 14 states
+   include a natural wrapper, scale edits, zero and restored offers, replacing
+   its child, an empty edge, restoring a child and undo before refresh.
 3. **Check more than randomness.** Hand-computable/extreme cases assert exact
    splits. Commuting the operands or repeating a term under min/max must
    preserve sizes at the *same* legal site. Transposition applies to a flat
@@ -91,7 +98,7 @@ To replay the generator from the repo root (use a private target directory):
 export CARGO_TARGET_DIR="$(mktemp -d)" CARGO_NET_OFFLINE=true RAYON_NUM_THREADS=1
 EMERGE_DIM_SEED=0 EMERGE_DIM_CASES=1 ./scripts/performance-lock.sh shared \
   cargo test --manifest-path native/emerge_skia/Cargo.toml --release --locked \
-  --features bench-diagnostics seeded_dimension_edits_match_math_and_fresh_trees
+  --features bench-diagnostics seeded_
 ```
 
 Set `EMERGE_DIM_CASES=10000` for the extended run. The dedicated math, site,
@@ -148,7 +155,8 @@ second child order, direct callback dispatch or a test-only native API.
 
 The following results are for the original two main axes at `2c802f6`;
 see the [three-site](column-cross-axis-width.md#results) and subsequent
-[four-site qualification](row-cross-axis-height.md#results) for the extensions.
+[four-site qualification](row-cross-axis-height.md#results), then the
+[unary two-axis qualification](el-child-fill.md#results) for the extensions.
 
 - **144/144 ordered expression cases** now meet the independent geometry
   expectations. The width × height site matrix and all 10 native campaign

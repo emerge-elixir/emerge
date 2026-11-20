@@ -196,16 +196,16 @@ impl Batch {
                     Some(p) => matches!(
                         self.get(p)
                             .map_or_else(|| e.slots[e.ids[&p]].shape, |edit| edit.shape),
-                        Shape::Row | Shape::Column
+                        Shape::Row | Shape::Column | Shape::El
                     ),
                 };
                 let width = a.sizing.width;
                 if width != Length::Fill && width.weight().is_some() && !fill_site(Shape::Row) {
-                    return Err("weighted or compound fill width requires a root Row or a child of a Row or Column".into());
+                    return Err("weighted or compound fill width requires a root Row or a child of a Row, Column or El".into());
                 }
                 if a.sizing.height.weight().is_some() && !fill_site(Shape::Column) {
                     return Err(
-                        "height(fill()) requires a root Column or a child of a Column or Row"
+                        "height(fill()) requires a root Column or a child of a Column, Row or El"
                             .into(),
                     );
                 }

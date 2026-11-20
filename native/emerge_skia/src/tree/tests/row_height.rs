@@ -66,6 +66,9 @@ fn policy_only_edits_reach_the_row_height_offer_not_intrinsic_measure_or_width_s
 
 #[test]
 fn a_closed_move_switches_between_pre_and_post_wrap_at_identical_width_and_scale() {
+    closed_move(1);
+}
+pub(super) fn closed_move(independent_host: u8) {
     let mut r = Raster::default();
     let wrap = |masked| {
         block(&[
@@ -89,9 +92,14 @@ fn a_closed_move_switches_between_pre_and_post_wrap_at_identical_width_and_scale
             node(2, 2, wrap(120.), &[3, 4]),
             node(3, 6, chip(), &[]),
             node(4, 6, chip(), &[]),
-            node(20, 1, block(&[px(1, 80.), vec![2, 1]]), &[]),
-            node(30, 1, block(&[px(1, 40.), number(78, 2.)]), &[]),
-            node(40, 4, block(&[]), &[]),
+            node(20, independent_host, block(&[px(1, 80.), vec![2, 1]]), &[]),
+            node(
+                30,
+                independent_host,
+                block(&[px(1, 40.), number(78, 2.)]),
+                &[],
+            ),
+            node(40, 2, block(&[]), &[]),
         ]))
         .unwrap();
     let old = draw(&mut r).to_vec();
@@ -113,23 +121,23 @@ fn a_closed_move_switches_between_pre_and_post_wrap_at_identical_width_and_scale
     let pending = r.tree.encode();
     assert!(
         r.tree
-            .patch(&transfer(40, 4))
+            .patch(&transfer(40, 2))
             .unwrap_err()
             .contains("height(fill()) requires")
     );
     assert_eq!(
-        r.tree.patch(&transfer(30, 1)).unwrap_err(),
+        r.tree.patch(&transfer(30, independent_host)).unwrap_err(),
         "scaled length exceeds device range"
     );
     assert_eq!(r.tree.encode(), pending);
     assert!(r.tree.layers.worksets_empty());
-    r.tree.patch(&transfer(20, 1)).unwrap();
+    r.tree.patch(&transfer(20, independent_host)).unwrap();
     assert_eq!(
         r.prepare(180., 170., 1.)
             .unwrap()
-            .submit(|_, _| Err("refused Row height".into()))
+            .submit(|_, _| Err("refused height handoff".into()))
             .unwrap_err(),
-        "refused Row height"
+        "refused height handoff"
     );
     assert_eq!(heights(&r), [0., 28., 28.]);
     assert_eq!(bounds(&r, 4).y, 20.);
@@ -145,7 +153,7 @@ fn a_closed_move_switches_between_pre_and_post_wrap_at_identical_width_and_scale
             &[
                 edges(1, 3, &[10, 20, 30, 40]),
                 edges(10, 3, &[2]),
-                edges(20, 1, &[]),
+                edges(20, independent_host, &[]),
             ],
         ))
         .unwrap();
@@ -156,10 +164,13 @@ fn a_closed_move_switches_between_pre_and_post_wrap_at_identical_width_and_scale
 
 #[test]
 fn changing_site_and_policy_before_one_refresh_uses_the_first_height_basis() {
-    let wrap = |in_row| {
+    edit_and_move(1);
+}
+pub(super) fn edit_and_move(independent_host: u8) {
+    let wrap = |independent| {
         let mut cap = vec![2, 4];
         cap.extend(number(2, 90.));
-        cap.extend(if in_row { &[4, 1, 0][..] } else { &[0] });
+        cap.extend(if independent { &[4, 1, 0][..] } else { &[0] });
         block(&[
             px(1, 76.),
             cap,
@@ -169,32 +180,37 @@ fn changing_site_and_policy_before_one_refresh_uses_the_first_height_basis() {
         ])
     };
     let kids = |yes| if yes { &[2][..] } else { &[] };
-    let full = |in_row: bool| {
+    let full = |independent: bool| {
         upload(&[
             node(1, 3, block(&[px(1, 76.)]), &[10, 20]),
-            node(10, 3, block(&[px(1, 76.), vec![2, 1]]), kids(!in_row)),
-            node(20, 1, block(&[px(1, 76.), vec![2, 1]]), kids(in_row)),
-            node(2, 2, wrap(in_row), &[3, 4]),
+            node(10, 3, block(&[px(1, 76.), vec![2, 1]]), kids(!independent)),
+            node(
+                20,
+                independent_host,
+                block(&[px(1, 76.), vec![2, 1]]),
+                kids(independent),
+            ),
+            node(2, 2, wrap(independent), &[3, 4]),
             node(3, 6, block(&[px(1, 38.), px(2, 12.)]), &[]),
             node(4, 6, block(&[px(1, 38.), px(2, 12.)]), &[]),
         ])
     };
     // The two policies have exactly the same natural bounds (0..90). Only
-    // the old Column used pre-wrap 12; the new Row needs post-wrap 28.
+    // the old Column used pre-wrap 12; the independent host needs post-wrap 28.
     for edit_first in [false, true] {
         let mut r = Raster::default();
         r.tree.upload(&full(false)).unwrap();
-        for in_row in [true, false] {
+        for independent in [true, false] {
             draw(&mut r);
             let edits = [
-                set(2, 2, wrap(in_row)),
+                set(2, 2, wrap(independent)),
                 patch(
                     1,
                     1,
                     &[
                         edges(1, 3, &[10, 20]),
-                        edges(10, 3, kids(!in_row)),
-                        edges(20, 1, kids(in_row)),
+                        edges(10, 3, kids(!independent)),
+                        edges(20, independent_host, kids(independent)),
                     ],
                 ),
             ];
@@ -203,10 +219,10 @@ fn changing_site_and_policy_before_one_refresh_uses_the_first_height_basis() {
             }
             assert!(r.tree.layers.worksets_empty());
             let mut cold = Raster::default();
-            cold.tree.upload(&full(in_row)).unwrap();
+            cold.tree.upload(&full(independent)).unwrap();
             draw(&mut r);
             draw(&mut cold);
-            assert_eq!(bounds(&r, 2).height, if in_row { 28. } else { 12. });
+            assert_eq!(bounds(&r, 2).height, if independent { 28. } else { 12. });
             assert_eq!(r.pixels(), cold.pixels());
             assert_eq!(r.hit_at(5., 20.), cold.hit_at(5., 20.));
         }

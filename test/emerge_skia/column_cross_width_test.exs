@@ -131,7 +131,7 @@ defmodule EmergeSkia.ColumnCrossWidthTest do
         [key(:column), width(px(108)), height(px(12))],
         if(site == :column, do: [card], else: [])
       ),
-      el([key(:el), height(px(0))], if(site == :el, do: card, else: none()))
+      wrapped_row([key(:wrap), height(px(0))], if(site == :wrap, do: [card], else: []))
     ])
   end
 
@@ -164,7 +164,7 @@ defmodule EmergeSkia.ColumnCrossWidthTest do
     {_, pending} = Emerge.Engine.diff_state_update_binary(before, move_scene(:column))
 
     assert_raise RuntimeError, ~r/renderer_patch failed: .*fill width requires/, fn ->
-      EmergeSkia.patch_tree(r, pending, move_scene(:el))
+      EmergeSkia.patch_tree(r, pending, move_scene(:wrap))
     end
 
     assert {:ok, ^top} = EmergeSkia.render_to_pixels(r)

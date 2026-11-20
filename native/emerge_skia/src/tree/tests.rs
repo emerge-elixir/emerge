@@ -5,6 +5,7 @@ mod column;
 mod column_width;
 mod content_bounds;
 mod dimensions;
+mod el_child;
 mod identity;
 mod nested;
 mod row;

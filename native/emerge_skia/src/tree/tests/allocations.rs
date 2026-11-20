@@ -261,6 +261,47 @@ fn independent_row_heights(c: &Counter) {
     assert_eq!(r.hit_at(10., 117.), Some((1, 10., 117.)));
 }
 
+fn el_child_offers(c: &Counter) {
+    let mut r = Raster::default();
+    r.tree.upload(&el_child::example()).unwrap();
+    c.zero("first El offers after reservation", || {
+        r.settle(180., 170., 1.).unwrap();
+    });
+    draw(&mut r);
+    for (edit, w, h) in [
+        (set(2, 4, el_child::policy(5)), 108., 68.),
+        (set(3, 4, el_child::demand(150., 90.)), 150., 90.),
+    ] {
+        c.zero(
+            "fitting El policy/demand through prepared paint/hit inputs",
+            || {
+                r.tree.patch(&edit).unwrap();
+                r.settle(180., 170., 1.).unwrap();
+            },
+        );
+        assert_eq!((bounds(&r, 2).width, bounds(&r, 2).height), (w, h));
+        draw(&mut r);
+    }
+    let visible = r.pixels().to_vec();
+    let target = r.target_at(123., 86.).unwrap();
+    r.tree.patch(&set(2, 4, el_child::policy(4))).unwrap();
+    let pending = r.tree.encode();
+    let over = set(4, 5, text(&"W".repeat(512)));
+    (c.fail_next_reserve)();
+    assert_eq!(
+        r.tree.patch(&over).unwrap_err(),
+        "tree workspace capacity exceeded"
+    );
+    assert_eq!(r.tree.encode(), pending);
+    c.zero("pending El cap after refused growth", || {
+        r.settle(180., 170., 1.).unwrap();
+    });
+    assert_eq!(r.pixels(), visible);
+    assert_eq!(r.target_at(123., 86.), Some(target));
+    draw(&mut r);
+    assert!(r.target_at(123., 86.).is_none());
+}
+
 fn bounded_content(c: &Counter) {
     for axis in [1, 2] {
         let mut r = Raster::default();
@@ -647,6 +688,7 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     mixed_splits(&c);
     independent_column_widths(&c);
     independent_row_heights(&c);
+    el_child_offers(&c);
     // 100 slots + 80% = 180. The inserted subtree and edited parent's
     // first input coexist with the old glyph/command buffers and batch scratch.
     let ids: Vec<u64> = (2..=100).collect();

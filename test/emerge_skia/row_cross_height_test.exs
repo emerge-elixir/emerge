@@ -124,7 +124,7 @@ defmodule EmergeSkia.RowCrossHeightTest do
     second =
       case site do
         :row -> [card]
-        :el -> [el([key(:wrapper)], card)]
+        :wrap -> [wrapped_row([key(:wrap)], [card])]
         :column -> []
       end
 
@@ -170,7 +170,7 @@ defmodule EmergeSkia.RowCrossHeightTest do
       )
 
     assert_raise RuntimeError, ~r/renderer_patch failed: height\(fill\(\)\) requires/, fn ->
-      EmergeSkia.patch_tree(r, pending, move_scene(:el))
+      EmergeSkia.patch_tree(r, pending, move_scene(:wrap))
     end
 
     assert {:ok, ^shared} = EmergeSkia.render_to_pixels(r)
