@@ -8,13 +8,14 @@ impl ShapeMeta for Column {
 }
 impl LayoutBehaviour for Column {
     const ALLOTS_HEIGHT: bool = true;
-    fn measure(children: &[Key], cx: &mut Measuring<'_>) -> Size {
+    fn measure(children: &[Key], cx: &mut Measuring<'_>) -> Demand {
         children.iter().map(|&c| cx.child(c)).fold(
-            Size {
-                w: 0.,
+            Demand {
                 h: cx.gap[1] * children.len().saturating_sub(1) as f32,
+                ..Demand::default()
             },
-            |s, c| Size {
+            |s, c| Demand {
+                min_w: s.min_w.max(c.min_w),
                 w: s.w.max(c.w),
                 h: s.h + c.h,
             },

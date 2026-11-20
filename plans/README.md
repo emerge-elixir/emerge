@@ -7,6 +7,8 @@ Keep [bugs found on main and verified fixes for the changelog](retained-changelo
 
 Implemented: [the viewport supplies ordinary constraints](viewport-constraints.md#results). All six supported element kinds use the same sizing rules at the viewport as inside a zero-padding El, including after resize or promotion.
 
+Implemented: [width fill inside a WrappedRow](wrapped-row-child-width.md). Lines form from minimum widths, then divide their own space by weight. This deliberately changes plain fill from the stacked layout on `main`.
+
 Implemented: [fill widths on direct children of a Column](column-cross-axis-width.md#results). Each stacked child uses the full inner-width offer, not a share of its siblings’ width.
 
 Implemented: [fill heights on direct children of a single-line Row](row-cross-axis-height.md#results). Each child gets the Row’s placed inner height as its offer; content limits use demand after wrapping.

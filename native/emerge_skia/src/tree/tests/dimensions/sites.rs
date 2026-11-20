@@ -10,7 +10,7 @@ impl Expr {
         }
     }
     fn allowed(&self, axis: u8, parent: Option<u8>) -> bool {
-        parent != Some(2) || !self.has_fill() || (axis == 1 && matches!(self, Fill(None)))
+        parent != Some(2) || !self.has_fill() || (axis == 1 && matches!(self, Fill(_)))
     }
     fn single(&self, natural: f32, host: f64, independent_offer: bool) -> f32 {
         let eval = |unit| self.eval(f64::from(natural), 1., |_| unit);

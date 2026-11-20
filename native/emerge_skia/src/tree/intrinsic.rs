@@ -1,7 +1,7 @@
 //! Shared intrinsic box values, independent of mount identity. Collision or payload
 //! pressure is a miss, never evidence of equality. A slot owns a snapshot of
 //! the settled child sizes, not an occurrence or another copy of child order.
-use super::{layers::Size, *};
+use super::{layers::Demand, *};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 #[derive(Clone, Copy)]
@@ -9,13 +9,13 @@ struct Entry {
     shape: Shape,
     style: BoxStyle,
     scale: f32,
-    children: Span<Size>,
-    value: Size,
+    children: Span<Demand>,
+    value: Demand,
 }
 #[derive(Default)]
 pub(super) struct Intrinsic {
     slots: Vec<Option<Entry>>,
-    inputs: Pool<Size>,
+    inputs: Pool<Demand>,
     #[cfg(test)]
     pub misses: usize,
 }
@@ -31,7 +31,7 @@ impl Intrinsic {
         shape: Shape,
         style: BoxStyle,
         scale: f32,
-        children: impl Iterator<Item = Size>,
+        children: impl Iterator<Item = Demand>,
     ) -> usize {
         let mut h = DefaultHasher::new();
         (shape as u8, scale.to_bits()).hash(&mut h);
@@ -49,7 +49,7 @@ impl Intrinsic {
             n.to_bits().hash(&mut h);
         }
         for s in children {
-            (s.w.to_bits(), s.h.to_bits()).hash(&mut h);
+            (s.w.to_bits(), s.h.to_bits(), s.min_w.to_bits()).hash(&mut h);
         }
         h.finish() as usize % self.slots.len()
     }
@@ -58,8 +58,8 @@ impl Intrinsic {
         shape: Shape,
         style: BoxStyle,
         scale: f32,
-        children: impl Iterator<Item = Size> + Clone,
-    ) -> (usize, Option<Size>) {
+        children: impl Iterator<Item = Demand> + Clone,
+    ) -> (usize, Option<Demand>) {
         let i = self.slot(shape, style, scale, children.clone());
         (
             i,
@@ -79,8 +79,8 @@ impl Intrinsic {
         shape: Shape,
         style: BoxStyle,
         scale: f32,
-        children: impl ExactSizeIterator<Item = Size>,
-        value: Size,
+        children: impl ExactSizeIterator<Item = Demand>,
+        value: Demand,
     ) {
         #[cfg(test)]
         {

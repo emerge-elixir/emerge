@@ -19,6 +19,7 @@ pub(super) enum Pass {
     Compose,
 }
 use Pass::*;
+use scale::{Inputs, pixels};
 impl Pass {
     fn direction(self) -> Direction {
         match self {
@@ -33,7 +34,20 @@ pub(super) struct Size {
     pub w: f32,
     pub h: f32,
 }
-use scale::{Inputs, pixels};
+/// Intrinsic outer sizes in device pixels. A wrapping descendant may fit
+/// at a smaller width than its preferred (single-line) measurement.
+#[derive(Default, Clone, Copy, Debug, PartialEq)]
+pub(super) struct Demand {
+    pub w: f32,
+    pub h: f32,
+    pub min_w: f32,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct WidthOffer {
+    axis: Constraint,
+    break_before: bool,
+}
 #[derive(Clone, Copy, PartialEq)]
 struct Width {
     outer: f32,
@@ -77,7 +91,7 @@ struct Placement {
 pub(super) struct Layers {
     jobs: [WorkSet; 7],
     context: SecondaryMap<Key, Inputs>,
-    measure: SecondaryMap<Key, Size>,
+    measure: SecondaryMap<Key, Demand>,
     pub(super) intrinsic: intrinsic::Intrinsic,
     // Glyph changes and intrinsic size changes have different readers.
     pub(super) runs: SecondaryMap<Key, Run>,
@@ -87,7 +101,7 @@ pub(super) struct Layers {
     pub(super) text_count: usize,
     pub(super) prepared_scale: f32,
     width: SecondaryMap<Key, Width>,
-    offers: SecondaryMap<Key, Constraint>,
+    offers: SecondaryMap<Key, WidthOffer>,
     fit: SecondaryMap<Key, Size>,
     placement: SecondaryMap<Key, Placement>,
     pub frames: SecondaryMap<Key, Rect>,
@@ -109,10 +123,10 @@ pub(super) struct Measuring<'a> {
     pub gap: [f32; 2],
 }
 impl Measuring<'_> {
-    pub fn child(&self, c: Key) -> Size {
+    pub fn child(&self, c: Key) -> Demand {
         self.layers.measure[c]
     }
-    pub fn glyph_run(&mut self, text: &str) -> Size {
+    pub fn glyph_run(&mut self, text: &str) -> Demand {
         let k = self.k;
         let l = &mut self.layers;
         let ctx = l.context[k];
@@ -124,7 +138,8 @@ impl Measuring<'_> {
             || run.metrics.family != ctx.family
             || run.metrics.size != font_size)
             && l.text.measure(text, len, ctx.family, font_size, run);
-        let size = Size {
+        let size = Demand {
+            min_w: run.metrics.width,
             w: run.metrics.width,
             h: run.metrics.height,
         };
@@ -150,14 +165,28 @@ impl FlowCx<'_> {
     pub fn policy_of(&self, c: Key) -> Length {
         self.e.attrs[c].sizing.width
     }
+    pub fn minimum_width(&self, c: Key) -> f32 {
+        self.layers.measure[c].min_w
+    }
+    pub fn nonfill_width(&self, c: Key) -> f32 {
+        // Preserve an auto Column's available-width offer if it has a fill child.
+        if self.e.slots[c].shape.uses_offer(self.e, c) {
+            self.inner
+        } else {
+            self.measured_width(c)
+        }
+    }
     pub fn offer(&mut self, c: Key, width: Constraint) {
-        self.layers.offer_width(self.e, c, width);
+        self.layers.offer_width(self.e, c, width, false);
+    }
+    pub fn line_width(&mut self, c: Key, width: f32, break_before: bool) {
+        self.layers
+            .offer_width(self.e, c, Constraint::Assigned(width), break_before);
     }
 }
 pub(super) struct ReflowCx<'a> {
     layers: &'a mut Layers,
     e: &'a Elements,
-    pub inner: f32,
     pub gap: [f32; 2],
     padding: [f32; 4],
     height: Length,
@@ -168,6 +197,9 @@ pub(super) struct ReflowCx<'a> {
 impl ReflowCx<'_> {
     pub fn child(&self, c: Key) -> Size {
         self.layers.fit[c]
+    }
+    pub fn break_before(&self, c: Key) -> bool {
+        self.layers.offers[c].break_before
     }
     pub fn offset(&mut self, c: Key, x: f32, y: f32) {
         self.layers.offer_placement(
@@ -270,9 +302,11 @@ impl Layers {
     /// an evicted generation; never resolve it as a current attachment.
     pub fn invalidate_order(&mut self, e: &Elements, k: Key, old_order: &[Key], membership: bool) {
         let node = &e.slots[k];
-        let reads_offers = node
-            .shape
-            .reads_flow(e.attrs[k].sizing.width, FlowInput::Order);
+        let per_line = node.shape == Shape::WrappedRow;
+        let reads_offers = !per_line
+            && node
+                .shape
+                .reads_flow(e.attrs[k].sizing.width, FlowInput::Order);
         let next = e.children(k);
         let different_len = old_order.len() != next.len();
         let (mut moved, mut measure, mut flow) = (different_len, different_len, different_len);
@@ -297,8 +331,10 @@ impl Layers {
                 width.new_edge = true;
             }
             flow = true;
+            self.auto_width_reader(e, k);
         }
-        if flow {
+        // Even equal-width siblings can exchange a first-on-line edge.
+        if flow || (moved && per_line) {
             self.enqueue(Flow, k, e)
         }
         if moved {
@@ -344,9 +380,29 @@ impl Layers {
             self.enqueue(p, parent, e);
         }
     }
-    fn offer_width(&mut self, e: &Elements, k: Key, width: Constraint) {
-        if changed(&mut self.offers, k, width) && e.slots[k].shape.uses_offer(e, k) {
-            self.enqueue(Flow, k, e);
+    // A wrapping parent plans the width of an auto Column before flowing
+    // that Column. Its direct children's fill presence affects that width.
+    pub(super) fn auto_width_reader(&mut self, e: &Elements, k: Key) {
+        if e.slots[k].shape == Shape::Column
+            && e.attrs[k].sizing.width == Length::Auto
+            && e.parent_shape(k) == Some(Shape::WrappedRow)
+        {
+            self.parent(Flow, k, e);
+        }
+    }
+    fn offer_width(&mut self, e: &Elements, k: Key, axis: Constraint, break_before: bool) {
+        let next = WidthOffer { axis, break_before };
+        let old = self.offers.get(k).copied();
+        if old != Some(next) {
+            self.offers.insert(k, next);
+            if old.is_none_or(|p| p.axis != axis) && e.slots[k].shape.uses_offer(e, k) {
+                self.enqueue(Flow, k, e);
+            }
+            if old.is_some_and(|p| p.break_before) != break_before
+                && e.parent_shape(k) == Some(Shape::WrappedRow)
+            {
+                self.parent(Reflow, k, e);
+            }
         }
     }
     fn offer_placement(
@@ -391,7 +447,7 @@ impl Layers {
         }
         // Supply the incoming edge, even on promotion at unchanged viewport
         // size. There is no synthetic mount or separate root length resolver.
-        self.offer_width(e, root, Constraint::Available(w));
+        self.offer_width(e, root, Constraint::Available(w), false);
         self.offer_placement(e, root, [0.; 2], Constraint::Available(h), false);
         if vp != self.viewport {
             self.viewport = vp;
@@ -493,7 +549,8 @@ impl Layers {
                 },
             );
             let [t, r, d, l] = b.padding.map(|v| pixels(v, c.scale));
-            let m = Size {
+            let m = Demand {
+                min_w: b.width.resolve(content.min_w + (l + r), || c.scale),
                 w: b.width.resolve(content.w + (l + r), || c.scale),
                 h: b.height.resolve(content.h + (t + d), || c.scale),
             };
@@ -523,6 +580,12 @@ impl Layers {
                     self.enqueue(Flow, p, e);
                 }
             }
+            if old.is_none_or(|s| s.min_w != m.min_w)
+                && e.attrs[k].sizing.width.weight().is_some()
+                && e.parent_shape(k) == Some(Shape::WrappedRow)
+            {
+                self.parent(Flow, k, e);
+            }
             // Column's natural demand charges a fill child's measured basis,
             // independent of the child's width-dependent fit.
             if old.is_none_or(|s| s.h != m.h)
@@ -533,7 +596,9 @@ impl Layers {
             {
                 self.enqueue(Reflow, p, e);
             }
-            self.enqueue(Reflow, k, e);
+            if old.is_none_or(|s| s.w != m.w || s.h != m.h) {
+                self.enqueue(Reflow, k, e);
+            }
         }
     }
     pub fn text_changed(&mut self, k: Key, depth: usize) {
@@ -547,7 +612,9 @@ impl Layers {
         let shape = e.slots[k].shape;
         let scale = self.context[k].scale;
         let outer = if shape.uses_offer(e, k) {
-            self.offers[k].resolve(e, k, b.width, self.measure[k].w)
+            self.offers[k]
+                .axis
+                .resolve(e, k, b.width, self.measure[k].w)
         } else {
             self.measure[k].w
         };
@@ -587,7 +654,6 @@ impl Layers {
             e,
             k,
             &mut ReflowCx {
-                inner: width.inner,
                 gap: b.spacing.map(|v| pixels(v, scale)),
                 padding: b.padding.map(|v| pixels(v, scale)),
                 height: b.height,

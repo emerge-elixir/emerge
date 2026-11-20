@@ -14,6 +14,7 @@ mod scale;
 mod topology;
 mod viewport;
 mod weighted;
+mod wrapped_width;
 use super::*;
 use layers::Pass::*;
 use paint::Outputs;

@@ -7,7 +7,7 @@ impl ShapeMeta for Text {
     type Paint = Self;
 }
 impl LayoutBehaviour for Text {
-    fn measure(text: &str, cx: &mut Measuring<'_>) -> Size {
+    fn measure(text: &str, cx: &mut Measuring<'_>) -> Demand {
         cx.glyph_run(text)
     }
     fn reflow(_: Mounted<'_, Utf8>, cx: &mut ReflowCx<'_>) -> f32 {

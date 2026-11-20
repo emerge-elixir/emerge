@@ -190,8 +190,8 @@ impl Batch {
                 .as_ref()
                 .map(|(a, _)| a)
                 .or_else(|| old.map(|k| &e.attrs[k]));
-            // The viewport offers both axes to any kind. Only the wrapping
-            // parent's outgoing edge still lacks distribution semantics.
+            // Wrapped lines distribute plain/weighted width, not compound
+            // fill expressions or vertical shares.
             if let Some(a) = attrs
                 && parent.is_some_and(|p| {
                     self.get(p)
@@ -200,11 +200,9 @@ impl Batch {
                 })
             {
                 let width = a.sizing.width;
-                if width != Length::Fill && width.weight().is_some() {
-                    return Err(
-                        "weighted or compound fill width is not supported on a WrappedRow child"
-                            .into(),
-                    );
+                if width.weight().is_some() && !matches!(width, Length::Fill | Length::Weighted(_))
+                {
+                    return Err("compound fill width is not supported on a WrappedRow child".into());
                 }
                 if a.sizing.height.weight().is_some() {
                     return Err("fill height is not supported on a WrappedRow child".into());

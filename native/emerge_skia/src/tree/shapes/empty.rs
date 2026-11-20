@@ -7,8 +7,8 @@ impl ShapeMeta for Empty {
     type Paint = BoxPaint;
 }
 impl LayoutBehaviour for Empty {
-    fn measure(_: NoData, _: &mut Measuring<'_>) -> Size {
-        Size::default()
+    fn measure(_: NoData, _: &mut Measuring<'_>) -> Demand {
+        Demand::default()
     }
     fn reflow(_: Mounted<'_, NoData>, cx: &mut ReflowCx<'_>) -> f32 {
         cx.box_height(0.)

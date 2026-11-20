@@ -208,6 +208,13 @@ impl Layers {
             .same_split(old_raw, next.sizing.height, raw);
         let parent = e.parent_shape(k);
         let split_height = parent.is_some_and(Shape::allots_height);
+        if shape == Shape::Column
+            && parent == Some(Shape::WrappedRow)
+            && (a.width == Length::Auto) != (b.width == Length::Auto)
+            && let Some(p) = e.slots[k].parent
+        {
+            self.invalidate(Pass::Flow, p, e.depth(p));
+        }
         // When fitting its content, a Column charges measured fill bases
         // and reflowed nonfills. The choice can change at two equal fits,
         // including when the Column's own height is a content-limited fill.
@@ -266,6 +273,9 @@ impl Layers {
                 .is_some_and(|input| e.slots[p].shape.reads_flow(e.attrs[p].sizing.width, input))
         {
             self.invalidate(Pass::Flow, p, e.depth(p));
+            if width == Some(FlowInput::ChildFill) {
+                self.auto_width_reader(e, p);
+            }
         }
     }
 }

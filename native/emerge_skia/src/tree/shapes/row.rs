@@ -9,8 +9,8 @@ impl ShapeMeta for Row {
 impl LayoutBehaviour for Row {
     const ALLOTS_WIDTH: bool = true;
     const OFFERS_INNER_HEIGHT: bool = true;
-    fn measure(children: &[Key], cx: &mut Measuring<'_>) -> Size {
-        measure_line(children, cx)
+    fn measure(children: &[Key], cx: &mut Measuring<'_>) -> Demand {
+        measure_line(children, cx, false)
     }
 
     fn reads_flow(width: Length, input: FlowInput) -> bool {

@@ -5,7 +5,7 @@ pub(super) fn host(axis: u8) -> u8 {
     if axis == 1 { 1 } else { 3 }
 }
 // Keep both lanes at their original positions, but put them under a parent
-// that cannot itself host the weighted/bounded child being moved: a 90px
+// that cannot itself host a compound fill width or a fill height: a 90px
 // WrappedRow stacks the width lanes; a natural WrappedRow puts the height
 // lanes on a single line. Unlike Row, neither can offer a fill height.
 pub(super) fn wrong_site(axis: u8) -> (u8, Bytes) {
@@ -187,7 +187,18 @@ fn rejection_preserves_pending_weights_and_closed_moves_use_the_new_hosts_split(
             .unwrap();
         let old = draw(&mut r).to_vec();
         let pressed = r.target_at(5., 5.).unwrap().0;
-        r.tree.patch(&edit(axis, 10, 3.)).unwrap();
+        // A bare numeric width is legal on a wrapped line now. Include a real
+        // (nonbinding here) pixel cap for the unsupported width-site checks.
+        let policy = |w| {
+            if axis == 1 {
+                bounded::bound(1, 4, 300., Some(w), false)
+            } else {
+                weight(2, w)
+            }
+        };
+        r.tree
+            .patch(&set(10, 4, panel(axis, 10, policy(3.))))
+            .unwrap();
         let pending = r.tree.encode();
         for w in [0., -0., -1., f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             assert_eq!(
@@ -216,7 +227,7 @@ fn rejection_preserves_pending_weights_and_closed_moves_use_the_new_hosts_split(
                     edges(10, 4, &[11]),
                 ],
             ),
-            patch(3, 9, &[node(9, 4, size(axis, weight(axis, 1.)), &[])]),
+            patch(3, 9, &[node(9, 4, size(axis, policy(1.)), &[])]),
         ] {
             assert!(r.tree.patch(&bad).unwrap_err().contains("WrappedRow child"));
         }

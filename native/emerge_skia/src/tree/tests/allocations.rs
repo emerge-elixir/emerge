@@ -261,6 +261,38 @@ fn independent_row_heights(c: &Counter) {
     assert_eq!(r.hit_at(10., 117.), Some((1, 10., 117.)));
 }
 
+fn wrapped_widths(c: &Counter) {
+    let mut r = Raster::default();
+    r.tree.upload(&wrapped_width::nested(20., 20.)).unwrap();
+    c.zero("first wrapped line split after reservation", || {
+        r.settle(50., 80., 1.).unwrap();
+    });
+    let edits = [
+        set(4, 6, wrapped_width::chip(10.)),
+        set(5, 6, wrapped_width::chip(30.)),
+    ];
+    c.zero(
+        "fitting demand edits through prepared multiline inputs",
+        || {
+            for edit in &edits {
+                r.tree.patch(edit).unwrap();
+            }
+            r.settle(50., 80., 1.).unwrap();
+        },
+    );
+    assert_eq!(bounds(&r, 3).y, 16.);
+    let over = patch(4, 14, &[node(14, 5, text(&"W".repeat(512)), &[])]);
+    (c.fail_next_reserve)();
+    assert_eq!(
+        r.tree.patch(&over).unwrap_err(),
+        "tree workspace capacity exceeded"
+    );
+    c.zero("resize and redistribute after refused growth", || {
+        r.settle(54., 80., 1.).unwrap();
+    });
+    assert_eq!(bounds(&r, 3).y, 0.);
+}
+
 fn viewport_offers(c: &Counter) {
     let mut r = Raster::default();
     r.tree.upload(&viewport::wrapped()).unwrap();
@@ -717,6 +749,7 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     mixed_splits(&c);
     independent_column_widths(&c);
     viewport_offers(&c);
+    wrapped_widths(&c);
     independent_row_heights(&c);
     el_child_offers(&c);
     // 100 slots + 80% = 180. The inserted subtree and edited parent's

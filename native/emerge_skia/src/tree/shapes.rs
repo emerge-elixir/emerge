@@ -2,7 +2,7 @@
 //! shared or custom paint, and register the module below. Shapes do not own a
 //! second child order, allocate plans, schedule passes or install output.
 use super::{
-    layers::{Constraint, FlowCx, Measuring, PlaceCx, ReflowCx, Size},
+    layers::{Constraint, Demand, FlowCx, Measuring, PlaceCx, ReflowCx},
     paint::{OwnPaint, PaintContext},
     text::Run,
     *,
@@ -62,7 +62,7 @@ trait LayoutBehaviour: ShapeMeta {
     const ALLOTS_HEIGHT: bool = false;
     /// Each fill child receives the full placed inner height without a split.
     const OFFERS_INNER_HEIGHT: bool = false;
-    fn measure(data: Data<'_, Self>, cx: &mut Measuring<'_>) -> Size;
+    fn measure(data: Data<'_, Self>, cx: &mut Measuring<'_>) -> Demand;
     fn auto_fills(_node: Mounted<'_, Self::Payload>) -> bool {
         false
     }
@@ -167,7 +167,7 @@ impl Shape {
     pub fn uses_glyphs(self) -> bool {
         with_shape!(self, |S| PayloadOf::<S>::USES_GLYPHS)
     }
-    pub fn measure(self, e: &Elements, k: Key, cx: &mut Measuring<'_>) -> Size {
+    pub fn measure(self, e: &Elements, k: Key, cx: &mut Measuring<'_>) -> Demand {
         with_shape!(self, |S| S::measure(PayloadOf::<S>::get(e, k), cx))
     }
     pub fn uses_offer(self, e: &Elements, k: Key) -> bool {
@@ -235,16 +235,27 @@ fn line_height(children: &[Key], cx: &ReflowCx<'_>) -> f32 {
     cx.box_height(children.iter().map(|&c| cx.child(c).h).fold(0., f32::max))
 }
 
-fn measure_line(children: &[Key], cx: &Measuring<'_>) -> Size {
+fn measure_line(children: &[Key], cx: &Measuring<'_>, wraps: bool) -> Demand {
     let content = children
         .iter()
         .map(|&c| cx.child(c))
-        .fold(Size::default(), |s, c| Size {
+        .fold(Demand::default(), |s, c| Demand {
             w: s.w + c.w,
             h: s.h.max(c.h),
+            min_w: if wraps {
+                s.min_w.max(c.min_w)
+            } else {
+                s.min_w + c.min_w
+            },
         });
-    Size {
-        w: content.w + cx.gap[0] * children.len().saturating_sub(1) as f32,
+    let gaps = cx.gap[0] * children.len().saturating_sub(1) as f32;
+    Demand {
+        w: content.w + gaps,
+        min_w: if wraps {
+            content.min_w
+        } else {
+            content.min_w + gaps
+        },
         ..content
     }
 }

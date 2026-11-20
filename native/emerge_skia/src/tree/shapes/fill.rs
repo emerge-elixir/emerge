@@ -26,6 +26,30 @@ impl<'a> Slot<'a> {
             },
         }
     }
+    // The automatic minimum is already an outer size in device pixels. Use
+    // the same bounded-share solver as Row without scaling that floor again.
+    pub(super) fn line_fill(weight: f64, minimum: f32) -> Self {
+        let length = if minimum == 0. {
+            Length::Weighted(weight)
+        } else {
+            Length::BoundedFill {
+                weight,
+                bounds: Bounds {
+                    floor: f64::from(minimum),
+                    cap: f64::INFINITY,
+                },
+            }
+        };
+        Self {
+            length,
+            content: minimum,
+            scale: 1.,
+            raw: &[],
+        }
+    }
+    pub(super) fn basis(self) -> f32 {
+        self.content
+    }
     fn eval(self, share: impl Fn(f64) -> f32) -> f32 {
         self.length
             .allotted(self.raw, self.content, self.scale, share)
@@ -102,6 +126,14 @@ impl FillShares {
         if !policy.definite() {
             return None;
         }
+        Self::line(inner, gap, children, slot)
+    }
+    pub(super) fn line<'a>(
+        inner: f32,
+        gap: f32,
+        children: &[Key],
+        slot: impl Fn(Key) -> Slot<'a>,
+    ) -> Option<Self> {
         let (mut fixed, mut total, mut largest) = (0., 0., 0f64);
         let mut device_weights = true;
         let mut bounded = false;

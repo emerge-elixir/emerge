@@ -8,8 +8,8 @@ impl ShapeMeta for El {
 }
 impl LayoutBehaviour for El {
     const OFFERS_INNER_HEIGHT: bool = true;
-    fn measure(child: Option<Key>, cx: &mut Measuring<'_>) -> Size {
-        child.map_or(Size::default(), |c| cx.child(c))
+    fn measure(child: Option<Key>, cx: &mut Measuring<'_>) -> Demand {
+        child.map_or(Demand::default(), |c| cx.child(c))
     }
     fn reflow(node: Mounted<'_, OnlyChild>, cx: &mut ReflowCx<'_>) -> f32 {
         line_height(node.children(), cx)

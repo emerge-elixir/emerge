@@ -7,22 +7,58 @@ impl ShapeMeta for WrappedRow {
     type Paint = ClippedBoxPaint;
 }
 impl LayoutBehaviour for WrappedRow {
-    fn measure(children: &[Key], cx: &mut Measuring<'_>) -> Size {
-        measure_line(children, cx)
+    const ALLOTS_WIDTH: bool = true;
+    fn measure(children: &[Key], cx: &mut Measuring<'_>) -> Demand {
+        measure_line(children, cx, true)
+    }
+    fn reads_flow(_: Length, input: FlowInput) -> bool {
+        // Fill minima (not preferred widths) have their own dependency.
+        !matches!(input, FlowInput::ChildWidth(w) if w.weight().is_some())
+    }
+    fn offer_widths(node: Mounted<'_, Children>, cx: &mut FlowCx<'_>) {
+        let slot = |c, cx: &FlowCx<'_>| {
+            let w = cx.policy_of(c);
+            if let Some(weight) = w.weight() {
+                fill::Slot::line_fill(weight, cx.minimum_width(c))
+            } else {
+                fill::Slot::new(node.elements, c, w, cx.nonfill_width(c))
+            }
+        };
+        let mut rest = node.data();
+        let mut first_line = true;
+        while let Some((&first, others)) = rest.split_first() {
+            // Break on hypothetical outer widths, not on rounded allocations.
+            // Even a single oversized child belongs to a line.
+            let mut used = slot(first, cx).basis();
+            let additional = others
+                .iter()
+                .take_while(|&&c| {
+                    used = used + cx.gap + slot(c, cx).basis();
+                    used <= cx.inner
+                })
+                .count();
+            let (line, tail) = rest.split_at(1 + additional);
+            let split = FillShares::line(cx.inner, cx.gap, line, |c| slot(c, cx));
+            for &c in line {
+                let s = slot(c, cx);
+                let w = split.and_then(|share| share.offer(s)).unwrap_or(s.basis());
+                cx.line_width(c, w, c == first && !first_line);
+            }
+            rest = tail;
+            first_line = false;
+        }
     }
     fn reflow(node: Mounted<'_, Children>, cx: &mut ReflowCx<'_>) -> f32 {
         let (mut x, mut y, mut line_height) = (0., 0., 0f32);
         for (i, &c) in node.data().iter().enumerate() {
-            let size = cx.child(c);
-            if i != 0 {
-                if x + cx.gap[0] + size.w > cx.inner {
-                    x = 0.;
-                    y += line_height + cx.gap[1];
-                    line_height = 0.;
-                } else {
-                    x += cx.gap[0];
-                }
+            if cx.break_before(c) {
+                x = 0.;
+                y += line_height + cx.gap[1];
+                line_height = 0.;
+            } else if i != 0 {
+                x += cx.gap[0];
             }
+            let size = cx.child(c);
             cx.offset(c, x, y);
             x += size.w;
             line_height = line_height.max(size.h);

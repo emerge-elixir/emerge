@@ -90,6 +90,14 @@ that can still grow or shrink divide the remainder by weight. In a 120px Row,
 take **15px each**. All caps can leave unused space, and unavoidable floors
 can overflow. Neither case changes the host clip.
 
+A WrappedRow first forms lines in declaration order, using each fill child's
+minimum outer width. It divides each line independently by weight, honoring
+those minima. In a 100×40 host with no padding and a 4px gap, two cards with
+20×12 content take 48/48 at equal weights or 24/72 at 1:3, leaving 28px
+below. At 44px the 1:3 pair takes 20/20; at 43px each gets its own 43px
+line, leaving 12px below. Reflow uses those same line breaks and the actual
+child heights. See [the before/after comparison](../../plans/wrapped-row-child-width.md).
+
 Nested `min`/`max` can put both a floor and a cap on one fill. With no padding
 or gap, `min(px(50), max(px(20), fill()))` next to `fill()` takes 20/10 in a
 30px host, 40/40 in an 80px host, and 50/70 in a 120px host. Nothing is left
