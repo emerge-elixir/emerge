@@ -1,5 +1,25 @@
 use super::*;
 
+/// Split off the next line using only outer measurements. No child has a
+/// share yet, and a single oversized child still makes progress.
+fn take_line<T: Copy>(
+    children: &[T],
+    inner: f32,
+    gap: f32,
+    width: impl Fn(T) -> f32,
+) -> Option<(&[T], &[T])> {
+    let (&first, rest) = children.split_first()?;
+    let mut used = width(first);
+    let following = rest
+        .iter()
+        .take_while(|&&c| {
+            used = used + gap + width(c);
+            used <= inner
+        })
+        .count();
+    Some(children.split_at(1 + following))
+}
+
 pub(super) struct WrappedRow;
 impl ShapeMeta for WrappedRow {
     const TAG: u8 = 2;
@@ -12,51 +32,17 @@ impl LayoutBehaviour for WrappedRow {
         measure_line(children, cx, true)
     }
     fn reads_flow(_: Length, input: FlowInput) -> bool {
-        // Fill minima have their own dependency. A content cap also reads
-        // preferred width, which can change while the minimum stays equal.
-        match input {
-            FlowInput::ChildWidth(w) => w.weight().is_none() || w.reads_fill_content(),
-            _ => true,
-        }
+        input.affects_width_group(true) // each line distributes its own width
     }
     fn offer_widths(node: Mounted<'_, Children>, cx: &mut FlowCx<'_>) {
-        let slot = |c, cx: &FlowCx<'_>| {
-            let w = cx.policy_of(c);
-            if let Some(weight) = w.weight() {
-                let cap = if w.reads_fill_content() {
-                    cx.measured_width(c) // padded, pre-wrap, already in device pixels
-                } else {
-                    w.bounds().map_or(f32::INFINITY, |b| {
-                        scale::pixels(b.cap, node.elements.slots[c].admitted.scale)
-                    })
-                };
-                fill::Slot::line_fill(weight, cx.minimum_width(c), cap)
-            } else {
-                fill::Slot::new(node.elements, c, w, cx.nonfill_width(c))
-            }
-        };
         let mut rest = node.data();
-        let mut first_line = true;
-        while let Some((&first, others)) = rest.split_first() {
-            // Break on hypothetical outer widths, not on rounded allocations.
-            // Even a single oversized child belongs to a line.
-            let mut used = slot(first, cx).basis();
-            let additional = others
-                .iter()
-                .take_while(|&&c| {
-                    used = used + cx.gap + slot(c, cx).basis();
-                    used <= cx.inner
-                })
-                .count();
-            let (line, tail) = rest.split_at(1 + additional);
-            let split = FillShares::line(cx.inner, cx.gap, line, |c| slot(c, cx));
-            for &c in line {
-                let s = slot(c, cx);
-                let w = split.and_then(|share| share.offer(s)).unwrap_or(s.basis());
-                cx.line_width(c, w, c == first && !first_line);
-            }
+        let mut break_before = false;
+        while let Some((line, tail)) = take_line(rest, cx.inner, cx.gap, |c| cx.line_measure(c)) {
+            cx.assign_group(line, Some(cx.inner), break_before, |cx, c| {
+                node.width_slot(cx, c).with_basis(cx.line_measure(c))
+            });
             rest = tail;
-            first_line = false;
+            break_before = true;
         }
     }
     fn reflow(node: Mounted<'_, Children>, cx: &mut ReflowCx<'_>) -> f32 {

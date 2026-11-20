@@ -44,14 +44,13 @@ impl LayoutBehaviour for Column {
     fn place_children(node: Mounted<'_, Children>, cx: &mut PlaceCx<'_>) {
         let children = node.data();
         let style = node.attrs().sizing;
-        let [top, _, bottom, left] = style.padding.map(|n| scale::pixels(n, cx.scale));
+        let ([left, top], inner) = cx.padded_height_offer(style);
         let gap = scale::pixels(style.spacing[1], cx.scale);
         let length = |c: Key| node.elements.attrs[c].sizing.height;
         let slot =
             |c, cx: &PlaceCx<'_>| fill::Slot::new(node.elements, c, length(c), cx.child(c).h);
-        let split = FillShares::split(
-            style.height,
-            cx.height - (top + bottom),
+        let split = FillShares::group(
+            style.height.definite().then_some(inner),
             gap,
             children,
             |c| slot(c, cx),

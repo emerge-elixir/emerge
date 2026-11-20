@@ -162,24 +162,21 @@ impl FlowCx<'_> {
     pub fn measured_width(&self, c: Key) -> f32 {
         self.layers.measure[c].w
     }
-    pub fn policy_of(&self, c: Key) -> Length {
-        self.e.attrs[c].sizing.width
-    }
-    pub fn minimum_width(&self, c: Key) -> f32 {
-        self.layers.measure[c].min_w
-    }
-    pub fn nonfill_width(&self, c: Key) -> f32 {
-        // Preserve an auto Column's available-width offer if it has a fill child.
-        if self.e.slots[c].shape.uses_offer(self.e, c) {
+    pub fn line_measure(&self, c: Key) -> f32 {
+        let measured = self.layers.measure[c];
+        if self.e.attrs[c].sizing.width.weight().is_some() {
+            measured.min_w
+        } else if self.e.slots[c].shape.uses_offer(self.e, c) {
+            // An auto Column with a fill child consumes the available width.
             self.inner
         } else {
-            self.measured_width(c)
+            measured.w
         }
     }
     pub fn offer(&mut self, c: Key, width: Constraint) {
         self.layers.offer_width(self.e, c, width, false);
     }
-    pub fn line_width(&mut self, c: Key, width: f32, break_before: bool) {
+    pub fn assign_width(&mut self, c: Key, width: f32, break_before: bool) {
         self.layers
             .offer_width(self.e, c, Constraint::Assigned(width), break_before);
     }
@@ -566,13 +563,16 @@ impl Layers {
             }
             m
         };
-        // The memo is site-independent. A wrapped edge with an explicit
-        // floor contributes that outer width instead of the content minimum.
+        // Apply the incoming edge after the site-independent intrinsic memo.
+        // In a mixed width, content reads preferred demand while fill reads
+        // the minimum measurement. Neither is a share of the line.
         let mut m = m;
-        if let Some(floor) = e.attrs[k].line_floor()
-            && e.parent_shape(k) == Some(Shape::WrappedRow)
-        {
-            m.min_w = pixels(floor, c.scale);
+        let a = &e.attrs[k];
+        if a.line_width.projects_minimum() && e.parent_shape(k) == Some(Shape::WrappedRow) {
+            m.min_w = a.line_floor().map_or_else(
+                || a.sizing.width.at_offer(e, k, m.w, m.min_w),
+                |floor| pixels(floor, c.scale),
+            );
         }
         let old = self.measure.get(k).copied();
         if changed(&mut self.measure, k, m) {

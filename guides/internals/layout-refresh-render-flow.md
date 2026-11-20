@@ -90,10 +90,16 @@ that can still grow or shrink divide the remainder by weight. In a 120px Row,
 take **15px each**. All caps can leave unused space, and unavoidable floors
 can overflow. Neither case changes the host clip.
 
-A WrappedRow first forms lines in declaration order, using each fill child's
-minimum outer width. It divides each line independently by weight, honoring
-those minima. In a 100×40 host with no padding and a 4px gap, two cards with
-20×12 content take 48/48 at equal weights or 24/72 at 1:3, leaving 28px
+A WrappedRow chooses a line before distributing any of its space. Subtract
+left and right host padding once. The next child fits when the measured outer
+widths (including child padding) and the gaps **between** them fit that inner
+width. An oversized first child still gets a line. Weights aren't an input to
+this test. Row sends one group, WrappedRow sends a group per line, and Column
+sends a height group to the same allocator. For each group it evaluates the
+original child lengths, honoring any minimum supplied by the site.
+
+In a 100×40 host with no padding and a 4px gap, two cards with 20×12
+content take 48/48 at equal weights or 24/72 at 1:3, leaving 28px
 below. At 44px the 1:3 pair takes 20/20; at 43px each gets its own 43px
 line, leaving 12px below. A pixel cap limits the automatic minimum; an
 explicit pixel floor replaces it. Both resolve at the child's scale. The
@@ -101,7 +107,10 @@ line split honors the cap as well as the floor: capping A at 30px in the
 100px equal-weight case leaves 66px for B. With `min(content(), fill())`
 on A, its preferred outer width caps the share; its minimum still decides the
 break. Growing A's content from 20px to 40px changes **20/76 to 40/56** when
-B can use the remainder. Reflow uses the same breaks and actual child heights. See [why this differs from main](retained-decisions.md#d7-share-fill-widths-per-wrapped-line)
+B can use the remainder. With `max(content(), fill())`, A's preferred width
+is a floor: in a 67px row, **43 + 4 + 20** fits exactly, but growing A's
+content by 1px puts B on its own line. Reflow uses the chosen breaks and
+actual child heights. See [why this differs from main](retained-decisions.md#d7-share-fill-widths-per-wrapped-line)
 and the [submitted-frame regression](../../test/emerge_skia/wrapped_row_fill_test.exs).
 
 Nested `min`/`max` can put both a floor and a cap on one fill. With no padding

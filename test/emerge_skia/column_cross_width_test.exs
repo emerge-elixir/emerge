@@ -108,11 +108,15 @@ defmodule EmergeSkia.ColumnCrossWidthTest do
   end
 
   defp move_scene(site) do
+    # Same 3:1 split / independent offer, but two fill leaves still cannot
+    # move to a wrapped line. Keep the card's declaration across all sites.
+    policy = max(content(), max(fill(3), fill(3)))
+
     card =
       el(
         [
           key(:card),
-          width(max(content(), fill(3))),
+          width(policy),
           height(px(12)),
           Background.color(:red),
           Event.on_click(site)

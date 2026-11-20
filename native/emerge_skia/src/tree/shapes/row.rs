@@ -14,30 +14,13 @@ impl LayoutBehaviour for Row {
     }
 
     fn reads_flow(width: Length, input: FlowInput) -> bool {
-        let definite = width.definite();
-        match input {
-            FlowInput::ChildWidth(child) => {
-                !definite || child.weight().is_none() || child.reads_fill_content()
-            }
-            FlowInput::ChildFill
-            | FlowInput::ChildSplit
-            | FlowInput::HorizontalGap
-            | FlowInput::Order => definite,
-        }
+        input.affects_width_group(width.definite())
     }
     fn offer_widths(node: Mounted<'_, Children>, cx: &mut FlowCx<'_>) {
-        let children = node.data();
-        // A content-sized row gives even a fill child its own intrinsic extent.
-        let slot = |c, cx: &FlowCx<'_>| {
-            fill::Slot::new(node.elements, c, cx.policy_of(c), cx.measured_width(c))
-        };
-        let split = FillShares::split(cx.policy, cx.inner, cx.gap, children, |c| slot(c, cx));
-        for &c in children {
-            let w = split
-                .and_then(|s| s.offer(slot(c, cx)))
-                .unwrap_or_else(|| cx.measured_width(c));
-            cx.offer(c, Constraint::Assigned(w));
-        }
+        let available = cx.policy.definite().then_some(cx.inner);
+        cx.assign_group(node.data(), available, false, |cx, c| {
+            node.width_slot(cx, c)
+        });
     }
     fn reflow(node: Mounted<'_, Children>, cx: &mut ReflowCx<'_>) -> f32 {
         line_height(node.data(), cx)

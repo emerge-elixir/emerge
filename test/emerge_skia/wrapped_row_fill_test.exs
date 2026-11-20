@@ -18,6 +18,20 @@ defmodule EmergeSkia.WrappedRowFillTest do
     )
   end
 
+  defp nested_card(policy, children) do
+    wrapped_row(
+      [
+        key(:a),
+        width(policy),
+        height(content()),
+        spacing(4),
+        Background.color(:red),
+        Event.on_click(:a)
+      ],
+      children
+    )
+  end
+
   defp with_peer(w, a, b) do
     wrapped_row(
       [width(px(w)), height(px(40)), spacing(4), Background.color(:white), Event.on_click(:host)],
@@ -178,22 +192,74 @@ defmodule EmergeSkia.WrappedRowFillTest do
     click(cold, 32.0, 6.0, :a, 32.0, 6.0)
   end
 
+  test "a Row and one wrapped line split the same constraints alike" do
+    for host <- [&row/2, &wrapped_row/2] do
+      build = fn size ->
+        body = el([width(max(px(0), fill()))], chip(size))
+        a = nested_card(min(content(), fill()), [body])
+
+        host.([width(px(100)), height(px(40)), spacing(4), Background.color(:white)], [
+          a,
+          card(:b, fill(), :blue, 0)
+        ])
+      end
+
+      {p, r} = Headless.mount({100, 40}, fn -> build.(20) end, [:pointer_button])
+      assert Headless.pixels() == pixels(100, 20, 24, 0, 76)
+      click(r, 32.0, 6.0, :b, 8.0, 6.0)
+      send(p, {:scene, fn -> build.(40) end})
+      assert Headless.pixels() == pixels(100, 40, 44, 0, 56)
+      click(r, 32.0, 6.0, :a, 32.0, 6.0)
+      {_, cold} = Headless.mount({100, 40}, fn -> build.(40) end, [:pointer_button])
+      assert Headless.pixels() == pixels(100, 40, 44, 0, 56)
+      click(cold, 32.0, 6.0, :a, 32.0, 6.0)
+    end
+  end
+
+  test "a content floor changes the break before sharing either line" do
+    build = fn w, n, floor -> with_peer(w, nested_card(floor, [chip(20), chip(n)]), fill()) end
+    floor = max(content(), fill())
+
+    {p, r} =
+      Headless.mount({100, 40}, fn -> build.(67, 19, floor) end, [:pointer_button], target_fps: 1)
+
+    before = pixels(67, 43, 47, 0, 20)
+    assert Headless.pixels() == before
+
+    send(
+      p,
+      {:scene,
+       fn ->
+         send(self(), :built)
+         build.(67, 20, floor)
+       end}
+    )
+
+    assert_receive {:application, :built}
+    assert {:ok, ^before} = EmergeSkia.render_to_pixels(r)
+    click(r, 50.0, 6.0, :b, 3.0, 6.0)
+    assert Headless.pixels(2500) == pixels(67, 67, 0, 16, 67)
+    click(r, 50.0, 6.0, :a, 50.0, 6.0)
+
+    for {w, n, policy, aw, bx, by, bw} <- [
+          {67, 19, floor, 43, 47, 0, 20},
+          {68, 20, floor, 44, 48, 0, 20},
+          {100, 20, max(fill(3), shrink()), 72, 76, 0, 24},
+          {67, 20, floor, 67, 0, 16, 67}
+        ] do
+      scene = fn -> build.(w, n, policy) end
+      send(p, {:scene, scene})
+      expected = pixels(w, aw, bx, by, bw)
+      assert Headless.pixels(2500) == expected
+      {_, cold} = Headless.mount({100, 40}, scene, [:pointer_button])
+      assert Headless.pixels() == expected
+      click(cold, bx + 3.0, by + 6.0, :b, 3.0, 6.0)
+    end
+  end
+
   test "a nested card breaks at its minimum, but caps its share at its preferred width" do
     build = fn w, chip2, cap, peer ->
-      a =
-        wrapped_row(
-          [
-            key(:a),
-            width(cap),
-            height(content()),
-            spacing(4),
-            Background.color(:red),
-            Event.on_click(:a)
-          ],
-          [chip(20), chip(chip2)]
-        )
-
-      with_peer(w, a, peer)
+      with_peer(w, nested_card(cap, [chip(20), chip(chip2)]), peer)
     end
 
     cap = min(content(), fill())

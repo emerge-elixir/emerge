@@ -10,6 +10,7 @@ mod tests;
 pub(super) struct Slot<'a> {
     length: Length,
     content: f32,
+    minimum: f32, // additional outer constraint supplied by the group, in device pixels
     scale: f32,
     raw: &'a [u8],
 }
@@ -18,6 +19,7 @@ impl<'a> Slot<'a> {
         Self {
             length,
             content,
+            minimum: 0.,
             scale: e.slots[k].admitted.scale,
             raw: if matches!(length, Length::Formula(_)) {
                 e.raw(k)
@@ -26,35 +28,22 @@ impl<'a> Slot<'a> {
             },
         }
     }
-    // The line break and the allocator use the same device-pixel floor.
-    pub(super) fn line_fill(weight: f64, minimum: f32, cap: f32) -> Self {
-        let length = if minimum == 0. && cap.is_infinite() {
-            Length::Weighted(weight)
+    // A fill can grow from this measurement; a non-fill charges it as-is.
+    pub(super) fn with_basis(mut self, outer: f32) -> Self {
+        if self.length.weight().is_some() {
+            self.minimum = outer;
         } else {
-            Length::BoundedFill {
-                weight,
-                bounds: Bounds {
-                    floor: f64::from(minimum),
-                    cap: f64::from(cap),
-                },
-            }
-        };
-        Self {
-            length,
-            content: minimum,
-            scale: 1.,
-            raw: &[],
+            self.content = outer;
         }
-    }
-    pub(super) fn basis(self) -> f32 {
-        self.content
+        self
     }
     fn eval(self, share: impl Fn(f64) -> f32) -> f32 {
         self.length
             .allotted(self.raw, self.content, self.scale, share)
+            .max(self.minimum)
     }
     fn active(self, w: f64, r: &mut Region) -> Term {
-        if let Length::Formula(f) = self.length {
+        let term = if let Length::Formula(f) = self.length {
             f.eval(
                 self.raw,
                 Term::Px(self.content),
@@ -68,6 +57,53 @@ impl<'a> Slot<'a> {
             r.select(true, above_floor, Term::Px(b.cap))
         } else {
             Term::Weight(w)
+        };
+        if self.minimum > 0. {
+            r.select(false, term, Term::Px(self.minimum))
+        } else {
+            term
+        }
+    }
+}
+
+impl FlowInput {
+    /// Without a split every child reads its own preferred width. With a
+    /// split, fill children only read it if the declared expression does.
+    pub(super) fn affects_width_group(self, distributes: bool) -> bool {
+        match self {
+            Self::ChildWidth(w) => !distributes || w.weight().is_none() || w.reads_fill_content(),
+            Self::ChildFill | Self::ChildSplit | Self::HorizontalGap | Self::Order => distributes,
+        }
+    }
+}
+
+impl<'e> Mounted<'e, Children> {
+    pub(super) fn width_slot(&self, cx: &FlowCx<'_>, c: Key) -> Slot<'e> {
+        Slot::new(
+            self.elements,
+            c,
+            self.elements.attrs[c].sizing.width,
+            cx.measured_width(c),
+        )
+    }
+}
+
+impl FlowCx<'_> {
+    /// The caller has already chosen group membership and the child measurements.
+    pub(super) fn assign_group<'e>(
+        &mut self,
+        children: &[Key],
+        available: Option<f32>,
+        break_before: bool,
+        slot: impl Fn(&Self, Key) -> Slot<'e>,
+    ) {
+        let split = FillShares::group(available, self.gap, children, |c| slot(self, c));
+        for (i, &c) in children.iter().enumerate() {
+            let s = slot(self, c);
+            let width = split
+                .and_then(|shares| shares.offer(s))
+                .unwrap_or(s.content);
+            self.assign_width(c, width, i == 0 && break_before);
         }
     }
 }
@@ -115,24 +151,13 @@ pub(super) enum FillShares {
     Boundary(f64),
 }
 impl FillShares {
-    pub(super) fn split<'a>(
-        policy: Length,
-        inner: f32,
+    pub(super) fn group<'a>(
+        available: Option<f32>,
         gap: f32,
         children: &[Key],
         slot: impl Fn(Key) -> Slot<'a>,
     ) -> Option<Self> {
-        if !policy.definite() {
-            return None;
-        }
-        Self::line(inner, gap, children, slot)
-    }
-    pub(super) fn line<'a>(
-        inner: f32,
-        gap: f32,
-        children: &[Key],
-        slot: impl Fn(Key) -> Slot<'a>,
-    ) -> Option<Self> {
+        let inner = available?;
         let (mut fixed, mut total, mut largest) = (0., 0., 0f64);
         let mut device_weights = true;
         let mut bounded = false;
@@ -143,7 +168,9 @@ impl FillShares {
                 let w = w as f32;
                 total += w;
                 device_weights &= w.is_normal();
-                bounded |= s.length.bounds().is_some() || matches!(s.length, Length::Formula(_));
+                bounded |= s.minimum > 0.
+                    || s.length.bounds().is_some()
+                    || matches!(s.length, Length::Formula(_));
             } else {
                 fixed += s.content;
             }

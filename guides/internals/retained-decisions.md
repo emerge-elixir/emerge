@@ -131,6 +131,17 @@ fixed 20px peer fit beside it at 68px but wrapped at 67px. Retained keeps the
 peer on that line at 67px: A gets 43px and wraps its chips instead. At 44px
 both still fit at 20px each; at 43px the peer wraps. A content edit can change
 the cap without changing the minimum, so the parent reads both measurements.
+
+For `max(content(), fill())`, preferred outer width is instead a floor. In a
+67px host with gap 4, A's two chips of 20px and 19px need 43px together. A
+20px fill peer fits exactly. Grow the 19px chip to 20px: A now needs 44px,
+so the peer wraps and both get 67px on their own lines. At `aef5e42f`, `main`
+gave both cards 67px before **and** after the edit, with the peer at y=4.
+
+Keep line formation separate from sharing: it reads child measurements, host
+inner width and gaps, not lengths, weights or trial shares. Row, each wrapped
+line and Column's height group use the same allocator on the authored lengths.
+Adding the floor after that extraction only widened admission.
 [Submitted frames and clicks](../../test/emerge_skia/wrapped_row_fill_test.exs) ·
 [minimum on a moved child](../../native/emerge_skia/src/tree/tests/wrapped_width.rs).
 

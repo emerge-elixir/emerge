@@ -16,6 +16,45 @@ pub(super) fn nested(a: f64, b: f64) -> Bytes {
 }
 
 #[test]
+fn measures_padding_and_gaps_choose_line_membership_before_shares() {
+    let host = |w, right, gap| {
+        let pad = [0., right, 0., 4.].into_iter().flat_map(f64::to_be_bytes);
+        block(&[
+            px(1, w),
+            [3, 2].into_iter().chain(pad).collect(),
+            number(4, gap),
+        ])
+    };
+    let mut r = Raster::default();
+    r.tree
+        .upload(&upload(&[
+            node(1, 2, host(52., 4., 4.), &[2, 3]),
+            node(2, 4, block(&[vec![1, 0]]), &[4]),
+            node(3, 4, block(&[vec![1, 0]]), &[5]),
+            node(4, 6, chip(20.), &[]),
+            node(5, 6, chip(20.), &[]),
+        ]))
+        .unwrap();
+    for (w, right, gap, measured, weight, aw, bx, by, bw) in [
+        (52., 4., 4., 20., 1., 20., 28., 0., 20.), // exact fit
+        (52., 4., 4., 21., 1., 44., 4., 16., 44.), // measure only
+        (52., 5., 4., 20., 1., 43., 4., 16., 43.), // padding only relative to exact fit
+        (52., 4., 5., 20., 1., 44., 4., 17., 44.), // gap only
+        (108., 4., 4., 20., 1., 48., 56., 0., 48.),
+        (108., 4., 4., 20., 3., 24., 32., 0., 72.), // weights, same line
+    ] {
+        r.tree.patch(&set(1, 2, host(w, right, gap))).unwrap();
+        r.tree.patch(&set(4, 6, chip(measured))).unwrap();
+        r.tree
+            .patch(&set(3, 4, block(&[weighted::weight(1, weight)])))
+            .unwrap();
+        draw(&mut r);
+        let b = bounds(&r, 3);
+        assert_eq!((bounds(&r, 2).width, b.x, b.y, b.width), (aw, bx, by, bw));
+    }
+}
+
+#[test]
 fn a_new_minimum_at_equal_preferred_width_can_move_a_peer_to_another_line() {
     let mut r = Raster::default();
     r.tree.upload(&nested(20., 20.)).unwrap();
@@ -46,14 +85,14 @@ fn a_new_minimum_at_equal_preferred_width_can_move_a_peer_to_another_line() {
     }
 }
 
-pub(super) fn capped(second_chip: f64) -> Bytes {
+pub(super) fn content_bound(op: u8, second_chip: f64) -> Bytes {
     upload(&[
         node(1, 2, block(&[vec![1, 0], number(4, 4.)]), &[2, 3]),
         node(
             2,
             2,
             block(&[
-                vec![1, 4, 1, 0],
+                vec![1, op, 1, 0],
                 number(4, 4.),
                 color([255, 0, 0]),
                 vec![40, 1],
@@ -68,41 +107,47 @@ pub(super) fn capped(second_chip: f64) -> Bytes {
 }
 
 #[test]
-fn a_preferred_only_cap_edit_survives_a_refusal_without_publishing_early() {
-    let mut r = Raster::default();
-    r.tree.upload(&capped(10.)).unwrap();
-    let old = r.draw(100., 40., 1.).unwrap().to_vec();
-    assert_eq!(r.hit_at(42., 6.), Some((3, 4., 6.)));
-    // Widen A's second chip: preferred 34 → 44, minimum stays 20.
-    r.tree.patch(&set(5, 6, chip(20.))).unwrap();
-    let pending = r.tree.encode();
-    for field in [
-        vec![1, 5, 1, 0],       // content floor
-        vec![1, 4, 4, 1, 1, 0], // content is a folded expression, not a leaf
-        vec![1, 4, 1, 5, 0, 0], // two fills
-        vec![2, 4, 1, 0],       // height
+fn a_preferred_only_edit_survives_a_refusal_without_publishing_early() {
+    for (op, w, chip2, x, old_local, next_peer) in [
+        (4, 100., 10., 42., 4., (48., 0.)), // capped, same line
+        (5, 67., 19., 50., 3., (0., 16.)),  // floored, new line
     ] {
-        assert!(
-            r.tree
-                .patch(&set(2, 2, block(&[field])))
-                .unwrap_err()
-                .contains("WrappedRow child")
-        );
-        assert_eq!(r.tree.encode(), pending);
+        let mut r = Raster::default();
+        r.tree.upload(&content_bound(op, chip2)).unwrap();
+        let old = r.draw(w, 40., 1.).unwrap().to_vec();
+        let old_hit = Some((3, old_local, 6.));
+        assert_eq!(r.hit_at(x, 6.), old_hit);
+        r.tree.patch(&set(5, 6, chip(20.))).unwrap();
+        let pending = r.tree.encode();
+        for field in [
+            vec![1, 4, 1, 5, 1, 0], // nested content bound
+            vec![1, 4, 4, 1, 1, 0], // content is a folded expression, not a leaf
+            vec![1, 4, 1, 5, 0, 0], // two fills
+            vec![2, 4, 1, 0],       // height
+        ] {
+            assert!(
+                r.tree
+                    .patch(&set(2, 2, block(&[field])))
+                    .unwrap_err()
+                    .contains("WrappedRow child")
+            );
+            assert_eq!(r.tree.encode(), pending);
+        }
+        assert!(r.tree.layers.worksets_empty());
+        let err = r
+            .prepare(w, 40., 1.)
+            .unwrap()
+            .submit(|_, _| Err("refused handoff".into()))
+            .unwrap_err();
+        assert_eq!(err, "refused handoff");
+        assert!(ran(&r, Flow, 1) && !ran(&r, Measure, 3));
+        let peer = bounds(&r, 3);
+        assert_eq!((peer.x, peer.y), next_peer);
+        assert_eq!(r.pixels(), old);
+        assert_eq!(r.hit_at(x, 6.), old_hit);
+        r.draw(w, 40., 1.).unwrap();
+        assert_eq!(r.hit_at(x, 6.), Some((2, f64::from(x), 6.)));
     }
-    assert!(r.tree.layers.worksets_empty());
-    let err = r
-        .prepare(100., 40., 1.)
-        .unwrap()
-        .submit(|_, _| Err("refused handoff".into()))
-        .unwrap_err();
-    assert_eq!(err, "refused handoff");
-    assert!(ran(&r, Flow, 1) && !ran(&r, Measure, 3));
-    assert_eq!(bounds(&r, 3).x, 48.);
-    assert_eq!(r.pixels(), old);
-    assert_eq!(r.hit_at(42., 6.), Some((3, 4., 6.)));
-    r.draw(100., 40., 1.).unwrap();
-    assert_eq!(r.hit_at(42., 6.), Some((2, 42., 6.)));
 }
 
 #[test]
@@ -146,6 +191,52 @@ fn moving_a_closed_pixel_floor_changes_only_the_minimum_its_new_parent_reads() {
 }
 
 #[test]
+fn content_floor_measure_follows_the_final_parent_and_operator() {
+    // The outer host reads the inner WrappedRow's minimum. Switching a
+    // grandchild's operator, or moving it behind an El, changes that minimum
+    // without changing any preferred width. Check untouched descendant bytes.
+    let mut t = Tree::default();
+    let fill = || block(&[vec![1, 0]]);
+    let style = |width| block(&[width, number(4, 4.)]);
+    let policy = |op| set(4, 2, style(vec![1, op, 1, 0]));
+    t.upload(&upload(&[
+        node(1, 2, style(vec![1, 0]), &[2, 3]),
+        node(2, 2, fill(), &[4]),
+        node(3, 4, fill(), &[5]),
+        node(5, 6, chip(20.), &[]),
+        node(4, 2, style(vec![1, 5, 1, 0]), &[6, 7]),
+        node(6, 6, chip(20.), &[]),
+        node(7, 6, chip(20.), &[]),
+    ]))
+    .unwrap();
+    let interpose = || patch(4, 8, &[node(8, 4, fill(), &[4])]);
+    let promote = || patch(8, 4, &[]);
+    for (edits, bx, by) in [
+        (vec![], 0., 16.),
+        (vec![policy(4)], 35.5, 0.),
+        (vec![policy(5)], 0., 16.),
+        (vec![interpose()], 35.5, 0.),
+        (vec![promote()], 0., 16.),
+        (vec![interpose(), set(4, 2, style(vec![1, 0]))], 35.5, 0.),
+        (vec![policy(5), promote()], 0., 16.),
+    ] {
+        for wire in edits {
+            t.patch(&wire).unwrap();
+        }
+        assert!(t.layers.worksets_empty());
+        t.refresh(67., 40., 1.).unwrap();
+        let peer = t.layers.frames[t.elements.ids[&3]];
+        assert_eq!((peer.x, peer.y), (bx, by));
+        let mut cold = Tree::default();
+        cold.upload(&t.encode()).unwrap();
+        cold.refresh(67., 40., 1.).unwrap();
+        for (id, frame) in cold.frames() {
+            assert_eq!(t.layers.frames[t.elements.ids[&id]], frame);
+        }
+    }
+}
+
+#[test]
 fn explicit_zero_changes_line_membership_at_equal_folded_bounds() {
     let mut r = Raster::default();
     let cap = || bounded::bound(1, 4, 30., None, false);
@@ -172,7 +263,7 @@ fn explicit_zero_changes_line_membership_at_equal_folded_bounds() {
     let pending = r.tree.encode();
     // Masking content or a second fill with a zero cap does not make the
     // declaration a pixel bound on one fill. Equal output isn't admission.
-    for mixed in [vec![4, 1, 0], vec![5, 0, 0]] {
+    for mixed in [vec![4, 1, 0], vec![5, 1, 0], vec![5, 0, 0]] {
         let width = [vec![1, 4], number(2, 0.), mixed].concat();
         assert!(
             r.tree

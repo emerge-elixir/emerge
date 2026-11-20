@@ -332,33 +332,46 @@ fn pixel_bounded_lines(c: &Counter) {
     assert_eq!((bounds(&r, 3).x, bounds(&r, 3).y), (14., 0.));
 }
 
-fn content_capped_lines(c: &Counter) {
-    let mut r = Raster::default();
-    r.tree.upload(&wrapped_width::capped(10.)).unwrap();
-    c.zero("first wrapped content cap after reservation", || {
-        r.settle(100., 40., 1.).unwrap();
-    });
-    assert_eq!(bounds(&r, 3).x, 38.);
-    let wider = set(5, 6, wrapped_width::chip(20.));
-    c.zero(
-        "preferred-only edit through prepared paint/hit inputs",
-        || {
-            r.tree.patch(&wider).unwrap();
-            r.settle(100., 40., 1.).unwrap();
-        },
-    );
-    assert_eq!(bounds(&r, 3).x, 48.);
-    r.tree.patch(&set(5, 6, wrapped_width::chip(10.))).unwrap();
-    let over = patch(5, 15, &[node(15, 5, text(&"W".repeat(512)), &[])]);
-    (c.fail_next_reserve)();
-    assert_eq!(
-        r.tree.patch(&over).unwrap_err(),
-        "tree workspace capacity exceeded"
-    );
-    c.zero("pending wrapped content cap after refused growth", || {
-        r.settle(100., 40., 1.).unwrap();
-    });
-    assert_eq!(bounds(&r, 3).x, 38.);
+fn content_bounded_lines(c: &Counter) {
+    for (op, w, narrow, before, after) in [
+        (4, 100., 10., (38., 0.), (48., 0.)),
+        (5, 67., 19., (47., 0.), (0., 16.)),
+    ] {
+        let mut r = Raster::default();
+        let peer = |r: &Raster| {
+            let f = bounds(r, 3);
+            (f.x, f.y)
+        };
+        r.tree
+            .upload(&wrapped_width::content_bound(op, narrow))
+            .unwrap();
+        c.zero("first wrapped content bound after reservation", || {
+            r.settle(w, 40., 1.).unwrap();
+        });
+        assert_eq!(peer(&r), before);
+        let wider = set(5, 6, wrapped_width::chip(20.));
+        c.zero(
+            "preferred-only edit through prepared paint/hit inputs",
+            || {
+                r.tree.patch(&wider).unwrap();
+                r.settle(w, 40., 1.).unwrap();
+            },
+        );
+        assert_eq!(peer(&r), after);
+        r.tree
+            .patch(&set(5, 6, wrapped_width::chip(narrow)))
+            .unwrap();
+        let over = patch(5, 15, &[node(15, 5, text(&"W".repeat(512)), &[])]);
+        (c.fail_next_reserve)();
+        assert_eq!(
+            r.tree.patch(&over).unwrap_err(),
+            "tree workspace capacity exceeded"
+        );
+        c.zero("pending wrapped content bound after refused growth", || {
+            r.settle(w, 40., 1.).unwrap();
+        });
+        assert_eq!(peer(&r), before);
+    }
 }
 
 fn viewport_offers(c: &Counter) {
@@ -819,7 +832,7 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     viewport_offers(&c);
     wrapped_widths(&c);
     pixel_bounded_lines(&c);
-    content_capped_lines(&c);
+    content_bounded_lines(&c);
     independent_row_heights(&c);
     el_child_offers(&c);
     // 100 slots + 80% = 180. The inserted subtree and edited parent's

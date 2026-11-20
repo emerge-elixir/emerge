@@ -8,6 +8,7 @@ fn slot((weight, b): (f64, Option<Bounds<f32>>)) -> Slot<'static> {
             weight,
         }),
         content: 0.,
+        minimum: 0.,
         scale: 1.,
         raw: &[],
     }

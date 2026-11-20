@@ -30,10 +30,8 @@ impl Reader<'_> {
                         rule.unwrap_or_default().pixel_bound(min)
                     }
                     ((Content, None), (Fill | Weighted(_), None))
-                    | ((Fill | Weighted(_), None), (Content, None))
-                        if min =>
-                    {
-                        LineWidth::ContentCap
+                    | ((Fill | Weighted(_), None), (Content, None)) => {
+                        LineWidth::ContentBound { min }
                     }
                     _ => LineWidth::Unsupported,
                 };
@@ -103,7 +101,7 @@ impl Reader<'_> {
 impl LineWidth {
     fn pixel_bound(self, min: bool) -> Self {
         match self {
-            Self::ContentCap => Self::Unsupported, // no nested mixed width on a wrapped line
+            Self::ContentBound { .. } => Self::Unsupported, // no nested mixed width on a wrapped line
             Self::Auto if !min => Self::PixelFloor, // even an explicit zero replaces the auto minimum
             other => other,
         }

@@ -18,9 +18,11 @@ impl Expr {
                 || matches!(l, Min(a, b) | Max(a, b)
                 if (pixels(a) && pixel_bounded(b)) || (pixel_bounded(a) && pixels(b)))
         }
-        let content_cap = matches!(self, Min(a, b)
+        let content_bound = matches!(self, Min(a, b) | Max(a, b)
             if matches!((&**a, &**b), (Content, Fill(_)) | (Fill(_), Content)));
-        parent != Some(2) || !self.has_fill() || (axis == 1 && (pixel_bounded(self) || content_cap))
+        parent != Some(2)
+            || !self.has_fill()
+            || (axis == 1 && (pixel_bounded(self) || content_bound))
     }
     fn single(&self, natural: f32, host: f64, independent_offer: bool) -> f32 {
         let eval = |unit| self.eval(f64::from(natural), 1., |_| unit);
@@ -48,6 +50,7 @@ fn width_by_height_at_roots_and_all_supported_parent_child_sites() {
         pair(true, Content, Content),
         pair(false, Fill(Some(2.)), Px(9.)),
         pair(true, Content, Fill(None)),
+        pair(false, Fill(Some(3.)), Content),
         pair(false, Fill(None), pair(true, Px(75.), Fill(Some(3.)))),
     ];
     let styles = |w: &Expr, h: &Expr, kind| {

@@ -192,15 +192,23 @@ impl BoxStyle {
         }
     }
 }
-/// A folded interval alone doesn't identify a wrapped child's automatic
-/// minimum, explicit zero floor, or the expression allowed to cap its share.
+/// Admission and measurement dependency at a wrapped edge. The allocator
+/// evaluates the original length, never this description of its syntax.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum LineWidth {
     #[default]
     Auto,
     PixelFloor,
-    ContentCap,
+    // Changing just the operator can change the minimum; changing just the weight cannot.
+    ContentBound {
+        min: bool,
+    },
     Unsupported,
+}
+impl LineWidth {
+    fn projects_minimum(self) -> bool {
+        matches!(self, Self::PixelFloor | Self::ContentBound { .. })
+    }
 }
 #[derive(Clone, Debug, Default)]
 struct Attrs {

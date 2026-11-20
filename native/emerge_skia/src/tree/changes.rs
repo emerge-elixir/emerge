@@ -111,8 +111,14 @@ impl Layers {
             debug_assert!(m.detached.is_none());
             let change = std::mem::take(&mut m.change);
             let moved = change.old_parent.is_some_and(|old| old != m.parent);
-            if (moved || change.reattached) && e.attrs[k].line_floor().is_some() {
-                // The new edge may consume an explicit wrapped minimum even
+            if (moved || change.reattached)
+                && (e.attrs[k].line_width.projects_minimum()
+                    || change
+                        .attrs
+                        .as_ref()
+                        .is_some_and(|(old, _)| old.line_width.projects_minimum()))
+            {
+                // The new edge may consume a different wrapped minimum even
                 // if scale, preferred width and every child stayed the same.
                 self.invalidate(Pass::Measure, k, depth);
             }
@@ -170,7 +176,11 @@ impl Layers {
             invalidate(Pass::Context)
         }
         let (a, b) = (old.sizing.without_weights(), next.sizing.without_weights());
-        if a != b || old.line_floor() != next.line_floor() {
+        let parent = e.parent_shape(k);
+        if a != b
+            || (parent == Some(Shape::WrappedRow)
+                && (old.line_width != next.line_width || old.line_floor() != next.line_floor()))
+        {
             invalidate(Pass::Measure)
         }
         if a.width != b.width
@@ -212,7 +222,6 @@ impl Layers {
             .sizing
             .height
             .same_split(old_raw, next.sizing.height, raw);
-        let parent = e.parent_shape(k);
         let split_height = parent.is_some_and(Shape::allots_height);
         if shape == Shape::Column
             && parent == Some(Shape::WrappedRow)
