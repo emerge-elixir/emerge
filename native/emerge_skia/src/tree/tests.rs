@@ -14,6 +14,7 @@ mod scale;
 mod topology;
 mod viewport;
 mod weighted;
+mod wrapped_column;
 mod wrapped_height;
 mod wrapped_width;
 use super::*;

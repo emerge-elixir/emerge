@@ -2,14 +2,16 @@
 //! shared or custom paint, and register the module below. Shapes do not own a
 //! second child order, allocate plans, schedule passes or install output.
 use super::{
-    layers::{Constraint, Demand, FlowCx, Measuring, PlaceCx, ReflowCx},
+    layers::{Constraint, Demand, FlowCx, Heights, Measuring, PlaceCx, ReflowCx, Size},
     paint::{OwnPaint, PaintContext},
     text::Run,
     *,
 };
 mod fill;
+mod linear;
+pub(super) use linear::{column_demand, column_width};
 mod payload;
-use fill::FillShares;
+pub(super) use fill::FillShares;
 use payload::{Children, NoData, OnlyChild, Payload, Utf8};
 
 trait ShapeMeta {
@@ -76,7 +78,7 @@ trait LayoutBehaviour: ShapeMeta {
             }
         }
     }
-    fn reflow(node: Mounted<'_, Self::Payload>, cx: &mut ReflowCx<'_>) -> f32;
+    fn reflow(node: Mounted<'_, Self::Payload>, cx: &mut ReflowCx<'_>) -> Heights;
     fn place_children(node: Mounted<'_, Self::Payload>, cx: &mut PlaceCx<'_>) {
         cx.translate_children(node.children());
     }
@@ -132,6 +134,7 @@ define_shapes!(
     row::Row,
     wrapped_row::WrappedRow,
     column::Column,
+    wrapped_column::WrappedColumn,
     el::El,
     text_leaf::Text,
     empty::Empty
@@ -158,6 +161,24 @@ impl Shape {
     pub fn allots_width(self) -> bool {
         with_shape!(self, |S| S::ALLOTS_WIDTH)
     }
+    pub fn has_intrinsic_height(self, style: BoxStyle) -> bool {
+        matches!(style.height, Length::Px(_)) || matches!(self, Self::Text | Self::Empty)
+    }
+    /// A child's packed intrinsic width is an input to this Column's width,
+    /// or to the child's own content-bearing fill width.
+    pub fn reads_group_height(self, style: BoxStyle, column: BoxStyle) -> bool {
+        self == Self::WrappedColumn
+            && style.height.weight().is_some()
+            && !matches!(style.width, Length::Px(_))
+            && (!matches!(column.width, Length::Px(_)) || style.width.reads_fill_content())
+    }
+    /// Authored outer pixels at a site which offers the whole padded height.
+    pub fn cross_height_px(self, style: BoxStyle) -> Option<f64> {
+        match style.height {
+            Length::Px(px) if self.offers_inner_height() || self == Self::WrappedRow => Some(px),
+            _ => None,
+        }
+    }
     pub fn offers_inner_height(self) -> bool {
         with_shape!(self, |S| S::OFFERS_INNER_HEIGHT)
     }
@@ -182,7 +203,7 @@ impl Shape {
     pub fn offer_widths(self, e: &Elements, k: Key, cx: &mut FlowCx<'_>) {
         with_shape!(self, |S| S::offer_widths(Mounted::new(e, k), cx))
     }
-    pub fn reflow(self, e: &Elements, k: Key, cx: &mut ReflowCx<'_>) -> f32 {
+    pub fn reflow(self, e: &Elements, k: Key, cx: &mut ReflowCx<'_>) -> Heights {
         with_shape!(self, |S| S::reflow(Mounted::new(e, k), cx))
     }
     pub fn place_children(self, e: &Elements, k: Key, cx: &mut PlaceCx<'_>) {
@@ -228,34 +249,13 @@ impl Shape {
 
 // A single row fits the tallest unallotted child. El uses the same fit;
 // WrappedRow also uses it as the cross-axis basis before stacking lines.
-fn line_height(children: &[Key], cx: &ReflowCx<'_>) -> f32 {
+fn line_height(children: &[Key], cx: &ReflowCx<'_>) -> Heights {
     if cx.fixed_basis {
-        return cx.measured_height;
+        return cx.measured_height.into();
     }
-    cx.box_height(children.iter().map(|&c| cx.child(c).h).fold(0., f32::max))
-}
-
-fn measure_line(children: &[Key], cx: &Measuring<'_>, wraps: bool) -> Demand {
-    let content = children
+    children
         .iter()
-        .map(|&c| cx.child(c))
-        .fold(Demand::default(), |s, c| Demand {
-            w: s.w + c.w,
-            h: s.h.max(c.h),
-            min_w: if wraps {
-                s.min_w.max(c.min_w)
-            } else {
-                s.min_w + c.min_w
-            },
-        });
-    let gaps = cx.gap[0] * children.len().saturating_sub(1) as f32;
-    Demand {
-        w: content.w + gaps,
-        min_w: if wraps {
-            content.min_w
-        } else {
-            content.min_w + gaps
-        },
-        ..content
-    }
+        .map(|&c| cx.child(c).heights())
+        .fold(Heights::default(), Heights::max)
+        .map(|n| cx.box_height(n))
 }

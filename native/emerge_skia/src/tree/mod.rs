@@ -143,8 +143,18 @@ impl Length {
     fn definite(self) -> bool {
         !matches!(self, Self::Auto | Self::Content | Self::BoundedContent(_))
     }
-    // Unallotted fit describes this box at its settled width, not what an
-    // enclosing allocator will choose to do with that demand.
+    // An unconstrained column fits one group, even at fractional sizes.
+    fn limits_column_height(self) -> bool {
+        match self {
+            Self::Auto | Self::Content => false,
+            Self::BoundedContent(b) => b.cap.is_finite(),
+            _ => true,
+        }
+    }
+    fn declared_height_slot(self) -> bool {
+        matches!(self, Self::Px(_)) || (self.weight().is_some() && !self.reads_fill_content())
+    }
+    // Unallotted fit at settled width, before an enclosing allocator assigns space.
     fn fits_content_height(self) -> bool {
         !matches!(self, Self::Px(_))
     }
@@ -201,12 +211,30 @@ impl BoxStyle {
         }
     }
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Alignment {
+    #[default]
+    Start,
+    Center,
+    End,
+}
+impl Alignment {
+    fn offset(self, slot: f32, extent: f32) -> f32 {
+        match self {
+            Self::Start => 0.,
+            Self::Center => (slot - extent) * 0.5,
+            Self::End => slot - extent,
+        }
+    }
+}
 #[derive(Clone, Debug, Default)]
 struct Attrs {
     sizing: BoxStyle,
     // Guaranteed floor of a fill width, as a clamp of preferred outer width.
     // Only a wrapped edge reads this. None keeps the automatic minimum.
     line_floor: Option<Bounds<f64>>,
+    height_floor: Option<Bounds<f64>>,
+    align: [Option<Alignment>; 2],
     // Admission also checks operands masked by a tighter bound. This is not a layout input.
     largest_length_px: f64,
     family: Option<Family>,
@@ -294,6 +322,16 @@ impl Elements {
     }
     fn parent_shape(&self, k: Key) -> Option<Shape> {
         self.slots[k].parent.map(|p| self.slots[p].shape)
+    }
+    fn alignment(&self, k: Key, axis: usize) -> Alignment {
+        self.attrs[k].align[axis]
+            .or_else(|| {
+                self.slots[k]
+                    .parent
+                    .filter(|&p| self.slots[p].shape == Shape::El)
+                    .and_then(|p| self.attrs[p].align[axis])
+            })
+            .unwrap_or_default()
     }
     fn children(&self, key: Key) -> &[Key] {
         self.child_pool.get(&self.slots[key].children)

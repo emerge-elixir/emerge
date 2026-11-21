@@ -7,7 +7,7 @@ defmodule Emerge.Engine.Patch do
   alias Emerge.Engine.{AttrCodec, Element, Reconcile}
   alias Emerge.Engine.Tree.Nearby
 
-  @kinds ~w(row wrapped_row column el text none paragraph text_column image text_input video multiline slider)a
+  @kinds ~w(row wrapped_row column el text none paragraph text_column image text_input video multiline slider wrapped_column)a
   @tags @kinds |> Enum.with_index(1) |> Map.new()
   @types Map.new(@tags, fn {kind, tag} -> {tag, kind} end)
   @type body ::

@@ -143,8 +143,8 @@ impl Region {
     }
 }
 
-#[derive(Clone, Copy)]
-pub(super) enum FillShares {
+#[derive(Clone, Copy, PartialEq)]
+pub(in crate::tree) enum FillShares {
     Device(f32),
     Relative { largest: f64, pixels_per_unit: f64 },
     // sqrt(unit) at a boundary of a flat or exhausted interval.
@@ -203,6 +203,40 @@ impl FillShares {
             return Some(initial);
         }
         Some(initial.redistribute(f64::from(room), || children.iter().map(|&c| slot(c))))
+    }
+    // A fixed-height Column can compute this group before width Flow when
+    // all slots are pixels or fills that do not read content. Use exactly
+    // the same solver and device rounding as the final Place group.
+    fn declared_slot(e: &Elements, c: Key) -> Slot<'_> {
+        let h = e.attrs[c].sizing.height;
+        let basis = h.resolve(0., || e.slots[c].admitted.scale);
+        Slot::new(e, c, h, basis)
+    }
+    pub(in crate::tree) fn declared_column(e: &Elements, k: Key) -> Option<Self> {
+        let b = e.attrs[k].sizing;
+        let Length::Px(px) = b.height else {
+            return None;
+        };
+        let kids = e.children(k);
+        if !kids
+            .iter()
+            .any(|&c| e.slots[c].shape.reads_group_height(e.attrs[c].sizing, b))
+            || !kids
+                .iter()
+                .all(|&c| e.attrs[c].sizing.height.declared_height_slot())
+        {
+            return None;
+        }
+        let s = e.slots[k].admitted.scale;
+        let inner = (scale::pixels(px, s)
+            - (scale::pixels(b.padding[0], s) + scale::pixels(b.padding[2], s)))
+        .max(0.);
+        Self::group(Some(inner), scale::pixels(b.spacing[1], s), kids, |c| {
+            Self::declared_slot(e, c)
+        })
+    }
+    pub(in crate::tree) fn assigned_height(self, e: &Elements, c: Key) -> Option<f32> {
+        self.offer(Self::declared_slot(e, c))
     }
     fn share(self, w: f64) -> f32 {
         match self {

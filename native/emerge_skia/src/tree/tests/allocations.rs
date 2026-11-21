@@ -856,6 +856,26 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     independent_column_widths(&c);
     viewport_offers(&c);
     wrapped_widths(&c);
+    for (bytes, id, kind, w, heights) in [
+        (wrapped_column::shared(), 1, 1, 64., [43., 44.]),
+        (wrapped_column::shared_column(), 3, 4, 0., [17., 16.]),
+    ] {
+        let mut columns = Raster::default();
+        columns.tree.upload(&bytes).unwrap();
+        c.zero("cold packed width before sibling width sharing", || {
+            columns.settle(180., 170., 1.).unwrap();
+        });
+        for h in heights {
+            let edit = set(id, kind, block(&[px(1, w), px(2, h)]));
+            c.zero(
+                "changed height offer/share through prepared draw/hit inputs",
+                || {
+                    columns.tree.patch(&edit).unwrap();
+                    columns.settle(180., 170., 1.).unwrap();
+                },
+            );
+        }
+    }
     let mut wrapped = Raster::default();
     wrapped.tree.upload(&wrapped_height::assigned()).unwrap();
     c.zero("cold wrapped height after reservation", || {

@@ -90,7 +90,7 @@ fn attrs(raw: &[u8], shape: Shape) -> Result<Attrs> {
     for _ in 0..r.count()? {
         match r.byte()? {
             1 => (a.sizing.width, largest_px[0], a.line_floor) = r.length(raw)?,
-            2 => (a.sizing.height, largest_px[1], _) = r.length(raw)?,
+            2 => (a.sizing.height, largest_px[1], a.height_floor) = r.length(raw)?,
             3 => {
                 a.sizing.padding = match r.byte()? {
                     0 => [r.number()?; 4],
@@ -100,7 +100,15 @@ fn attrs(raw: &[u8], shape: Shape) -> Result<Attrs> {
             }
             4 => a.sizing.spacing = [r.number()?; 2],
             36 => a.sizing.spacing = [r.number()?, r.number()?],
-            5 | 6 | 30 if r.byte()? == 0 => (),
+            tag @ (5 | 6) => {
+                a.align[usize::from(tag - 5)] = Some(match r.byte()? {
+                    0 => Alignment::Start,
+                    1 => Alignment::Center,
+                    2 => Alignment::End,
+                    v => return Err(format!("invalid alignment {v}")),
+                });
+            }
+            30 if r.byte()? == 0 => (),
             12 if r.byte()? == 0 => a.background = Some(r.color()?),
             16 => a.font_size = Some(r.number()?),
             78 => {

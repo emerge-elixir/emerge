@@ -112,7 +112,8 @@ impl Layers {
             let change = std::mem::take(&mut m.change);
             let moved = change.old_parent.is_some_and(|old| old != m.parent);
             if (moved || change.reattached)
-                && (e.attrs[k].line_floor.is_some()
+                && (Self::reads_early_height(e, k)
+                    || e.attrs[k].line_floor.is_some()
                     || change
                         .attrs
                         .as_ref()
@@ -177,6 +178,10 @@ impl Layers {
         }
         let (a, b) = (old.sizing.without_weights(), next.sizing.without_weights());
         let parent = e.parent_shape(k);
+        let align_changed = old.align != next.align;
+        if align_changed && shape == Shape::El {
+            invalidate(Pass::Place);
+        }
         if a != b || (parent == Some(Shape::WrappedRow) && old.line_floor != next.line_floor) {
             invalidate(Pass::Measure)
         }
@@ -213,6 +218,23 @@ impl Layers {
         if shape.uses_glyphs() && &old_raw[old.text.clone()] != e.text(k).as_bytes() {
             self.text_changed(k, depth)
         }
+        if align_changed && let Some(p) = e.slots[k].parent {
+            self.invalidate(Pass::Place, p, e.depth(p));
+        }
+        if shape.cross_height_px(a) != shape.cross_height_px(b)
+            || (shape.cross_height_px(b).is_some()
+                && (a.padding[0] != b.padding[0] || a.padding[2] != b.padding[2]))
+        {
+            self.invalidate_early_heights(e, k);
+        }
+        if shape == Shape::El
+            && a.padding[1] != b.padding[1]
+            && e.children(k)
+                .first()
+                .is_some_and(|&c| e.alignment(c, 0) != Alignment::Start)
+        {
+            self.invalidate(Pass::Place, k, depth);
+        }
         let raw = e.raw(k);
         let width = !old.sizing.width.same_split(old_raw, next.sizing.width, raw);
         let height = !old
@@ -220,6 +242,56 @@ impl Layers {
             .height
             .same_split(old_raw, next.sizing.height, raw);
         let split_height = parent.is_some_and(Shape::allots_height);
+        if shape == Shape::Column
+            && (a.height != b.height
+                || a.width != b.width
+                || a.spacing[1] != b.spacing[1]
+                || a.padding[0] != b.padding[0]
+                || a.padding[2] != b.padding[2])
+            && (self.has_height_group(k) || Self::has_group_reader(e, k))
+        {
+            self.invalidate(Pass::Context, k, depth);
+        }
+        if parent == Some(Shape::Column)
+            && let Some(p) = e.slots[k].parent
+            && (height
+                || a.height != b.height
+                || old.layout_scale != next.layout_scale
+                || a.width != b.width)
+            && (self.has_height_group(p)
+                || shape.reads_group_height(next.sizing, e.attrs[p].sizing))
+        {
+            self.invalidate(Pass::Context, p, e.depth(p));
+        }
+        if height
+            && Self::reads_early_height(e, k)
+            && (a.height != b.height
+                || old.sizing.height.reads_fill_content()
+                || next.sizing.height.reads_fill_content()
+                || parent == Some(Shape::Column))
+        {
+            self.invalidate(Pass::Measure, k, depth);
+        }
+        if parent == Some(Shape::WrappedColumn)
+            && let Some(p) = e.slots[k].parent
+        {
+            if old.height_floor != next.height_floor
+                || a.height.weight().is_some() != b.height.weight().is_some()
+            {
+                self.invalidate(Pass::Reflow, p, e.depth(p));
+            }
+            if !matches!(e.attrs[p].sizing.width, Length::Px(_))
+                && (shape.has_intrinsic_height(a) != shape.has_intrinsic_height(b)
+                    || old.height_floor != next.height_floor
+                    || a.height.weight().is_some() != b.height.weight().is_some()
+                    || a.width != b.width
+                    || (width
+                        && (next.sizing.width.reads_fill_content()
+                            || old.sizing.width.reads_fill_content())))
+            {
+                self.invalidate(Pass::Measure, p, e.depth(p));
+            }
+        }
         if shape == Shape::Column
             && parent == Some(Shape::WrappedRow)
             && (a.width == Length::Auto) != (b.width == Length::Auto)
@@ -272,6 +344,11 @@ impl Layers {
         }
         let parent = e.slots[k].parent;
         if height {
+            if let Some(p) = parent.filter(|&p| {
+                e.slots[p].shape.offers_inner_height() && e.alignment(k, 1) != Alignment::Start
+            }) {
+                self.invalidate(Pass::Place, p, e.depth(p));
+            }
             if let Some(p) = parent.filter(|&p| e.slots[p].shape == Shape::WrappedRow) {
                 // The resolved outer box can move later lines at equal fit.
                 let pass = if e.attrs[p].sizing.height.fits_content_height() {
@@ -281,7 +358,7 @@ impl Layers {
                 };
                 self.invalidate(pass, p, e.depth(p));
             } else if let Some(p) = parent.filter(|&p| e.slots[p].shape.allots_height()) {
-                if e.attrs[p].sizing.height.definite() {
+                if e.attrs[p].sizing.height.definite() || e.slots[p].shape == Shape::WrappedColumn {
                     self.invalidate(Pass::Place, p, e.depth(p));
                 }
             } else {

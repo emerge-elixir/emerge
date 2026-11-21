@@ -6,6 +6,7 @@ defmodule Emerge.Engine.Element do
   @type element_type ::
           :row
           | :wrapped_row
+          | :wrapped_column
           | :column
           | :text_column
           | :el

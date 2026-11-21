@@ -92,7 +92,7 @@ admission; evaluate irreducible formulas from validated bytes, not a heap AST.
 Redistribute actual charges after a cap/floor binds, and use the child's own
 post-wrap content where the policy reads it. Otherwise a cap can leave space
 beside a sibling that could use it, or cut a second line off. An offer is not
-a clip: El doesn't clip; Row, Column and WrappedRow clip paint and hits to the
+a clip: El doesn't clip; the four linear containers clip paint and hits to the
 host, without changing the child's size. [Flow and examples](layout-refresh-render-flow.md) ·
 [main-axis regression](../../test/emerge_skia/mixed_content_fill_test.exs).
 
@@ -195,3 +195,25 @@ therefore already say applied on return. That token is not proof of a new
 frame. Do not generalize this shortcut to asynchronous device, backlight or
 power operations. [Control path](../../native/emerge_skia/src/session/mod.rs) ·
 [status tests](../../test/emerge_skia/config_control_test.exs).
+
+### D10. Wrap columns at the resolved height
+
+`wrapped_column/2` is **new**, not one of the 13 `main` kinds. Append v10 tag
+14; use the same declaration order, group selection, allocator and placement
+arithmetic as the other linear containers. Vertical membership needs the
+post-width child heights and the actual height limit. Natural width fits the
+occupied columns, not the widest single child. Cross-axis alignment is relative
+to each group; it neither sizes the child nor changes where it breaks.
+
+Only use a packed width in an earlier width split if its inputs can be proved
+before that split. A 60px Column with a 16→17px header can independently give
+its remaining **44→43px** to two 12×20 cards: they need **12→30px** of width,
+and a sibling can rewrap at its new width. Contrast a content-width Column
+with a width-sharing, wrapping header and two 30×21 cards (no gaps). At 30px
+the header is 20px tall: the remaining 40px forces two columns needing 60px.
+At 60px the header is 10px tall: the 50px left fits one 30px column. **Neither
+width satisfies both constraints.** This is a retained example; `main` has no
+WrappedColumn. Reject cycles and unproved early dependencies atomically. No
+previous-frame estimate, one-column fallback or retry from Place to Flow.
+[Independent and circular cases](../../native/emerge_skia/src/tree/tests/wrapped_column.rs) ·
+[submitted results](../../test/emerge_skia/wrapped_column_test.exs).

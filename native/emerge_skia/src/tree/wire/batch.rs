@@ -2,6 +2,7 @@
 //! summary-changing nodes enter this scratch. Closed interiors are not decoded.
 use super::*;
 mod domains;
+mod layout_sites;
 use domains::Domains;
 use std::hash::{BuildHasher, RandomState};
 
@@ -369,6 +370,7 @@ impl Batch {
                 self.ancestors(e, parent, b)?;
             }
         }
+        self.check_layout_sites(e, parent)?;
         // Claims are complete. Retire only actual absences, stopping at moved
         // subtrees even when an old owner was removed before its new owner.
         while let Some(k) = self.displaced.pop() {

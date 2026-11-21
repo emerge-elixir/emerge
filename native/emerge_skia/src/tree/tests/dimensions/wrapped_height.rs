@@ -3,29 +3,29 @@
 //! a fresh tree as well. No production breaks, height constraints or folds.
 use super::*;
 
-fn host(c: &Case, h: &Expr) -> Bytes {
+fn host(c: &Case, h: &Expr, axis: u8) -> Bytes {
     let mut fields = vec![
-        px(1, c.host),
+        px(3 - axis, c.host),
         number(4, c.gap),
         [vec![3, 0], c.pad.to_be_bytes().to_vec()].concat(),
     ];
-    fields.extend(h.field(2));
+    fields.extend(h.field(axis));
     block(&fields)
 }
-fn document(c: &Case, h: &Expr) -> Bytes {
+fn document(c: &Case, h: &Expr, axis: u8, kind: u8) -> Bytes {
     upload(
-        &std::iter::once(node(1, 2, host(c, h), &c.ids()))
+        &std::iter::once(node(1, kind, host(c, h, axis), &c.ids()))
             .chain(c.kids.iter().flat_map(|k| {
                 [
-                    node(k.id, 4, k.attrs(2), &[k.id + 100]),
-                    node(k.id + 100, 6, block(&[px(2, k.demand)]), &[]),
+                    node(k.id, 4, k.attrs(axis), &[k.id + 100]),
+                    node(k.id + 100, 6, block(&[px(axis, k.demand)]), &[]),
                 ]
             }))
             .collect::<Vec<_>>(),
     )
 }
 
-fn verify(c: &Case, policy: &Expr, natural: bool, t: &Tree) {
+fn verify(c: &Case, policy: &Expr, natural: bool, t: &Tree, axis: u8) {
     let z = c.display;
     let (pad, gap) = (c.pad * z, c.gap * z);
     let width = |k: &Child| 12. * k.zoom * z;
@@ -69,18 +69,19 @@ fn verify(c: &Case, policy: &Expr, natural: bool, t: &Tree) {
             "{actual} vs {want}, {policy:?}, {c:?}"
         )
     };
-    check(t.layers.frames[t.elements.ids[&1]].height, outer);
+    let root = t.layers.frames[t.elements.ids[&1]];
+    check(if axis == 2 { root.height } else { root.width }, outer);
     let mut y = pad;
     for line in lines {
         let mut x = pad;
         for k in line {
             let f = t.layers.frames[t.elements.ids[&k.id]];
-            for (a, b) in [
-                (f.x, x),
-                (f.y, y),
-                (f.width, width(k)),
-                (f.height, kid_h(k, offer)),
-            ] {
+            let actual = if axis == 2 {
+                [f.x, f.y, f.width, f.height]
+            } else {
+                [f.y, f.x, f.height, f.width]
+            };
+            for (a, b) in actual.into_iter().zip([x, y, width(k), kid_h(k, offer)]) {
                 check(a, b);
             }
             x += width(k) + gap;
@@ -91,6 +92,13 @@ fn verify(c: &Case, policy: &Expr, natural: bool, t: &Tree) {
 
 #[test]
 fn seeded_wrapped_heights_match_cross_offers_and_fresh_trees() {
+    check_cross(2, 2);
+}
+#[test]
+fn seeded_wrapped_column_widths_match_cross_offers_and_fresh_trees() {
+    check_cross(1, 14);
+}
+fn check_cross(axis: u8, kind: u8) {
     for seed in seeds() {
         let mut rng = Rng(seed);
         let mut c = specimen(Auto);
@@ -121,25 +129,25 @@ fn seeded_wrapped_heights_match_cross_offers_and_fresh_trees() {
         {
             c.host = rng.next(69) as f64;
             if step == 0 {
-                live.upload(&document(&c, &h)).unwrap();
+                live.upload(&document(&c, &h, axis, kind)).unwrap();
             } else {
                 let i = rng.next(c.kids.len());
                 let k = &mut c.kids[i];
                 k.expr = rng.expr(4);
                 k.zoom = [0.5, 1., 2.][rng.next(3)];
                 k.demand = rng.next(51) as f64;
-                live.patch(&set(k.id, 4, k.attrs(2))).unwrap();
-                live.patch(&set(k.id + 100, 6, block(&[px(2, k.demand)])))
+                live.patch(&set(k.id, 4, k.attrs(axis))).unwrap();
+                live.patch(&set(k.id + 100, 6, block(&[px(axis, k.demand)])))
                     .unwrap();
                 c.kids.reverse();
-                live.patch(&order(1, 2, &c.ids())).unwrap();
-                live.patch(&set(1, 2, host(&c, &h))).unwrap();
+                live.patch(&order(1, kind, &c.ids())).unwrap();
+                live.patch(&set(1, kind, host(&c, &h, axis))).unwrap();
                 c.display = [1., 1.5, 2.][rng.next(3)];
             }
             c.settle(&mut live).unwrap();
-            verify(&c, &h, natural, &live);
+            verify(&c, &h, natural, &live, axis);
             let mut cold = Tree::default();
-            cold.upload(&document(&c, &h)).unwrap();
+            cold.upload(&document(&c, &h, axis, kind)).unwrap();
             c.settle(&mut cold).unwrap();
             for (id, f) in cold.frames() {
                 assert_eq!(

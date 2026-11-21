@@ -32,7 +32,7 @@ refresh a scale change propagates down the context pass; intrinsic sizes and
 fit propagate back up. Fill offers remain in device pixels. A successful
 submission installs the effective scale with the listener's origin and clip,
 so a click is local to the box that was drawn, even across a keyed move.
-Columns, rows and wrapped rows clip ordinary descendants' paint and hits to
+Rows, columns and their wrapped forms clip ordinary descendants' paint and hits to
 intersecting host frames. Clipping does not shrink the child or change the
 wrapped-line height: spacing is measured between the laid-out child boxes.
 
@@ -132,6 +132,29 @@ It then fits the stack using the actual outer heights and gaps, without feeding
 the packed height back as a second offer. Each new line starts below the tallest
 resolved box on the preceding line; a host clip does not move that line up.
 [Submitted heights, line origins and hits](../../test/emerge_skia/wrapped_row_height_test.exs).
+
+The four linear containers use [one layout implementation](../../native/emerge_skia/src/tree/shapes/linear.rs).
+It takes an axis and either the whole child slice or its next fitting prefix.
+Horizontal breaks use width measurements in Flow. Vertical breaks use the
+children's heights **after width reflow** and the actual inner height in Place.
+Both advance by resolved outer boxes. On the cross axis, center/end alignment
+uses the padded host for an unwrapped group, the tallest/widest child for a
+wrapped group. It changes placement, not shares or membership. A natural
+WrappedRow retains its single-row height offer for Place, not its grown stack.
+
+A WrappedColumn fits the **sum** of its occupied column widths plus gaps.
+In a content-width host with two 12×20 cards and `spacing_xy(6, 4)`, a height
+of 44px takes 12px of width; 43px takes 30px. Child width offers in a natural
+host come from one column; packing does not feed that larger width back into
+its children. If the packed width is needed in width Flow, Measure can use
+pixel-height children or intrinsically measured leaves and an independently
+known height. For a pixel-height Column whose slots are pixels or fills that
+do not read content, Context computes the shared unit once from the **final**
+declarations, and Place reuses it. A content-width child of a fixed-width
+Column can instead pack late, using its actual assigned height. Unproved
+early dependencies are refused before commit, never resolved from an old frame.
+[Dependency and cycle tests](../../native/emerge_skia/src/tree/tests/wrapped_column.rs) ·
+[delivered frames and local clicks](../../test/emerge_skia/wrapped_column_test.exs).
 
 Nested `min`/`max` can put both a floor and a cap on one fill. With no padding
 or gap, `min(px(50), max(px(20), fill()))` next to `fill()` takes 20/10 in a

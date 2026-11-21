@@ -179,7 +179,7 @@ defmodule Emerge.UI.Internal.Validation do
   def validate_child_element!(function_name, children) when is_list(children) do
     raise ArgumentError,
           "#{function_name} expects the second argument to be a single child element, got a list: #{inspect(children)}. " <>
-            "Use row/2, column/2, wrapped_row/2, paragraph/2, or text_column/2 for multiple children."
+            "Use row/2, column/2, wrapped_row/2, wrapped_column/2, paragraph/2, or text_column/2 for multiple children."
   end
 
   def validate_child_element!(function_name, other) do

@@ -46,6 +46,8 @@ defmodule Emerge.UI.Space do
   - `column/2` and `text_column/2` use vertical spacing
   - `wrapped_row/2` uses horizontal spacing within each line and vertical
     spacing between wrapped lines
+  - `wrapped_column/2` uses vertical spacing within a column and horizontal
+    spacing after the widest child of each completed column
 
   Wrapped rows also measure each line from the resolved child frames on that
   line. If a child grows taller after reflow, the line height and total wrapped

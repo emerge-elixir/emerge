@@ -91,6 +91,13 @@ defmodule Emerge.UI.Align do
   `align_top/0`, `center_y/0`, and `align_bottom/0` still position each child
   within the height of its own wrapped line.
 
+  ## `wrapped_column`
+
+  Put `align_left/0`, `center_x/0`, or `align_right/0` on a child to position
+  it within **its own column**, not the full container. For example, a
+  16-pixel child in a 32-pixel column starts 0, 8 or 16 pixels from that
+  column's left edge. Alignment does not change which column the child fits in.
+
   ## `column`
 
   In `column`, children do not inherit alignment from the column. Put alignment

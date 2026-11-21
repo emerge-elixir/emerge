@@ -33,6 +33,45 @@ const PASSES: [Pass; 7] = [Context, Measure, Flow, Reflow, Place, PaintContext, 
 pub(super) struct Size {
     pub w: f32,
     pub h: f32,
+    pub min_h: f32,
+}
+#[derive(Clone, Copy, Default)]
+pub(super) struct Heights {
+    pub fit: f32,
+    pub min: f32,
+}
+impl From<f32> for Heights {
+    fn from(h: f32) -> Self {
+        Self { fit: h, min: h }
+    }
+}
+impl Heights {
+    pub fn max(self, rhs: Self) -> Self {
+        Self {
+            fit: self.fit.max(rhs.fit),
+            min: self.min.max(rhs.min),
+        }
+    }
+    pub fn map(self, f: impl Fn(f32) -> f32) -> Self {
+        Self {
+            fit: f(self.fit),
+            min: f(self.min),
+        }
+    }
+}
+#[derive(Clone, Copy)]
+struct Fit {
+    size: Size,
+    // Natural cross offer for a WrappedRow, before fitting its full stack.
+    row_offer: f32,
+}
+impl Size {
+    pub fn heights(self) -> Heights {
+        Heights {
+            fit: self.h,
+            min: self.min_h,
+        }
+    }
 }
 /// Intrinsic outer sizes in device pixels. A wrapping descendant may fit
 /// at a smaller width than its preferred (single-line) measurement.
@@ -70,7 +109,7 @@ impl Constraint {
             other => other,
         }
     }
-    fn resolve(self, e: &Elements, k: Key, policy: Length, fit: f32) -> f32 {
+    pub(super) fn resolve(self, e: &Elements, k: Key, policy: Length, fit: f32) -> f32 {
         match self {
             Self::Natural => fit,
             Self::Available(n) => policy.at_offer(e, k, fit, n),
@@ -102,7 +141,9 @@ pub(super) struct Layers {
     pub(super) prepared_scale: f32,
     width: SecondaryMap<Key, Width>,
     offers: SecondaryMap<Key, WidthOffer>,
-    fit: SecondaryMap<Key, Size>,
+    // Only independent, declared Column groups needed by an early packed width.
+    height_shares: SecondaryMap<Key, shapes::FillShares>,
+    fit: SecondaryMap<Key, Fit>,
     placement: SecondaryMap<Key, Placement>,
     pub frames: SecondaryMap<Key, Rect>,
     paint: SecondaryMap<Key, PaintContext>,
@@ -182,18 +223,18 @@ impl FlowCx<'_> {
     }
 }
 pub(super) struct ReflowCx<'a> {
-    layers: &'a mut Layers,
-    e: &'a Elements,
+    layers: &'a Layers,
     pub gap: [f32; 2],
     padding: [f32; 4],
     height: Length,
     scale: f32,
     pub fixed_basis: bool,
     pub measured_height: f32,
+    pub row_offer: f32,
 }
 impl ReflowCx<'_> {
     pub fn child(&self, c: Key) -> Size {
-        self.layers.fit[c]
+        self.layers.fit[c].size
     }
     pub fn break_before(&self, c: Key) -> bool {
         self.layers.offers[c].break_before
@@ -201,21 +242,8 @@ impl ReflowCx<'_> {
     pub fn inner_height(&self, outer: f32) -> f32 {
         (outer - (self.padding[0] + self.padding[2])).max(0.)
     }
-    pub fn offset(&mut self, c: Key, x: f32, y: f32, height: Constraint) {
-        self.layers.offer_placement(
-            self.e,
-            c,
-            [self.padding[3] + x, self.padding[0] + y],
-            height,
-            false,
-        );
-    }
-    pub fn column_basis(&self, c: Key) -> f32 {
-        if self.e.attrs[c].sizing.height.weight().is_some() {
-            self.layers.measure[c].h
-        } else {
-            self.child(c).h
-        }
+    pub fn measured_height(&self, c: Key) -> f32 {
+        self.layers.measure[c].h
     }
     pub fn box_height(&self, demand: f32) -> f32 {
         if self.fixed_basis {
@@ -232,12 +260,14 @@ pub(super) struct PlaceCx<'a> {
     layers: &'a mut Layers,
     e: &'a Elements,
     pub height: f32,
+    pub width: f32,
     pub scale: f32,
+    pub row_offer: f32,
     translated: bool,
 }
 impl PlaceCx<'_> {
     pub fn child(&self, c: Key) -> Size {
-        self.layers.fit[c]
+        self.layers.fit[c].size
     }
     pub fn break_before(&self, c: Key) -> bool {
         self.layers.offers[c].break_before
@@ -248,6 +278,12 @@ impl PlaceCx<'_> {
     pub fn padded_height_offer(&self, style: BoxStyle) -> ([f32; 2], f32) {
         let [top, _, bottom, left] = style.padding.map(|v| pixels(v, self.scale));
         ([left, top], (self.height - (top + bottom)).max(0.))
+    }
+    pub fn declared_shares(&self, k: Key) -> Option<shapes::FillShares> {
+        self.layers.height_shares.get(k).copied()
+    }
+    pub fn width_at(&self, c: Key, edge: Constraint) -> f32 {
+        self.layers.width_at(self.e, c, edge)
     }
     pub fn place(&mut self, c: Key, offset: [f32; 2], height: Constraint) {
         self.layers
@@ -276,7 +312,17 @@ impl Layers {
         }
         macro_rules! room {($($map:ident),+) => {$(self.$map.try_set_capacity(keys).map_err(pool::capacity_error)?;)+}}
         room!(
-            context, measure, runs, width, offers, fit, placement, frames, paint, parts
+            context,
+            measure,
+            runs,
+            width,
+            offers,
+            height_shares,
+            fit,
+            placement,
+            frames,
+            paint,
+            parts
         );
         #[cfg(test)]
         pool::reserve(&mut self.trace, 7 * capacity)?;
@@ -325,8 +371,14 @@ impl Layers {
                             .same_split(e.raw(a), e.attrs[b].sizing.width, e.raw(b))
                     }));
         }
-        if measure {
+        if measure || (moved && node.shape == Shape::WrappedColumn) {
             self.enqueue(Measure, k, e)
+        }
+        if moved
+            && node.shape == Shape::Column
+            && (self.has_height_group(k) || (membership && Self::has_group_reader(e, k)))
+        {
+            self.enqueue(Context, k, e);
         }
         if moved && membership {
             // An incoming edge needs an offer even if our inner width is unchanged.
@@ -369,6 +421,7 @@ impl Layers {
         self.measure.remove(k);
         self.width.remove(k);
         self.offers.remove(k);
+        self.height_shares.remove(k);
         self.fit.remove(k);
         self.placement.remove(k);
         self.frames.remove(k);
@@ -386,11 +439,12 @@ impl Layers {
     // A wrapping parent plans the width of an auto Column before flowing
     // that Column. Its direct children's fill presence affects that width.
     pub(super) fn auto_width_reader(&mut self, e: &Elements, k: Key) {
-        if e.slots[k].shape == Shape::Column
-            && e.attrs[k].sizing.width == Length::Auto
-            && e.parent_shape(k) == Some(Shape::WrappedRow)
-        {
-            self.parent(Flow, k, e);
+        if e.slots[k].shape == Shape::Column && e.attrs[k].sizing.width == Length::Auto {
+            match e.parent_shape(k) {
+                Some(Shape::WrappedRow) => self.parent(Flow, k, e),
+                Some(Shape::WrappedColumn) => self.parent(Measure, k, e),
+                _ => (),
+            }
         }
     }
     fn offer_width(&mut self, e: &Elements, k: Key, axis: Constraint, break_before: bool) {
@@ -453,6 +507,9 @@ impl Layers {
         self.offer_width(e, root, Constraint::Available(w), false);
         self.offer_placement(e, root, [0.; 2], Constraint::Available(h), false);
         if vp != self.viewport {
+            if vp.height != self.viewport.height && Self::reads_early_height(e, root) {
+                self.enqueue(Measure, root, e);
+            }
             self.viewport = vp;
             self.enqueue(PaintContext, root, e);
         }
@@ -490,7 +547,59 @@ impl Layers {
             }
         }
     }
+    pub(super) fn reads_early_height(e: &Elements, k: Key) -> bool {
+        e.slots[k].shape == Shape::WrappedColumn
+            && !matches!(e.attrs[k].sizing.width, Length::Px(_))
+            && e.attrs[k].sizing.height.weight().is_some()
+    }
+    pub(super) fn invalidate_early_heights(&mut self, e: &Elements, p: Key) {
+        for &c in e.children(p) {
+            if Self::reads_early_height(e, c) {
+                self.enqueue(Measure, c, e);
+            }
+        }
+    }
+    pub(super) fn has_height_group(&self, k: Key) -> bool {
+        self.height_shares.contains_key(k)
+    }
+    pub(super) fn has_group_reader(e: &Elements, p: Key) -> bool {
+        matches!(e.attrs[p].sizing.height, Length::Px(_))
+            && e.children(p).iter().any(|&c| {
+                e.slots[c]
+                    .shape
+                    .reads_group_height(e.attrs[c].sizing, e.attrs[p].sizing)
+            })
+    }
+    fn known_height_edge(&self, e: &Elements, k: Key) -> Option<Constraint> {
+        let Some(p) = e.slots[k].parent else {
+            return Some(Constraint::Available(self.viewport.height));
+        };
+        let style = e.attrs[p].sizing;
+        if let Some(px) = e.slots[p].shape.cross_height_px(style) {
+            let s = e.slots[p].admitted.scale;
+            Some(Constraint::Available(
+                (pixels(px, s) - (pixels(style.padding[0], s) + pixels(style.padding[2], s)))
+                    .max(0.),
+            ))
+        } else {
+            self.height_shares
+                .get(p)?
+                .assigned_height(e, k)
+                .map(Constraint::Assigned)
+        }
+    }
     fn context(&mut self, e: &Elements, k: Key) {
+        if e.slots[k].shape == Shape::Column {
+            let shares = shapes::FillShares::declared_column(e, k);
+            if shares != self.height_shares.get(k).copied() {
+                if let Some(value) = shares {
+                    self.height_shares.insert(k, value);
+                } else {
+                    self.height_shares.remove(k);
+                }
+                self.invalidate_early_heights(e, k);
+            }
+        }
         let ctx = e.slots[k].admitted;
         let old_scale = self.context.get(k).map(|p| p.scale);
         let scale_changed = old_scale != Some(ctx.scale);
@@ -499,6 +608,13 @@ impl Layers {
                 self.enqueue(Measure, k, e);
             }
             if scale_changed {
+                if e.slots[k]
+                    .shape
+                    .cross_height_px(e.attrs[k].sizing)
+                    .is_some()
+                {
+                    self.invalidate_early_heights(e, k);
+                }
                 // The parent's offer reads the bound at the child's scale,
                 // even if the child's intrinsic box remains exactly the same.
                 if let Some(old) = old_scale {
@@ -506,6 +622,21 @@ impl Layers {
                         matches!(l, Length::Formula(_))
                             || matches!(l, Length::BoundedFill { bounds, .. } if bounds.device(old) != bounds.device(ctx.scale))
                     };
+                    if let Some(p) = e.slots[k].parent
+                        && e.slots[p].shape == Shape::WrappedColumn
+                    {
+                        if moved(e.attrs[k].sizing.width)
+                            && !matches!(e.attrs[p].sizing.width, Length::Px(_))
+                        {
+                            self.enqueue(Measure, p, e);
+                        }
+                        if e.attrs[k].height_floor.is_some() {
+                            self.enqueue(Reflow, p, e);
+                            if !matches!(e.attrs[p].sizing.width, Length::Px(_)) {
+                                self.enqueue(Measure, p, e);
+                            }
+                        }
+                    }
                     let b = e.attrs[k].sizing;
                     self.invalidate_offer_readers(
                         e,
@@ -571,7 +702,11 @@ impl Layers {
         };
         // Only an explicit floor replaces the intrinsic minimum. Keep the
         // site-independent demand in the memo, including on a closed move.
-        let mut m = m;
+        let mut m = if shape == Shape::WrappedColumn {
+            shapes::column_demand(e, k, m, self.known_height_edge(e, k), |c| self.measure[c])
+        } else {
+            m
+        };
         if let Some(bounds) = e.attrs[k].line_floor
             && e.parent_shape(k) == Some(Shape::WrappedRow)
         {
@@ -630,7 +765,17 @@ impl Layers {
             self.measure[k].w
         };
         let [_, r, _, l] = b.padding.map(|v| pixels(v, scale));
-        let inner = (outer - (r + l)).max(0.);
+        let inner = if shape == Shape::WrappedColumn && !b.width.definite() {
+            // Child offers use the single-column basis, never the packed width.
+            let one = e
+                .children(k)
+                .iter()
+                .map(|c| self.measure[*c].w)
+                .fold(0., f32::max);
+            (b.width.resolve(one + (r + l), || scale) - (r + l)).max(0.)
+        } else {
+            (outer - (r + l)).max(0.)
+        };
         let old = self.width.insert(
             k,
             Width {
@@ -661,29 +806,45 @@ impl Layers {
         let b = e.attrs[k].sizing;
         let width = self.width[k];
         let scale = self.context[k].scale;
-        let h = n.shape.reflow(
-            e,
-            k,
-            &mut ReflowCx {
-                gap: b.spacing.map(|v| pixels(v, scale)),
-                padding: b.padding.map(|v| pixels(v, scale)),
-                height: b.height,
-                scale,
-                fixed_basis: !b.height.fits_content_height(),
-                measured_height: self.measure[k].h,
-                layers: self,
-                e,
-            },
-        );
+        let mut cx = ReflowCx {
+            gap: b.spacing.map(|v| pixels(v, scale)),
+            padding: b.padding.map(|v| pixels(v, scale)),
+            height: b.height,
+            scale,
+            fixed_basis: !b.height.fits_content_height(),
+            measured_height: self.measure[k].h,
+            row_offer: 0.,
+            layers: self,
+        };
+        let heights = n.shape.reflow(e, k, &mut cx);
+        let row_offer = cx.row_offer;
         // Even at equal fit, a Column's shares or a definite WrappedRow's
         // line origins may need updating against the final placed height.
-        let fit = Size { w: width.outer, h };
-        let old = self.fit.insert(k, fit);
-        if n.shape.allots_height()
-            || (n.shape == Shape::WrappedRow && b.height.definite())
-            || old != Some(fit)
-        {
+        let h = heights.fit;
+        let fit = Size {
+            w: width.outer,
+            h,
+            min_h: heights.min,
+        };
+        let old = self
+            .fit
+            .insert(
+                k,
+                Fit {
+                    size: fit,
+                    row_offer,
+                },
+            )
+            .map(|f| f.size);
+        if n.shape.allots_height() || n.shape == Shape::WrappedRow || old != Some(fit) {
             self.enqueue(Place, k, e);
+        }
+        if n.shape == Shape::WrappedColumn
+            && !b.width.definite()
+            && (e.alignment(k, 0) != Alignment::Start
+                || e.parent_shape(k) == Some(Shape::WrappedColumn))
+        {
+            self.parent(Place, k, e);
         }
         if old != Some(fit)
             && let Some(p) = n.parent
@@ -691,15 +852,38 @@ impl Layers {
             let height_changed = old.is_none_or(|s| s.h != h);
             match e.slots[p].shape {
                 host if host.offers_inner_height() => {
-                    if height_changed && e.attrs[p].sizing.height.fits_content_height() {
+                    if old.is_none_or(|s| s.min_h != fit.min_h || s.h != h)
+                        && e.attrs[p].sizing.height.fits_content_height()
+                    {
                         self.enqueue(Reflow, p, e);
+                    }
+                    if (height_changed && e.alignment(k, 1) != Alignment::Start)
+                        || (host == Shape::El
+                            && e.alignment(k, 0) != Alignment::Start
+                            && old.is_none_or(|s| s.w != fit.w))
+                    {
+                        self.enqueue(Place, p, e);
                     }
                     // A Row also reads widths to place the following sibling.
                     if host.allots_width() && old.is_none_or(|s| s.w != fit.w) {
                         self.enqueue(Place, p, e);
                     }
                 }
+                Shape::WrappedColumn => {
+                    self.enqueue(Reflow, p, e);
+                    self.enqueue(Place, p, e);
+                }
                 Shape::Column => {
+                    if e.alignment(k, 0) != Alignment::Start
+                        && old.is_none_or(|s| s.w != fit.w || height_changed)
+                    {
+                        self.enqueue(Place, p, e);
+                    }
+                    if old.is_none_or(|s| s.min_h != fit.min_h)
+                        && e.attrs[p].sizing.height.fits_content_height()
+                    {
+                        self.enqueue(Reflow, p, e);
+                    }
                     if height_changed {
                         if e.attrs[p].sizing.height.fits_content_height()
                             && b.height.weight().is_none()
@@ -717,13 +901,25 @@ impl Layers {
             }
         }
     }
+    fn width_at(&self, e: &Elements, k: Key, edge: Constraint) -> f32 {
+        let fit = self.fit[k].size;
+        let style = e.attrs[k].sizing;
+        if e.slots[k].shape != Shape::WrappedColumn || style.width.definite() {
+            return fit.w;
+        }
+        let height = edge
+            .for_height(style.height)
+            .resolve(e, k, style.height, fit.h);
+        shapes::column_width(e, k, height, |c| self.fit[c].size)
+    }
     fn place(&mut self, e: &Elements, k: Key, origin: [f32; 2]) {
-        let s = self.fit[k];
+        let Fit { size: s, row_offer } = self.fit[k];
         let scale = self.context[k].scale;
         let edge = self.placement[k];
         let [x, y] = [origin[0] + edge.offset[0], origin[1] + edge.offset[1]];
         let policy = e.attrs[k].sizing.height;
         let height = edge.height.for_height(policy).resolve(e, k, policy, s.h);
+        let width = self.width_at(e, k, edge.height);
         let origin_changed = self.frames.get(k).is_none_or(|f| [f.x, f.y] != [x, y]);
         if changed(
             &mut self.frames,
@@ -731,7 +927,7 @@ impl Layers {
             Rect {
                 x,
                 y,
-                width: s.w,
+                width,
                 height,
             },
         ) {
@@ -744,7 +940,9 @@ impl Layers {
                 layers: self,
                 e,
                 height,
+                width,
                 scale,
+                row_offer,
                 translated: origin_changed,
             },
         );

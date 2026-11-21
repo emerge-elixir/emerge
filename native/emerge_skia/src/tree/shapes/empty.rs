@@ -10,7 +10,7 @@ impl LayoutBehaviour for Empty {
     fn measure(_: NoData, _: &mut Measuring<'_>) -> Demand {
         Demand::default()
     }
-    fn reflow(_: Mounted<'_, NoData>, cx: &mut ReflowCx<'_>) -> f32 {
-        cx.box_height(0.)
+    fn reflow(_: Mounted<'_, NoData>, cx: &mut ReflowCx<'_>) -> Heights {
+        cx.box_height(0.).into()
     }
 }

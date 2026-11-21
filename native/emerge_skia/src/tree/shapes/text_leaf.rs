@@ -10,8 +10,8 @@ impl LayoutBehaviour for Text {
     fn measure(text: &str, cx: &mut Measuring<'_>) -> Demand {
         cx.glyph_run(text)
     }
-    fn reflow(_: Mounted<'_, Utf8>, cx: &mut ReflowCx<'_>) -> f32 {
-        cx.measured_height
+    fn reflow(_: Mounted<'_, Utf8>, cx: &mut ReflowCx<'_>) -> Heights {
+        cx.measured_height.into()
     }
 }
 impl PaintBehaviour<Utf8> for Text {

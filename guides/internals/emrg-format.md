@@ -79,7 +79,12 @@ text_input  -> 10
 video       -> 11
 multiline   -> 12
 slider      -> 13
+wrapped_column -> 14
 ```
+
+Tag 14 is an addition to v10. The header, the first thirteen tags, child
+references and attribute encoding are unchanged. Older retained readers
+reject the new kind, not the whole format.
 
 ## Attribute Tags
 

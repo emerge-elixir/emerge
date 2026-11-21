@@ -11,6 +11,7 @@ branch stays in [API parity](../../plans/api-parity.md).
 
 | Kind | Candidate release note | Decision / evidence |
 | --- | --- | --- |
+| Added | `wrapped_column/2` lays children out top to bottom, then starts a column to the right. Height fills share their column; horizontal alignment uses that column's width. `width(content())` fits the occupied columns and gaps. Layouts whose packed width would be needed before their wrap height is known can be refused. | [D10](retained-decisions.md#d10-wrap-columns-at-the-resolved-height) · [one-pixel wrap and local click](../../test/emerge_skia/wrapped_column_test.exs) |
 | Changed | `wrapped_row` now uses minimum widths to choose line breaks, then divides each line's available width by weight, respecting those minima. Two `fill()` children that used to occupy separate lines can now sit side by side. Pixel and content caps can keep a peer on the same line; a floor can push it to the next. Nested widths may combine several fill weights without counting the child twice: in an 84px row with a 4px gap, raising one cap can change a 40/40 split to 50/30 without moving either card to another line. This is intentional, **not a bug fix**. | [D7](retained-decisions.md#d7-share-fill-widths-per-wrapped-line) · [48/48, 24/72 and the wrap threshold](../../test/emerge_skia/wrapped_row_fill_test.exs) |
 | Changed | A globally keyed element of the same kind keeps its occurrence across parent moves or promotion to root; removing it from an accepted declaration ends that lifetime. A press can survive a move, not a removal/reinsert. | [D2](retained-decisions.md#d2-identify-occurrences-rather-than-matching-subtrees) · [promotion test](../../test/emerge_skia/viewport_constraints_test.exs) |
 | Changed | Low-level EMRG clients must use v10 declarations/patch terms; v9 bytes and opcode lists are not accepted. Call `upload_tree/2` on a vacant renderer, then use the returned state with `patch_tree/3` even for a new root. Pass `nil` to clear; `none()` mounts an element. | [D3](retained-decisions.md#d3-replace-one-target-instead-of-sending-a-list-of-mutations) · [wire contract](emrg-format.md) |
@@ -51,6 +52,12 @@ host with padding 2 and gap 4, raising A's cap from 16px to 32px left the next
 line at y=18 in both frames and overlapped A. The next line now starts at
 **y=22 then y=38**, four pixels below A's box. [Submitted cap edit, undo and
 click targets](../../test/emerge_skia/wrapped_row_height_test.exs).
+
+Also reproduced on `aef5e42f`: in a 64×64 WrappedRow with padding 4 and
+16×16 and 32×32 siblings, `align_bottom()` on the first should put it at
+**y=20**. Only a 16×4 strip was visible at y=0 on `main`; retained draws the
+full 16×16 box at y=20. Ordinary Row/Column center controls matched `main`.
+[Line alignment regression](../../test/emerge_skia/wrapped_column_test.exs).
 
 A retained refusal before a port, or a clipping correction that restores
 `main`'s pixels, is not evidence for a `main` fix. No candidate above has been

@@ -24,8 +24,8 @@ defmodule Emerge.UI do
   - zero or more child elements
 
   `el/2` accepts exactly one child. Layout containers such as `row/2`,
-  `wrapped_row/2`, `column/2`, `text_column/2`, and `paragraph/2` accept child
-  lists. Leaf elements such as `text/1`, `image/2`, `svg/2`, `video/2`, and
+  `wrapped_row/2`, `column/2`, `wrapped_column/2`, `text_column/2`, and
+  `paragraph/2` accept child lists. Leaf elements such as `text/1`, `image/2`, `svg/2`, `video/2`, and
   `none/0` have no children.
 
   ## Core Constructors
@@ -36,6 +36,7 @@ defmodule Emerge.UI do
   - `row/2` for a horizontal line of children
   - `wrapped_row/2` for horizontal flow that wraps onto new lines
   - `column/2` for vertical stacks
+  - `wrapped_column/2` for vertical flow that wraps into columns to the right
   - `text_column/2` and `paragraph/2` for wrapped text flows
   - `text/1`, `image/2`, `svg/2`, `video/2`, and `none/0` for content leaves
 
@@ -308,6 +309,29 @@ defmodule Emerge.UI do
   def column(attrs, children) do
     {attrs, nearby, children} = Builder.prepare_children!("column/2", attrs, children)
     Builder.build_element(attrs, nearby, :column, children)
+  end
+
+  @doc """
+  Lay out children from top to bottom, starting a column to the right when the
+  next child no longer fits. `spacing_xy(x, y)` sets the gap between columns
+  and between items in a column, respectively. With no height limit the
+  children form one column. Height fills share space within each column.
+  `width(content())` fits the occupied columns and the gaps between them;
+  `center_x/0` on a child centers it in its own column.
+
+  If another element needs that packed width to decide its own width, the
+  renderer must be able to determine the column breaks before width reflow.
+  For example, a fixed-height container with pixel-height cards works. A
+  content-width column whose remaining height depends on a sibling wrapping
+  at that same width can be refused. Give the container a pixel width to
+  remove that dependency.
+
+      wrapped_column([width(px(120)), height(px(80)), spacing_xy(8, 4)], cards)
+  """
+  @spec wrapped_column(attrs(), children()) :: t()
+  def wrapped_column(attrs, children) do
+    {attrs, nearby, children} = Builder.prepare_children!("wrapped_column/2", attrs, children)
+    Builder.build_element(attrs, nearby, :wrapped_column, children)
   end
 
   @doc """

@@ -22,15 +22,15 @@ fn break_width(e: &Expr, preferred: f64, automatic: f64) -> f64 {
 fn first_chip(k: &Child) -> f64 {
     if k.id.is_multiple_of(2) { 20. } else { 0. }
 }
-fn line_tree(case: &Case) -> Bytes {
-    let root = node(1, 2, case.root(1), &case.ids());
+fn line_tree(case: &Case, axis: u8, kind: u8) -> Bytes {
+    let root = node(1, kind, case.root(axis), &case.ids());
     upload(
         &std::iter::once(root)
             .chain(case.kids.iter().flat_map(|k| {
                 [
-                    node(k.id, 2, k.attrs(1), &[k.id + 200, k.id + 100]),
-                    node(k.id + 200, 6, block(&[px(1, first_chip(k))]), &[]),
-                    node(k.id + 100, 6, block(&[px(1, k.demand)]), &[]),
+                    node(k.id, kind, k.attrs(axis), &[k.id + 200, k.id + 100]),
+                    node(k.id + 200, 6, block(&[px(axis, first_chip(k))]), &[]),
+                    node(k.id + 100, 6, block(&[px(axis, k.demand)]), &[]),
                 ]
             }))
             .collect::<Vec<_>>(),
@@ -92,6 +92,13 @@ fn expected(case: &Case) -> Vec<(f64, f64, f64)> {
 
 #[test]
 fn seeded_wrapped_widths_match_line_math_and_fresh_trees() {
+    check_lines(1, 2);
+}
+#[test]
+fn seeded_wrapped_column_heights_match_line_math_and_fresh_trees() {
+    check_lines(2, 14);
+}
+fn check_lines(axis: u8, kind: u8) {
     for seed in seeds() {
         let mut rng = Rng(seed);
         let mut case = specimen(Auto);
@@ -107,38 +114,38 @@ fn seeded_wrapped_widths_match_line_math_and_fresh_trees() {
         case.gap = rng.next(6) as f64;
         case.pad = rng.next(5) as f64;
         let mut live = Tree::default();
-        live.upload(&line_tree(&case)).unwrap();
+        live.upload(&line_tree(&case, axis, kind)).unwrap();
         for step in 0..8 {
             let i = rng.next(case.kids.len());
             let k = &mut case.kids[i];
             match step {
                 1 | 6 => {
                     case.host = if step == 1 { 0. } else { rng.next(240) as f64 };
-                    live.patch(&set(1, 2, case.root(1))).unwrap();
+                    live.patch(&set(1, kind, case.root(axis))).unwrap();
                 }
                 2 | 7 => {
                     k.expr = policy(&mut rng);
-                    live.patch(&set(k.id, 2, k.attrs(1))).unwrap();
+                    live.patch(&set(k.id, kind, k.attrs(axis))).unwrap();
                 }
                 3 => {
                     k.demand = rng.next(91) as f64;
-                    live.patch(&set(k.id + 100, 6, block(&[px(1, k.demand)])))
+                    live.patch(&set(k.id + 100, 6, block(&[px(axis, k.demand)])))
                         .unwrap();
                 }
                 4 => {
                     case.kids.reverse();
-                    live.patch(&order(1, 2, &case.ids())).unwrap();
+                    live.patch(&order(1, kind, &case.ids())).unwrap();
                 }
                 5 => {
                     k.zoom = [0.5, 1., 2.][rng.next(3)];
-                    live.patch(&set(k.id, 2, k.attrs(1))).unwrap();
+                    live.patch(&set(k.id, kind, k.attrs(axis))).unwrap();
                     case.display = 1.5;
                 }
                 _ => (),
             }
             case.settle(&mut live).unwrap();
             let mut cold = Tree::default();
-            cold.upload(&line_tree(&case)).unwrap();
+            cold.upload(&line_tree(&case, axis, kind)).unwrap();
             case.settle(&mut cold).unwrap();
             for (id, f) in cold.frames() {
                 assert_eq!(
@@ -148,7 +155,12 @@ fn seeded_wrapped_widths_match_line_math_and_fresh_trees() {
             }
             for (k, (x, y, w)) in case.kids.iter().zip(expected(&case)) {
                 let f = live.layers.frames[live.elements.ids[&k.id]];
-                for (actual, want) in [(f.x, x), (f.y, y), (f.width, w)] {
+                let actual = if axis == 1 {
+                    [f.x, f.y, f.width]
+                } else {
+                    [f.y, f.x, f.height]
+                };
+                for (actual, want) in actual.into_iter().zip([x, y, w]) {
                     assert!(
                         (f64::from(actual) - want).abs()
                             <= 8. * f64::from(f32::EPSILON) * want.abs().max(1.),
