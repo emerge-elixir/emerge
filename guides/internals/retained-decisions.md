@@ -85,8 +85,13 @@ internal ABI, not the application's `start/1` contract.
 ### D6. Resolve constraints at the site that offers the space
 
 Instead of special-casing the root in layout, the viewport supplies ordinary
-available width and height. An El offers each axis to its one child; a Row
-splits width, a Column splits height. A parent-assigned share is not evaluated
+available width and height at a zero offset. Unlike a layout parent it never
+reads root alignment for that offset. Keep the attributes: a root El can use
+them for its child, and a future parent may use them to place a [demoted
+box](../../test/emerge_skia/root_alignment_test.exs).
+
+An El offers each axis to its one child; a Row splits width, a Column splits
+height. A parent-assigned share is not evaluated
 as available space again. For static `min`/`max`, fold simple expressions on
 admission; evaluate irreducible formulas from validated bytes, not a heap AST.
 Redistribute actual charges after a cap/floor binds, and use the child's own

@@ -87,3 +87,38 @@ defmodule Emerge.TestSupport.Headless do
   def button(renderer, action, x, y),
     do: EmergeSkia.send_input(renderer, {:pointer_button, {:left, action, [], {x, y}}})
 end
+
+defmodule Emerge.TestSupport.BoxAssertions do
+  @moduledoc false
+  import ExUnit.Assertions
+  alias Emerge.TestSupport.Headless
+
+  # Literal outer rectangles, back to front. No use of the layout decoder.
+  def frame({w, h}, boxes) do
+    for y <- 0..(h - 1), x <- 0..(w - 1), into: <<>> do
+      color =
+        Enum.reduce(boxes, 0, fn {left, top, width, height, color}, behind ->
+          if x >= left and x < left + width and y >= top and y < top + height,
+            do: color,
+            else: behind
+        end)
+
+      <<color::32>>
+    end
+  end
+
+  def button(r, phase, {x, y}) do
+    assert :ok = Headless.button(r, phase, x, y)
+    assert_receive {:raw, {:pointer_button, {:left, ^phase, [], {^x, ^y}}}}
+  end
+
+  def click(r, point, target, {lx, ly}) do
+    for phase <- [:press, :release], do: button(r, phase, point)
+    assert_receive {:application, {^target, %{x: ^lx, y: ^ly}}}
+  end
+
+  def fresh(size, scene, expected) do
+    Headless.mount(size, scene)
+    assert Headless.pixels() == expected
+  end
+end

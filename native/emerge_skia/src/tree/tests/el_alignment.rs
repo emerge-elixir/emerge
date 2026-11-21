@@ -143,11 +143,16 @@ fn a_right_aligned_packed_width_reads_a_height_edit_even_at_equal_natural_fit() 
     }
     r.tree.patch(&set(2, 14, packed_attrs(4, 2))).unwrap();
     let pending = r.tree.encode();
+    // A Row needs its kept child's width before the first card has reflowed.
     assert!(
         r.tree
-            .patch(&patch(1, 2, &[]))
+            .patch(&patch(
+                1,
+                10,
+                &[node(10, 1, el_child::demand(64., 43.), &[2])]
+            ))
             .unwrap_err()
-            .contains("alignment")
+            .contains("before child reflow")
     );
     assert_eq!(pending, r.tree.encode());
     let prev = r.pixels().to_vec();
@@ -161,4 +166,11 @@ fn a_right_aligned_packed_width_reads_a_height_edit_even_at_equal_natural_fit() 
     assert_eq!(r.hit_at(40., 6.), Some((1, 40., 6.)));
     draw(&mut r);
     assert_eq!(r.hit_at(40., 6.), Some((2, 6., 6.)));
+    // At the root there is no earlier sibling split and no horizontal offset.
+    r.tree.patch(&patch(1, 2, &[])).unwrap();
+    draw(&mut r);
+    let b = bounds(&r, 2);
+    assert_eq!([b.x, b.y, b.width, b.height], [0., 0., 12., 44.]);
+    assert_eq!(r.hit_at(6., 6.), Some((2, 6., 6.)));
+    check_fresh(&r);
 }

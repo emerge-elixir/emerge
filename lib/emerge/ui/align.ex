@@ -21,6 +21,11 @@ defmodule Emerge.UI.Align do
   parent. `el` also aligns its child content, and `paragraph` also aligns its
   wrapped text lines.
 
+  The root has no layout parent. `center_x/0` and `align_bottom/0` on a root
+  do **not** center or bottom-align its box in the viewport: it starts at
+  `(0, 0)`. A root `el` still uses those helpers to position its child. A root
+  `row` with the same helpers leaves its children's alignment unchanged.
+
   ## `el`
 
   An `el` positions its child within the padded area. On each axis the

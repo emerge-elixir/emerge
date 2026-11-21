@@ -36,15 +36,20 @@ Rows, columns and their wrapped forms clip ordinary descendants' paint and hits 
 intersecting host frames. Clipping does not shrink the child or change the
 wrapped-line height: spacing is measured between the laid-out child boxes.
 
-The viewport offers its width and height in device pixels at `(0,0)`, just
-as a zero-padding `el` of that size would. The element receiving the offer
+The viewport offers the same width and height in device pixels as a
+zero-padding El of that size, but it does not align the root. Its origin
+stays `(0,0)`, even when a fixed-size root is smaller than the viewport. The element receiving the offer
 doesn't inspect whether it is the root: on either axis, `fill()` and
 `fill(3)` read the same available extent. A Row can instead **assign** a
 child its share of the width, and a Column its share of the height. An
 assignment is used as-is, not passed through the child's policy again.
 Resizing the viewport or promoting a subtree replaces its incoming
-constraints; neither changes how that subtree lays out its own children.
-See the [viewport resize and promotion regressions](../../test/emerge_skia/viewport_constraints_test.exs).
+constraints, not its child-placement rules. For example, a 100×64 root El
+with padding 4, `center_x()` and `align_bottom()` puts a 20×20 child at
+`(40,40)`. The same helpers on a root Row do not align its children. A
+parent can use the root's preserved attributes again after demotion.
+See [viewport sizing](../../test/emerge_skia/viewport_constraints_test.exs) and
+[aligned root moves, frames and clicks](../../test/emerge_skia/root_alignment_test.exs).
 
 Any Column can host ordinary fill-height children. Width flow and bottom-up reflow settle the
 heights of non-fill siblings first, including wrapped lines. Placement splits

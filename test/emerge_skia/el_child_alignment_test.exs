@@ -1,6 +1,7 @@
 defmodule EmergeSkia.ElChildAlignmentTest do
   use ExUnit.Case, async: true
   use Emerge.UI
+  import Emerge.TestSupport.BoxAssertions
   alias Emerge.Engine
   alias Emerge.Engine.Patch
   alias Emerge.TestSupport.Headless
@@ -8,35 +9,6 @@ defmodule EmergeSkia.ElChildAlignmentTest do
   @white 0xFFFFFFFF
   @red 0xFF0000FF
   @blue 0x0000FFFF
-
-  # Literal outer rectangles, back to front. No use of the layout decoder.
-  defp frame({w, h}, boxes) do
-    for y <- 0..(h - 1), x <- 0..(w - 1), into: <<>> do
-      color =
-        Enum.reduce(boxes, 0, fn {left, top, width, height, color}, behind ->
-          if x >= left and x < left + width and y >= top and y < top + height,
-            do: color,
-            else: behind
-        end)
-
-      <<color::32>>
-    end
-  end
-
-  defp button(r, phase, {x, y}) do
-    assert :ok = Headless.button(r, phase, x, y)
-    assert_receive {:raw, {:pointer_button, {:left, ^phase, [], {^x, ^y}}}}
-  end
-
-  defp click(r, point, target, {lx, ly}) do
-    for phase <- [:press, :release], do: button(r, phase, point)
-    assert_receive {:application, {^target, %{x: ^lx, y: ^ly}}}
-  end
-
-  defp fresh(size, scene, expected) do
-    Headless.mount(size, scene)
-    assert Headless.pixels() == expected
-  end
 
   test "the direct child's right and center override is installed with its pixels and local click" do
     scene = fn attrs, callback ->

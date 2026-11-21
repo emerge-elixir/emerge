@@ -21,6 +21,126 @@ pub(super) fn wrapped() -> Bytes {
     ])
 }
 
+pub(super) fn root_attrs(kind: u8, [x, y]: [u8; 2]) -> Bytes {
+    block(
+        &[
+            px(1, 100.),
+            px(2, 64.),
+            [vec![3, 0], 4f64.to_be_bytes().to_vec()].concat(),
+            vec![5, x],
+            vec![6, y],
+            color([0, 0, 255]),
+            vec![40, 1],
+        ]
+        .into_iter()
+        .chain((kind == 5).then(|| text("Hi")[2..].to_vec()))
+        .collect::<Vec<_>>(),
+    )
+}
+pub(super) fn aligned_root(kind: u8, pos: [u8; 2]) -> Bytes {
+    let a = root_attrs(kind, pos);
+    if matches!(kind, 5 | 6) {
+        upload(&[node(1, kind, a, &[])])
+    } else {
+        upload(&[
+            node(1, kind, a, &[2]),
+            node(
+                2,
+                4,
+                block(&[px(1, 20.), px(2, 20.), color([255, 0, 0]), vec![40, 1]]),
+                &[],
+            ),
+        ])
+    }
+}
+
+#[test]
+fn root_alignment_is_retained_but_only_el_reads_it_for_its_child() {
+    for kind in [1, 2, 3, 4, 5, 6, 14] {
+        let mut r = Raster::default();
+        r.tree.upload(&aligned_root(kind, [0, 0])).unwrap();
+        let leading = draw(&mut r).to_vec();
+        for (pos, child) in [
+            ([1, 2], [40., 40.]),
+            ([2, 1], [76., 22.]),
+            ([0, 0], [4., 4.]),
+        ] {
+            r.tree.patch(&set(1, kind, root_attrs(kind, pos))).unwrap();
+            assert!(r.tree.layers.worksets_empty());
+            draw(&mut r);
+            let b = bounds(&r, 1);
+            assert_eq!([b.x, b.y, b.width, b.height], [0., 0., 100., 64.]);
+            if kind == 4 {
+                let b = bounds(&r, 2);
+                assert_eq!([b.x, b.y], child);
+                assert!(ran(&r, Place, 1));
+                assert!(
+                    r.tree
+                        .layers
+                        .trace
+                        .iter()
+                        .all(|(pass, _, _)| !matches!(pass, Context | Measure | Flow | Reflow))
+                );
+            } else {
+                assert!(
+                    r.tree.layers.trace.is_empty(),
+                    "root kind {kind} has no placement reader"
+                );
+                assert_eq!(r.pixels(), leading);
+            }
+            assert_eq!(r.tree.encode(), aligned_root(kind, pos));
+            check_fresh(&r);
+        }
+        r.tree
+            .patch(&set(1, kind, root_attrs(kind, [1, 2])))
+            .unwrap();
+        for (w, h, scale) in [(128., 96., 1.), (50., 32., 1.), (192., 144., 1.5)] {
+            r.draw(w, h, scale).unwrap();
+            let b = bounds(&r, 1);
+            assert_eq!(
+                [b.x, b.y, b.width, b.height],
+                [0., 0., 100. * scale, 64. * scale]
+            );
+            if !matches!(kind, 5 | 6) {
+                let b = bounds(&r, 2);
+                let at = if kind == 4 { 40. } else { 4. };
+                assert_eq!([b.x, b.y], [at * scale; 2]);
+            }
+            assert_eq!(r.hit_at(w, 2.), None); // viewport excludes its right edge
+        }
+    }
+}
+
+// The same closed 100×64 El at (0,0) as root or (30,56) inside this host.
+pub(super) fn demote_aligned_root() -> Bytes {
+    patch(1, 3, &[node(3, 4, el_child::demand(160., 120.), &[1])])
+}
+#[test]
+fn installing_a_settled_demotion_does_not_publish_the_next_promotion() {
+    let mut r = Raster::default();
+    r.tree.upload(&aligned_root(4, [1, 2])).unwrap();
+    draw(&mut r);
+    let key = r.target_at(42., 42.).unwrap().0;
+    r.tree.patch(&demote_aligned_root()).unwrap();
+    assert!(r.settle(180., 170., 1.).unwrap()); // B ready, A still installed
+    r.tree.patch(&patch(3, 1, &[])).unwrap(); // C keeps the panel and child
+    let accepted = r.tree.encode();
+    assert_eq!(
+        r.tree.patch(&set(1, 4, root_attrs(4, [1, 3]))).unwrap_err(),
+        "invalid alignment 3"
+    );
+    assert_eq!(accepted, r.tree.encode());
+    assert_eq!(r.target_at(42., 42.), Some((key, 2, 2., 2.)));
+    assert!(r.hit_at(72., 98.).is_none());
+    r.install();
+    assert!(r.hit_at(42., 42.).is_none());
+    assert_eq!(r.target_at(72., 98.), Some((key, 2, 2., 2.)));
+    draw(&mut r);
+    assert!(r.hit_at(72., 98.).is_none());
+    assert_eq!(r.target_at(42., 42.), Some((key, 2, 2., 2.)));
+    check_fresh(&r);
+}
+
 #[test]
 fn resizing_only_the_viewport_has_the_same_postwrap_fit_as_an_el_offer() {
     let mut direct = Tree::default();

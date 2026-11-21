@@ -46,7 +46,14 @@ impl Counter {
 fn alignment_zones(c: &Counter) {
     for (kind, axis, n) in [(1, 1, 10_000), (3, 2, 12), (2, 1, 16), (14, 2, 16)] {
         let ids: Vec<_> = (2..n + 2).collect();
-        let host = |extent| block(&[px(axis, extent), px(3 - axis, 40.), number(4, 2.)]);
+        let host = |extent, z| {
+            block(&[
+                px(axis, extent),
+                px(3 - axis, 40.),
+                number(4, 2.),
+                vec![4 + axis, z],
+            ])
+        };
         let item = |z| {
             block(&[
                 px(axis, 2.),
@@ -56,7 +63,7 @@ fn alignment_zones(c: &Counter) {
                 vec![40, 1],
             ])
         };
-        let nodes = std::iter::once(node(1, kind, host(60.), &ids))
+        let nodes = std::iter::once(node(1, kind, host(60., 2), &ids))
             .chain(ids.iter().map(|&id| node(id, 4, item((id % 3) as u8), &[])))
             .collect::<Vec<_>>();
         let mut r = Raster::default();
@@ -66,7 +73,8 @@ fn alignment_zones(c: &Counter) {
         });
         for edit in [
             set(2, 4, item(0)),
-            set(1, kind, host(57.)),
+            set(1, kind, host(60., 1)), // same extents; the root has no placing parent
+            set(1, kind, host(57., 1)),
             set(2, 4, item(1)),
             set(2, 4, item(2)),
         ] {
@@ -463,6 +471,27 @@ fn viewport_offers(c: &Counter) {
         },
     );
     assert_eq!(bounds(&r, 2).height, 32.);
+
+    let mut r = Raster::default();
+    r.tree.upload(&viewport::aligned_root(4, [1, 2])).unwrap();
+    c.zero("first aligned root after reservation", || {
+        r.settle(180., 170., 1.).unwrap();
+    });
+    for (edit, at) in [
+        (viewport::demote_aligned_root(), [70., 96.]),
+        (patch(3, 1, &[]), [40., 40.]),
+        (set(1, 4, viewport::root_attrs(4, [2, 0])), [76., 4.]),
+    ] {
+        c.zero(
+            "aligned root move or edit through prepared draw/hit inputs",
+            || {
+                r.tree.patch(&edit).unwrap();
+                r.settle(180., 170., 1.).unwrap();
+            },
+        );
+        let b = bounds(&r, 2);
+        assert_eq!([b.x, b.y], at);
+    }
 }
 
 fn el_child_offers(c: &Counter) {

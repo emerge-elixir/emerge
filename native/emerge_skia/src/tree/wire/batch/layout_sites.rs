@@ -115,25 +115,6 @@ impl Batch {
         for &i in &self.post {
             let s = &self.entries[i];
             let (shape, a) = self.declaration(e, s.id);
-            let parent = s.parent.map(|id| self.declaration(e, id).0);
-            if !matches!(
-                parent,
-                Some(
-                    Shape::El
-                        | Shape::Row
-                        | Shape::Column
-                        | Shape::WrappedRow
-                        | Shape::WrappedColumn
-                )
-            ) && let Some(axis) = a
-                .align
-                .iter()
-                .position(|a| a.is_some_and(|z| z != Alignment::Start))
-            {
-                return Err(format!(
-                    "unsupported alignment on axis {axis} at this layout site"
-                ));
-            }
             if shape == Shape::Column
                 && (!s.closed
                     || s.attrs.as_ref().is_some_and(|(a, _)| {
@@ -149,8 +130,8 @@ impl Batch {
                 self.check_column_basis(e, s.id)?;
             }
             if let Some(p) = s.parent
-                && parent == Some(Shape::WrappedColumn)
                 && !shape.has_intrinsic_height(a.sizing)
+                && self.declaration(e, p).0 == Shape::WrappedColumn
                 && self.needs_early_width(e, p)
             {
                 return Err(early_heights());

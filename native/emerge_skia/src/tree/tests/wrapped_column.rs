@@ -311,20 +311,26 @@ fn cross_alignment_is_placement_only_and_uses_each_groups_own_maximum() {
             let b = bounds(&r, id);
             assert_eq!(if vertical { b.x } else { b.y }, pos);
         }
-        // The kept child can move under an El; promoting it to a root is a
-        // different site and still fails without changing the accepted tree.
+        // The El reads the kept child's alignment. On promotion there is
+        // no parent, but its declared alignment is not stripped.
         r.tree
             .patch(&patch(10, 11, &[node(11, 4, wh(36., 64.), &[2])]))
             .unwrap();
         draw(&mut r);
         let b = bounds(&r, 2);
         assert_eq!(if vertical { b.x } else { b.y }, 24.);
-        let accepted = r.tree.encode();
-        assert!(
+        r.tree.patch(&patch(11, 2, &[])).unwrap();
+        draw(&mut r);
+        let b = bounds(&r, 2);
+        assert_eq!([b.x, b.y], [0., 0.]);
+        let accepted = upload(&[node(2, 4, item(1), &[])]);
+        assert_eq!(r.tree.encode(), accepted);
+        // Leaf child arity is still checked even when the kept child is aligned.
+        assert_eq!(
             r.tree
-                .patch(&patch(11, 2, &[]))
-                .unwrap_err()
-                .contains("alignment")
+                .patch(&patch(2, 12, &[node(12, 6, block(&[]), &[2])]))
+                .unwrap_err(),
+            "leaf has children"
         );
         assert_eq!(r.tree.encode(), accepted);
     }

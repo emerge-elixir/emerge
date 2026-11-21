@@ -520,7 +520,8 @@ impl Layers {
             self.enqueue(Context, root, e);
         }
         // Supply the incoming edge, even on promotion at unchanged viewport
-        // size. There is no synthetic mount or separate root length resolver.
+        // size. The viewport offers space, not alignment: the root offset is
+        // always zero. Its own child placement still reads its declaration.
         self.offer_width(e, root, Constraint::Available(w), false);
         self.offer_placement(e, root, [0.; 2], Constraint::Available(h), false);
         if vp != self.viewport {

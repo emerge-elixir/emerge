@@ -195,7 +195,7 @@ fn row_rejects_unsupported_fields_and_malformed_shapes_without_losing_pending_ed
     for bad in [
         block(&[vec![2, 255]]),
         block(&[vec![1, 3]]),
-        block(&[vec![5, 1]]),
+        block(&[vec![5, 3]]),
         text("not row data"),
     ] {
         assert!(r.tree.patch(&set(1, 1, bad)).is_err());
@@ -218,4 +218,8 @@ fn row_rejects_unsupported_fields_and_malformed_shapes_without_losing_pending_ed
     assert_eq!(r.hit_at(80., 10.), Some((4, 5., 5.)));
     check_cold(&mut r, base(60.));
     assert_eq!(r.hit_at(80., 10.), Some((3, 10., 5.)));
+    let centered = block(&[vec![5, 1]]);
+    r.tree.patch(&set(1, 1, centered.clone())).unwrap();
+    check_cold(&mut r, band(centered, red(px(1, 60.)), &[2, 3, 4]));
+    assert_eq!(bounds(&r, 1).x, 0.);
 }

@@ -110,11 +110,15 @@ fn a_content_column_anchors_its_end_after_width_reflow_and_successful_submission
     assert_eq!((bounds(&r, 1).height, bounds(&r, 5).y), (24., 12.));
     r.tree.patch(&set(1, 3, host(43.))).unwrap();
     let pending = r.tree.encode();
-    assert!(
+    assert_eq!(
         r.tree
-            .patch(&patch(1, 5, &[]))
-            .unwrap_err()
-            .contains("alignment")
+            .patch(&patch(
+                1,
+                5,
+                &[attr_record(5, 4, card(2, 12., 3, [255, 0, 0]))]
+            ))
+            .unwrap_err(),
+        "invalid alignment 3"
     );
     assert_eq!(r.tree.encode(), pending);
     assert!(
@@ -130,6 +134,10 @@ fn a_content_column_anchors_its_end_after_width_reflow_and_successful_submission
     assert_eq!(r.hit_at(5., 15.), None);
     assert_eq!(r.hit_at(5., 27.), Some((5, 5., 3.)));
     check_fresh(&r);
+    r.tree.patch(&patch(1, 5, &[])).unwrap();
+    draw(&mut r);
+    assert_eq!(r.hit_at(5., 3.), Some((5, 5., 3.)));
+    assert_eq!(r.hit_at(5., 27.), None);
 }
 #[test]
 fn a_center_follows_the_resolved_width_of_an_unedited_packed_sibling() {
