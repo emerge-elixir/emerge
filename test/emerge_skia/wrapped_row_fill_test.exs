@@ -257,6 +257,67 @@ defmodule EmergeSkia.WrappedRowFillTest do
     end
   end
 
+  test "a nested cap on a content floor moves the peer only on submission" do
+    build = fn n ->
+      a = nested_card(min(px(50), max(content(), fill())), [chip(20), chip(n)])
+      with_peer(64, a, fill())
+    end
+
+    {p, r} = Headless.mount({100, 40}, fn -> build.(16) end, [:pointer_button], target_fps: 1)
+    before = pixels(64, 40, 44, 0, 20)
+    assert Headless.pixels() == before
+
+    send(
+      p,
+      {:scene,
+       fn ->
+         send(self(), :built)
+         build.(17)
+       end}
+    )
+
+    assert_receive {:application, :built}
+    assert {:ok, ^before} = EmergeSkia.render_to_pixels(r)
+    click(r, 46.0, 6.0, :b, 2.0, 6.0)
+
+    wrapped = pixels(64, 50, 0, 16, 64)
+    assert Headless.pixels(2500) == wrapped
+    click(r, 46.0, 6.0, :a, 46.0, 6.0)
+    {_, cold} = Headless.mount({100, 40}, fn -> build.(17) end, [:pointer_button])
+    assert Headless.pixels() == wrapped
+    click(cold, 46.0, 6.0, :a, 46.0, 6.0)
+
+    send(p, {:scene, fn -> build.(16) end})
+    assert Headless.pixels(2500) == before
+    click(r, 46.0, 6.0, :b, 2.0, 6.0)
+  end
+
+  test "a maximum inside a fill-free operand does not replace the automatic minimum" do
+    cap = min(max(shrink(), px(10)), fill(3))
+    floor = max(px(10), min(fill(3), shrink()))
+    build = fn policy -> with_peer(34, nested_card(policy, [chip(20), chip(17)]), fill()) end
+    {p, r} = Headless.mount({100, 40}, fn -> build.(cap) end, [:pointer_button])
+    assert Headless.pixels() == pixels(34, 34, 0, 32, 34, 28)
+    click(r, 16.0, 6.0, :a, 16.0, 6.0)
+    send(p, {:scene, fn -> build.(floor) end})
+    assert Headless.pixels() == pixels(34, 10, 14, 0, 20, 28)
+    click(r, 16.0, 6.0, :b, 2.0, 6.0)
+  end
+
+  test "nested pixel and content bounds share the child's padded outer units at scale" do
+    build = fn w ->
+      a = card(:a, min(px(30), max(content(), fill(3))), :red, 20, [padding_xy(2, 0), scale(1.5)])
+      with_peer(w, a, fill())
+    end
+
+    {p, r} = Headless.mount({100, 40}, fn -> build.(60) end, [:pointer_button])
+    assert Headless.pixels() == pixels(60, 36, 40, 0, 20, 18)
+    click(r, 42.0, 6.0, :b, 2.0, 6.0)
+    send(p, {:scene, fn -> build.(59) end})
+    assert Headless.pixels() == pixels(59, 45, 0, 22, 59, 18)
+    click(r, 42.0, 6.0, :a, 28.0, 4.0)
+  end
+
   test "a nested card breaks at its minimum, but caps its share at its preferred width" do
     build = fn w, chip2, cap, peer ->
       with_peer(w, nested_card(cap, [chip(20), chip(chip2)]), peer)

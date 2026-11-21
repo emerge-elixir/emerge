@@ -563,16 +563,13 @@ impl Layers {
             }
             m
         };
-        // Apply the incoming edge after the site-independent intrinsic memo.
-        // In a mixed width, content reads preferred demand while fill reads
-        // the minimum measurement. Neither is a share of the line.
+        // Only an explicit floor replaces the intrinsic minimum. Keep the
+        // site-independent demand in the memo, including on a closed move.
         let mut m = m;
-        let a = &e.attrs[k];
-        if a.line_width.projects_minimum() && e.parent_shape(k) == Some(Shape::WrappedRow) {
-            m.min_w = a.line_floor().map_or_else(
-                || a.sizing.width.at_offer(e, k, m.w, m.min_w),
-                |floor| pixels(floor, c.scale),
-            );
+        if let LineWidth::Floor(bounds) = e.attrs[k].line_width
+            && e.parent_shape(k) == Some(Shape::WrappedRow)
+        {
+            m.min_w = bounds.resolve(m.w, c.scale);
         }
         let old = self.measure.get(k).copied();
         if changed(&mut self.measure, k, m) {

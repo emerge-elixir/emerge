@@ -3,19 +3,40 @@
 use super::*;
 
 fn policy(rng: &mut Rng) -> Expr {
-    let w = Fill(Some([0.25, 1., 2., 4.][rng.next(4)]));
-    let (a, b) = (Px(rng.next(81) as f64), Px(rng.next(81) as f64));
-    match rng.next(10) {
-        0 => w,
-        1 => pair(true, w, a),
-        2 => pair(false, a, w),
-        3 => pair(true, a, pair(false, b, w)),
-        4 => pair(false, pair(true, a, w), b),
-        5 => a,
-        6 => Content,
-        7 => pair(true, w, Content),
-        8 => pair(false, Content, w),
-        _ => Auto,
+    fn bound(r: &mut Rng, depth: usize) -> Expr {
+        if depth > 0 && r.next(3) == 0 {
+            pair(r.next(2) == 0, bound(r, depth - 1), bound(r, depth - 1))
+        } else if r.next(2) == 0 {
+            Content
+        } else {
+            Px(r.next(81) as f64)
+        }
+    }
+    match rng.next(8) {
+        0 => Auto,
+        1 => bound(rng, 2),
+        _ => {
+            let fill = Fill(Some([0.25, 1., 2., 4.][rng.next(4)]));
+            (0..rng.next(5)).fold(fill, |expr, _| {
+                let b = bound(rng, 2);
+                let min = rng.next(2) == 0;
+                if rng.next(2) == 0 {
+                    pair(min, b, expr)
+                } else {
+                    pair(min, expr, b)
+                }
+            })
+        }
+    }
+}
+
+// Interpret the written tree, without folding intervals. A max supplies a
+// floor in place of the automatic fill minimum only within its own subtree.
+fn break_width(e: &Expr, preferred: f64, automatic: f64) -> f64 {
+    match e {
+        Min(a, b) => break_width(a, preferred, automatic).min(break_width(b, preferred, automatic)),
+        Max(a, b) => break_width(a, preferred, 0.).max(break_width(b, preferred, 0.)),
+        leaf => leaf.eval(preferred, 1., |_| automatic),
     }
 }
 
@@ -52,13 +73,7 @@ fn expected(case: &Case) -> Vec<(f64, f64, f64)> {
             let first = first_chip(k);
             let preferred = first + k.demand + 2. * k.pad;
             let automatic = first.max(k.demand) + 2. * k.pad;
-            // An explicit pixel floor replaces the automatic one. Otherwise a
-            // fill's contribution is its minimum, and content is its preferred width.
-            let auto =
-                matches!(k.expr, Fill(_)) || matches!(&k.expr, Min(f, _) if matches!(**f, Fill(_)));
-            let basis = k
-                .expr
-                .eval(preferred, 1., |_| if auto { automatic } else { 0. });
+            let basis = break_width(&k.expr, preferred, automatic);
             let model = Child {
                 demand: first + k.demand,
                 expr: pair(false, Px(basis), k.expr.clone()),

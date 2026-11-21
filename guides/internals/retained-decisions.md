@@ -138,6 +138,14 @@ For `max(content(), fill())`, preferred outer width is instead a floor. In a
 so the peer wraps and both get 67px on their own lines. At `aef5e42f`, `main`
 gave both cards 67px before **and** after the edit, with the peer at y=4.
 
+Nested bounds compose around a single fill. For `min(px(50), max(content(), fill()))`
+with a 64px host, gap 4 and a 20px-minimum peer, a 40px content floor fits:
+A/B take **40/20**. Grow the content to 41px: B wraps to y=16 and A stops at
+its 50px cap. `main` at `aef5e42f` drew A at 50px and B at `(0,4)` with width
+64px in **both** states. Only a `max` enclosing the fill replaces its automatic
+minimum; `min(max(content(), px(10)), fill())` still breaks at the capped
+automatic minimum, not at 10px. A masked second fill still counts as two.
+
 Keep line formation separate from sharing: it reads child measurements, host
 inner width and gaps, not lengths, weights or trial shares. Row, each wrapped
 line and Column's height group use the same allocator on the authored lengths.

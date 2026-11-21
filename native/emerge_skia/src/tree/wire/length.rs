@@ -19,23 +19,17 @@ impl Reader<'_> {
                         Length::Px(px)
                     }
                 };
-                (length, None::<LineWidth>) // a bare leaf, not a folded expression
+                (length, LineWidth::Auto)
             },
             |min, (a, left), (b, right)| {
-                let length = fold(min, a, b);
-                use Length::{Content, Fill, Px, Weighted};
-                let rule = match ((a, left), (b, right)) {
-                    _ if length.weight().is_none() => LineWidth::Auto,
-                    ((Px(_), _), (_, rule)) | ((_, rule), (Px(_), _)) => {
-                        rule.unwrap_or_default().pixel_bound(min)
-                    }
-                    ((Content, None), (Fill | Weighted(_), None))
-                    | ((Fill | Weighted(_), None), (Content, None)) => {
-                        LineWidth::ContentBound { min }
-                    }
-                    _ => LineWidth::Unsupported,
+                // Folding preserves fill presence even under a constant bound.
+                let line = match (a.weight(), b.weight()) {
+                    (None, None) => LineWidth::Auto,
+                    (Some(_), Some(_)) => LineWidth::MultipleFills,
+                    (Some(_), None) => left.bounded_by(min, b),
+                    (None, Some(_)) => right.bounded_by(min, a),
                 };
-                (length, Some(rule))
+                (fold(min, a, b), line)
             },
         )?;
         if let Length::Formula(f) = &mut l {
@@ -43,7 +37,7 @@ impl Reader<'_> {
             f.start = start as u32;
             f.end = (raw.len() - self.0.len()) as u32;
         }
-        Ok((l, largest, line.unwrap_or_default()))
+        Ok((l, largest, line))
     }
     fn leaf(&mut self, tag: u8) -> Result<Leaf> {
         match tag {
@@ -99,10 +93,13 @@ impl Reader<'_> {
     }
 }
 impl LineWidth {
-    fn pixel_bound(self, min: bool) -> Self {
+    fn bounded_by(self, min: bool, fill_free: Length) -> Self {
+        // Follow only the fill's path. Caps alone already constrain the
+        // intrinsic minimum. From the first max onward, the explicit floor
+        // is the authored expression with fill = 0 and content = preferred.
         match self {
-            Self::ContentBound { .. } => Self::Unsupported, // no nested mixed width on a wrapped line
-            Self::Auto if !min => Self::PixelFloor, // even an explicit zero replaces the auto minimum
+            Self::Auto if !min => Self::Floor(fill_free.natural_bounds()),
+            Self::Floor(b) => Self::Floor(b.combine(fill_free.natural_bounds(), min)),
             other => other,
         }
     }
@@ -142,15 +139,10 @@ impl Formula {
 }
 
 fn fold(min: bool, a: Length, b: Length) -> Length {
-    let f = if min { f64::min } else { f64::max };
-    // When all variables have the same basis x, min/max of two clamps of
-    // x is another clamp. These endpoints are also global output limits:
-    // clipping an input (including content) to them cannot change the result.
+    // These natural bounds are also global output limits: clipping an
+    // input (including content) to them cannot change the result.
     let (x, y) = (a.natural_bounds(), b.natural_bounds());
-    let bounds = Bounds {
-        floor: f(x.floor, y.floor),
-        cap: f(x.cap, y.cap),
-    };
+    let bounds = x.combine(y, min);
     let reads_content = |l: Length| {
         matches!(l, Length::Content | Length::BoundedContent(_)) || l.reads_fill_content()
     };
@@ -166,7 +158,7 @@ fn fold(min: bool, a: Length, b: Length) -> Length {
             };
         }
         (Some(w), None) | (None, Some(w)) => (w, true),
-        (Some(x), Some(y)) => (f(x, y), x == y),
+        (Some(x), Some(y)) => (if min { x.min(y) } else { x.max(y) }, x == y),
     };
     if bounds.floor == bounds.cap {
         return Length::BoundedFill { bounds, weight: 1. };

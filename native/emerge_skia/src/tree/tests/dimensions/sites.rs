@@ -2,27 +2,15 @@
 use super::*;
 
 impl Expr {
-    fn has_fill(&self) -> bool {
+    fn fill_leaves(&self) -> usize {
         match self {
-            Fill(_) => true,
-            Min(a, b) | Max(a, b) => a.has_fill() || b.has_fill(),
-            _ => false,
+            Fill(_) => 1,
+            Min(a, b) | Max(a, b) => a.fill_leaves() + b.fill_leaves(),
+            _ => 0,
         }
     }
     fn allowed(&self, axis: u8, parent: Option<u8>) -> bool {
-        fn pixels(l: &Expr) -> bool {
-            matches!(l, Px(_)) || matches!(l, Min(a, b) | Max(a, b) if pixels(a) && pixels(b))
-        }
-        fn pixel_bounded(l: &Expr) -> bool {
-            matches!(l, Fill(_))
-                || matches!(l, Min(a, b) | Max(a, b)
-                if (pixels(a) && pixel_bounded(b)) || (pixel_bounded(a) && pixels(b)))
-        }
-        let content_bound = matches!(self, Min(a, b) | Max(a, b)
-            if matches!((&**a, &**b), (Content, Fill(_)) | (Fill(_), Content)));
-        parent != Some(2)
-            || !self.has_fill()
-            || (axis == 1 && (pixel_bounded(self) || content_bound))
+        parent != Some(2) || self.fill_leaves() <= usize::from(axis == 1)
     }
     fn single(&self, natural: f32, host: f64, independent_offer: bool) -> f32 {
         let eval = |unit| self.eval(f64::from(natural), 1., |_| unit);
@@ -51,7 +39,10 @@ fn width_by_height_at_roots_and_all_supported_parent_child_sites() {
         pair(false, Fill(Some(2.)), Px(9.)),
         pair(true, Content, Fill(None)),
         pair(false, Fill(Some(3.)), Content),
+        pair(true, Px(50.), pair(false, Content, Fill(None))),
+        pair(true, pair(false, Content, Px(10.)), Fill(Some(3.))),
         pair(false, Fill(None), pair(true, Px(75.), Fill(Some(3.)))),
+        pair(true, Px(0.), pair(false, Fill(None), Fill(None))),
     ];
     let styles = |w: &Expr, h: &Expr, kind| {
         let mut fields = vec![[vec![3, 0], 2f64.to_be_bytes().to_vec()].concat()];
@@ -237,11 +228,14 @@ fn a_closed_mixed_child_checks_its_new_site_and_scale_without_installing_a_refus
         assert_eq!(target.1, 5);
         r.tree.patch(&set(4, 4, sty(2e38))).unwrap();
         let pending = r.tree.encode();
-        assert!(
-            r.tree
-                .patch(&patch(1, 90, &[node(90, 2, block(&[]), &[4])]))
-                .unwrap_err()
-                .contains("WrappedRow child")
+        let wrap = patch(1, 90, &[node(90, 2, block(&[number(78, 2.)]), &[4])]);
+        assert_eq!(
+            r.tree.patch(&wrap).unwrap_err(),
+            if axis == 1 {
+                "scaled length exceeds device range"
+            } else {
+                "fill height is not supported on a WrappedRow child"
+            }
         );
         let moved = patch(
             1,

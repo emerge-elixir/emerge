@@ -112,11 +112,11 @@ impl Layers {
             let change = std::mem::take(&mut m.change);
             let moved = change.old_parent.is_some_and(|old| old != m.parent);
             if (moved || change.reattached)
-                && (e.attrs[k].line_width.projects_minimum()
+                && (e.attrs[k].line_width.has_floor()
                     || change
                         .attrs
                         .as_ref()
-                        .is_some_and(|(old, _)| old.line_width.projects_minimum()))
+                        .is_some_and(|(old, _)| old.line_width.has_floor()))
             {
                 // The new edge may consume a different wrapped minimum even
                 // if scale, preferred width and every child stayed the same.
@@ -177,10 +177,7 @@ impl Layers {
         }
         let (a, b) = (old.sizing.without_weights(), next.sizing.without_weights());
         let parent = e.parent_shape(k);
-        if a != b
-            || (parent == Some(Shape::WrappedRow)
-                && (old.line_width != next.line_width || old.line_floor() != next.line_floor()))
-        {
+        if a != b || (parent == Some(Shape::WrappedRow) && old.line_width != next.line_width) {
             invalidate(Pass::Measure)
         }
         if a.width != b.width

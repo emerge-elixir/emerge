@@ -85,18 +85,17 @@ fn a_new_minimum_at_equal_preferred_width_can_move_a_peer_to_another_line() {
     }
 }
 
-pub(super) fn content_bound(op: u8, second_chip: f64) -> Bytes {
+pub(super) fn capped_floor(cap: f64, weight: f64) -> Bytes {
+    [vec![1, 4], number(2, cap), vec![5, 1], number(3, weight)].concat()
+}
+
+pub(super) fn content_bound(policy: Bytes, second_chip: f64) -> Bytes {
     upload(&[
         node(1, 2, block(&[vec![1, 0], number(4, 4.)]), &[2, 3]),
         node(
             2,
             2,
-            block(&[
-                vec![1, op, 1, 0],
-                number(4, 4.),
-                color([255, 0, 0]),
-                vec![40, 1],
-            ]),
+            block(&[policy, number(4, 4.), color([255, 0, 0]), vec![40, 1]]),
             &[4, 5],
         ),
         node(4, 6, chip(20.), &[]),
@@ -108,23 +107,19 @@ pub(super) fn content_bound(op: u8, second_chip: f64) -> Bytes {
 
 #[test]
 fn a_preferred_only_edit_survives_a_refusal_without_publishing_early() {
-    for (op, w, chip2, x, old_local, next_peer) in [
-        (4, 100., 10., 42., 4., (48., 0.)), // capped, same line
-        (5, 67., 19., 50., 3., (0., 16.)),  // floored, new line
+    for (policy, w, chip2, grow_to, x, old_local, next_peer) in [
+        (vec![1, 4, 1, 0], 100., 10., 20., 42., 4., (48., 0.)), // capped, same line
+        (vec![1, 5, 1, 0], 67., 19., 20., 50., 3., (0., 16.)),  // floored, new line
+        (capped_floor(50., 1.), 64., 16., 17., 46., 2., (0., 16.)),
     ] {
         let mut r = Raster::default();
-        r.tree.upload(&content_bound(op, chip2)).unwrap();
+        r.tree.upload(&content_bound(policy, chip2)).unwrap();
         let old = r.draw(w, 40., 1.).unwrap().to_vec();
         let old_hit = Some((3, old_local, 6.));
         assert_eq!(r.hit_at(x, 6.), old_hit);
-        r.tree.patch(&set(5, 6, chip(20.))).unwrap();
+        r.tree.patch(&set(5, 6, chip(grow_to))).unwrap();
         let pending = r.tree.encode();
-        for field in [
-            vec![1, 4, 1, 5, 1, 0], // nested content bound
-            vec![1, 4, 4, 1, 1, 0], // content is a folded expression, not a leaf
-            vec![1, 4, 1, 5, 0, 0], // two fills
-            vec![2, 4, 1, 0],       // height
-        ] {
+        for field in [vec![1, 4, 1, 5, 0, 0], vec![2, 4, 1, 0]] {
             assert!(
                 r.tree
                     .patch(&set(2, 2, block(&[field])))
@@ -199,6 +194,15 @@ fn content_floor_measure_follows_the_final_parent_and_operator() {
     let fill = || block(&[vec![1, 0]]);
     let style = |width| block(&[width, number(4, 4.)]);
     let policy = |op| set(4, 2, style(vec![1, op, 1, 0]));
+    // max(fill(w), min(content, px(n))) has the same natural bounds for
+    // every n. Only its explicit wrapped minimum reads this cap on content.
+    let limited_floor = |n, w| {
+        set(
+            4,
+            2,
+            style([vec![1, 5], number(3, w), vec![4, 1], number(2, n)].concat()),
+        )
+    };
     t.upload(&upload(&[
         node(1, 2, style(vec![1, 0]), &[2, 3]),
         node(2, 2, fill(), &[4]),
@@ -219,6 +223,10 @@ fn content_floor_measure_follows_the_final_parent_and_operator() {
         (vec![promote()], 0., 16.),
         (vec![interpose(), set(4, 2, style(vec![1, 0]))], 35.5, 0.),
         (vec![policy(5), promote()], 0., 16.),
+        (vec![limited_floor(43., 1.)], 47., 0.),
+        (vec![limited_floor(44., 1.)], 0., 16.),
+        (vec![interpose()], 35.5, 0.),
+        (vec![promote(), limited_floor(43., 1.)], 47., 0.),
     ] {
         for wire in edits {
             t.patch(&wire).unwrap();
@@ -234,6 +242,31 @@ fn content_floor_measure_follows_the_final_parent_and_operator() {
             assert_eq!(t.layers.frames[t.elements.ids[&id]], frame);
         }
     }
+    t.patch(&limited_floor(43., 3.)).unwrap();
+    t.refresh(67., 40., 1.).unwrap();
+    assert!(!t.layers.trace.iter().any(|(p, _, _)| *p == Measure));
+    assert_eq!(t.layers.frames[t.elements.ids[&3]].x, 47.);
+}
+
+#[test]
+fn a_single_fill_is_admitted_through_depth_64_but_not_65() {
+    let deep = |depth| {
+        let expr = (1..depth).fold(vec![5, 1, 0], |inner, _| {
+            [vec![4], number(2, 50.), inner].concat()
+        });
+        [vec![1], expr].concat()
+    };
+    let mut r = Raster::default();
+    r.tree.upload(&content_bound(deep(64), 16.)).unwrap();
+    r.tree.patch(&set(5, 6, chip(17.))).unwrap();
+    let pending = r.tree.encode();
+    assert_eq!(
+        r.tree.patch(&set(2, 2, block(&[deep(65)]))).unwrap_err(),
+        "length expression depth exceeds 64"
+    );
+    assert_eq!(r.tree.encode(), pending);
+    r.draw(64., 40., 1.).unwrap();
+    assert_eq!((bounds(&r, 2).width, bounds(&r, 3).y), (50., 16.));
 }
 
 #[test]
@@ -260,11 +293,21 @@ fn explicit_zero_changes_line_membership_at_equal_folded_bounds() {
         let b = bounds(&r, 3);
         assert_eq!((bounds(&r, 2).width, b.x, b.y), (aw, bx, by));
     }
+    let masked = |expr: Bytes| [vec![1, 4], number(2, 0.), expr].concat();
+    for one_fill in [vec![4, 1, 0], vec![5, 1, 0]] {
+        r.tree
+            .patch(&set(2, 4, block(&[masked(one_fill)])))
+            .unwrap();
+        draw(&mut r);
+        assert_eq!(
+            (bounds(&r, 2).width, bounds(&r, 3).x, bounds(&r, 3).y),
+            (0., 4., 0.)
+        );
+    }
+    // Even under a zero cap, count *authored* leaves before folding.
     let pending = r.tree.encode();
-    // Masking content or a second fill with a zero cap does not make the
-    // declaration a pixel bound on one fill. Equal output isn't admission.
-    for mixed in [vec![4, 1, 0], vec![5, 1, 0], vec![5, 0, 0]] {
-        let width = [vec![1, 4], number(2, 0.), mixed].concat();
+    for two_fills in [vec![5, 0, 0], vec![4, 4, 0, 1, 5, 1, 0]] {
+        let width = masked(two_fills);
         assert!(
             r.tree
                 .patch(&set(2, 4, block(&[width])))

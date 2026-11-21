@@ -119,13 +119,20 @@ fn independent_width_reflows_wrapped_lines_and_places_the_following_child() {
 #[test]
 fn a_closed_move_checks_site_and_masked_scale_before_publishing_the_new_width() {
     let mut r = Raster::default();
-    // A caps to min(content, 3u, masked px); the Row splits 120 as 90/30.
+    // Two equal fill leaves still refuse on a wrapped line. In the Row
+    // min(content, min(3u, 3u), masked px) splits 120 as 90/30.
     // The other Column's width is 54 logical px at scale 2, i.e. 108 device px.
     let cap = |n| {
         panel(
             1,
             2,
-            [vec![1, 4, 4, 1], number(3, 3.), number(2, n)].concat(),
+            [
+                vec![1, 4, 4, 1, 4],
+                number(3, 3.),
+                number(3, 3.),
+                number(2, n),
+            ]
+            .concat(),
         )
     };
     r.tree

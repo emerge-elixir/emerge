@@ -49,8 +49,20 @@ impl Bounds<f64> {
         floor: 0.,
         cap: f64::INFINITY,
     };
+    // Pointwise min/max of two clamps of the same input is another clamp.
+    fn combine(self, other: Self, min: bool) -> Self {
+        let choose = if min { f64::min } else { f64::max };
+        Self {
+            floor: choose(self.floor, other.floor),
+            cap: choose(self.cap, other.cap),
+        }
+    }
     fn device(self, scale: f32) -> Bounds<f32> {
         self.map(|v| scale::pixels(v, scale))
+    }
+    fn resolve(self, basis: f32, scale: f32) -> f32 {
+        let b = self.device(scale);
+        basis.clamp(b.floor, b.cap)
     }
 }
 /// Only a mixed expression which cannot be reduced to a single pixel clamp
@@ -146,10 +158,7 @@ impl Length {
                 natural: bounds, ..
             })
             | Self::BoundedContent(bounds)
-            | Self::BoundedFill { bounds, .. } => {
-                let b = bounds.device(scale());
-                basis.clamp(b.floor, b.cap)
-            }
+            | Self::BoundedFill { bounds, .. } => bounds.resolve(basis, scale()),
             _ => basis,
         }
     }
@@ -192,22 +201,20 @@ impl BoxStyle {
         }
     }
 }
-/// Admission and measurement dependency at a wrapped edge. The allocator
-/// evaluates the original length, never this description of its syntax.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// Only the incoming wrapped edge reads this minimum. Allocation always
+/// evaluates the original length, not this projection of it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 enum LineWidth {
     #[default]
     Auto,
-    PixelFloor,
-    // Changing just the operator can change the minimum; changing just the weight cannot.
-    ContentBound {
-        min: bool,
-    },
-    Unsupported,
+    /// An explicit floor replaces the automatic minimum. It is a clamp of
+    /// the child's preferred outer width (a constant for pixel-only bounds).
+    Floor(Bounds<f64>),
+    MultipleFills,
 }
 impl LineWidth {
-    fn projects_minimum(self) -> bool {
-        matches!(self, Self::PixelFloor | Self::ContentBound { .. })
+    fn has_floor(self) -> bool {
+        matches!(self, Self::Floor(_))
     }
 }
 #[derive(Clone, Debug, Default)]
@@ -225,11 +232,6 @@ struct Attrs {
     // Relative to the pooled wire block. No retained String or second copy of UTF-8.
     text: Range<usize>,
     glyph_count: usize,
-}
-impl Attrs {
-    fn line_floor(&self) -> Option<f64> {
-        (self.line_width == LineWidth::PixelFloor).then(|| self.sizing.width.natural_bounds().floor)
-    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Subtree {

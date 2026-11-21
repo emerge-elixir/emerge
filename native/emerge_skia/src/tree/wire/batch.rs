@@ -199,7 +199,7 @@ impl Batch {
                         == Shape::WrappedRow
                 })
             {
-                if a.line_width == LineWidth::Unsupported {
+                if a.line_width == LineWidth::MultipleFills {
                     return Err("compound fill width is not supported on a WrappedRow child".into());
                 }
                 if a.sizing.height.weight().is_some() {

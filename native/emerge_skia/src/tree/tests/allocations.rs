@@ -333,9 +333,17 @@ fn pixel_bounded_lines(c: &Counter) {
 }
 
 fn content_bounded_lines(c: &Counter) {
-    for (op, w, narrow, before, after) in [
-        (4, 100., 10., (38., 0.), (48., 0.)),
-        (5, 67., 19., (47., 0.), (0., 16.)),
+    for (policy, w, narrow, wide, before, after) in [
+        (vec![1, 4, 1, 0], 100., 10., 20., (38., 0.), (48., 0.)),
+        (vec![1, 5, 1, 0], 67., 19., 20., (47., 0.), (0., 16.)),
+        (
+            wrapped_width::capped_floor(50., 3.),
+            64.,
+            16.,
+            17.,
+            (44., 0.),
+            (0., 16.),
+        ),
     ] {
         let mut r = Raster::default();
         let peer = |r: &Raster| {
@@ -343,13 +351,13 @@ fn content_bounded_lines(c: &Counter) {
             (f.x, f.y)
         };
         r.tree
-            .upload(&wrapped_width::content_bound(op, narrow))
+            .upload(&wrapped_width::content_bound(policy, narrow))
             .unwrap();
         c.zero("first wrapped content bound after reservation", || {
             r.settle(w, 40., 1.).unwrap();
         });
         assert_eq!(peer(&r), before);
-        let wider = set(5, 6, wrapped_width::chip(20.));
+        let wider = set(5, 6, wrapped_width::chip(wide));
         c.zero(
             "preferred-only edit through prepared paint/hit inputs",
             || {
