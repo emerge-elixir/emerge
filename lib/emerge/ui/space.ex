@@ -16,8 +16,7 @@ defmodule Emerge.UI.Space do
     between an element frame and its content
   - `spacing/1` and `spacing_xy/2` to add gaps between children in layout
     containers
-  - `space_evenly/0` to turn the remaining room in a row or column into equal
-    gaps between children
+  - `space_evenly/0` to share the remaining width of a row between its children
 
   ## Padding
 
@@ -55,18 +54,20 @@ defmodule Emerge.UI.Space do
 
   ## Even Distribution
 
-  `space_evenly/0` is for rows and columns with definite room on their main
-  axis.
+  In a `row/2` with a pixel width or a width that requests fill, `space_evenly/0`
+  sizes the children **without reserving fixed gaps**. It divides any width left
+  over into equal gaps *between* the children, in declaration order. A single
+  child starts at the padded left edge. Horizontal alignment groups don't apply
+  while this is active; vertical alignment still does.
 
-  - on `row/2`, the row needs definite width, such as `width(px(...))` or
-    `width(fill())` inside a bounded parent
-  - on `column/2`, the column needs definite height, such as `height(px(...))`
-    or `height(fill())` inside a bounded parent
-  - when active, `space_evenly/0` derives equal gaps from the remaining room
-    between children
-  - it does not add extra gap before the first child or after the last child
-  - it replaces fixed main-axis spacing while active, so `spacing/1` or
-    `spacing_xy/2` no longer controls those gaps
+  For example, in a 100px row with padding 4, three 20px cards start at
+  **4, 40 and 76**. Replace the middle width with `fill()` and it takes all
+  52 remaining pixels: there is no gap. With `spacing(4)` instead of
+  `space_evenly()`, the same fill only gets 44 pixels.
+
+  A content-sized row keeps its authored spacing and alignment groups, even
+  with a content floor such as `width(max(px(100), content()))`. The retained
+  renderer currently accepts `space_evenly/0` only on a plain row.
 
   ## Examples
 
@@ -224,11 +225,10 @@ defmodule Emerge.UI.Space do
   @doc """
   Turn remaining main-axis room into equal gaps between children.
 
-  `space_evenly/0` only takes effect on rows and columns that have definite room
-  on their main axis. It creates equal gaps between consecutive children, with
-  no extra outer gap before the first child or after the last child.
-
-  When active, fixed main-axis spacing no longer controls those gaps.
+  On a plain row with a pixel or fill width, size the children first and put
+  equal gaps between consecutive children. There are no edge gaps or negative
+  gaps on overflow. Remove this attribute to restore horizontal alignment
+  groups and fixed spacing; content-sized rows already use those rules.
 
   ## Example
 

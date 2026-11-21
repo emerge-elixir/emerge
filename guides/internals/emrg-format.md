@@ -111,6 +111,10 @@ mouse_over, focused, mouse_down
 snap_layout, snap_text_metrics, space_evenly
 ```
 
+Tag `37` (`space_evenly`) carries one byte: `0` for false, `1` for true.
+The retained reader currently accepts it on a plain Row only. It retains
+both the flag and the authored spacing; calculated gaps are not serialized.
+
 Layout scale is tag `78` followed by a finite, positive big-endian `f64`.
 The wire contains the authored factor, never the product with an ancestor or
 the display. An attrs-only replacement can rescale a closed subtree without

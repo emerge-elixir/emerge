@@ -44,26 +44,41 @@ impl Counter {
     }
 }
 fn alignment_zones(c: &Counter) {
-    for (kind, axis, n) in [(1, 1, 10_000), (3, 2, 12), (2, 1, 16), (14, 2, 16)] {
+    for (kind, axis, n, even) in [
+        (1, 1, 10_000, false),
+        (1, 1, 10_000, true),
+        (3, 2, 12, false),
+        (2, 1, 16, false),
+        (14, 2, 16, false),
+    ] {
         let ids: Vec<_> = (2..n + 2).collect();
-        let host = |extent, z| {
-            block(&[
+        let host = |extent, z, on| {
+            let mut fields = vec![
                 px(axis, extent),
                 px(3 - axis, 40.),
                 number(4, 2.),
                 vec![4 + axis, z],
-            ])
+            ];
+            if on {
+                fields.push(vec![37, 1]);
+            }
+            block(&fields)
         };
         let item = |z| {
             block(&[
-                px(axis, 2.),
+                if even && z == 1 {
+                    nested::range(axis, 1., 3., 2.)
+                } else {
+                    px(axis, 2.)
+                },
                 px(3 - axis, 4.),
                 vec![4 + axis, z],
                 color([255, 0, 0]),
                 vec![40, 1],
             ])
         };
-        let nodes = std::iter::once(node(1, kind, host(60., 2), &ids))
+        let extent = if even { 48_000. } else { 60. };
+        let nodes = std::iter::once(node(1, kind, host(extent, 2, even), &ids))
             .chain(ids.iter().map(|&id| node(id, 4, item((id % 3) as u8), &[])))
             .collect::<Vec<_>>();
         let mut r = Raster::default();
@@ -73,8 +88,9 @@ fn alignment_zones(c: &Counter) {
         });
         for edit in [
             set(2, 4, item(0)),
-            set(1, kind, host(60., 1)), // same extents; the root has no placing parent
-            set(1, kind, host(57., 1)),
+            set(1, kind, host(extent, 1, even)), // the root has no placing parent
+            set(1, kind, host(extent, 1, false)),
+            set(1, kind, host(extent - 3., 1, even)),
             set(2, 4, item(1)),
             set(2, 4, item(2)),
         ] {

@@ -72,6 +72,7 @@ fn expected(case: &Case) -> Vec<(f64, f64, f64)> {
             host: case.host,
             pad: case.pad,
             gap: case.gap,
+            even: false,
             display: z,
         };
         boxes.extend(

@@ -185,10 +185,11 @@ impl Layers {
         if a != b || (parent == Some(Shape::WrappedRow) && old.line_floor != next.line_floor) {
             invalidate(Pass::Measure)
         }
+        let width_gap_changed = old.width_gap_charge() != next.width_gap_charge();
         if a.width != b.width
             || a.padding[1] != b.padding[1]
             || a.padding[3] != b.padding[3]
-            || (a.spacing[0] != b.spacing[0] && shape.reads_flow(b.width, FlowInput::HorizontalGap))
+            || (width_gap_changed && shape.reads_flow(b.width, FlowInput::HorizontalGap))
         {
             invalidate(Pass::Flow)
         }
@@ -197,7 +198,8 @@ impl Layers {
             if a.height != b.height || vertical_padding {
                 invalidate(Pass::Reflow)
             }
-            if (shape.allots_width() && a.spacing[0] != b.spacing[0])
+            if (shape.allots_width() && width_gap_changed)
+                || old.even_row() != next.even_row()
                 || vertical_padding
                 || a.padding[3] != b.padding[3]
             {
@@ -218,7 +220,10 @@ impl Layers {
         if shape.uses_glyphs() && &old_raw[old.text.clone()] != e.text(k).as_bytes() {
             self.text_changed(k, depth)
         }
-        if align_changed && let Some(p) = e.slots[k].parent {
+        if align_changed
+            && let Some(p) = e.slots[k].parent
+            && (old.align[1] != next.align[1] || !e.attrs[p].even_row())
+        {
             self.invalidate(Pass::Place, p, e.depth(p));
         }
         // The single-column basis in Flow may stay equal while the policy
@@ -235,9 +240,10 @@ impl Layers {
         }
         if shape.offers_inner_height()
             && a.padding[1] != b.padding[1]
-            && e.children(k)
-                .iter()
-                .any(|&c| e.alignment(c, 0) != Alignment::Start)
+            && (next.even_row()
+                || e.children(k)
+                    .iter()
+                    .any(|&c| e.alignment(c, 0) != Alignment::Start))
         {
             self.invalidate(Pass::Place, k, depth);
         }

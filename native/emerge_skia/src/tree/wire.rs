@@ -100,6 +100,13 @@ fn attrs(raw: &[u8], shape: Shape) -> Result<Attrs> {
             }
             4 => a.sizing.spacing = [r.number()?; 2],
             36 => a.sizing.spacing = [r.number()?, r.number()?],
+            37 if shape == Shape::Row => {
+                a.space_evenly = match r.byte()? {
+                    0 => false,
+                    1 => true,
+                    v => return Err(format!("invalid space_evenly flag {v}")),
+                }
+            }
             tag @ (5 | 6) => {
                 a.align[usize::from(tag - 5)] = Some(match r.byte()? {
                     0 => Alignment::Start,

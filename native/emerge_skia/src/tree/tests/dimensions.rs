@@ -111,16 +111,21 @@ struct Case {
     host: f64,
     pad: f64,
     gap: f64,
+    even: bool,
     display: f64,
 }
 impl Case {
     fn root(&self, axis: u8) -> Bytes {
-        block(&[
+        let mut fields = vec![
             px(axis, self.host),
             px(3 - axis, 12.),
             number(4, self.gap),
             [vec![3, 0], self.pad.to_be_bytes().to_vec()].concat(),
-        ])
+        ];
+        if self.even {
+            fields.push(vec![37, 1]);
+        }
+        block(&fields)
     }
     fn ids(&self) -> Vec<u64> {
         self.kids.iter().map(|c| c.id).collect()
@@ -153,9 +158,9 @@ impl Case {
                 .map(|c| (self.pad * z, c.extent(z, |_| inner)))
                 .collect();
         }
-        let room =
-            ((self.host - 2. * self.pad - self.gap * self.kids.len().saturating_sub(1) as f64) * z)
-                .max(0.);
+        let gaps = self.kids.len().saturating_sub(1) as f64;
+        let charge = if self.even { 0. } else { self.gap };
+        let room = ((self.host - 2. * self.pad - charge * gaps) * z).max(0.);
         let sum = |unit: f64| {
             self.kids
                 .iter()
@@ -183,13 +188,18 @@ impl Case {
             }
             hi
         };
+        let gap = if self.even && gaps > 0. {
+            (room - sum(unit)).max(0.) / gaps
+        } else {
+            charge * z
+        };
         let mut pos = self.pad * z;
         self.kids
             .iter()
             .map(|c| {
                 let w = c.extent(z, |w| w * unit);
                 let x = pos;
-                pos += w + self.gap * z;
+                pos += w + gap;
                 (x, w)
             })
             .collect()
@@ -208,10 +218,18 @@ impl Case {
             })
             .collect::<Vec<_>>();
         for ((x, w), (ex, ew)) in spans.iter().copied().zip(self.expected(site)) {
-            let close = |a: f32, b: f64| {
-                (f64::from(a) - b).abs() <= 8. * f64::from(f32::EPSILON) * b.abs().max(1.)
+            let close = |a: f32, b: f64, basis: f64| {
+                (f64::from(a) - b).abs()
+                    <= 8. * f64::from(f32::EPSILON) * b.abs().max(basis).max(1.)
             };
-            if !close(x, ex) || !close(w, ew) {
+            // Even a subpixel origin includes the residual of two host-sized
+            // f32 extents. Widths have no such extra subtraction.
+            let basis = if self.even {
+                self.host * self.display
+            } else {
+                0.
+            };
+            if !close(x, ex, basis) || !close(w, ew, 0.) {
                 return Err(format!("actual ({x},{w}), expected ({ex},{ew})"));
             }
         }
@@ -271,6 +289,7 @@ fn specimen(a: Expr) -> Case {
         kids: vec![child(2, a, 20.), child(3, Fill(None), 90.)],
         host: 120.,
         gap: 0.,
+        even: false,
         pad: 0.,
         display: 1.,
     }
@@ -440,6 +459,57 @@ fn seeded_dimension_edits_match_math_and_fresh_trees() {
                     );
                 }
             }
+        }
+    }
+}
+
+#[test]
+fn seeded_even_row_shares_and_positions_match_math_and_fresh_trees() {
+    for seed in seeds() {
+        let mut rng = Rng(seed);
+        let mut c = specimen(Auto);
+        c.kids = (0..rng.next(8))
+            .map(|i| Child {
+                id: 2 + i as u64,
+                expr: rng.expr(3),
+                demand: rng.next(64) as f64,
+                zoom: [0.5, 1., 1.5][rng.next(3)],
+                pad: rng.next(4) as f64,
+            })
+            .collect();
+        c.even = true;
+        c.pad = rng.next(5) as f64;
+        c.gap = rng.next(15) as f64 / 2.;
+        let mut live = Tree::default();
+        live.upload(&c.upload(RowWidth)).unwrap();
+        for step in 0..6 {
+            match step {
+                1 | 2 => {
+                    c.even = step == 2;
+                    live.patch(&set(1, 1, c.root(1))).unwrap();
+                }
+                3 => {
+                    c.kids.reverse();
+                    live.patch(&order(1, 1, &c.ids())).unwrap();
+                }
+                4 if !c.kids.is_empty() => {
+                    let i = rng.next(c.kids.len());
+                    c.kids[i].expr = rng.expr(3);
+                    live.patch(&set(c.kids[i].id, 4, c.kids[i].attrs(1)))
+                        .unwrap();
+                }
+                5 => {
+                    c.host = rng.next(160) as f64;
+                    c.display = 1.5;
+                    live.patch(&set(1, 1, c.root(1))).unwrap();
+                }
+                _ => (),
+            }
+            c.settle(&mut live).unwrap();
+            let spans = c
+                .verify(RowWidth, &live)
+                .unwrap_or_else(|e| panic!("seed {seed} step {step}: {e}; {c:?}"));
+            assert_eq!(spans, c.cold(RowWidth).unwrap(), "seed {seed} step {step}");
         }
     }
 }

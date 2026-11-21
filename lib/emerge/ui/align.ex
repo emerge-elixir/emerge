@@ -78,8 +78,10 @@ defmodule Emerge.UI.Align do
   keep their declaration order and spacing within each group. If boxes overlap,
   later siblings paint on top and the later eligible listener receives the click.
 
-  `align_top/0`, `center_y/0`, and `align_bottom/0` position each child within
-  the row height.
+  When `Emerge.UI.Space.space_evenly/0` is active, the row instead places its
+  children in declaration order and distributes the leftover width between them.
+  `align_top/0`, `center_y/0`, and `align_bottom/0` still position each child
+  within the row height.
 
   If you put an alignment helper on the `row` itself, it positions that `row`
   inside its parent. It is not inherited by the row's children.

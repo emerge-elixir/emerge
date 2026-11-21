@@ -105,6 +105,14 @@ that can still grow or shrink divide the remainder by weight. In a 120px Row,
 take **15px each**. All caps can leave unused space, and unavoidable floors
 can overflow. Neither case changes the host clip.
 
+A plain Row with active [`space_evenly()`](retained-decisions.md#d12-resolve-row-widths-before-distributing-even-gaps)
+charges no fixed gaps during that split. Place uses the **resolved widths** to
+distribute only the remaining space between consecutive children. With a 100px
+Row, padding 4 and children `20, fill(), 20`, switching from spacing 4 to even
+moves the fill from x=28 to x=24 **and widens it from 44 to 52**. Its contents
+may rewrap. Changing spacing mode doesn't change its intrinsic measurement or
+publish its new origin before submission.
+
 A WrappedRow chooses a line before distributing any of its space. Subtract
 left and right host padding once. The next child fits when the measured outer
 widths (including child padding) and the gaps **between** them fit that inner

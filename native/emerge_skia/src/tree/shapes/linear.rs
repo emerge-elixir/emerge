@@ -72,6 +72,14 @@ impl<const M: usize, const W: bool, const T: u8> Linear<M, W, T> {
         [pair[M], pair[1 - M]]
     }
 
+    fn even_gap(line: &[Key], room: f32, extent: impl Fn(Key) -> f32) -> f32 {
+        if line.len() < 2 {
+            return 0.;
+        }
+        let occupied: f32 = line.iter().copied().map(extent).sum();
+        (room - occupied).max(0.) / (line.len() - 1) as f32
+    }
+
     fn advance(cursor: &mut Cursor, extent: f32, gap: f32, zone: Alignment) -> f32 {
         if zone == Alignment::End {
             cursor.edge = cursor.next - extent;
@@ -291,6 +299,7 @@ impl<const M: usize, const W: bool, const T: u8> LayoutBehaviour for Linear<M, W
     }
     fn place_children(node: Mounted<'_, Children>, cx: &mut PlaceCx<'_>) {
         let style = node.attrs().sizing;
+        let even = M == X && !W && node.attrs().even_row();
         let children = node.data();
         let e = node.elements;
         let (origin, inner) = cx.padded_height_offer(style);
@@ -366,7 +375,23 @@ impl<const M: usize, const W: bool, const T: u8> LayoutBehaviour for Linear<M, W
                 };
                 (Size { w, h, ..fit }, edge)
             };
-            let zone = |c: Key| e.attrs[c].align[M].unwrap_or_default();
+            // Sizes are settled. Even spacing uses the existing forward cursor
+            // for every child; it replaces main-axis zones, not cross alignment.
+            let main_gap = if even {
+                Self::even_gap(line, main_room, |c| {
+                    let (s, _) = resolved(c, cx);
+                    Self::axes([s.w, s.h])[0]
+                })
+            } else {
+                gap[M]
+            };
+            let zone = |c: Key| {
+                if even {
+                    Alignment::Start
+                } else {
+                    e.attrs[c].align[M].unwrap_or_default()
+                }
+            };
             let align = |c: Key| e.attrs[c].align[1 - M].unwrap_or_default();
             let interval = if W && line.iter().any(|&c| align(c) != Alignment::Start) {
                 line.iter()
@@ -381,7 +406,7 @@ impl<const M: usize, const W: bool, const T: u8> LayoutBehaviour for Linear<M, W
             let occupied_cross = Self::place_zones(
                 line,
                 main_room,
-                gap[M],
+                main_gap,
                 zone,
                 cx,
                 resolved,

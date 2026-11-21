@@ -813,7 +813,7 @@ impl Layers {
                 inner,
                 offer_children,
                 policy: b.width,
-                gap: pixels(b.spacing[0], scale),
+                gap: pixels(e.attrs[k].width_gap_charge(), scale),
                 layers: self,
                 e,
             },

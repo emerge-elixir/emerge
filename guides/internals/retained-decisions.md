@@ -241,3 +241,19 @@ paints **blue** and routes the click to blue at local `(15,6)`: later eligible
 siblings win in the one declaration order, even on overflow. The comparison
 with `main` is of pixels, not its seat routing. [Public frames and clicks](../../test/emerge_skia/linear_zones_test.exs) ·
 [transposed geometry oracle](../../native/emerge_skia/src/tree/tests/dimensions/zones.rs).
+
+### D12. Resolve Row widths before distributing even gaps
+
+`space_evenly()` is a Row policy, not a fourth child alignment. Like `main`,
+keep authored gaps in the intrinsic width. A content parent can assign a fill
+Row its natural **76px**, including padding 4 and two authored 4px gaps around
+three 20px cards. Once the Row has its width, a pixel or fill policy activates
+spacing; auto, content and bounded content do not. The final width alone
+can't distinguish `px(100)` from `max(px(100), content())`.
+
+With the flag active, Flow charges zero gaps to the existing width allocator.
+Place sums the resolved outer widths and divides any nonnegative remainder
+among the `n − 1` gaps. Use the forward cursor in declaration order, with no
+edge gaps; even an end-aligned singleton leads. Cross alignment, clipping
+and stacking do not change. [Sizes, pixels and installed local clicks](../../test/emerge_skia/row_even_spacing_test.exs) ·
+[policy changes and failed handoff](../../native/emerge_skia/src/tree/tests/row_even.rs).

@@ -235,6 +235,7 @@ struct Attrs {
     line_floor: Option<Bounds<f64>>,
     height_floor: Option<Bounds<f64>>,
     align: [Option<Alignment>; 2],
+    space_evenly: bool,
     // Admission also checks operands masked by a tighter bound. This is not a layout input.
     largest_length_px: f64,
     family: Option<Family>,
@@ -246,6 +247,22 @@ struct Attrs {
     // Relative to the pooled wire block. No retained String or second copy of UTF-8.
     text: Range<usize>,
     glyph_count: usize,
+}
+impl Attrs {
+    // Only a plain Row admits the flag. A content floor is not a width allocation,
+    // even if it resolves to exactly the same extent as a pixel or fill width.
+    fn even_row(&self) -> bool {
+        self.space_evenly && self.sizing.width.definite()
+    }
+    // The share budget, not intrinsic measurement: a natural parent can still
+    // assign this Row its preferred width, including the authored gaps.
+    fn width_gap_charge(&self) -> f64 {
+        if self.even_row() {
+            0.
+        } else {
+            self.sizing.spacing[0]
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Subtree {
