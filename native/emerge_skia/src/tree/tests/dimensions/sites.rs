@@ -85,6 +85,77 @@ fn width_by_height_at_roots_and_all_supported_parent_child_sites() {
 }
 
 #[test]
+fn seeded_el_child_alignment_reads_each_resolved_extent_after_resize() {
+    for seed in seeds() {
+        let mut rng = Rng(seed);
+        let pad: [f64; 4] = std::array::from_fn(|_| rng.next(15) as f64);
+        let root = block(&[
+            vec![1, 0],
+            vec![2, 0],
+            [
+                vec![3, 2],
+                pad.into_iter().flat_map(f64::to_be_bytes).collect(),
+            ]
+            .concat(),
+        ]);
+        let zoom = [0.5, 1., 1.5][rng.next(3)];
+        let lengths: [Expr; 2] = std::array::from_fn(|_| rng.expr(3));
+        let align: [u8; 2] = std::array::from_fn(|_| rng.next(3) as u8);
+        let room: [f64; 2] = std::array::from_fn(|_| rng.next(121) as f64);
+        let child = |[x, y]: [u8; 2]| {
+            block(
+                &[number(78, zoom), vec![5, x], vec![6, y]]
+                    .into_iter()
+                    .chain(lengths[0].field(1))
+                    .chain(lengths[1].field(2))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let tree = |pos| {
+            upload(&[
+                node(1, 4, root.clone(), &[2]),
+                node(2, 4, child(pos), &[3]),
+                node(3, 6, el_child::demand(22., 10.), &[]),
+            ])
+        };
+        let mut live = Tree::default();
+        live.upload(&tree(align)).unwrap();
+        for (pos, view, z) in [
+            (align, room, 1.),
+            ([2, 1], room, 1.),
+            ([1, 2], [0., room[1]], 1.5),
+            (align, room, 1.),
+        ] {
+            live.patch(&set(2, 4, child(pos))).unwrap();
+            let mut cold = Tree::default();
+            cold.upload(&tree(pos)).unwrap();
+            for t in [&mut live, &mut cold] {
+                t.refresh((view[0] * z) as f32, (view[1] * z) as f32, z as f32)
+                    .unwrap();
+            }
+            for (id, b) in cold.frames() {
+                assert_eq!(b, live.layers.frames[live.elements.ids[&id]], "seed {seed}");
+            }
+            let b = live.layers.frames[live.elements.ids[&2]];
+            for (axis, lead, trail, natural, origin, size) in [
+                (0, pad[3], pad[1], 22., b.x, b.width),
+                (1, pad[0], pad[2], 10., b.y, b.height),
+            ] {
+                let offer = (view[axis] - lead - trail).max(0.) * z;
+                let want = lengths[axis].eval(natural * z * zoom, z * zoom, |_| offer);
+                let at = lead * z + (offer - want) * f64::from(pos[axis]) / 2.;
+                assert_eq!(
+                    (origin, size),
+                    (at as f32, want as f32),
+                    "seed {seed} axis {axis} {:?}",
+                    lengths[axis]
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn a_mixed_wrapped_height_reads_reflow_only_when_there_is_a_slot() {
     let mut t = Tree::default();
     let chip = || block(&[px(1, 48.), px(2, 20.)]);

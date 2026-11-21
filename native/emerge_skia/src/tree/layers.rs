@@ -109,6 +109,10 @@ impl Constraint {
             other => other,
         }
     }
+    pub(super) fn resolve_height(self, e: &Elements, k: Key, fit: f32) -> f32 {
+        let policy = e.attrs[k].sizing.height;
+        self.for_height(policy).resolve(e, k, policy, fit)
+    }
     pub(super) fn resolve(self, e: &Elements, k: Key, policy: Length, fit: f32) -> f32 {
         match self {
             Self::Natural => fit,
@@ -434,6 +438,19 @@ impl Layers {
     fn parent(&mut self, p: Pass, k: Key, e: &Elements) {
         if let Some(parent) = e.slots[k].parent {
             self.enqueue(p, parent, e);
+        }
+    }
+    // Positioning reads a child's packed width for a horizontal group,
+    // column advance, or a non-leading horizontal offset (including in El).
+    pub(super) fn packed_width_reader(&mut self, e: &Elements, k: Key) {
+        if let Some(p) = e.slots[k].parent {
+            let host = e.slots[p].shape;
+            if host.allots_width()
+                || host == Shape::WrappedColumn
+                || e.alignment(k, 0) != Alignment::Start
+            {
+                self.enqueue(Place, p, e);
+            }
         }
     }
     // A wrapping parent plans the width of an auto Column before flowing
@@ -765,7 +782,7 @@ impl Layers {
             self.measure[k].w
         };
         let [_, r, _, l] = b.padding.map(|v| pixels(v, scale));
-        let inner = if shape == Shape::WrappedColumn && !b.width.definite() {
+        let inner = if shape.packs_width(b.width) {
             // Child offers use the single-column basis, never the packed width.
             let one = e
                 .children(k)
@@ -839,13 +856,8 @@ impl Layers {
         if n.shape.allots_height() || n.shape == Shape::WrappedRow || old != Some(fit) {
             self.enqueue(Place, k, e);
         }
-        if n.shape == Shape::WrappedColumn
-            && !b.width.definite()
-            && (e.alignment(k, 0) != Alignment::Start
-                || e.parent_shape(k).is_some_and(Shape::allots_width)
-                || e.parent_shape(k) == Some(Shape::WrappedColumn))
-        {
-            self.parent(Place, k, e);
+        if n.shape.packs_width(b.width) {
+            self.packed_width_reader(e, k);
         }
         if old != Some(fit)
             && let Some(p) = n.parent
@@ -904,13 +916,10 @@ impl Layers {
     }
     fn width_at(&self, e: &Elements, k: Key, edge: Constraint) -> f32 {
         let fit = self.fit[k].size;
-        let style = e.attrs[k].sizing;
-        if e.slots[k].shape != Shape::WrappedColumn || style.width.definite() {
+        if !e.slots[k].shape.packs_width(e.attrs[k].sizing.width) {
             return fit.w;
         }
-        let height = edge
-            .for_height(style.height)
-            .resolve(e, k, style.height, fit.h);
+        let height = edge.resolve_height(e, k, fit.h);
         shapes::column_width(e, k, height, |c| self.fit[c].size)
     }
     fn place(&mut self, e: &Elements, k: Key, origin: [f32; 2]) {
@@ -918,8 +927,7 @@ impl Layers {
         let scale = self.context[k].scale;
         let edge = self.placement[k];
         let [x, y] = [origin[0] + edge.offset[0], origin[1] + edge.offset[1]];
-        let policy = e.attrs[k].sizing.height;
-        let height = edge.height.for_height(policy).resolve(e, k, policy, s.h);
+        let height = edge.height.resolve_height(e, k, s.h);
         let width = self.width_at(e, k, edge.height);
         let origin_changed = self.frames.get(k).is_none_or(|f| [f.x, f.y] != [x, y]);
         if changed(

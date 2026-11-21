@@ -93,7 +93,10 @@ Redistribute actual charges after a cap/floor binds, and use the child's own
 post-wrap content where the policy reads it. Otherwise a cap can leave space
 beside a sibling that could use it, or cut a second line off. An offer is not
 a clip: El doesn't clip; the four linear containers clip paint and hits to the
-host, without changing the child's size. [Flow and examples](layout-refresh-render-flow.md) ·
+host, without changing the child's size. Like `main`, an El resolves each
+child alignment from the child first, then the immediate El, then start;
+this is not an inherited text style. Place uses the child's actual outer box,
+including late packed width, not its natural fit. [El alignment and moves](../../test/emerge_skia/el_child_alignment_test.exs) · [Flow and examples](layout-refresh-render-flow.md) ·
 [main-axis regression](../../test/emerge_skia/mixed_content_fill_test.exs).
 
 Subtree and display scale compose. Explicit font size resolves where declared;

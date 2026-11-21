@@ -19,23 +19,17 @@ impl LayoutBehaviour for El {
             let host = node.attrs();
             let (mut origin, height) = cx.padded_height_offer(host.sizing);
             let edge = Constraint::Available(height);
-            let a = &node.elements.attrs[child];
-            let across = |i: usize| a.align[i].or(host.align[i]).unwrap_or_default();
-            if across(0) != Alignment::Start {
+            let e = node.elements;
+            let [x, y] = [0, 1].map(|axis| e.alignment(child, axis));
+            if x != Alignment::Start {
                 let right = scale::pixels(host.sizing.padding[1], cx.scale);
-                origin[0] += across(0).offset(
+                origin[0] += x.offset(
                     (cx.width - (origin[0] + right)).max(0.),
                     cx.width_at(child, edge),
                 );
             }
-            if across(1) != Alignment::Start {
-                let fit = cx.child(child).h;
-                let h = if a.sizing.height.weight().is_some() {
-                    a.sizing.height.at_offer(node.elements, child, fit, height)
-                } else {
-                    fit
-                };
-                origin[1] += across(1).offset(height, h);
+            if y != Alignment::Start {
+                origin[1] += y.offset(height, edge.resolve_height(e, child, cx.child(child).h));
             }
             cx.place(child, origin, edge);
         }

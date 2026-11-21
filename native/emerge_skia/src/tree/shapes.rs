@@ -161,6 +161,9 @@ impl Shape {
     pub fn allots_width(self) -> bool {
         with_shape!(self, |S| S::ALLOTS_WIDTH)
     }
+    pub fn packs_width(self, width: Length) -> bool {
+        self == Self::WrappedColumn && !width.definite()
+    }
     pub fn has_intrinsic_height(self, style: BoxStyle) -> bool {
         matches!(style.height, Length::Px(_)) || matches!(self, Self::Text | Self::Empty)
     }

@@ -27,14 +27,6 @@ fn xy(r: &Raster, id: u64, axis: u8) -> [f32; 2] {
     let b = bounds(r, id);
     if axis == 1 { [b.x, b.y] } else { [b.y, b.x] }
 }
-fn check_fresh(r: &Raster) {
-    let mut cold = Raster::default();
-    cold.tree.upload(&r.tree.encode()).unwrap();
-    assert_eq!(draw(&mut cold), r.pixels());
-    for (id, frame) in cold.tree.frames() {
-        assert_eq!(frame, bounds(r, id));
-    }
-}
 #[test]
 fn end_zone_is_anchored_as_a_group_in_declaration_order() {
     for (kind, axis) in [(1, 1), (3, 2)] {
@@ -157,11 +149,17 @@ fn a_center_follows_the_resolved_width_of_an_unedited_packed_sibling() {
 }
 #[test]
 fn installing_settled_zones_does_not_publish_a_later_accepted_edit() {
+    for kind in [1, 4] {
+        // Row zone or El child alignment
+        check_alignment_install(kind);
+    }
+}
+fn check_alignment_install(kind: u8) {
     let mut r = Raster::default();
     let attrs = |z| card(1, 20., z, [255, 0, 0]);
     r.tree
         .upload(&upload(&[
-            node(1, 1, host(1, 100., 4.), &[2]),
+            node(1, kind, host(1, 100., 4.), &[2]),
             node(2, 4, attrs(0), &[]),
         ]))
         .unwrap();

@@ -5,6 +5,7 @@ mod column;
 mod column_width;
 mod content_bounds;
 mod dimensions;
+mod el_alignment;
 mod el_child;
 mod identity;
 mod nested;
@@ -105,6 +106,14 @@ fn draw(r: &mut Raster) -> &[u8] {
 }
 fn bounds(r: &Raster, id: u64) -> Rect {
     r.tree.layers.frames[r.tree.elements.ids[&id]]
+}
+fn check_fresh(r: &Raster) {
+    let mut cold = Raster::default();
+    cold.tree.upload(&r.tree.encode()).unwrap();
+    assert_eq!(draw(&mut cold), r.pixels());
+    for (id, frame) in cold.tree.frames() {
+        assert_eq!(frame, bounds(r, id));
+    }
 }
 fn ran(r: &Raster, pass: Pass, id: u64) -> bool {
     r.tree

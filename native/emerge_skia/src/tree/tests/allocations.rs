@@ -504,6 +504,26 @@ fn el_child_offers(c: &Counter) {
     assert_eq!(r.target_at(123., 86.), Some(target));
     draw(&mut r);
     assert!(r.target_at(123., 86.).is_none());
+
+    let mut r = Raster::default();
+    r.tree.upload(&el_alignment::packed()).unwrap();
+    c.zero(
+        "first explicitly aligned El child after reservation",
+        || {
+            r.settle(64., 43., 1.).unwrap();
+        },
+    );
+    for (op, alignment, x) in [(4, 2, 34.), (4, 1, 17.), (5, 1, 26.), (5, 2, 52.)] {
+        let edit = set(2, 14, el_alignment::packed_attrs(op, alignment));
+        c.zero(
+            "El child alignment and late width through prepared draw/hit inputs",
+            || {
+                r.tree.patch(&edit).unwrap();
+                r.settle(64., 43., 1.).unwrap();
+            },
+        );
+        assert_eq!(bounds(&r, 2).x, x);
+    }
 }
 
 fn bounded_content(c: &Counter) {

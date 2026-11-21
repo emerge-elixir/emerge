@@ -221,6 +221,12 @@ impl Layers {
         if align_changed && let Some(p) = e.slots[k].parent {
             self.invalidate(Pass::Place, p, e.depth(p));
         }
+        // The single-column basis in Flow may stay equal while the policy
+        // starts, stops or limits packing of the actual columns in Place.
+        if a.width != b.width && (shape.packs_width(a.width) || shape.packs_width(b.width)) {
+            self.invalidate(Pass::Place, k, depth);
+            self.packed_width_reader(e, k);
+        }
         if shape.cross_height_px(a) != shape.cross_height_px(b)
             || (shape.cross_height_px(b).is_some()
                 && (a.padding[0] != b.padding[0] || a.padding[2] != b.padding[2]))
@@ -348,6 +354,10 @@ impl Layers {
                 e.slots[p].shape.offers_inner_height() && e.alignment(k, 1) != Alignment::Start
             }) {
                 self.invalidate(Pass::Place, p, e.depth(p));
+            }
+            if e.slots[k].shape.packs_width(e.attrs[k].sizing.width) {
+                // A new height can move even a top-aligned child's horizontal origin.
+                self.packed_width_reader(e, k);
             }
             if let Some(p) = parent.filter(|&p| e.slots[p].shape == Shape::WrappedRow) {
                 // The resolved outer box can move later lines at equal fit.

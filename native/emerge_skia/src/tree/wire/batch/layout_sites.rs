@@ -118,7 +118,13 @@ impl Batch {
             let parent = s.parent.map(|id| self.declaration(e, id).0);
             if !matches!(
                 parent,
-                Some(Shape::Row | Shape::Column | Shape::WrappedRow | Shape::WrappedColumn)
+                Some(
+                    Shape::El
+                        | Shape::Row
+                        | Shape::Column
+                        | Shape::WrappedRow
+                        | Shape::WrappedColumn
+                )
             ) && let Some(axis) = a
                 .align
                 .iter()

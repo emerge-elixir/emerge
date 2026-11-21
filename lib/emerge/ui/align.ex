@@ -13,7 +13,9 @@ defmodule Emerge.UI.Align do
   Alignment happens inside the parent's content area. Padding and border are
   applied before alignment, so these helpers work within the remaining space.
 
-  Alignment is visible when the parent has extra space on that axis.
+  Alignment is visible when the parent and child have different extents on
+  that axis. For example, a right-aligned child wider than its El overflows
+  to the left.
 
   Alignment helpers position the element they are attached to inside its
   parent. `el` also aligns its child content, and `paragraph` also aligns its
@@ -21,10 +23,10 @@ defmodule Emerge.UI.Align do
 
   ## `el`
 
-  In `el`, child content inherits alignment from the container.
-
-  Putting `center_x/0`, `align_right/0`, `center_y/0`, or `align_bottom/0` on
-  the `el` controls how its child content is positioned inside that `el`.
+  An `el` positions its child within the padded area. On each axis the
+  child's own helper wins, then the El's helper, then left or top. An
+  explicit `align_left/0` or `align_top/0` overrides just that axis. These
+  defaults apply to the immediate child, not to all of its descendants.
 
   This example centers a pill inside a larger container:
 
@@ -32,12 +34,12 @@ defmodule Emerge.UI.Align do
 
   #{Examples.image_tag!("ui-align-el", "Rendered el alignment example")}
 
-  A child can override inherited alignment with its own alignment helper:
+  Here the 20×20 child starts at `(76, 22)`: its right edge sits four pixels
+  inside the El, and it is vertically centered.
 
   ```elixir
-  el(
-    [width(px(200)), height(px(100)), center_x()],
-    el([align_right()], text("Child"))
+  el([width(px(100)), height(px(64)), padding(4)],
+    el([width(px(20)), height(px(20)), align_right(), center_y()], text("A"))
   )
   ```
 

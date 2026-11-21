@@ -1,14 +1,14 @@
 # Alignment on the retained renderer
 
-**A1–A4 are implemented:** plain and wrapped Row/Column children support start, center and end groups. See the [placement and stacking decision](../guides/internals/retained-decisions.md#d11-place-alignment-groups-without-changing-stacking), [geometry](../native/emerge_skia/src/tree/tests/zones.rs) and [submitted frames and clicks](../test/emerge_skia/linear_zones_test.exs).
+**A1–A5 are implemented.** Plain and wrapped Row/Column children support [start, center and end groups](../guides/internals/retained-decisions.md#d11-place-alignment-groups-without-changing-stacking). A [direct child of El](../test/emerge_skia/el_child_alignment_test.exs) can override its host's alignment independently on either axis, including after a keyed move.
 
-This is a roadmap, not a selection. A5–A6 cover El and root sites, A7–A9 cover even spacing. F1–F2 concern text and can be selected separately. Put only one slice in the [parity tracker's selected slot](api-parity.md). The last table lists work gated on other features.
+This is a roadmap, not a selection. A6 covers root sites; A7–A9 cover even spacing. F1–F2 concern text and can be selected separately. Put only one slice in the [parity tracker's selected slot](api-parity.md). The last table lists work gated on other features.
 
 ## Starting point and reference
 
 | Surface | Current retained behavior | Work below |
 | --- | --- | --- |
-| `align_left/0`, `center_x/0`, `align_right/0`; `align_top/0`, `center_y/0`, `align_bottom/0` | On **both axes**, all three positions work for direct children of Row, Column, WrappedRow and WrappedColumn. El implements per-axis child overrides, but admission restricts where non-leading attrs can be used. | A5–A6: finish El and root sites. |
+| `align_left/0`, `center_x/0`, `align_right/0`; `align_top/0`, `center_y/0`, `align_bottom/0` | On **both axes**, all three positions work for direct children of El, Row, Column, WrappedRow and WrappedColumn. Non-leading attrs at the root still refuse. | A6: root sites. |
 | `Emerge.UI.Space.space_evenly/0` | The DSL and codec exist; the retained reader refuses tag 37. | A7–A9: Row, Column, then sites where the flag has no effect. X1 is an optional **change**, not parity. |
 | `Font.align_left/0`, `Font.center/0`, `Font.align_right/0` | Tag 30 accepts only left; because no non-left ancestor can be admitted, it currently need not remember the override. | F1–F2: single-line text ink and the width it uses. Paragraphs, floats and editors have their own follow-ups. |
 
@@ -25,13 +25,7 @@ For the reference algorithms inspect `git show aef5e42:native/emerge_skia/src/tr
 
 ## Static box placement — select one at a time
 
-### A5. Explicit alignment on a direct child of El
-
-Widen the final-site check for ordinary children of El. Reuse [`El::place_children`](../native/emerge_skia/src/tree/shapes/el.rs): on **each** axis choose `child.explicit` → `host.explicit` → start. Don't make this a recursively inherited layout attribute. An El can itself be positioned by its parent and align its immediate child.
-
-**Observed:** unaligned 100×64 El, padding 4, 20×20 child with `align_right(), center_y()` → `(76,22)`. Exercise both axes, asymmetric padding, an oversized child (signed offset; El does not clip), width/height fill/caps and a late-fitting WrappedColumn. Use an already-admitted aligned El host to test explicit start overriding one axis while the other stays inherited. Moving an aligned keyed child to/from an El must work without resending its subtree.
-
-### A6. Root attributes without a fictitious viewport alignment slot (after A5)
+### A6. Root attributes without a fictitious viewport alignment slot
 
 Admit box alignment on the supported root kinds. A root stays at `(0,0)`; there is no parent to position it. Its **own** content rules still run. **Observed:** root El 100×64, padding 4, `center_x(), align_bottom()` places a 20×20 child at `(40,40)`; child `align_left()` changes that to `(4,40)`. A root Row 60×40 with those same attrs leaves its ordinary first card at `(4,4)`.
 
@@ -65,7 +59,7 @@ Parity target: accept the well-formed flag as a **no-op** on supported kinds whe
 
 **F2 — right-align one-line Text (after F1).** Use the same width/metrics path with the trailing origin. **Observed:** `Font.align_right()` yields white bounds `(82,8,8,12)` in F1's fixture. Test left→center→right→left on the same text, asymmetric insets, narrower-than-run widths, overhangs, scale and identical text at different sites. An ink shift is not a shifted El hit box. Where the Text box itself changes width, test that as layout, not as an assumed draw-only edit.
 
-The following are **separate slices once their prerequisite exists**. Do not build their parent feature as part of A5–F2, and do not count a decoded attr on an unimplemented kind. The [paragraph alignment tests](../test/emerge_skia/paragraph_alignment_test.exs) and [Nearby slot contract](../lib/emerge/ui/nearby.ex) give public fixtures.
+The following are **separate slices once their prerequisite exists**. Do not build their parent feature as part of A6–F2, and do not count a decoded attr on an unimplemented kind. The [paragraph alignment tests](../test/emerge_skia/paragraph_alignment_test.exs) and [Nearby slot contract](../lib/emerge/ui/nearby.ex) give public fixtures.
 
 | Slice | Prerequisite | Observable result and stopping point |
 | --- | --- | --- |
@@ -89,4 +83,4 @@ When borders land, rerun asymmetric-inset fixtures (e.g. the `resolve_core` 200�
 2. **Two correctness checks.** Compare whole delivered RGBA frames to literal controls and sparse edits/undo to a fresh renderer of the final declaration. Exercise zero/one/many children, interleaving, overflow, asymmetric insets, scale 1.5, resize, changing only an unaligned sibling, kept moves, and multiple edits before one settle. Use a seeded axis-transposed oracle for group policies; trace that only real readers run. On refusal the prior accepted declaration and installed output remain usable.
 3. **Verify publication, not just coordinates.** Use a [normal viewport](../test/support/headless_viewport_helper.exs): real raw press/release through `handle_input/2`, routed callback/key and exact local point through `handle_info/2`. Cover a keyed press across a move or reorder, a callback-only edit, visible A / sealed B / accepted C and failed handoff; only a successful submission or valid reuse replaces A. For a window claim capture before/after compositor crops and use actual `wl_seat` input. No injected resolved event, sleep or queue drain; no inferred `main` clicks from reference pixels.
 4. **Protect cost and protocol.** No extra child order, per-group heap or reshaping of identical glyph runs for an offset. Reserve old/candidate overlap, detached residents and any scratch before accepting. Extend [`fitting_wire_through_draw_inputs_uses_no_heap`](../native/emerge_skia/src/tree/tests/allocations.rs) for cold compute **after reservation** and fitting sparse edits through prepared draw/hit inputs: require `[0,0,0]` alloc/realloc/free, with positive controls. Include a long sibling group; don't confuse this gate with constant footprint, allocation-free raster/BEAM, or a timing claim.
-5. **Qualify and stop.** Under `./scripts/performance-lock.sh shared`, run release `cargo test` and strict Clippy on the six existing profiles (no features, Wayland, Wayland+GL, Wayland+Vulkan/deps, Wayland-all, defaults+bench-diagnostics), extended seeded layout tests, focused and full `mix test` on matched BEAM/NIF bytes. Compare **named** failures and exclusions to the preceding slice (`f0c84a9`: 93 failures, 21 exclusions); list repairs, no new failures. Update [coverage](README.md), the tracker, [decisions](../guides/internals/retained-decisions.md) and [changelog candidates](../guides/internals/retained-changelog-candidates.md) as warranted. Retire the completed slice and clear the selection before taking another. Remove the roadmap when its remaining entries are closed or handed to their prerequisite features.
+5. **Qualify and stop.** Under `./scripts/performance-lock.sh shared`, run release `cargo test` and strict Clippy on the six existing profiles (no features, Wayland, Wayland+GL, Wayland+Vulkan/deps, Wayland-all, defaults+bench-diagnostics), extended seeded layout tests, focused and full `mix test` on matched BEAM/NIF bytes. Compare **named** failures and exclusions to the preceding slice (A1–A5 baseline: 93 failures, 21 exclusions); list repairs, no new failures. Update [coverage](README.md), the tracker, [decisions](../guides/internals/retained-decisions.md) and [changelog candidates](../guides/internals/retained-changelog-candidates.md) as warranted. Retire the completed slice and clear the selection before taking another. Remove the roadmap when its remaining entries are closed or handed to their prerequisite features.

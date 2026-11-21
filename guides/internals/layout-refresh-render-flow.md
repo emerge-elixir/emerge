@@ -80,6 +80,16 @@ by 42×22. An offer is not a clip. The El keeps its inherited paint and hit
 clip; an enclosing Column still clips at its own edge. See the [submitted
 examples](../../test/emerge_skia/el_child_fill_test.exs).
 
+El positions that resolved child independently on each axis: explicit child
+alignment, otherwise the immediate El's explicit alignment, otherwise start.
+Use the signed space remaining after padding and the child's outer extent.
+Even a **horizontal** offset can read a new **height**: in a 64×43 El,
+switching a WrappedColumn from `max(content(), fill(3))` to
+`min(content(), fill(3))` can change its height from 44 to 43 and its packed
+width from 12 to 30. A right-aligned box must move from x=52 to
+x=34 even if its natural fit stays the same. [Frames, kept moves and local
+clicks](../../test/emerge_skia/el_child_alignment_test.exs).
+
 A Row divides spare width, and a Column divides spare height, in proportion
 to the children's weights. `fill()` and `fill(1)` both take one share. A
 weight-only edit invalidates the distributing parent, not the child's

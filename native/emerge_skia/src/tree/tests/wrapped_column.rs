@@ -311,15 +311,22 @@ fn cross_alignment_is_placement_only_and_uses_each_groups_own_maximum() {
             let b = bounds(&r, id);
             assert_eq!(if vertical { b.x } else { b.y }, pos);
         }
-        // The same kept center child still cannot move under an El or to the root.
+        // The kept child can move under an El; promoting it to a root is a
+        // different site and still fails without changing the accepted tree.
+        r.tree
+            .patch(&patch(10, 11, &[node(11, 4, wh(36., 64.), &[2])]))
+            .unwrap();
+        draw(&mut r);
+        let b = bounds(&r, 2);
+        assert_eq!(if vertical { b.x } else { b.y }, 24.);
         let accepted = r.tree.encode();
-        for refused in [
-            patch(10, 11, &[node(11, 4, wh(36., 64.), &[2])]),
-            patch(10, 2, &[]),
-        ] {
-            assert!(r.tree.patch(&refused).unwrap_err().contains("alignment"));
-            assert_eq!(r.tree.encode(), accepted);
-        }
+        assert!(
+            r.tree
+                .patch(&patch(11, 2, &[]))
+                .unwrap_err()
+                .contains("alignment")
+        );
+        assert_eq!(r.tree.encode(), accepted);
     }
 }
 
