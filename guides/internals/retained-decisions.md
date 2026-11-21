@@ -161,6 +161,16 @@ line and Column's height group use the same allocator on the authored lengths.
 [Submitted frames and clicks](../../test/emerge_skia/wrapped_row_fill_test.exs) ·
 [minimum on a moved child](../../native/emerge_skia/src/tree/tests/wrapped_width.rs).
 
+Height is independent of those width shares. Like `main`, a definite host
+offers its whole inner height to each fill child; a content host offers the
+natural height of one row before packing the stack. Use the children's
+post-wrap fits for that basis. Advance each line by its tallest **outer** box,
+not just the content inside it. On `aef5e42f`, raising a child's height cap
+from 16px to 32px left the next line at y=18, overlapping the taller box.
+With 2px top padding and gap 4 it should move from **y=22 to y=38**. This
+overlap correction is distinct from the intentional width-sharing change.
+[Pixels and local clicks](../../test/emerge_skia/wrapped_row_height_test.exs).
+
 ### D8. Submit the same retained drawing to explicit Wayland presenters
 
 Do not import `main`'s scene renderer or upload CPU-drawn glyph masks as a GPU

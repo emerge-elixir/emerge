@@ -172,9 +172,9 @@ defmodule EmergeSkia.ColumnCrossWidthTest do
     {_, pending} = Emerge.Engine.diff_state_update_binary(before, move_scene(:column))
 
     assert_raise RuntimeError,
-                 ~r/renderer_patch failed: fill height is not supported on a WrappedRow child/,
+                 ~r/renderer_patch failed: scaled length exceeds device range/,
                  fn ->
-                   EmergeSkia.patch_tree(r, pending, move_scene(:wrap, min(px(12), fill())))
+                   EmergeSkia.patch_tree(r, pending, move_scene(:wrap, min(px(1.0e39), fill())))
                  end
 
     assert {:ok, ^top} = EmergeSkia.render_to_pixels(r)

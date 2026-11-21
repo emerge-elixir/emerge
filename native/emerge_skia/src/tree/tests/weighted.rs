@@ -5,7 +5,7 @@ pub(super) fn host(axis: u8) -> u8 {
     if axis == 1 { 1 } else { 3 }
 }
 // A 90px WrappedRow stacks the width lanes; a natural one places the height
-// lanes side by side. Neither can offer a direct child a fill height.
+// lanes side by side.
 pub(super) fn wrapped_lanes(axis: u8) -> (u8, Bytes) {
     if axis == 1 {
         (2, block(&[px(1, 90.)]))
@@ -202,28 +202,6 @@ fn rejection_preserves_pending_weights_and_closed_moves_use_the_new_hosts_split(
                 .unwrap_err(),
             "truncated EMRG data"
         );
-        // Fill heights still refuse at the new edge, including closed refs.
-        if axis == 2 {
-            for bad in [
-                patch(2, 10, &[]),
-                patch(1, 90, &[node(90, 2, block(&[]), &[10])]),
-                patch(
-                    1,
-                    1,
-                    &[
-                        edges(1, cross, &[2, 3, 10]),
-                        edges(2, line, &[20]),
-                        edges(10, 4, &[11]),
-                    ],
-                ),
-                patch(3, 9, &[node(9, 4, size(axis, policy(1.)), &[])]),
-            ] {
-                assert_eq!(
-                    r.tree.patch(&bad).unwrap_err(),
-                    "fill height is not supported on a WrappedRow child"
-                );
-            }
-        }
         assert_eq!(r.tree.encode(), pending);
         assert!(r.tree.layers.worksets_empty());
         assert_eq!(r.pixels(), old);

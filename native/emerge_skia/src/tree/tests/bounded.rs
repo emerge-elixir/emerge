@@ -274,19 +274,11 @@ fn admission_proves_the_bounded_leaf_at_its_final_site_before_publishing_anythin
             r.tree.refresh(180., 170., 2.).unwrap_err(),
             "scaled length exceeds device range"
         );
-        if axis == 2 {
-            for p in [
-                patch(1, 90, &[node(90, 2, block(&[]), &[10])]),
-                patch(2, 10, &[]),
-                patch(
-                    3,
-                    31,
-                    &[node(31, 4, size(axis, bound(axis, 5, 5., None, true)), &[])],
-                ),
-            ] {
-                assert!(r.tree.patch(&p).unwrap_err().contains("WrappedRow child"));
-            }
-        }
+        let wrapped = patch(1, 90, &[node(90, 2, block(&[number(78, 2.)]), &[10])]);
+        assert_eq!(
+            r.tree.patch(&wrapped).unwrap_err(),
+            "scaled length exceeds device range"
+        );
         for (l, err) in [
             (vec![axis, 4, 0, 6], "unsupported length 6"),
             (vec![axis, 5, 0, 255], "unsupported length 255"),

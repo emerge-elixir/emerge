@@ -45,6 +45,13 @@ retained renderer. Keep or refresh the before evidence if `main` moves.
 | Recompute an El child's cap after wrapping, including in a content-sized parent. | An 84px-wide El narrows to 83, padding 2. Its 80→79px WrappedRow child wrapped but kept the cap at **16**. The cap now goes **16→32→16**; a content-sized enclosing El grows from **20 to 36**. [Regression](../../test/emerge_skia/el_child_fill_test.exs) |
 | Recompute a viewport-sized WrappedRow's content/fill cap on resize. | 80×80 viewport, padding 2, gap 4, two 36×12 chips: at width 79 the second line moved to y=18 but the root stayed **16px** high. Its capped height now tracks **16→32→16** at widths 80→79→80. [Resize, pixels and input](../../test/emerge_skia/viewport_constraints_test.exs) |
 
+Separately reproduced on `aef5e42fc789c396505f85c34810b2ca9c008586`:
+**preserve the gap after a fill-height child on a wrapped line**. In a 48×64
+host with padding 2 and gap 4, raising A's cap from 16px to 32px left the next
+line at y=18 in both frames and overlapped A. The next line now starts at
+**y=22 then y=38**, four pixels below A's box. [Submitted cap edit, undo and
+click targets](../../test/emerge_skia/wrapped_row_height_test.exs).
+
 A retained refusal before a port, or a clipping correction that restores
 `main`'s pixels, is not evidence for a `main` fix. No candidate above has been
 promoted by this documentation change.

@@ -99,7 +99,7 @@ pub(super) fn closed_move(independent_host: u8) {
                 block(&[px(1, 40.), number(78, 2.)]),
                 &[],
             ),
-            node(40, 2, block(&[]), &[]),
+            node(40, 2, block(&[number(78, 2.)]), &[]),
         ]))
         .unwrap();
     let old = draw(&mut r).to_vec();
@@ -119,11 +119,9 @@ pub(super) fn closed_move(independent_host: u8) {
     };
     r.tree.patch(&set(2, 2, wrap(2e38))).unwrap();
     let pending = r.tree.encode();
-    assert!(
-        r.tree
-            .patch(&transfer(40, 2))
-            .unwrap_err()
-            .contains("fill height is not supported on a WrappedRow child")
+    assert_eq!(
+        r.tree.patch(&transfer(40, 2)).unwrap_err(),
+        "scaled length exceeds device range"
     );
     assert_eq!(
         r.tree.patch(&transfer(30, independent_host)).unwrap_err(),

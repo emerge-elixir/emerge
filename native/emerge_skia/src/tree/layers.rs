@@ -198,12 +198,15 @@ impl ReflowCx<'_> {
     pub fn break_before(&self, c: Key) -> bool {
         self.layers.offers[c].break_before
     }
-    pub fn offset(&mut self, c: Key, x: f32, y: f32) {
+    pub fn inner_height(&self, outer: f32) -> f32 {
+        (outer - (self.padding[0] + self.padding[2])).max(0.)
+    }
+    pub fn offset(&mut self, c: Key, x: f32, y: f32, height: Constraint) {
         self.layers.offer_placement(
             self.e,
             c,
             [self.padding[3] + x, self.padding[0] + y],
-            Constraint::Natural,
+            height,
             false,
         );
     }
@@ -235,6 +238,9 @@ pub(super) struct PlaceCx<'a> {
 impl PlaceCx<'_> {
     pub fn child(&self, c: Key) -> Size {
         self.layers.fit[c]
+    }
+    pub fn break_before(&self, c: Key) -> bool {
+        self.layers.offers[c].break_before
     }
     pub fn measured_height(&self, c: Key) -> f32 {
         self.layers.measure[c].h
@@ -669,12 +675,14 @@ impl Layers {
                 e,
             },
         );
-        // A Column rechecks its vertical split here even at equal fit. Line
-        // offsets/offers are invalidated by their own inputs, not by a scan
-        // for the tallest child that returned the very same height.
+        // Even at equal fit, a Column's shares or a definite WrappedRow's
+        // line origins may need updating against the final placed height.
         let fit = Size { w: width.outer, h };
         let old = self.fit.insert(k, fit);
-        if n.shape.allots_height() || old != Some(fit) {
+        if n.shape.allots_height()
+            || (n.shape == Shape::WrappedRow && b.height.definite())
+            || old != Some(fit)
+        {
             self.enqueue(Place, k, e);
         }
         if old != Some(fit)

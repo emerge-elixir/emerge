@@ -123,6 +123,16 @@ chosen breaks and actual child heights.
 See [why this differs from main](retained-decisions.md#d7-share-fill-widths-per-wrapped-line)
 and the [submitted-frame regression](../../test/emerge_skia/wrapped_row_fill_test.exs).
 
+A WrappedRow shares **width**, not height. In a fixed or allocated 64px-tall
+host with 2px padding, every child's height-fill leaf reads 60px, on every
+line, regardless of weight. Content reads that child's outer height **after**
+width reflow. A content-sized host instead takes its cross-axis offer from the
+tallest unallotted child, applying its own bounds and padding as for one Row.
+It then fits the stack using the actual outer heights and gaps, without feeding
+the packed height back as a second offer. Each new line starts below the tallest
+resolved box on the preceding line; a host clip does not move that line up.
+[Submitted heights, line origins and hits](../../test/emerge_skia/wrapped_row_height_test.exs).
+
 Nested `min`/`max` can put both a floor and a cap on one fill. With no padding
 or gap, `min(px(50), max(px(20), fill()))` next to `fill()` takes 20/10 in a
 30px host, 40/40 in an 80px host, and 50/70 in a 120px host. Nothing is left

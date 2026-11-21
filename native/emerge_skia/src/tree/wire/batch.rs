@@ -179,28 +179,10 @@ impl Batch {
                 Some(i) => i,
                 None => self.old(e, old.ok_or("unknown kept occurrence")?, b)?,
             };
-            let s = &self.entries[i];
+            let s = &mut self.entries[i];
             if s.visited {
                 return Err("cycle or duplicate child".into());
             }
-            // A kept root may move even when both its attrs and its children
-            // are closed. Only this incoming edge changes site, not its interior.
-            let attrs = s
-                .attrs
-                .as_ref()
-                .map(|(a, _)| a)
-                .or_else(|| old.map(|k| &e.attrs[k]));
-            // Check the height policy even when the child is a kept reference.
-            if attrs.is_some_and(|a| a.sizing.height.weight().is_some())
-                && parent.is_some_and(|p| {
-                    self.get(p)
-                        .map_or_else(|| e.slots[e.ids[&p]].shape, |edit| edit.shape)
-                        == Shape::WrappedRow
-                })
-            {
-                return Err("fill height is not supported on a WrappedRow child".into());
-            }
-            let s = &mut self.entries[i];
             s.visited = true;
             s.attached = true;
             s.inserted = old.is_none();

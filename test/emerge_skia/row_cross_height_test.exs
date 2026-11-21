@@ -106,13 +106,15 @@ defmodule EmergeSkia.RowCrossHeightTest do
     end
   end
 
-  defp move_scene(site) do
+  defp move_scene(site, limit \\ nil) do
+    policy = max(content(), fill(3))
+
     card =
       el(
         [
           key(:card),
           width(fill()),
-          height(max(content(), fill(3))),
+          height(if(limit, do: min(px(limit), policy), else: policy)),
           Background.color(:red),
           Event.on_click(site)
         ],
@@ -161,8 +163,8 @@ defmodule EmergeSkia.RowCrossHeightTest do
     )
 
     assert_receive {:application, :moved}
-    # Submit the wrong-site edit against the same last accepted declaration;
-    # its rejection should neither kill the viewport nor cancel the press.
+    # A masked length valid at scale 1 is out of range at the destination's
+    # scale 2. Its rejection must not cancel the press or the pending move.
     {_, pending} =
       Emerge.Engine.diff_state_update_binary(
         Emerge.Engine.diff_state_new(move_scene(:column)),
@@ -170,9 +172,9 @@ defmodule EmergeSkia.RowCrossHeightTest do
       )
 
     assert_raise RuntimeError,
-                 ~r/renderer_patch failed: fill height is not supported on a WrappedRow child/,
+                 ~r/renderer_patch failed: scaled length exceeds device range/,
                  fn ->
-                   EmergeSkia.patch_tree(r, pending, move_scene(:wrap))
+                   EmergeSkia.patch_tree(r, pending, move_scene(:wrap, 2.0e38))
                  end
 
     assert {:ok, ^shared} = EmergeSkia.render_to_pixels(r)

@@ -856,6 +856,31 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     independent_column_widths(&c);
     viewport_offers(&c);
     wrapped_widths(&c);
+    let mut wrapped = Raster::default();
+    wrapped.tree.upload(&wrapped_height::assigned()).unwrap();
+    c.zero("cold wrapped height after reservation", || {
+        wrapped.settle(80., 80., 1.).unwrap();
+    });
+    for h in [64., 16.] {
+        let edit = set(2, 6, block(&[px(2, h)]));
+        c.zero("fitting edit repositions lines at assigned height", || {
+            wrapped.tree.patch(&edit).unwrap();
+            wrapped.settle(80., 80., 1.).unwrap();
+        });
+        assert_eq!(bounds(&wrapped, 4).height, if h == 64. { 0. } else { 28. });
+    }
+    let edit = set(3, 2, wrapped_height::host(vec![2, 1]));
+    c.zero(
+        "natural wrapped offer and packed fit through paint/hit inputs",
+        || {
+            wrapped.tree.patch(&edit).unwrap();
+            wrapped.settle(80., 80., 1.).unwrap();
+        },
+    );
+    assert_eq!(
+        (bounds(&wrapped, 3).height, bounds(&wrapped, 6).y),
+        (32., 34.)
+    );
     pixel_bounded_lines(&c);
     content_bounded_lines(&c);
     independent_row_heights(&c);

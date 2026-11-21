@@ -209,8 +209,7 @@ fn site_proof_uses_final_edges_and_accepted_attrs_without_disturbing_pending_or_
     let mut r = Raster::default();
     r.tree
         .upload(&upload(&[
-            // A WrappedRow can keep these lanes side by side but cannot
-            // itself give an incoming child a fill-height offer.
+            // A WrappedRow keeps the Column lanes side by side.
             node(1, 2, block(&[]), &[2, 3, 4]),
             node(2, 3, host(50.), &[17]),
             node(3, 2, block(&[]), &[]),
@@ -222,52 +221,41 @@ fn site_proof_uses_final_edges_and_accepted_attrs_without_disturbing_pending_or_
     draw(&mut r);
     let pressed = r.target_at(5., 45.).unwrap();
     r.tree.patch(&set(2, 3, host(24.))).unwrap();
-    // #18's fill is accepted but never drawn before the attempted promotion.
+    // #18's fill is accepted but never drawn before the failed move.
     r.tree.patch(&set(18, 4, panel([0, 0, 255]))).unwrap();
     let pending = r.tree.encode();
-    let to_wrap = [
-        edges(1, 2, &[2, 3, 4]),
-        edges(2, 3, &[]),
-        edges(3, 2, &[17]),
-    ];
-    for records in [
-        to_wrap.to_vec(),
-        [to_wrap.as_slice(), &[edges(17, 3, &[18])]].concat(),
-    ] {
-        assert!(
-            r.tree
-                .patch(&patch(1, 1, &records))
-                .unwrap_err()
-                .contains("WrappedRow child")
-        );
-    }
-    for bad in [
-        patch(2, 17, &[]),
-        patch(1, 90, &[node(90, 2, block(&[]), &[18])]),
-        patch(3, 8, &[node(8, 4, panel([1, 2, 3]), &[])]),
-    ] {
-        assert!(r.tree.patch(&bad).unwrap_err().contains("WrappedRow child"));
-    }
-    for variant in [4, 5] {
-        let value = vec![2, variant, 0, 1];
-        assert_eq!(
-            r.tree.patch(&set(3, 2, block(&[value]))).unwrap_err(),
-            "fill height is not supported on a WrappedRow child"
-        );
-    }
+    let to_wrap = |h| {
+        patch(
+            1,
+            1,
+            &[
+                edges(1, 2, &[2, 3, 4]),
+                edges(2, 3, &[]),
+                node(3, 2, host(h), &[17]),
+            ],
+        )
+    };
+    assert_eq!(
+        r.tree.patch(&to_wrap(1e39)).unwrap_err(),
+        "scaled length exceeds device range"
+    );
     assert_eq!(r.tree.encode(), pending);
     assert!(r.tree.layers.worksets_empty());
     assert_eq!(r.target_at(5., 45.), Some(pressed));
     draw(&mut r);
     assert_eq!(yh(&r, 17), (0., 24.));
     assert_eq!(r.hit_at(5., 45.), None);
+    r.tree.patch(&to_wrap(54.)).unwrap();
+    draw(&mut r);
+    assert_eq!(yh(&r, 17), (0., 54.));
+    assert_eq!(r.target_at(35., 45.).unwrap().0, pressed.0);
     r.tree
         .patch(&patch(
             1,
             1,
             &[
                 edges(1, 2, &[2, 3, 4]),
-                edges(2, 3, &[]),
+                node(3, 2, block(&[]), &[]),
                 edges(4, 3, &[17]),
             ],
         ))

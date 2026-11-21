@@ -179,16 +179,11 @@ fn masked_pixels_are_still_checked_at_the_final_site_and_fail_atomically() {
             r.tree.refresh(180., 170., 2.).unwrap_err(),
             "scaled length exceeds device range"
         );
-        // A closed bounded width is legal there, but the scaled masked
-        // operand is still checked. Fill heights remain illegal at that site.
+        // The wrapped edge admits both axes but still checks the masked operand.
         let wrapped_move = patch(1, 90, &[node(90, 2, block(&[number(78, 2.)]), &[10])]);
         assert_eq!(
             r.tree.patch(&wrapped_move).unwrap_err(),
-            if axis == 1 {
-                "scaled length exceeds device range"
-            } else {
-                "fill height is not supported on a WrappedRow child"
-            }
+            "scaled length exceeds device range"
         );
         assert_eq!(r.tree.encode(), pending);
         assert_eq!(r.pixels(), visible);

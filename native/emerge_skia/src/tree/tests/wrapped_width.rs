@@ -174,8 +174,8 @@ fn a_preferred_only_edit_survives_a_refusal_without_publishing_early() {
         for (field, why) in [
             (masked_bad_weight, "fill weight must be finite and positive"),
             (
-                vec![2, 4, 1, 0],
-                "fill height is not supported on a WrappedRow child",
+                [vec![2, 4, 0], number(2, 1e39)].concat(),
+                "scaled length exceeds device range",
             ),
         ] {
             assert_eq!(r.tree.patch(&set(2, 2, block(&[field]))).unwrap_err(), why);

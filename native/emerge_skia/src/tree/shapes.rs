@@ -226,8 +226,8 @@ impl Shape {
     }
 }
 
-// A Row and a unary El both fit the tallest unallotted child. Only the
-// Row can have a second child, and only the Row shares widths in Flow.
+// A single row fits the tallest unallotted child. El uses the same fit;
+// WrappedRow also uses it as the cross-axis basis before stacking lines.
 fn line_height(children: &[Key], cx: &ReflowCx<'_>) -> f32 {
     if cx.fixed_basis {
         return cx.measured_height;

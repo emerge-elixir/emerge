@@ -2,13 +2,6 @@
 use super::*;
 
 impl Expr {
-    fn has_fill(&self) -> bool {
-        match self {
-            Fill(_) => true,
-            Min(a, b) | Max(a, b) => a.has_fill() || b.has_fill(),
-            _ => false,
-        }
-    }
     fn single(&self, natural: f32, host: f64, independent_offer: bool) -> f32 {
         let eval = |unit| self.eval(f64::from(natural), 1., |_| unit);
         // One child: if a main-axis slot exists it either takes all the room
@@ -69,30 +62,22 @@ fn width_by_height_at_roots_and_all_supported_parent_child_sites() {
             } else {
                 assert_eq!((natural.width, natural.height), (4., 4.));
             }
-            let mut accepted = t.encode();
             for width in &lengths {
                 for height in &lengths {
                     let edit = set(id, kind, styles(width, height, kind));
-                    let result = t.patch(&edit);
-                    if parent == Some(2) && height.has_fill() {
-                        assert!(result.unwrap_err().contains("WrappedRow child"));
-                        assert_eq!(t.encode(), accepted);
-                        continue;
-                    }
-                    result.unwrap();
+                    t.patch(&edit).unwrap();
                     t.refresh(w as f32, h as f32, 1.).unwrap();
                     let b = t.layers.frames[key];
                     assert_eq!((b.x, b.y), (0., 0.));
                     let expected = (
                         width.single(natural.width, w, matches!(parent, None | Some(3 | 4))),
-                        height.single(natural.height, h, matches!(parent, None | Some(1 | 4))),
+                        height.single(natural.height, h, matches!(parent, None | Some(1 | 2 | 4))),
                     );
                     assert_eq!(
                         (b.width, b.height),
                         expected,
                         "{parent:?} → {kind:?}, {width:?} × {height:?}"
                     );
-                    accepted = t.encode();
                 }
             }
         }
@@ -228,11 +213,7 @@ fn a_closed_mixed_child_checks_its_new_site_and_scale_without_installing_a_refus
         let wrap = patch(1, 90, &[node(90, 2, block(&[number(78, 2.)]), &[4])]);
         assert_eq!(
             r.tree.patch(&wrap).unwrap_err(),
-            if axis == 1 {
-                "scaled length exceeds device range"
-            } else {
-                "fill height is not supported on a WrappedRow child"
-            }
+            "scaled length exceeds device range"
         );
         let moved = patch(
             1,

@@ -258,8 +258,8 @@ impl Layers {
                 || split_height);
         self.invalidate_offer_readers(e, k, parent_input, height);
     }
-    // A distributor resolves its children's shares. Otherwise Place on the
-    // element itself reads the height policy and the incoming available size.
+    // A Column reads shares; a WrappedRow reads occupied heights to advance
+    // lines. At other sites only the element reads its incoming height offer.
     pub(super) fn invalidate_offer_readers(
         &mut self,
         e: &Elements,
@@ -272,7 +272,15 @@ impl Layers {
         }
         let parent = e.slots[k].parent;
         if height {
-            if let Some(p) = parent.filter(|&p| e.slots[p].shape.allots_height()) {
+            if let Some(p) = parent.filter(|&p| e.slots[p].shape == Shape::WrappedRow) {
+                // The resolved outer box can move later lines at equal fit.
+                let pass = if e.attrs[p].sizing.height.fits_content_height() {
+                    Pass::Reflow
+                } else {
+                    Pass::Place
+                };
+                self.invalidate(pass, p, e.depth(p));
+            } else if let Some(p) = parent.filter(|&p| e.slots[p].shape.allots_height()) {
                 if e.attrs[p].sizing.height.definite() {
                     self.invalidate(Pass::Place, p, e.depth(p));
                 }
