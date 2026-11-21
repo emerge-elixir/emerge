@@ -76,6 +76,65 @@ defmodule EmergeSkia.WrappedRowFillTest do
     end
   end
 
+  test "two fill leaves in one child share one line unit and publish one click target" do
+    build = fn cap -> cards(84, fill(), max(min(fill(3), px(cap)), fill())) end
+    {p, r} = Headless.mount({100, 40}, fn -> build.(30) end, [:pointer_button], target_fps: 1)
+    before = pixels(84, 40, 44, 0, 40)
+    assert Headless.pixels() == before
+
+    send(
+      p,
+      {:scene,
+       fn ->
+         send(self(), :built)
+         build.(50)
+       end}
+    )
+
+    assert_receive {:application, :built}
+    assert {:ok, ^before} = EmergeSkia.render_to_pixels(r)
+    click(r, 48.0, 6.0, :b, 4.0, 6.0)
+
+    after_edit = pixels(84, 50, 54, 0, 30)
+    assert Headless.pixels(2500) == after_edit
+    click(r, 48.0, 6.0, :a, 48.0, 6.0)
+    {_, cold} = Headless.mount({100, 40}, fn -> build.(50) end, [:pointer_button])
+    assert Headless.pixels() == after_edit
+    click(cold, 48.0, 6.0, :a, 48.0, 6.0)
+
+    send(p, {:scene, fn -> build.(30) end})
+    assert Headless.pixels(2500) == before
+    click(r, 48.0, 6.0, :b, 4.0, 6.0)
+  end
+
+  test "only a floor guaranteed by the whole width can replace the automatic minimum" do
+    zero = max(px(0), fill(3))
+    explicit = max(fill(), zero)
+    optional = min(fill(), zero)
+    floor = min(max(fill(), content()), max(fill(3), px(50)))
+    build = fn w, n, policy -> with_peer(w, nested_card(policy, [chip(20), chip(n)]), fill()) end
+    {p, r} = Headless.mount({100, 40}, fn -> build.(64, 16, floor) end, [:pointer_button])
+    assert Headless.pixels() == pixels(64, 40, 44, 0, 20)
+
+    for {w, n, policy, aw, ah, bx, by, bw} <- [
+          {64, 17, floor, 64, 12, 0, 16, 64},
+          {64, 17, min(max(content(), fill()), fill(3)), 40, 28, 44, 0, 20},
+          {24, 17, explicit, 0, 28, 4, 0, 20},
+          {24, 17, optional, 24, 28, 0, 32, 24},
+          {44, 17, max(fill(3), fill()), 20, 28, 24, 0, 20},
+          {43, 17, max(fill(3), fill()), 43, 12, 0, 16, 43}
+        ] do
+      scene = fn -> build.(w, n, policy) end
+      send(p, {:scene, scene})
+      expected = pixels(w, aw, bx, by, bw, ah)
+      assert Headless.pixels() == expected
+      click(r, bx + 3.0, by + 5.0, :b, 3.0, 5.0)
+      {_, cold} = Headless.mount({100, 40}, scene, [:pointer_button])
+      assert Headless.pixels() == expected
+      click(cold, bx + 3.0, by + 5.0, :b, 3.0, 5.0)
+    end
+  end
+
   test "the weight-only edit publishes the new width and click target together" do
     {p, r} =
       Headless.mount({100, 40}, fn -> cards(100, fill()) end, [:pointer_button], target_fps: 1)

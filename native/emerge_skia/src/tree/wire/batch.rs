@@ -190,21 +190,15 @@ impl Batch {
                 .as_ref()
                 .map(|(a, _)| a)
                 .or_else(|| old.map(|k| &e.attrs[k]));
-            // Check the width grammar and vertical policy at the new edge,
-            // including when the child's own declaration is kept.
-            if let Some(a) = attrs
+            // Check the height policy even when the child is a kept reference.
+            if attrs.is_some_and(|a| a.sizing.height.weight().is_some())
                 && parent.is_some_and(|p| {
                     self.get(p)
                         .map_or_else(|| e.slots[e.ids[&p]].shape, |edit| edit.shape)
                         == Shape::WrappedRow
                 })
             {
-                if a.line_width == LineWidth::MultipleFills {
-                    return Err("compound fill width is not supported on a WrappedRow child".into());
-                }
-                if a.sizing.height.weight().is_some() {
-                    return Err("fill height is not supported on a WrappedRow child".into());
-                }
+                return Err("fill height is not supported on a WrappedRow child".into());
             }
             let s = &mut self.entries[i];
             s.visited = true;

@@ -4,11 +4,9 @@ use super::*;
 pub(super) fn host(axis: u8) -> u8 {
     if axis == 1 { 1 } else { 3 }
 }
-// Keep both lanes at their original positions, but put them under a parent
-// that cannot itself host a mixed fill width or a fill height: a 90px
-// WrappedRow stacks the width lanes; a natural WrappedRow puts the height
-// lanes on a single line. Unlike Row, neither can offer a fill height.
-pub(super) fn wrong_site(axis: u8) -> (u8, Bytes) {
+// A 90px WrappedRow stacks the width lanes; a natural one places the height
+// lanes side by side. Neither can offer a direct child a fill height.
+pub(super) fn wrapped_lanes(axis: u8) -> (u8, Bytes) {
     if axis == 1 {
         (2, block(&[px(1, 90.)]))
     } else {
@@ -172,7 +170,7 @@ fn nested_weighted_columns_charge_the_reflowed_nonfill_sibling_once() {
 fn rejection_preserves_pending_weights_and_closed_moves_use_the_new_hosts_split() {
     for axis in [1, 2] {
         let line = host(axis);
-        let (cross, root) = wrong_site(axis);
+        let (cross, root) = wrapped_lanes(axis);
         let mut r = Raster::default();
         r.tree
             .upload(&upload(&[
@@ -187,15 +185,7 @@ fn rejection_preserves_pending_weights_and_closed_moves_use_the_new_hosts_split(
             .unwrap();
         let old = draw(&mut r).to_vec();
         let pressed = r.target_at(5., 5.).unwrap().0;
-        // Pixel caps are legal here too. Use a second fill operand for a real
-        // width-site refusal; min(w, w) still has weight w at the Row site.
-        let policy = |w| {
-            if axis == 1 {
-                [vec![1, 4], number(3, w), number(3, w)].concat()
-            } else {
-                weight(2, w)
-            }
-        };
+        let policy = |w| [vec![axis, 4], number(3, w), number(3, w)].concat();
         r.tree
             .patch(&set(10, 4, panel(axis, 10, policy(3.))))
             .unwrap();
@@ -212,24 +202,27 @@ fn rejection_preserves_pending_weights_and_closed_moves_use_the_new_hosts_split(
                 .unwrap_err(),
             "truncated EMRG data"
         );
-        // The kept branch has accepted a weighted policy, even though the last
-        // draw used fill(). It can't move directly under the wrapping host,
-        // as a definition with :same or a bare ref. Promotion is legal.
-        for bad in [
-            patch(2, 10, &[]),
-            patch(1, 90, &[node(90, 2, block(&[]), &[10])]),
-            patch(
-                1,
-                1,
-                &[
-                    edges(1, cross, &[2, 3, 10]),
-                    edges(2, line, &[20]),
-                    edges(10, 4, &[11]),
-                ],
-            ),
-            patch(3, 9, &[node(9, 4, size(axis, policy(1.)), &[])]),
-        ] {
-            assert!(r.tree.patch(&bad).unwrap_err().contains("WrappedRow child"));
+        // Fill heights still refuse at the new edge, including closed refs.
+        if axis == 2 {
+            for bad in [
+                patch(2, 10, &[]),
+                patch(1, 90, &[node(90, 2, block(&[]), &[10])]),
+                patch(
+                    1,
+                    1,
+                    &[
+                        edges(1, cross, &[2, 3, 10]),
+                        edges(2, line, &[20]),
+                        edges(10, 4, &[11]),
+                    ],
+                ),
+                patch(3, 9, &[node(9, 4, size(axis, policy(1.)), &[])]),
+            ] {
+                assert_eq!(
+                    r.tree.patch(&bad).unwrap_err(),
+                    "fill height is not supported on a WrappedRow child"
+                );
+            }
         }
         assert_eq!(r.tree.encode(), pending);
         assert!(r.tree.layers.worksets_empty());

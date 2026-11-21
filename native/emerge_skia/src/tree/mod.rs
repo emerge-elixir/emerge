@@ -201,26 +201,12 @@ impl BoxStyle {
         }
     }
 }
-/// Only the incoming wrapped edge reads this minimum. Allocation always
-/// evaluates the original length, not this projection of it.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-enum LineWidth {
-    #[default]
-    Auto,
-    /// An explicit floor replaces the automatic minimum. It is a clamp of
-    /// the child's preferred outer width (a constant for pixel-only bounds).
-    Floor(Bounds<f64>),
-    MultipleFills,
-}
-impl LineWidth {
-    fn has_floor(self) -> bool {
-        matches!(self, Self::Floor(_))
-    }
-}
 #[derive(Clone, Debug, Default)]
 struct Attrs {
     sizing: BoxStyle,
-    line_width: LineWidth,
+    // Guaranteed floor of a fill width, as a clamp of preferred outer width.
+    // Only a wrapped edge reads this. None keeps the automatic minimum.
+    line_floor: Option<Bounds<f64>>,
     // Admission also checks operands masked by a tighter bound. This is not a layout input.
     largest_length_px: f64,
     family: Option<Family>,

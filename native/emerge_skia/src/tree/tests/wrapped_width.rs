@@ -89,6 +89,56 @@ pub(super) fn capped_floor(cap: f64, weight: f64) -> Bytes {
     [vec![1, 4], number(2, cap), vec![5, 1], number(3, weight)].concat()
 }
 
+pub(super) fn two_rates(fast: f64, cap: f64, slow: f64) -> Bytes {
+    // max(min(fill(fast), px(cap)), fill(slow))
+    [
+        vec![1, 5, 4],
+        number(3, fast),
+        number(2, cap),
+        number(3, slow),
+    ]
+    .concat()
+}
+
+#[test]
+fn an_extreme_weight_can_hand_the_line_to_a_second_fill_without_remeasuring() {
+    let mut r = Raster::default();
+    let tiny = f64::from_bits(1);
+    let policy = |w| block(&[two_rates(w, 50., tiny)]);
+    r.tree
+        .upload(&upload(&[
+            node(1, 2, block(&[vec![1, 0], number(4, 4.)]), &[2, 3]),
+            node(2, 4, policy(tiny), &[4]),
+            node(3, 4, block(&[weighted::weight(1, tiny)]), &[5]),
+            node(4, 6, chip(20.), &[]),
+            node(5, 6, chip(20.), &[]),
+        ]))
+        .unwrap();
+    for (host, weight, aw, bx, by, bw) in [
+        (84., tiny, 40., 44., 0., 40.),
+        (84., f64::MAX, 50., 54., 0., 30.), // cap binds, peer takes remainder
+        (124., f64::MAX, 60., 64., 0., 60.), // slower ray outgrows the cap
+        (44., f64::MAX, 20., 24., 0., 20.),
+        (43., f64::MAX, 43., 0., 16., 43.),
+    ] {
+        r.tree.patch(&set(2, 4, policy(weight))).unwrap();
+        r.tree.refresh(host, 40., 1.).unwrap();
+        let peer = bounds(&r, 3);
+        assert_eq!(
+            (bounds(&r, 2).width, peer.x, peer.y, peer.width),
+            (aw, bx, by, bw)
+        );
+        if host == 84. && weight == f64::MAX {
+            assert!(!r.tree.layers.trace.iter().any(|(p, _, _)| *p == Measure));
+        }
+    }
+}
+
+pub(super) fn two_floors(cap: f64, weight: f64) -> Bytes {
+    // min(max(content, fill()), max(px(cap), fill(weight)))
+    [vec![1, 4, 5, 1, 0, 5], number(2, cap), number(3, weight)].concat()
+}
+
 pub(super) fn content_bound(policy: Bytes, second_chip: f64) -> Bytes {
     upload(&[
         node(1, 2, block(&[vec![1, 0], number(4, 4.)]), &[2, 3]),
@@ -111,6 +161,7 @@ fn a_preferred_only_edit_survives_a_refusal_without_publishing_early() {
         (vec![1, 4, 1, 0], 100., 10., 20., 42., 4., (48., 0.)), // capped, same line
         (vec![1, 5, 1, 0], 67., 19., 20., 50., 3., (0., 16.)),  // floored, new line
         (capped_floor(50., 1.), 64., 16., 17., 46., 2., (0., 16.)),
+        (two_floors(50., 3.), 64., 16., 17., 46., 2., (0., 16.)),
     ] {
         let mut r = Raster::default();
         r.tree.upload(&content_bound(policy, chip2)).unwrap();
@@ -119,13 +170,15 @@ fn a_preferred_only_edit_survives_a_refusal_without_publishing_early() {
         assert_eq!(r.hit_at(x, 6.), old_hit);
         r.tree.patch(&set(5, 6, chip(grow_to))).unwrap();
         let pending = r.tree.encode();
-        for field in [vec![1, 4, 1, 5, 0, 0], vec![2, 4, 1, 0]] {
-            assert!(
-                r.tree
-                    .patch(&set(2, 2, block(&[field])))
-                    .unwrap_err()
-                    .contains("WrappedRow child")
-            );
+        let masked_bad_weight = [vec![1, 4], number(2, 0.), vec![5, 0], number(3, 0.)].concat();
+        for (field, why) in [
+            (masked_bad_weight, "fill weight must be finite and positive"),
+            (
+                vec![2, 4, 1, 0],
+                "fill height is not supported on a WrappedRow child",
+            ),
+        ] {
+            assert_eq!(r.tree.patch(&set(2, 2, block(&[field]))).unwrap_err(), why);
             assert_eq!(r.tree.encode(), pending);
         }
         assert!(r.tree.layers.worksets_empty());
@@ -227,6 +280,13 @@ fn content_floor_measure_follows_the_final_parent_and_operator() {
         (vec![limited_floor(44., 1.)], 0., 16.),
         (vec![interpose()], 35.5, 0.),
         (vec![promote(), limited_floor(43., 1.)], 47., 0.),
+        (vec![set(4, 2, style(two_floors(44., 1.)))], 0., 16.),
+        (vec![interpose()], 35.5, 0.),
+        (
+            vec![promote(), set(4, 2, style(two_floors(43., 1.)))],
+            47.,
+            0.,
+        ),
     ] {
         for wire in edits {
             t.patch(&wire).unwrap();
@@ -242,16 +302,16 @@ fn content_floor_measure_follows_the_final_parent_and_operator() {
             assert_eq!(t.layers.frames[t.elements.ids[&id]], frame);
         }
     }
-    t.patch(&limited_floor(43., 3.)).unwrap();
+    t.patch(&set(4, 2, style(two_floors(43., 3.)))).unwrap();
     t.refresh(67., 40., 1.).unwrap();
     assert!(!t.layers.trace.iter().any(|(p, _, _)| *p == Measure));
     assert_eq!(t.layers.frames[t.elements.ids[&3]].x, 47.);
 }
 
 #[test]
-fn a_single_fill_is_admitted_through_depth_64_but_not_65() {
+fn branched_fill_is_admitted_through_depth_64_but_not_65() {
     let deep = |depth| {
-        let expr = (1..depth).fold(vec![5, 1, 0], |inner, _| {
+        let expr = (2..depth).fold(vec![5, 1, 4, 0, 0], |inner, _| {
             [vec![4], number(2, 50.), inner].concat()
         });
         [vec![1], expr].concat()
@@ -294,27 +354,18 @@ fn explicit_zero_changes_line_membership_at_equal_folded_bounds() {
         assert_eq!((bounds(&r, 2).width, b.x, b.y), (aw, bx, by));
     }
     let masked = |expr: Bytes| [vec![1, 4], number(2, 0.), expr].concat();
-    for one_fill in [vec![4, 1, 0], vec![5, 1, 0]] {
-        r.tree
-            .patch(&set(2, 4, block(&[masked(one_fill)])))
-            .unwrap();
+    for expr in [
+        vec![4, 1, 0],
+        vec![5, 1, 0],
+        vec![5, 0, 0],
+        vec![4, 4, 0, 1, 5, 1, 0],
+    ] {
+        r.tree.patch(&set(2, 4, block(&[masked(expr)]))).unwrap();
         draw(&mut r);
         assert_eq!(
             (bounds(&r, 2).width, bounds(&r, 3).x, bounds(&r, 3).y),
             (0., 4., 0.)
         );
-    }
-    // Even under a zero cap, count *authored* leaves before folding.
-    let pending = r.tree.encode();
-    for two_fills in [vec![5, 0, 0], vec![4, 4, 0, 1, 5, 1, 0]] {
-        let width = masked(two_fills);
-        assert!(
-            r.tree
-                .patch(&set(2, 4, block(&[width])))
-                .unwrap_err()
-                .contains("WrappedRow child")
-        );
-        assert_eq!(r.tree.encode(), pending);
     }
 }
 

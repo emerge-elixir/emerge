@@ -309,6 +309,15 @@ fn pixel_bounded_lines(c: &Counter) {
         r.settle(100., 40., 1.).unwrap();
     });
     assert_eq!(bounds(&r, 3).x, 34.);
+    let edit = set(2, 4, panel(wrapped_width::two_rates(3., 50., 1.)));
+    c.zero(
+        "fitting edit changes the active fill leaf on a wrapped line",
+        || {
+            r.tree.patch(&edit).unwrap();
+            r.settle(84., 40., 1.).unwrap();
+        },
+    );
+    assert_eq!(bounds(&r, 3).x, 54.);
     let edit = set(2, 4, panel(nested::range(1, 70., 120., 3.)));
     c.zero("fitting floor/weight edit changes line membership", || {
         r.tree.patch(&edit).unwrap();
@@ -338,6 +347,14 @@ fn content_bounded_lines(c: &Counter) {
         (vec![1, 5, 1, 0], 67., 19., 20., (47., 0.), (0., 16.)),
         (
             wrapped_width::capped_floor(50., 3.),
+            64.,
+            16.,
+            17.,
+            (44., 0.),
+            (0., 16.),
+        ),
+        (
+            wrapped_width::two_floors(50., 3.),
             64.,
             16.,
             17.,

@@ -107,9 +107,8 @@ defmodule EmergeSkia.ColumnCrossWidthTest do
     end
   end
 
-  defp move_scene(site) do
-    # Same 3:1 split / independent offer, but two fill leaves still cannot
-    # move to a wrapped line. Keep the card's declaration across all sites.
+  defp move_scene(site, height_policy \\ px(12)) do
+    # Keep the same keyed card and width across all three sites.
     policy = max(content(), max(fill(3), fill(3)))
 
     card =
@@ -117,7 +116,7 @@ defmodule EmergeSkia.ColumnCrossWidthTest do
         [
           key(:card),
           width(policy),
-          height(px(12)),
+          height(height_policy),
           Background.color(:red),
           Event.on_click(site)
         ],
@@ -126,6 +125,12 @@ defmodule EmergeSkia.ColumnCrossWidthTest do
 
     peer = el([key(:peer), width(fill()), height(px(12)), Background.color(:blue)], none())
 
+    wrap =
+      wrapped_row(
+        [key(:wrap), width(px(100)), height(px(12))],
+        if(site == :wrap, do: [card], else: [])
+      )
+
     column([width(px(120)), height(px(24)), Background.color(:white)], [
       row(
         [key(:row), width(px(120)), height(px(12))],
@@ -133,13 +138,12 @@ defmodule EmergeSkia.ColumnCrossWidthTest do
       ),
       column(
         [key(:column), width(px(108)), height(px(12))],
-        if(site == :column, do: [card], else: [])
-      ),
-      wrapped_row([key(:wrap), height(px(0))], if(site == :wrap, do: [card], else: []))
+        if(site == :column, do: [card, wrap], else: [wrap])
+      )
     ])
   end
 
-  test "a press follows a keyed Row ↔ Column move, even after a rejected sparse edit" do
+  test "a press follows the keyed card across Row, Column and WrappedRow after a rejected edit" do
     {pid, r} =
       Headless.mount({120, 24}, fn -> move_scene(:row) end, [:pointer_button], target_fps: 1)
 
@@ -168,16 +172,21 @@ defmodule EmergeSkia.ColumnCrossWidthTest do
     {_, pending} = Emerge.Engine.diff_state_update_binary(before, move_scene(:column))
 
     assert_raise RuntimeError,
-                 ~r/renderer_patch failed: .*fill width is not supported on a WrappedRow child/,
+                 ~r/renderer_patch failed: fill height is not supported on a WrappedRow child/,
                  fn ->
-                   EmergeSkia.patch_tree(r, pending, move_scene(:wrap))
+                   EmergeSkia.patch_tree(r, pending, move_scene(:wrap, min(px(12), fill())))
                  end
 
     assert {:ok, ^top} = EmergeSkia.render_to_pixels(r)
     assert Headless.pixels(2500) == bottom
     button(r, :release, {100.0, 17.0})
     assert_receive {:application, {:column, %{x: 100.0, y: 5.0}}}
-    button(r, :press, {100.0, 17.0})
+    button(r, :press, {85.0, 17.0})
+    send(pid, {:scene, fn -> move_scene(:wrap) end})
+    assert Headless.pixels(2500) == blue.(120 * 12) <> :binary.copy(red.(100) <> white.(20), 12)
+    button(r, :release, {85.0, 17.0})
+    assert_receive {:application, {:wrap, %{x: 85.0, y: 5.0}}}
+    button(r, :press, {85.0, 17.0})
     send(pid, {:scene, fn -> move_scene(:row) end})
     assert Headless.pixels(2500) == top
     button(r, :release, {85.0, 5.0})

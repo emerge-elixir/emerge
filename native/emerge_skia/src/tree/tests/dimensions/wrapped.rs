@@ -3,40 +3,17 @@
 use super::*;
 
 fn policy(rng: &mut Rng) -> Expr {
-    fn bound(r: &mut Rng, depth: usize) -> Expr {
-        if depth > 0 && r.next(3) == 0 {
-            pair(r.next(2) == 0, bound(r, depth - 1), bound(r, depth - 1))
-        } else if r.next(2) == 0 {
-            Content
-        } else {
-            Px(r.next(81) as f64)
-        }
-    }
-    match rng.next(8) {
-        0 => Auto,
-        1 => bound(rng, 2),
-        _ => {
-            let fill = Fill(Some([0.25, 1., 2., 4.][rng.next(4)]));
-            (0..rng.next(5)).fold(fill, |expr, _| {
-                let b = bound(rng, 2);
-                let min = rng.next(2) == 0;
-                if rng.next(2) == 0 {
-                    pair(min, b, expr)
-                } else {
-                    pair(min, expr, b)
-                }
-            })
-        }
-    }
+    if rng.next(8) == 0 { Auto } else { rng.expr(4) }
 }
 
-// Interpret the written tree, without folding intervals. A max supplies a
-// floor in place of the automatic fill minimum only within its own subtree.
+// Literal extended-real model, no production interval folding. Treat fill
+// as unbounded below: a finite result is a guaranteed floor, even at zero.
 fn break_width(e: &Expr, preferred: f64, automatic: f64) -> f64 {
-    match e {
-        Min(a, b) => break_width(a, preferred, automatic).min(break_width(b, preferred, automatic)),
-        Max(a, b) => break_width(a, preferred, 0.).max(break_width(b, preferred, 0.)),
-        leaf => leaf.eval(preferred, 1., |_| automatic),
+    let floor = e.eval(preferred, 1., |_| f64::NEG_INFINITY);
+    if floor.is_finite() {
+        floor
+    } else {
+        e.eval(preferred, 1., |_| automatic)
     }
 }
 

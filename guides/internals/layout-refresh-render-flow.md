@@ -109,13 +109,17 @@ on A, its preferred outer width caps the share; its minimum still decides the
 break. Growing A's content from 20px to 40px changes **20/76 to 40/56** when
 B can use the remainder. With `max(content(), fill())`, A's preferred width
 is a floor: in a 67px row, **43 + 4 + 20** fits exactly, but growing A's
-content by 1px puts B on its own line. Nested bounds follow the path from
-that one fill leaf to the root of the length expression: caps constrain the
-automatic minimum, and a floor replaces it (even a floor of zero). A `max`
-inside a fill-free operand affects that operand only. The decoder folds the
-explicit floor into a clamp of preferred width; measurement applies it after
-the intrinsic cache lookup. The shared allocator still reads the original
-length. Reflow uses the chosen breaks and actual child heights.
+content by 1px puts B on its own line.
+
+A width may contain several fills. While decoding, fold its guaranteed floor:
+`px` and `content()` supply one, fill does not. For `min` both operands must
+supply one; for `max` either suffices. Measurement applies that floor as a
+clamp of preferred outer width after the intrinsic cache lookup. No guarantee
+means keep the capped automatic minimum; a guaranteed **zero** replaces it.
+Only after the line is chosen does the allocator evaluate the original width
+at the common fill unit. For `max(min(fill(3), px(50)), fill())`, that means
+`max(min(3u, 50), u)` at scale 1, not two sibling shares. Reflow uses the
+chosen breaks and actual child heights.
 See [why this differs from main](retained-decisions.md#d7-share-fill-widths-per-wrapped-line)
 and the [submitted-frame regression](../../test/emerge_skia/wrapped_row_fill_test.exs).
 

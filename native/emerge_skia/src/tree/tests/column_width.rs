@@ -119,9 +119,9 @@ fn independent_width_reflows_wrapped_lines_and_places_the_following_child() {
 #[test]
 fn a_closed_move_checks_site_and_masked_scale_before_publishing_the_new_width() {
     let mut r = Raster::default();
-    // Two equal fill leaves still refuse on a wrapped line. In the Row
-    // min(content, min(3u, 3u), masked px) splits 120 as 90/30.
-    // The other Column's width is 54 logical px at scale 2, i.e. 108 device px.
+    // min(content, min(3u, 3u), masked px) splits 120 as 90/30 in the Row.
+    // Both destinations have a 108px inner width, but only the wrapped line
+    // honors the card's automatic minimum (120 logical px at scale 2).
     let cap = |n| {
         panel(
             1,
@@ -143,7 +143,7 @@ fn a_closed_move_checks_site_and_masked_scale_before_publishing_the_new_width() 
             node(4, 6, block(&[px(1, 120.)]), &[]),
             node(3, 4, panel(1, 3, vec![1, 0]), &[]),
             node(20, 3, block(&[px(1, 54.), px(2, 12.), number(78, 2.)]), &[]),
-            node(30, 2, block(&[]), &[]),
+            node(30, 2, block(&[px(1, 54.), number(78, 2.)]), &[]),
         ]))
         .unwrap();
     let old = draw(&mut r).to_vec();
@@ -162,16 +162,12 @@ fn a_closed_move_checks_site_and_masked_scale_before_publishing_the_new_width() 
     };
     r.tree.patch(&set(2, 4, cap(2e38))).unwrap();
     let pending = r.tree.encode();
-    assert!(
-        r.tree
-            .patch(&transfer(30, 2))
-            .unwrap_err()
-            .contains("WrappedRow child")
-    );
-    assert_eq!(
-        r.tree.patch(&transfer(20, 3)).unwrap_err(),
-        "scaled length exceeds device range"
-    );
+    for (id, kind) in [(30, 2), (20, 3)] {
+        assert_eq!(
+            r.tree.patch(&transfer(id, kind)).unwrap_err(),
+            "scaled length exceeds device range"
+        );
+    }
     assert_eq!(r.tree.encode(), pending);
     assert!(r.tree.layers.worksets_empty());
     assert_eq!(r.target_at(85., 5.), Some(old_hit));
@@ -204,4 +200,9 @@ fn a_closed_move_checks_site_and_masked_scale_before_publishing_the_new_width() 
     assert_eq!(draw(&mut r), old);
     assert_eq!(bounds(&r, 2).width, 90.);
     assert_eq!(r.target_at(85., 5.), Some(old_hit));
+    r.tree.patch(&transfer(30, 2)).unwrap();
+    draw(&mut r);
+    assert_eq!((bounds(&r, 30).width, bounds(&r, 2).width), (108., 240.));
+    assert_eq!(r.target_at(85., 49.), Some((old_hit.0, 2, 42.5, 2.5)));
+    assert!(r.target_at(110., 49.).is_none());
 }

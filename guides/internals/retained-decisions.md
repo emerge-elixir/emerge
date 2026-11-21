@@ -115,8 +115,8 @@ at 44px they take 20/20; at 43px each takes its own line. Keep Emerge's
 leading vertical placement and line gap, not CSS cross-axis stretching.
 Existing plain-fill layouts can change.
 
-Pixel bounds apply to **one** fill weight. A cap lowers the automatic content
-minimum for breaking; an explicit floor replaces that minimum, even at zero.
+For a pixel bound on a fill, a cap lowers the automatic content minimum for
+breaking; an explicit floor replaces that minimum, even at zero.
 Unused width goes to uncapped siblings **on that line**. On `main` at `aef5e42f`,
 a 30px cap gave A 30px on line one and B 100px on line two. With the elm-ui
 rule the same unpadded cards take **30/66** on one line. A 10px cap on 20px
@@ -142,14 +142,22 @@ Nested bounds compose around a single fill. For `min(px(50), max(content(), fill
 with a 64px host, gap 4 and a 20px-minimum peer, a 40px content floor fits:
 A/B take **40/20**. Grow the content to 41px: B wraps to y=16 and A stops at
 its 50px cap. `main` at `aef5e42f` drew A at 50px and B at `(0,4)` with width
-64px in **both** states. Only a `max` enclosing the fill replaces its automatic
-minimum; `min(max(content(), px(10)), fill())` still breaks at the capped
-automatic minimum, not at 10px. A masked second fill still counts as two.
+64px in **both** states. `min(max(content(), px(10)), fill())` still breaks
+at the capped automatic minimum, not at 10px: the fill can undercut the bound.
+
+With any number of fill leaves, only a floor **guaranteed by the whole width**
+replaces the automatic minimum. Pixels and preferred content guarantee a floor;
+fill alone does not. `min` needs a guarantee from both operands, `max` from
+at least one. Thus `max(fill(), fill(3))` keeps its automatic minimum, while
+`max(px(0), max(fill(), fill(3)))` has an explicit zero. Every fill leaf in a
+child's width uses the same line unit; the resulting width counts **once**.
+In an 84px host with gap 4, A `max(min(fill(3), px(cap)), fill())` next to B
+`fill()` takes **40/40** at cap 30 and **50/30** at cap 50 (20px content each).
+`main` at `aef5e42f` put both on separate 84px lines at both caps.
 
 Keep line formation separate from sharing: it reads child measurements, host
 inner width and gaps, not lengths, weights or trial shares. Row, each wrapped
 line and Column's height group use the same allocator on the authored lengths.
-Adding the floor after that extraction only widened admission.
 [Submitted frames and clicks](../../test/emerge_skia/wrapped_row_fill_test.exs) ·
 [minimum on a moved child](../../native/emerge_skia/src/tree/tests/wrapped_width.rs).
 

@@ -233,7 +233,7 @@ fn admission_proves_the_bounded_leaf_at_its_final_site_before_publishing_anythin
     for axis in [1, 2] {
         let mut r = Raster::default();
         let line = host(axis);
-        let (cross, root) = weighted::wrong_site(axis);
+        let (cross, root) = weighted::wrapped_lanes(axis);
         r.tree
             .upload(&upload(&[
                 node(1, cross, root, &[2, 3]),

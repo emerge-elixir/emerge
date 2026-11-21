@@ -2,15 +2,12 @@
 use super::*;
 
 impl Expr {
-    fn fill_leaves(&self) -> usize {
+    fn has_fill(&self) -> bool {
         match self {
-            Fill(_) => 1,
-            Min(a, b) | Max(a, b) => a.fill_leaves() + b.fill_leaves(),
-            _ => 0,
+            Fill(_) => true,
+            Min(a, b) | Max(a, b) => a.has_fill() || b.has_fill(),
+            _ => false,
         }
-    }
-    fn allowed(&self, axis: u8, parent: Option<u8>) -> bool {
-        parent != Some(2) || self.fill_leaves() <= usize::from(axis == 1)
     }
     fn single(&self, natural: f32, host: f64, independent_offer: bool) -> f32 {
         let eval = |unit| self.eval(f64::from(natural), 1., |_| unit);
@@ -77,7 +74,7 @@ fn width_by_height_at_roots_and_all_supported_parent_child_sites() {
                 for height in &lengths {
                     let edit = set(id, kind, styles(width, height, kind));
                     let result = t.patch(&edit);
-                    if !width.allowed(1, parent) || !height.allowed(2, parent) {
+                    if parent == Some(2) && height.has_fill() {
                         assert!(result.unwrap_err().contains("WrappedRow child"));
                         assert_eq!(t.encode(), accepted);
                         continue;

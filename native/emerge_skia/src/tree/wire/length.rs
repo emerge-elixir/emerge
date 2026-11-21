@@ -5,10 +5,10 @@ use super::*;
 const MAX_LENGTH_DEPTH: usize = 64;
 
 impl Reader<'_> {
-    pub(super) fn length(&mut self, raw: &[u8]) -> Result<(Length, f64, LineWidth)> {
+    pub(super) fn length(&mut self, raw: &[u8]) -> Result<(Length, f64, Option<Bounds<f64>>)> {
         let start = raw.len() - self.0.len();
         let mut largest = 0f64;
-        let (mut l, line) = self.expression(
+        let (mut length, floor) = self.expression(
             |leaf| {
                 let length = match leaf {
                     Leaf::Fill => Length::Fill,
@@ -19,25 +19,26 @@ impl Reader<'_> {
                         Length::Px(px)
                     }
                 };
-                (length, LineWidth::Auto)
+                let floor = length.weight().is_none().then(|| length.natural_bounds());
+                (length, floor)
             },
             |min, (a, left), (b, right)| {
-                // Folding preserves fill presence even under a constant bound.
-                let line = match (a.weight(), b.weight()) {
-                    (None, None) => LineWidth::Auto,
-                    (Some(_), Some(_)) => LineWidth::MultipleFills,
-                    (Some(_), None) => left.bounded_by(min, b),
-                    (None, Some(_)) => right.bounded_by(min, a),
+                // Fill alone promises no floor (different from an authored
+                // zero). Min needs a guarantee from both sides; max only one.
+                let floor = match (left, right) {
+                    (Some(x), Some(y)) => Some(x.combine(y, min)),
+                    _ if min => None,
+                    _ => left.or(right),
                 };
-                (fold(min, a, b), line)
+                (fold(min, a, b), floor)
             },
         )?;
-        if let Length::Formula(f) = &mut l {
+        if let Length::Formula(f) = &mut length {
             // An EMRG body is limited to 64 MiB before attr parsing.
             f.start = start as u32;
             f.end = (raw.len() - self.0.len()) as u32;
         }
-        Ok((l, largest, line))
+        Ok((length, largest, length.weight().and(floor)))
     }
     fn leaf(&mut self, tag: u8) -> Result<Leaf> {
         match tag {
@@ -89,18 +90,6 @@ impl Reader<'_> {
                 }
             }
             tag = self.byte()?;
-        }
-    }
-}
-impl LineWidth {
-    fn bounded_by(self, min: bool, fill_free: Length) -> Self {
-        // Follow only the fill's path. Caps alone already constrain the
-        // intrinsic minimum. From the first max onward, the explicit floor
-        // is the authored expression with fill = 0 and content = preferred.
-        match self {
-            Self::Auto if !min => Self::Floor(fill_free.natural_bounds()),
-            Self::Floor(b) => Self::Floor(b.combine(fill_free.natural_bounds(), min)),
-            other => other,
         }
     }
 }

@@ -566,7 +566,7 @@ impl Layers {
         // Only an explicit floor replaces the intrinsic minimum. Keep the
         // site-independent demand in the memo, including on a closed move.
         let mut m = m;
-        if let LineWidth::Floor(bounds) = e.attrs[k].line_width
+        if let Some(bounds) = e.attrs[k].line_floor
             && e.parent_shape(k) == Some(Shape::WrappedRow)
         {
             m.min_w = bounds.resolve(m.w, c.scale);
