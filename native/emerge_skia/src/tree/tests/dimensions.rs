@@ -6,6 +6,7 @@ mod sites;
 mod unary;
 mod wrapped;
 mod wrapped_height;
+mod zones;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Site {

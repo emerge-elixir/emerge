@@ -227,11 +227,11 @@ impl Layers {
         {
             self.invalidate_early_heights(e, k);
         }
-        if shape == Shape::El
+        if shape.offers_inner_height()
             && a.padding[1] != b.padding[1]
             && e.children(k)
-                .first()
-                .is_some_and(|&c| e.alignment(c, 0) != Alignment::Start)
+                .iter()
+                .any(|&c| e.alignment(c, 0) != Alignment::Start)
         {
             self.invalidate(Pass::Place, k, depth);
         }

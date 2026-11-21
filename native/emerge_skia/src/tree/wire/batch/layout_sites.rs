@@ -116,20 +116,17 @@ impl Batch {
             let s = &self.entries[i];
             let (shape, a) = self.declaration(e, s.id);
             let parent = s.parent.map(|id| self.declaration(e, id).0);
-            for (axis, align) in a.align.into_iter().enumerate() {
-                if align.is_none_or(|a| a == Alignment::Start) {
-                    continue;
-                }
-                let supported = match parent {
-                    Some(Shape::Row | Shape::WrappedRow) => axis == 1,
-                    Some(Shape::Column | Shape::WrappedColumn) => axis == 0,
-                    _ => false,
-                };
-                if !supported {
-                    return Err(format!(
-                        "unsupported alignment on axis {axis} at this layout site"
-                    ));
-                }
+            if !matches!(
+                parent,
+                Some(Shape::Row | Shape::Column | Shape::WrappedRow | Shape::WrappedColumn)
+            ) && let Some(axis) = a
+                .align
+                .iter()
+                .position(|a| a.is_some_and(|z| z != Alignment::Start))
+            {
+                return Err(format!(
+                    "unsupported alignment on axis {axis} at this layout site"
+                ));
             }
             if shape == Shape::Column
                 && (!s.closed

@@ -17,6 +17,7 @@ mod weighted;
 mod wrapped_column;
 mod wrapped_height;
 mod wrapped_width;
+mod zones;
 use super::*;
 use layers::Pass::*;
 use paint::Outputs;

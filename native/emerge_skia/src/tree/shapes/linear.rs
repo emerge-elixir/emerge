@@ -55,30 +55,85 @@ impl<'a> Groups<'a> {
     }
 }
 
+/// `edge` excludes the gap that `next` reserves for another member of this zone.
+struct Cursor {
+    edge: f32,
+    next: f32,
+}
+impl Cursor {
+    fn at(edge: f32) -> Self {
+        Self { edge, next: edge }
+    }
+}
+
 impl<const M: usize, const W: bool, const T: u8> Linear<M, W, T> {
     // Map between (x,y) and (main,cross), in either direction.
     fn axes(pair: [f32; 2]) -> [f32; 2] {
         [pair[M], pair[1 - M]]
     }
 
-    /// Give each child its relative offset; return the occupied cross extent.
-    fn pack(
-        line: &[Key],
-        gap: f32,
-        cross: f32,
-        mut visit: impl FnMut(Key, [f32; 2]) -> Size,
-    ) -> f32 {
-        let (mut pos, mut widest) = (0., 0f32);
-        for &c in line {
-            let size = visit(c, Self::axes([pos, cross]));
-            let [main, across] = Self::axes([size.w, size.h]);
+    fn advance(cursor: &mut Cursor, extent: f32, gap: f32, zone: Alignment) -> f32 {
+        if zone == Alignment::End {
+            cursor.edge = cursor.next - extent;
+            cursor.next = cursor.edge - gap;
+            cursor.edge
+        } else {
+            let start = cursor.next;
+            cursor.edge = start + extent;
             // Preserve the existing Row's f32 step rounding.
-            pos = if M == X && !W {
-                pos + (main + gap)
+            cursor.next = if M == X && !W {
+                start + (extent + gap)
             } else {
-                (pos + main) + gap
+                cursor.edge + gap
             };
+            start
+        }
+    }
+
+    /// Anchor the two outer zones, then center *one group* between their actual
+    /// edges. End members are positioned backwards so even a very large first
+    /// member cannot lose the last one's right/bottom edge to cancellation.
+    /// Only placement writes vary in order; paint and hit walk the declaration.
+    fn place_zones(
+        line: &[Key],
+        room: f32,
+        gap: f32,
+        zone: impl Fn(Key) -> Alignment,
+        cx: &mut PlaceCx<'_>,
+        resolve: impl Fn(Key, &PlaceCx<'_>) -> (Size, Constraint),
+        mut put: impl FnMut(&mut PlaceCx<'_>, Key, f32, f32, Constraint),
+    ) -> f32 {
+        use Alignment::{Center, End, Start};
+        let (mut start, mut center, mut end) = (Cursor::at(0.), Cursor::at(0.), Cursor::at(room));
+        let mut widest = 0f32;
+        let mut place = |c, z, cursor: &mut Cursor, cx: &mut PlaceCx<'_>| {
+            let (size, edge) = resolve(c, cx);
+            let [main, across] = Self::axes([size.w, size.h]);
+            let at = Self::advance(cursor, main, gap, z);
+            put(cx, c, at, across, edge);
             widest = widest.max(across);
+        };
+        let (mut centers, mut ends) = (&line[..0], &line[..0]);
+        for (i, &c) in line.iter().enumerate() {
+            match zone(c) {
+                Start => place(c, Start, &mut start, cx),
+                End => ends = &line[..=i],
+                Center => {
+                    let (s, _) = resolve(c, cx);
+                    Self::advance(&mut center, Self::axes([s.w, s.h])[0], gap, Center);
+                    centers = &line[..=i];
+                }
+            }
+        }
+        for &c in ends.iter().rev().filter(|&&c| zone(c) == End) {
+            place(c, End, &mut end, cx);
+        }
+        if !centers.is_empty() {
+            let free = (end.edge - start.edge) - center.edge;
+            center = Cursor::at(start.edge + free.max(0.) * 0.5);
+            for &c in centers.iter().filter(|&&c| zone(c) == Center) {
+                place(c, Center, &mut center, cx);
+            }
         }
         widest
     }
@@ -241,11 +296,7 @@ impl<const M: usize, const W: bool, const T: u8> LayoutBehaviour for Linear<M, W
         let (origin, inner) = cx.padded_height_offer(style);
         let pad = style.padding.map(|v| scale::pixels(v, cx.scale));
         let gap = style.spacing.map(|v| scale::pixels(v, cx.scale));
-        let cross_room = if M == Y {
-            (cx.width - (pad[1] + pad[3])).max(0.)
-        } else {
-            inner
-        };
+        let [main_room, cross_room] = Self::axes([(cx.width - (pad[1] + pad[3])).max(0.), inner]);
         let slot = |c, cx: &PlaceCx<'_>| {
             let fit = cx.child(c);
             let s = fill::Slot::new(e, c, e.attrs[c].sizing.height, fit.h);
@@ -282,23 +333,12 @@ impl<const M: usize, const W: bool, const T: u8> LayoutBehaviour for Linear<M, W
             let resolved = |c: Key, cx: &PlaceCx<'_>| {
                 let fit = cx.child(c);
                 let height = e.attrs[c].sizing.height;
-                if M == Y {
+                let (h, edge) = if M == Y {
                     let allotted = split
                         .and_then(|s| s.offer(slot(c, cx)))
                         .or_else(|| height.weight().map(|_| cx.measured_height(c)));
                     let edge = allotted.map_or(Constraint::Natural, Constraint::Assigned);
-                    (
-                        Size {
-                            w: if W || e.alignment(c, X) != Alignment::Start {
-                                cx.width_at(c, edge)
-                            } else {
-                                fit.w
-                            },
-                            h: allotted.unwrap_or(fit.h),
-                            ..fit
-                        },
-                        edge,
-                    )
+                    (allotted.unwrap_or(fit.h), edge)
                 } else if height.weight().is_some()
                     && (W || e.attrs[c].align[Y].is_some_and(|a| a != Alignment::Start))
                 {
@@ -308,18 +348,25 @@ impl<const M: usize, const W: bool, const T: u8> LayoutBehaviour for Linear<M, W
                         inner
                     };
                     let h = height.at_offer(e, c, fit.h, offer);
-                    (Size { h, ..fit }, Constraint::Assigned(h))
+                    (h, Constraint::Assigned(h))
                 } else {
                     (
-                        fit,
+                        fit.h,
                         if W {
                             Constraint::Natural
                         } else {
                             Constraint::Available(inner)
                         },
                     )
-                }
+                };
+                let w = if M == X || W || e.alignment(c, X) != Alignment::Start {
+                    cx.width_at(c, edge)
+                } else {
+                    fit.w
+                };
+                (Size { w, h, ..fit }, edge)
             };
+            let zone = |c: Key| e.attrs[c].align[M].unwrap_or_default();
             let align = |c: Key| e.attrs[c].align[1 - M].unwrap_or_default();
             let interval = if W && line.iter().any(|&c| align(c) != Alignment::Start) {
                 line.iter()
@@ -331,12 +378,18 @@ impl<const M: usize, const W: bool, const T: u8> LayoutBehaviour for Linear<M, W
             } else {
                 cross_room
             };
-            let occupied_cross = Self::pack(line, gap[M], cross, |c, mut offset| {
-                let (size, edge) = resolved(c, cx);
-                offset[1 - M] += align(c).offset(interval, Self::axes([size.w, size.h])[1]);
-                cx.place(c, [origin[0] + offset[0], origin[1] + offset[1]], edge);
-                size
-            });
+            let occupied_cross = Self::place_zones(
+                line,
+                main_room,
+                gap[M],
+                zone,
+                cx,
+                resolved,
+                |cx, c, pos, across, edge| {
+                    let offset = Self::axes([pos, cross + align(c).offset(interval, across)]);
+                    cx.place(c, [origin[0] + offset[0], origin[1] + offset[1]], edge);
+                },
+            );
             cross = (cross + occupied_cross) + gap[1 - M];
         }
     }

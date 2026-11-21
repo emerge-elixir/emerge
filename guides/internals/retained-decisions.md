@@ -217,3 +217,19 @@ WrappedColumn. Reject cycles and unproved early dependencies atomically. No
 previous-frame estimate, one-column fallback or retry from Place to Flow.
 [Independent and circular cases](../../native/emerge_skia/src/tree/tests/wrapped_column.rs) ·
 [submitted results](../../test/emerge_skia/wrapped_column_test.exs).
+
+### D11. Place alignment groups without changing stacking
+
+Like `main`, anchor the end group at the padded edge and center the whole
+middle group between the occupied ends. In a 100px row with padding and gap
+4, widths 36/12/20 at start/center/end give origins **4/52/76**, not 4/44/76.
+Use resolved outer extents after sharing. Reset the cursors on each line of a
+WrappedRow or column of a WrappedColumn; alignment must not change the break.
+
+Unlike `main`, alignment never changes stacking order. In a 30px Row, declare
+an end-aligned red 20px card first and a start-aligned blue 20px card second.
+At `(15,6)` `aef5e42f` painted **red** using its derived child order. Retained
+paints **blue** and routes the click to blue at local `(15,6)`: later eligible
+siblings win in the one declaration order, even on overflow. The comparison
+with `main` is of pixels, not its seat routing. [Public frames and clicks](../../test/emerge_skia/linear_zones_test.exs) ·
+[transposed geometry oracle](../../native/emerge_skia/src/tree/tests/dimensions/zones.rs).

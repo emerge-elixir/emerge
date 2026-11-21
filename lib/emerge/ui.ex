@@ -68,10 +68,9 @@ defmodule Emerge.UI do
   `wrapped_row/2` wraps against the width it resolves from its parent,
   including nested fill-driven layouts. Its height grows to match the tallest
   child on each wrapped line, so multiline or reflowed children push following
-  content down instead of clipping. Horizontal child alignment also stays
-  line-local after wrapping, which means `center_x/0` and `align_right/0`
-  position children within the remaining width of their wrapped line rather
-  than across the full container width.
+  content down instead of clipping. Each line has the padded width of the row.
+  Its right-aligned group ends at the right edge, and its centered group uses
+  the space left between that line's left and right groups.
 
   ## use Emerge.UI
 
@@ -317,7 +316,8 @@ defmodule Emerge.UI do
   and between items in a column, respectively. With no height limit the
   children form one column. Height fills share space within each column.
   `width(content())` fits the occupied columns and the gaps between them;
-  `center_x/0` on a child centers it in its own column.
+  `center_x/0` on a child centers it across its own column. `center_y/0` and
+  `align_bottom/0` place groups down each column after its members are known.
 
   If another element needs that packed width to decide its own width, the
   renderer must be able to determine the column breaks before width reflow.

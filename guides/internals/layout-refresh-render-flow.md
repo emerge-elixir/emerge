@@ -142,6 +142,13 @@ uses the padded host for an unwrapped group, the tallest/widest child for a
 wrapped group. It changes placement, not shares or membership. A natural
 WrappedRow retains its single-row height offer for Place, not its grown stack.
 
+On the main axis, start and end groups pack against the padded edges. Center
+members and their internal gaps form one group, centered between the occupied
+edges or starting immediately after the start group if space runs out. No gap
+is charged twice at a zone boundary. Place uses the already resolved sizes
+and does not repartition or sort the children; overlaps draw and hit in
+[declaration order](retained-decisions.md#d11-place-alignment-groups-without-changing-stacking).
+
 A WrappedColumn fits the **sum** of its occupied column widths plus gaps.
 In a content-width host with two 12×20 cards and `spacing_xy(6, 4)`, a height
 of 44px takes 12px of width; 43px takes 30px. Child width offers in a natural

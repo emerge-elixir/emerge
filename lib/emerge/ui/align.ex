@@ -65,7 +65,11 @@ defmodule Emerge.UI.Align do
   helpers on the children you want to position inside the row.
 
   `align_left/0`, `center_x/0`, and `align_right/0` split children into left,
-  center, and right groups across the row.
+  center, and right groups. The right group ends at the padded right edge. The
+  center group is centered **between the two outer groups**, not in the whole
+  row. With too little space it starts where the left group ends. Children
+  keep their declaration order and spacing within each group. If boxes overlap,
+  later siblings paint on top and the later eligible listener receives the click.
 
   `align_top/0`, `center_y/0`, and `align_bottom/0` position each child within
   the row height.
@@ -83,10 +87,10 @@ defmodule Emerge.UI.Align do
 
   In `wrapped_row`, horizontal alignment is evaluated per wrapped line.
 
-  After wrapping, `align_left/0`, `center_x/0`, and `align_right/0` split each
-  line into left, center, and right zones using the remaining width of that
-  line. A centered or right-aligned child on a later line therefore aligns
-  within that line, not against the full wrapped row width.
+  Each line uses the padded width of the row, but only the children on that
+  line form its left, center, and right groups. Alignment does not change line
+  breaks or fill widths. A lone 20-pixel card on a 60-pixel line starts at 20
+  with `center_x/0` and at 40 with `align_right/0` (no padding).
 
   `align_top/0`, `center_y/0`, and `align_bottom/0` still position each child
   within the height of its own wrapped line.
@@ -96,7 +100,9 @@ defmodule Emerge.UI.Align do
   Put `align_left/0`, `center_x/0`, or `align_right/0` on a child to position
   it within **its own column**, not the full container. For example, a
   16-pixel child in a 32-pixel column starts 0, 8 or 16 pixels from that
-  column's left edge. Alignment does not change which column the child fits in.
+  column's left edge. `align_bottom/0` anchors the bottom group at the padded
+  bottom edge; `center_y/0` centers its group between the top and bottom
+  groups **in that column**. Neither helper changes which column a child fits in.
 
   ## `column`
 
@@ -104,7 +110,8 @@ defmodule Emerge.UI.Align do
   helpers on the children you want to position inside the column.
 
   `align_top/0`, `center_y/0`, and `align_bottom/0` split children into top,
-  center, and bottom groups down the column.
+  center, and bottom groups down the column. The center group uses the space
+  between the top and bottom groups, just as in a row.
 
   `align_left/0`, `center_x/0`, and `align_right/0` position each child within
   the column width.

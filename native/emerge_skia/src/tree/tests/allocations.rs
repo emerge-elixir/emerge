@@ -43,6 +43,43 @@ impl Counter {
         )
     }
 }
+fn alignment_zones(c: &Counter) {
+    for (kind, axis, n) in [(1, 1, 10_000), (3, 2, 12), (2, 1, 16), (14, 2, 16)] {
+        let ids: Vec<_> = (2..n + 2).collect();
+        let host = |extent| block(&[px(axis, extent), px(3 - axis, 40.), number(4, 2.)]);
+        let item = |z| {
+            block(&[
+                px(axis, 2.),
+                px(3 - axis, 4.),
+                vec![4 + axis, z],
+                color([255, 0, 0]),
+                vec![40, 1],
+            ])
+        };
+        let nodes = std::iter::once(node(1, kind, host(60.), &ids))
+            .chain(ids.iter().map(|&id| node(id, 4, item((id % 3) as u8), &[])))
+            .collect::<Vec<_>>();
+        let mut r = Raster::default();
+        r.tree.upload(&upload(&nodes)).unwrap();
+        c.zero("first aligned groups after reservation", || {
+            r.settle(100., 100., 1.).unwrap();
+        });
+        for edit in [
+            set(2, 4, item(0)),
+            set(1, kind, host(57.)),
+            set(2, 4, item(1)),
+            set(2, 4, item(2)),
+        ] {
+            c.zero(
+                "fitting zone edit through prepared draw and hit inputs",
+                || {
+                    r.tree.patch(&edit).unwrap();
+                    r.settle(100., 100., 1.).unwrap();
+                },
+            );
+        }
+    }
+}
 fn weighted_splits(c: &Counter) {
     for axis in [1, 2] {
         let mut r = Raster::default();
@@ -848,6 +885,7 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     c.zero("height-only resize through paint/hit inputs", || {
         assert!(stack.settle(180., 53., 1.).unwrap());
     });
+    alignment_zones(&c);
     weighted_splits(&c);
     bounded_splits(&c);
     nested_splits(&c);

@@ -842,6 +842,7 @@ impl Layers {
         if n.shape == Shape::WrappedColumn
             && !b.width.definite()
             && (e.alignment(k, 0) != Alignment::Start
+                || e.parent_shape(k).is_some_and(Shape::allots_width)
                 || e.parent_shape(k) == Some(Shape::WrappedColumn))
         {
             self.parent(Place, k, e);

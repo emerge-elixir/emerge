@@ -300,14 +300,26 @@ fn cross_alignment_is_placement_only_and_uses_each_groups_own_maximum() {
                 .iter()
                 .all(|(p, _, _)| !matches!(p, Measure | Flow | Reflow))
         );
-        // A closed occurrence moved to the unported main-axis grouping site is not silently accepted.
+        // Move both closed children: their former cross alignment is now
+        // read by the new parent's main-axis placement.
         let opposite = if vertical { 1 } else { 3 };
-        assert!(
-            r.tree
-                .patch(&patch(1, 10, &[node(10, opposite, wh(36., 64.), &[2, 4])]))
-                .unwrap_err()
-                .contains("alignment")
-        );
+        r.tree
+            .patch(&patch(1, 10, &[node(10, opposite, wh(36., 64.), &[2, 4])]))
+            .unwrap();
+        draw(&mut r);
+        for (id, pos) in [(2, 16.), (4, 48.)] {
+            let b = bounds(&r, id);
+            assert_eq!(if vertical { b.x } else { b.y }, pos);
+        }
+        // The same kept center child still cannot move under an El or to the root.
+        let accepted = r.tree.encode();
+        for refused in [
+            patch(10, 11, &[node(11, 4, wh(36., 64.), &[2])]),
+            patch(10, 2, &[]),
+        ] {
+            assert!(r.tree.patch(&refused).unwrap_err().contains("alignment"));
+            assert_eq!(r.tree.encode(), accepted);
+        }
     }
 }
 
