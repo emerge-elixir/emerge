@@ -35,6 +35,7 @@ use crate::events::CursorIcon;
 use crate::input::InputEvent;
 use crate::linux_wait::poll_fds;
 use crate::native_log::NativeLogRelay;
+use crate::output_rotation::OutputRotation;
 use crate::renderer::{RenderState, RenderTimings, SceneRenderer};
 use crate::stats::{
     RendererStatsCollector, format_slow_render_frame_log, render_frame_has_slow_stage,
@@ -816,6 +817,8 @@ struct CursorPlaneCommit {
     props: Arc<HashMap<String, property::Info>>,
     fb: framebuffer::Handle,
     size: (u32, u32),
+    /// The plane has no rotation of its own; bitmap, hotspot and position turn by the output rotation.
+    rotation: OutputRotation,
 }
 
 impl Drop for CursorPlane {
@@ -831,7 +834,7 @@ impl CursorPlane {
 
     fn write_visual(&mut self, visual: &CursorVisual) -> Result<(), String> {
         self.bo
-            .write(visual.plane_bgra())
+            .write(&cursor_plane_pixels(visual, self.commit.rotation))
             .map_err(|err| format!("failed to write cursor bo: {err}"))
     }
 }
@@ -1026,12 +1029,17 @@ fn quiesce_gl(egl_state: &EglState, frame_surface: &mut GlFrameSurface) -> Resul
     Ok(())
 }
 
+fn cursor_plane_pixels(visual: &CursorVisual, rotation: OutputRotation) -> Vec<u8> {
+    rotation.rotate_square_pixels(visual.plane_bgra(), CURSOR_PLANE_SIZE.0)
+}
+
 fn create_cursor_plane<T: AsFd>(
     card: &Arc<Card>,
     gbm_device: &GbmDevice<T>,
     resources: &ResourceHandles,
     crtc_handle: crtc::Handle,
     theme: &DrmCursorTheme,
+    rotation: OutputRotation,
 ) -> Result<Option<CursorPlane>, String> {
     let Some(handle) = find_cursor_plane(card, resources, crtc_handle)? else {
         return Ok(None);
@@ -1052,8 +1060,11 @@ fn create_cursor_plane<T: AsFd>(
         )
         .map_err(|e| format!("failed to create cursor bo: {e}"))?;
 
-    bo.write(theme.cursor(CursorIcon::Default).plane_bgra())
-        .map_err(|e| format!("failed to write cursor bo: {e}"))?;
+    bo.write(&cursor_plane_pixels(
+        theme.cursor(CursorIcon::Default),
+        rotation,
+    ))
+    .map_err(|e| format!("failed to write cursor bo: {e}"))?;
 
     let fb = card
         .add_framebuffer(&bo, 32, 32)
@@ -1066,6 +1077,7 @@ fn create_cursor_plane<T: AsFd>(
             props,
             fb,
             size,
+            rotation,
         },
         bo,
     }))
@@ -1101,7 +1113,12 @@ fn add_cursor_plane_properties(
     visual: &CursorVisual,
     screen_size: (u32, u32),
 ) -> Result<(), String> {
-    if let Some((x, y)) = cursor_plane_position(cursor, plane.size, visual.hotspot(), screen_size) {
+    let cursor = CursorState {
+        pos: plane.rotation.to_physical(cursor.pos, screen_size),
+        ..cursor
+    };
+    let hotspot = plane.rotation.to_physical(visual.hotspot(), plane.size);
+    if let Some((x, y)) = cursor_plane_position(cursor, plane.size, hotspot, screen_size) {
         req.add_property(
             plane.handle,
             prop_handle(&plane.props, "FB_ID")?,
@@ -2451,35 +2468,28 @@ fn prepare_primary_frame(
                 }
             };
 
-            let render_timings = if sample_gpu_render {
-                let mut begin_gpu_render_sample =
-                    |_surface: &mut skia_safe::Surface| gpu_render_timer.begin_sample(native_log);
+            let draw_cursor = !hw_cursor_enabled && cursor_visible;
+            let cursor_visual = cursor_theme.cursor(cursor_icon);
+            let render_timings = {
+                // The cursor is drawn under the scene's output transform, before the one flush.
+                let mut before_flush = |surface: &mut skia_safe::Surface| {
+                    if draw_cursor {
+                        draw_software_cursor(surface.canvas(), cursor_visual, cursor_pos);
+                    }
+                    if sample_gpu_render {
+                        gpu_render_timer.begin_sample(native_log);
+                    }
+                };
                 if profile_render {
                     renderer.render_profiled_with_before_flush(
                         &mut frame,
                         render_state,
-                        &mut begin_gpu_render_sample,
+                        &mut before_flush,
                     )
                 } else {
-                    renderer.render_with_before_flush(
-                        &mut frame,
-                        render_state,
-                        &mut begin_gpu_render_sample,
-                    )
+                    renderer.render_with_before_flush(&mut frame, render_state, &mut before_flush)
                 }
-            } else if profile_render {
-                renderer.render_profiled(&mut frame, render_state)
-            } else {
-                renderer.render(&mut frame, render_state)
             };
-            if !hw_cursor_enabled && cursor_visible {
-                draw_software_cursor(
-                    renderer,
-                    &mut frame,
-                    cursor_theme.cursor(cursor_icon),
-                    cursor_pos,
-                );
-            }
             if sample_gpu_render {
                 gpu_render_timer.end_sample(
                     generation,
@@ -2611,24 +2621,16 @@ fn prepare_primary_frame(
     })
 }
 
-fn draw_software_cursor(
-    renderer: &mut SceneRenderer,
-    frame: &mut crate::renderer::RenderFrame<'_>,
-    visual: &CursorVisual,
-    cursor_pos: (f32, f32),
-) {
+fn draw_software_cursor(canvas: &skia_safe::Canvas, visual: &CursorVisual, cursor_pos: (f32, f32)) {
     let (cursor_width, cursor_height) = visual.size();
     let hotspot = visual.hotspot();
     let x = cursor_pos.0 - hotspot.0;
     let y = cursor_pos.1 - hotspot.1;
-    let canvas = frame.surface_mut().canvas();
     let sampling =
         skia_safe::SamplingOptions::new(skia_safe::FilterMode::Linear, skia_safe::MipmapMode::None);
     let paint = Paint::default();
     let dst = Rect::from_xywh(x, y, cursor_width as f32, cursor_height as f32);
     canvas.draw_image_rect_with_sampling_options(visual.image(), None, dst, sampling, &paint);
-
-    renderer.flush(frame);
 }
 
 pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
@@ -3006,7 +3008,14 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
         }
 
         let mut cursor_plane = if config.hw_cursor {
-            match create_cursor_plane(&card, &gbm_device, &resources, crtc_handle, &cursor_theme) {
+            match create_cursor_plane(
+                &card,
+                &gbm_device,
+                &resources,
+                crtc_handle,
+                &cursor_theme,
+                config.rotation,
+            ) {
                 Ok(plane) => plane,
                 Err(e) => {
                     native_log.warning("drm", format!("DRM cursor setup failed: {e}"));

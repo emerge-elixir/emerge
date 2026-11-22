@@ -2698,16 +2698,24 @@ fn text_payload_gpu_subpixel_phase(
         && unit_axis(transform.xx, transform.xy)
         && unit_axis(transform.yx, transform.yy)
         && approx_eq(determinant.abs(), 1.0);
-    if pixel_aligned_orthogonal
-        && transform.tx.is_finite()
-        && transform.ty.is_finite()
-        && approx_eq(transform.tx, transform.tx.round())
-        && approx_eq(transform.ty, transform.ty.round())
-    {
-        return Ok(PaintLayerSubpixelPhase::default());
+    if !pixel_aligned_orthogonal {
+        return Err(RendererCacheRejectionReason::UnsupportedTransform);
     }
 
-    Err(RendererCacheRejectionReason::UnsupportedTransform)
+    // The payload is drawn at `origin - phase` in local space, so its pixels land on the device
+    // grid when `M * phase` matches the fractional device translation. M is orthogonal with
+    // integer entries, so the local phase is `M^T * t`.
+    let (xx, yx, xy, yy) = (
+        transform.xx.round(),
+        transform.yx.round(),
+        transform.xy.round(),
+        transform.yy.round(),
+    );
+    PaintLayerSubpixelPhase::from_translation(
+        xx * transform.tx + yx * transform.ty,
+        xy * transform.tx + yy * transform.ty,
+    )
+    .ok_or(RendererCacheRejectionReason::UnsupportedTransform)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -9957,10 +9965,47 @@ mod tests {
             text_payload_gpu_subpixel_phase(run, quarter_turn, true),
             Ok(PaintLayerSubpixelPhase::default())
         );
+        // Device x follows local y on a quarter turn, so the fractional device x lands in the y phase.
         assert_eq!(
             text_payload_gpu_subpixel_phase(run, fractional_quarter_turn, true),
-            Err(RendererCacheRejectionReason::UnsupportedTransform)
+            Ok(PaintLayerSubpixelPhase::from_translation(0.0, 0.5).unwrap())
         );
+        let three_quarter_turn = MovingLayerEligibility::root().with_transform(Affine2 {
+            xx: 0.0,
+            yx: 1.0,
+            xy: -1.0,
+            yy: 0.0,
+            tx: 1280.0,
+            ty: 0.25,
+        });
+        assert_eq!(
+            text_payload_gpu_subpixel_phase(run, three_quarter_turn, true),
+            Ok(PaintLayerSubpixelPhase::from_translation(0.25, 0.0).unwrap())
+        );
+        let half_turn = MovingLayerEligibility::root().with_transform(Affine2 {
+            xx: -1.0,
+            yx: 0.0,
+            xy: 0.0,
+            yy: -1.0,
+            tx: 800.0,
+            ty: 1279.75,
+        });
+        assert_eq!(
+            text_payload_gpu_subpixel_phase(run, half_turn, true),
+            Ok(PaintLayerSubpixelPhase::from_translation(0.0, -1279.75).unwrap())
+        );
+        for eligibility in [fractional_quarter_turn, three_quarter_turn, half_turn] {
+            let t = eligibility.current_transform;
+            let phase = text_payload_gpu_subpixel_phase(run, eligibility, true).unwrap();
+            let (px, py) = phase.offsets();
+            // The payload origin shifted by -phase lands on whole device pixels.
+            let dx = t.tx - (t.xx * px + t.xy * py);
+            let dy = t.ty - (t.yx * px + t.yy * py);
+            assert!(
+                (dx - dx.round()).abs() < 1e-3 && (dy - dy.round()).abs() < 1e-3,
+                "{t:?}"
+            );
+        }
 
         let phase = PaintLayerSubpixelPhase::from_translation(0.0, -5335.513).unwrap();
         let phase_key =

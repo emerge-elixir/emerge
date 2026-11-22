@@ -36,7 +36,7 @@ defmodule Emerge.Config.DRM do
     `rotation: 90` lays out a 1280 × 800 UI. Touch and pointer input are mapped
     back into the rotated coordinates, and `preferred_size` is given in the
     rotated orientation. The renderer turns the picture, so no plane rotation is
-    needed. A rotated output draws the cursor in software.
+    needed. The hardware cursor image and hotspot are turned the same way.
 
   Discover connector names and modes with `EmergeSkia.drm_outputs(drm_card: path)`.
 

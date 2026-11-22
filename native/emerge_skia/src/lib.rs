@@ -2860,9 +2860,7 @@ fn start_native_renderer_with_config(
                     .drm_hotplug_interval_ms
                     .map(|ms| Duration::from_millis(u64::from(ms))),
                 force_gpu_finish: config.drm_force_gpu_finish,
-                // The cursor plane cannot rotate; a rotated output draws the cursor with the scene.
-                hw_cursor: config.drm_hw_cursor
-                    && drm_rotation == output_rotation::OutputRotation::Deg0,
+                hw_cursor: config.drm_hw_cursor,
                 rotation: drm_rotation,
                 render_log: log_render,
                 renderer_stats_log: config.renderer_stats_log,

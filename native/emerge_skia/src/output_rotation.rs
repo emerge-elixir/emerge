@@ -2,7 +2,7 @@
 //! panel showing a landscape UI. The renderer draws through `transform`; input maps back through
 //! `to_logical`.
 
-use crate::tree::transform::Affine2;
+use crate::tree::transform::{Affine2, Point};
 
 /// Counter-clockwise quarter turns of the UI on the scanout, as DRM's `DRM_MODE_ROTATE_*`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -66,6 +66,26 @@ impl OutputRotation {
         }
     }
 
+    /// Maps a layout point, such as the cursor position, to scanout coordinates.
+    pub fn to_physical(self, (x, y): (f32, f32), physical: (u32, u32)) -> (f32, f32) {
+        let point = self.transform(physical).map_point(Point { x, y });
+        (point.x, point.y)
+    }
+
+    /// Turns a square bitmap with 4 bytes per pixel, such as a cursor plane image, the way
+    /// `transform` turns the UI.
+    pub fn rotate_square_pixels(self, pixels: &[u8], side: u32) -> Vec<u8> {
+        let side_px = side as usize;
+        (0..side_px * side_px)
+            .flat_map(|index| {
+                let (x, y) = (index % side_px, index / side_px);
+                let (sx, sy) = self.to_logical((x as f64 + 0.5, y as f64 + 0.5), (side, side));
+                let source = (sy as usize * side_px + sx as usize) * 4;
+                pixels[source..source + 4].iter().copied()
+            })
+            .collect()
+    }
+
     /// Maps a scanout point, such as a touch contact, to layout coordinates.
     pub fn to_logical(self, (x, y): (f64, f64), physical: (u32, u32)) -> (f64, f64) {
         let (w, h) = (physical.0 as f64, physical.1 as f64);
@@ -108,6 +128,55 @@ mod tests {
         assert_eq!((origin.x, origin.y), (0.0, 1280.0));
         let right = transform.map_point(Point { x: 1280.0, y: 0.0 });
         assert_eq!((right.x, right.y), (0.0, 0.0));
+    }
+
+    #[test]
+    fn rotate_square_pixels_turns_the_bitmap_like_the_ui() {
+        // 2 x 2 bitmap, one byte value per pixel: a b / c d.
+        let pixels: Vec<u8> = [1, 2, 3, 4].iter().flat_map(|&v| [v; 4]).collect();
+        let first_bytes = |rotation: OutputRotation| {
+            rotation
+                .rotate_square_pixels(&pixels, 2)
+                .chunks(4)
+                .map(|pixel| pixel[0])
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(first_bytes(OutputRotation::Deg0), [1, 2, 3, 4]);
+        // Counter-clockwise: the top row (a b) becomes the left column, read bottom to top.
+        assert_eq!(first_bytes(OutputRotation::Deg90), [2, 4, 1, 3]);
+        assert_eq!(first_bytes(OutputRotation::Deg180), [4, 3, 2, 1]);
+        assert_eq!(first_bytes(OutputRotation::Deg270), [3, 1, 4, 2]);
+    }
+
+    #[test]
+    fn rotated_cursor_plane_puts_the_hotspot_on_the_cursor() {
+        let side = 64;
+        let hotspot = (7.0, 2.0);
+        let cursor = (100.0, 50.0);
+        for rotation in [
+            OutputRotation::Deg0,
+            OutputRotation::Deg90,
+            OutputRotation::Deg180,
+            OutputRotation::Deg270,
+        ] {
+            let plane_hotspot = rotation.to_physical(hotspot, (side, side));
+            let device_cursor = rotation.to_physical(cursor, PANEL);
+            let plane_origin = (
+                device_cursor.0 - plane_hotspot.0,
+                device_cursor.1 - plane_hotspot.1,
+            );
+            // The hotspot pixel of the turned bitmap is at the device cursor position.
+            assert_eq!(
+                (
+                    plane_origin.0 + plane_hotspot.0,
+                    plane_origin.1 + plane_hotspot.1
+                ),
+                device_cursor,
+                "{rotation:?}"
+            );
+            let back = rotation.to_logical((device_cursor.0 as f64, device_cursor.1 as f64), PANEL);
+            assert_eq!(back, (cursor.0 as f64, cursor.1 as f64), "{rotation:?}");
+        }
     }
 
     #[test]
