@@ -15,28 +15,39 @@ impl LayoutBehaviour for Text {
     }
 }
 impl PaintBehaviour<Utf8> for Text {
-    fn context_attrs_changed(a: &Attrs, b: &Attrs) -> bool {
-        let p = a.sizing.padding;
-        let q = b.sizing.padding;
-        p[0] != q[0] || p[3] != q[3]
+    fn attrs_changed(a: &Attrs, b: &Attrs) -> bool {
+        <BoxPaint as PaintBehaviour<Utf8>>::attrs_changed(a, b)
+            || [0, 1, 3]
+                .into_iter()
+                .any(|i| a.sizing.padding[i] != b.sizing.padding[i])
     }
-    fn reads_context(a: &Attrs, old: Option<PaintContext>, ctx: PaintContext) -> bool {
-        <BoxPaint as PaintBehaviour<Utf8>>::reads_context(a, old, ctx)
-            || old.is_none_or(|p| {
-                p.color != ctx.color || p.text_origin != ctx.text_origin || p.clip != ctx.clip
-            })
+    fn reads_context(_: &Attrs, old: Option<PaintContext>, ctx: PaintContext) -> bool {
+        old != Some(ctx)
     }
     fn paint(node: Mounted<'_, Utf8>, ctx: &PaintContext, run: Option<&Run>) -> OwnPaint {
         let mut own = OwnPaint::background(node.attrs(), ctx);
         if let Some(run) = run.filter(|_| ctx.color & 255 != 0) {
             let m = run.metrics;
-            let pos = [ctx.text_origin[0] + m.left, ctx.text_origin[1] + m.ascent];
+            let f = ctx.frame;
+            let [top, right, _, left] = node
+                .attrs()
+                .sizing
+                .padding
+                .map(|v| scale::pixels(v, ctx.scale));
+            // Keep the signed space, including when the run or the insets overflow.
+            let x = match ctx.text_align {
+                Alignment::Start => f.x + left,
+                Alignment::Center => f.x + left + (f.width - left - right - m.width) * 0.5,
+                Alignment::End => f.x + f.width - right - m.width,
+            };
+            let pos = [x + m.left, f.y + top + m.ascent];
             let ink = Rect {
                 x: pos[0] + m.ink.x,
                 y: pos[1] + m.ink.y,
                 ..m.ink
             };
-            let clip = ctx.pixel_clip();
+            // Clip the ink to its own frame, not its padded content area.
+            let clip = f.intersection(ctx.clip).unwrap_or_default().pixel_clip();
             if let Some(visible) = ink.intersection(clip) {
                 own.text = Some(paint::GlyphPaint {
                     pos,

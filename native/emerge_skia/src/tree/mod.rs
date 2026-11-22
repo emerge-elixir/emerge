@@ -249,6 +249,7 @@ struct Attrs {
     // Admission also checks operands masked by a tighter bound. This is not a layout input.
     largest_length_px: f64,
     family: Option<Family>,
+    text_align: Option<Alignment>,
     font_size: Option<f64>,
     layout_scale: Option<f64>,
     color: Option<u32>,

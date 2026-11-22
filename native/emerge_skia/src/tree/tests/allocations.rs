@@ -43,6 +43,45 @@ impl Counter {
         )
     }
 }
+fn text_alignment(c: &Counter) {
+    let ids: Vec<_> = (2..10_002).collect();
+    let labels = std::iter::once(node(1, 3, text_align::host(Some(1)), &ids))
+        .chain(
+            ids.iter()
+                .map(|&id| node(id, 5, text_align::label(None), &[])),
+        )
+        .collect::<Vec<_>>();
+    for (doc, id, tag, attrs) in [
+        (
+            text_align::line(),
+            1,
+            4,
+            text_align::host as fn(Option<u8>) -> Bytes,
+        ),
+        (
+            text_align::packed(vec![1, 4, 1, 0]),
+            3,
+            5,
+            text_align::label,
+        ),
+        (upload(&labels), 1, 3, text_align::host),
+    ] {
+        let mut r = Raster::default();
+        r.tree.upload(&doc).unwrap();
+        r.tree.patch(&set(id, tag, attrs(Some(1)))).unwrap();
+        c.zero("first aligned-text layout after reservation", || {
+            r.settle(180., 170., 1.).unwrap();
+        });
+        for mode in [Some(2), Some(0), Some(1), None] {
+            let edit = set(id, tag, attrs(mode));
+            c.zero("fitting text alignment through draw and hit inputs", || {
+                r.tree.patch(&edit).unwrap();
+                r.settle(180., 170., 1.).unwrap();
+            });
+        }
+        assert_eq!(r.tree.layers.text.shapes, 1);
+    }
+}
 fn alignment_zones(c: &Counter) {
     for (kind, axis, n, even) in [
         (1, 1, 10_000, false),
@@ -958,6 +997,7 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
         assert!(stack.settle(180., 53., 1.).unwrap());
     });
     alignment_zones(&c);
+    text_alignment(&c);
     for kind in [4, 5, 6] {
         let mut r = Raster::default();
         r.tree

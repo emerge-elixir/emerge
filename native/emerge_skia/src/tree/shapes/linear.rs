@@ -483,14 +483,14 @@ pub(in crate::tree) fn column_demand(
     single: Demand,
     height_edge: Option<Constraint>,
     child: impl Fn(Key) -> Demand,
+    offered_width: impl Fn(Key, f32) -> f32,
 ) -> Demand {
     let style = e.attrs[k].sizing;
-    if matches!(style.width, Length::Px(_))
-        || (style.height.limits_column_height()
-            && !e
-                .children(k)
-                .iter()
-                .all(|&c| e.slots[c].shape.has_intrinsic_height(e.attrs[c].sizing)))
+    if style.height.limits_column_height()
+        && !e
+            .children(k)
+            .iter()
+            .all(|&c| e.slots[c].shape.has_intrinsic_height(e.attrs[c].sizing))
     {
         return single;
     }
@@ -521,15 +521,7 @@ pub(in crate::tree) fn column_demand(
             let h = child(c).h;
             wrap_minimum(e.attrs[c].height_floor, h, h, || e.slots[c].admitted.scale)
         },
-        |c| {
-            let m = child(c);
-            let w = if e.slots[c].shape.uses_offer(e, c) {
-                e.attrs[c].sizing.width.at_offer(e, c, m.w, inner)
-            } else {
-                m.w
-            };
-            [w, m.min_w]
-        },
+        |c| [offered_width(c, inner), child(c).min_w],
     );
     Demand { w, min_w, ..single }
 }

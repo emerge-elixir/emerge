@@ -130,10 +130,22 @@ struct Placement {
     height: Constraint,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+struct LayoutContext {
+    inputs: Inputs,
+    // Unlike strike resources, alignment is resolved only after the mutation interval.
+    text_align: Alignment,
+}
+impl LayoutContext {
+    fn text_takes_offer(self, width: Length) -> bool {
+        width == Length::Auto && self.text_align != Alignment::Start
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Layers {
     jobs: [WorkSet; 7],
-    context: SecondaryMap<Key, Inputs>,
+    context: SecondaryMap<Key, LayoutContext>,
     measure: SecondaryMap<Key, Demand>,
     pub(super) intrinsic: intrinsic::Intrinsic,
     // Glyph changes and intrinsic size changes have different readers.
@@ -174,7 +186,7 @@ impl Measuring<'_> {
     pub fn glyph_run(&mut self, text: &str) -> Demand {
         let k = self.k;
         let l = &mut self.layers;
-        let ctx = l.context[k];
+        let ctx = l.context[k].inputs;
         let len = self.e.attrs[k].glyph_count;
         let run = l.runs.entry(k).unwrap().or_default();
         let font_size = ctx.font_size();
@@ -210,8 +222,9 @@ impl FlowCx<'_> {
         let measured = self.layers.measure[c];
         if self.e.attrs[c].sizing.width.weight().is_some() {
             measured.min_w
-        } else if self.e.slots[c].shape.uses_offer(self.e, c) {
-            // An auto Column with a fill child consumes the available width.
+        } else if self.e.slots[c].shape.requests_fill_width(self.e, c) {
+            // An auto Column can claim the line. Non-left Text takes its assigned
+            // box; it does not ask to break the line or redistribute its peers.
             self.inner
         } else {
             measured.w
@@ -468,12 +481,29 @@ impl Layers {
             }
         }
     }
+    fn reads_width_offer(&self, e: &Elements, k: Key) -> bool {
+        let shape = e.slots[k].shape;
+        shape.requests_fill_width(e, k)
+            || (shape == Shape::Text
+                && self
+                    .context
+                    .get(k)
+                    .is_some_and(|c| c.text_takes_offer(e.attrs[k].sizing.width)))
+    }
+    fn resolved_width(&self, e: &Elements, k: Key, edge: Constraint) -> f32 {
+        let measured = self.measure[k].w;
+        if self.reads_width_offer(e, k) {
+            edge.resolve(e, k, e.attrs[k].sizing.width, measured)
+        } else {
+            measured
+        }
+    }
     fn offer_width(&mut self, e: &Elements, k: Key, axis: Constraint, break_before: bool) {
         let next = WidthOffer { axis, break_before };
         let old = self.offers.get(k).copied();
         if old != Some(next) {
             self.offers.insert(k, next);
-            if old.is_none_or(|p| p.axis != axis) && e.slots[k].shape.uses_offer(e, k) {
+            if old.is_none_or(|p| p.axis != axis) && self.reads_width_offer(e, k) {
                 self.enqueue(Flow, k, e);
             }
             if old.is_some_and(|p| p.break_before) != break_before
@@ -520,7 +550,7 @@ impl Layers {
             self.viewport = vp;
             return;
         };
-        if self.context.get(root) != Some(&e.slots[root].admitted) {
+        if self.context.get(root).map(|c| c.inputs) != Some(e.slots[root].admitted) {
             self.enqueue(Context, root, e);
         }
         // Supply the incoming edge, even on promotion at unchanged viewport
@@ -623,10 +653,39 @@ impl Layers {
             }
         }
         let ctx = e.slots[k].admitted;
-        let old_scale = self.context.get(k).map(|p| p.scale);
+        let text_align = e.attrs[k]
+            .text_align
+            .or_else(|| e.slots[k].parent.map(|p| self.context[p].text_align))
+            .unwrap_or_default();
+        let old = self.context.get(k).copied();
+        let old_scale = old.map(|c| c.inputs.scale);
         let scale_changed = old_scale != Some(ctx.scale);
-        if changed(&mut self.context, k, ctx) {
-            if e.slots[k].shape.uses_glyphs() || scale_changed {
+        let inputs_changed = old.is_none_or(|c| c.inputs != ctx);
+        let next = LayoutContext {
+            inputs: ctx,
+            text_align,
+        };
+        if changed(&mut self.context, k, next) {
+            if let Some(prev) = old
+                && e.slots[k].shape == Shape::Text
+                && prev.text_align != text_align
+            {
+                self.enqueue(PaintContext, k, e);
+                let width = e.attrs[k].sizing.width;
+                if prev.text_takes_offer(width) != next.text_takes_offer(width)
+                    && !e.parent_shape(k).is_some_and(Shape::allots_width)
+                {
+                    self.enqueue(Flow, k, e);
+                    if let Some(p) = e.slots[k].parent
+                        && e.slots[p]
+                            .shape
+                            .measures_packed_width(e.attrs[p].sizing.width)
+                    {
+                        self.enqueue(Measure, p, e);
+                    }
+                }
+            }
+            if (e.slots[k].shape.uses_glyphs() && inputs_changed) || scale_changed {
                 self.enqueue(Measure, k, e);
             }
             if scale_changed {
@@ -675,12 +734,14 @@ impl Layers {
                 }
             }
             for &c in e.children(k) {
-                self.enqueue(Context, c, e);
+                if inputs_changed || e.attrs[c].text_align.is_none() {
+                    self.enqueue(Context, c, e);
+                }
             }
         }
     }
     fn measure(&mut self, e: &Elements, k: Key) {
-        let c = self.context[k];
+        let c = self.context[k].inputs;
         let b = e.attrs[k].sizing.without_weights();
         let shape = e.slots[k].shape;
         let memo = (!shape.uses_glyphs()).then(|| {
@@ -723,8 +784,15 @@ impl Layers {
             m
         };
         // Keep the site-independent demand in the memo, including on a closed move.
-        let mut m = if shape == Shape::WrappedColumn {
-            shapes::column_demand(e, k, m, self.known_height_edge(e, k), |c| self.measure[c])
+        let mut m = if shape.measures_packed_width(b.width) {
+            shapes::column_demand(
+                e,
+                k,
+                m,
+                self.known_height_edge(e, k),
+                |c| self.measure[c],
+                |c, inner| self.resolved_width(e, c, Constraint::Available(inner)),
+            )
         } else {
             m
         };
@@ -776,14 +844,8 @@ impl Layers {
     fn flow(&mut self, e: &Elements, k: Key) {
         let b = e.attrs[k].sizing;
         let shape = e.slots[k].shape;
-        let scale = self.context[k].scale;
-        let outer = if shape.uses_offer(e, k) {
-            self.offers[k]
-                .axis
-                .resolve(e, k, b.width, self.measure[k].w)
-        } else {
-            self.measure[k].w
-        };
+        let scale = self.context[k].inputs.scale;
+        let outer = self.resolved_width(e, k, self.offers[k].axis);
         let [_, r, _, l] = b.padding.map(|v| pixels(v, scale));
         let inner = if shape.packs_width(b.width) {
             // Child offers use the single-column basis, never the packed width.
@@ -824,7 +886,7 @@ impl Layers {
         let n = &e.slots[k];
         let b = e.attrs[k].sizing;
         let width = self.width[k];
-        let scale = self.context[k].scale;
+        let scale = self.context[k].inputs.scale;
         let mut cx = ReflowCx {
             gap: b.spacing.map(|v| pixels(v, scale)),
             padding: b.padding.map(|v| pixels(v, scale)),
@@ -920,7 +982,7 @@ impl Layers {
     }
     fn place(&mut self, e: &Elements, k: Key, origin: [f32; 2]) {
         let Fit { size: s, row_offer } = self.fit[k];
-        let scale = self.context[k].scale;
+        let scale = self.context[k].inputs.scale;
         let edge = self.placement[k];
         let [x, y] = [origin[0] + edge.offset[0], origin[1] + edge.offset[1]];
         let height = edge.height.resolve_height(e, k, s.h);
@@ -960,17 +1022,16 @@ impl Layers {
             .color
             .or_else(|| parent.map(|p| self.paint[p].color))
             .unwrap_or(0xff);
-        let [top, _, _, left] = a.sizing.padding;
         let shape = e.slots[k].shape;
         let clip = parent.map_or(self.viewport, |p| self.paint[p].child_clip);
-        let scale = self.context[k].scale;
+        let ctx = self.context[k];
         let next = PaintContext {
             frame: f,
             clip,
             child_clip: shape.child_clip(clip, f),
             color,
-            scale,
-            text_origin: [f.x + pixels(left, scale), f.y + pixels(top, scale)],
+            scale: ctx.inputs.scale,
+            text_align: ctx.text_align,
         };
         let old = self.paint.get(k).copied();
         if old == Some(next) {

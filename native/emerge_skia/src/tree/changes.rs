@@ -172,6 +172,7 @@ impl Layers {
         let mut invalidate = |pass| self.invalidate(pass, k, depth);
         if old.family != next.family
             || old.font_size != next.font_size
+            || old.text_align != next.text_align
             || old.layout_scale != next.layout_scale
         {
             invalidate(Pass::Context)
@@ -214,7 +215,7 @@ impl Layers {
         } else if a.height != b.height || a.spacing != b.spacing || a.padding != b.padding {
             invalidate(Pass::Reflow)
         }
-        if old.color != next.color || shape.paint_context_attrs_changed(old, next) {
+        if old.color != next.color {
             invalidate(Pass::PaintContext)
         }
         if let Some(outputs) = Outputs::changed(

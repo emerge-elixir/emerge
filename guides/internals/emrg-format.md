@@ -111,6 +111,12 @@ mouse_over, focused, mouse_down
 snap_layout, snap_text_metrics, space_evenly
 ```
 
+Tag `30` (`text_align`) takes one byte: `0` left, `1` center, `2` right.
+The declaration inherits when absent; explicit `0` overrides an inherited
+center or right. Only authored values are serialized, not the inherited
+alignment, offered width or glyph origin. Tags `5` and `6` position boxes
+and are independent. Unknown or missing alignment bytes are refused.
+
 Tag `37` (`space_evenly`) carries one byte: `0` for false, `1` for true.
 All supported kinds retain the declared bytes, including explicit false.
 Only Row, Column, WrappedRow and WrappedColumn use the flag; it has no

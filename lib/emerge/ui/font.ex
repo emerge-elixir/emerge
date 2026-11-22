@@ -57,7 +57,12 @@ defmodule Emerge.UI.Font do
 
   `align_left/0`, `align_right/0`, and `center/0` align text inside the
   element's content box after padding and border insets are applied. They do not
-  change where the element itself is placed in a `row/2` or `column/2`.
+  position the element's box like `Emerge.UI.Align.center_x/0` does.
+
+  For a single line, center or right alignment uses the width offered to the
+  text when it has no explicit width. A row can offer just the measured run;
+  a wider `el/2` leaves room to move the ink. An explicit `Font.align_left()`
+  overrides an inherited alignment. None of these changes the baseline.
 
   On a paragraph, these helpers align every wrapped line, including the last
   line. Explicit font alignment on the paragraph overrides `center_x/0`,

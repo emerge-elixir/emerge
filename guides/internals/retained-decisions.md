@@ -292,3 +292,24 @@ uses the proven height group, not a previous-frame estimate or a layout retry.
 [Row frames](../../test/emerge_skia/row_even_spacing_test.exs) ·
 [Column and wrapped frames, kept moves and local clicks](../../test/emerge_skia/linear_even_spacing_test.exs) ·
 [breaks, equal-size policy edits, rounding and failed handoff](../../native/emerge_skia/src/tree/tests/linear_even.rs).
+
+### D13. Align single-line ink inside its settled Text box
+
+Resolve local `Font` alignment → inherited alignment → left in Context, after
+accepting edits. Alignment is not a strike resource or a glyph-cache key.
+Only a Text with **omitted width** and non-left alignment takes the available
+width instead of its natural run. This isn't a fill request: horizontal rows
+still plan the measured slot. If a WrappedColumn needs an early packed width,
+Measure uses the same child width rule as Flow, including when packed content
+caps a fill share rather than setting the final width in Place. In a 120px Row,
+a centered label can raise that cap from 49.765625px to above 60px: the two
+children then take 60px each. Switching center ↔ right doesn't change the share.
+[Native reader and publication controls](../../native/emerge_skia/src/tree/tests/text_align.rs).
+
+Like `main`, use the signed space between the scaled insets, the run's visual
+width and its left overhang. Keep the baseline, clip ink at the Text frame (not
+at the padding), and hit-test the submitted box. In a 100×40 El with padding 4,
+white `Hi` starts at x **6 / 44 / 82** for left / center / right; the fully
+white bounds stay 8×12 at y=8. Explicit left restores the natural-width box.
+The existing [default-size scale rule](retained-changelog-candidates.md#verified-fix-candidates)
+still applies. [Public frames and local clicks](../../test/emerge_skia/text_alignment_test.exs).

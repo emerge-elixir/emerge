@@ -85,9 +85,6 @@ trait LayoutBehaviour: ShapeMeta {
 }
 trait PaintBehaviour<P: Payload> {
     const CLIP_CHILDREN: bool = false;
-    fn context_attrs_changed(_a: &Attrs, _b: &Attrs) -> bool {
-        false
-    }
     fn reads_context(a: &Attrs, old: Option<PaintContext>, ctx: PaintContext) -> bool {
         a.background.is_some() && old.is_none_or(|p| p.frame != ctx.frame || p.clip != ctx.clip)
     }
@@ -169,6 +166,10 @@ impl Shape {
             || e.alignment(child, linear::X)
         ))
     }
+    /// Even a fill can use packed content in its intrinsic demand or as a cap.
+    pub fn measures_packed_width(self, width: Length) -> bool {
+        self == Self::WrappedColumn && !matches!(width, Length::Px(_))
+    }
     pub fn packs_width(self, width: Length) -> bool {
         self == Self::WrappedColumn && !width.definite()
     }
@@ -202,7 +203,8 @@ impl Shape {
     pub fn measure(self, e: &Elements, k: Key, cx: &mut Measuring<'_>) -> Demand {
         with_shape!(self, |S| S::measure(PayloadOf::<S>::get(e, k), cx))
     }
-    pub fn uses_offer(self, e: &Elements, k: Key) -> bool {
+    /// A layout fill request, distinct from aligning a Text inside an available box.
+    pub fn requests_fill_width(self, e: &Elements, k: Key) -> bool {
         match e.attrs[k].sizing.width {
             Length::Auto => with_shape!(self, |S| S::auto_fills(Mounted::new(e, k))),
             length => length.weight().is_some(),
@@ -228,11 +230,6 @@ impl Shape {
         } else {
             inherited
         }
-    }
-    pub fn paint_context_attrs_changed(self, a: &Attrs, b: &Attrs) -> bool {
-        with_shape!(self, |S| {
-            <PaintOf<S> as PaintBehaviour<PayloadOf<S>>>::context_attrs_changed(a, b)
-        })
     }
     pub fn reads_paint_context(
         self,

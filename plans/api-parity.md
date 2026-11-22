@@ -6,7 +6,7 @@
 ported `main` kinds, not a seventh `main` kind. See the [geometry and dependency
 boundary](../guides/internals/retained-decisions.md#d10-wrap-columns-at-the-resolved-height).
 The rows below are gaps, not concurrent plans. The [alignment roadmap](alignment.md)
-covers the remaining text alignment and work gated on other features.
+covers the remaining sites gated on paragraphs, editors and other features.
 
 **Reference:** local `main` at `aef5e42fc789c396505f85c34810b2ca9c008586`;
 retained inventory began at `871659f`; the linked implementations and tests
@@ -40,7 +40,7 @@ be expressed from what can be drawn or receive input.
 | `UI.rotate/1`, `Transform` — missing | Layout rotation; separately paint-only move X/Y, rotate, scale and alpha with matching hits. Layout `UI.scale/1` already works; paint scale (tag 34) and screenshot scale are different contracts. |
 | `Nearby`, `clip_nearby/0` — missing | All six mount positions (`behind_content`, `above`, `on_right`, `below`, `on_left`, `in_front`), stacking, escaping/clipped hits and identity on moves. The producer understands the edges; native rejects them. Ordinary linear-container clipping is not overlay support. |
 | `Color`, `Background`, `Border` — partial | Solid RGB/RGBA and palette helpers work on backgrounds/text; raw names are limited to black, white, red, blue and transparent. Missing other supported names, gradients including alpha/stops across all color consumers, background image fit/tile, borders (per-edge widths, per-corner radii, colors/styles), outer/inner shadows and glow. |
-| `Font` — partial | Size, solid color, leading alignment and bundled regular `default`/`sans-serif` and `monospace` work. Remaining: other/custom families, **explicit** weights (even `regular`), italic, letter/word spacing, underline/strike, center/right and paragraph inheritance. |
+| `Font` — partial | Size, solid color, bundled regular `default`/`sans-serif` and `monospace`, and [left/center/right alignment of single-line text](../test/emerge_skia/text_alignment_test.exs) work. Remaining: other/custom families, **explicit** weights (even `regular`), italic, letter/word spacing, underline/strike, and paragraph/editor text layout. |
 | `Scroll` — missing | Scrollbars and interaction on both axes; controlled `scroll_x/1` and `scroll_y/1` fractions/key targets, resize/echo rules and `on_scroll` position fractions. Resolving a key in Elixir does not move native content. |
 | `Event`, `focus_on_mount/0` — partial | Beyond `on_click`: mouse down/up/enter/leave/move, press, drag/capture, swipe in four directions, key down/up/press, focus/blur, change, scroll and `virtual_key`. Deliver the proper payload and callback (including custom `wrap_payload/3` and external PIDs) on the installed geometry. [Raw-to-local controls](../test/emerge/pointer_drag_test.exs) |
 | `Interactive`, `Animation` — missing | Hover, mouse-down and focused styles; `animate`, enter, exit and `change` policies, endpoints, length reflow, hit-testing of moving elements, frame pacing and becoming idle. A decoded transition is not a presented animation. |

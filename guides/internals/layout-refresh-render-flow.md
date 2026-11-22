@@ -100,6 +100,15 @@ compute a non-leading X offset. El and the linear hosts compute the same
 padded area for placement; it is not itself a clip. [Frames, kept moves and local
 clicks](../../test/emerge_skia/el_child_alignment_test.exs).
 
+Single-line **font** alignment is inherited in Context, not box placement.
+A Text with omitted width and non-left alignment takes its incoming width in
+Flow. It still measures just the run and its insets: an auto label in a Row
+or WrappedRow does not claim a fill share or change line breaks. Changing
+center to right within the same box changes only the ink origin. Compose
+uses the settled visual metrics and clips ink to the Text frame and inherited
+clip; hit coordinates stay relative to the submitted frame, not the ink.
+[Widths, glyph bounds and clicks](../../test/emerge_skia/text_alignment_test.exs).
+
 A Row divides spare width, and a Column divides spare height, in proportion
 to the children's weights. `fill()` and `fill(1)` both take one share. A
 weight-only edit invalidates the distributing parent, not the child's

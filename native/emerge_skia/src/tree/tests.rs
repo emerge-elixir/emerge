@@ -16,6 +16,7 @@ mod row;
 mod row_even;
 mod row_height;
 mod scale;
+mod text_align;
 mod topology;
 mod viewport;
 mod weighted;

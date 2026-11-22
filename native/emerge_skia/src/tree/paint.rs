@@ -10,20 +10,19 @@ pub(super) struct PaintContext {
     pub child_clip: Rect,
     pub color: u32,
     pub scale: f32,
-    pub text_origin: [f32; 2],
+    pub text_align: Alignment,
 }
-impl PaintContext {
-    /// Ordinary rectangular Skia host clips use non-antialiased device edges.
+impl Rect {
+    /// Ordinary rectangular Skia clips use non-antialiased device edges.
     /// Hits keep the unrounded clip and the original element-local origin.
-    pub fn pixel_clip(&self) -> Rect {
-        let c = self.clip;
-        let x = c.x.round();
-        let y = c.y.round();
+    pub(super) fn pixel_clip(self) -> Rect {
+        let x = self.x.round();
+        let y = self.y.round();
         Rect {
             x,
             y,
-            width: (c.x + c.width).round() - x,
-            height: (c.y + c.height).round() - y,
+            width: (self.x + self.width).round() - x,
+            height: (self.y + self.height).round() - y,
         }
     }
 }
@@ -74,10 +73,11 @@ pub(super) struct OwnPaint {
 }
 impl OwnPaint {
     pub fn background(a: &Attrs, ctx: &PaintContext) -> Self {
-        let fill = a
-            .background
-            .filter(|v| v & 255 != 0)
-            .and_then(|v| ctx.frame.intersection(ctx.pixel_clip()).map(|r| (r, v)));
+        let fill = a.background.filter(|v| v & 255 != 0).and_then(|v| {
+            ctx.frame
+                .intersection(ctx.clip.pixel_clip())
+                .map(|r| (r, v))
+        });
         Self { fill, text: None }
     }
     fn nonempty(self) -> bool {

@@ -32,6 +32,14 @@ impl<'a> Reader<'a> {
     fn id(&mut self) -> Result<u64> {
         Ok(u64::from_be_bytes(self.array()?))
     }
+    fn alignment(&mut self, name: &str) -> Result<Alignment> {
+        Ok(match self.byte()? {
+            0 => Alignment::Start,
+            1 => Alignment::Center,
+            2 => Alignment::End,
+            v => return Err(format!("invalid {name} {v}")),
+        })
+    }
     fn number(&mut self) -> Result<f64> {
         let n = f64::from_be_bytes(self.array()?);
         if n.is_finite() && n >= 0. {
@@ -107,15 +115,8 @@ fn attrs(raw: &[u8], shape: Shape) -> Result<Attrs> {
                     v => return Err(format!("invalid space_evenly flag {v}")),
                 }
             }
-            tag @ (5 | 6) => {
-                a.align[usize::from(tag - 5)] = Some(match r.byte()? {
-                    0 => Alignment::Start,
-                    1 => Alignment::Center,
-                    2 => Alignment::End,
-                    v => return Err(format!("invalid alignment {v}")),
-                });
-            }
-            30 if r.byte()? == 0 => (),
+            tag @ (5 | 6) => a.align[usize::from(tag - 5)] = Some(r.alignment("alignment")?),
+            30 => a.text_align = Some(r.alignment("text alignment")?),
             12 if r.byte()? == 0 => a.background = Some(r.color()?),
             16 => a.font_size = Some(r.number()?),
             78 => {
