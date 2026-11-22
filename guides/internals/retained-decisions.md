@@ -279,6 +279,11 @@ stacking do not change. In particular, `main` ignores the flag on WrappedRow:
 in a 100px padded row, x=`4/28/52` becomes **`4/40/76`** here, by design.
 There is no WrappedColumn on `main`.
 
+El, Text and None retain the flag but have no main axis to distribute. A
+flag-only edit there schedules no layout or paint and leaves hit geometry unchanged.
+In particular, an El doesn't pass its flag to a nested Row. [Submitted
+no-op and kind replacement](../../test/emerge_skia/inactive_even_spacing_test.exs).
+
 A Column's early height share must use the same charge as final placement.
 Activating even spacing with a 1px authored gap can change the assigned
 height **43→44**, its child's packed

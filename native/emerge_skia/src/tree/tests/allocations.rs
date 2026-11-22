@@ -958,6 +958,30 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
         assert!(stack.settle(180., 53., 1.).unwrap());
     });
     alignment_zones(&c);
+    for kind in [4, 5, 6] {
+        let mut r = Raster::default();
+        r.tree
+            .upload(&upload(&[node(
+                1,
+                kind,
+                inactive_even::attrs(kind, Some(1)),
+                &[],
+            )]))
+            .unwrap();
+        c.zero("first inactive even flag after reservation", || {
+            r.settle(100., 100., 1.).unwrap();
+        });
+        for flag in [Some(0), None, Some(1)] {
+            let edit = set(1, kind, inactive_even::attrs(kind, flag));
+            c.zero(
+                "inactive even edit through prepared draw and hit inputs",
+                || {
+                    r.tree.patch(&edit).unwrap();
+                    r.settle(100., 100., 1.).unwrap();
+                },
+            );
+        }
+    }
     let mut early = Raster::default();
     early.tree.upload(&wrapped_column::shared_column()).unwrap();
     c.zero("first independent Column height group", || {

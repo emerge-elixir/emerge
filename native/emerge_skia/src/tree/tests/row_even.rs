@@ -138,17 +138,12 @@ fn an_even_gap_is_not_charged_to_the_fill_and_is_not_published_on_accept() {
         "invalid space_evenly flag 2"
     );
     for kind in [4, 5, 6] {
-        for flag in [0, 1] {
-            assert_eq!(
-                r.tree
-                    .patch(&patch(
-                        1,
-                        10,
-                        &[node(10, kind, block(&[vec![37, flag]]), &[])]
-                    ))
-                    .unwrap_err(),
-                "unsupported attribute 37 in first slice"
-            );
+        for (field, error) in [
+            (vec![37, 2], "invalid space_evenly flag 2"),
+            (vec![37], "truncated EMRG data"),
+        ] {
+            let replacement = patch(1, 10, &[node(10, kind, block(&[field]), &[])]);
+            assert_eq!(r.tree.patch(&replacement).unwrap_err(), error);
         }
     }
     assert_eq!(r.tree.encode(), pending);

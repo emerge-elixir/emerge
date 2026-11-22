@@ -234,7 +234,8 @@ defmodule Emerge.UI.Space do
   size the children first, then put equal gaps between them. Wrapped layouts do
   this per line or column after choosing breaks with the authored spacing.
   There are no edge gaps or negative gaps on overflow. Remove the attribute to
-  restore main-axis alignment groups and fixed spacing.
+  restore main-axis alignment groups and fixed spacing. On an El, Text, or None
+  the attribute has no effect; it is not inherited by a nested row or column.
 
   ## Example
 

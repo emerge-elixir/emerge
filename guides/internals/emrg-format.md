@@ -112,9 +112,10 @@ snap_layout, snap_text_metrics, space_evenly
 ```
 
 Tag `37` (`space_evenly`) carries one byte: `0` for false, `1` for true.
-The retained reader accepts it on Row, Column, WrappedRow and WrappedColumn.
-It retains the flag and authored spacing, not the calculated gaps. Other
-kinds and non-boolean values are refused before replacing the accepted tree.
+All supported kinds retain the declared bytes, including explicit false.
+Only Row, Column, WrappedRow and WrappedColumn use the flag; it has no
+layout effect on El, Text or None. Calculated gaps are never serialized.
+A missing or non-boolean payload is refused before replacing the accepted tree.
 
 Layout scale is tag `78` followed by a finite, positive big-endian `f64`.
 The wire contains the authored factor, never the product with an ancestor or

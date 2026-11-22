@@ -100,7 +100,7 @@ fn attrs(raw: &[u8], shape: Shape) -> Result<Attrs> {
             }
             4 => a.sizing.spacing = [r.number()?; 2],
             36 => a.sizing.spacing = [r.number()?, r.number()?],
-            37 if shape.main_axis().is_some() => {
+            37 => {
                 a.space_evenly = match r.byte()? {
                     0 => false,
                     1 => true,
