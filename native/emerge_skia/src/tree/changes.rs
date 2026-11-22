@@ -185,11 +185,21 @@ impl Layers {
         if a != b || (parent == Some(Shape::WrappedRow) && old.line_floor != next.line_floor) {
             invalidate(Pass::Measure)
         }
-        let width_gap_changed = old.width_gap_charge() != next.width_gap_charge();
+        let gaps = shape
+            .main_axis()
+            .map(|i| (old.main_spacing(i), next.main_spacing(i)));
+        let charge_changed = gaps.is_some_and(|(a, b)| a.charge() != b.charge());
+        if gaps.is_some_and(|(a, b)| a != b) {
+            invalidate(Pass::Place);
+        }
+        let width_gaps = FlowInput::HorizontalGaps {
+            authored: a.spacing[0] != b.spacing[0],
+            charge: charge_changed,
+        };
         if a.width != b.width
             || a.padding[1] != b.padding[1]
             || a.padding[3] != b.padding[3]
-            || (width_gap_changed && shape.reads_flow(b.width, FlowInput::HorizontalGap))
+            || shape.reads_flow(b.width, width_gaps)
         {
             invalidate(Pass::Flow)
         }
@@ -198,11 +208,7 @@ impl Layers {
             if a.height != b.height || vertical_padding {
                 invalidate(Pass::Reflow)
             }
-            if (shape.allots_width() && width_gap_changed)
-                || old.even_row() != next.even_row()
-                || vertical_padding
-                || a.padding[3] != b.padding[3]
-            {
+            if vertical_padding || a.padding[3] != b.padding[3] {
                 invalidate(Pass::Place)
             }
         } else if a.height != b.height || a.spacing != b.spacing || a.padding != b.padding {
@@ -222,7 +228,10 @@ impl Layers {
         }
         if align_changed
             && let Some(p) = e.slots[k].parent
-            && (old.align[1] != next.align[1] || !e.attrs[p].even_row())
+            && !e.slots[p].shape.main_axis().is_some_and(|i| {
+                e.attrs[p].main_spacing(i) == MainSpacing::Even
+                    && old.align[1 - i] == next.align[1 - i]
+            })
         {
             self.invalidate(Pass::Place, p, e.depth(p));
         }
@@ -240,7 +249,7 @@ impl Layers {
         }
         if shape.offers_inner_height()
             && a.padding[1] != b.padding[1]
-            && (next.even_row()
+            && (gaps.is_some_and(|(_, b)| b == MainSpacing::Even)
                 || e.children(k)
                     .iter()
                     .any(|&c| e.alignment(c, 0) != Alignment::Start))
@@ -257,7 +266,7 @@ impl Layers {
         if shape == Shape::Column
             && (a.height != b.height
                 || a.width != b.width
-                || a.spacing[1] != b.spacing[1]
+                || charge_changed
                 || a.padding[0] != b.padding[0]
                 || a.padding[2] != b.padding[2])
             && (self.has_height_group(k) || Self::has_group_reader(e, k))

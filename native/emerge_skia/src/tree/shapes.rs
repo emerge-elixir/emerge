@@ -55,13 +55,12 @@ pub(super) enum FlowInput {
     ChildWidth(Length),
     ChildFill,  // changed whether the child requests fill
     ChildSplit, // changed the policy or scale of an existing fill
-    HorizontalGap,
+    HorizontalGaps { authored: bool, charge: bool },
     Order,
 }
 trait LayoutBehaviour: ShapeMeta {
     /// Which main-axis length this shape distributes among its children.
-    const ALLOTS_WIDTH: bool = false;
-    const ALLOTS_HEIGHT: bool = false;
+    const MAIN_AXIS: Option<usize> = None;
     /// Each fill child receives the full placed inner height without a split.
     const OFFERS_INNER_HEIGHT: bool = false;
     fn measure(data: Data<'_, Self>, cx: &mut Measuring<'_>) -> Demand;
@@ -158,8 +157,11 @@ impl Shape {
     ) -> Result<(), String> {
         with_shape!(self, |S| PayloadOf::<S>::decode(tag, r, raw, a))
     }
+    pub fn main_axis(self) -> Option<usize> {
+        with_shape!(self, |S| S::MAIN_AXIS)
+    }
     pub fn allots_width(self) -> bool {
-        with_shape!(self, |S| S::ALLOTS_WIDTH)
+        self.main_axis() == Some(linear::X)
     }
     pub fn packs_width(self, width: Length) -> bool {
         self == Self::WrappedColumn && !width.definite()
@@ -186,7 +188,7 @@ impl Shape {
         with_shape!(self, |S| S::OFFERS_INNER_HEIGHT)
     }
     pub fn allots_height(self) -> bool {
-        with_shape!(self, |S| S::ALLOTS_HEIGHT)
+        self.main_axis() == Some(linear::Y)
     }
     pub fn uses_glyphs(self) -> bool {
         with_shape!(self, |S| PayloadOf::<S>::USES_GLYPHS)

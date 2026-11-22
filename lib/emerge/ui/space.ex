@@ -16,7 +16,8 @@ defmodule Emerge.UI.Space do
     between an element frame and its content
   - `spacing/1` and `spacing_xy/2` to add gaps between children in layout
     containers
-  - `space_evenly/0` to share the remaining width of a row between its children
+  - `space_evenly/0` to share leftover room between children in a row, column,
+    wrapped line or wrapped column
 
   ## Padding
 
@@ -54,20 +55,24 @@ defmodule Emerge.UI.Space do
 
   ## Even Distribution
 
-  In a `row/2` with a pixel width or a width that requests fill, `space_evenly/0`
-  sizes the children **without reserving fixed gaps**. It divides any width left
-  over into equal gaps *between* the children, in declaration order. A single
-  child starts at the padded left edge. Horizontal alignment groups don't apply
-  while this is active; vertical alignment still does.
+  Give a row a pixel or fill width, or a column a pixel or fill height, and
+  `space_evenly/0` sizes its children **without reserving fixed gaps**. It
+  divides the room left over into equal gaps *between* the children in
+  declaration order. A single child starts at the padded leading edge. Main-axis
+  alignment groups don't apply while this is active; cross-axis alignment still does.
 
   For example, in a 100px row with padding 4, three 20px cards start at
   **4, 40 and 76**. Replace the middle width with `fill()` and it takes all
   52 remaining pixels: there is no gap. With `spacing(4)` instead of
   `space_evenly()`, the same fill only gets 44 pixels.
 
-  A content-sized row keeps its authored spacing and alignment groups, even
-  with a content floor such as `width(max(px(100), content()))`. The retained
-  renderer currently accepts `space_evenly/0` only on a plain row.
+  `wrapped_row/2` and `wrapped_column/2` do this independently in each line or
+  column. Authored spacing still determines which children fit and how far
+  apart the groups sit. For example, two 20px cards with `spacing(4)` fit on
+  a 44px line but wrap at 43px, even when `space_evenly/0` is active.
+
+  A content-sized main axis keeps its authored spacing and alignment groups,
+  even with a content floor such as `width(max(px(100), content()))`.
 
   ## Examples
 
@@ -83,7 +88,7 @@ defmodule Emerge.UI.Space do
 
   #{Examples.image_tag!("ui-space-spacing", "Rendered spacing_xy example")}
 
-  `space_evenly/0` turns remaining width into equal gaps between children:
+  `space_evenly/0` turns remaining room into equal gaps between children:
 
   #{Examples.code_block!("ui-space-evenly")}
 
@@ -225,10 +230,11 @@ defmodule Emerge.UI.Space do
   @doc """
   Turn remaining main-axis room into equal gaps between children.
 
-  On a plain row with a pixel or fill width, size the children first and put
-  equal gaps between consecutive children. There are no edge gaps or negative
-  gaps on overflow. Remove this attribute to restore horizontal alignment
-  groups and fixed spacing; content-sized rows already use those rules.
+  On a row with a pixel or fill width, or a column with a pixel or fill height,
+  size the children first, then put equal gaps between them. Wrapped layouts do
+  this per line or column after choosing breaks with the authored spacing.
+  There are no edge gaps or negative gaps on overflow. Remove the attribute to
+  restore main-axis alignment groups and fixed spacing.
 
   ## Example
 

@@ -66,17 +66,6 @@ impl<'a> Slot<'a> {
     }
 }
 
-impl FlowInput {
-    /// Without a split every child reads its own preferred width. With a
-    /// split, fill children only read it if the declared expression does.
-    pub(super) fn affects_width_group(self, distributes: bool) -> bool {
-        match self {
-            Self::ChildWidth(w) => !distributes || w.weight().is_none() || w.reads_fill_content(),
-            Self::ChildFill | Self::ChildSplit | Self::HorizontalGap | Self::Order => distributes,
-        }
-    }
-}
-
 impl<'e> Mounted<'e, Children> {
     pub(super) fn width_slot(&self, cx: &FlowCx<'_>, c: Key) -> Slot<'e> {
         Slot::new(
@@ -94,10 +83,11 @@ impl FlowCx<'_> {
         &mut self,
         children: &[Key],
         available: Option<f32>,
+        charge: f32,
         break_before: bool,
         slot: impl Fn(&Self, Key) -> Slot<'e>,
     ) {
-        let split = FillShares::group(available, self.gap, children, |c| slot(self, c));
+        let split = FillShares::group(available, charge, children, |c| slot(self, c));
         for (i, &c) in children.iter().enumerate() {
             let s = slot(self, c);
             let width = split
@@ -231,9 +221,8 @@ impl FillShares {
         let inner = (scale::pixels(px, s)
             - (scale::pixels(b.padding[0], s) + scale::pixels(b.padding[2], s)))
         .max(0.);
-        Self::group(Some(inner), scale::pixels(b.spacing[1], s), kids, |c| {
-            Self::declared_slot(e, c)
-        })
+        let charge = scale::pixels(e.attrs[k].main_spacing(linear::Y).charge(), s);
+        Self::group(Some(inner), charge, kids, |c| Self::declared_slot(e, c))
     }
     pub(in crate::tree) fn assigned_height(self, e: &Elements, c: Key) -> Option<f32> {
         self.offer(Self::declared_slot(e, c))

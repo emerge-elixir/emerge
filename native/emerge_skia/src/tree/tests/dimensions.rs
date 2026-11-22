@@ -465,6 +465,14 @@ fn seeded_dimension_edits_match_math_and_fresh_trees() {
 
 #[test]
 fn seeded_even_row_shares_and_positions_match_math_and_fresh_trees() {
+    check_even(RowWidth);
+}
+#[test]
+fn seeded_even_column_shares_and_positions_match_math_and_fresh_trees() {
+    check_even(ColumnHeight);
+}
+fn check_even(site: Site) {
+    let (axis, kind) = (site.axis(), site.host());
     for seed in seeds() {
         let mut rng = Rng(seed);
         let mut c = specimen(Auto);
@@ -481,35 +489,35 @@ fn seeded_even_row_shares_and_positions_match_math_and_fresh_trees() {
         c.pad = rng.next(5) as f64;
         c.gap = rng.next(15) as f64 / 2.;
         let mut live = Tree::default();
-        live.upload(&c.upload(RowWidth)).unwrap();
+        live.upload(&c.upload(site)).unwrap();
         for step in 0..6 {
             match step {
                 1 | 2 => {
                     c.even = step == 2;
-                    live.patch(&set(1, 1, c.root(1))).unwrap();
+                    live.patch(&set(1, kind, c.root(axis))).unwrap();
                 }
                 3 => {
                     c.kids.reverse();
-                    live.patch(&order(1, 1, &c.ids())).unwrap();
+                    live.patch(&order(1, kind, &c.ids())).unwrap();
                 }
                 4 if !c.kids.is_empty() => {
                     let i = rng.next(c.kids.len());
                     c.kids[i].expr = rng.expr(3);
-                    live.patch(&set(c.kids[i].id, 4, c.kids[i].attrs(1)))
+                    live.patch(&set(c.kids[i].id, 4, c.kids[i].attrs(axis)))
                         .unwrap();
                 }
                 5 => {
                     c.host = rng.next(160) as f64;
                     c.display = 1.5;
-                    live.patch(&set(1, 1, c.root(1))).unwrap();
+                    live.patch(&set(1, kind, c.root(axis))).unwrap();
                 }
                 _ => (),
             }
             c.settle(&mut live).unwrap();
             let spans = c
-                .verify(RowWidth, &live)
-                .unwrap_or_else(|e| panic!("seed {seed} step {step}: {e}; {c:?}"));
-            assert_eq!(spans, c.cold(RowWidth).unwrap(), "seed {seed} step {step}");
+                .verify(site, &live)
+                .unwrap_or_else(|e| panic!("seed {seed} {site:?} step {step}: {e}; {c:?}"));
+            assert_eq!(spans, c.cold(site).unwrap(), "seed {seed} step {step}");
         }
     }
 }

@@ -80,7 +80,7 @@ impl<const M: usize, const W: bool, const T: u8> Linear<M, W, T> {
         (room - occupied).max(0.) / (line.len() - 1) as f32
     }
 
-    fn advance(cursor: &mut Cursor, extent: f32, gap: f32, zone: Alignment) -> f32 {
+    fn advance(cursor: &mut Cursor, extent: f32, gap: f32, zone: Alignment, even: bool) -> f32 {
         if zone == Alignment::End {
             cursor.edge = cursor.next - extent;
             cursor.next = cursor.edge - gap;
@@ -88,8 +88,9 @@ impl<const M: usize, const W: bool, const T: u8> Linear<M, W, T> {
         } else {
             let start = cursor.next;
             cursor.edge = start + extent;
-            // Preserve the existing Row's f32 step rounding.
-            cursor.next = if M == X && !W {
+            // Every even group uses the plain Row's f32 step. Leave ordinary
+            // wrapped and vertical placement's edge rounding unchanged.
+            cursor.next = if even || (M == X && !W) {
                 start + (extent + gap)
             } else {
                 cursor.edge + gap
@@ -105,19 +106,28 @@ impl<const M: usize, const W: bool, const T: u8> Linear<M, W, T> {
     fn place_zones(
         line: &[Key],
         room: f32,
-        gap: f32,
-        zone: impl Fn(Key) -> Alignment,
+        spacing: MainSpacing,
+        alignment: impl Fn(Key) -> Alignment,
         cx: &mut PlaceCx<'_>,
         resolve: impl Fn(Key, &PlaceCx<'_>) -> (Size, Constraint),
         mut put: impl FnMut(&mut PlaceCx<'_>, Key, f32, f32, Constraint),
     ) -> f32 {
         use Alignment::{Center, End, Start};
+        let even = spacing == MainSpacing::Even;
+        let zone = |c| if even { Start } else { alignment(c) };
+        let gap = match spacing {
+            MainSpacing::Fixed(gap) => scale::pixels(gap, cx.scale),
+            MainSpacing::Even => Self::even_gap(line, room, |c| {
+                let (s, _) = resolve(c, cx);
+                Self::axes([s.w, s.h])[0]
+            }),
+        };
         let (mut start, mut center, mut end) = (Cursor::at(0.), Cursor::at(0.), Cursor::at(room));
         let mut widest = 0f32;
         let mut place = |c, z, cursor: &mut Cursor, cx: &mut PlaceCx<'_>| {
             let (size, edge) = resolve(c, cx);
             let [main, across] = Self::axes([size.w, size.h]);
-            let at = Self::advance(cursor, main, gap, z);
+            let at = Self::advance(cursor, main, gap, z, even);
             put(cx, c, at, across, edge);
             widest = widest.max(across);
         };
@@ -128,7 +138,7 @@ impl<const M: usize, const W: bool, const T: u8> Linear<M, W, T> {
                 End => ends = &line[..=i],
                 Center => {
                     let (s, _) = resolve(c, cx);
-                    Self::advance(&mut center, Self::axes([s.w, s.h])[0], gap, Center);
+                    Self::advance(&mut center, Self::axes([s.w, s.h])[0], gap, Center, even);
                     centers = &line[..=i];
                 }
             }
@@ -148,8 +158,7 @@ impl<const M: usize, const W: bool, const T: u8> Linear<M, W, T> {
 }
 
 impl<const M: usize, const W: bool, const T: u8> LayoutBehaviour for Linear<M, W, T> {
-    const ALLOTS_WIDTH: bool = M == X;
-    const ALLOTS_HEIGHT: bool = M == Y;
+    const MAIN_AXIS: Option<usize> = Some(M);
     const OFFERS_INNER_HEIGHT: bool = M == X && !W;
 
     fn measure(children: &[Key], cx: &mut Measuring<'_>) -> Demand {
@@ -192,7 +201,16 @@ impl<const M: usize, const W: bool, const T: u8> LayoutBehaviour for Linear<M, W
     }
     fn reads_flow(width: Length, input: FlowInput) -> bool {
         if M == X {
-            input.affects_width_group(W || width.definite())
+            let splits = W || width.definite();
+            match input {
+                FlowInput::HorizontalGaps { authored, charge } => {
+                    (W && authored) || (splits && charge)
+                }
+                FlowInput::ChildWidth(w) => {
+                    !splits || w.weight().is_none() || w.reads_fill_content()
+                }
+                FlowInput::ChildFill | FlowInput::ChildSplit | FlowInput::Order => splits,
+            }
         } else {
             (!W && width == Length::Auto && input == FlowInput::ChildFill)
                 || (W && !width.definite() && matches!(input, FlowInput::ChildWidth(_)))
@@ -207,11 +225,14 @@ impl<const M: usize, const W: bool, const T: u8> LayoutBehaviour for Linear<M, W
             }
             return;
         }
-        let available = (W || cx.policy.definite()).then_some(cx.inner);
+        let attrs = node.attrs();
+        let available = (W || attrs.sizing.width.definite()).then_some(cx.inner);
+        let break_gap = scale::pixels(attrs.sizing.spacing[M], cx.scale);
+        let charge = scale::pixels(attrs.main_spacing(M).charge(), cx.scale);
         let mut groups = Groups(node.data());
         let mut after_first = false;
-        while let Some(line) = groups.measured(W, cx.inner, cx.gap, |c| cx.line_measure(c)) {
-            cx.assign_group(line, available, after_first, |cx, c| {
+        while let Some(line) = groups.measured(W, cx.inner, break_gap, |c| cx.line_measure(c)) {
+            cx.assign_group(line, available, charge, after_first, |cx, c| {
                 let slot = node.width_slot(cx, c);
                 if W {
                     slot.with_basis(cx.line_measure(c))
@@ -299,7 +320,7 @@ impl<const M: usize, const W: bool, const T: u8> LayoutBehaviour for Linear<M, W
     }
     fn place_children(node: Mounted<'_, Children>, cx: &mut PlaceCx<'_>) {
         let style = node.attrs().sizing;
-        let even = M == X && !W && node.attrs().even_row();
+        let spacing = node.attrs().main_spacing(M);
         let children = node.data();
         let e = node.elements;
         let (origin, inner) = cx.padded_height_offer(style);
@@ -331,7 +352,7 @@ impl<const M: usize, const W: bool, const T: u8> LayoutBehaviour for Linear<M, W
                 cx.declared_shares(node.key).or_else(|| {
                     FillShares::group(
                         (W || style.height.definite()).then_some(inner),
-                        gap[M],
+                        scale::pixels(spacing.charge(), cx.scale),
                         line,
                         |c| slot(c, cx),
                     )
@@ -375,23 +396,6 @@ impl<const M: usize, const W: bool, const T: u8> LayoutBehaviour for Linear<M, W
                 };
                 (Size { w, h, ..fit }, edge)
             };
-            // Sizes are settled. Even spacing uses the existing forward cursor
-            // for every child; it replaces main-axis zones, not cross alignment.
-            let main_gap = if even {
-                Self::even_gap(line, main_room, |c| {
-                    let (s, _) = resolved(c, cx);
-                    Self::axes([s.w, s.h])[0]
-                })
-            } else {
-                gap[M]
-            };
-            let zone = |c: Key| {
-                if even {
-                    Alignment::Start
-                } else {
-                    e.attrs[c].align[M].unwrap_or_default()
-                }
-            };
             let align = |c: Key| e.attrs[c].align[1 - M].unwrap_or_default();
             let interval = if W && line.iter().any(|&c| align(c) != Alignment::Start) {
                 line.iter()
@@ -406,8 +410,8 @@ impl<const M: usize, const W: bool, const T: u8> LayoutBehaviour for Linear<M, W
             let occupied_cross = Self::place_zones(
                 line,
                 main_room,
-                main_gap,
-                zone,
+                spacing,
+                |c| e.attrs[c].align[M].unwrap_or_default(),
                 cx,
                 resolved,
                 |cx, c, pos, across, edge| {

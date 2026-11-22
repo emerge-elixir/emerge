@@ -248,19 +248,27 @@ struct Attrs {
     text: Range<usize>,
     glyph_count: usize,
 }
-impl Attrs {
-    // Only a plain Row admits the flag. A content floor is not a width allocation,
-    // even if it resolves to exactly the same extent as a pixel or fill width.
-    fn even_row(&self) -> bool {
-        self.space_evenly && self.sizing.width.definite()
+#[derive(Clone, Copy, PartialEq)]
+enum MainSpacing {
+    Fixed(f64),
+    Even,
+}
+impl MainSpacing {
+    // Only the share budget. Intrinsic sizing and wrap breaks use authored gaps.
+    fn charge(self) -> f64 {
+        match self {
+            Self::Fixed(gap) => gap,
+            Self::Even => 0.,
+        }
     }
-    // The share budget, not intrinsic measurement: a natural parent can still
-    // assign this Row its preferred width, including the authored gaps.
-    fn width_gap_charge(&self) -> f64 {
-        if self.even_row() {
-            0.
+}
+impl Attrs {
+    fn main_spacing(&self, axis: usize) -> MainSpacing {
+        let length = [self.sizing.width, self.sizing.height][axis];
+        if self.space_evenly && length.definite() {
+            MainSpacing::Even
         } else {
-            self.sizing.spacing[0]
+            MainSpacing::Fixed(self.sizing.spacing[axis])
         }
     }
 }

@@ -242,18 +242,34 @@ siblings win in the one declaration order, even on overflow. The comparison
 with `main` is of pixels, not its seat routing. [Public frames and clicks](../../test/emerge_skia/linear_zones_test.exs) ·
 [transposed geometry oracle](../../native/emerge_skia/src/tree/tests/dimensions/zones.rs).
 
-### D12. Resolve Row widths before distributing even gaps
+### D12. Distribute even gaps after sizing each linear group
 
-`space_evenly()` is a Row policy, not a fourth child alignment. Like `main`,
-keep authored gaps in the intrinsic width. A content parent can assign a fill
-Row its natural **76px**, including padding 4 and two authored 4px gaps around
-three 20px cards. Once the Row has its width, a pixel or fill policy activates
-spacing; auto, content and bounded content do not. The final width alone
-can't distinguish `px(100)` from `max(px(100), content())`.
+`space_evenly()` is a container policy, not a fourth child alignment. It
+activates on a pixel or fill-bearing **main axis**. Auto, content and bounded
+content keep their authored gaps and alignment zones, even at the same size:
+`px(100)` and `max(px(100), content())` are not interchangeable.
 
-With the flag active, Flow charges zero gaps to the existing width allocator.
-Place sums the resolved outer widths and divides any nonnegative remainder
-among the `n − 1` gaps. Use the forward cursor in declaration order, with no
-edge gaps; even an end-aligned singleton leads. Cross alignment, clipping
-and stacking do not change. [Sizes, pixels and installed local clicks](../../test/emerge_skia/row_even_spacing_test.exs) ·
-[policy changes and failed handoff](../../native/emerge_skia/src/tree/tests/row_even.rs).
+All four kinds use [one `Linear` implementation](../../native/emerge_skia/src/tree/shapes/linear.rs).
+Keep authored gaps in intrinsic demand and wrap membership. A content parent
+can assign a fill Row or Column its natural **76px**, including padding 4 and
+two 4px gaps around three 20px cards. In a wrapped group, two fills with 20px
+minima and a 4px gap still need **44px** to fit together. Once they fit, active
+even spacing charges **zero** fixed gap to the allocator: they receive 22px each,
+not 20px each. Editing the authored gap to 5 makes them wrap at the same 44px.
+
+After width allocation in Flow or height allocation in Place, distribute the
+nonnegative remainder across `n − 1` gaps between **resolved outer boxes**.
+Use the same forward cursor in declaration order, with no edge gaps; a
+singleton leads. Cross alignment, spacing *between* groups, clipping and
+stacking do not change. In particular, `main` ignores the flag on WrappedRow:
+in a 100px padded row, x=`4/28/52` becomes **`4/40/76`** here, by design.
+There is no WrappedColumn on `main`.
+
+A Column's early height share must use the same charge as final placement.
+Activating even spacing with a 1px authored gap can change the assigned
+height **43→44**, its child's packed
+width **30→12**, and a peer's width **34→52** before that peer wraps. This
+uses the proven height group, not a previous-frame estimate or a layout retry.
+[Row frames](../../test/emerge_skia/row_even_spacing_test.exs) ·
+[Column and wrapped frames, kept moves and local clicks](../../test/emerge_skia/linear_even_spacing_test.exs) ·
+[breaks, equal-size policy edits, rounding and failed handoff](../../native/emerge_skia/src/tree/tests/linear_even.rs).

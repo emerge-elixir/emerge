@@ -198,10 +198,9 @@ impl Measuring<'_> {
 pub(super) struct FlowCx<'a> {
     layers: &'a mut Layers,
     e: &'a Elements,
-    pub policy: Length,
+    pub scale: f32,
     pub inner: f32,
     pub offer_children: bool,
-    pub gap: f32,
 }
 impl FlowCx<'_> {
     pub fn measured_width(&self, c: Key) -> f32 {
@@ -812,8 +811,7 @@ impl Layers {
             &mut FlowCx {
                 inner,
                 offer_children,
-                policy: b.width,
-                gap: pixels(e.attrs[k].width_gap_charge(), scale),
+                scale,
                 layers: self,
                 e,
             },

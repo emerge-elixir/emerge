@@ -137,7 +137,7 @@ fn an_even_gap_is_not_charged_to_the_fill_and_is_not_published_on_accept() {
         r.tree.patch(&set(1, 1, root(Some(2)))).unwrap_err(),
         "invalid space_evenly flag 2"
     );
-    for kind in [2, 3, 4, 5, 6, 14] {
+    for kind in [4, 5, 6] {
         for flag in [0, 1] {
             assert_eq!(
                 r.tree

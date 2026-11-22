@@ -72,7 +72,7 @@ fn expected(case: &Case) -> Vec<(f64, f64, f64)> {
             host: case.host,
             pad: case.pad,
             gap: case.gap,
-            even: false,
+            even: case.even,
             display: z,
         };
         boxes.extend(
@@ -93,13 +93,18 @@ fn expected(case: &Case) -> Vec<(f64, f64, f64)> {
 
 #[test]
 fn seeded_wrapped_widths_match_line_math_and_fresh_trees() {
-    check_lines(1, 2);
+    check_lines(1, 2, false);
 }
 #[test]
 fn seeded_wrapped_column_heights_match_line_math_and_fresh_trees() {
-    check_lines(2, 14);
+    check_lines(2, 14, false);
 }
-fn check_lines(axis: u8, kind: u8) {
+#[test]
+fn seeded_even_wrapped_groups_match_line_math_and_fresh_trees() {
+    check_lines(1, 2, true);
+    check_lines(2, 14, true);
+}
+fn check_lines(axis: u8, kind: u8, even: bool) {
     for seed in seeds() {
         let mut rng = Rng(seed);
         let mut case = specimen(Auto);
@@ -112,11 +117,12 @@ fn check_lines(axis: u8, kind: u8) {
                 pad: rng.next(5) as f64,
             })
             .collect();
+        case.even = even;
         case.gap = rng.next(6) as f64;
         case.pad = rng.next(5) as f64;
         let mut live = Tree::default();
         live.upload(&line_tree(&case, axis, kind)).unwrap();
-        for step in 0..8 {
+        for step in 0..if even { 11 } else { 8 } {
             let i = rng.next(case.kids.len());
             let k = &mut case.kids[i];
             match step {
@@ -142,6 +148,13 @@ fn check_lines(axis: u8, kind: u8) {
                     live.patch(&set(k.id, kind, k.attrs(axis))).unwrap();
                     case.display = 1.5;
                 }
+                8..=10 => {
+                    case.even = step != 8;
+                    if step == 10 {
+                        case.gap = rng.next(12) as f64;
+                    }
+                    live.patch(&set(1, kind, case.root(axis))).unwrap();
+                }
                 _ => (),
             }
             case.settle(&mut live).unwrap();
@@ -161,10 +174,20 @@ fn check_lines(axis: u8, kind: u8) {
                 } else {
                     [f.y, f.x, f.height]
                 };
-                for (actual, want) in actual.into_iter().zip([x, y, w]) {
+                let origin_basis = if case.even {
+                    case.host * case.display
+                } else {
+                    0.
+                };
+                for ((actual, want), basis) in
+                    actual
+                        .into_iter()
+                        .zip([x, y, w])
+                        .zip([origin_basis, 0., 0.])
+                {
                     assert!(
                         (f64::from(actual) - want).abs()
-                            <= 8. * f64::from(f32::EPSILON) * want.abs().max(1.),
+                            <= 8. * f64::from(f32::EPSILON) * want.abs().max(basis).max(1.),
                         "seed {seed} step {step}, {k:?}: {f:?} vs ({x},{y},{w}); {case:?}"
                     );
                 }

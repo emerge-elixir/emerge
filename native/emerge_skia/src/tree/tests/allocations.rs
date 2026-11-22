@@ -48,8 +48,11 @@ fn alignment_zones(c: &Counter) {
         (1, 1, 10_000, false),
         (1, 1, 10_000, true),
         (3, 2, 12, false),
+        (3, 2, 10_000, true),
         (2, 1, 16, false),
+        (2, 1, 10_000, true),
         (14, 2, 16, false),
+        (14, 2, 10_000, true),
     ] {
         let ids: Vec<_> = (2..n + 2).collect();
         let host = |extent, z, on| {
@@ -77,7 +80,11 @@ fn alignment_zones(c: &Counter) {
                 vec![40, 1],
             ])
         };
-        let extent = if even { 48_000. } else { 60. };
+        let extent = if even && matches!(kind, 1 | 3) {
+            48_000.
+        } else {
+            60.
+        };
         let nodes = std::iter::once(node(1, kind, host(extent, 2, even), &ids))
             .chain(ids.iter().map(|&id| node(id, 4, item((id % 3) as u8), &[])))
             .collect::<Vec<_>>();
@@ -951,6 +958,18 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
         assert!(stack.settle(180., 53., 1.).unwrap());
     });
     alignment_zones(&c);
+    let mut early = Raster::default();
+    early.tree.upload(&wrapped_column::shared_column()).unwrap();
+    c.zero("first independent Column height group", || {
+        early.settle(100., 100., 1.).unwrap();
+    });
+    for flag in [0, 1, 0] {
+        let edit = linear_even::outer(flag);
+        c.zero("even share through packed width and peer reflow", || {
+            early.tree.patch(&edit).unwrap();
+            early.settle(100., 100., 1.).unwrap();
+        });
+    }
     weighted_splits(&c);
     bounded_splits(&c);
     nested_splits(&c);

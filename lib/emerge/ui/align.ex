@@ -102,7 +102,8 @@ defmodule Emerge.UI.Align do
   with `center_x/0` and at 40 with `align_right/0` (no padding).
 
   `align_top/0`, `center_y/0`, and `align_bottom/0` still position each child
-  within the height of its own wrapped line.
+  within the height of its own wrapped line. Active `Emerge.UI.Space.space_evenly/0`
+  replaces horizontal groups with equal gaps within each line.
 
   ## `wrapped_column`
 
@@ -111,7 +112,9 @@ defmodule Emerge.UI.Align do
   16-pixel child in a 32-pixel column starts 0, 8 or 16 pixels from that
   column's left edge. `align_bottom/0` anchors the bottom group at the padded
   bottom edge; `center_y/0` centers its group between the top and bottom
-  groups **in that column**. Neither helper changes which column a child fits in.
+  groups **in that column**. Active `Emerge.UI.Space.space_evenly/0` replaces
+  those vertical groups with equal gaps within each column, without changing
+  which children fit in it.
 
   ## `column`
 
@@ -120,7 +123,9 @@ defmodule Emerge.UI.Align do
 
   `align_top/0`, `center_y/0`, and `align_bottom/0` split children into top,
   center, and bottom groups down the column. The center group uses the space
-  between the top and bottom groups, just as in a row.
+  between the top and bottom groups, just as in a row. With active
+  `Emerge.UI.Space.space_evenly/0`, leftover height instead becomes gaps
+  between consecutive children.
 
   `align_left/0`, `center_x/0`, and `align_right/0` position each child within
   the column width.
