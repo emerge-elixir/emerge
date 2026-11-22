@@ -200,7 +200,7 @@ pub(super) struct FlowCx<'a> {
     e: &'a Elements,
     pub scale: f32,
     pub inner: f32,
-    pub offer_children: bool,
+    offer_children: bool,
 }
 impl FlowCx<'_> {
     pub fn measured_width(&self, c: Key) -> f32 {
@@ -217,8 +217,13 @@ impl FlowCx<'_> {
             measured.w
         }
     }
-    pub fn offer(&mut self, c: Key, width: Constraint) {
-        self.layers.offer_width(self.e, c, width, false);
+    pub fn offer_inner_width(&mut self, parent: Key) {
+        if self.offer_children {
+            for &c in self.e.children(parent) {
+                self.layers
+                    .offer_width(self.e, c, Constraint::Available(self.inner), false);
+            }
+        }
     }
     pub fn assign_width(&mut self, c: Key, width: f32, break_before: bool) {
         self.layers
@@ -262,8 +267,8 @@ impl ReflowCx<'_> {
 pub(super) struct PlaceCx<'a> {
     layers: &'a mut Layers,
     e: &'a Elements,
-    pub height: f32,
-    pub width: f32,
+    height: f32,
+    width: f32,
     pub scale: f32,
     pub row_offer: f32,
     translated: bool,
@@ -278,9 +283,15 @@ impl PlaceCx<'_> {
     pub fn measured_height(&self, c: Key) -> f32 {
         self.layers.measure[c].h
     }
-    pub fn padded_height_offer(&self, style: BoxStyle) -> ([f32; 2], f32) {
-        let [top, _, bottom, left] = style.padding.map(|v| pixels(v, self.scale));
-        ([left, top], (self.height - (top + bottom)).max(0.))
+    /// Local area for child placement, not a paint or hit clip.
+    pub fn padded_area(&self, style: BoxStyle) -> Rect {
+        let [top, right, bottom, left] = style.padding.map(|v| pixels(v, self.scale));
+        Rect {
+            x: left,
+            y: top,
+            width: (self.width - (left + right)).max(0.),
+            height: (self.height - (top + bottom)).max(0.),
+        }
     }
     pub fn declared_shares(&self, k: Key) -> Option<shapes::FillShares> {
         self.layers.height_shares.get(k).copied()
@@ -439,17 +450,11 @@ impl Layers {
             self.enqueue(p, parent, e);
         }
     }
-    // Positioning reads a child's packed width for a horizontal group,
-    // column advance, or a non-leading horizontal offset (including in El).
     pub(super) fn packed_width_reader(&mut self, e: &Elements, k: Key) {
-        if let Some(p) = e.slots[k].parent {
-            let host = e.slots[p].shape;
-            if host.allots_width()
-                || host == Shape::WrappedColumn
-                || e.alignment(k, 0) != Alignment::Start
-            {
-                self.enqueue(Place, p, e);
-            }
+        if let Some(p) = e.slots[k].parent
+            && e.slots[p].shape.reads_placed_width(e, k)
+        {
+            self.enqueue(Place, p, e);
         }
     }
     // A wrapping parent plans the width of an auto Column before flowing
@@ -717,18 +722,16 @@ impl Layers {
             }
             m
         };
-        // Only an explicit floor replaces the intrinsic minimum. Keep the
-        // site-independent demand in the memo, including on a closed move.
+        // Keep the site-independent demand in the memo, including on a closed move.
         let mut m = if shape == Shape::WrappedColumn {
             shapes::column_demand(e, k, m, self.known_height_edge(e, k), |c| self.measure[c])
         } else {
             m
         };
-        if let Some(bounds) = e.attrs[k].line_floor
-            && e.parent_shape(k) == Some(Shape::WrappedRow)
-        {
-            m.min_w = bounds.resolve(m.w, c.scale);
-        }
+        let floor = e.attrs[k]
+            .line_floor
+            .filter(|_| e.parent_shape(k) == Some(Shape::WrappedRow));
+        m.min_w = wrap_minimum(floor, m.w, m.min_w, || c.scale);
         let old = self.measure.get(k).copied();
         if changed(&mut self.measure, k, m) {
             self.parent(Measure, k, e);
@@ -870,14 +873,8 @@ impl Layers {
                         self.enqueue(Reflow, p, e);
                     }
                     if (height_changed && e.alignment(k, 1) != Alignment::Start)
-                        || (host == Shape::El
-                            && e.alignment(k, 0) != Alignment::Start
-                            && old.is_none_or(|s| s.w != fit.w))
+                        || (old.is_none_or(|s| s.w != fit.w) && host.reads_placed_width(e, k))
                     {
-                        self.enqueue(Place, p, e);
-                    }
-                    // A Row also reads widths to place the following sibling.
-                    if host.allots_width() && old.is_none_or(|s| s.w != fit.w) {
                         self.enqueue(Place, p, e);
                     }
                 }
@@ -886,8 +883,8 @@ impl Layers {
                     self.enqueue(Place, p, e);
                 }
                 Shape::Column => {
-                    if e.alignment(k, 0) != Alignment::Start
-                        && old.is_none_or(|s| s.w != fit.w || height_changed)
+                    if old.is_none_or(|s| s.w != fit.w || height_changed)
+                        && Shape::Column.reads_placed_width(e, k)
                     {
                         self.enqueue(Place, p, e);
                     }

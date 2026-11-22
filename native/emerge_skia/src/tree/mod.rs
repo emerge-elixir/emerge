@@ -65,6 +65,16 @@ impl Bounds<f64> {
         basis.clamp(b.floor, b.cap)
     }
 }
+/// Only an authored floor replaces the automatic wrap minimum, even if it resolves to zero.
+fn wrap_minimum(
+    floor: Option<Bounds<f64>>,
+    preferred: f32,
+    automatic: f32,
+    child_scale: impl FnOnce() -> f32,
+) -> f32 {
+    floor.map_or(automatic, |bounds| bounds.resolve(preferred, child_scale()))
+}
+
 /// Only a mixed expression which cannot be reduced to a single pixel clamp
 /// retains a program. The offsets address *this owner's* validated attr block.
 #[derive(Clone, Copy, Debug, PartialEq)]

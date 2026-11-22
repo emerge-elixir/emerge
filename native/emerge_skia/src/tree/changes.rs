@@ -275,14 +275,17 @@ impl Layers {
         }
         if parent == Some(Shape::Column)
             && let Some(p) = e.slots[k].parent
-            && (height
-                || a.height != b.height
-                || old.layout_scale != next.layout_scale
-                || a.width != b.width)
-            && (self.has_height_group(p)
-                || shape.reads_group_height(next.sizing, e.attrs[p].sizing))
+            && matches!(e.attrs[p].sizing.height, Length::Px(_))
         {
-            self.invalidate(Pass::Context, p, e.depth(p));
+            // Equal intrinsic widths can still add or remove a reader of the
+            // Column's height shares. Compare the policies used by the allocator.
+            let reads = |style| shape.reads_group_height(style, e.attrs[p].sizing);
+            let slot_changed =
+                height || a.height != b.height || old.layout_scale != next.layout_scale;
+            if reads(old.sizing) != reads(next.sizing) || (slot_changed && self.has_height_group(p))
+            {
+                self.invalidate(Pass::Context, p, e.depth(p));
+            }
         }
         if height
             && Self::reads_early_height(e, k)

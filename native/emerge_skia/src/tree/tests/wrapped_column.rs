@@ -114,6 +114,77 @@ fn a_declared_column_share_reaches_an_earlier_width_consumer_without_retry() {
     );
 }
 
+// min(px(cap), fill()) and min(px(cap), max(content(), fill())) have the
+// same intrinsic clamp. Only the latter reads the packed width in Flow.
+pub(super) fn reader_attrs(cap: f64, reads_content: bool) -> Bytes {
+    let basis = if reads_content {
+        vec![5, 1, 0]
+    } else {
+        vec![0]
+    };
+    let width = [vec![1, 4], number(2, cap), basis].concat();
+    block(&[width, vec![2, 0], vec![5, 2], gaps(6., 4.)])
+}
+pub(super) fn reader_column() -> Bytes {
+    let card = |rgb| block(&[px(1, 12.), px(2, 20.), color(rgb), vec![40, 1]]);
+    upload(&[
+        node(1, 3, rect(16., 60.), &[2, 3]),
+        node(2, 4, rect(1., 17.), &[]),
+        node(3, 14, reader_attrs(80., false), &[4, 5]),
+        node(4, 4, card([255, 0, 0]), &[]),
+        node(5, 4, card([0, 0, 255]), &[]),
+    ])
+}
+
+#[test]
+fn a_sparse_width_edit_can_add_or_remove_the_only_column_share_reader() {
+    let mut r = Raster::default();
+    r.tree.upload(&reader_column()).unwrap();
+    draw(&mut r);
+    let column = r.tree.elements.ids[&1];
+    let edit = |cap, reads| set(3, 14, reader_attrs(cap, reads));
+    let rect = |x, width| Rect {
+        x,
+        y: 17.,
+        width,
+        height: 43.,
+    };
+    assert_eq!(bounds(&r, 3), rect(0., 16.));
+    assert_eq!(r.hit_at(6., 22.), Some((4, 6., 5.)));
+    for (cap, reads, transition) in [(80., true, true), (79., true, false), (79., false, true)] {
+        let old_pixels = r.pixels().to_vec();
+        let old_hit = r.hit_at(6., 22.);
+        let passes = r.tree.layers.invalidation_passes;
+        r.tree.patch(&edit(cap, reads)).unwrap();
+        assert!(r.tree.layers.worksets_empty());
+        r.prepare(180., 170., 1.)
+            .unwrap()
+            .submit(|_, _| Err("refused handoff".into()))
+            .unwrap_err();
+        let (x, w, hit) = if reads {
+            (-14., 30., (5, 2., 5.))
+        } else {
+            (0., 16., (4, 6., 5.))
+        };
+        assert_eq!(bounds(&r, 3), rect(x, w));
+        assert_eq!(r.tree.layers.has_height_group(column), reads);
+        assert_eq!(ran(&r, Context, 1), transition);
+        assert_eq!(r.tree.layers.invalidation_passes, passes + 1);
+        assert_eq!(r.pixels(), old_pixels);
+        assert_eq!(r.hit_at(6., 22.), old_hit);
+        draw(&mut r);
+        assert_eq!(r.hit_at(6., 22.), Some(hit));
+        check_fresh(&r);
+    }
+    // No transient reader when both edits are accepted before compute.
+    r.tree.patch(&edit(79., true)).unwrap();
+    r.tree.patch(&edit(79., false)).unwrap();
+    assert!(r.tree.layers.worksets_empty());
+    draw(&mut r);
+    assert!(r.tree.layers.trace.is_empty());
+    assert!(!r.tree.layers.has_height_group(column));
+}
+
 #[test]
 fn swapping_weights_at_an_unchanged_group_unit_updates_packed_width_once() {
     let mut r = Raster::default();

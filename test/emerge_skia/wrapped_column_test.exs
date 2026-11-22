@@ -99,6 +99,40 @@ defmodule EmergeSkia.WrappedColumnTest do
     end
   end
 
+  test "a sparse width edit that begins reading packed content matches a fresh frame and click" do
+    alias Emerge.TestSupport.BoxAssertions, as: Box
+    size = {64, 80}
+
+    build = fn basis ->
+      column([width(px(16)), height(px(60)), Background.color(:white)], [
+        el([width(px(1)), height(px(17))], none()),
+        wrapped_column(
+          [width(min(px(80), basis)), height(fill()), align_right(), spacing_xy(6, 4)],
+          [card(:a, 12, 20, :red), card(:b, 12, 20, :blue)]
+        )
+      ])
+    end
+
+    initial = fn -> build.(fill()) end
+    packed = fn -> build.(max(content(), fill())) end
+    host = {0, 0, 16, 60, 0xFFFFFFFF}
+    one = Box.frame(size, [host, {0, 17, 12, 20, 0xFF0000FF}])
+    # The 30px-wide pack starts at −14. Its red card is clipped; blue starts at 4.
+    two = Box.frame(size, [host, {4, 17, 12, 20, 0x0000FFFF}])
+    {p, r} = Headless.mount(size, initial, [:pointer_button])
+    assert Headless.pixels() == one
+    click(r, 6.0, 22.0, :a, 6.0, 5.0)
+    send(p, {:scene, packed})
+    assert Headless.pixels() == two
+    click(r, 6.0, 22.0, :b, 2.0, 5.0)
+    {_, fresh} = Headless.mount(size, packed, [:pointer_button])
+    assert Headless.pixels() == two
+    click(fresh, 6.0, 22.0, :b, 2.0, 5.0)
+    send(p, {:scene, initial})
+    assert Headless.pixels() == one
+    click(r, 6.0, 22.0, :a, 6.0, 5.0)
+  end
+
   test "width reflow inside a card decides its vertical break" do
     build = fn cap ->
       chip = el([width(px(10)), height(px(8))], none())

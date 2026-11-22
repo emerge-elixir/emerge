@@ -63,6 +63,11 @@ trait LayoutBehaviour: ShapeMeta {
     const MAIN_AXIS: Option<usize> = None;
     /// Each fill child receives the full placed inner height without a split.
     const OFFERS_INNER_HEIGHT: bool = false;
+    /// Place advances a row member or a wrapped column along X.
+    const ADVANCES_X: bool = false;
+    fn reads_placed_width(align_x: impl FnOnce() -> Alignment) -> bool {
+        Self::ADVANCES_X || align_x() != Alignment::Start
+    }
     fn measure(data: Data<'_, Self>, cx: &mut Measuring<'_>) -> Demand;
     fn auto_fills(_node: Mounted<'_, Self::Payload>) -> bool {
         false
@@ -71,11 +76,7 @@ trait LayoutBehaviour: ShapeMeta {
         false
     }
     fn offer_widths(node: Mounted<'_, Self::Payload>, cx: &mut FlowCx<'_>) {
-        if cx.offer_children {
-            for &child in node.children() {
-                cx.offer(child, Constraint::Available(cx.inner))
-            }
-        }
+        cx.offer_inner_width(node.key);
     }
     fn reflow(node: Mounted<'_, Self::Payload>, cx: &mut ReflowCx<'_>) -> Heights;
     fn place_children(node: Mounted<'_, Self::Payload>, cx: &mut PlaceCx<'_>) {
@@ -162,6 +163,11 @@ impl Shape {
     }
     pub fn allots_width(self) -> bool {
         self.main_axis() == Some(linear::X)
+    }
+    pub fn reads_placed_width(self, e: &Elements, child: Key) -> bool {
+        with_shape!(self, |S| S::reads_placed_width(
+            || e.alignment(child, linear::X)
+        ))
     }
     pub fn packs_width(self, width: Length) -> bool {
         self == Self::WrappedColumn && !width.definite()

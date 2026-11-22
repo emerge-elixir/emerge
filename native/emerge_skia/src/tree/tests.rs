@@ -8,6 +8,7 @@ mod dimensions;
 mod el_alignment;
 mod el_child;
 mod identity;
+mod layout_rules;
 mod linear_even;
 mod nested;
 mod row;

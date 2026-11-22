@@ -55,6 +55,25 @@ impl<'a> Groups<'a> {
     }
 }
 
+/// Pack the cross extents of already chosen groups. Each component (e.g.
+/// fit and minimum) takes its own maximum. Add gaps only between groups.
+fn packed_cross_extent<'a, const N: usize>(
+    groups: impl Iterator<Item = &'a [Key]>,
+    gap: f32,
+    mut extent: impl FnMut(Key) -> [f32; N],
+) -> [f32; N] {
+    groups
+        .map(|group| {
+            group
+                .iter()
+                .copied()
+                .map(&mut extent)
+                .fold([0f32; N], |a, b| std::array::from_fn(|i| a[i].max(b[i])))
+        })
+        .reduce(|a, b| std::array::from_fn(|i| a[i] + gap + b[i]))
+        .unwrap_or([0.; N])
+}
+
 /// `edge` excludes the gap that `next` reserves for another member of this zone.
 struct Cursor {
     edge: f32,
@@ -160,6 +179,7 @@ impl<const M: usize, const W: bool, const T: u8> Linear<M, W, T> {
 impl<const M: usize, const W: bool, const T: u8> LayoutBehaviour for Linear<M, W, T> {
     const MAIN_AXIS: Option<usize> = Some(M);
     const OFFERS_INNER_HEIGHT: bool = M == X && !W;
+    const ADVANCES_X: bool = M == X || W;
 
     fn measure(children: &[Key], cx: &mut Measuring<'_>) -> Demand {
         let gaps = cx.gap[M] * children.len().saturating_sub(1) as f32;
@@ -218,11 +238,7 @@ impl<const M: usize, const W: bool, const T: u8> LayoutBehaviour for Linear<M, W
     }
     fn offer_widths(node: Mounted<'_, Children>, cx: &mut FlowCx<'_>) {
         if M == Y {
-            if cx.offer_children {
-                for &c in node.data() {
-                    cx.offer(c, Constraint::Available(cx.inner));
-                }
-            }
+            cx.offer_inner_width(node.key);
             return;
         }
         let attrs = node.attrs();
@@ -284,49 +300,36 @@ impl<const M: usize, const W: bool, const T: u8> LayoutBehaviour for Linear<M, W
         }
         let mut basis = None;
         let mut groups = Groups(children);
-        let heights = std::iter::from_fn(|| groups.settled(true, |c| cx.break_before(c)))
-            .map(|line| {
-                line.iter()
-                    .map(|&c| {
-                        let fit = cx.child(c);
-                        let height = node.elements.attrs[c].sizing.height;
-                        if height.weight().is_none() {
-                            return fit.heights();
-                        }
-                        let inner = *basis.get_or_insert_with(|| {
-                            line_height(children, cx).map(|v| cx.inner_height(v))
-                        });
-                        let eval = |n, offer| height.at_offer(node.elements, c, n, offer);
-                        let h = eval(fit.h, inner.fit);
-                        Heights {
-                            fit: h,
-                            min: if fit.h == fit.min_h && inner.fit == inner.min {
-                                h
-                            } else {
-                                eval(fit.min_h, inner.min)
-                            },
-                        }
-                    })
-                    .fold(Heights::default(), Heights::max)
-            })
-            .reduce(|a, b| Heights {
-                fit: a.fit + cx.gap[Y] + b.fit,
-                min: a.min + cx.gap[Y] + b.min,
-            })
-            .unwrap_or_default()
-            .map(|v| cx.box_height(v));
+        let lines = std::iter::from_fn(|| groups.settled(true, |c| cx.break_before(c)));
+        let [fit, min] = packed_cross_extent(lines, cx.gap[Y], |c| {
+            let fit = cx.child(c);
+            let height = node.elements.attrs[c].sizing.height;
+            if height.weight().is_none() {
+                return [fit.h, fit.min_h];
+            }
+            let inner =
+                *basis.get_or_insert_with(|| line_height(children, cx).map(|v| cx.inner_height(v)));
+            let eval = |n, offer| height.at_offer(node.elements, c, n, offer);
+            let h = eval(fit.h, inner.fit);
+            let min = if fit.h == fit.min_h && inner.fit == inner.min {
+                h
+            } else {
+                eval(fit.min_h, inner.min)
+            };
+            [h, min]
+        })
+        .map(|v| cx.box_height(v));
         cx.row_offer = basis.map_or(0., |b| b.fit);
-        heights
+        Heights { fit, min }
     }
     fn place_children(node: Mounted<'_, Children>, cx: &mut PlaceCx<'_>) {
         let style = node.attrs().sizing;
         let spacing = node.attrs().main_spacing(M);
         let children = node.data();
         let e = node.elements;
-        let (origin, inner) = cx.padded_height_offer(style);
-        let pad = style.padding.map(|v| scale::pixels(v, cx.scale));
+        let area = cx.padded_area(style);
         let gap = style.spacing.map(|v| scale::pixels(v, cx.scale));
-        let [main_room, cross_room] = Self::axes([(cx.width - (pad[1] + pad[3])).max(0.), inner]);
+        let [main_room, cross_room] = Self::axes([area.width, area.height]);
         let slot = |c, cx: &PlaceCx<'_>| {
             let fit = cx.child(c);
             let s = fill::Slot::new(e, c, e.attrs[c].sizing.height, fit.h);
@@ -341,7 +344,7 @@ impl<const M: usize, const W: bool, const T: u8> LayoutBehaviour for Linear<M, W
         while let Some(line) = if M == Y {
             groups.measured(
                 W && style.height.limits_column_height(),
-                inner,
+                area.height,
                 gap[Y],
                 |c| vertical_basis(e, c, cx.child(c), false),
             )
@@ -351,7 +354,7 @@ impl<const M: usize, const W: bool, const T: u8> LayoutBehaviour for Linear<M, W
             let split = if M == Y {
                 cx.declared_shares(node.key).or_else(|| {
                     FillShares::group(
-                        (W || style.height.definite()).then_some(inner),
+                        (W || style.height.definite()).then_some(area.height),
                         scale::pixels(spacing.charge(), cx.scale),
                         line,
                         |c| slot(c, cx),
@@ -375,7 +378,7 @@ impl<const M: usize, const W: bool, const T: u8> LayoutBehaviour for Linear<M, W
                     let offer = if W && !style.height.definite() {
                         cx.row_offer
                     } else {
-                        inner
+                        area.height
                     };
                     let h = height.at_offer(e, c, fit.h, offer);
                     (h, Constraint::Assigned(h))
@@ -385,11 +388,11 @@ impl<const M: usize, const W: bool, const T: u8> LayoutBehaviour for Linear<M, W
                         if W {
                             Constraint::Natural
                         } else {
-                            Constraint::Available(inner)
+                            Constraint::Available(area.height)
                         },
                     )
                 };
-                let w = if M == X || W || e.alignment(c, X) != Alignment::Start {
+                let w = if Self::reads_placed_width(|| e.alignment(c, X)) {
                     cx.width_at(c, edge)
                 } else {
                     fit.w
@@ -416,7 +419,7 @@ impl<const M: usize, const W: bool, const T: u8> LayoutBehaviour for Linear<M, W
                 resolved,
                 |cx, c, pos, across, edge| {
                     let offset = Self::axes([pos, cross + align(c).offset(interval, across)]);
-                    cx.place(c, [origin[0] + offset[0], origin[1] + offset[1]], edge);
+                    cx.place(c, [area.x + offset[0], area.y + offset[1]], edge);
                 },
             );
             cross = (cross + occupied_cross) + gap[1 - M];
@@ -429,8 +432,9 @@ fn vertical_basis(e: &Elements, c: Key, fit: Size, minimum: bool) -> f32 {
     if a.sizing.height.weight().is_none() && !minimum {
         return fit.h;
     }
-    a.height_floor
-        .map_or(fit.min_h, |b| b.resolve(fit.h, e.slots[c].admitted.scale))
+    wrap_minimum(a.height_floor, fit.h, fit.min_h, || {
+        e.slots[c].admitted.scale
+    })
 }
 
 /// Cross extent of the groups. Width offers are independent of group membership.
@@ -448,22 +452,15 @@ fn packed_widths<const N: usize>(
     let [gx, gy] = style.spacing.map(|v| scale::pixels(v, scale));
     let inner = (height - (t + b)).max(0.);
     let mut groups = Groups(e.children(k));
-    std::iter::from_fn(|| {
+    let columns = std::iter::from_fn(|| {
         groups.measured(
             style.height.limits_column_height(),
             inner,
             gy,
             &break_height,
         )
-    })
-    .map(|line| {
-        line.iter()
-            .map(|&c| widths(c))
-            .fold([0f32; N], |a, b| std::array::from_fn(|i| a[i].max(b[i])))
-    })
-    .reduce(|a, b| std::array::from_fn(|i| a[i] + gx + b[i]))
-    .unwrap_or([0.; N])
-    .map(|v| style.width.resolve(v + (l + r), || scale))
+    });
+    packed_cross_extent(columns, gx, widths).map(|v| style.width.resolve(v + (l + r), || scale))
 }
 pub(in crate::tree) fn column_width(
     e: &Elements,
@@ -522,9 +519,7 @@ pub(in crate::tree) fn column_demand(
         h,
         |c| {
             let h = child(c).h;
-            e.attrs[c]
-                .height_floor
-                .map_or(h, |b| b.resolve(h, e.slots[c].admitted.scale))
+            wrap_minimum(e.attrs[c].height_floor, h, h, || e.slots[c].admitted.scale)
         },
         |c| {
             let m = child(c);

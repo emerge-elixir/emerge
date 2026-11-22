@@ -213,6 +213,13 @@ post-width child heights and the actual height limit. Natural width fits the
 occupied columns, not the widest single child. Cross-axis alignment is relative
 to each group; it neither sizes the child nor changes where it breaks.
 
+Share the arithmetic, not the schedule. Both wrap directions resolve an
+explicit minimum at the child's scale; otherwise they keep the minimum from
+that pass. Both compute the cross extent as the sum of group maxima with a
+gap **between** groups. WrappedRow supplies the lines saved by Flow;
+WrappedColumn supplies groups chosen at its height limit. The shared fold
+never chooses breaks. [Geometry and rounding controls](../../native/emerge_skia/src/tree/tests/layout_rules.rs).
+
 Only use a packed width in an earlier width split if its inputs can be proved
 before that split. A 60px Column with a 16→17px header can independently give
 its remaining **44→43px** to two 12×20 cards: they need **12→30px** of width,
@@ -223,6 +230,13 @@ At 60px the header is 10px tall: the 50px left fits one 30px column. **Neither
 width satisfies both constraints.** This is a retained example; `main` has no
 WrappedColumn. Reject cycles and unproved early dependencies atomically. No
 previous-frame estimate, one-column fallback or retry from Place to Flow.
+
+A width edit can add or remove the only reader of a Column's height shares
+without changing the child's intrinsic clamp. Compare the **authored** reader
+before and after the edit, against the final parent. For example, in a 16px
+Column, `min(px(80), fill())` takes the offered 16px. After switching to
+`min(px(80), max(content(), fill()))`, two packed columns can require 30px;
+right alignment then starts at −14px on both a sparse edit and a fresh upload.
 [Independent and circular cases](../../native/emerge_skia/src/tree/tests/wrapped_column.rs) ·
 [submitted results](../../test/emerge_skia/wrapped_column_test.exs).
 

@@ -64,7 +64,9 @@ width of the Column. Content reads the child's own padded demand; pixel
 leaves use the child's scale. A content floor can make a child wider than
 its parent without changing a sibling's width or extending the parent clip.
 The child resolves the expression in width flow, never a second time on an
-already resolved offer from a Row. See the [Column child width regression](../../test/emerge_skia/column_cross_width_test.exs).
+already resolved offer from a Row. El, Column and WrappedColumn use the same
+independent offer: send it when the inner width changes **or a child joins at
+the same width**. Zero is a real offer. See the [Column child width regression](../../test/emerge_skia/column_cross_width_test.exs).
 
 Direct children of a single-line Row likewise do **not** divide its height.
 Width flow settles first. Each child reports its padded height after wrapping;
@@ -92,7 +94,10 @@ Even a **horizontal** offset can read a new **height**: in a 64×43 El,
 switching a WrappedColumn from `max(content(), fill(3))` to
 `min(content(), fill(3))` can change its height from 44 to 43 and its packed
 width from 12 to 30. A right-aligned box must move from x=52 to
-x=34 even if its natural fit stays the same. [Frames, kept moves and local
+x=34 even if its natural fit stays the same. Placement and invalidation use
+the same test: the parent reads the child's width to advance along X or to
+compute a non-leading X offset. El and the linear hosts compute the same
+padded area for placement; it is not itself a clip. [Frames, kept moves and local
 clicks](../../test/emerge_skia/el_child_alignment_test.exs).
 
 A Row divides spare width, and a Column divides spare height, in proportion

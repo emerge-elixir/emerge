@@ -970,6 +970,22 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
             early.settle(100., 100., 1.).unwrap();
         });
     }
+    let mut reader = Raster::default();
+    reader
+        .tree
+        .upload(&wrapped_column::reader_column())
+        .unwrap();
+    reader.settle(64., 80., 1.).unwrap();
+    for reads in [true, false] {
+        let edit = set(3, 14, wrapped_column::reader_attrs(80., reads));
+        c.zero(
+            "sparse width edit adds or removes a Column share reader",
+            || {
+                reader.tree.patch(&edit).unwrap();
+                reader.settle(64., 80., 1.).unwrap();
+            },
+        );
+    }
     weighted_splits(&c);
     bounded_splits(&c);
     nested_splits(&c);
