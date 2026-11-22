@@ -1698,6 +1698,7 @@ fn clone_as_ghost(
         runtime: crate::tree::element::NodeRuntime {
             scroll_proposals: old.runtime.scroll_proposals,
             scroll_position: old.runtime.scroll_position,
+            scroll_overscroll: old.runtime.scroll_overscroll,
             text_input_content_origin: old.runtime.text_input_content_origin,
             content_proposal: old.runtime.content_proposal.clone(),
             text_input_focused: false,

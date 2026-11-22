@@ -6,6 +6,7 @@ fn node() -> ScrollNode {
         position: [0.0; 2],
         range: [100.0; 2],
         enabled: [true; 2],
+        viewport: [200.0; 2],
         proposals: Default::default(),
         targets: [None; 2],
         emit: true,

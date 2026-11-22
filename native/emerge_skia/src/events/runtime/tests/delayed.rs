@@ -285,6 +285,8 @@ fn real_event_actor_waits_for_its_own_response_and_can_stop_with_buffered_input(
             backend_cursor_tx: None,
             backend_wake: BackendWakeHandle::noop(),
             scroll_line_pixels: 40.0,
+            scroll_bounce: false,
+            scroll_deceleration: Default::default(),
             log_render: false,
             native_log: Arc::new(NativeLogRelay::default()),
             system_clipboard: false,

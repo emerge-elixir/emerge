@@ -146,6 +146,8 @@ closed key union and payload types.
 
 Coordinates are backend surface coordinates. Discrete scroll steps use
 `input.scroll_line_pixels` (default `30.0`); precise deltas follow backend normalization.
+With `input.scroll_bounce: true`, touch and pointer drags and flings overscroll with a
+rubber band (see `Emerge.UI.Scroll`); wheel scrolling stays clamped.
 Resize reports output dimensions and scale. Enter/focus refer to the **window**,
 not an individual UI element. IME preedit ranges come from the platform; surrounding
 text deletion counts UTF-8 bytes, not characters.

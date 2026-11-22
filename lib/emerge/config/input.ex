@@ -18,6 +18,17 @@ defmodule Emerge.Config.Input do
     Integers, `nil`, `:all` and `:none` are not accepted.
   - `scroll_line_pixels` — positive pixel distance per wheel/line-scroll step;
     defaults to `30.0`. Precise pixel-scroll input is not converted into line steps.
+  - `scroll_bounce` — with `true`, a touch or pointer drag pulls scroll content past
+    its edge with growing resistance, and the content springs back on release; a
+    fling that reaches the edge overshoots and returns. A scroll container whose
+    content fits bounces as well. Defaults to `false` (hard stop).
+    Wheel, keyboard, scrollbar and app-set positions stay clamped. Supported by the
+    DRM and Wayland backends.
+  - `scroll_deceleration` — how a fling slows down after release. `:android`
+    (default) follows Android's `OverScroller` curve. `:ios` follows
+    `UIScrollView.DecelerationRate.normal`: the velocity drops by 0.2 % per
+    millisecond, so a fling travels about half a second's worth of its release
+    velocity.
   - `cursor` — `Emerge.Config.Cursor`, defaulting to its built-in cursor settings.
 
   Subscriptions filter input callbacks, not buttons, element key bindings,
@@ -33,11 +44,13 @@ defmodule Emerge.Config.Input do
   ## Changing settings
 
   `events` can change through `config` and replaces the entire subscription list.
-  Messages already in your mailbox are not retracted. Scroll distance and cursor
-  settings require a new viewport to change.
+  Messages already in your mailbox are not retracted. Scroll distance, scroll bounce,
+  scroll deceleration and cursor settings require a new viewport to change.
   """
   defstruct events: [],
             scroll_line_pixels: 30.0,
+            scroll_bounce: false,
+            scroll_deceleration: :android,
             cursor: %Emerge.Config.Cursor{}
 
   @typedoc "Input category. `:text` includes committed text and IME events; `:display_wake` observes accepted DRM wakes; enter/focus refer to the window, not an element."
@@ -55,18 +68,24 @@ defmodule Emerge.Config.Input do
   @type t :: %__MODULE__{
           events: [event_kind()],
           scroll_line_pixels: number(),
+          scroll_bounce: boolean(),
+          scroll_deceleration: :android | :ios,
           cursor: Emerge.Config.Cursor.t() | Emerge.Config.Cursor.options()
         }
   @typedoc "Typed keyword shorthand accepted in this record's parent field."
   @type options :: [
           {:events, [event_kind()]}
           | {:scroll_line_pixels, number()}
+          | {:scroll_bounce, boolean()}
+          | {:scroll_deceleration, :android | :ios}
           | {:cursor, Emerge.Config.Cursor.t() | Emerge.Config.Cursor.options()}
         ]
   @typedoc "Canonical form after nested keyword records have been expanded."
   @type normalized_t :: %__MODULE__{
           events: [event_kind()],
           scroll_line_pixels: number(),
+          scroll_bounce: boolean(),
+          scroll_deceleration: :android | :ios,
           cursor: Emerge.Config.Cursor.normalized_t()
         }
 
@@ -89,6 +108,8 @@ defmodule Emerge.Config.Input do
             :display_wake
           ]}},
       scroll_line_pixels: :positive_number,
+      scroll_bounce: :boolean,
+      scroll_deceleration: {:enum, [:android, :ios]},
       cursor: {:record, Emerge.Config.Cursor}
     ]
 

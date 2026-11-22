@@ -204,6 +204,8 @@ defmodule EmergeSkia.Native do
             }
           ],
           required(:scroll_line_pixels) => float(),
+          required(:scroll_bounce) => boolean(),
+          required(:scroll_deceleration) => :android | :ios,
           required(:hw_cursor) => boolean(),
           required(:input_log) => boolean(),
           required(:render_log) => boolean(),

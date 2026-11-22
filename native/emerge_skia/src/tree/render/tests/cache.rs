@@ -531,6 +531,67 @@ fn scroll_content_normalizes_offset_out_of_payload_generation() {
 }
 
 #[test]
+fn scroll_overscroll_moves_the_content_layer_past_the_edge() {
+    let root_id = NodeId::from_u64(70_100);
+    let child_id = NodeId::from_u64(70_101);
+    let mut root = element(
+        root_id,
+        ElementKind::El,
+        Attrs {
+            scrollbar_y: Some(true),
+            ..Attrs::default()
+        },
+        Frame {
+            content_height: 200.0,
+            ..frame(0.0, 0.0, 160.0, 100.0)
+        },
+    );
+    root.children = vec![child_id];
+    root.layout.scroll_y_max = 100.0;
+    let child = element(
+        child_id,
+        ElementKind::El,
+        solid_fill_attrs((40, 80, 120)),
+        frame(0.0, 20.0, 140.0, 40.0),
+    );
+    let mut tree = ElementTree::new();
+    tree.set_root_id(root_id);
+    tree.insert(root);
+    tree.insert(child);
+    tree.clear_refresh_dirty();
+
+    let generation = |tree: &ElementTree| {
+        let scene = super::super::render_tree_scene_with_scroll_layers(tree).scene;
+        let layer = describe_layers(&scene.nodes)
+            .into_iter()
+            .find(|layer| layer.id.role == PaintLayerReason::ScrollContent)
+            .expect("scroll content layer");
+        let transform = transform_for_layer_reason(&scene.nodes, PaintLayerReason::ScrollContent)
+            .expect("scroll content placement");
+        (layer.content_generation, transform)
+    };
+    let (first_generation, _) = generation(&tree);
+
+    // Negative overscroll is content pulled down past the top edge.
+    assert!(
+        tree.set_scroll_overscroll(&root_id, [0.0, -12.0])
+            .is_dirty()
+    );
+    let (second_generation, transform) = generation(&tree);
+    assert_eq!(second_generation, first_generation);
+    assert_eq!(
+        transform,
+        crate::tree::transform::Affine2::translation(0.0, 12.0)
+    );
+
+    assert!(tree.set_scroll_overscroll(&root_id, [0.0, 0.0]).is_dirty());
+    assert_eq!(
+        generation(&tree).1,
+        crate::tree::transform::Affine2::identity()
+    );
+}
+
+#[test]
 fn nested_slider_generation_is_local_and_scroll_offset_independent() {
     let root_id = NodeId::from_u64(75_000);
     let slider_id = NodeId::from_u64(75_001);

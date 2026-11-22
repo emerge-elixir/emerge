@@ -96,6 +96,11 @@ pub enum TreeMsg {
         element_id: NodeId,
         position: [f64; 2],
     },
+    /// Pixels past the content edge, added to the scroll translation; zero when at rest.
+    SetScrollOverscroll {
+        element_id: NodeId,
+        offset: [f32; 2],
+    },
     ScrollRequest {
         element_id: NodeId,
         dx: f32,
@@ -184,6 +189,7 @@ impl TreeMsg {
     pub(crate) fn target_id(&self) -> Option<NodeId> {
         match self {
             Self::SetScrollPosition { element_id, .. }
+            | Self::SetScrollOverscroll { element_id, .. }
             | Self::ScrollRequest { element_id, .. }
             | Self::ScrollbarThumbDragX { element_id, .. }
             | Self::ScrollbarThumbDragY { element_id, .. }
@@ -232,6 +238,8 @@ impl TreeMsg {
             // immediately by the event runtime, so text dragging must not wait
             // for a registry round trip on every pointer move.
             Self::SetTextInputRuntime { .. } => false,
+            // Paint-only; hit testing uses the clamped scroll offset.
+            Self::SetScrollOverscroll { .. } => false,
             // Asset notices originate outside the event lane. Paint-only
             // completions need no registry acknowledgement; intrinsic layout
             // changes still publish their actual registry damage.

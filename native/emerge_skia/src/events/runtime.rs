@@ -57,6 +57,7 @@ use super::{
     swipe_down_atom, swipe_left_atom, swipe_right_atom, swipe_up_atom, virtual_key_hold_atom,
 };
 
+mod overscroll;
 mod scroll;
 mod text_click;
 mod touch;
@@ -150,6 +151,14 @@ impl EventRuntimeDriver {
         self.runtime.set_scroll_line_pixels(scroll_line_pixels);
     }
 
+    fn set_scroll_bounce(&mut self, scroll_bounce: bool) {
+        self.runtime.set_scroll_bounce(scroll_bounce);
+    }
+
+    fn set_scroll_deceleration(&mut self, scroll_deceleration: ScrollDeceleration) {
+        self.runtime.set_scroll_deceleration(scroll_deceleration);
+    }
+
     fn set_input_mask(&mut self, mask: u32) {
         self.runtime.set_input_mask(mask);
     }
@@ -176,6 +185,7 @@ impl EventRuntimeDriver {
             self.runtime.virtual_key_deadline = None;
             self.runtime.drag_motion = None;
             self.runtime.inertial_scroll = None;
+            self.runtime.clear_overscroll(&commands, self.log_render);
             self.runtime.hover_stack.clear();
             self.runtime.hover_tracking_initialized = false;
         }
@@ -566,8 +576,31 @@ const ADAPTIVE_SCROLL_PHYSICAL_COEFF: f32 = 51_890.203;
 const ADAPTIVE_SCROLL_MIN_VELOCITY: f32 = 500.0;
 const ADAPTIVE_SCROLL_MAX_VELOCITY: f32 = 6_000.0;
 const ADAPTIVE_SCROLL_STOP_TOLERANCE: f32 = 0.5;
+/// `UIScrollView.DecelerationRate.normal` multiplies the fling velocity by 0.998 each millisecond:
+/// `v(t) = v0 * e^(k t)` with `k = 1000 * ln(0.998)` per second.
+const IOS_DECAY_PER_SEC: f32 = -2.002_002_7;
 const ADAPTIVE_SCROLL_WATCHDOG_MIN_DELAY: Duration = Duration::from_millis(1);
 const ADAPTIVE_SCROLL_WATCHDOG_MAX_DELAY: Duration = Duration::from_millis(100);
+/// Rubber-band resistance: displayed = (1 - 1 / (raw * c / viewport + 1)) * viewport.
+const OVERSCROLL_RESISTANCE: f32 = 0.55;
+/// Natural frequency of the critically damped spring back to the edge, in rad/s. 15 settles a
+/// 100 px overscroll below 2 px in 400 ms.
+const OVERSCROLL_SPRING_OMEGA: f32 = 15.0;
+/// The spring ends once the displayed overscroll is below this many pixels.
+const OVERSCROLL_STOP_TOLERANCE: f32 = 0.5;
+/// The spring snaps to the edge after this long.
+const OVERSCROLL_MAX_DURATION: Duration = Duration::from_millis(1_200);
+
+/// Deceleration curve of a fling after release.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, rustler::NifUnitEnum)]
+pub(crate) enum ScrollDeceleration {
+    /// Android `OverScroller` spline.
+    #[default]
+    Android,
+    /// iOS `UIScrollView`: exponential decay at `IOS_DECAY_PER_SEC`.
+    Ios,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PresentTimingState {
     presented_at: Instant,
@@ -586,10 +619,18 @@ struct DragMotionState {
 
 #[derive(Clone, Debug, PartialEq)]
 struct AdaptiveScrollSimulation {
+    curve: FlingCurve,
     initial_position: f32,
     initial_velocity: f32,
     duration_secs: f32,
-    distance: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum FlingCurve {
+    /// Android spline covering `distance` in `duration_secs`.
+    Spline { distance: f32 },
+    /// iOS exponential decay at `IOS_DECAY_PER_SEC`.
+    Exponential,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -599,41 +640,81 @@ struct TextCommitSuppression {
 }
 
 impl AdaptiveScrollSimulation {
-    fn new(initial_position: f32, initial_velocity: f32) -> Option<Self> {
+    fn new(
+        model: ScrollDeceleration,
+        initial_position: f32,
+        initial_velocity: f32,
+    ) -> Option<Self> {
+        let (curve, duration_secs) = match model {
+            ScrollDeceleration::Android => Self::spline(initial_velocity)?,
+            ScrollDeceleration::Ios => (
+                FlingCurve::Exponential,
+                Self::exponential_duration(initial_velocity)?,
+            ),
+        };
+        (duration_secs.is_finite() && duration_secs > 0.0).then_some(Self {
+            curve,
+            initial_position,
+            initial_velocity,
+            duration_secs,
+        })
+    }
+
+    fn spline(initial_velocity: f32) -> Option<(FlingCurve, f32)> {
         let abs_velocity = initial_velocity.abs();
         if abs_velocity < f32::EPSILON {
             return None;
         }
-
         let reference_velocity =
             ADAPTIVE_SCROLL_FRICTION * ADAPTIVE_SCROLL_PHYSICAL_COEFF / ADAPTIVE_SCROLL_INFLEXION;
         let android_duration = (abs_velocity / reference_velocity)
             .powf(1.0 / (ADAPTIVE_SCROLL_DECELERATION_RATE - 1.0));
         let duration_secs =
             ADAPTIVE_SCROLL_DECELERATION_RATE * ADAPTIVE_SCROLL_INFLEXION * android_duration;
-
-        if !duration_secs.is_finite() || duration_secs <= 0.0 {
-            return None;
-        }
-
         let distance = initial_velocity * duration_secs / ADAPTIVE_SCROLL_DECELERATION_RATE;
-        Some(Self {
-            initial_position,
-            initial_velocity,
-            duration_secs,
-            distance,
-        })
+        Some((FlingCurve::Spline { distance }, duration_secs))
+    }
+
+    /// Ends once the remaining distance, |v / k|, is below the stop tolerance.
+    fn exponential_duration(initial_velocity: f32) -> Option<f32> {
+        let stop_velocity = ADAPTIVE_SCROLL_STOP_TOLERANCE * -IOS_DECAY_PER_SEC;
+        let abs_velocity = initial_velocity.abs();
+        (abs_velocity > stop_velocity)
+            .then(|| (stop_velocity / abs_velocity).ln() / IOS_DECAY_PER_SEC)
     }
 
     fn x(&self, elapsed_secs: f32) -> f32 {
-        let t = (elapsed_secs / self.duration_secs).clamp(0.0, 1.0);
-        self.initial_position
-            + self.distance * (1.0 - (1.0 - t).powf(ADAPTIVE_SCROLL_DECELERATION_RATE))
+        match self.curve {
+            FlingCurve::Spline { distance } => {
+                let t = (elapsed_secs / self.duration_secs).clamp(0.0, 1.0);
+                self.initial_position
+                    + distance * (1.0 - (1.0 - t).powf(ADAPTIVE_SCROLL_DECELERATION_RATE))
+            }
+            FlingCurve::Exponential => {
+                let t = elapsed_secs.clamp(0.0, self.duration_secs);
+                self.initial_position
+                    + self.initial_velocity * ((IOS_DECAY_PER_SEC * t).exp() - 1.0)
+                        / IOS_DECAY_PER_SEC
+            }
+        }
     }
 
     fn dx(&self, elapsed_secs: f32) -> f32 {
-        let t = (elapsed_secs / self.duration_secs).clamp(0.0, 1.0);
-        self.initial_velocity * (1.0 - t).powf(ADAPTIVE_SCROLL_DECELERATION_RATE - 1.0)
+        match self.curve {
+            FlingCurve::Spline { .. } => {
+                let t = (elapsed_secs / self.duration_secs).clamp(0.0, 1.0);
+                self.initial_velocity * (1.0 - t).powf(ADAPTIVE_SCROLL_DECELERATION_RATE - 1.0)
+            }
+            FlingCurve::Exponential => {
+                let t = elapsed_secs.clamp(0.0, self.duration_secs);
+                self.initial_velocity * (IOS_DECAY_PER_SEC * t).exp()
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn distance(&self) -> f32 {
+        self.x(self.duration_secs) - self.initial_position
     }
 
     fn is_done(&self, elapsed_secs: f32) -> bool {
@@ -649,6 +730,62 @@ struct InertialScrollState {
     started_at: Instant,
     last_sample_position: f32,
     watchdog_deadline: Instant,
+}
+
+/// Content pulled past a scroll edge. `raw` is the unresisted distance in scroll-offset pixels:
+/// negative before the start, positive past the end.
+#[derive(Clone, Debug, PartialEq)]
+struct OverscrollState {
+    element_id: NodeId,
+    axis: ScrollbarAxis,
+    viewport: f32,
+    raw: f32,
+    spring: Option<OverscrollSpring>,
+    sent: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct OverscrollSpring {
+    started_at: Instant,
+    from: f32,
+    velocity: f32,
+    watchdog_deadline: Instant,
+}
+
+impl OverscrollState {
+    fn displayed(&self) -> f32 {
+        rubber_band(self.raw, self.viewport)
+    }
+}
+
+impl OverscrollSpring {
+    /// Unresisted overscroll at `now` on the critically damped spring.
+    fn raw_at(&self, now: Instant) -> f32 {
+        let t = now.saturating_duration_since(self.started_at).as_secs_f32();
+        let omega = OVERSCROLL_SPRING_OMEGA;
+        (self.from + (self.velocity + omega * self.from) * t) * (-omega * t).exp()
+    }
+}
+
+fn rubber_band(raw: f32, viewport: f32) -> f32 {
+    let viewport = viewport.max(1.0);
+    raw.signum() * (1.0 - 1.0 / (raw.abs() * OVERSCROLL_RESISTANCE / viewport + 1.0)) * viewport
+}
+
+fn scroll_request_axis_delta(message: &TreeMsg, axis: ScrollbarAxis) -> Option<(NodeId, f32)> {
+    match message {
+        TreeMsg::ScrollRequest { element_id, dx, .. }
+            if axis == ScrollbarAxis::X && dx.abs() > f32::EPSILON =>
+        {
+            Some((*element_id, *dx))
+        }
+        TreeMsg::ScrollRequest { element_id, dy, .. }
+            if axis == ScrollbarAxis::Y && dy.abs() > f32::EPSILON =>
+        {
+            Some((*element_id, *dy))
+        }
+        _ => None,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -763,6 +900,7 @@ impl PendingDispatchEffects {
         {
             motion.element_id = target;
         }
+        runtime.apply_drag_overscroll(&mut self.tree_msgs, &self.runtime_changes);
         // Cancelling a press for scrolling/swiping must also cancel its visual
         // feedback; the active drag's release listener does not redispatch it.
         if self
@@ -890,6 +1028,7 @@ fn tree_msg_label(msg: &TreeMsg) -> &'static str {
         TreeMsg::PatchTree { .. } => "patch_tree",
         TreeMsg::Resize { .. } => "resize",
         TreeMsg::SetScrollPosition { .. } => "set_scroll_position",
+        TreeMsg::SetScrollOverscroll { .. } => "set_scroll_overscroll",
         TreeMsg::ScrollRequest { .. } => "scroll_request",
         TreeMsg::ScrollbarThumbDragX { .. } => "scrollbar_thumb_drag_x",
         TreeMsg::ScrollbarThumbDragY { .. } => "scrollbar_thumb_drag_y",
@@ -956,9 +1095,14 @@ struct RuntimeListenerComputeCtx<'a> {
     clipboard: &'a mut ClipboardManager,
     text_clicks: &'a mut text_click::TextClicks,
     input_time: Instant,
+    scroll_bounce: bool,
 }
 
 impl ListenerComputeCtx for RuntimeListenerComputeCtx<'_> {
+    fn scroll_bounce(&self) -> bool {
+        self.scroll_bounce
+    }
+
     fn input_time(&self) -> Instant {
         self.input_time
     }
@@ -1204,6 +1348,10 @@ struct DirectEventRuntime {
     inertial_scroll: Option<InertialScrollState>,
     suppress_drag_release_inertia: bool,
     scroll_line_pixels: f32,
+    scroll_bounce: bool,
+    scroll_deceleration: ScrollDeceleration,
+    drag_scroll_target: Option<NodeId>,
+    overscroll: Option<OverscrollState>,
     native_log: Arc<NativeLogRelay>,
     stats: Option<Arc<RendererStatsCollector>>,
 }
@@ -1269,6 +1417,10 @@ impl DirectEventRuntime {
             inertial_scroll: None,
             suppress_drag_release_inertia: false,
             scroll_line_pixels: SCROLL_LINE_PIXELS,
+            scroll_bounce: false,
+            scroll_deceleration: ScrollDeceleration::Android,
+            drag_scroll_target: None,
+            overscroll: None,
             native_log,
             stats,
         }
@@ -1327,6 +1479,14 @@ impl DirectEventRuntime {
                 .map(|duration| format!("{:.3} ms", duration.as_secs_f64() * 1_000.0))
                 .unwrap_or_else(|| "none".to_string()),
         )
+    }
+
+    fn set_scroll_bounce(&mut self, scroll_bounce: bool) {
+        self.scroll_bounce = scroll_bounce;
+    }
+
+    fn set_scroll_deceleration(&mut self, scroll_deceleration: ScrollDeceleration) {
+        self.scroll_deceleration = scroll_deceleration;
     }
 
     fn set_scroll_line_pixels(&mut self, scroll_line_pixels: f32) {
@@ -1538,6 +1698,11 @@ impl DirectEventRuntime {
             return;
         };
 
+        // Content past its edge springs back instead of flinging; content that fits has nothing to fling.
+        if self.overscroll.is_some() || self.fits_on_axis(motion.element_id, motion.axis) {
+            return;
+        }
+
         let velocity = motion
             .velocity_px_per_sec
             .clamp(-ADAPTIVE_SCROLL_MAX_VELOCITY, ADAPTIVE_SCROLL_MAX_VELOCITY);
@@ -1548,7 +1713,9 @@ impl DirectEventRuntime {
             return;
         }
 
-        let Some(simulation) = AdaptiveScrollSimulation::new(0.0, velocity) else {
+        let Some(simulation) =
+            AdaptiveScrollSimulation::new(self.scroll_deceleration, 0.0, velocity)
+        else {
             return;
         };
 
@@ -1586,11 +1753,16 @@ impl DirectEventRuntime {
 
         let current_velocity = inertia.simulation.dx(elapsed_secs);
         if self.edge_blocks_inertial_scroll(&inertia.element_id, inertia.axis, current_velocity) {
+            self.start_overshoot(&inertia, 0.0, current_velocity, now);
             return;
         }
 
+        let unclamped_delta = delta;
         let (delta, hit_boundary) =
             self.clamp_inertial_scroll_delta(&inertia.element_id, inertia.axis, delta);
+        if hit_boundary && !simulation_done {
+            self.start_overshoot(&inertia, unclamped_delta - delta, current_velocity, now);
+        }
 
         if delta.abs() > f32::EPSILON {
             send_tree(
@@ -1635,6 +1807,10 @@ impl DirectEventRuntime {
                     .as_ref()
                     .map(|inertia| inertia.watchdog_deadline),
             )
+            .chain(
+                self.overscroll_spring()
+                    .map(|spring| spring.watchdog_deadline),
+            )
             .min()
     }
 
@@ -1659,6 +1835,7 @@ impl DirectEventRuntime {
         });
         self.record_pointer_snapshot(&event);
         self.cancel_inertial_scroll_for_input(&event);
+        self.overscroll_for_input(&event);
         crate::debug_trace::hover_trace!(
             "event_input",
             "event={:?} stale={} buffered={}",
@@ -1750,6 +1927,7 @@ impl DirectEventRuntime {
                 clipboard: &mut self.clipboard,
                 text_clicks: &mut self.text_clicks,
                 input_time: self.input_time,
+                scroll_bounce: self.scroll_bounce,
             };
 
             registry_builder::resolve_text_input_command_actions(&element_id, request, &mut ctx)
@@ -1807,6 +1985,7 @@ impl DirectEventRuntime {
                 clipboard: &mut self.clipboard,
                 text_clicks: &mut self.text_clicks,
                 input_time: self.input_time,
+                scroll_bounce: self.scroll_bounce,
             };
 
             registry_builder::resolve_text_input_edit_actions(&element_id, request, &mut ctx)
@@ -2147,6 +2326,12 @@ impl DirectEventRuntime {
             self.log_event_diagnostic(log_render, || "inertial scroll watchdog due".to_string());
             self.step_inertial_scroll(now, tree_tx, log_render);
         }
+        if self
+            .overscroll_spring()
+            .is_some_and(|spring| spring.watchdog_deadline <= now)
+        {
+            self.step_overscroll(now, tree_tx, log_render);
+        }
         self.log_event_diagnostic(log_render, || {
             format!("timers end\n  {}", self.diagnostic_summary())
         });
@@ -2160,11 +2345,8 @@ impl DirectEventRuntime {
         log_render: bool,
     ) {
         self.note_present_timing(presented_at, predicted_next_present_at);
-        if self.inertial_scroll.is_none() {
-            return;
-        }
-
         self.step_inertial_scroll(presented_at, tree_tx, log_render);
+        self.step_overscroll(presented_at, tree_tx, log_render);
     }
 
     fn handle_virtual_key_timer(&mut self, tree_tx: &dyn TreeSink, log_render: bool) {
@@ -2347,6 +2529,7 @@ impl DirectEventRuntime {
                 clipboard: &mut self.clipboard,
                 text_clicks: &mut self.text_clicks,
                 input_time: self.input_time,
+                scroll_bounce: self.scroll_bounce,
             };
             registry_builder::LayeredRegistryView::new(&self.overlay_registry, &self.base_registry)
                 .first_match(&input, &[], &mut ctx)
@@ -2489,6 +2672,7 @@ impl DirectEventRuntime {
                 scroll_candidate,
             } => {
                 self.suppress_drag_release_inertia = false;
+                self.drag_scroll_target = None;
                 self.runtime_overlay.drag = registry_builder::DragTrackerState::Candidate {
                     element_id,
                     matcher_kind,
@@ -2519,8 +2703,12 @@ impl DirectEventRuntime {
                 };
                 self.sync_drag_motion_start(element_id, locked_axis, last_x, last_y, now);
             }
+            RuntimeChange::SetDragScrollTarget { element_id } => {
+                self.drag_scroll_target = Some(element_id);
+            }
             RuntimeChange::ClearDragTracker => {
                 self.runtime_overlay.drag = registry_builder::DragTrackerState::Inactive;
+                self.drag_scroll_target = None;
                 self.maybe_start_inertial_scroll(now);
             }
             RuntimeChange::UpdateDragTrackerPointer {
@@ -3423,6 +3611,8 @@ pub(crate) struct SpawnEventActorConfig {
     pub backend_cursor_tx: Option<Sender<CursorIcon>>,
     pub backend_wake: BackendWakeHandle,
     pub scroll_line_pixels: f32,
+    pub scroll_bounce: bool,
+    pub scroll_deceleration: ScrollDeceleration,
     pub log_render: bool,
     pub native_log: Arc<NativeLogRelay>,
     pub system_clipboard: bool,
@@ -3437,6 +3627,8 @@ pub(crate) fn spawn_event_actor(config: SpawnEventActorConfig) -> thread::JoinHa
         backend_cursor_tx,
         backend_wake,
         scroll_line_pixels,
+        scroll_bounce,
+        scroll_deceleration,
         log_render,
         native_log,
         system_clipboard,
@@ -3456,6 +3648,8 @@ pub(crate) fn spawn_event_actor(config: SpawnEventActorConfig) -> thread::JoinHa
             stats,
         );
         driver.set_scroll_line_pixels(scroll_line_pixels);
+        driver.set_scroll_bounce(scroll_bounce);
+        driver.set_scroll_deceleration(scroll_deceleration);
         driver.log_event_diagnostic(|| {
             format!(
                 "event actor started\n  scroll_line_pixels: {scroll_line_pixels:.3}\n  system_clipboard: {system_clipboard}\n  {}",
@@ -3557,6 +3751,33 @@ fn coalesce_registry_updates(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ios_deceleration_decays_velocity_by_0_998_per_ms() {
+        let simulation = AdaptiveScrollSimulation::new(ScrollDeceleration::Ios, 0.0, 1_000.0)
+            .expect("simulation should start");
+        assert!((simulation.dx(0.001) - 998.0).abs() < 0.01);
+        assert!((simulation.dx(0.1) - 1_000.0 * 0.998_f32.powi(100)).abs() < 0.5);
+        // Total travel is v0 / -ln(0.998) / 1000 = 499.5 px, less the 0.5 px stop tolerance.
+        assert!(
+            (simulation.distance() - 499.0).abs() < 0.1,
+            "{}",
+            simulation.distance()
+        );
+        assert!((simulation.x(simulation.duration_secs) - simulation.distance()).abs() < 0.01);
+        assert!(simulation.is_done(simulation.duration_secs));
+        assert!(AdaptiveScrollSimulation::new(ScrollDeceleration::Ios, 0.0, 0.5).is_none());
+    }
+
+    #[test]
+    fn ios_deceleration_travels_further_than_android_for_the_same_fling() {
+        assert!((IOS_DECAY_PER_SEC - 1_000.0 * 0.998_f32.ln()).abs() < 1e-4);
+        let ios =
+            AdaptiveScrollSimulation::new(ScrollDeceleration::Ios, 0.0, -2_000.0).expect("ios");
+        let android = AdaptiveScrollSimulation::new(ScrollDeceleration::Android, 0.0, -2_000.0)
+            .expect("android");
+        assert!(ios.distance().abs() > android.distance().abs());
+    }
+
     pub(super) mod delayed;
     use std::collections::{HashMap, VecDeque};
     use std::sync::Mutex;
@@ -5489,7 +5710,7 @@ mod tests {
             inertia.simulation.initial_velocity,
             -ADAPTIVE_SCROLL_MAX_VELOCITY
         );
-        assert!(inertia.simulation.distance < -4_000.0);
+        assert!(inertia.simulation.distance() < -4_000.0);
     }
 
     #[test]
@@ -5517,7 +5738,7 @@ mod tests {
         runtime.inertial_scroll = Some(InertialScrollState {
             element_id,
             axis: ScrollbarAxis::X,
-            simulation: AdaptiveScrollSimulation::new(0.0, 1_000.0)
+            simulation: AdaptiveScrollSimulation::new(ScrollDeceleration::Android, 0.0, 1_000.0)
                 .expect("simulation should start"),
             started_at: now,
             last_sample_position: 0.0,
@@ -5604,8 +5825,12 @@ mod tests {
             runtime.inertial_scroll = Some(InertialScrollState {
                 element_id,
                 axis: ScrollbarAxis::Y,
-                simulation: AdaptiveScrollSimulation::new(0.0, velocity)
-                    .expect("simulation should start"),
+                simulation: AdaptiveScrollSimulation::new(
+                    ScrollDeceleration::Android,
+                    0.0,
+                    velocity,
+                )
+                .expect("simulation should start"),
                 started_at: now,
                 last_sample_position: 0.0,
                 watchdog_deadline: now + Duration::from_millis(16),
@@ -5663,6 +5888,7 @@ mod tests {
                 position: [0.2, 0.0],
                 range: [100.0, 0.0],
                 enabled: [true, false],
+                viewport: [200.0, 0.0],
                 proposals: Default::default(),
                 targets: [None, None],
                 emit: false,
@@ -5687,7 +5913,7 @@ mod tests {
         runtime.driver.runtime.inertial_scroll = Some(InertialScrollState {
             element_id,
             axis: ScrollbarAxis::X,
-            simulation: AdaptiveScrollSimulation::new(0.0, 1_000.0)
+            simulation: AdaptiveScrollSimulation::new(ScrollDeceleration::Android, 0.0, 1_000.0)
                 .expect("simulation should start"),
             started_at: now,
             last_sample_position: 0.0,
@@ -5764,7 +5990,7 @@ mod tests {
         runtime.inertial_scroll = Some(InertialScrollState {
             element_id,
             axis: ScrollbarAxis::Y,
-            simulation: AdaptiveScrollSimulation::new(0.0, -800.0)
+            simulation: AdaptiveScrollSimulation::new(ScrollDeceleration::Android, 0.0, -800.0)
                 .expect("simulation should start"),
             started_at: now - Duration::from_millis(12),
             last_sample_position: 0.0,
@@ -5827,7 +6053,8 @@ mod tests {
         let make_inertia = || InertialScrollState {
             element_id,
             axis: ScrollbarAxis::X,
-            simulation: AdaptiveScrollSimulation::new(0.0, 900.0).expect("simulation should start"),
+            simulation: AdaptiveScrollSimulation::new(ScrollDeceleration::Android, 0.0, 900.0)
+                .expect("simulation should start"),
             started_at: now,
             last_sample_position: 0.0,
             watchdog_deadline: now + Duration::from_millis(16),
