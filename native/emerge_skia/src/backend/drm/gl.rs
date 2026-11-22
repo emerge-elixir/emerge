@@ -2918,6 +2918,8 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             };
         let (width, height) = mode.size();
         let dimensions = (width as u32, height as u32);
+        // Scanout size stays physical; layout and the tree get the rotated size.
+        let logical_dimensions = config.rotation.logical_size(dimensions);
         let refresh_hz = mode_refresh_hz(&mode);
         let frame_interval = mode_frame_interval(&mode);
         record_drm_display_interval(stats.as_deref(), frame_interval);
@@ -2996,8 +2998,8 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
         }
         if last_dimensions != Some(dimensions) {
             let _ = event_tx.send(EventMsg::InputEvent(InputEvent::Resized {
-                width: dimensions.0,
-                height: dimensions.1,
+                width: logical_dimensions.0,
+                height: logical_dimensions.1,
                 scale_factor: 1.0,
             }));
             last_dimensions = Some(dimensions);
@@ -3200,6 +3202,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             &native_log,
         );
         let mut renderer = SceneRenderer::with_cache_config(config.renderer_cache_config);
+        renderer.set_output_rotation(config.rotation);
         let mut raster_renderer = if matches!(config.rendering_api, RenderingApi::Raster) {
             match RasterBackend::with_cache_config(
                 &RasterConfig {
@@ -3208,7 +3211,10 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                 },
                 config.renderer_cache_config,
             ) {
-                Ok(renderer) => Some(renderer),
+                Ok(mut renderer) => {
+                    renderer.set_output_rotation(config.rotation);
+                    Some(renderer)
+                }
                 Err(err) => {
                     if handle_startup_failure(
                         &mut startup_tx,
@@ -3287,7 +3293,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                 }
                 let first_scene = if let Some(presenter) = &presenter {
                     presenter
-                        .request_frame(&tree_tx, dimensions, &stop)
+                        .request_frame(&tree_tx, logical_dimensions, &stop)
                         .and_then(|request| {
                             super::first_frame::wait_for_frame(
                                 &render_rx,
@@ -3303,8 +3309,8 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                             frame_request = next;
                             let request = TreeMsg::Batch(vec![
                                 TreeMsg::Resize {
-                                    width: dimensions.0 as f32,
-                                    height: dimensions.1 as f32,
+                                    width: logical_dimensions.0 as f32,
+                                    height: logical_dimensions.1 as f32,
                                     scale: 1.0,
                                 },
                                 TreeMsg::RequestFrame {

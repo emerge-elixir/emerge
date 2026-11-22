@@ -26,6 +26,9 @@
   Subscribe with `input.events: [:display_wake]` to receive accepted wakes as
   `{:display_wake, gesture}` through `handle_input/2`.
 - WSLg troubleshooting and an explicit GBM-free Wayland/raster build recipe.
+- `Emerge.Config.DRM` `rotation` (`0`, `90`, `180`, `270`): the renderer turns the
+  UI counter-clockwise onto the panel, and touch and pointer input are mapped back.
+  A portrait panel shows a landscape UI without rotating content in the app.
 
 ### Fixed
 

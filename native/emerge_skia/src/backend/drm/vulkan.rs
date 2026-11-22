@@ -646,6 +646,7 @@ impl PresenterSession {
         }
 
         let mut engine = VulkanEngine::new(Arc::clone(&device), config.renderer_cache_config)?;
+        engine.renderer_mut()?.set_output_rotation(config.rotation);
         let initial_state = TargetImageState {
             layout: vk::ImageLayout::UNDEFINED,
             queue_family_index: DMA_BUF_EXTERNAL_QUEUE_FAMILY,
@@ -1413,9 +1414,10 @@ fn run_session(
     }
     let _ = screen_tx.send(session.kms().dimensions);
     let _ = input_wake.signal();
+    let logical_dimensions = config.rotation.logical_size(session.kms().dimensions);
     let _ = event_tx.send(EventMsg::InputEvent(crate::input::InputEvent::Resized {
-        width: session.kms().dimensions.0,
-        height: session.kms().dimensions.1,
+        width: logical_dimensions.0,
+        height: logical_dimensions.1,
         scale_factor: 1.0,
     }));
 
@@ -1427,7 +1429,7 @@ fn run_session(
         vulkan_device: Some(report),
     }));
     let required_frame = if let Some(presenter) = &presenter {
-        match presenter.request_frame(tree_tx, session.kms().dimensions, stop) {
+        match presenter.request_frame(tree_tx, logical_dimensions, stop) {
             Ok(required) => Some(required),
             Err(error) => {
                 native_log.error("drm_vulkan", error);

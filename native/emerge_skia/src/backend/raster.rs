@@ -73,6 +73,10 @@ pub struct RasterBackend {
 }
 
 impl RasterBackend {
+    pub fn set_output_rotation(&mut self, rotation: crate::output_rotation::OutputRotation) {
+        self.renderer.set_output_rotation(rotation);
+    }
+
     pub fn new(config: &RasterConfig) -> Result<Self, String> {
         Self::with_cache_config(config, RendererCacheConfig::default())
     }
