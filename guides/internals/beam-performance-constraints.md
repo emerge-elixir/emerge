@@ -58,13 +58,10 @@ Lists are a bad fit for:
 
 ### Why this matters for Emerge
 
-Current reconciliation already shows the patterns we should avoid:
-
-- indexed sibling lookups with `Enum.at/2`
-- repeated patch accumulation with `++`
-
-At Emerge's expected sizes, those patterns are much more important than small
-syntax choices such as body recursion versus tail recursion.
+The snapshot reconciler walks declarations against a sibling cursor. It
+prepends changed entries on return so the stable suffix of the old VNode list
+can be shared. Editing the last child still copies the prefix; a sparse wire
+patch does not make an independently rebuilt declaration a sparse input.
 
 ## Maps
 

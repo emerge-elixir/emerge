@@ -23,6 +23,8 @@ that is a regression baseline, not a port score.
 
 ## How we work
 
+The [snapshot reconciliation work](reconciliation-and-diffing.md) changes producer bookkeeping, not the viewport API. Its [checkpoint](checkpoints/performance/snapshot-diff.md) separates diff time, allocation and delivered frames.
+
 Select **one observable behavior** from the tracker. Record its `main` reference,
 expected result and how to observe it. After it is delivered, update the coverage
 above, retire that item, and remove its plan. Do not queue several active ports

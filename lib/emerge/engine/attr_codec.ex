@@ -94,6 +94,8 @@ defmodule Emerge.Engine.AttrCodec do
   @tag_type Map.new(@type_tag, fn {type, tag} -> {tag, type} end)
 
   @spec encode_attrs(map()) :: binary()
+  def encode_attrs(attrs) when map_size(attrs) == 0, do: <<0::16>>
+
   def encode_attrs(attrs) when is_map(attrs) do
     attrs
     |> TreeAttrs.strip_runtime_attrs()

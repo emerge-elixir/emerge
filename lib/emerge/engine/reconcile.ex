@@ -109,9 +109,11 @@ defmodule Emerge.Engine.Reconcile do
     ctx = %{
       old: old,
       index: old,
+      updated_nodes: [],
       claims: MapSet.new(),
       displaced: [],
       seen_keys: %{},
+      keys_match?: true,
       routes: routes,
       mode: mode,
       next: max(old.next_id, next_id)
@@ -120,6 +122,7 @@ defmodule Emerge.Engine.Reconcile do
     pos = if root, do: Map.fetch!(old.nodes, root.id)
     {result, ctx} = enter(tree, pos, nil, :root, ctx)
     {result, ctx} = settle(result, ctx)
+    ctx = index_updates(ctx)
     id = result.node.id
     ctx = if root && root.id != id, do: retire(pos, ctx), else: ctx
     ctx = Enum.reduce(ctx.displaced, ctx, &retire/2)
@@ -127,7 +130,8 @@ defmodule Emerge.Engine.Reconcile do
 
     idx = %{
       idx
-      | own: Labels.finish(idx.own),
+      | keys: accepted_keys(ctx),
+        own: Labels.finish(idx.own),
         branch: Labels.finish(idx.branch),
         ancestry: Labels.finish(idx.ancestry),
         routes:
@@ -185,28 +189,18 @@ defmodule Emerge.Engine.Reconcile do
 
     parent_site = {ancestry, id, inherited}
 
-    {cs, pending_cs, ctx} =
+    {cs, ctx} =
       walk(element.children, if(old, do: old.children, else: []), :child, parent_site, ctx)
 
-    {ns, pending_ns, ctx} =
-      walk(element.nearby, if(old, do: old.nearby, else: []), :nearby, parent_site, ctx)
+    {ns, ctx} = walk(element.nearby, if(old, do: old.nearby, else: []), :nearby, parent_site, ctx)
 
     {attrs, ctx} = scroll_declarations(element.attrs, old, ctx)
 
-    node = %VNode{
-      id: id,
-      kind: element.type,
-      key: element.key,
-      attrs: attrs,
-      owner: parent,
-      inherited: inherited
-    }
-
-    exit = fn ctx -> close(node, old, element, ancestry, cs, ns, ctx) end
-
-    if pending_cs or pending_ns or waiting?(attrs, ctx.seen_keys),
-      do: {exit, ctx},
-      else: exit.(ctx)
+    if is_function(cs, 1) or is_function(ns, 1) or waiting?(attrs, ctx.seen_keys) do
+      {fn final -> close(element, old, parent, parent_site, attrs, cs, ns, final) end, ctx}
+    else
+      close(element, old, parent, parent_site, attrs, cs, ns, ctx)
+    end
   end
 
   defp occurrence(%{id: id, type: kind}, _, %{mode: :import, old: old}) do
@@ -232,31 +226,49 @@ defmodule Emerge.Engine.Reconcile do
   defp fresh(%{next: id} = ctx) when id in 1..@max_id, do: {id, %{ctx | next: id + 1}}
   defp fresh(_), do: raise(ArgumentError, "occurrence ID exhausted")
 
+  defp claim(ctx, nil, id), do: claim_id(ctx, id)
+
   defp claim(ctx, key, id) do
-    if key != nil and Map.has_key?(ctx.seen_keys, key),
+    if Map.has_key?(ctx.seen_keys, key),
       do: raise(ArgumentError, "duplicate explicit key: #{inspect(key)}")
 
-    if MapSet.member?(ctx.claims, id), do: raise(ArgumentError, "duplicate occurrence ID")
-    ctx = %{ctx | claims: MapSet.put(ctx.claims, id)}
+    # Only detached imports supply IDs independently of occurrence matching.
+    ctx = if ctx.mode == :import, do: claim_id(ctx, id), else: ctx
 
-    if is_nil(key) do
+    %{
       ctx
-    else
-      index = ctx.index
-
-      keys =
-        if Map.get(index.keys, key) === id, do: index.keys, else: Map.put(index.keys, key, id)
-
-      %{ctx | index: %{index | keys: keys}, seen_keys: Map.put(ctx.seen_keys, key, id)}
-    end
+      | seen_keys: Map.put(ctx.seen_keys, key, id),
+        keys_match?: ctx.keys_match? and Map.get(ctx.old.keys, key) === id
+    }
   end
 
+  # Seen keys are already the complete final index. Keep the accepted map
+  # itself on ordinary edits; the size check detects removals without a scan.
+  defp accepted_keys(ctx) do
+    if ctx.keys_match? and map_size(ctx.old.keys) == map_size(ctx.seen_keys),
+      do: ctx.old.keys,
+      else: ctx.seen_keys
+  end
+
+  defp claim_id(ctx, id) do
+    if MapSet.member?(ctx.claims, id), do: raise(ArgumentError, "duplicate occurrence ID")
+    %{ctx | claims: MapSet.put(ctx.claims, id)}
+  end
+
+  @doc false
+  def claimed?(%{mode: mode, claims: claims}, %{key: key, id: id})
+      when is_nil(key) or mode == :import,
+      do: MapSet.member?(claims, id)
+
+  # A new occurrence can have the old key but a different kind and ID.
+  def claimed?(ctx, node), do: Map.get(ctx.seen_keys, node.key) === node.id
+
   defp walk(items, old, group, site, ctx),
-    do: siblings(items, old, group, site, 0, nil, [], false, ctx)
+    do: siblings(items, old, group, site, 0, nil, ctx)
 
-  defp siblings([], _, _, _, _, _, acc, pending, ctx), do: {Enum.reverse(acc), pending, ctx}
+  defp siblings([], old_tail, _, _, _, _, ctx), do: Children.finish(old_tail, ctx)
 
-  defp siblings([entry | tail], cursor, group, site, i, keyed, acc, pending, ctx) do
+  defp siblings([entry | tail], old, group, site, i, keyed, ctx) do
     {tag, child} = Children.edge(entry)
     mode = not is_nil(child.key)
 
@@ -269,63 +281,93 @@ defmodule Emerge.Engine.Reconcile do
     end
 
     {pos, cursor} =
-      case cursor do
+      case old do
         [] -> {nil, []}
         [head | rest] -> {elem(Children.edge(head), 1), rest}
       end
 
     {ancestry, parent, inherited} = site
     {child, ctx} = enter(child, pos, parent, {ancestry, parent, inherited, tag, i}, ctx)
-    entry = if group == :child, do: child, else: {tag, child}
+    {suffix, ctx} = siblings(tail, cursor, group, site, i + 1, mode, ctx)
 
-    siblings(
-      tail,
-      cursor,
-      group,
-      site,
-      i + 1,
-      mode,
-      [entry | acc],
-      pending or is_function(child, 1),
-      ctx
-    )
+    if is_function(child, 1) or is_function(suffix, 1) do
+      # A forward target must see all new keys. Settle pending siblings in
+      # declaration order, just as if both results had been ready on entry.
+      {fn final ->
+         {child, final} = settle(child, final)
+         {suffix, final} = settle(suffix, final)
+         Children.prepend(tag, child, old, suffix, final)
+       end, ctx}
+    else
+      Children.prepend(tag, child, old, suffix, ctx)
+    end
   end
 
   defp settle(fun, ctx) when is_function(fun, 1), do: fun.(ctx)
   defp settle(done, ctx), do: {done, ctx}
 
-  defp close(%VNode{} = node, old, element, ancestry, cs, ns, ctx) do
-    {cs, ctx} = Children.close(cs, if(old, do: old.children, else: []), ctx, &settle/2)
-    {ns, ctx} = Children.close(ns, if(old, do: old.nearby, else: []), ctx, &settle/2)
+  defp close(element, old, owner, {ancestry, id, inherited}, attrs, cs, ns, ctx) do
+    {cs, ctx} = settle(cs, ctx)
+    {ns, ctx} = settle(ns, ctx)
+    attrs = resolve(attrs, ctx.seen_keys)
 
-    attrs = resolve(node.attrs, ctx.seen_keys)
+    # Exact resolved attrs include event destinations. Share the accepted map
+    # with assigned output too, but take non-wire fields (e.g. frame) from the
+    # current declaration. A matching branch token cannot prove either is safe.
     same_attrs = old != nil and old.attrs === attrs
-    raw = if same_attrs, do: old.native, else: AttrCodec.encode_attrs(attrs)
-    {own, ctx} = if same_attrs, do: {old.own, ctx}, else: bind(ctx, :own, old && old.own, raw)
-    own_equal = old != nil and old.own == own
-    if old && !own_equal, do: AttrValidation.validate_change_update!(old.attrs, attrs)
-    events = if same_attrs, do: old.events, else: EventRegistry.node_events(attrs)
+    attrs = if same_attrs, do: old.attrs, else: attrs
 
-    old_events = if old, do: old.events, else: %{}
+    assigned =
+      if ctx.mode == :assigned,
+        do: %{element | id: id, attrs: attrs, children: cs.assigned, nearby: ns.assigned}
 
-    routes =
-      if events === old_events,
-        do: ctx.routes,
-        else: EventRegistry.put_events(ctx.routes, node.id, events)
+    if same_attrs and cs.stable and ns.stable and
+         old.owner === owner and part(old, :ancestry) == ancestry and old.inherited == inherited and
+         old.key === element.key do
+      {%Fold{node: old, assigned: assigned, body: id, stable: true}, ctx}
+    else
+      {raw, own, events, ctx} = local_inputs(old, attrs, same_attrs, id, ctx)
 
-    order_equal = old != nil and cs.order_equal and ns.order_equal
-    changed = Children.merge(cs.cover, ns.cover)
-    list_same = order_equal and changed == nil
-
-    values = %VNode{
-      node
-      | attrs: attrs,
+      node = %VNode{
+        id: id,
+        kind: element.type,
+        key: element.key,
+        owner: owner,
+        inherited: inherited,
+        attrs: attrs,
         events: events,
         native: raw,
         own: own,
         children: cs.nodes,
         nearby: ns.nodes
-    }
+      }
+
+      rebuild(node, old, ancestry, cs, ns, assigned, ctx)
+    end
+  end
+
+  defp local_inputs(old, _, true, _, ctx), do: {old.native, old.own, old.events, ctx}
+
+  defp local_inputs(old, attrs, false, id, ctx) do
+    raw = AttrCodec.encode_attrs(attrs)
+    {own, ctx} = bind(ctx, :own, old && old.own, raw)
+    if old && old.own != own, do: AttrValidation.validate_change_update!(old.attrs, attrs)
+    events = EventRegistry.node_events(attrs)
+    previous = if old, do: old.events, else: %{}
+
+    ctx =
+      if events === previous,
+        do: ctx,
+        else: %{ctx | routes: EventRegistry.put_events(ctx.routes, id, events)}
+
+    {raw, own, events, ctx}
+  end
+
+  defp rebuild(node, old, ancestry, cs, ns, assigned, ctx) do
+    own_equal = old != nil and old.own == node.own
+    order_equal = old != nil and cs.order_equal and ns.order_equal
+    changed = Children.merge(cs.cover, ns.cover)
+    list_same = order_equal and changed == nil
 
     {branch, ctx} =
       if list_same and own_equal do
@@ -335,18 +377,18 @@ defmodule Emerge.Engine.Reconcile do
           ctx,
           :branch,
           part(old, :branch),
-          {node.kind, own, Patch.edges(values, &part(&1, :branch))}
+          {node.kind, node.own, Patch.edges(node, &part(&1, :branch))}
         )
       end
 
-    node = %{values | stamp: <<branch::32, ancestry::32>>}
+    node = %{node | stamp: <<branch::32, ancestry::32>>}
 
     {body, cover} =
       if list_same and own_equal do
         {node.id, nil}
       else
         body =
-          {:node, node.id, node.kind, if(own_equal, do: :same, else: raw),
+          {:node, node.id, node.kind, if(own_equal, do: :same, else: node.native),
            if(list_same, do: :same, else: Children.emit(cs, Children.emit(ns, [])))}
 
         cover =
@@ -357,27 +399,18 @@ defmodule Emerge.Engine.Reconcile do
         {body, cover}
       end
 
-    stable =
-      same_attrs and order_equal and old.owner == node.owner and old.stamp == node.stamp and
-        cs.stable and ns.stable
+    {%Fold{node: node, assigned: assigned, body: body, cover: cover, stable: false},
+     %{ctx | updated_nodes: [{node.id, node} | ctx.updated_nodes]}}
+  end
 
+  # Occurrence matching reads only the preceding index. Install changed
+  # records together after all forward targets settle, before retiring old IDs.
+  defp index_updates(%{updated_nodes: []} = ctx), do: ctx
+
+  defp index_updates(ctx) do
     idx = ctx.index
-
-    {node, idx} =
-      if stable, do: {old, idx}, else: {node, %{idx | nodes: Map.put(idx.nodes, node.id, node)}}
-
-    assigned =
-      if ctx.mode == :assigned,
-        do: %{
-          element
-          | id: node.id,
-            attrs: attrs,
-            children: cs.assigned,
-            nearby: ns.assigned
-        }
-
-    {%Fold{node: node, assigned: assigned, body: body, cover: cover, stable: stable},
-     %{ctx | index: idx, routes: routes}}
+    nodes = Map.merge(idx.nodes, Map.new(ctx.updated_nodes))
+    %{ctx | updated_nodes: [], index: %{idx | nodes: nodes}}
   end
 
   defp part(nil, _), do: nil
@@ -393,20 +426,14 @@ defmodule Emerge.Engine.Reconcile do
     do: put_in(ctx.index.ancestry, Labels.release(ctx.index.ancestry, part(old, :ancestry)))
 
   defp retire(node, ctx) do
-    if MapSet.member?(ctx.claims, node.id) or not Map.has_key?(ctx.index.nodes, node.id) do
+    if claimed?(ctx, node) or not Map.has_key?(ctx.index.nodes, node.id) do
       ctx
     else
       idx = ctx.index
 
-      keys =
-        if node.key != nil and Map.get(idx.keys, node.key) == node.id,
-          do: Map.delete(idx.keys, node.key),
-          else: idx.keys
-
       idx = %{
         idx
         | nodes: Map.delete(idx.nodes, node.id),
-          keys: keys,
           branch: Labels.release(idx.branch, part(node, :branch)),
           ancestry: Labels.release(idx.ancestry, part(node, :ancestry)),
           own: idx.own |> Labels.release(node.own) |> Labels.release(node.inherited)

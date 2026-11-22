@@ -30,6 +30,12 @@ ID, incoming constraint, hit or callback. This makes moves continuous without
 using geometry or hashes as identity. [Identity tests](../../test/emerge/stable_identity_test.exs) ·
 [press across promotion](../../test/emerge_skia/viewport_constraints_test.exs).
 
+The [snapshot reconciler](../../lib/emerge/engine/reconcile.ex) still visits the
+new declaration. A matched key is not evidence that a row is unchanged. Reuse
+its VNode only after forward targets settle and its resolved attrs (including
+callbacks), attachment, inherited inputs and ordered children agree. The public
+assigned tree still takes non-wire fields such as `frame` from the new declaration.
+
 ### D3. Replace one target instead of sending a list of mutations
 
 `main` uses EMRG v9 full trees and separate patch opcodes. Retained uses zero

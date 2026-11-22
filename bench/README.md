@@ -2,6 +2,8 @@
 
 Benchmarks are intentionally separate from `mix test` and `cargo test`.
 
+For the retained renderer, see the [first shared-surface comparison against `main`](../plans/checkpoints/performance/shared-surface-baseline.md): native refresh, BEAM diff/encode and time to a delivered raster frame for the same 500-row list and 100-card grid. The [one-label follow-up](../plans/checkpoints/performance/list-label-delivery.md) separates producer allocation and GC from native frame delivery. The [snapshot-diff comparison](../plans/checkpoints/performance/snapshot-diff.md) measures the Elixir reconciliation changes against that retained baseline, not against `main`.
+
 ## Elixir / BEAM
 
 Run all Elixir benchmarks:
@@ -48,7 +50,7 @@ nonempty updates are one sparse replacement. External snapshots retain their
 numeric IDs and decoded values; both text-echo directions use the same patch
 format. No runtime compatibility decoder is retained. The earlier workload
 measurements below concern their pinned producers and original fixtures, not
-v10 or the current six-shape binary headless renderer. Old Criterion targets
+v10 or the retained binary headless renderer. Old Criterion targets
 are not active targets in this slice.
 
 After regenerating fixtures, run at least one Elixir retained-layout smoke and

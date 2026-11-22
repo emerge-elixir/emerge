@@ -1,60 +1,41 @@
 defmodule Emerge.Engine.Reconcile.Children do
   @moduledoc false
-  # Fold one ordered edge list against an old cursor. No recursive VNode
-  # equality. Build a wire list only after the first changed edge or branch.
+  # Settle in declaration order. Build output on return so a stable suffix
+  # (often the entire accepted list) is reused without comparing VNode trees.
   defstruct nodes: [], assigned: [], wire: nil, order_equal: true, stable: true, cover: nil
 
-  def close(folds, old, ctx, settle), do: close(folds, old, %__MODULE__{}, ctx, settle)
+  def finish([], ctx), do: {%__MODULE__{}, ctx}
 
-  defp close([], old_tail, list, ctx, _) do
-    ctx = Enum.reduce(old_tail, ctx, &displace/2)
+  def finish(old_tail, ctx),
+    do: {%__MODULE__{order_equal: false, stable: false}, Enum.reduce(old_tail, ctx, &displace/2)}
 
-    {%{
-       list
-       | nodes: Enum.reverse(list.nodes),
-         assigned: Enum.reverse(list.assigned),
-         order_equal: list.order_equal and old_tail == []
-     }, ctx}
-  end
-
-  defp close([entry | rest], old, list, ctx, settle) do
-    {tag, pending} = edge(entry)
-    {fold, ctx} = settle.(pending, ctx)
-
-    {prior, tail} =
-      case old do
-        [] -> {nil, []}
-        [p | tail] -> {p, tail}
-      end
-
-    same = prior != nil and bare(prior) == {tag, fold.node.id}
-    ctx = if same or prior == nil, do: ctx, else: displace(prior, ctx)
+  def prepend(tag, fold, old, suffix, ctx) do
+    same = old != [] and bare(hd(old)) == {tag, fold.node.id}
+    ctx = if same or old == [], do: ctx, else: displace(hd(old), ctx)
+    stable = same and fold.stable and suffix.stable
 
     wire =
       cond do
-        list.wire != nil -> [{tag, fold.body} | list.wire]
+        suffix.wire != nil -> [{tag, fold.body} | suffix.wire]
         same and fold.cover == nil -> nil
-        true -> [{tag, fold.body} | Enum.map(list.nodes, &bare/1)]
+        true -> [{tag, fold.body} | Enum.map(suffix.nodes, &bare/1)]
       end
 
-    next = %{
-      list
-      | nodes: [wrap(tag, fold.node) | list.nodes],
-        wire: wire,
-        assigned:
-          if(ctx.mode == :assigned, do: [wrap(tag, fold.assigned) | list.assigned], else: []),
-        order_equal: list.order_equal and same,
-        stable: list.stable and same and fold.stable,
-        cover: merge(list.cover, fold.cover)
-    }
-
-    close(rest, tail, next, ctx, settle)
+    {%__MODULE__{
+       nodes: if(stable, do: old, else: [wrap(tag, fold.node) | suffix.nodes]),
+       assigned:
+         if(ctx.mode == :assigned, do: [wrap(tag, fold.assigned) | suffix.assigned], else: []),
+       wire: wire,
+       order_equal: same and suffix.order_equal,
+       stable: stable,
+       cover: merge(fold.cover, suffix.cover)
+     }, ctx}
   end
 
   defp displace(entry, ctx) do
     {_, node} = edge(entry)
 
-    if MapSet.member?(ctx.claims, node.id),
+    if Emerge.Engine.Reconcile.claimed?(ctx, node),
       do: ctx,
       else: %{ctx | displaced: [node | ctx.displaced]}
   end
@@ -62,7 +43,7 @@ defmodule Emerge.Engine.Reconcile.Children do
   def emit(list, tail) do
     case list.wire do
       nil -> List.foldr(list.nodes, tail, fn n, acc -> [bare(n) | acc] end)
-      rev -> Enum.reverse(rev, tail)
+      edges -> edges ++ tail
     end
   end
 

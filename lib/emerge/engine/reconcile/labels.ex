@@ -31,24 +31,26 @@ defmodule Emerge.Engine.Reconcile.Labels do
 
   def release(pool, token) when token in [nil, 0], do: pool
 
-  def release(pool, token) do
+  # Until all new claims are known, even a descriptor losing its last old
+  # reference can be reclaimed. Queue each decrement rather than writing a
+  # zero-count entry only to delete it at the end of the same update.
+  def release(pool, token), do: %{pool | retired: [token | pool.retired]}
+
+  def finish(pool), do: Enum.reduce(pool.retired, %{pool | retired: []}, &drop_ref/2)
+
+  defp drop_ref(token, pool) do
     desc = Map.fetch!(pool.by_token, token)
-    {^token, n} = Map.fetch!(pool.values, desc)
-    retired = if n == 1, do: [token | pool.retired], else: pool.retired
-    %{pool | values: Map.put(pool.values, desc, {token, n - 1}), retired: retired}
-  end
 
-  # Delay deletion until all new claims: changing the visitation order cannot
-  # make an equal, still-live descriptor acquire a different token.
-  def finish(pool) do
-    Enum.reduce(pool.retired, %{pool | retired: []}, fn token, acc ->
-      desc = Map.get(acc.by_token, token)
+    case Map.fetch!(pool.values, desc) do
+      {^token, 1} ->
+        %{
+          pool
+          | values: Map.delete(pool.values, desc),
+            by_token: Map.delete(pool.by_token, token)
+        }
 
-      if Map.get(acc.values, desc) == {token, 0} do
-        %{acc | values: Map.delete(acc.values, desc), by_token: Map.delete(acc.by_token, token)}
-      else
-        acc
-      end
-    end)
+      {^token, n} when n > 1 ->
+        %{pool | values: Map.put(pool.values, desc, {token, n - 1})}
+    end
   end
 end

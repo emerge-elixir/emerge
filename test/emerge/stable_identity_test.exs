@@ -113,10 +113,75 @@ defmodule Emerge.Engine.StableIdentityTest do
              update(b, view.([:b, :a], :new))
 
     assert c.vdom.stamp == a.vdom.stamp
+    assert :erts_debug.same(c.index.keys, a.index.keys)
     twins = [el([], text("Pay")), el([], text("Pay"))]
     state = DiffState.new(column([], twins))
     {[], same, %{}} = update(state, column([], Enum.reverse(twins)))
     assert Enum.map(same.vdom.children, & &1.id) == Enum.map(state.vdom.children, & &1.id)
+  end
+
+  test "reusing a key with another kind retires the old occurrence and its route" do
+    child = el([key(:item), Event.on_click(:old)], none())
+    state = DiffState.new(column([], [child]))
+    id = state.index.keys.item
+    old_route = <<id::64>>
+    replacement = row([key(:item), Event.on_click(:new)], [])
+
+    assert_raise ArgumentError, ~r/duplicate explicit key/, fn ->
+      DiffState.diff_and_encode_binary(state, column([], [replacement, child]))
+    end
+
+    {[_], next, edits} = update(state, column([], [replacement]))
+    new_id = next.index.keys.item
+    new_route = <<new_id::64>>
+    refute id == new_id or Map.has_key?(next.index.nodes, id)
+    assert %{^old_route => nil, ^new_route => %{click: {_, :new}}} = edits
+    refute Map.has_key?(next.event_registry, old_route)
+    {[_], back, _} = update(next, column([], [child]))
+    assert back.index.keys.item > new_id
+  end
+
+  test "detached imports cannot claim one supplied ID with two different keys" do
+    state = DiffState.new(column([], [row([key(:a)], []), row([key(:b)], [])]))
+    [a, b] = state.tree.children
+    duplicate = %{state.tree | children: [a, %{b | id: a.id}]}
+
+    assert_raise ArgumentError, ~r/duplicate occurrence ID/, fn ->
+      Patch.diff(state.tree, duplicate)
+    end
+
+    assert_raise ArgumentError, ~r/duplicate occurrence ID/, fn ->
+      Patch.diff(duplicate, state.tree)
+    end
+
+    assert [] == Patch.diff(state.tree, state.tree)
+  end
+
+  test "stable VNodes share child lists without reusing stale assigned fields" do
+    view = fn frame, padding, label ->
+      tip = %{text("tip") | frame: frame}
+      kids = for s <- ["first", label, "third", "last"], do: %{text(s) | frame: frame}
+      %{column([padding(padding), Nearby.above(tip)], kids) | frame: frame}
+    end
+
+    box = %{x: 3, y: 4, width: 12, height: 18}
+    old = DiffState.new(view.(nil, 1, "second"))
+    {_, binary} = DiffState.diff_and_encode_binary(old, view.(nil, 2, "second"))
+    assert is_nil(binary.tree)
+    assert :erts_debug.same(binary.vdom.children, old.vdom.children)
+    assert :erts_debug.same(binary.vdom.nearby, old.vdom.nearby)
+
+    assert {<<>>, assigned, tree} = DiffState.diff_and_encode(binary, view.(box, 2, "second"))
+    assert tree === assigned.tree and tree.frame == box
+    assert :erts_debug.same(hd(tree.children).attrs, hd(assigned.vdom.children).attrs)
+    assert Enum.all?(tree.children, &(&1.frame == box))
+    assert [above: %{frame: ^box}] = tree.nearby
+
+    {patch, routed, %{}} = DiffState.diff_and_encode_routed(assigned, view.(nil, 2, "edited"))
+    assert is_nil(routed.tree) and byte_size(patch) > 0
+    assert :erts_debug.same(Enum.drop(routed.vdom.children, 2), Enum.drop(old.vdom.children, 2))
+    {<<>>, _, tree} = DiffState.diff_and_encode(routed, view.(nil, 2, "edited"))
+    assert Enum.all?(tree.children, &is_nil(&1.frame))
   end
 
   test "nested swaps keep claimed routes even when their old wrapper disappears" do
@@ -158,6 +223,31 @@ defmodule Emerge.Engine.StableIdentityTest do
     refute back.index.keys[:target] == state.index.keys[:target]
   end
 
+  test "pending siblings close in declaration order against the complete key index" do
+    scene = fn targets ->
+      column([], [
+        el([key(:first), scroll_x(:a)], none()),
+        el([key(:second), scroll_y(:b)], none()),
+        column([key(:targets)], Enum.map(targets, &el([key(&1)], none())))
+      ])
+    end
+
+    initial = DiffState.new(scene.([:a, :b]))
+    [x, y, _] = initial.vdom.children
+    assert x.attrs.scroll_position_x.id == initial.index.keys.a
+    assert y.attrs.scroll_position_y.id == initial.index.keys.b
+    # Both distinct resolved descriptors are new, so the first gets the earlier token.
+    assert x.own < y.own
+
+    {[_], missing, _} = update(initial, scene.([]))
+    [x, y, _] = missing.vdom.children
+    assert x.attrs.scroll_position_x.id == 0 and y.attrs.scroll_position_y.id == 0
+    {[_], back, _} = update(missing, scene.([:b, :a]))
+    [x, y, _] = back.vdom.children
+    assert x.attrs.scroll_position_x.id == back.index.keys.a
+    assert y.attrs.scroll_position_y.id == back.index.keys.b
+  end
+
   test "a changed sibling does not change the declared site of its neighbour" do
     view = fn w, size -> column([Font.size(size)], [el([width(px(w))], none()), text("Pay")]) end
     a = DiffState.new(view.(10, 16))
@@ -167,6 +257,18 @@ defmodule Emerge.Engine.StableIdentityTest do
     assert <<branch::32, site::32>> = List.last(b.vdom.children).stamp
     assert <<^branch::32, other::32>> = List.last(c.vdom.children).stamp
     refute site == other
+  end
+
+  test "descriptor references released twice and reclaimed in one update survive exactly once" do
+    alias Emerge.Engine.Reconcile.Labels
+    {id, pool} = Labels.bind(%Labels{}, nil, :red)
+    {^id, pool} = Labels.bind(pool, nil, :red)
+    pool = pool |> Labels.release(id) |> Labels.release(id)
+    {^id, pool} = Labels.bind(pool, nil, :red)
+    pool = Labels.finish(pool)
+    assert pool.values == %{red: {id, 1}} and pool.retired == []
+    pool = pool |> Labels.release(id) |> Labels.finish()
+    assert pool.values == %{} and pool.by_token == %{}
   end
 
   test "unequal colliding descriptors stay distinct and token exhaustion cannot wrap" do
@@ -216,6 +318,28 @@ defmodule Emerge.Engine.StableIdentityTest do
       initial
     ]
 
+    assert_replays(steps)
+  end
+
+  test "simultaneous edits, moves and deletions replay on edit and undo" do
+    :rand.seed(:exsss, {7, 13, 31})
+
+    steps =
+      for i <- 1..24 do
+        {left, right} =
+          1..9
+          |> Enum.shuffle()
+          |> Enum.take(:rand.uniform(9))
+          |> Enum.map(fn k -> el([key(k), Event.on_click({i, k})], text("#{rem(i + k, 3)}")) end)
+          |> Enum.split(:rand.uniform(5) - 1)
+
+        row([], [column([key(:left)], left), column([key(:right)], right)])
+      end
+
+    assert_replays(steps ++ Enum.reverse(steps))
+  end
+
+  defp assert_replays(steps) do
     Enum.reduce(steps, {DiffState.new(), nil}, fn tree, {state, previous} ->
       {ops, next, _} = update(state, tree)
 
