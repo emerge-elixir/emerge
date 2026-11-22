@@ -34,6 +34,16 @@ impl OutputRotation {
         }
     }
 
+    /// The rotation turned by a further 180°.
+    pub fn half_turn(self) -> Self {
+        match self {
+            Self::Deg0 => Self::Deg180,
+            Self::Deg90 => Self::Deg270,
+            Self::Deg180 => Self::Deg0,
+            Self::Deg270 => Self::Deg90,
+        }
+    }
+
     /// Maps layout coordinates to scanout coordinates.
     pub fn transform(self, physical: (u32, u32)) -> Affine2 {
         let (w, h) = (physical.0 as f32, physical.1 as f32);

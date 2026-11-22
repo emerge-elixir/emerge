@@ -1029,6 +1029,23 @@ fn quiesce_gl(egl_state: &EglState, frame_surface: &mut GlFrameSurface) -> Resul
     Ok(())
 }
 
+const DRM_MODE_ROTATE_0: u64 = 1 << 0;
+const DRM_MODE_ROTATE_180: u64 = 1 << 2;
+
+/// Current value of the plane's `rotation` property, if the driver has one.
+fn plane_rotation_bits(
+    card: &Card,
+    plane: plane::Handle,
+    props: &HashMap<String, property::Info>,
+) -> Option<u64> {
+    let handle = props.get("rotation")?.handle();
+    let values = card.get_properties(plane).ok()?;
+    values
+        .iter()
+        .find(|(id, _)| **id == handle)
+        .map(|(_, value)| *value)
+}
+
 fn cursor_plane_pixels(visual: &CursorVisual, rotation: OutputRotation) -> Vec<u8> {
     rotation.rotate_square_pixels(visual.plane_bgra(), CURSOR_PLANE_SIZE.0)
 }
@@ -1169,6 +1186,14 @@ fn add_cursor_plane_properties(
             prop_handle(&plane.props, "SRC_H")?,
             property::Value::UnsignedRange((plane.size.1 as u64) << 16),
         );
+        // A rotation left on the cursor plane by another DRM master would turn the bitmap again.
+        if let Some(rotation) = plane.props.get("rotation") {
+            req.add_property(
+                plane.handle,
+                rotation.handle(),
+                property::Value::Bitmask(DRM_MODE_ROTATE_0),
+            );
+        }
     } else {
         req.add_property(
             plane.handle,
@@ -2901,6 +2926,23 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
             }
         };
 
+        // The primary plane's rotation property stays as the previous DRM master set it, e.g. the 180° fbdev
+        // sets for a panel orientation plus `video=...,rotate=`. The cursor plane scans out in CRTC
+        // coordinates, so it turns by that as well.
+        let primary_rotation = plane_rotation_bits(&card, plane, &plane_props);
+        let cursor_rotation =
+            if primary_rotation.is_some_and(|bits| bits & DRM_MODE_ROTATE_180 != 0) {
+                config.rotation.half_turn()
+            } else {
+                config.rotation
+            };
+        if let Some(bits) = primary_rotation.filter(|bits| *bits != DRM_MODE_ROTATE_0) {
+            native_log.info(
+                "drm",
+                format!("primary plane rotation={bits:#x}; cursor plane uses {cursor_rotation:?}"),
+            );
+        }
+
         let handoff =
             match super::handoff::Handoff::read(&card, connector, crtc_handle, plane, &mode) {
                 Ok(handoff) => handoff,
@@ -3014,7 +3056,7 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
                 &resources,
                 crtc_handle,
                 &cursor_theme,
-                config.rotation,
+                cursor_rotation,
             ) {
                 Ok(plane) => plane,
                 Err(e) => {
