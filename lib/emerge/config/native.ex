@@ -35,6 +35,7 @@ defmodule Emerge.Config.Native do
       vulkan_drm_node: renderer.device,
       scroll_line_pixels: config.input.scroll_line_pixels,
       hw_cursor: config.input.cursor.hardware,
+      drm_cursor_size: config.input.cursor.size,
       drm_cursor: cursor_options(config.input.cursor),
       drm_startup_retries: config.runtime.startup_retries,
       drm_retry_interval_ms: config.runtime.retry_interval_ms,

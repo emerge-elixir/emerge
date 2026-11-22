@@ -2102,6 +2102,8 @@ struct StartConfig {
     #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
     drm_cursor_overrides: Vec<DrmCursorOverrideConfig>,
     #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
+    drm_cursor_size: Option<u32>,
+    #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
     drm_input_log: bool,
     #[cfg_attr(
         not(any(
@@ -2247,6 +2249,7 @@ struct StartOptsNif {
     drm_hotplug_interval_ms: Option<u32>,
     drm_force_gpu_finish: bool,
     hw_cursor: bool,
+    drm_cursor_size: Option<u32>,
     input_log: bool,
     render_log: bool,
     close_signal_log: bool,
@@ -2848,6 +2851,7 @@ fn start_native_renderer_with_config(
                 asset_config: config.asset_config.clone(),
                 startup_retries: config.drm_startup_retries,
                 cursor_overrides: config.drm_cursor_overrides.clone(),
+                cursor_size: config.drm_cursor_size,
                 retry_interval_ms: config.drm_retry_interval_ms,
                 hotplug_interval: config
                     .drm_hotplug_interval_ms
@@ -3140,6 +3144,7 @@ fn start(
                 drm_force_gpu_finish: false,
                 drm_hw_cursor: true,
                 drm_cursor_overrides: Vec::new(),
+                drm_cursor_size: None,
                 drm_input_log: false,
                 render_log: false,
                 close_signal_log: false,
@@ -3228,6 +3233,7 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
             drm_force_gpu_finish: opts.drm_force_gpu_finish,
             drm_hw_cursor: opts.hw_cursor,
             drm_cursor_overrides,
+            drm_cursor_size: opts.drm_cursor_size,
             drm_input_log: opts.input_log,
             render_log: opts.render_log,
             close_signal_log: opts.close_signal_log,

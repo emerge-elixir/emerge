@@ -1256,7 +1256,11 @@ pub(super) fn run(context: DrmRunContext, config: DrmRunConfig) {
         running_flag.store(false, Ordering::Release);
         return;
     }
-    let cursor_theme = match DrmCursorTheme::load(&config.asset_config, &config.cursor_overrides) {
+    let cursor_theme = match DrmCursorTheme::load(
+        &config.asset_config,
+        &config.cursor_overrides,
+        config.cursor_size,
+    ) {
         Ok(theme) => theme,
         Err(error) => {
             let _ = startup_tx.send(Err(format!(

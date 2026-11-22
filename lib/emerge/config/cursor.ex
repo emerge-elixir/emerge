@@ -18,6 +18,10 @@ defmodule Emerge.Config.Cursor do
   - `default` — optional `Emerge.Config.CursorIcon` for the ordinary arrow.
   - `text` — optional `Emerge.Config.CursorIcon` for the text-selection cursor.
   - `pointer` — optional `Emerge.Config.CursorIcon` for clickable content.
+  - `size` — optional edge length in pixels, 1 to 64. Every icon is scaled so its
+    longer side has this length, the built-in ones (24 px) and overrides alike.
+    With `nil` (default) the icons stay at their source size; sources larger than
+    64 px are shrunk.
 
   All icon fields default to `nil`, keeping the built-in icon. Overrides apply to
   DRM; they do not replace desktop system cursors. All fields require a new
@@ -26,13 +30,15 @@ defmodule Emerge.Config.Cursor do
   defstruct hardware: true,
             default: nil,
             text: nil,
-            pointer: nil
+            pointer: nil,
+            size: nil
 
   @type t :: %__MODULE__{
           hardware: boolean(),
           default: Emerge.Config.CursorIcon.t() | Emerge.Config.CursorIcon.options() | nil,
           text: Emerge.Config.CursorIcon.t() | Emerge.Config.CursorIcon.options() | nil,
-          pointer: Emerge.Config.CursorIcon.t() | Emerge.Config.CursorIcon.options() | nil
+          pointer: Emerge.Config.CursorIcon.t() | Emerge.Config.CursorIcon.options() | nil,
+          size: 1..64 | nil
         }
   @typedoc "Typed keyword shorthand accepted in this record's parent field."
   @type options :: [
@@ -40,13 +46,15 @@ defmodule Emerge.Config.Cursor do
           | {:default, Emerge.Config.CursorIcon.t() | Emerge.Config.CursorIcon.options() | nil}
           | {:text, Emerge.Config.CursorIcon.t() | Emerge.Config.CursorIcon.options() | nil}
           | {:pointer, Emerge.Config.CursorIcon.t() | Emerge.Config.CursorIcon.options() | nil}
+          | {:size, 1..64 | nil}
         ]
   @typedoc "Canonical form after nested keyword records have been expanded."
   @type normalized_t :: %__MODULE__{
           hardware: boolean(),
           default: Emerge.Config.CursorIcon.normalized_t() | nil,
           text: Emerge.Config.CursorIcon.normalized_t() | nil,
-          pointer: Emerge.Config.CursorIcon.normalized_t() | nil
+          pointer: Emerge.Config.CursorIcon.normalized_t() | nil,
+          size: 1..64 | nil
         }
 
   @doc false
@@ -55,6 +63,7 @@ defmodule Emerge.Config.Cursor do
       hardware: :boolean,
       default: {:optional, {:record, Emerge.Config.CursorIcon}},
       text: {:optional, {:record, Emerge.Config.CursorIcon}},
-      pointer: {:optional, {:record, Emerge.Config.CursorIcon}}
+      pointer: {:optional, {:record, Emerge.Config.CursorIcon}},
+      size: {:optional, {:enum, Enum.to_list(1..64)}}
     ]
 end

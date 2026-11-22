@@ -47,14 +47,17 @@ pub(crate) struct DrmCursorTheme {
 }
 
 impl DrmCursorTheme {
+    /// `size` sets the longer side of every icon in pixels, up to the cursor plane; with `None` the
+    /// icons stay at their source size.
     pub(crate) fn load(
         asset_config: &AssetConfig,
         overrides: &[DrmCursorOverrideConfig],
+        size: Option<u32>,
     ) -> Result<Self, String> {
-        let mut theme = Self::builtin()?;
+        let mut theme = Self::builtin(size)?;
 
         for entry in overrides {
-            let visual = load_override_visual(asset_config, entry)?;
+            let visual = load_override_visual(asset_config, entry, size)?;
             theme.set(entry.icon, visual);
         }
 
@@ -69,11 +72,11 @@ impl DrmCursorTheme {
         }
     }
 
-    fn builtin() -> Result<Self, String> {
+    fn builtin(size: Option<u32>) -> Result<Self, String> {
         Ok(Self {
-            default: load_builtin_cursor(CursorIcon::Default)?,
-            pointer: load_builtin_cursor(CursorIcon::Pointer)?,
-            text: load_builtin_cursor(CursorIcon::Text)?,
+            default: load_builtin_cursor(CursorIcon::Default, size)?,
+            pointer: load_builtin_cursor(CursorIcon::Pointer, size)?,
+            text: load_builtin_cursor(CursorIcon::Text, size)?,
         })
     }
 
@@ -86,15 +89,16 @@ impl DrmCursorTheme {
     }
 }
 
-fn load_builtin_cursor(icon: CursorIcon) -> Result<CursorVisual, String> {
+fn load_builtin_cursor(icon: CursorIcon, size: Option<u32>) -> Result<CursorVisual, String> {
     let (svg, hotspot) = builtin_cursor(icon);
     let tree = parse_svg(svg.as_bytes())?;
-    build_visual_from_svg(&tree, hotspot)
+    build_visual_from_svg(&tree, hotspot, size)
 }
 
 fn load_override_visual(
     asset_config: &AssetConfig,
     entry: &DrmCursorOverrideConfig,
+    size: Option<u32>,
 ) -> Result<CursorVisual, String> {
     let resolved = resolve_configured_path(&entry.source, asset_config)?;
     let bytes = fs::read(&resolved).map_err(|err| {
@@ -112,9 +116,9 @@ fn load_override_visual(
     match extension.as_str() {
         "svg" => {
             let tree = parse_svg(&bytes)?;
-            build_visual_from_svg(&tree, entry.hotspot)
+            build_visual_from_svg(&tree, entry.hotspot, size)
         }
-        "png" => build_visual_from_png(&bytes, entry.hotspot),
+        "png" => build_visual_from_png(&bytes, entry.hotspot, size),
         other => Err(format!(
             "unsupported DRM cursor override format .{other}: {}",
             resolved.display()
@@ -128,10 +132,14 @@ fn parse_svg(bytes: &[u8]) -> Result<usvg::Tree, String> {
         .map_err(|err| format!("failed to parse DRM cursor SVG: {err}"))
 }
 
-fn build_visual_from_svg(tree: &usvg::Tree, hotspot: (f32, f32)) -> Result<CursorVisual, String> {
+fn build_visual_from_svg(
+    tree: &usvg::Tree,
+    hotspot: (f32, f32),
+    size: Option<u32>,
+) -> Result<CursorVisual, String> {
     let source_size = (tree.size().width(), tree.size().height());
     validate_hotspot(hotspot, source_size)?;
-    let (target_width, target_height, scale) = fit_size(source_size)?;
+    let (target_width, target_height, scale) = fit_size(source_size, size)?;
     let mut pixmap = resvg::tiny_skia::Pixmap::new(target_width, target_height)
         .ok_or_else(|| "failed to allocate DRM cursor SVG pixmap".to_string())?;
     let transform = resvg::tiny_skia::Transform::from_scale(scale, scale);
@@ -146,12 +154,16 @@ fn build_visual_from_svg(tree: &usvg::Tree, hotspot: (f32, f32)) -> Result<Curso
     )
 }
 
-fn build_visual_from_png(bytes: &[u8], hotspot: (f32, f32)) -> Result<CursorVisual, String> {
+fn build_visual_from_png(
+    bytes: &[u8],
+    hotspot: (f32, f32),
+    size: Option<u32>,
+) -> Result<CursorVisual, String> {
     let image = Image::from_encoded(Data::new_copy(bytes))
         .ok_or_else(|| "failed to decode DRM cursor PNG".to_string())?;
     let source_size = (image.width().max(0) as f32, image.height().max(0) as f32);
     validate_hotspot(hotspot, source_size)?;
-    let (target_width, target_height, scale) = fit_size(source_size)?;
+    let (target_width, target_height, scale) = fit_size(source_size, size)?;
     let rgba = rasterize_image_to_rgba(&image, target_width, target_height)?;
     build_visual_from_rgba(
         target_width,
@@ -161,15 +173,20 @@ fn build_visual_from_png(bytes: &[u8], hotspot: (f32, f32)) -> Result<CursorVisu
     )
 }
 
-fn fit_size(source_size: (f32, f32)) -> Result<(u32, u32, f32), String> {
+/// Scale of a cursor source: its longer side becomes `size`. Without `size` the scale is 1, or less
+/// to fit the cursor plane.
+fn fit_size(source_size: (f32, f32), size: Option<u32>) -> Result<(u32, u32, f32), String> {
     let (source_width, source_height) = source_size;
     if source_width <= 0.0 || source_height <= 0.0 {
         return Err("DRM cursor source must have positive dimensions".to_string());
     }
 
-    let scale = (CURSOR_PLANE_SIZE.0 as f32 / source_width)
-        .min(CURSOR_PLANE_SIZE.1 as f32 / source_height)
-        .min(1.0);
+    let plane_fit =
+        (CURSOR_PLANE_SIZE.0 as f32 / source_width).min(CURSOR_PLANE_SIZE.1 as f32 / source_height);
+    let scale = match size {
+        Some(size) => (size as f32 / source_width.max(source_height)).min(plane_fit),
+        None => plane_fit.min(1.0),
+    };
     let width = ((source_width * scale).round().max(1.0) as u32).min(CURSOR_PLANE_SIZE.0);
     let height = ((source_height * scale).round().max(1.0) as u32).min(CURSOR_PLANE_SIZE.1);
     Ok((width, height, scale))
@@ -283,8 +300,20 @@ mod tests {
     }
 
     #[test]
+    fn size_scales_builtin_icons_and_hotspots() {
+        let theme =
+            DrmCursorTheme::load(&AssetConfig::default(), &[], Some(48)).expect("builtin theme");
+        assert_eq!(theme.cursor(CursorIcon::Default).size(), (48, 48));
+        assert_eq!(theme.cursor(CursorIcon::Default).hotspot(), (2.0, 2.0));
+        let capped =
+            DrmCursorTheme::load(&AssetConfig::default(), &[], Some(200)).expect("builtin theme");
+        assert_eq!(capped.cursor(CursorIcon::Default).size(), CURSOR_PLANE_SIZE);
+    }
+
+    #[test]
     fn builtin_theme_uses_expected_mocu_hotspots() {
-        let theme = DrmCursorTheme::load(&AssetConfig::default(), &[]).expect("builtin theme");
+        let theme =
+            DrmCursorTheme::load(&AssetConfig::default(), &[], None).expect("builtin theme");
 
         assert_eq!(theme.cursor(CursorIcon::Default).size(), (24, 24));
         assert_eq!(theme.cursor(CursorIcon::Default).hotspot(), (1.0, 1.0));

@@ -2679,7 +2679,11 @@ pub(crate) fn run(context: DrmRunContext, config: DrmRunConfig) {
     let hotplug_interval = config.hotplug_interval;
     let mut logged_cursor_info = false;
     let mut logged_mode_info = false;
-    let cursor_theme = match DrmCursorTheme::load(&config.asset_config, &config.cursor_overrides) {
+    let cursor_theme = match DrmCursorTheme::load(
+        &config.asset_config,
+        &config.cursor_overrides,
+        config.cursor_size,
+    ) {
         Ok(theme) => theme,
         Err(err) => {
             if let Some(startup_tx) = startup_tx.take() {
