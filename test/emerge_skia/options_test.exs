@@ -277,6 +277,37 @@ defmodule EmergeSkia.OptionsTest do
     end
   end
 
+  test "build_start_native_opts! normalizes scrollbars" do
+    assert %{scrollbars: :always} = Options.build_start_native_opts!([])
+
+    assert %{scrollbars: :while_scrolling} =
+             Options.build_start_native_opts!(scrollbars: :while_scrolling)
+
+    assert_raise ArgumentError, ~r/:scrollbars must be :always or :while_scrolling/, fn ->
+      Options.build_start_native_opts!(scrollbars: :auto)
+    end
+  end
+
+  test "build_start_native_opts! normalizes scroll_deceleration" do
+    assert %{scroll_deceleration: :android} = Options.build_start_native_opts!([])
+
+    assert %{scroll_deceleration: :ios} =
+             Options.build_start_native_opts!(scroll_deceleration: :ios)
+
+    assert_raise ArgumentError, ~r/:scroll_deceleration must be :android or :ios/, fn ->
+      Options.build_start_native_opts!(scroll_deceleration: :web)
+    end
+  end
+
+  test "build_start_native_opts! normalizes scroll_bounce" do
+    assert %{scroll_bounce: false} = Options.build_start_native_opts!([])
+    assert %{scroll_bounce: true} = Options.build_start_native_opts!(scroll_bounce: true)
+
+    assert_raise ArgumentError, ~r/:scroll_bounce must be a boolean/, fn ->
+      Options.build_start_native_opts!(scroll_bounce: :yes)
+    end
+  end
+
   test "build_start_native_opts! keeps native diagnostic logs disabled by default" do
     assert %{input_log: false, render_log: false, close_signal_log: false} =
              Options.build_start_native_opts!([])

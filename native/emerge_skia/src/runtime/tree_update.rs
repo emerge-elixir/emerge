@@ -403,6 +403,15 @@ impl TreeUpdateEngine {
                 } => {
                     invalidation.add(self.tree.set_scroll_position(&element_id, position));
                 }
+                TreeMsg::SetScrollOverscroll { element_id, offset } => {
+                    invalidation.add(self.tree.set_scroll_overscroll(&element_id, offset));
+                }
+                TreeMsg::SetScrollbarAlpha { element_id, alpha } => {
+                    invalidation.add(self.tree.set_scrollbar_alpha(&element_id, alpha));
+                }
+                TreeMsg::SetTransientScrollbars { enabled } => {
+                    invalidation.add(self.tree.set_transient_scrollbars(enabled));
+                }
                 TreeMsg::ScrollRequest { element_id, dx, dy } => {
                     let entry = scroll_acc.entry((element_id, mount)).or_insert((0.0, 0.0));
                     entry.0 += dx;

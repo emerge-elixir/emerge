@@ -27,6 +27,8 @@ pub struct ScrollNode {
     pub position: [f64; 2],
     pub range: [f64; 2],
     pub enabled: [bool; 2],
+    /// Visible size of the scroll viewport in pixels.
+    pub viewport: [f64; 2],
     pub proposals: [ScrollProposal; 2],
     pub targets: [Option<f64>; 2],
     pub emit: bool,
@@ -58,6 +60,11 @@ impl ScrollNode {
                     }
                 })
             });
+        let viewport = element
+            .layout
+            .frame
+            .map(|frame| [frame.width as f64, frame.height as f64])
+            .unwrap_or([0.0; 2]);
         let proposals = element.runtime.scroll_proposals;
         let targets = std::array::from_fn(|axis| match proposals[axis].value {
             Some(ScrollPosition::Target { node, .. }) => {
@@ -70,6 +77,7 @@ impl ScrollNode {
             position,
             range,
             enabled,
+            viewport,
             proposals,
             targets,
             emit: element.layout.effective.on_scroll.unwrap_or(false),

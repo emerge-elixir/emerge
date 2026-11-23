@@ -1046,6 +1046,8 @@ pub enum DragScrollMode {
 struct DragScrollActivation {
     primary_axis: GestureAxis,
     scroll_mode: DragScrollMode,
+    /// Container found by the primary-axis probe, or by the opposite probe at an edge.
+    target: Option<NodeId>,
 }
 
 /// Drag tracker lifecycle state.
@@ -2116,6 +2118,11 @@ fn runtime_press_region_from_source(source: &Listener) -> Option<PointerRegion> 
 }
 
 pub(crate) trait ListenerComputeCtx {
+    /// Whether drags on scroll containers whose content fits overscroll (`scroll_bounce`).
+    fn scroll_bounce(&self) -> bool {
+        false
+    }
+
     fn input_time(&self) -> Instant {
         Instant::now()
     }
@@ -2328,6 +2335,11 @@ pub(crate) enum ListenerMatcher {
         region: PointerRegion,
         direction: ScrollDirection,
     },
+    /// Match a drag along `axis` inside `region` of a scroll container whose content fits.
+    DragBounceInsideAxis {
+        region: PointerRegion,
+        axis: GestureAxis,
+    },
     /// Match Enter key press when Ctrl/Alt/Meta are not held.
     KeyEnterPressNoCtrlAltMeta,
     /// Match Left key press when Ctrl/Alt/Meta are not held.
@@ -2414,6 +2426,7 @@ pub enum ListenerMatcherKind {
     CursorScrollAny,
     RawPointerLifecycle,
     CursorScrollInsideDirection,
+    DragBounceInsideAxis,
     KeyEnterPressNoCtrlAltMeta,
     KeyLeftPressNoCtrlAltMeta,
     KeyRightPressNoCtrlAltMeta,
@@ -2471,6 +2484,9 @@ impl ListenerMatcher {
             ListenerMatcher::RawPointerLifecycle => ListenerMatcherKind::RawPointerLifecycle,
             ListenerMatcher::CursorScrollInsideDirection { .. } => {
                 ListenerMatcherKind::CursorScrollInsideDirection
+            }
+            ListenerMatcher::DragBounceInsideAxis { .. } => {
+                ListenerMatcherKind::DragBounceInsideAxis
             }
             ListenerMatcher::KeyEnterPressNoCtrlAltMeta => {
                 ListenerMatcherKind::KeyEnterPressNoCtrlAltMeta
@@ -2625,6 +2641,9 @@ impl ListenerMatcher {
             }
             ListenerMatcher::CursorScrollInsideDirection { region, direction } => {
                 cursor_scroll_direction_matches(input, region, *direction)
+            }
+            ListenerMatcher::DragBounceInsideAxis { region, axis } => {
+                drag_bounce_component(input, region, *axis).is_some()
             }
             ListenerMatcher::KeyEnterPressNoCtrlAltMeta => matches!(
                 input.raw(),
@@ -2987,6 +3006,10 @@ pub(crate) enum RuntimeChange {
         element_id: NodeId,
         matcher_kind: ListenerMatcherKind,
     },
+    /// Scroll container under an active drag, for overscroll at a content edge.
+    SetDragScrollTarget {
+        element_id: NodeId,
+    },
     /// End drag tracking on pointer release.
     ClearDragTracker,
     /// Update active drag pointer position after a cursor move.
@@ -3171,6 +3194,14 @@ pub(crate) enum ListenerCompute {
         start: SwipeStart,
         swipe_handlers: SwipeHandlers,
         scroll_candidate: bool,
+    },
+    /// Drag on a scroll container whose content fits: the drag goes to a scrolling ancestor;
+    /// without one and with `scroll_bounce`, a scroll request for this container starts the rubber
+    /// band.
+    DragBounce {
+        element_id: NodeId,
+        axis: GestureAxis,
+        region: PointerRegion,
     },
     /// Split one physical scroll input into directional redispatches.
     RedispatchScrollInput,
@@ -3484,7 +3515,7 @@ impl ListenerCompute {
                         !swipe_handlers.any(),
                         ctx,
                     ) {
-                        vec![
+                        [
                             ListenerAction::RuntimeChange(RuntimeChange::PromoteDragTracker {
                                 element_id: *element_id,
                                 matcher_kind: *matcher_kind,
@@ -3495,6 +3526,13 @@ impl ListenerCompute {
                             }),
                             ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
                         ]
+                        .into_iter()
+                        .chain(activation.target.map(|element_id| {
+                            ListenerAction::RuntimeChange(RuntimeChange::SetDragScrollTarget {
+                                element_id,
+                            })
+                        }))
+                        .collect()
                     } else if let Some(locked_axis) = gesture_axis_intent_from_delta(dx, dy)
                         && swipe_handlers.any_for_axis(locked_axis)
                     {
@@ -3529,6 +3567,32 @@ impl ListenerCompute {
                 }
                 _ => Vec::new(),
             },
+            ListenerCompute::DragBounce {
+                element_id,
+                axis,
+                region,
+            } => {
+                let chained =
+                    ctx.dispatch_base_skip(input, &[ListenerMatcherKind::DragBounceInsideAxis]);
+                let ancestor_scrolls = chained
+                    .iter()
+                    .any(|action| drag_scroll_axis_delta_from_action(action, *axis).is_some());
+                if ancestor_scrolls || !ctx.scroll_bounce() {
+                    chained
+                } else {
+                    drag_bounce_component(input, region, *axis)
+                        .map(|component| {
+                            ListenerAction::TreeMsg(TreeMsg::ScrollRequest {
+                                element_id: *element_id,
+                                dx: component.dx,
+                                dy: component.dy,
+                            })
+                        })
+                        .into_iter()
+                        .chain(chained)
+                        .collect()
+                }
+            }
             ListenerCompute::RedispatchScrollInput => match input.raw() {
                 Some(input) => redispatch_scroll_components_from_input(input, ctx),
                 None => Vec::new(),
@@ -4023,6 +4087,39 @@ fn drag_scroll_component_for_region(
     scroll_component_delta_for_axis(axis, dx, dy)
 }
 
+fn drag_bounce_component(
+    input: &ListenerInput,
+    region: &PointerRegion,
+    axis: GestureAxis,
+) -> Option<ScrollComponentDelta> {
+    let ListenerInput::DragScroll {
+        locked_axis,
+        from_x,
+        from_y,
+        x,
+        y,
+    } = input
+    else {
+        return None;
+    };
+    drag_scroll_component_for_region(region, *locked_axis, *from_x, *from_y, *x, *y).filter(
+        |component| match axis {
+            GestureAxis::Horizontal => {
+                matches!(
+                    component.direction,
+                    ScrollDirection::XNeg | ScrollDirection::XPos
+                )
+            }
+            GestureAxis::Vertical => {
+                matches!(
+                    component.direction,
+                    ScrollDirection::YNeg | ScrollDirection::YPos
+                )
+            }
+        },
+    )
+}
+
 fn cursor_scroll_direction_matches(
     input: &ListenerInput,
     region: &PointerRegion,
@@ -4065,7 +4162,7 @@ fn drag_scroll_axis_request<C: ListenerComputeCtx>(
     x: f32,
     y: f32,
     ctx: &mut C,
-) -> Option<f32> {
+) -> Option<(f32, NodeId)> {
     let input = ListenerInput::DragScroll {
         locked_axis: Some(axis),
         from_x,
@@ -4074,9 +4171,15 @@ fn drag_scroll_axis_request<C: ListenerComputeCtx>(
         y,
     };
 
-    ctx.dispatch_base(&input)
-        .iter()
-        .find_map(|action| drag_scroll_axis_delta_from_action(action, axis))
+    ctx.dispatch_base(&input).iter().find_map(|action| {
+        let delta = drag_scroll_axis_delta_from_action(action, axis)?;
+        match action {
+            ListenerAction::TreeMsg(TreeMsg::ScrollRequest { element_id, .. }) => {
+                Some((delta, *element_id))
+            }
+            _ => None,
+        }
+    })
 }
 
 fn drag_scroll_axis_potential<C: ListenerComputeCtx>(
@@ -4087,7 +4190,7 @@ fn drag_scroll_axis_potential<C: ListenerComputeCtx>(
     y: f32,
     allow_opposite_probe: bool,
     ctx: &mut C,
-) -> Option<f32> {
+) -> Option<(f32, NodeId)> {
     drag_scroll_axis_request(axis, from_x, from_y, x, y, ctx).or_else(|| {
         let (opposite_x, opposite_y) =
             allow_opposite_probe.then(|| opposite_probe_point(from_x, from_y, x, y))??;
@@ -4128,6 +4231,7 @@ fn drag_scroll_activation<C: ListenerComputeCtx>(
             DragScrollActivation {
                 primary_axis,
                 scroll_mode: DragScrollMode::Locked,
+                target: None,
             }
         });
     }
@@ -4152,17 +4256,26 @@ fn drag_scroll_activation<C: ListenerComputeCtx>(
     );
 
     match (horizontal_delta, vertical_delta) {
-        (Some(dx), Some(dy)) => Some(DragScrollActivation {
-            primary_axis: primary_drag_axis(dx, dy),
-            scroll_mode: DragScrollMode::Biaxial,
-        }),
-        (Some(_), None) => Some(DragScrollActivation {
+        (Some((dx, x_target)), Some((dy, y_target))) => {
+            let primary_axis = primary_drag_axis(dx, dy);
+            Some(DragScrollActivation {
+                primary_axis,
+                scroll_mode: DragScrollMode::Biaxial,
+                target: Some(match primary_axis {
+                    GestureAxis::Horizontal => x_target,
+                    GestureAxis::Vertical => y_target,
+                }),
+            })
+        }
+        (Some((_, target)), None) => Some(DragScrollActivation {
             primary_axis: GestureAxis::Horizontal,
             scroll_mode: DragScrollMode::Locked,
+            target: Some(target),
         }),
-        (None, Some(_)) => Some(DragScrollActivation {
+        (None, Some((_, target))) => Some(DragScrollActivation {
             primary_axis: GestureAxis::Vertical,
             scroll_mode: DragScrollMode::Locked,
+            target: Some(target),
         }),
         (None, None) => None,
     }
@@ -8705,6 +8818,22 @@ fn emit_scroll_listeners_for_element(
                 },
             }),
     );
+    out.emit_all(
+        scroll_wheel::bounce_axes_for_element(element)
+            .into_iter()
+            .map(|axis| Listener {
+                element_id: Some(element.id),
+                matcher: ListenerMatcher::DragBounceInsideAxis {
+                    region: region.clone(),
+                    axis,
+                },
+                compute: ListenerCompute::DragBounce {
+                    element_id: element.id,
+                    axis,
+                    region: region.clone(),
+                },
+            }),
+    );
 }
 
 fn emit_front_nearby_blockers_for_element(
@@ -9077,7 +9206,8 @@ mod click_press_tracker {
     ) -> Option<PointerDragBootstrap> {
         let attrs = &element.layout.effective;
         let swipe_handlers = swipe_handlers_for_element(element);
-        let scroll_candidate = !scroll_wheel::scroll_directions_for_element(element).is_empty();
+        let scroll_candidate = !scroll_wheel::scroll_directions_for_element(element).is_empty()
+            || !scroll_wheel::bounce_axes_for_element(element).is_empty();
         (!attrs.on_drag.unwrap_or(false)
             && (attrs.on_click.unwrap_or(false)
                 || attrs.on_press.unwrap_or(false)
@@ -9148,6 +9278,20 @@ mod scroll_wheel {
             (attrs.scrollbar_y.unwrap_or(false) && scroll_y < scroll_y_max)
                 .then_some(ScrollDirection::YNeg),
             (attrs.scrollbar_y.unwrap_or(false) && scroll_y > 0.0).then_some(ScrollDirection::YPos),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+
+    /// Axes with a scrollbar whose content fits; drags there can only overscroll.
+    pub(super) fn bounce_axes_for_element(element: &Element) -> Vec<GestureAxis> {
+        let attrs = &element.layout.effective;
+        [
+            (attrs.scrollbar_x.unwrap_or(false) && element.layout.scroll_x_max <= 0.0)
+                .then_some(GestureAxis::Horizontal),
+            (attrs.scrollbar_y.unwrap_or(false) && element.layout.scroll_y_max <= 0.0)
+                .then_some(GestureAxis::Vertical),
         ]
         .into_iter()
         .flatten()
@@ -12458,6 +12602,7 @@ mod tests {
                     ..
                 }),
                 ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
+                ListenerAction::RuntimeChange(RuntimeChange::SetDragScrollTarget { .. }),
             ] if *element_id == NodeId::from_term_bytes(vec![31])
                 && *matcher_kind == ListenerMatcherKind::CursorButtonLeftPressInside
                 && *locked_axis == GestureAxis::Horizontal
@@ -12527,6 +12672,7 @@ mod tests {
                     ..
                 }),
                 ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
+                ListenerAction::RuntimeChange(RuntimeChange::SetDragScrollTarget { .. }),
             ] if *element_id == NodeId::from_term_bytes(vec![32])
                 && *locked_axis == GestureAxis::Vertical
         ));
@@ -15727,6 +15873,7 @@ mod tests {
                     ..
                 }),
                 ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
+                ListenerAction::RuntimeChange(RuntimeChange::SetDragScrollTarget { .. }),
             ] if *element_id == NodeId::from_term_bytes(vec![83])
                 && *matcher_kind == ListenerMatcherKind::CursorButtonLeftPressInside
                 && *locked_axis == GestureAxis::Horizontal
@@ -15798,6 +15945,7 @@ mod tests {
                     ..
                 }),
                 ListenerAction::RuntimeChange(RuntimeChange::ClearClickPressTracker),
+                ListenerAction::RuntimeChange(RuntimeChange::SetDragScrollTarget { .. }),
             ] if *element_id == NodeId::from_term_bytes(vec![84])
                 && *matcher_kind == ListenerMatcherKind::CursorButtonLeftPressInside
                 && *locked_axis == GestureAxis::Horizontal

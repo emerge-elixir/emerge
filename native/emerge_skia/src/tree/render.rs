@@ -637,7 +637,12 @@ fn build_element_subtree<R: RegistryTraversalSink>(
     let background_nodes = build_background_nodes(render_frame, attrs);
     let inset_shadow_nodes = collect_box_shadow_nodes(render_frame, attrs, radius, true);
     let border_nodes = collect_border_nodes(render_frame, attrs);
-    let scrollbar_nodes = collect_scrollbar_nodes(scene_state.as_ref(), render_frame, attrs);
+    let scrollbar_alpha = if tree.transient_scrollbars {
+        f32::from_bits(element.runtime.scrollbar_alpha)
+    } else {
+        1.0
+    };
+    let scrollbar_nodes = collect_scrollbar_nodes(scene_state.as_ref(), scrollbar_alpha);
     let inherited_host_clips = traversal.render_ctx.full_clip_shapes();
     let inherited_self_clip = traversal.render_ctx.nearest_self_clip();
 
@@ -743,7 +748,10 @@ fn wrap_semantic_scroll_content_layer(
         paint_layer_own_content_visual_bounds(&canonical_nodes),
         nominal_bounds,
     );
-    let canonical_host_clip = host_clip.offset(-scroll_x, -scroll_y);
+    // Overscroll moves the content past its edge; the host clip stays in place.
+    let [overscroll_x, overscroll_y] = element.runtime.scroll_overscroll.map(f32::from_bits);
+    let (shift_x, shift_y) = (scroll_x + overscroll_x, scroll_y + overscroll_y);
+    let canonical_host_clip = host_clip.offset(-shift_x, -shift_y);
     let canonical_nodes = wrap_with_host_clip(canonical_nodes, canonical_host_clip);
     let content = RenderPaintLayerContent::from_composition_nodes(canonical_nodes);
     let content_generation =
@@ -761,7 +769,7 @@ fn wrap_semantic_scroll_content_layer(
     );
     wrap_with_transform(
         vec![RenderNode::PaintLayer(layer)],
-        Affine2::translation(-scroll_x, -scroll_y),
+        Affine2::translation(-shift_x, -shift_y),
     )
 }
 

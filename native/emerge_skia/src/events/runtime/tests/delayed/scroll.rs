@@ -340,7 +340,8 @@ fn scroll_echoes_preserve_momentum_and_app_jumps_cancel_only_the_affected_axis()
         host.driver.runtime.inertial_scroll = Some(InertialScrollState {
             element_id: NodeId(1),
             axis,
-            simulation: AdaptiveScrollSimulation::new(0.0, -1000.0).unwrap(),
+            simulation: AdaptiveScrollSimulation::new(ScrollDeceleration::Android, 0.0, -1000.0)
+                .unwrap(),
             started_at: now,
             last_sample_position: 0.0,
             watchdog_deadline: now + Duration::from_secs(1),
@@ -474,4 +475,350 @@ fn scroll_app_echo_before_native_receipt_preserves_inflight_progress() {
     settle(&mut engine, &mut host);
     assert_y(&engine, &host, 0.2);
     assert_eq!(events.0.lock().unwrap().len(), 2);
+}
+
+// Installs a registry payload only when the tree reports one, as the tree actor does; paint-only
+// overscroll updates leave the registry unchanged.
+fn bounce_settle(engine: &mut TreeUpdateEngine, host: &mut HostEventRuntime) {
+    for _ in 0..16 {
+        let messages = host.drain_tree_messages();
+        if messages.is_empty() {
+            assert!(!host.driver.runtime.listener_lane.is_stale());
+            return;
+        }
+        match engine
+            .process_messages(
+                messages,
+                TreeUpdateOptions::new(None, TreeUpdateDecodePolicy::ReturnErr),
+            )
+            .unwrap()
+        {
+            TreeUpdateEffect::Layout { output, .. } if output.event_rebuild_changed => {
+                host.install_rebuild(output.event_rebuild)
+            }
+            TreeUpdateEffect::RegistryUpdate { rebuild } => host.install_rebuild(rebuild),
+            _ => {}
+        }
+    }
+    panic!("scroll feedback loop");
+}
+fn bounce(engine: &mut TreeUpdateEngine, host: &mut HostEventRuntime) {
+    host.driver.runtime.set_scroll_bounce(true);
+    bounce_settle(engine, host);
+}
+fn pointer(engine: &mut TreeUpdateEngine, host: &mut HostEventRuntime, event: InputEvent) {
+    host.handle_input(event);
+    bounce_settle(engine, host);
+}
+fn move_to(engine: &mut TreeUpdateEngine, host: &mut HostEventRuntime, y: f32) {
+    pointer(engine, host, InputEvent::CursorPos { x: 50.0, y });
+}
+fn overscroll_y(engine: &TreeUpdateEngine) -> f32 {
+    f32::from_bits(
+        engine
+            .tree()
+            .get(&NodeId(1))
+            .unwrap()
+            .runtime
+            .scroll_overscroll[1],
+    )
+}
+fn spring_started_at(host: &HostEventRuntime) -> Instant {
+    host.driver
+        .runtime
+        .overscroll
+        .as_ref()
+        .and_then(|overscroll| overscroll.spring.as_ref())
+        .expect("spring running")
+        .started_at
+}
+fn present(engine: &mut TreeUpdateEngine, host: &mut HostEventRuntime, at: Instant) {
+    host.handle_present_timing(at, at + Duration::from_millis(16));
+    bounce_settle(engine, host);
+}
+// Press at y = 20 and move 15 px down, past the drag dead zone.
+fn grab(engine: &mut TreeUpdateEngine, host: &mut HostEventRuntime) {
+    pointer(
+        engine,
+        host,
+        super::pointer::button(ACTION_PRESS, 50.0, 20.0),
+    );
+    move_to(engine, host, 35.0);
+    assert!(matches!(
+        host.driver.runtime.runtime_overlay.drag,
+        registry_builder::DragTrackerState::Active { .. }
+    ));
+}
+
+#[test]
+fn drag_past_the_top_pulls_content_with_resistance_and_springs_back_to_the_edge() {
+    let assets = crate::assets::AssetRuntime::new();
+    let _assets = assets.enter();
+    let (mut engine, mut host, _) = start(None, false);
+    bounce(&mut engine, &mut host);
+    grab(&mut engine, &mut host);
+
+    // The viewport is 100 px tall.
+    move_to(&mut engine, &mut host, 60.0);
+    let first = overscroll_y(&engine);
+    assert!(
+        (first - rubber_band(-25.0, 100.0).round()).abs() < 1e-3,
+        "{first}"
+    );
+    assert_y(&engine, &host, 0.0);
+
+    move_to(&mut engine, &mut host, 110.0);
+    let second = overscroll_y(&engine);
+    assert!(
+        (second - rubber_band(-75.0, 100.0).round()).abs() < 1e-3,
+        "{second}"
+    );
+    assert!(second - first > -50.0, "resistance: {first} -> {second}");
+
+    // Moving back first takes the overscroll in, then scrolls the content.
+    move_to(&mut engine, &mut host, 85.0);
+    assert!((overscroll_y(&engine) - rubber_band(-50.0, 100.0).round()).abs() < 1e-3);
+    move_to(&mut engine, &mut host, 15.0);
+    assert_eq!(overscroll_y(&engine), 0.0);
+    assert!(host.driver.runtime.overscroll.is_none());
+    assert_y(&engine, &host, 20.0 / 300.0);
+
+    move_to(&mut engine, &mut host, 75.0);
+    assert_y(&engine, &host, 0.0);
+    assert!((overscroll_y(&engine) - rubber_band(-40.0, 100.0).round()).abs() < 1e-3);
+
+    pointer(
+        &mut engine,
+        &mut host,
+        super::pointer::button(ACTION_RELEASE, 50.0, 75.0),
+    );
+    assert!(host.driver.runtime.inertial_scroll.is_none());
+    let started_at = spring_started_at(&host);
+    let held = overscroll_y(&engine);
+    present(
+        &mut engine,
+        &mut host,
+        started_at + Duration::from_millis(100),
+    );
+    let mid = overscroll_y(&engine);
+    assert!(held < mid && mid < 0.0, "{held} -> {mid}");
+    present(
+        &mut engine,
+        &mut host,
+        started_at + Duration::from_millis(450),
+    );
+    assert_eq!(overscroll_y(&engine), 0.0);
+    assert!(host.driver.runtime.overscroll.is_none());
+    assert_y(&engine, &host, 0.0);
+}
+
+#[test]
+fn drag_through_the_edge_overscrolls_only_the_excess() {
+    let assets = crate::assets::AssetRuntime::new();
+    let _assets = assets.enter();
+    // 15 px of 300 left above the viewport.
+    let (mut engine, mut host, _) = start(Some(fraction(0.05)), false);
+    bounce(&mut engine, &mut host);
+    grab(&mut engine, &mut host);
+    let before = host.driver.runtime.scroll_sessions[&NodeId(1)].position[1];
+    let room = before * 300.0;
+    move_to(&mut engine, &mut host, 75.0);
+    assert_y(&engine, &host, 0.0);
+    let excess = 40.0 - room as f32;
+    assert!(
+        (overscroll_y(&engine) - rubber_band(-excess, 100.0).round()).abs() < 1e-3,
+        "{} room {room}",
+        overscroll_y(&engine)
+    );
+}
+
+#[test]
+fn a_press_holds_the_spring_and_the_next_release_lets_it_go() {
+    let assets = crate::assets::AssetRuntime::new();
+    let _assets = assets.enter();
+    let (mut engine, mut host, _) = start(None, false);
+    bounce(&mut engine, &mut host);
+    grab(&mut engine, &mut host);
+    move_to(&mut engine, &mut host, 95.0);
+    pointer(
+        &mut engine,
+        &mut host,
+        super::pointer::button(ACTION_RELEASE, 50.0, 95.0),
+    );
+    let started_at = spring_started_at(&host);
+    present(
+        &mut engine,
+        &mut host,
+        started_at + Duration::from_millis(40),
+    );
+    pointer(
+        &mut engine,
+        &mut host,
+        super::pointer::button(ACTION_PRESS, 50.0, 95.0),
+    );
+    let overscroll = host.driver.runtime.overscroll.as_ref().unwrap();
+    assert!(overscroll.spring.is_none());
+    assert!(overscroll.raw < 0.0);
+    pointer(
+        &mut engine,
+        &mut host,
+        super::pointer::button(ACTION_RELEASE, 50.0, 95.0),
+    );
+    let started_at = spring_started_at(&host);
+    present(
+        &mut engine,
+        &mut host,
+        started_at + Duration::from_millis(1_300),
+    );
+    assert_eq!(overscroll_y(&engine), 0.0);
+    assert_y(&engine, &host, 0.0);
+}
+
+#[test]
+fn a_fling_into_the_edge_overshoots_and_returns() {
+    let assets = crate::assets::AssetRuntime::new();
+    let _assets = assets.enter();
+    // 6 px above the viewport; the fling moves content down, toward the top edge.
+    let (mut engine, mut host, _) = start(Some(fraction(0.02)), false);
+    bounce(&mut engine, &mut host);
+    let now = Instant::now();
+    host.driver.runtime.inertial_scroll = Some(InertialScrollState {
+        element_id: NodeId(1),
+        axis: ScrollbarAxis::Y,
+        simulation: AdaptiveScrollSimulation::new(ScrollDeceleration::Android, 0.0, 2_000.0)
+            .unwrap(),
+        started_at: now,
+        last_sample_position: 0.0,
+        watchdog_deadline: now + Duration::from_millis(16),
+    });
+    present(&mut engine, &mut host, now + Duration::from_millis(16));
+    assert!(host.driver.runtime.inertial_scroll.is_none());
+    assert_y(&engine, &host, 0.0);
+    let started_at = spring_started_at(&host);
+    let mut deepest = 0.0f32;
+    for ms in (16..=600).step_by(16) {
+        present(
+            &mut engine,
+            &mut host,
+            started_at + Duration::from_millis(ms),
+        );
+        deepest = deepest.min(overscroll_y(&engine));
+    }
+    assert!(deepest < -5.0, "overshoot {deepest}");
+    present(
+        &mut engine,
+        &mut host,
+        started_at + Duration::from_millis(1_300),
+    );
+    assert_eq!(overscroll_y(&engine), 0.0);
+    assert!(host.driver.runtime.overscroll.is_none());
+    assert_y(&engine, &host, 0.0);
+}
+
+#[test]
+fn wheel_stays_clamped_with_bounce_on() {
+    let assets = crate::assets::AssetRuntime::new();
+    let _assets = assets.enter();
+    let (mut engine, mut host, _) = start(None, false);
+    bounce(&mut engine, &mut host);
+    wheel(&mut engine, &mut host, 0.0, 120.0);
+    assert_y(&engine, &host, 0.0);
+    assert!(host.driver.runtime.overscroll.is_none());
+    assert_eq!(overscroll_y(&engine), 0.0);
+}
+
+#[test]
+fn without_bounce_a_drag_past_the_edge_stops_hard() {
+    let assets = crate::assets::AssetRuntime::new();
+    let _assets = assets.enter();
+    let (mut engine, mut host, _) = start(None, false);
+    grab(&mut engine, &mut host);
+    move_to(&mut engine, &mut host, 95.0);
+    assert!(host.driver.runtime.overscroll.is_none());
+    assert_eq!(overscroll_y(&engine), 0.0);
+    assert_y(&engine, &host, 0.0);
+}
+
+#[test]
+fn rubber_band_grows_slower_than_the_drag_and_stays_inside_the_viewport() {
+    assert_eq!(rubber_band(0.0, 100.0), 0.0);
+    let mut last = 0.0;
+    for raw in [10.0, 50.0, 200.0, 1_000.0, 100_000.0] {
+        let shown = rubber_band(-raw, 100.0);
+        assert!(
+            shown < last && shown > -raw && shown > -100.0,
+            "{raw}: {shown}"
+        );
+        last = shown;
+    }
+}
+
+fn scrollbar_alpha(engine: &TreeUpdateEngine) -> f32 {
+    f32::from_bits(
+        engine
+            .tree()
+            .get(&NodeId(1))
+            .unwrap()
+            .runtime
+            .scrollbar_alpha,
+    )
+}
+
+fn transient(engine: &mut TreeUpdateEngine, host: &mut HostEventRuntime) {
+    host.driver
+        .runtime
+        .set_scrollbar_visibility(ScrollbarVisibility::WhileScrolling);
+    engine
+        .process_messages(
+            vec![TreeMsg::SetTransientScrollbars { enabled: true }],
+            TreeUpdateOptions::new(None, TreeUpdateDecodePolicy::ReturnErr),
+        )
+        .unwrap();
+}
+
+#[test]
+fn transient_scrollbars_show_on_scroll_hold_then_fade_and_stop_their_timer() {
+    let assets = crate::assets::AssetRuntime::new();
+    let _assets = assets.enter();
+    let (mut engine, mut host, _) = start(None, false);
+    transient(&mut engine, &mut host);
+    assert_eq!(scrollbar_alpha(&engine), 0.0);
+
+    wheel(&mut engine, &mut host, 0.0, -40.0);
+    assert_eq!(scrollbar_alpha(&engine), 1.0);
+    let shown_at = host.driver.runtime.scrollbar_fades[&NodeId(1)].last_activity;
+
+    present(
+        &mut engine,
+        &mut host,
+        shown_at + Duration::from_millis(500),
+    );
+    assert_eq!(scrollbar_alpha(&engine), 1.0);
+
+    present(
+        &mut engine,
+        &mut host,
+        shown_at + Duration::from_millis(925),
+    );
+    let fading = scrollbar_alpha(&engine);
+    assert!(fading > 0.0 && fading < 1.0, "{fading}");
+
+    present(
+        &mut engine,
+        &mut host,
+        shown_at + Duration::from_millis(1_100),
+    );
+    assert_eq!(scrollbar_alpha(&engine), 0.0);
+    assert!(host.driver.runtime.scrollbar_fades.is_empty());
+    assert!(host.driver.runtime.next_scrollbar_fade_deadline().is_none());
+}
+
+#[test]
+fn scrollbars_always_shown_send_no_fade_updates() {
+    let assets = crate::assets::AssetRuntime::new();
+    let _assets = assets.enter();
+    let (mut engine, mut host, _) = start(None, false);
+    wheel(&mut engine, &mut host, 0.0, -40.0);
+    assert!(host.driver.runtime.scrollbar_fades.is_empty());
+    assert!(!engine.tree().transient_scrollbars);
 }

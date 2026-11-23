@@ -21,6 +21,15 @@
 - `Event.on_drag/1` lets custom controls receive drag movement and release even
   outside the element. Messages include the drag phase and element-local position.
 - Native double-click word selection for single-line and multiline text inputs.
+- `Emerge.Config.Input` `scroll_bounce` (default `false`): touch and pointer drags
+  pull scroll content past its edge with rubber-band resistance and spring back on
+  release; flings that reach an edge overshoot and return. Containers whose content
+  fits bounce as well. Wheel, keyboard,
+  scrollbar and app-set positions stay clamped. DRM and Wayland backends.
+- `Emerge.Config.Input` `scrollbars`: `:always` (default) or `:while_scrolling`,
+  where thumbs show while a container scrolls and fade out 800 ms after it stops.
+- `Emerge.Config.Input` `scroll_deceleration`: `:android` (default) or `:ios`,
+  where a fling loses 0.2 % of its velocity per millisecond as in `UIScrollView`.
 - Optional DRM touch wake through `wake_on_touch`: single tap, double tap or long
   press. The default `nil` disables touch wake; wake gestures do not activate the UI.
   Subscribe with `input.events: [:display_wake]` to receive accepted wakes as

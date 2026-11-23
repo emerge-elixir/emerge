@@ -52,6 +52,22 @@ defmodule Emerge.UI.Scroll do
   is ambiguous; arbitrarily delayed/out-of-order controller results need a
   separate application-level causal protocol.
 
+  ## Rubber-band overscroll
+
+  Set `scroll_bounce: true` in `Emerge.Config.Input` to let touch and pointer
+  drags pull content past its edge. The content follows the drag with growing
+  resistance, at most one viewport length, and springs back to the edge on
+  release in about 400 ms. A fling that reaches the edge overshoots and returns.
+  The drag goes first to a container that can still scroll in the drag
+  direction, so overscroll applies to the innermost container at its edge.
+  A container whose content fits its viewport bounces as well, when no
+  ancestor scrolls in the drag direction.
+
+  Overscroll is paint-only: the position fraction stays at `0.0` or `1.0`,
+  `on_scroll` reports no out-of-range values, hit testing uses the clamped
+  position, and the scrollbar thumb stays at its end. Wheel, keyboard,
+  scrollbar and app-set positions stop at the edge.
+
   ## Examples
 
   A vertical scroll panel:

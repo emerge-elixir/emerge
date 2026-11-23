@@ -13,6 +13,13 @@ impl DirectEventRuntime {
                 .get(id)
                 .is_some_and(|node| node.mount == session.node.mount)
         });
+        if self
+            .overscroll
+            .as_ref()
+            .is_some_and(|overscroll| !self.scroll_sessions.contains_key(&overscroll.element_id))
+        {
+            self.overscroll = None;
+        }
         let now = Instant::now();
         nodes.into_iter().fold(false, |changed, (id, node)| {
             let session = self
@@ -42,6 +49,12 @@ impl DirectEventRuntime {
                         && replaced[usize::from(inertia.axis == ScrollbarAxis::Y)]
                 }) {
                     self.cancel_inertial_scroll();
+                }
+                if self.overscroll.as_ref().is_some_and(|overscroll| {
+                    overscroll.element_id == id
+                        && replaced[usize::from(overscroll.axis == ScrollbarAxis::Y)]
+                }) {
+                    self.clear_overscroll(tx, log);
                 }
                 if self
                     .runtime_overlay
@@ -140,6 +153,18 @@ impl DirectEventRuntime {
                 })
             })
             .collect();
-        other.into_iter().chain(updates).collect()
+        let now = Instant::now();
+        let moved: Vec<NodeId> = updates
+            .iter()
+            .filter_map(|message| match message {
+                TreeMsg::SetScrollPosition { element_id, .. } => Some(*element_id),
+                _ => None,
+            })
+            .collect();
+        let shown: Vec<_> = moved
+            .into_iter()
+            .filter_map(|element_id| self.show_scrollbars(element_id, now))
+            .collect();
+        other.into_iter().chain(updates).chain(shown).collect()
     }
 }

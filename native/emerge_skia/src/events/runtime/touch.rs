@@ -43,6 +43,7 @@ impl DirectEventRuntime {
             clipboard: &mut self.clipboard,
             text_clicks: &mut self.text_clicks,
             input_time: self.input_time,
+            scroll_bounce: self.scroll_bounce,
         };
         ctx.dispatch_base(&ListenerInput::Raw(event))
     }

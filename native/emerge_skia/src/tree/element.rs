@@ -604,6 +604,10 @@ pub struct NodeRuntime {
     pub scroll_proposals: [crate::events::scroll::ScrollProposal; 2],
     /// Last event-owned fractions; legacy pixel attrs remain separate.
     pub scroll_position: Option<[u64; 2]>,
+    /// Rubber-band pixels past the content edge as f32 bits; paint-only.
+    pub scroll_overscroll: [u32; 2],
+    /// Scrollbar thumb opacity as f32 bits when transient scrollbars are on; paint-only.
+    pub scrollbar_alpha: u32,
     /// Runtime-only origin label for current text-input content.
     pub text_input_content_origin: TextInputContentOrigin,
 
@@ -824,6 +828,8 @@ impl Element {
                 declared: attrs.clone(),
             },
             runtime: NodeRuntime {
+                scroll_overscroll: [0; 2],
+                scrollbar_alpha: 0,
                 scroll_proposals: [attrs.scroll_position_x, attrs.scroll_position_y].map(|value| {
                     crate::events::scroll::ScrollProposal {
                         id: u64::from(value.is_some()),
@@ -1283,6 +1289,8 @@ pub struct ElementTree {
     detached_layout_cache: Vec<DetachedLayoutSubtreeCache>,
     scroll_refresh_dirty: bool,
     scroll_cache_context_active: bool,
+    /// The renderer draws thumbs at `NodeRuntime::scrollbar_alpha`.
+    pub(crate) transient_scrollbars: bool,
     registry_affects_dirty: bool,
     registry_affects_stamp: Option<(u64, u64)>,
     #[cfg(any(test, feature = "bench-diagnostics"))]
@@ -1333,6 +1341,7 @@ impl Default for ElementTree {
             detached_layout_cache: Vec::new(),
             scroll_refresh_dirty: false,
             scroll_cache_context_active: false,
+            transient_scrollbars: false,
             registry_affects_dirty: true,
             registry_affects_stamp: None,
             #[cfg(any(test, feature = "bench-diagnostics"))]
@@ -2853,6 +2862,7 @@ impl ElementTree {
         uploaded.set_revision(revision);
         uploaded.next_ghost_seq = self.next_ghost_seq;
         uploaded.current_scale = self.current_scale;
+        uploaded.transient_scrollbars = self.transient_scrollbars;
         uploaded.set_layout_cache_stats_enabled(layout_cache_stats_enabled);
         uploaded.layout_structure_epoch = self.layout_structure_epoch.wrapping_add(1);
         uploaded.layout_model_epoch = self.layout_model_epoch.wrapping_add(1);
@@ -3908,6 +3918,57 @@ impl ElementTree {
         self.scroll_refresh_dirty = true;
         self.scroll_cache_context_active = true;
         self.mark_render_and_registry_refresh_dirty(id);
+        TreeInvalidation::Paint
+    }
+
+    pub fn set_scroll_overscroll(&mut self, id: &NodeId, offset: [f32; 2]) -> TreeInvalidation {
+        if !offset.iter().all(|v| v.is_finite()) {
+            return TreeInvalidation::None;
+        }
+        let Some(ix) = self.ix_of(id) else {
+            return TreeInvalidation::None;
+        };
+        let Some(node) = self.get_ix_mut(ix) else {
+            return TreeInvalidation::None;
+        };
+        let bits = offset.map(f32::to_bits);
+        if node.runtime.scroll_overscroll == bits {
+            return TreeInvalidation::None;
+        }
+        node.runtime.scroll_overscroll = bits;
+        self.scroll_refresh_dirty = true;
+        self.scroll_cache_context_active = true;
+        self.mark_render_refresh_dirty_ix(ix);
+        TreeInvalidation::Paint
+    }
+
+    pub fn set_scrollbar_alpha(&mut self, id: &NodeId, alpha: f32) -> TreeInvalidation {
+        if !alpha.is_finite() {
+            return TreeInvalidation::None;
+        }
+        let Some(ix) = self.ix_of(id) else {
+            return TreeInvalidation::None;
+        };
+        let Some(node) = self.get_ix_mut(ix) else {
+            return TreeInvalidation::None;
+        };
+        let bits = alpha.clamp(0.0, 1.0).to_bits();
+        if node.runtime.scrollbar_alpha == bits {
+            return TreeInvalidation::None;
+        }
+        node.runtime.scrollbar_alpha = bits;
+        self.mark_render_refresh_dirty_ix(ix);
+        TreeInvalidation::Paint
+    }
+
+    pub fn set_transient_scrollbars(&mut self, enabled: bool) -> TreeInvalidation {
+        if self.transient_scrollbars == enabled {
+            return TreeInvalidation::None;
+        }
+        self.transient_scrollbars = enabled;
+        let ixs: Vec<_> = self.id_to_ix.values().copied().collect();
+        ixs.into_iter()
+            .for_each(|ix| self.mark_render_refresh_dirty_ix(ix));
         TreeInvalidation::Paint
     }
 
@@ -5040,6 +5101,16 @@ mod tests {
                 .mounted_at_revision,
             tree.revision()
         );
+    }
+
+    #[test]
+    fn test_replace_with_uploaded_keeps_transient_scrollbars() {
+        let mut tree = ElementTree::new();
+        let _ = tree.set_transient_scrollbars(true);
+
+        tree.replace_with_uploaded(ElementTree::new());
+
+        assert!(tree.transient_scrollbars);
     }
 
     #[test]
