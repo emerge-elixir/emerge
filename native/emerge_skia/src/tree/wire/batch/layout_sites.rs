@@ -39,6 +39,8 @@ impl Batch {
                 let (shape, parent) = self.declaration(e, p);
                 !(matches!(parent.sizing.width, Length::Px(_))
                     && (matches!(shape, Shape::El | Shape::Column | Shape::WrappedColumn)
+                        || (shape == Shape::TextColumn
+                            && !matches!(a.align[0], Some(Alignment::Start | Alignment::End)))
                         || (shape == Shape::Row && a.sizing.width.weight().is_some())))
             })
     }
@@ -209,7 +211,11 @@ impl Batch {
                 && let Some(k) = e.live(s.id)
                 && ((matches!(
                     shape,
-                    Shape::El | Shape::Column | Shape::Row | Shape::WrappedColumn
+                    Shape::El
+                        | Shape::Column
+                        | Shape::Row
+                        | Shape::WrappedColumn
+                        | Shape::TextColumn
                 ) && matches!(e.attrs[k].sizing.width, Length::Px(_))
                     && !matches!(a.sizing.width, Length::Px(_)))
                     || (shape.cross_height_px(e.attrs[k].sizing).is_some()

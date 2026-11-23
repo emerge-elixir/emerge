@@ -10,7 +10,7 @@ struct Demand {
     edges: usize,
     texts: usize,
     scales: usize,
-    paragraphs: usize,
+    prose_hosts: usize,
     words: usize,
     materials: usize,
     material_bytes: usize,
@@ -30,7 +30,7 @@ impl Demand {
             edges: e.child_pool.len(),
             texts: t.layers.text_count,
             scales: t.layers.scale_declarations,
-            paragraphs: t.layers.paragraphs.count,
+            prose_hosts: t.layers.paragraphs.hosts,
             words: t.layers.paragraphs.words,
             materials: t.output.materials,
             material_bytes: t.output.material_bytes,
@@ -137,7 +137,7 @@ impl Tree {
                 d.live -= 1;
                 d.live_bytes -= e.raw(k).len();
                 d.texts -= usize::from(e.slots[k].shape.uses_glyphs());
-                d.paragraphs -= usize::from(e.slots[k].shape == Shape::Paragraph);
+                d.prose_hosts -= usize::from(e.slots[k].shape.has_prose_sites());
                 d.materials -= usize::from(e.attrs[k].material());
                 d.material_bytes -= e.attrs[k].material_bytes();
                 d.rules -= usize::from(e.attrs[k].has_rules());
@@ -182,7 +182,7 @@ impl Tree {
             d.live += 1;
             d.live_bytes += len;
             d.texts += usize::from(s.shape.uses_glyphs());
-            d.paragraphs += usize::from(s.shape == Shape::Paragraph);
+            d.prose_hosts += usize::from(s.shape.has_prose_sites());
             d.materials += usize::from(a.material());
             d.material_bytes += a.material_bytes();
             d.rules += usize::from(a.has_rules());
@@ -296,13 +296,13 @@ impl Tree {
             self.budget,
         )?;
         self.layers.text.ensure(peak, d.resident, self.budget)?;
-        d.words = if d.paragraphs > 0 {
+        d.words = if d.prose_hosts > 0 {
             b.paragraph_words(&self.elements, d.words)
         } else {
             0
         };
         let words = d.words;
-        if d.paragraphs > 0 {
+        if d.prose_hosts > 0 {
             self.layers.paragraphs.reserve(
                 self.elements.slots.capacity(),
                 d.resident,
@@ -411,7 +411,7 @@ impl Tree {
         self.root = b.root.map(|id| e.ids[&id]);
         e.live_bytes = d.live_bytes;
         self.layers.text_count = d.texts;
-        self.layers.paragraphs.count = d.paragraphs;
+        self.layers.paragraphs.hosts = d.prose_hosts;
         self.layers.paragraphs.words = d.words;
         self.output.materials = d.materials;
         self.output.material_bytes = d.material_bytes;

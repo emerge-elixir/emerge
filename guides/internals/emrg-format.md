@@ -84,9 +84,9 @@ wrapped_column -> 14
 
 Tag 14 is an addition to v10. The header, the first thirteen tags, child
 references and attribute encoding are unchanged. Older retained readers
-reject the new kind, not the whole format. Paragraph uses the existing tag `7`
-and the ordinary declared child order. No line fragments, float offsets, glyph
-ranges or continuation hit boxes cross the wire.
+reject the new kind, not the whole format. Paragraph and TextColumn use the
+existing tags `7` and `8` and ordinary declared child order. No line fragments,
+float offsets, glyph ranges or continuation hit boxes cross the wire.
 
 ## Attribute Tags
 
@@ -118,14 +118,16 @@ The declaration inherits when absent; explicit `0` overrides an inherited
 center or right. Only authored values are serialized, not the inherited
 alignment, offered width or glyph origin. Tags `5` and `6` normally position
 boxes. A paragraph also reads its own `5` as a fallback for line alignment;
-explicit left/right on its child selects a float. Omission is not an explicit
-left float. Unknown or missing alignment bytes are refused.
+explicit left/right on a child of Paragraph or TextColumn selects a float.
+TextColumn shares exclusions across its direct paragraphs. Omission is not an
+explicit left float. Unknown or missing alignment bytes are refused.
 
 Tag `37` (`space_evenly`) carries one byte: `0` for false, `1` for true.
 All supported kinds retain the declared bytes, including explicit false.
 Only Row, Column, WrappedRow and WrappedColumn use the flag; it has no
-layout effect on El, Text, None or Paragraph. Calculated gaps are never serialized.
-A missing or non-boolean payload is refused before replacing the accepted tree.
+layout effect on El, Text, None, Paragraph or TextColumn. Calculated gaps are
+never serialized. A missing or non-boolean payload is refused before replacing
+the accepted tree.
 
 Layout scale is tag `78` followed by a finite, positive big-endian `f64`.
 The wire contains the authored factor, never the product with an ancestor or

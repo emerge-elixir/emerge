@@ -16,7 +16,7 @@ branch stays in [API parity](../../plans/api-parity.md).
 | Changed | `space_evenly()` on a pixel- or fill-width `wrapped_row/2` now distributes leftover width **within each line** instead of being ignored. Authored spacing still decides which children fit; a single child stays at the start. | [D12](retained-decisions.md#d12-distribute-even-gaps-after-sizing-each-linear-group) · [multi-line frames and clicks](../../test/emerge_skia/linear_even_spacing_test.exs) |
 | Changed | A globally keyed element of the same kind keeps its occurrence across parent moves or promotion to root; removing it from an accepted declaration ends that lifetime. A press can survive a move, not a removal/reinsert. | [D2](retained-decisions.md#d2-identify-occurrences-rather-than-matching-subtrees) · [promotion](../../test/emerge_skia/viewport_constraints_test.exs) · [press across an aligned Row ↔ El move](../../test/emerge_skia/el_child_alignment_test.exs) |
 | Changed | Low-level EMRG clients must use v10 declarations/patch terms; v9 bytes and opcode lists are not accepted. Call `upload_tree/2` on a vacant renderer, then use the returned state with `patch_tree/3` even for a new root. Pass `nil` to clear; `none()` mounts an element. | [D3](retained-decisions.md#d3-replace-one-target-instead-of-sending-a-list-of-mutations) · [wire contract](emrg-format.md) |
-| Changed | If siblings from different alignment groups overlap, the later-declared sibling paints on top; the later eligible listener wins the click. Aligning a card right or bottom does not raise it above later siblings. | [D11 and reference pixel](retained-decisions.md#d11-place-alignment-groups-without-changing-stacking) · [overlap and reorder](../../test/emerge_skia/linear_zones_test.exs) |
+| Changed | If siblings from different alignment groups overlap, the later-declared sibling paints on top; the later eligible listener wins the click. Aligning a card right or bottom does not raise it above later siblings. This also applies to a stacked float overlapping a later paragraph in a [text column](../../plans/checkpoints/layout/text-column.md). | [D11 and reference pixel](retained-decisions.md#d11-place-alignment-groups-without-changing-stacking) · [overlap and reorder](../../test/emerge_skia/linear_zones_test.exs) |
 | Changed | After a tree or callback edit, clicks still use the last successfully submitted pixels, listener geometry and route until the new frame is installed. Local coordinates themselves are **not** new to current `main`. | [D5](retained-decisions.md#d5-publish-input-with-the-successful-submission) · [pending edit and click](../../test/emerge_skia/retained_tree_slice_test.exs) |
 | Changed | A clickable inline phrase in `paragraph/2` receives clicks on each visible continuation. Gaps remain with the paragraph or the content behind it. Coordinates are relative to the same element across lines, not reset at the start of each line. | [D14: observed before/after on a Wayland seat](retained-decisions.md#d14-break-paragraph-lines-once-and-submit-their-hit-regions-with-the-ink) · [continuation, gap and held click](../../test/emerge_skia/paragraph_flow_test.exs) |
 | Added | Binary headless sessions accept raw pointer, key, focus and text-commit input via `EmergeSkia.send_input/2`; subscribers and element listeners use the normal dispatch path. | [D5](retained-decisions.md#d5-publish-input-with-the-successful-submission) |
@@ -61,6 +61,14 @@ Also reproduced on `aef5e42f`: in a 64×64 WrappedRow with padding 4 and
 **y=20**. Only a 16×4 strip was visible at y=0 on `main`; retained draws the
 full 16×16 box at y=20. Ordinary Row/Column center controls matched `main`.
 [Line alignment regression](../../test/emerge_skia/wrapped_column_test.exs).
+
+**Keep visible solid backgrounds on unbounded document blocks.** On `aef5e42f`,
+`height(fill())` on a non-floating TextColumn block receives an effectively
+unbounded height. Its solid background could disappear from the viewport even
+though the block was there. Retained paints the visible portion, matching a
+400px-tall control in a 196px viewport, without changing the height offer or
+pulling the following block back on screen. [Public fill/cap/undo and click](../../test/emerge_skia/text_column_test.exs) ·
+[matched geometry, raster and Skia control](../../plans/checkpoints/layout/text-column.md).
 
 A retained refusal before a port, or a clipping correction that restores
 `main`'s pixels, is not evidence for a `main` fix. No candidate above has been

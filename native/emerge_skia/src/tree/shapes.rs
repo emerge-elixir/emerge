@@ -135,6 +135,7 @@ define_shapes!(
     el::El,
     text_leaf::Text,
     paragraph::Paragraph,
+    text_column::TextColumn,
     empty::Empty
 );
 
@@ -197,6 +198,12 @@ impl Shape {
     }
     pub fn allots_height(self) -> bool {
         self.main_axis() == Some(linear::Y)
+    }
+    pub fn has_prose_sites(self) -> bool {
+        matches!(self, Self::Paragraph | Self::TextColumn)
+    }
+    pub fn reads_prose_box(self, e: &Elements, c: Key) -> bool {
+        self == Self::TextColumn || (self == Self::Paragraph && e.float_side(c).is_some())
     }
     pub fn uses_glyphs(self) -> bool {
         with_shape!(self, |S| PayloadOf::<S>::USES_GLYPHS)

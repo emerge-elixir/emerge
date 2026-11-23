@@ -349,3 +349,33 @@ paragraph during a press, release at `(53,13)` delivered that same link at
 clicks](../../test/emerge_skia/paragraph_flow_test.exs) · [failed submission and
 resource controls](../../native/emerge_skia/src/tree/tests/prose.rs) ·
 [qualification and scope](../../plans/checkpoints/layout/paragraph.md).
+
+### D15. Resolve shared float bands in document order
+
+A TextColumn measures the widest block and the sum of block heights, authored
+vertical gaps and insets. It offers widths before reflow, but does not allot
+Column height shares. An explicit left/right child floats; each side stacks
+independently. Floats don't advance the block cursor. A non-floating paragraph
+can start alongside earlier floats; any other ordinary block clears below them.
+
+[Document reflow](../../native/emerge_skia/src/tree/layers/document.rs) positions
+the paragraph **before** running the same [line breaker](../../native/emerge_skia/src/tree/paragraph.rs)
+against shared exclusions. Fragment positions remain paragraph-relative; the
+float rectangles are document-relative. Search for a float's band with its
+measured width and height, then exclude its final outer box. This matters for
+a floating paragraph: content can grow after wrapping, but a pixel cap or a
+fill-height float does not take all that wrapped height. A clean paragraph with no incoming
+exclusions can reuse its relative result below a changed block. Do not solve a
+provisional paragraph, sort children by resulting geometry, or use a previous
+frame to decide where to break. Document child rectangles, including late packed
+widths, are read directly in Place. Prepared drawing and hits still install together.
+
+[D11](#d11-place-alignment-groups-without-changing-stacking) applies even where
+a stacked float overlaps a later paragraph. At `(15,90)` on the private Wayland
+seat, `main` painted and routed the blue float `(8,5)`; retained painted and
+routed the later paragraph `(8,55.16)` (rounded here). For an **uncapped
+fill-height block**, both implementations offer `f32::MAX`, not the viewport's
+height. Retained clips solid backgrounds to their visible bounds before raster;
+it does not make them disappear because the full rectangle is too large for
+Skia. [Whole frames, seated observations and scope](../../plans/checkpoints/layout/text-column.md) ·
+[public regressions](../../test/emerge_skia/text_column_test.exs).

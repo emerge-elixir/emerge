@@ -75,6 +75,56 @@ fn paragraphs(c: &Counter) {
     assert!(r.tree.patch(&too_large).is_err());
     assert_eq!(r.tree.encode(), before);
 }
+fn documents(c: &Counter) {
+    let mut r = Raster::default();
+    r.tree.upload(&document::story()).unwrap();
+    c.zero("first document after reservation", || {
+        r.settle(180., 170., 1.).unwrap();
+    });
+    r.install();
+    for edit in [
+        set(2, 4, document::margin(2, 30., 72.)),
+        order(1, 8, &[3, 2, 5, 8]),
+        set(7, 5, text("BB AA")),
+        order(1, 8, &[2, 3, 5, 8]),
+        set(2, 4, document::margin(0, 30., 70.)),
+    ] {
+        c.zero("fitting document change through draw and hits", || {
+            r.tree.patch(&edit).unwrap();
+            r.settle(180., 170., 1.).unwrap();
+        });
+        r.install();
+    }
+    let accepted = r.tree.encode();
+    let bigger = set(7, 5, text(&"big ".repeat(1000)));
+    (c.fail_next_reserve)();
+    assert!(r.tree.patch(&bigger).is_err());
+    assert_eq!(r.tree.encode(), accepted);
+
+    // Reserve sides for all residents, not just the number of paragraphs or
+    // float sides seen at first layout. No paragraph or glyph is needed here.
+    let ids: Vec<_> = (2..2050).collect();
+    let nodes = std::iter::once(node(1, 8, block(&[px(1, 98.)]), &ids))
+        .chain(
+            ids.iter()
+                .map(|&id| node(id, 4, document::margin(0, 9., 1.), &[])),
+        )
+        .collect::<Vec<_>>();
+    let mut wide = Raster::default();
+    wide.tree.upload(&upload(&nodes)).unwrap();
+    c.zero("2048 same-side floats after reservation", || {
+        wide.settle(180., 170., 1.).unwrap();
+    });
+    wide.install();
+    let reverse = order(1, 8, &ids.into_iter().rev().collect::<Vec<_>>());
+    c.zero(
+        "reverse document floats without a second child order",
+        || {
+            wide.tree.patch(&reverse).unwrap();
+            wide.settle(180., 170., 1.).unwrap();
+        },
+    );
+}
 fn text_alignment(c: &Counter) {
     let ids: Vec<_> = (2..10_002).collect();
     let labels = std::iter::once(node(1, 3, text_align::host(Some(1)), &ids))
@@ -1030,6 +1080,7 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     });
     alignment_zones(&c);
     paragraphs(&c);
+    documents(&c);
     text_alignment(&c);
     for kind in [4, 5, 6] {
         let mut r = Raster::default();

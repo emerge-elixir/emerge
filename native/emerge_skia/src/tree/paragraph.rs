@@ -1,10 +1,13 @@
 //! Paragraph-local fragments, in declaration order. Reflow writes relative
 //! coordinates once; Place, drawing and hit testing read the same result.
 use super::{
-    layers::Size,
     text::{Run, TextStore},
     *,
 };
+
+mod floats;
+use floats::Floats;
+pub(super) use floats::{Band, FloatSize};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct Fragment {
@@ -19,14 +22,19 @@ pub(super) struct Fragment {
 }
 #[derive(Default)]
 pub(super) struct Paragraphs {
-    pub count: usize,
+    pub hosts: usize,
     pub words: usize,
-    spans: SecondaryMap<Key, Span<Fragment>>,
+    solutions: SecondaryMap<Key, Solution>,
     data: Pool<Fragment>,
     sites: SecondaryMap<Key, Rect>,
     scratch: Vec<Fragment>,
-    // Each side stacks monotonically, even when the two sides overlap.
-    floats: [Vec<Rect>; 2],
+    pub floats: Floats,
+}
+#[derive(Clone, Copy, Default)]
+struct Solution {
+    span: Span<Fragment>,
+    // A clean unexcluded paragraph can move vertically without breaking lines.
+    clear_height: Option<f32>,
 }
 impl Paragraphs {
     pub fn reserve(
@@ -36,7 +44,7 @@ impl Paragraphs {
         words: usize,
         b: Budget,
     ) -> Result<(), String> {
-        self.spans
+        self.solutions
             .try_set_capacity(keys)
             .map_err(pool::capacity_error)?;
         self.sites
@@ -45,11 +53,7 @@ impl Paragraphs {
         if words > self.scratch.capacity() {
             pool::reserve(&mut self.scratch, b.capacity(words))?;
         }
-        for side in &mut self.floats {
-            if owners > side.capacity() {
-                pool::reserve(side, b.capacity(owners))?;
-            }
-        }
+        self.floats.reserve(owners, b)?;
         // Old fragments can belong to a detached or not-yet-reflowed paragraph.
         // Provision both initial and replacement line sets on first admission.
         let old = if self.data.capacity() == 0 {
@@ -60,54 +64,74 @@ impl Paragraphs {
         self.data.ensure(old + words, owners, b)
     }
     pub fn evict(&mut self, k: Key) {
-        if let Some(span) = self.spans.remove(k) {
-            self.data.release(span);
+        if let Some(solution) = self.solutions.remove(k) {
+            self.data.release(solution.span);
         }
         self.sites.remove(k);
+    }
+    pub fn set_site(&mut self, c: Key, site: Rect) {
+        self.sites.insert(c, site);
     }
     pub fn site(&self, c: Key) -> Rect {
         self.sites.get(c).copied().unwrap_or_default()
     }
     pub fn fragments(&self, k: Key) -> &[Fragment] {
-        self.spans.get(k).map_or(&[], |s| self.data.get(s))
+        self.solutions
+            .get(k)
+            .map_or(&[], |s| self.data.get(&s.span))
     }
+    pub fn invalidate_lines(&mut self, k: Key) {
+        if let Some(s) = self.solutions.get_mut(k) {
+            s.clear_height = None;
+        }
+    }
+    /// Returns the content height and whether line inputs were rebuilt. A local
+    /// float cannot outlive this paragraph's content height. Thus when both the
+    /// old and new incoming bands are clear, clean relative sites need no replay.
     #[allow(clippy::too_many_arguments)]
     pub fn layout(
         &mut self,
         e: &Elements,
         k: Key,
         inner: f32,
-        gap: [f32; 2],
+        document_origin: Option<[f32; 2]>,
         align: Alignment,
         runs: &SecondaryMap<Key, Run>,
         text: &TextStore,
-        fit: impl Fn(Key) -> Size,
-    ) -> f32 {
+        float_size: impl Fn(Key) -> FloatSize,
+    ) -> (f32, bool) {
+        let size = e.attrs[k].sizing;
         let scale = e.slots[k].admitted.scale;
-        let [top, _, _, left] = e.attrs[k].sizing.padding.map(|v| scale::pixels(v, scale));
-        self.scratch.clear();
-        for side in &mut self.floats {
-            side.clear();
+        let [top, _, _, left] = size.padding.map(|v| scale::pixels(v, scale));
+        let [gap, line_gap] = size.spacing.map(|v| scale::pixels(v, scale));
+        let origin = document_origin.unwrap_or([0.; 2]);
+        if document_origin.is_none() {
+            self.floats.clear();
         }
+        let clear = document_origin.is_some() && self.floats.bottom() <= origin[1] + top;
+        if clear && let Some(h) = self.solutions.get(k).and_then(|s| s.clear_height) {
+            return (h, false);
+        }
+        let band = Band::new(origin, left, inner, gap);
+        let left = band.limits(&self.floats, top, 1.).0;
+        self.scratch.clear();
         let mut flow = Lines {
             words: &mut self.scratch,
             floats: &mut self.floats,
-            left,
-            right: left + inner,
+            band,
             y: top,
             x: left,
             h: 0.,
             bottom: top,
-            gap,
+            line_gap,
             align,
             start: 0,
             text_right: left,
-            band_right: left + inner,
+            band_right: band.right,
         };
         for &owner in e.children(k) {
             if let Some(side) = e.float_side(owner) {
-                let size = fit(owner);
-                let rect = flow.add_float(side == Alignment::End, size);
+                let rect = flow.add_float(side, float_size(owner));
                 self.sites.insert(owner, rect);
                 continue;
             }
@@ -145,13 +169,18 @@ impl Paragraphs {
                 self.sites.insert(f.source, bounds);
             }
         }
-        if self.fragments(k) != self.scratch {
-            if let Some(old) = self.spans.remove(k) {
-                self.data.release(old);
-            }
-            self.spans.insert(k, self.data.insert(&self.scratch));
+        let changed = self.fragments(k) != self.scratch;
+        let solution = self
+            .solutions
+            .entry(k)
+            .expect("live paragraph")
+            .or_default();
+        if changed {
+            self.data.release(solution.span);
+            solution.span = self.data.insert(&self.scratch);
         }
-        height
+        solution.clear_height = clear.then_some(height);
+        (height, true)
     }
 }
 pub(super) fn union(a: Rect, b: Rect) -> Rect {
@@ -167,14 +196,13 @@ pub(super) fn union(a: Rect, b: Rect) -> Rect {
 const EPS: f32 = 0.001;
 struct Lines<'a> {
     words: &'a mut Vec<Fragment>,
-    floats: &'a mut [Vec<Rect>; 2],
-    left: f32,
-    right: f32,
+    floats: &'a mut Floats,
+    band: Band,
     x: f32,
     y: f32,
     h: f32,
     bottom: f32,
-    gap: [f32; 2],
+    line_gap: f32,
     align: Alignment,
     start: usize,
     text_right: f32,
@@ -182,27 +210,10 @@ struct Lines<'a> {
 }
 impl Lines<'_> {
     fn band(&self, y: f32, height: f32) -> (f32, f32) {
-        let active = |side: usize| {
-            let floats = &self.floats[side];
-            let start = floats.partition_point(|r| r.y + r.height <= y);
-            floats[start..]
-                .iter()
-                .take_while(move |r| r.y < y + height.max(1.))
-        };
-        let l = active(0)
-            .map(|r| (r.x + r.width + self.gap[0]).min(self.right))
-            .fold(self.left, f32::max);
-        let r = active(1)
-            .map(|r| (r.x - self.gap[0]).max(self.left))
-            .fold(self.right, f32::min);
-        (l, r.max(l))
+        self.band.limits(self.floats, y, height)
     }
     fn next_bottom(&self, y: f32) -> Option<f32> {
-        self.floats
-            .iter()
-            .filter_map(|s| s.get(s.partition_point(|r| r.y + r.height <= y + EPS)))
-            .map(|r| r.y + r.height)
-            .min_by(f32::total_cmp)
+        self.band.next_bottom(self.floats, y)
     }
     fn finish_line(&mut self) {
         let dx = self
@@ -223,34 +234,14 @@ impl Lines<'_> {
         self.x = self.band(y, 1.).0;
     }
     fn advance_line(&mut self) {
-        self.newline(self.y + self.h + self.gap[1]);
+        self.newline(self.y + self.h + self.line_gap);
     }
-    fn add_float(&mut self, right: bool, size: Size) -> Rect {
+    fn add_float(&mut self, side: Alignment, size: FloatSize) -> Rect {
         if self.h > 0. && self.x > self.band(self.y, 1.).0 + EPS {
             self.advance_line();
         }
-        let mut y = self.floats[usize::from(right)]
-            .last()
-            .map_or(self.y, |r| self.y.max(r.y + r.height));
-        let (l, r) = loop {
-            let (l, r) = self.band(y, size.h);
-            if size.w.min(self.right - self.left) <= r - l + EPS {
-                break (l, r);
-            }
-            if let Some(b) = self.next_bottom(y) {
-                y = b;
-            } else {
-                break (l, r);
-            }
-        };
-        let rect = Rect {
-            x: if right { (r - size.w).max(l) } else { l },
-            y,
-            width: size.w,
-            height: size.h,
-        };
-        self.bottom = self.bottom.max(y + size.h);
-        self.floats[usize::from(right)].push(rect);
+        let rect = self.band.place(self.floats, side, self.y, size);
+        self.bottom = self.bottom.max(rect.y + rect.height);
         self.x = self.x.max(self.band(self.y, 1.).0);
         rect
     }

@@ -5,6 +5,7 @@ mod column;
 mod column_width;
 mod content_bounds;
 mod dimensions;
+mod document;
 mod el_alignment;
 mod el_child;
 mod identity;

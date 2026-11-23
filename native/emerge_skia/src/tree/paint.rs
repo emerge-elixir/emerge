@@ -615,6 +615,10 @@ impl Raster {
     pub(super) fn hit_at(&self, x: f32, y: f32) -> Option<(u64, f64, f64)> {
         self.target_at(x, y).map(|(_, id, x, y)| (id, x, y))
     }
+    #[cfg(test)]
+    pub(super) fn replay_drawing(&self) -> Vec<u8> {
+        rasterize(self.tree.layers.viewport, self.tree.output.drawing()).unwrap()
+    }
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
     }

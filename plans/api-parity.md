@@ -1,12 +1,12 @@
 # Public API parity with main
 
-**Selected item:** none. Last completed: [`paragraph/2`](checkpoints/layout/paragraph.md).
+**Selected item:** none. Last completed: [`text_column/2`](checkpoints/layout/text-column.md).
 
-`wrapped_column/2` is an addition to the seven
-ported `main` kinds, not an eighth `main` kind. See the [geometry and dependency
+`wrapped_column/2` is an addition to the eight
+ported `main` kinds, not a ninth `main` kind. See the [geometry and dependency
 boundary](../guides/internals/retained-decisions.md#d10-wrap-columns-at-the-resolved-height).
 The rows below are gaps, not concurrent plans. The [alignment roadmap](alignment.md)
-covers the remaining sites gated on TextColumn, editors and other features.
+covers the remaining sites gated on Nearby, scrolling and editors.
 
 **Reference:** local `main` at `aef5e42fc789c396505f85c34810b2ca9c008586`;
 retained inventory began at `871659f`; the linked implementations and tests
@@ -32,7 +32,6 @@ be expressed from what can be drawn or receive input.
 
 | Surface | Remaining behavior |
 | --- | --- |
-| `text_column/2` — missing | Block layout, default sizes and floats spanning paragraphs. [`paragraph/2`](checkpoints/layout/paragraph.md) already wraps and aligns direct Text and El→Text with paragraph-local floats, inline decoration and continuation clicks. CR/LF are whitespace at an inline prose site; this is not standalone multiline Text or an editor. |
 | `image/2`, `svg/2`, `image_fit/1`, `Svg.color/1` — missing | Load, measure and paint raster/SVG, aspect-preserving and explicit fits, original SVG colors or template tint. SVG uses the image kind. Asset policy below applies to backgrounds too. |
 | `Input.text/2`, `multiline/2`, `slider/2`, `Input.Slider.config/0,1` — missing | Editable single/multiline text, echo, caret, selection, IME, multiline wrap/scroll; controlled slider range/value/step, track, filled track, thumb and change delivery. A button is already an El, but its keyboard/press behavior is not there. |
 | `video/2` — missing | Layout, fit and paint the latest frame of a renderer-local named target; distinct from sending headless frames *out*. See video submission below. |

@@ -152,7 +152,11 @@ impl Layers {
                 }
                 self.invalidate_composition(k, depth, Outputs::Hit);
             } else if moved {
-                // Fit is site-independent. The new constraints and origin
+                // A paragraph leaving document flow no longer reads sibling floats.
+                if e.slots[k].shape == Shape::Paragraph {
+                    self.invalidate(Pass::Reflow, k, depth);
+                }
+                // Ordinary fit is site-independent. The new constraints and origin
                 // can still differ even when width and scale are unchanged.
                 if let Some(part) = self.parts.get_mut(k) {
                     part.reattach();
@@ -272,6 +276,11 @@ impl Layers {
             self.invalidate(Pass::Reflow, p, e.depth(p));
             self.invalidate(Pass::Place, k, depth);
         }
+        if old.align[0] != next.align[0] && parent == Some(Shape::TextColumn) {
+            let p = e.slots[k].parent.unwrap();
+            self.invalidate(Pass::Flow, p, e.depth(p));
+            self.invalidate(Pass::Reflow, p, e.depth(p));
+        }
         if align_changed
             && let Some(p) = e.slots[k].parent
             && !e.slots[p].shape.main_axis().is_some_and(|i| {
@@ -362,7 +371,7 @@ impl Layers {
                 self.invalidate(Pass::Measure, p, e.depth(p));
             }
         }
-        if shape == Shape::Column
+        if matches!(shape, Shape::Column | Shape::TextColumn)
             && parent == Some(Shape::WrappedRow)
             && (a.width == Length::Auto) != (b.width == Length::Auto)
             && let Some(p) = e.slots[k].parent
@@ -414,6 +423,11 @@ impl Layers {
         }
         let parent = e.slots[k].parent;
         if height {
+            if e.slots[k].shape == Shape::Paragraph && e.is_prose_float(k) {
+                // Mixed policies can change whether wrapped content grows a
+                // floating paragraph without changing its intrinsic clamp.
+                self.invalidate(Pass::Reflow, k, e.depth(k));
+            }
             if let Some(p) = parent.filter(|&p| {
                 e.slots[p].shape.offers_inner_height() && e.alignment(k, 1) != Alignment::Start
             }) {
@@ -423,7 +437,9 @@ impl Layers {
                 // A new height can move even a top-aligned child's horizontal origin.
                 self.packed_width_reader(e, k);
             }
-            if let Some(p) = parent.filter(|&p| e.slots[p].shape == Shape::WrappedRow) {
+            if let Some(p) = parent.filter(|&p| e.slots[p].shape.reads_prose_box(e, k)) {
+                self.invalidate(Pass::Reflow, p, e.depth(p));
+            } else if let Some(p) = parent.filter(|&p| e.slots[p].shape == Shape::WrappedRow) {
                 // The resolved outer box can move later lines at equal fit.
                 let pass = if e.attrs[p].sizing.height.fits_content_height() {
                     Pass::Reflow

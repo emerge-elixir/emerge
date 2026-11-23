@@ -39,8 +39,7 @@ impl LayoutBehaviour for Paragraph {
     }
     fn place_children(node: Mounted<'_, Children>, cx: &mut PlaceCx<'_>) {
         for &c in node.children() {
-            let site = cx.paragraph_site(c);
-            cx.place(c, [site.x, site.y], Constraint::Natural);
+            cx.place_site(node.key, c);
         }
     }
 }

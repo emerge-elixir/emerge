@@ -19,6 +19,7 @@ pub(super) enum Pass {
     Compose,
 }
 use Pass::*;
+mod document;
 use scale::{Inputs, pixels};
 impl Pass {
     fn direction(self) -> Direction {
@@ -64,6 +65,16 @@ struct Fit {
     size: Size,
     // Natural cross offer for a WrappedRow, before fitting its full stack.
     row_offer: f32,
+}
+impl Fit {
+    fn width_at(fits: &SecondaryMap<Key, Self>, e: &Elements, k: Key, edge: Constraint) -> f32 {
+        let fit = fits[k].size;
+        if !e.slots[k].shape.packs_width(e.attrs[k].sizing.width) {
+            return fit.w;
+        }
+        let height = edge.resolve_height(e, k, fit.h);
+        shapes::column_width(e, k, height, |c| fits[c].size)
+    }
 }
 impl Size {
     pub fn heights(self) -> Heights {
@@ -125,11 +136,25 @@ impl Constraint {
 /// The offset is relative to the incoming coordinate system. A zero
 /// constraint is an actual size, distinct from using natural fit.
 #[derive(Clone, Copy, PartialEq)]
-struct Placement {
-    // Switching out of paragraph-owned geometry matters even at (0,0).
-    inline: Option<Key>,
-    offset: [f32; 2],
-    height: Constraint,
+enum Placement {
+    Box {
+        offset: [f32; 2],
+        height: Constraint,
+    },
+    // Reflow already resolved this rectangle relative to its document or
+    // paragraph. Switching coordinate systems matters even at (0,0).
+    Prose(Key),
+}
+impl Placement {
+    fn for_height(self, policy: Length) -> Self {
+        match self {
+            Self::Box { offset, height } => Self::Box {
+                offset,
+                height: height.for_height(policy),
+            },
+            site => site,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -246,6 +271,9 @@ impl FlowCx<'_> {
     }
     pub fn offer_intrinsic_width(&mut self, c: Key) {
         let width = self.measured_width(c).min(self.inner);
+        self.offer_available_width(c, width);
+    }
+    pub fn offer_available_width(&mut self, c: Key, width: f32) {
         self.layers
             .offer_width(self.e, c, Constraint::Available(width), false);
     }
@@ -265,25 +293,6 @@ pub(super) struct ReflowCx<'a> {
     pub row_offer: f32,
 }
 impl ReflowCx<'_> {
-    pub fn paragraph(&mut self, e: &Elements, k: Key) -> Heights {
-        let l = &mut self.layers;
-        let align = e.attrs[k]
-            .text_align
-            .or(e.attrs[k].align[0])
-            .unwrap_or(l.context[k].text_align);
-        let height = l.paragraphs.layout(
-            e,
-            k,
-            l.width[k].inner,
-            self.gap,
-            align,
-            &l.runs,
-            &l.text,
-            |c| l.fit[c].size,
-        );
-        l.enqueue(Compose, k, e);
-        self.box_height(height).max(self.measured_height).into()
-    }
     pub fn child(&self, c: Key) -> Size {
         self.layers.fit[c].size
     }
@@ -317,8 +326,9 @@ pub(super) struct PlaceCx<'a> {
     translated: bool,
 }
 impl PlaceCx<'_> {
-    pub fn paragraph_site(&self, c: Key) -> Rect {
-        self.layers.paragraphs.site(c)
+    pub fn place_site(&mut self, host: Key, c: Key) {
+        self.layers
+            .offer_edge(self.e, c, Placement::Prose(host), self.translated);
     }
     pub fn child(&self, c: Key) -> Size {
         self.layers.fit[c].size
@@ -343,7 +353,7 @@ impl PlaceCx<'_> {
         self.layers.height_shares.get(k).copied()
     }
     pub fn width_at(&self, c: Key, edge: Constraint) -> f32 {
-        self.layers.width_at(self.e, c, edge)
+        Fit::width_at(&self.layers.fit, self.e, c, edge)
     }
     pub fn place(&mut self, c: Key, offset: [f32; 2], height: Constraint) {
         self.layers
@@ -498,16 +508,20 @@ impl Layers {
         }
     }
     pub(super) fn packed_width_reader(&mut self, e: &Elements, k: Key) {
-        if let Some(p) = e.slots[k].parent
-            && e.slots[p].shape.reads_placed_width(e, k)
-        {
-            self.enqueue(Place, p, e);
+        if let Some(p) = e.slots[k].parent {
+            if e.slots[p].shape.reads_prose_box(e, k) {
+                self.enqueue(Reflow, p, e);
+            } else if e.slots[p].shape.reads_placed_width(e, k) {
+                self.enqueue(Place, p, e);
+            }
         }
     }
     // A wrapping parent plans the width of an auto Column before flowing
     // that Column. Its direct children's fill presence affects that width.
     pub(super) fn auto_width_reader(&mut self, e: &Elements, k: Key) {
-        if e.slots[k].shape == Shape::Column && e.attrs[k].sizing.width == Length::Auto {
+        if matches!(e.slots[k].shape, Shape::Column | Shape::TextColumn)
+            && e.attrs[k].sizing.width == Length::Auto
+        {
             match e.parent_shape(k) {
                 Some(Shape::WrappedRow) => self.parent(Flow, k, e),
                 Some(Shape::WrappedColumn) => self.parent(Measure, k, e),
@@ -564,19 +578,20 @@ impl Layers {
         height: Constraint,
         translated: bool,
     ) {
-        let inline = e.inline_host(k);
+        let edge = e
+            .inline_host(k)
+            .map_or(Placement::Box { offset, height }, Placement::Prose);
+        self.offer_edge(e, k, edge, translated);
+    }
+    fn placed_site(&self, host: Key, child: Key) -> Rect {
+        let mut r = self.paragraphs.site(child);
+        r.x += self.frames[host].x;
+        r.y += self.frames[host].y;
+        r
+    }
+    fn offer_edge(&mut self, e: &Elements, k: Key, edge: Placement, translated: bool) {
         let translated = translated
-            || inline.is_some_and(|p| {
-                let mut r = self.paragraphs.site(k);
-                r.x += self.frames[p].x;
-                r.y += self.frames[p].y;
-                self.frames.get(k) != Some(&r)
-            });
-        let edge = Placement {
-            inline,
-            offset,
-            height,
-        };
+            || matches!(edge,Placement::Prose(host) if self.frames.get(k) != Some(&self.placed_site(host,k)));
         if self.placement.get(k) == Some(&edge) && !translated {
             return;
         }
@@ -584,13 +599,7 @@ impl Layers {
         let policy = e.attrs[k].sizing.height;
         // Compare what the element reads. Losing an assigned extent matters
         // even if the new policy ignores changes in available height.
-        if translated
-            || old.is_none_or(|p| {
-                p.inline != inline
-                    || p.offset != offset
-                    || p.height.for_height(policy) != height.for_height(policy)
-            })
-        {
+        if translated || old.is_none_or(|p| p.for_height(policy) != edge.for_height(policy)) {
             self.enqueue(Place, k, e);
         }
     }
@@ -899,6 +908,12 @@ impl Layers {
             }
             if old.is_none_or(|s| s.w != m.w || s.h != m.h) {
                 self.enqueue(Reflow, k, e);
+                // A side float searches for a band with its *measured*
+                // dimensions before placing the reflowed box. Its actual fit
+                // and even the document's aggregate measure can stay equal.
+                if e.is_prose_float(k) {
+                    self.parent(Reflow, k, e);
+                }
             }
         }
     }
@@ -951,6 +966,16 @@ impl Layers {
     }
     fn reflow(&mut self, e: &Elements, k: Key) {
         let n = &e.slots[k];
+        if n.shape == Shape::Paragraph
+            && e.parent_shape(k) == Some(Shape::TextColumn)
+            && e.float_side(k).is_none()
+        {
+            // Only the document knows this paragraph's incoming bands. Its
+            // descendants have settled; delegate the single line solve to it.
+            self.paragraphs.invalidate_lines(k);
+            self.parent(Reflow, k, e);
+            return;
+        }
         let b = e.attrs[k].sizing;
         let width = self.width[k];
         let scale = self.context[k].inputs.scale;
@@ -985,7 +1010,10 @@ impl Layers {
             )
             .map(|f| f.size);
         if n.shape.allots_height()
-            || matches!(n.shape, Shape::WrappedRow | Shape::Paragraph)
+            || matches!(
+                n.shape,
+                Shape::WrappedRow | Shape::Paragraph | Shape::TextColumn
+            )
             || old != Some(fit)
         {
             self.enqueue(Place, k, e);
@@ -1042,46 +1070,24 @@ impl Layers {
             }
         }
     }
-    fn width_at(&self, e: &Elements, k: Key, edge: Constraint) -> f32 {
-        let fit = self.fit[k].size;
-        if !e.slots[k].shape.packs_width(e.attrs[k].sizing.width) {
-            return fit.w;
-        }
-        let height = edge.resolve_height(e, k, fit.h);
-        shapes::column_width(e, k, height, |c| self.fit[c].size)
-    }
     fn place(&mut self, e: &Elements, k: Key, origin: [f32; 2]) {
         let Fit { size: s, row_offer } = self.fit[k];
         let scale = self.context[k].inputs.scale;
-        let edge = self.placement[k];
-        let [x, y] = [origin[0] + edge.offset[0], origin[1] + edge.offset[1]];
-        let (x, y, width, height) = if let Some(p) = edge.inline {
-            let r = self.paragraphs.site(k);
-            (
-                self.frames[p].x + r.x,
-                self.frames[p].y + r.y,
-                r.width,
-                r.height,
-            )
-        } else {
-            (
-                x,
-                y,
-                self.width_at(e, k, edge.height),
-                edge.height.resolve_height(e, k, s.h),
-            )
-        };
-        let origin_changed = self.frames.get(k).is_none_or(|f| [f.x, f.y] != [x, y]);
-        if changed(
-            &mut self.frames,
-            k,
-            Rect {
-                x,
-                y,
-                width,
-                height,
+        let rect = match self.placement[k] {
+            Placement::Prose(host) => self.placed_site(host, k),
+            Placement::Box { offset, height } => Rect {
+                x: origin[0] + offset[0],
+                y: origin[1] + offset[1],
+                width: Fit::width_at(&self.fit, e, k, height),
+                height: height.resolve_height(e, k, s.h),
             },
-        ) {
+        };
+        let origin_changed = self
+            .frames
+            .get(k)
+            .is_none_or(|f| [f.x, f.y] != [rect.x, rect.y]);
+        let Rect { width, height, .. } = rect;
+        if changed(&mut self.frames, k, rect) {
             self.enqueue(PaintContext, k, e);
         }
         e.slots[k].shape.place_children(

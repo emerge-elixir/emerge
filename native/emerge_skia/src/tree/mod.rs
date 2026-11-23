@@ -166,6 +166,23 @@ impl Length {
     fn declared_height_slot(self) -> bool {
         matches!(self, Self::Px(_)) || (self.weight().is_some() && !self.reads_fill_content())
     }
+    // Can wrapped content grow a floating paragraph beyond its intrinsic offer?
+    // A min needs both branches to grow; a max needs just one. For a folded
+    // content clamp the upper bound already answers this question.
+    fn grows_with_content(self, raw: &[u8]) -> bool {
+        match self {
+            Self::Auto | Self::Content => true,
+            Self::BoundedContent(b) => b.cap.is_infinite(),
+            Self::Formula(f) => f.eval(
+                raw,
+                true,
+                |_| false,
+                |_| false,
+                |min, a, b| if min { a && b } else { a || b },
+            ),
+            _ => false,
+        }
+    }
     // Unallotted fit at settled width, before an enclosing allocator assigns space.
     fn fits_content_height(self) -> bool {
         !matches!(self, Self::Px(_))
@@ -375,6 +392,9 @@ impl Elements {
         self.attrs[k].align[0].filter(|a| *a != Alignment::Center)
     }
     /// The paragraph owns a direct non-float and, for an El, its text source.
+    fn is_prose_float(&self, k: Key) -> bool {
+        self.parent_shape(k).is_some_and(Shape::has_prose_sites) && self.float_side(k).is_some()
+    }
     fn inline_host(&self, k: Key) -> Option<Key> {
         let p = self.slots[k].parent?;
         if self.slots[p].shape == Shape::Paragraph {

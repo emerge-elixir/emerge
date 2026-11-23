@@ -337,12 +337,15 @@ defmodule Emerge.UI do
   @doc """
   A text column lays out paragraph-oriented content vertically.
 
-  It behaves like a column but comes with document-friendly defaults:
+  Its default size is `width(fill())` and `height(content())`; explicit widths
+  and heights override these defaults. Blocks follow each other with the
+  authored spacing. Unlike `column/2`, a text column does not divide the
+  remaining height into fill shares or distribute extra space between blocks.
 
-  - `width(fill())`
-  - `height(content())`
-
-  You can override these by passing explicit width/height attributes.
+  Put `align_left()` or `align_right()` on a direct child to float it. Paragraph
+  lines use the remaining width beside the float, even in the next paragraph.
+  A non-floating, non-paragraph child clears the floats above it. Use
+  `center_x()` to center a block without floating it.
 
   ## Example
 
