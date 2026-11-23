@@ -59,6 +59,8 @@ use super::{
 
 mod overscroll;
 mod scroll;
+mod scrollbar_fade;
+pub(crate) use scrollbar_fade::ScrollbarVisibility;
 mod text_click;
 mod touch;
 
@@ -157,6 +159,16 @@ impl EventRuntimeDriver {
 
     fn set_scroll_deceleration(&mut self, scroll_deceleration: ScrollDeceleration) {
         self.runtime.set_scroll_deceleration(scroll_deceleration);
+    }
+
+    fn set_scrollbar_visibility(&mut self, visibility: ScrollbarVisibility) {
+        self.runtime.set_scrollbar_visibility(visibility);
+        // The tree starts with thumbs always shown.
+        if visibility == ScrollbarVisibility::WhileScrolling {
+            let _ = self
+                .tree_tx
+                .send(TreeMsg::SetTransientScrollbars { enabled: true });
+        }
     }
 
     fn set_input_mask(&mut self, mask: u32) {
@@ -1029,6 +1041,8 @@ fn tree_msg_label(msg: &TreeMsg) -> &'static str {
         TreeMsg::Resize { .. } => "resize",
         TreeMsg::SetScrollPosition { .. } => "set_scroll_position",
         TreeMsg::SetScrollOverscroll { .. } => "set_scroll_overscroll",
+        TreeMsg::SetScrollbarAlpha { .. } => "set_scrollbar_alpha",
+        TreeMsg::SetTransientScrollbars { .. } => "set_transient_scrollbars",
         TreeMsg::ScrollRequest { .. } => "scroll_request",
         TreeMsg::ScrollbarThumbDragX { .. } => "scrollbar_thumb_drag_x",
         TreeMsg::ScrollbarThumbDragY { .. } => "scrollbar_thumb_drag_y",
@@ -1352,6 +1366,8 @@ struct DirectEventRuntime {
     scroll_deceleration: ScrollDeceleration,
     drag_scroll_target: Option<NodeId>,
     overscroll: Option<OverscrollState>,
+    scrollbar_visibility: ScrollbarVisibility,
+    scrollbar_fades: HashMap<NodeId, scrollbar_fade::ScrollbarFade>,
     native_log: Arc<NativeLogRelay>,
     stats: Option<Arc<RendererStatsCollector>>,
 }
@@ -1421,6 +1437,8 @@ impl DirectEventRuntime {
             scroll_deceleration: ScrollDeceleration::Android,
             drag_scroll_target: None,
             overscroll: None,
+            scrollbar_visibility: ScrollbarVisibility::Always,
+            scrollbar_fades: HashMap::new(),
             native_log,
             stats,
         }
@@ -1811,6 +1829,7 @@ impl DirectEventRuntime {
                 self.overscroll_spring()
                     .map(|spring| spring.watchdog_deadline),
             )
+            .chain(self.next_scrollbar_fade_deadline())
             .min()
     }
 
@@ -2332,6 +2351,12 @@ impl DirectEventRuntime {
         {
             self.step_overscroll(now, tree_tx, log_render);
         }
+        if self
+            .next_scrollbar_fade_deadline()
+            .is_some_and(|deadline| deadline <= now)
+        {
+            self.step_scrollbar_fades(now, tree_tx, log_render);
+        }
         self.log_event_diagnostic(log_render, || {
             format!("timers end\n  {}", self.diagnostic_summary())
         });
@@ -2347,6 +2372,7 @@ impl DirectEventRuntime {
         self.note_present_timing(presented_at, predicted_next_present_at);
         self.step_inertial_scroll(presented_at, tree_tx, log_render);
         self.step_overscroll(presented_at, tree_tx, log_render);
+        self.step_scrollbar_fades(presented_at, tree_tx, log_render);
     }
 
     fn handle_virtual_key_timer(&mut self, tree_tx: &dyn TreeSink, log_render: bool) {
@@ -3613,6 +3639,7 @@ pub(crate) struct SpawnEventActorConfig {
     pub scroll_line_pixels: f32,
     pub scroll_bounce: bool,
     pub scroll_deceleration: ScrollDeceleration,
+    pub scrollbars: ScrollbarVisibility,
     pub log_render: bool,
     pub native_log: Arc<NativeLogRelay>,
     pub system_clipboard: bool,
@@ -3629,6 +3656,7 @@ pub(crate) fn spawn_event_actor(config: SpawnEventActorConfig) -> thread::JoinHa
         scroll_line_pixels,
         scroll_bounce,
         scroll_deceleration,
+        scrollbars,
         log_render,
         native_log,
         system_clipboard,
@@ -3650,6 +3678,7 @@ pub(crate) fn spawn_event_actor(config: SpawnEventActorConfig) -> thread::JoinHa
         driver.set_scroll_line_pixels(scroll_line_pixels);
         driver.set_scroll_bounce(scroll_bounce);
         driver.set_scroll_deceleration(scroll_deceleration);
+        driver.set_scrollbar_visibility(scrollbars);
         driver.log_event_diagnostic(|| {
             format!(
                 "event actor started\n  scroll_line_pixels: {scroll_line_pixels:.3}\n  system_clipboard: {system_clipboard}\n  {}",

@@ -25,6 +25,7 @@ fn full_outbound_tree_channel_does_not_prevent_event_actor_stop() {
         scroll_line_pixels: 40.0,
         scroll_bounce: false,
         scroll_deceleration: Default::default(),
+        scrollbars: Default::default(),
         log_render: false,
         native_log: Arc::new(NativeLogRelay::default()),
         system_clipboard: false,

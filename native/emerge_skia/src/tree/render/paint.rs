@@ -196,11 +196,13 @@ fn paint_node_for_image_source(
 
 pub(super) fn collect_scrollbar_nodes(
     scene_state: Option<&ResolvedNodeState>,
-    frame: Frame,
-    attrs: &Attrs,
+    alpha: f32,
 ) -> Vec<RenderNode> {
     let mut nodes = Vec::new();
-    let _ = (frame, attrs);
+    if alpha <= 0.0 {
+        return nodes;
+    }
+    let color = scrollbar_color(alpha);
 
     if let Some(metrics) = scene_state.and_then(|state| state.scrollbar_y) {
         nodes.push(RenderNode::Primitive(DrawPrimitive::RoundedRect(
@@ -209,7 +211,7 @@ pub(super) fn collect_scrollbar_nodes(
             metrics.thumb_width,
             metrics.thumb_height,
             metrics.thumb_width / 2.0,
-            (SCROLLBAR_COLOR).into(),
+            color.into(),
         )));
     }
 
@@ -220,11 +222,17 @@ pub(super) fn collect_scrollbar_nodes(
             metrics.thumb_width,
             metrics.thumb_height,
             metrics.thumb_height / 2.0,
-            (SCROLLBAR_COLOR).into(),
+            color.into(),
         )));
     }
 
     nodes
+}
+
+/// `SCROLLBAR_COLOR` with its alpha scaled by `alpha`.
+fn scrollbar_color(alpha: f32) -> u32 {
+    let base = (SCROLLBAR_COLOR & 0xFF) as f32;
+    (SCROLLBAR_COLOR & 0xFFFF_FF00) | (base * alpha.clamp(0.0, 1.0)).round() as u32
 }
 
 pub(super) fn collect_background_rect_nodes(frame: Frame, fill: RenderColor) -> Vec<RenderNode> {
@@ -334,4 +342,21 @@ pub(super) fn collect_border_nodes(frame: Frame, attrs: &Attrs) -> Vec<RenderNod
     };
 
     primitive.into_iter().map(RenderNode::Primitive).collect()
+}
+
+#[cfg(test)]
+mod scrollbar_alpha_tests {
+    use super::*;
+
+    #[test]
+    fn hidden_thumbs_draw_nothing_and_fading_thumbs_scale_the_colour_alpha() {
+        assert!(collect_scrollbar_nodes(None, 0.0).is_empty());
+        assert_eq!(scrollbar_color(1.0), SCROLLBAR_COLOR);
+        assert_eq!(
+            scrollbar_color(0.5) & 0xFFFF_FF00,
+            SCROLLBAR_COLOR & 0xFFFF_FF00
+        );
+        assert_eq!(scrollbar_color(0.5) & 0xFF, 0x4D);
+        assert_eq!(scrollbar_color(0.0) & 0xFF, 0);
+    }
 }

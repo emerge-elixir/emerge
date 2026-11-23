@@ -559,6 +559,7 @@ fn real_event_actor_drops_remounted_click_capture_but_preserves_same_mount_relea
             scroll_line_pixels: 40.0,
             scroll_bounce: false,
             scroll_deceleration: Default::default(),
+            scrollbars: Default::default(),
             log_render: false,
             native_log: Arc::new(NativeLogRelay::default()),
             system_clipboard: false,

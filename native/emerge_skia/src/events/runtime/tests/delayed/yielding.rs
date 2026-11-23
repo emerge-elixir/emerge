@@ -433,6 +433,7 @@ fn real_actor_recovers_yielded_bursts_or_stops_without_a_yield_receipt() {
             scroll_line_pixels: 40.0,
             scroll_bounce: false,
             scroll_deceleration: Default::default(),
+            scrollbars: Default::default(),
             log_render: false,
             native_log: Arc::new(NativeLogRelay::default()),
             system_clipboard: false,

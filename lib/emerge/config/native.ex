@@ -36,6 +36,7 @@ defmodule Emerge.Config.Native do
       scroll_line_pixels: config.input.scroll_line_pixels,
       scroll_bounce: config.input.scroll_bounce,
       scroll_deceleration: config.input.scroll_deceleration,
+      scrollbars: config.input.scrollbars,
       hw_cursor: config.input.cursor.hardware,
       drm_cursor: cursor_options(config.input.cursor),
       drm_startup_retries: config.runtime.startup_retries,

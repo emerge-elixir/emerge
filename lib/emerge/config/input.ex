@@ -29,6 +29,11 @@ defmodule Emerge.Config.Input do
     `UIScrollView.DecelerationRate.normal`: the velocity drops by 0.2 % per
     millisecond, so a fling travels about half a second's worth of its release
     velocity.
+  - `scrollbars` — with `:always` (default), scrollbar thumbs are visible whenever
+    content overflows. With `:while_scrolling`, they are visible while a container
+    scrolls (drag, fling, wheel, keys, overscroll) and fade out 800 ms after the last
+    movement. In both modes the renderer draws thumbs over the content, without
+    layout space.
   - `cursor` — `Emerge.Config.Cursor`, defaulting to its built-in cursor settings.
 
   Subscriptions filter input callbacks, not buttons, element key bindings,
@@ -51,6 +56,7 @@ defmodule Emerge.Config.Input do
             scroll_line_pixels: 30.0,
             scroll_bounce: false,
             scroll_deceleration: :android,
+            scrollbars: :always,
             cursor: %Emerge.Config.Cursor{}
 
   @typedoc "Input category. `:text` includes committed text and IME events; `:display_wake` observes accepted DRM wakes; enter/focus refer to the window, not an element."
@@ -70,6 +76,7 @@ defmodule Emerge.Config.Input do
           scroll_line_pixels: number(),
           scroll_bounce: boolean(),
           scroll_deceleration: :android | :ios,
+          scrollbars: :always | :while_scrolling,
           cursor: Emerge.Config.Cursor.t() | Emerge.Config.Cursor.options()
         }
   @typedoc "Typed keyword shorthand accepted in this record's parent field."
@@ -78,6 +85,7 @@ defmodule Emerge.Config.Input do
           | {:scroll_line_pixels, number()}
           | {:scroll_bounce, boolean()}
           | {:scroll_deceleration, :android | :ios}
+          | {:scrollbars, :always | :while_scrolling}
           | {:cursor, Emerge.Config.Cursor.t() | Emerge.Config.Cursor.options()}
         ]
   @typedoc "Canonical form after nested keyword records have been expanded."
@@ -86,6 +94,7 @@ defmodule Emerge.Config.Input do
           scroll_line_pixels: number(),
           scroll_bounce: boolean(),
           scroll_deceleration: :android | :ios,
+          scrollbars: :always | :while_scrolling,
           cursor: Emerge.Config.Cursor.normalized_t()
         }
 
@@ -110,6 +119,7 @@ defmodule Emerge.Config.Input do
       scroll_line_pixels: :positive_number,
       scroll_bounce: :boolean,
       scroll_deceleration: {:enum, [:android, :ios]},
+      scrollbars: {:enum, [:always, :while_scrolling]},
       cursor: {:record, Emerge.Config.Cursor}
     ]
 

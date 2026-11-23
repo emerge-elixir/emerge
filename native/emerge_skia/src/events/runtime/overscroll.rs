@@ -236,6 +236,7 @@ impl DirectEventRuntime {
     /// The tree message for a changed displayed offset; drops the state once it is back at zero.
     fn take_overscroll_update(&mut self) -> Option<TreeMsg> {
         let overscroll = self.overscroll.as_mut()?;
+        let element_id = overscroll.element_id;
         // Whole pixels keep the subpixel phase of the cached scroll payload, so no subpixel updates go out.
         let displayed = overscroll.displayed().round();
         let message = (displayed != overscroll.sent).then(|| {
@@ -251,7 +252,13 @@ impl DirectEventRuntime {
         if overscroll.raw == 0.0 {
             self.overscroll = None;
         }
-        message
+        let shown = message
+            .as_ref()
+            .and_then(|_| self.show_scrollbars(element_id, Instant::now()));
+        match (message, shown) {
+            (Some(message), Some(shown)) => Some(TreeMsg::Batch(vec![message, shown])),
+            (message, _) => message,
+        }
     }
 
     /// Pixels the container can still scroll in the direction of a request delta, or `None` when

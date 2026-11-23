@@ -153,6 +153,18 @@ impl DirectEventRuntime {
                 })
             })
             .collect();
-        other.into_iter().chain(updates).collect()
+        let now = Instant::now();
+        let moved: Vec<NodeId> = updates
+            .iter()
+            .filter_map(|message| match message {
+                TreeMsg::SetScrollPosition { element_id, .. } => Some(*element_id),
+                _ => None,
+            })
+            .collect();
+        let shown: Vec<_> = moved
+            .into_iter()
+            .filter_map(|element_id| self.show_scrollbars(element_id, now))
+            .collect();
+        other.into_iter().chain(updates).chain(shown).collect()
     }
 }

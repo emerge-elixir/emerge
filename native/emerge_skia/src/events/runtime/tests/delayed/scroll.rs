@@ -752,3 +752,73 @@ fn rubber_band_grows_slower_than_the_drag_and_stays_inside_the_viewport() {
         last = shown;
     }
 }
+
+fn scrollbar_alpha(engine: &TreeUpdateEngine) -> f32 {
+    f32::from_bits(
+        engine
+            .tree()
+            .get(&NodeId(1))
+            .unwrap()
+            .runtime
+            .scrollbar_alpha,
+    )
+}
+
+fn transient(engine: &mut TreeUpdateEngine, host: &mut HostEventRuntime) {
+    host.driver
+        .runtime
+        .set_scrollbar_visibility(ScrollbarVisibility::WhileScrolling);
+    engine
+        .process_messages(
+            vec![TreeMsg::SetTransientScrollbars { enabled: true }],
+            TreeUpdateOptions::new(None, TreeUpdateDecodePolicy::ReturnErr),
+        )
+        .unwrap();
+}
+
+#[test]
+fn transient_scrollbars_show_on_scroll_hold_then_fade_and_stop_their_timer() {
+    let assets = crate::assets::AssetRuntime::new();
+    let _assets = assets.enter();
+    let (mut engine, mut host, _) = start(None, false);
+    transient(&mut engine, &mut host);
+    assert_eq!(scrollbar_alpha(&engine), 0.0);
+
+    wheel(&mut engine, &mut host, 0.0, -40.0);
+    assert_eq!(scrollbar_alpha(&engine), 1.0);
+    let shown_at = host.driver.runtime.scrollbar_fades[&NodeId(1)].last_activity;
+
+    present(
+        &mut engine,
+        &mut host,
+        shown_at + Duration::from_millis(500),
+    );
+    assert_eq!(scrollbar_alpha(&engine), 1.0);
+
+    present(
+        &mut engine,
+        &mut host,
+        shown_at + Duration::from_millis(925),
+    );
+    let fading = scrollbar_alpha(&engine);
+    assert!(fading > 0.0 && fading < 1.0, "{fading}");
+
+    present(
+        &mut engine,
+        &mut host,
+        shown_at + Duration::from_millis(1_100),
+    );
+    assert_eq!(scrollbar_alpha(&engine), 0.0);
+    assert!(host.driver.runtime.scrollbar_fades.is_empty());
+    assert!(host.driver.runtime.next_scrollbar_fade_deadline().is_none());
+}
+
+#[test]
+fn scrollbars_always_shown_send_no_fade_updates() {
+    let assets = crate::assets::AssetRuntime::new();
+    let _assets = assets.enter();
+    let (mut engine, mut host, _) = start(None, false);
+    wheel(&mut engine, &mut host, 0.0, -40.0);
+    assert!(host.driver.runtime.scrollbar_fades.is_empty());
+    assert!(!engine.tree().transient_scrollbars);
+}

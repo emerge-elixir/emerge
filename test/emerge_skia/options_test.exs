@@ -277,6 +277,17 @@ defmodule EmergeSkia.OptionsTest do
     end
   end
 
+  test "build_start_native_opts! normalizes scrollbars" do
+    assert %{scrollbars: :always} = Options.build_start_native_opts!([])
+
+    assert %{scrollbars: :while_scrolling} =
+             Options.build_start_native_opts!(scrollbars: :while_scrolling)
+
+    assert_raise ArgumentError, ~r/:scrollbars must be :always or :while_scrolling/, fn ->
+      Options.build_start_native_opts!(scrollbars: :auto)
+    end
+  end
+
   test "build_start_native_opts! normalizes scroll_deceleration" do
     assert %{scroll_deceleration: :android} = Options.build_start_native_opts!([])
 

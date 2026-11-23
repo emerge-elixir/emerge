@@ -57,7 +57,9 @@ pub mod test_support;
 pub mod text_ops;
 
 pub use runtime::{HostEventRuntime, HostEventSink};
-pub(crate) use runtime::{ScrollDeceleration, SpawnEventActorConfig, spawn_event_actor};
+pub(crate) use runtime::{
+    ScrollDeceleration, ScrollbarVisibility, SpawnEventActorConfig, spawn_event_actor,
+};
 use scrollbar::ScrollbarNode;
 
 /// Element-level events that Rust can emit back to Elixir after input matching.

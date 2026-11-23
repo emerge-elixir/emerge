@@ -637,7 +637,12 @@ fn build_element_subtree<R: RegistryTraversalSink>(
     let background_nodes = build_background_nodes(render_frame, attrs);
     let inset_shadow_nodes = collect_box_shadow_nodes(render_frame, attrs, radius, true);
     let border_nodes = collect_border_nodes(render_frame, attrs);
-    let scrollbar_nodes = collect_scrollbar_nodes(scene_state.as_ref(), render_frame, attrs);
+    let scrollbar_alpha = if tree.transient_scrollbars {
+        f32::from_bits(element.runtime.scrollbar_alpha)
+    } else {
+        1.0
+    };
+    let scrollbar_nodes = collect_scrollbar_nodes(scene_state.as_ref(), scrollbar_alpha);
     let inherited_host_clips = traversal.render_ctx.full_clip_shapes();
     let inherited_self_clip = traversal.render_ctx.nearest_self_clip();
 

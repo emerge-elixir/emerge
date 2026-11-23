@@ -26,6 +26,8 @@
   release; flings that reach an edge overshoot and return. Containers whose content
   fits bounce as well. Wheel, keyboard,
   scrollbar and app-set positions stay clamped. DRM and Wayland backends.
+- `Emerge.Config.Input` `scrollbars`: `:always` (default) or `:while_scrolling`,
+  where thumbs show while a container scrolls and fade out 800 ms after it stops.
 - `Emerge.Config.Input` `scroll_deceleration`: `:android` (default) or `:ios`,
   where a fling loses 0.2 % of its velocity per millisecond as in `UIScrollView`.
 - Optional DRM touch wake through `wake_on_touch`: single tap, double tap or long

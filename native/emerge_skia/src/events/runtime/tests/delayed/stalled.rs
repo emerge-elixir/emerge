@@ -432,6 +432,7 @@ fn real_event_actor_handles_burst_recovery_or_stop_without_a_registry_ack() {
             scroll_line_pixels: 40.0,
             scroll_bounce: false,
             scroll_deceleration: Default::default(),
+            scrollbars: Default::default(),
             log_render: false,
             native_log: Arc::new(NativeLogRelay::default()),
             system_clipboard: false,
