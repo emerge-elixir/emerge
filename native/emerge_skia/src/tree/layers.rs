@@ -211,6 +211,9 @@ impl Measuring<'_> {
     pub fn child(&self, c: Key) -> Demand {
         self.layers.measure[c]
     }
+    pub fn scale(&self) -> f32 {
+        self.layers.context[self.k].inputs.scale
+    }
     pub fn glyph_run(&mut self, text: &str) -> Demand {
         let k = self.k;
         let l = &mut self.layers;
@@ -298,6 +301,9 @@ impl ReflowCx<'_> {
     }
     pub fn break_before(&self, c: Key) -> bool {
         self.layers.offers[c].break_before
+    }
+    pub fn inner_width(&self, k: Key) -> f32 {
+        self.layers.width[k].inner
     }
     pub fn inner_height(&self, outer: f32) -> f32 {
         (outer - (self.padding[0] + self.padding[2])).max(0.)
@@ -820,7 +826,7 @@ impl Layers {
         let c = self.context[k].inputs;
         let b = e.attrs[k].sizing.without_weights();
         let shape = e.slots[k].shape;
-        let memo = (!shape.uses_glyphs()).then(|| {
+        let memo = (!shape.uses_glyphs() && shape != Shape::Image).then(|| {
             self.intrinsic.lookup(
                 shape,
                 b,
@@ -1143,7 +1149,10 @@ impl Layers {
         let next = PaintContext {
             frame: f,
             clip,
-            child_clip: if a.decor.radius != [0.; 4] || a.decor.border != [0.; 4] {
+            child_clip: if shape == Shape::Image {
+                // A leaf's content is the sample, not another layout box.
+                clip.media_clip(inherited)
+            } else if a.decor.radius != [0.; 4] || a.decor.border != [0.; 4] {
                 clip.intersection(a.decor.inner_rect(f, scale))
                     .unwrap_or_default()
             } else {
@@ -1181,9 +1190,14 @@ impl Layers {
         if let Some(outputs) = Outputs::changed(draw, hit) {
             self.invalidate_composition(k, e.depth(k), outputs);
         }
-        if child_clip_changed || color_changed || inputs_changed {
+        let outer_clip_changed = old.is_none_or(|p| p.clip != clip);
+        if child_clip_changed || color_changed || inputs_changed || outer_clip_changed {
             for &child in e.children(k) {
-                if child_clip_changed || inputs_changed || e.attrs[child].color.is_none() {
+                if child_clip_changed
+                    || inputs_changed
+                    || (color_changed && e.attrs[child].color.is_none())
+                    || (outer_clip_changed && e.slots[child].shape == Shape::Image)
+                {
                     self.enqueue(PaintContext, child, e);
                 }
             }

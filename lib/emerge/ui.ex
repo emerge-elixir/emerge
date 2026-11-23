@@ -429,7 +429,9 @@ defmodule Emerge.UI do
   An image element.
 
   `source` can be a verified `~m"..."` reference, logical asset path,
-  runtime file path, or `{:id, image_id}`.
+  runtime file path, or `{:id, image_id}`. The retained renderer supports
+  verified and logical PNG and JPEG sources under the configured app's `priv/`.
+  For JPEGs, intrinsic size and fit use the EXIF display orientation.
 
   When one dimension is pixel-sized and the other is omitted or `content()`,
   the content-sized dimension follows the source's intrinsic aspect ratio.

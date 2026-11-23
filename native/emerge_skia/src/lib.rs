@@ -4,6 +4,7 @@ pub mod input;
 pub mod keys;
 #[path = "runtime/lifecycle.rs"]
 mod lifecycle;
+mod raster_assets;
 mod services;
 mod session;
 pub mod tree;
@@ -106,31 +107,49 @@ struct Offscreen<'a> {
     scale: f64,
     fonts: Vec<Term<'a>>,
     asset_mode: &'a str,
+    asset_timeout_ms: u64,
 }
-fn offscreen(data: Binary, opts: &Offscreen) -> Result<Vec<u8>, String> {
+fn offscreen(data: Binary, opts: &Offscreen, assets: Term) -> Result<Vec<u8>, String> {
     if !matches!(opts.asset_mode, "snapshot" | "await") {
         return Err(format!("unsupported asset mode: {}", opts.asset_mode));
     }
     if !opts.fonts.is_empty() {
         return Err("custom fonts are not in the first slice".into());
     }
-    services::render_tree_offscreen(data.as_slice(), opts.width, opts.height, opts.scale as f32)
+    services::render_tree_offscreen(
+        data.as_slice(),
+        opts.width,
+        opts.height,
+        opts.scale as f32,
+        || {
+            let config = assets
+                .decode::<raster_assets::Settings>()
+                .map_err(|_| "invalid asset options")?;
+            Ok((
+                config,
+                opts.asset_mode == "await",
+                std::time::Duration::from_millis(opts.asset_timeout_ms),
+            ))
+        },
+    )
 }
 #[rustler::nif(schedule = "DirtyCpu")]
 fn render_tree_to_pixels_nif<'a>(
     env: Env<'a>,
     data: Binary,
-    opts: Offscreen,
+    options: Term,
 ) -> Result<Binary<'a>, String> {
-    Ok(binary(env, &offscreen(data, &opts)?))
+    let opts = options.decode().map_err(|_| "invalid raster options")?;
+    Ok(binary(env, &offscreen(data, &opts, options)?))
 }
 #[rustler::nif(schedule = "DirtyCpu")]
 fn render_tree_to_png_nif<'a>(
     env: Env<'a>,
     data: Binary,
-    opts: Offscreen,
+    options: Term,
 ) -> Result<Binary<'a>, String> {
-    let mut pixels = offscreen(data, &opts)?;
+    let opts = options.decode().map_err(|_| "invalid raster options")?;
+    let mut pixels = offscreen(data, &opts, options)?;
     let png = services::png(opts.width, opts.height, &mut pixels)?;
     Ok(binary(env, &png))
 }

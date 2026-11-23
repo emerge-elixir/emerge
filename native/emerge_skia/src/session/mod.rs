@@ -3,6 +3,7 @@
 mod capture;
 mod dispatch;
 mod frame;
+mod images;
 mod stats;
 #[cfg(all(target_os = "linux", feature = "wayland"))]
 mod wayland;
@@ -59,6 +60,7 @@ struct Live {
     #[cfg(all(target_os = "linux", feature = "wayland"))]
     toplevel: Option<wayland::Toplevel>,
     raster: Raster,
+    assets: Option<images::Assets>,
     input: Dispatcher,
     route_target: Option<LocalPid>,
     log: Option<LocalPid>,
@@ -78,6 +80,16 @@ impl Live {
         }
         Err("invalid headless control".into())
     }
+    fn settle(&mut self, size: (u32, u32), scale: f32) -> Result<Option<bool>, String> {
+        let changed = self.raster.settle(size.0 as f32, size.1 as f32, scale)?;
+        if self.raster.tree.waiting_for_pixels() {
+            if let Some(assets) = &self.assets {
+                assets.notify_fits();
+            }
+            return Ok(None);
+        }
+        Ok(Some(changed))
+    }
     fn present(
         &mut self,
         env: &mut OwnedEnv,
@@ -87,8 +99,13 @@ impl Live {
         submit: impl FnOnce(&mut OwnedEnv, &[u8], bool) -> Result<bool, String>,
     ) -> Result<bool, String> {
         self.request = false;
-        let prepared = match self.raster.prepare(size.0 as f32, size.1 as f32, scale) {
-            Ok(prepared) => prepared,
+        let prepared = match self.settle(size, scale) {
+            Ok(Some(c)) => self.raster.prepare_settled(c),
+            Ok(None) => return Ok(false),
+            Err(why) => Err(why),
+        };
+        let prepared = match prepared {
+            Ok(p) => p,
             Err(why) => {
                 self.log_frame_error(env, backend, why);
                 return Ok(false);
@@ -180,6 +197,7 @@ impl Selected {
         }
     }
 }
+#[derive(Clone)]
 enum Wake {
     Binary(Sender<()>),
     #[cfg(all(target_os = "linux", feature = "wayland"))]
@@ -228,6 +246,9 @@ impl Session {
     ) -> Result<(), String> {
         self.live(|live| {
             edit(&mut live.raster.tree, bytes)?;
+            if let Some(assets) = &mut live.assets {
+                assets.request(&self.owner, &self.wake, &mut live.raster.tree);
+            }
             // Send only changed callback addresses down the same ordered channel
             // as clicks. No BEAM term is retained by the renderer.
             if let (Some(edits), Some(target)) = (routes, live.input.target) {
@@ -339,6 +360,7 @@ fn start(env: Env, opts: Start) -> Result<ResourceArc<Session>, String> {
             toplevel: None,
             raster: Raster::with_tree(Tree::with_headroom(opts.tree_headroom_percent)),
             input: Dispatcher::default(),
+            assets: None,
             route_target: None,
             log: Some(env.pid()),
             stats: (opts.stats_enabled || opts.renderer_stats_log).then(stats::Samples::new),
@@ -363,7 +385,10 @@ fn start(env: Env, opts: Start) -> Result<ResourceArc<Session>, String> {
                 worker.lifecycle.fail(e);
             }
             worker.lifecycle.request_stop();
-            worker.live.lock().unwrap_or_else(|p| p.into_inner()).take();
+            let live = worker.live.lock().unwrap_or_else(|p| p.into_inner()).take();
+            if let Some(images) = live.and_then(|s| s.assets) {
+                images.stop();
+            }
             worker.lifecycle.complete(Ok(()));
         })
         .map_err(|e| e.to_string())?;
@@ -513,9 +538,24 @@ fn set_log_target(r: ResourceArc<Session>, pid: Option<LocalPid>) -> NifResult<A
     }))
 }
 #[rustler::nif(schedule = "DirtyIo")]
-fn configure_assets_nif(r: ResourceArc<Session>, _opts: Term) -> NifResult<Atom> {
-    // No supported declaration resolves an external asset.
-    submitted(r.live(|_| Ok(())))
+fn configure_assets_nif(
+    r: ResourceArc<Session>,
+    opts: crate::raster_assets::Settings,
+) -> NifResult<Atom> {
+    let loader = crate::raster_assets::Loader::new(opts);
+    submitted(r.live(|live| {
+        if live.assets.is_some() {
+            return Err("changing the asset root requires a new renderer".into());
+        }
+        let mut assets = images::Assets::new(loader?);
+        if live.raster.tree.needs_images() {
+            assets.request(&r.owner, &r.wake, &mut live.raster.tree);
+            live.request = true;
+            r.wake.notify();
+        }
+        live.assets = Some(assets);
+        Ok(())
+    }))
 }
 #[rustler::nif]
 fn load_font_nif(

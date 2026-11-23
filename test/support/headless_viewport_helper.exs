@@ -13,7 +13,7 @@ defmodule Emerge.TestSupport.HeadlessViewport do
        output: %Emerge.Config.Headless{target: target, size: Keyword.fetch!(opts, :size)},
        renderer: [api: :raster] ++ Keyword.take(opts, [:target_fps]),
        input: [events: Keyword.get(opts, :events, [])],
-       assets: [otp_app: :emerge]
+       assets: [otp_app: :emerge] ++ Keyword.take(opts, [:decode_at_size])
      }}
   end
 

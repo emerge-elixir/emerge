@@ -2,6 +2,7 @@
 mod capacity;
 mod changes;
 mod decoration;
+mod images;
 mod intrinsic;
 mod layers;
 mod paint;
@@ -275,6 +276,10 @@ struct Attrs {
     layout_scale: Option<f64>,
     color: Option<u32>,
     background: Option<u32>,
+    image_src: decoration::Bytes,
+    image_cover: bool,
+    image_host_clip: bool,
+    opacity: Option<u8>,
     decor: decoration::Decor,
     font_gradient: decoration::Bytes,
     underline: Option<bool>,
@@ -358,6 +363,7 @@ struct Elements {
     child_pool: Pool<Key>,
     bytes: Pool<u8>,
     touched: Vec<Key>,
+    images: images::Images,
     detached: Vec<Key>,
     free_indices: Vec<usize>,
     live_bytes: usize,
@@ -493,3 +499,5 @@ impl Tree {
 }
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(crate) use tests::image_fixture;

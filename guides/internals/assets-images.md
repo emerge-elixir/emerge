@@ -1,6 +1,8 @@
 # Assets and Images
 
-This guide describes the EMRG v3 image asset pipeline.
+Retained `image/2` accepts logical [PNGs](../../plans/checkpoints/layout/raster-images.md) and [JPEGs](../../plans/checkpoints/layout/jpeg.md) from the renderer's application `priv/`. With `assets.decode_at_size: true`, layout reads the intrinsic **display** dimensions from immutable source metadata. Preparation requests enough texels for the largest visible use of that source, including the area outside a cover crop. The loader decodes and, if necessary, resamples to that size. Later smaller draws reuse the bitmap while it is live or cached. Disabling the option keeps the full-resolution path; neither path opens files or runs codecs during replay. [Fitted memory and submission controls](../../plans/checkpoints/layout/sized-rasters.md).
+
+The remainder of this guide describes the broader EMRG v3 pipeline on `main`, not additional retained source types or renderer APIs.
 
 `image/2` and `Background.image/2` support raster formats plus self-contained SVGs.
 SVG text uses system font matching; relative subresources and external SVG fonts are not loaded in v1.

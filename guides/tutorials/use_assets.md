@@ -245,6 +245,11 @@ consider decoding images near their drawn size and lowering retained-pixel budge
 }
 ```
 
+With `decode_at_size: true`, enlarging a thumbnail can grow its decoded bitmap.
+Shrinking it again reuses the larger bitmap while available, without changing
+its intrinsic layout size. Some codecs, notably PNG, still need a larger
+temporary decode even when only the thumbnail is retained.
+
 Cache budgets count decoded pixels, not compressed file sizes, and apply to each
 renderer separately. They are not a limit on total application or peak decoding
 memory. Keep any fonts/runtime-path policy alongside these fields when combining

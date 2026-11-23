@@ -1,9 +1,9 @@
 # Public API parity with main
 
-**Selected item:** none. Last completed: [`text_column/2`](checkpoints/layout/text-column.md).
+**Selected item:** none. Last completed: [fitted raster memory](checkpoints/layout/sized-rasters.md).
 
-`wrapped_column/2` is an addition to the eight
-ported `main` kinds, not a ninth `main` kind. See the [geometry and dependency
+`wrapped_column/2` is an addition to the nine
+ported `main` kinds, not a tenth `main` kind. See the [geometry and dependency
 boundary](../guides/internals/retained-decisions.md#d10-wrap-columns-at-the-resolved-height).
 The rows below are gaps, not concurrent plans. The [alignment roadmap](alignment.md)
 covers the remaining sites gated on Nearby, scrolling and editors.
@@ -32,11 +32,11 @@ be expressed from what can be drawn or receive input.
 
 | Surface | Remaining behavior |
 | --- | --- |
-| `image/2`, `svg/2`, `image_fit/1`, `Svg.color/1` — missing | Load, measure and paint raster/SVG, aspect-preserving and explicit fits, original SVG colors or template tint. SVG uses the image kind. Asset policy below applies to backgrounds too. |
+| `image/2`, `svg/2`, `image_fit/1`, `Svg.color/1` — partial | Logical [PNGs](checkpoints/layout/raster-images.md) and [JPEGs](checkpoints/layout/jpeg.md) load, size and draw with contain/cover; JPEGs honor EXIF orientation. Other raster formats, SVG/original colors or tint, tiling and other source variants are missing. Asset policy below applies to backgrounds too. |
 | `Input.text/2`, `multiline/2`, `slider/2`, `Input.Slider.config/0,1` — missing | Editable single/multiline text, echo, caret, selection, IME, multiline wrap/scroll; controlled slider range/value/step, track, filled track, thumb and change delivery. A button is already an El, but its keyboard/press behavior is not there. |
 | `video/2` — missing | Layout, fit and paint the latest frame of a renderer-local named target; distinct from sending headless frames *out*. See video submission below. |
 | `Size`, `Space`, `Align` — partial | Static lengths, padding and fixed gaps work. Direct children of all four linear kinds support [start/center/end groups and cross-axis alignment](../test/emerge_skia/linear_zones_test.exs). [WrappedColumn](../test/emerge_skia/wrapped_column_test.exs) can reject content-dependent widths needed before a height share or child reflow is known. An [El child](../test/emerge_skia/el_child_alignment_test.exs) can override either axis. An [aligned root](../test/emerge_skia/root_alignment_test.exs) keeps its attributes without moving its box. [Even spacing](../test/emerge_skia/linear_even_spacing_test.exs) sizes children before distributing gaps on both axes, independently per wrapped line or column. [El, Text and None retain the flag without using it](../test/emerge_skia/inactive_even_spacing_test.exs). Still separate: placement on unported kinds and layout/text snapping. [Sizing sites](../native/emerge_skia/src/tree/tests/dimensions/sites.rs) |
-| `UI.rotate/1`, `Transform` — partial | Paragraph/ancestor move X/Y works on the [submitted paint path](../test/emerge_skia/paragraph_border_test.exs). This does not establish all transform sites. Layout rotation, paint rotation/scale and alpha with matching hits remain. Layout `UI.scale/1` and screenshot scale are different contracts. |
+| `UI.rotate/1`, `Transform` — partial | Paragraph/ancestor move X/Y works on the [submitted paint path](../test/emerge_skia/paragraph_border_test.exs). This does not establish all transform sites. Static alpha on Image or an enclosing El preserves submitted hits. Layout rotation, paint rotation/scale, animated opacity and other alpha sites remain. Layout `UI.scale/1` and screenshot scale are different contracts. |
 | `Nearby`, `clip_nearby/0` — missing | All six mount positions (`behind_content`, `above`, `on_right`, `below`, `on_left`, `in_front`), stacking, escaping/clipped hits and identity on moves. The producer understands the edges; native rejects them. Ordinary linear-container clipping is not overlay support. |
 | `Color`, `Background`, `Border` — partial | [Inline boxes](../test/emerge_skia/paragraph_border_test.exs) paint solid/gradient backgrounds, per-edge widths, per-corner radii, solid/dashed/dotted borders, outer/inner shadows and glow. Shared ordinary-box painting and [gradient stops/alpha](../test/emerge_skia/gradient_test.exs) work on admitted kinds. Background images, SVG tint, other asset consumers and broader feature interactions remain. |
 | `Font` — partial | Bundled default/sans-serif and mono (including JetBrains Mono aliases); regular/bold/italic/bold-italic and synthetic weight fallback, solid/gradient ink, underline/strike. [Single-line Text](../test/emerge_skia/text_alignment_test.exs) and [paragraph lines](../test/emerge_skia/paragraph_alignment_test.exs) have distinct alignment rules. Letter/word spacing, custom font loading and editor layout remain. |
@@ -75,7 +75,7 @@ Scope: [Emerge](../lib/emerge.ex), [Emerge.Input](../lib/emerge/input.ex),
 | --- | --- |
 | Raw input (`Config.Input.events`, `all_events/0`, `scroll_line_pixels`) — partial | Wayland emits move, enter/leave, left button with modifiers, focus and resize. These cover only part of the ten subscription categories. Other buttons, wheel/precise scroll, keys/repeat/text and platform IME preedit/clear/delete need backend delivery; touch and display-wake require the appropriate backend. Binary headless `send_input/2` can inject pointer (including scroll), key, focus and text-commit, not seat events or an element target. [Wayland handlers](../native/emerge_skia/src/session/wayland/pointer.rs) |
 | Live configuration and recovery — partial | Nested records/keyword normalization, input masks, Wayland title and target FPS, session revisions and monitored cleanup work on the supported path. Retained applies these controls immediately; do not infer `main`'s pending/failed device revisions, retry/replacement or safe DRM reuse from an acknowledgment. [Config contract](../lib/emerge/config.ex) |
-| Assets and fonts (`Config.Assets`, `RuntimePaths`, `AssetCache`, `Font`; `load_font_file/5`) — missing native service | `Ref.new/1,2` constructs a reference; `use Emerge.Assets.Path` and `~m` verify literal paths at compile time. Implement per-renderer `otp_app` roots, allowed runtime paths/symlinks, extension and byte limits, snapshot/await loading, decode-at-size, decoded/parsed SVG cache budgets, updates/isolation and font registration before first paint. `configure_assets_nif` accepting options currently loads nothing. [Asset contracts](../lib/emerge/config/assets.ex) |
+| Assets and fonts (`Config.Assets`, `RuntimePaths`, `AssetCache`, `Font`; `load_font_file/5`) — partial | Logical PNG/JPEG strings and `~m` references use a per-renderer `otp_app` root, checked decode limits, [decode at fitted size and reuse on shrink](checkpoints/layout/sized-rasters.md), bounded decoded cache, snapshot/await and stale-safe completion. Remaining: runtime paths/symlink policy, other formats, SVG caches and font registration before first paint. [Asset contracts](../lib/emerge/config/assets.ex) |
 | `Emerge.submit_video_frame/3`, `EmergeSkia.submit_video_frame/3` — missing renderer | A visible target retains the latest frame; a hidden target consumes/drops it. Honor `VideoInterop.Frame` storage/sync, lease release/abandonment, and the distinction between viewport consumption and direct caller-owned/transferred errors. [Ownership controls](../test/emerge_skia/video_interop_session_test.exs) |
 | Diagnostics and caching — partial | `stats/1,2` has v25 peek/take/reset, successful submissions, submit duration and available display interval. Remaining: applicable timing families/counters, draining GPU samples, periodic stats and input/render/close/animation logs, DRM `force_gpu_finish`. Implement `RendererCache`/`PaintLayerCache` limits and reporting; `renderer_info` currently advertises no renderer cache or PRIME video. Tree/glyph reuse is not the public paint cache. [Collectors](../native/emerge_skia/src/session/stats.rs) |
 
@@ -104,7 +104,7 @@ changed deliberately**; see [decisions](../guides/internals/retained-decisions.m
 `EmergeSkia.Native` also documents low-level calls: detached `tree_new`,
 upload/patch/layout and round trips use the same supported kinds as the live
 renderer. What remains is native coverage for the missing declarations above,
-asset/font-aware offscreen pixels/PNG, and detached tree stats. A round trip
+offscreen assets beyond logical PNGs and JPEGs, custom fonts, and detached tree stats. A round trip
 or a synthetic dispatch to a registry is not a rendered frame or real input.
 The three removed tree inspection/reset functions and the private test/transport
 boundaries are accounted for in the decision record, not silently marked ported.

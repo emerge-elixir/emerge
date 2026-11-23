@@ -9,6 +9,10 @@ mod document;
 mod el_alignment;
 mod el_child;
 mod identity;
+mod images;
+pub(crate) fn image_fixture() -> Vec<u8> {
+    images::story(images::WIDE, 1.)
+}
 mod inactive_even;
 mod layout_rules;
 mod linear_even;

@@ -11,6 +11,8 @@ struct Demand {
     texts: usize,
     scales: usize,
     prose_hosts: usize,
+    images: usize,
+    groups: usize,
     words: usize,
     materials: usize,
     material_bytes: usize,
@@ -31,6 +33,8 @@ impl Demand {
             texts: t.layers.text_count,
             scales: t.layers.scale_declarations,
             prose_hosts: t.layers.paragraphs.hosts,
+            images: e.images.active,
+            groups: t.output.groups,
             words: t.layers.paragraphs.words,
             materials: t.output.materials,
             material_bytes: t.output.material_bytes,
@@ -138,6 +142,8 @@ impl Tree {
                 d.live_bytes -= e.raw(k).len();
                 d.texts -= usize::from(e.slots[k].shape.uses_glyphs());
                 d.prose_hosts -= usize::from(e.slots[k].shape.has_prose_sites());
+                d.images -= usize::from(e.slots[k].shape == Shape::Image);
+                d.groups -= usize::from(e.attrs[k].opacity.is_some());
                 d.materials -= usize::from(e.attrs[k].material());
                 d.material_bytes -= e.attrs[k].material_bytes();
                 d.rules -= usize::from(e.attrs[k].has_rules());
@@ -179,10 +185,21 @@ impl Tree {
                 },
                 |(a, r)| (a, r.len()),
             );
+            s.request_image = s.shape == Shape::Image
+                && (s.inserted
+                    || existing.is_none_or(|k| {
+                        s.attrs.as_ref().is_some_and(|(a, r)| {
+                            e.attrs[k]
+                                .image_src
+                                .differs(e.raw(k), a.image_src, &bytes[r.clone()])
+                        })
+                    }));
             d.live += 1;
             d.live_bytes += len;
             d.texts += usize::from(s.shape.uses_glyphs());
             d.prose_hosts += usize::from(s.shape.has_prose_sites());
+            d.images += usize::from(s.shape == Shape::Image);
+            d.groups += usize::from(a.opacity.is_some());
             d.materials += usize::from(a.material());
             d.material_bytes += a.material_bytes();
             d.rules += usize::from(a.has_rules());
@@ -302,6 +319,10 @@ impl Tree {
             0
         };
         let words = d.words;
+        self.output.fits.reserve(d.images, self.budget)?;
+        self.elements
+            .images
+            .reserve(self.elements.slots.capacity(), d.images, self.budget)?;
         if d.prose_hosts > 0 {
             self.layers.paragraphs.reserve(
                 self.elements.slots.capacity(),
@@ -321,7 +342,12 @@ impl Tree {
             d.live,
             desired,
             words,
-            d.materials + if d.rules > 0 { 2 * d.texts } else { 0 },
+            d.materials
+                + d.images
+                + 2 * d.groups
+                + if d.groups > 0 { 2 * words } else { 0 }
+                + if d.rules > 0 { 2 * d.texts } else { 0 },
+            d.groups,
             self.budget,
         )?;
         b.prepare_domains(&self.elements, &mut self.layers, scale, d.scales)?;
@@ -383,6 +409,9 @@ impl Tree {
                 continue;
             }
             let k = e.ids[&s.id];
+            if s.request_image {
+                e.images.request(k);
+            }
             let parent = s.parent.map(|id| e.ids[&id]);
             let m = &mut e.slots[k];
             let moved = !s.inserted && m.parent != parent;
@@ -408,6 +437,7 @@ impl Tree {
                 e.slots[k].children = span;
             }
         }
+        self.output.cancel_fits();
         self.root = b.root.map(|id| e.ids[&id]);
         e.live_bytes = d.live_bytes;
         self.layers.text_count = d.texts;
@@ -416,6 +446,8 @@ impl Tree {
         self.output.materials = d.materials;
         self.output.material_bytes = d.material_bytes;
         self.output.rules = d.rules;
+        self.output.groups = d.groups;
+        e.images.active = d.images;
         self.layers.scale_declarations = d.scales;
         self.layers.text.sizes = d.sizes;
         b.publish_domains(e, &mut self.layers);

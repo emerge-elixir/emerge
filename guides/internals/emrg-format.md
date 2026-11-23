@@ -88,6 +88,8 @@ reject the new kind, not the whole format. Paragraph and TextColumn use the
 existing tags `7` and `8` and ordinary declared child order. No line fragments,
 float offsets, glyph ranges or continuation hit boxes cross the wire.
 
+Kind `9` is a retained leaf for logical PNG and JPEG images. Tag `53` variant `1` carries the logical name (u16 byte length and UTF-8 bytes); tag `54` is `0` contain or `1` cover. Image and El admit tag `35`, a finite `f64` for static opacity. No dimensions, pixels, resource tickets or group bounds cross the wire. [Fitted decode](../../plans/checkpoints/layout/sized-rasters.md) uses renderer configuration and settled device geometry, not another image attribute. Other image-source variants are not compatibility aliases. [PNG scope and controls](../../plans/checkpoints/layout/raster-images.md) · [JPEG scope and controls](../../plans/checkpoints/layout/jpeg.md).
+
 ## Attribute Tags
 
 The attr block continues to use the typed attr encoding from

@@ -10,6 +10,7 @@ pub(super) struct Change {
     pub reattached: bool,
     pub membership: bool,
     pub old_parent: Option<Option<Key>>,
+    pub image: Option<crate::raster_assets::Source>,
     pub attrs: Option<(Attrs, Span<u8>)>,
     pub order: Option<Span<Key>>,
 }
@@ -52,6 +53,8 @@ impl Elements {
     }
     pub fn detach(&mut self, k: Key) {
         self.unlist(k);
+        self.images.remove(k);
+        self.slots[k].change.image = None;
         if self.slots[k].detached.is_none() {
             self.slots[k].detached = Some(self.detached.len());
             self.detached.push(k);
@@ -86,6 +89,7 @@ impl Elements {
     pub fn evict(&mut self, k: Key) {
         self.unlist(k);
         self.uncache(k);
+        self.images.remove(k);
         let m = self.slots.remove(k).unwrap();
         self.ids.remove(&m.id);
         self.attrs.remove(k);
@@ -128,6 +132,21 @@ impl Layers {
                 && let Some(p) = e.inline_host(k)
             {
                 self.invalidate(Pass::Reflow, p, e.depth(p));
+            }
+            if !change.cold && e.slots[k].shape == Shape::Image {
+                let source = e.images.source(k);
+                if change.reattached
+                    || change
+                        .image
+                        .as_ref()
+                        .is_some_and(|s| s.dimensions() != source.dimensions())
+                {
+                    self.invalidate(Pass::Measure, k, depth);
+                    self.invalidate(Pass::Reflow, k, depth);
+                }
+                if change.reattached || change.image.as_ref().is_some_and(|s| s != source) {
+                    self.invalidate_composition(k, depth, Outputs::Draw);
+                }
             }
             if change.cold {
                 self.mount(k, depth);
@@ -252,7 +271,8 @@ impl Layers {
         {
             invalidate(Pass::PaintContext)
         }
-        let paint_changed = shape.paint_attrs_changed(old, next)
+        let paint_changed = old.opacity != next.opacity
+            || shape.paint_attrs_changed(old, next)
             || old.decor.differs(old_raw, next.decor, e.raw(k));
         let output = Outputs::changed(paint_changed, old.click != next.click || clip_changed);
         if let Some(outputs) = output {

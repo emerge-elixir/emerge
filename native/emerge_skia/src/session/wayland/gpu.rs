@@ -258,17 +258,14 @@ impl WindowApp {
         }
         if gpu.sealed.is_none() {
             live.request = false;
-            let changed =
-                match live
-                    .raster
-                    .settle(size.0 as f32, size.1 as f32, mapping.geometry.nominal())
-                {
-                    Ok(c) => c,
-                    Err(e) => {
-                        live.log_frame_error(&mut self.env, "wayland", e);
-                        return Ok(None);
-                    }
-                };
+            let changed = match live.settle(size, mapping.geometry.nominal()) {
+                Ok(Some(c)) => c,
+                Ok(None) => return Ok(None),
+                Err(e) => {
+                    live.log_frame_error(&mut self.env, "wayland", e);
+                    return Ok(None);
+                }
+            };
             if !changed && !changed_surface && !gpu.device.recreate() && gpu.front.is_some() {
                 live.raster.install();
                 live.after_present(&mut self.env, size);

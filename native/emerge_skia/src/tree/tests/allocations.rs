@@ -1081,6 +1081,47 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     alignment_zones(&c);
     paragraphs(&c);
     documents(&c);
+    for name in [images::GRID, "test_assets/turn_right.jpeg"] {
+        let mut image = Raster::default();
+        image.tree.upload(&images::story(name, 0.5)).unwrap();
+        images::load(&mut image.tree, &mut images::loader());
+        c.zero("first prepared raster after decode and reservation", || {
+            image.settle(180., 170., 1.).unwrap();
+        });
+        image.install();
+        for alpha in [0.25, 1., 0., 0.5] {
+            let edit = set(2, 9, images::attrs(name, alpha));
+            c.zero(
+                "opacity-only image edit through prepared drawing and hits",
+                || {
+                    image.tree.patch(&edit).unwrap();
+                    image.settle(180., 170., 1.).unwrap();
+                },
+            );
+            image.install();
+        }
+    }
+    let mut fitted = Raster::default();
+    let mut loader = images::image_loader(true, 1);
+    fitted
+        .tree
+        .upload(&images::story("sample_assets/static.jpg", 0.5))
+        .unwrap();
+    images::load(&mut fitted.tree, &mut loader);
+    c.zero("discover fitted bitmap demand after metadata", || {
+        fitted.settle(180., 170., 1.).unwrap();
+    });
+    images::load(&mut fitted.tree, &mut loader);
+    c.zero("bind prepared fitted bitmap after worker decode", || {
+        fitted.settle(180., 170., 1.).unwrap();
+    });
+    fitted.install();
+    let shrink = set(1, 3, block(&[px(1, 48.)]));
+    c.zero("shrink and bind the installed larger bitmap", || {
+        fitted.tree.patch(&shrink).unwrap();
+        fitted.settle(180., 170., 1.).unwrap();
+        assert!(!fitted.tree.waiting_for_pixels());
+    });
     text_alignment(&c);
     for kind in [4, 5, 6] {
         let mut r = Raster::default();

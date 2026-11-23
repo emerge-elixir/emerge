@@ -651,6 +651,7 @@ dependencies = [
  "objc2-quartz-core",
  "raw-window-handle",
  "resvg",
+ "rustix 1.1.4",
  "rustler",
  "sha2",
  "skia-safe",

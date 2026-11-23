@@ -86,6 +86,22 @@ impl Materials {
             }
         }
     }
+    pub fn paint_bounds(&self, i: u32, r: Rect, phase: Phase, clip: Rect) -> SkRect {
+        let m = self.styles[i as usize];
+        // Each of offset, spread and blur is <= max_shadow. Include both
+        // offset and spread, three blur sigmas (sigma = blur / 2), and AA.
+        if phase == Phase::Under && m.decor.shadows.len != 0 {
+            let outset = 4. * scale::pixels(m.decor.max_shadow, m.scale) + 2.;
+            sk(r).with_outset((outset, outset))
+        } else {
+            let mut area = sk(r).with_outset((1., 1.));
+            if area.intersect(sk(clip)) {
+                area
+            } else {
+                SkRect::default()
+            }
+        }
+    }
     pub fn outer_shadow(&self, canvas: &Canvas, i: u32, r: Rect) {
         let m = self.styles[i as usize];
         let raw = &self.bytes;

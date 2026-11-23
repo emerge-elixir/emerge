@@ -32,11 +32,11 @@ impl Rounded {
                 dx * dx + dy * dy <= radius * radius
             })
     }
-    fn apply(self, canvas: &Canvas) {
-        let r = self.rect;
+    fn apply(self, canvas: &Canvas, relaxed: bool) {
+        let bleed = if relaxed { 0.5 } else { 0. };
         let rr = RRect::new_rect_radii(
-            skia_safe::Rect::from_xywh(r.x, r.y, r.width, r.height),
-            &self.radii.map(|v| Point::new(v, v)),
+            sk(self.rect).with_outset((bleed, bleed)),
+            &self.radii.map(|v| Point::new(v + bleed, v + bleed)),
         );
         canvas.clip_rrect(rr, ClipOp::Intersect, true);
     }
@@ -100,11 +100,11 @@ impl Clips {
         }
         true
     }
-    fn apply(&self, mask: Mask, canvas: &Canvas) {
+    pub fn apply(&self, mask: Mask, canvas: &Canvas, relaxed: u8) {
         if mask != OPEN {
             let (r, prev) = self.0[mask as usize - 1];
-            self.apply(prev, canvas);
-            r.apply(canvas);
+            self.apply(prev, canvas, relaxed.saturating_sub(1));
+            r.apply(canvas, relaxed != 0);
         }
     }
     pub fn within<T>(&self, mask: Mask, canvas: &Canvas, f: impl FnOnce() -> T) -> T {
@@ -112,7 +112,7 @@ impl Clips {
             return f();
         }
         canvas.save();
-        self.apply(mask, canvas);
+        self.apply(mask, canvas, 0);
         let result = f();
         canvas.restore();
         result

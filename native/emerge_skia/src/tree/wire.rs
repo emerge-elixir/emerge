@@ -176,6 +176,7 @@ fn attrs(raw: &[u8], shape: Shape) -> Result<Attrs> {
             1 => (a.sizing.width, largest_px[0], a.line_floor) = r.length(raw)?,
             2 => (a.sizing.height, largest_px[1], a.height_floor) = r.length(raw)?,
             3 => {
+                a.image_host_clip = true;
                 a.sizing.padding = match r.byte()? {
                     0 => [r.number()?; 4],
                     1 | 2 => [r.number()?, r.number()?, r.number()?, r.number()?],
@@ -194,8 +195,14 @@ fn attrs(raw: &[u8], shape: Shape) -> Result<Attrs> {
             tag @ (5 | 6) => a.align[usize::from(tag - 5)] = Some(r.alignment("alignment")?),
             30 => a.text_align = Some(r.alignment("text alignment")?),
             12 if r.byte()? == 0 => (a.background, a.decor.background_gradient) = r.ink(raw)?,
-            13 => a.decor.radius = r.quad()?,
-            14 => a.decor.border = r.quad()?,
+            13 => {
+                a.decor.radius = r.quad()?;
+                a.image_host_clip = true;
+            }
+            14 => {
+                a.decor.border = r.quad()?;
+                a.image_host_clip = true;
+            }
             15 => (a.decor.border_color, a.decor.border_gradient) = r.ink(raw)?,
             51 => {
                 a.decor.style = r.byte()?;
@@ -204,6 +211,10 @@ fn attrs(raw: &[u8], shape: Shape) -> Result<Attrs> {
                 }
             }
             52 => (a.decor.shadows, a.decor.max_shadow) = r.shadows(raw)?,
+            35 if matches!(shape, Shape::Image | Shape::El) => {
+                let alpha = (r.signed()?.clamp(0., 1.) as f32 * 255.).round() as u8;
+                a.opacity = (alpha != 255).then_some(alpha);
+            }
             31 => a.offset[0] = r.signed()?,
             32 => a.offset[1] = r.signed()?,
             47 => a.underline = Some(r.flag()?),
@@ -252,6 +263,24 @@ fn attrs(raw: &[u8], shape: Shape) -> Result<Attrs> {
     }
     if !r.0.is_empty() {
         return Err("trailing attribute bytes".into());
+    }
+    if shape == Shape::Image {
+        if a.image_src.len == 0 {
+            return Err("image requires a logical PNG or JPEG source".into());
+        }
+        if !matches!(
+            a.sizing.width,
+            Length::Px(_) | Length::Fill | Length::Weighted(_) | Length::Auto | Length::Content
+        ) || !matches!(
+            a.sizing.height,
+            Length::Px(_) | Length::Fill | Length::Weighted(_) | Length::Auto | Length::Content
+        ) || (!a.sizing.width.definite() && a.sizing.height.weight().is_some())
+        {
+            return Err(
+                "unported image sizing: declare a pixel axis or fill width with automatic height"
+                    .into(),
+            );
+        }
     }
     // Layout reads padding plus the border inset; paint retains the border itself.
     a.sizing.padding = std::array::from_fn(|i| a.sizing.padding[i] + a.decor.border[i]);

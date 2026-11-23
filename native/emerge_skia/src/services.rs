@@ -7,9 +7,40 @@ pub(crate) fn render_tree_offscreen(
     w: u32,
     h: u32,
     scale: f32,
+    assets: impl FnOnce() -> Result<(crate::raster_assets::Settings, bool, std::time::Duration), String>,
 ) -> Result<Vec<u8>, String> {
     let mut raster = Raster::default();
     raster.tree.upload_scaled(bytes, scale)?;
+    if raster.tree.needs_images()
+        && let (config, true, timeout) = assets()?
+    {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        std::thread::Builder::new()
+            .name("emerge-image-export".into())
+            .spawn(move || {
+                let start = std::time::Instant::now();
+                let result = crate::raster_assets::Loader::new(config).and_then(|mut loader| {
+                    loop {
+                        while let Some((ticket, request)) = raster.tree.next_image() {
+                            if start.elapsed() >= timeout {
+                                return Err("image loading timed out".into());
+                            }
+                            loader.fulfill(request, |s| raster.tree.complete_image(&ticket, s));
+                        }
+                        raster.tree.refresh(w as f32, h as f32, scale)?;
+                        if !raster.tree.waiting_for_pixels() {
+                            break;
+                        }
+                    }
+                    Ok(raster)
+                });
+                let _ = tx.send(result);
+            })
+            .map_err(|e| e.to_string())?;
+        raster = rx
+            .recv_timeout(timeout)
+            .map_err(|e| format!("awaiting image assets: {e}"))??;
+    }
     raster.draw(w as f32, h as f32, scale)?;
     Ok(raster.into_pixels())
 }

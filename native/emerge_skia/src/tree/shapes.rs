@@ -136,6 +136,7 @@ define_shapes!(
     text_leaf::Text,
     paragraph::Paragraph,
     text_column::TextColumn,
+    image::Image,
     empty::Empty
 );
 
@@ -176,7 +177,9 @@ impl Shape {
         self == Self::WrappedColumn && !width.definite()
     }
     pub fn has_intrinsic_height(self, style: BoxStyle) -> bool {
-        matches!(style.height, Length::Px(_)) || matches!(self, Self::Text | Self::Empty)
+        matches!(style.height, Length::Px(_))
+            || matches!(self, Self::Text | Self::Empty)
+            || (self == Self::Image && style.width.weight().is_none())
     }
     /// A child's packed intrinsic width is an input to this Column's width,
     /// or to the child's own content-bearing fill width.
