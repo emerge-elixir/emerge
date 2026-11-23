@@ -204,7 +204,7 @@ fn row_rejects_unsupported_fields_and_malformed_shapes_without_losing_pending_ed
         (4, "El supports at most one child"),
         (5, "leaf has children"),
         (6, "leaf has children"),
-        (7, "unsupported element 7 in first slice"),
+        (8, "unsupported element 8 in first slice"),
     ] {
         let full = upload(&[
             node(10, wire, block(&[]), &[20, 30]),

@@ -43,6 +43,38 @@ impl Counter {
         )
     }
 }
+fn paragraphs(c: &Counter) {
+    let mut r = Raster::default();
+    let sentence = "AAA BBB \u{200b} C ".repeat(120);
+    r.tree.upload(&prose::doc(&sentence, 64.)).unwrap();
+    c.zero(
+        "first paragraph from reserved inputs to glyphs, rules, gradient and hits",
+        || {
+            r.settle(180., 170., 1.).unwrap();
+        },
+    );
+    r.install();
+    for patch in [
+        set(1, 7, prose::host(110., 1)),
+        set(2, 4, prose::wrapper(180)),
+        set(3, 5, text(&sentence.replace("AAA", "BBB"))),
+        set(1, 7, prose::host(64., 0)),
+    ] {
+        c.zero(
+            "fitting paragraph replacement through prepared draw and hit inputs",
+            || {
+                r.tree.patch(&patch).unwrap();
+                r.settle(180., 170., 1.).unwrap();
+            },
+        );
+        r.install();
+    }
+    let before = r.tree.encode();
+    let too_large = set(3, 5, text(&"plus ".repeat(8_000)));
+    (c.fail_next_reserve)();
+    assert!(r.tree.patch(&too_large).is_err());
+    assert_eq!(r.tree.encode(), before);
+}
 fn text_alignment(c: &Counter) {
     let ids: Vec<_> = (2..10_002).collect();
     let labels = std::iter::once(node(1, 3, text_align::host(Some(1)), &ids))
@@ -997,6 +1029,7 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
         assert!(stack.settle(180., 53., 1.).unwrap());
     });
     alignment_zones(&c);
+    paragraphs(&c);
     text_alignment(&c);
     for kind in [4, 5, 6] {
         let mut r = Raster::default();

@@ -126,6 +126,8 @@ impl Constraint {
 /// constraint is an actual size, distinct from using natural fit.
 #[derive(Clone, Copy, PartialEq)]
 struct Placement {
+    // Switching out of paragraph-owned geometry matters even at (0,0).
+    inline: Option<Key>,
     offset: [f32; 2],
     height: Constraint,
 }
@@ -151,6 +153,7 @@ pub(super) struct Layers {
     // Glyph changes and intrinsic size changes have different readers.
     pub(super) runs: SecondaryMap<Key, Run>,
     pub(super) text: TextStore,
+    pub(super) paragraphs: paragraph::Paragraphs,
     pub(super) bounds: capacity::PayloadBounds,
     pub(super) owners: usize,
     pub(super) text_count: usize,
@@ -162,7 +165,7 @@ pub(super) struct Layers {
     fit: SecondaryMap<Key, Fit>,
     placement: SecondaryMap<Key, Placement>,
     pub frames: SecondaryMap<Key, Rect>,
-    paint: SecondaryMap<Key, PaintContext>,
+    pub(super) paint: SecondaryMap<Key, PaintContext>,
     pub(super) parts: SecondaryMap<Key, Composition>,
     pub(super) viewport: Rect,
     pub(super) scale_declarations: usize,
@@ -192,16 +195,19 @@ impl Measuring<'_> {
         let font_size = ctx.font_size();
         let changed = (run.invalid
             || run.revision == 0
-            || run.metrics.family != ctx.family
+            || run.metrics.face != ctx.face
             || run.metrics.size != font_size)
-            && l.text.measure(text, len, ctx.family, font_size, run);
+            && l.text.measure(text, len, ctx.face, font_size, run);
         let size = Demand {
             min_w: run.metrics.width,
             w: run.metrics.width,
             h: run.metrics.height,
         };
         if changed {
-            l.invalidate_composition(k, self.e.depth(k), Outputs::Draw)
+            l.invalidate_composition(k, self.e.depth(k), Outputs::Draw);
+            if let Some(p) = self.e.inline_host(k) {
+                l.enqueue(Reflow, p, self.e);
+            }
         }
         l.bounds.set(self.e.slots[k].index, len, len, false);
         size
@@ -238,13 +244,18 @@ impl FlowCx<'_> {
             }
         }
     }
+    pub fn offer_intrinsic_width(&mut self, c: Key) {
+        let width = self.measured_width(c).min(self.inner);
+        self.layers
+            .offer_width(self.e, c, Constraint::Available(width), false);
+    }
     pub fn assign_width(&mut self, c: Key, width: f32, break_before: bool) {
         self.layers
             .offer_width(self.e, c, Constraint::Assigned(width), break_before);
     }
 }
 pub(super) struct ReflowCx<'a> {
-    layers: &'a Layers,
+    layers: &'a mut Layers,
     pub gap: [f32; 2],
     padding: [f32; 4],
     height: Length,
@@ -254,6 +265,25 @@ pub(super) struct ReflowCx<'a> {
     pub row_offer: f32,
 }
 impl ReflowCx<'_> {
+    pub fn paragraph(&mut self, e: &Elements, k: Key) -> Heights {
+        let l = &mut self.layers;
+        let align = e.attrs[k]
+            .text_align
+            .or(e.attrs[k].align[0])
+            .unwrap_or(l.context[k].text_align);
+        let height = l.paragraphs.layout(
+            e,
+            k,
+            l.width[k].inner,
+            self.gap,
+            align,
+            &l.runs,
+            &l.text,
+            |c| l.fit[c].size,
+        );
+        l.enqueue(Compose, k, e);
+        self.box_height(height).max(self.measured_height).into()
+    }
     pub fn child(&self, c: Key) -> Size {
         self.layers.fit[c].size
     }
@@ -287,6 +317,9 @@ pub(super) struct PlaceCx<'a> {
     translated: bool,
 }
 impl PlaceCx<'_> {
+    pub fn paragraph_site(&self, c: Key) -> Rect {
+        self.layers.paragraphs.site(c)
+    }
     pub fn child(&self, c: Key) -> Size {
         self.layers.fit[c].size
     }
@@ -441,6 +474,7 @@ impl Layers {
         self.enqueue(Compose, k, e);
     }
     pub fn evict(&mut self, k: Key) {
+        self.paragraphs.evict(k);
         if let Some(run) = self.runs.remove(k) {
             self.text.release(run);
         }
@@ -484,6 +518,7 @@ impl Layers {
     fn reads_width_offer(&self, e: &Elements, k: Key) -> bool {
         let shape = e.slots[k].shape;
         shape.requests_fill_width(e, k)
+            || (shape == Shape::Paragraph && !e.attrs[k].sizing.width.definite())
             || (shape == Shape::Text
                 && self
                     .context
@@ -492,7 +527,15 @@ impl Layers {
     }
     fn resolved_width(&self, e: &Elements, k: Key, edge: Constraint) -> f32 {
         let measured = self.measure[k].w;
-        if self.reads_width_offer(e, k) {
+        if e.slots[k].shape == Shape::Paragraph && !e.attrs[k].sizing.width.definite() {
+            match edge {
+                Constraint::Natural => measured,
+                Constraint::Available(w) | Constraint::Assigned(w) => e.attrs[k]
+                    .sizing
+                    .width
+                    .resolve(measured.min(w), || e.slots[k].admitted.scale),
+            }
+        } else if self.reads_width_offer(e, k) {
             edge.resolve(e, k, e.attrs[k].sizing.width, measured)
         } else {
             measured
@@ -521,7 +564,19 @@ impl Layers {
         height: Constraint,
         translated: bool,
     ) {
-        let edge = Placement { offset, height };
+        let inline = e.inline_host(k);
+        let translated = translated
+            || inline.is_some_and(|p| {
+                let mut r = self.paragraphs.site(k);
+                r.x += self.frames[p].x;
+                r.y += self.frames[p].y;
+                self.frames.get(k) != Some(&r)
+            });
+        let edge = Placement {
+            inline,
+            offset,
+            height,
+        };
         if self.placement.get(k) == Some(&edge) && !translated {
             return;
         }
@@ -531,7 +586,9 @@ impl Layers {
         // even if the new policy ignores changes in available height.
         if translated
             || old.is_none_or(|p| {
-                p.offset != offset || p.height.for_height(policy) != height.for_height(policy)
+                p.inline != inline
+                    || p.offset != offset
+                    || p.height.for_height(policy) != height.for_height(policy)
             })
         {
             self.enqueue(Place, k, e);
@@ -666,6 +723,11 @@ impl Layers {
             text_align,
         };
         if changed(&mut self.context, k, next) {
+            if e.slots[k].shape == Shape::Paragraph
+                && old.is_none_or(|p| p.text_align != text_align)
+            {
+                self.enqueue(Reflow, k, e);
+            }
             if let Some(prev) = old
                 && e.slots[k].shape == Shape::Text
                 && prev.text_align != text_align
@@ -689,6 +751,11 @@ impl Layers {
                 self.enqueue(Measure, k, e);
             }
             if scale_changed {
+                if e.attrs[k].sizing.padding != [0.; 4]
+                    && let Some(p) = e.inline_host(k)
+                {
+                    self.enqueue(Reflow, p, e);
+                }
                 if e.slots[k]
                     .shape
                     .cross_height_px(e.attrs[k].sizing)
@@ -917,7 +984,10 @@ impl Layers {
                 },
             )
             .map(|f| f.size);
-        if n.shape.allots_height() || n.shape == Shape::WrappedRow || old != Some(fit) {
+        if n.shape.allots_height()
+            || matches!(n.shape, Shape::WrappedRow | Shape::Paragraph)
+            || old != Some(fit)
+        {
             self.enqueue(Place, k, e);
         }
         if n.shape.packs_width(b.width) {
@@ -985,8 +1055,22 @@ impl Layers {
         let scale = self.context[k].inputs.scale;
         let edge = self.placement[k];
         let [x, y] = [origin[0] + edge.offset[0], origin[1] + edge.offset[1]];
-        let height = edge.height.resolve_height(e, k, s.h);
-        let width = self.width_at(e, k, edge.height);
+        let (x, y, width, height) = if let Some(p) = edge.inline {
+            let r = self.paragraphs.site(k);
+            (
+                self.frames[p].x + r.x,
+                self.frames[p].y + r.y,
+                r.width,
+                r.height,
+            )
+        } else {
+            (
+                x,
+                y,
+                self.width_at(e, k, edge.height),
+                edge.height.resolve_height(e, k, s.h),
+            )
+        };
         let origin_changed = self.frames.get(k).is_none_or(|f| [f.x, f.y] != [x, y]);
         if changed(
             &mut self.frames,
@@ -1017,19 +1101,52 @@ impl Layers {
     fn paint_context(&mut self, e: &Elements, k: Key) {
         let parent = e.slots[k].parent;
         let a = &e.attrs[k];
-        let f = self.frames[k];
-        let color = a
-            .color
-            .or_else(|| parent.map(|p| self.paint[p].color))
-            .unwrap_or(0xff);
+        let inherited = parent.map(|p| self.paint[p]);
+        let scale = self.context[k].inputs.scale;
+        let offset = std::array::from_fn(|i| {
+            inherited.map_or(0., |p| p.offset[i]) + pixels(a.offset[i], scale)
+        });
+        let mut f = self.frames[k];
+        f.x += offset[0];
+        f.y += offset[1];
+        let gradient = if a.font_gradient.len != 0 {
+            Some((k, e.slots[k].ink_revision))
+        } else if a.color.is_some() {
+            None
+        } else {
+            inherited.and_then(|p| p.gradient)
+        };
+        let color = if gradient.is_some() {
+            0xff
+        } else {
+            a.color
+                .or_else(|| inherited.map(|p| p.color))
+                .unwrap_or(0xff)
+        };
+        let rules = [a.underline, a.strike]
+            .into_iter()
+            .enumerate()
+            .fold(0u8, |mask, (i, b)| {
+                mask | (u8::from(
+                    b.unwrap_or_else(|| inherited.is_some_and(|p| p.rules & (1 << i) != 0)),
+                ) << i)
+            });
         let shape = e.slots[k].shape;
         let clip = parent.map_or(self.viewport, |p| self.paint[p].child_clip);
         let ctx = self.context[k];
         let next = PaintContext {
             frame: f,
             clip,
-            child_clip: shape.child_clip(clip, f),
+            child_clip: if a.decor.radius != [0.; 4] || a.decor.border != [0.; 4] {
+                clip.intersection(a.decor.inner_rect(f, scale))
+                    .unwrap_or_default()
+            } else {
+                shape.child_clip(clip, f)
+            },
             color,
+            gradient,
+            rules,
+            offset,
             scale: ctx.inputs.scale,
             text_align: ctx.text_align,
         };
@@ -1038,17 +1155,29 @@ impl Layers {
             return;
         }
         self.paint.insert(k, next);
+        if let Some(p) = e.inline_host(k) {
+            let hit = a.click && old.is_none_or(|ctx| ctx.scale != next.scale || ctx.frame != f);
+            self.invalidate_composition(
+                p,
+                e.depth(p),
+                if hit { Outputs::Both } else { Outputs::Draw },
+            );
+        }
         let child_clip_changed = old.is_none_or(|p| p.child_clip != next.child_clip);
         let geometry_changed = old.is_none_or(|p| p.frame != f || p.clip != clip);
-        let color_changed = old.is_none_or(|p| p.color != color);
-        let draw = shape.reads_paint_context(a, old, next);
-        let hit = a.click && (geometry_changed || old.is_none_or(|p| p.scale != next.scale));
+        let color_changed = old.is_none_or(|p| p.color != color || p.gradient != gradient);
+        let inputs_changed = old.is_none_or(|p| p.rules != rules || p.offset != offset);
+        let draw = shape == Shape::Paragraph
+            || a.decor.active()
+            || shape.reads_paint_context(a, old, next);
+        let hit = (a.click || shape == Shape::Paragraph || a.decor.radius != [0.; 4])
+            && (geometry_changed || old.is_none_or(|p| p.scale != next.scale));
         if let Some(outputs) = Outputs::changed(draw, hit) {
             self.invalidate_composition(k, e.depth(k), outputs);
         }
-        if child_clip_changed || color_changed {
+        if child_clip_changed || color_changed || inputs_changed {
             for &child in e.children(k) {
-                if child_clip_changed || e.attrs[child].color.is_none() {
+                if child_clip_changed || inputs_changed || e.attrs[child].color.is_none() {
                     self.enqueue(PaintContext, child, e);
                 }
             }

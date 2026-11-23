@@ -27,6 +27,7 @@ impl Mount {
             bytes: Span::default(),
             detached: None,
             attachment: 0,
+            ink_revision: 0,
             change: Change {
                 cold: true,
                 ..Change::default()
@@ -123,6 +124,11 @@ impl Layers {
                 // if scale, preferred width and every child stayed the same.
                 self.invalidate(Pass::Measure, k, depth);
             }
+            if (change.cold || change.reattached || moved || change.order.is_some())
+                && let Some(p) = e.inline_host(k)
+            {
+                self.invalidate(Pass::Reflow, p, e.depth(p));
+            }
             if change.cold {
                 self.mount(k, depth);
             } else if change.reattached {
@@ -156,6 +162,13 @@ impl Layers {
                 }
             }
             if let Some((before, span)) = change.attrs {
+                if before.font_gradient.differs(
+                    e.bytes.get(&span),
+                    e.attrs[k].font_gradient,
+                    e.raw(k),
+                ) {
+                    e.slots[k].ink_revision += 1;
+                }
                 self.invalidate_attrs(e, k, &before, e.bytes.get(&span));
                 e.bytes.release(span);
             }
@@ -171,6 +184,8 @@ impl Layers {
         let shape = e.slots[k].shape;
         let mut invalidate = |pass| self.invalidate(pass, k, depth);
         if old.family != next.family
+            || old.weight != next.weight
+            || old.italic != next.italic
             || old.font_size != next.font_size
             || old.text_align != next.text_align
             || old.layout_scale != next.layout_scale
@@ -180,6 +195,11 @@ impl Layers {
         let (a, b) = (old.sizing.without_weights(), next.sizing.without_weights());
         let parent = e.parent_shape(k);
         let align_changed = old.align != next.align;
+        if shape == Shape::Paragraph
+            && (old.align[0] != next.align[0] || old.text_align != next.text_align)
+        {
+            invalidate(Pass::Reflow);
+        }
         if align_changed && shape == Shape::El {
             invalidate(Pass::Place);
         }
@@ -215,17 +235,42 @@ impl Layers {
         } else if a.height != b.height || a.spacing != b.spacing || a.padding != b.padding {
             invalidate(Pass::Reflow)
         }
-        if old.color != next.color {
+        let clip_changed =
+            old.decor.radius != next.decor.radius || old.decor.border != next.decor.border;
+        if clip_changed
+            || old.color != next.color
+            || old
+                .font_gradient
+                .differs(old_raw, next.font_gradient, e.raw(k))
+            || old.underline != next.underline
+            || old.strike != next.strike
+            || old.offset != next.offset
+        {
             invalidate(Pass::PaintContext)
         }
-        if let Some(outputs) = Outputs::changed(
-            shape.paint_attrs_changed(old, next),
-            old.click != next.click,
-        ) {
+        let paint_changed = shape.paint_attrs_changed(old, next)
+            || old.decor.differs(old_raw, next.decor, e.raw(k));
+        let output = Outputs::changed(paint_changed, old.click != next.click || clip_changed);
+        if let Some(outputs) = output {
             self.invalidate_composition(k, depth, outputs)
         }
         if shape.uses_glyphs() && &old_raw[old.text.clone()] != e.text(k).as_bytes() {
             self.text_changed(k, depth)
+        }
+        if let Some(p) = e.inline_host(k) {
+            if a.padding != b.padding
+                || (shape == Shape::Text && &old_raw[old.text.clone()] != e.text(k).as_bytes())
+            {
+                self.invalidate(Pass::Reflow, p, e.depth(p));
+            }
+            if let Some(outputs) = output {
+                self.invalidate_composition(p, e.depth(p), outputs);
+            }
+        }
+        if old.align[0] != next.align[0] && parent == Some(Shape::Paragraph) {
+            let p = e.slots[k].parent.unwrap();
+            self.invalidate(Pass::Reflow, p, e.depth(p));
+            self.invalidate(Pass::Place, k, depth);
         }
         if align_changed
             && let Some(p) = e.slots[k].parent

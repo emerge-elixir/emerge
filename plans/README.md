@@ -10,7 +10,7 @@ selected work.
 | What works now | Boundary |
 | --- | --- |
 | `use Emerge`: mount, render, rerender, configure, receive raw input and route clicks; direct renderer startup, status, capture and shutdown | Ordinary binary headless and explicit Wayland sessions. Input uses the **last successfully submitted frame**, not the last accepted tree. |
-| **6 of 13** `main` element kinds: `el`, single-line `text`, `none`, `row`, `column`, `wrapped_row`; **one addition: `wrapped_column`** | Padding/gaps, subtree scale, solid backgrounds/text, bundled regular sans/mono. Single-line text supports [inherited left, center and right alignment](../test/emerge_skia/text_alignment_test.exs); this aligns ink within the offered text box, not the box within its parent. `Input.button/2` builds an `el`; `svg/2` needs the still-missing image kind. |
+| **7 of 13** `main` element kinds: `el`, `text`, `none`, `row`, `column`, `wrapped_row`, `paragraph`; **one addition: `wrapped_column`** | [Paragraphs](checkpoints/layout/paragraph.md) wrap direct Text and El→Text, align each line beside local floats, and paint and hit-test styled continuations. Elsewhere Text is single-line and [aligns ink inside its offered box](../test/emerge_skia/text_alignment_test.exs). Bundled sans/mono faces work; custom fonts, TextColumn and editors are separate. `Input.button/2` builds an `el`; `svg/2` needs the still-missing image kind. |
 | Static widths/heights and linear layout | The viewport offers both axes without moving an [aligned root](../test/emerge_skia/root_alignment_test.exs) away from `(0,0)`. A [direct child of El](../test/emerge_skia/el_child_alignment_test.exs) can override the host's alignment on either axis. Row and Column share the main axis; wrapped forms share it **per group**. [Start, center and end groups](../test/emerge_skia/linear_zones_test.exs) use each settled line or column without reordering paint or clicks. All four layouts can [distribute even gaps](../test/emerge_skia/linear_even_spacing_test.exs) within each group on a pixel or fill-bearing main axis. Authored spacing still decides wrap breaks. [El, Text and None ignore the even-spacing flag](../test/emerge_skia/inactive_even_spacing_test.exs). Cross-axis alignment uses the padded host or each wrapped group. Static lengths can combine pixels, content and multiple fills. A WrappedColumn can fit all its occupied widths and gaps; an [unproved early dependency](../guides/internals/retained-decisions.md#d10-wrap-columns-at-the-resolved-height) is refused. |
 | **1 of 19** element `on_*` listeners: `on_click/1` | A left press/release can deliver local coordinates and the current callback for the submitted occurrence. Raw subscriptions are separate; they don't implement key, drag or hover listeners. |
 | **3 of 6** binary headless pixel formats: RGBA8888, BGRA8888, RGB888 | CPU-delivered `VideoInterop.Frame` and installed-frame RGB/RGBA or PNG capture. Producing a binary frame is not video import or PRIME export. |
@@ -18,8 +18,8 @@ selected work.
 
 These counts have different denominators. There is no meaningful overall API
 percentage: a color constructor, a listener and a display backend are not equal
-units of work. The last implementation suite had 93 failures and 21 exclusions;
-that is a regression baseline, not a port score.
+units of work. After the paragraph port the suite has 71 named failures (22
+fewer) and the same 21 exclusions. This is a regression baseline, not a port score.
 
 ## How we work
 

@@ -134,6 +134,7 @@ define_shapes!(
     wrapped_column::WrappedColumn,
     el::El,
     text_leaf::Text,
+    paragraph::Paragraph,
     empty::Empty
 );
 

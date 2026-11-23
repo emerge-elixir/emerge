@@ -52,6 +52,8 @@ impl PaintBehaviour<Utf8> for Text {
                 own.text = Some(paint::GlyphPaint {
                     pos,
                     color: ctx.color,
+                    rules: ctx.rules,
+                    gradient: ctx.gradient,
                     revision: run.revision,
                     clip: (visible != ink).then_some(clip),
                 });

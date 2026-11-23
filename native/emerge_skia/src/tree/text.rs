@@ -1,60 +1,25 @@
 //! Glyph and position calculation reads immutable Skia strike metrics. Preparing
 //! a strike provisions font inputs, not the width, bounds or layout of any string.
 use super::{
-    Family::*,
     Rect,
     pool::{Budget, Pool, Span},
 };
-use skia_safe::{Font, FontHinting, FontMgr, Point, Typeface, font::Edging};
-use skrifa::{FontRef, MetadataProvider, charmap::Charmap};
+use skia_safe::{FontHinting, Point, font::Edging};
+mod face;
+pub use face::Family;
+pub(super) use face::{Face, Weight};
 use slotmap::{SlotMap, new_key_type};
-use std::{
-    hash::{DefaultHasher, Hash, Hasher},
-    sync::OnceLock,
-};
+use std::hash::{DefaultHasher, Hash, Hasher};
 new_key_type! { struct SharedKey; }
-#[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Hash)]
-pub enum Family {
-    #[default]
-    Sans,
-    Mono,
-}
-impl Family {
-    pub(super) fn bytes(self) -> &'static [u8] {
-        match self {
-            Sans => include_bytes!("../fonts/inter/Inter-Regular.ttf"),
-            Mono => include_bytes!("../fonts/jetbrains-mono/JetBrainsMonoNL-Regular.ttf"),
-        }
-    }
-    fn cmap(self) -> &'static Charmap<'static> {
-        static MAPS: [OnceLock<Charmap>; 2] = [OnceLock::new(), OnceLock::new()];
-        MAPS[self as usize]
-            .get_or_init(|| FontRef::new(self.bytes()).expect("bundled font").charmap())
-    }
-    pub(super) fn font(self, size: f32) -> Font {
-        static FACES: [OnceLock<Typeface>; 2] = [OnceLock::new(), OnceLock::new()];
-        let face = FACES[self as usize].get_or_init(|| {
-            FontMgr::new()
-                .new_from_data(self.bytes(), 0)
-                .expect("bundled typeface")
-        });
-        let mut f = Font::from_typeface(face.clone(), size);
-        f.set_subpixel(true);
-        f.set_linear_metrics(true);
-        f.set_baseline_snap(true);
-        f.set_edging(Edging::SubpixelAntiAlias);
-        f.set_hinting(FontHinting::Normal);
-        f
-    }
-}
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct Glyph {
     pub id: u16,
+    anchor: bool,
     pub pos: Point,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct Metrics {
-    pub family: Family,
+    pub face: Face,
     pub size: f32,
     pub width: f32,
     pub height: f32,
@@ -79,7 +44,7 @@ struct SharedRun {
 mod strikes;
 pub(super) use strikes::{StrikeDelta, StrikeKey};
 struct Strike {
-    family: Family,
+    face: Face,
     size: f32,
     scale: f32,
     widths: Vec<f32>,
@@ -89,14 +54,14 @@ struct Strike {
 }
 impl Strike {
     fn new(
-        family: Family,
+        face: Face,
         size: f32,
         reserve_bytes: impl FnOnce(usize) -> Result<(), String>,
     ) -> Result<Self, String> {
         // Same path canonicalization as SkStrikeSpec::MakeCanonicalized. Sum raw
         // advances before scaling bounds/width; positions scale each advance first.
         let path = size > 256.;
-        let mut font = family.font(if path { 64. } else { size });
+        let mut font = face.font(if path { 64. } else { size });
         let scale = if path { size / 64. } else { 1. };
         if path {
             font.set_embedded_bitmaps(false);
@@ -118,9 +83,9 @@ impl Strike {
         bounds.resize(count, skia_safe::Rect::default());
         font.get_widths_bounds(&ids, Some(&mut widths), Some(&mut bounds), None);
         let (_, m) = font.metrics();
-        family.cmap();
+        face.cmap();
         Ok(Self {
-            family,
+            face,
             size,
             scale,
             widths,
@@ -132,11 +97,12 @@ impl Strike {
     fn shape(&self, text: &str, data: &mut [Glyph]) -> Metrics {
         let mut ink = skia_safe::Rect::default();
         let (mut width, mut pos) = (0., 0.);
-        let cmap = self.family.cmap();
+        let cmap = self.face.cmap();
         for (i, (ch, g)) in text.chars().zip(data).enumerate() {
             let id = cmap.map(ch).map_or(0, |v| v.to_u32() as u16);
             *g = Glyph {
                 id,
+                anchor: ch == '\u{200b}',
                 pos: Point::new(pos, 0.),
             };
             let mut rect = self.bounds[id as usize];
@@ -156,7 +122,7 @@ impl Strike {
         let x = ink.left * self.scale;
         let y = ink.top * self.scale;
         Metrics {
-            family: self.family,
+            face: self.face,
             size: self.size,
             width: width + left + (right - width).max(0.),
             height: self.descent - self.ascent,
@@ -232,20 +198,13 @@ impl TextStore {
         self.strings.ensure(4 * peak, n, b)?;
         self.glyphs.ensure(peak, n, b)
     }
-    pub fn measure(
-        &mut self,
-        text: &str,
-        n: usize,
-        family: Family,
-        size: f32,
-        run: &mut Run,
-    ) -> bool {
+    pub fn measure(&mut self, text: &str, n: usize, face: Face, size: f32, run: &mut Run) -> bool {
         let mut h = DefaultHasher::new();
-        (text, family as u8, size.to_bits()).hash(&mut h);
+        (text, face, size.to_bits()).hash(&mut h);
         let slot = h.finish() as usize % self.lookup.len();
         let key = if let Some(k) = self.lookup[slot].filter(|&k| {
             self.values.get(k).is_some_and(|s| {
-                s.metrics.family == family
+                s.metrics.face == face
                     && s.metrics.size == size
                     && self.strings.get(&s.text) == text.as_bytes()
             })
@@ -253,7 +212,7 @@ impl TextStore {
             self.values[k].refs += 1;
             k
         } else {
-            let strike = self.strikes.get(StrikeKey::new(family, size));
+            let strike = self.strikes.get(StrikeKey::new(face, size));
             let glyphs = self.glyphs.alloc(n);
             let metrics = strike.shape(text, self.glyphs.write(glyphs));
             #[cfg(test)]
@@ -285,6 +244,45 @@ impl TextStore {
         self.release(old);
         changed
     }
+    fn strike(&self, run: Run) -> &Strike {
+        self.strikes
+            .get(StrikeKey::new(run.metrics.face, run.metrics.size))
+    }
+    pub fn space_width(&self, run: Run) -> f32 {
+        let s = self.strike(run);
+        let id = s.face.cmap().map(' ').map_or(0, |g| g.to_u32() as usize);
+        s.widths[id] * s.scale
+    }
+    pub fn word_width(&self, run: Run, range: std::ops::Range<usize>) -> f32 {
+        let s = self.strike(run);
+        let mut ink = skia_safe::Rect::default();
+        let mut pen = 0.;
+        for g in self.glyphs.get(&run.span)[range]
+            .iter()
+            .filter(|g| !g.anchor)
+        {
+            let mut rect = s.bounds[g.id as usize];
+            rect.offset((pen, 0.));
+            ink.join(rect);
+            pen += s.widths[g.id as usize];
+        }
+        (pen.max(ink.right) - ink.left.min(0.)) * s.scale
+    }
+    pub fn word_glyphs(
+        &self,
+        run: Run,
+        range: std::ops::Range<usize>,
+    ) -> impl Iterator<Item = (u16, Point)> + '_ {
+        let s = self.strike(run);
+        self.glyphs.get(&run.span)[range]
+            .iter()
+            .filter(|g| !g.anchor)
+            .scan(0., move |x, g| {
+                let pos = Point::new(*x, 0.);
+                *x += s.widths[g.id as usize] * s.scale;
+                Some((g.id, pos))
+            })
+    }
     pub fn release(&mut self, run: Run) {
         if let Some(k) = run.shared {
             self.values[k].refs -= 1;
@@ -299,7 +297,7 @@ impl TextStore {
 pub struct TextMeasurer;
 impl TextMeasurer {
     pub fn dimensions(text: &str, size: f32) -> (f32, f32, f32, f32) {
-        let f = Sans.font(size);
+        let f = Face::default().font(size);
         let (advance, _) = f.measure_str(text, None);
         let (_, m) = f.metrics();
         (advance, m.descent - m.ascent, -m.ascent, m.descent)

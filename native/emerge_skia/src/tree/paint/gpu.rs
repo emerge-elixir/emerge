@@ -32,8 +32,16 @@ impl OutlinePen for Pen {
         self.0.close();
     }
 }
-fn mesh(family: Family, size: f32, id: u16) -> Result<Option<Vertices>, String> {
-    let font = FontRef::new(family.bytes()).map_err(|e| e.to_string())?;
+enum Outline {
+    Mesh(Vertices),
+    Synthetic(skia_safe::Path),
+}
+fn mesh(face: text::Face, size: f32, id: u16) -> Result<Option<Outline>, String> {
+    // Synthetic embolden/skew changes the outline, not just the advance.
+    if face.synthetic() {
+        return Ok(face.font(size).get_path(id).map(Outline::Synthetic));
+    }
+    let font = FontRef::new(face.bytes()).map_err(|e| e.to_string())?;
     let outline = font
         .outline_glyphs()
         .get(GlyphId::new(id.into()))
@@ -68,11 +76,11 @@ fn mesh(family: Family, size: f32, id: u16) -> Result<Option<Vertices>, String> 
         .indices()
         .ok_or("missing triangle indices")?
         .copy_from_slice(&buf.indices);
-    Ok(Some(builder.detach()))
+    Ok(Some(Outline::Mesh(builder.detach())))
 }
 #[derive(Default)]
 pub(crate) struct GeometryPainter {
-    meshes: HashMap<(u8, u32, u16), Option<Vertices>>,
+    meshes: HashMap<(text::Face, u32, u16), Option<Outline>>,
 }
 impl GeometryPainter {
     pub(crate) fn record(&mut self, canvas: &Canvas, raster: &Raster) -> Result<(), String> {
@@ -81,9 +89,9 @@ impl GeometryPainter {
             raster.tree.output.drawing(),
             |canvas, run, paint| {
                 for (&id, p) in run.ids.iter().zip(run.positions) {
-                    let key = (run.family as u8, run.size.to_bits(), id);
+                    let key = (run.face, run.size.to_bits(), id);
                     if !self.meshes.contains_key(&key) {
-                        let m = mesh(run.family, run.size, id)?;
+                        let m = mesh(run.face, run.size, id)?;
                         if self.meshes.len() >= 256 {
                             self.meshes.clear();
                         }
@@ -91,8 +99,24 @@ impl GeometryPainter {
                     }
                     if let Some(m) = &self.meshes[&key] {
                         canvas.save();
-                        canvas.translate((run.origin[0] + p.x, run.origin[1] + p.y));
-                        canvas.draw_vertices(m, BlendMode::SrcOver, paint);
+                        let (x, y) = (run.origin[0] + p.x, run.origin[1] + p.y);
+                        canvas.translate((x, y));
+                        let anchored = paint.shader().map(|shader| {
+                            let mut local = paint.clone();
+                            local.set_shader(
+                                shader.with_local_matrix(&skia_safe::Matrix::translate((-x, -y))),
+                            );
+                            local
+                        });
+                        let paint = anchored.as_ref().unwrap_or(paint);
+                        match m {
+                            Outline::Mesh(v) => {
+                                canvas.draw_vertices(v, BlendMode::SrcOver, paint);
+                            }
+                            Outline::Synthetic(path) => {
+                                canvas.draw_path(path, paint);
+                            }
+                        }
                         canvas.restore();
                     }
                 }
@@ -106,7 +130,7 @@ mod tests {
     use super::*;
     #[test]
     fn spaces_and_card_labels_need_only_outline_geometry() {
-        for f in [Family::Sans, Family::Mono] {
+        for f in [Family::Sans, Family::Mono].map(text::Face::from) {
             let font = FontRef::new(f.bytes()).unwrap();
             assert!(
                 mesh(f, 16., u16::MAX).is_err(),

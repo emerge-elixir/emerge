@@ -1,9 +1,11 @@
 //! Wire IDs name declarations, keys name cache slots, and attachments name live input targets.
 mod capacity;
 mod changes;
+mod decoration;
 mod intrinsic;
 mod layers;
 mod paint;
+mod paragraph;
 mod pool;
 mod queue;
 mod scale;
@@ -249,15 +251,24 @@ struct Attrs {
     // Admission also checks operands masked by a tighter bound. This is not a layout input.
     largest_length_px: f64,
     family: Option<Family>,
+    weight: Option<text::Weight>,
+    italic: Option<bool>,
     text_align: Option<Alignment>,
     font_size: Option<f64>,
     layout_scale: Option<f64>,
     color: Option<u32>,
     background: Option<u32>,
+    decor: decoration::Decor,
+    font_gradient: decoration::Bytes,
+    underline: Option<bool>,
+    strike: Option<bool>,
+    offset: [f64; 2],
     click: bool,
     // Relative to the pooled wire block. No retained String or second copy of UTF-8.
     text: Range<usize>,
     glyph_count: usize,
+    words: usize,
+    multiline: bool,
 }
 #[derive(Clone, Copy, PartialEq)]
 enum MainSpacing {
@@ -317,6 +328,7 @@ struct Mount {
     // Some only while this slot is in the detached cache.
     detached: Option<usize>,
     attachment: u64,
+    ink_revision: u64,
     change: changes::Change,
     children: Span<Key>,
     bytes: Span<u8>,
@@ -358,6 +370,21 @@ impl Elements {
     }
     fn parent_shape(&self, k: Key) -> Option<Shape> {
         self.slots[k].parent.map(|p| self.slots[p].shape)
+    }
+    fn float_side(&self, k: Key) -> Option<Alignment> {
+        self.attrs[k].align[0].filter(|a| *a != Alignment::Center)
+    }
+    /// The paragraph owns a direct non-float and, for an El, its text source.
+    fn inline_host(&self, k: Key) -> Option<Key> {
+        let p = self.slots[k].parent?;
+        if self.slots[p].shape == Shape::Paragraph {
+            return self.float_side(k).is_none().then_some(p);
+        }
+        (self.slots[k].shape == Shape::Text
+            && self.slots[p].shape == Shape::El
+            && self.float_side(p).is_none()
+            && self.parent_shape(p) == Some(Shape::Paragraph))
+        .then(|| self.slots[p].parent.unwrap())
     }
     fn alignment(&self, k: Key, axis: usize) -> Alignment {
         self.attrs[k].align[axis]

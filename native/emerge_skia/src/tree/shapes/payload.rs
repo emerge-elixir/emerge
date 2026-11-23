@@ -54,9 +54,8 @@ impl Payload for Utf8 {
             return Err(format!("unsupported attribute {tag} in first slice"));
         }
         let s = r.string()?;
-        if s.contains(['\r', '\n']) {
-            return Err("multiline text is not in the first slice".into());
-        }
+        a.multiline = s.contains(['\r', '\n']);
+        a.words = s.split_whitespace().count().max(1);
         a.text = wire::range(raw, s.as_bytes());
         a.glyph_count = s.chars().count();
         Ok(())

@@ -7,15 +7,15 @@ use std::collections::HashMap;
 const TABLE_BYTES: usize = 64 * 1024 * 1024;
 const WARM: usize = 8;
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub(in crate::tree) struct StrikeKey(Family, u32);
+pub(in crate::tree) struct StrikeKey(Face, u32);
 impl StrikeKey {
-    pub(super) fn new(family: Family, size: f32) -> Self {
-        Self(family, size.to_bits())
+    pub(super) fn new(face: Face, size: f32) -> Self {
+        Self(face, size.to_bits())
     }
 }
 impl From<Inputs> for StrikeKey {
     fn from(i: Inputs) -> Self {
-        Self::new(i.family, i.font_size())
+        Self::new(i.face, i.font_size())
     }
 }
 pub(in crate::tree) type StrikeDelta = (Option<StrikeKey>, Option<StrikeKey>);
@@ -127,7 +127,7 @@ mod tests {
     #[test]
     fn a_partial_cold_reserve_cannot_leak_or_evict_live_or_promised_tables() {
         let mut s = Strikes::default();
-        let [a, b, c, d] = [12., 14., 16., 18.].map(|n| StrikeKey::new(Sans, n));
+        let [a, b, c, d] = [12., 14., 16., 18.].map(|n| StrikeKey::new(Face::default(), n));
         let mut added = Vec::new();
         s.prepare(&[(None, Some(a))], &mut added).unwrap();
         s.commit(&[(None, Some(a))]);

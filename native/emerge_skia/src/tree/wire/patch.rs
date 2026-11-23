@@ -10,6 +10,11 @@ struct Demand {
     edges: usize,
     texts: usize,
     scales: usize,
+    paragraphs: usize,
+    words: usize,
+    materials: usize,
+    material_bytes: usize,
+    rules: usize,
     new_glyphs: usize,
     new_ids: usize,
     sizes: text::Sizes,
@@ -25,6 +30,11 @@ impl Demand {
             edges: e.child_pool.len(),
             texts: t.layers.text_count,
             scales: t.layers.scale_declarations,
+            paragraphs: t.layers.paragraphs.count,
+            words: t.layers.paragraphs.words,
+            materials: t.output.materials,
+            material_bytes: t.output.material_bytes,
+            rules: t.output.rules,
             new_glyphs: 0,
             new_ids: 0,
             sizes: t.layers.text.sizes,
@@ -127,6 +137,10 @@ impl Tree {
                 d.live -= 1;
                 d.live_bytes -= e.raw(k).len();
                 d.texts -= usize::from(e.slots[k].shape.uses_glyphs());
+                d.paragraphs -= usize::from(e.slots[k].shape == Shape::Paragraph);
+                d.materials -= usize::from(e.attrs[k].material());
+                d.material_bytes -= e.attrs[k].material_bytes();
+                d.rules -= usize::from(e.attrs[k].has_rules());
                 d.scales -= usize::from(e.attrs[k].layout_scale.is_some());
                 if let Some(size) = e.attrs[k].font_size {
                     d.sizes.remove(size);
@@ -168,6 +182,10 @@ impl Tree {
             d.live += 1;
             d.live_bytes += len;
             d.texts += usize::from(s.shape.uses_glyphs());
+            d.paragraphs += usize::from(s.shape == Shape::Paragraph);
+            d.materials += usize::from(a.material());
+            d.material_bytes += a.material_bytes();
+            d.rules += usize::from(a.has_rules());
             d.scales += usize::from(a.layout_scale.is_some());
             if let Some(size) = a.font_size {
                 d.sizes.add(size)?;
@@ -185,6 +203,8 @@ impl Tree {
                     }
                     d.raw += r.len();
                     if a.family != e.attrs[k].family
+                        || a.weight != e.attrs[k].weight
+                        || a.italic != e.attrs[k].italic
                         || a.font_size != e.attrs[k].font_size
                         || a.layout_scale != e.attrs[k].layout_scale
                     {
@@ -276,7 +296,34 @@ impl Tree {
             self.budget,
         )?;
         self.layers.text.ensure(peak, d.resident, self.budget)?;
-        self.output.reserve_for(d.live, desired, self.budget)?;
+        d.words = if d.paragraphs > 0 {
+            b.paragraph_words(&self.elements, d.words)
+        } else {
+            0
+        };
+        let words = d.words;
+        if d.paragraphs > 0 {
+            self.layers.paragraphs.reserve(
+                self.elements.slots.capacity(),
+                d.resident,
+                words,
+                self.budget,
+            )?;
+        }
+        self.output.reserve_materials(
+            self.elements.slots.capacity(),
+            d.materials,
+            d.material_bytes,
+            words,
+            self.budget,
+        )?;
+        self.output.reserve_for(
+            d.live,
+            desired,
+            words,
+            d.materials + if d.rules > 0 { 2 * d.texts } else { 0 },
+            self.budget,
+        )?;
         b.prepare_domains(&self.elements, &mut self.layers, scale, d.scales)?;
         Ok(d)
     }
@@ -364,6 +411,11 @@ impl Tree {
         self.root = b.root.map(|id| e.ids[&id]);
         e.live_bytes = d.live_bytes;
         self.layers.text_count = d.texts;
+        self.layers.paragraphs.count = d.paragraphs;
+        self.layers.paragraphs.words = d.words;
+        self.output.materials = d.materials;
+        self.output.material_bytes = d.material_bytes;
+        self.output.rules = d.rules;
         self.layers.scale_declarations = d.scales;
         self.layers.text.sizes = d.sizes;
         b.publish_domains(e, &mut self.layers);

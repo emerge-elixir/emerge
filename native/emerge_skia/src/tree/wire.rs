@@ -10,7 +10,7 @@ pub(super) struct Scratch {
 }
 type Result<T> = std::result::Result<T, String>;
 const MAX_BYTES: usize = 64 * 1024 * 1024;
-pub(super) struct Reader<'a>(&'a [u8]);
+pub(super) struct Reader<'a>(pub(super) &'a [u8]);
 impl<'a> Reader<'a> {
     pub(super) fn take(&mut self, n: usize) -> Result<&'a [u8]> {
         let (v, rest) = self.0.split_at_checked(n).ok_or("truncated EMRG data")?;
@@ -26,7 +26,7 @@ impl<'a> Reader<'a> {
     pub(super) fn count(&mut self) -> Result<usize> {
         Ok(u16::from_be_bytes(self.array()?) as usize)
     }
-    fn long(&mut self) -> Result<usize> {
+    pub(super) fn long(&mut self) -> Result<usize> {
         Ok(u32::from_be_bytes(self.array()?) as usize)
     }
     fn id(&mut self) -> Result<u64> {
@@ -60,7 +60,73 @@ impl<'a> Reader<'a> {
         let n = self.count()?;
         self.take(n * 8)
     }
-    fn color(&mut self) -> Result<u32> {
+    pub(super) fn signed(&mut self) -> Result<f64> {
+        let v = f64::from_be_bytes(self.array()?);
+        if v.is_finite() {
+            Ok(v)
+        } else {
+            Err("expected finite number".into())
+        }
+    }
+    fn flag(&mut self) -> Result<bool> {
+        match self.byte()? {
+            0 => Ok(false),
+            1 => Ok(true),
+            v => Err(format!("invalid boolean {v}")),
+        }
+    }
+    fn quad(&mut self) -> Result<[f64; 4]> {
+        match self.byte()? {
+            0 => Ok([self.number()?; 4]),
+            1 => Ok([
+                self.number()?,
+                self.number()?,
+                self.number()?,
+                self.number()?,
+            ]),
+            v => Err(format!("invalid four-edge value {v}")),
+        }
+    }
+    pub(super) fn ink(&mut self, raw: &[u8]) -> Result<(Option<u32>, decoration::Bytes)> {
+        if self.0.first() != Some(&3) {
+            return Ok((Some(self.color()?), Default::default()));
+        }
+        let start = self.0;
+        self.byte()?;
+        let n = self.long()?;
+        if n < 2 || n > self.0.len() / 3 {
+            return Err("invalid gradient stop count".into());
+        }
+        for _ in 0..n {
+            self.color()?;
+        }
+        self.signed()?;
+        Ok((
+            None,
+            decoration::Bytes::of(raw, &start[..start.len() - self.0.len()]),
+        ))
+    }
+    fn shadows(&mut self, raw: &[u8]) -> Result<(decoration::Bytes, f64)> {
+        let start = self.0;
+        let mut largest = 0f64;
+        for _ in 0..self.byte()? {
+            for n in [
+                self.signed()?,
+                self.signed()?,
+                self.number()?,
+                self.signed()?,
+            ] {
+                largest = largest.max(n.abs());
+            }
+            self.ink(raw)?;
+            self.flag()?;
+        }
+        Ok((
+            decoration::Bytes::of(raw, &start[..start.len() - self.0.len()]),
+            largest,
+        ))
+    }
+    pub(super) fn color(&mut self) -> Result<u32> {
         Ok(match self.byte()? {
             0 => {
                 let [r, g, b] = self.array()?;
@@ -72,6 +138,16 @@ impl<'a> Reader<'a> {
                 "white" => 0xffffffff,
                 "red" => 0xff0000ff,
                 "blue" => 0xffff,
+                "green" => 0x00ff00ff,
+                "cyan" => 0x00ffffff,
+                "magenta" => 0xff00ffff,
+                "yellow" => 0xffff00ff,
+                "orange" => 0xffa500ff,
+                "purple" => 0x800080ff,
+                "pink" => 0xffc0cbff,
+                "gray" | "grey" => 0x808080ff,
+                "navy" => 0x000080ff,
+                "teal" => 0x008080ff,
                 "transparent" => 0,
                 v => return Err(format!("unsupported named color {v}")),
             },
@@ -117,7 +193,21 @@ fn attrs(raw: &[u8], shape: Shape) -> Result<Attrs> {
             }
             tag @ (5 | 6) => a.align[usize::from(tag - 5)] = Some(r.alignment("alignment")?),
             30 => a.text_align = Some(r.alignment("text alignment")?),
-            12 if r.byte()? == 0 => a.background = Some(r.color()?),
+            12 if r.byte()? == 0 => (a.background, a.decor.background_gradient) = r.ink(raw)?,
+            13 => a.decor.radius = r.quad()?,
+            14 => a.decor.border = r.quad()?,
+            15 => (a.decor.border_color, a.decor.border_gradient) = r.ink(raw)?,
+            51 => {
+                a.decor.style = r.byte()?;
+                if a.decor.style > 2 {
+                    return Err("invalid border style".into());
+                }
+            }
+            52 => (a.decor.shadows, a.decor.max_shadow) = r.shadows(raw)?,
+            31 => a.offset[0] = r.signed()?,
+            32 => a.offset[1] = r.signed()?,
+            47 => a.underline = Some(r.flag()?),
+            48 => a.strike = Some(r.flag()?),
             16 => a.font_size = Some(r.number()?),
             78 => {
                 let s = f64::from_be_bytes(r.array()?);
@@ -126,12 +216,28 @@ fn attrs(raw: &[u8], shape: Shape) -> Result<Attrs> {
                 }
                 a.layout_scale = Some(s);
             }
-            17 => a.color = Some(r.color()?),
+            17 => (a.color, a.font_gradient) = r.ink(raw)?,
             18 if r.byte()? <= 1 => {
                 a.family = Some(match r.string()? {
                     "default" | "sans-serif" => Family::Sans,
-                    "monospace" => Family::Mono,
+                    "monospace" | "JetBrains Mono NL" | "JetBrains Mono" => Family::Mono,
                     v => return Err(format!("unported font family {v}")),
+                })
+            }
+            19 => {
+                a.weight = Some(match r.string()? {
+                    "normal" | "regular" => text::Weight::Regular,
+                    "bold" => text::Weight::Bold,
+                    "thin" | "extra_light" | "light" | "medium" => text::Weight::OtherLight,
+                    "semi_bold" | "extra_bold" | "black" => text::Weight::OtherHeavy,
+                    s => return Err(format!("unsupported font weight {s}")),
+                })
+            }
+            20 => {
+                a.italic = Some(match r.string()? {
+                    "italic" => true,
+                    "normal" => false,
+                    s => return Err(format!("unsupported font style {s}")),
                 })
             }
             40 => {
@@ -147,6 +253,8 @@ fn attrs(raw: &[u8], shape: Shape) -> Result<Attrs> {
     if !r.0.is_empty() {
         return Err("trailing attribute bytes".into());
     }
+    // Layout reads padding plus the border inset; paint retains the border itself.
+    a.sizing.padding = std::array::from_fn(|i| a.sizing.padding[i] + a.decor.border[i]);
     a.largest_length_px = largest_px[0].max(largest_px[1]);
     Ok(a)
 }

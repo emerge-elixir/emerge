@@ -1,12 +1,12 @@
 # Public API parity with main
 
-**Selected item:** none.
+**Selected item:** none. Last completed: [`paragraph/2`](checkpoints/layout/paragraph.md).
 
-`wrapped_column/2` is an addition to the six
-ported `main` kinds, not a seventh `main` kind. See the [geometry and dependency
+`wrapped_column/2` is an addition to the seven
+ported `main` kinds, not an eighth `main` kind. See the [geometry and dependency
 boundary](../guides/internals/retained-decisions.md#d10-wrap-columns-at-the-resolved-height).
 The rows below are gaps, not concurrent plans. The [alignment roadmap](alignment.md)
-covers the remaining sites gated on paragraphs, editors and other features.
+covers the remaining sites gated on TextColumn, editors and other features.
 
 **Reference:** local `main` at `aef5e42fc789c396505f85c34810b2ca9c008586`;
 retained inventory began at `871659f`; the linked implementations and tests
@@ -32,15 +32,15 @@ be expressed from what can be drawn or receive input.
 
 | Surface | Remaining behavior |
 | --- | --- |
-| `paragraph/2`, `text_column/2` — missing | Inline text, floats, wrapping, line alignment and decoration; the text-column layout and its defaults. `text/1` today is one UTF-8 line; no CR/LF. |
+| `text_column/2` — missing | Block layout, default sizes and floats spanning paragraphs. [`paragraph/2`](checkpoints/layout/paragraph.md) already wraps and aligns direct Text and El→Text with paragraph-local floats, inline decoration and continuation clicks. CR/LF are whitespace at an inline prose site; this is not standalone multiline Text or an editor. |
 | `image/2`, `svg/2`, `image_fit/1`, `Svg.color/1` — missing | Load, measure and paint raster/SVG, aspect-preserving and explicit fits, original SVG colors or template tint. SVG uses the image kind. Asset policy below applies to backgrounds too. |
 | `Input.text/2`, `multiline/2`, `slider/2`, `Input.Slider.config/0,1` — missing | Editable single/multiline text, echo, caret, selection, IME, multiline wrap/scroll; controlled slider range/value/step, track, filled track, thumb and change delivery. A button is already an El, but its keyboard/press behavior is not there. |
 | `video/2` — missing | Layout, fit and paint the latest frame of a renderer-local named target; distinct from sending headless frames *out*. See video submission below. |
 | `Size`, `Space`, `Align` — partial | Static lengths, padding and fixed gaps work. Direct children of all four linear kinds support [start/center/end groups and cross-axis alignment](../test/emerge_skia/linear_zones_test.exs). [WrappedColumn](../test/emerge_skia/wrapped_column_test.exs) can reject content-dependent widths needed before a height share or child reflow is known. An [El child](../test/emerge_skia/el_child_alignment_test.exs) can override either axis. An [aligned root](../test/emerge_skia/root_alignment_test.exs) keeps its attributes without moving its box. [Even spacing](../test/emerge_skia/linear_even_spacing_test.exs) sizes children before distributing gaps on both axes, independently per wrapped line or column. [El, Text and None retain the flag without using it](../test/emerge_skia/inactive_even_spacing_test.exs). Still separate: placement on unported kinds and layout/text snapping. [Sizing sites](../native/emerge_skia/src/tree/tests/dimensions/sites.rs) |
-| `UI.rotate/1`, `Transform` — missing | Layout rotation; separately paint-only move X/Y, rotate, scale and alpha with matching hits. Layout `UI.scale/1` already works; paint scale (tag 34) and screenshot scale are different contracts. |
+| `UI.rotate/1`, `Transform` — partial | Paragraph/ancestor move X/Y works on the [submitted paint path](../test/emerge_skia/paragraph_border_test.exs). This does not establish all transform sites. Layout rotation, paint rotation/scale and alpha with matching hits remain. Layout `UI.scale/1` and screenshot scale are different contracts. |
 | `Nearby`, `clip_nearby/0` — missing | All six mount positions (`behind_content`, `above`, `on_right`, `below`, `on_left`, `in_front`), stacking, escaping/clipped hits and identity on moves. The producer understands the edges; native rejects them. Ordinary linear-container clipping is not overlay support. |
-| `Color`, `Background`, `Border` — partial | Solid RGB/RGBA and palette helpers work on backgrounds/text; raw names are limited to black, white, red, blue and transparent. Missing other supported names, gradients including alpha/stops across all color consumers, background image fit/tile, borders (per-edge widths, per-corner radii, colors/styles), outer/inner shadows and glow. |
-| `Font` — partial | Size, solid color, bundled regular `default`/`sans-serif` and `monospace`, and [left/center/right alignment of single-line text](../test/emerge_skia/text_alignment_test.exs) work. Remaining: other/custom families, **explicit** weights (even `regular`), italic, letter/word spacing, underline/strike, and paragraph/editor text layout. |
+| `Color`, `Background`, `Border` — partial | [Inline boxes](../test/emerge_skia/paragraph_border_test.exs) paint solid/gradient backgrounds, per-edge widths, per-corner radii, solid/dashed/dotted borders, outer/inner shadows and glow. Shared ordinary-box painting and [gradient stops/alpha](../test/emerge_skia/gradient_test.exs) work on admitted kinds. Background images, SVG tint, other asset consumers and broader feature interactions remain. |
+| `Font` — partial | Bundled default/sans-serif and mono (including JetBrains Mono aliases); regular/bold/italic/bold-italic and synthetic weight fallback, solid/gradient ink, underline/strike. [Single-line Text](../test/emerge_skia/text_alignment_test.exs) and [paragraph lines](../test/emerge_skia/paragraph_alignment_test.exs) have distinct alignment rules. Letter/word spacing, custom font loading and editor layout remain. |
 | `Scroll` — missing | Scrollbars and interaction on both axes; controlled `scroll_x/1` and `scroll_y/1` fractions/key targets, resize/echo rules and `on_scroll` position fractions. Resolving a key in Elixir does not move native content. |
 | `Event`, `focus_on_mount/0` — partial | Beyond `on_click`: mouse down/up/enter/leave/move, press, drag/capture, swipe in four directions, key down/up/press, focus/blur, change, scroll and `virtual_key`. Deliver the proper payload and callback (including custom `wrap_payload/3` and external PIDs) on the installed geometry. [Raw-to-local controls](../test/emerge/pointer_drag_test.exs) |
 | `Interactive`, `Animation` — missing | Hover, mouse-down and focused styles; `animate`, enter, exit and `change` policies, endpoints, length reflow, hit-testing of moving elements, frame pacing and becoming idle. A decoded transition is not a presented animation. |

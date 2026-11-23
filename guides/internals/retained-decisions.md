@@ -319,3 +319,33 @@ white `Hi` starts at x **6 / 44 / 82** for left / center / right; the fully
 white bounds stay 8×12 at y=8. Explicit left restores the natural-width box.
 The existing [default-size scale rule](retained-changelog-candidates.md#verified-fix-candidates)
 still applies. [Public frames and local clicks](../../test/emerge_skia/text_alignment_test.exs).
+
+### D14. Break paragraph lines once and submit their hit regions with the ink
+
+Measure the preferred unwrapped width; in Reflow use the final width and the
+vertical extent of each local float. Its width constraint is an **offer**, not
+an assigned share: a `max(px(104), fill())` float can overflow a 76px band.
+Align each finished line separately, including the last. An explicit paragraph
+Font alignment overrides its horizontal box helper, then the inherited Font
+applies. Neither rule positions the paragraph in its parent.
+
+Each [fragment](../../native/emerge_skia/src/tree/paragraph.rs) names a range
+in its Text run and its direct inline owner. Adjacent words of the same El on
+one line share a decorated box; each continuation gets its own insets and
+border. Place and both painters consume the relative result. A color-only edit
+need not rewrap; a different word with equal metrics must not reuse stale
+ink. A kept wrapper that becomes a float must relinquish its inline geometry
+even at an unchanged origin. Admission reserves old and new fragments, scratch,
+strikes, commands, clips and material bytes before committing. A prepared
+drawing owns variable paint bytes once per contributing element, not per word.
+
+**Intentional input difference:** use the submitted continuation as a hit region
+and the listener's outer origin across all its lines for local coordinates;
+the space between continuations is not a link. In matching compositor crops,
+a press/release at `(53,41)` reached the paragraph at `(48,36)` on pinned
+`main`; retained delivered the wrapped link at `(44,32)`. After widening the
+paragraph during a press, release at `(53,13)` delivered that same link at
+`(44,4)`. The float, rounded corner and gap controls agreed. [Public edits and
+clicks](../../test/emerge_skia/paragraph_flow_test.exs) · [failed submission and
+resource controls](../../native/emerge_skia/src/tree/tests/prose.rs) ·
+[qualification and scope](../../plans/checkpoints/layout/paragraph.md).
