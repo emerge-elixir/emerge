@@ -45,6 +45,7 @@ pub mod keys;
 #[cfg(all(feature = "drm", target_os = "linux"))]
 mod linux_wait;
 mod native_log;
+pub mod output_rotation;
 pub mod paint_layer_payload_cache;
 pub mod render_color;
 pub mod render_scene;
@@ -2096,6 +2097,8 @@ struct StartConfig {
     #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
     drm_hotplug_interval_ms: Option<u32>,
     #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
+    drm_rotation: output_rotation::OutputRotation,
+    #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
     drm_force_gpu_finish: bool,
     #[cfg_attr(not(all(feature = "drm", target_os = "linux")), allow(dead_code))]
     drm_hw_cursor: bool,
@@ -2245,6 +2248,7 @@ struct StartOptsNif {
     drm_startup_retries: u32,
     drm_retry_interval_ms: u32,
     drm_hotplug_interval_ms: Option<u32>,
+    drm_rotation: u32,
     drm_force_gpu_finish: bool,
     hw_cursor: bool,
     input_log: bool,
@@ -2795,7 +2799,9 @@ fn start_native_renderer_with_config(
             let drm_cursor_state_for_input = Arc::clone(&drm_cursor_state);
             let stop_clone = Arc::clone(&stop_flag);
             let input_log = log_input;
-            let drm_input_size = (initial_width, initial_height);
+            let drm_rotation = config.drm_rotation;
+            // The size hint is in layout orientation; input and mode selection work on the panel.
+            let drm_input_size = drm_rotation.logical_size((initial_width, initial_height));
             let backend_wake_for_input = backend_wake.clone();
             let input_wake_for_input = input_wake.clone();
             let latest_frame_for_backend = Arc::clone(&latest_frame);
@@ -2813,6 +2819,7 @@ fn start_native_renderer_with_config(
                     input_wake_for_input,
                     input_log,
                     wake_control_for_input,
+                    drm_rotation,
                 );
                 input.run();
             }));
@@ -2840,7 +2847,7 @@ fn start_native_renderer_with_config(
                 backlight_state: config.backlight_state.clone().unwrap_or_else(|| {
                     ResourceArc::new(runtime::backlight::BacklightState::default())
                 }),
-                requested_size: Some((config.width, config.height)),
+                requested_size: Some(drm_rotation.logical_size((config.width, config.height))),
                 card_path: config.drm_card.clone(),
                 output: config.drm_output.clone(),
                 mode: config.drm_mode.clone(),
@@ -2854,6 +2861,7 @@ fn start_native_renderer_with_config(
                     .map(|ms| Duration::from_millis(u64::from(ms))),
                 force_gpu_finish: config.drm_force_gpu_finish,
                 hw_cursor: config.drm_hw_cursor,
+                rotation: drm_rotation,
                 render_log: log_render,
                 renderer_stats_log: config.renderer_stats_log,
                 rendering_api: selected_rendering_api,
@@ -3137,6 +3145,7 @@ fn start(
                 drm_startup_retries: 40,
                 drm_retry_interval_ms: 250,
                 drm_hotplug_interval_ms: Some(750),
+                drm_rotation: output_rotation::OutputRotation::Deg0,
                 drm_force_gpu_finish: false,
                 drm_hw_cursor: true,
                 drm_cursor_overrides: Vec::new(),
@@ -3225,6 +3234,10 @@ fn start_opts(env: Env, opts: StartOptsNif) -> NifResult<ResourceArc<RendererRes
             drm_startup_retries: opts.drm_startup_retries,
             drm_retry_interval_ms: opts.drm_retry_interval_ms,
             drm_hotplug_interval_ms: opts.drm_hotplug_interval_ms,
+            drm_rotation: output_rotation::OutputRotation::from_degrees(opts.drm_rotation)
+                .ok_or_else(|| {
+                    rustler::Error::Term(Box::new("drm_rotation must be 0, 90, 180 or 270"))
+                })?,
             drm_force_gpu_finish: opts.drm_force_gpu_finish,
             drm_hw_cursor: opts.hw_cursor,
             drm_cursor_overrides,

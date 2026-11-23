@@ -512,6 +512,7 @@ fn run_session(
     startup: &mut Option<std::sync::mpsc::Sender<Result<DrmBackendStartupInfo, String>>>,
 ) -> Result<(), String> {
     let dimensions = session.kms.dimensions();
+    let logical_dimensions = config.rotation.logical_size(dimensions);
     let interval = core::mode_frame_interval(&session.kms.mode);
     let pitches: Vec<_> = session
         .buffers
@@ -535,8 +536,8 @@ fn run_session(
     let _ = context
         .event_tx
         .try_send(EventMsg::InputEvent(InputEvent::Resized {
-            width: dimensions.0,
-            height: dimensions.1,
+            width: logical_dimensions.0,
+            height: logical_dimensions.1,
             scale_factor: 1.0,
         }));
     context.native_log.info(
@@ -552,11 +553,12 @@ fn run_session(
     let required_frame = context
         .presenter
         .as_ref()
-        .map(|p| p.request_frame(&context.tree_tx, dimensions, &context.stop))
+        .map(|p| p.request_frame(&context.tree_tx, logical_dimensions, &context.stop))
         .transpose()?;
     let mut first_present = true;
     let mut application_frame_ready = false;
     let mut renderer = SceneRenderer::with_cache_config(config.renderer_cache_config);
+    renderer.set_output_rotation(config.rotation);
     let mut state = RenderState::default();
     let mut cursor = context.cursor_state.snapshot();
     let mut icon = CursorIcon::Default;

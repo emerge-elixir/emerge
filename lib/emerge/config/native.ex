@@ -87,6 +87,7 @@ defmodule Emerge.Config.Native do
       drm_output: drm.connector,
       drm_mode: drm.mode,
       drm_hotplug_interval_ms: drm.hotplug_interval_ms,
+      drm_rotation: drm.rotation,
       width: width,
       height: height
     ]

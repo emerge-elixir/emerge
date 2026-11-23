@@ -31,6 +31,12 @@ defmodule Emerge.Config.DRM do
     Use it to select a panel backlight and request brightness.
   - `hotplug_interval_ms` — connector hotplug polling interval in milliseconds;
     defaults to `750`. Set it to `nil` to disable polling for built-in panels.
+  - `rotation` — `0` (default), `90`, `180` or `270`: counter-clockwise turn of
+    the UI on the panel, as DRM `ROTATE_*`. A 800 × 1280 portrait panel with
+    `rotation: 90` lays out a 1280 × 800 UI. Touch and pointer input are mapped
+    back into the rotated coordinates, and `preferred_size` is given in the
+    rotated orientation. The renderer turns the picture, so no plane rotation is
+    needed. The hardware cursor image and hotspot are turned the same way.
 
   Discover connector names and modes with `EmergeSkia.drm_outputs(drm_card: path)`.
 
@@ -126,11 +132,14 @@ defmodule Emerge.Config.DRM do
             display: :on,
             wake_on_touch: nil,
             backlight: %Emerge.Config.Backlight{},
-            hotplug_interval_ms: 750
+            hotplug_interval_ms: 750,
+            rotation: 0
 
   @typedoc "Desired display state, not application or system power state."
   @type display :: :on | :off
   @type wake_gesture :: :single_tap | :double_tap | :long_press
+  @typedoc "Counter-clockwise turn of the UI on the panel, in degrees."
+  @type rotation :: 0 | 90 | 180 | 270
   @type t :: %__MODULE__{
           card: String.t(),
           connector: String.t() | nil,
@@ -139,7 +148,8 @@ defmodule Emerge.Config.DRM do
           display: display(),
           wake_on_touch: wake_gesture() | nil,
           backlight: Emerge.Config.Backlight.t() | Emerge.Config.Backlight.options(),
-          hotplug_interval_ms: pos_integer() | nil
+          hotplug_interval_ms: pos_integer() | nil,
+          rotation: rotation()
         }
   @typedoc "Canonical form after nested keyword records have been expanded."
   @type normalized_t :: %__MODULE__{
@@ -150,7 +160,8 @@ defmodule Emerge.Config.DRM do
           display: display(),
           wake_on_touch: wake_gesture() | nil,
           backlight: Emerge.Config.Backlight.normalized_t(),
-          hotplug_interval_ms: pos_integer() | nil
+          hotplug_interval_ms: pos_integer() | nil,
+          rotation: rotation()
         }
 
   @doc false
@@ -163,6 +174,7 @@ defmodule Emerge.Config.DRM do
       display: {:enum, [:on, :off]},
       wake_on_touch: {:optional, {:enum, [:single_tap, :double_tap, :long_press]}},
       backlight: {:record, Emerge.Config.Backlight},
-      hotplug_interval_ms: {:optional, :positive_integer}
+      hotplug_interval_ms: {:optional, :positive_integer},
+      rotation: {:enum, [0, 90, 180, 270]}
     ]
 end

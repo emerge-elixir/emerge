@@ -126,6 +126,7 @@ pub(crate) struct DrmRunConfig {
     pub(crate) hotplug_interval: Option<std::time::Duration>,
     pub(crate) force_gpu_finish: bool,
     pub(crate) hw_cursor: bool,
+    pub(crate) rotation: crate::output_rotation::OutputRotation,
     pub(crate) render_log: bool,
     pub(crate) renderer_stats_log: bool,
     pub(crate) rendering_api: RenderingApi,

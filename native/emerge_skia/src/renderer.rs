@@ -27,6 +27,7 @@ use skia_safe::{
 };
 use skia_safe::{Data, images};
 
+use crate::output_rotation::OutputRotation;
 use crate::paint_layer_payload_cache::{
     PaintLayerPayloadCache, PaintLayerPayloadCacheConfig, PaintLayerPayloadKey,
     PaintLayerPayloadStorage, PaintLayerPayloadStoreRejection,
@@ -2697,16 +2698,24 @@ fn text_payload_gpu_subpixel_phase(
         && unit_axis(transform.xx, transform.xy)
         && unit_axis(transform.yx, transform.yy)
         && approx_eq(determinant.abs(), 1.0);
-    if pixel_aligned_orthogonal
-        && transform.tx.is_finite()
-        && transform.ty.is_finite()
-        && approx_eq(transform.tx, transform.tx.round())
-        && approx_eq(transform.ty, transform.ty.round())
-    {
-        return Ok(PaintLayerSubpixelPhase::default());
+    if !pixel_aligned_orthogonal {
+        return Err(RendererCacheRejectionReason::UnsupportedTransform);
     }
 
-    Err(RendererCacheRejectionReason::UnsupportedTransform)
+    // The payload is drawn at `origin - phase` in local space, so its pixels land on the device
+    // grid when `M * phase` matches the fractional device translation. M is orthogonal with
+    // integer entries, so the local phase is `M^T * t`.
+    let (xx, yx, xy, yy) = (
+        transform.xx.round(),
+        transform.yx.round(),
+        transform.xy.round(),
+        transform.yy.round(),
+    );
+    PaintLayerSubpixelPhase::from_translation(
+        xx * transform.tx + yx * transform.ty,
+        xy * transform.tx + yy * transform.ty,
+    )
+    .ok_or(RendererCacheRejectionReason::UnsupportedTransform)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -3663,10 +3672,18 @@ impl MovingLayerEligibility {
     }
 }
 
-fn moving_layer_root_eligibility_for_surface(surface: &Surface) -> MovingLayerEligibility {
+fn surface_size(surface: &Surface) -> (u32, u32) {
     let dimensions = surface.image_info().dimensions();
-    let width = u32::try_from(dimensions.width.max(1)).unwrap_or(u32::MAX);
-    let height = u32::try_from(dimensions.height.max(1)).unwrap_or(u32::MAX);
+    (
+        u32::try_from(dimensions.width.max(1)).unwrap_or(u32::MAX),
+        u32::try_from(dimensions.height.max(1)).unwrap_or(u32::MAX),
+    )
+}
+
+fn moving_layer_root_eligibility(
+    (width, height): (u32, u32),
+    output_transform: Affine2,
+) -> MovingLayerEligibility {
     MovingLayerEligibility {
         current_clip: Some(PaintLayerDeviceRect {
             x: 0,
@@ -3674,6 +3691,7 @@ fn moving_layer_root_eligibility_for_surface(surface: &Surface) -> MovingLayerEl
             width,
             height,
         }),
+        current_transform: output_transform,
         ..MovingLayerEligibility::root()
     }
 }
@@ -4175,6 +4193,7 @@ pub struct SceneRenderer {
     video_state: RendererVideoState,
     renderer_cache: RendererCacheManager,
     last_visible_frame_fingerprint: Option<u64>,
+    output_rotation: OutputRotation,
 }
 
 impl Default for SceneRenderer {
@@ -4193,6 +4212,15 @@ impl SceneRenderer {
             video_state: RendererVideoState::new(),
             renderer_cache: RendererCacheManager::with_config(cache_config),
             last_visible_frame_fingerprint: None,
+            output_rotation: OutputRotation::Deg0,
+        }
+    }
+
+    /// Turns the scene onto the surface; the transform follows the surface size of each frame.
+    pub fn set_output_rotation(&mut self, rotation: OutputRotation) {
+        if self.output_rotation != rotation {
+            self.output_rotation = rotation;
+            self.last_visible_frame_fingerprint = None;
         }
     }
 
@@ -4626,23 +4654,19 @@ impl SceneRenderer {
     ) -> Option<u64> {
         let _fonts = state.scene.fonts.as_ref().map(|fonts| fonts.enter());
         let _images = scene_images::enter(state.scene.images.as_ref());
-        let surface_clip = PaintLayerDeviceRect {
-            x: 0,
-            y: 0,
-            width: surface_dimensions.0.max(1),
-            height: surface_dimensions.1.max(1),
-        };
+        let surface_dimensions = (surface_dimensions.0.max(1), surface_dimensions.1.max(1));
+        let root = moving_layer_root_eligibility(
+            surface_dimensions,
+            self.output_rotation.transform(surface_dimensions),
+        );
         let mut hasher = DefaultHasher::new();
         "visible-frame-v1".hash(&mut hasher);
         hash_skia_color(&mut hasher, state.clear_color);
-        surface_clip.hash(&mut hasher);
+        root.current_clip.hash(&mut hasher);
         let ready = hash_visible_render_nodes(
             &state.scene.nodes,
             &self.renderer_cache,
-            MovingLayerEligibility {
-                current_clip: Some(surface_clip),
-                ..MovingLayerEligibility::root()
-            },
+            root,
             1.0,
             &mut hasher,
         );
@@ -4693,8 +4717,12 @@ impl SceneRenderer {
         let _images = scene_images::enter(state.scene.images.as_ref());
         let started_at = Instant::now();
         let draw_started_at = Instant::now();
-        let root_eligibility = moving_layer_root_eligibility_for_surface(frame.surface);
+        let size = surface_size(frame.surface);
+        let output_transform = self.output_rotation.transform(size);
+        let root_eligibility = moving_layer_root_eligibility(size, output_transform);
         let canvas = frame.surface.canvas();
+        canvas.reset_matrix();
+        canvas.concat(&matrix_from_affine2(output_transform));
 
         // Keep no-candidate frames on the original renderer path. Routing every
         // frame through cache-tracking traversal regressed mixed_ui_scene by
@@ -9937,10 +9965,47 @@ mod tests {
             text_payload_gpu_subpixel_phase(run, quarter_turn, true),
             Ok(PaintLayerSubpixelPhase::default())
         );
+        // Device x follows local y on a quarter turn, so the fractional device x lands in the y phase.
         assert_eq!(
             text_payload_gpu_subpixel_phase(run, fractional_quarter_turn, true),
-            Err(RendererCacheRejectionReason::UnsupportedTransform)
+            Ok(PaintLayerSubpixelPhase::from_translation(0.0, 0.5).unwrap())
         );
+        let three_quarter_turn = MovingLayerEligibility::root().with_transform(Affine2 {
+            xx: 0.0,
+            yx: 1.0,
+            xy: -1.0,
+            yy: 0.0,
+            tx: 1280.0,
+            ty: 0.25,
+        });
+        assert_eq!(
+            text_payload_gpu_subpixel_phase(run, three_quarter_turn, true),
+            Ok(PaintLayerSubpixelPhase::from_translation(0.25, 0.0).unwrap())
+        );
+        let half_turn = MovingLayerEligibility::root().with_transform(Affine2 {
+            xx: -1.0,
+            yx: 0.0,
+            xy: 0.0,
+            yy: -1.0,
+            tx: 800.0,
+            ty: 1279.75,
+        });
+        assert_eq!(
+            text_payload_gpu_subpixel_phase(run, half_turn, true),
+            Ok(PaintLayerSubpixelPhase::from_translation(0.0, -1279.75).unwrap())
+        );
+        for eligibility in [fractional_quarter_turn, three_quarter_turn, half_turn] {
+            let t = eligibility.current_transform;
+            let phase = text_payload_gpu_subpixel_phase(run, eligibility, true).unwrap();
+            let (px, py) = phase.offsets();
+            // The payload origin shifted by -phase lands on whole device pixels.
+            let dx = t.tx - (t.xx * px + t.xy * py);
+            let dy = t.ty - (t.yx * px + t.yy * py);
+            assert!(
+                (dx - dx.round()).abs() < 1e-3 && (dy - dy.round()).abs() < 1e-3,
+                "{t:?}"
+            );
+        }
 
         let phase = PaintLayerSubpixelPhase::from_translation(0.0, -5335.513).unwrap();
         let phase_key =

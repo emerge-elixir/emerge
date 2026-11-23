@@ -97,6 +97,7 @@ defmodule EmergeSkia.Options do
         opts
         |> Keyword.get(:drm_hotplug_interval_ms, 750)
         |> normalize_optional_positive_integer!(":drm_hotplug_interval_ms"),
+      drm_rotation: opts |> Keyword.get(:drm_rotation, 0) |> normalize_rotation!(),
       drm_startup_retries:
         opts
         |> Keyword.get(:drm_startup_retries, 40)
@@ -538,6 +539,11 @@ defmodule EmergeSkia.Options do
     raise ArgumentError,
           "#{field_name} must be nil or a non-empty absolute path, got: #{inspect(value)}"
   end
+
+  defp normalize_rotation!(rotation) when rotation in [0, 90, 180, 270], do: rotation
+
+  defp normalize_rotation!(rotation),
+    do: raise(ArgumentError, ":drm_rotation must be 0, 90, 180 or 270, got: #{inspect(rotation)}")
 
   defp normalize_optional_positive_integer!(nil, _field_name), do: nil
 

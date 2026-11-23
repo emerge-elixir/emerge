@@ -11,6 +11,7 @@ use crate::{
     },
     keys::CanonicalKey,
     linux_wait::{EventFd, poll_fds},
+    output_rotation::OutputRotation,
 };
 use crossbeam_channel::{Receiver, SendTimeoutError, Sender, TrySendError};
 use emerge_input::{Context, Event};
@@ -138,8 +139,10 @@ pub struct DrmInput {
     caps_lock: bool,
     repeat_key: Option<KeyboardRepeat>,
     pressed_keys: std::collections::HashSet<(u64, u16)>,
+    /// Scanout size; libinput scales absolute coordinates to it.
     screen_size: (u32, u32),
     screen_rx: Receiver<(u32, u32)>,
+    rotation: OutputRotation,
     event_tx: Sender<EventMsg>,
     cursor_state: Arc<SharedCursorState>,
     stop: Arc<AtomicBool>,
@@ -163,6 +166,7 @@ impl DrmInput {
         input_wake: EventFd,
         log_enabled: bool,
         wake_control: Arc<TouchWakeControl>,
+        rotation: OutputRotation,
     ) -> Self {
         let context = Context::new()
             .map_err(|err| eprintln!("drm_input: cannot initialize bundled libinput: {err}"))
@@ -181,6 +185,7 @@ impl DrmInput {
             pressed_keys: Default::default(),
             screen_size,
             screen_rx,
+            rotation,
             event_tx,
             cursor_state,
             stop,
@@ -425,7 +430,12 @@ impl DrmInput {
                 self.handle_key_event(Key::new(event.code as u16), event.state as i32);
             }
             3 => self.handle_abs_relative(event.x as f32, event.y as f32, self.screen_size),
-            4 => self.handle_abs_position(event.x as f32, event.y as f32, true),
+            4 => {
+                let (x, y) = self
+                    .rotation
+                    .to_logical((event.x, event.y), self.screen_size);
+                self.handle_abs_position(x as f32, y as f32, true);
+            }
             5 => {
                 self.handle_key_event(Key::new(event.code as u16), event.state as i32);
                 self.flush_pending_pointer_buttons_blocking();
@@ -442,8 +452,12 @@ impl DrmInput {
                 });
             }
             8..=11 => {
-                event.x = event.x.clamp(0.0, self.screen_size.0.max(1) as f64 - 1.0);
-                event.y = event.y.clamp(0.0, self.screen_size.1.max(1) as f64 - 1.0);
+                let (x, y) = self
+                    .rotation
+                    .to_logical((event.x, event.y), self.screen_size);
+                let (width, height) = self.logical_size();
+                event.x = x.clamp(0.0, width.max(1) as f64 - 1.0);
+                event.y = y.clamp(0.0, height.max(1) as f64 - 1.0);
                 self.set_cursor_visible(false);
                 self.flush_pending_cursor_pos_blocking();
                 for contact in self.contacts.event(event) {
@@ -466,9 +480,14 @@ impl DrmInput {
             meta: held(Key::KEY_LEFTMETA, Key::KEY_RIGHTMETA),
         };
     }
+    /// Layout size, which touch and the cursor are clamped to.
+    fn logical_size(&self) -> (u32, u32) {
+        self.rotation.logical_size(self.screen_size)
+    }
     fn handle_abs_position(&mut self, x: f32, y: f32, visible: bool) {
-        let x = x.clamp(0.0, self.screen_size.0.saturating_sub(1) as f32);
-        let y = y.clamp(0.0, self.screen_size.1.saturating_sub(1) as f32);
+        let (width, height) = self.logical_size();
+        let x = x.clamp(0.0, width.saturating_sub(1) as f32);
+        let y = y.clamp(0.0, height.saturating_sub(1) as f32);
         self.set_cursor_state(x, y, visible);
         self.pending_cursor_pos = Some((x, y));
     }
@@ -917,6 +936,7 @@ mod tests {
             pressed_keys: Default::default(),
             screen_size: (640, 480),
             screen_rx,
+            rotation: OutputRotation::Deg0,
             event_tx,
             cursor_state: cursor.clone(),
             stop: Arc::new(AtomicBool::new(false)),

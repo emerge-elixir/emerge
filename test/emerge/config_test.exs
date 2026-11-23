@@ -119,6 +119,33 @@ defmodule Emerge.ConfigTest do
     end
   end
 
+  test "DRM rotation defaults to 0 and reaches native options with the layout size hint" do
+    native = fn config ->
+      config |> Config.Native.options() |> EmergeSkia.Options.build_start_native_opts!()
+    end
+
+    default = Normalize.config!(%Config{output: %Config.DRM{}})
+    assert default.output.rotation == 0
+    assert native.(default).drm_rotation == 0
+
+    rotated =
+      Normalize.config!(%Config{output: %Config.DRM{rotation: 90, preferred_size: {1280, 800}}})
+
+    opts = native.(rotated)
+    assert opts.drm_rotation == 90
+    assert {opts.width, opts.height} == {1280, 800}
+
+    for invalid <- [45, -90, 360, :left] do
+      assert_raise ArgumentError, ~r/config.output.rotation/, fn ->
+        Normalize.config!(%Config{output: %Config.DRM{rotation: invalid}})
+      end
+    end
+
+    assert_raise ArgumentError, ~r/startup-only/, fn ->
+      Config.Changes.validate!(default, rotated)
+    end
+  end
+
   test "DRM hotplug polling defaults to 750 ms and can be retuned or disabled" do
     native = fn config ->
       config |> Config.Native.options() |> EmergeSkia.Options.build_start_native_opts!()
