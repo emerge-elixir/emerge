@@ -403,6 +403,9 @@ impl TreeUpdateEngine {
                 } => {
                     invalidation.add(self.tree.set_scroll_position(&element_id, position));
                 }
+                TreeMsg::SetScrollOverscroll { element_id, offset } => {
+                    invalidation.add(self.tree.set_scroll_overscroll(&element_id, offset));
+                }
                 TreeMsg::ScrollRequest { element_id, dx, dy } => {
                     let entry = scroll_acc.entry((element_id, mount)).or_insert((0.0, 0.0));
                     entry.0 += dx;

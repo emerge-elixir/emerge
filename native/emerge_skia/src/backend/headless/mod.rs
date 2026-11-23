@@ -358,6 +358,8 @@ pub(crate) fn start_renderer_with_config(
         backend_cursor_tx: Some(backend_cursor_tx),
         backend_wake: backend_wake.clone(),
         scroll_line_pixels: config.scroll_line_pixels,
+        scroll_bounce: false,
+        scroll_deceleration: Default::default(),
         log_render: config.render_log,
         native_log: Arc::clone(&native_log),
         system_clipboard: false,

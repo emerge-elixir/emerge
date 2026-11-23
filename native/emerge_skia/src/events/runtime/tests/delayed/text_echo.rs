@@ -731,6 +731,8 @@ fn actor_backed_fifo_echoes_do_not_publish_corrections_or_reorder_typing() {
         backend_cursor_tx: None,
         backend_wake: BackendWakeHandle::noop(),
         scroll_line_pixels: 40.0,
+        scroll_bounce: false,
+        scroll_deceleration: Default::default(),
         log_render: false,
         native_log: Arc::new(NativeLogRelay::default()),
         system_clipboard: false,

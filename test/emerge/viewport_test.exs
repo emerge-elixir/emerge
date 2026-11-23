@@ -230,7 +230,7 @@ defmodule Emerge.ViewportTest do
        %Emerge.Config{
          output: %Emerge.Config.Window{title: "Scroll line pixels"},
          assets: [otp_app: :emerge],
-         input: [scroll_line_pixels: 45],
+         input: [scroll_line_pixels: 45, scroll_bounce: true],
          runtime: [adapter: Emerge.ViewportTest.FakeRenderer, health_check_interval_ms: nil]
        }}
     end
@@ -631,6 +631,7 @@ defmodule Emerge.ViewportTest do
     {:ok, pid} = ScrollLinePixelsViewport.start_link()
     renderer = Emerge.renderer(pid)
     assert Keyword.get(FakeRenderer.skia_opts(renderer), :scroll_line_pixels) == 45
+    assert Keyword.get(FakeRenderer.skia_opts(renderer), :scroll_bounce) == true
     assert Keyword.get(FakeRenderer.skia_opts(renderer), :otp_app) == :emerge
     GenServer.stop(pid)
   end

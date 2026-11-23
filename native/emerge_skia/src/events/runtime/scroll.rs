@@ -13,6 +13,13 @@ impl DirectEventRuntime {
                 .get(id)
                 .is_some_and(|node| node.mount == session.node.mount)
         });
+        if self
+            .overscroll
+            .as_ref()
+            .is_some_and(|overscroll| !self.scroll_sessions.contains_key(&overscroll.element_id))
+        {
+            self.overscroll = None;
+        }
         let now = Instant::now();
         nodes.into_iter().fold(false, |changed, (id, node)| {
             let session = self
@@ -42,6 +49,12 @@ impl DirectEventRuntime {
                         && replaced[usize::from(inertia.axis == ScrollbarAxis::Y)]
                 }) {
                     self.cancel_inertial_scroll();
+                }
+                if self.overscroll.as_ref().is_some_and(|overscroll| {
+                    overscroll.element_id == id
+                        && replaced[usize::from(overscroll.axis == ScrollbarAxis::Y)]
+                }) {
+                    self.clear_overscroll(tx, log);
                 }
                 if self
                     .runtime_overlay

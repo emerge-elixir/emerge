@@ -113,6 +113,12 @@ defmodule EmergeSkia.Options do
         opts
         |> Keyword.get(:scroll_line_pixels, 30.0)
         |> normalize_positive_number!(":scroll_line_pixels"),
+      scroll_bounce:
+        opts
+        |> Keyword.get(:scroll_bounce, false)
+        |> normalize_boolean!(":scroll_bounce"),
+      scroll_deceleration:
+        opts |> Keyword.get(:scroll_deceleration, :android) |> normalize_scroll_deceleration!(),
       hw_cursor: Keyword.get(opts, :hw_cursor, true),
       input_log: Keyword.get(opts, :input_log, false),
       render_log: Keyword.get(opts, :render_log, false),
@@ -552,6 +558,15 @@ defmodule EmergeSkia.Options do
       raise(
         ArgumentError,
         ":headless.frame_message must be an atom or string, got: #{inspect(value)}"
+      )
+
+  defp normalize_scroll_deceleration!(model) when model in [:android, :ios], do: model
+
+  defp normalize_scroll_deceleration!(model),
+    do:
+      raise(
+        ArgumentError,
+        ":scroll_deceleration must be :android or :ios, got: #{inspect(model)}"
       )
 
   defp normalize_screenshot_region!(opts) do

@@ -604,6 +604,8 @@ pub struct NodeRuntime {
     pub scroll_proposals: [crate::events::scroll::ScrollProposal; 2],
     /// Last event-owned fractions; legacy pixel attrs remain separate.
     pub scroll_position: Option<[u64; 2]>,
+    /// Rubber-band pixels past the content edge as f32 bits; paint-only.
+    pub scroll_overscroll: [u32; 2],
     /// Runtime-only origin label for current text-input content.
     pub text_input_content_origin: TextInputContentOrigin,
 
@@ -824,6 +826,7 @@ impl Element {
                 declared: attrs.clone(),
             },
             runtime: NodeRuntime {
+                scroll_overscroll: [0; 2],
                 scroll_proposals: [attrs.scroll_position_x, attrs.scroll_position_y].map(|value| {
                     crate::events::scroll::ScrollProposal {
                         id: u64::from(value.is_some()),
@@ -3908,6 +3911,27 @@ impl ElementTree {
         self.scroll_refresh_dirty = true;
         self.scroll_cache_context_active = true;
         self.mark_render_and_registry_refresh_dirty(id);
+        TreeInvalidation::Paint
+    }
+
+    pub fn set_scroll_overscroll(&mut self, id: &NodeId, offset: [f32; 2]) -> TreeInvalidation {
+        if !offset.iter().all(|v| v.is_finite()) {
+            return TreeInvalidation::None;
+        }
+        let Some(ix) = self.ix_of(id) else {
+            return TreeInvalidation::None;
+        };
+        let Some(node) = self.get_ix_mut(ix) else {
+            return TreeInvalidation::None;
+        };
+        let bits = offset.map(f32::to_bits);
+        if node.runtime.scroll_overscroll == bits {
+            return TreeInvalidation::None;
+        }
+        node.runtime.scroll_overscroll = bits;
+        self.scroll_refresh_dirty = true;
+        self.scroll_cache_context_active = true;
+        self.mark_render_refresh_dirty_ix(ix);
         TreeInvalidation::Paint
     }
 
