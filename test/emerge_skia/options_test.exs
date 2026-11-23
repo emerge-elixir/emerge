@@ -642,4 +642,15 @@ defmodule EmergeSkia.OptionsTest do
       )
     end
   end
+
+  test "build_start_native_opts! normalizes drm_cursor_size" do
+    assert %{drm_cursor_size: nil} = Options.build_start_native_opts!([])
+    assert %{drm_cursor_size: 48} = Options.build_start_native_opts!(drm_cursor_size: 48)
+
+    for invalid <- [0, 65, 1.5, :big] do
+      assert_raise ArgumentError, ~r/:drm_cursor_size must be nil or 1..64/, fn ->
+        Options.build_start_native_opts!(drm_cursor_size: invalid)
+      end
+    end
+  end
 end

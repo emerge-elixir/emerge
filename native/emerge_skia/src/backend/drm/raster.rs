@@ -453,7 +453,11 @@ fn run_inner(
     startup: &mut Option<std::sync::mpsc::Sender<Result<DrmBackendStartupInfo, String>>>,
 ) -> Result<(), String> {
     context.video_registry.set_prime_video_available(false)?;
-    let theme = DrmCursorTheme::load(&config.asset_config, &config.cursor_overrides)?;
+    let theme = DrmCursorTheme::load(
+        &config.asset_config,
+        &config.cursor_overrides,
+        config.cursor_size,
+    )?;
     let mut retries = config.startup_retries;
     let session = loop {
         if context.stop.load(Ordering::Acquire) {
@@ -893,7 +897,8 @@ mod tests {
 
     #[test]
     fn software_cursor_is_erased_when_hidden() {
-        let theme = DrmCursorTheme::load(&crate::assets::AssetConfig::default(), &[]).unwrap();
+        let theme =
+            DrmCursorTheme::load(&crate::assets::AssetConfig::default(), &[], None).unwrap();
         let mut renderer = SceneRenderer::new();
         let state = RenderState::new(
             RenderScene::default(),

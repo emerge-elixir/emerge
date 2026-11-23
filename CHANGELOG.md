@@ -18,6 +18,8 @@
 
 ### Added
 
+- `Emerge.Config.Cursor` `size` (1 to 64 px): scales the DRM cursor icons, built-in
+  and overrides, so their longer side has that length.
 - `Event.on_drag/1` lets custom controls receive drag movement and release even
   outside the element. Messages include the drag phase and element-local position.
 - Native double-click word selection for single-line and multiline text inputs.

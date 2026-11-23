@@ -116,6 +116,7 @@ defmodule EmergeSkia.Options do
       hw_cursor: Keyword.get(opts, :hw_cursor, true),
       input_log: Keyword.get(opts, :input_log, false),
       render_log: Keyword.get(opts, :render_log, false),
+      drm_cursor_size: opts |> Keyword.get(:drm_cursor_size) |> normalize_cursor_size!(),
       close_signal_log: Keyword.get(opts, :close_signal_log, false),
       stats_enabled: Keyword.get(opts, :stats, false) == true,
       renderer_stats_log: Keyword.get(opts, :renderer_stats_log, false),
@@ -384,6 +385,12 @@ defmodule EmergeSkia.Options do
     raise ArgumentError,
           ":asset_mode must be :await or :snapshot, got: #{inspect(value)}"
   end
+
+  defp normalize_cursor_size!(nil), do: nil
+  defp normalize_cursor_size!(size) when size in 1..64, do: size
+
+  defp normalize_cursor_size!(size),
+    do: raise(ArgumentError, ":drm_cursor_size must be nil or 1..64, got: #{inspect(size)}")
 
   defp maybe_disable_renderer_cache_for_raster_default!(
          %{enabled_configured: false} = renderer_cache,
