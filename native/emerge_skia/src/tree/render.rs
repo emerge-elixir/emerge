@@ -661,17 +661,24 @@ fn build_element_subtree<R: RegistryTraversalSink>(
     }
     normal_nodes.extend(border_nodes);
 
-    let content_clips = if matches!(element.spec.kind, ElementKind::Image | ElementKind::Video)
+    // An image or video without its own box is clipped to its parent's
+    // shape. That clip is applied inside the element's transform, so it turns
+    // and scales with the image; outside it, a rotated image was cut to its
+    // parent's unrotated box.
+    let image_self_clip = if matches!(element.spec.kind, ElementKind::Image | ElementKind::Video)
         && !image_video_needs_own_host_clip(attrs)
     {
         inherited_self_clip
-            .map(|clip| vec![clip])
-            .unwrap_or_else(|| inherited_host_clips.to_vec())
     } else {
-        inherited_host_clips.to_vec()
+        None
     };
-    let normal_nodes = if matches!(element.spec.kind, ElementKind::Image | ElementKind::Video) {
-        wrap_with_relaxed_clips(wrap_with_transform(normal_nodes, transform), &content_clips)
+    let normal_nodes = if let Some(clip) = image_self_clip {
+        wrap_with_transform(wrap_with_relaxed_clips(normal_nodes, &[clip]), transform)
+    } else if matches!(element.spec.kind, ElementKind::Image | ElementKind::Video) {
+        wrap_with_relaxed_clips(
+            wrap_with_transform(normal_nodes, transform),
+            inherited_host_clips,
+        )
     } else {
         wrap_with_clips(
             wrap_with_transform(normal_nodes, transform),

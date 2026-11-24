@@ -423,6 +423,49 @@ fn test_render_image_cover_border_has_no_inner_gap_from_background() {
 }
 
 #[test]
+fn test_render_rotated_image_parent_clip_turns_with_the_image() {
+    let image_id = "paint_rotated_image_parent_clip";
+    let mut src = vec![0u8; 16 * 16 * 4];
+    for px in src.as_chunks_mut::<4>().0 {
+        px.copy_from_slice(&[36, 216, 72, 255]);
+    }
+    crate::renderer::insert_test_raster_asset_rgba(image_id, 16, 16, &src)
+        .expect("test raster asset should insert");
+
+    let frame = Frame {
+        x: 40.0,
+        y: 40.0,
+        width: 100.0,
+        height: 100.0,
+        content_width: 100.0,
+        content_height: 100.0,
+    };
+    let tree = build_tree_with_image_child_frame(
+        Attrs {
+            border_radius: Some(BorderRadius::Uniform(8.0)),
+            ..Attrs::default()
+        },
+        frame,
+        Attrs {
+            image_src: Some(ImageSource::Id(image_id.to_string())),
+            image_fit: Some(ImageFit::Cover),
+            rotate: Some(45.0),
+            ..Attrs::default()
+        },
+        frame,
+    );
+
+    let (_, pixels) = render_tree_to_pixels(180, 180, &tree);
+    let green = |(r, g, b, a): (u8, u8, u8, u8)| a > 200 && g > 180 && r < 80 && b < 120;
+
+    // The rotated image's top corner reaches above its parent's unrotated
+    // box; the parent's clip turns with the image, so it is drawn.
+    assert!(green(rgba_at(&pixels, 180, 90, 30)));
+    // The parent's own corner lies outside the rotated image and its clip.
+    assert!(!green(rgba_at(&pixels, 180, 44, 44)));
+}
+
+#[test]
 fn test_render_nested_image_cover_has_no_inner_gap_from_parent_background() {
     let image_id = "paint_nested_image_cover_no_inner_gap";
     let mut src = vec![0u8; 24 * 16 * 4];
