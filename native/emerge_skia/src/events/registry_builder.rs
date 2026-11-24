@@ -11292,6 +11292,75 @@ mod tests {
         assert!(actions.is_empty());
     }
 
+    // A nearby in a scroll container's content is clipped by
+    // the container for input as it is for paint.
+    #[test]
+    fn registry_for_elements_scroll_container_clips_nearby_of_its_content() {
+        let page_attrs = Attrs {
+            scrollbar_y: Some(true),
+            ..Attrs::default()
+        };
+        let mut page = with_interaction_rect(
+            make_element(88, page_attrs),
+            true,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 50.0,
+            },
+        );
+        page.layout.scroll_y = 20.0;
+        page.layout.scroll_y_max = 40.0;
+        page.children = vec![NodeId::from_term_bytes(vec![89])];
+
+        // A row at 30..50 on screen; its in_front knob at 35..55.
+        let mut row = with_interaction_rect(
+            make_element(89, Attrs::default()),
+            true,
+            Rect {
+                x: 0.0,
+                y: 50.0,
+                width: 100.0,
+                height: 20.0,
+            },
+        );
+        row.nearby
+            .set(NearbySlot::InFront, Some(NodeId::from_term_bytes(vec![90])));
+        let knob = with_interaction_rect(
+            make_element(90, on_mouse_down_attrs()),
+            true,
+            Rect {
+                x: 40.0,
+                y: 55.0,
+                width: 20.0,
+                height: 20.0,
+            },
+        );
+
+        let registry = registry_for_elements(&[page, row, knob]);
+        let press = |y: f32| {
+            first_matching_actions(
+                &registry,
+                &InputEvent::CursorButton {
+                    button: "left".to_string(),
+                    action: ACTION_PRESS,
+                    mods: 0,
+                    x: 50.0,
+                    y,
+                },
+            )
+        };
+
+        assert!(matches!(
+            press(45.0).as_slice(),
+            [ListenerAction::ElixirEvent(ElixirEvent { element_id, kind, .. })]
+                if *element_id == NodeId::from_term_bytes(vec![90])
+                    && *kind == ElementEventKind::MouseDown
+        ));
+        assert!(press(52.0).is_empty());
+    }
+
     #[test]
     fn registry_for_elements_earlier_child_escape_beats_later_normal_sibling() {
         let host_id = NodeId::from_term_bytes(vec![141]);

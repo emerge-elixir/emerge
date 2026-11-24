@@ -2587,9 +2587,10 @@ fn test_render_nearby_above_below_order_after_parent() {
 
 #[test]
 fn test_render_front_nearby_escapes_ancestor_host_clip() {
+    // A scroll container clips the nearby of its content (see
+    // `tests::scroll_nearby_clip`); a plain clipping ancestor is still escaped.
     let parent_attrs = Attrs {
         background: Some(Background::Color(Color::Rgb { r: 0, g: 0, b: 0 })),
-        scrollbar_y: Some(true),
         ..Attrs::default()
     };
 

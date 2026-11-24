@@ -39,11 +39,17 @@ pub struct ResolvedNodeState {
     pub visible: bool,
     pub child_visible_clip: ClipShape,
     pub nearby_visible_clip: Option<ClipShape>,
+    /// The nearby clip for this element's children, which
+    /// also holds a scroll container's own clip (see `clip_content_nearby`).
+    pub content_nearby_visible_clip: Option<ClipShape>,
     pub scrollbar_x: Option<ScrollbarMetrics>,
     pub scrollbar_y: Option<ScrollbarMetrics>,
     pub local_scroll_x: f32,
     pub local_scroll_y: f32,
     pub clip_nearby: bool,
+    /// nearby content attached inside this element's
+    /// children is clipped to it: `clip_nearby`, or a scroll container.
+    pub clip_content_nearby: bool,
     pub front_nearby_subtree: bool,
     pub front_nearby_root: bool,
     pub interaction_transform: Affine2,
@@ -97,14 +103,30 @@ pub fn resolve_node_state(element: &Element, ctx: SceneContext) -> Option<Resolv
     } else {
         host_clip
     };
-    let nearby_visible_clip = if clip_nearby {
-        Some(if local_transform.is_identity() {
-            super::geometry::intersect_clip(ctx.nearby_visible_clip, host_clip)
+    let with_host_nearby_clip = |clips: bool| {
+        if clips {
+            Some(if local_transform.is_identity() {
+                super::geometry::intersect_clip(ctx.nearby_visible_clip, host_clip)
+            } else {
+                host_clip
+            })
         } else {
-            host_clip
-        })
+            ctx.nearby_visible_clip
+        }
+    };
+    let nearby_visible_clip = with_host_nearby_clip(clip_nearby);
+    // A scroll container clips the nearby content (in_front,
+    // above, ...) of elements in its content, which scrolls with them; its
+    // own nearby is not scroll content and still overflows it. Upstream let
+    // a nearby in a list draw over whatever lay outside the list once it was
+    // scrolled out of view (a slider knob over the nav bar).
+    let clip_content_nearby = clip_nearby
+        || super::attrs::effective_scrollbar_x(&element.layout.effective)
+        || super::attrs::effective_scrollbar_y(&element.layout.effective);
+    let content_nearby_visible_clip = if clip_content_nearby == clip_nearby {
+        nearby_visible_clip
     } else {
-        ctx.nearby_visible_clip
+        with_host_nearby_clip(clip_content_nearby)
     };
 
     let scrollbar_x = scene
@@ -133,11 +155,13 @@ pub fn resolve_node_state(element: &Element, ctx: SceneContext) -> Option<Resolv
         visible,
         child_visible_clip,
         nearby_visible_clip,
+        content_nearby_visible_clip,
         scrollbar_x,
         scrollbar_y,
         local_scroll_x: element.layout.scroll_x,
         local_scroll_y: element.layout.scroll_y,
         clip_nearby,
+        clip_content_nearby,
         front_nearby_subtree: ctx.front_nearby_subtree,
         front_nearby_root: ctx.front_nearby_root,
         interaction_transform,
@@ -200,7 +224,12 @@ pub fn child_context(state: ResolvedNodeState, phase: RetainedPaintPhase) -> Sce
             InteractionClip::new(state.host_clip, state.interaction_transform),
         )
     };
-    let nearby_interaction_clips = if state.clip_nearby {
+    let clips_nearby = if matches!(phase, RetainedPaintPhase::Children) {
+        state.clip_content_nearby
+    } else {
+        state.clip_nearby
+    };
+    let nearby_interaction_clips = if clips_nearby {
         interaction_clip_chain_with(
             &state.nearby_interaction_clips,
             InteractionClip::new(state.host_clip, state.interaction_transform),
@@ -214,7 +243,7 @@ pub fn child_context(state: ResolvedNodeState, phase: RetainedPaintPhase) -> Sce
             scroll_dx: scroll_dx + state.local_scroll_x,
             scroll_dy: scroll_dy + state.local_scroll_y,
             visible_clip: Some(state.child_visible_clip),
-            nearby_visible_clip: state.nearby_visible_clip,
+            nearby_visible_clip: state.content_nearby_visible_clip,
             front_nearby_subtree: state.front_nearby_subtree,
             front_nearby_root: false,
             interaction_transform: state.interaction_transform,

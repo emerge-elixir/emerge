@@ -43,8 +43,16 @@ defmodule Emerge.UI.Nearby do
   ## Clipping
 
   Nearby escape content is not clipped by ancestor hosts by default. Add
-  `Emerge.UI.clip_nearby/0` on a host or scroll container when you want that
-  host to clip nearby escapes too.
+  `Emerge.UI.clip_nearby/0` on a host when you want that host to clip nearby
+  escapes too.
+
+  A scroll container (`Emerge.UI.Scroll.scrollbar_x/0`, `scrollbar_y/0`)
+  always clips the nearby content of elements inside it, because that content
+  scrolls with them: a tooltip on a row is not drawn over the rest of the
+  screen once the row scrolls out of view. Nearby content attached to the
+  scroll container itself is not scroll content and still overflows it unless
+  the container has `clip_nearby/0`. Attach a popover that must overflow a
+  list to an element outside the list.
 
   ## Paint Order
 
