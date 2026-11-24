@@ -6696,6 +6696,23 @@ fn outset_rect_in_device_space(canvas: &skia_safe::Canvas, rect: Rect, device_ou
     }
 
     let matrix = canvas.local_to_device_as_3x3();
+    // Under rotation or skew, mapping the bounding box to device space and
+    // back inflates it (2x at 45 degrees), so a rotated image was drawn up to
+    // twice its size. Outset along the transform's own axes instead.
+    if !matrix.has_perspective() && (matrix.skew_x() != 0.0 || matrix.skew_y() != 0.0) {
+        let axis_x = (matrix.scale_x().powi(2) + matrix.skew_y().powi(2)).sqrt();
+        let axis_y = (matrix.skew_x().powi(2) + matrix.scale_y().powi(2)).sqrt();
+        if !(axis_x > 0.0 && axis_y > 0.0) {
+            return rect;
+        }
+        let (dx, dy) = (device_outset / axis_x, device_outset / axis_y);
+        return Rect::from_ltrb(
+            rect.left() - dx,
+            rect.top() - dy,
+            rect.right() + dx,
+            rect.bottom() + dy,
+        );
+    }
     let (device_rect, _) = matrix.map_rect(rect);
     if !device_rect.left().is_finite()
         || !device_rect.top().is_finite()
@@ -8692,6 +8709,36 @@ fn border_edge_clip_quads(rect: RectSpec, insets: EdgeInsets) -> [(f32, [(f32, f
 mod tests {
     use super::*;
     use crate::render_scene::{PaintLayerPlacement, PaintLayerReason};
+
+    #[test]
+    fn device_outset_under_rotation_stays_close_to_the_rect() {
+        let mut surface = skia_safe::surfaces::raster_n32_premul((256, 256)).expect("test surface");
+        let canvas = surface.canvas();
+        let rect = Rect::from_xywh(0.0, 0.0, 100.0, 100.0);
+
+        canvas.rotate(45.0, None);
+        let rotated = outset_rect_in_device_space(canvas, rect, 1.0);
+        assert!((rotated.left() + 1.0).abs() < 1e-3, "{rotated:?}");
+        assert!((rotated.top() + 1.0).abs() < 1e-3, "{rotated:?}");
+        assert!((rotated.right() - 101.0).abs() < 1e-3, "{rotated:?}");
+        assert!((rotated.bottom() - 101.0).abs() < 1e-3, "{rotated:?}");
+
+        canvas.reset_matrix();
+        canvas.rotate(30.0, None);
+        canvas.scale((2.0, 0.5));
+        let scaled = outset_rect_in_device_space(canvas, rect, 1.0);
+        assert!((scaled.left() + 0.5).abs() < 1e-3, "{scaled:?}");
+        assert!((scaled.top() + 2.0).abs() < 1e-3, "{scaled:?}");
+
+        canvas.reset_matrix();
+        canvas.scale((2.0, 2.0));
+        let axis_aligned = outset_rect_in_device_space(canvas, rect, 1.0);
+        assert!((axis_aligned.left() + 0.5).abs() < 1e-3, "{axis_aligned:?}");
+        assert!(
+            (axis_aligned.right() - 100.5).abs() < 1e-3,
+            "{axis_aligned:?}"
+        );
+    }
 
     #[test]
     fn asset_raster_lru_enforces_entry_and_byte_limits() {
