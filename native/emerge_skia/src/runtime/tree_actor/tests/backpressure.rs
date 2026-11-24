@@ -163,6 +163,17 @@ fn blocked_registry_coalesces_to_direct_final_and_ghost_cleanup_output() {
         }
         let expected = final_output.unwrap();
         assert!(!expected.animations_active);
+        // Every held scene replaced by a newer one is counted (just after the
+        // scene is constructed, so wait for the last one).
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while actor.stats.peek().pipeline.render_queue_overwrites < count - 1 {
+            assert!(Instant::now() < deadline, "overwrites must be counted");
+            thread::yield_now();
+        }
+        assert_eq!(
+            actor.stats.peek().pipeline.render_queue_overwrites,
+            count - 1
+        );
         actor.registry.recv().unwrap(); // remove the prefilled sentinel, not a native update
         let EventMsg::RegistryUpdate { rebuild } =
             actor.registry.recv_timeout(Duration::from_secs(5)).unwrap()
