@@ -1692,8 +1692,14 @@ fn wrap_with_clip_kind(
 
     for node in nodes {
         if render_node_has_shadow_escape(&node) {
-            push_clipped_group(&mut out, clips, relaxed, &mut clipped);
-            out.push(node);
+            for (escapes, part) in split_shadow_escape(node) {
+                if escapes {
+                    push_clipped_group(&mut out, clips, relaxed, &mut clipped);
+                    out.push(part);
+                } else {
+                    clipped.push(part);
+                }
+            }
         } else {
             clipped.push(node);
         }
@@ -1701,6 +1707,57 @@ fn wrap_with_clip_kind(
 
     push_clipped_group(&mut out, clips, relaxed, &mut clipped);
     out
+}
+
+// A shadow escapes its ancestors' clips, so a card's shadow isn't cut by its
+// row. A transform or clip node holding one is split, in paint order, into its
+// parts that hold a shadow and those that don't, each re-wrapped in the same
+// transform or clip (which paints the same pixels), so only the shadows
+// escape: escaping whole, a moved element (`move_x`, `rotate`, a carousel
+// strip) with a shadowed descendant drew all its content past its host. An
+// alpha or layer node can't be split without changing how it composites, so
+// it still escapes whole.
+fn split_shadow_escape(node: RenderNode) -> Vec<(bool, RenderNode)> {
+    fn regroup(
+        children: Vec<RenderNode>,
+        wrap: impl Fn(Vec<RenderNode>) -> RenderNode,
+    ) -> Vec<(bool, RenderNode)> {
+        let mut parts: Vec<(bool, Vec<RenderNode>)> = Vec::new();
+        for (escapes, part) in children.into_iter().flat_map(split_shadow_escape) {
+            match parts.last_mut() {
+                Some((last, group)) if *last == escapes => group.push(part),
+                _ => parts.push((escapes, vec![part])),
+            }
+        }
+        parts
+            .into_iter()
+            .map(|(escapes, group)| (escapes, wrap(group)))
+            .collect()
+    }
+
+    if !render_node_has_shadow_escape(&node) {
+        return vec![(false, node)];
+    }
+    match node {
+        RenderNode::Transform {
+            transform,
+            children,
+        } => regroup(children, |children| RenderNode::Transform {
+            transform,
+            children,
+        }),
+        RenderNode::Clip { clips, children } => regroup(children, |children| RenderNode::Clip {
+            clips: clips.clone(),
+            children,
+        }),
+        RenderNode::RelaxedClip { clips, children } => {
+            regroup(children, |children| RenderNode::RelaxedClip {
+                clips: clips.clone(),
+                children,
+            })
+        }
+        node => vec![(true, node)],
+    }
 }
 
 fn render_node_has_shadow_escape(node: &RenderNode) -> bool {

@@ -10,4 +10,5 @@ mod multiline;
 mod paint;
 mod paragraph;
 mod pipeline;
+mod shadow_transform_clip;
 mod text;
