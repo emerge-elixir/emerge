@@ -13,6 +13,8 @@ pub(super) struct Change {
     pub image: Option<crate::raster_assets::Source>,
     pub attrs: Option<(Attrs, Span<u8>)>,
     pub order: Option<Span<Key>>,
+    pub before: Option<std::sync::Arc<declaration::Record>>,
+    pub pose_before: Option<(std::sync::Arc<Attrs>, std::sync::Arc<declaration::Block>)>,
 }
 impl Mount {
     pub fn new(id: u64, shape: Shape, index: usize) -> Self {
@@ -101,7 +103,9 @@ impl Elements {
         if let Some(s) = m.change.order {
             self.child_pool.release(s);
         }
-        self.free_indices.push(m.index);
+        if self.attrs.version.is_none() {
+            self.free_indices.push(m.index);
+        }
     }
 }
 impl Layers {
@@ -120,6 +124,10 @@ impl Layers {
                 && (Self::reads_early_height(e, k)
                     || e.attrs[k].line_floor.is_some()
                     || change
+                        .before
+                        .as_ref()
+                        .is_some_and(|r| r.block.attrs.line_floor.is_some())
+                    || change
                         .attrs
                         .as_ref()
                         .is_some_and(|(old, _)| old.line_floor.is_some()))
@@ -128,7 +136,13 @@ impl Layers {
                 // if scale, preferred width and every child stayed the same.
                 self.invalidate(Pass::Measure, k, depth);
             }
-            if (change.cold || change.reattached || moved || change.order.is_some())
+            let shared = change
+                .before
+                .as_ref()
+                .zip(e.attrs.version.as_ref().and_then(|v| v.get(k)));
+            let shared_order =
+                shared.is_some_and(|(a, b)| !std::sync::Arc::ptr_eq(&a.children, &b.children));
+            if (change.cold || change.reattached || moved || change.order.is_some() || shared_order)
                 && let Some(p) = e.inline_host(k)
             {
                 self.invalidate(Pass::Reflow, p, e.depth(p));
@@ -182,6 +196,26 @@ impl Layers {
                 }
                 for p in [Pass::Context, Pass::Flow, Pass::Place, Pass::PaintContext] {
                     self.invalidate(p, k, depth);
+                }
+            }
+            if let Some((old, source)) = &change.pose_before {
+                self.invalidate_attrs(e, k, old, &source.raw);
+            }
+            if let Some((before, next)) = shared {
+                if !std::sync::Arc::ptr_eq(&before.block, &next.block) {
+                    let (a, b) = (&before.block, &next.block);
+                    if a.attrs
+                        .font_gradient
+                        .differs(&a.raw, b.attrs.font_gradient, &b.raw)
+                    {
+                        e.slots[k].ink_revision += 1;
+                    }
+                    if change.pose_before.is_none() {
+                        self.invalidate_attrs(e, k, &a.attrs, &a.raw);
+                    }
+                }
+                if shared_order {
+                    self.invalidate_order(e, k, &before.children, change.membership);
                 }
             }
             if let Some((before, span)) = change.attrs {

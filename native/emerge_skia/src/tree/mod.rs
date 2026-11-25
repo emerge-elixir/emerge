@@ -1,6 +1,7 @@
 //! Wire IDs name declarations, keys name cache slots, and attachments name live input targets.
 mod capacity;
 mod changes;
+mod declaration;
 mod decoration;
 mod images;
 mod intrinsic;
@@ -13,7 +14,15 @@ mod scale;
 mod shapes;
 mod text;
 mod wire;
-pub(crate) use wire::media::Staged;
+pub(crate) use images::Ticket;
+mod motion;
+pub(crate) mod storage;
+pub(crate) use motion::{Endpoints, Motion};
+pub(crate) use wire::{
+    media::Staged,
+    publisher::{Draft, Publication, Publisher},
+    stream::{CHUNK, Stream},
+};
 
 use layers::{Layers, Pass};
 #[cfg(all(
@@ -22,7 +31,7 @@ use layers::{Layers, Pass};
     any(feature = "opengl", feature = "vulkan")
 ))]
 pub(crate) use paint::GeometryPainter;
-pub(crate) use paint::{Attachment, Raster};
+pub(crate) use paint::{Attachment, Raster, Scene};
 use pool::{Budget, Pool, Span};
 use slotmap::{SecondaryMap, SlotMap, new_key_type};
 use std::{cell::Cell, collections::HashMap, ops::Range};
@@ -362,9 +371,9 @@ struct Mount {
 }
 #[derive(Default)]
 struct Elements {
-    slots: SlotMap<Key, Mount>,
+    slots: declaration::Mounts,
     ids: HashMap<u64, Key>,
-    attrs: SecondaryMap<Key, Attrs>,
+    attrs: declaration::Attributes,
     child_pool: Pool<Key>,
     bytes: Pool<u8>,
     touched: Vec<Key>,
@@ -429,10 +438,18 @@ impl Elements {
             .unwrap_or_default()
     }
     fn children(&self, key: Key) -> &[Key] {
-        self.child_pool.get(&self.slots[key].children)
+        if let Some(v) = &self.attrs.version {
+            &v.get(key).expect("declared owner").children
+        } else {
+            self.child_pool.get(&self.slots[key].children)
+        }
     }
     fn raw(&self, key: Key) -> &[u8] {
-        self.bytes.get(&self.slots[key].bytes)
+        if let Some(v) = &self.attrs.version {
+            &v.get(key).expect("declared owner").block.raw
+        } else {
+            self.bytes.get(&self.slots[key].bytes)
+        }
     }
     fn text(&self, key: Key) -> &str {
         std::str::from_utf8(&self.raw(key)[self.attrs[key].text.clone()]).expect("validated UTF-8")
@@ -463,6 +480,7 @@ impl Rect {
 }
 #[derive(Default)]
 pub struct Tree {
+    workspace: Option<std::sync::Arc<storage::Grant>>,
     elements: Elements,
     root: Option<Key>,
     layers: Layers,
@@ -486,6 +504,11 @@ impl Tree {
             .filter_map(|(k, n)| Some((n.id, *self.layers.frames.get(k)?)))
     }
     pub(crate) fn refresh(&mut self, width: f32, height: f32, scale: f32) -> Result<(), String> {
+        self.layout(width, height, scale)?;
+        self.output.collect(&self.elements, self.root, &self.layers);
+        Ok(())
+    }
+    pub(crate) fn layout(&mut self, width: f32, height: f32, scale: f32) -> Result<(), String> {
         if ![width, height, scale].into_iter().all(f32::is_finite)
             || width < 0.
             || height < 0.
@@ -500,7 +523,6 @@ impl Tree {
         self.layers
             .recompute(&self.elements, self.root, width, height);
         self.layers.bounds.context_dirty = false;
-        self.output.collect(&self.elements, self.root, &self.layers);
         Ok(())
     }
 }

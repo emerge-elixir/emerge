@@ -34,7 +34,7 @@ impl Batch {
     pub(in crate::tree::wire) fn prepare_domains(
         &mut self,
         e: &Elements,
-        l: &mut Layers,
+        strikes: &mut std::sync::Arc<text::Strikes>,
         display: f32,
         declarations: usize,
     ) -> Result<()> {
@@ -66,9 +66,10 @@ impl Batch {
             let old = e.slots[e.ids[&s.id]].admitted;
             self.domains.deltas.push((Some(old.into()), None));
         }
-        l.text
-            .strikes
-            .prepare(&self.domains.deltas, &mut self.domains.added)
+        if self.domains.deltas.is_empty() {
+            return Ok(());
+        }
+        std::sync::Arc::make_mut(strikes).prepare(&self.domains.deltas, &mut self.domains.added)
     }
     fn walk_domains(
         &mut self,
@@ -116,8 +117,19 @@ impl Batch {
         }
         Ok(())
     }
+    pub(in crate::tree::wire) fn changed_inputs(&self) -> impl Iterator<Item = (u64, Inputs)> + '_ {
+        self.domains.changed.iter().copied()
+    }
+    pub(in crate::tree::wire) fn commit_strikes(
+        &self,
+        strikes: &mut std::sync::Arc<text::Strikes>,
+    ) {
+        if !self.domains.deltas.is_empty() {
+            std::sync::Arc::make_mut(strikes).commit(&self.domains.deltas);
+        }
+    }
     pub(in crate::tree::wire) fn publish_domains(&self, e: &mut Elements, l: &mut Layers) {
-        l.text.strikes.commit(&self.domains.deltas);
+        self.commit_strikes(&mut l.text.strikes);
         for &(id, next) in &self.domains.changed {
             e.slots[e.ids[&id]].admitted = next;
         }

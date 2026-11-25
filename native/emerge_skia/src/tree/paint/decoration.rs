@@ -37,6 +37,9 @@ pub(super) struct Materials {
     bytes: Vec<u8>,
 }
 impl Materials {
+    pub(super) fn capacities(&self) -> [usize; 2] {
+        [self.styles.capacity(), self.bytes.capacity()]
+    }
     pub fn reserve(&mut self, styles: usize, bytes: usize, b: Budget) -> Result<(), String> {
         if styles > self.styles.capacity() {
             pool::reserve(&mut self.styles, b.capacity(styles))?;

@@ -1,12 +1,16 @@
-//! One graphics/present queue on the Wayland worker. Each image owns its
-//! completion semaphore and its own WSI retirement fence, not a frame counter.
-use super::{Owner, gpu::ProbeError, handles::*};
+//! Ganesh draws on a graphics queue; a distinct transfer/present queue
+//! resolves only the winner into FIFO WSI. Acquisition and WSI retirement
+//! fences still belong to their original image/generation.
+mod targets;
+mod transfer;
+use super::{Lease, Owner, Ping, gpu::ProbeError, handles::*, textures::Producer};
+use crate::session::capture::Rect;
 use crate::{
     session::DeviceReport,
     vk_window::{
         capabilities::DrmNodeId,
         device::{DeviceRequirements, VulkanDevice},
-        ganesh::{GANESH_TARGET_IMAGE_USAGE, GaneshContext, TargetImageState, VulkanTargetSurface},
+        ganesh::GaneshContext,
         instance::VulkanInstance,
         raw,
     },
@@ -18,6 +22,7 @@ use skia_safe::{
 };
 use smithay_client_toolkit::shell::{WaylandSurface, xdg::window::Window};
 use std::sync::Arc;
+pub(in crate::session) use targets::Drawing;
 use wayland_client::Connection;
 #[path = "../../backend/wayland/vulkan/acquire.rs"]
 mod acquire;
@@ -39,7 +44,7 @@ impl Drop for Wsi {
     }
 }
 struct Image {
-    surface: Option<VulkanTargetSurface>,
+    image: vk::Image,
     signal: vk::Semaphore,
     present: vk::Fence,
     sent: bool,
@@ -47,7 +52,6 @@ struct Image {
 }
 impl Drop for Image {
     fn drop(&mut self) {
-        self.surface.take();
         unsafe {
             self.device.raw().destroy_fence(self.present, None);
             self.device.raw().destroy_semaphore(self.signal, None);
@@ -71,7 +75,7 @@ impl Drop for Chain {
 }
 struct Graph {
     chain: Option<Chain>,
-    context: GaneshContext,
+    transfer: transfer::Transfer,
     device: Arc<VulkanDevice>,
     wsi: Wsi,
 }
@@ -92,7 +96,7 @@ impl Graph {
             f.color_space == color && (f.format == format || f.format == vk::Format::UNDEFINED)
         }) || !caps
             .supported_usage_flags
-            .contains(GANESH_TARGET_IMAGE_USAGE)
+            .contains(vk::ImageUsageFlags::TRANSFER_DST)
         {
             return Err(ProbeError::Unavailable(
                 "surface lacks Ganesh BGRA8/transfer support".into(),
@@ -136,7 +140,7 @@ impl Graph {
             .image_color_space(color)
             .image_extent(extent)
             .image_array_layers(1)
-            .image_usage(GANESH_TARGET_IMAGE_USAGE)
+            .image_usage(vk::ImageUsageFlags::TRANSFER_DST)
             .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
             .pre_transform(caps.current_transform)
             .composite_alpha(alpha)
@@ -157,11 +161,6 @@ impl Graph {
         chain.acquires =
             Some(AcquirePool::new(device.clone(), raw_images.len(), generation).map_err(error)?);
         for image in raw_images {
-            let state = TargetImageState {
-                layout: vk::ImageLayout::UNDEFINED,
-                queue_family_index: device.queue_family_index(),
-            };
-            let surface = VulkanTargetSurface::new(&mut self.context, image, size, state)?;
             let signal = unsafe {
                 device
                     .raw()
@@ -169,7 +168,7 @@ impl Graph {
             }
             .map_err(error)?;
             let mut im = Image {
-                surface: Some(surface),
+                image,
                 signal,
                 present: vk::Fence::null(),
                 sent: false,
@@ -206,13 +205,7 @@ impl Graph {
                 }
                 .map_err(error)?;
             }
-            // A command-recording or submission error may have left Ganesh
-            // work buffered. Flush while borrowed image handles are still live.
-            let ctx = self.context.direct_context_mut()?;
-            if ctx.flush_and_submit().is_err() || ctx.abandoned() {
-                return Err("unable to retire Vulkan drawing context".into());
-            }
-            self.device.wait_idle("retire Ganesh queue")?;
+            self.transfer.retire()?;
         }
         Ok(())
     }
@@ -231,7 +224,8 @@ impl VkPresenter {
         size: (u32, u32),
         node: Option<DrmNodeId>,
         owner: &Arc<Owner>,
-    ) -> Result<(Self, DeviceReport), ProbeError> {
+        ping: &Ping,
+    ) -> Result<(Self, Producer, DeviceReport), ProbeError> {
         let display = raw_display_handle(conn)?;
         let mut exts = ash_window::enumerate_required_extensions(display)
             .map_err(error)?
@@ -260,7 +254,7 @@ impl VkPresenter {
             _conn: conn.clone(),
             _instance: instance.clone(),
         };
-        let device = VulkanDevice::probe_surface(
+        let device = VulkanDevice::probe_split_surface(
             instance,
             DeviceRequirements {
                 required_extensions: &[
@@ -280,7 +274,7 @@ impl VkPresenter {
         )?
         .ok_or_else(|| {
             ProbeError::Unavailable(
-                "no eligible hardware Vulkan device with present-fence support".into(),
+                "no hardware Vulkan device with independent draw and transfer/present queues and present-fence support".into(),
             )
         })?;
         let info = device.report();
@@ -303,10 +297,13 @@ impl VkPresenter {
                 }
             }),
         };
-        let context = GaneshContext::new(&device)?;
+        let draw = device.clone();
+        let producer = Producer::start(owner.clone(), ping.clone(), move || {
+            targets::DrawContext::new(draw)
+        })?;
         let mut graph = Box::new(Graph {
+            transfer: transfer::Transfer::new(&device)?,
             chain: None,
-            context,
             device,
             wsi,
         });
@@ -318,6 +315,7 @@ impl VkPresenter {
                 acquired: None,
                 recreate: false,
             },
+            producer,
             report,
         ))
     }
@@ -374,40 +372,16 @@ impl VkPresenter {
         self.acquired = Some(token);
         Ok(true)
     }
-    pub(super) fn context(&mut self) -> Result<&mut gpu::DirectContext, String> {
-        self.graph().context.direct_context_mut()
+    pub(super) fn read(&mut self, lease: &Arc<Lease>, rect: Rect) -> Result<Vec<u8>, String> {
+        self.graph().transfer.read(lease, rect)
     }
-    pub(super) fn surface(&mut self) -> &mut Surface {
-        let (_, idx, _) = self.acquired.expect("acquired before record");
-        self.graph().chain.as_mut().unwrap().images[idx]
-            .surface
-            .as_mut()
-            .unwrap()
-            .surface_mut()
-    }
-    pub(super) fn present(&mut self) -> Result<bool, String> {
+    pub(super) fn present(&mut self, lease: &Arc<Lease>) -> Result<bool, String> {
         let (_, idx, acquire_suboptimal) =
             self.acquired.take().ok_or("no acquired Vulkan target")?;
         let g = self.graph();
         let c = g.chain.as_mut().unwrap();
         let i = &mut c.images[idx];
-        let ctx = g.context.direct_context_mut()?;
-        let state = skvk::mutable_texture_states::new_vulkan(
-            skvk::ImageLayout::PRESENT_SRC_KHR,
-            g.device.queue_family_index(),
-        );
-        let mut signal = unsafe { backend_semaphores::make_vk(raw::semaphore_to_skia(i.signal)) };
-        let mut info = gpu::FlushInfo::default();
-        unsafe { info.set_signal_semaphores(std::slice::from_mut(&mut signal)) };
-        if ctx.flush_surface_with_texture_state(
-            i.surface.as_mut().unwrap().surface_mut(),
-            &info,
-            Some(&state),
-        ) != Ok(gpu::SemaphoresSubmitted::Yes)
-            || !ctx.submit(gpu::SyncCpu::No)
-        {
-            return Err("Vulkan render-finished submission failed".into());
-        }
+        g.transfer.copy(lease, i.image, i.signal)?;
         let waits = [i.signal];
         let chains = [c.handle];
         let indices = [idx as u32];
@@ -443,7 +417,6 @@ impl Drop for VkPresenter {
                 Box::leak(graph);
             } else {
                 graph.chain.take();
-                graph.context.shutdown();
             }
         }
     }

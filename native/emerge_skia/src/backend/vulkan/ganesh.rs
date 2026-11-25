@@ -28,6 +28,13 @@ pub struct GaneshContext {
 
 impl GaneshContext {
     pub fn new(device: &Arc<VulkanDevice>) -> Result<Self, String> {
+        Self::on_queue(device, device.queue(), device.queue_family_index())
+    }
+    pub(crate) fn on_queue(
+        device: &Arc<VulkanDevice>,
+        queue: vk::Queue,
+        family: u32,
+    ) -> Result<Self, String> {
         let instance = device.instance();
         let get_proc = |request| {
             // SAFETY: the BackendContext is built from these exact live ash owners. The closure is
@@ -52,10 +59,7 @@ impl GaneshContext {
                 raw::instance_to_skia(instance.raw().handle()),
                 raw::physical_device_to_skia(device.physical_device()),
                 raw::device_to_skia(device.raw().handle()),
-                (
-                    raw::queue_to_skia(device.queue()),
-                    device.queue_family_index() as usize,
-                ),
+                (raw::queue_to_skia(queue), family as usize),
                 &get_proc,
                 Some(sk_vk::Version::new(
                     vk::api_version_major(api_version) as usize,

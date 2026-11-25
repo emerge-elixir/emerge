@@ -16,8 +16,10 @@ pub(crate) fn image_fixture(name: &str) -> Vec<u8> {
 mod inactive_even;
 mod layout_rules;
 mod linear_even;
+mod motion;
 mod nested;
 mod prose;
+mod publication;
 mod row;
 mod row_even;
 mod row_height;

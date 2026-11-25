@@ -1,34 +1,32 @@
-//! The worker alone owns the device, the sealed recording, and the submitted
-//! image. No GL/Vulkan call below takes the session lock. Edits may reserve
-//! output storage, but only this worker can settle or install draw/hit lists.
-use super::super::{Live, Selected, capture::Readback};
+//! The presentation context/queue has one owner. It only resolves selected
+//! images or reads a pinned installation; it never replays a drawing.
 use super::*;
-use crate::tree::GeometryPainter;
-use crossbeam_channel::Receiver;
-use rustler::LocalPid;
-use skia_safe::{
-    AlphaType, BlendMode, Color, ColorType, ImageInfo, Paint, Picture, PictureRecorder, Surface,
-    gpu::{self as ganesh, DirectContext},
+use crate::session::{
+    Selected,
+    capture::{Readback, Rect},
 };
-rustler::atoms! { warning, emerge_skia_seal_routes, emerge_skia_publish_routes, emerge_skia_retry_routes }
+use crossbeam_channel::{Receiver, Sender, bounded};
+use std::thread::{self, JoinHandle};
+rustler::atoms! {warning}
 #[derive(Debug)]
 pub(super) enum ProbeError {
     Unavailable(String),
     Fatal(String),
+}
+#[cfg(feature = "vulkan")]
+impl ProbeError {
+    pub(super) fn reason(self) -> String {
+        match self {
+            Self::Fatal(e) | Self::Unavailable(e) => e,
+        }
+    }
 }
 impl From<String> for ProbeError {
     fn from(s: String) -> Self {
         Self::Fatal(s)
     }
 }
-#[cfg(feature = "vulkan")]
-impl ProbeError {
-    pub(super) fn reason(self) -> String {
-        match self {
-            Self::Unavailable(s) | Self::Fatal(s) => s,
-        }
-    }
-}
+
 enum Device {
     #[cfg(feature = "opengl")]
     Gl(gl::Gl),
@@ -36,128 +34,105 @@ enum Device {
     Vk(vulkan::VkPresenter),
 }
 impl Device {
-    fn acquire(&mut self, size: (u32, u32)) -> Result<bool, String> {
-        match self {
+    fn handoff(&mut self, c: &Claim, owner: &Owner) -> Result<Outcome, String> {
+        // Order the start with reconfiguration without holding the exchange
+        // lock over a driver call. An already started successful handoff
+        // installs its own mapping, never the subsequent configure's.
+        if lock(&owner.pipe)?
+            .view
+            .is_none_or(|v| v.generation != c.frame.id.generation)
+        {
+            return Ok(Outcome::SupersededView);
+        }
+        #[cfg(feature = "stage-probes")]
+        if owner
+            .probes
+            .reject(c.frame.id, c.frame.value.bundle.revision)
+        {
+            return Ok(Outcome::Unsubmitted { outdated: false });
+        }
+        let Target::Gpu(image) = &c.frame.value.target else {
+            return Err("not a device image".into());
+        };
+        self.submit(image)
+    }
+    fn submit(&mut self, image: &Arc<Lease>) -> Result<Outcome, String> {
+        match (self, &image.image) {
             #[cfg(feature = "opengl")]
-            Self::Gl(g) => {
-                g.resize(size)?;
-                Ok(true)
+            (Self::Gl(g), textures::Image::Gl(t)) => {
+                g.submit(t, image.size)?;
+                Ok(Outcome::Submitted)
             }
             #[cfg(feature = "vulkan")]
-            Self::Vk(v) => v.acquire(size),
+            (Self::Vk(v), textures::Image::Vk(_)) => {
+                if !v.acquire(image.size)? {
+                    return Ok(Outcome::Unsubmitted {
+                        outdated: v.recreate,
+                    });
+                }
+                Ok(if v.present(image)? {
+                    Outcome::Submitted
+                } else {
+                    Outcome::Unsubmitted { outdated: true }
+                })
+            }
+            #[cfg(all(feature = "opengl", feature = "vulkan"))]
+            _ => Err("foreign device image".into()),
         }
     }
-    fn recreate(&self) -> bool {
-        match self {
+    fn read(&mut self, image: &Arc<Lease>, rect: Rect) -> Result<Vec<u8>, String> {
+        match (self, &image.image) {
             #[cfg(feature = "opengl")]
-            Self::Gl(_) => false,
+            (Self::Gl(g), textures::Image::Gl(t)) => g.read(t, rect),
             #[cfg(feature = "vulkan")]
-            Self::Vk(v) => v.recreate,
-        }
-    }
-    fn context(&mut self) -> Result<&mut DirectContext, String> {
-        match self {
-            #[cfg(feature = "opengl")]
-            Self::Gl(g) => Ok(g.context()),
-            #[cfg(feature = "vulkan")]
-            Self::Vk(v) => v.context(),
-        }
-    }
-    fn surface(&mut self) -> &mut Surface {
-        match self {
-            #[cfg(feature = "opengl")]
-            Self::Gl(g) => g.surface(),
-            #[cfg(feature = "vulkan")]
-            Self::Vk(v) => v.surface(),
-        }
-    }
-    fn submit(&mut self) -> Result<bool, String> {
-        match self {
-            #[cfg(feature = "opengl")]
-            Self::Gl(g) => g.swap().map(|()| true),
-            #[cfg(feature = "vulkan")]
-            Self::Vk(v) => v.present(),
+            (Self::Vk(v), textures::Image::Vk(_)) => v.read(image, rect),
+            #[cfg(all(feature = "opengl", feature = "vulkan"))]
+            _ => Err("foreign capture image".into()),
         }
     }
 }
-struct Sealed {
+pub(super) enum Outcome {
+    Submitted,
+    SupersededView,
+    #[cfg(any(feature = "vulkan", feature = "stage-probes"))]
+    Unsubmitted {
+        outdated: bool,
+    },
+}
+struct Claim {
+    frame: Frame<Completed>,
     mapping: Mapping,
-    record: Picture,
-    routes: Option<LocalPid>,
 }
+enum Job {
+    Present(Claim),
+    Capture(Readback),
+}
+// A capture replies directly to its caller; the dispatcher only needs its completion.
+type Report = Option<(Claim, Outcome, Duration)>;
 pub(super) struct Output {
-    // Drop both offscreen targets before their owning device/context.
-    front: Option<Surface>,
-    back: Option<Surface>,
-    sealed: Option<Sealed>,
-    retry_at: Option<Instant>,
-    painter: GeometryPainter,
+    jobs: Option<Sender<Job>>,
+    reports: Receiver<Result<Report, String>>,
+    thread: Option<JoinHandle<()>>,
     captures: Receiver<Readback>,
-    device: Device,
+    busy: bool,
+    retry: Option<Instant>,
 }
-fn target(ctx: &mut DirectContext, (w, h): (u32, u32)) -> Result<Surface, String> {
-    let info = ImageInfo::new(
-        (w as i32, h as i32),
-        ColorType::RGBA8888,
-        AlphaType::Premul,
-        None,
-    );
-    ganesh::surfaces::render_target(
-        ctx,
-        ganesh::Budgeted::Yes,
-        &info,
-        4,
-        ganesh::SurfaceOrigin::TopLeft,
-        None,
-        false,
-        false,
-    )
-    .ok_or_else(|| "could not allocate multisampled GPU color target".into())
+impl Drop for Output {
+    fn drop(&mut self) {
+        self.jobs.take();
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
 }
 impl Output {
-    pub(super) fn readback(&mut self) {
-        if let Ok(req) = self.captures.try_recv() {
-            req.read(self.front.as_mut());
-        }
-    }
-    pub(super) fn pending(&self) -> bool {
-        self.sealed.is_some() || self.device.recreate()
-    }
-    fn retry(&mut self, live: &mut Live, env: &mut OwnedEnv) {
-        if let Some(s) = self.sealed.take()
-            && let Some(pid) = s.routes
-        {
-            live.route_target.get_or_insert(pid);
-            let _ = env.send_and_clear(&pid, |_| emerge_skia_retry_routes());
-        }
-        self.retry_at = None;
-        live.request = true;
-    }
-    fn render(&mut self, size: (u32, u32)) -> Result<(), String> {
-        let dims = (size.0 as i32, size.1 as i32);
-        if self
-            .back
+    fn send(&mut self, job: Job) -> Result<(), String> {
+        self.jobs
             .as_ref()
-            .is_none_or(|s| (s.width(), s.height()) != dims)
-        {
-            self.back = Some(target(self.device.context()?, size)?);
-        }
-        let back = self.back.as_mut().expect("allocated GPU target");
-        back.canvas().clear(Color::TRANSPARENT);
-        back.canvas().draw_picture(
-            &self.sealed.as_ref().expect("sealed drawing").record,
-            None,
-            None,
-        );
-        let image = back.image_snapshot();
-        if !image.is_texture_backed() {
-            return Err("expected a device-resident color target".into());
-        }
-        let canvas = self.device.surface().canvas();
-        canvas.clear(Color::TRANSPARENT);
-        let mut paint = Paint::default();
-        paint.set_blend_mode(BlendMode::Src);
-        canvas.draw_image(image, (0, 0), Some(&paint));
+            .ok_or("device stopped")?
+            .try_send(job)
+            .map_err(|_| "device queue unavailable")?;
+        self.busy = true;
         Ok(())
     }
 }
@@ -166,61 +141,129 @@ impl WindowApp {
         &mut self,
         conn: &Connection,
         request: Requested,
+        ping: &Ping,
     ) -> Result<(), String> {
         let size = self.geometry.buffer()?;
-        let probe = match request {
-            Requested::Raster => return Ok(()),
-            #[cfg(feature = "opengl")]
-            Requested::Gl => {
-                gl::Gl::new(conn, &self.window, size).map(|g| (Device::Gl(g), Selected::Gl))
-            }
-            #[cfg(feature = "vulkan")]
-            Requested::Vk => {
-                vulkan::VkPresenter::new(conn, &self.window, size, self.feedback.node, &self.owner)
-                    .map(|(g, info)| (Device::Vk(g), Selected::Vk(info)))
-            }
+        let win = self.window.clone();
+        let conn = conn.clone();
+        let owner = self.owner.clone();
+        let ping = ping.clone();
+        #[cfg(feature = "vulkan")]
+        let node = self.feedback.node;
+        let (jobs, inbox) = bounded(1);
+        let (tx, reports) = bounded(1);
+        let (started, rx) = bounded(1);
+        let (requests, captures) = bounded(1);
+        let t = thread::Builder::new()
+            .name("emerge-present".into())
+            .spawn(move || {
+                let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                    || -> Result<(), String> {
+                        let probe = match request {
+                            Requested::Raster => return Err("raster cannot start a GPU".into()),
+                            #[cfg(feature = "opengl")]
+                            Requested::Gl => gl::Gl::new(&conn, &win, size, &owner, &ping)
+                                .map(|(g, p)| (Device::Gl(g), p, Selected::Gl)),
+                            #[cfg(feature = "vulkan")]
+                            Requested::Vk => {
+                                vulkan::VkPresenter::new(&conn, &win, size, node, &owner, &ping)
+                                    .map(|(v, p, d)| (Device::Vk(v), p, Selected::Vk(d)))
+                            }
+                        };
+                        let (device, producer, kind) = match probe {
+                            Ok(v) => v,
+                            Err(e) => {
+                                let _ = started.send(Err(e));
+                                return Ok(());
+                            }
+                        };
+                        // The WSI owner retires all GPU reads before Producer drops its
+                        // bank. Leases held by the selector after shutdown are inert.
+                        let _producer = producer;
+                        let mut device = device;
+                        started.send(Ok(kind)).map_err(|_| "startup cancelled")?;
+                        while let Ok(job) = inbox.recv() {
+                            if owner.lifecycle.stop.load(Ordering::Acquire) {
+                                break;
+                            }
+                            let report = match job {
+                                Job::Present(c) => {
+                                    #[cfg(feature = "stage-probes")]
+                                    owner.probes.pause(
+                                        crate::session::probes::Stage::Claimed,
+                                        c.frame.id.serial,
+                                        c.frame.value.bundle.revision,
+                                        &owner,
+                                    );
+                                    let t = Instant::now();
+                                    let handed = device.handoff(&c, &owner).and_then(|outcome| {
+                                        conn.flush().map_err(err)?;
+                                        #[cfg(feature = "stage-probes")]
+                                        if matches!(outcome, Outcome::Submitted) {
+                                            let revision = c.frame.value.bundle.revision;
+                                            owner.probes.confirm(c.frame.id, revision)?;
+                                            owner.probes.pause(
+                                                crate::session::probes::Stage::Handed,
+                                                c.frame.id.serial,
+                                                revision,
+                                                &owner,
+                                            );
+                                        }
+                                        Ok(outcome)
+                                    });
+                                    // Tell dispatch and the draw owner *before* retiring the
+                                    // device. An uncertain handoff is never retried or installed.
+                                    let outcome = handed.inspect_err(|e| {
+                                        owner.lifecycle.fail(e.clone());
+                                        owner.actor.notify();
+                                        owner.render.notify();
+                                        ping.ping();
+                                    })?;
+                                    Some((c, outcome, t.elapsed()))
+                                }
+                                Job::Capture(read) => {
+                                    read.read(|image, rect| device.read(image, rect));
+                                    None
+                                }
+                            };
+                            if tx.try_send(Ok(report)).is_err() {
+                                break;
+                            }
+                            ping.ping();
+                        }
+                        Ok(())
+                    },
+                ))
+                .unwrap_or_else(|_| Err("presentation worker panicked".into()));
+                if let Err(e) = run {
+                    let _ = tx.try_send(Err(e));
+                    ping.ping();
+                }
+            })
+            .map_err(err)?;
+        let service = Output {
+            jobs: Some(jobs),
+            reports,
+            thread: Some(t),
+            captures,
+            busy: false,
+            retry: None,
         };
-        let result = probe.and_then(|(mut device, selected)| {
-            let ctx = device.context()?;
-            if ctx.max_surface_sample_count_for_color_type(ColorType::RGBA8888) < 4 {
-                return Err(ProbeError::Unavailable(
-                    "RGBA8 4x hardware multisampling is unavailable".into(),
-                ));
-            }
-            let back = Some(target(ctx, size)?);
-            let (tx, captures) = crossbeam_channel::bounded(1);
-            Ok((
-                Output {
-                    device,
-                    back,
-                    front: None,
-                    sealed: None,
-                    retry_at: None,
-                    painter: Default::default(),
-                    captures,
-                },
-                tx,
-                selected,
-            ))
-        });
-        if self.owner.lifecycle.stop.load(Ordering::Acquire) {
-            return Err("Wayland startup stopped before renderer selection".into());
-        }
-        let selected = match result {
-            Ok((output, tx, selected)) => {
-                self.gpu = Some(output);
+        let selected = match rx.recv().map_err(err)? {
+            Ok(kind) => {
                 self.owner
                     .readbacks
-                    .set(tx)
+                    .set(requests)
                     .map_err(|_| "capture already initialized")?;
-                selected
+                self.gpu = Some(service);
+                kind
             }
-            Err(ProbeError::Fatal(why)) => return Err(why),
-            Err(ProbeError::Unavailable(why)) => {
-                let guard = lock(&self.owner.live)?;
-                if let Some(pid) = guard.as_ref().and_then(|l| l.log) {
+            Err(ProbeError::Fatal(e)) => return Err(e),
+            Err(ProbeError::Unavailable(e)) => {
+                let log = *lock(&self.owner.log)?;
+                if let Some(pid) = log {
                     let msg = format!(
-                        "Wayland: {} requested; {why}; using CPU raster (wl_shm)",
+                        "Wayland: {} requested; {e}; using CPU raster (wl_shm)",
                         self.owner.api
                     );
                     let _ = self.env.send_and_clear(&pid, |_| {
@@ -233,114 +276,106 @@ impl WindowApp {
         self.owner
             .selected
             .set(selected)
-            .map_err(|_| "renderer already selected".to_string())
+            .map_err(|_| "renderer already selected".into())
+    }
+    pub(super) fn device_report(&mut self) -> Result<(), String> {
+        let Some(gpu) = &mut self.gpu else {
+            return Ok(());
+        };
+        let result = match gpu.reports.try_recv() {
+            Ok(r) => r?,
+            Err(crossbeam_channel::TryRecvError::Empty) => return Ok(()),
+            Err(_) => return Err("presentation device stopped".into()),
+        };
+        gpu.busy = false;
+        match result {
+            Some((Claim { frame, mapping }, Outcome::Submitted, t)) => {
+                let Target::Gpu(target) = frame.value.target else {
+                    return Err("missing submitted texture".into());
+                };
+                #[cfg(feature = "stage-probes")]
+                self.pin_target(&frame.value.bundle, target.clone());
+                self.installed = Some(mapping);
+                self.frame_pending = self.callback_armed;
+                self.display.install(
+                    &self.owner,
+                    frame.value.bundle,
+                    Pixels::Gpu(target),
+                    Some(t),
+                )?;
+            }
+            #[cfg(any(feature = "vulkan", feature = "stage-probes"))]
+            Some((Claim { frame, .. }, Outcome::Unsubmitted { outdated }, _)) => {
+                if outdated
+                    && lock(&self.owner.pipe)?
+                        .view
+                        .is_some_and(|v| v.generation == frame.id.generation)
+                {
+                    self.attempted = None;
+                    self.owner.invalidate_view()?;
+                } else {
+                    let retired = lock(&self.owner.pipe)?.completed.retry(frame);
+                    drop(retired);
+                }
+                gpu.retry = Some(Instant::now() + Duration::from_millis(4));
+            }
+            Some((_, Outcome::SupersededView, _)) | None => (),
+        }
+        self.owner.actor.notify();
+        Ok(())
     }
     pub(super) fn present_gpu(
         &mut self,
-        conn: &Connection,
         qh: &QueueHandle<Self>,
         mapping: Mapping,
-        changed_surface: bool,
     ) -> Result<Option<Duration>, String> {
-        let size = mapping.buffer;
         let gpu = self.gpu.as_mut().expect("selected GPU");
         let owner = &self.owner;
-        let mut guard = lock(&owner.live)?;
-        let live = guard.as_mut().ok_or("stopped")?;
-        if gpu.sealed.as_ref().is_some_and(|s| s.mapping != mapping) {
-            gpu.retry(live, &mut self.env);
-        }
-        if let Some(wait) = gpu
-            .retry_at
-            .and_then(|d| d.checked_duration_since(Instant::now()))
-        {
-            return Ok(Some(wait));
-        }
-        if gpu.sealed.is_none() {
-            live.request = false;
-            let changed = match live.settle(size, mapping.geometry.nominal()) {
-                Ok(Some(c)) => c,
-                Ok(None) => return Ok(None),
-                Err(e) => {
-                    live.log_frame_error(&mut self.env, "wayland", e);
-                    return Ok(None);
-                }
+        let changed = self.installed != Some(mapping);
+        gpu.retry = gpu.retry.filter(|t| *t > Instant::now());
+        let open =
+            owner.opportunity(!gpu.busy && gpu.retry.is_none() && (!self.frame_pending || changed));
+        let frame = {
+            let mut p = lock(&owner.pipe)?;
+            p.submit_open = open;
+            let f = open.then(|| p.completed.take()).flatten();
+            if f.is_some() {
+                p.submit_open = false;
+            }
+            f
+        };
+        owner.render.notify();
+        if let Some(f) = frame {
+            let Target::Gpu(image) = &f.value.target else {
+                return Err("expected GPU target".into());
             };
-            if !changed && !changed_surface && !gpu.device.recreate() && gpu.front.is_some() {
-                live.raster.install();
-                live.after_present(&mut self.env, size);
-                return Ok(None);
+            if !changed
+                && self.display.installed.as_ref().is_some_and(|i| {
+                    i.bundle.view.generation == f.id.generation
+                        && matches!(&i.pixels,Pixels::Gpu(t) if Arc::ptr_eq(t,image))
+                })
+            {
+                self.display
+                    .install(owner, f.value.bundle, Pixels::Gpu(image.clone()), None)?;
+            } else {
+                self.protocols
+                    .apply(self.window.wl_surface(), mapping.geometry);
+                if !self.callback_armed {
+                    self.window
+                        .wl_surface()
+                        .frame(qh, self.window.wl_surface().clone());
+                    self.callback_armed = true;
+                }
+                gpu.send(Job::Present(Claim { frame: f, mapping }))?;
             }
-            let mut recorder = PictureRecorder::new();
-            let canvas = recorder.begin_recording(
-                skia_safe::Rect::from_wh(size.0 as f32, size.1 as f32),
-                false,
-            );
-            // Geometry and commands only; the recorder has no pixel storage or GPU.
-            gpu.painter.record(canvas, &live.raster)?;
-            let record = recorder
-                .finish_recording_as_picture(None)
-                .ok_or("failed to seal GPU drawing")?;
-            let routes = live.route_target.take();
-            if let Some(pid) = routes {
-                let _ = self.env.send_and_clear(&pid, |_| emerge_skia_seal_routes());
-            }
-            gpu.sealed = Some(Sealed {
-                mapping,
-                record,
-                routes,
-            });
         }
-        drop(guard);
-        let retry = Duration::from_millis(4);
-        if !gpu.device.acquire(size)? {
-            if gpu.device.recreate() {
-                // OUT_OF_DATE (not merely NOT_READY): discard this recording
-                // and seal the newest accepted edits for the new generation.
-                let mut live = lock(&owner.live)?;
-                gpu.retry(live.as_mut().ok_or("stopped")?, &mut self.env);
-            }
-            gpu.retry_at = Some(Instant::now() + retry);
-            return Ok(Some(retry));
+        if !gpu.busy
+            && let Ok(read) = gpu.captures.try_recv()
+        {
+            gpu.send(Job::Capture(read))?;
         }
-        gpu.render(size)?;
-        let surface = self.window.wl_surface();
-        self.protocols.apply(surface, mapping.geometry);
-        // An unsuccessful present may leave this request pending on wl_surface.
-        // Reuse it on retry rather than requesting a second callback.
-        if !self.callback_armed {
-            surface.frame(qh, surface.clone());
-            self.callback_armed = true;
-        }
-        let started = Instant::now();
-        let submitted = gpu.device.submit()?;
-        conn.flush().map_err(err)?;
-        let mut guard = lock(&owner.live)?;
-        let live = guard.as_mut().ok_or("stopped")?;
-        if submitted {
-            if let Some(s) = &mut live.stats {
-                s.submitted(started.elapsed());
-            }
-            std::mem::swap(&mut gpu.front, &mut gpu.back);
-            let s = gpu.sealed.take().expect("sealed before submit");
-            gpu.retry_at = None;
-            live.raster.install();
-            (live.width, live.height) = size;
-            live.input.after_draw(&live.raster);
-            live.last = Some(Instant::now());
-            self.installed = Some(s.mapping);
-            self.frame_pending = true;
-            if let Some(pid) = s.routes {
-                let _ = self
-                    .env
-                    .send_and_clear(&pid, |_| emerge_skia_publish_routes());
-            }
-            Ok(None)
-        } else {
-            self.frame_pending = false;
-            gpu.retry(live, &mut self.env);
-            gpu.retry_at = Some(Instant::now() + retry);
-            Ok(Some(retry))
-        }
+        Ok(gpu
+            .retry
+            .map(|t| t.saturating_duration_since(Instant::now())))
     }
 }

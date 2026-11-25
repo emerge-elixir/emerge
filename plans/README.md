@@ -14,13 +14,15 @@ selected work.
 | Static widths/heights and linear layout | The viewport offers both axes without moving an [aligned root](../test/emerge_skia/root_alignment_test.exs) away from `(0,0)`. A [direct child of El](../test/emerge_skia/el_child_alignment_test.exs) can override the host's alignment on either axis. Row and Column share the main axis; wrapped forms share it **per group**. [Start, center and end groups](../test/emerge_skia/linear_zones_test.exs) use each settled line or column without reordering paint or clicks. All four layouts can [distribute even gaps](../test/emerge_skia/linear_even_spacing_test.exs) within each group on a pixel or fill-bearing main axis. Authored spacing still decides wrap breaks. [El, Text and None ignore the even-spacing flag](../test/emerge_skia/inactive_even_spacing_test.exs). Cross-axis alignment uses the padded host or each wrapped group. Static lengths can combine pixels, content and multiple fills. A WrappedColumn can fit all its occupied widths and gaps; an [unproved early dependency](../guides/internals/retained-decisions.md#d10-wrap-columns-at-the-resolved-height) is refused. |
 | **1 of 19** element `on_*` listeners: `on_click/1` | A left press/release can deliver local coordinates and the current callback for the submitted occurrence. Raw subscriptions are separate; they don't implement key, drag or hover listeners. |
 | **3 of 6** binary headless pixel formats: RGBA8888, BGRA8888, RGB888 | CPU-delivered `VideoInterop.Frame` and installed-frame RGB/RGBA or PNG capture. Producing a binary frame is not video import or PRIME export. |
-| Wayland CPU (`wl_shm`), OpenGL and Vulkan | Compositor pixels and seat input on all three. Fractional display scale was exercised on shm; hardware GPU evidence is at integer scales, not a synchronization or physical scanout qualification. |
+| Wayland CPU (`wl_shm`), OpenGL and Vulkan | Compositor pixels and seat input on all three. An isolated seat checked installed coordinates across a 1.0→1.5 configure on shm and AMD hardware GL/Vulkan. Vulkan synchronization controls ran there; broader hardware coverage and physical scanout remain unverified. |
 
 These counts have different denominators. There is no meaningful overall API
 percentage: a color constructor, a listener and a display backend are not equal
 units of work. The public Mix suite has **58 named failures and 21 exclusions**. These counts are not a port score.
 
 ## How we work
+
+The [live tree isolation checkpoint](checkpoints/performance/tree-owner-isolation.md) compares accepted edits, installed frames and input during a stalled handoff. It also records the higher cost of unstalled edits.
 
 The [snapshot reconciliation work](reconciliation-and-diffing.md) changes producer bookkeeping, not the viewport API. Its [checkpoint](checkpoints/performance/snapshot-diff.md) separates diff time, allocation and delivered frames.
 

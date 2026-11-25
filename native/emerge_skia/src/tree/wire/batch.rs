@@ -21,10 +21,11 @@ pub(super) struct Edit {
     next_in_bucket: usize,
     visited: bool,
     closed: bool,
-    inputs: Option<scale::Inputs>,
+    pub(super) inputs: Option<scale::Inputs>,
 }
 #[derive(Default)]
 pub(super) struct Batch {
+    pub(super) live: bool,
     // Removing from an open-addressed HashMap leaves tombstones: reserving the
     // same high-water mark could reallocate on a fitting detach. These chains
     // live in the entries themselves. Zero is empty, other links are index+1.
@@ -42,6 +43,11 @@ pub(super) struct Batch {
 }
 impl Batch {
     pub fn reserve(&mut self, n: usize) -> Result<()> {
+        // Entries plus stacks, domains and allocator indexes. Detached trees
+        // have their own synchronous capacity proof.
+        if self.live && n > (256usize << 20) / (size_of::<Edit>() + 512) {
+            return Err("live edit proof exceeds storage limit".into());
+        }
         if n > self.heads.len() {
             let cap = n.next_power_of_two();
             pool::reserve(&mut self.heads, cap)?;
@@ -61,7 +67,7 @@ impl Batch {
         self.domains.reserve(n)?;
         self.orders.ensure(n, n, Budget(0))
     }
-    fn reset(&mut self) {
+    pub(super) fn reset(&mut self) {
         for s in self.entries.drain(..) {
             let bucket = self.hash.hash_one(s.id) as usize & (self.heads.len() - 1);
             self.heads[bucket] = 0;
@@ -133,7 +139,7 @@ impl Batch {
         s.attached = true;
         Ok(i)
     }
-    fn order(
+    pub(super) fn order(
         &mut self,
         i: usize,
         len: usize,
@@ -149,10 +155,14 @@ impl Batch {
         self.entries[i].order = Some(span);
         Ok(())
     }
-    fn definition(&mut self, e: &Elements, bytes: &[u8], r: &mut Reader, b: Budget) -> Result<()> {
-        let id = r.id()?;
-        let shape = Shape::from_tag(r.byte()?)?;
-        let flags = r.byte()?;
+    pub(super) fn entry(
+        &mut self,
+        e: &Elements,
+        id: u64,
+        shape: Shape,
+        flags: u8,
+        b: Budget,
+    ) -> Result<usize> {
         let old = e.live(id);
         if flags > 3 || (flags != 3 && old.is_none()) {
             return Err("invalid keep field or missing fresh declaration".into());
@@ -160,7 +170,13 @@ impl Batch {
         if old.is_some_and(|k| e.slots[k].shape != shape) {
             return Err("live occurrence changed kind".into());
         }
-        let i = self.add(id, shape, b)?;
+        self.add(id, shape, b)
+    }
+    fn definition(&mut self, e: &Elements, bytes: &[u8], r: &mut Reader, b: Budget) -> Result<()> {
+        let id = r.id()?;
+        let shape = Shape::from_tag(r.byte()?)?;
+        let flags = r.byte()?;
+        let i = self.entry(e, id, shape, flags, b)?;
         if flags & 1 != 0 {
             let raw = r.block()?;
             self.entries[i].attrs = Some((attrs(raw, shape)?, range(bytes, raw)));
@@ -311,32 +327,54 @@ impl Batch {
         bytes: &[u8],
         b: Budget,
     ) -> Result<()> {
-        self.reset();
         let mut r = Reader(bytes);
         if r.take(5)? != b"EMRG\x0a" {
             return Err("expected EMRG version 10".into());
         }
         let target_id = r.id()?;
-        let target = if target_id == 0 && previous.is_none() {
-            None
-        } else {
-            Some(e.live(target_id).ok_or("unknown patch target")?)
-        };
         let id = r.id()?;
         let root = (id != 0).then_some(id);
         let n = r.long()?;
         if n > r.0.len() / 10 || n > 1_000_000 {
             return Err("invalid record count".into());
         }
-        if n > self.entries.capacity() {
-            self.reserve(b.capacity(n))?;
-        }
+        let target = self.begin(e, previous, target_id, n, b)?;
         for _ in 0..n {
             self.definition(e, bytes, &mut r, b)?;
         }
         if !r.0.is_empty() {
             return Err("trailing patch bytes".into());
         }
+        self.prove(e, previous, target, root, b)
+    }
+    pub(super) fn begin(
+        &mut self,
+        e: &Elements,
+        previous: Option<Key>,
+        target_id: u64,
+        n: usize,
+        b: Budget,
+    ) -> Result<Option<Key>> {
+        self.reset();
+        let target = if target_id == 0 && previous.is_none() {
+            None
+        } else {
+            Some(e.live(target_id).ok_or("unknown patch target")?)
+        };
+        if n > self.entries.capacity() {
+            self.reserve(b.capacity(n))?;
+        }
+        Ok(target)
+    }
+    pub(super) fn prove(
+        &mut self,
+        e: &Elements,
+        previous: Option<Key>,
+        target: Option<Key>,
+        root: Option<u64>,
+        b: Budget,
+    ) -> Result<()> {
+        let target_id = target.map_or(0, |k| e.slots[k].id);
         let parent = target.and_then(|k| e.slots[k].parent);
         if let Some(id) = root {
             if self.stack.capacity() == 0 {

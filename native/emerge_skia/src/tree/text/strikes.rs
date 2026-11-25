@@ -19,9 +19,9 @@ impl From<Inputs> for StrikeKey {
     }
 }
 pub(in crate::tree) type StrikeDelta = (Option<StrikeKey>, Option<StrikeKey>);
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(in crate::tree) struct Strikes {
-    entries: HashMap<StrikeKey, (Strike, usize)>,
+    entries: HashMap<StrikeKey, (std::sync::Arc<Strike>, usize)>,
     warm: Vec<StrikeKey>,
     bytes: usize,
 }
@@ -73,7 +73,7 @@ impl Strikes {
                         Ok(())
                     })?;
                     self.bytes += Self::bytes(&strike);
-                    self.entries.insert(key, (strike, 0));
+                    self.entries.insert(key, (std::sync::Arc::new(strike), 0));
                     added.push(key);
                 }
                 Ok(())

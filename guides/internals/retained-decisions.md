@@ -15,8 +15,11 @@ tree**, then computes context ↓, measure ↑, flow ↓, reflow ↑, place ↓,
 context ↓ and compose ↑. Shapes implement the work they own. One child order
 serves layout, draw and hit testing. An unchanged value stops only its readers;
 a sibling or a moved occurrence can still need work. This avoids both early
-invalidation and a second renderer for the supported subset. Route change only;
-no speed claim. [Layout flow](layout-refresh-render-flow.md) · [work queue](../../native/emerge_skia/src/tree/queue.rs).
+invalidation and a second renderer for the supported subset. On live binary
+headless and Wayland the NIF applies each edit to the preceding **accepted**
+declaration. The tree actor reads those shared records; it does not reapply
+wire or borrow a mutable document from the renderer. A stalled consumer can
+exhaust credit, but busy means neither accepted nor queued. [Layout flow](layout-refresh-render-flow.md) · [work queue](../../native/emerge_skia/src/tree/queue.rs).
 
 ### D2. Identify occurrences rather than matching subtrees
 
@@ -66,6 +69,13 @@ reservation and fitting edits through prepared draw/hit inputs, not for
 provisioning, drawing, BEAM messages or display. [Configuration test](../../test/emerge_skia/config_control_test.exs) ·
 [allocation boundary and controls](../../native/emerge_skia/src/tree/tests/allocations.rs).
 
+The live [storage ledger](../../native/emerge_skia/src/tree/storage.rs) caps
+declaration charges at 512 MiB, workspace at 1 GiB and inline media at 256 MiB.
+These are separate ceilings, not estimates of process memory. A draft's cumulative
+reservation must fit half the corresponding account. A fitting transaction
+blocked by pinned readers returns busy; one that exceeds its limit is refused
+permanently. Neither advances the accepted revision.
+
 ### D5. Publish input with the successful submission
 
 `main` rebuilds event state through its actor pipeline. Retained prepares draw,
@@ -77,6 +87,13 @@ route without changing any pixel. Element-local click payloads already exist
 on current `main`; the decision is about **which frame** they describe.
 [Frame and click controls](../../test/emerge_skia/retained_tree_slice_test.exs) ·
 [sealed route ordering](../../test/emerge/viewport_submit_routes_test.exs).
+
+Select twice: skip superseded commands **before drawing**, then choose the
+newest eligible **completed image** at handoff. If C is still drawing, submit
+ready B; if both completed before the claim, submit C. The dispatcher installs
+the claimed bundle's mapping and epoch, and retires its predecessor's callbacks
+after their last event. Capture pins installed pixels, not the declaration.
+[Stall witnesses and measured trade-offs](../../plans/checkpoints/performance/tree-owner-isolation.md).
 
 Exercise that boundary through `EmergeSkia.send_input/2` on binary headless
 or real seat input on Wayland. Unlike `main`'s test harness this cannot inject
@@ -196,18 +213,21 @@ unavailability **at startup**, even an explicit GPU request may use CPU shm
 for the whole session and warn once. Report requested and selected APIs; a
 missing build feature, ambiguous device or runtime failure is not that fallback.
 This keeps output ownership explicit without calling software rendering a GPU
-pass. Integer-scale hardware frames/seat were exercised; see the tracker for
-what that does not prove. [Presenter](../../native/emerge_skia/src/session/wayland/mod.rs) ·
+pass. Draw into independently owned targets; on handoff GL samples the
+resolved share-group texture and Vulkan copies the finished image on a
+separate transfer/present queue. Capture is not part of ordinary handoff.
+The private AMD seat exercised integer scale and a 1.0→1.5 configure; neither
+handoff nor a frame callback establishes physical scanout. [Presenter](../../native/emerge_skia/src/session/wayland/mod.rs) ·
 [capture](../../native/emerge_skia/src/session/capture.rs).
 
 ### D9. Apply supported live controls directly
 
 `main` queues native desired revisions and can supersede or fail device work.
-For the retained title, input mask and frame cap, apply the snapshot under the
-session lock, then acknowledge its session/revision. `config_status/1` can
+For the retained title, input mask and frame cap, the dispatcher applies a
+bounded control message, then acknowledges its session/revision. `config_status/1` can
 therefore already say applied on return. That token is not proof of a new
 frame. Do not generalize this shortcut to asynchronous device, backlight or
-power operations. [Control path](../../native/emerge_skia/src/session/mod.rs) ·
+power operations. [Control path](../../native/emerge_skia/src/session/mailbox.rs) ·
 [status tests](../../test/emerge_skia/config_control_test.exs).
 
 ### D10. Wrap columns at the resolved height

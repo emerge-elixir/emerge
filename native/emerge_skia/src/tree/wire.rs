@@ -4,6 +4,8 @@ mod batch;
 mod length;
 pub(super) mod media;
 mod patch;
+pub(crate) mod publisher;
+pub(crate) mod stream;
 mod upload;
 #[derive(Default)]
 pub(super) struct Scratch {

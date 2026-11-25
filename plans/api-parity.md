@@ -60,6 +60,13 @@ Scope: [Emerge](../lib/emerge.ex), [Emerge.Input](../lib/emerge/input.ex),
   [reloader tests](../test/emerge/code_reloader_test.exs) are not proof of an
   unported listener or platform. `Config.Runtime` health checks, custom adapter
   and `adapter_opts` are distinct from DRM startup retries.
+- **Live binary headless and Wayland:** native edit success means applied to the
+  preceding accepted revision, not displayed. A busy edit is not queued. The
+  viewport retries from its accepted state on credit. [Stage tests](../test/emerge_skia/stage_isolation_test.exs)
+  check both selections: ready B can install while C is still drawing, and a
+  completed C can supersede an unclaimed B. Only the installed frame supplies
+  capture, hit geometry and callback routes. Detached trees and one-shot
+  exports do not use this pipeline.
 - **Already usable on the supported outputs:** `start/1`, `running?/1`,
   `stop/1,2`, `renderer_status/1`, `renderer_info/1`, `config_status/1`,
   `set_input_target/2`, `set_log_target/2`, `upload_tree/2`, `patch_tree/3`.
@@ -92,7 +99,7 @@ name proves neither device selection nor visible output.
 | `DRM`, `Backlight`, `Cursor`, `CursorIcon`, `Runtime` retries — missing | `drm_outputs/0,1` discovery **without** a running renderer; card/connector/mode/size selection, CPU/GL/Vulkan, explicit Vulkan render device independent of the KMS card, handoff of the boot image, hotplug, display power, wake gesture, backlight, cursor hotspots and input, leases/cleanup and restart. Test actual output and device ownership, not only config validation. |
 | macOS Window — missing retained host | AppKit transport for Metal/auto and window raster, title/floating preference, input/IME, video and close. The host sources are not a retained presenter. Qualify Darwin headless raster separately; do not add headless Metal or promise macOS screenshot/status services that `main` itself doesn't support. |
 | Build, distribution and developer tools — partial | `compiled_backends`, feature unions, legacy option normalization, `mix emerge.build_info` and standalone `scripts/build-info.exs` describe builds, not runtime parity. Remaining: source/precompiled target/variant behavior (including Nerves/embedded and Darwin NIF/host), checksums/fallback, the full package screenshot gate and accurate availability errors. The unpacked Linux source already renders file and inline SVGs. Internal release and docs-screenshot tasks are not renderer APIs; example rendering inherits the same gaps. [Artifact smoke](../test/raster_artifact_smoke_test.exs) |
-| Hardware and performance evidence — verify, not new APIs | Fractional display scale on hardware GL/Vulkan; forced real Vulkan acquire stall and the opt-in [synchronization gate](../scripts/check-wayland-vulkan.exs). No matched scale/fill timing or physical scanout claim. Use those gates only for the corresponding claim. |
+| Hardware and performance evidence — verify, not new APIs | An isolated seat exercised 101×75 at 1.0 → 152×113 at 1.5, including the same pointer position across installation, on shm and AMD hardware GL/Vulkan. The opt-in [Vulkan sync tests](../test/emerge_skia/wayland_vulkan_sync_test.exs) ran there. Broader fractional-scale, real acquire starvation, device migration/loss and physical scanout are not established. Use those gates only for the corresponding claim. |
 
 ## Engine and low-level clients
 

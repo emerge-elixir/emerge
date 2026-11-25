@@ -43,7 +43,7 @@ struct SharedRun {
     refs: usize,
 }
 mod strikes;
-pub(super) use strikes::{StrikeDelta, StrikeKey};
+pub(super) use strikes::{StrikeDelta, StrikeKey, Strikes};
 struct Strike {
     face: Face,
     size: f32,
@@ -175,7 +175,7 @@ impl Sizes {
 #[derive(Default)]
 pub(super) struct TextStore {
     pub sizes: Sizes,
-    pub strikes: strikes::Strikes,
+    pub strikes: std::sync::Arc<strikes::Strikes>,
     pub glyphs: Pool<Glyph>,
     strings: Pool<u8>,
     values: SlotMap<SharedKey, SharedRun>,

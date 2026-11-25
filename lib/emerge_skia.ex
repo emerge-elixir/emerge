@@ -674,8 +674,8 @@ defmodule EmergeSkia do
 
   Use the same pointer, key, text-commit or focus event shapes as `Emerge.Input`.
   For example, send `{:pointer_button, {:left, :press, [], {5, 45}}}` followed
-  by a release. The normal dispatcher resolves the target against the last drawn
-  output. Raw subscriptions do not enable or disable element listeners. In a
+  by a release. The dispatcher resolves the target against the last installed
+  output, even when a newer tree has been accepted or drawn. Raw subscriptions do not enable or disable element listeners. In a
   viewport, obtain the renderer with `Emerge.renderer/1`.
   """
   @spec send_input(renderer(), Emerge.Input.event()) :: :ok | {:error, term()}

@@ -78,7 +78,7 @@ impl Tree {
                     .ensure(l.bounds.context_peak(), l.owners, self.budget)?;
             }
             let scales = l.scale_declarations;
-            b.prepare_domains(&self.elements, l, display, scales)?;
+            b.prepare_domains(&self.elements, &mut l.text.strikes, display, scales)?;
             b.publish_domains(&mut self.elements, l);
             l.prepared_scale = display;
             Ok(())
@@ -364,7 +364,12 @@ impl Tree {
             d.groups,
             self.budget,
         )?;
-        b.prepare_domains(&self.elements, &mut self.layers, scale, d.scales)?;
+        b.prepare_domains(
+            &self.elements,
+            &mut self.layers.text.strikes,
+            scale,
+            d.scales,
+        )?;
         Ok(d)
     }
     fn commit(&mut self, b: &mut Batch, bytes: &[u8], d: Demand) {

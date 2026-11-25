@@ -1,13 +1,17 @@
-//! One bounded work signal, and no loader thread for a renderer without images.
-//! Tickets live in the tree. Filesystem and codec calls never hold its lock.
+//! One outstanding request, one result, one acknowledgement. Only the tree
+//! actor issues tickets and binds completions. The loader never borrows a tree.
 use super::*;
-use crate::raster_assets::{Loader, Request, Source};
-use std::{sync::Weak, thread::JoinHandle};
+use crate::{
+    raster_assets::{Loader, Pictures, Request, Source},
+    tree::Ticket,
+};
+use std::thread::JoinHandle;
 
 pub(super) struct Assets {
-    pictures: crate::raster_assets::Pictures,
+    pictures: Pictures,
     loader: Option<Loader>,
     worker: Option<Worker>,
+    inflight: bool,
 }
 impl Assets {
     pub fn new(loader: Loader) -> Self {
@@ -15,97 +19,95 @@ impl Assets {
             pictures: loader.pictures.clone(),
             loader: Some(loader),
             worker: None,
+            inflight: false,
         }
     }
-    pub fn request(&mut self, owner: &Arc<Owner>, wake: &Wake, tree: &mut Tree) {
-        tree.bind_ready_pictures(&self.pictures);
-        if !tree.needs_images() {
-            return;
-        }
-        if let Some(mut loader) = self.loader.take() {
-            self.worker = Worker::start(
-                Arc::downgrade(owner),
-                wake.clone(),
-                move |request, publish| {
-                    loader.fulfill(request, publish);
-                },
-            )
-            .ok();
-        }
-        if let Some(worker) = &self.worker {
-            let _ = worker.notify.try_send(());
-        } else {
-            // The declaration is accepted. Failure to start the file service
-            // is a failed resource, not a retroactive tree rejection.
-            while let Some((job, _)) = tree.next_image() {
-                tree.complete_image(&job, Source::Failed);
+    /// Return whether an accepted completion may change layout/paint.
+    pub fn drive(&mut self, tree: &mut Tree, wake: &Signal) -> Result<bool, String> {
+        let mut changed = false;
+        if self.inflight
+            && let Some(w) = &self.worker
+        {
+            match w.results.try_recv() {
+                Ok((job, source)) => {
+                    changed = tree.complete_image(&job, source);
+                    w.ack
+                        .try_send(changed)
+                        .map_err(|_| "image service stopped")?;
+                    self.inflight = false;
+                }
+                Err(crossbeam_channel::TryRecvError::Empty) => (),
+                Err(_) => return Err("image service stopped".into()),
             }
         }
-    }
-    pub fn notify_fits(&self) {
-        if let Some(w) = &self.worker {
-            let _ = w.notify.try_send(());
+        tree.bind_ready_pictures(&self.pictures);
+        if !self.inflight
+            && let Some(job) = tree.next_image()
+        {
+            if let Some(mut loader) = self.loader.take() {
+                self.worker = Worker::start(wake.clone(), move |req, publish| {
+                    loader.fulfill(req, publish);
+                })
+                .ok();
+            }
+            if let Some(w) = &self.worker {
+                w.jobs
+                    .try_send(job)
+                    .map_err(|_| "image service unavailable")?;
+                self.inflight = true;
+            } else {
+                changed |= tree.complete_image(&job.0, Source::Failed);
+                wake.notify();
+            }
         }
+        Ok(changed)
     }
     pub fn stop(self) {
-        if let Some(w) = self.worker {
-            w.stop();
+        if let Some(worker) = self.worker {
+            worker.stop();
         }
     }
 }
 struct Worker {
-    notify: Sender<()>,
+    jobs: Sender<(Ticket, Request)>,
+    results: Receiver<(Ticket, Source)>,
+    ack: Sender<bool>,
     thread: JoinHandle<()>,
 }
 impl Worker {
     fn start(
-        owner: Weak<Owner>,
-        wake: Wake,
+        wake: Signal,
         mut load: impl FnMut(Request, &mut dyn FnMut(Source) -> bool) + Send + 'static,
     ) -> std::io::Result<Self> {
-        let (notify, rx) = bounded(1);
+        let (jobs, rx) = bounded::<(Ticket, Request)>(1);
+        let (tx, results) = bounded(1);
+        let (ack, acknowledged) = bounded(1);
         let thread = std::thread::Builder::new()
             .name("emerge-image".into())
             .spawn(move || {
-                while rx.recv().is_ok() {
-                    let Some(owner) = owner.upgrade() else { break };
-                    loop {
-                        if !owner.lifecycle.running.load(Ordering::Acquire) {
-                            return;
+                while let Ok((ticket, request)) = rx.recv() {
+                    let mut ticket = Some(ticket);
+                    load(request, &mut |source| {
+                        let Some(ticket) = ticket.take() else {
+                            return false;
+                        };
+                        if tx.try_send((ticket, source)).is_err() {
+                            return false;
                         }
-                        let job = owner
-                            .live
-                            .lock()
-                            .ok()
-                            .and_then(|mut guard| guard.as_mut()?.raster.tree.next_image());
-                        let Some((ticket, request)) = job else { break };
-                        load(request, &mut |source| {
-                            let Ok(mut guard) = owner.live.lock() else {
-                                return false;
-                            };
-                            let Some(live) = guard.as_mut() else {
-                                return false;
-                            };
-                            if !owner.lifecycle.running.load(Ordering::Acquire)
-                                || !live.raster.tree.complete_image(&ticket, source)
-                            {
-                                return false;
-                            }
-                            // Partial fitted inputs cannot produce a frame. Let
-                            // this worker finish the batch before waking display.
-                            if !live.raster.tree.waiting_for_pixels() {
-                                live.request = true;
-                                wake.notify();
-                            }
-                            true
-                        });
-                    }
+                        wake.notify();
+                        acknowledged.recv().unwrap_or(false)
+                    });
                 }
             })?;
-        Ok(Self { notify, thread })
+        Ok(Self {
+            jobs,
+            results,
+            ack,
+            thread,
+        })
     }
     fn stop(self) {
-        drop(self.notify);
+        drop((self.jobs, self.results, self.ack));
         let _ = self.thread.join();
     }
 }

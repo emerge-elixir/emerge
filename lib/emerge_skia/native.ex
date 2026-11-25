@@ -122,7 +122,7 @@ defmodule EmergeSkia.Native do
   def set_window_title(_renderer, _title), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc false
-  def set_frame_rate(_renderer, _fps), do: :erlang.nif_error(:nif_not_loaded)
+  def set_frame_rate(renderer, fps), do: control(renderer, :frame_rate, fps)
 
   @doc false
   def configure(renderer, config) do
@@ -135,7 +135,11 @@ defmodule EmergeSkia.Native do
   def power_defaults(power), do: Map.put_new(power, :wake_on_touch, nil)
 
   @doc false
-  def configure_nif(_renderer, _config), do: :erlang.nif_error(:nif_not_loaded)
+  def configure_nif(renderer, %{title: title} = config)
+      when is_nil(title) or (is_binary(title) and byte_size(title) <= 4096),
+      do: control(renderer, :configure, config)
+
+  def configure_nif(_, _), do: {:error, "invalid renderer config"}
 
   @doc false
   def new_backlight_state, do: :erlang.nif_error(:nif_not_loaded)
@@ -148,7 +152,18 @@ defmodule EmergeSkia.Native do
   @doc false
   def renderer_status(_renderer), do: :erlang.nif_error(:nif_not_loaded)
   @doc false
-  def stop_timeout(_renderer, _timeout_ms), do: :erlang.nif_error(:nif_not_loaded)
+  def stop_timeout(renderer, ms) when is_integer(ms) and ms >= 0 do
+    with {:ok, :ok} <-
+           await(
+             ms,
+             "renderer cleanup is still pending (timeout)",
+             &renderer_stop_nif(renderer, ms, &1)
+           ),
+         do: :ok
+  end
+
+  @doc false
+  def renderer_stop_nif(_renderer, _ms, _id), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Private window NIF binding. Application startup uses
@@ -237,28 +252,155 @@ defmodule EmergeSkia.Native do
             }
           }
         }) :: reference() | {:ok, reference()} | {:error, term()}
-  def start_opts(_opts), do: :erlang.nif_error(:nif_not_loaded)
+  def start_opts(opts) do
+    observer = self()
+
+    with true <- bounded_start?(opts) || {:error, "invalid renderer startup fields"},
+         {:ok, renderer} <-
+           await(6_000, "renderer startup timed out", &renderer_start_nif(opts, observer, &1)),
+         do: renderer
+  end
+
+  defp bounded_start?(%{
+         backend: backend,
+         title: title,
+         rendering_api: %{kind: api, raster_present: present},
+         headless: %{mode: mode, frame_message: msg, pixel_format: format}
+       }),
+       do:
+         bounded_binary?(title, 4096) and bounded_binary?(msg, 255) and
+           Enum.all?([backend, api, present, mode, format], &bounded_binary?(&1, 32))
+
+  defp bounded_start?(_), do: false
+  defp bounded_binary?(b, n), do: is_binary(b) and byte_size(b) <= n
+  defp bounded_list?([], _, _), do: true
+
+  defp bounded_list?([b | tail], n, len) when n > 0,
+    do: bounded_binary?(b, len) and bounded_list?(tail, n - 1, len)
+
+  defp bounded_list?(_, _, _), do: false
+
+  defp renderer_start_nif(_opts, _observer, _id), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Stop the renderer and close the window.
   """
   @spec stop(reference()) :: {:ok, :ok} | {:error, String.t()}
-  def stop(_renderer), do: :erlang.nif_error(:nif_not_loaded)
+  def stop(renderer) do
+    with :ok <- stop_timeout(renderer, 5_000), do: {:ok, :ok}
+  end
 
   @doc """
-  Upload a full EMRG tree, run layout, and render immediately.
+  Accept a full EMRG declaration for layout and rendering.
   Window dimensions come from the initial start config and resize events.
   """
-  @spec renderer_upload(reference(), binary()) :: :ok
-  def renderer_upload(_renderer, _data), do: :erlang.nif_error(:nif_not_loaded)
+  @spec renderer_upload(reference(), binary()) :: :ok | {:error, term()}
+  def renderer_upload(renderer, data), do: renderer_patch(renderer, data)
 
   @doc """
-  Submit EMRG patches for the next draw. The viewport can accompany them with
-  changed callback addresses; these do not change the EMRG format.
+  Accept an EMRG patch, without waiting for layout or presentation. A busy
+  renderer has not accepted or queued the patch.
   Window dimensions come from the initial start config and resize events.
   """
-  @spec renderer_patch(reference(), binary() | {binary(), map()}) :: :ok
-  def renderer_patch(_renderer, _data), do: :erlang.nif_error(:nif_not_loaded)
+  @spec renderer_patch(reference(), binary()) :: :ok | {:error, term()}
+  def renderer_patch(renderer, bytes) when is_binary(bytes) do
+    case submit_revision(renderer, nil, bytes, false, nil) do
+      {:ok, _} -> :ok
+      error -> error
+    end
+  end
+
+  @doc false
+  def submit_revision(renderer, base, <<>>, false, _waiter),
+    do: renderer_revision_nif(renderer, base)
+
+  def submit_revision(renderer, base, bytes, routes?, waiter) when is_binary(bytes) do
+    with {:ok, ticket, id} <-
+           renderer_begin_nif(renderer, base, byte_size(bytes), routes?, waiter) do
+      try do
+        with :ok <- feed(ticket, id, bytes, 0), :ok <- renderer_prove_nif(ticket) do
+          receive do
+            {:emerge_edit, ^id, :ready} -> apply_edit(ticket, id)
+            {:emerge_edit, ^id, result} -> result
+          end
+        else
+          {:finished, result} -> result
+          error -> discard_edit(ticket, id, error)
+        end
+      after
+        renderer_abort_nif(ticket)
+      end
+    end
+  end
+
+  # Split in BEAM before the private NIF inspects anything. A bit-offset
+  # sub-binary may need aligning, but at most one small slice is copied.
+  defp feed(_ticket, _id, <<>>, _offset), do: :ok
+
+  defp feed(ticket, id, bytes, offset) do
+    n = min(byte_size(bytes), 4096)
+    <<part::binary-size(^n), rest::binary>> = bytes
+
+    case renderer_chunk_nif(ticket, offset, part) do
+      :ok -> feed(ticket, id, rest, offset + n)
+      :held -> with :ok <- resume_edit(id), do: feed(ticket, id, rest, offset + n)
+      error -> error
+    end
+  end
+
+  # Only the opt-in stage probe can return :held. It never parks a scheduler.
+  defp resume_edit(id) do
+    receive do
+      {:emerge_resume, ^id} -> :ok
+      {:emerge_edit, ^id, result} -> {:finished, result}
+    end
+  end
+
+  defp apply_edit(ticket, id) do
+    case renderer_apply_nif(ticket) do
+      :more ->
+        apply_edit(ticket, id)
+
+      :held ->
+        case resume_edit(id) do
+          :ok -> apply_edit(ticket, id)
+          {:finished, result} -> result
+        end
+
+      :ok ->
+        receive do
+          {:emerge_edit, ^id, result} -> result
+        end
+
+      error ->
+        discard_edit(ticket, id, error)
+    end
+  end
+
+  defp discard_edit(ticket, id, error) do
+    renderer_abort_nif(ticket)
+
+    receive do
+      {:emerge_edit, ^id, _result} -> error
+    end
+  end
+
+  @doc false
+  def renderer_stage_nif(_renderer, _stage, _hold), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  def renderer_storage_nif(_renderer), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  def renderer_revision_nif(_renderer, _base), do: :erlang.nif_error(:nif_not_loaded)
+
+  defp renderer_begin_nif(_renderer, _base, _size, _routes, _waiter),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  defp renderer_chunk_nif(_ticket, _offset, _part), do: :erlang.nif_error(:nif_not_loaded)
+  defp renderer_prove_nif(_ticket), do: :erlang.nif_error(:nif_not_loaded)
+  defp renderer_apply_nif(_ticket), do: :erlang.nif_error(:nif_not_loaded)
+  defp renderer_abort_nif(_ticket), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Measure text dimensions.
@@ -291,7 +433,21 @@ defmodule EmergeSkia.Native do
   Configure native asset loading policy and source roots.
   """
   @spec configure_assets_nif(reference(), map()) :: :ok
-  def configure_assets_nif(_renderer, _opts), do: :erlang.nif_error(:nif_not_loaded)
+  def configure_assets_nif(
+        renderer,
+        %{sources: roots, allowlist: paths, extensions: extensions} = opts
+      ) do
+    if bounded_list?(roots, 1, 4096) and bounded_list?(paths, 128, 4096) and
+         bounded_list?(extensions, 64, 32) do
+      with {:ok, :ok} <-
+             await(5_000, "asset setup timed out", &renderer_assets_nif(renderer, opts, &1)),
+           do: :ok
+    else
+      {:error, "asset configuration exceeds storage limit"}
+    end
+  end
+
+  defp renderer_assets_nif(_renderer, _opts, _id), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Check if the renderer is still running.
@@ -387,7 +543,7 @@ defmodule EmergeSkia.Native do
   - 0xFF: All events
   """
   @spec set_input_mask(reference(), non_neg_integer()) :: :ok
-  def set_input_mask(_renderer, _mask), do: :erlang.nif_error(:nif_not_loaded)
+  def set_input_mask(renderer, mask), do: control(renderer, :mask, mask)
 
   @doc """
   Set the target process to receive input events.
@@ -396,10 +552,37 @@ defmodule EmergeSkia.Native do
   `{:emerge_skia_event, event}` messages.
   """
   @spec set_input_target(reference(), pid() | nil) :: :ok
-  def set_input_target(_renderer, _pid), do: :erlang.nif_error(:nif_not_loaded)
+  def set_input_target(renderer, pid), do: control(renderer, :input_target, pid)
 
   @doc false
-  def send_input(_renderer, _raw_event), do: :erlang.nif_error(:nif_not_loaded)
+  def send_input(renderer, event) do
+    if bounded_input?(event),
+      do: control(renderer, :input, event),
+      else: {:error, "invalid or unsupported raw input"}
+  end
+
+  # Preflight the envelope before copying it to the disposable reply process.
+  # Native still validates button/key names, actions and finite coordinates.
+  defp bounded_input?({:pointer_button, {btn, act, mods, xy}}),
+    do: is_atom(btn) and is_atom(act) and point?(xy) and modifiers?(mods, 4)
+
+  defp bounded_input?({:key, {key, act, mods}}),
+    do: is_atom(key) and is_atom(act) and modifiers?(mods, 4)
+
+  defp bounded_input?({:text_commit, {text, mods}}),
+    do: bounded_binary?(text, 65_536) and modifiers?(mods, 4)
+
+  defp bounded_input?({:pointer_move, xy}), do: point?(xy)
+  defp bounded_input?({:pointer_scroll, {delta, xy}}), do: point?(delta) and point?(xy)
+  defp bounded_input?({tag, b}) when tag in [:pointer_enter, :focus], do: is_boolean(b)
+  defp bounded_input?(_), do: false
+
+  defp point?({x, y}), do: coord?(x) and coord?(y)
+  defp point?(_), do: false
+  defp coord?(n), do: is_float(n) or (is_integer(n) and n >= -3.403e38 and n <= 3.403e38)
+  defp modifiers?([], _), do: true
+  defp modifiers?([m | rest], n) when n > 0 and is_atom(m), do: modifiers?(rest, n - 1)
+  defp modifiers?(_, _), do: false
 
   @doc """
   Set the target process to receive native renderer log messages.
@@ -408,7 +591,7 @@ defmodule EmergeSkia.Native do
   `{:emerge_skia_log, level, source, message}` messages.
   """
   @spec set_log_target(reference(), pid() | nil) :: :ok
-  def set_log_target(_renderer, _pid), do: :erlang.nif_error(:nif_not_loaded)
+  def set_log_target(renderer, pid), do: control(renderer, :log_target, pid)
 
   @type stats_command ::
           :peek | :take | :reset | {:configure, %{required(:enabled) => boolean()}}
@@ -609,7 +792,20 @@ defmodule EmergeSkia.Native do
 
   @doc false
   @spec stats(reference(), stats_command()) :: {:ok, stats_snapshot()} | {:error, String.t()}
-  def stats(_resource, _command), do: :erlang.nif_error(:nif_not_loaded)
+  def stats(renderer, command), do: control(renderer, :stats, command)
+
+  defp control(renderer, op, payload) do
+    observer = self()
+
+    await(
+      5000,
+      "renderer control timed out",
+      &renderer_control_nif(renderer, op, payload, observer, &1)
+    )
+  end
+
+  defp renderer_control_nif(_renderer, _op, _payload, _observer, _id),
+    do: :erlang.nif_error(:nif_not_loaded)
 
   @type vulkan_drm_node_info :: %{
           required(:path) => String.t(),
@@ -646,11 +842,76 @@ defmodule EmergeSkia.Native do
 
   @doc false
   @spec renderer_capture_pixels(reference(), map()) :: {:ok, binary()} | {:error, String.t()}
-  def renderer_capture_pixels(_renderer, _opts), do: :erlang.nif_error(:nif_not_loaded)
+  def renderer_capture_pixels(renderer, opts),
+    do: capture(renderer, opts, false)
 
   @doc false
   @spec renderer_capture_png(reference(), map()) :: {:ok, binary()} | {:error, String.t()}
-  def renderer_capture_png(_renderer, _opts), do: :erlang.nif_error(:nif_not_loaded)
+  def renderer_capture_png(renderer, opts),
+    do: capture(renderer, opts, true)
+
+  defp capture(renderer, opts, png?) do
+    if Enum.all?(
+         [opts.pixel_format, opts.background, opts.png_compression],
+         &bounded_binary?(&1, 32)
+       ),
+       do:
+         await(
+           opts.timeout_ms,
+           "screenshot timed out",
+           &renderer_capture_nif(renderer, opts, png?, &1)
+         ),
+       else: {:error, "unsupported screenshot options"}
+  end
+
+  defp renderer_capture_nif(_renderer, _opts, _png, _id), do: :erlang.nif_error(:nif_not_loaded)
+
+  # A disposable return address keeps late binaries and session handles out of
+  # the caller's mailbox. There is no waiting (even on a dirty scheduler) in
+  # the native entry. The request itself is admitted before starting its timer.
+  defp await(ms, timeout, request) do
+    caller = self()
+    reply = :erlang.alias([:reply])
+
+    {pid, ref} =
+      spawn_monitor(fn ->
+        parent = Process.monitor(caller)
+        id = :erlang.unique_integer([:positive])
+
+        result =
+          case request.(id) do
+            :complete ->
+              {:ok, :ok}
+
+            :ok ->
+              receive do
+                {:emerge_skia_reply, ^id, result} -> result
+                {:DOWN, ^parent, :process, ^caller, _} -> exit(:normal)
+              after
+                ms -> {:error, timeout}
+              end
+
+            error ->
+              error
+          end
+
+        send(reply, {reply, result})
+      end)
+
+    try do
+      receive do
+        {^reply, result} -> result
+        {:DOWN, ^ref, :process, ^pid, reason} -> {:error, reason}
+      after
+        ms + 1_000 ->
+          Process.exit(pid, :kill)
+          {:error, timeout}
+      end
+    after
+      :erlang.unalias(reply)
+      Process.demonitor(ref, [:flush])
+    end
+  end
 
   # ===========================================================================
   # Tree Functions (Emerge Integration)

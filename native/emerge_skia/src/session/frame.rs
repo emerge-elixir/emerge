@@ -1,6 +1,6 @@
 //! The binary headless output is a VideoInterop frame, not a signal that a
 //! draw was scheduled. Message tags other than the default stay binaries.
-use rustler::{Atom, Binary, Encoder, Env, NewBinary, Term};
+use rustler::{Atom, Binary, Encoder, Env, OwnedBinary, Term};
 rustler::atoms! { emerge_skia_frame, rgba8888, bgra8888, rgb888, bt709, iec61966_2_1, rgb, full, center, premultiplied, opaque, progressive, implicit }
 #[derive(rustler::NifStruct)]
 #[module = "VideoInterop.Rect"]
@@ -105,17 +105,21 @@ impl Channels {
             }
         }
     }
+    pub fn prepare(self, rgba: &[u8]) -> Result<OwnedBinary, String> {
+        let mut data = OwnedBinary::new(rgba.len() / 4 * self.bpp())
+            .ok_or("could not allocate headless frame")?;
+        self.convert(rgba, data.as_mut_slice());
+        Ok(data)
+    }
     pub fn message<'a>(
         self,
         env: Env<'a>,
         tag: &str,
         width: u32,
         height: u32,
-        rgba: &[u8],
+        data: OwnedBinary,
     ) -> Term<'a> {
         let stride = width as usize * self.bpp();
-        let mut data = NewBinary::new(env, stride * height as usize);
-        self.convert(rgba, data.as_mut_slice());
         let frame = Frame {
             coded_width: width,
             coded_height: height,
@@ -128,7 +132,7 @@ impl Channels {
             acquire_sync: implicit(),
             lease: None,
             storage: Storage {
-                data: data.into(),
+                data: data.release(env),
                 planes: vec![Plane { offset: 0, stride }],
             },
             format: Format {

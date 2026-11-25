@@ -14,6 +14,8 @@ crate-type = ["cdylib", "rlib"]
 [features]
 default = ["wayland", "opengl"]
 bench-diagnostics = []
+# Deterministic live-stage qualification; never enabled in artifact profiles.
+stage-probes = []
 # Embedded builds provide fonts as registered assets and do not ship
 # desktop fontconfig/freetype development libraries.
 embedded-freetype = ["skia-safe/embed-freetype"]

@@ -2,10 +2,11 @@
 //! The prepass has no dependency on mutable session state. Non-media edits
 //! borrow the original buffer; only definitions require copying or hashing.
 use super::*;
-use crate::raster_assets::{Charge, Digest, InputBudget, Media, digest};
+use crate::raster_assets::{Digest, InputBudget, Media, digest};
 use std::{borrow::Cow, collections::HashSet, sync::Arc};
+use storage::Grant as Charge;
 
-type Definitions = HashMap<Digest, Arc<Media>>;
+pub(super) type Definitions = HashMap<Digest, Arc<Media>>;
 pub(crate) struct Staged<'a> {
     pub(super) bytes: Cow<'a, [u8]>,
     definitions: Definitions,
@@ -123,17 +124,32 @@ impl<'a> Staged<'a> {
 pub(in crate::tree) struct Declarations {
     live: HashMap<Digest, (usize, Arc<Media>)>,
     bytes: usize,
+    extent: usize,
 }
 #[derive(Default)]
 pub(super) struct Changes {
     counts: HashMap<Digest, isize>,
     bytes: usize,
+    pub(super) extent: usize,
 }
 fn key<'a>(attrs: &Attrs, raw: &'a [u8]) -> Option<&'a Digest> {
     attrs.image_src.get(raw).strip_prefix(&[4])?.try_into().ok()
 }
 impl Staged<'_> {
     pub(super) fn changes(&self, e: &Elements, b: &batch::Batch) -> Result<Changes> {
+        Changes::for_batch(e, b, |r| &self.bytes[r.clone()], &self.definitions)
+    }
+    pub(super) fn commit(&self, changes: Changes, e: &mut Elements) {
+        changes.install(&self.definitions, e);
+    }
+}
+impl Changes {
+    pub(super) fn for_batch<'a>(
+        e: &Elements,
+        b: &batch::Batch,
+        raw: impl Fn(&Range<usize>) -> &'a [u8],
+        defs: &Definitions,
+    ) -> Result<Self> {
         let mut counts = HashMap::new();
         for s in b
             .entries
@@ -144,7 +160,7 @@ impl Staged<'_> {
             let old = k.and_then(|k| key(&e.attrs[k], e.raw(k)));
             let new = if s.attached {
                 match &s.attrs {
-                    Some((a, r)) => key(a, &self.bytes[r.clone()]),
+                    Some((a, r)) => key(a, raw(r)),
                     None => old,
                 }
             } else {
@@ -159,38 +175,42 @@ impl Staged<'_> {
                 }
             }
         }
-        let mut bytes = e.media.bytes;
+        let (mut bytes, mut extent) = (e.media.bytes, e.media.extent);
         for (id, &delta) in &counts {
             if let Some((n, data)) = e.media.live.get(id) {
                 if n.checked_add_signed(delta).ok_or("invalid source count")? == 0 {
                     bytes -= data.bytes().len() + 4;
+                    extent -= data.extent();
                 }
             } else {
-                let data = self
-                    .definitions
-                    .get(id)
-                    .ok_or("undefined inline image reference")?;
+                let data = defs.get(id).ok_or("undefined inline image reference")?;
+                extent = extent
+                    .checked_add(data.extent())
+                    .ok_or("inline source limit")?;
                 bytes = bytes
                     .checked_add(data.bytes().len() + 4)
                     .ok_or("inline source limit")?;
             }
         }
-        Ok(Changes { counts, bytes })
+        Ok(Changes {
+            counts,
+            bytes,
+            extent,
+        })
     }
-    pub(super) fn commit(&self, changes: Changes, e: &mut Elements) {
-        for (id, delta) in changes.counts {
+    pub(super) fn install(self, defs: &Definitions, e: &mut Elements) {
+        for (id, delta) in self.counts {
             if let Some((n, _)) = e.media.live.get_mut(&id) {
                 *n = n.checked_add_signed(delta).unwrap();
                 if *n == 0 {
                     e.media.live.remove(&id);
                 }
             } else {
-                e.media
-                    .live
-                    .insert(id, (delta as usize, self.definitions[&id].clone()));
+                e.media.live.insert(id, (delta as usize, defs[&id].clone()));
             }
         }
-        e.media.bytes = changes.bytes;
+        e.media.bytes = self.bytes;
+        e.media.extent = self.extent;
     }
 }
 impl Changes {
@@ -199,6 +219,9 @@ impl Changes {
     }
 }
 impl Declarations {
+    pub(super) fn find(&self, id: &Digest) -> Option<&Arc<Media>> {
+        self.live.get(id).map(|d| &d.1)
+    }
     pub(in crate::tree) fn get(&self, id: &Digest) -> &Arc<Media> {
         &self.live[id].1
     }

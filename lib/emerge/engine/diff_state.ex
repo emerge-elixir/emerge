@@ -7,6 +7,8 @@ defmodule Emerge.Engine.DiffState do
   alias Emerge.Engine.Reconcile.Index
 
   @type t :: %__MODULE__{
+          accepted: {non_neg_integer(), non_neg_integer()} | nil,
+          route_epoch: non_neg_integer(),
           tree: Emerge.Engine.Element.t() | nil,
           vdom: VNode.t() | nil,
           index: %Index{},
@@ -14,7 +16,13 @@ defmodule Emerge.Engine.DiffState do
           next_id: non_neg_integer()
         }
 
-  defstruct tree: nil, vdom: nil, index: %Index{}, event_registry: %{}, next_id: 1
+  defstruct accepted: nil,
+            route_epoch: 0,
+            tree: nil,
+            vdom: nil,
+            index: %Index{},
+            event_registry: %{},
+            next_id: 1
 
   @doc """
   Initialize diff state with an optional tree.

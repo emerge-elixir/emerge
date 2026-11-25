@@ -2,12 +2,12 @@
 const STATS_SCHEMA_VERSION: u64 = 25;
 
 #[derive(Clone, Copy, Debug, Default, rustler::NifMap)]
-struct StatsConfigureNif {
+pub(super) struct StatsConfigureNif {
     enabled: bool,
 }
 
 #[derive(Clone, Copy, Debug, rustler::NifTaggedEnum)]
-enum StatsCommandNif {
+pub(super) enum StatsCommandNif {
     Peek,
     Take,
     Reset,
@@ -15,7 +15,7 @@ enum StatsCommandNif {
 }
 
 #[derive(Clone, Debug, Default, rustler::NifMap)]
-struct StatsSnapshotNif {
+pub(super) struct StatsSnapshotNif {
     version: u64,
     kind: String,
     enabled: bool,

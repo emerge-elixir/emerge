@@ -1,6 +1,9 @@
 use super::{layers::Layers, text::Run, *};
+mod buffers;
 mod clips;
 pub(super) mod fits;
+use buffers::Buffers;
+use std::sync::Arc;
 mod image;
 mod opacity;
 fn sk(r: Rect) -> skia_safe::Rect {
@@ -248,7 +251,7 @@ enum Command {
     },
 }
 #[derive(Default, PartialEq)]
-struct Drawing {
+pub(crate) struct Drawing {
     materials: Materials,
     commands: Vec<(Mask, Command)>,
     clips: Clips,
@@ -257,26 +260,6 @@ struct Drawing {
     positions: Vec<Point>,
 }
 impl Drawing {
-    fn reserve(
-        &mut self,
-        owners: usize,
-        glyphs: usize,
-        words: usize,
-        extra_commands: usize,
-        b: Budget,
-    ) -> Result<(), String> {
-        let commands = 2 * owners + 5 * words + extra_commands;
-        if commands > self.commands.capacity() {
-            pool::reserve(&mut self.commands, b.capacity(commands))?
-        }
-        if glyphs > self.ids.capacity() {
-            pool::reserve(&mut self.ids, b.capacity(glyphs))?
-        }
-        if glyphs > self.positions.capacity() {
-            pool::reserve(&mut self.positions, b.capacity(glyphs))?
-        }
-        Ok(())
-    }
     fn push(&mut self, cmd: Command) {
         self.commands.push((self.mask, cmd));
     }
@@ -305,8 +288,8 @@ impl Drawing {
         self.positions.clear()
     }
 }
-// Candidate and last successful execution inputs. Neither is addressable by a
-// client. Pixel comparison never publishes; only the successful draw does.
+// Mutable builder and last sealed inputs, not the live display installation.
+// Drawing and hits can change independently; only the dispatcher installs.
 #[derive(Default)]
 pub(super) struct Output {
     pub(super) fits: fits::Fits,
@@ -316,9 +299,8 @@ pub(super) struct Output {
     pub groups: usize,
     index: MaterialIndex,
     stack: Vec<(Key, Visit, Mask)>,
-    hit_clips: [Clips; 2],
-    draw: [Drawing; 2],
-    hits: [Vec<Hit>; 2],
+    draw: Buffers<Drawing, 6>,
+    hits: Buffers<Hits, 2>,
     installed: [Option<(Key, u64)>; 2],
     pending: [Option<(Key, u64)>; 2],
     dirty: [bool; 2],
@@ -340,14 +322,9 @@ impl Output {
         b: Budget,
     ) -> Result<(), String> {
         if count != 0 {
-            for c in &mut self.hit_clips {
-                c.reserve(2 * count + words, b)?;
-            }
+            self.hits.reserve([0, 2 * count + words], b)?;
             self.index.reserve(keys)?;
-            for d in &mut self.draw {
-                d.materials.reserve(count, bytes, b)?;
-                d.clips.reserve(count, b)?;
-            }
+            self.draw.reserve([0, 0, 0, count, count, bytes], b)?;
         }
         Ok(())
     }
@@ -364,15 +341,18 @@ impl Output {
         if stack > self.stack.capacity() {
             pool::reserve(&mut self.stack, b.capacity(stack))?
         }
-        for v in &mut self.draw {
-            v.reserve(owners, glyphs, words, extra_commands, b)?
-        }
-        for h in &mut self.hits {
-            if owners + 2 * words > h.capacity() {
-                pool::reserve(h, b.capacity(owners + 2 * words))?
-            }
-        }
-        Ok(())
+        self.draw.reserve(
+            [
+                2 * owners + 5 * words + extra_commands,
+                glyphs,
+                glyphs,
+                0,
+                0,
+                0,
+            ],
+            b,
+        )?;
+        self.hits.reserve([owners + 2 * words, 0], b)
     }
     // Only an *unsealed* stream can have outstanding bitmap jobs. Accepted
     // edits may supersede those jobs but must never alter a sealed drawing.
@@ -380,7 +360,7 @@ impl Output {
         if self.fits.unbound() {
             self.fits.reset();
             self.pending[0] = self.installed[0];
-            self.draw[1].clear();
+            self.draw.build.clear();
             self.dirty[0] = false;
         }
     }
@@ -400,10 +380,10 @@ impl Output {
             }
             if side == 0 {
                 self.index.begin();
-                self.draw[1].clear()
+                self.draw.build.clear()
             } else {
-                self.hit_clips[1].clear();
-                self.hits[1].clear()
+                self.hits.build.clips.clear();
+                self.hits.build.items.clear()
             }
             self.stack.extend(root.map(|k| {
                 (
@@ -422,7 +402,7 @@ impl Output {
                     }
                     Visit::Border => {
                         let ctx = layers.paint[k];
-                        let draw = &mut self.draw[1];
+                        let draw = &mut self.draw.build;
                         draw.mask = mask;
                         let material = self.index.get(draw, e, k);
                         draw.push(Command::Box {
@@ -434,7 +414,7 @@ impl Output {
                         continue;
                     }
                     Visit::Opacity(start) => {
-                        self.draw[1].end_group(start, layers.viewport);
+                        self.draw.build.end_group(start, layers.viewport);
                         continue;
                     }
                     Visit::Node { rounded_parent } => rounded_parent,
@@ -446,7 +426,7 @@ impl Output {
                 let ctx = layers.paint[k];
                 let decor = e.attrs[k].decor;
                 if side == 0 {
-                    let draw = &mut self.draw[1];
+                    let draw = &mut self.draw.build;
                     draw.mask = mask;
                     if let Some(alpha) = p.opacity {
                         if alpha == 0 {
@@ -510,15 +490,18 @@ impl Output {
                         );
                     }
                 } else if let Some(mut hit) = p.hit {
-                    hit.mask = self.hit_clips[1]
+                    hit.mask = self
+                        .hits
+                        .build
+                        .clips
                         .add(mask, Rounded::new(ctx.frame, decor.radii(ctx.scale)));
-                    self.hits[1].push(hit)
+                    self.hits.build.items.push(hit)
                 }
                 let inner = decor.rounded_inner(ctx.frame, ctx.scale);
                 let mask = if side == 0 {
-                    self.draw[1].clips.add(mask, inner)
+                    self.draw.build.clips.add(mask, inner)
                 } else {
-                    self.hit_clips[1].add(mask, inner)
+                    self.hits.build.clips.add(mask, inner)
                 };
                 if side == 0
                     && e.slots[k].shape == Shape::Image
@@ -528,11 +511,11 @@ impl Output {
                         ctx,
                         u8::from(rounded_parent) + u8::from(inner.is_some()),
                         (e.attrs[k].svg_gradient.len != 0)
-                            .then(|| self.index.get(&mut self.draw[1], e, k)),
+                            .then(|| self.index.get(&mut self.draw.build, e, k)),
                         &mut self.fits,
                     )
                 {
-                    let draw = &mut self.draw[1];
+                    let draw = &mut self.draw.build;
                     draw.mask = mask;
                     draw.push(Command::Image(sample));
                 }
@@ -563,7 +546,7 @@ impl Output {
                 self.fits.finish_targets();
             }
         }
-        self.fits.bind(&mut self.draw[1]);
+        self.fits.bind(&mut self.draw.build);
     }
     fn inline(&mut self, e: &Elements, k: Key, l: &Layers, side: usize, mask: Mask) {
         let ctx = l.paint[k];
@@ -581,7 +564,7 @@ impl Output {
             rect.y += ctx.frame.y;
             if side == 1 {
                 if let Some(area) = rect.intersection(clip) {
-                    let mask = self.hit_clips[1].add(
+                    let mask = self.hits.build.clips.add(
                         mask,
                         Rounded::new(rect, e.attrs[owner].decor.radii(l.paint[owner].scale)),
                     );
@@ -590,7 +573,7 @@ impl Output {
                         .flatten()
                         .filter(|&c| e.attrs[c].click)
                     {
-                        self.hits[1].push(Hit {
+                        self.hits.build.items.push(Hit {
                             mask,
                             key: Attachment(target, e.slots[target].attachment),
                             id: e.slots[target].id,
@@ -607,7 +590,7 @@ impl Output {
                 }
                 continue;
             }
-            let draw = &mut self.draw[1];
+            let draw = &mut self.draw.build;
             draw.mask = mask;
             let alpha = e.attrs[owner].opacity;
             if alpha == Some(0) {
@@ -682,18 +665,18 @@ impl Output {
         }
     }
     fn drawing(&self) -> &Drawing {
-        &self.draw[usize::from(self.dirty[0])]
+        if self.dirty[0] {
+            &self.draw.build
+        } else {
+            self.draw.current()
+        }
     }
     fn install(&mut self) {
         if self.dirty[0] {
-            self.draw.swap(0, 1);
-            self.draw[1].clear();
+            self.draw.publish();
         }
         if self.dirty[1] {
-            self.hit_clips.swap(0, 1);
-            self.hit_clips[1].clear();
-            self.hits.swap(0, 1);
-            self.hits[1].clear();
+            self.hits.publish();
         }
         self.installed = self.pending;
         self.dirty = [false; 2];
@@ -708,21 +691,40 @@ pub(crate) struct Raster {
     pub(super) draws: usize,
 }
 impl Raster {
+    #[cfg(test)]
     pub(crate) fn with_tree(tree: Tree) -> Self {
         Self {
             tree,
             ..Default::default()
         }
     }
+    #[cfg(test)]
     pub(crate) fn has_target(&self, key: Attachment) -> bool {
-        self.tree.output.hits[0].iter().any(|h| h.key == key)
+        self.tree.output.hits.current().has_target(key)
     }
+    #[cfg(test)]
     pub(crate) fn target_at(&self, x: f32, y: f32) -> Option<(Attachment, u64, f64, f64)> {
-        let v = self.viewport;
+        self.tree
+            .output
+            .hits
+            .current()
+            .target_at(self.viewport, x, y)
+    }
+}
+#[derive(Default)]
+pub(crate) struct Hits {
+    clips: Clips,
+    items: Vec<Hit>,
+}
+impl Hits {
+    pub(crate) fn has_target(&self, key: Attachment) -> bool {
+        self.items.iter().any(|h| h.key == key)
+    }
+    pub(crate) fn target_at(&self, v: Rect, x: f32, y: f32) -> Option<(Attachment, u64, f64, f64)> {
         if !(x >= 0. && x < v.width && y >= 0. && y < v.height) {
             return None;
         }
-        self.tree.output.hits[0]
+        self.items
             .iter()
             .rev()
             .find(|h| {
@@ -731,7 +733,7 @@ impl Raster {
                     && x <= r.x + r.width
                     && y >= r.y
                     && y <= r.y + r.height
-                    && self.tree.output.hit_clips[0].contains(h.mask, x, y)
+                    && self.clips.contains(h.mask, x, y)
             })
             .map(|h| {
                 (
@@ -742,6 +744,71 @@ impl Raster {
                 )
             })
     }
+}
+
+/// No occurrence table, pool span, writable pixel target or mutable device state escapes.
+#[derive(Clone, Default)]
+pub(crate) struct Scene {
+    _workspace: Option<Arc<storage::Grant>>,
+    pub viewport: Rect,
+    pub drawing: Arc<Drawing>,
+    pub hits: Arc<Hits>,
+}
+impl Scene {
+    pub fn rasterize(&self) -> Result<Vec<u8>, String> {
+        rasterize(self.viewport, &self.drawing)
+    }
+    pub fn same_drawing(&self, other: &Self) -> bool {
+        self.viewport == other.viewport
+            && (Arc::ptr_eq(&self.drawing, &other.drawing) || self.drawing == other.drawing)
+    }
+}
+impl Tree {
+    pub(crate) fn for_session(percent: u16) -> Self {
+        let mut tree = Self::with_headroom(percent);
+        tree.output.draw = Buffers::new(5);
+        tree.output.hits = Buffers::new(5);
+        tree
+    }
+    pub(crate) fn reclaim_frames(&mut self) {
+        self.output.draw.reclaim();
+        self.output.hits.reclaim();
+    }
+    /// Layout may advance with every reader pinned. Don't pack a side that
+    /// cannot be sealed, and don't require a spare for an unchanged side.
+    pub(crate) fn collect_if_available(&mut self) -> bool {
+        let o = &mut self.output;
+        let stamp = |side: usize| {
+            self.root
+                .map(|k| (k, self.layers.parts[k].ports[side].revision))
+        };
+        if (stamp(0) != o.installed[0] && !o.draw.available())
+            || (stamp(1) != o.installed[1] && !o.hits.available())
+        {
+            o.cancel_fits();
+            return false;
+        }
+        o.collect(&self.elements, self.root, &self.layers);
+        true
+    }
+    pub(crate) fn seal(&mut self) -> Option<Scene> {
+        let o = &mut self.output;
+        if o.fits.waiting()
+            || (o.dirty[0] && !o.draw.available())
+            || (o.dirty[1] && !o.hits.available())
+        {
+            return None;
+        }
+        o.install();
+        Some(Scene {
+            _workspace: self.workspace.clone(),
+            viewport: self.layers.viewport,
+            drawing: o.draw.current().clone(),
+            hits: o.hits.current().clone(),
+        })
+    }
+}
+impl Raster {
     #[cfg(test)]
     pub(super) fn hit_at(&self, x: f32, y: f32) -> Option<(u64, f64, f64)> {
         self.target_at(x, y).map(|(_, id, x, y)| (id, x, y))
@@ -750,6 +817,7 @@ impl Raster {
     pub(super) fn replay_drawing(&self) -> Vec<u8> {
         rasterize(self.tree.layers.viewport, self.tree.output.drawing()).unwrap()
     }
+    #[cfg(test)]
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
     }
@@ -765,7 +833,8 @@ impl Raster {
     pub(crate) fn settle(&mut self, w: f32, h: f32, scale: f32) -> Result<bool, String> {
         self.tree.refresh(w, h, scale)?;
         let o = &self.tree.output;
-        Ok(self.viewport != self.tree.layers.viewport || (o.dirty[0] && o.draw[0] != o.draw[1]))
+        Ok(self.viewport != self.tree.layers.viewport
+            || (o.dirty[0] && **o.draw.current() != o.draw.build))
     }
     pub(crate) fn install(&mut self) {
         self.viewport = self.tree.layers.viewport;

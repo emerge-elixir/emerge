@@ -149,9 +149,9 @@ defmodule Emerge.Runtime.Viewport do
              config_applied: nil,
              config_accepted: nil,
              diff_state: nil,
-             drawn_routes: nil,
-             pending_routes: nil,
-             submitting_routes: nil,
+             route_epochs: %{},
+             pending_edit: nil,
+             waiting_credit?: false,
              renderer_generation: nil,
              retiring_renderer_generation: generation,
              renderer_relay: nil,
@@ -441,7 +441,7 @@ defmodule Emerge.Runtime.Viewport do
   def handle_flush(state) when is_map(state) do
     state = update_runtime(state, &%{&1 | flush_scheduled?: false})
 
-    if runtime!(state).dirty? do
+    if runtime!(state).dirty? && !runtime!(state).pending_edit && !runtime!(state).waiting_credit? do
       {:noreply, render_frame(state, :rerender)}
     else
       {:noreply, state}
@@ -503,7 +503,7 @@ defmodule Emerge.Runtime.Viewport do
     runtime = %{runtime!(state) | dirty?: true}
     state = put_runtime(state, runtime)
 
-    if runtime.flush_scheduled? do
+    if runtime.flush_scheduled? || runtime.pending_edit || runtime.waiting_credit? do
       state
     else
       GenServer.cast(self(), {:emerge_viewport, :flush})
@@ -564,37 +564,47 @@ defmodule Emerge.Runtime.Viewport do
 
   # These messages and element input arrive in order from this session's relay.
   # Edits prepare the next addresses; only a successful draw installs them.
-  defp handle_renderer_message({:emerge_skia_route_changes, edits}, state) do
-    {:noreply, update_runtime(state, &State.routes(&1, {:edit, edits}))}
+  defp handle_renderer_message({:emerge_skia_retire_routes, _session, epoch}, state) do
+    {:noreply, update_runtime(state, &State.retire(&1, epoch))}
   end
 
-  # A later edit can arrive while the display worker is in swap/present.
-  # Seal the persistent address map by reference, not a tree copy or frame ID.
-  defp handle_renderer_message(:emerge_skia_seal_routes, state) do
-    {:noreply, update_runtime(state, &State.routes(&1, :seal))}
+  defp handle_renderer_message({:emerge_skia_credit, _session}, state) do
+    case runtime!(state) do
+      %{pending_edit: %{} = pending} ->
+        {:noreply, update_runtime(state, &%{&1 | pending_edit: %{pending | credit?: true}})}
+
+      %{waiting_credit?: true} ->
+        {:noreply, state |> update_runtime(&%{&1 | waiting_credit?: false}) |> rerender()}
+
+      _ ->
+        {:noreply, state}
+    end
   end
 
-  defp handle_renderer_message(:emerge_skia_publish_routes, state) do
-    {:noreply, update_runtime(state, &State.routes(&1, :publish))}
+  defp handle_renderer_message({:emerge_skia_edit, ref, result}, state) do
+    case runtime!(state).pending_edit do
+      %{ref: ^ref} = pending -> {:noreply, finish_edit(state, pending, result)}
+      _ -> {:noreply, state}
+    end
   end
 
-  defp handle_renderer_message(:emerge_skia_retry_routes, state) do
-    {:noreply, update_runtime(state, &State.routes(&1, :retry))}
-  end
-
-  defp handle_renderer_message(:emerge_skia_install_routes, state) do
-    {:noreply, update_runtime(state, &State.routes(&1, :install))}
+  defp handle_renderer_message({:emerge_skia_routed, epoch, {id, type, payload}}, state) do
+    routes = Map.get(runtime!(state).route_epochs, epoch, %{})
+    route_element_event(state, id, type, {:with_payload, payload}, routes)
+    {:noreply, note_renderer_heartbeat(state)}
   end
 
   defp handle_renderer_message(message, state), do: handle_info(message, state)
 
-  defp route_element_event(state, id_bin, event_ref, payload_mode) do
+  defp route_element_event(state, id_bin, event_ref, payload_mode, installed_routes \\ nil) do
     runtime = runtime!(state)
 
-    if is_nil(runtime.diff_state) do
+    if is_nil(installed_routes) and is_nil(runtime.diff_state) do
       :ok
     else
-      routes = runtime.drawn_routes || runtime.diff_state.event_registry
+      # Untagged messages are for non-retained transports. A retained click
+      # supplies its exact registry (possibly empty), never a latest-state fallback.
+      routes = installed_routes || runtime.diff_state.event_registry
 
       case Map.fetch(Map.get(routes, id_bin, %{}), event_ref) do
         {:ok, {pid, message}} when is_pid(pid) ->
@@ -875,6 +885,10 @@ defmodule Emerge.Runtime.Viewport do
     end
   end
 
+  defp patch_existing_renderer(state, %{renderer_module: Skia, renderer: r} = rt, tree)
+       when is_reference(r),
+       do: begin_edit(state, rt, tree)
+
   defp patch_existing_renderer(state, runtime, tree) do
     patch_fun =
       if function_exported?(runtime.renderer_module, :patch_tree_runtime, 3) do
@@ -1014,7 +1028,15 @@ defmodule Emerge.Runtime.Viewport do
     end
   end
 
-  defp upload_initial_tree(state, renderer, tree) when is_map(state) do
+  defp upload_initial_tree(state, renderer, tree) do
+    rt = runtime!(state)
+
+    if rt.renderer_module == Skia and is_reference(renderer),
+      do: begin_edit(state, rt, tree),
+      else: upload_other(state, renderer, tree)
+  end
+
+  defp upload_other(state, renderer, tree) do
     runtime = runtime!(state)
 
     case safe_invoke(fn -> runtime.renderer_module.upload_tree(renderer, tree) end) do
@@ -1026,14 +1048,7 @@ defmodule Emerge.Runtime.Viewport do
               current
               | renderer: renderer,
                 diff_state: diff_state,
-                drawn_routes:
-                  if(
-                    current.renderer_module == Emerge.Runtime.Viewport.Renderer.Skia and
-                      is_reference(renderer),
-                    do: diff_state.event_registry
-                  ),
-                pending_routes: nil,
-                submitting_routes: nil,
+                route_epochs: %{},
                 last_renderer_heartbeat_at_ms: monotonic_ms()
             }
           end)
@@ -1046,6 +1061,74 @@ defmodule Emerge.Runtime.Viewport do
 
       {:error, failure} ->
         {:error, failure}
+    end
+  end
+
+  # Prepare the next persistent address map in the viewport, before publishing
+  # anything native. While the ticket runs, input/close use their own mailbox.
+  defp begin_edit(state, rt, tree) do
+    candidate = rt.diff_state || Emerge.Engine.diff_state_new()
+
+    case EmergeSkia.Native.renderer_revision_nif(rt.renderer, candidate.accepted) do
+      {:error, reason} -> {:error, "renderer base rejected: #{inspect(reason)}"}
+      {:ok, base} -> register_edit(state, rt, tree, candidate, base)
+    end
+  end
+
+  defp register_edit(state, rt, tree, candidate, base) do
+    {bytes, next, edits} = Emerge.Engine.DiffState.diff_and_encode_routed(candidate, tree)
+    route? = is_nil(rt.diff_state) or map_size(edits) != 0
+    epoch = if route?, do: elem(base, 1) + 1, else: candidate.route_epoch
+    next = %{next | route_epoch: epoch}
+    ref = make_ref()
+
+    pending = %{
+      ref: ref,
+      next: next,
+      initial?: is_nil(rt.diff_state),
+      route?: route?,
+      credit?: false
+    }
+
+    runtime = if route?, do: State.register(rt, epoch, next.event_registry), else: rt
+    relay = rt.renderer_relay
+    renderer = rt.renderer
+
+    {:ok, _} =
+      Task.start(fn ->
+        result =
+          safe_invoke(fn ->
+            EmergeSkia.Native.submit_revision(renderer, base, bytes, route?, relay)
+          end)
+
+        send(relay, {:emerge_skia_edit, ref, result})
+      end)
+
+    {:ok, put_runtime(state, %{runtime | pending_edit: pending})}
+  end
+
+  defp finish_edit(state, p, {:ok, {:ok, token}}) do
+    next = %{p.next | accepted: token}
+    state = update_runtime(state, &%{&1 | pending_edit: nil, diff_state: next})
+    if p.initial?, do: VideoEndpoints.register(self(), runtime!(state).renderer)
+    if runtime!(state).dirty?, do: rerender(state), else: state
+  end
+
+  defp finish_edit(state, p, result) do
+    rt = runtime!(state)
+    rt = if p.route?, do: State.retire(rt, p.next.route_epoch), else: rt
+    state = put_runtime(state, %{rt | pending_edit: nil})
+
+    case result do
+      {:ok, {:error, :busy}} when p.credit? ->
+        rerender(state)
+
+      {:ok, {:error, :busy}} ->
+        update_runtime(state, &%{&1 | waiting_credit?: true, dirty?: true})
+
+      failure ->
+        log_render_failure(rt.module, :rerender, inspect(failure))
+        if rt.dirty?, do: rerender(state), else: state
     end
   end
 

@@ -20,7 +20,21 @@ The previous config is desired intent. A cap update does not cancel an already
 admitted frame. Application timers, producers and tree updates are not throttled
 by this setting. Unchanged content is not redrawn merely because its cap changes.
 
-## Scheduling
+## Current binary headless and Wayland sessions
+
+The [retained pipeline](../../native/emerge_skia/src/session/tree_actor.rs) caps
+**draw starts**, including the one permitted speculative replacement. It does
+not delay submission a second time. An open handoff takes the newest eligible
+completed image, not the newest accepted edit. Headless delivers without waiting
+for vsync; Wayland frame callbacks pace handoff but do not release buffers or
+prove scanout. The internal [prediction clock](../../native/emerge_skia/src/session/timing.rs)
+has no idle timer. It does not implement the public animation declarations.
+See [ownership and installation](layout-refresh-render-flow.md#current-retained-path-binary-headless-and-wayland).
+
+## Scheduling (reference renderer)
+
+The remaining sections describe the reference backend loops, not the live
+retained session or evidence for retained PRIME, DRM or public animation.
 
 `backend/cadence.rs` holds the shared cap and owner-thread admission clock.
 Intervals round up to nanoseconds; deadlines derive from the last admission,

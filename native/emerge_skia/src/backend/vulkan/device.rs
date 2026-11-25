@@ -111,6 +111,9 @@ pub struct VulkanDevice {
     device: Device,
     queue: vk::Queue,
     queue_family_index: u32,
+    // Only the split Wayland adapter requests this queue. No other path
+    // submits to it; its Ganesh context is created on the drawing thread.
+    drawing_queue: Option<(vk::Queue, u32)>,
     physical_device_name: String,
     physical_device_api: u32,
     identity: VulkanDeviceIdentity,
@@ -132,7 +135,22 @@ impl VulkanDevice {
     pub fn probe_surface(
         instance: Arc<VulkanInstance>,
         requirements: DeviceRequirements<'_>,
+        presentation_support: impl FnMut(vk::PhysicalDevice, u32) -> Result<bool, String>,
+    ) -> Result<Option<Arc<Self>>, String> {
+        Self::surface_device(instance, requirements, presentation_support, false)
+    }
+    pub fn probe_split_surface(
+        instance: Arc<VulkanInstance>,
+        requirements: DeviceRequirements<'_>,
+        presentation_support: impl FnMut(vk::PhysicalDevice, u32) -> Result<bool, String>,
+    ) -> Result<Option<Arc<Self>>, String> {
+        Self::surface_device(instance, requirements, presentation_support, true)
+    }
+    fn surface_device(
+        instance: Arc<VulkanInstance>,
+        requirements: DeviceRequirements<'_>,
         mut presentation_support: impl FnMut(vk::PhysicalDevice, u32) -> Result<bool, String>,
+        split: bool,
     ) -> Result<Option<Arc<Self>>, String> {
         let devices = enumerate_devices(&instance, requirements.required_extensions)?;
         let mut selection_candidates = Vec::with_capacity(devices.len());
@@ -178,10 +196,37 @@ impl VulkanDevice {
         }
         let queue_family_index = u32::try_from(selected.queue_family_index)
             .map_err(|_| "selected Vulkan queue-family index exceeds u32".to_string())?;
+        let (present, draw) = if !split {
+            (queue_family_index, None)
+        } else if candidate.queue_families[selected.queue_family_index].queue_count >= 2 {
+            (queue_family_index, Some(queue_family_index))
+        } else {
+            let mut present = None;
+            for (i, family) in candidate.queue_families.iter().enumerate() {
+                let i = i as u32;
+                if i != queue_family_index
+                    && family.queue_count > 0
+                    && family.queue_flags.intersects(
+                        vk::QueueFlags::GRAPHICS
+                            | vk::QueueFlags::COMPUTE
+                            | vk::QueueFlags::TRANSFER,
+                    )
+                    && presentation_support(candidate.physical_device, i)?
+                {
+                    present = Some(i);
+                    break;
+                }
+            }
+            let Some(present) = present else {
+                return Ok(None);
+            };
+            (present, Some(queue_family_index))
+        };
         Self::create_logical(
             instance,
             candidate,
-            queue_family_index,
+            present,
+            draw,
             requirements.required_extensions,
         )
         .map(Some)
@@ -222,6 +267,7 @@ impl VulkanDevice {
             instance,
             candidate,
             queue_family_index,
+            None,
             requirements.required_extensions,
         )
     }
@@ -230,6 +276,7 @@ impl VulkanDevice {
         instance: Arc<VulkanInstance>,
         candidate: &EnumeratedDevice,
         queue_family_index: u32,
+        draw_family: Option<u32>,
         required_extensions: &[&CStr],
     ) -> Result<Arc<Self>, String> {
         let enabled_extension_names = required_extensions
@@ -255,10 +302,19 @@ impl VulkanDevice {
             .iter()
             .map(|name| name.as_ptr())
             .collect::<Vec<_>>();
-        let priority = [1.0_f32];
-        let queue_info = [vk::DeviceQueueCreateInfo::default()
-            .queue_family_index(queue_family_index)
-            .queue_priorities(&priority)];
+        let priority = [1.0_f32; 2];
+        let count = 1 + usize::from(draw_family == Some(queue_family_index));
+        let queue_info = std::iter::once(
+            vk::DeviceQueueCreateInfo::default()
+                .queue_family_index(queue_family_index)
+                .queue_priorities(&priority[..count]),
+        )
+        .chain(draw_family.filter(|&d| d != queue_family_index).map(|d| {
+            vk::DeviceQueueCreateInfo::default()
+                .queue_family_index(d)
+                .queue_priorities(&priority[..1])
+        }))
+        .collect::<Vec<_>>();
         let enable_sampler_ycbcr =
             requires_extension(required_extensions, EXT_SAMPLER_YCBCR_CONVERSION);
         if enable_sampler_ycbcr && !candidate.sampler_ycbcr_conversion {
@@ -295,6 +351,12 @@ impl VulkanDevice {
             )
         })?;
         let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
+        let drawing_queue = draw_family.map(|d| {
+            (
+                unsafe { device.get_device_queue(d, u32::from(d == queue_family_index)) },
+                d,
+            )
+        });
 
         Ok(Arc::new(Self {
             instance,
@@ -302,6 +364,7 @@ impl VulkanDevice {
             device,
             queue,
             queue_family_index,
+            drawing_queue,
             physical_device_name: candidate.selection.name.clone(),
             physical_device_api: candidate.properties.api_version,
             identity: candidate.identity,
@@ -326,6 +389,10 @@ impl VulkanDevice {
 
     pub fn queue(&self) -> vk::Queue {
         self.queue
+    }
+
+    pub fn drawing_queue(&self) -> Option<(vk::Queue, u32)> {
+        self.drawing_queue
     }
 
     pub fn queue_family_index(&self) -> u32 {

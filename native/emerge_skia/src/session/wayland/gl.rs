@@ -1,21 +1,29 @@
-//! EGL owns the wl_buffer attach/commit. Keep every GL/Skia object on this thread.
-use super::{gpu::ProbeError, handles::*};
+//! EGL owns the wl_buffer attach/commit. Each context is current on exactly
+//! one thread. The presenter borrows only resolved, pinned share-group textures.
+use super::{
+    Owner, Ping,
+    gpu::ProbeError,
+    handles::*,
+    textures::{self, Producer, Renderer},
+};
+use crate::session::capture::Rect;
 use glutin::{
     api::egl::{context::PossiblyCurrentContext, display::Display, surface::Surface as EglSurface},
     config::{ConfigTemplateBuilder, GlConfig},
-    context::{ContextApi, ContextAttributesBuilder, NotCurrentGlContext},
+    context::{ContextApi, ContextAttributesBuilder, GlContext, NotCurrentGlContext},
     display::GlDisplay,
     prelude::GlSurface,
     surface::{SurfaceAttributesBuilder, SwapInterval, WindowSurface},
 };
 use skia_safe::{
-    ColorType, Surface,
+    AlphaType, BlendMode, ColorType, ImageInfo, Paint, Surface,
     gpu::{
         self, SurfaceOrigin, backend_render_targets, direct_contexts,
         gl::{FramebufferInfo, Interface},
     },
 };
 use smithay_client_toolkit::shell::{WaylandSurface, xdg::window::Window};
+use std::sync::Arc;
 use std::{
     ffi::{CStr, CString},
     num::NonZeroU32,
@@ -62,8 +70,67 @@ fn dims(size: Size) -> Result<(NonZeroU32, NonZeroU32), String> {
 fn driver_error(e: impl std::fmt::Display) -> String {
     format!("EGL: {e}")
 }
+fn ganesh(display: &Display) -> Result<gpu::DirectContext, String> {
+    let interface = Interface::new_load_with(|name| {
+        if name == "eglGetCurrentDisplay" {
+            std::ptr::null()
+        } else {
+            display.get_proc_address(&CString::new(name).expect("GL symbol"))
+        }
+    })
+    .ok_or("invalid Ganesh GL interface")?;
+    direct_contexts::make_gl(interface, None).ok_or_else(|| "failed to initialize Ganesh GL".into())
+}
+struct Offscreen {
+    context: gpu::DirectContext,
+    _egl: PossiblyCurrentContext,
+}
+impl Renderer for Offscreen {
+    type Storage = ();
+    fn allocate(&mut self, (w, h): Size) -> Result<(Surface, ()), String> {
+        let info = ImageInfo::new(
+            (w as i32, h as i32),
+            ColorType::RGBA8888,
+            AlphaType::Premul,
+            None,
+        );
+        gpu::surfaces::render_target(
+            &mut self.context,
+            gpu::Budgeted::Yes,
+            &info,
+            4,
+            SurfaceOrigin::TopLeft,
+            None,
+            false,
+            false,
+        )
+        .map(|s| (s, ()))
+        .ok_or_else(|| "cannot allocate 4x GL render target".into())
+    }
+    fn finish(&mut self, s: &mut Surface, _: &()) -> Result<textures::Image, String> {
+        let mut t = gpu::surfaces::get_backend_texture(
+            s,
+            skia_safe::surface::BackendHandleAccess::FlushRead,
+        )
+        .ok_or("unshareable GL render target")?;
+        self.context
+            .flush_and_submit_surface(s, gpu::SyncCpu::Yes)
+            .map_err(driver_error)?;
+        if self.context.abandoned() {
+            return Err("GL drawing context lost".into());
+        }
+        gpu::backend_textures::gl_texture_parameters_modified(&mut t);
+        Ok(textures::Image::Gl(t))
+    }
+}
 impl Gl {
-    pub(super) fn new(conn: &Connection, win: &Window, size: Size) -> Result<Self, ProbeError> {
+    pub(super) fn new(
+        conn: &Connection,
+        win: &Window,
+        size: Size,
+        owner: &Arc<Owner>,
+        ping: &Ping,
+    ) -> Result<(Self, Producer), ProbeError> {
         let dh = raw_display_handle(conn)?;
         let wh = raw_window_handle(win.wl_surface())?;
         // SAFETY: both the SCTK Window owner (not only its proxy) and the display
@@ -160,16 +227,25 @@ impl Gl {
             string(gl::VERSION)?
         );
         let _ = drawable.set_swap_interval(&egl, SwapInterval::DontWait);
-        let interface = Interface::new_load_with(|name| {
-            if name == "eglGetCurrentDisplay" {
-                std::ptr::null()
-            } else {
-                proc(name)
-            }
-        })
-        .ok_or("invalid Ganesh GL interface".to_string())?;
-        let mut context = direct_contexts::make_gl(interface, None)
-            .ok_or("failed to initialize Ganesh GL".to_string())?;
+        let attrs = ContextAttributesBuilder::new()
+            .with_context_api(egl.context_api())
+            .with_sharing(&egl)
+            .build(None);
+        // SAFETY: live context and config from this same EGL display/share group.
+        let draw = unsafe { display.create_context(&config, &attrs) }.map_err(driver_error)?;
+        let mut context = ganesh(&display)?;
+        if context.max_surface_sample_count_for_color_type(ColorType::RGBA8888) < 4 {
+            return Err(ProbeError::Unavailable(
+                "RGBA8 4x hardware multisampling is unavailable".into(),
+            ));
+        }
+        let producer = Producer::start(owner.clone(), ping.clone(), move || {
+            let egl = draw.make_current_surfaceless().map_err(driver_error)?;
+            Ok(Offscreen {
+                context: ganesh(&display)?,
+                _egl: egl,
+            })
+        })?;
         let mut id = 0;
         unsafe { gl::GetIntegerv(gl::FRAMEBUFFER_BINDING, &mut id) };
         let fb = FramebufferInfo {
@@ -179,18 +255,21 @@ impl Gl {
         };
         let samples = config.num_samples() as usize;
         let stencil = config.stencil_size() as usize;
-        Ok(Self {
-            surface: wrap(&mut context, fb, samples, stencil, size)?,
-            context,
-            drawable,
-            egl,
-            fb,
-            samples,
-            stencil,
-            size,
-            _window: win.clone(),
-            _connection: conn.clone(),
-        })
+        Ok((
+            Self {
+                surface: wrap(&mut context, fb, samples, stencil, size)?,
+                context,
+                drawable,
+                egl,
+                fb,
+                samples,
+                stencil,
+                size,
+                _window: win.clone(),
+                _connection: conn.clone(),
+            },
+            producer,
+        ))
     }
     pub(super) fn resize(&mut self, size: Size) -> Result<(), String> {
         if self.size != size {
@@ -201,16 +280,56 @@ impl Gl {
         }
         Ok(())
     }
-    pub(super) fn context(&mut self) -> &mut gpu::DirectContext {
-        &mut self.context
+    fn borrow(&mut self, t: &gpu::BackendTexture) -> Result<skia_safe::Image, String> {
+        gpu::images::borrow_texture_from(
+            &mut self.context,
+            t,
+            SurfaceOrigin::TopLeft,
+            ColorType::RGBA8888,
+            AlphaType::Premul,
+            None,
+        )
+        .ok_or_else(|| "cannot sample shared GL texture".into())
     }
-    pub(super) fn surface(&mut self) -> &mut Surface {
-        &mut self.surface
+    pub(super) fn read(
+        &mut self,
+        t: &gpu::BackendTexture,
+        (x, y, w, h): Rect,
+    ) -> Result<Vec<u8>, String> {
+        let image = self.borrow(t)?;
+        let info = ImageInfo::new(
+            (w as i32, h as i32),
+            ColorType::RGBA8888,
+            AlphaType::Premul,
+            None,
+        );
+        let stride = w as usize * 4;
+        let mut rgba = vec![0; stride * h as usize];
+        image
+            .read_pixels_with_context(
+                &mut self.context,
+                &info,
+                &mut rgba,
+                stride,
+                (x as i32, y as i32),
+                skia_safe::image::CachingHint::Disallow,
+            )
+            .then_some(rgba)
+            .ok_or_else(|| "GL readback failed".into())
     }
-    pub(super) fn swap(&mut self) -> Result<(), String> {
+    pub(super) fn submit(&mut self, t: &gpu::BackendTexture, size: Size) -> Result<(), String> {
+        self.resize(size)?;
+        let image = self.borrow(t)?;
+        let mut paint = Paint::default();
+        paint.set_blend_mode(BlendMode::Src);
+        self.surface
+            .canvas()
+            .draw_image(image, (0, 0), Some(&paint));
+        // Release the reader only when this context has finished the final blit.
+        // The producer context can be drawing a different slot meanwhile.
         if self
             .context
-            .flush_and_submit_surface(&mut self.surface, gpu::SyncCpu::No)
+            .flush_and_submit_surface(&mut self.surface, gpu::SyncCpu::Yes)
             .is_err()
             || self.context.abandoned()
         {

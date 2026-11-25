@@ -24,6 +24,9 @@ pub(in crate::tree) struct Fits {
     missing: usize,
 }
 impl Fits {
+    pub(in crate::tree) fn advance_from(&mut self, old: &Self) {
+        self.epoch = old.epoch + 1;
+    }
     pub(in crate::tree) fn reserve(&mut self, count: usize, budget: Budget) -> Result<(), String> {
         if count > self.index.capacity() {
             self.index

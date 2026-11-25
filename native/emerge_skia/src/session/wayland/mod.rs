@@ -7,6 +7,10 @@ mod gl;
 #[cfg(any(feature = "opengl", feature = "vulkan"))]
 mod gpu;
 #[cfg(any(feature = "opengl", feature = "vulkan"))]
+mod textures;
+#[cfg(any(feature = "opengl", feature = "vulkan"))]
+pub(super) use textures::Lease;
+#[cfg(any(feature = "opengl", feature = "vulkan"))]
 #[path = "../../backend/wayland/handles.rs"]
 mod handles;
 mod pointer;
@@ -35,7 +39,9 @@ impl Requested {
         }
     }
 }
-use super::{Owner, Ready, Wake};
+use super::{
+    Completed, Cpu, Display, Owner, Pixels, Ready, Target, Wake, presentation::Frame, tree_actor,
+};
 use crate::{input::InputEvent, lock};
 use geometry::{Geometry, Mapping, Protocols, Scale};
 use rustler::OwnedEnv;
@@ -58,7 +64,7 @@ use sctk::{
     },
     shm::{Shm, ShmHandler},
 };
-use shm::Slots;
+pub(super) use shm::Slots;
 use smithay_client_toolkit as sctk;
 use std::{
     sync::{Arc, atomic::Ordering},
@@ -74,6 +80,10 @@ rustler::atoms! {emerge_skia_close, window_close_requested}
 
 struct WindowApp {
     owner: Arc<Owner>,
+    display: Display,
+    shm_claim: Option<(Frame<Completed>, Mapping)>,
+    #[cfg(feature = "stage-probes")]
+    held_targets: Vec<Arc<dyn Send + Sync>>,
     env: OwnedEnv,
     protocols: Protocols,
     window: Window,
@@ -92,7 +102,7 @@ struct WindowApp {
     attempted: Option<Geometry>,
     installed: Option<Mapping>,
     frame_pending: bool,
-    buffers: Slots,
+
     #[cfg(any(feature = "opengl", feature = "vulkan"))]
     gpu: Option<gpu::Output>,
     #[cfg(any(feature = "opengl", feature = "vulkan"))]
@@ -116,6 +126,7 @@ pub(super) fn run(
     title: String,
     size: (u32, u32),
     api: Requested,
+    mut display: Display,
 ) -> Result<(), String> {
     let (globals, queue) = registry_queue_init(&conn).map_err(err)?;
     let qh = queue.handle();
@@ -141,12 +152,13 @@ pub(super) fn run(
     let protocols = Protocols::bind(&globals, &qh, window.wl_surface());
     window.commit(); // Empty initial commit solicits configure; no hits or routes yet.
     conn.flush().map_err(err)?;
-    lock(&owner.live)?
-        .as_mut()
-        .ok_or("renderer stopped")?
-        .toplevel = Some(window.xdg_toplevel().clone());
+    display.toplevel = Some(window.xdg_toplevel().clone());
     let mut app = WindowApp {
         owner: owner.clone(),
+        display,
+        shm_claim: None,
+        #[cfg(feature = "stage-probes")]
+        held_targets: Vec::with_capacity(4),
         env: OwnedEnv::new(),
         protocols,
         #[cfg(feature = "vulkan")]
@@ -178,7 +190,6 @@ pub(super) fn run(
         attempted: None,
         installed: None,
         frame_pending: false,
-        buffers: Slots::default(),
     };
     #[cfg(any(feature = "opengl", feature = "vulkan"))]
     if api != Requested::Raster {
@@ -197,121 +208,197 @@ pub(super) fn run(
             }
             events.dispatch(None, &mut app).map_err(err)?;
         }
-        app.init_device(&conn, api)?;
+        app.init_device(&conn, api, &ping)?;
         app.allow_cursor_theme = app.gpu.is_none();
     }
-    ready
-        .send(Ok(Wake::Window(ping)))
-        .map_err(|_| "Wayland startup cancelled")?;
-    while !owner.lifecycle.stop.load(Ordering::Acquire) {
-        let wait = app.present(&conn, &qh)?;
-        events.dispatch(wait, &mut app).map_err(err)?;
-    }
-    Ok(())
+    let wake = Wake::Window(ping);
+    let cpu = matches!(owner.selected.get(), None | Some(super::Selected::Raster))
+        .then(|| Cpu::Shm(app.shm.wl_shm().clone().into(), Box::default()));
+    tree_actor::run(owner, &wake, cpu, || {
+        ready
+            .send(Ok(wake.clone()))
+            .map_err(|_| "Wayland startup cancelled")?;
+        while !owner.lifecycle.stop.load(Ordering::Acquire) {
+            let wait = app.present(&conn, &qh)?;
+            events.dispatch(wait, &mut app).map_err(err)?;
+        }
+        Ok(())
+    })
 }
 impl WindowApp {
+    // Simulate delayed release, not delayed display feedback. Hold exactly
+    // the submitted target lease, never the scene/route or a writable target.
+    #[cfg(feature = "stage-probes")]
+    fn pin_target(&mut self, bundle: &super::Bundle, target: Arc<dyn Send + Sync>) {
+        use super::probes::Stage;
+        if !self.owner.probes.open(Stage::RetainTargets)
+            && !self.held_targets.iter().any(|p| Arc::ptr_eq(p, &target))
+        {
+            debug_assert!(self.held_targets.len() < 4);
+            self.held_targets.push(target);
+            self.owner
+                .probes
+                .emit(Stage::RetainTargets, bundle.id.serial, bundle.revision);
+        }
+    }
     fn present(
         &mut self,
         conn: &Connection,
         qh: &QueueHandle<Self>,
     ) -> Result<Option<Duration>, String> {
         #[cfg(any(feature = "opengl", feature = "vulkan"))]
-        let work = self.gpu.as_mut().is_some_and(|gpu| {
-            gpu.readback();
-            gpu.pending()
-        });
-        #[cfg(not(any(feature = "opengl", feature = "vulkan")))]
-        let work = false;
-        let changed_surface = self.installed.is_none_or(|m| m.geometry != self.geometry);
-        if !self.configured || (self.frame_pending && !changed_surface) {
-            return Ok(None);
-        }
-        let mut guard = lock(&self.owner.live)?;
-        let live = guard.as_mut().ok_or("renderer stopped")?;
-        if !work && !live.request && self.attempted.is_none_or(|g| g == self.geometry) {
-            return Ok(None);
-        }
-        if let Some(deadline) = live.last.zip(live.interval).map(|(t, d)| t + d)
-            && let Some(wait) = deadline.checked_duration_since(Instant::now())
+        self.device_report()?;
+        self.display.controls(&self.owner, &mut self.env);
+        #[cfg(feature = "stage-probes")]
+        if self.owner.probes.open(super::probes::Stage::RetainTargets)
+            && !self.held_targets.is_empty()
         {
-            return Ok(Some(wait));
+            self.held_targets.clear();
+            self.owner.render.notify();
+        }
+        if !self.configured {
+            return Ok(None);
         }
         let mapping = match self.geometry.mapping() {
-            Ok(mapping) => mapping,
-            Err(why) => {
-                self.attempted = Some(self.geometry);
-                live.request = false;
-                live.log_frame_error(&mut self.env, "wayland", why);
+            Ok(m) => m,
+            Err(reason) => {
+                if self.attempted != Some(self.geometry) {
+                    self.attempted = Some(self.geometry);
+                    // Retire all candidates for the previous configure, even on failure.
+                    self.owner.invalidate_view()?;
+                    if let Some(pid) = *lock(&self.owner.log)? {
+                        let _ = self.env.send_and_clear(&pid, |_| {
+                            (super::emerge_skia_log(), super::error(), "wayland", reason)
+                        });
+                    }
+                }
                 return Ok(None);
             }
         };
-        let size = mapping.buffer;
+        if self.attempted != Some(self.geometry) {
+            self.attempted = Some(self.geometry);
+            self.owner
+                .geometry(mapping.buffer, self.geometry.nominal())?;
+        }
+        let changed_surface = self.installed != Some(mapping);
         #[cfg(any(feature = "opengl", feature = "vulkan"))]
         if self.gpu.is_some() {
-            drop(guard);
-            self.attempted = Some(self.geometry);
-            return self.present_gpu(conn, qh, mapping, changed_surface);
+            return self.present_gpu(qh, mapping);
         }
-        // No available slot: don't mutate the installed raster or sample input
-        // geometry. A wl_buffer.release wakes this same event loop.
-        let Some(i) = self.buffers.available(size) else {
+        let open = self
+            .owner
+            .opportunity(self.shm_claim.is_none() && (!self.frame_pending || changed_surface));
+        {
+            let mut p = lock(&self.owner.pipe)?;
+            p.submit_open = open;
+            if open && let Some(f) = p.completed.take() {
+                #[cfg(feature = "stage-probes")]
+                self.owner.probes.emit(
+                    crate::session::probes::Stage::Claimed,
+                    f.id.serial,
+                    f.value.bundle.revision,
+                );
+                self.shm_claim = Some((f, mapping));
+                p.submit_open = false;
+            }
+        }
+        // wl_buffer.release arrives independently of frame callbacks.
+        self.owner.render.notify();
+        #[cfg(feature = "stage-probes")]
+        if !self
+            .owner
+            .probes
+            .open(crate::session::probes::Stage::Claimed)
+        {
+            return Ok(None);
+        }
+        let Some((frame, claimed_mapping)) = self.shm_claim.take() else {
             return Ok(None);
         };
-        self.attempted = Some(self.geometry);
-        let presented = live.present(
-            &mut self.env,
-            size,
-            self.geometry.nominal(),
-            "wayland",
-            |_, pixels, reuse| {
-                if reuse && !changed_surface {
-                    return Ok(false);
-                }
-                let surface = self.window.wl_surface();
-                let buffer = self.buffers.write(i, &self.shm, size, pixels)?;
-                self.protocols.apply(surface, mapping.geometry);
-                if surface.version() >= 4 {
-                    surface.damage_buffer(0, 0, size.0 as i32, size.1 as i32)
-                } else {
-                    surface.damage(
-                        0,
-                        0,
-                        self.geometry.logical.0 as i32,
-                        self.geometry.logical.1 as i32,
-                    )
-                }
-                buffer.attach_to(surface).map_err(err)?;
-                if !self.frame_pending {
-                    surface.frame(qh, surface.clone());
-                    self.frame_pending = true;
-                }
-                self.window.commit();
-                conn.flush().map(|_| true).map_err(err)
-            },
-        )?;
-        if presented {
-            self.installed = Some(mapping);
+        if mapping != claimed_mapping
+            || lock(&self.owner.pipe)?
+                .view
+                .is_none_or(|v| v.generation != frame.id.generation)
+        {
+            return Ok(Some(Duration::ZERO));
         }
+        #[cfg(feature = "stage-probes")]
+        if self
+            .owner
+            .probes
+            .reject(frame.id, frame.value.bundle.revision)
+        {
+            let loser = lock(&self.owner.pipe)?.completed.retry(frame);
+            drop(loser);
+            return Ok(Some(Duration::ZERO));
+        }
+        let Completed { bundle, target } = frame.value;
+        let Target::Shm(buffer, rgba) = target else {
+            return Err("unexpected shm target".into());
+        };
+        let current = self.display.installed.as_ref();
+        let reuse = !changed_surface
+            && current.is_some_and(|i| {
+                i.bundle.view.generation == bundle.view.generation
+                    && i.pixels.cpu().is_some_and(|old| Arc::ptr_eq(old, &rgba))
+            });
+        let elapsed = if reuse {
+            None
+        } else {
+            let started = Instant::now();
+            let surface = self.window.wl_surface();
+            self.protocols.apply(surface, mapping.geometry);
+            if surface.version() >= 4 {
+                surface.damage_buffer(0, 0, mapping.buffer.0 as i32, mapping.buffer.1 as i32);
+            } else {
+                surface.damage(
+                    0,
+                    0,
+                    self.geometry.logical.0 as i32,
+                    self.geometry.logical.1 as i32,
+                );
+            }
+            buffer.attach_to(surface).map_err(err)?;
+            if !self.frame_pending {
+                surface.frame(qh, surface.clone());
+                self.frame_pending = true;
+            }
+            self.window.commit();
+            conn.flush().map_err(err)?;
+            #[cfg(feature = "stage-probes")]
+            {
+                self.owner.probes.confirm(bundle.id, bundle.revision)?;
+                self.pin_target(&bundle, buffer);
+            }
+            Some(started.elapsed())
+        };
+        self.installed = Some(mapping);
+        self.display
+            .install(&self.owner, bundle, Pixels::Cpu(rgba), elapsed)?;
+        lock(&self.owner.pipe)?.submit_open = self.owner.opportunity(!self.frame_pending);
         Ok(None)
     }
     fn input(&mut self, event: InputEvent) {
-        if let Ok(mut guard) = self.owner.live.lock()
-            && let Some(live) = guard.as_mut()
-        {
-            self.env
-                .run(|env| live.input.dispatch(env, &live.raster, event));
-            self.env.clear();
-        }
+        self.env.run(|env| self.display.dispatch(env, event));
+        self.env.clear();
     }
-    fn output_interval(&self, o: &wl_output::WlOutput) {
+    fn output_interval(&mut self, o: &wl_output::WlOutput) {
         if let Some(mode) = self
             .outputs
             .info(o)
             .and_then(|o| o.modes.into_iter().find(|m| m.current))
-            && let Ok(mut guard) = self.owner.live.lock()
-            && let Some(stats) = guard.as_mut().and_then(|s| s.stats.as_mut())
         {
-            stats.output_mode(mode.refresh_rate);
+            if let Some(stats) = &mut self.display.stats {
+                stats.output_mode(mode.refresh_rate);
+            }
+            if mode.refresh_rate > 0
+                && let Ok(mut p) = self.owner.pipe.lock()
+            {
+                p.clock.cadence(Duration::from_secs_f64(
+                    1000. / f64::from(mode.refresh_rate),
+                ));
+                self.owner.actor.notify();
+            }
         }
     }
     fn set_scale(&mut self, next: Scale) {
@@ -350,9 +437,7 @@ impl WindowHandler for WindowApp {
         self.configured = true; // SCTK acknowledges the serial before this handler.
     }
     fn request_close(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &Window) {
-        if let Ok(guard) = self.owner.live.lock()
-            && let Some(target) = guard.as_ref().and_then(|live| live.input.target)
-        {
+        if let Some(target) = self.display.input.target {
             let _ = self
                 .env
                 .send_and_clear(&target, |_| (emerge_skia_close(), window_close_requested()));
@@ -382,6 +467,10 @@ impl CompositorHandler for WindowApp {
                 self.callback_armed = false;
             }
             self.frame_pending = false;
+            if let Ok(mut p) = self.owner.pipe.lock() {
+                p.clock.feedback(Instant::now());
+                self.owner.actor.notify();
+            }
         }
     }
     fn transform_changed(

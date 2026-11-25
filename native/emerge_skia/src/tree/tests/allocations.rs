@@ -867,6 +867,25 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
         node(2, 5, text("AA"), &[]),
     ]);
     let mut r = Raster::default();
+    let storage = storage::Storage::default();
+    let mut writer = Publisher::with_storage(80, storage.clone());
+    let mut actor = Tree::for_session(0);
+    writer.apply(&full, 1.).unwrap().install(&mut actor);
+    actor.refresh(180., 170., 1.).unwrap();
+    let _front = actor.seal().unwrap();
+    let edit = set(2, 5, text("BB"));
+    let mut stream = Stream::bounded(edit.len(), &storage).unwrap();
+    stream.push(0, &edit).unwrap();
+    let mut d = writer.prepare(stream.finish().unwrap(), 1.).unwrap();
+    c.zero("live fitting NIF directory application", || {
+        assert!(d.apply_slice())
+    });
+    let version = d.publish();
+    writer.release(d, true);
+    version.install(&mut actor);
+    c.zero("live fitting calculation with older reader", || {
+        actor.refresh(180., 170., 1.).unwrap()
+    });
     let initial = c.count(|| r.tree.upload(&full).unwrap());
     assert!(initial[0] > 0);
     c.zero("cold padded text", || {

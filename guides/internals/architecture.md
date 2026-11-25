@@ -5,6 +5,11 @@ runtime used by Emerge. Elixir owns application state and encodes UI trees into
 EMRG. Rust owns the decoded tree, layout, render-scene construction, event
 hit-testing metadata, assets, text editing state, and backend rendering.
 
+For the **current retained binary headless and Wayland** implementation, see
+[edit, layout, draw and presentation owners](layout-refresh-render-flow.md#current-retained-path-binary-headless-and-wayland).
+The `ElementTree`, registry/event actor, render queue and DRM descriptions below
+refer to the reference renderer; they are not the retained session's threading model.
+
 ## Declarative configuration
 
 Viewport mount returns `%Emerge.Config{}`; optional `config(previous)` or

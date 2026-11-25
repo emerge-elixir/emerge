@@ -7,23 +7,30 @@ renderer paint-layer cache.
 
 ## Current retained path: binary headless and Wayland
 
-The ordinary session admits one [sparse EMRG v10 replacement](emrg-format.md)
-against the preceding accepted declaration. It applies all accepted edits before
-invalidating once and recomputing in dependency order. Keyed reparenting and
-promotion preserve occurrence identity. Context, offers, placement, clip and
-hits are checked against the new site. The raster separates preparation from
-installation. Headless installs after binary frame delivery. Wayland installs
-after attaching and committing a `wl_shm` buffer and flushing the connection,
-or reusing actual pixels already submitted to that surface at that geometry.
+**Acceptance is not installation.** The [edit NIF](../../native/emerge_skia/src/session/admission.rs)
+reserves the writer and a journal slot before receiving [EMRG v10](emrg-format.md).
+A provisioner validates the replacement against the preceding **accepted** declaration.
+NIF continuations apply it to a private paged directory and publish one immutable
+root. `:busy` means neither accepted nor queued. A fitting leaf edit shares the
+other records and child orders; changing a wide child order can cost its length.
 
-Explicit hardware Wayland sessions use the same ordered fill/glyph commands.
-Glyph outlines become triangles; color and coverage are produced on a Ganesh
-multisampled device target. Before swap/present the display worker seals the
-drawing, hit list and callback route changes. Only a successful handoff (or
-reuse of a still-valid submission) publishes that candidate. A later edit
-cannot change its addresses. Capture reads the retained submitted target on
-demand, not the swapchain. Configure, a blocked acquire, and a frame callback
-are not installations. See the [presenter decision](retained-decisions.md#d8-submit-the-same-retained-drawing-to-explicit-wayland-presenters)
+The [tree actor](../../native/emerge_skia/src/session/tree_actor.rs) folds a finite
+prefix of at most two publications, combines their changes with resize, asset
+completion and any due pose sample, then invalidates once and computes in
+dependency order. It seals drawing and hits with their frame ID, surface geometry
+and callback epoch. Pinned readers can delay packing without delaying layout.
+The draw thread takes the newest eligible **unstarted commands**. Separately,
+the [presenter](../../native/emerge_skia/src/session/presentation.rs) takes the
+newest eligible **completed image**. If B is ready and C is still drawing, B
+can be handed off; finishing C cannot change an already claimed B.
+
+Binary headless installs on delivery. Wayland shm attaches only the winner;
+GL samples its resolved share-group texture and Vulkan copies its resolved
+image on a separate transfer/present queue. A successful handoff (or reuse
+of the same valid installation) installs **that frame's** pixels, hits, mapping
+and callback routes together. A capture pins those pixels, not the actor's
+tree or the swapchain. Configure, a blocked acquire, and a frame callback
+are not installations; a handoff is not proof of scanout. See the [presenter decision](retained-decisions.md#d8-submit-the-same-retained-drawing-to-explicit-wayland-presenters)
 and the [remaining hardware checks](../../plans/api-parity.md#outputs-platforms-and-distributions).
 
 `Emerge.UI.scale/1` changes layout before measurement. Admission proves each

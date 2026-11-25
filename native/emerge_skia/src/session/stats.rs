@@ -38,51 +38,51 @@ impl Samples {
         };
     }
 }
-#[rustler::nif(schedule = "DirtyCpu")]
-fn stats(r: ResourceArc<Session>, cmd: StatsCommandNif) -> Result<StatsSnapshotNif, String> {
+pub(super) fn snapshot(
+    l: &mut Display,
+    owner: &Owner,
+    cmd: StatsCommandNif,
+) -> Result<StatsSnapshotNif, String> {
     if matches!(cmd, StatsCommandNif::Configure(_)) {
         return Err("renderer stats are configured when the renderer starts".into());
     }
-    r.live(|l| {
-        let mut snap = StatsSnapshotNif {
-            version: STATS_SCHEMA_VERSION,
-            kind: "renderer".into(),
-            enabled: l.stats.is_some(),
-            rendering_api: Some(RenderingApi {
-                requested: r.owner.api.clone(),
-                selected: r
-                    .owner
-                    .selected
-                    .get()
-                    .unwrap_or(&Selected::Raster)
-                    .name()
-                    .into(),
-            }),
-            ..Default::default()
-        };
-        snap.counters.renderer_cache.disabled_reason = Some("renderer cache unavailable".into());
-        if let Some(s) = &mut l.stats {
-            if matches!(cmd, StatsCommandNif::Reset) {
-                s.reset();
-            }
-            let elapsed = s.start.elapsed();
-            snap.window.elapsed_ms = elapsed.as_millis() as u64;
-            snap.frames.frame_count = s.count;
-            snap.frames.fps = if elapsed.is_zero() {
-                0.
-            } else {
-                s.count as f64 / elapsed.as_secs_f64()
-            };
-            if let Some(ms) = s.interval_ms {
-                snap.frames.display_frame_ms = ms;
-                snap.frames.display_fps = 1000. / ms;
-            }
-            snap.timings.present_submit = s.submit;
-            if matches!(cmd, StatsCommandNif::Take) {
-                snap.window.reset_on_read = true;
-                s.reset();
-            }
+    let mut snap = StatsSnapshotNif {
+        version: STATS_SCHEMA_VERSION,
+        kind: "renderer".into(),
+        enabled: l.stats.is_some(),
+        rendering_api: Some(RenderingApi {
+            requested: owner.api.clone(),
+            selected: owner
+                .selected
+                .get()
+                .unwrap_or(&Selected::Raster)
+                .name()
+                .into(),
+        }),
+        ..Default::default()
+    };
+    snap.counters.renderer_cache.disabled_reason = Some("renderer cache unavailable".into());
+    if let Some(s) = &mut l.stats {
+        if matches!(cmd, StatsCommandNif::Reset) {
+            s.reset();
         }
-        Ok(snap)
-    })
+        let elapsed = s.start.elapsed();
+        snap.window.elapsed_ms = elapsed.as_millis() as u64;
+        snap.frames.frame_count = s.count;
+        snap.frames.fps = if elapsed.is_zero() {
+            0.
+        } else {
+            s.count as f64 / elapsed.as_secs_f64()
+        };
+        if let Some(ms) = s.interval_ms {
+            snap.frames.display_frame_ms = ms;
+            snap.frames.display_fps = 1000. / ms;
+        }
+        snap.timings.present_submit = s.submit;
+        if matches!(cmd, StatsCommandNif::Take) {
+            snap.window.reset_on_read = true;
+            s.reset();
+        }
+    }
+    Ok(snap)
 }

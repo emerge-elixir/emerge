@@ -17,6 +17,23 @@ pub(super) struct Images {
     pub active: usize,
 }
 impl Images {
+    pub fn bound(&self, k: Key) -> bool {
+        self.slots.contains_key(k)
+    }
+    pub fn inherit(&mut self, old: &mut Self, version: &declaration::Records) {
+        self.generation = old.generation;
+        version.each(|k, r| {
+            if r.shape == Shape::Image
+                && let Some(mut b) = old.slots.remove(k)
+            {
+                if b.queued.is_some() {
+                    b.queued = Some(self.queue.len());
+                    self.queue.push(k);
+                }
+                self.slots.insert(k, b);
+            }
+        });
+    }
     pub fn reserve(&mut self, keys: usize, active: usize, budget: Budget) -> Result<(), String> {
         if active != 0 {
             self.slots
@@ -105,7 +122,17 @@ impl Tree {
         let input = match raw[0] {
             4 => {
                 let id = raw[1..].try_into().unwrap();
-                Input::Bytes(id, e.media.get(&id).clone())
+                let data = if let Some(v) = &e.attrs.version {
+                    v.get(k)
+                        .unwrap()
+                        .block
+                        .media
+                        .as_ref()
+                        .expect("declared media")
+                } else {
+                    e.media.get(&id)
+                };
+                Input::Bytes(id, data.clone())
             }
             tag => {
                 let name = std::str::from_utf8(&raw[3..])

@@ -83,46 +83,42 @@ pub(crate) struct GeometryPainter {
     meshes: HashMap<(text::Face, u32, u16), Option<Outline>>,
 }
 impl GeometryPainter {
-    pub(crate) fn record(&mut self, canvas: &Canvas, raster: &Raster) -> Result<(), String> {
-        replay(
-            canvas,
-            raster.tree.output.drawing(),
-            |canvas, run, paint| {
-                for (&id, p) in run.ids.iter().zip(run.positions) {
-                    let key = (run.face, run.size.to_bits(), id);
-                    if !self.meshes.contains_key(&key) {
-                        let m = mesh(run.face, run.size, id)?;
-                        if self.meshes.len() >= 256 {
-                            self.meshes.clear();
-                        }
-                        self.meshes.insert(key, m);
+    pub(crate) fn record(&mut self, canvas: &Canvas, drawing: &Drawing) -> Result<(), String> {
+        replay(canvas, drawing, |canvas, run, paint| {
+            for (&id, p) in run.ids.iter().zip(run.positions) {
+                let key = (run.face, run.size.to_bits(), id);
+                if !self.meshes.contains_key(&key) {
+                    let m = mesh(run.face, run.size, id)?;
+                    if self.meshes.len() >= 256 {
+                        self.meshes.clear();
                     }
-                    if let Some(m) = &self.meshes[&key] {
-                        canvas.save();
-                        let (x, y) = (run.origin[0] + p.x, run.origin[1] + p.y);
-                        canvas.translate((x, y));
-                        let anchored = paint.shader().map(|shader| {
-                            let mut local = paint.clone();
-                            local.set_shader(
-                                shader.with_local_matrix(&skia_safe::Matrix::translate((-x, -y))),
-                            );
-                            local
-                        });
-                        let paint = anchored.as_ref().unwrap_or(paint);
-                        match m {
-                            Outline::Mesh(v) => {
-                                canvas.draw_vertices(v, BlendMode::SrcOver, paint);
-                            }
-                            Outline::Synthetic(path) => {
-                                canvas.draw_path(path, paint);
-                            }
-                        }
-                        canvas.restore();
-                    }
+                    self.meshes.insert(key, m);
                 }
-                Ok(())
-            },
-        )
+                if let Some(m) = &self.meshes[&key] {
+                    canvas.save();
+                    let (x, y) = (run.origin[0] + p.x, run.origin[1] + p.y);
+                    canvas.translate((x, y));
+                    let anchored = paint.shader().map(|shader| {
+                        let mut local = paint.clone();
+                        local.set_shader(
+                            shader.with_local_matrix(&skia_safe::Matrix::translate((-x, -y))),
+                        );
+                        local
+                    });
+                    let paint = anchored.as_ref().unwrap_or(paint);
+                    match m {
+                        Outline::Mesh(v) => {
+                            canvas.draw_vertices(v, BlendMode::SrcOver, paint);
+                        }
+                        Outline::Synthetic(path) => {
+                            canvas.draw_path(path, paint);
+                        }
+                    }
+                    canvas.restore();
+                }
+            }
+            Ok(())
+        })
     }
 }
 #[cfg(test)]

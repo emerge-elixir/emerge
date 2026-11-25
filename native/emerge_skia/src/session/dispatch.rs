@@ -4,7 +4,7 @@ use crate::{
     binary,
     input::{self, InputEvent, InputHandler},
     keys::CanonicalKey,
-    tree::{Attachment, Raster},
+    tree::{Attachment, Scene},
 };
 use rustler::{Atom, Env, Error, LocalPid, NifResult, Term};
 
@@ -20,7 +20,10 @@ fn action(a: Atom) -> NifResult<u8> {
 }
 fn mods(mut list: Term) -> NifResult<u8> {
     let mut bits = 0;
-    while !list.is_empty_list() {
+    for _ in 0..4 {
+        if list.is_empty_list() {
+            return Ok(bits);
+        }
         let (t, tail) = list.list_get_cell()?;
         list = tail;
         let a: Atom = t.decode()?;
@@ -40,7 +43,7 @@ fn mods(mut list: Term) -> NifResult<u8> {
         }
         bits |= bit;
     }
-    Ok(bits)
+    list.is_empty_list().then_some(bits).ok_or(Error::BadArg)
 }
 fn point((x, y): (f32, f32)) -> NifResult<(f32, f32)> {
     if x.is_finite() && y.is_finite() {
@@ -90,9 +93,14 @@ pub(super) fn decode(raw: Term) -> NifResult<InputEvent> {
             focused: payload.decode()?,
         }
     } else if tag == input::text_commit() {
-        let (text, m): (String, Term) = payload.decode()?;
+        let (text, m): (rustler::Binary, Term) = payload.decode()?;
+        if text.len() > 64 * 1024 {
+            return Err(Error::BadArg);
+        }
         InputEvent::TextCommit {
-            text,
+            text: std::str::from_utf8(text.as_slice())
+                .map_err(|_| Error::BadArg)?
+                .to_owned(),
             mods: mods(m)?,
         }
     } else {
@@ -112,8 +120,8 @@ struct Position {
     y: f64,
 }
 impl Dispatcher {
-    pub fn after_draw(&mut self, raster: &Raster) {
-        if self.pressed.is_some_and(|key| !raster.has_target(key)) {
+    pub fn after_draw(&mut self, scene: &Scene) {
+        if self.pressed.is_some_and(|key| !scene.hits.has_target(key)) {
             self.pressed = None
         }
     }
@@ -121,7 +129,7 @@ impl Dispatcher {
         self.pressed = None;
         self.target = target;
     }
-    pub fn dispatch(&mut self, env: Env, raster: &Raster, event: InputEvent) {
+    pub fn dispatch(&mut self, env: Env, frame: Option<&super::Bundle>, event: InputEvent) {
         let Some(pid) = self.target else { return };
         if self.observer.accepts(&event) {
             let _ = env.send(&pid, (input::emerge_skia_event(), &event));
@@ -134,23 +142,25 @@ impl Dispatcher {
                 y,
                 ..
             } if button == input::pointer::BUTTON_LEFT => {
-                let hit = raster.target_at(x, y);
+                let hit = frame.and_then(|f| f.scene.hits.target_at(f.scene.viewport, x, y));
                 if action == input::ACTION_PRESS {
                     self.pressed = hit.map(|h| h.0);
                 } else if let (Some(pressed), Some((key, id, x, y))) = (self.pressed.take(), hit)
                     && key == pressed
                 {
-                    let _ = env.send(
-                        &pid,
-                        (
-                            input::emerge_skia_event(),
-                            (
-                                binary(env, &id.to_be_bytes()),
-                                input::click(),
-                                Position { x, y },
-                            ),
-                        ),
+                    let event = (
+                        binary(env, &id.to_be_bytes()),
+                        input::click(),
+                        Position { x, y },
                     );
+                    match frame.map(|f| f.route.epoch).unwrap_or(0) {
+                        0 => {
+                            let _ = env.send(&pid, (input::emerge_skia_event(), event));
+                        }
+                        epoch => {
+                            let _ = env.send(&pid, (super::emerge_skia_routed(), epoch, event));
+                        }
+                    }
                 }
             }
             InputEvent::Focused { focused: false }
