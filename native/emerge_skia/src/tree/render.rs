@@ -1080,14 +1080,28 @@ fn build_host_content_subtree<H: HostRegistryTraversalSink>(
         scroll_y: effective_scrollbar_y(attrs),
     };
     let current_self_shape = geometry_self_shape(render_frame, attrs);
-    let child_render_ctx = traversal.render_ctx.with_host_clip(
-        current_host_clip,
-        ClipShape {
-            rect: current_self_shape.rect,
-            radii: current_self_shape.radii,
-        },
-        attrs.clip_nearby.unwrap_or(false),
-    );
+    let current_self_clip = ClipShape {
+        rect: current_self_shape.rect,
+        radii: current_self_shape.radii,
+    };
+    let clip_nearby = attrs.clip_nearby.unwrap_or(false);
+    let child_render_ctx =
+        traversal
+            .render_ctx
+            .with_host_clip(current_host_clip, current_self_clip, clip_nearby);
+    // A scroll container clips the nearby content of its children (as
+    // `clip_nearby` does), since that content scrolls with them; its own
+    // nearby (`child_render_ctx`) still overflows it. Matches
+    // `ResolvedNodeState::clip_content_nearby`, which clips input and culling.
+    let scrolls = current_host_clip.scroll_x || current_host_clip.scroll_y;
+    let content_render_ctx_owned = (scrolls && !clip_nearby).then(|| {
+        traversal
+            .render_ctx
+            .with_host_clip(current_host_clip, current_self_clip, true)
+    });
+    let content_render_ctx = content_render_ctx_owned
+        .as_ref()
+        .unwrap_or(&child_render_ctx);
 
     let mut subtree = RenderSubtree::default();
     let slider_slots = (element.spec.kind == ElementKind::Slider)
@@ -1153,7 +1167,7 @@ fn build_host_content_subtree<H: HostRegistryTraversalSink>(
                 let branch_registry =
                     registry.child_traversal(child_registry_skipped, child_registry_ctx);
                 let child_traversal =
-                    traversal.for_child(child_scene_ctx.clone(), &child_render_ctx);
+                    traversal.for_child(child_scene_ctx.clone(), content_render_ctx);
                 let child_traversal = if slider_value_slot {
                     child_traversal.within_cacheable_semantic_layer()
                 } else {
@@ -1238,7 +1252,7 @@ fn build_host_content_subtree<H: HostRegistryTraversalSink>(
             element,
             element_context,
             &mut outputs.reborrow(),
-            traversal.for_branch(&child_render_ctx),
+            traversal.for_branch(content_render_ctx),
             scene_state.clone(),
             current_host_clip.clip,
             &mut registry,

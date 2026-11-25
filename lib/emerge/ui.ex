@@ -544,8 +544,9 @@ defmodule Emerge.UI do
   @doc """
   Clip nearby escape overlays attached under this host.
 
-  Use this on hosts or scroll containers when nearby content should be clipped
-  to the host bounds instead of escaping freely.
+  Use this on hosts when nearby content should be clipped to the host bounds
+  instead of escaping freely. A scroll container already clips the nearby
+  content of its descendants; on one, this also clips its own nearby.
   """
   @spec clip_nearby() :: clip_nearby_attr()
   def clip_nearby, do: {:clip_nearby, true}
