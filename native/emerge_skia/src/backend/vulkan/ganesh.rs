@@ -90,7 +90,8 @@ impl GaneshContext {
         if let Some(mut context) = self.direct_context.take() {
             context.perform_deferred_cleanup(std::time::Duration::ZERO, None);
             context.free_gpu_resources();
-            context.flush_and_submit();
+            // Best effort on teardown; this is not a frame to present.
+            let _ = context.flush_and_submit();
             drop(context);
         }
     }

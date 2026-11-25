@@ -204,7 +204,7 @@ fn row_rejects_unsupported_fields_and_malformed_shapes_without_losing_pending_ed
         (4, "El supports at most one child"),
         (5, "leaf has children"),
         (6, "leaf has children"),
-        (9, "image requires a logical PNG or JPEG source"),
+        (9, "image requires a source"),
         (10, "unsupported element 10 in first slice"),
     ] {
         let full = upload(&[

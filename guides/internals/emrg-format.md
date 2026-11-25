@@ -88,7 +88,19 @@ reject the new kind, not the whole format. Paragraph and TextColumn use the
 existing tags `7` and `8` and ordinary declared child order. No line fragments,
 float offsets, glyph ranges or continuation hit boxes cross the wire.
 
-Kind `9` is a retained leaf for logical PNG and JPEG images. Tag `53` variant `1` carries the logical name (u16 byte length and UTF-8 bytes); tag `54` is `0` contain or `1` cover. Image and El admit tag `35`, a finite `f64` for static opacity. No dimensions, pixels, resource tickets or group bounds cross the wire. [Fitted decode](../../plans/checkpoints/layout/sized-rasters.md) uses renderer configuration and settled device geometry, not another image attribute. Other image-source variants are not compatibility aliases. [PNG scope and controls](../../plans/checkpoints/layout/raster-images.md) · [JPEG scope and controls](../../plans/checkpoints/layout/jpeg.md).
+### Retained image sources
+
+Kind `9` serves both `image/2` and `svg/2`. Tag `54` selects contain (`0`) or cover (`1`); `64` indicates SVG is required; `63` is its optional solid/gradient template color. Tag `35` remains static opacity. A source in tag `53` consists of one variant byte followed by:
+
+| Variant | Payload | Meaning |
+| --- | --- | --- |
+| `0` | length-prefixed ID | Reserved existing ID form; no retained ID lookup |
+| `1` | `u16be` length, UTF-8 logical name | Under the renderer's application `priv/`, including `~m` |
+| `2` | `u16be` length, UTF-8 absolute path | Requires runtime authorization |
+| `3` | SHA-256 (32 bytes), `u32be` length, encoded file bytes | Defines and uses inline PNG, JPEG or SVG |
+| `4` | SHA-256 (32 bytes) | Uses a definition from this batch (including a later record) or the preceding accepted declaration |
+
+A full export includes one definition per distinct inline payload. An incremental edit may reuse it without resending bytes. Clear or removal of the last declaration ends that ownership, even if a sealed frame or idle cache still holds the picture. New digests are checked before admission; malformed or over-budget updates do not replace the accepted declaration. The 64 MiB EMRG limit includes framing and inline definitions. Decoded pixels, intrinsic dimensions, picture commands and resource tickets are never on the wire. [Fitted raster decode](../../plans/checkpoints/layout/sized-rasters.md) still depends on renderer configuration and prepared geometry.
 
 ## Attribute Tags
 

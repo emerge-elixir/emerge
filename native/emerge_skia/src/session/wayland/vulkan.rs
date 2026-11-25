@@ -209,8 +209,7 @@ impl Graph {
             // A command-recording or submission error may have left Ganesh
             // work buffered. Flush while borrowed image handles are still live.
             let ctx = self.context.direct_context_mut()?;
-            ctx.flush(None);
-            if !ctx.submit(gpu::SyncCpu::No) || ctx.abandoned() {
+            if ctx.flush_and_submit().is_err() || ctx.abandoned() {
                 return Err("unable to retire Vulkan drawing context".into());
             }
             self.device.wait_idle("retire Ganesh queue")?;
@@ -404,7 +403,7 @@ impl VkPresenter {
             i.surface.as_mut().unwrap().surface_mut(),
             &info,
             Some(&state),
-        ) != gpu::SemaphoresSubmitted::Yes
+        ) != Ok(gpu::SemaphoresSubmitted::Yes)
             || !ctx.submit(gpu::SyncCpu::No)
         {
             return Err("Vulkan render-finished submission failed".into());

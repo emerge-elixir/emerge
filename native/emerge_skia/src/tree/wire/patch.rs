@@ -87,17 +87,18 @@ impl Tree {
         result
     }
     pub fn patch(&mut self, bytes: &[u8]) -> Result<()> {
+        self.patch_staged(&Staged::new(bytes, &self.input_budget)?)
+    }
+    pub(crate) fn patch_staged(&mut self, edit: &Staged<'_>) -> Result<()> {
         let scale = if self.layers.prepared_scale > 0. {
             self.layers.prepared_scale
         } else {
             1.
         };
-        self.apply(bytes, scale)
+        self.apply(edit, scale)
     }
-    pub(super) fn apply(&mut self, bytes: &[u8], scale: f32) -> Result<()> {
-        if bytes.len() > MAX_BYTES {
-            return Err("patch exceeds storage limit".into());
-        }
+    pub(super) fn apply(&mut self, edit: &Staged<'_>, scale: f32) -> Result<()> {
+        let bytes = edit.bytes.as_ref();
         if bytes.is_empty() {
             return Ok(());
         }
@@ -110,10 +111,12 @@ impl Tree {
                 if b.entries.is_empty() {
                     return Ok(());
                 }
+                let media = edit.changes(&self.elements, &b)?;
                 let dirty = self.layers.bounds.context_dirty;
-                match self.admit(&mut b, bytes, scale) {
+                match self.admit(&mut b, bytes, scale, media.bytes()) {
                     Ok(d) => {
                         self.layers.prepared_scale = scale;
+                        edit.commit(media, &mut self.elements);
                         self.commit(&mut b, bytes, d);
                         Ok(())
                     }
@@ -129,7 +132,13 @@ impl Tree {
         self.wire.patch = Some(b);
         result
     }
-    fn admit(&mut self, b: &mut Batch, bytes: &[u8], scale: f32) -> Result<Demand> {
+    fn admit(
+        &mut self,
+        b: &mut Batch,
+        bytes: &[u8],
+        scale: f32,
+        media_bytes: usize,
+    ) -> Result<Demand> {
         let mut d = Demand::new(self);
         let e = &self.elements;
         let l = &mut self.layers;
@@ -189,9 +198,12 @@ impl Tree {
                 && (s.inserted
                     || existing.is_none_or(|k| {
                         s.attrs.as_ref().is_some_and(|(a, r)| {
-                            e.attrs[k]
-                                .image_src
-                                .differs(e.raw(k), a.image_src, &bytes[r.clone()])
+                            e.attrs[k].svg_expected != a.svg_expected
+                                || e.attrs[k].image_src.differs(
+                                    e.raw(k),
+                                    a.image_src,
+                                    &bytes[r.clone()],
+                                )
                         })
                     }));
             d.live += 1;
@@ -251,7 +263,9 @@ impl Tree {
             }
         }
         if d.live > 1_000_000
-            || d.live_bytes + 18 * d.live + 8 * d.live.saturating_sub(1) + 25 > MAX_BYTES
+            || media_bytes
+                .saturating_add(d.live_bytes + 18 * d.live + 8 * d.live.saturating_sub(1) + 25)
+                > MAX_BYTES
         {
             return Err("patched declarations exceed storage limit".into());
         }

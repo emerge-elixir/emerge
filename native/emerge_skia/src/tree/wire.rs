@@ -2,6 +2,7 @@
 use super::*;
 mod batch;
 mod length;
+pub(super) mod media;
 mod patch;
 mod upload;
 #[derive(Default)]
@@ -68,7 +69,7 @@ impl<'a> Reader<'a> {
             Err("expected finite number".into())
         }
     }
-    fn flag(&mut self) -> Result<bool> {
+    pub(super) fn flag(&mut self) -> Result<bool> {
         match self.byte()? {
             0 => Ok(false),
             1 => Ok(true),
@@ -266,7 +267,10 @@ fn attrs(raw: &[u8], shape: Shape) -> Result<Attrs> {
     }
     if shape == Shape::Image {
         if a.image_src.len == 0 {
-            return Err("image requires a logical PNG or JPEG source".into());
+            return Err("image requires a source".into());
+        }
+        if !a.svg_expected && (a.svg_color.is_some() || a.svg_gradient.len != 0) {
+            return Err("template color requires an SVG leaf".into());
         }
         if !matches!(
             a.sizing.width,
@@ -297,6 +301,7 @@ impl Tree {
                 .to_be_bytes(),
         );
         out.extend((self.elements.attached_count() as u32).to_be_bytes());
+        let mut seen = std::collections::HashSet::new();
         let mut stack: Vec<_> = self.root.into_iter().collect();
         while let Some(k) = stack.pop() {
             let e = &self.elements;
@@ -304,8 +309,7 @@ impl Tree {
             out.extend(n.id.to_be_bytes());
             out.extend([n.shape as u8, 3]);
             let raw = e.raw(k);
-            out.extend((raw.len() as u32).to_be_bytes());
-            out.extend(raw);
+            e.media.write(&e.attrs[k], raw, &mut seen, &mut out);
             let children = e.children(k);
             out.extend((children.len() as u16).to_be_bytes());
             for &c in children {

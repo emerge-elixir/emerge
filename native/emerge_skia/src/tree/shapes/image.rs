@@ -14,13 +14,28 @@ impl Payload for Image {
     }
     fn decode(tag: u8, r: &mut wire::Reader<'_>, raw: &[u8], a: &mut Attrs) -> Result<(), String> {
         match tag {
-            53 if r.byte()? == 1 => {
-                let path = r.string()?;
-                if crate::raster_assets::Format::logical(path).is_none() {
-                    return Err("expected a relative logical PNG or JPEG name".into());
+            53 if a.image_src.len == 0 => {
+                let start = r.0;
+                match r.byte()? {
+                    1 if crate::raster_assets::valid_logical(r.string()?) => (),
+                    2 if crate::raster_assets::valid_absolute(r.string()?) => (),
+                    3 => {
+                        r.take(32)?;
+                        let len = r.long()?;
+                        if len == 0 {
+                            return Err("empty inline image".into());
+                        }
+                        r.take(len)?;
+                    }
+                    4 => {
+                        r.take(32)?;
+                    }
+                    _ => return Err("invalid image source".into()),
                 }
-                a.image_src = decoration::Bytes::of(raw, path.as_bytes());
+                a.image_src = decoration::Bytes::of(raw, &start[..start.len() - r.0.len()]);
             }
+            63 => (a.svg_color, a.svg_gradient) = r.ink(raw)?,
+            64 => a.svg_expected = r.flag()?,
             54 => {
                 a.image_cover = match r.byte()? {
                     0 => false,
@@ -33,17 +48,17 @@ impl Payload for Image {
         Ok(())
     }
 }
-fn projected(extent: f32, to: i32, from: i32) -> f32 {
+fn projected(extent: f32, to: f32, from: f32) -> f32 {
     (f64::from(extent.max(0.)) * f64::from(to) / f64::from(from)).min(f64::from(f32::MAX)) as f32
 }
 impl LayoutBehaviour for Image {
     fn measure(node: Mounted<'_, Self>, cx: &mut Measuring<'_>) -> Demand {
         let b = node.attrs().sizing;
         let size = node.elements.images.source(node.key).dimensions();
-        let (iw, ih) = size.unwrap_or((64, 64));
+        let (iw, ih) = size.unwrap_or((64., 64.));
         // Intrinsic texel dimensions are device extents on main. Only authored
         // box lengths/insets are scaled. An unknown file supplies no aspect ratio.
-        let (mut w, mut h) = (iw as f32, ih as f32);
+        let (mut w, mut h) = (iw, ih);
         if size.is_some() {
             let scale = cx.scale();
             let [t, r, d, l] = b.padding.map(|v| scale::pixels(v, scale));
@@ -75,11 +90,12 @@ impl LayoutBehaviour for Image {
 impl PaintBehaviour<Image> for Image {
     fn attrs_changed(a: &Attrs, b: &Attrs) -> bool {
         a.background != b.background
+            || a.svg_color != b.svg_color
             || a.image_cover != b.image_cover
             || a.image_host_clip != b.image_host_clip
             || a.sizing.padding != b.sizing.padding
     }
     fn reads_context(_: &Attrs, old: Option<PaintContext>, ctx: PaintContext) -> bool {
-        old.is_none_or(|p| p.frame != ctx.frame || p.child_clip != ctx.child_clip || p.scale != ctx.scale)
+        old.is_none_or(|p| p.frame != ctx.frame || p.clip != ctx.clip || p.child_clip != ctx.child_clip || p.scale != ctx.scale)
     }
 }

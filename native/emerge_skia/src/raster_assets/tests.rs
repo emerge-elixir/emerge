@@ -4,7 +4,12 @@ use std::{fs, os::unix::fs::symlink, path::PathBuf};
 struct Temp(PathBuf);
 impl Temp {
     fn new(label: &str) -> Self {
-        let path = std::env::temp_dir().join(format!("emerge-{label}-{}", std::process::id()));
+        // TMPDIR itself may be a symlink (e.g. /var on macOS). The exact-file
+        // controls must test the grant, not accidentally refuse its parent.
+        let path = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("emerge-{label}-{}", std::process::id()));
         fs::create_dir(&path).unwrap();
         Self(path)
     }
@@ -14,6 +19,7 @@ impl Temp {
             decode_at_size: false,
             cache_max_entries: 1,
             cache_max_bytes: MAX_BITMAP,
+            ..Default::default()
         })
         .unwrap()
     }
@@ -66,7 +72,7 @@ fn directory_capability_file_and_decode_limits_precede_pixel_allocation() {
     }
     assert_eq!(l.resident.load(Ordering::Relaxed), 0);
     let a = l.load("wide.png".into());
-    assert_eq!(a.dimensions(), Some((200, 100)));
+    assert_eq!(a.dimensions(), Some((200., 100.)));
     assert_eq!(a, l.load("wide.png".into()));
     let b = l.load("grid.png".into());
     assert_eq!(l.cache.len(), 1);
@@ -74,9 +80,97 @@ fn directory_capability_file_and_decode_limits_precede_pixel_allocation() {
     drop(a);
     assert_eq!(l.resident.load(Ordering::Relaxed), 240);
     assert!(l.evict());
-    assert_eq!(b.dimensions(), Some((10, 6)));
+    assert_eq!(b.dimensions(), Some((10., 6.)));
     drop(b);
     assert_eq!(l.resident.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn runtime_cache_hits_require_the_declared_decoder_and_current_file_capability() {
+    let dir = Temp::new("content-reader");
+    let png = fs::read(fixtures().join("alpha_grid.png")).unwrap();
+    let bytes = InputBudget::default().copy(&png).unwrap();
+    let wrong = dir.0.join("wrong.jpg");
+    fs::write(&wrong, &png).unwrap();
+    let name = dir.0.join("photo.png");
+    fs::write(&name, &png).unwrap();
+    for sized in [false, true] {
+        let mut l = Loader::new(Settings {
+            sources: vec![dir.0.display().to_string()],
+            decode_at_size: sized,
+            cache_max_entries: 2,
+            cache_max_bytes: MIB,
+            runtime_enabled: true,
+            follow_symlinks: true,
+            allowlist: vec![dir.0.display().to_string()],
+            extensions: vec![".png".into(), ".jpg".into()],
+            max_file_size: MIB,
+            ..Default::default()
+        })
+        .unwrap();
+        let input = || Input::Bytes(digest(&png), bytes.clone());
+        let ready = l.open_input(input(), false).unwrap();
+        assert_eq!(ready.dimensions(), Some((10., 6.)));
+        assert!(l.open_input(input(), true).is_none());
+        assert_eq!(
+            l.open_input(Input::Runtime(name.display().to_string()), false),
+            Some(ready)
+        );
+        assert!(
+            l.open_input(Input::Runtime(wrong.display().to_string()), false)
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn logical_svg_aliases_share_a_live_snapshot_only_within_the_same_root() {
+    let [a, b] = [Temp::new("svg-root-a"), Temp::new("svg-root-b")];
+    let wide = fs::read(fixtures().join("single_axis_wide.svg")).unwrap();
+    let square = fs::read(fixtures().join("single_axis_square.svg")).unwrap();
+    fs::write(a.0.join("same.svg"), &wide).unwrap();
+    fs::write(a.0.join("alias.svg"), &wide).unwrap();
+    fs::write(b.0.join("same.svg"), &square).unwrap();
+    let absolute = a.0.join("alias.svg").display().to_string();
+    let mut first = Loader::new(Settings {
+        sources: vec![a.0.display().to_string()],
+        runtime_enabled: true,
+        allowlist: vec![absolute.clone()],
+        extensions: vec![".svg".into()],
+        max_file_size: MIB,
+        ..Default::default() // no idle retention
+    })
+    .unwrap();
+    let mut second = b.loader();
+    let live = first.load("same.svg".into());
+    let alias = first.load("alias.svg".into());
+    assert_eq!(alias, live);
+    let other = second.load("same.svg".into());
+    assert_eq!(live.dimensions(), Some((200., 100.)));
+    assert_eq!(other.dimensions(), Some((200., 200.)));
+    for _ in 0..2 {
+        let copy = InputBudget::default().copy(&wide).unwrap();
+        assert_eq!(
+            first.open_input(Input::Bytes(digest(&wide), copy), true),
+            Some(live.clone())
+        );
+    }
+    let runtime = || Input::Runtime(absolute.clone());
+    assert_eq!(first.open_input(runtime(), true), Some(live.clone()));
+    // The exact-file grant pins the original descriptor. New identical bytes
+    // at the very same filename are not a grant, even with the picture live.
+    fs::rename(&absolute, a.0.join("original.svg")).unwrap();
+    fs::write(&absolute, &wide).unwrap();
+    assert!(first.open_input(runtime(), true).is_none());
+    fs::write(a.0.join("same.svg"), square).unwrap();
+    assert_eq!(first.load("same.svg".into()), live);
+    assert_eq!(first.pictures.counts(), (1, 1));
+    drop((alias, live));
+    let reopened = first.load("same.svg".into());
+    assert_eq!(reopened.dimensions(), other.dimensions());
+    assert_ne!(reopened, other, "renderers do not share a picture catalog");
+    assert_eq!(first.pictures.counts(), (2, 2));
+    assert_eq!(second.pictures.counts(), (1, 1));
 }
 
 // Change just the SHORT orientation value in our generated little-endian IFD0.
@@ -201,7 +295,7 @@ fn jpeg_requires_a_complete_matching_file_and_bounded_dimensions() {
         assert_eq!(l.load(bad.into()), Source::Failed, "{bad}");
         assert_eq!(l.resident.load(Ordering::Relaxed), 0);
     }
-    assert_eq!(l.load("padded.jpg".into()).dimensions(), Some((640, 420)));
+    assert_eq!(l.load("padded.jpg".into()).dimensions(), Some((640., 420.)));
 }
 #[test]
 fn fitted_jpeg_retains_only_fitted_bytes_and_grows_from_the_same_compressed_source() {

@@ -1,5 +1,5 @@
-//! Logical PNG and JPEG images. Each loader owns its directory capability, decoded cache
-//! and pixel budget. No process-global source names or lazy decode at replay.
+//! Renderer-local source preparation. SVGs are immutable command pictures;
+//! only PNG/JPEG use the fitted-pixel pipeline.
 use rustix::fs::{Mode, OFlags, openat};
 use skia_safe::{
     AlphaType, Bitmap, Codec, ColorType, Data, EncodedOrigin, ISize, Image, ImageInfo, codec,
@@ -16,12 +16,19 @@ use std::{
     },
 };
 
+mod files;
 mod format;
+mod input;
 mod sized;
+mod svg;
+pub(crate) use files::{valid_absolute, valid_logical};
+use input::AssetKey;
+pub(crate) use input::{Digest, Input, InputBudget, Media, digest};
 pub(crate) use sized::{Record, covers};
+pub(crate) use svg::Pictures;
 #[cfg(test)]
 mod tests;
-pub(crate) use format::Format;
+use format::Format;
 const MIB: usize = 1024 * 1024;
 const MAX_FILE: usize = 64 * MIB;
 const MAX_BITMAP: usize = 64 * MIB;
@@ -35,16 +42,23 @@ fn bitmap_bytes(w: i32, h: i32) -> Option<usize> {
     (bytes <= MAX_BITMAP).then_some(bytes)
 }
 
-#[derive(rustler::NifMap)]
+#[derive(rustler::NifMap, Default)]
 pub(crate) struct Settings {
     pub sources: Vec<String>,
+    pub runtime_enabled: bool,
+    pub allowlist: Vec<String>,
+    pub follow_symlinks: bool,
+    pub max_file_size: usize,
+    pub extensions: Vec<String>,
+    pub svg_tree_max_entries: usize,
+    pub svg_tree_max_bytes: usize,
     pub decode_at_size: bool,
     pub cache_max_entries: usize,
     pub cache_max_bytes: usize,
 }
 
 #[derive(Debug)]
-struct Charge {
+pub(crate) struct Charge {
     resident: Arc<AtomicUsize>,
     bytes: usize,
 }
@@ -95,32 +109,35 @@ pub(crate) enum Source {
     Pending,
     Ready(BitmapRef),
     Sized(Record),
+    Picture(svg::Art),
     Failed,
 }
 impl Source {
-    pub fn dimensions(&self) -> Option<(i32, i32)> {
+    pub fn dimensions(&self) -> Option<(f32, f32)> {
         match self {
-            Self::Ready(b) => Some((b.image().width(), b.image().height())),
-            Self::Sized(r) => Some((r.size().width, r.size().height)),
+            Self::Ready(b) => Some((b.image().width() as f32, b.image().height() as f32)),
+            Self::Sized(r) => Some((r.size().width as f32, r.size().height as f32)),
+            Self::Picture(art) => Some(art.size()),
             _ => None,
         }
     }
 }
 
 pub(crate) enum Request {
-    Open(String),
+    Open(Input, bool),
     Fit(Record, ISize),
 }
 struct Entry {
-    name: Arc<str>,
+    name: AssetKey,
     record: Option<Record>,
     bitmap: BitmapRef,
 }
 pub(crate) struct Loader {
-    root: Option<File>,
+    files: files::Files,
+    pub pictures: Pictures,
     settings: Settings,
     cache: VecDeque<Entry>,
-    records: HashMap<Arc<str>, std::sync::Weak<sized::Encoded>>,
+    records: HashMap<AssetKey, std::sync::Weak<sized::Encoded>>,
     encoded_bytes: Arc<AtomicUsize>,
     clock: Arc<std::sync::atomic::AtomicU64>,
     #[cfg(test)]
@@ -130,23 +147,9 @@ pub(crate) struct Loader {
 }
 impl Loader {
     pub fn new(settings: Settings) -> Result<Self, String> {
-        let [root] = settings.sources.as_slice() else {
-            return Err("expected one application priv directory".into());
-        };
-        if !Path::new(root).is_absolute() {
-            return Err("expected an absolute priv directory".into());
-        }
-        // Mix itself may symlink priv/. Descendants are opened relative to this
-        // directory handle with NOFOLLOW, not checked and re-opened by path.
-        let root = rustix::fs::open(
-            root.as_str(),
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .ok()
-        .map(File::from);
         Ok(Self {
-            root,
+            files: files::Files::new(&settings)?,
+            pictures: Pictures::new(&settings),
             settings,
             cache: Default::default(),
             records: Default::default(),
@@ -157,26 +160,6 @@ impl Loader {
             cached_bytes: 0,
             resident: Default::default(),
         })
-    }
-    fn open(&self, name: &str) -> Option<(Format, File, usize)> {
-        let format = Format::logical(name)?;
-        let mut dir = self.root.as_ref()?.try_clone().ok()?;
-        let mut components = name.split('/').peekable();
-        while let Some(component) = components.next() {
-            let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK;
-            let flags = if components.peek().is_some() {
-                flags | OFlags::DIRECTORY
-            } else {
-                flags
-            };
-            dir = openat(dir, component, flags, Mode::empty()).ok()?.into();
-        }
-        let meta = dir.metadata().ok()?;
-        let len = usize::try_from(meta.len()).ok()?;
-        if !meta.is_file() || !(1..=MAX_FILE).contains(&len) {
-            return None;
-        }
-        Some((format, dir, len))
     }
     fn evict(&mut self) -> bool {
         let i = if self.settings.decode_at_size {
@@ -207,15 +190,11 @@ impl Loader {
         // can release their individual leases on other threads.
         Some(Charge::new(&self.resident, bytes))
     }
-    fn decode(&mut self, name: &str) -> Option<BitmapRef> {
-        let (format, file, len) = self.open(name)?;
-        let codec = format.codec(Data::from_stream(file.take(len as u64), len)?)?;
-        let display = sized::intrinsic(&codec, format);
-        self.decode_for(codec, format, display)
-    }
     pub fn fulfill(&mut self, req: Request, publish: impl FnOnce(Source) -> bool) -> bool {
         match req {
-            Request::Open(name) => publish(self.load(name)),
+            Request::Open(input, svg_only) => {
+                publish(self.open_input(input, svg_only).unwrap_or(Source::Failed))
+            }
             Request::Fit(r, size) => {
                 let Some(b) = self.fit(&r, size) else {
                     return publish(Source::Failed);
@@ -230,23 +209,93 @@ impl Loader {
             }
         }
     }
+    #[cfg(test)]
     pub fn load(&mut self, name: String) -> Source {
-        if self.settings.decode_at_size {
-            return self.metadata(name).map_or(Source::Failed, Source::Sized);
+        self.open_input(Input::Logical(name), false)
+            .unwrap_or(Source::Failed)
+    }
+    fn open_input(&mut self, input: Input, svg_only: bool) -> Option<Source> {
+        let (format, key, data) = match input {
+            Input::Logical(name) => {
+                let format = Format::logical(&name)?;
+                if svg_only && format != Format::Svg {
+                    return None;
+                }
+                if format == Format::Svg
+                    && let Some(art) = self.pictures.named(&name)
+                {
+                    return Some(Source::Picture(art));
+                }
+                let name: Arc<str> = name.into();
+                let key = AssetKey::Name(name.clone());
+                if format != Format::Svg
+                    && let Some(hit) = self.cached(&key)
+                {
+                    return Some(hit);
+                }
+                let (_, data) = self.files.read(&name, false, &self.settings)?;
+                (format, key, data)
+            }
+            Input::Runtime(name) => {
+                let (format, data) = self.files.read(&name, true, &self.settings)?;
+                (format, AssetKey::Content(digest(&data)), data)
+            }
+            Input::Bytes(id, bytes) => {
+                let format = Format::inline(bytes.bytes());
+                if bytes.bytes().len() > format.limit() {
+                    return None;
+                }
+                // SkData retains the already-owned input, not a BEAM term.
+                struct Owner(Arc<Media>);
+                impl AsRef<[u8]> for Owner {
+                    fn as_ref(&self) -> &[u8] {
+                        self.0.bytes()
+                    }
+                }
+                (
+                    format,
+                    AssetKey::Content(id),
+                    Data::new_with_owner(Owner(bytes)),
+                )
+            }
+        };
+        if format == Format::Svg {
+            return self.pictures.load(key, &data).map(Source::Picture);
         }
-        if let Some(i) = self.cache.iter().position(|e| e.name.as_ref() == name) {
+        if svg_only {
+            return None;
+        }
+        if matches!(key, AssetKey::Content(_))
+            && let Some(hit) = self.cached(&key)
+        {
+            return Some(hit);
+        }
+        if self.settings.decode_at_size {
+            return self.metadata(key, format, data).map(Source::Sized);
+        }
+        let codec = format.codec(data)?;
+        let size = sized::intrinsic(&codec, format);
+        let image = self.decode_for(codec, format, size)?;
+        self.retain(key, None, &image);
+        Some(Source::Ready(image))
+    }
+    fn cached(&mut self, name: &AssetKey) -> Option<Source> {
+        if self.settings.decode_at_size {
+            return self
+                .records
+                .get(name)?
+                .upgrade()
+                .map(|r| Source::Sized(Record(r)));
+        }
+        if let Some(i) = self.cache.iter().position(|e| &e.name == name) {
             let entry = self.cache.remove(i).unwrap();
             let image = entry.bitmap.clone();
             self.cache.push_back(entry);
-            return Source::Ready(image);
+            return Some(Source::Ready(image));
         }
-        let Some(image) = self.decode(&name) else {
-            return Source::Failed;
-        };
-        self.retain(name.into(), None, &image);
-        Source::Ready(image)
+        None
     }
-    fn retain(&mut self, name: Arc<str>, record: Option<Record>, image: &BitmapRef) {
+    fn retain(&mut self, name: AssetKey, record: Option<Record>, image: &BitmapRef) {
         let bytes = image.0.charge.bytes;
         let limit = self.settings.cache_max_bytes.min(MAX_RESIDENT);
         if self.settings.cache_max_entries == 0 || bytes > limit {

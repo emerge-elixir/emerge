@@ -30,32 +30,23 @@ defmodule Emerge.Engine.Patch do
   end
 
   @spec encode(patch() | [patch()]) :: binary()
-  def encode([]), do: <<>>
-  def encode([op]), do: encode(op)
+  def encode(patch, known \\ %{})
+  def encode([], _known), do: <<>>
+  def encode([op], known), do: encode(op, known)
 
-  def encode({:patch, target, body}) when target in 0..0xFFFFFFFFFFFFFFFF do
-    {records, count} = records(body, {[], 0})
-
-    IO.iodata_to_binary([
-      <<"EMRG", 10, target::64, id(body)::64, count::32>>,
-      Enum.reverse(records)
-    ])
+  def encode({:patch, target, body}, known) when target in 0..0xFFFFFFFFFFFFFFFF do
+    {records, count, _known} = records(body, {[], 0, known})
+    wire = [<<"EMRG", 10, target::64, id(body)::64, count::32>>, Enum.reverse(records)]
+    if IO.iodata_length(wire) > 67_108_864, do: raise(ArgumentError, "EMRG exceeds 64 MiB")
+    IO.iodata_to_binary(wire)
   end
 
   defp id(nil), do: 0
   defp id({:node, id, _, _, _}), do: id(id)
   defp id(id) when id in 1..0xFFFFFFFFFFFFFFFF, do: id
 
-  defp records({:node, id, kind, attrs, children}, {acc, n}) do
-    {at, raw} =
-      case attrs do
-        :same ->
-          {0, []}
-
-        attrs ->
-          bytes = if is_binary(attrs), do: attrs, else: AttrCodec.encode_attrs(attrs)
-          {1, [<<byte_size(bytes)::32>>, bytes]}
-      end
+  defp records({:node, id, kind, attrs, children}, {acc, n, known}) do
+    {at, raw, known} = field(attrs, known)
 
     {ch, order} =
       case children do
@@ -64,11 +55,26 @@ defmodule Emerge.Engine.Patch do
       end
 
     record = [<<id(id)::64, Map.fetch!(@tags, kind), at + ch>>, raw, order]
-    acc = {[record | acc], n + 1}
+    acc = {[record | acc], n + 1, known}
     if ch == 0, do: acc, else: Enum.reduce(children, acc, fn {_, c}, acc -> records(c, acc) end)
   end
 
   defp records(_ref, acc), do: acc
+
+  defp field(:same, known), do: {0, [], known}
+  defp field(attrs, known) when is_map(attrs), do: field(AttrCodec.local(attrs, nil), known)
+  defp field(raw, known) when is_binary(raw), do: {1, [<<byte_size(raw)::32>>, raw], known}
+
+  defp field({:media, prefix, digest, bytes}, known) do
+    if Map.has_key?(known, digest) do
+      field(AttrCodec.reference(prefix, digest), known)
+    else
+      len = byte_size(prefix) + 37 + byte_size(bytes)
+
+      {1, [<<len::32>>, prefix, <<3, digest::binary, byte_size(bytes)::32>>, bytes],
+       Map.put(known, digest, true)}
+    end
+  end
 
   defp encode_edges(edges) do
     {ordinary, nearby} = Enum.split_while(edges, fn {tag, _} -> tag == :child end)
@@ -92,7 +98,28 @@ defmodule Emerge.Engine.Patch do
   def decode(<<>>), do: []
 
   def decode(<<"EMRG", 10, target::64, root::64, count::32, rest::binary>>) do
-    {defs, <<>>} = read_records(rest, count, %{})
+    {defs, media, <<>>} = read_records(rest, count, %{}, %{})
+
+    defs =
+      if map_size(media) > 0 or target == 0 do
+        Map.new(defs, fn
+          {id, {kind, %{image_src: {:digest, key}} = attrs, edges}} ->
+            src =
+              Map.get(media, key) ||
+                if(target == 0,
+                  do: raise(ArgumentError, "undefined image source"),
+                  else: {:digest, key}
+                )
+
+            {id, {kind, %{attrs | image_src: src}, edges}}
+
+          entry ->
+            entry
+        end)
+      else
+        defs
+      end
+
     {body, {remaining, _}} = expand(root, {defs, MapSet.new()})
     if map_size(remaining) != 0, do: raise(ArgumentError, "unreachable patch record")
     [patch(target, body)]
@@ -100,9 +127,9 @@ defmodule Emerge.Engine.Patch do
 
   def decode(_), do: raise(ArgumentError, "expected EMRG version 10")
 
-  defp read_records(bytes, 0, defs), do: {defs, bytes}
+  defp read_records(bytes, 0, defs, media), do: {defs, media, bytes}
 
-  defp read_records(<<id::64, tag, flags, bytes::binary>>, n, defs)
+  defp read_records(<<id::64, tag, flags, bytes::binary>>, n, defs, media)
        when flags in 0..3 and id > 0 do
     if Map.has_key?(defs, id), do: raise(ArgumentError, "duplicate patch record")
 
@@ -115,7 +142,17 @@ defmodule Emerge.Engine.Patch do
       end
 
     {edges, bytes} = if flags >= 2, do: read_edges(bytes), else: {:same, bytes}
-    read_records(bytes, n - 1, Map.put(defs, id, {Map.fetch!(@types, tag), attrs, edges}))
+
+    media =
+      case attrs do
+        %{image_src: {:bytes, data} = source} ->
+          Map.put(media, :crypto.hash(:sha256, data), source)
+
+        _ ->
+          media
+      end
+
+    read_records(bytes, n - 1, Map.put(defs, id, {Map.fetch!(@types, tag), attrs, edges}), media)
   end
 
   defp read_edges(

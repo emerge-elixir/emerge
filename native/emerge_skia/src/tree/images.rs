@@ -1,7 +1,7 @@
 //! Sparse subscriptions. Rebinding queues at most one job per occurrence.
 //! A completion publishes a whole immutable source (pixels *and* dimensions).
 use super::*;
-use crate::raster_assets::{Request, Source};
+use crate::raster_assets::{Input, Pictures, Request, Source};
 
 #[derive(Default)]
 struct Binding {
@@ -58,6 +58,33 @@ impl Tree {
     pub(crate) fn needs_images(&self) -> bool {
         !self.elements.images.queue.is_empty()
     }
+    /// Publish already-authorized logical snapshots and owned content without
+    /// scheduling I/O. A warm remount cannot race the display's first frame.
+    pub(crate) fn bind_ready_pictures(&mut self, pictures: &Pictures) {
+        for i in (0..self.elements.images.queue.len()).rev() {
+            let e = &mut self.elements;
+            let k = e.images.queue[i];
+            let raw = e.attrs[k].image_src.get(e.raw(k));
+            let art = match raw[0] {
+                1 => {
+                    pictures.named(std::str::from_utf8(&raw[3..]).expect("validated logical name"))
+                }
+                4 => pictures.known(raw[1..].try_into().unwrap()),
+                // An absolute file must pass the configured policy before sharing.
+                _ => None,
+            };
+            if let Some(art) = art {
+                e.images.queue.swap_remove(i);
+                if let Some(&moved) = e.images.queue.get(i) {
+                    e.images.slots[moved].queued = Some(i);
+                }
+                let b = &mut e.images.slots[k];
+                b.queued = None;
+                let ticket = Ticket::Open(k, b.generation);
+                self.complete_image(&ticket, Source::Picture(art));
+            }
+        }
+    }
     pub(crate) fn waiting_for_pixels(&self) -> bool {
         self.output.fits.waiting()
     }
@@ -73,9 +100,25 @@ impl Tree {
         let b = &mut e.images.slots[k];
         b.queued = None;
         let ticket = Ticket::Open(k, b.generation);
-        let name = std::str::from_utf8(e.attrs[k].image_src.get(e.raw(k)))
-            .expect("validated logical name");
-        Some((ticket, Request::Open(name.to_owned())))
+        let a = &e.attrs[k];
+        let raw = a.image_src.get(e.raw(k));
+        let input = match raw[0] {
+            4 => {
+                let id = raw[1..].try_into().unwrap();
+                Input::Bytes(id, e.media.get(&id).clone())
+            }
+            tag => {
+                let name = std::str::from_utf8(&raw[3..])
+                    .expect("validated filename")
+                    .to_owned();
+                if tag == 1 {
+                    Input::Logical(name)
+                } else {
+                    Input::Runtime(name)
+                }
+            }
+        };
+        Some((ticket, Request::Open(input, a.svg_expected)))
     }
     pub(crate) fn complete_image(&mut self, ticket: &Ticket, source: Source) -> bool {
         let e = &mut self.elements;

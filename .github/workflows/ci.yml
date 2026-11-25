@@ -251,5 +251,16 @@ jobs:
       - name: Install dependencies
         run: mix deps.get
 
+      - name: Test retained SVGs on Darwin without Metal, then with Metal compiled
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(--locked --manifest-path native/emerge_skia/Cargo.toml --no-default-features)
+          cargo tree "${args[@]}" -e normal,features -i skia-safe > /tmp/darwin-raster-features
+          if grep -E 'skia-safe feature "(metal|ganesh|gl|vulkan)"' /tmp/darwin-raster-features; then exit 1; fi
+          cargo tree "${args[@]}" --features macos -e normal,features -i skia-safe | grep -F 'skia-safe feature "metal"'
+          cargo test "${args[@]}" --release --lib svg
+          cargo test "${args[@]}" --features macos --release --lib svg
+
       - name: Run CI test script
         run: ./ci-tests.sh

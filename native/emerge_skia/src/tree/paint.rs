@@ -527,6 +527,8 @@ impl Output {
                         k,
                         ctx,
                         u8::from(rounded_parent) + u8::from(inner.is_some()),
+                        (e.attrs[k].svg_gradient.len != 0)
+                            .then(|| self.index.get(&mut self.draw[1], e, k)),
                         &mut self.fits,
                     )
                 {
@@ -872,7 +874,7 @@ fn replay(
         i += 1;
         match cmd {
             Command::Image(sample) => {
-                sample.draw(canvas, &draw.clips, *mask);
+                sample.draw(canvas, &draw.clips, *mask, &draw.materials);
                 continue;
             }
             Command::Group { alpha, bounds, end } => {

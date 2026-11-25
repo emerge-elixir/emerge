@@ -5,7 +5,7 @@ use std::sync::{Mutex, Weak, atomic::AtomicU64};
 
 #[derive(Debug)]
 pub(super) struct Encoded {
-    name: Arc<str>,
+    name: AssetKey,
     format: Format,
     data: Data,
     display: ISize,
@@ -28,7 +28,7 @@ impl Record {
     pub fn size(&self) -> ISize {
         self.0.display
     }
-    pub(super) fn name(&self) -> Arc<str> {
+    pub(super) fn name(&self) -> AssetKey {
         self.0.name.clone()
     }
     pub fn publish(&self, bitmap: &BitmapRef) {
@@ -79,11 +79,13 @@ fn origin(codec: &Codec, format: Format) -> EncodedOrigin {
 }
 
 impl Loader {
-    pub(super) fn metadata(&mut self, name: String) -> Option<Record> {
-        if let Some(r) = self.records.get(name.as_str()).and_then(Weak::upgrade) {
-            return Some(Record(r));
-        }
-        let (format, file, len) = self.open(&name)?;
+    pub(super) fn metadata(
+        &mut self,
+        name: AssetKey,
+        format: Format,
+        data: Data,
+    ) -> Option<Record> {
+        let len = data.len();
         let room = MAX_RESIDENT.checked_sub(len)?;
         while self.encoded_bytes.load(Ordering::Relaxed) > room {
             if !self.evict() {
@@ -91,12 +93,10 @@ impl Loader {
             }
         }
         let lease = Charge::new(&self.encoded_bytes, len);
-        let data = Data::from_stream(file.take(len as u64), len)?;
         let codec = format.codec(data.clone())?;
         let display = intrinsic(&codec, format);
         // Same source acceptance limits in both modes, even for tiny draws.
         bitmap_bytes(display.width, display.height)?;
-        let name: Arc<str> = name.into();
         let record = Record(Arc::new(Encoded {
             name: name.clone(),
             format,

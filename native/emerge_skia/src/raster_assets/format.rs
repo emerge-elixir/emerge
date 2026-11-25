@@ -4,23 +4,36 @@ use super::*;
 pub(crate) enum Format {
     Png,
     Jpeg,
+    Svg,
 }
 impl Format {
     pub fn logical(name: &str) -> Option<Self> {
-        if name.len() > 4096
-            || name.contains(['\0', '\\'])
-            || name.split('/').any(|s| matches!(s, "" | "." | ".."))
-        {
-            return None;
-        }
+        files::valid_logical(name).then(|| Self::extension(name))?
+    }
+    pub(super) fn extension(name: &str) -> Option<Self> {
         let ext = Path::new(name).extension()?;
         if ext.eq_ignore_ascii_case("png") {
             Some(Self::Png)
         } else if ext.eq_ignore_ascii_case("jpg") || ext.eq_ignore_ascii_case("jpeg") {
             Some(Self::Jpeg)
+        } else if ext.eq_ignore_ascii_case("svg") {
+            Some(Self::Svg)
         } else {
             None
         }
+    }
+
+    pub(super) fn inline(bytes: &[u8]) -> Self {
+        if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+            Self::Png
+        } else if bytes.starts_with(b"\xff\xd8") {
+            Self::Jpeg
+        } else {
+            Self::Svg
+        }
+    }
+    pub(super) fn limit(self) -> usize {
+        if self == Self::Svg { 4 * MIB } else { MAX_FILE }
     }
 
     pub(super) fn codec(self, data: Data) -> Option<Codec<'static>> {
@@ -37,6 +50,7 @@ impl Format {
                 }
             }
             Self::Jpeg => complete_jpeg(&data)?,
+            Self::Svg => return None,
         }
         self.reopen(data)
     }
@@ -45,6 +59,7 @@ impl Format {
         let decoder = match self {
             Self::Png => codec::png_decoder::decoder(),
             Self::Jpeg => codec::jpeg_decoder::decoder(),
+            Self::Svg => return None,
         };
         Codec::from_data_with_decoders(data, &[decoder])
     }

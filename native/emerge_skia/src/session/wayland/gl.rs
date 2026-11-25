@@ -208,8 +208,12 @@ impl Gl {
         &mut self.surface
     }
     pub(super) fn swap(&mut self) -> Result<(), String> {
-        self.context.flush_surface(&mut self.surface);
-        if !self.context.submit(gpu::SyncCpu::No) || self.context.abandoned() {
+        if self
+            .context
+            .flush_and_submit_surface(&mut self.surface, gpu::SyncCpu::No)
+            .is_err()
+            || self.context.abandoned()
+        {
             return Err("GL context lost".into());
         }
         self.drawable.swap_buffers(&self.egl).map_err(driver_error)

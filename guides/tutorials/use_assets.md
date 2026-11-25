@@ -82,6 +82,27 @@ The sigil checks that the file exists under `priv/` and tracks it as an external
 resource. Its `otp_app:` option controls that compile-time check; the viewport's
 `assets.otp_app` must still identify the application when running.
 
+## Choose a file or pass bytes
+
+`path/1` declares a filename without opening it. A relative name means the
+same thing as a bare string: look under this viewport's application `priv/`.
+Use `binary/1` when you already have the encoded file or SVG XML in memory:
+
+```elixir
+svg([height(px(24))], path("icons/check.svg"))
+svg([height(px(24))], binary(svg_xml))
+
+image([width(px(120))], path("images/logo.png"))
+image([width(px(120))], binary(png_bytes))
+```
+
+`image/2` accepts PNG, JPEG and original-color SVG. `svg/2` accepts only SVG
+and supports template tinting. Bytes are never treated as a filename, even if
+they spell one. Pass encoded data, not base64, raw pixels or a serialized Skia
+picture. Empty bytes are invalid. SVG XML is limited to 4 MiB, encoded raster
+files to 64 MiB; the tree update including its framing must also fit in 64 MiB.
+These byte sources are for image elements, not backgrounds or fonts.
+
 ## Size and fit images
 
 Set one dimension to preserve the source's aspect ratio:
@@ -106,7 +127,9 @@ from the available width. Explicit size and min/max constraints take precedence.
 
 ## Use an image as a background
 
-`Background.image/2` paints behind an element's content. Its default fit is
+The retained renderer currently paints image **elements**, not background images
+or tiles. On renderers with background-image support, `Background.image/2`
+paints behind an element's content. Its default fit is
 `:cover`:
 
 ```elixir
@@ -131,7 +154,9 @@ Here are styled examples of an image element and a background image:
 
 ## Tint an SVG
 
-SVGs keep their original colors unless you supply `Svg.color/1`:
+SVGs keep their original colors unless you supply `Svg.color/1`. A solid or
+gradient tint colors the composited artwork, preserving transparent holes and
+partial coverage. A gradient spans the element's content box:
 
 ```elixir
 svg(
@@ -141,6 +166,14 @@ svg(
 ```
 
 <img src="assets/ui-assets-svg-example.png" alt="An SVG with original colors and with a tint" width="320">
+
+Use static, self-contained UTF-8 SVG with positive absolute dimensions or a
+`viewBox`. Supported artwork includes paths, strokes, local gradients, patterns,
+clips, masks, bounded color-matrix filters and text using the bundled Inter and
+JetBrains Mono faces. This is not a browser: scripts, animation, stylesheets,
+SVGZ, external fonts, and linked or embedded images are not loaded. Unsupported
+resources and artwork over the renderer's complexity limits show the failed-image
+indicator.
 
 ## Register a font in mount
 
@@ -217,7 +250,7 @@ assets configuration:
 Then pass an absolute path in the UI:
 
 ```elixir
-image([width(px(160)), height(px(96))], {:path, "/data/photos/photo.jpg"})
+image([width(px(160)), height(px(96))], path("/data/photos/photo.jpg"))
 ```
 
 Runtime loading is off by default. An enabled policy with an empty allowlist
@@ -250,9 +283,13 @@ Shrinking it again reuses the larger bitmap while available, without changing
 its intrinsic layout size. Some codecs, notably PNG, still need a larger
 temporary decode even when only the thumbnail is retained.
 
-Cache budgets count decoded pixels, not compressed file sizes, and apply to each
-renderer separately. They are not a limit on total application or peak decoding
-memory. Keep any fonts/runtime-path policy alongside these fields when combining
+`max_entries` and `max_bytes` limit cached PNG/JPEG pixels, not compressed file
+sizes. SVGs instead share one recorded picture for identical content within a
+renderer, regardless of size, fit or tint. `decode_at_size` has no effect on SVG.
+`svg_tree_max_entries` and `svg_tree_max_bytes` let unused pictures stay cached
+(default 64 pictures / 16 MiB estimated storage). Set either to zero to disable
+idle picture retention; live uses still share. These are per-renderer budgets,
+not limits on total application or peak decoding memory. Keep any fonts/runtime-path policy alongside these fields when combining
 settings. See `Emerge.Config.Assets` and `Emerge.Config.AssetCache` for defaults.
 
 To see periodic performance and asset-memory summaries, add a diagnostics group

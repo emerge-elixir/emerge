@@ -40,6 +40,10 @@ defmodule Emerge.MixPackageTest do
       ~w(guides/migrations/0.6.md
         priv/sample_assets/static.jpg priv/sample_assets/fallback.jpg
         priv/sample_assets/template_cloud.svg priv/sample_assets/SOURCES.md
+        native/anyrender_painter/Cargo.toml native/anyrender_painter/README.md
+        native/anyrender_painter/LICENSE-MIT native/anyrender_painter/LICENSE-APACHE
+        native/anyrender_painter/src/lib.rs native/anyrender_painter/src/scene.rs
+        native/anyrender_painter/src/cache.rs native/anyrender_painter/src/ct_collection.rs
         priv/test_assets/gradient_mask.svg licenses/Unsplash.txt
         licenses/Tabler-icons-MIT.txt NOTICE THIRD_PARTY_ASSETS.md) ++
         Enum.flat_map(~w(bench/**/* assets/*.png scripts/**/*.exs scripts/**/*.sh), fn pattern ->
@@ -53,6 +57,11 @@ defmodule Emerge.MixPackageTest do
     for relative <- required do
       assert File.read!(Path.join(package, relative)) == File.read!(Path.join(@root, relative)),
              "package must preserve #{relative}"
+    end
+
+    for relative <-
+          ~w(assets.rs assets/svg_cache.rs backend/drm/cursor_theme.rs backend/wayland/cursor.rs) do
+      refute File.exists?(Path.join([package, "native/emerge_skia/src", relative]))
     end
 
     refute File.exists?(Path.join(package, "guides/internals"))
@@ -79,7 +88,10 @@ defmodule Emerge.MixPackageTest do
     File.write!(Path.join(consumer, "lib/consumer.ex"), """
     defmodule Consumer do
       use Emerge.UI
-      def view, do: paragraph([width(fill())], [text("Package smoke")])
+      def view, do: row([], [
+        image([width(px(24))], path("sample_assets/static.jpg")),
+        svg([], binary(~s(<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"/>)))
+      ])
     end
     """)
 

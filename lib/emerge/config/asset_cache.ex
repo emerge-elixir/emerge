@@ -1,6 +1,6 @@
 defmodule Emerge.Config.AssetCache do
   @moduledoc """
-  Limits for retained image pixels and parsed SVGs. Set this record as
+  Idle cache limits for decoded raster pixels and recorded SVG pictures. Set this record as
   `Emerge.Config.Assets.cache`. Budgets apply separately to each renderer.
 
   ```elixir
@@ -13,17 +13,17 @@ defmodule Emerge.Config.AssetCache do
 
   ## Fields
 
-  - `max_entries` — maximum retained decoded-image entries, including rasterized
-    SVG sizes; defaults to `256`.
+  - `max_entries` — maximum cached PNG/JPEG bitmaps; defaults to `256`.
   - `max_bytes` — retained decoded-pixel budget in bytes;
     defaults to `268_435_456` (256 MiB). This is not compressed file size.
-  - `svg_tree_max_entries` — maximum retained parsed SVGs; defaults to `64`.
-    One parsed SVG can be reused to draw multiple sizes.
-  - `svg_tree_max_bytes` — estimated parsed-SVG storage budget in bytes;
-    defaults to `16_777_216` (16 MiB), separate from rendered pixels.
+  - `svg_tree_max_entries` — maximum cached SVG pictures; defaults to `64`.
+    One picture draws at any size. No parse tree or size-specific bitmap is kept.
+  - `svg_tree_max_bytes` — estimated picture storage budget in bytes;
+    defaults to `16_777_216` (16 MiB), separate from decoded pixels.
 
   All values are non-negative integers. A zero entry/byte limit disables retention
-  in the corresponding cache; images still load and draw. Limits do not bound
+  in the corresponding idle cache. Live occurrences and submitted frames still
+  share and keep the artwork they need. These configuration limits do not bound
   peak decoding memory, fonts or total application memory. These fields require
   a new viewport to change. See [Use assets](use_assets.html) for cache tuning.
   """

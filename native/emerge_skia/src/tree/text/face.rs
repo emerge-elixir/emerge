@@ -1,6 +1,6 @@
 //! Bundled faces, including the reference renderer's synthetic fallback for
 //! weights without an embedded face. Metrics and both painters use one key.
-use skia_safe::{Font, FontHinting, FontMgr, Typeface, font::Edging};
+use skia_safe::{Data, Font, FontHinting, FontMgr, Typeface, font::Edging};
 use skrifa::{FontRef, MetadataProvider, charmap::Charmap};
 use std::sync::OnceLock;
 
@@ -32,6 +32,16 @@ impl From<Family> for Face {
         }
     }
 }
+pub(crate) const BUNDLED_FONTS: [&[u8]; 8] = [
+    include_bytes!("../../fonts/inter/Inter-Regular.ttf"),
+    include_bytes!("../../fonts/inter/Inter-Italic.ttf"),
+    include_bytes!("../../fonts/inter/Inter-Bold.ttf"),
+    include_bytes!("../../fonts/inter/Inter-BoldItalic.ttf"),
+    include_bytes!("../../fonts/jetbrains-mono/JetBrainsMonoNL-Regular.ttf"),
+    include_bytes!("../../fonts/jetbrains-mono/JetBrainsMonoNL-Italic.ttf"),
+    include_bytes!("../../fonts/jetbrains-mono/JetBrainsMonoNL-Bold.ttf"),
+    include_bytes!("../../fonts/jetbrains-mono/JetBrainsMonoNL-BoldItalic.ttf"),
+];
 impl Face {
     pub fn synthetic(self) -> bool {
         matches!(self.weight, Weight::OtherHeavy)
@@ -44,17 +54,7 @@ impl Face {
             + usize::from(real && self.italic)
     }
     pub fn bytes(self) -> &'static [u8] {
-        const FILES: [&[u8]; 8] = [
-            include_bytes!("../../fonts/inter/Inter-Regular.ttf"),
-            include_bytes!("../../fonts/inter/Inter-Italic.ttf"),
-            include_bytes!("../../fonts/inter/Inter-Bold.ttf"),
-            include_bytes!("../../fonts/inter/Inter-BoldItalic.ttf"),
-            include_bytes!("../../fonts/jetbrains-mono/JetBrainsMonoNL-Regular.ttf"),
-            include_bytes!("../../fonts/jetbrains-mono/JetBrainsMonoNL-Italic.ttf"),
-            include_bytes!("../../fonts/jetbrains-mono/JetBrainsMonoNL-Bold.ttf"),
-            include_bytes!("../../fonts/jetbrains-mono/JetBrainsMonoNL-BoldItalic.ttf"),
-        ];
-        FILES[self.index()]
+        BUNDLED_FONTS[self.index()]
     }
     pub(super) fn cmap(self) -> &'static Charmap<'static> {
         static MAPS: [OnceLock<Charmap>; 8] = [const { OnceLock::new() }; 8];
@@ -65,7 +65,7 @@ impl Face {
         static FACES: [OnceLock<Typeface>; 8] = [const { OnceLock::new() }; 8];
         let face = FACES[self.index()].get_or_init(|| {
             FontMgr::new()
-                .new_from_data(self.bytes(), 0)
+                .new_from_data(Data::new_with_owner(self.bytes()), 0)
                 .expect("bundled typeface")
         });
         let mut f = Font::from_typeface(face.clone(), size);

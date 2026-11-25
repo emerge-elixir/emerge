@@ -215,6 +215,7 @@ impl Wake {
     }
 }
 struct Session {
+    input_budget: crate::raster_assets::InputBudget,
     owner: Arc<Owner>,
     wake: Wake,
 }
@@ -238,14 +239,10 @@ impl Session {
         self.request_stop();
         self.owner.lifecycle.wait(Duration::from_millis(ms.into()))
     }
-    fn edit(
-        &self,
-        bytes: &[u8],
-        edit: fn(&mut Tree, &[u8]) -> Result<(), String>,
-        routes: Option<Term<'_>>,
-    ) -> Result<(), String> {
+    fn edit(&self, bytes: &[u8], routes: Option<Term<'_>>) -> Result<(), String> {
+        let edit = crate::tree::Staged::new(bytes, &self.input_budget)?;
         self.live(|live| {
-            edit(&mut live.raster.tree, bytes)?;
+            live.raster.tree.patch_staged(&edit)?;
             if let Some(assets) = &mut live.assets {
                 assets.request(&self.owner, &self.wake, &mut live.raster.tree);
             }
@@ -400,7 +397,11 @@ fn start(env: Env, opts: Start) -> Result<ResourceArc<Session>, String> {
         }
         "renderer startup did not complete"
     })??;
-    let session = ResourceArc::new(Session { owner, wake });
+    let session = ResourceArc::new(Session {
+        owner,
+        wake,
+        input_budget: Default::default(),
+    });
     if let Some(pid) = opts.owner
         && session.monitor(Some(env), &pid).is_none()
     {
@@ -479,7 +480,7 @@ fn start_opts(env: Env, opts: Start) -> NifResult<ResourceArc<Session>> {
 }
 #[rustler::nif(schedule = "DirtyCpu")]
 fn renderer_upload(r: ResourceArc<Session>, data: Binary) -> NifResult<Atom> {
-    submitted(r.edit(data.as_slice(), Tree::upload, None))
+    submitted(r.edit(data.as_slice(), None))
 }
 #[rustler::nif(schedule = "DirtyCpu")]
 fn renderer_patch(r: ResourceArc<Session>, submission: Term) -> NifResult<Atom> {
@@ -495,7 +496,7 @@ fn renderer_patch(r: ResourceArc<Session>, submission: Term) -> NifResult<Atom> 
     if data.is_empty() && routes.is_none() {
         submitted(r.live(|_| Ok(())))
     } else {
-        submitted(r.edit(data.as_slice(), Tree::patch, routes))
+        submitted(r.edit(data.as_slice(), routes))
     }
 }
 #[rustler::nif(schedule = "DirtyCpu")]

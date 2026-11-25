@@ -10,8 +10,8 @@ mod el_alignment;
 mod el_child;
 mod identity;
 mod images;
-pub(crate) fn image_fixture() -> Vec<u8> {
-    images::story(images::WIDE, 1.)
+pub(crate) fn image_fixture(name: &str) -> Vec<u8> {
+    images::story(name, 1.)
 }
 mod inactive_even;
 mod layout_rules;
@@ -22,6 +22,7 @@ mod row;
 mod row_even;
 mod row_height;
 mod scale;
+mod svg_pictures;
 mod text_align;
 mod topology;
 mod viewport;

@@ -399,3 +399,7 @@ A thumbnail's decoded dimensions are **not** its intrinsic size. In sized mode r
 Use an existing live or cached bitmap only if **both** axes suffice. Otherwise the asset worker decodes at a sufficient codec size and resamples to the exact target. Budget compressed data separately from resident pixels; count staging, old drawings and the new candidate while they coexist. The LRU holds at most one eligible bitmap per name, not a pyramid. With caching disabled an installed or sealed drawing still owns the pixels it uses. Neither a header nor a larger decode installs hits. Reject obsolete work; a successful in-flight decode may satisfy a new preparation that explicitly wants the same immutable record and target.
 
 `main` can decode a smaller visible use and then a larger one in replay order. Retained binds the largest demand once **before** replay, so a small first use can look like `main`'s warmed draw rather than its cold first draw. Do not keep an extra size or perform codec work in replay to recreate that intermediate state. [Resource and crop tests](../../native/emerge_skia/src/raster_assets/tests.rs) · [memory, complete frames and real input](../../plans/checkpoints/layout/sized-rasters.md).
+
+### D20. Share one Skia picture per SVG source on every renderer
+
+We use AnyRender to record each resident SVG as a Skia picture so CPU and GPU renderers can reuse the same vector artwork across sizes and tints without storing a bitmap for each size.

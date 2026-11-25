@@ -6,6 +6,7 @@ use super::{
 };
 use skia_safe::{FontHinting, Point, font::Edging};
 mod face;
+pub(crate) use face::BUNDLED_FONTS;
 pub use face::Family;
 pub(super) use face::{Face, Weight};
 use slotmap::{SlotMap, new_key_type};

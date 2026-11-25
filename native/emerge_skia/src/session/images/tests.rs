@@ -2,8 +2,20 @@ use super::*;
 
 #[test]
 fn stop_while_worker_owns_a_ticket_does_not_publish_or_wake() {
+    for name in [
+        "test_assets/single_axis_wide.png",
+        "test_assets/single_axis_wide.svg",
+    ] {
+        stop_before_publication(name);
+    }
+}
+
+fn stop_before_publication(name: &'static str) {
     let mut raster = Raster::default();
-    raster.tree.upload(&crate::tree::image_fixture()).unwrap();
+    raster
+        .tree
+        .upload(&crate::tree::image_fixture(name))
+        .unwrap();
     let owner = Arc::new(Owner {
         lifecycle: Default::default(),
         revision: Default::default(),
@@ -37,21 +49,24 @@ fn stop_while_worker_owns_a_ticket_does_not_publish_or_wake() {
     let w = Worker::start(
         Arc::downgrade(&owner),
         Wake::Binary(wake),
-        move |name, publish| {
-            let Request::Open(name) = name else {
-                panic!("expected open")
-            };
-            entered.send(name).unwrap();
-            release.recv().unwrap();
-            publish(Source::Failed);
+        move |request, publish| {
+            let mut loader = Loader::new(crate::raster_assets::Settings {
+                sources: vec![format!("{}/../../priv", env!("CARGO_MANIFEST_DIR"))],
+                ..Default::default()
+            })
+            .unwrap();
+            loader.fulfill(request, |s| {
+                assert!(matches!(s, Source::Ready(_) | Source::Picture(_)));
+                entered.send(()).unwrap(); // Actual bitmap/picture ready; not yet bound.
+                release.recv().unwrap();
+                assert!(!publish(s));
+                false
+            });
         },
     )
     .unwrap();
     w.notify.send(()).unwrap();
-    assert_eq!(
-        ticket.recv_timeout(Duration::from_secs(3)).unwrap(),
-        "test_assets/single_axis_wide.png"
-    );
+    ticket.recv_timeout(Duration::from_secs(3)).unwrap();
     owner.lifecycle.request_stop();
     resume.send(()).unwrap();
     w.stop();

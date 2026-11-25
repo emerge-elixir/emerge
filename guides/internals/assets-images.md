@@ -1,8 +1,18 @@
 # Assets and Images
 
-Retained `image/2` accepts logical [PNGs](../../plans/checkpoints/layout/raster-images.md) and [JPEGs](../../plans/checkpoints/layout/jpeg.md) from the renderer's application `priv/`. With `assets.decode_at_size: true`, layout reads the intrinsic **display** dimensions from immutable source metadata. Preparation requests enough texels for the largest visible use of that source, including the area outside a cover crop. The loader decodes and, if necessary, resamples to that size. Later smaller draws reuse the bitmap while it is live or cached. Disabling the option keeps the full-resolution path; neither path opens files or runs codecs during replay. [Fitted memory and submission controls](../../plans/checkpoints/layout/sized-rasters.md).
+## Retained image leaves (EMRG v10)
 
-The remainder of this guide describes the broader EMRG v3 pipeline on `main`, not additional retained source types or renderer APIs.
+`image/2` accepts [PNG](../../plans/checkpoints/layout/raster-images.md), [JPEG](../../plans/checkpoints/layout/jpeg.md) and original-color SVG; `svg/2` requires SVG and optionally tints its composited alpha. `path(relative)` and `~m` select a logical name under this renderer's `priv/`. `path(absolute)` requires runtime permission; the worker confines the open to a pinned allowlisted directory or file and checks the regular descriptor, length, extension and selected decoder. Only then may its bytes share a cached result. `binary(encoded)` supplies the actual bytes, not a filename. See the [wire definition and reference](emrg-format.md#retained-image-sources).
+
+**Raster:** With `assets.decode_at_size: true`, layout reads the intrinsic **display** dimensions from immutable source metadata. Preparation requests enough texels for the largest visible use of that source, including the area outside a cover crop. The loader decodes and, if necessary, resamples to that size. Later smaller draws reuse the bitmap while it is live or cached. Disabling the option keeps the full-resolution path; neither path opens files or runs codecs during replay. [Fitted memory and submission controls](../../plans/checkpoints/layout/sized-rasters.md).
+
+**SVG:** The asset worker validates self-contained XML, resolves local references and bundled fonts with `usvg`, and records the AnyRender scene into an intrinsic-coordinate Skia picture. It drops the normalized tree. Only the immutable picture and intrinsic geometry travel to paint. Logical aliases and verified inline content can bind a ready picture before the first remounted frame. Absolute paths must be reopened under the configured policy. Replacing art publishes its size and pixels together; input continues to use the last successful submission. A one-shot `:snapshot` draws pending without opening the file; `:await` uses an export-local loader and deadline.
+
+The renderer has weak indices for live pictures and a strong idle LRU. `svg_tree_max_entries` / `svg_tree_max_bytes` bound **pictures**, not XML or per-size textures. Parser/conversion scratch, worker painter high-water storage, lookup entries and pinned old/candidate pictures are charged separately from the idle budget. Estimates are not RSS. One renderer cannot warm another. [Picture, parser and policy](../../native/emerge_skia/src/raster_assets/svg.rs) · [Repeated vs distinct, sealed vs installed](../../native/emerge_skia/src/tree/tests/svg_pictures.rs).
+
+## Earlier `main` asset pipeline (EMRG v3)
+
+The remainder is historical reference, not additional retained source types or renderer APIs.
 
 `image/2` and `Background.image/2` support raster formats plus self-contained SVGs.
 SVG text uses system font matching; relative subresources and external SVG fonts are not loaded in v1.

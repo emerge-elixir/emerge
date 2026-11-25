@@ -93,6 +93,35 @@ defmodule Emerge.Engine.AttrCodec do
 
   @tag_type Map.new(@type_tag, fn {type, tag} -> {tag, type} end)
 
+  # Keep large media binaries out of local attribute descriptors. The compact
+  # prefix ends at tag 53; Patch chooses definition vs reference per batch.
+  @doc false
+  def local(%{image_src: {:bytes, bytes}} = attrs, previous) do
+    {:bytes, ^bytes} = Emerge.UI.binary(bytes)
+    <<count::16, rest::binary>> = encode_attrs(Map.delete(attrs, :image_src))
+
+    digest =
+      case previous do
+        {:media, _, digest, ^bytes} -> digest
+        _ -> :crypto.hash(:sha256, bytes)
+      end
+
+    {:media, <<count + 1::16, rest::binary, 53>>, digest, bytes}
+  end
+
+  def local(attrs, _previous), do: encode_attrs(attrs)
+
+  @doc false
+  def public({:media, prefix, digest, bytes}) do
+    prefix |> reference(digest) |> decode_attrs() |> Map.put(:image_src, {:bytes, bytes})
+  end
+
+  def public(raw) when is_binary(raw), do: decode_attrs(raw)
+  def public(:same), do: :same
+
+  @doc false
+  def reference(prefix, digest), do: <<prefix::binary, 4, digest::binary-size(32)>>
+
   @spec encode_attrs(map()) :: binary()
   def encode_attrs(attrs) when map_size(attrs) == 0, do: <<0::16>>
 
@@ -784,7 +813,25 @@ defmodule Emerge.Engine.AttrCodec do
     decode_box_shadow_items(rest, count - 1, [shadow | acc])
   end
 
+  defp encode_image_src({:bytes, bytes}) do
+    {:bytes, ^bytes} = Emerge.UI.binary(bytes)
+    [<<3, :crypto.hash(:sha256, bytes)::binary, byte_size(bytes)::32>>, bytes]
+  end
+
+  defp encode_image_src({:digest, digest}), do: <<4, digest::binary-size(32)>>
   defp encode_image_src(source), do: encode_image_source(source)
+
+  defp decode_image_src(
+         <<3, digest::binary-size(32), n::32, bytes::binary-size(n), rest::binary>>
+       ) do
+    unless n > 0 and :crypto.hash(:sha256, bytes) == digest,
+      do: raise(ArgumentError, "invalid inline image definition")
+
+    {{:bytes, bytes}, rest}
+  end
+
+  defp decode_image_src(<<4, digest::binary-size(32), rest::binary>>),
+    do: {{:digest, digest}, rest}
 
   defp decode_image_src(rest), do: decode_image_source(rest)
 

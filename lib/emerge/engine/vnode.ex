@@ -10,7 +10,7 @@ defmodule Emerge.Engine.VNode do
           owner: pos_integer() | nil,
           own: pos_integer(),
           inherited: pos_integer(),
-          native: binary(),
+          native: binary() | {:media, binary(), binary(), binary()},
           stamp: <<_::64>>,
           index: map() | nil,
           attrs: map(),

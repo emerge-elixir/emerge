@@ -20,6 +20,7 @@ mod atoms {
 }
 #[derive(Default)]
 struct TreeResource {
+    input_budget: raster_assets::InputBudget,
     tree: Mutex<Tree>,
 }
 #[rustler::resource_impl]
@@ -39,12 +40,14 @@ fn tree_new() -> ResourceArc<TreeResource> {
 }
 #[rustler::nif(schedule = "DirtyCpu")]
 fn tree_upload(r: ResourceArc<TreeResource>, data: Binary) -> Result<bool, String> {
-    lock(&r.tree)?.upload(data.as_slice())?;
+    let edit = tree::Staged::new(data.as_slice(), &r.input_budget)?;
+    lock(&r.tree)?.patch_staged(&edit)?;
     Ok(true)
 }
 #[rustler::nif(schedule = "DirtyCpu")]
 fn tree_patch(r: ResourceArc<TreeResource>, data: Binary) -> Result<bool, String> {
-    lock(&r.tree)?.patch(data.as_slice())?;
+    let edit = tree::Staged::new(data.as_slice(), &r.input_budget)?;
+    lock(&r.tree)?.patch_staged(&edit)?;
     Ok(true)
 }
 // The regular Elixir TreeRenderer transport expects bare :ok, whereas the
@@ -66,8 +69,9 @@ fn tree_upload_roundtrip<'a>(
     r: ResourceArc<TreeResource>,
     data: Binary,
 ) -> Result<Binary<'a>, String> {
+    let edit = tree::Staged::new(data.as_slice(), &r.input_budget)?;
     let mut tree = lock(&r.tree)?;
-    tree.upload(data.as_slice())?;
+    tree.patch_staged(&edit)?;
     Ok(binary(env, &tree.encode()))
 }
 #[rustler::nif(schedule = "DirtyCpu")]
@@ -76,8 +80,9 @@ fn tree_patch_roundtrip<'a>(
     r: ResourceArc<TreeResource>,
     data: Binary,
 ) -> Result<Binary<'a>, String> {
+    let edit = tree::Staged::new(data.as_slice(), &r.input_budget)?;
     let mut tree = lock(&r.tree)?;
-    tree.patch(data.as_slice())?;
+    tree.patch_staged(&edit)?;
     Ok(binary(env, &tree.encode()))
 }
 

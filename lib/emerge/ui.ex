@@ -166,9 +166,12 @@ defmodule Emerge.UI do
   @typedoc "Image fit modes accepted by `image_fit/1`."
   @type image_fit_mode :: :contain | :cover
 
-  @typedoc "An image source accepted by `image/2` and `svg/2`."
-  @type image_source ::
+  @typedoc "A logical/verified asset name, runtime file, or registered asset reference."
+  @type file_source ::
           binary() | atom() | {:id, binary()} | {:path, binary()} | Emerge.Assets.Ref.t()
+
+  @typedoc "A file source or explicitly supplied encoded bytes for `image/2` and `svg/2`."
+  @type image_source :: file_source() | {:bytes, binary()}
 
   @typedoc "A viewport-local atom target accepted by `video/2`."
   @type video_target :: atom()
@@ -428,17 +431,21 @@ defmodule Emerge.UI do
   @doc """
   An image element.
 
-  `source` can be a verified `~m"..."` reference, logical asset path,
-  runtime file path, or `{:id, image_id}`. The retained renderer supports
-  verified and logical PNG and JPEG sources under the configured app's `priv/`.
-  For JPEGs, intrinsic size and fit use the EXIF display orientation.
+  Give `image/2` a PNG, JPEG or self-contained SVG. Use `path/1` for a file
+  or `binary/1` for encoded bytes. A relative path, bare string or verified
+  `~m"..."` names a file under the configured application's `priv/`. Absolute
+  paths require an enabled `Emerge.Config.RuntimePaths` allowlist. Registered
+  image IDs are not supported by the retained renderer.
+
+  JPEG sizing and fit use the EXIF display orientation. SVGs draw in their
+  original colors; use `svg/2` if you want a template tint.
 
   When one dimension is pixel-sized and the other is omitted or `content()`,
   the content-sized dimension follows the source's intrinsic aspect ratio.
   With `width(fill())`, an omitted or `content()` height follows the resolved
-  width. With `height(fill())`, an automatic width follows the resolved height.
-  Both grow or shrink proportionally, subject to explicit dimensions and min/max
-  limits. Sizes include padding and borders; the ratio applies to the inner content.
+  width. To size from height on the retained renderer, give a pixel height;
+  deriving width from `height(fill())` is not supported. Sizes include padding
+  and borders; the ratio applies to the inner content.
 
   Use `image_fit/1` to choose between `:contain` and `:cover`. Setting both
   dimensions fixes the frame; the fit mode controls how the image fills it.
@@ -462,19 +469,40 @@ defmodule Emerge.UI do
     |> Builder.build_element(nearby, :image, [])
   end
 
+  @doc "Declares a logical `priv/` file, or an absolute file subject to the runtime path policy. Does not read the file."
+  @spec path(String.t()) :: String.t() | {:path, String.t()}
+  def path(name) when is_binary(name) and byte_size(name) in 1..4096 do
+    if not String.valid?(name) or String.contains?(name, <<0>>),
+      do: raise(ArgumentError, "path/1 expects a UTF-8 filename")
+
+    if Path.type(name) == :absolute, do: {:path, name}, else: name
+  end
+
+  def path(_), do: raise(ArgumentError, "path/1 expects a filename of 1 to 4096 bytes")
+
+  @doc "Declares encoded PNG/JPEG bytes or UTF-8 SVG XML, never a filename or raw pixel plane."
+  @spec binary(binary()) :: {:bytes, binary()}
+  def binary(bytes) when is_binary(bytes) and byte_size(bytes) in 1..67_108_864,
+    do: {:bytes, bytes}
+
+  def binary(_), do: raise(ArgumentError, "binary/1 expects 1 byte to 64 MiB of encoded media")
+
   @doc """
   An SVG element.
 
-  Preserves the SVG's original colors by default. Use `Svg.color/1` to apply
-  template tinting to all visible pixels.
+  Pass a path or `binary/1` containing up to 4 MiB of self-contained UTF-8
+  SVG XML. SVGs preserve their original colors; `Svg.color/1` replaces the
+  color on the final source alpha. A renderer records the vector commands once
+  while the source is resident and replays them at each drawn size. See
+  [Use assets](use_assets.html) for supported resources and cache limits.
 
   Like `image/2`, a pixel-sized dimension determines an omitted or `content()`
   dimension from the source's intrinsic aspect ratio. For example, a 200×200 SVG
   with only `height(px(68))` occupies 68×68 pixels without padding or borders.
-  `width(fill())` derives an automatic height from the allocated width, and
-  `height(fill())` derives an automatic width from the allocated height, including
-  enlargement beyond the source dimensions. Setting both dimensions
-  fixes the frame, with `image_fit/1` controlling the fit.
+  `width(fill())` derives an automatic height from the allocated width, including
+  enlargement beyond the source dimensions. As with `image/2`, deriving width
+  from `height(fill())` is not supported by the retained renderer. Setting both
+  dimensions fixes the frame, with `image_fit/1` controlling the fit.
 
   ## Example
 

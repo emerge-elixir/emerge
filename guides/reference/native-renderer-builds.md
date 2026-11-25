@@ -16,6 +16,12 @@ features. DRM and Wayland add presenters; OpenGL and Vulkan add shared rendering
 APIs. The macOS window backend remains the separate AppKit host with Metal.
 Headless Metal is deferred.
 
+The renderer and its [SVG painter](../../native/anyrender_painter/README.md) share
+`skia-safe`/`skia-bindings` 0.157.0 from the Cargo registry. The source package
+includes the painter and its licenses. Raster builds need neither Ganesh nor a
+GPU API. OpenGL enables Ganesh through `gl`; Vulkan and Metal request it
+explicitly. The Apple painter's CoreText support does not require Metal.
+
 Keep one compile-time configuration list:
 
 ```elixir

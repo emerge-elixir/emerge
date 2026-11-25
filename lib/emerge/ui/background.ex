@@ -50,8 +50,8 @@ defmodule Emerge.UI.Background do
   `Emerge.UI.Border.rounded/1` and `Emerge.UI.Border.rounded_each/4` also clip
   background painting.
 
-  For color helpers, see `Emerge.UI.Color`. `Background.image/2` accepts the
-  same source forms as `Emerge.UI.image/2`.
+  For color helpers, see `Emerge.UI.Color`. Background images accept file
+  sources, not the inline `Emerge.UI.binary/1` form of an image leaf.
 
   ## Examples
 
@@ -67,7 +67,7 @@ defmodule Emerge.UI.Background do
 
   @type color_value :: Emerge.UI.Color.color() | Emerge.UI.Color.t()
   @type fit :: :contain | :cover | :repeat | :repeat_x | :repeat_y
-  @type image_background :: {:image, Emerge.UI.image_source(), fit()}
+  @type image_background :: {:image, Emerge.UI.file_source(), fit()}
   @type image_options :: keyword()
   @type t :: {:background, color_value() | image_background()}
 
@@ -101,7 +101,7 @@ defmodule Emerge.UI.Background do
   @doc """
   Set a background image on the element frame.
 
-  Accepts any source supported by `Emerge.UI.image_source()`. The default fit is
+  Accepts a file source (`Emerge.UI.file_source()`). The default fit is
   `:cover`.
 
   Unlike `Emerge.UI.image/2`, this is decorative and does not create a content
@@ -136,8 +136,8 @@ defmodule Emerge.UI.Background do
   ])
   ```
   """
-  @spec image(Emerge.UI.image_source()) :: t()
-  @spec image(Emerge.UI.image_source(), image_options()) :: t()
+  @spec image(Emerge.UI.file_source()) :: t()
+  @spec image(Emerge.UI.file_source(), image_options()) :: t()
   def image(source, opts \\ []) do
     fit =
       case Keyword.get(opts, :fit, :cover) do
@@ -174,7 +174,7 @@ defmodule Emerge.UI.Background do
   )
   ```
   """
-  @spec uncropped(Emerge.UI.image_source()) :: t()
+  @spec uncropped(Emerge.UI.file_source()) :: t()
   def uncropped(source), do: {:background, {:image, source, :contain}}
 
   @doc """
@@ -199,7 +199,7 @@ defmodule Emerge.UI.Background do
   )
   ```
   """
-  @spec tiled(Emerge.UI.image_source()) :: t()
+  @spec tiled(Emerge.UI.file_source()) :: t()
   def tiled(source), do: {:background, {:image, source, :repeat}}
 
   @doc """
@@ -224,7 +224,7 @@ defmodule Emerge.UI.Background do
   )
   ```
   """
-  @spec tiled_x(Emerge.UI.image_source()) :: t()
+  @spec tiled_x(Emerge.UI.file_source()) :: t()
   def tiled_x(source), do: {:background, {:image, source, :repeat_x}}
 
   @doc """
@@ -249,6 +249,6 @@ defmodule Emerge.UI.Background do
   )
   ```
   """
-  @spec tiled_y(Emerge.UI.image_source()) :: t()
+  @spec tiled_y(Emerge.UI.file_source()) :: t()
   def tiled_y(source), do: {:background, {:image, source, :repeat_y}}
 end

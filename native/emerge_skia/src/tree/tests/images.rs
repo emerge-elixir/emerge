@@ -12,6 +12,7 @@ pub(super) fn image_loader(decode_at_size: bool, cache_max_entries: usize) -> Lo
         decode_at_size,
         cache_max_entries,
         cache_max_bytes: 1 << 20,
+        ..Default::default()
     })
     .unwrap()
 }
@@ -107,7 +108,6 @@ fn superseded_or_detached_tickets_cannot_change_the_final_declaration() {
         vec![path("/a.png")],
         vec![path("../photos/a.jpeg")],
         vec![path("photos//a.jpg")],
-        vec![path("bad.svg")],
         vec![path(GRID), vec![54, 2]],
         vec![path(GRID), vec![2, 0]],
         vec![path(GRID), number(35, f64::NAN)],

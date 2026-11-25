@@ -13,6 +13,7 @@ mod scale;
 mod shapes;
 mod text;
 mod wire;
+pub(crate) use wire::media::Staged;
 
 use layers::{Layers, Pass};
 #[cfg(all(
@@ -25,6 +26,7 @@ pub(crate) use paint::{Attachment, Raster};
 use pool::{Budget, Pool, Span};
 use slotmap::{SecondaryMap, SlotMap, new_key_type};
 use std::{cell::Cell, collections::HashMap, ops::Range};
+pub(crate) use text::BUNDLED_FONTS;
 pub use text::{Family, TextMeasurer};
 new_key_type! { pub(crate) struct Key; }
 /// Root is at depth zero. Enforced during upload, before mounting.
@@ -277,6 +279,9 @@ struct Attrs {
     color: Option<u32>,
     background: Option<u32>,
     image_src: decoration::Bytes,
+    svg_expected: bool,
+    svg_color: Option<u32>,
+    svg_gradient: decoration::Bytes,
     image_cover: bool,
     image_host_clip: bool,
     opacity: Option<u8>,
@@ -364,6 +369,7 @@ struct Elements {
     bytes: Pool<u8>,
     touched: Vec<Key>,
     images: images::Images,
+    media: wire::media::Declarations,
     detached: Vec<Key>,
     free_indices: Vec<usize>,
     live_bytes: usize,
@@ -461,6 +467,7 @@ pub struct Tree {
     root: Option<Key>,
     layers: Layers,
     wire: wire::Scratch,
+    input_budget: crate::raster_assets::InputBudget,
     output: paint::Output,
     budget: Budget,
 }

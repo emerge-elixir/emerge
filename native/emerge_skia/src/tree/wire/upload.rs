@@ -32,6 +32,6 @@ impl Tree {
         self.patch(data)
     }
     pub(crate) fn upload_scaled(&mut self, data: &[u8], scale: f32) -> Result<()> {
-        self.apply(data, scale)
+        self.apply(&Staged::new(data, &self.input_budget)?, scale)
     }
 }

@@ -48,11 +48,12 @@ impl Decor {
 }
 impl Attrs {
     pub fn material(&self) -> bool {
-        self.decor.active() || self.font_gradient.len != 0
+        self.decor.active() || self.font_gradient.len != 0 || self.svg_gradient.len != 0
     }
     pub fn material_bytes(&self) -> usize {
         [
             self.font_gradient,
+            self.svg_gradient,
             self.decor.shadows,
             self.decor.background_gradient,
             self.decor.border_gradient,

@@ -14,7 +14,7 @@ defmodule Emerge.MixProjectTest do
     assert config.opts == []
     assert config.app == :emerge
     assert config.elixir == "~> 1.19"
-    assert config.application == [extra_applications: [:logger]]
+    assert config.application == [extra_applications: [:logger, :crypto]]
     assert {:rustler, "~> 0.38.0", optional: true} in config.deps
     assert config.cli[:preferred_envs][:"quality.fast"] == :test
     assert config.cli[:preferred_envs][:dialyzer] == :dev

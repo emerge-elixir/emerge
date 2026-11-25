@@ -20,6 +20,11 @@ defmodule Emerge.Mix.Package do
       "native/emerge_skia/Cargo.toml",
       "native/emerge_skia/Cargo.lock",
       "native/emerge_skia/Cross.toml",
+      "native/anyrender_painter/Cargo.toml",
+      "native/anyrender_painter/src",
+      "native/anyrender_painter/README.md",
+      "native/anyrender_painter/LICENSE-APACHE",
+      "native/anyrender_painter/LICENSE-MIT",
       "native/emerge_input/Cargo.toml",
       "native/emerge_input/Cargo.lock",
       "native/emerge_input/build.rs",
@@ -56,7 +61,15 @@ defmodule Emerge.Mix.Package do
     |> Path.wildcard()
     |> Enum.reject(&File.dir?/1)
     |> Enum.map(&Path.relative_to(&1, root))
+    |> Enum.reject(&legacy_svg?/1)
   end
+
+  # Unlinked pre-retained loaders and cursor renderers use a different asset
+  # pipeline. Do not ship them (or restore resvg to make them compile). Port
+  # the cursor consumer to the retained picture when its presenter is ported.
+  @legacy_svg ~w(native/emerge_skia/src/assets.rs native/emerge_skia/src/assets/svg_cache.rs
+                 native/emerge_skia/src/backend/wayland/cursor.rs native/emerge_skia/src/backend/drm/cursor_theme.rs)
+  defp legacy_svg?(path), do: path in @legacy_svg
 
   defp assets(root), do: regular_files(root, "assets/*.png")
 end

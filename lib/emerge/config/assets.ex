@@ -23,11 +23,11 @@ defmodule Emerge.Config.Assets do
     thumbnail retains pixels for its fitted device size rather than the full image.
     A larger draw can grow the bitmap; smaller draws reuse it while it is live
     or cached. This does not change intrinsic layout size. One-shot tree exports
-    enable this option by default.
+    enable this option by default. It does not apply to SVG pictures.
   - `runtime_paths` — `Emerge.Config.RuntimePaths`. Its default disables images
     loaded from absolute filesystem paths.
-  - `cache` — `Emerge.Config.AssetCache`, limiting retained image pixels and parsed
-    SVGs. These limits are separate from renderer paint caching.
+  - `cache` — `Emerge.Config.AssetCache`, limiting idle PNG/JPEG bitmaps and SVG
+    pictures separately. These limits are independent of renderer paint caching.
 
   All fields require a new viewport to change. Lists such as `fonts` replace the
   previous list rather than append to it. See [Use assets](use_assets.html) for

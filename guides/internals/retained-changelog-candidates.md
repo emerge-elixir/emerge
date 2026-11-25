@@ -26,6 +26,9 @@ branch stays in [API parity](../../plans/api-parity.md).
 | Removed | The low-level `EmergeSkia.Native.tree_node_count/1`, `tree_is_empty/1` and `tree_clear/1` bindings were removed. Use a stateful patch to clear. The separate test harness was not an application API. | [D5](retained-decisions.md#d5-publish-input-with-the-successful-submission) |
 | Changed | Explicit Wayland GPU starts may fall back once to CPU shm on proven hardware unavailability, with a warning and an accurate requested/selected API report. This is not a silent switch after startup or a workaround for missing build features. | [D8](retained-decisions.md#d8-submit-the-same-retained-drawing-to-explicit-wayland-presenters) |
 | Changed | On supported sessions, accepted title, input-mask and frame-cap revisions can be reported applied immediately. Configuration completion still does not acknowledge a new frame. | [D9](retained-decisions.md#d9-apply-supported-live-controls-directly) |
+| Added | `path/1` and `binary/1` declare a file or encoded bytes for `image/2` and `svg/2`. Enabling absolute files still requires an explicit runtime-path policy. | [Source examples](../tutorials/use_assets.md#choose-a-file-or-pass-bytes) |
+| Changed | Static, self-contained SVGs use one vector picture per resident source per renderer instead of cached pixels per size. `svg_tree_max_entries` and `svg_tree_max_bytes` now budget idle pictures; supported SVG text uses bundled fonts. PNG/JPEG fitted decoding is unchanged. | [D20](retained-decisions.md#d20-share-one-skia-picture-per-svg-source-on-every-renderer) · [pixel and source tests](../../test/emerge_skia/svg_pictures_test.exs) |
+| Changed | Native source builds resolve `skia-safe` 0.157.0 from the Cargo registry. The SVG frontend uses `usvg` and the AnyRender Skia painter, without a second Skia or a GPU requirement for raster builds. | [Native renderer builds](../reference/native-renderer-builds.md) |
 
 ## Verified fix candidates
 

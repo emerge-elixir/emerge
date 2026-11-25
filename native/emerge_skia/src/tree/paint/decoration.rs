@@ -16,6 +16,7 @@ use skia_safe::{
 pub(super) enum Brush {
     Solid(u32),
     Font(u32, Rect),
+    Svg(u32, Rect),
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Phase {
@@ -27,6 +28,7 @@ struct Material {
     decor: Decor,
     background: Option<u32>,
     font: Bytes,
+    svg: Bytes,
     scale: f32,
 }
 #[derive(Default, PartialEq)]
@@ -68,11 +70,13 @@ impl Materials {
             ..a.decor
         };
         let font = copy(a.font_gradient);
+        let svg = copy(a.svg_gradient);
         let idx = self.styles.len() as u32;
         self.styles.push(Material {
             decor,
             background: a.background,
             font,
+            svg,
             scale: e.slots[k].admitted.scale,
         });
         idx
@@ -80,6 +84,7 @@ impl Materials {
     pub fn paint(&self, b: Brush) -> Paint {
         match b {
             Brush::Solid(c) => solid(c),
+            Brush::Svg(i, r) => ink(None, self.styles[i as usize].svg, &self.bytes, r),
             Brush::Font(i, r) => {
                 let m = self.styles[i as usize];
                 ink(None, m.font, &self.bytes, r)

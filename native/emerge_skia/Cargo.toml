@@ -50,6 +50,7 @@ macos = [
     "dep:objc2-core-graphics",
     "dep:objc2-metal",
     "dep:objc2-quartz-core",
+    "skia-safe/ganesh",
     "skia-safe/metal",
 ]
 wayland = [
@@ -62,7 +63,7 @@ wayland = [
 ]
 # Presenter and rendering API features are independent. Raster/headless are baseline.
 drm = ["dep:drm", "dep:evdev", "dep:emerge_input", "embedded-freetype"]
-vulkan = ["dep:lyon_tessellation", "video-interop-support", "dep:ash", "skia-safe/vulkan", "video-interop/vulkan"]
+vulkan = ["dep:lyon_tessellation", "video-interop-support", "dep:ash", "skia-safe/ganesh", "skia-safe/vulkan", "video-interop/vulkan"]
 # Cargo cannot express dependency activation conditional on two features. The
 # canonical resolver adds these dependency-only glue features for those pairs.
 drm-vulkan-deps = ["dep:gbm"]
@@ -101,12 +102,13 @@ rustix = { version = "1.1", features = ["fs"] }
 crossbeam-channel = "0.5"
 sha2 = "0.10"
 unicode-segmentation = "1.12"
-resvg = "0.48.1"
-# Pinned past the 0.99.0 tag for Vulkan BackendSemaphore make/get, Surface::wait, and
-# FlushInfo signal-semaphore wrappers. Exit this git pin when the first upstream rust-skia release
-# containing 0d2261c63941f4b534522246cc1ace13ca4242d8 is adopted. The workspace dependency keeps
-# skia-bindings coordinated at the identical immutable rust-skia revision.
-skia-safe = { version = "0.99.0", git = "https://github.com/rust-skia/rust-skia", rev = "0d2261c63941f4b534522246cc1ace13ca4242d8", default-features = false, features = ["jpeg", "binary-cache"] }
+anyrender_svg = { version = "=0.16.0", default-features = false }
+usvg = { version = "=0.50.0", default-features = false, features = ["text"] }
+svgtypes = "0.16"
+# Iterative structural limit check before roxmltree's recursive XML reader.
+quick-xml = { version = "0.41", default-features = false }
+emerge_skia_painter = { path = "../anyrender_painter" }
+skia-safe = { version = "0.157.0", default-features = false, features = ["jpeg", "binary-cache"] }
 
 [dev-dependencies]
 criterion = "0.7"

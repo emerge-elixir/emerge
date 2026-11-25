@@ -1,0 +1,22 @@
+[package]
+name = "emerge_skia_painter"
+version = "0.13.1"
+edition = "2024"
+rust-version = "1.91"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+anyrender = "=0.15.1"
+kurbo = "0.13.1"
+peniko = "0.6"
+hashbrown = "0.17"
+skrifa = { version = "0.49", default-features = false, features = ["std"] }
+smallvec = "1"
+skia-safe = { version = "=0.157.0", default-features = false }
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+# The stock painter extracts a face from a collection if CoreText cannot match it.
+oaty = "0.3"
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["CFArray", "CFData", "CFString"] }
+objc2-core-text = { version = "0.3.2", default-features = false, features = ["CTFont", "CTFontDescriptor", "CTFontManager"] }

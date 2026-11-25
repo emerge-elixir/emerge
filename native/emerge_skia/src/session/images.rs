@@ -5,17 +5,20 @@ use crate::raster_assets::{Loader, Request, Source};
 use std::{sync::Weak, thread::JoinHandle};
 
 pub(super) struct Assets {
+    pictures: crate::raster_assets::Pictures,
     loader: Option<Loader>,
     worker: Option<Worker>,
 }
 impl Assets {
     pub fn new(loader: Loader) -> Self {
         Self {
+            pictures: loader.pictures.clone(),
             loader: Some(loader),
             worker: None,
         }
     }
     pub fn request(&mut self, owner: &Arc<Owner>, wake: &Wake, tree: &mut Tree) {
+        tree.bind_ready_pictures(&self.pictures);
         if !tree.needs_images() {
             return;
         }

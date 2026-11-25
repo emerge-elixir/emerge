@@ -17,6 +17,7 @@ pub(super) struct Sample {
     pub clip: SkRect,
     pub relaxed_masks: u8,
     pub alpha: u8,
+    pub tint: Option<Brush>,
 }
 impl Sample {
     pub fn new(
@@ -24,6 +25,7 @@ impl Sample {
         k: Key,
         ctx: PaintContext,
         relaxed_masks: u8,
+        gradient: Option<u32>,
         fits: &mut fits::Fits,
     ) -> Option<Self> {
         let a = &e.attrs[k];
@@ -37,9 +39,14 @@ impl Sample {
         let rect = SkRect::from_xywh(x, y, w, h);
         let source = e.images.source(k);
         let own_clip = a.image_host_clip;
-        let relaxed = own_clip || e.slots[k].parent.is_some();
-        let mut clip = sk(ctx.child_clip);
-        if own_clip && !clip.intersect(sk(a.decor.inner_rect(f, ctx.scale)).with_outset((0.5, 0.5)))
+        // The half-pixel clip relaxation and extra texel at a fitted edge are
+        // bitmap sampling rules. They must not enlarge vector geometry.
+        let picture = matches!(source, Source::Picture(_));
+        let relaxed = !picture && (own_clip || e.slots[k].parent.is_some());
+        let bleed = if picture { 0. } else { 0.5 };
+        let mut clip = sk(if picture { ctx.clip } else { ctx.child_clip });
+        if own_clip
+            && !clip.intersect(sk(a.decor.inner_rect(f, ctx.scale)).with_outset((bleed, bleed)))
         {
             return None;
         }
@@ -47,7 +54,6 @@ impl Sample {
         let mut src = Rect::default();
         let mut target = None;
         if let Some((iw, ih)) = source.dimensions() {
-            let (iw, ih) = (iw as f32, ih as f32);
             let factor = if a.image_cover {
                 (w / iw).max(h / ih)
             } else {
@@ -102,11 +108,31 @@ impl Sample {
             fits.add(k, record, size);
         }
         Some(Self {
-            source: source.clone(),
+            source: match source {
+                Source::Picture(art)
+                    if !art.fits(dst.width() / src.width, dst.height() / src.height) =>
+                {
+                    Source::Failed
+                }
+                _ => source.clone(),
+            },
+            tint: a.svg_color.map(Brush::Solid).or_else(|| {
+                gradient.map(|i| {
+                    Brush::Svg(
+                        i,
+                        Rect {
+                            x,
+                            y,
+                            width: w,
+                            height: h,
+                        },
+                    )
+                })
+            }),
             src,
             dst,
             clip,
-            relaxed_masks,
+            relaxed_masks: if picture { 0 } else { relaxed_masks },
             alpha: 255,
         })
     }
@@ -122,7 +148,7 @@ impl Sample {
         self.src.height *= sy;
         self.source = Source::Ready(bitmap.clone());
     }
-    pub fn draw(&self, canvas: &Canvas, clips: &Clips, mask: Mask) {
+    pub fn draw(&self, canvas: &Canvas, clips: &Clips, mask: Mask, materials: &Materials) {
         canvas.save();
         // Rasterize the AA mask inside the rectangular device clip. Reversing
         // these operations changes edge coverage even at opacity one.
@@ -141,6 +167,29 @@ impl Sample {
                     SamplingOptions::new(FilterMode::Linear, MipmapMode::None),
                     &p,
                 );
+            }
+            Source::Picture(art) => {
+                canvas.clip_rect(self.dst, None, false);
+                // Tint replaces the RGB of the *composited* source, not each
+                // component path. The gradient's coordinates are the content box.
+                if self.tint.is_some() {
+                    canvas.save_layer_alpha(self.dst, 255);
+                }
+                canvas.save();
+                canvas.translate((self.dst.left, self.dst.top));
+                canvas.scale((
+                    self.dst.width() / self.src.width,
+                    self.dst.height() / self.src.height,
+                ));
+                canvas.translate((-self.src.x, -self.src.y));
+                canvas.draw_picture(art.picture(), None, None);
+                canvas.restore();
+                if let Some(brush) = self.tint {
+                    let mut p = materials.paint(brush);
+                    p.set_blend_mode(skia_safe::BlendMode::SrcIn);
+                    canvas.draw_paint(&p);
+                    canvas.restore();
+                }
             }
             Source::Sized(_) => unreachable!("fitted samples must be bound before sealing"),
             Source::Pending => {

@@ -70,7 +70,7 @@ defmodule Emerge.Engine.DiffState do
 
     {routes, edits} = routes(registry)
 
-    {Patch.encode(ops),
+    {Patch.encode(ops, state.index.media),
      %{
        state
        | tree: assigned,

@@ -232,6 +232,11 @@ defmodule Emerge.UI.Internal.Validation do
       when is_binary(path),
       do: source
 
+  def validate_image_source!("svg/2", {:bytes, bytes}) when byte_size(bytes) > 4_194_304,
+    do: raise(ArgumentError, "svg/2 accepts at most 4 MiB of SVG XML")
+
+  def validate_image_source!(_attrs_owner, {:bytes, bytes}), do: Emerge.UI.binary(bytes)
+
   def validate_image_source!(_attrs_owner, {:id, id}) when is_binary(id), do: {:id, id}
   def validate_image_source!(_attrs_owner, {:path, path}) when is_binary(path), do: {:path, path}
   def validate_image_source!(_attrs_owner, path) when is_binary(path), do: path
@@ -239,7 +244,7 @@ defmodule Emerge.UI.Internal.Validation do
 
   def validate_image_source!(attrs_owner, other) do
     raise ArgumentError,
-          "#{attrs_owner} expects an image source to be a binary, atom, ~m reference, {:id, id}, or {:path, path}, got: #{inspect(other)}"
+          "#{attrs_owner} expects a file source, binary(encoded_media), or {:id, id}, got: #{inspect(other)}"
   end
 
   defp clear_change_policy(acc, key) do

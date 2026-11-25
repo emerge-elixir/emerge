@@ -273,6 +273,9 @@ impl Layers {
         }
         let paint_changed = old.opacity != next.opacity
             || shape.paint_attrs_changed(old, next)
+            || old
+                .svg_gradient
+                .differs(old_raw, next.svg_gradient, e.raw(k))
             || old.decor.differs(old_raw, next.decor, e.raw(k));
         let output = Outputs::changed(paint_changed, old.click != next.click || clip_changed);
         if let Some(outputs) = output {

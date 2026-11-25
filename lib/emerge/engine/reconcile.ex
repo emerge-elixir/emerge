@@ -15,6 +15,7 @@ defmodule Emerge.Engine.Reconcile do
   defmodule Index do
     @moduledoc false
     defstruct nodes: %{},
+              media: %{},
               keys: %{},
               routes: %{},
               own: %Labels{},
@@ -91,7 +92,7 @@ defmodule Emerge.Engine.Reconcile do
 
   defp public_body({:node, id, kind, attrs, edges}),
     do:
-      {:node, id, kind, if(is_binary(attrs), do: AttrCodec.decode_attrs(attrs), else: attrs),
+      {:node, id, kind, AttrCodec.public(attrs),
        if(is_list(edges),
          do: Enum.map(edges, fn {tag, c} -> {tag, public_body(c)} end),
          else: edges
@@ -349,8 +350,17 @@ defmodule Emerge.Engine.Reconcile do
   defp local_inputs(old, _, true, _, ctx), do: {old.native, old.own, old.events, ctx}
 
   defp local_inputs(old, attrs, false, id, ctx) do
-    raw = AttrCodec.encode_attrs(attrs)
-    {own, ctx} = bind(ctx, :own, old && old.own, raw)
+    previous = old && old.native
+    raw = AttrCodec.local(attrs, previous)
+    ctx = media_change(ctx, previous, raw)
+
+    descriptor =
+      case raw do
+        {:media, prefix, digest, _} -> {prefix, digest}
+        bytes -> bytes
+      end
+
+    {own, ctx} = bind(ctx, :own, old && old.own, descriptor)
     if old && old.own != own, do: AttrValidation.validate_change_update!(old.attrs, attrs)
     events = EventRegistry.node_events(attrs)
     previous = if old, do: old.events, else: %{}
@@ -361,6 +371,30 @@ defmodule Emerge.Engine.Reconcile do
         else: %{ctx | routes: EventRegistry.put_events(ctx.routes, id, events)}
 
     {raw, own, events, ctx}
+  end
+
+  defp media_change(ctx, {:media, _, id, _}, {:media, _, id, _}), do: ctx
+
+  defp media_change(ctx, old, new) do
+    media = ctx.index.media
+
+    media =
+      case old do
+        {:media, _, id, _} ->
+          case Map.fetch!(media, id) do
+            1 -> Map.delete(media, id)
+            count -> Map.put(media, id, count - 1)
+          end
+
+        _ ->
+          media
+      end
+
+    case new do
+      {:media, _, id, _} -> put_in(ctx.index.media, Map.update(media, id, 1, &(&1 + 1)))
+      _ when media === ctx.index.media -> ctx
+      _ -> put_in(ctx.index.media, media)
+    end
   end
 
   defp rebuild(node, old, ancestry, cs, ns, assigned, ctx) do
@@ -429,6 +463,7 @@ defmodule Emerge.Engine.Reconcile do
     if claimed?(ctx, node) or not Map.has_key?(ctx.index.nodes, node.id) do
       ctx
     else
+      ctx = media_change(ctx, node.native, nil)
       idx = ctx.index
 
       idx = %{

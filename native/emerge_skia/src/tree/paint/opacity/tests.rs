@@ -16,14 +16,15 @@ fn image(source: Source) -> Command {
     Command::Image(image::Sample {
         source,
         src: Rect {
-            width: w as f32,
-            height: h as f32,
+            width: w,
+            height: h,
             ..Rect::default()
         },
         dst: SkRect::from_xywh(20., 16., 40., 24.),
         clip: sk(viewport()),
         relaxed_masks: 1,
         alpha: 255,
+        tint: None,
     })
 }
 fn render(draw: &Drawing, bg: Color, isolated: Option<u8>) -> (Vec<u8>, Calls) {
@@ -52,6 +53,7 @@ fn png() -> Source {
         decode_at_size: false,
         cache_max_entries: 1,
         cache_max_bytes: 1024,
+        ..Default::default()
     })
     .unwrap()
     .load("test_assets/alpha_grid.png".into())
