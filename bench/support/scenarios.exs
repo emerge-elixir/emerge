@@ -726,6 +726,7 @@ defmodule Emerge.Bench.Scenarios do
     )
   end
 
+  # Synthetic logical file names keep the distinct-source counts and wire sizes of this workload.
   defp media_cards(count, opts) do
     count
     |> ordered_indexes(opts)
@@ -736,7 +737,7 @@ defmodule Emerge.Bench.Scenarios do
           width(px(180)),
           spacing(6),
           padding(8),
-          Background.image({:id, "bench-background-#{rem(index, 8)}"},
+          Background.image("media/covers/#{rem(index, 8)}.jpg",
             fit: if(rem(index, 2) == 0, do: :cover, else: :contain)
           ),
           Border.rounded(10),
@@ -752,7 +753,7 @@ defmodule Emerge.Bench.Scenarios do
               image_fit(if(rem(index, 2) == 0, do: :cover, else: :contain)),
               Border.rounded(8)
             ],
-            {:id, "bench-image-#{index}"}
+            "gallery/#{index}.png"
           ),
           row([key({:media_rich, :meta, index}), width(fill()), spacing(6)], [
             svg(
@@ -762,7 +763,7 @@ defmodule Emerge.Bench.Scenarios do
                 height(px(24)),
                 Svg.color(color(:sky, 600))
               ],
-              {:id, "bench-icon-#{rem(index, 5)}"}
+              "glyphs/#{rem(index, 5)}.svg"
             ),
             video(
               [

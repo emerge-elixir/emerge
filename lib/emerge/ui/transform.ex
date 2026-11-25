@@ -23,6 +23,11 @@ defmodule Emerge.UI.Transform do
   - `scale/1` to grow or shrink an element around its center
   - `alpha/1` to reduce opacity for the rendered element subtree
 
+  On the retained Linux renderer, static `rotate/1` and `scale/1` are supported
+  on `Emerge.UI.image/2` and `Emerge.UI.svg/2`, not arbitrary containers. Their
+  installed click coordinates follow the inverse transform. A negative uniform
+  scale reverses both axes; zero draws nothing and does not receive a click.
+
   ## Layout vs Paint
 
   Transforms do not reserve extra layout space. The element keeps its normal
@@ -33,9 +38,9 @@ defmodule Emerge.UI.Transform do
 
   ## Interaction
 
-  Pointer hit testing follows the transformed shape that the user sees on screen,
-  not the pre-transform slot. Hover, press, and move handlers stay attached to
-  the painted result.
+  On a retained Image leaf, a click follows the installed shape, not the
+  pre-transform slot. Transparent texels still belong to the shape. This is
+  click support, not support for hover, press or move handlers.
 
   ## Opacity
 
@@ -51,7 +56,9 @@ defmodule Emerge.UI.Transform do
 
   #{Examples.image_tag!("ui-transform-translate", "Rendered translated transform example")}
 
-  Rotation and scale both happen around the element center:
+  Rotation and scale both happen around the element center. This card example
+  uses container transforms from the full renderer; on retained Linux, apply
+  them to an image or SVG leaf instead:
 
   #{Examples.code_block!("ui-transform-rotate-scale")}
 
@@ -64,7 +71,8 @@ defmodule Emerge.UI.Transform do
   #{Examples.image_tag!("ui-transform-alpha", "Rendered alpha transform example")}
 
   The faint outline below marks the original slot. The transformed card is what
-  the user sees and what pointer hit testing follows:
+  the user sees and what pointer hit testing follows. This full-renderer
+  example also uses a Nearby overlay:
 
   #{Examples.code_block!("ui-transform-slot-vs-visual")}
 
@@ -135,22 +143,13 @@ defmodule Emerge.UI.Transform do
   @doc """
   Rotate the painted element in degrees around its center.
 
-  Rotation does not change the element's layout slot.
+  Rotation does not change the element's layout slot. On retained Linux,
+  use it on an image or SVG leaf.
 
   ## Example
 
   ```elixir
-  el(
-    [
-      width(px(140)),
-      height(px(72)),
-      Transform.rotate(-8),
-      Background.color(color(:violet, 600)),
-      Border.rounded(12),
-      Font.color(color(:white))
-    ],
-    text("Tilted note")
-  )
+  image([width(px(140)), Transform.rotate(-8)], "images/photo.jpg")
   ```
   """
   @spec rotate(number()) :: {:rotate, number()}
@@ -160,22 +159,12 @@ defmodule Emerge.UI.Transform do
   Scale the painted element uniformly around its center.
 
   `1.0` keeps the original size, values above `1.0` enlarge, and values between
-  `0.0` and `1.0` shrink.
+  `0.0` and `1.0` shrink. On retained Linux, use this on an image or SVG leaf.
 
   ## Example
 
   ```elixir
-  el(
-    [
-      width(px(140)),
-      height(px(72)),
-      Transform.scale(1.1),
-      Background.color(color(:amber, 500)),
-      Border.rounded(12),
-      Font.color(color(:slate, 950))
-    ],
-    text("Emphasized")
-  )
+  svg([height(px(24)), Transform.scale(1.5)], "icons/check.svg")
   ```
   """
   @spec scale(number()) :: {:scale, number()}

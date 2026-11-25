@@ -86,7 +86,8 @@ trait LayoutBehaviour: ShapeMeta {
 trait PaintBehaviour<P: Payload> {
     const CLIP_CHILDREN: bool = false;
     fn reads_context(a: &Attrs, old: Option<PaintContext>, ctx: PaintContext) -> bool {
-        a.background.is_some() && old.is_none_or(|p| p.frame != ctx.frame || p.clip != ctx.clip)
+        (a.background.is_some() || a.has_art())
+            && old.is_none_or(|p| p.frame != ctx.frame || p.clip != ctx.clip)
     }
     fn attrs_changed(a: &Attrs, b: &Attrs) -> bool {
         a.background != b.background

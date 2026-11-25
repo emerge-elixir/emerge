@@ -85,6 +85,10 @@ impl Drawing {
                 }
                 Command::Restore => unreachable!("child extent includes its restore"),
             };
+            let extent = self
+                .planes
+                .get(self.commands[i].0.plane)
+                .map_or(extent, |p| p.bounds(extent));
             if extent.is_finite() {
                 bounds.join(extent);
             } else {

@@ -293,6 +293,45 @@ defmodule EmergeSkia.SvgPicturesTest do
            end)
   end
 
+  test "file and inline pictures turn the content-box tint and its transparent hole together" do
+    name = "test_assets/gradient_mask.svg"
+
+    attrs = [
+      center_x(),
+      center_y(),
+      image_fit(:contain),
+      Svg.color(gradient([:red, :blue], 90)) | axes(80, 80)
+    ]
+
+    scene = fn src, angle -> el(axes(100, 100), svg([Transform.rotate(angle) | attrs], src)) end
+    a = pixels(scene.(path(name), 0), 100, 100)
+    b = pixels(scene.(binary(file(name)), 90), 100, 100)
+    assert rgba(a, 100, 50, 50) == <<0, 0, 0, 0>>
+    refute rgba(a, 100, 15, 35) == rgba(a, 100, 15, 65)
+
+    for x <- 0..99, y <- 0..99 do
+      assert rgba(b, 100, 99 - y, x) == rgba(a, 100, x, y)
+    end
+
+    for radius <- [0, 8] do
+      inner = fn src -> svg([image_fit(:cover), Transform.rotate(45) | axes(100, 100)], src) end
+
+      scene = fn src ->
+        el(
+          [Background.color(:white) | axes(180, 180)],
+          el([center_x(), center_y(), Border.rounded(radius) | axes(100, 100)], inner.(src))
+        )
+      end
+
+      source = "test_assets/single_axis_square.svg"
+      frame = pixels(scene.(source), 180, 180)
+      assert frame == pixels(scene.(binary(file(source))), 180, 180)
+
+      assert for({x, y} <- [{90, 8}, {90, 30}, {44, 44}], do: rgba(frame, 180, x, y)) ==
+               [<<255, 255, 255, 255>>, <<255, 0, 0, 255>>, <<255, 255, 255, 255>>]
+    end
+  end
+
   test "bundled SVG text actually contributes ink; file and inline give identical buffers" do
     name = "test_assets/cache_complex.svg"
     xml = file(name)
@@ -315,7 +354,7 @@ defmodule EmergeSkia.SvgPicturesTest do
 
     scene = fn w, src ->
       column([width(px(w))], [
-        svg([width(fill()), Event.on_click(:art)], src),
+        svg([width(fill()), Transform.rotate(180), Event.on_click(:art)], src),
         el([width(px(6)), height(px(6)), Background.color(:blue), Event.on_click(:after)], none())
       ])
     end
@@ -332,6 +371,6 @@ defmodule EmergeSkia.SvgPicturesTest do
     send(v, {:scene, new})
     assert Headless.pixels() == pixels(new.(), 64, 36)
     BoxAssertions.click(r, {2.0, 14.0}, :after, {2.0, 2.0})
-    BoxAssertions.click(r, {2.0, 2.0}, :art, {2.0, 2.0})
+    BoxAssertions.click(r, {2.0, 2.0}, :art, {22.0, 10.0})
   end
 end

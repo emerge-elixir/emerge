@@ -151,7 +151,7 @@ impl Tree {
                 d.live_bytes -= e.raw(k).len();
                 d.texts -= usize::from(e.slots[k].shape.uses_glyphs());
                 d.prose_hosts -= usize::from(e.slots[k].shape.has_prose_sites());
-                d.images -= usize::from(e.slots[k].shape == Shape::Image);
+                d.images -= usize::from(e.attrs[k].has_art());
                 d.groups -= usize::from(e.attrs[k].opacity.is_some());
                 d.materials -= usize::from(e.attrs[k].material());
                 d.material_bytes -= e.attrs[k].material_bytes();
@@ -194,7 +194,7 @@ impl Tree {
                 },
                 |(a, r)| (a, r.len()),
             );
-            s.request_image = s.shape == Shape::Image
+            s.request_image = a.has_art()
                 && (s.inserted
                     || existing.is_none_or(|k| {
                         s.attrs.as_ref().is_some_and(|(a, r)| {
@@ -210,7 +210,7 @@ impl Tree {
             d.live_bytes += len;
             d.texts += usize::from(s.shape.uses_glyphs());
             d.prose_hosts += usize::from(s.shape.has_prose_sites());
-            d.images += usize::from(s.shape == Shape::Image);
+            d.images += usize::from(a.has_art());
             d.groups += usize::from(a.opacity.is_some());
             d.materials += usize::from(a.material());
             d.material_bytes += a.material_bytes();
@@ -333,7 +333,7 @@ impl Tree {
             0
         };
         let words = d.words;
-        self.output.fits.reserve(d.images, self.budget)?;
+        self.output.reserve_images(d.images, self.budget)?;
         self.elements
             .images
             .reserve(self.elements.slots.capacity(), d.images, self.budget)?;
@@ -412,7 +412,10 @@ impl Tree {
                     .set(index, 0, s.attrs.as_ref().unwrap().0.glyph_count, true);
                 k
             };
-            if s.attrs.is_some() {
+            if let Some((a, _)) = &s.attrs {
+                if !a.has_art() {
+                    e.withdraw_art(k);
+                }
                 e.replace_bytes(k);
             }
             if s.order.is_some() {

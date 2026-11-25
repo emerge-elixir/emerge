@@ -959,8 +959,6 @@ defmodule Emerge.Engine.AttrCodec do
     decode_gradient_colors(rest, count - 1, [color | colors])
   end
 
-  defp encode_image_source({:id, id}) when is_binary(id), do: <<0, encode_string(id)::binary>>
-
   defp encode_image_source(%Emerge.Assets.Ref{path: path}) when is_binary(path),
     do: <<1, encode_string(path)::binary>>
 
@@ -975,12 +973,7 @@ defmodule Emerge.Engine.AttrCodec do
 
   defp encode_image_source(other) do
     raise ArgumentError,
-          "unsupported image source #{inspect(other)} (expected binary/atom/~m/{:id,id}/{:path,path})"
-  end
-
-  defp decode_image_source(<<0, rest::binary>>) do
-    {id, rest} = decode_string(rest)
-    {{:id, id}, rest}
+          "unsupported image source #{inspect(other)} (expected a logical name, ~m reference, or {:path, path})"
   end
 
   defp decode_image_source(<<1, rest::binary>>) do

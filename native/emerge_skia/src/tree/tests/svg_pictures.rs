@@ -102,6 +102,8 @@ fn mixed_sizes_record_once_per_resident_content_not_per_occurrence_or_edit() {
                 px(1, w),
                 px(2, 9.),
                 vec![54, u8::from(cover)],
+                number(33, if tint { 45. } else { 0. }),
+                number(34, if tint { 1.75 } else { 1. }),
             ];
             if tint {
                 fields.push(vec![63, 0, 255, 0, 0]);
@@ -147,6 +149,47 @@ fn mixed_sizes_record_once_per_resident_content_not_per_occurrence_or_edit() {
             .unwrap();
         settle(&mut r, &mut l);
         assert_eq!(l.pictures.counts(), (n + 1, n + 1));
+    }
+}
+
+#[test]
+fn changing_background_tile_extent_or_axis_reuses_the_leaf_picture() {
+    const NAME: &str = "sample_assets/tile_quad.svg";
+    let xml = include_bytes!("../../../../../priv/sample_assets/tile_quad.svg");
+    let host = |fit, w| {
+        block(&[
+            px(1, w),
+            px(2, 100.),
+            [
+                vec![12, 2, 1],
+                (NAME.len() as u16).to_be_bytes().to_vec(),
+                NAME.as_bytes().to_vec(),
+                vec![fit],
+            ]
+            .concat(),
+        ])
+    };
+    let mut r = Raster::default();
+    let mut l = images::image_loader(true, 0);
+    r.tree
+        .upload(&upload(&[
+            node(1, 4, host(2, 180.), &[2]),
+            node(2, 9, block(&[source(xml, true)]), &[]),
+        ]))
+        .unwrap();
+    settle(&mut r, &mut l);
+    for (mode, w, color) in [
+        (2, 180., [255, 255, 0, 255]),
+        (3, 80., [0; 4]),
+        (4, 75., [0; 4]),
+        (2, 180., [255, 255, 0, 255]),
+    ] {
+        r.tree.patch(&set(1, 4, host(mode, w))).unwrap();
+        let pixels = draw(&mut r);
+        let index = 4 * (17 * 180 + 17);
+        assert_eq!(pixels[index..index + 4], color);
+        assert!(r.tree.next_image().is_none());
+        assert_eq!(l.pictures.counts(), (1, 1));
     }
 }
 

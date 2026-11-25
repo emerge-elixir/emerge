@@ -21,6 +21,9 @@ pub(super) enum Brush {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Phase {
     Under,
+    // A file backdrop paints between outer and inset shadows.
+    OuterShadow,
+    Inset,
     Border,
 }
 #[derive(Clone, Copy, PartialEq)]
@@ -98,7 +101,7 @@ impl Materials {
         let m = self.styles[i as usize];
         // Each of offset, spread and blur is <= max_shadow. Include both
         // offset and spread, three blur sigmas (sigma = blur / 2), and AA.
-        if phase == Phase::Under && m.decor.shadows.len != 0 {
+        if matches!(phase, Phase::Under | Phase::OuterShadow) && m.decor.shadows.len != 0 {
             let outset = 4. * scale::pixels(m.decor.max_shadow, m.scale) + 2.;
             sk(r).with_outset((outset, outset))
         } else {
@@ -147,7 +150,7 @@ impl Materials {
             }
             draw_shadows(canvas, shadows, m.scale, r, corners, true);
         }
-        if phase != Phase::Under
+        if phase == Phase::Border
             && (d.border_color.is_some() || d.border_gradient.len != 0)
             && d.border != [0.; 4]
         {

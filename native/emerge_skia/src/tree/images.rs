@@ -23,7 +23,7 @@ impl Images {
     pub fn inherit(&mut self, old: &mut Self, version: &declaration::Records) {
         self.generation = old.generation;
         version.each(|k, r| {
-            if r.shape == Shape::Image
+            if r.block.attrs.has_art()
                 && let Some(mut b) = old.slots.remove(k)
             {
                 if b.queued.is_some() {
@@ -55,16 +55,27 @@ impl Images {
             self.queue.push(k);
         }
     }
-    pub fn remove(&mut self, k: Key) {
-        if let Some(i) = self.slots.remove(k).and_then(|b| b.queued) {
+    pub fn remove(&mut self, k: Key) -> Option<Source> {
+        let binding = self.slots.remove(k)?;
+        if let Some(i) = binding.queued {
             self.queue.swap_remove(i);
             if let Some(&moved) = self.queue.get(i) {
                 self.slots[moved].queued = Some(i);
             }
         }
+        Some(binding.source)
     }
     pub fn source(&self, k: Key) -> &Source {
         &self.slots[k].source
+    }
+}
+impl Elements {
+    pub fn withdraw_art(&mut self, k: Key) {
+        if let Some(old) = self.images.remove(k) {
+            // A -> color -> A can fold before compute, but the final A has a
+            // fresh subscription. Compare its bound pixels with the first A.
+            self.slots[k].change.image.get_or_insert(old);
+        }
     }
 }
 pub(crate) enum Ticket {

@@ -6,6 +6,8 @@ use buffers::Buffers;
 use std::sync::Arc;
 mod image;
 mod opacity;
+mod pose;
+use pose::{Plane, Planes, Scope};
 fn sk(r: Rect) -> skia_safe::Rect {
     skia_safe::Rect::from_xywh(r.x, r.y, r.width, r.height)
 }
@@ -74,7 +76,7 @@ impl Rect {
 pub(crate) struct Attachment(Key, u64);
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Hit {
-    mask: Mask,
+    scope: Scope,
     key: Attachment,
     id: u64,
     rect: Rect,
@@ -143,6 +145,7 @@ impl OwnPaint {
 #[derive(Clone, Copy, Default)]
 pub(super) struct Composition {
     paint: OwnPaint,
+    art: bool,
     hit: Option<Hit>,
     rounded: bool,
     opacity: Option<u8>,
@@ -175,18 +178,23 @@ pub(super) fn compose(
         }
         let own = if side == 0 {
             let paint = e.slots[k].shape.paint(e, k, ctx, run);
-            let image = e.slots[k].shape == Shape::Image;
-            *changed = next.paint != paint || paint.decorated || image || next.opacity != a.opacity;
+            let image = a.has_art();
+            *changed = next.paint != paint
+                || paint.decorated
+                || image
+                || next.art
+                || next.opacity != a.opacity;
+            next.art = image;
             next.opacity = a.opacity;
             next.paint = paint;
             image || paint.nonempty()
         } else {
             let hit = ctx
                 .frame
-                .intersection(ctx.clip)
+                .intersection(if a.posed() { ctx.child_clip } else { ctx.clip })
                 .filter(|_| a.click)
                 .map(|rect| Hit {
-                    mask: OPEN,
+                    scope: Scope::default(),
                     key: Attachment(k, e.slots[k].attachment),
                     id: e.slots[k].id,
                     rect,
@@ -194,7 +202,10 @@ pub(super) fn compose(
                     scale: ctx.scale,
                 });
             let rounded = a.decor.radius != [0.; 4];
-            *changed = hit != next.hit || rounded || next.rounded;
+            *changed = hit != next.hit
+                || rounded
+                || next.rounded
+                || (a.click && e.slots[k].shape == Shape::Image);
             next.rounded = rounded;
             next.hit = hit;
             hit.is_some()
@@ -253,15 +264,25 @@ enum Command {
 #[derive(Default, PartialEq)]
 pub(crate) struct Drawing {
     materials: Materials,
-    commands: Vec<(Mask, Command)>,
+    commands: Vec<(Scope, Command)>,
     clips: Clips,
+    planes: Planes,
+    plane: u32,
     mask: Mask,
     ids: Vec<u16>,
     positions: Vec<Point>,
 }
 impl Drawing {
     fn push(&mut self, cmd: Command) {
-        self.commands.push((self.mask, cmd));
+        let scope = if matches!(cmd, Command::Group { .. } | Command::Restore) {
+            Scope::default() // opacity bounds are already in viewport coordinates
+        } else {
+            Scope {
+                mask: self.mask,
+                plane: self.plane,
+            }
+        };
+        self.commands.push((scope, cmd));
     }
     fn rules(&mut self, rules: u8, brush: Brush, pos: [f32; 2], width: f32, size: f32, clip: Rect) {
         let h = (size * 0.06).max(1.);
@@ -282,6 +303,8 @@ impl Drawing {
     fn clear(&mut self) {
         self.materials.clear();
         self.clips.clear();
+        self.planes.0.clear();
+        self.plane = 0;
         self.mask = OPEN;
         self.commands.clear();
         self.ids.clear();
@@ -299,8 +322,8 @@ pub(super) struct Output {
     pub groups: usize,
     index: MaterialIndex,
     stack: Vec<(Key, Visit, Mask)>,
-    draw: Buffers<Drawing, 6>,
-    hits: Buffers<Hits, 2>,
+    draw: Buffers<Drawing, 7>,
+    hits: Buffers<Hits, 3>,
     installed: [Option<(Key, u64)>; 2],
     pending: [Option<(Key, u64)>; 2],
     dirty: [bool; 2],
@@ -309,10 +332,15 @@ pub(super) struct Output {
 enum Visit {
     Node { rounded_parent: bool },
     Inline,
-    Border,
+    Border(u32),
     Opacity(usize),
 }
 impl Output {
+    pub fn reserve_images(&mut self, count: usize, b: Budget) -> Result<(), String> {
+        self.fits.reserve(count, b)?;
+        self.draw.reserve([0, 0, 0, 0, 0, 0, count], b)?;
+        self.hits.reserve([0, 0, count], b)
+    }
     pub fn reserve_materials(
         &mut self,
         keys: usize,
@@ -322,9 +350,10 @@ impl Output {
         b: Budget,
     ) -> Result<(), String> {
         if count != 0 {
-            self.hits.reserve([0, 2 * count + words], b)?;
+            self.hits.reserve([0, 2 * count + words, 0], b)?;
             self.index.reserve(keys)?;
-            self.draw.reserve([0, 0, 0, count, count, bytes], b)?;
+            self.draw
+                .reserve([0, 0, 0, 2 * count, count, bytes, 0], b)?;
         }
         Ok(())
     }
@@ -349,10 +378,11 @@ impl Output {
                 0,
                 0,
                 0,
+                0,
             ],
             b,
         )?;
-        self.hits.reserve([owners + 2 * words, 0], b)
+        self.hits.reserve([owners + 2 * words, 0, 0], b)
     }
     // Only an *unsealed* stream can have outstanding bitmap jobs. Accepted
     // edits may supersede those jobs but must never alter a sealed drawing.
@@ -383,6 +413,7 @@ impl Output {
                 self.draw.build.clear()
             } else {
                 self.hits.build.clips.clear();
+                self.hits.build.planes.0.clear();
                 self.hits.build.items.clear()
             }
             self.stack.extend(root.map(|k| {
@@ -395,14 +426,16 @@ impl Output {
                 )
             }));
             while let Some((k, visit, mask)) = self.stack.pop() {
+                self.draw.build.plane = 0;
                 let rounded_parent = match visit {
                     Visit::Inline => {
                         self.inline(e, k, layers, side, mask);
                         continue;
                     }
-                    Visit::Border => {
+                    Visit::Border(plane) => {
                         let ctx = layers.paint[k];
                         let draw = &mut self.draw.build;
+                        draw.plane = plane;
                         draw.mask = mask;
                         let material = self.index.get(draw, e, k);
                         draw.push(Command::Box {
@@ -424,10 +457,33 @@ impl Output {
                     continue;
                 }
                 let ctx = layers.paint[k];
-                let decor = e.attrs[k].decor;
+                let a = &e.attrs[k];
+                let decor = a.decor;
+                if a.pose.zoom == 0. {
+                    continue;
+                } // collapsed leaf has neither ink nor a target
+                let plane = a.posed().then(|| {
+                    let stop = if rounded_parent && !a.image_host_clip {
+                        (if side == 0 {
+                            &self.draw.build.clips
+                        } else {
+                            &self.hits.build.clips
+                        })
+                        .parent(mask)
+                    } else {
+                        mask
+                    };
+                    Plane::new(a, ctx, stop)
+                });
+                if plane.is_some_and(|p| {
+                    !p.matrix.is_finite() || !p.matrix.map_rect(sk(ctx.frame)).0.is_finite()
+                }) {
+                    continue;
+                }
                 if side == 0 {
                     let draw = &mut self.draw.build;
                     draw.mask = mask;
+                    draw.plane = draw.planes.add(plane);
                     if let Some(alpha) = p.opacity {
                         if alpha == 0 {
                             continue;
@@ -435,8 +491,28 @@ impl Output {
                         let start = draw.begin_group(alpha);
                         self.stack.push((k, Visit::Opacity(start), mask));
                     }
-                    if p.paint.decorated {
-                        let material = self.index.get(draw, e, k);
+                    let material = p.paint.decorated.then(|| self.index.get(draw, e, k));
+                    let backdrop = p.art && e.slots[k].shape != Shape::Image;
+                    if backdrop {
+                        if let Some(material) = material.filter(|_| decor.shadows.len != 0) {
+                            draw.push(Command::Box {
+                                material,
+                                rect: ctx.frame,
+                                clip: ctx.clip,
+                                phase: Phase::OuterShadow,
+                            });
+                        }
+                        if let Some(sample) =
+                            image::Sample::new(e, k, ctx, None, 0, None, &mut self.fits)
+                        {
+                            draw.mask = draw
+                                .clips
+                                .add(mask, Rounded::new(ctx.frame, decor.radii(ctx.scale)));
+                            draw.push(Command::Image(sample));
+                            draw.mask = mask;
+                        }
+                    }
+                    if let Some(material) = material {
                         if e.attrs[k].background.is_some_and(|v| v & 255 != 0)
                             || decor.background_gradient.len != 0
                             || decor.shadows.len != 0
@@ -445,13 +521,13 @@ impl Output {
                                 material,
                                 rect: ctx.frame,
                                 clip: ctx.box_clip(e.slots[k].shape),
-                                phase: Phase::Under,
+                                phase: if backdrop { Phase::Inset } else { Phase::Under },
                             });
                         }
                         if decor.border != [0.; 4]
                             && (decor.border_color.is_some() || decor.border_gradient.len != 0)
                         {
-                            self.stack.push((k, Visit::Border, mask));
+                            self.stack.push((k, Visit::Border(draw.plane), mask));
                         }
                     } else if let Some((r, c)) = p.paint.fill {
                         draw.push(Command::Fill(r, Brush::Solid(c)))
@@ -490,12 +566,17 @@ impl Output {
                         );
                     }
                 } else if let Some(mut hit) = p.hit {
-                    hit.mask = self
-                        .hits
-                        .build
+                    let hits = &mut self.hits.build;
+                    hit.scope.mask = hits
                         .clips
                         .add(mask, Rounded::new(ctx.frame, decor.radii(ctx.scale)));
-                    self.hits.build.items.push(hit)
+                    if let Some(plane) = plane {
+                        let Some(inverse) = plane.inverse() else {
+                            continue;
+                        };
+                        hit.scope.plane = hits.planes.add(Some(inverse));
+                    }
+                    hits.items.push(hit)
                 }
                 let inner = decor.rounded_inner(ctx.frame, ctx.scale);
                 let mask = if side == 0 {
@@ -509,6 +590,7 @@ impl Output {
                         e,
                         k,
                         ctx,
+                        plane,
                         u8::from(rounded_parent) + u8::from(inner.is_some()),
                         (e.attrs[k].svg_gradient.len != 0)
                             .then(|| self.index.get(&mut self.draw.build, e, k)),
@@ -574,7 +656,7 @@ impl Output {
                         .filter(|&c| e.attrs[c].click)
                     {
                         self.hits.build.items.push(Hit {
-                            mask,
+                            scope: Scope { mask, plane: 0 },
                             key: Attachment(target, e.slots[target].attachment),
                             id: e.slots[target].id,
                             rect: area,
@@ -713,6 +795,7 @@ impl Raster {
 }
 #[derive(Default)]
 pub(crate) struct Hits {
+    planes: Planes,
     clips: Clips,
     items: Vec<Hit>,
 }
@@ -724,18 +807,19 @@ impl Hits {
         if !(x >= 0. && x < v.width && y >= 0. && y < v.height) {
             return None;
         }
-        self.items
-            .iter()
-            .rev()
-            .find(|h| {
-                let r = h.rect;
-                x >= r.x
-                    && x <= r.x + r.width
-                    && y >= r.y
-                    && y <= r.y + r.height
-                    && self.clips.contains(h.mask, x, y)
-            })
-            .map(|h| {
+        let inside =
+            |r: Rect, x, y| x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height;
+        self.items.iter().rev().find_map(|h| {
+            let (x, y, stop) = if let Some(p) = self.planes.get(h.scope.plane) {
+                if !inside(p.outer, x, y) || !self.clips.contains(p.stop, OPEN, x, y) {
+                    return None;
+                }
+                let local = p.matrix.map_point((x, y));
+                (local.x, local.y, p.stop)
+            } else {
+                (x, y, OPEN)
+            };
+            (inside(h.rect, x, y) && self.clips.contains(h.scope.mask, stop, x, y)).then(|| {
                 (
                     h.key,
                     h.id,
@@ -743,6 +827,7 @@ impl Hits {
                     (f64::from(y) - f64::from(h.origin[1])) / f64::from(h.scale),
                 )
             })
+        })
     }
 }
 
@@ -939,13 +1024,9 @@ fn replay(
     let _scope = skia_safe::AutoCanvasRestore::guard(canvas, false);
     let mut i = 0;
     while i < draw.commands.len() {
-        let (mask, cmd) = &draw.commands[i];
+        let (scope, cmd) = &draw.commands[i];
         i += 1;
         match cmd {
-            Command::Image(sample) => {
-                sample.draw(canvas, &draw.clips, *mask, &draw.materials);
-                continue;
-            }
             Command::Group { alpha, bounds, end } => {
                 if let Some(local) = opacity::visible(canvas, *bounds) {
                     canvas.save_layer_alpha(local, u32::from(*alpha));
@@ -962,70 +1043,85 @@ fn replay(
             }
             _ => (),
         }
+        let plane = draw.planes.get(scope.plane);
+        let _posed = plane.map(|p| {
+            let restore = skia_safe::AutoCanvasRestore::guard(canvas, true);
+            p.enter(canvas, &draw.clips);
+            restore
+        });
+        let stop = plane.map_or(OPEN, |p| p.stop);
+        if let Command::Image(sample) = cmd {
+            sample.draw(canvas, &draw.clips, scope.mask, plane, &draw.materials);
+            continue;
+        }
         if let Command::Box {
             material,
             rect,
-            phase: Phase::Under,
+            phase: phase @ (Phase::Under | Phase::OuterShadow),
             ..
         } = cmd
         {
             draw.materials.outer_shadow(canvas, *material, *rect);
+            if *phase == Phase::OuterShadow {
+                continue;
+            }
         }
-        draw.clips.within(*mask, canvas, || -> Result<(), String> {
-            match cmd {
-                Command::Image(_) | Command::Group { .. } | Command::Restore => unreachable!(),
-                Command::Box {
-                    material,
-                    rect,
-                    clip,
-                    phase,
-                } => {
-                    draw.materials.draw(canvas, *material, *rect, *clip, *phase);
-                }
-                Command::Fill(r, brush) => {
-                    let paint = draw.materials.paint(*brush);
-                    canvas.draw_rect(
-                        skia_safe::Rect::from_xywh(r.x, r.y, r.width, r.height),
-                        &paint,
-                    );
-                }
-                Command::Glyphs {
-                    pos,
-                    face,
-                    size,
-                    range,
-                    clip,
-                    color,
-                    ..
-                } => {
-                    let paint = draw.materials.paint(*color);
-                    if let Some(r) = clip {
-                        canvas.save();
-                        canvas.clip_rect(
+        draw.clips
+            .within(scope.mask, stop, canvas, || -> Result<(), String> {
+                match cmd {
+                    Command::Image(_) | Command::Group { .. } | Command::Restore => unreachable!(),
+                    Command::Box {
+                        material,
+                        rect,
+                        clip,
+                        phase,
+                    } => {
+                        draw.materials.draw(canvas, *material, *rect, *clip, *phase);
+                    }
+                    Command::Fill(r, brush) => {
+                        let paint = draw.materials.paint(*brush);
+                        canvas.draw_rect(
                             skia_safe::Rect::from_xywh(r.x, r.y, r.width, r.height),
-                            None,
-                            false,
+                            &paint,
                         );
                     }
-                    let result = glyphs(
-                        canvas,
-                        GlyphPaintRun {
-                            ids: &draw.ids[range.clone()],
-                            positions: &draw.positions[range.clone()],
-                            origin: *pos,
-                            face: *face,
-                            size: *size,
-                        },
-                        &paint,
-                    );
-                    if clip.is_some() {
-                        canvas.restore();
+                    Command::Glyphs {
+                        pos,
+                        face,
+                        size,
+                        range,
+                        clip,
+                        color,
+                        ..
+                    } => {
+                        let paint = draw.materials.paint(*color);
+                        if let Some(r) = clip {
+                            canvas.save();
+                            canvas.clip_rect(
+                                skia_safe::Rect::from_xywh(r.x, r.y, r.width, r.height),
+                                None,
+                                false,
+                            );
+                        }
+                        let result = glyphs(
+                            canvas,
+                            GlyphPaintRun {
+                                ids: &draw.ids[range.clone()],
+                                positions: &draw.positions[range.clone()],
+                                origin: *pos,
+                                face: *face,
+                                size: *size,
+                            },
+                            &paint,
+                        );
+                        if clip.is_some() {
+                            canvas.restore();
+                        }
+                        result?;
                     }
-                    result?;
                 }
-            }
-            Ok(())
-        })?;
+                Ok(())
+            })?;
     }
     Ok(())
 }

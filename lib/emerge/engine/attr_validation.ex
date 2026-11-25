@@ -662,12 +662,12 @@ defmodule Emerge.Engine.AttrValidation do
   end
 
   defp validate_background!(attrs_owner, {:image, source, fit}) do
-    validate_image_source!(attrs_owner, source)
+    validate_file_source!(attrs_owner, source)
     validate_background_image_fit!(attrs_owner, fit)
   end
 
   defp validate_background!(attrs_owner, {:image, source}) do
-    validate_image_source!(attrs_owner, source)
+    validate_file_source!(attrs_owner, source)
   end
 
   defp validate_background!(attrs_owner, value) do
@@ -705,17 +705,16 @@ defmodule Emerge.Engine.AttrValidation do
           "#{attrs_owner} expects each :box_shadow entry to include numeric :offset_x, :offset_y, :size, :blur, a valid :color, and boolean :inset, got: #{inspect(value)}"
   end
 
-  defp validate_image_source!(_attrs_owner, %Emerge.Assets.Ref{path: path}) when is_binary(path),
-    do: :ok
+  @spec validate_file_source!(String.t(), term()) :: Emerge.UI.file_source()
+  def validate_file_source!(_owner, %Emerge.Assets.Ref{path: path} = ref) when is_binary(path),
+    do: ref
 
-  defp validate_image_source!(_attrs_owner, {:id, id}) when is_binary(id), do: :ok
-  defp validate_image_source!(_attrs_owner, {:path, path}) when is_binary(path), do: :ok
-  defp validate_image_source!(_attrs_owner, path) when is_binary(path), do: :ok
-  defp validate_image_source!(_attrs_owner, path) when is_atom(path), do: :ok
+  def validate_file_source!(_owner, {:path, path} = source) when is_binary(path), do: source
+  def validate_file_source!(_owner, name) when is_binary(name) or is_atom(name), do: name
 
-  defp validate_image_source!(attrs_owner, other) do
+  def validate_file_source!(owner, other) do
     raise ArgumentError,
-          "#{attrs_owner} expects an image source to be a binary, atom, ~m reference, {:id, id}, or {:path, path}, got: #{inspect(other)}"
+          "invalid file source for #{owner}: #{inspect(other)} (expected a logical name, ~m reference, or {:path, path})"
   end
 
   defp validate_length!(_attrs_owner, _key, :fill), do: :ok

@@ -2,6 +2,7 @@ defmodule Emerge.UI.Background do
   require Emerge.Docs.Examples
 
   alias Emerge.Docs.Examples
+  alias Emerge.Engine.AttrValidation
 
   Examples.external_resources(~w(ui-background-overview))
 
@@ -30,8 +31,9 @@ defmodule Emerge.UI.Background do
 
   ## Background Images
 
-  `Background.image/2` decorates an existing element frame. It does not create
-  an image element and it does not derive size from the source image. Use
+  `Background.image/2` decorates a block `el`, `row`, `column`, `wrapped_row`
+  or `wrapped_column`. It does not create an image element or derive the box's
+  size from the file. Use
   `Emerge.UI.image/2` when the image itself is the content element.
 
   Background image fit modes are:
@@ -42,10 +44,12 @@ defmodule Emerge.UI.Background do
   - `:repeat_x` - tile on the X axis only
   - `:repeat_y` - tile on the Y axis only
 
-  `Emerge.UI.image_fit/1` only applies to `Emerge.UI.image/2` and only accepts
-  `:contain` and `:cover`. Background images additionally support the repeat
-  modes above.
+  `Emerge.UI.image_fit/1` sets `:contain` or `:cover` on an `Emerge.UI.image/2`
+  or `Emerge.UI.svg/2` leaf. Use the `:fit` option on `Background.image/2` for
+  backgrounds, including repeat modes.
 
+  Tiles start at the top-left of the border box, at the source's intrinsic
+  device size. A non-repeated axis is transparent beyond the first tile.
   Backgrounds follow the element shape, so rounded corners from
   `Emerge.UI.Border.rounded/1` and `Emerge.UI.Border.rounded_each/4` also clip
   background painting.
@@ -149,7 +153,7 @@ defmodule Emerge.UI.Background do
         _ -> :cover
       end
 
-    {:background, {:image, source, fit}}
+    file_image(source, fit)
   end
 
   @doc """
@@ -175,7 +179,7 @@ defmodule Emerge.UI.Background do
   ```
   """
   @spec uncropped(Emerge.UI.file_source()) :: t()
-  def uncropped(source), do: {:background, {:image, source, :contain}}
+  def uncropped(source), do: file_image(source, :contain)
 
   @doc """
   Tile a background image on both axes.
@@ -200,7 +204,7 @@ defmodule Emerge.UI.Background do
   ```
   """
   @spec tiled(Emerge.UI.file_source()) :: t()
-  def tiled(source), do: {:background, {:image, source, :repeat}}
+  def tiled(source), do: file_image(source, :repeat)
 
   @doc """
   Tile a background image on the X axis.
@@ -225,7 +229,7 @@ defmodule Emerge.UI.Background do
   ```
   """
   @spec tiled_x(Emerge.UI.file_source()) :: t()
-  def tiled_x(source), do: {:background, {:image, source, :repeat_x}}
+  def tiled_x(source), do: file_image(source, :repeat_x)
 
   @doc """
   Tile a background image on the Y axis.
@@ -250,5 +254,9 @@ defmodule Emerge.UI.Background do
   ```
   """
   @spec tiled_y(Emerge.UI.file_source()) :: t()
-  def tiled_y(source), do: {:background, {:image, source, :repeat_y}}
+  def tiled_y(source), do: file_image(source, :repeat_y)
+
+  defp file_image(source, fit) do
+    {:background, {:image, AttrValidation.validate_file_source!("background image", source), fit}}
+  end
 end

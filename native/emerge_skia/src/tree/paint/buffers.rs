@@ -108,8 +108,8 @@ impl<T: Packed<N>, const N: usize> Buffers<T, N> {
     }
 }
 
-impl Packed<6> for super::Drawing {
-    fn capacities(&self) -> [usize; 6] {
+impl Packed<7> for super::Drawing {
+    fn capacities(&self) -> [usize; 7] {
         let [styles, bytes] = self.materials.capacities();
         [
             self.commands.capacity(),
@@ -118,12 +118,14 @@ impl Packed<6> for super::Drawing {
             self.clips.capacity(),
             styles,
             bytes,
+            self.planes.0.capacity(),
         ]
     }
     fn reserve(
         &mut self,
-        [commands, ids, pos, clips, styles, bytes]: [usize; 6],
+        [commands, ids, pos, clips, styles, bytes, planes]: [usize; 7],
     ) -> Result<(), String> {
+        pool::reserve(&mut self.planes.0, planes)?;
         pool::reserve(&mut self.commands, commands)?;
         pool::reserve(&mut self.ids, ids)?;
         pool::reserve(&mut self.positions, pos)?;
@@ -134,16 +136,22 @@ impl Packed<6> for super::Drawing {
         super::Drawing::clear(self)
     }
 }
-impl Packed<2> for super::Hits {
-    fn capacities(&self) -> [usize; 2] {
-        [self.items.capacity(), self.clips.capacity()]
+impl Packed<3> for super::Hits {
+    fn capacities(&self) -> [usize; 3] {
+        [
+            self.items.capacity(),
+            self.clips.capacity(),
+            self.planes.0.capacity(),
+        ]
     }
-    fn reserve(&mut self, [items, clips]: [usize; 2]) -> Result<(), String> {
+    fn reserve(&mut self, [items, clips, planes]: [usize; 3]) -> Result<(), String> {
+        pool::reserve(&mut self.planes.0, planes)?;
         pool::reserve(&mut self.items, items)?;
         self.clips.reserve(clips, Budget(0))
     }
     fn clear(&mut self) {
         self.items.clear();
         self.clips.clear();
+        self.planes.0.clear();
     }
 }

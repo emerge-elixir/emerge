@@ -13,7 +13,7 @@ defmodule Emerge.Config.AssetCache do
 
   ## Fields
 
-  - `max_entries` — maximum cached PNG/JPEG bitmaps; defaults to `256`.
+  - `max_entries` — maximum cached raster bitmaps; defaults to `256`.
   - `max_bytes` — retained decoded-pixel budget in bytes;
     defaults to `268_435_456` (256 MiB). This is not compressed file size.
   - `svg_tree_max_entries` — maximum cached SVG pictures; defaults to `64`.

@@ -32,6 +32,11 @@ impl Art {
     pub fn picture(&self) -> &Picture {
         &self.0.picture
     }
+    // A picture shader needs a full intrinsic tile even when the box is tiny.
+    pub fn fits_tile(&self) -> bool {
+        let (w, h) = self.size();
+        f64::from(w.ceil()) * f64::from(h.ceil()) <= MAX_EFFECT_PIXELS
+    }
     pub fn fits(&self, sx: f32, sy: f32) -> bool {
         sx.is_finite()
             && sy.is_finite()

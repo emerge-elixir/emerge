@@ -96,7 +96,8 @@ image([width(px(120))], path("images/logo.png"))
 image([width(px(120))], binary(png_bytes))
 ```
 
-`image/2` accepts PNG, JPEG and original-color SVG. `svg/2` accepts only SVG
+`image/2` accepts PNG, JPEG, uncompressed 24-bit BMP, the first frame of a
+GIF, and original-color SVG. GIFs do not animate. `svg/2` accepts only SVG
 and supports template tinting. Bytes are never treated as a filename, even if
 they spell one. Pass encoded data, not base64, raw pixels or a serialized Skia
 picture. Empty bytes are invalid. SVG XML is limited to 4 MiB, encoded raster
@@ -123,14 +124,22 @@ image(
 
 `:contain` keeps the whole image visible. `:cover` fills the frame and crops the
 excess. For a responsive image, `image([width(fill())], source)` derives height
-from the available width. Explicit size and min/max constraints take precedence.
+from the available width. For the reverse, `image([height(fill())], source)`
+derives width when the image is the viewport root or a direct child of an `el`
+or `row` with a pixel height. The ratio uses the space inside borders and
+padding, and uses display orientation for JPEGs.
+
+On an image or SVG leaf, `Transform.rotate(45)` turns the painted box and
+its click target around the center. `Transform.scale(2)` magnifies both;
+`-1` reverses both axes and `0` leaves neither visible art nor a target. These
+are static paint transforms: they don't move siblings.
 
 ## Use an image as a background
 
-The retained renderer currently paints image **elements**, not background images
-or tiles. On renderers with background-image support, `Background.image/2`
-paints behind an element's content. Its default fit is
-`:cover`:
+Use `Background.image/2` on a block `el`, `row`, `column`, `wrapped_row` or
+`wrapped_column`. The file paints behind the children, inside the rounded
+border box. It doesn't size the box or add an image click target. The default
+fit is `:cover`:
 
 ```elixir
 el(
@@ -146,7 +155,10 @@ el(
 ```
 
 Use `fit: :contain` to avoid cropping. Use `Background.tiled/1`,
-`Background.tiled_x/1` or `Background.tiled_y/1` to repeat an image.
+`Background.tiled_x/1` or `Background.tiled_y/1` to repeat a file from the
+top-left of the frame. A tile keeps its intrinsic size in device pixels; any
+space beyond the tile on a non-repeated axis stays transparent. File
+backgrounds are not inline paragraph decorations and don't accept `binary/1`.
 
 Here are styled examples of an image element and a background image:
 
@@ -283,7 +295,7 @@ Shrinking it again reuses the larger bitmap while available, without changing
 its intrinsic layout size. Some codecs, notably PNG, still need a larger
 temporary decode even when only the thumbnail is retained.
 
-`max_entries` and `max_bytes` limit cached PNG/JPEG pixels, not compressed file
+`max_entries` and `max_bytes` limit cached raster pixels, not compressed file
 sizes. SVGs instead share one recorded picture for identical content within a
 renderer, regardless of size, fit or tint. `decode_at_size` has no effect on SVG.
 `svg_tree_max_entries` and `svg_tree_max_bytes` let unused pictures stay cached

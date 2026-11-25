@@ -1120,6 +1120,31 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
             image.install();
         }
     }
+    let mut posed = Raster::default();
+    let pose = |angle, zoom| {
+        block(&[
+            images::path(images::GRID),
+            number(33, angle),
+            number(34, zoom),
+            vec![40, 1],
+        ])
+    };
+    posed
+        .tree
+        .upload(&upload(&[node(1, 9, pose(0., 1.), &[])]))
+        .unwrap();
+    images::load(&mut posed.tree, &mut images::loader());
+    for (angle, zoom) in [(45., 1.), (90., -2.), (30., 0.), (0., 1.)] {
+        let edit = set(1, 9, pose(angle, zoom));
+        c.zero(
+            "fitting image pose through prepared samples and inverse hits",
+            || {
+                posed.tree.patch(&edit).unwrap();
+                posed.settle(180., 170., 1.).unwrap();
+            },
+        );
+        posed.install();
+    }
     let mut fitted = Raster::default();
     let mut loader = images::image_loader(true, 1);
     fitted

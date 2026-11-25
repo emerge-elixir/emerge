@@ -32,11 +32,10 @@ impl Rounded {
                 dx * dx + dy * dy <= radius * radius
             })
     }
-    fn apply(self, canvas: &Canvas, relaxed: bool) {
-        let bleed = if relaxed { 0.5 } else { 0. };
+    fn apply(self, canvas: &Canvas, bleed: (f32, f32)) {
         let rr = RRect::new_rect_radii(
-            sk(self.rect).with_outset((bleed, bleed)),
-            &self.radii.map(|v| Point::new(v + bleed, v + bleed)),
+            sk(self.rect).with_outset(bleed),
+            &self.radii.map(|v| Point::new(v + bleed.0, v + bleed.1)),
         );
         canvas.clip_rrect(rr, ClipOp::Intersect, true);
     }
@@ -93,8 +92,11 @@ impl Clips {
             None => parent,
         }
     }
-    pub fn contains(&self, mut mask: Mask, x: f32, y: f32) -> bool {
-        while mask != OPEN {
+    pub fn parent(&self, mask: Mask) -> Mask {
+        self.0[mask as usize - 1].1
+    }
+    pub fn contains(&self, mut mask: Mask, stop: Mask, x: f32, y: f32) -> bool {
+        while mask != stop {
             let (r, next) = self.0[mask as usize - 1];
             if !r.contains(x, y) {
                 return false;
@@ -103,19 +105,19 @@ impl Clips {
         }
         true
     }
-    pub fn apply(&self, mask: Mask, canvas: &Canvas, relaxed: u8) {
-        if mask != OPEN {
+    pub fn apply(&self, mask: Mask, stop: Mask, canvas: &Canvas, relaxed: u8, pad: (f32, f32)) {
+        if mask != stop {
             let (r, prev) = self.0[mask as usize - 1];
-            self.apply(prev, canvas, relaxed.saturating_sub(1));
-            r.apply(canvas, relaxed != 0);
+            self.apply(prev, stop, canvas, relaxed.saturating_sub(1), pad);
+            r.apply(canvas, if relaxed != 0 { pad } else { (0., 0.) });
         }
     }
-    pub fn within<T>(&self, mask: Mask, canvas: &Canvas, f: impl FnOnce() -> T) -> T {
-        if mask == OPEN {
+    pub fn within<T>(&self, mask: Mask, stop: Mask, canvas: &Canvas, f: impl FnOnce() -> T) -> T {
+        if mask == stop {
             return f();
         }
         canvas.save();
-        self.apply(mask, canvas, 0);
+        self.apply(mask, stop, canvas, 0, (0., 0.));
         let result = f();
         canvas.restore();
         result

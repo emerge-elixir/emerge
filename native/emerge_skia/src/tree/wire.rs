@@ -63,6 +63,39 @@ impl<'a> Reader<'a> {
         let n = self.count()?;
         self.take(n * 8)
     }
+    pub(super) fn artwork(&mut self, raw: &[u8], inline: bool) -> Result<decoration::Bytes> {
+        let start = self.0;
+        match self.byte()? {
+            1 if crate::raster_assets::valid_logical(self.string()?) => (),
+            2 if crate::raster_assets::valid_absolute(self.string()?) => (),
+            3 if inline => {
+                self.take(32)?;
+                let len = self.long()?;
+                if len == 0 {
+                    return Err("empty inline image".into());
+                }
+                self.take(len)?;
+            }
+            4 if inline => {
+                self.take(32)?;
+            }
+            _ => return Err("invalid image source".into()),
+        }
+        Ok(decoration::Bytes::of(
+            raw,
+            &start[..start.len() - self.0.len()],
+        ))
+    }
+    pub(super) fn image_fit(&mut self, tiles: bool) -> Result<ImageFit> {
+        match self.byte()? {
+            0 => Ok(ImageFit::Contain),
+            1 => Ok(ImageFit::Cover),
+            2 if tiles => Ok(ImageFit::Repeat),
+            3 if tiles => Ok(ImageFit::RepeatX),
+            4 if tiles => Ok(ImageFit::RepeatY),
+            _ => Err("invalid image fit for this site".into()),
+        }
+    }
     pub(super) fn signed(&mut self) -> Result<f64> {
         let v = f64::from_be_bytes(self.array()?);
         if v.is_finite() {
@@ -197,7 +230,26 @@ fn attrs(raw: &[u8], shape: Shape) -> Result<Attrs> {
             }
             tag @ (5 | 6) => a.align[usize::from(tag - 5)] = Some(r.alignment("alignment")?),
             30 => a.text_align = Some(r.alignment("text alignment")?),
-            12 if r.byte()? == 0 => (a.background, a.decor.background_gradient) = r.ink(raw)?,
+            12 => match r.byte()? {
+                0 if !a.has_art() || shape == Shape::Image => {
+                    (a.background, a.decor.background_gradient) = r.ink(raw)?
+                }
+                2 if matches!(
+                    shape,
+                    Shape::El
+                        | Shape::Row
+                        | Shape::Column
+                        | Shape::WrappedRow
+                        | Shape::WrappedColumn
+                ) && !a.has_art()
+                    && a.background.is_none()
+                    && a.decor.background_gradient.len == 0 =>
+                {
+                    a.image_src = r.artwork(raw, false)?;
+                    a.image_fit = r.image_fit(true)?;
+                }
+                _ => return Err("unsupported background declaration or site".into()),
+            },
             13 => {
                 a.decor.radius = r.quad()?;
                 a.image_host_clip = true;
@@ -280,12 +332,8 @@ fn attrs(raw: &[u8], shape: Shape) -> Result<Attrs> {
         ) || !matches!(
             a.sizing.height,
             Length::Px(_) | Length::Fill | Length::Weighted(_) | Length::Auto | Length::Content
-        ) || (!a.sizing.width.definite() && a.sizing.height.weight().is_some())
-        {
-            return Err(
-                "unported image sizing: declare a pixel axis or fill width with automatic height"
-                    .into(),
-            );
+        ) {
+            return Err("unported image sizing: expected pixels, content or fill".into());
         }
     }
     // Layout reads padding plus the border inset; paint retains the border itself.

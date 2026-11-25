@@ -90,15 +90,17 @@ float offsets, glyph ranges or continuation hit boxes cross the wire.
 
 ### Retained image sources
 
-Kind `9` serves both `image/2` and `svg/2`. Tag `54` selects contain (`0`) or cover (`1`); `64` indicates SVG is required; `63` is its optional solid/gradient template color. Tag `35` remains static opacity. A source in tag `53` consists of one variant byte followed by:
+Kind `9` serves both `image/2` and `svg/2`. Tag `54` selects contain (`0`) or cover (`1`); `64` indicates SVG is required; `63` is its optional solid/gradient template color. Tags `33`/`34` on Image are finite paint rotation (degrees) and uniform scale about the frame center; `35` remains static opacity. These are not layout transforms. A source in tag `53` consists of one variant byte followed by:
 
 | Variant | Payload | Meaning |
 | --- | --- | --- |
-| `0` | length-prefixed ID | Reserved existing ID form; no retained ID lookup |
+| `0` | — | Retired. Writers never emit it; readers reject it rather than interpreting it as a path or digest. |
 | `1` | `u16be` length, UTF-8 logical name | Under the renderer's application `priv/`, including `~m` |
 | `2` | `u16be` length, UTF-8 absolute path | Requires runtime authorization |
-| `3` | SHA-256 (32 bytes), `u32be` length, encoded file bytes | Defines and uses inline PNG, JPEG or SVG |
+| `3` | SHA-256 (32 bytes), `u32be` length, encoded file bytes | Defines and uses encoded raster data or self-contained SVG XML |
 | `4` | SHA-256 (32 bytes) | Uses a definition from this batch (including a later record) or the preceding accepted declaration |
+
+Block El, Row, Column, WrappedRow and WrappedColumn also accept tag `12`, variant `2`: one **file** source (variant `1` or `2` above), then a fit byte (contain `0`, cover `1`, repeat `2`, repeat-x `3`, repeat-y `4`). It declares a decorative background, not a leaf, inline definition or additional child. Supported raster profiles include PNG, JPEG, 24-bit BI_RGB BMP and static GIF frame zero.
 
 A full export includes one definition per distinct inline payload. An incremental edit may reuse it without resending bytes. Clear or removal of the last declaration ends that ownership, even if a sealed frame or idle cache still holds the picture. New digests are checked before admission; malformed or over-budget updates do not replace the accepted declaration. The 64 MiB EMRG limit includes framing and inline definitions. Decoded pixels, intrinsic dimensions, picture commands and resource tickets are never on the wire. [Fitted raster decode](../../plans/checkpoints/layout/sized-rasters.md) still depends on renderer configuration and prepared geometry.
 

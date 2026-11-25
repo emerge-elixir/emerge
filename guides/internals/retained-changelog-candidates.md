@@ -27,13 +27,16 @@ branch stays in [API parity](../../plans/api-parity.md).
 | Removed | The low-level `EmergeSkia.Native.tree_node_count/1`, `tree_is_empty/1` and `tree_clear/1` bindings were removed. Use a stateful patch to clear. The separate test harness was not an application API. | [D5](retained-decisions.md#d5-publish-input-with-the-successful-submission) |
 | Changed | Explicit Wayland GPU starts may fall back once to CPU shm on proven hardware unavailability, with a warning and an accurate requested/selected API report. This is not a silent switch after startup or a workaround for missing build features. | [D8](retained-decisions.md#d8-submit-the-same-retained-drawing-to-explicit-wayland-presenters) |
 | Changed | On supported sessions, accepted title, input-mask and frame-cap revisions can be reported applied immediately. Configuration completion still does not acknowledge a new frame. | [D9](retained-decisions.md#d9-apply-supported-live-controls-directly) |
+| Removed | `{:id, id}` is no longer an image source. Reuse the original file source, or pass encoded bytes with `binary/1` to `image/2` or `svg/2`. Image backgrounds take file sources only. | [D21](retained-decisions.md#d21-declare-artwork-by-source-not-cache-id) |
 | Added | `path/1` and `binary/1` declare a file or encoded bytes for `image/2` and `svg/2`. Enabling absolute files still requires an explicit runtime-path policy. | [Source examples](../tutorials/use_assets.md#choose-a-file-or-pass-bytes) |
 | Changed | Static, self-contained SVGs use one vector picture per resident source per renderer instead of cached pixels per size. `svg_tree_max_entries` and `svg_tree_max_bytes` now budget idle pictures; supported SVG text uses bundled fonts. PNG/JPEG fitted decoding is unchanged. | [D20](retained-decisions.md#d20-share-one-skia-picture-per-svg-source-on-every-renderer) · [pixel and source tests](../../test/emerge_skia/svg_pictures_test.exs) |
 | Changed | Native source builds resolve `skia-safe` 0.157.0 from the Cargo registry. The SVG frontend uses `usvg` and the AnyRender Skia painter, without a second Skia or a GPU requirement for raster builds. | [Native renderer builds](../reference/native-renderer-builds.md) |
 
 ## Verified fix candidates
 
-**Which `main`?** The before measurements below ran on pinned Emerge
+Porting [Image transforms, height-driven width, BMP/GIF and file backgrounds](../../plans/images-and-svg.md) restores behavior available on `main`; these are not new public APIs. The image-turn fix below was reproduced on `aef5e42f`.
+
+**Which `main`?** The before measurements for the original layout regressions ran on pinned Emerge
 `5c71a593acfcbb2675c3bd282c680633439e7745`. The API reference is current local
 `main` at `aef5e42fc789c396505f85c34810b2ca9c008586`: source comparison of
 `tree/layout.rs` and `tree/layout/` shows only the added `on_drag` field copy,
@@ -44,6 +47,7 @@ retained renderer. Keep or refresh the before evidence if `main` moves.
 
 | Candidate fix | Reproduction and observed reference → expected and delivered result |
 | --- | --- |
+| Preserve the silhouette and exposed tips of a turned image. | A 100×100 `:cover` leaf at 45° in a 180×180 host: on pinned `main` a roomy bitmap painted (90,8) outside the diamond; an image borrowing an 8px rounded mask lost the tip at (90,30). The retained bitmap and SVG leave the host visible at (90,8), paint (90,30) and route it to about (7.57,7.57) local. [D22 and reference controls](retained-decisions.md#d22-turn-the-media-shape-not-its-device-bounds) |
 | Scale default-size text with its layout. | At display scale 1 and local scale 1.5, implicit text stayed at 16 device pixels. It now matches an explicit logical 16 at that text site: **24 device pixels**. At scale 1 the frame is unchanged. [Regression](../../test/emerge_skia/layout_scale_test.exs) |
 | Preserve the gap between wrapped lines of fixed-height children. | Chips of height 32 with padding 5, `none()` content and gap 8: the second line started at **y=18**, using content height. It should start at **y=40** (outer 32 + gap 8). Ordinary wrapping/pixels/hits: [regression](../../test/emerge_skia/retained_tree_slice_test.exs). |
 | Give usable space to other fill siblings after a pixel limit binds. | In a 120px Row with no gap, `min(px(20), fill())` beside `fill()` gave **20/60** and wasted 40px; now **20/100**. At width 30 both get 15. A nested 20–50 bound at widths 30/120 gave 20/15 and 50/60; now **20/10** and **50/70**, also on the Column axis. [Bounds and hits](../../test/emerge_skia/bounded_fill_test.exs) |

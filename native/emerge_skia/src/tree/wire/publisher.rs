@@ -27,7 +27,7 @@ impl Totals {
         count(&mut self.raw, raw);
         count(&mut self.glyphs, a.glyph_count);
         count(&mut self.texts, usize::from(shape.uses_glyphs()));
-        count(&mut self.images, usize::from(shape == Shape::Image));
+        count(&mut self.images, usize::from(a.has_art()));
         count(&mut self.hosts, usize::from(shape.has_prose_sites()));
         count(&mut self.groups, usize::from(a.opacity.is_some()));
         count(&mut self.materials, usize::from(a.material()));
@@ -85,7 +85,7 @@ impl Capacity {
         // Conservative byte credits, including the builder, five readers,
         // secondary-map slots, glyph overlap and paragraph/clip scratch.
         // Keep the credit pinned with any sealed readers after a growth.
-        let units = [4096, 4096, 160, 8192, 512, 4096, 6, 128, 1536];
+        let units = [4096, 4096, 160, 8192, 1536, 4096, 6, 128, 1536];
         let charge = self
             .0
             .iter()
@@ -111,17 +111,23 @@ impl Capacity {
             .paragraphs
             .reserve(keys, owners, words, Budget(0))?;
         e.images.reserve(keys, images, Budget(0))?;
-        t.output.fits.reserve(images, Budget(0))?;
+        t.output.reserve_images(images, Budget(0))?;
         let mut batch = Batch::default();
         batch.reserve(owners)?;
         t.wire.patch = Some(batch);
         Ok(Box::new(t))
     }
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ArtChange {
+    Keep,
+    Request,
+    Withdraw,
+}
 #[derive(Clone, Copy)]
 struct Change {
     key: Key,
-    image: bool,
+    art: ArtChange,
     membership: bool,
 }
 pub(crate) struct Publication {
@@ -268,7 +274,7 @@ impl Publisher {
                 },
                 |(a, r)| (a, rows.raw(r)),
             );
-            s.request_image = s.shape == Shape::Image
+            s.request_image = a.has_art()
                 && old.is_none_or(|k| {
                     e.attrs[k].svg_expected != a.svg_expected
                         || e.attrs[k].image_src.differs(e.raw(k), a.image_src, raw)
@@ -405,6 +411,13 @@ impl Publisher {
                     })
                 },
             );
+            let art = if s.request_image {
+                ArtChange::Request
+            } else if !block.attrs.has_art() && old.is_some_and(|r| r.block.attrs.has_art()) {
+                ArtChange::Withdraw
+            } else {
+                ArtChange::Keep
+            };
             let r = Record {
                 _grant: backing.split(RECORD),
                 id: s.id,
@@ -419,7 +432,7 @@ impl Publisher {
             writes.push((k, Arc::new(r)));
             changes.push(Change {
                 key: k,
-                image: s.request_image,
+                art,
                 membership: s.membership,
             });
         }
@@ -440,7 +453,7 @@ impl Publisher {
             writes.push((k, Arc::new(r)));
             changes.push(Change {
                 key: k,
-                image: false,
+                art: ArtChange::Keep,
                 membership: false,
             });
         }
@@ -566,6 +579,13 @@ impl Publication {
             .replace(self.version.clone())
             .unwrap_or_default();
         e.topology += 1;
+        // Backgrounds can disappear without detaching their hosts. Withdraw
+        // subscriptions before adding any new ones within the reserved count.
+        if !rebuild && e.images.active != 0 {
+            for c in self.changes.iter().filter(|c| c.art == ArtChange::Withdraw) {
+                e.withdraw_art(c.key);
+            }
+        }
         let mut bind = |c: Change| {
             let k = c.key;
             let r = self.version.get(k).unwrap();
@@ -584,7 +604,9 @@ impl Publication {
             m.stats = r.stats;
             m.admitted = r.inputs;
             m.change.membership |= c.membership;
-            if c.image || (rebuild && r.shape == Shape::Image && !e.images.bound(k)) {
+            if c.art == ArtChange::Request
+                || (rebuild && r.block.attrs.has_art() && !e.images.bound(k))
+            {
                 e.images.request(k);
             }
             e.touch(k);
@@ -593,7 +615,7 @@ impl Publication {
             self.version.each(|key, _| {
                 bind(Change {
                     key,
-                    image: false,
+                    art: ArtChange::Keep,
                     membership: false,
                 })
             });

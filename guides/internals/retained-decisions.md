@@ -423,3 +423,11 @@ Use an existing live or cached bitmap only if **both** axes suffice. Otherwise t
 ### D20. Share one Skia picture per SVG source on every renderer
 
 We use AnyRender to record each resident SVG as a Skia picture so CPU and GPU renderers can reuse the same vector artwork across sizes and tints without storing a bitmap for each size.
+
+### D21. Declare artwork by source, not cache ID
+
+On pinned `main`, a second Image could draw a loaded PNG by the ID from that renderer's log; a fresh `:await` export with only the ID showed the missing-image indicator. There was no public registration API. Retained declarations name the file or supply encoded bytes instead of depending on what a particular renderer has loaded. The DSL and codec reject `{:id, id}`; [wire variant 0](emrg-format.md#retained-image-sources) stays unused. This does not change element IDs, file authorization, picture reuse or the digest references that keep repeated inline bytes out of edits. [Declaration tests](../../test/emerge/ui_test.exs) · [codec tests](../../test/emerge/attr_codec_test.exs).
+
+### D22. Turn the media shape, not its device bounds
+
+An Image paint pose preserves the layout slot. Apply independent ancestor clips before the pose; apply the leaf's own or borrowed media mask in its local plane. A device bounding box can limit visibility or opacity work, but using it to expand bitmap sampling makes a turning square pulse. Instead divide the one-device-pixel allowance by each transformed unit-axis length. Hits use the inverse pose and the actual local shape, never the bleed. At 45° the tip of a 100px square under an 8px borrowed radius paints and hits, while the exposed corner does neither. [Reference differences](../../plans/images-and-svg.md#rotation-clips-and-installed-input) · [pixel and local-coordinate controls](../../test/emerge_skia/raster_images_test.exs).

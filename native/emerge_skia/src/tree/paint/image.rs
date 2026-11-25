@@ -5,11 +5,63 @@ use skia_safe::{
     canvas::SrcRectConstraint, paint::Style,
 };
 
+/// Source crop, destination and full fitted extent (before any bitmap bleed).
+/// A cover crop can require more texels than the slot; a repeated tile never does
+/// more decode work just because the slot is large.
+struct Placement {
+    src: Rect,
+    dst: SkRect,
+    full: SkRect,
+}
+impl ImageFit {
+    fn place(self, slot: Rect, iw: f32, ih: f32) -> Placement {
+        let src = Rect {
+            width: iw,
+            height: ih,
+            ..Rect::default()
+        };
+        let (w, h) = (slot.width, slot.height);
+        let centered =
+            |dw, dh| SkRect::from_xywh(slot.x + (w - dw) * 0.5, slot.y + (h - dh) * 0.5, dw, dh);
+        match self {
+            Self::Cover => {
+                let factor = (w / iw).max(h / ih);
+                let (cw, ch) = ((w / factor).min(iw), (h / factor).min(ih));
+                Placement {
+                    src: Rect {
+                        x: (iw - cw) * 0.5,
+                        y: (ih - ch) * 0.5,
+                        width: cw,
+                        height: ch,
+                    },
+                    dst: sk(slot),
+                    full: centered(iw * factor, ih * factor),
+                }
+            }
+            Self::Contain => {
+                let factor = (w / iw).min(h / ih);
+                let dst = centered((iw * factor).min(w), (ih * factor).min(h));
+                Placement {
+                    src,
+                    dst,
+                    full: dst,
+                }
+            }
+            Self::Repeat | Self::RepeatX | Self::RepeatY => Placement {
+                src,
+                dst: sk(slot),
+                full: sk(src),
+            },
+        }
+    }
+}
+
 /// Prepared samples and geometry. Pending/failed indicators have more than
 /// one paint operation and do not qualify for direct bitmap opacity.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Sample {
     pub source: Source,
+    pub fit: ImageFit,
     // Keep xywh until binding: subtracting SkRect edges to recover a crop
     // width can move a strict sampling boundary by one texel after scaling.
     pub src: Rect,
@@ -24,111 +76,107 @@ impl Sample {
         e: &Elements,
         k: Key,
         ctx: PaintContext,
+        plane: Option<Plane>,
         relaxed_masks: u8,
         gradient: Option<u32>,
         fits: &mut fits::Fits,
     ) -> Option<Self> {
         let a = &e.attrs[k];
-        let [t, r, b, l] = a.sizing.padding.map(|n| scale::pixels(n, ctx.scale));
+        let leaf = e.slots[k].shape == Shape::Image;
+        let [t, r, b, l] = if leaf {
+            a.sizing.padding.map(|n| scale::pixels(n, ctx.scale))
+        } else {
+            [0.; 4]
+        }; // backgrounds cover the border box
         let f = ctx.frame;
         let (w, h) = (f.width - l - r, f.height - t - b);
         if w <= 0. || h <= 0. {
             return None;
         }
         let (x, y) = (f.x + l, f.y + t);
-        let rect = SkRect::from_xywh(x, y, w, h);
+        let slot = Rect {
+            x,
+            y,
+            width: w,
+            height: h,
+        };
+        let rect = sk(slot);
         let source = e.images.source(k);
-        let own_clip = a.image_host_clip;
+        let own_clip = leaf && a.image_host_clip;
         // The half-pixel clip relaxation and extra texel at a fitted edge are
         // bitmap sampling rules. They must not enlarge vector geometry.
         let picture = matches!(source, Source::Picture(_));
-        let relaxed = !picture && (own_clip || e.slots[k].parent.is_some());
-        let bleed = if picture { 0. } else { 0.5 };
-        let mut clip = sk(if picture { ctx.clip } else { ctx.child_clip });
-        if own_clip
-            && !clip.intersect(sk(a.decor.inner_rect(f, ctx.scale)).with_outset((bleed, bleed)))
-        {
+        let relaxed = leaf && !picture && (own_clip || e.slots[k].parent.is_some());
+        let pad = plane.map_or((1., 1.), |p| pose::allowance(p.matrix, 1.));
+        let bleed = if picture {
+            (0., 0.)
+        } else {
+            (0.5 * pad.0, 0.5 * pad.1)
+        };
+        let mut clip = if !leaf {
+            sk(ctx.clip)
+        } else if plane.is_some() {
+            let borrowed = !own_clip && e.slots[k].parent.is_some_and(|p| e.attrs[p].clips_media());
+            sk(ctx.child_clip).with_outset(if borrowed || picture { bleed } else { pad })
+        } else {
+            sk(if picture { ctx.clip } else { ctx.child_clip })
+        };
+        if own_clip && !clip.intersect(sk(a.decor.inner_rect(f, ctx.scale)).with_outset(bleed)) {
             return None;
         }
         let mut dst = rect;
         let mut src = Rect::default();
         let mut target = None;
         if let Some((iw, ih)) = source.dimensions() {
-            let factor = if a.image_cover {
-                (w / iw).max(h / ih)
-            } else {
-                (w / iw).min(h / ih)
-            };
-            if a.image_cover {
-                let (cw, ch) = ((w / factor).min(iw), (h / factor).min(ih));
-                src = Rect {
-                    x: (iw - cw) * 0.5,
-                    y: (ih - ch) * 0.5,
-                    width: cw,
-                    height: ch,
-                };
-            } else {
-                let (dw, dh) = ((iw * factor).min(w), (ih * factor).min(h));
-                dst = SkRect::from_xywh(x + (w - dw) * 0.5, y + (h - dh) * 0.5, dw, dh);
-                src = Rect {
-                    width: iw,
-                    height: ih,
-                    ..Rect::default()
-                };
-            }
+            let placement = a.image_fit.place(slot, iw, ih);
+            (src, dst) = (placement.src, placement.dst);
             if let Source::Sized(record) = source {
-                // The full fitted image in device coordinates, before adding
-                // bleed. A cover crop needs more texels than the visible slot.
-                let full = if a.image_cover {
-                    let (fw, fh) = (iw * factor, ih * factor);
-                    SkRect::from_xywh(x + (w - fw) * 0.5, y + (h - fh) * 0.5, fw, fh)
-                } else {
-                    dst
-                };
+                let full = placement.full;
                 if !full.is_finite() {
                     return None;
                 }
-                let width = full.width().ceil().clamp(1., iw) as i32;
-                let height = full.height().ceil().clamp(1., ih) as i32;
+                let zoom = a.pose.zoom.abs();
+                let width = (full.width() * zoom).ceil().clamp(1., iw) as i32;
+                let height = (full.height() * zoom).ceil().clamp(1., ih) as i32;
                 target = Some((record, (width, height).into()));
             }
             if relaxed {
                 let fills = |a: f32, b: f32| (a - b).abs() <= 0.01;
                 let dx = fills(dst.left, rect.left) && fills(dst.right, rect.right);
                 let dy = fills(dst.top, rect.top) && fills(dst.bottom, rect.bottom);
-                dst.outset((u8::from(dx) as f32, u8::from(dy) as f32));
+                dst.outset((if dx { pad.0 } else { 0. }, if dy { pad.1 } else { 0. }));
             }
         } else if relaxed {
-            dst.outset((1., 1.));
+            dst.outset(pad);
         }
-        if !dst.intersects(clip) {
+        let mut visible = dst;
+        if !visible.intersect(clip) || plane.is_some_and(|p| p.bounds(visible).is_empty()) {
             return None;
         }
         if let Some((record, size)) = target {
             fits.add(k, record, size);
         }
+        let source = if let Source::Picture(art) = source {
+            let zoom = a.pose.zoom.abs();
+            let fits = if a.image_fit.tiled() {
+                art.fits_tile() && art.fits(1., 1.)
+            } else {
+                art.fits(
+                    dst.width() / src.width * zoom,
+                    dst.height() / src.height * zoom,
+                )
+            };
+            if fits { source.clone() } else { Source::Failed }
+        } else {
+            source.clone()
+        };
         Some(Self {
-            source: match source {
-                Source::Picture(art)
-                    if !art.fits(dst.width() / src.width, dst.height() / src.height) =>
-                {
-                    Source::Failed
-                }
-                _ => source.clone(),
-            },
-            tint: a.svg_color.map(Brush::Solid).or_else(|| {
-                gradient.map(|i| {
-                    Brush::Svg(
-                        i,
-                        Rect {
-                            x,
-                            y,
-                            width: w,
-                            height: h,
-                        },
-                    )
-                })
-            }),
+            fit: a.image_fit,
+            source,
+            tint: a
+                .svg_color
+                .map(Brush::Solid)
+                .or_else(|| gradient.map(|i| Brush::Svg(i, slot))),
             src,
             dst,
             clip,
@@ -148,18 +196,35 @@ impl Sample {
         self.src.height *= sy;
         self.source = Source::Ready(bitmap.clone());
     }
-    pub fn draw(&self, canvas: &Canvas, clips: &Clips, mask: Mask, materials: &Materials) {
+    pub fn draw(
+        &self,
+        canvas: &Canvas,
+        clips: &Clips,
+        mask: Mask,
+        plane: Option<Plane>,
+        materials: &Materials,
+    ) {
         canvas.save();
         // Rasterize the AA mask inside the rectangular device clip. Reversing
         // these operations changes edge coverage even at opacity one.
         canvas.clip_rect(self.clip, None, false);
-        clips.apply(mask, canvas, self.relaxed_masks);
+        clips.apply(
+            mask,
+            plane.map_or(OPEN, |p| p.stop),
+            canvas,
+            self.relaxed_masks,
+            plane.map_or((0.5, 0.5), |p| pose::allowance(p.matrix, 0.5)),
+        );
+        if self.fit.tiled() && self.draw_tiles(canvas) {
+            canvas.restore();
+            return;
+        }
         match &self.source {
             Source::Ready(b) => {
                 #[cfg(test)]
                 opacity::bitmap_drawn();
                 let mut p = Paint::default();
-                p.set_alpha(self.alpha);
+                p.set_alpha(self.alpha).set_anti_alias(plane.is_some());
                 canvas.draw_image_rect_with_sampling_options(
                     b.image(),
                     Some((&sk(self.src), SrcRectConstraint::Strict)),
@@ -207,6 +272,42 @@ impl Sample {
             Source::Failed => failed(canvas, self.dst),
         }
         canvas.restore();
+    }
+    // One shader operation even for a one-pixel tile in a large box. A
+    // picture shader references the existing recording, never the SVG bytes.
+    fn draw_tiles(&self, canvas: &Canvas) -> bool {
+        use skia_safe::{
+            Matrix,
+            TileMode::{Decal, Repeat},
+        };
+        let modes = match self.fit {
+            ImageFit::Repeat => (Repeat, Repeat),
+            ImageFit::RepeatX => (Repeat, Decal),
+            ImageFit::RepeatY => (Decal, Repeat),
+            _ => return false,
+        };
+        let matrix = Matrix::translate((self.dst.left, self.dst.top));
+        let shader = match &self.source {
+            Source::Ready(b) => {
+                b.image()
+                    .to_shader(modes, SamplingOptions::from(FilterMode::Linear), &matrix)
+            }
+            Source::Picture(art) => {
+                Some(
+                    art.picture()
+                        .to_shader(modes, FilterMode::Linear, &matrix, &sk(self.src)),
+                )
+            }
+            _ => return false, // normal pending/failed indicator
+        };
+        if let Some(shader) = shader {
+            let mut paint = Paint::default();
+            paint.set_shader(shader).set_alpha(self.alpha);
+            canvas.draw_rect(self.dst, &paint);
+        } else {
+            failed(canvas, self.dst);
+        }
+        true
     }
 }
 fn indicator(a: u8, r: u8, g: u8, b: u8) -> Paint {

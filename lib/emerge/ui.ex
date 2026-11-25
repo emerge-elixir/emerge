@@ -166,9 +166,8 @@ defmodule Emerge.UI do
   @typedoc "Image fit modes accepted by `image_fit/1`."
   @type image_fit_mode :: :contain | :cover
 
-  @typedoc "A logical/verified asset name, runtime file, or registered asset reference."
-  @type file_source ::
-          binary() | atom() | {:id, binary()} | {:path, binary()} | Emerge.Assets.Ref.t()
+  @typedoc "A logical asset name, verified `~m` reference, or runtime file path."
+  @type file_source :: binary() | atom() | {:path, binary()} | Emerge.Assets.Ref.t()
 
   @typedoc "A file source or explicitly supplied encoded bytes for `image/2` and `svg/2`."
   @type image_source :: file_source() | {:bytes, binary()}
@@ -431,11 +430,10 @@ defmodule Emerge.UI do
   @doc """
   An image element.
 
-  Give `image/2` a PNG, JPEG or self-contained SVG. Use `path/1` for a file
-  or `binary/1` for encoded bytes. A relative path, bare string or verified
+  Give `image/2` a PNG, JPEG, uncompressed 24-bit BMP, GIF (first frame), or
+  self-contained SVG. Use `path/1` for a file or `binary/1` for encoded bytes. A relative path, bare string or verified
   `~m"..."` names a file under the configured application's `priv/`. Absolute
-  paths require an enabled `Emerge.Config.RuntimePaths` allowlist. Registered
-  image IDs are not supported by the retained renderer.
+  paths require an enabled `Emerge.Config.RuntimePaths` allowlist.
 
   JPEG sizing and fit use the EXIF display orientation. SVGs draw in their
   original colors; use `svg/2` if you want a template tint.
@@ -443,12 +441,14 @@ defmodule Emerge.UI do
   When one dimension is pixel-sized and the other is omitted or `content()`,
   the content-sized dimension follows the source's intrinsic aspect ratio.
   With `width(fill())`, an omitted or `content()` height follows the resolved
-  width. To size from height on the retained renderer, give a pixel height;
-  deriving width from `height(fill())` is not supported. Sizes include padding
-  and borders; the ratio applies to the inner content.
+  width. Conversely, `height(fill())` derives an automatic width at the viewport
+  root or in a directly enclosing `el/2` or `row/2` with a pixel height. Sizes
+  include padding and borders; the ratio applies to the inner content.
 
   Use `image_fit/1` to choose between `:contain` and `:cover`. Setting both
   dimensions fixes the frame; the fit mode controls how the image fills it.
+  `Transform.rotate/1` and `Transform.scale/1` turn and scale the artwork and
+  its click target around the frame center, without changing sibling layout.
 
   ## Example
 
@@ -480,7 +480,7 @@ defmodule Emerge.UI do
 
   def path(_), do: raise(ArgumentError, "path/1 expects a filename of 1 to 4096 bytes")
 
-  @doc "Declares encoded PNG/JPEG bytes or UTF-8 SVG XML, never a filename or raw pixel plane."
+  @doc "Declares encoded image bytes (see `image/2`) or UTF-8 SVG XML, never a filename or raw pixel plane."
   @spec binary(binary()) :: {:bytes, binary()}
   def binary(bytes) when is_binary(bytes) and byte_size(bytes) in 1..67_108_864,
     do: {:bytes, bytes}
@@ -500,9 +500,9 @@ defmodule Emerge.UI do
   dimension from the source's intrinsic aspect ratio. For example, a 200×200 SVG
   with only `height(px(68))` occupies 68×68 pixels without padding or borders.
   `width(fill())` derives an automatic height from the allocated width, including
-  enlargement beyond the source dimensions. As with `image/2`, deriving width
-  from `height(fill())` is not supported by the retained renderer. Setting both
-  dimensions fixes the frame, with `image_fit/1` controlling the fit.
+  enlargement beyond the source dimensions. `height(fill())` derives an
+  automatic width at the same definite-height sites as `image/2`. Setting
+  both dimensions fixes the frame, with `image_fit/1` controlling the fit.
 
   ## Example
 

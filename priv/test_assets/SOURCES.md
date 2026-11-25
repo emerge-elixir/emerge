@@ -17,3 +17,10 @@ texels and opaque cyan texels; the inverse control is solid blue.
 EXIF orientation 6. Its RGB ramp is `(16*x, 32*y, 15*((3*x+11*y) % 17))`,
 encoded with `cjpeg -baseline -quality 95 -sample 1x1` and a little-endian
 IFD0 orientation tag. No external image is used.
+
+`media.bmp` and `media.gif` encode the same generated 9×8 swatch: green top
+rows, then red and blue columns, with a black marker at x=4 on even rows.
+Netpbm `ppmtobmp -windows -bpp 24` produces padded bottom-up BGR;
+`ppmtogif -interlace -transparent black` makes the marker transparent.
+`sequence.gif` adds a second frame with red and blue interchanged. The static
+image decoder draws the first frame.

@@ -243,6 +243,9 @@ struct BoxStyle {
     spacing: [f64; 2],
 }
 impl BoxStyle {
+    fn width_from_height(self) -> bool {
+        matches!(self.width, Length::Auto | Length::Content) && self.height.weight().is_some()
+    }
     // Weights belong to the distributing parent, not to this intrinsic box.
     fn without_weights(self) -> Self {
         Self {
@@ -265,6 +268,33 @@ impl Alignment {
             Self::Start => 0.,
             Self::Center => (slot - extent) * 0.5,
             Self::End => slot - extent,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+enum ImageFit {
+    #[default]
+    Contain,
+    Cover,
+    Repeat,
+    RepeatX,
+    RepeatY,
+}
+impl ImageFit {
+    fn tiled(self) -> bool {
+        matches!(self, Self::Repeat | Self::RepeatX | Self::RepeatY)
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ImagePose {
+    degrees: f32,
+    zoom: f32,
+}
+impl Default for ImagePose {
+    fn default() -> Self {
+        Self {
+            degrees: 0.,
+            zoom: 1.,
         }
     }
 }
@@ -291,7 +321,8 @@ struct Attrs {
     svg_expected: bool,
     svg_color: Option<u32>,
     svg_gradient: decoration::Bytes,
-    image_cover: bool,
+    image_fit: ImageFit,
+    pose: ImagePose,
     image_host_clip: bool,
     opacity: Option<u8>,
     decor: decoration::Decor,
@@ -321,6 +352,15 @@ impl MainSpacing {
     }
 }
 impl Attrs {
+    fn has_art(&self) -> bool {
+        self.image_src.len != 0
+    }
+    fn posed(&self) -> bool {
+        self.pose != ImagePose::default()
+    }
+    fn clips_media(&self) -> bool {
+        self.decor.radius != [0.; 4] || self.decor.border != [0.; 4]
+    }
     fn main_spacing(&self, axis: usize) -> MainSpacing {
         let length = [self.sizing.width, self.sizing.height][axis];
         if self.space_evenly && length.definite() {

@@ -14,35 +14,15 @@ impl Payload for Image {
     }
     fn decode(tag: u8, r: &mut wire::Reader<'_>, raw: &[u8], a: &mut Attrs) -> Result<(), String> {
         match tag {
-            53 if a.image_src.len == 0 => {
-                let start = r.0;
-                match r.byte()? {
-                    1 if crate::raster_assets::valid_logical(r.string()?) => (),
-                    2 if crate::raster_assets::valid_absolute(r.string()?) => (),
-                    3 => {
-                        r.take(32)?;
-                        let len = r.long()?;
-                        if len == 0 {
-                            return Err("empty inline image".into());
-                        }
-                        r.take(len)?;
-                    }
-                    4 => {
-                        r.take(32)?;
-                    }
-                    _ => return Err("invalid image source".into()),
-                }
-                a.image_src = decoration::Bytes::of(raw, &start[..start.len() - r.0.len()]);
+            33 => a.pose.degrees = (r.signed()? % 360.) as f32,
+            34 => {
+                a.pose.zoom = r.signed()? as f32;
+                if !a.pose.zoom.is_finite() { return Err("image paint scale exceeds device range".into()); }
             }
+            53 if !a.has_art() => a.image_src = r.artwork(raw, true)?,
             63 => (a.svg_color, a.svg_gradient) = r.ink(raw)?,
             64 => a.svg_expected = r.flag()?,
-            54 => {
-                a.image_cover = match r.byte()? {
-                    0 => false,
-                    1 => true,
-                    _ => return Err("expected contain or cover for image".into()),
-                }
-            }
+            54 => a.image_fit = r.image_fit(false)?,
             _ => return Err(format!("unsupported image attribute or source {tag}")),
         }
         Ok(())
@@ -69,6 +49,9 @@ impl LayoutBehaviour for Image {
                 (Length::Auto | Length::Content, Length::Px(px)) => {
                     w = projected(scale::pixels(px, scale) - (t + d), iw, ih)
                 }
+                _ if b.width_from_height() => {
+                    w = projected(cx.allocated_image_height() - (t + d), iw, ih)
+                }
                 _ => (),
             }
         }
@@ -90,8 +73,8 @@ impl LayoutBehaviour for Image {
 impl PaintBehaviour<Image> for Image {
     fn attrs_changed(a: &Attrs, b: &Attrs) -> bool {
         a.background != b.background
+            || a.pose != b.pose
             || a.svg_color != b.svg_color
-            || a.image_cover != b.image_cover
             || a.image_host_clip != b.image_host_clip
             || a.sizing.padding != b.sizing.padding
     }

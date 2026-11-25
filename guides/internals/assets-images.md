@@ -2,7 +2,11 @@
 
 ## Retained image leaves (EMRG v10)
 
-`image/2` accepts [PNG](../../plans/checkpoints/layout/raster-images.md), [JPEG](../../plans/checkpoints/layout/jpeg.md) and original-color SVG; `svg/2` requires SVG and optionally tints its composited alpha. `path(relative)` and `~m` select a logical name under this renderer's `priv/`. `path(absolute)` requires runtime permission; the worker confines the open to a pinned allowlisted directory or file and checks the regular descriptor, length, extension and selected decoder. Only then may its bytes share a cached result. `binary(encoded)` supplies the actual bytes, not a filename. See the [wire definition and reference](emrg-format.md#retained-image-sources).
+`image/2` accepts [PNG](../../plans/checkpoints/layout/raster-images.md), [JPEG](../../plans/checkpoints/layout/jpeg.md), uncompressed 24-bit BGR BMP, GIF frame zero and original-color SVG; `svg/2` requires SVG and optionally tints its composited alpha. `path(relative)` and `~m` select a logical name under this renderer's `priv/`. `path(absolute)` requires runtime permission; the worker confines the open to a pinned allowlisted directory or file and checks the regular descriptor, length, extension and selected decoder. Only then may its bytes share a cached result. `binary(encoded)` supplies the actual bytes, not a filename. See the [wire definition and reference](emrg-format.md#retained-image-sources).
+
+A block El, Row, Column, WrappedRow or WrappedColumn can also declare a **file** background. Its subscription follows the same authorization and generation rules. Readiness changes drawing, not intrinsic size or listeners. An intrinsic-size tile uses one bitmap or picture shader, with decal on any non-repeating axis. Picture tile area is bounded to 16,777,216 texels; a tile is not a new source recording.
+
+**Leaf geometry:** A known fill height at the viewport root or under a pixel-height El/Row can determine automatic width from the display ratio inside the insets. A paint turn or uniform scale changes the installed drawing and click coordinates, not layout. Bitmap seam allowance is measured along the transformed unit axes, never by enlarging a rotated bounding box. An eligible borrowed rounded clip turns with the Image; independent ancestor clips do not.
 
 **Raster:** With `assets.decode_at_size: true`, layout reads the intrinsic **display** dimensions from immutable source metadata. Preparation requests enough texels for the largest visible use of that source, including the area outside a cover crop. The loader decodes and, if necessary, resamples to that size. Later smaller draws reuse the bitmap while it is live or cached. Disabling the option keeps the full-resolution path; neither path opens files or runs codecs during replay. [Fitted memory and submission controls](../../plans/checkpoints/layout/sized-rasters.md).
 
@@ -28,18 +32,7 @@ SVG text uses system font matching; relative subresources and external SVG fonts
 
 ## Source Types
 
-`image/2` and `Background.image/2` support:
-
-- `%Emerge.Assets.Ref{}` from `~m"..."`
-- logical path string (example: `"images/logo.png"`)
-- runtime path tuple (example: `{:path, "/data/photos/a.jpg"}`)
-- preloaded image ID tuple (example: `{:id, "img_<sha256>"}`)
-
-In EMRG v3 these are encoded as typed image sources:
-
-- `0` -> `{:id, id}`
-- `1` -> logical path
-- `2` -> `{:path, path}`
+The earlier encoder used `1` for logical names (including `~m`) and `2` for runtime paths. It also used `0` for a renderer-local lookup by ID. The retained API [dropped that lookup](retained-decisions.md#d21-declare-artwork-by-source-not-cache-id); use the original file or, for an image leaf, `binary/1`.
 
 ## Runtime Flow
 

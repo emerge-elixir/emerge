@@ -26,7 +26,7 @@ defmodule Emerge.Config.Assets do
     enable this option by default. It does not apply to SVG pictures.
   - `runtime_paths` — `Emerge.Config.RuntimePaths`. Its default disables images
     loaded from absolute filesystem paths.
-  - `cache` — `Emerge.Config.AssetCache`, limiting idle PNG/JPEG bitmaps and SVG
+  - `cache` — `Emerge.Config.AssetCache`, limiting idle raster bitmaps and SVG
     pictures separately. These limits are independent of renderer paint caching.
 
   All fields require a new viewport to change. Lists such as `fonts` replace the

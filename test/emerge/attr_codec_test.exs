@@ -624,13 +624,27 @@ defmodule Emerge.Engine.AttrCodecTest do
   test "encode/decode image source variants" do
     attrs = %{
       image_src: {:path, "/tmp/runtime.jpg"},
-      background: {:image, {:id, "img_preloaded"}, :cover}
+      background: {:image, "icons/cloud.svg", :cover}
     }
 
-    decoded = attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+    assert attrs == attrs |> AttrCodec.encode_attrs() |> AttrCodec.decode_attrs()
+  end
 
-    assert decoded.image_src == {:path, "/tmp/runtime.jpg"}
-    assert decoded.background == {:image, {:id, "img_preloaded"}, :cover}
+  test "image source variant 0 is neither written nor read, including in backgrounds" do
+    source = {:id, "logo"}
+
+    for attrs <- [%{image_src: source}, %{background: {:image, source, :cover}}] do
+      assert_raise ArgumentError, ~r/unsupported image source/, fn ->
+        AttrCodec.encode_attrs(attrs)
+      end
+    end
+
+    # One tag 53 (image_src), or tag 12 (background) with image fill and cover fit.
+    for block <- [<<1::16, 53, 0, 4::16, "logo">>, <<1::16, 12, 2, 0, 4::16, "logo", 1>>] do
+      assert_raise ArgumentError, "unknown image source variant: 0", fn ->
+        AttrCodec.decode_attrs(block)
+      end
+    end
   end
 
   defp normalize_attrs(attrs) do

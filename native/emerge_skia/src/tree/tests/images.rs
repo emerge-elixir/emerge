@@ -16,7 +16,7 @@ pub(super) fn image_loader(decode_at_size: bool, cache_max_entries: usize) -> Lo
     })
     .unwrap()
 }
-fn path(name: &str) -> Bytes {
+pub(super) fn path(name: &str) -> Bytes {
     [53, 1]
         .into_iter()
         .chain((name.len() as u16).to_be_bytes())
@@ -111,12 +111,131 @@ fn superseded_or_detached_tickets_cannot_change_the_final_declaration() {
         vec![path(GRID), vec![54, 2]],
         vec![path(GRID), vec![2, 0]],
         vec![path(GRID), number(35, f64::NAN)],
+        vec![path(GRID), number(33, f64::NAN)],
+        vec![path(GRID), number(33, f64::INFINITY)],
+        vec![path(GRID), number(79, 45.)], // layout rotation is not a paint pose
         vec![vec![53, 2, 0, 1, b'x']],
+        vec![vec![53, 0, 0, 2, b'i', b'd']], // retired preloaded-ID source
     ] {
         assert!(r.tree.patch(&set(2, 9, block(&fields))).is_err());
     }
     assert_eq!(r.tree.encode(), pending);
     assert!(!r.tree.needs_images());
+}
+#[test]
+fn turns_reuse_fitted_pixels_without_layout_or_moving_siblings() {
+    let mut r = Raster::default();
+    let mut l = image_loader(true, 0);
+    r.tree.upload(&story(WIDE, 1.)).unwrap();
+    load(&mut r.tree, &mut l);
+    r.settle(180., 170., 1.).unwrap();
+    fit(&mut r.tree, &mut l, (80, 40));
+    let a = draw(&mut r).to_vec();
+    for degrees in [30., 45., 90., -45., f64::MAX, 360.] {
+        let fields = block(&[path(WIDE), vec![1, 0], vec![40, 1], number(33, degrees)]);
+        r.tree.patch(&set(2, 9, fields)).unwrap();
+        draw(&mut r);
+        assert_eq!(bounds(&r, 3).y, 40.);
+        assert!(
+            r.tree
+                .layers
+                .trace
+                .iter()
+                .all(|&(p, _, _)| matches!(p, PaintContext | Compose))
+        );
+        assert!(r.tree.next_image().is_none());
+    }
+    assert_eq!(r.pixels(), a);
+    let zoom = |z| {
+        set(
+            2,
+            9,
+            block(&[
+                path(WIDE),
+                vec![1, 0],
+                vec![40, 1],
+                number(33, 30.),
+                number(34, z),
+            ]),
+        )
+    };
+    r.tree.patch(&zoom(2.)).unwrap();
+    r.settle(180., 170., 1.).unwrap();
+    fit(&mut r.tree, &mut l, (160, 80));
+    draw(&mut r);
+    r.tree.patch(&zoom(-0.5)).unwrap();
+    draw(&mut r);
+    assert!(
+        r.tree.next_image().is_none(),
+        "a smaller reflected use reuses the grown pixels"
+    );
+    assert_eq!(bounds(&r, 3).y, 40.);
+    let accepted = r.tree.encode();
+    assert!(r.tree.patch(&zoom(f64::MAX)).is_err());
+    assert!(r.tree.patch(&set(1, 3, block(&[number(33, 30.)]))).is_err());
+    assert_eq!(r.tree.encode(), accepted);
+}
+#[test]
+fn early_image_width_uses_the_final_row_offer_never_a_previous_fit() {
+    let mut r = Raster::default();
+    let leaf = block(&[path(WIDE), vec![2, 0], vec![40, 1]]);
+    r.tree
+        .upload(&upload(&[
+            node(1, 1, block(&[px(2, 40.)]), &[2, 3]),
+            node(2, 9, leaf, &[]),
+            node(3, 3, block(&[px(2, 60.)]), &[]),
+        ]))
+        .unwrap();
+    draw(&mut r);
+    assert_eq!(bounds(&r, 2).width, 64.); // pending has no ratio
+    load(&mut r.tree, &mut loader());
+    draw(&mut r);
+    assert_eq!(bounds(&r, 2).width, 80.);
+    r.tree.patch(&set(1, 1, block(&[px(2, 60.)]))).unwrap();
+    draw(&mut r);
+    assert_eq!(bounds(&r, 2).width, 120.);
+    let before = r.tree.encode();
+    for invalid in [
+        set(1, 1, block(&[])),
+        patch(1, 1, &[edges(1, 1, &[3]), edges(3, 3, &[2])]),
+    ] {
+        assert!(
+            r.tree
+                .patch(&invalid)
+                .unwrap_err()
+                .contains("automatic width from fill height")
+        );
+        assert_eq!(r.tree.encode(), before);
+    }
+    // Releasing the parent's definite height is fine if the same batch also
+    // changes the kept Image to an explicit height.
+    r.tree
+        .patch(&patch(
+            1,
+            1,
+            &[
+                node(1, 1, block(&[]), &[2, 3]),
+                attr_record(2, 9, block(&[path(WIDE), px(2, 22.)])),
+            ],
+        ))
+        .unwrap();
+    draw(&mut r);
+    assert_eq!(bounds(&r, 2).width, 44.);
+
+    let mut root = Raster::default();
+    root.tree
+        .upload(&upload(&[node(
+            1,
+            9,
+            block(&[path(WIDE), vec![2, 0]]),
+            &[],
+        )]))
+        .unwrap();
+    load(&mut root.tree, &mut loader());
+    for h in [40., 60., 40.] {
+        root.draw(180., h, 1.).unwrap();
+        assert_eq!(bounds(&root, 1).width, 2. * h);
+    }
 }
 fn fit(t: &mut Tree, l: &mut Loader, size: (i32, i32)) {
     let (ticket, request) = t.next_image().expect("expected fitted request");

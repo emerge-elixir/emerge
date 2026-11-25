@@ -4,6 +4,8 @@ use super::*;
 pub(crate) enum Format {
     Png,
     Jpeg,
+    Bmp,
+    Gif,
     Svg,
 }
 impl Format {
@@ -16,6 +18,10 @@ impl Format {
             Some(Self::Png)
         } else if ext.eq_ignore_ascii_case("jpg") || ext.eq_ignore_ascii_case("jpeg") {
             Some(Self::Jpeg)
+        } else if ext.eq_ignore_ascii_case("gif") {
+            Some(Self::Gif)
+        } else if ext.eq_ignore_ascii_case("bmp") {
+            Some(Self::Bmp)
         } else if ext.eq_ignore_ascii_case("svg") {
             Some(Self::Svg)
         } else {
@@ -26,6 +32,10 @@ impl Format {
     pub(super) fn inline(bytes: &[u8]) -> Self {
         if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
             Self::Png
+        } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+            Self::Gif
+        } else if bytes.starts_with(b"BM") {
+            Self::Bmp
         } else if bytes.starts_with(b"\xff\xd8") {
             Self::Jpeg
         } else {
@@ -50,6 +60,8 @@ impl Format {
                 }
             }
             Self::Jpeg => complete_jpeg(&data)?,
+            Self::Bmp => complete_rgb_bmp(&data)?,
+            Self::Gif => complete_gif(&data)?,
             Self::Svg => return None,
         }
         self.reopen(data)
@@ -59,10 +71,79 @@ impl Format {
         let decoder = match self {
             Self::Png => codec::png_decoder::decoder(),
             Self::Jpeg => codec::jpeg_decoder::decoder(),
+            Self::Bmp => codec::bmp_decoder::decoder(),
+            Self::Gif => codec::gif_decoder::decoder(),
             Self::Svg => return None,
         };
         Codec::from_data_with_decoders(data, &[decoder])
     }
+}
+
+// Count no frames and allocate no frame table. Validate the bounded canvas,
+// palettes and sub-block framing on the worker; Skia decodes frame zero.
+fn complete_gif(data: &[u8]) -> Option<()> {
+    let (screen, rest) = data.split_first_chunk::<13>()?;
+    if !matches!(&screen[..6], b"GIF87a" | b"GIF89a") {
+        return None;
+    }
+    let u16le = |pair: &[u8]| i32::from(u16::from_le_bytes([pair[0], pair[1]]));
+    let (w, h) = (u16le(&screen[6..]), u16le(&screen[8..]));
+    bitmap_bytes(w, h)?;
+    let palette = |flags: u8| {
+        if flags & 0x80 == 0 {
+            0
+        } else {
+            6usize << (flags & 7)
+        }
+    };
+    let mut rest = rest.get(palette(screen[10])..)?;
+    let mut image = false;
+    loop {
+        let (&tag, tail) = rest.split_first()?;
+        rest = match tag {
+            0x3b => return image.then_some(()),
+            0x21 => tail.get(1..)?, // extension label followed by sub-blocks
+            0x2c => {
+                let (desc, tail) = tail.split_first_chunk::<9>()?;
+                let (fw, fh) = (u16le(&desc[4..]), u16le(&desc[6..]));
+                if fw == 0 || fh == 0 || u16le(desc) + fw > w || u16le(&desc[2..]) + fh > h {
+                    return None;
+                }
+                image = true;
+                tail.get(1 + palette(desc[8])..)? // skip the local table and LZW code size
+            }
+            _ => return None,
+        };
+        loop {
+            let (&n, tail) = rest.split_first()?;
+            rest = tail.get(n as usize..)?;
+            if n == 0 {
+                break;
+            }
+        }
+    }
+}
+
+// BITMAPINFOHEADER, BI_RGB, 24-bit BGR. Check padded rows and signed height
+// before asking Skia to allocate anything. Negative height is top-down.
+fn complete_rgb_bmp(bytes: &[u8]) -> Option<()> {
+    let header = bytes.first_chunk::<54>()?;
+    let word = |i| u32::from_le_bytes(header[i..i + 4].try_into().unwrap());
+    let offset = word(10) as usize;
+    if &header[..2] != b"BM"
+        || word(14) != 40
+        || offset < 54
+        || header[26..30] != [1, 0, 24, 0]
+        || word(30) != 0
+    {
+        return None;
+    }
+    let w = word(18) as i32;
+    let h = (word(22) as i32).checked_abs()?;
+    bitmap_bytes(w, h)?;
+    let stride = (3 * w as usize).next_multiple_of(4);
+    let end = offset.checked_add(stride * h as usize)?;
+    (end <= word(2) as usize && word(2) as usize <= bytes.len()).then_some(())
 }
 
 /// Skia can produce pixels from an incomplete progressive scan. Require a real

@@ -1,5 +1,5 @@
 //! Renderer-local source preparation. SVGs are immutable command pictures;
-//! only PNG/JPEG use the fitted-pixel pipeline.
+//! raster formats use the fitted-pixel pipeline; SVG retains a picture.
 use rustix::fs::{Mode, OFlags, openat};
 use skia_safe::{
     AlphaType, Bitmap, Codec, ColorType, Data, EncodedOrigin, ISize, Image, ImageInfo, codec,

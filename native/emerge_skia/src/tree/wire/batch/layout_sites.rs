@@ -103,6 +103,19 @@ impl Batch {
             Err("multiline text is not in the first slice".into())
         }
     }
+    // Ordinary Row and El offer their entire definite inner height. Neither
+    // a future Column share nor a line break is an input to Image measure.
+    fn check_image_basis(&self, e: &Elements, id: u64, a: &Attrs) -> Result<()> {
+        if a.sizing.width_from_height()
+            && self.site_parent(e, id).is_some_and(|p| {
+                let (host, a) = self.declaration(e, p);
+                !host.offers_inner_height() || !matches!(a.sizing.height, Length::Px(_))
+            })
+        {
+            return Err("unported image sizing: automatic width from fill height requires the viewport or an El or Row with pixel height".into());
+        }
+        Ok(())
+    }
     fn check_column_basis(&self, e: &Elements, id: u64) -> Result<()> {
         if !self.needs_early_width(e, id) {
             return Ok(());
@@ -179,6 +192,9 @@ impl Batch {
             if shape == Shape::Text {
                 self.check_text_site(e, s.id)?;
             } else if shape == Shape::El {
+                if a.has_art() && self.inline_text(e, s.id) {
+                    return Err("file backgrounds require a block box, not a paragraph span".into());
+                }
                 // Moving a kept wrapper can turn its text back into a single line.
                 for c in self.layout_children(e, s.id) {
                     self.check_text_site(e, c)?;
@@ -195,7 +211,9 @@ impl Batch {
             {
                 self.check_declared_group(e, s.id)?;
             }
-            if shape == Shape::WrappedColumn {
+            if shape == Shape::Image {
+                self.check_image_basis(e, s.id, a)?;
+            } else if shape == Shape::WrappedColumn {
                 self.check_column_basis(e, s.id)?;
             }
             if let Some(p) = s.parent
@@ -225,7 +243,10 @@ impl Batch {
                         && !matches!(a.sizing.height, Length::Px(_))))
             {
                 for &c in e.children(k) {
-                    if e.slots[c].shape == Shape::WrappedColumn {
+                    if e.slots[c].shape == Shape::Image && self.get(e.slots[c].id).is_none() {
+                        // Edited children are proved above against their final declaration.
+                        self.check_image_basis(e, e.slots[c].id, &e.attrs[c])?;
+                    } else if e.slots[c].shape == Shape::WrappedColumn {
                         self.check_column_basis(e, e.slots[c].id)?;
                     }
                 }

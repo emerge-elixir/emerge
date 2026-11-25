@@ -40,6 +40,29 @@ if System.get_env("EMERGE_TEST_STAGES") in ~w(headless raster opengl vulkan) do
          }}
       end
 
+      def render(%{pose: {:image, angle, msg}}) do
+        el(
+          [width(px(64)), height(px(64)), Background.color(:white), Event.on_click(:host)],
+          el(
+            [center_x(), center_y(), width(px(32)), height(px(32)), Border.rounded(2)],
+            svg(
+              [width(px(32)), height(px(32)), Transform.rotate(angle), Event.on_click(msg)],
+              "test_assets/single_axis_square.svg"
+            )
+          )
+        )
+      end
+
+      def render(%{pose: {:row, h, msg}}) do
+        row([width(px(64)), height(px(h))], [
+          image([height(fill()), Event.on_click(msg)], "test_assets/single_axis_wide.png"),
+          el(
+            [width(px(8)), height(px(8)), Background.color(:blue), Event.on_click(:next)],
+            none()
+          )
+        ])
+      end
+
       def render(%{pose: {color, msg}}),
         do:
           el(
@@ -105,6 +128,65 @@ if System.get_env("EMERGE_TEST_STAGES") in ~w(headless raster opengl vulkan) do
       refute_received {:emerge_stage, :installed, _, 3}
       output(r, :blue)
       click(r, :c)
+    end
+
+    test "a held then rejected image turn keeps the installed pixels, inverse and callback together",
+         %{
+           v: v,
+           r: r
+         } do
+      point = {32.0, 13.0}
+      send(v, {:pose, {:image, 0, :old_art}})
+      stage(:installed, 3)
+      # Readiness may install a second frame of the same revision.
+      await_pixel(r, 3, {32, 32, 1, 1}, <<255, 0, 0, 255>>)
+      gate(r, :opportunity, true)
+      send(v, {:pose, {:image, 45, :new_art}})
+      stage(:ready, 4)
+
+      old = fn ->
+        assert {:ok, <<255, 255, 255, 255>>} =
+                 EmergeSkia.render_to_pixels(r, region: {32, 13, 1, 1})
+
+        click_point(r, point)
+        assert_receive {:routed, {:host, %{x: 32.0, y: 13.0}}}, 2000
+      end
+
+      old.()
+      gate(r, :claimed, true)
+      gate(r, :opportunity, false)
+      claim = stage(:claimed, 4)
+      gate(r, :opportunity, true)
+      gate(r, :reject, true)
+      gate(r, :claimed, false)
+      assert stage(:reject, 4) == claim
+      old.()
+      gate(r, :opportunity, false)
+      stage(:installed, 4)
+      assert {:ok, <<255, 0, 0, 255>>} = EmergeSkia.render_to_pixels(r, region: {32, 13, 1, 1})
+
+      click_point(r, point)
+      assert_receive {:routed, {:new_art, %{x: lx, y: ly}}}, 2000
+      assert_in_delta lx, 16 - 19 / :math.sqrt(2), 0.002
+      assert_in_delta ly, lx, 0.002
+    end
+
+    test "a ready height edit does not move an installed image or its sibling", %{v: v, r: r} do
+      region = {34, 3, 1, 1}
+      send(v, {:pose, {:row, 16, :old_image}})
+      stage(:installed, 3)
+      await_pixel(r, 3, region, <<0, 0, 255, 255>>)
+      gate(r, :opportunity, true)
+      send(v, {:pose, {:row, 24, :new_image}})
+      stage(:ready, 4)
+      assert {:ok, <<0, 0, 255, 255>>} = EmergeSkia.render_to_pixels(r, region: region)
+      click_point(r, {34.0, 3.0})
+      assert_receive {:routed, {:next, %{x: 2.0, y: 3.0}}}, 2000
+      gate(r, :opportunity, false)
+      stage(:installed, 4)
+      assert {:ok, <<255, 0, 0, 255>>} = EmergeSkia.render_to_pixels(r, region: region)
+      click_point(r, {34.0, 3.0})
+      assert_receive {:routed, {:new_image, %{x: 34.0, y: 3.0}}}, 2000
     end
 
     test "B hands off while C is still drawing into a different target", %{v: v, r: r} do
@@ -389,6 +471,13 @@ if System.get_env("EMERGE_TEST_STAGES") in ~w(headless raster opengl vulkan) do
       serial
     end
 
+    defp await_pixel(r, revision, region, pixel) do
+      unless EmergeSkia.render_to_pixels(r, region: region) == {:ok, pixel} do
+        stage(:installed, revision)
+        await_pixel(r, revision, region, pixel)
+      end
+    end
+
     defp output(r, color) do
       pixel =
         %{red: <<255, 0, 0, 255>>, green: <<0, 255, 0, 255>>, blue: <<0, 0, 255, 255>>}[color]
@@ -397,11 +486,8 @@ if System.get_env("EMERGE_TEST_STAGES") in ~w(headless raster opengl vulkan) do
     end
 
     if @api == :headless do
-      defp button(r, phase),
-        do:
-          assert(
-            :ok == EmergeSkia.send_input(r, {:pointer_button, {:left, phase, [], {5.0, 5.0}}})
-          )
+      defp button_at(r, phase, point),
+        do: assert(:ok == EmergeSkia.send_input(r, {:pointer_button, {:left, phase, [], point}}))
     else
       test "four held target leases stop a fifth draw, not edits, input or capture", %{r: r, v: v} do
         gate(r, :retain_targets, true)
@@ -562,12 +648,12 @@ if System.get_env("EMERGE_TEST_STAGES") in ~w(headless raster opengl vulkan) do
 
       # Only the explicitly supplied, isolated Wayland virtual pointer may
       # generate input. Never drive the user's desktop.
-      defp button(_r, phase) do
+      defp button_at(_r, phase, {px, py}) do
         %{"x" => x, "y" => y} = box(sway_query("get_tree"))
 
         File.write!(
           System.fetch_env!("EMERGE_STAGE_POINTER"),
-          "#{x + 5} #{y + 5} #{if phase == :press, do: 1, else: 0}\n"
+          "#{x + round(px)} #{y + round(py)} #{if phase == :press, do: 1, else: 0}\n"
         )
       end
 
@@ -575,12 +661,17 @@ if System.get_env("EMERGE_TEST_STAGES") in ~w(headless raster opengl vulkan) do
       defp box(n), do: Enum.find_value(n["nodes"] ++ n["floating_nodes"], &box/1)
     end
 
-    defp click(r, msg) do
-      for phase <- [:press, :release] do
-        button(r, phase)
-        assert_receive {:raw, {:pointer_button, {:left, ^phase, [], {5.0, 5.0}}}}, 2_000
-      end
+    defp button(r, phase), do: button_at(r, phase, {5.0, 5.0})
 
+    defp click_point(r, point) do
+      for phase <- [:press, :release] do
+        button_at(r, phase, point)
+        assert_receive {:raw, {:pointer_button, {:left, ^phase, [], ^point}}}, 2_000
+      end
+    end
+
+    defp click(r, msg) do
+      click_point(r, {5.0, 5.0})
       assert_receive {:routed, {^msg, %{x: 5.0, y: 5.0}}}, 2_000
     end
   end

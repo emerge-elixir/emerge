@@ -14,6 +14,7 @@ fn viewport() -> Rect {
 fn image(source: Source) -> Command {
     let (w, h) = source.dimensions().unwrap();
     Command::Image(image::Sample {
+        fit: ImageFit::Contain,
         source,
         src: Rect {
             width: w,

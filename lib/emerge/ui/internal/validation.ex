@@ -228,24 +228,13 @@ defmodule Emerge.UI.Internal.Validation do
   end
 
   @spec validate_image_source!(attrs_owner(), image_source()) :: image_source()
-  def validate_image_source!(_attrs_owner, %Emerge.Assets.Ref{path: path} = source)
-      when is_binary(path),
-      do: source
-
   def validate_image_source!("svg/2", {:bytes, bytes}) when byte_size(bytes) > 4_194_304,
     do: raise(ArgumentError, "svg/2 accepts at most 4 MiB of SVG XML")
 
   def validate_image_source!(_attrs_owner, {:bytes, bytes}), do: Emerge.UI.binary(bytes)
 
-  def validate_image_source!(_attrs_owner, {:id, id}) when is_binary(id), do: {:id, id}
-  def validate_image_source!(_attrs_owner, {:path, path}) when is_binary(path), do: {:path, path}
-  def validate_image_source!(_attrs_owner, path) when is_binary(path), do: path
-  def validate_image_source!(_attrs_owner, path) when is_atom(path), do: path
-
-  def validate_image_source!(attrs_owner, other) do
-    raise ArgumentError,
-          "#{attrs_owner} expects a file source, binary(encoded_media), or {:id, id}, got: #{inspect(other)}"
-  end
+  def validate_image_source!(attrs_owner, source),
+    do: AttrValidation.validate_file_source!(attrs_owner, source)
 
   defp clear_change_policy(acc, key) do
     case Map.get(acc, :animate_change) do

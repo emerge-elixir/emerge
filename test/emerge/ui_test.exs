@@ -1178,6 +1178,20 @@ defmodule Emerge.UITest do
     assert Event.on_change({pid, :changed}) == {:on_change, {pid, :changed}}
   end
 
+  test "image, SVG and background declarations reject renderer-local image IDs" do
+    source = {:id, "img_cached"}
+
+    for declare <- [
+          &image([], &1),
+          &svg([], &1),
+          &Background.image/1,
+          &Background.tiled/1,
+          &el([{:background, {:image, &1, :cover}}], none())
+        ] do
+      assert_raise ArgumentError, ~r/invalid file source/, fn -> declare.(source) end
+    end
+  end
+
   test "image/2 validates attrs are first" do
     assert_raise ArgumentError,
                  ~r/image\/2 expects the first argument to be a list of attributes, got:/,

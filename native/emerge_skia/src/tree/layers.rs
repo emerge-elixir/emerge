@@ -214,6 +214,12 @@ impl Measuring<'_> {
     pub fn scale(&self) -> f32 {
         self.layers.context[self.k].inputs.scale
     }
+    pub fn allocated_image_height(&self) -> f32 {
+        self.layers
+            .known_height_edge(self.e, self.k)
+            .expect("admitted height-driven Image")
+            .resolve_height(self.e, self.k, 0.)
+    }
     pub fn glyph_run(&mut self, text: &str) -> Demand {
         let k = self.k;
         let l = &mut self.layers;
@@ -672,9 +678,14 @@ impl Layers {
         }
     }
     pub(super) fn reads_early_height(e: &Elements, k: Key) -> bool {
-        e.slots[k].shape == Shape::WrappedColumn
-            && !matches!(e.attrs[k].sizing.width, Length::Px(_))
-            && e.attrs[k].sizing.height.weight().is_some()
+        let b = e.attrs[k].sizing;
+        match e.slots[k].shape {
+            Shape::Image => b.width_from_height(),
+            Shape::WrappedColumn => {
+                !matches!(b.width, Length::Px(_)) && b.height.weight().is_some()
+            }
+            _ => false,
+        }
     }
     pub(super) fn invalidate_early_heights(&mut self, e: &Elements, p: Key) {
         for &c in e.children(p) {
@@ -1145,14 +1156,27 @@ impl Layers {
             });
         let shape = e.slots[k].shape;
         let clip = parent.map_or(self.viewport, |p| self.paint[p].child_clip);
+        // A borrowed media shape turns with the leaf. Do not rotate the
+        // intersection with its ancestors (in particular a linear host clip).
+        let borrowed =
+            parent.filter(|&p| a.posed() && !a.image_host_clip && e.attrs[p].clips_media());
+        let outer = borrowed.map_or(clip, |p| {
+            let host = self.paint[p];
+            e.slots[p].shape.child_clip(host.clip, host.frame)
+        });
         let ctx = self.context[k];
         let next = PaintContext {
             frame: f,
-            clip,
-            child_clip: if shape == Shape::Image {
+            clip: outer,
+            child_clip: if a.posed() {
+                borrowed.map_or(f, |p| {
+                    let host = self.paint[p];
+                    e.attrs[p].decor.inner_rect(host.frame, host.scale)
+                })
+            } else if shape == Shape::Image {
                 // A leaf's content is the sample, not another layout box.
                 clip.media_clip(inherited)
-            } else if a.decor.radius != [0.; 4] || a.decor.border != [0.; 4] {
+            } else if a.clips_media() {
                 clip.intersection(a.decor.inner_rect(f, scale))
                     .unwrap_or_default()
             } else {
@@ -1179,7 +1203,8 @@ impl Layers {
             );
         }
         let child_clip_changed = old.is_none_or(|p| p.child_clip != next.child_clip);
-        let geometry_changed = old.is_none_or(|p| p.frame != f || p.clip != clip);
+        let geometry_changed = old.is_none_or(|p| p.frame != f || p.clip != outer)
+            || (a.posed() && child_clip_changed);
         let color_changed = old.is_none_or(|p| p.color != color || p.gradient != gradient);
         let inputs_changed = old.is_none_or(|p| p.rules != rules || p.offset != offset);
         let draw = shape == Shape::Paragraph
@@ -1191,12 +1216,19 @@ impl Layers {
             self.invalidate_composition(k, e.depth(k), outputs);
         }
         let outer_clip_changed = old.is_none_or(|p| p.clip != clip);
-        if child_clip_changed || color_changed || inputs_changed || outer_clip_changed {
+        let frame_changed = old.is_none_or(|p| p.frame != f);
+        if child_clip_changed
+            || color_changed
+            || inputs_changed
+            || outer_clip_changed
+            || frame_changed
+        {
             for &child in e.children(k) {
                 if child_clip_changed
                     || inputs_changed
                     || (color_changed && e.attrs[child].color.is_none())
                     || (outer_clip_changed && e.slots[child].shape == Shape::Image)
+                    || (frame_changed && e.attrs[child].posed())
                 {
                     self.enqueue(PaintContext, child, e);
                 }

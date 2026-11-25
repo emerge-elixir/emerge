@@ -147,13 +147,14 @@ impl Layers {
             {
                 self.invalidate(Pass::Reflow, p, e.depth(p));
             }
-            if !change.cold && e.slots[k].shape == Shape::Image {
+            if !change.cold && e.attrs[k].has_art() {
                 let source = e.images.source(k);
-                if change.reattached
-                    || change
-                        .image
-                        .as_ref()
-                        .is_some_and(|s| s.dimensions() != source.dimensions())
+                if e.slots[k].shape == Shape::Image
+                    && (change.reattached
+                        || change
+                            .image
+                            .as_ref()
+                            .is_some_and(|s| s.dimensions() != source.dimensions()))
                 {
                     self.invalidate(Pass::Measure, k, depth);
                     self.invalidate(Pass::Reflow, k, depth);
@@ -294,7 +295,16 @@ impl Layers {
         }
         let clip_changed =
             old.decor.radius != next.decor.radius || old.decor.border != next.decor.border;
+        if clip_changed {
+            for &c in e.children(k) {
+                if e.attrs[c].posed() {
+                    self.invalidate(Pass::PaintContext, c, e.depth(c));
+                }
+            }
+        }
         if clip_changed
+            || old.posed() != next.posed()
+            || (next.posed() && old.image_host_clip != next.image_host_clip)
             || old.color != next.color
             || old
                 .font_gradient
@@ -303,15 +313,24 @@ impl Layers {
             || old.strike != next.strike
             || old.offset != next.offset
         {
-            invalidate(Pass::PaintContext)
+            self.invalidate(Pass::PaintContext, k, depth)
         }
-        let paint_changed = old.opacity != next.opacity
+        let paint_changed = old.has_art() != next.has_art()
+            || old.image_fit != next.image_fit
+            || old.opacity != next.opacity
             || shape.paint_attrs_changed(old, next)
             || old
                 .svg_gradient
                 .differs(old_raw, next.svg_gradient, e.raw(k))
             || old.decor.differs(old_raw, next.decor, e.raw(k));
-        let output = Outputs::changed(paint_changed, old.click != next.click || clip_changed);
+        let output = Outputs::changed(
+            paint_changed,
+            old.click != next.click
+                || clip_changed
+                || (next.click
+                    && (old.pose != next.pose
+                        || (next.posed() && old.image_host_clip != next.image_host_clip))),
+        );
         if let Some(outputs) = output {
             self.invalidate_composition(k, depth, outputs)
         }

@@ -259,6 +259,81 @@ fn an_outstanding_fit_cannot_replace_pixels_after_a_live_resize_and_remount() {
 }
 
 #[test]
+fn a_file_backdrop_rebinds_on_its_host_without_reviving_a_superseded_ticket() {
+    let mut writer = Publisher::new(0);
+    let mut t = Tree::for_session(0);
+    let mut loader = images::image_loader(true, 0);
+    let file = |name: &str, tile| {
+        [
+            vec![12, 2, 1],
+            (name.len() as u16).to_be_bytes().to_vec(),
+            name.as_bytes().to_vec(),
+            vec![tile],
+        ]
+        .concat()
+    };
+    let attrs = |bg: Bytes| block(&[px(1, 60.), px(2, 50.), vec![40, 1], bg]);
+    let bmp = || attrs(file("test_assets/media.bmp", 2));
+    let gif = || attrs(file("test_assets/media.gif", 2));
+    let mut publish = |t: &mut Tree, wire: Bytes| writer.apply(&wire, 1.).unwrap().install(t);
+    let frame = |t: &mut Tree| {
+        t.refresh(60., 50., 1.).unwrap();
+        t.seal().unwrap()
+    };
+    publish(&mut t, upload(&[node(1, 4, bmp(), &[])]));
+    images::load(&mut t, &mut loader);
+    t.refresh(60., 50., 1.).unwrap();
+    let (ticket, req) = t.next_image().unwrap();
+    assert!(
+        matches!(&req, crate::raster_assets::Request::Fit(_,target) if *target == (9,8).into())
+    );
+    assert!(loader.fulfill(req, |s| t.complete_image(&ticket, s)));
+    let first = frame(&mut t);
+    let bytes = first.rasterize().unwrap();
+    let marker = 4 * (2 * 60 + 4);
+    assert_eq!(&bytes[marker..marker + 4], &[0, 0, 0, 255]);
+    // Accepted A -> solid -> A before layout. The fresh A has no pixels yet.
+    publish(&mut t, set(1, 4, attrs(color([0, 255, 0]))));
+    publish(&mut t, set(1, 4, bmp()));
+    let pending = frame(&mut t);
+    assert_ne!(pending.rasterize().unwrap(), bytes);
+    assert_eq!(
+        pending
+            .hits
+            .target_at(pending.viewport, 32., 10.)
+            .unwrap()
+            .1,
+        1
+    );
+    let (stale, req) = t.next_image().unwrap();
+    publish(&mut t, set(1, 4, gif()));
+    assert!(!loader.fulfill(req, |s| t.complete_image(&stale, s)));
+    images::load(&mut t, &mut loader);
+    t.refresh(60., 50., 1.).unwrap();
+    let (fit, req) = t.next_image().unwrap();
+    publish(&mut t, set(1, 4, attrs(color([0, 255, 0]))));
+    assert!(!loader.fulfill(req, |s| t.complete_image(&fit, s)));
+    let green = frame(&mut t);
+    assert_eq!(
+        &green.rasterize().unwrap()[marker..marker + 4],
+        &[0, 255, 0, 255]
+    );
+    assert!(t.next_image().is_none());
+    // Dimensions of non-leaf art never schedule measurement or placement.
+    publish(&mut t, set(1, 4, gif()));
+    images::load(&mut t, &mut loader);
+    t.refresh(60., 50., 1.).unwrap();
+    assert!(t.layers.trace.iter().all(|&(p, _, _)| p == Compose));
+    images::load(&mut t, &mut loader);
+    let final_frame = frame(&mut t);
+    assert_eq!(
+        &final_frame.rasterize().unwrap()[marker..marker + 4],
+        &[0; 4]
+    );
+    assert_eq!(first.rasterize().unwrap(), bytes);
+}
+
+#[test]
 fn grow_a_workspace_while_old_glyphs_hits_and_drawing_are_pinned() {
     let mut writer = Publisher::new(0);
     let mut actor = Tree::for_session(0);
