@@ -77,6 +77,22 @@ if System.get_env("EMERGE_TEST_STAGES") in ~w(headless raster opengl vulkan) do
         ])
       end
 
+      def render(%{pose: {:pack, words, msg}}) do
+        row([width(fill()), height(fill())], [
+          wrapped_column([width(content()), height(px(60)), spacing_xy(6, 4)], [
+            paragraph([width(px(48))], [text(words)]),
+            el(
+              [width(px(20)), height(px(20)), Background.color(:red), Event.on_click(msg)],
+              none()
+            )
+          ]),
+          el(
+            [width(fill()), height(px(8)), Background.color(:blue), Event.on_click(:peer)],
+            none()
+          )
+        ])
+      end
+
       def render(%{pose: {:row, h, msg}}) do
         row([width(px(64)), height(px(h))], [
           image([height(fill()), Event.on_click(msg)], "test_assets/single_axis_wide.png"),
@@ -249,6 +265,37 @@ if System.get_env("EMERGE_TEST_STAGES") in ~w(headless raster opengl vulkan) do
       stage(:installed, 5)
       click_point(r, {8.0, 36.0})
       assert_receive {:routed, {:rerouted, %{x: 4.0, y: 8.0}}}, 2000
+    end
+
+    test "rejected paragraph packing cannot publish its new card or displace the installed peer",
+         %{v: v, r: r} do
+      region = {57, 3, 1, 1}
+      send(v, {:pose, {:pack, "AA BB", :short}})
+      stage(:installed, 3)
+      gate(r, :opportunity, true)
+      send(v, {:pose, {:pack, "AA BB CC DD EE", :long}})
+      stage(:ready, 4)
+
+      old = fn ->
+        assert {:ok, <<0, 0, 255, 255>>} = EmergeSkia.render_to_pixels(r, region: region)
+        click_point(r, {57.0, 3.0})
+        assert_receive {:routed, {:peer, %{x: 9.0, y: 3.0}}}, 2000
+      end
+
+      old.()
+      gate(r, :claimed, true)
+      gate(r, :opportunity, false)
+      claim = stage(:claimed, 4)
+      gate(r, :opportunity, true)
+      gate(r, :reject, true)
+      gate(r, :claimed, false)
+      assert stage(:reject, 4) == claim
+      old.()
+      gate(r, :opportunity, false)
+      stage(:installed, 4)
+      assert {:ok, <<255, 0, 0, 255>>} = EmergeSkia.render_to_pixels(r, region: region)
+      click_point(r, {57.0, 3.0})
+      assert_receive {:routed, {:long, %{x: 3.0, y: 3.0}}}, 2000
     end
 
     test "a ready height edit does not move an installed image or its sibling", %{v: v, r: r} do

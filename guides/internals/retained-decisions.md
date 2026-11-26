@@ -134,13 +134,15 @@ approximate width. Fractional window input uses the installed buffer/logical
 extent ratio, not the requested nominal scale. These choices keep geometry,
 glyphs and local coordinates together. [Scale regressions](../../test/emerge_skia/layout_scale_test.exs).
 
+Keep the intrinsic question separate from final allocation. For example, while deriving a Column's content width, a fixed-width wrapped paragraph can supply its fitted height; a sibling whose fit needs that **same Column width** supplies intrinsic height to this calculation only. Allocate the placed group from actual fits. Fixed-height prose need not build fragments just to give a number. A document supplies the final bands for its direct paragraphs. [Site rules, one-solve and sparse/fresh controls](../../plans/size.md#implementation-order).
+
 ### D7. Share fill widths per wrapped line
 
 **Intentional behavior change, not a fix to `main`.** In a 100px WrappedRow,
 gap 4 and two 20px-content cards, `main` offered each fill child 100px; both
 plain and 1:3 fills occupied separate lines. We chose the widths measured in
 `mdgriffith/elm-ui` 1.1.8: form lines from minimum outer widths first, then
-share each line by weight from zero bases, respecting those minima. Reflow uses
+share each line by weight from zero bases, respecting those minima. A non-fill that turns a wrapped height into width uses its independently measured occupied extent in line formation. Reflow uses
 the same breaks. Equal fills take **48/48**; 1:3 takes **24/72**, not 34/62;
 at 44px they take 20/20; at 43px each takes its own line. Keep Emerge's
 leading vertical placement and line gap, not CSS cross-axis stretching.
@@ -254,8 +256,7 @@ with a width-sharing, wrapping header and two 30×21 cards (no gaps). At 30px
 the header is 20px tall: the remaining 40px forces two columns needing 60px.
 At 60px the header is 10px tall: the 50px left fits one 30px column. **Neither
 width satisfies both constraints.** This is a retained example; `main` has no
-WrappedColumn. Reject cycles and unproved early dependencies atomically. No
-previous-frame estimate, one-column fallback or retry from Place to Flow.
+WrappedColumn. Reject this cycle when folding the **final** affected group, including closed moves and sibling-only edits. A known single-column width lets a paragraph supply its height before packing. Group by vertical minima and settled non-fills, assign shares per column, then project cross extents. Offer the cards the single-column basis, **not** the resulting packed width. No previous-frame estimate or retry from Place to Flow. [Packing and refusal controls](../../native/emerge_skia/src/tree/tests/size.rs).
 
 A width edit can add or remove the only reader of a Column's height shares
 without changing the child's intrinsic clamp. Compare the **authored** reader
@@ -436,7 +437,7 @@ An Image paint pose preserves the layout slot. Apply independent ancestor clips 
 
 Only a literal pixel dimension paired with bare content infers aspect before allocation. Folding a bound to pixels must not turn it into that literal. Keep the authored-axis facts from the wire walk alongside the ordinary folded length; no second expression tree. Once a fill is allocated, project its **inner** extent through the source's display ratio, add the opposite insets and apply the receiving content bounds. Neither a second fill nor unknown art supplies an aspect ratio.
 
-An early width (for a split or wrap) requires a definite inherited height or a Column share independent of width reflow. A pixel-width El or Column that needs the width only to place its Image can instead use the actual height at placement. Check this against the final declarations, including kept moves, not against a prior fit. Reject unproved dependencies before publication; do not introduce a retry pass. [Allocation, undo and cycle controls](../../native/emerge_skia/src/tree/tests/images/sizing.rs).
+The height comes from the **offering site**, not a list of parents that permit Image. A document block has unbounded available height; a float searches at measured demand and excludes the allocated box. A Row uses its unallotted cross basis; a Column assigns the remainder after sibling charges and gaps. A height measured at a known width can supply such a charge even through filling wrappers. A content Column preserves the Image's intrinsic width minimum; Place still projects the actual allocated height. [Allocation and source controls](../../native/emerge_skia/src/tree/tests/images/sizing.rs) · [submitted clip, width and local click](../../test/emerge_skia/static_size_test.exs).
 
 ### D24. Decode still WebP on the existing raster worker
 
@@ -446,6 +447,6 @@ The tested VP8L, VP8 and VP8X+alpha images matched missing art on pinned `main`.
 
 Resolve width, height, content bounds and children on the **authored axes**. Layout rotation reserves the axis-aligned bounds of that border box; center the local frame in the reservation. Non-fills charge the occupied extent. A fill share still sizes its local axis: a splitting Row advances by the width it assigned, but a Column advances below the occupied height. Both size shares before computing even gaps or the center group's spare room. A change to a fill's local content can therefore move a peer or resize its share even at unchanged occupied width or height. [Reference controls and limits](../../plans/static-layout-transforms.md#layout-controls).
 
-Do not resolve a dependency on the last frame or add a second layout loop. Carry declaration-only facts about height readers and width-dependent reflow on the final edges. An independent height can project width before a split; a placement-only site can use the settled box. A [pixel-width Row](../../plans/row-independent-turn.md) can also split after a turned non-fill with a fixed local width finishes reflow: the Row needs its occupied width, but the child doesn't need a width share from the Row. If a split or wrap would require that box before it exists, refuse the edit before publication. In a TextColumn an axis-mixing turned Paragraph clears earlier floats as a block; an inline continuation has no independent layout slot to turn.
+Do not resolve a dependency on the last frame or add a second layout loop. Carry declaration-only facts about height readers and width-dependent reflow on the final edges. An independently measured local height can project width before a split; a placement-only site can use the settled box. The [ordinary scheduler](../../native/emerge_skia/src/tree/layers/constrained.rs) measures a turned non-fill at its proved width. Row and WrappedRow read the occupied charge without running Flow or Reflow early. The [original pixel-width Row](../../plans/row-independent-turn.md) is one case, not the admission rule. If the card passes its height to an Image that takes width from a paragraph beside it, the paragraph cannot first supply a post-wrap content cap for that same height. Resolve this turn's mixed cap on intrinsic demand; use the resulting extent for both the Row charge and the placed slot. A paragraph with independent lines still supplies its fitted height. [Reference and regression](../../plans/size.md#s5-row-charges-and-wrappedrow-membership). In a TextColumn an axis-mixing turned Paragraph clears earlier floats as a block; an inline continuation has no independent layout slot to turn.
 
 For paint, extend [D22](#d22-turn-the-media-shape-not-its-device-bounds) through the subtree. A prepared plane names its parent and the clips that stop in that space. Apply those clips **before** changing spaces, including a rounded continuation before its Text's own pose. The drawing uses the forward steps; its paired hit data uses the inverse at each boundary. An outer shadow uses the composed transform but, as before, is not clipped by an ordinary host or included in the click shape. Never substitute the conservative device bounds for the shape. This needs no transform matrix in EMRG, duplicate child order or new frame clock. Edits to `Transform` preserve sibling layout and need no remeasurement; the installed drawing and hit geometry can still change. [Native regressions](../../native/emerge_skia/src/tree/tests/transforms.rs) · [rejected handoff and callback-only installation](../../test/emerge_skia/stage_isolation_test.exs).

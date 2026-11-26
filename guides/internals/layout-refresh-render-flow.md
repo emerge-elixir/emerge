@@ -17,7 +17,7 @@ other records and child orders; changing a wide child order can cost its length.
 The [tree actor](../../native/emerge_skia/src/session/tree_actor.rs) folds a finite
 prefix of at most two publications, combines their changes with resize, asset
 completion and any due pose sample, then invalidates once and computes in
-dependency order. It seals drawing and hits with their frame ID, surface geometry
+dependency order: Context → Measure → Flow → Reflow → Place, then paint context and composition. A [height at a proved width](../../native/emerge_skia/src/tree/layers/constrained.rs) can supply an intrinsic charge; an edited paragraph produces its actual fragments once at its final width and bands. Flow does not reopen after Reflow. The actor seals drawing and hits with their frame ID, surface geometry
 and callback epoch. Pinned readers can delay packing without delaying layout.
 The draw thread takes the newest eligible **unstarted commands**. Separately,
 the [presenter](../../native/emerge_skia/src/session/presentation.rs) takes the
@@ -202,12 +202,10 @@ In a content-width host with two 12×20 cards and `spacing_xy(6, 4)`, a height
 of 44px takes 12px of width; 43px takes 30px. Child width offers in a natural
 host come from one column; packing does not feed that larger width back into
 its children. If the packed width is needed in width Flow, Measure can use
-pixel-height children or intrinsically measured leaves and an independently
-known height. For a pixel-height Column whose slots are pixels or fills that
+children measured at the independent single-column width and the supplied height. Each vertical group assigns its own shares before projecting cross widths. For a pixel-height Column whose slots are pixels or fills that
 do not read content, Context computes the shared unit once from the **final**
 declarations, and Place reuses it. A content-width child of a fixed-width
-Column can instead pack late, using its actual assigned height. Unproved
-early dependencies are refused before commit, never resolved from an old frame.
+Column can instead pack late, using its actual assigned height. A pack that would derive its width from a Column share that depends on that width is rejected before publication, not resolved from an old frame.
 [Dependency and cycle tests](../../native/emerge_skia/src/tree/tests/wrapped_column.rs) ·
 [delivered frames and local clicks](../../test/emerge_skia/wrapped_column_test.exs).
 

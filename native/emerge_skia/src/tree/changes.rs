@@ -111,7 +111,7 @@ impl Elements {
 }
 impl Layers {
     pub fn invalidate_changes(&mut self, e: &mut Elements, root: Option<Key>) {
-        self.begin_width_schedule(e, root);
+        self.begin_measure_inputs(e, root);
         #[cfg(test)]
         if !e.touched.is_empty() {
             self.invalidation_passes += 1;
@@ -148,15 +148,33 @@ impl Layers {
             let new_layout = e.slots[k].stats.own;
             if old_layout.is_some_and(|old| old.late_nonfill != new_layout.late_nonfill)
                 && let Some(p) = e.slots[k].parent
-                && e.slots[p].shape == Shape::Row
-                && e.slots[p].stats.children.fills_width
+                && e.slots[p].shape.allots_width()
             {
                 // The source of the split charge changed, possibly behind an
                 // equal intrinsic width and an attrs-only descendant edit.
+                self.enqueue(Pass::Measure, p, e);
                 self.enqueue(Pass::Flow, p, e);
+            }
+            if old_layout.is_some_and(|old| {
+                old.reflows_height != new_layout.reflows_height
+                    || old.fit_after_share != new_layout.fit_after_share
+                    || old.width_sensitive_fit != new_layout.width_sensitive_fit
+                    || old.width_sensitive_slot != new_layout.width_sensitive_slot
+            }) && let Some(p) = e.slots[k].parent
+                && e.slots[p].stats.own.constrained_measure
+            {
+                self.enqueue(Pass::Measure, p, e);
+                if e.slots[p].shape == Shape::WrappedColumn {
+                    self.enqueue(Pass::Flow, p, e);
+                }
             }
             if old_layout.is_some_and(|old| old.height_reader != new_layout.height_reader) {
                 self.enqueue(Pass::Context, k, e);
+                if let Some(p) = e.slots[k].parent
+                    && e.slots[p].shape == Shape::Column
+                {
+                    self.enqueue(Pass::Context, p, e);
+                }
                 if matches!(e.slots[k].shape, Shape::Row | Shape::Column)
                     && e.attrs[k].sizing.height.weight().is_some()
                 {
@@ -394,6 +412,13 @@ impl Layers {
                 self.invalidate_composition(p, e.depth(p), outputs);
             }
         }
+        if old.align[0] != next.align[0]
+            && parent.is_some_and(Shape::has_prose_sites)
+            && Self::reads_early_height(e, k)
+        {
+            self.enqueue(Pass::Measure, k, e);
+            self.enqueue(Pass::Place, k, e);
+        }
         if old.align[0] != next.align[0] && parent == Some(Shape::Paragraph) {
             let p = e.slots[k].parent.unwrap();
             self.enqueue(Pass::Reflow, p, e);
@@ -496,9 +521,19 @@ impl Layers {
                     && (old.image_axes != next.image_axes
                         || a.width != b.width
                         || a.padding != b.padding));
-            if reads(old) != reads(next) || (slot_changed && self.has_height_group(p)) {
+            if slot_changed && e.slots[p].stats.children.height_reader && !self.has_height_group(p)
+            {
+                self.enqueue(Pass::Measure, p, e);
+                self.refresh_child_offers(e, p);
+            }
+            if reads(old) != reads(next)
+                || (slot_changed && (self.has_height_group(p) || Self::has_group_reader(e, p)))
+            {
                 self.enqueue(Pass::Context, p, e);
             }
+        }
+        if height && parent == Some(Shape::Column) && e.slots[k].stats.children.height_reader {
+            self.enqueue(Pass::Context, k, e);
         }
         if height
             && Self::reads_early_height(e, k)
@@ -512,6 +547,14 @@ impl Layers {
         if parent == Some(Shape::WrappedColumn)
             && let Some(p) = e.slots[k].parent
         {
+            if e.slots[p].stats.children.height_reader
+                && (height
+                    || old.height_floor != next.height_floor
+                    || a.height != b.height
+                    || old.rotation != next.rotation)
+            {
+                self.enqueue(Pass::Measure, p, e);
+            }
             if old.height_floor != next.height_floor
                 || a.height.weight().is_some() != b.height.weight().is_some()
             {

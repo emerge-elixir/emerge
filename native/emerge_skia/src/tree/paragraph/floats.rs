@@ -1,5 +1,9 @@
 use super::*;
 
+fn bottom(r: &Rect) -> f32 {
+    (r.y + r.height).min(f32::MAX)
+}
+
 /// Float rectangles share one coordinate system for the duration of one
 /// document (or standalone paragraph). Each side stacks in increasing Y.
 #[derive(Default)]
@@ -22,7 +26,7 @@ impl Floats {
         self.0
             .iter()
             .filter_map(|s| s.last())
-            .map(|r| r.y + r.height)
+            .map(bottom)
             .fold(0., f32::max)
     }
 }
@@ -46,15 +50,15 @@ impl Band {
         Self {
             origin,
             left,
-            right: left + inner,
+            right: coordinate(left + inner),
             gap,
         }
     }
     pub fn limits(self, floats: &Floats, y: f32, height: f32) -> (f32, f32) {
-        let y = y + self.origin[1];
+        let y = coordinate(y + self.origin[1]);
         let active = |side: usize| {
             let floats = &floats.0[side];
-            let start = floats.partition_point(|r| r.y + r.height <= y);
+            let start = floats.partition_point(|r| bottom(r) <= y);
             floats[start..]
                 .iter()
                 .take_while(move |r| r.y < y + height.max(1.))
@@ -71,17 +75,15 @@ impl Band {
         floats
             .0
             .iter()
-            .filter_map(|s| {
-                s.get(s.partition_point(|r| r.y + r.height - self.origin[1] <= y + EPS))
-            })
-            .map(|r| r.y + r.height - self.origin[1])
+            .filter_map(|s| s.get(s.partition_point(|r| bottom(r) - self.origin[1] <= y + EPS)))
+            .map(|r| bottom(r) - self.origin[1])
             .min_by(f32::total_cmp)
     }
     pub fn place(self, floats: &mut Floats, side: Alignment, y: f32, size: FloatSize) -> Rect {
         let right = side == Alignment::End;
         let mut y = floats.0[usize::from(right)]
             .last()
-            .map_or(y, |r| y.max(r.y + r.height - self.origin[1]));
+            .map_or(y, |r| y.max(bottom(r) - self.origin[1]));
         loop {
             let (l, r) = self.limits(floats, y, size.wanted[1]);
             if size.wanted[0].min(self.right - self.left) <= r - l + EPS {
@@ -101,8 +103,8 @@ impl Band {
             height,
         };
         floats.0[usize::from(right)].push(Rect {
-            x: rect.x + self.origin[0],
-            y: rect.y + self.origin[1],
+            x: coordinate(rect.x + self.origin[0]),
+            y: coordinate(rect.y + self.origin[1]),
             ..rect
         });
         rect

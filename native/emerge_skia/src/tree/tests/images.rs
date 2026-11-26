@@ -199,18 +199,13 @@ fn early_image_width_uses_the_final_row_offer_never_a_previous_fit() {
     r.tree.patch(&set(1, 1, block(&[px(2, 60.)]))).unwrap();
     draw(&mut r);
     assert_eq!(bounds(&r, 2).width, 120.);
-    let before = r.tree.encode();
-    for invalid in [
+    for edit in [
         set(1, 1, block(&[])),
         patch(1, 1, &[edges(1, 1, &[3]), node(3, 3, block(&[]), &[2])]),
     ] {
-        assert!(
-            r.tree
-                .patch(&invalid)
-                .unwrap_err()
-                .contains("automatic width from fill height")
-        );
-        assert_eq!(r.tree.encode(), before);
+        r.tree.patch(&edit).unwrap();
+        draw(&mut r);
+        assert_eq!((bounds(&r, 2).width, bounds(&r, 2).height), (200., 100.));
     }
     // Releasing the parent's definite height is fine if the same batch also
     // changes the kept Image to an explicit height.
@@ -220,6 +215,7 @@ fn early_image_width_uses_the_final_row_offer_never_a_previous_fit() {
             1,
             &[
                 node(1, 1, block(&[]), &[2, 3]),
+                edges(3, 3, &[]),
                 attr_record(2, 9, block(&[path(WIDE), px(2, 22.)])),
             ],
         ))

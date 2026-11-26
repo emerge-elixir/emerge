@@ -2,8 +2,8 @@
 use super::*;
 
 impl Expr {
-    fn single(&self, natural: f32, host: f64, independent_offer: bool) -> f32 {
-        let eval = |unit| self.eval(f64::from(natural), 1., |_| unit);
+    fn single(&self, natural: f32, host: f64, scale: f64, independent_offer: bool) -> f32 {
+        let eval = |unit| self.eval(f64::from(natural), scale, |_| unit);
         // One child: if a main-axis slot exists it either takes all the room
         // or reaches its minimum/maximum. Roots and cross-axis fills read the offer directly.
         if independent_offer {
@@ -34,8 +34,23 @@ fn width_by_height_at_roots_and_all_supported_parent_child_sites() {
         pair(false, Fill(None), pair(true, Px(75.), Fill(Some(3.)))),
         pair(true, Px(0.), pair(false, Fill(None), Fill(None))),
     ];
-    let styles = |w: &Expr, h: &Expr, kind| {
-        let mut fields = vec![[vec![3, 0], 2f64.to_be_bytes().to_vec()].concat()];
+    let styles = |w: &Expr, h: &Expr, kind, float| {
+        let mut fields = vec![
+            [
+                vec![3, 2],
+                [1f64, 2., 3., 4.]
+                    .into_iter()
+                    .flat_map(f64::to_be_bytes)
+                    .collect(),
+            ]
+            .concat(),
+        ];
+        if float {
+            fields.push(vec![5, 0]);
+        }
+        if kind == 9 {
+            fields.push(images::path(images::WIDE));
+        }
         if kind == 5 {
             fields.push(vec![21, 0, 1, b'i']);
         }
@@ -43,35 +58,74 @@ fn width_by_height_at_roots_and_all_supported_parent_child_sites() {
         fields.extend(h.field(2));
         block(&fields)
     };
-    for parent in [None, Some(1), Some(2), Some(3), Some(4)] {
-        for kind in 1..=6 {
-            let (w, h) = (80., 60.);
+    for (parent, float) in [
+        (None, false),
+        (Some(1), false),
+        (Some(2), false),
+        (Some(3), false),
+        (Some(4), false),
+        (Some(14), false),
+        (Some(7), true),
+        (Some(8), true),
+        (Some(8), false),
+    ] {
+        for (kind, z) in (1..=9)
+            .chain([14])
+            .flat_map(|kind| [1., 1.5].map(|z| (kind, z)))
+        {
+            let (w, h) = (160., 120.);
             let id = if parent.is_some() { 2 } else { 1 };
             let mut nodes: Vec<_> = parent
                 .into_iter()
                 .map(|p| node(1, p, block(&[px(1, w), px(2, h)]), &[id]))
                 .collect();
-            nodes.push(node(id, kind, styles(&Content, &Content, kind), &[]));
+            nodes.push(node(id, kind, styles(&Content, &Content, kind, float), &[]));
             let mut t = Tree::default();
             t.upload(&upload(&nodes)).unwrap();
-            t.refresh(w as f32, h as f32, 1.).unwrap();
+            t.refresh((w * z) as f32, (h * z) as f32, z as f32).unwrap();
             let key = t.elements.ids[&id];
             let natural = t.layers.frames[key];
             if kind == 5 {
-                assert!(natural.width > 4. && natural.height > 4.);
+                assert!(natural.width > (6. * z) as f32 && natural.height > (4. * z) as f32);
             } else {
-                assert_eq!((natural.width, natural.height), (4., 4.));
+                let art = if kind == 9 { 64. } else { 0. };
+                assert_eq!(
+                    (natural.width, natural.height),
+                    ((art + 6. * z) as f32, (art + 4. * z) as f32)
+                );
             }
             for width in &lengths {
                 for height in &lengths {
-                    let edit = set(id, kind, styles(width, height, kind));
+                    let edit = set(id, kind, styles(width, height, kind, float));
                     t.patch(&edit).unwrap();
-                    t.refresh(w as f32, h as f32, 1.).unwrap();
+                    t.refresh((w * z) as f32, (h * z) as f32, z as f32).unwrap();
                     let b = t.layers.frames[key];
                     assert_eq!((b.x, b.y), (0., 0.));
                     let expected = (
-                        width.single(natural.width, w, matches!(parent, None | Some(3 | 4))),
-                        height.single(natural.height, h, matches!(parent, None | Some(1 | 2 | 4))),
+                        width.single(
+                            natural.width,
+                            if float {
+                                width
+                                    .eval(natural.width.into(), z, |_| natural.width.into())
+                                    .min(w * z)
+                            } else {
+                                w * z
+                            },
+                            z,
+                            !matches!(parent, Some(1 | 2)),
+                        ),
+                        height.single(
+                            natural.height,
+                            if float {
+                                height.eval(natural.height.into(), z, |_| natural.height.into())
+                            } else if parent == Some(8) {
+                                f32::MAX.into()
+                            } else {
+                                h * z
+                            },
+                            z,
+                            !matches!(parent, Some(3 | 14)),
+                        ),
                     );
                     assert_eq!(
                         (b.width, b.height),

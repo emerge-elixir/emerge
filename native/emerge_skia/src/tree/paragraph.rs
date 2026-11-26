@@ -29,12 +29,18 @@ pub(super) struct Paragraphs {
     sites: SecondaryMap<Key, Rect>,
     scratch: Vec<Fragment>,
     pub floats: Floats,
+    #[cfg(test)]
+    pub solves: usize,
+    #[cfg(test)]
+    pub frame: u64,
 }
 #[derive(Clone, Copy, Default)]
 struct Solution {
     span: Span<Fragment>,
     // A clean unexcluded paragraph can move vertically without breaking lines.
     clear_height: Option<f32>,
+    #[cfg(test)]
+    solved_frame: Option<(u64, f32)>,
 }
 impl Paragraphs {
     pub fn reserve(
@@ -80,6 +86,14 @@ impl Paragraphs {
             .get(k)
             .map_or(&[], |s| self.data.get(&s.span))
     }
+    #[cfg(test)]
+    pub fn assert_final_width(&self, k: Key, inner: f32) {
+        if let Some((frame, w)) = self.solutions.get(k).and_then(|s| s.solved_frame)
+            && frame == self.frame
+        {
+            assert_eq!(w, inner, "paragraph was not solved at its final width");
+        }
+    }
     pub fn invalidate_lines(&mut self, k: Key) {
         if let Some(s) = self.solutions.get_mut(k) {
             s.clear_height = None;
@@ -111,6 +125,18 @@ impl Paragraphs {
         let clear = document_origin.is_some() && self.floats.bottom() <= origin[1] + top;
         if clear && let Some(h) = self.solutions.get(k).and_then(|s| s.clear_height) {
             return (h, false);
+        }
+        #[cfg(test)]
+        {
+            assert_ne!(
+                self.solutions
+                    .get(k)
+                    .and_then(|s| s.solved_frame.map(|(n, _)| n)),
+                Some(self.frame),
+                "paragraph {} solved twice in one layout",
+                e.slots[k].id
+            );
+            self.solves += 1;
         }
         let band = Band::new(origin, left, inner, gap);
         let left = band.limits(&self.floats, top, 1.).0;
@@ -178,6 +204,10 @@ impl Paragraphs {
         if changed {
             self.data.release(solution.span);
             solution.span = self.data.insert(&self.scratch);
+        }
+        #[cfg(test)]
+        {
+            solution.solved_frame = Some((self.frame, inner));
         }
         solution.clear_height = clear.then_some(height);
         (height, true)

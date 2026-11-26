@@ -5,6 +5,46 @@ fn fill_image() -> Bytes {
 }
 
 #[test]
+fn document_height_is_unbounded_for_blocks_and_measured_for_floats() {
+    let mut r = Raster::default();
+    let art = |side: Option<u8>, h| {
+        block(
+            &[
+                vec![path(WIDE), h],
+                side.map(|s| vec![5, s]).into_iter().collect(),
+            ]
+            .concat(),
+        )
+    };
+    let marker = block(&[px(1, 8.), px(2, 8.), color([0, 0, 255])]);
+    r.tree
+        .upload(&upload(&[
+            node(1, 8, block(&[vec![1, 1], px(2, 80.)]), &[2, 3]),
+            node(2, 9, art(None, bounded::bound(2, 4, 24., None, false)), &[]),
+            node(3, 4, marker, &[]),
+        ]))
+        .unwrap();
+    draw(&mut r);
+    assert_eq!(bounds(&r, 2).width, 64.); // unknown source is not square artwork
+    load(&mut r.tree, &mut loader());
+    for (side, h, w, y) in [
+        (None, px(2, 24.), 48., 24.),
+        (Some(2), vec![2, 0], 200., 100.),
+        (None, vec![2, 0], f32::MAX, f32::MAX),
+        (Some(0), bounded::bound(2, 4, 24., None, false), 48., 24.),
+        (None, bounded::bound(2, 4, 24., None, false), 48., 24.),
+    ] {
+        r.tree.patch(&set(2, 9, art(side, h))).unwrap();
+        draw(&mut r);
+        assert_eq!(
+            (bounds(&r, 1).width, bounds(&r, 2).width, bounds(&r, 3).y),
+            (w, w, y)
+        );
+        assert!(r.tree.layers.worksets_empty());
+    }
+}
+
+#[test]
 fn a_column_share_uses_the_final_charges_before_width_flow_or_only_at_placement() {
     for late in [false, true] {
         let host = if late {
@@ -39,23 +79,13 @@ fn a_column_share_uses_the_final_charges_before_width_flow_or_only_at_placement(
             assert_eq!(draw(&mut fresh), bytes);
             assert_eq!(r.hit_at(3., w / 2. + 2.), Some((3, 3., 2.)));
         }
-        // An unallotted content sibling can depend on width reflow. A fixed
-        // cross extent only needs Image width at placement; an auto Column can't guess it.
-        let edit = set(3, 4, block(&[px(1, 8.)]));
-        let accepted = r.tree.encode();
-        if late {
-            r.tree.patch(&edit).unwrap();
-            draw(&mut r);
-            assert_eq!((bounds(&r, 2).width, bounds(&r, 2).x), (96., 64.));
-        } else {
-            assert!(
-                r.tree
-                    .patch(&edit)
-                    .unwrap_err()
-                    .contains("share depends on reflow")
-            );
-            assert_eq!(r.tree.encode(), accepted);
-        }
+        // Empty content at an independent width is a known zero-height slot.
+        r.tree.patch(&set(3, 4, block(&[px(1, 8.)]))).unwrap();
+        draw(&mut r);
+        assert_eq!(
+            (bounds(&r, 2).width, bounds(&r, 2).x),
+            (96., if late { 64. } else { 0. })
+        );
     }
 }
 
@@ -82,9 +112,10 @@ fn inherited_height_reaches_nested_wrappers_before_their_peers_split_width() {
                 (outer, outer, 1000. - outer)
             );
         }
-        let old = r.tree.encode();
-        assert!(r.tree.patch(&set(1, 1, block(&[vec![1, 0]]))).is_err());
-        assert_eq!(r.tree.encode(), old);
+        r.tree.patch(&set(1, 1, block(&[vec![1, 0]]))).unwrap();
+        r.tree.refresh(1000., 300., 1.).unwrap();
+        assert_eq!((bounds(&r, 2).width, bounds(&r, 4).x), (200., 200.));
+        assert_eq!((bounds(&r, 3).width, bounds(&r, 3).height), (200., 100.));
     }
 }
 
@@ -108,9 +139,9 @@ fn wrapped_row_breaks_use_resolved_image_widths_before_offering_a_line() {
         let f = bounds(&r, 3);
         assert_eq!((f.x, f.y, f.width, f.height), (x, y, 300., 150.));
     }
-    let old = r.tree.encode();
-    assert!(r.tree.patch(&set(1, 2, block(&[px(1, 450.)]))).is_err());
-    assert_eq!(old, r.tree.encode());
+    r.tree.patch(&set(1, 2, block(&[px(1, 450.)]))).unwrap();
+    draw(&mut r);
+    assert_eq!((bounds(&r, 3).x, bounds(&r, 3).y), (200., 0.));
 }
 
 #[test]
@@ -165,7 +196,7 @@ fn transposed_bounds_project_display_pixels_inside_the_allocated_insets() {
 }
 
 #[test]
-fn sparse_kept_move_uses_the_final_column_weights_and_rolls_back_a_cycle() {
+fn sparse_kept_move_uses_the_final_column_weights_or_its_unallotted_height() {
     let mut r = Raster::default();
     let wrapped = block(&[vec![2, 0]]);
     let weighted = |weight| block(&[images::path(WIDE), [vec![2], number(3, weight)].concat()]);
@@ -200,9 +231,9 @@ fn sparse_kept_move_uses_the_final_column_weights_and_rolls_back_a_cycle() {
             ],
         )
     };
-    let before = r.tree.encode();
-    assert!(r.tree.patch(&transfer(false)).is_err());
-    assert_eq!(before, r.tree.encode());
+    r.tree.patch(&transfer(false)).unwrap();
+    draw(&mut r);
+    assert_eq!((bounds(&r, 4).width, bounds(&r, 5).y), (200., 100.));
     r.tree.patch(&transfer(true)).unwrap();
     draw(&mut r);
     assert_eq!(

@@ -172,9 +172,10 @@ fn early_rotated_charges_split_fills_break_lines_and_follow_inherited_height() {
         assert_eq!(bounds(&r, 4), rect(h as f32 + 4., 0., 96. - h as f32, 8.));
         check_fresh(&r);
     }
-    let before = r.tree.encode();
-    assert!(r.tree.patch(&set(1, 4, block(&[px(1, 100.)]))).is_err());
-    assert_eq!(r.tree.encode(), before);
+    r.tree.patch(&set(1, 4, block(&[px(1, 100.)]))).unwrap();
+    draw(&mut r);
+    assert_eq!(bounds(&r, 4), rect(44., 0., 56., 8.));
+    check_fresh(&r);
     let mut r = Raster::default();
     let line = |w| block(&[px(1, w), px(2, 28.), number(4, 2.)]);
     r.tree
@@ -321,7 +322,7 @@ pub(super) fn split_prose() -> Bytes {
 }
 
 #[test]
-fn a_row_splits_after_its_fixed_width_branch_reflows_not_after_it_is_placed() {
+fn a_row_consumes_the_independently_measured_charge_without_reopening_flow() {
     let mut r = Raster::default();
     r.tree.upload(&split_prose()).unwrap();
     for (words, lines) in [
@@ -332,8 +333,10 @@ fn a_row_splits_after_its_fixed_width_branch_reflows_not_after_it_is_placed() {
         ("AA BB", 1.),
         ("AA BB CC DD EE", 3.),
     ] {
+        let before = r.tree.layers.paragraphs.solves;
         r.tree.patch(&set(5, 5, text(words))).unwrap();
         draw(&mut r);
+        assert_eq!(r.tree.layers.paragraphs.solves - before, 1);
         let h = r.tree.layers.runs[r.tree.elements.ids[&5]].metrics.height * lines;
         assert_eq!(bounds(&r, 2), rect(0., 0., h, 48.));
         assert_eq!(bounds(&r, 3), rect(h, 0., 160. - h, 8.));
@@ -346,12 +349,12 @@ fn a_row_splits_after_its_fixed_width_branch_reflows_not_after_it_is_placed() {
                 .position(|&(p, n, _)| p == pass && n == id)
                 .unwrap()
         };
-        assert!(index(RowChargeReflow, 4) < index(RowChargeReflow, 2));
-        assert!(index(RowChargeReflow, 2) < index(Flow, 1));
+        assert!(index(Measure, 1) < index(Flow, 1));
+        assert!(index(Flow, 1) < index(Reflow, 4));
         assert_eq!(
             trace
                 .iter()
-                .filter(|&&(p, n, _)| n == 4 && matches!(p, Reflow | RowChargeReflow))
+                .filter(|&&(p, n, _)| n == 4 && p == Reflow)
                 .count(),
             1
         );
@@ -374,29 +377,22 @@ fn a_row_splits_after_its_fixed_width_branch_reflows_not_after_it_is_placed() {
     r.tree.patch(&order(1, 1, &[3, 2])).unwrap();
     draw(&mut r);
     assert_eq!(bounds(&r, 2).x, 160. - bounds(&r, 2).width);
-    assert!(!ran(&r, Reflow, 4) && !ran(&r, RowChargeReflow, 4));
+    assert!(!ran(&r, Reflow, 4));
     check_fresh(&r);
-    // Removing the independent width (or requiring a wrap break) still fails
-    // on the final tree; the existing split remains available for later edits.
-    let before = r.tree.encode();
-    assert!(
-        r.tree
-            .patch(&set(2, 4, block(&[number(79, 90.)])))
-            .unwrap_err()
-            .contains("before child reflow")
-    );
+    // This non-fill's resolved local width is intrinsic, not the occupied charge.
+    r.tree.patch(&set(2, 4, block(&[number(79, 90.)]))).unwrap();
+    draw(&mut r);
+    assert_eq!(bounds(&r, 3).width, 160. - line * 3.);
+    check_fresh(&r);
     let wrap = upload(&[
         node(8, 2, axes(160., 120.), &[9]),
         node(9, 7, block(&[px(1, 48.), number(79, 90.)]), &[10]),
         node(10, 5, text("AA BB CC DD EE"), &[]),
     ]);
-    assert!(
-        r.tree
-            .patch(&at(wrap, 1))
-            .unwrap_err()
-            .contains("before child reflow")
-    );
-    assert_eq!(r.tree.encode(), before);
+    r.tree.patch(&at(wrap, 1)).unwrap();
+    draw(&mut r);
+    assert_eq!(bounds(&r, 9).width, line * 3.);
+    check_fresh(&r);
 }
 
 #[test]
@@ -432,7 +428,7 @@ fn moving_a_kept_branch_changes_which_row_has_to_wait_for_its_lines() {
         r.tree.patch(&moved).unwrap();
         draw(&mut r);
         let charge = lines * line;
-        assert_eq!(ran(&r, RowChargeReflow, 5), split);
+        assert!(ran(&r, Reflow, 5));
         assert_eq!(
             bounds(&r, 7).width,
             if split { 160. - charge } else { 160. }
@@ -490,9 +486,7 @@ fn a_leading_fill_paragraph_reflows_at_the_remainder_not_the_previous_share() {
         assert_eq!(bounds(&r, 2).height, if w == 48. { 3. } else { 2. } * line);
         check_fresh(&r);
     }
-    // Making the turned branch need the same new split *inside* an early
-    // charge would require another dependency level. Do not use its stale fit.
-    let before = r.tree.encode();
+    // Nested independent charges settle inside-out, without reopening Flow.
     let nested = patch(
         5,
         7,
@@ -502,17 +496,14 @@ fn a_leading_fill_paragraph_reflows_at_the_remainder_not_the_previous_share() {
             node(9, 4, block(&[vec![1, 0]]), &[]),
         ],
     );
-    assert!(
-        r.tree
-            .patch(&nested)
-            .unwrap_err()
-            .contains("before child reflow")
-    );
-    assert_eq!(r.tree.encode(), before);
+    r.tree.patch(&nested).unwrap();
+    draw(&mut r);
+    assert_eq!((bounds(&r, 4).width, bounds(&r, 2).width), (24., 84.));
+    check_fresh(&r);
 }
 
 #[test]
-fn a_turn_without_an_independent_local_width_keeps_the_final_batch_guard() {
+fn a_nonfill_intrinsic_local_width_is_independent_of_the_final_batch_split() {
     let mut r = Raster::default();
     let automatic = || block(&[number(79, 90.)]);
     let doc = upload(&[
@@ -526,17 +517,12 @@ fn a_turn_without_an_independent_local_width_keeps_the_final_batch_guard() {
     draw(&mut r);
     assert_eq!(bounds(&r, 3).x, bounds(&r, 2).width);
     assert!(bounds(&r, 3).x > 32.);
-    let before = r.tree.encode();
     let fills = block(&[vec![1, 0], px(2, 8.)]);
-    assert!(
-        r.tree
-            .patch(&set(3, 4, fills.clone()))
-            .unwrap_err()
-            .contains("before child reflow")
-    );
-    assert_eq!(before, r.tree.encode());
-    // Break the dependency and introduce the fill atomically. Checking each
-    // intermediate edit instead would reject this valid final tree.
+    r.tree.patch(&set(3, 4, fills.clone())).unwrap();
+    draw(&mut r);
+    let charge = bounds(&r, 2).width;
+    assert_eq!(bounds(&r, 3).width, 160. - charge);
+    // Both replacements describe a single final split.
     r.tree
         .patch(&patch(
             1,
@@ -551,9 +537,10 @@ fn a_turn_without_an_independent_local_width_keeps_the_final_batch_guard() {
     draw(&mut r);
     assert_eq!(bounds(&r, 3), rect(20., 0., 140., 8.));
     check_fresh(&r);
-    let accepted = r.tree.encode();
-    assert!(r.tree.patch(&set(2, 4, automatic())).is_err());
-    assert_eq!(accepted, r.tree.encode());
+    r.tree.patch(&set(2, 4, automatic())).unwrap();
+    draw(&mut r);
+    assert_eq!(bounds(&r, 3).x, charge);
+    check_fresh(&r);
 }
 
 #[test]

@@ -110,19 +110,19 @@ impl<const M: usize, const W: bool, const T: u8> Linear<M, W, T> {
 
     fn advance(cursor: &mut Cursor, extent: f32, gap: f32, zone: Alignment, even: bool) -> f32 {
         if zone == Alignment::End {
-            cursor.edge = cursor.next - extent;
-            cursor.next = cursor.edge - gap;
+            cursor.edge = coordinate(cursor.next - extent);
+            cursor.next = coordinate(cursor.edge - gap);
             cursor.edge
         } else {
             let start = cursor.next;
-            cursor.edge = start + extent;
+            cursor.edge = coordinate(start + extent);
             // Every even group uses the plain Row's f32 step. Leave ordinary
             // wrapped and vertical placement's edge rounding unchanged.
-            cursor.next = if even || (M == X && !W) {
+            cursor.next = coordinate(if even || (M == X && !W) {
                 start + (extent + gap)
             } else {
                 cursor.edge + gap
-            };
+            });
             start
         }
     }
@@ -242,7 +242,9 @@ impl<const M: usize, const W: bool, const T: u8> LayoutBehaviour for Linear<M, W
     }
     fn offer_widths(node: Mounted<'_, Children>, cx: &mut FlowCx<'_>) {
         if M == Y {
-            cx.offer_inner_width(node.key);
+            if !W || !cx.offer_pack(node.key) {
+                cx.offer_inner_width(node.key);
+            }
             return;
         }
         let attrs = node.attrs();
@@ -382,6 +384,8 @@ impl<const M: usize, const W: bool, const T: u8> LayoutBehaviour for Linear<M, W
                         .or_else(|| height.weight().map(|_| cx.local_height(c)));
                     let edge = allotted.map_or(Constraint::Natural, Constraint::Assigned);
                     (allotted.unwrap_or(fit.h), edge)
+                } else if let Some(h) = cx.intrinsic_turn_height(c) {
+                    (h, Constraint::Assigned(h))
                 } else if height.weight().is_some()
                     && (W || e.attrs[c].align[Y].is_some_and(|a| a != Alignment::Start))
                 {
@@ -452,7 +456,7 @@ impl<const M: usize, const W: bool, const T: u8> LayoutBehaviour for Linear<M, W
                     cx.place(c, [area.x + offset[0], area.y + offset[1]], edge);
                 },
             );
-            cross = (cross + occupied_cross) + gap[1 - M];
+            cross = coordinate((cross + occupied_cross) + gap[1 - M]);
         }
     }
 }
@@ -467,44 +471,101 @@ fn vertical_basis(e: &Elements, c: Key, fit: Size, minimum: bool) -> f32 {
     })
 }
 
-/// Cross extent of the groups. Width offers are independent of group membership.
-/// The caller supplies either proven width-independent heights or width-settled fits.
+/// Membership and allocation are the same whether the caller needs a width
+/// or needs to pass the assigned height through a filling card.
+pub(in crate::tree) struct ColumnGroups<'e> {
+    e: &'e Elements,
+    groups: Groups<'e>,
+    inner: f32,
+    wrap: bool,
+    gap: f32,
+    charge: f32,
+}
+impl<'e> ColumnGroups<'e> {
+    pub fn new(e: &'e Elements, k: Key, height: f32) -> Self {
+        let b = e.attrs[k].sizing;
+        let scale = e.slots[k].admitted.scale;
+        Self {
+            e,
+            groups: Groups(e.children(k)),
+            inner: (height
+                - (scale::pixels(b.padding[0], scale) + scale::pixels(b.padding[2], scale)))
+            .max(0.),
+            wrap: b.height.limits_column_height(),
+            gap: scale::pixels(b.spacing[Y], scale),
+            charge: scale::pixels(e.attrs[k].main_spacing(Y).charge(), scale),
+        }
+    }
+    pub fn next(
+        &mut self,
+        fit: impl Fn(Key) -> (Size, Size),
+    ) -> Option<(&'e [Key], Option<FillShares>)> {
+        let e = self.e;
+        let group = self.groups.measured(self.wrap, self.inner, self.gap, |c| {
+            vertical_basis(e, c, fit(c).1, false)
+        })?;
+        let shares = FillShares::group(Some(self.inner), self.charge, group, |c| {
+            pack_slot(e, c, fit(c))
+        });
+        Some((group, shares))
+    }
+}
+fn pack_slot(e: &Elements, c: Key, (local, outer): (Size, Size)) -> fill::Slot<'_> {
+    let h = e.attrs[c].sizing.height;
+    fill::Slot::new(
+        e,
+        c,
+        h,
+        if h.weight().is_some() {
+            local.h
+        } else {
+            outer.h
+        },
+    )
+    .with_basis(vertical_basis(e, c, outer, false))
+}
+pub(in crate::tree) fn pack_edge(
+    e: &Elements,
+    c: Key,
+    fit: (Size, Size),
+    s: Option<FillShares>,
+) -> Constraint {
+    s.and_then(|s| s.offer(pack_slot(e, c, fit)))
+        .map_or(Constraint::Natural, Constraint::Assigned)
+}
 fn packed_widths<const N: usize>(
     e: &Elements,
     k: Key,
     height: f32,
-    break_height: impl Fn(Key) -> f32,
-    widths: impl Fn(Key) -> [f32; N],
+    fit: impl Fn(Key) -> (Size, Size) + Copy,
+    widths: impl Fn(Key, Constraint) -> [f32; N],
 ) -> [f32; N] {
     let style = e.attrs[k].sizing;
     let scale = e.slots[k].admitted.scale;
-    let [t, r, b, l] = style.padding.map(|v| scale::pixels(v, scale));
-    let [gx, gy] = style.spacing.map(|v| scale::pixels(v, scale));
-    let inner = (height - (t + b)).max(0.);
-    let mut groups = Groups(e.children(k));
-    let columns = std::iter::from_fn(|| {
-        groups.measured(
-            style.height.limits_column_height(),
-            inner,
-            gy,
-            &break_height,
-        )
-    });
-    packed_cross_extent(columns, gx, widths).map(|v| style.width.resolve(v + (l + r), || scale))
+    let [_, r, _, l] = style.padding.map(|v| scale::pixels(v, scale));
+    let gx = scale::pixels(style.spacing[X], scale);
+    let mut groups = ColumnGroups::new(e, k, height);
+    std::iter::from_fn(|| groups.next(fit))
+        .map(|(line, shares)| {
+            line.iter()
+                .map(|&c| {
+                    let edge = pack_edge(e, c, fit(c), shares);
+                    widths(c, edge)
+                })
+                .fold([0f32; N], |a, b| std::array::from_fn(|i| a[i].max(b[i])))
+        })
+        .reduce(|a, b| std::array::from_fn(|i| a[i] + gx + b[i]))
+        .unwrap_or([0.; N])
+        .map(|v| style.width.resolve(v + (l + r), || scale))
 }
 pub(in crate::tree) fn column_width(
     e: &Elements,
     k: Key,
     height: f32,
-    child: impl Fn(Key) -> Size,
+    fit: impl Fn(Key) -> (Size, Size) + Copy,
+    width: impl Fn(Key, Constraint) -> f32,
 ) -> f32 {
-    packed_widths(
-        e,
-        k,
-        height,
-        |c| vertical_basis(e, c, child(c), false),
-        |c| [child(c).w],
-    )[0]
+    packed_widths(e, k, height, fit, |c, edge| [width(c, edge)])[0]
 }
 
 pub(in crate::tree) fn column_demand(
@@ -512,46 +573,41 @@ pub(in crate::tree) fn column_demand(
     k: Key,
     single: Demand,
     height_edge: Option<Constraint>,
-    child: impl Fn(Key) -> Demand,
-    offered_width: impl Fn(Key, f32) -> f32,
+    child: impl Fn(Key) -> (Size, Size) + Copy,
+    offered_width: impl Fn(Key, Constraint) -> [f32; 2],
 ) -> Demand {
-    let style = e.attrs[k].sizing;
-    if style.height.limits_column_height()
-        && !e
-            .children(k)
-            .iter()
-            .all(|&c| e.slots[c].shape.has_intrinsic_height(&e.attrs[c]))
-    {
+    let Some(h) = column_height(e, k, height_edge, child) else {
         return single;
-    }
+    };
+    let [w, min_w] = packed_widths(e, k, h, child, offered_width);
+    Demand { w, min_w, ..single }
+}
+pub(in crate::tree) fn column_height(
+    e: &Elements,
+    k: Key,
+    height_edge: Option<Constraint>,
+    child: impl Fn(Key) -> (Size, Size),
+) -> Option<f32> {
+    let style = e.attrs[k].sizing;
     let scale = e.slots[k].admitted.scale;
-    let [t, r, b, l] = style.padding.map(|v| scale::pixels(v, scale));
-    let inner = (single.w - (l + r)).max(0.);
+    if let Length::Px(px) = style.height {
+        return Some(scale::pixels(px, scale));
+    }
+    if let Some(Constraint::Assigned(h)) = height_edge {
+        return Some(h);
+    }
+    let [t, _, b, _] = style.padding.map(|v| scale::pixels(v, scale));
     let gap = scale::pixels(style.spacing[Y], scale);
     let demand = e
         .children(k)
         .iter()
-        .map(|&c| child(c).h)
+        .map(|&c| child(c).1.h)
         .reduce(|a, b| a + gap + b)
         .unwrap_or(0.);
     let fit = style.height.resolve((demand + t) + b, || scale);
-    let h = if style.height.weight().is_some() {
-        let Some(edge) = height_edge else {
-            return single;
-        };
-        edge.resolve(e, k, style.height, fit)
+    Some(if style.height.weight().is_some() {
+        height_edge?.resolve(e, k, style.height, fit)
     } else {
         fit
-    };
-    let [w, min_w] = packed_widths(
-        e,
-        k,
-        h,
-        |c| {
-            let h = child(c).h;
-            wrap_minimum(e.attrs[c].height_floor, h, h, || e.slots[c].admitted.scale)
-        },
-        |c| [offered_width(c, inner), child(c).min_w],
-    );
-    Demand { w, min_w, ..single }
+    })
 }

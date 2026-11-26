@@ -245,10 +245,8 @@ fn an_unchanged_middle_child_moves_when_a_sibling_packs_a_second_column() {
         );
         check_fresh(&r);
     }
-    assert!(
-        r.tree
-            .patch(&set(4, 4, block(&[px(1, 12.)])))
-            .unwrap_err()
-            .contains("before child reflow")
-    );
+    r.tree.patch(&set(4, 4, block(&[px(1, 12.)]))).unwrap();
+    draw(&mut r);
+    assert_eq!((bounds(&r, 2).width, bounds(&r, 5).x), (12., 30.));
+    check_fresh(&r);
 }

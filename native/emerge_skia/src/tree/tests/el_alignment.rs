@@ -142,19 +142,6 @@ fn a_right_aligned_packed_width_reads_a_height_edit_even_at_equal_natural_fit() 
         check_fresh(&r);
     }
     r.tree.patch(&set(2, 14, packed_attrs(4, 2))).unwrap();
-    let pending = r.tree.encode();
-    // A Row needs its kept child's width before the first card has reflowed.
-    assert!(
-        r.tree
-            .patch(&patch(
-                1,
-                10,
-                &[node(10, 1, el_child::demand(64., 43.), &[2])]
-            ))
-            .unwrap_err()
-            .contains("before child reflow")
-    );
-    assert_eq!(pending, r.tree.encode());
     let prev = r.pixels().to_vec();
     assert!(
         r.prepare(180., 170., 1.)
@@ -166,8 +153,20 @@ fn a_right_aligned_packed_width_reads_a_height_edit_even_at_equal_natural_fit() 
     assert_eq!(r.hit_at(40., 6.), Some((1, 40., 6.)));
     draw(&mut r);
     assert_eq!(r.hit_at(40., 6.), Some((2, 6., 6.)));
+    // A kept pack can move into a Row: its first card's 12px width does
+    // not read the Row split. The 43px offer makes two columns.
+    r.tree
+        .patch(&patch(
+            1,
+            10,
+            &[node(10, 1, el_child::demand(64., 43.), &[2])],
+        ))
+        .unwrap();
+    draw(&mut r);
+    assert_eq!((bounds(&r, 2).x, bounds(&r, 2).width), (34., 30.));
+    check_fresh(&r);
     // At the root there is no earlier sibling split and no horizontal offset.
-    r.tree.patch(&patch(1, 2, &[])).unwrap();
+    r.tree.patch(&patch(10, 2, &[])).unwrap();
     draw(&mut r);
     let b = bounds(&r, 2);
     assert_eq!([b.x, b.y, b.width, b.height], [0., 0., 12., 44.]);

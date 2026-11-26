@@ -420,7 +420,7 @@ impl Batch {
                 self.ancestors(e, parent, b)?;
             }
         }
-        self.check_layout_sites(e, parent)?;
+        self.check_layout_sites(e)?;
         // Claims are complete. Retire only actual absences, stopping at moved
         // subtrees even when an old owner was removed before its new owner.
         while let Some(k) = self.displaced.pop() {

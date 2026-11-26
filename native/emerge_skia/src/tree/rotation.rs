@@ -7,52 +7,39 @@ use super::*;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Dependencies {
     pub height_reader: bool,
-    reflows_height: bool,
-    late_turn: bool,
+    pub reflows_height: bool,
+    // These depend on this node's *incoming* height. A fixed-height wrapper
+    // cuts the path, unlike `height_reader` which also marks interior work.
+    projects_offer: bool,
+    pub fit_after_share: bool,
+    // A pack which will read the Column share while deriving content width.
+    packed_share: bool,
+    pub width_sensitive_slot: bool,
+    pub width_sensitive_fit: bool,
     pub late_nonfill: bool,
-    // A late non-fill which cannot finish before a Row hands out width shares.
-    unready_nonfill: bool,
     pub fills_width: bool,
-    pub contains_row_split: bool,
+    pub constrained_measure: bool,
 }
 impl Dependencies {
     pub fn union(self, child: Self) -> Self {
         Self {
             height_reader: self.height_reader || child.height_reader,
             reflows_height: self.reflows_height || child.reflows_height,
-            late_turn: self.late_turn || child.late_turn,
+            projects_offer: self.projects_offer || child.projects_offer,
+            fit_after_share: self.fit_after_share || child.fit_after_share,
+            packed_share: self.packed_share || child.packed_share,
+            width_sensitive_slot: self.width_sensitive_slot || child.width_sensitive_slot,
+            width_sensitive_fit: self.width_sensitive_fit || child.width_sensitive_fit,
             late_nonfill: self.late_nonfill || child.late_nonfill,
-            unready_nonfill: self.unready_nonfill || child.unready_nonfill,
             fills_width: self.fills_width || child.fills_width,
-            contains_row_split: self.contains_row_split || child.contains_row_split,
+            constrained_measure: self.constrained_measure || child.constrained_measure,
         }
     }
 }
 impl Subtree {
-    pub(super) fn splits_after_reflow(self, shape: Shape) -> bool {
-        shape == Shape::Row && self.children.late_nonfill && self.children.fills_width
-    }
     pub fn with_layout(mut self, shape: Shape, a: &Attrs) -> Result<Self, String> {
         let kids = self.children;
         let b = a.sizing;
-        if kids.late_turn {
-            // Place can use the final fit. A Row split can also use it if
-            // every late charge can reflow independently before that split.
-            let can_resolve = matches!(b.width, Length::Px(_))
-                && match shape {
-                    Shape::Row => !kids.fills_width || !kids.unready_nonfill,
-                    Shape::WrappedRow => !kids.late_nonfill,
-                    Shape::El
-                    | Shape::Column
-                    | Shape::WrappedColumn
-                    | Shape::Paragraph
-                    | Shape::TextColumn => true,
-                    _ => false,
-                };
-            if !can_resolve {
-                return Err("rotated width is needed before child reflow; declare an independent height or use a placement-only site".into());
-            }
-        }
         let local_reflows = !matches!(b.height, Length::Px(_))
             && match shape {
                 Shape::WrappedRow | Shape::WrappedColumn | Shape::Paragraph | Shape::TextColumn => {
@@ -64,36 +51,110 @@ impl Subtree {
             };
         let mixes = a.rotation.mixes_axes();
         let late_turn = mixes && local_reflows && !b.height.independent_fill();
-        let late_nonfill = late_turn && b.width.weight().is_none();
-        let contains_row_split = kids.contains_row_split || self.splits_after_reflow(shape);
+        let pack = shape.measures_packed_width(b.width) && b.height.limits_column_height();
+        // A height-dependent pack can be hidden below closed, filling
+        // wrappers. A fixed width or height cuts that dependency.
+        let variable = |l: Length| l.natural_bounds().floor != l.natural_bounds().cap;
+        let packed_share = b.height.weight().is_some()
+            && variable(b.height)
+            && (!b.width.definite() || b.width.reads_fill_content())
+            && ((pack && (self.direct > 1 || kids.height_reader))
+                || ((shape.passes_cross_height() || shape == Shape::Column) && kids.packed_share));
+        let reads_width = b.width.weight().is_some()
+            || (shape == Shape::Paragraph && !b.width.definite())
+            || (matches!(shape, Shape::Column | Shape::TextColumn)
+                && b.width == Length::Auto
+                && kids.fills_width);
+        if shape == Shape::Column
+            && (!b.width.definite() || b.width.reads_fill_content())
+            && b.height.definite()
+            && kids.packed_share
+            && kids.width_sensitive_slot
+        {
+            return Err("WrappedColumn packed width is needed before its height is assigned; a Column share depends on that same width".into());
+        }
+        let constrained_measure = kids.constrained_measure
+            || (shape.allots_width() && kids.late_nonfill)
+            || pack
+            || (kids.height_reader && (shape == Shape::Column || shape.passes_cross_height()));
+        // Needing a width to measure a height is not the same as needing
+        // *this offer*. A filling El over a fixed-width paragraph is an
+        // independent height slot. A WrappedRow can also read width through
+        // membership, without a single width-sensitive child.
+        let slot_reads_width = match shape {
+            Shape::Paragraph | Shape::TextColumn => self.direct != 0,
+            Shape::WrappedRow => self.direct > 1 || kids.width_sensitive_fit,
+            Shape::El | Shape::Row | Shape::WrappedColumn => kids.width_sensitive_fit,
+            Shape::Column => kids.width_sensitive_slot,
+            Shape::Image => b.height_from_width(),
+            Shape::Empty | Shape::Text => false,
+        };
+        let width_sensitive_fit = reads_width
+            && variable(b.width)
+            && ((!matches!(b.height, Length::Px(_)) && slot_reads_width) || mixes);
+        let share = b.height.weight().is_some() && variable(b.height);
+        let passes_height = shape.passes_cross_height() || shape.allots_height();
+        let projects_offer = share
+            && (shape.projects_height(a)
+                || packed_share
+                || (passes_height && !matches!(b.width, Length::Px(_)) && kids.projects_offer));
+        // E.g. the Image consumes some of a Row's width; its filling prose
+        // peer cannot be measured before the height that sizes that Image.
+        let fit_after_share = share
+            && passes_height
+            && (kids.fit_after_share
+                || (kids.projects_offer
+                    && slot_reads_width
+                    && (shape.allots_width() || !matches!(b.width, Length::Px(_)))));
         self.own = Dependencies {
+            projects_offer,
+            fit_after_share,
             reflows_height: local_reflows
                 || (mixes && (!matches!(b.width, Length::Px(_)) || b.height.weight().is_some())),
-            late_turn,
-            late_nonfill,
-            // For an early charge, width must be known without the Row's
-            // offer and height must not change in Place. A nested dependent
-            // split would require another scheduling boundary.
-            unready_nonfill: late_nonfill
-                && (!matches!(b.width, Length::Px(_))
-                    || b.height.weight().is_some()
-                    || contains_row_split),
-            contains_row_split,
+            packed_share,
+            width_sensitive_fit,
+            width_sensitive_slot: !b.height.independent_fill() && width_sensitive_fit,
+            late_nonfill: late_turn && b.width.weight().is_none() && !fit_after_share,
+            constrained_measure,
             fills_width: b.width.weight().is_some(),
-            height_reader: kids.height_reader || shape.projects_height(a),
+            height_reader: kids.height_reader || shape.projects_height(a) || packed_share,
         };
         Ok(self)
     }
 }
 
 impl Elements {
+    pub(super) fn reads_column_share(&self, k: Key, column: BoxStyle) -> bool {
+        let m = &self.slots[k];
+        m.shape.reads_group_height(&self.attrs[k], column)
+            || (m.stats.children.height_reader && self.attrs[k].sizing.height.weight().is_some())
+    }
+    // A fixed outer width alone doesn't prove that a paragraph *inside* the
+    // card has its final width. A filling wrapper may pass its pending share
+    // to an Image that consumes width beside that paragraph.
+    pub(super) fn fit_reads_height_offer(&self, k: Key) -> bool {
+        let m = &self.slots[k];
+        let b = self.attrs[k].sizing;
+        m.stats.own.fit_after_share
+            || (m.stats.own.projects_offer && !matches!(b.width, Length::Px(_)))
+    }
+    pub(super) fn measures_at_width(&self, p: Key, k: Key) -> bool {
+        let m = &self.slots[p];
+        (m.shape.allots_width() && self.slots[k].stats.own.late_nonfill)
+            || (m.shape == Shape::WrappedColumn
+                && (m.shape.measures_packed_width(self.attrs[p].sizing.width)
+                    || m.stats.children.height_reader)
+                && self.slots[k].stats.own.reflows_height)
+            || (m.shape.passes_cross_height()
+                && m.stats.children.height_reader
+                && self.slots[k].stats.own.reflows_height)
+            || (m.shape == Shape::Column
+                && m.stats.children.height_reader
+                && !self.slots[k].shape.independent_height_slot(&self.attrs[k]))
+    }
     pub(super) fn is_row_charge(&self, k: Key) -> bool {
         let m = &self.slots[k];
-        m.stats.own.late_nonfill
-            && m.parent.is_some_and(|p| {
-                let host = &self.slots[p];
-                host.stats.splits_after_reflow(host.shape)
-            })
+        m.stats.own.late_nonfill && m.parent.is_some_and(|p| self.slots[p].shape.allots_width())
     }
 }
 

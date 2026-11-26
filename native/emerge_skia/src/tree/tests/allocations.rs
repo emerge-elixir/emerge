@@ -1166,6 +1166,24 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
         });
         split.install();
     }
+    let mut pack = Raster::default();
+    pack.tree.upload(&size::packed()).unwrap();
+    c.zero("first reserved pack uses the final paragraph fit", || {
+        pack.settle(180., 170., 1.).unwrap();
+    });
+    pack.install();
+    for (s, x) in [("AA BB", 48.), ("AA BB CC DD EE", 74.)] {
+        let edit = set(4, 5, text(s));
+        c.zero(
+            "fitting edit through pack membership, fill peer, draw and hits",
+            || {
+                pack.tree.patch(&edit).unwrap();
+                pack.settle(180., 170., 1.).unwrap();
+            },
+        );
+        assert_eq!(bounds(&pack, 6).x, x);
+        pack.install();
+    }
     paragraphs(&c);
     documents(&c);
     for name in [images::GRID, "test_assets/turn_right.jpeg"] {

@@ -77,16 +77,8 @@ pub(in crate::tree) fn width_at_height(e: &Elements, k: Key, height: f32) -> Opt
     ))
 }
 impl LayoutBehaviour for Image {
-    fn measure(node: Mounted<'_, Self>, cx: &mut Measuring<'_>) -> Demand {
-        let (e, k) = (node.elements, node.key);
-        let mut demand = natural(e, k);
-        if node.attrs().sizing.width_from_height()
-            && let Some(h) = cx.allocated_image_height(|| unallotted_height(e, k, demand.h))
-            && let Some(w) = projected_width(e, k, h)
-        {
-            demand.w = w;
-        }
-        demand
+    fn measure(node: Mounted<'_, Self>, _: &mut Measuring<'_>) -> Demand {
+        natural(node.elements, node.key)
     }
     fn reflow(node: Mounted<'_, Self>, cx: &mut ReflowCx<'_>) -> Heights {
         let b = node.attrs().sizing;

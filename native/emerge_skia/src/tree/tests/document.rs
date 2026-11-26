@@ -288,19 +288,66 @@ fn an_ordinary_block_can_center_a_late_packed_width_but_a_float_needs_it_in_flow
     draw(&mut r);
     assert_eq!((bounds(&r, 2).x, bounds(&r, 2).width), (33., 34.));
     r.tree.patch(&set(4, 6, block(&[px(2, 8.)]))).unwrap();
-    let pending = r.tree.encode();
-    for edit in [set(2, 14, attrs(0)), set(1, 8, block(&[vec![1, 1]]))] {
-        assert!(
-            r.tree
-                .patch(&edit)
-                .unwrap_err()
-                .contains("before child reflow")
-        );
-        assert_eq!(r.tree.encode(), pending);
-    }
     draw(&mut r);
     assert_eq!((bounds(&r, 2).x, bounds(&r, 2).width), (41., 18.));
-    check_fresh(&r);
+    for edit in [set(2, 14, attrs(0)), set(1, 8, block(&[vec![1, 1]]))] {
+        r.tree.patch(&edit).unwrap();
+        draw(&mut r);
+        assert_eq!((bounds(&r, 2).x, bounds(&r, 2).width), (0., 18.));
+        check_fresh(&r);
+    }
+}
+
+#[test]
+fn a_turned_document_block_uses_unbounded_height_even_in_a_short_document() {
+    let mut r = Raster::default();
+    let card = |height| {
+        block(&[
+            px(1, 24.),
+            height,
+            number(79, 90.),
+            color([255, 0, 0]),
+            vec![40, 1],
+        ])
+    };
+    let cap = |h| bounded::bound(2, 4, h, None, false);
+    r.tree
+        .upload(&upload(&[
+            node(
+                1,
+                8,
+                block(&[px(1, 160.), px(2, 80.), vec![40, 1]]),
+                &[2, 3],
+            ),
+            node(2, 4, card(px(2, 24.)), &[]),
+            node(
+                3,
+                4,
+                block(&[px(1, 8.), px(2, 8.), color([0, 0, 255])]),
+                &[],
+            ),
+        ]))
+        .unwrap();
+    for (width, height) in [
+        (24., cap(24.)),
+        (80., cap(80.)),
+        (f32::MAX, vec![2, 0]),
+        (24., px(2, 24.)),
+    ] {
+        let previous = r.hit_at(40., 6.);
+        r.tree.patch(&set(2, 4, card(height))).unwrap();
+        r.settle(180., 170., 1.).unwrap();
+        assert_eq!(r.hit_at(40., 6.), previous);
+        assert_eq!((bounds(&r, 2).width, bounds(&r, 3).y), (width, 24.));
+        draw(&mut r);
+        if width == 80. {
+            assert_eq!(r.hit_at(40., 6.), Some((2, 6., 40.)));
+        }
+        if width == 24. {
+            assert_eq!(r.hit_at(40., 6.), Some((1, 40., 6.)));
+        }
+        check_fresh(&r);
+    }
 }
 
 #[test]

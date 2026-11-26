@@ -222,9 +222,7 @@ impl FillShares {
         let inner = inner?;
         let b = e.attrs[k].sizing;
         let kids = e.children(k);
-        if !kids
-            .iter()
-            .any(|&c| e.slots[c].shape.reads_group_height(&e.attrs[c], b))
+        if !kids.iter().any(|&c| e.reads_column_share(c, b))
             || !kids
                 .iter()
                 .all(|&c| e.slots[c].shape.independent_height_slot(&e.attrs[c]))
@@ -234,6 +232,23 @@ impl FillShares {
         let s = e.slots[k].admitted.scale;
         let charge = scale::pixels(e.attrs[k].main_spacing(linear::Y).charge(), s);
         Self::group(Some(inner), charge, kids, |c| Self::declared_slot(e, c))
+    }
+    pub(in crate::tree) fn measured_column(
+        e: &Elements,
+        k: Key,
+        inner: f32,
+        basis: impl Fn(Key) -> f32,
+    ) -> Option<Self> {
+        let gap = scale::pixels(
+            e.attrs[k].main_spacing(linear::Y).charge(),
+            e.slots[k].admitted.scale,
+        );
+        Self::group(Some(inner), gap, e.children(k), |c| {
+            Slot::new(e, c, e.attrs[c].sizing.height, basis(c))
+        })
+    }
+    pub(in crate::tree) fn height(self, e: &Elements, c: Key, basis: f32) -> Option<f32> {
+        self.offer(Slot::new(e, c, e.attrs[c].sizing.height, basis))
     }
     pub(in crate::tree) fn assigned_height(self, e: &Elements, c: Key) -> Option<f32> {
         self.offer(Self::declared_slot(e, c))

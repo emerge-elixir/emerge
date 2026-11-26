@@ -52,21 +52,17 @@ fn an_independent_height_supplies_packed_width_before_its_sibling_flows() {
         assert_eq!(draw(&mut cold), r.pixels());
         assert_eq!(bounds(&cold, 5), bounds(&r, 5));
     }
-    let before = r.tree.encode();
-    // The closed child loses the independent height it used during Measure.
-    assert!(
-        r.tree
-            .patch(&set(1, 1, block(&[px(1, 64.)])))
-            .unwrap_err()
-            .contains("before its height is assigned")
-    );
-    assert!(
-        r.tree
-            .patch(&set(4, 4, block(&[px(1, 12.)])))
-            .unwrap_err()
-            .contains("before child reflow")
-    );
-    assert_eq!(r.tree.encode(), before);
+    // Removing the Row height uses the unallotted one-column basis. Neither
+    // that basis nor the empty card's zero content height reads the split.
+    for edit in [
+        set(1, 1, block(&[px(1, 64.)])),
+        set(4, 4, block(&[px(1, 12.)])),
+    ] {
+        r.tree.patch(&edit).unwrap();
+        draw(&mut r);
+        assert_eq!((bounds(&r, 2).width, bounds(&r, 5).x), (12., 12.));
+        check_fresh(&r);
+    }
 }
 
 pub(super) fn shared_column() -> Bytes {
@@ -105,13 +101,11 @@ fn a_declared_column_share_reaches_an_earlier_width_consumer_without_retry() {
             assert_eq!(bounds(&r, id), frame);
         }
     }
-    // Even an attrs-only edit to the *other* sibling must re-prove its slot.
-    assert!(
-        r.tree
-            .patch(&set(3, 4, block(&[vec![2, 1]])))
-            .unwrap_err()
-            .contains("share depends on reflow")
-    );
+    // The other sibling has independent, empty content instead of a declaration.
+    r.tree.patch(&set(3, 4, block(&[vec![2, 1]]))).unwrap();
+    draw(&mut r);
+    assert_eq!((bounds(&r, 4).height, bounds(&r, 6).x), (60., 12.));
+    check_fresh(&r);
 }
 
 // min(px(cap), fill()) and min(px(cap), max(content(), fill())) have the

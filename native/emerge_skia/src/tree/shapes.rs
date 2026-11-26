@@ -9,7 +9,7 @@ use super::{
 };
 mod fill;
 mod linear;
-pub(super) use linear::{column_demand, column_width};
+pub(super) use linear::{ColumnGroups, column_demand, column_height, column_width, pack_edge};
 mod payload;
 pub(super) use fill::FillShares;
 pub(super) use image::width_at_height as image_width_at_height;
@@ -214,11 +214,6 @@ impl Shape {
                 || (matches!(style.width, Length::Px(_)) && matches!(style.height, Length::Px(_)));
         }
         style.height.declared_height_slot() || (self == Self::Image && !style.height_from_width())
-    }
-    // Neither the cross-axis width nor an earlier split needs a child's
-    // projected width at these sites. Place alone needs the real height.
-    pub fn late_image_width(self, style: BoxStyle) -> bool {
-        matches!(self, Self::El | Self::Column) && matches!(style.width, Length::Px(_))
     }
     pub fn passes_cross_height(self) -> bool {
         self.offers_inner_height() || self == Self::WrappedRow

@@ -12,8 +12,6 @@ use super::{
 pub(super) enum Pass {
     Context,
     Measure,
-    RowChargeFlow,
-    RowChargeReflow,
     Flow,
     Reflow,
     Place,
@@ -21,31 +19,19 @@ pub(super) enum Pass {
     Compose,
 }
 use Pass::*;
+mod constrained;
 mod document;
-mod row;
+use constrained::{Basis, HeightOffers};
 use scale::{Inputs, pixels};
 impl Pass {
     fn direction(self) -> Direction {
         match self {
-            Measure | RowChargeReflow | Reflow | Compose => Direction::DeepFirst,
-            Context | RowChargeFlow | Flow | Place | PaintContext => Direction::ShallowFirst,
+            Measure | Reflow | Compose => Direction::DeepFirst,
+            Context | Flow | Place | PaintContext => Direction::ShallowFirst,
         }
     }
 }
-// A mount gets one job per layer. The two extra queue slots only change
-// when a proved branch runs those same Flow/Reflow jobs.
 const PASSES: [Pass; 7] = [Context, Measure, Flow, Reflow, Place, PaintContext, Compose];
-const SCHEDULE: [Pass; 9] = [
-    Context,
-    Measure,
-    RowChargeFlow,
-    RowChargeReflow,
-    Flow,
-    Reflow,
-    Place,
-    PaintContext,
-    Compose,
-];
 #[derive(Default, Clone, Copy, Debug, PartialEq)]
 pub(super) struct Size {
     pub w: f32,
@@ -92,12 +78,7 @@ impl Fit {
     ) -> f32 {
         let fit = fits[k].local;
         let style = e.attrs[k].sizing;
-        if e.slots[k].shape == Shape::Image
-            && style.width_from_height()
-            && e.slots[k]
-                .parent
-                .is_some_and(|p| e.slots[p].shape.late_image_width(e.attrs[p].sizing))
-        {
+        if e.slots[k].shape == Shape::Image && style.width_from_height() {
             return shapes::image_width_at_height(e, k, edge.resolve_height(e, k, fit.h))
                 .unwrap_or(fit.w);
         }
@@ -105,7 +86,13 @@ impl Fit {
             return fit.w;
         }
         let height = edge.resolve_height(e, k, fit.h);
-        shapes::column_width(e, k, height, |c| fits[c].size)
+        shapes::column_width(
+            e,
+            k,
+            height,
+            |c| (fits[c].local, fits[c].size),
+            |c, edge| Self::width_at(fits, e, c, edge),
+        )
     }
     fn local_at(fits: &SecondaryMap<Key, Self>, e: &Elements, k: Key, edge: Constraint) -> Size {
         let local = fits[k].local;
@@ -154,12 +141,15 @@ pub(super) struct Demand {
 struct WidthOffer {
     axis: Constraint,
     break_before: bool,
+    // A projected width can be offered through more than one filling wrapper.
+    projected_height: Option<f32>,
 }
 #[derive(Clone, Copy, PartialEq)]
 struct Width {
     outer: f32,
     inner: f32,
     new_edge: bool,
+    child_height: Option<f32>,
 }
 
 /// Input on an axis, in device pixels. An available extent is not a cap;
@@ -230,8 +220,8 @@ impl LayoutContext {
 
 #[derive(Default)]
 pub(super) struct Layers {
-    jobs: [WorkSet; SCHEDULE.len()],
-    row_splits: row::RowSplits,
+    jobs: [WorkSet; PASSES.len()],
+    constrained: constrained::Constrained,
     context: SecondaryMap<Key, LayoutContext>,
     measure: SecondaryMap<Key, Demand>,
     // Retain both sides of a rotation boundary, not a second layout tree.
@@ -250,6 +240,11 @@ pub(super) struct Layers {
     offers: SecondaryMap<Key, WidthOffer>,
     // Only independent, declared Column groups needed by an early packed width.
     height_shares: SecondaryMap<Key, shapes::FillShares>,
+    // Unallotted single-row cross basis, never the height of a wrapped stack.
+    natural_cross: SecondaryMap<Key, f32>,
+    // Width measurement only. Placement allocates from the final child fits.
+    measured_shares: SecondaryMap<Key, shapes::FillShares>,
+    slot_heights: SecondaryMap<Key, f32>,
     fit: SecondaryMap<Key, Fit>,
     placement: SecondaryMap<Key, Placement>,
     pub frames: SecondaryMap<Key, Rect>,
@@ -269,14 +264,11 @@ pub(super) struct Measuring<'a> {
     e: &'a Elements,
     k: Key,
     pub gap: [f32; 2],
+    heights: HeightOffers,
 }
 impl Measuring<'_> {
     pub fn child(&self, c: Key) -> Demand {
-        self.layers.measure[c]
-    }
-    pub fn allocated_image_height(&self, basis: impl FnOnce() -> f32) -> Option<f32> {
-        let edge = self.layers.known_height_edge(self.e, self.k)?;
-        Some(edge.resolve_height(self.e, self.k, basis()))
+        self.layers.child_demand(self.e, self.k, c, self.heights)
     }
     pub fn glyph_run(&mut self, text: &str) -> Demand {
         let k = self.k;
@@ -311,20 +303,25 @@ pub(super) struct FlowCx<'a> {
     pub scale: f32,
     pub inner: f32,
     offer_children: bool,
-    reflowed_charges: bool,
+    host: Key,
+    heights: HeightOffers,
+    basis: Basis,
 }
 impl FlowCx<'_> {
     pub fn measured_width(&self, c: Key) -> f32 {
         if self.e.attrs[c].sizing.width.weight().is_some() {
-            self.layers.local_measure[c].w // a fill's content operand is on the authored axis
-        } else if self.reflowed_charges && self.e.slots[c].stats.own.late_nonfill {
-            self.layers.fit[c].size.w // settled at its independent local width before this split
+            // The fill's content operand is local, not the occupied extent.
+            self.heights.for_child(self.layers, self.e, c).map_or_else(
+                || self.layers.local_measure[c].w,
+                |h| self.layers.projected_local_width(self.e, c, h),
+            )
         } else {
-            self.layers.measure[c].w // a non-fill charges its occupied width
+            self.layers
+                .child_demand(self.e, self.host, c, self.heights)
+                .w
         }
     }
     pub fn line_measure(&self, c: Key) -> f32 {
-        let measured = self.layers.measure[c];
         if self.e.attrs[c].sizing.width.weight().is_some() {
             self.layers.local_measure[c].min_w
         } else if self.e.slots[c].shape.requests_fill_width(self.e, c) {
@@ -332,14 +329,13 @@ impl FlowCx<'_> {
             // box; it does not ask to break the line or redistribute its peers.
             self.inner
         } else {
-            measured.w
+            self.measured_width(c)
         }
     }
     pub fn offer_inner_width(&mut self, parent: Key) {
         if self.offer_children {
             for &c in self.e.children(parent) {
-                self.layers
-                    .offer_width(self.e, c, Constraint::Available(self.inner), false);
+                self.offer(c, Constraint::Available(self.inner), false);
             }
         }
     }
@@ -348,16 +344,15 @@ impl FlowCx<'_> {
         self.offer_available_width(c, width);
     }
     pub fn offer_available_width(&mut self, c: Key, width: f32) {
-        self.layers
-            .offer_width(self.e, c, Constraint::Available(width), false);
+        self.offer(c, Constraint::Available(width), false);
     }
     pub fn assign_width(&mut self, c: Key, width: f32, break_before: bool) {
-        self.layers
-            .offer_width(self.e, c, Constraint::Assigned(width), break_before);
+        self.offer(c, Constraint::Assigned(width), break_before);
     }
 }
 pub(super) struct ReflowCx<'a> {
     layers: &'a mut Layers,
+    basis: Basis,
     pub gap: [f32; 2],
     padding: [f32; 4],
     height: Length,
@@ -368,13 +363,13 @@ pub(super) struct ReflowCx<'a> {
 }
 impl ReflowCx<'_> {
     pub fn child(&self, c: Key) -> Size {
-        self.layers.fit[c].size
+        self.basis.fits(self.layers)[c].size
     }
     pub fn break_before(&self, c: Key) -> bool {
-        self.layers.offers[c].break_before
+        self.basis.break_before(self.layers, c)
     }
     pub fn inner_width(&self, k: Key) -> f32 {
-        self.layers.width[k].inner
+        self.basis.width(self.layers, k).inner
     }
     pub fn inner_height(&self, outer: f32) -> f32 {
         (outer - (self.padding[0] + self.padding[2])).max(0.)
@@ -426,6 +421,21 @@ impl PlaceCx<'_> {
     pub fn local_child(&self, k: Key) -> Size {
         self.layers.fit[k].local
     }
+    pub fn intrinsic_turn_height(&self, k: Key) -> Option<f32> {
+        let a = &self.e.attrs[k];
+        // The peer inside this card fits at the width left by its projected
+        // art. Its later lines cannot increase the height that chose that
+        // width. Use the same evaluated cap for the occupied slot and advance.
+        if self.e.slots[k].stats.own.fit_after_share
+            && a.rotation.mixes_axes()
+            && a.sizing.width.weight().is_none()
+            && a.sizing.height.reads_fill_content()
+        {
+            self.layers.offers[k].projected_height
+        } else {
+            None
+        }
+    }
     pub fn local_height(&self, k: Key) -> f32 {
         self.layers.local_measure[k].h
     }
@@ -473,6 +483,9 @@ impl Layers {
             width,
             offers,
             height_shares,
+            natural_cross,
+            measured_shares,
+            slot_heights,
             fit,
             placement,
             frames,
@@ -482,7 +495,7 @@ impl Layers {
         #[cfg(test)]
         pool::reserve(&mut self.trace, 7 * capacity)?;
         self.bounds.reserve(capacity)?;
-        self.row_splits.reserve(keys)?;
+        self.constrained.reserve(keys)?;
         self.intrinsic.reserve(capacity)?;
         self.owners = capacity;
         Ok(())
@@ -497,6 +510,10 @@ impl Layers {
     #[cfg(test)]
     pub fn worksets_empty(&self) -> bool {
         self.jobs.iter().all(WorkSet::is_empty)
+    }
+    pub(super) fn begin_measure_inputs(&mut self, e: &Elements, root: Option<Key>) {
+        self.constrained
+            .begin(root.is_some_and(|k| e.slots[k].stats.own.constrained_measure));
     }
     pub fn mount(&mut self, k: Key, e: &Elements) {
         for p in PASSES {
@@ -570,6 +587,7 @@ impl Layers {
         self.enqueue(Compose, k, e);
     }
     pub fn evict(&mut self, k: Key) {
+        self.constrained.evict(k);
         self.paragraphs.evict(k);
         if let Some(run) = self.runs.remove(k) {
             self.text.release(run);
@@ -581,6 +599,9 @@ impl Layers {
         self.width.remove(k);
         self.offers.remove(k);
         self.height_shares.remove(k);
+        self.natural_cross.remove(k);
+        self.measured_shares.remove(k);
+        self.slot_heights.remove(k);
         self.fit.remove(k);
         self.placement.remove(k);
         self.frames.remove(k);
@@ -588,8 +609,10 @@ impl Layers {
         self.parts.remove(k);
     }
     pub(super) fn enqueue(&mut self, p: Pass, k: Key, e: &Elements) {
-        let phase = self.row_splits.phase(e, k, p);
-        self.invalidate(phase, k, e.depth(k));
+        if matches!(p, Measure | Flow | Reflow) {
+            self.invalidate_constraints(e, k);
+        }
+        self.invalidate(p, k, e.depth(k));
     }
     fn parent(&mut self, p: Pass, k: Key, e: &Elements) {
         if let Some(parent) = e.slots[k].parent {
@@ -628,8 +651,7 @@ impl Layers {
                     .get(k)
                     .is_some_and(|c| c.text_takes_offer(e.attrs[k].sizing.width)))
     }
-    fn resolved_width(&self, e: &Elements, k: Key, edge: Constraint) -> f32 {
-        let measured = self.local_measure[k].w;
+    fn resolved_width(&self, e: &Elements, k: Key, edge: Constraint, measured: f32) -> f32 {
         // A Row's non-fill charge is an occupied width, not a constraint on
         // the paragraph, aligned text or container in the local frame.
         if matches!(edge, Constraint::Assigned(_))
@@ -652,12 +674,16 @@ impl Layers {
             measured
         }
     }
-    fn offer_width(&mut self, e: &Elements, k: Key, axis: Constraint, break_before: bool) {
-        let next = WidthOffer { axis, break_before };
+    fn offer_width(&mut self, e: &Elements, k: Key, next: WidthOffer) {
+        let WidthOffer {
+            axis, break_before, ..
+        } = next;
         let old = self.offers.get(k).copied();
         if old != Some(next) {
             self.offers.insert(k, next);
-            if old.is_none_or(|p| p.axis != axis) && self.reads_width_offer(e, k) {
+            if old.is_none_or(|p| p.projected_height != next.projected_height)
+                || (old.is_none_or(|p| p.axis != axis) && self.reads_width_offer(e, k))
+            {
                 self.enqueue(Flow, k, e);
             }
             if old.is_some_and(|p| p.break_before) != break_before
@@ -682,8 +708,8 @@ impl Layers {
     }
     fn placed_site(&self, host: Key, child: Key) -> Rect {
         let mut r = self.paragraphs.site(child);
-        r.x += self.local_frames[host].x;
-        r.y += self.local_frames[host].y;
+        r.x = coordinate(r.x + self.local_frames[host].x);
+        r.y = coordinate(r.y + self.local_frames[host].y);
         r
     }
     fn offer_edge(&mut self, e: &Elements, k: Key, edge: Placement, translated: bool) {
@@ -702,7 +728,10 @@ impl Layers {
     }
     pub fn recompute(&mut self, e: &Elements, root: Option<Key>, w: f32, h: f32) {
         #[cfg(test)]
-        self.trace.clear();
+        {
+            self.trace.clear();
+            self.paragraphs.frame += 1;
+        }
         let vp = Rect {
             x: 0.,
             y: 0.,
@@ -721,7 +750,15 @@ impl Layers {
         // always zero. Its own child placement still reads its declaration.
         let swap = e.attrs[root].rotation.swaps_axes();
         let (local_w, local_h) = if swap { (h, w) } else { (w, h) };
-        self.offer_width(e, root, Constraint::Available(local_w), false);
+        self.offer_width(
+            e,
+            root,
+            WidthOffer {
+                axis: Constraint::Available(local_w),
+                break_before: false,
+                projected_height: None,
+            },
+        );
         self.offer_placement(e, root, [0.; 2], Constraint::Available(local_h), false);
         if vp != self.viewport {
             if local_h != self.root_height(e, root) {
@@ -732,12 +769,23 @@ impl Layers {
                     && e.attrs[root].sizing.height.weight().is_some()
                 {
                     self.enqueue(Context, root, e);
+                    if e.attrs[root].sizing.height.reads_fill_content() {
+                        self.enqueue(Measure, root, e);
+                    }
                 }
             }
             self.viewport = vp;
             self.enqueue(PaintContext, root, e);
         }
-        for pass in SCHEDULE {
+        for pass in PASSES {
+            #[cfg(test)]
+            assert!(
+                self.jobs[..pass as usize].iter().all(WorkSet::is_empty),
+                "work sent back before {pass:?}"
+            );
+            if pass == Flow {
+                self.constrained.finish_measure();
+            }
             while let Some((k, requested)) = self.jobs[pass as usize].pop(pass.direction()) {
                 if !e.slots.contains_key(k) {
                     continue;
@@ -747,8 +795,8 @@ impl Layers {
                 match pass {
                     Context => self.context(e, k),
                     Measure => self.measure(e, k),
-                    Flow | RowChargeFlow => self.flow(e, k),
-                    Reflow | RowChargeReflow => self.reflow(e, k),
+                    Flow => self.flow(e, k),
+                    Reflow => self.reflow(e, k),
                     Place => {
                         let base = e.slots[k].parent.map_or(vp, |p| self.local_frames[p]);
                         self.place(e, k, [base.x, base.y]);
@@ -780,6 +828,11 @@ impl Layers {
     }
     pub(super) fn invalidate_early_heights(&mut self, e: &Elements, p: Key) {
         for &c in e.children(p) {
+            if e.slots[c].stats.children.height_reader
+                && e.attrs[c].sizing.height.weight().is_some()
+            {
+                self.enqueue(Context, c, e);
+            }
             if Self::reads_early_height(e, c) {
                 self.enqueue(Measure, c, e);
             }
@@ -790,11 +843,9 @@ impl Layers {
     }
     pub(super) fn has_group_reader(e: &Elements, p: Key) -> bool {
         (matches!(e.attrs[p].sizing.height, Length::Px(_)) || e.slots[p].stats.own.height_reader)
-            && e.children(p).iter().any(|&c| {
-                e.slots[c]
-                    .shape
-                    .reads_group_height(&e.attrs[c], e.attrs[p].sizing)
-            })
+            && e.children(p)
+                .iter()
+                .any(|&c| e.reads_column_share(c, e.attrs[p].sizing))
     }
     fn root_height(&self, e: &Elements, k: Key) -> f32 {
         if e.attrs[k].rotation.swaps_axes() {
@@ -808,6 +859,9 @@ impl Layers {
             return Some(Constraint::Available(self.root_height(e, k)));
         };
         let style = e.attrs[p].sizing;
+        if e.slots[p].shape == Shape::TextColumn && !e.is_prose_float(k) {
+            return Some(document::BLOCK_HEIGHT);
+        }
         if let Some(px) = e.slots[p].shape.cross_height_px(style) {
             let s = e.slots[p].admitted.scale;
             Some(Constraint::Available(
@@ -829,8 +883,12 @@ impl Layers {
         let s = m.admitted.scale;
         let outer = match b.height {
             Length::Px(px) => pixels(px, s),
-            h if m.stats.own.height_reader && h.independent_fill() => {
-                self.known_height_edge(e, k)?.resolve_height(e, k, 0.)
+            h if m.stats.own.height_reader && h.weight().is_some() => {
+                let edge = self.known_height_edge(e, k)?;
+                if !h.independent_fill() && !matches!(edge, Constraint::Assigned(_)) {
+                    return None;
+                }
+                edge.resolve_height(e, k, 0.)
             }
             _ => return None,
         };
@@ -872,6 +930,12 @@ impl Layers {
             text_align,
         };
         if changed(&mut self.context, k, next) {
+            if height_changed
+                && shape.passes_cross_height()
+                && e.slots[k].stats.children.height_reader
+            {
+                self.refresh_child_offers(e, k);
+            }
             if e.slots[k].shape == Shape::Paragraph
                 && old.is_none_or(|p| p.text_align != text_align)
             {
@@ -965,21 +1029,92 @@ impl Layers {
             }
         }
     }
+    fn child_demand(&self, e: &Elements, p: Key, c: Key, heights: HeightOffers) -> Demand {
+        let mut m = self.measure[c];
+        if e.is_row_charge(c)
+            && let Some(fit) = self.constrained_fit(c)
+        {
+            m.w = fit.size.w;
+        }
+        let a = &e.attrs[c];
+        let host = e.slots[p].shape;
+        let local = self.local_measure[c];
+        let content_column = host == Shape::Column
+            && matches!(
+                e.attrs[p].sizing.width,
+                Length::Content | Length::BoundedContent(_)
+            );
+        if content_column && a.rotation.mixes_axes() && a.sizing.height.weight().is_some() {
+            // A Column does not grow its content width to a turned child's
+            // empty allocation. The occupied slot still advances and clips normally.
+            m.w = a.rotation.extent(local.w, local.h).0;
+            return m;
+        }
+        if let Some(h) = heights.for_child(self, e, c) {
+            m.w = a.rotation.extent(self.projected_local_width(e, c, h), h).0;
+        }
+        if content_column && e.slots[c].shape == Shape::Image && a.sizing.width_from_height() {
+            m.w = m.w.max(local.min_w);
+        }
+        m
+    }
     fn measure(&mut self, e: &Elements, k: Key) {
         let c = self.context[k].inputs;
         let b = e.attrs[k].sizing.without_weights();
         let shape = e.slots[k].shape;
-        let memo = (!shape.uses_glyphs() && shape != Shape::Image).then(|| {
-            self.intrinsic.lookup(
-                shape,
-                b,
-                c.scale,
-                e.children(k).iter().map(|c| self.measure[*c]),
-            )
+        let cross = (shape.passes_cross_height()
+            && e.slots[k].stats.children.height_reader
+            && self.context[k].inner_offer.is_none())
+        .then(|| {
+            let pad = pixels(b.padding[0], c.scale) + pixels(b.padding[2], c.scale);
+            let one = self.measure_cross_slots(e, k);
+            let natural = b.height.resolve(one + pad, || c.scale);
+            let outer = self
+                .known_height_edge(e, k)
+                .map_or(natural, |edge| edge.resolve_height(e, k, natural));
+            (outer - pad).max(0.)
         });
+        let old_cross = match cross {
+            Some(h) => self.natural_cross.insert(k, h),
+            None => self.natural_cross.remove(k),
+        };
+        if old_cross != cross {
+            self.refresh_child_offers(e, k);
+        }
+        if e.slots[k].stats.children.late_nonfill && shape.allots_width() {
+            for &c in e.children(k) {
+                if e.is_row_charge(c) {
+                    let old = self.constrained.fits.get(c).map(|f| f.size.w);
+                    let w = self
+                        .intrinsic_fit(e, c, Constraint::Assigned(self.local_measure[c].w))
+                        .size
+                        .w;
+                    if old != Some(w) {
+                        self.enqueue(Flow, k, e);
+                    }
+                }
+            }
+        }
+        if shape == Shape::Column {
+            self.measure_column_slots(e, k);
+        }
+        let memo = (!shape.uses_glyphs()
+            && shape != Shape::Image
+            && cross.is_none()
+            && !e.slots[k].stats.children.height_reader
+            && !e.slots[k].stats.children.late_nonfill)
+            .then(|| {
+                self.intrinsic.lookup(
+                    shape,
+                    b,
+                    c.scale,
+                    e.children(k).iter().map(|c| self.measure[*c]),
+                )
+            });
         let m = if let Some((_, Some(value))) = memo {
             value
         } else {
+            let heights = self.child_heights(e, k, None);
             let content = shape.measure(
                 e,
                 k,
@@ -987,6 +1122,7 @@ impl Layers {
                     layers: self,
                     e,
                     k,
+                    heights,
                     gap: b.spacing.map(|v| pixels(v, c.scale)),
                 },
             );
@@ -1009,21 +1145,47 @@ impl Layers {
             m
         };
         // Keep the site-independent demand in the memo, including on a closed move.
+        if shape == Shape::WrappedColumn
+            && (shape.measures_packed_width(b.width) || e.slots[k].stats.children.height_reader)
+        {
+            if b.height.limits_column_height() || e.slots[k].stats.children.height_reader {
+                let inner = self.single_inner(e, k, m.w);
+                let known_inner =
+                    matches!(b.width, Length::Px(_)) || Self::uses_single_column(e, k);
+                for &child in e.children(k) {
+                    if e.slots[child].stats.own.reflows_height
+                        && !e.fit_reads_height_offer(child)
+                        && (known_inner || !self.reads_width_offer(e, child))
+                    {
+                        self.intrinsic_fit(e, child, Constraint::Available(inner));
+                    }
+                }
+            }
+            if e.slots[k].stats.children.height_reader {
+                self.refresh_child_offers(e, k);
+            }
+        }
         let mut m = if shape.measures_packed_width(b.width) {
-            shapes::column_demand(
-                e,
-                k,
-                m,
-                self.known_height_edge(e, k),
-                |c| self.measure[c],
-                |c, inner| {
-                    let w = self.resolved_width(e, c, Constraint::Available(inner));
-                    e.attrs[c].rotation.extent(w, self.local_measure[c].h).0
-                },
-            )
+            self.packed_demand(e, k, m, self.known_height_edge(e, k))
         } else {
             m
         };
+        let edge = if shape.projects_height(&e.attrs[k]) {
+            if e.is_prose_float(k) {
+                Some(document::float_edge(e, k, m))
+            } else {
+                self.known_height_edge(e, k)
+            }
+        } else {
+            None
+        };
+        if shape == Shape::Image
+            && b.width_from_height()
+            && let Some(edge) = edge
+            && let Some(w) = shapes::image_width_at_height(e, k, edge.resolve_height(e, k, m.h))
+        {
+            m.w = w;
+        }
         // A height-filled linear wrapper keeps its intrinsic minimum when a
         // projected child shrinks. El instead follows the child's final width.
         if matches!(shape, Shape::Row | Shape::Column)
@@ -1062,8 +1224,7 @@ impl Layers {
                 self.parent(Flow, k, e);
             }
             let h = if b.height.weight().is_some() {
-                self.known_height_edge(e, k)
-                    .map_or(m.h, |edge| edge.resolve_height(e, k, m.h))
+                edge.map_or(m.h, |edge| edge.resolve_height(e, k, m.h))
             } else {
                 m.h
             };
@@ -1121,18 +1282,25 @@ impl Layers {
         }
         self.enqueue(Measure, k, e);
     }
-    fn flow(&mut self, e: &Elements, k: Key) {
+    fn width_for(&self, e: &Elements, k: Key, edge: Constraint, height: Option<f32>) -> Width {
         let b = e.attrs[k].sizing;
-        let shape = e.slots[k].shape;
         let scale = self.context[k].inputs.scale;
         let outer = if matches!(b.width, Length::Px(_)) {
             // A pixel width needs no incoming offer, including before its Row's split.
             self.local_measure[k].w
         } else {
-            self.resolved_width(e, k, self.offers[k].axis)
+            self.resolved_width(
+                e,
+                k,
+                edge,
+                height.map_or_else(
+                    || self.local_measure[k].w,
+                    |h| self.projected_local_width(e, k, h),
+                ),
+            )
         };
         let [_, r, _, l] = b.padding.map(|v| pixels(v, scale));
-        let inner = if shape.packs_width(b.width) {
+        let inner = if Self::uses_single_column(e, k) {
             // Child offers use the single-column basis, never the packed width.
             let one = e
                 .children(k)
@@ -1143,48 +1311,44 @@ impl Layers {
         } else {
             (outer - (r + l)).max(0.)
         };
-        let old = self.width.insert(
-            k,
-            Width {
-                outer,
-                inner,
-                new_edge: false,
-            },
-        );
+        Width {
+            outer,
+            inner,
+            new_edge: false,
+            child_height: height.filter(|_| {
+                e.slots[k].stats.children.height_reader
+                    && (e.slots[k].shape.passes_cross_height() || e.slots[k].shape.allots_height())
+            }),
+        }
+    }
+    fn flow(&mut self, e: &Elements, k: Key) {
+        let edge = self.offers[k];
+        let width = self.width_for(e, k, edge.axis, edge.projected_height);
+        let Width { outer, inner, .. } = width;
+        // The shared fragments belong to the width that produced them. A
+        // different ordinary solve retires, rather than overwrites, that proof.
+        if !self.constrained.accepts(k, width) {
+            self.constrained.discard(k);
+        }
+        let old = self.width.insert(k, width);
         if old.is_none_or(|w| w.outer != outer || w.inner != inner) {
             self.enqueue(Reflow, k, e);
         }
-        let offer_children = old.is_none_or(|w| w.inner != inner || w.new_edge);
-        shape.offer_widths(
-            e,
-            k,
-            &mut FlowCx {
-                inner,
-                offer_children,
-                reflowed_charges: e.slots[k].stats.splits_after_reflow(shape),
-                scale,
-                layers: self,
-                e,
-            },
-        );
+        let offer_children = old
+            .is_none_or(|w| w.inner != inner || w.new_edge || w.child_height != width.child_height);
+        self.child_widths(e, k, inner, offer_children, Basis::Offered);
     }
-    fn reflow(&mut self, e: &Elements, k: Key) {
-        let n = &e.slots[k];
-        if n.shape == Shape::Paragraph
+    fn in_document_flow(&self, e: &Elements, k: Key) -> bool {
+        e.slots[k].shape == Shape::Paragraph
             && e.parent_shape(k) == Some(Shape::TextColumn)
             && !e.attrs[k].rotation.mixes_axes()
             && e.float_side(k).is_none()
-        {
-            // Only the document knows this paragraph's incoming bands. Its
-            // descendants have settled; delegate the single line solve to it.
-            self.paragraphs.invalidate_lines(k);
-            self.parent(Reflow, k, e);
-            return;
-        }
+    }
+    fn box_fit(&mut self, e: &Elements, k: Key, width: Width, basis: Basis) -> Fit {
         let b = e.attrs[k].sizing;
-        let width = self.width[k];
         let scale = self.context[k].inputs.scale;
         let mut cx = ReflowCx {
+            basis,
             gap: b.spacing.map(|v| pixels(v, scale)),
             padding: b.padding.map(|v| pixels(v, scale)),
             height: b.height,
@@ -1194,29 +1358,30 @@ impl Layers {
             row_offer: 0.,
             layers: self,
         };
-        let heights = n.shape.reflow(e, k, &mut cx);
-        let row_offer = cx.row_offer;
-        // Even at equal fit, a Column's shares or a definite WrappedRow's
-        // line origins may need updating against the final placed height.
-        let local = Size {
-            w: width.outer,
-            h: heights.fit,
-            min_h: heights.min,
-        };
-        let fit = local.turned(e.attrs[k].rotation);
-        let h = fit.h;
-        let previous = self.fit.insert(
-            k,
-            Fit {
-                size: fit,
-                local,
-                row_offer,
-            },
-        );
-        let old = previous.map(|f| f.size);
-        if old.is_none_or(|s| s.w != fit.w) && e.is_row_charge(k) {
-            self.parent(Flow, k, e);
+        let heights = e.slots[k].shape.reflow(e, k, &mut cx);
+        Fit::from_heights(e, k, width.outer, heights, cx.row_offer)
+    }
+    fn reflow(&mut self, e: &Elements, k: Key) {
+        let n = &e.slots[k];
+        let b = e.attrs[k].sizing;
+        let width = self.width[k];
+        let known = self.use_fit(k, width);
+        if self.in_document_flow(e, k)
+            && n.parent
+                .is_none_or(|p| self.use_fit(p, self.width[p]).is_none())
+        {
+            self.constrained.discard(k);
+            self.paragraphs.invalidate_lines(k);
+            self.parent(Reflow, k, e);
+            return;
         }
+        let next = known.unwrap_or_else(|| self.box_fit(e, k, width, Basis::Offered));
+        let Fit {
+            size: fit, local, ..
+        } = next;
+        let h = fit.h;
+        let previous = self.fit.insert(k, next);
+        let old = previous.map(|f| f.size);
         if n.shape.allots_height()
             || matches!(
                 n.shape,
@@ -1290,6 +1455,10 @@ impl Layers {
         }
     }
     fn place(&mut self, e: &Elements, k: Key, origin: [f32; 2]) {
+        #[cfg(test)]
+        if e.slots[k].shape == Shape::Paragraph {
+            self.paragraphs.assert_final_width(k, self.width[k].inner);
+        }
         let row_offer = self.fit[k].row_offer;
         let scale = self.context[k].inputs.scale;
         let rotation = e.attrs[k].rotation;
@@ -1298,7 +1467,7 @@ impl Layers {
                 let slot = self.placed_site(host, k);
                 let local = if rotation.mixes_axes() && e.inline_host(k).is_none() {
                     let edge = if e.is_prose_float(k) {
-                        Constraint::Available(self.local_measure[k].h)
+                        document::float_edge(e, k, self.local_measure[k])
                     } else {
                         document::BLOCK_HEIGHT
                     };
@@ -1316,8 +1485,8 @@ impl Layers {
             Placement::Box { offset, height } => {
                 let size = Fit::local_at(&self.fit, e, k, height);
                 let local = Rect {
-                    x: origin[0] + offset[0],
-                    y: origin[1] + offset[1],
+                    x: coordinate(origin[0] + offset[0]),
+                    y: coordinate(origin[1] + offset[1]),
                     width: size.w,
                     height: size.h,
                 };
@@ -1325,8 +1494,8 @@ impl Layers {
             }
         };
         if rotation.mixes_axes() {
-            local.x += (slot.width - local.width) * 0.5;
-            local.y += (slot.height - local.height) * 0.5;
+            local.x = coordinate(local.x + (slot.width - local.width) * 0.5);
+            local.y = coordinate(local.y + (slot.height - local.height) * 0.5);
         }
         let old = self.local_frames.insert(k, local);
         let origin_changed = old.is_none_or(|f| [f.x, f.y] != [local.x, local.y]);

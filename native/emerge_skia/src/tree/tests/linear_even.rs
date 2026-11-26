@@ -260,10 +260,8 @@ fn check_early_share(inner_flag: u8) {
         );
         check_fresh(&r);
     }
-    assert!(
-        r.tree
-            .patch(&set(3, 4, block(&[vec![2, 1]])))
-            .unwrap_err()
-            .contains("share depends on reflow")
-    );
+    r.tree.patch(&set(3, 4, block(&[vec![2, 1]]))).unwrap();
+    draw(&mut r);
+    assert_eq!((bounds(&r, 4).width, bounds(&r, 6).x), (12., 12.));
+    check_fresh(&r);
 }

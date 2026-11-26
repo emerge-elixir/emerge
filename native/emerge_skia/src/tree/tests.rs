@@ -24,6 +24,7 @@ mod row;
 mod row_even;
 mod row_height;
 mod scale;
+mod size;
 mod svg_pictures;
 mod text_align;
 mod topology;

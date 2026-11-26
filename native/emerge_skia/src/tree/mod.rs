@@ -81,6 +81,12 @@ impl Bounds<f64> {
         basis.clamp(b.floor, b.cap)
     }
 }
+// Document blocks can legitimately occupy the largest device extent. Keep
+// accumulated origins representable without changing ordinary f32 rounding.
+fn coordinate(v: f32) -> f32 {
+    v.clamp(f32::MIN, f32::MAX)
+}
+
 /// Only an authored floor replaces the automatic wrap minimum, even if it resolves to zero.
 fn wrap_minimum(
     floor: Option<Bounds<f64>>,
@@ -208,6 +214,7 @@ impl Length {
     // parent's proportional share, or the viewport for a fill root. Only a
     // pixel operand needs to look up the declaring site's scale.
     fn resolve(self, basis: f32, scale: impl FnOnce() -> f32) -> f32 {
+        let basis = basis.min(f32::MAX);
         match self {
             Self::Px(px) => scale::pixels(px, scale()),
             Self::Formula(Formula {
@@ -397,6 +404,7 @@ impl Attrs {
 struct Subtree {
     count: usize,
     height: usize,
+    direct: usize,
     // Cache the children's union separately: an attrs-only edit never needs
     // to reopen a kept order to prove its own layout dependencies.
     own: rotation::Dependencies,
@@ -407,6 +415,7 @@ impl Default for Subtree {
         Self {
             count: 1,
             height: 0,
+            direct: 0,
             own: Default::default(),
             children: Default::default(),
         }
@@ -417,6 +426,7 @@ impl Subtree {
         children.fold(Self::default(), |s, c| Self {
             count: s.count + c.count,
             height: s.height.max(1 + c.height),
+            direct: s.direct + 1,
             children: s.children.union(c.own),
             own: Default::default(),
         })
