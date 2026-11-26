@@ -1,5 +1,7 @@
 use super::*;
 
+mod inline;
+
 fn axes(w: f64, h: f64) -> Bytes {
     block(&[px(1, w), px(2, h)])
 }
@@ -628,11 +630,16 @@ fn a_rounded_inline_mask_stays_with_the_wrapper_not_its_separately_turned_text()
         number(33, 180.),
         vec![40, 1],
     ]);
-    let wrapper = |radius| block(&[[vec![13, 0], f64::to_be_bytes(radius).to_vec()].concat()]);
+    let wrapper = |radius, angle| {
+        block(&[
+            [vec![13, 0], f64::to_be_bytes(radius).to_vec()].concat(),
+            number(79, angle),
+        ])
+    };
     r.tree
         .upload(&upload(&[
             node(1, 7, axes(160., 90.), &[2]),
-            node(2, 4, wrapper(0.), &[3]),
+            node(2, 4, wrapper(0., 0.), &[3]),
             node(3, 5, turn, &[]),
         ]))
         .unwrap();
@@ -643,26 +650,24 @@ fn a_rounded_inline_mask_stays_with_the_wrapper_not_its_separately_turned_text()
     let outside =
         |bytes: &[u8]| (0..50).any(|y| (x..x + 14).any(|i| bytes[(y * 180 + i) * 4 + 3] > 0));
     assert!(outside(&first));
-    r.tree.patch(&set(2, 4, wrapper(8.))).unwrap();
+    r.tree.patch(&set(2, 4, wrapper(8., 0.))).unwrap();
     let clipped = draw(&mut r).to_vec();
     assert!(!outside(&clipped));
     assert!(r.hit_at(x as f32, f.y + f.height / 2.).is_none());
     assert_eq!(r.hit_at(f.width - 10., f.y + f.height / 2.).unwrap().0, 3);
     check_fresh(&r);
-    r.tree.patch(&set(2, 4, wrapper(0.))).unwrap();
+    // Turn the wrapper and its mask together. The translated, half-turned
+    // Text remains inside that mask, not clipped at its old device position.
+    r.tree.patch(&set(2, 4, wrapper(8., 90.))).unwrap();
+    assert_ne!(draw(&mut r), clipped);
+    let turned = bounds(&r, 2);
+    assert_eq!((turned.width, turned.height), (f.height, f.width));
+    let middle = turned.width / 2.;
+    assert!(r.hit_at(middle, turned.height + 2.).is_none());
+    assert_eq!(r.hit_at(middle, turned.height - 10.).unwrap().0, 3);
+    check_fresh(&r);
+    r.tree.patch(&set(2, 4, wrapper(0., 0.))).unwrap();
     assert_eq!(draw(&mut r), first);
-    let accepted = r.tree.encode();
-    // Neither the wrapper nor its Text has an independent wrapping slot.
-    for edit in [
-        set(2, 4, block(&[number(79, 90.)])),
-        set(3, 5, block(&[text("MMMM")[2..].to_vec(), number(79, 45.)])),
-    ] {
-        assert_eq!(
-            r.tree.patch(&edit).unwrap_err(),
-            "layout rotation requires a block box, not a paragraph span"
-        );
-        assert_eq!(r.tree.encode(), accepted);
-    }
 }
 #[test]
 fn snap_flags_roundtrip_without_changing_fractional_geometry_ink_or_pass_inputs() {

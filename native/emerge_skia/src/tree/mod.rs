@@ -350,7 +350,7 @@ struct Attrs {
     svg_gradient: decoration::Bytes,
     image_fit: ImageFit,
     image_axes: [ImageAxis; 2],
-    pose: Pose,
+    pose: Pose,          // same signed paint and hit transform for both angle tags
     pose_declared: bool, // reserve a scope even at an authored identity endpoint
     rotation: Rotation,
     image_host_clip: bool,
@@ -387,6 +387,9 @@ impl Attrs {
     }
     fn posed(&self) -> bool {
         self.pose != Pose::default()
+    }
+    fn float_side(&self) -> Option<Alignment> {
+        self.align[0].filter(|a| *a != Alignment::Center)
     }
     fn clips_media(&self) -> bool {
         self.decor.radius != [0.; 4] || self.decor.border != [0.; 4]
@@ -491,12 +494,24 @@ impl Elements {
         self.slots[k].parent.map(|p| self.slots[p].shape)
     }
     fn float_side(&self, k: Key) -> Option<Alignment> {
-        self.attrs[k].align[0].filter(|a| *a != Alignment::Center)
+        self.attrs[k].float_side()
     }
-    /// The paragraph owns a direct non-float and, for an El, its text source.
     fn is_prose_float(&self, k: Key) -> bool {
         self.parent_shape(k).is_some_and(Shape::has_prose_sites) && self.float_side(k).is_some()
     }
+    /// Source of the words for a non-floating paragraph child.
+    fn span_source(&self, owner: Key) -> Option<Key> {
+        match self.slots[owner].shape {
+            Shape::Text => Some(owner),
+            Shape::El => self
+                .children(owner)
+                .first()
+                .copied()
+                .filter(|&c| self.slots[c].shape == Shape::Text),
+            _ => None,
+        }
+    }
+    /// The paragraph owns a direct non-float and, for an El, its text source.
     fn inline_host(&self, k: Key) -> Option<Key> {
         let p = self.slots[k].parent?;
         if self.slots[p].shape == Shape::Paragraph {

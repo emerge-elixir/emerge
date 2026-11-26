@@ -51,10 +51,12 @@ impl Space {
             }
         }
     }
-    fn rect(self, mut r: Rect) -> Rect {
-        r.x += self.origin[0];
-        r.y += self.origin[1];
-        r
+    fn rect(self, r: Rect) -> Rect {
+        Rect {
+            x: r.x + self.origin[0],
+            y: r.y + self.origin[1],
+            ..r
+        }
     }
 }
 fn lines(span: &[paragraph::Fragment]) -> impl Iterator<Item = (&[paragraph::Fragment], Rect)> {
@@ -106,6 +108,16 @@ impl Output {
                     side == 1,
                 )
             };
+            // A separately layout-turned Text occupies one projected slot
+            // inside its El. The El's hit, decoration and mask surround that
+            // slot in the El's axes, not in the axes of the Text's glyphs.
+            let owner_rect = |r| {
+                if source != owner && e.attrs[source].rotation.mixes_axes() {
+                    l.paint[owner].frame
+                } else {
+                    outer.rect(r)
+                }
+            };
             let corners = e.attrs[owner].decor.radii(l.paint[owner].scale);
             if side == 1 {
                 let hits = &mut self.hits.build;
@@ -113,9 +125,8 @@ impl Output {
                     continue;
                 }
                 for (_, local) in lines(span) {
-                    let mask = hits
-                        .clips
-                        .add(scope.mask, Rounded::new(outer.rect(local), corners));
+                    let wrapper = owner_rect(local);
+                    let mask = hits.clips.add(scope.mask, Rounded::new(wrapper, corners));
                     for (target, space) in [
                         (owner, Some(outer)),
                         (source, ink.filter(|_| source != owner)),
@@ -123,7 +134,11 @@ impl Output {
                         let Some(space) = space.filter(|_| e.attrs[target].click) else {
                             continue;
                         };
-                        let rect = space.rect(local);
+                        let rect = if target == owner {
+                            wrapper
+                        } else {
+                            space.rect(local)
+                        };
                         if let Some(area) = rect.intersection(space.clip) {
                             let frame = l.paint[target].frame;
                             hits.items.push(Hit {
@@ -152,7 +167,7 @@ impl Output {
                     plane: outer.plane,
                     ..scope
                 };
-                let rect = outer.rect(rect);
+                let rect = owner_rect(rect);
                 let clip = outer.clip.paint_clip(outer.plane != 0);
                 if let Some(material) = material {
                     draw.push(Command::Box {
@@ -189,7 +204,7 @@ impl Output {
                 };
                 let mask = if moved_source {
                     draw.clips
-                        .add(scope.mask, Rounded::new(outer.rect(rect), corners))
+                        .add(scope.mask, Rounded::new(owner_rect(rect), corners))
                 } else {
                     scope.mask
                 };

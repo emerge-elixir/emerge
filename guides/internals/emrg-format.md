@@ -90,7 +90,7 @@ float offsets, glyph ranges or continuation hit boxes cross the wire.
 
 ### Static transforms on retained sites
 
-Tags `31`/`32` translate, `33` rotates in degrees and `34` scales uniformly. These transforms preserve sibling layout; the subtree and its click geometry move together. Tag `35` changes opacity, not hit geometry. Tags `78`/`79` are layout scale and rotation. Layout rotation reserves a turned border box. An occurrence cannot declare both kinds of rotation (`79` and `33`) or both kinds of scale (`78` and `34`). Tags `28`/`29` validate a boolean and retain the original bytes without changing geometry or font metrics. No matrix, pivot, continuation or display state crosses the wire.
+Tags `31`/`32` translate, `33` rotates in degrees and `34` scales uniformly. These transforms preserve sibling layout; the subtree and its click geometry move together. Tag `35` changes opacity, not hit geometry. Tags `78`/`79` are layout scale and rotation. Tag `79` turns a block or float's border box. On inline Text or its El wrapper, `79` turns the phrase and reserves its rotated footprint on the line. Tag `33` turns the same local ink and click geometry but leaves the line's advance and height alone. An occurrence cannot declare both kinds of rotation (`79` and `33`) or both kinds of scale (`78` and `34`). Tags `28`/`29` validate a boolean and retain the original bytes without changing geometry or font metrics. No matrix, pivot, continuation or display state crosses the wire.
 
 ### Retained image sources
 

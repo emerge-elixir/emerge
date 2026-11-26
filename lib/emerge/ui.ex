@@ -584,20 +584,25 @@ defmodule Emerge.UI do
   @doc """
   Rotate this element during layout.
 
-  `width/1` and `height/1` still describe the authored unrotated box. The parent
-  reserves the rotated axis-aligned bounds, while rendering and hit testing use
-  the rotated shape. For example, a 60×20 box at 90 degrees occupies 20×60.
-  Children are still laid out inside the 60×20 box. A fill share sizes the
-  unrotated axis: a row advances by the width it assigned, while a column
-  places the next child below the turned box. On retained Linux, rotate
-  the paragraph or a block to change its layout; use `Transform.rotate/1` to
-  turn an inline phrase without rebreaking lines. In a pixel-width row, a
-  turned box with a fixed local width and content height can wrap its text
-  before a sibling gets the remaining width. If the split would need a height
-  that depends on that same split, declare an independent height instead.
+  On a block or float, `width/1` and `height/1` describe the unrotated box.
+  The parent reserves its rotated bounds; drawing and hit testing use the
+  rotated shape. For example, a 60×20 box at 90 degrees occupies 20×60,
+  but its children still lay out inside the 60×20 box.
 
-  `Transform.rotate/1` rotates the subtree and its hit targets while preserving
-  sibling layout. The rotated subtree can still overlap a sibling.
+  A fill share sizes the unrotated axis: a row advances by the width it
+  assigned, while a column places the next child below the turned box. In a
+  pixel-width row, a turned box with a fixed local width and content height can
+  wrap its text before a sibling gets the remaining width. If the split needs
+  a height that depends on that same split, declare an independent height.
+
+  In a paragraph, `el([rotate(45)], text("ride the bus"))` turns the whole
+  phrase and its click target. The line reserves the width and height of the
+  diagonal. A long phrase can take less width but make the line taller;
+  following text can move or wrap. If the turned phrase doesn't fit on the
+  current line, it moves as one item, rather than breaking at its rotated width.
+
+  Use `Transform.rotate/1` to turn a phrase and its hit regions without
+  changing the space it contributes to layout. Its ink can overlap a sibling.
   """
   @spec rotate(number()) :: layout_rotate_attr()
   def rotate(value) when is_number(value), do: {:layout_rotate, value}

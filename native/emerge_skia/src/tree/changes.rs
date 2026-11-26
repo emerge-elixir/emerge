@@ -403,7 +403,11 @@ impl Layers {
             self.text_changed(k, e)
         }
         if let Some(p) = e.inline_host(k) {
-            if a.padding != b.padding
+            let item_y_changed = parent == Some(Shape::Paragraph)
+                && old.align[1].unwrap_or_default() != next.align[1].unwrap_or_default();
+            if item_y_changed
+                || a.padding != b.padding
+                || old.rotation != next.rotation
                 || (shape == Shape::Text && &old_raw[old.text.clone()] != e.text(k).as_bytes())
             {
                 self.enqueue(Pass::Reflow, p, e);
@@ -420,6 +424,9 @@ impl Layers {
             self.enqueue(Pass::Place, k, e);
         }
         if old.align[0] != next.align[0] && parent == Some(Shape::Paragraph) {
+            if old.float_side().is_some() != next.float_side().is_some() {
+                self.enqueue(Pass::Context, k, e);
+            }
             let p = e.slots[k].parent.unwrap();
             self.enqueue(Pass::Reflow, p, e);
             self.enqueue(Pass::Place, k, e);

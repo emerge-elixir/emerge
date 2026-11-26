@@ -139,7 +139,7 @@ impl Layers {
     }
     pub(super) fn child_heights(&self, e: &Elements, k: Key, outer: Option<f32>) -> HeightOffers {
         let m = &e.slots[k];
-        if !m.stats.children.height_reader {
+        if !m.stats.children.height_reader || self.context[k].inline_host.is_some() {
             return HeightOffers::Independent;
         }
         let b = e.attrs[k].sizing;

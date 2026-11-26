@@ -15,7 +15,7 @@ impl LayoutBehaviour for El {
         line_height(node.children(), cx)
     }
     fn place_children(node: Mounted<'_, OnlyChild>, cx: &mut PlaceCx<'_>) {
-        if let Some(child) = node.data() {
+        if let Some(child) = node.data() && node.elements.inline_host(child).is_none() {
             let area = cx.padded_area(node.attrs().sizing);
             let mut origin = [area.x, area.y];
             let edge = Constraint::Available(area.height);

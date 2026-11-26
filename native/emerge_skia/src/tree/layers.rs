@@ -190,7 +190,8 @@ enum Placement {
     },
     // Reflow already resolved this rectangle relative to its document or
     // paragraph. Switching coordinate systems matters even at (0,0).
-    Prose(Key),
+    Occupied(Key), // float or document block: site is the parent-facing slot
+    Inline(Key),   // span or its Text: site is the unturned local frame
 }
 impl Placement {
     fn for_height(self, policy: Length) -> Self {
@@ -207,6 +208,8 @@ impl Placement {
 #[derive(Clone, Copy, PartialEq)]
 struct LayoutContext {
     inputs: Inputs,
+    // Inline text is measured but placed by its paragraph, not in a block slot.
+    inline_host: Option<Key>,
     // Only definite inherited offers on branches with an early width projection.
     inner_offer: Option<f32>,
     // Unlike strike resources, alignment is resolved only after the mutation interval.
@@ -289,7 +292,7 @@ impl Measuring<'_> {
         };
         if changed {
             l.invalidate_composition(k, self.e.depth(k), Outputs::Draw);
-            if let Some(p) = self.e.inline_host(k) {
+            if let Some(p) = l.context[k].inline_host {
                 l.enqueue(Reflow, p, self.e);
             }
         }
@@ -399,8 +402,19 @@ pub(super) struct PlaceCx<'a> {
 }
 impl PlaceCx<'_> {
     pub fn place_site(&mut self, host: Key, c: Key) {
-        self.layers
-            .offer_edge(self.e, c, Placement::Prose(host), self.translated);
+        let edge = if self.layers.context[c].inline_host == Some(host) {
+            let inline = Placement::Inline(host);
+            // The Text and El can have different pivots. Supply both sites
+            // even when the wrapper's bounds alone compare equal.
+            if let Some(source) = self.e.span_source(c).filter(|&source| source != c) {
+                self.layers
+                    .offer_edge(self.e, source, inline, self.translated);
+            }
+            inline
+        } else {
+            Placement::Occupied(host)
+        };
+        self.layers.offer_edge(self.e, c, edge, self.translated);
     }
     pub fn child(&self, c: Key) -> Size {
         self.layers.fit[c].size
@@ -701,10 +715,7 @@ impl Layers {
         height: Constraint,
         translated: bool,
     ) {
-        let edge = e
-            .inline_host(k)
-            .map_or(Placement::Box { offset, height }, Placement::Prose);
-        self.offer_edge(e, k, edge, translated);
+        self.offer_edge(e, k, Placement::Box { offset, height }, translated);
     }
     fn placed_site(&self, host: Key, child: Key) -> Rect {
         let mut r = self.paragraphs.site(child);
@@ -714,7 +725,13 @@ impl Layers {
     }
     fn offer_edge(&mut self, e: &Elements, k: Key, edge: Placement, translated: bool) {
         let translated = translated
-            || matches!(edge,Placement::Prose(host) if self.frames.get(k) != Some(&self.placed_site(host,k)));
+            || match edge {
+                Placement::Inline(host) => {
+                    self.local_frames.get(k) != Some(&self.placed_site(host, k))
+                }
+                Placement::Occupied(host) => self.frames.get(k) != Some(&self.placed_site(host, k)),
+                Placement::Box { .. } => false,
+            };
         if self.placement.get(k) == Some(&edge) && !translated {
             return;
         }
@@ -858,6 +875,10 @@ impl Layers {
         let Some(p) = e.slots[k].parent else {
             return Some(Constraint::Available(self.root_height(e, k)));
         };
+        // A span's declared height contributes demand, not an allocation for its Text.
+        if self.context[p].inline_host.is_some() {
+            return None;
+        }
         let style = e.attrs[p].sizing;
         if e.slots[p].shape == Shape::TextColumn && !e.is_prose_float(k) {
             return Some(document::BLOCK_HEIGHT);
@@ -896,8 +917,10 @@ impl Layers {
     }
     fn context(&mut self, e: &Elements, k: Key) {
         let shape = e.slots[k].shape;
-        let inner = if shape == Shape::Column
-            || (shape.passes_cross_height() && e.slots[k].stats.own.height_reader)
+        let inline_host = e.inline_host(k);
+        let inner = if inline_host.is_none()
+            && (shape == Shape::Column
+                || (shape.passes_cross_height() && e.slots[k].stats.own.height_reader))
         {
             self.independent_inner(e, k)
         } else {
@@ -924,12 +947,21 @@ impl Layers {
         let scale_changed = old_scale != Some(ctx.scale);
         let inputs_changed = old.is_none_or(|c| c.inputs != ctx);
         let height_changed = old.and_then(|c| c.inner_offer) != inner;
+        let site_changed = old.is_some_and(|c| c.inline_host != inline_host);
         let next = LayoutContext {
             inputs: ctx,
+            inline_host,
             inner_offer: inner,
             text_align,
         };
         if changed(&mut self.context, k, next) {
+            if site_changed {
+                if e.slots[k].stats.own.height_reader {
+                    self.enqueue(Measure, k, e);
+                }
+                self.enqueue(Place, k, e);
+                self.enqueue(PaintContext, k, e);
+            }
             if height_changed
                 && shape.passes_cross_height()
                 && e.slots[k].stats.children.height_reader
@@ -965,7 +997,7 @@ impl Layers {
             }
             if scale_changed {
                 if e.attrs[k].sizing.padding != [0.; 4]
-                    && let Some(p) = e.inline_host(k)
+                    && let Some(p) = inline_host
                 {
                     self.enqueue(Reflow, p, e);
                 }
@@ -1015,6 +1047,7 @@ impl Layers {
             }
             for &c in e.children(k) {
                 if inputs_changed
+                    || (site_changed && shape == Shape::El && e.slots[c].shape == Shape::Text)
                     || (old.is_none_or(|p| p.text_align != text_align)
                         && e.attrs[c].text_align.is_none())
                 {
@@ -1063,6 +1096,7 @@ impl Layers {
         let b = e.attrs[k].sizing.without_weights();
         let shape = e.slots[k].shape;
         let cross = (shape.passes_cross_height()
+            && self.context[k].inline_host.is_none()
             && e.slots[k].stats.children.height_reader
             && self.context[k].inner_offer.is_none())
         .then(|| {
@@ -1462,10 +1496,15 @@ impl Layers {
         let row_offer = self.fit[k].row_offer;
         let scale = self.context[k].inputs.scale;
         let rotation = e.attrs[k].rotation;
-        let (slot, mut local) = match self.placement[k] {
-            Placement::Prose(host) => {
+        let placement = self.placement[k];
+        let (slot, mut local) = match placement {
+            Placement::Inline(host) => {
+                let local = self.placed_site(host, k);
+                (rotation.about_center(local), local)
+            }
+            Placement::Occupied(host) => {
                 let slot = self.placed_site(host, k);
-                let local = if rotation.mixes_axes() && e.inline_host(k).is_none() {
+                let local = if rotation.mixes_axes() {
                     let edge = if e.is_prose_float(k) {
                         document::float_edge(e, k, self.local_measure[k])
                     } else {
@@ -1493,7 +1532,7 @@ impl Layers {
                 (rotation.slot(local), local)
             }
         };
-        if rotation.mixes_axes() {
+        if !matches!(placement, Placement::Inline(_)) && rotation.mixes_axes() {
             local.x = coordinate(local.x + (slot.width - local.width) * 0.5);
             local.y = coordinate(local.y + (slot.height - local.height) * 0.5);
         }
@@ -1599,7 +1638,7 @@ impl Layers {
             return;
         }
         self.paint.insert(k, next);
-        if let Some(p) = e.inline_host(k) {
+        if let Some(p) = ctx.inline_host {
             let hit = a.click && old.is_none_or(|ctx| ctx.scale != next.scale || ctx.frame != f);
             self.invalidate_composition(
                 p,

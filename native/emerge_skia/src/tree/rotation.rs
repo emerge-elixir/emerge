@@ -52,13 +52,14 @@ impl Subtree {
         let mixes = a.rotation.mixes_axes();
         let late_turn = mixes && local_reflows && !b.height.independent_fill();
         let pack = shape.measures_packed_width(b.width) && b.height.limits_column_height();
-        // A height-dependent pack can be hidden below closed, filling
-        // wrappers. A fixed width or height cuts that dependency.
+        // Multiple cards can change columns. One card can change packed width
+        // only if it projects its incoming share, not merely because something
+        // inside it reads a height (e.g. an inline turn inside a paragraph).
         let variable = |l: Length| l.natural_bounds().floor != l.natural_bounds().cap;
         let packed_share = b.height.weight().is_some()
             && variable(b.height)
             && (!b.width.definite() || b.width.reads_fill_content())
-            && ((pack && (self.direct > 1 || kids.height_reader))
+            && ((pack && (self.direct > 1 || kids.projects_offer))
                 || ((shape.passes_cross_height() || shape == Shape::Column) && kids.packed_share));
         let reads_width = b.width.weight().is_some()
             || (shape == Shape::Paragraph && !b.width.definite())
@@ -209,6 +210,15 @@ impl Rotation {
                 (self.cos * w + self.sin * h).min(f32::MAX),
                 (self.sin * w + self.cos * h).min(f32::MAX),
             )
+        }
+    }
+    /// Project in place about the same center used by the signed paint pose.
+    pub fn about_center(self, local: Rect) -> Rect {
+        let slot = self.slot(local);
+        Rect {
+            x: coordinate(local.x + (local.width - slot.width) * 0.5),
+            y: coordinate(local.y + (local.height - slot.height) * 0.5),
+            ..slot
         }
     }
     pub fn slot(self, local: Rect) -> Rect {

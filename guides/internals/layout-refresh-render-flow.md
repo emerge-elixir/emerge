@@ -84,7 +84,7 @@ with a 40×120 Row, padding 6, gap 4 and two 12px-wide children, both get a
 108px offer. If A caps fill at 30px of content, its height is 30px (78px unused)
 and B can still take all 108px. See the [wrap and overflow regressions](../../test/emerge_skia/row_cross_height_test.exs).
 
-The single child of an `el` does not divide **either** axis. Width flow
+The single child of a block `el` does not divide **either** axis. Width flow
 resolves the child's width first. The child reports its height after wrapping;
 placement then offers the El's actual inner height, including zero. For a
 120×80 El with padding 6 and no gap, `fill(3)` / `fill(0.5)` gives the child
@@ -93,6 +93,14 @@ placement then offers the El's actual inner height, including zero. For a
 by 42×22. An offer is not a clip. The El keeps its inherited paint and hit
 clip; an enclosing Column still clips at its own edge. See the [submitted
 examples](../../test/emerge_skia/el_child_fill_test.exs).
+
+An inline El in a paragraph measures its Text but does not offer it a block
+height. An axis-mixing layout turn projects the span's preferred demand in
+Measure. At the final width the paragraph fits the whole phrase into its line
+using the rotated width and height of the actual word run. Place retains the
+unturned frames; paint and hit testing apply the signed pose and its inverse.
+A paint-only turn skips the reservation. If the El becomes a float, Context
+updates the site of its kept Text as well. [Geometry, pixels and local clicks](../../plans/inline-layout-rotation.md).
 
 El positions that resolved child independently on each axis: explicit child
 alignment, otherwise the immediate El's explicit alignment, otherwise start.

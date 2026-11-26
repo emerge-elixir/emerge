@@ -95,7 +95,6 @@ impl LayoutBehaviour for Image {
 impl PaintBehaviour<Image> for Image {
     fn attrs_changed(a: &Attrs, b: &Attrs) -> bool {
         a.background != b.background
-            || a.pose != b.pose
             || a.svg_color != b.svg_color
             || a.image_host_clip != b.image_host_clip
             || a.sizing.padding != b.sizing.padding

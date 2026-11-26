@@ -125,7 +125,7 @@ defmodule Emerge.UI.Align do
   @spec center_x() :: x_attr()
   def center_x, do: {:align_x, :center}
 
-  @doc "Center vertically within the current layout parent."
+  @doc "Center vertically. On a paragraph span, center it within its own line’s occupied height."
   @spec center_y() :: y_attr()
   def center_y, do: {:align_y, :center}
 
@@ -137,11 +137,11 @@ defmodule Emerge.UI.Align do
   @spec align_right() :: x_attr()
   def align_right, do: {:align_x, :right}
 
-  @doc "Align to the top within the current layout parent."
+  @doc "Align to the top. On a paragraph span, align it to the top of its own line (the default)."
   @spec align_top() :: y_attr()
   def align_top, do: {:align_y, :top}
 
-  @doc "Align to the bottom within the current layout parent."
+  @doc "Align to the bottom. On a paragraph span, align it to the bottom of its own line."
   @spec align_bottom() :: y_attr()
   def align_bottom, do: {:align_y, :bottom}
 end

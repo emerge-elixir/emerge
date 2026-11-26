@@ -54,6 +54,11 @@ impl Band {
             gap,
         }
     }
+    /// An oversized item can overflow a clear line. Only a float that
+    /// actually narrows its required band is a reason to wait.
+    pub fn fits(self, width: f32, left: f32, right: f32) -> bool {
+        width.min(self.right - self.left) <= right - left + EPS
+    }
     pub fn limits(self, floats: &Floats, y: f32, height: f32) -> (f32, f32) {
         let y = coordinate(y + self.origin[1]);
         let active = |side: usize| {
@@ -86,7 +91,7 @@ impl Band {
             .map_or(y, |r| y.max(bottom(r) - self.origin[1]));
         loop {
             let (l, r) = self.limits(floats, y, size.wanted[1]);
-            if size.wanted[0].min(self.right - self.left) <= r - l + EPS {
+            if self.fits(size.wanted[0], l, r) {
                 break;
             }
             let Some(b) = self.next_bottom(floats, y) else {

@@ -6,6 +6,7 @@ use super::{
 };
 
 mod floats;
+mod turn;
 use floats::Floats;
 pub(super) use floats::{Band, FloatSize};
 
@@ -19,6 +20,30 @@ pub(super) struct Fragment {
     pub baseline: [f32; 2],
     pub width: f32,
     pub bounds: Rect,
+}
+impl Fragment {
+    // A wrapped continuation uses only its own height on this line. For a
+    // layout turn, align the occupied footprint rather than the unturned ink.
+    fn offset_y(item: &[Self], elements: &Elements, line_height: f32) -> f32 {
+        let first = &item[0];
+        let align = elements.attrs[first.owner].align[1].unwrap_or_default();
+        if align == Alignment::Start {
+            return 0.;
+        }
+        let height = if turn::mixes_axes(elements, first.owner, first.source) {
+            let ink = union(first.bounds, item.last().unwrap().bounds);
+            turn::slot(elements, first.owner, first.source, ink).height
+        } else {
+            first.bounds.height
+        };
+        align.offset(line_height, height).max(0.)
+    }
+    fn shift(&mut self, dx: f32, dy: f32) {
+        self.baseline[0] += dx;
+        self.baseline[1] += dy;
+        self.bounds.x += dx;
+        self.bounds.y += dy;
+    }
 }
 #[derive(Default)]
 pub(super) struct Paragraphs {
@@ -139,22 +164,16 @@ impl Paragraphs {
             self.solves += 1;
         }
         let band = Band::new(origin, left, inner, gap);
-        let left = band.limits(&self.floats, top, 1.).0;
         self.scratch.clear();
-        let mut flow = Lines {
-            words: &mut self.scratch,
-            floats: &mut self.floats,
+        let mut flow = Lines::new(
+            e,
+            &mut self.scratch,
+            &mut self.floats,
             band,
-            y: top,
-            x: left,
-            h: 0.,
-            bottom: top,
+            top,
             line_gap,
             align,
-            start: 0,
-            text_right: left,
-            band_right: band.right,
-        };
+        );
         for &owner in e.children(k) {
             if let Some(side) = e.float_side(owner) {
                 let rect = flow.add_float(side, float_size(owner));
@@ -162,37 +181,34 @@ impl Paragraphs {
                 continue;
             }
             self.sites.insert(owner, Rect::default());
-            let source = match e.slots[owner].shape {
-                Shape::Text => owner,
-                Shape::El => match e.children(owner).first() {
-                    Some(&c) if e.slots[c].shape == Shape::Text => c,
-                    _ => continue,
-                },
-                _ => continue,
+            let Some(source) = e.span_source(owner) else {
+                continue;
             };
             self.sites.insert(source, Rect::default());
-            let insets = if owner == source {
-                [0.; 4]
-            } else {
-                e.attrs[owner]
-                    .sizing
-                    .padding
-                    .map(|v| scale::pixels(v, e.slots[owner].admitted.scale))
+            let phrase = Phrase {
+                s: e.text(source),
+                source,
+                owner,
+                run: runs[source],
+                pad: insets(e, owner, source),
             };
-            flow.span(e.text(source), source, owner, insets, runs[source], text);
+            if turn::mixes_axes(e, owner, source) {
+                flow.turned_span(phrase, text);
+            } else {
+                flow.span(phrase, text);
+            }
         }
-        flow.finish_line();
+        flow.finish_line(flow.words.len());
         let height = flow.bottom - top;
-        for f in &self.scratch {
-            let bounds = self.site(f.owner);
-            let bounds = if bounds == Rect::default() {
-                f.bounds
-            } else {
-                union(bounds, f.bounds)
-            };
-            self.sites.insert(f.owner, bounds);
-            if f.source != f.owner {
-                self.sites.insert(f.source, bounds);
+        // Store unturned frames for the same pivots used in drawing and hits.
+        // Alignment has already shifted each fragment into its final line.
+        for span in self.scratch.chunk_by(|a, b| a.owner == b.owner) {
+            let (owner, source) = (span[0].owner, span[0].source);
+            let ink = span.iter().map(|f| f.bounds).reduce(union).unwrap();
+            self.sites.insert(source, ink);
+            if source != owner {
+                self.sites
+                    .insert(owner, turn::owner_box(e, owner, source, ink));
             }
         }
         let changed = self.fragments(k) != self.scratch;
@@ -223,8 +239,27 @@ pub(super) fn union(a: Rect, b: Rect) -> Rect {
         height: (a.y + a.height).max(b.y + b.height) - y,
     }
 }
+fn insets(e: &Elements, owner: Key, source: Key) -> [f32; 4] {
+    if owner == source {
+        [0.; 4]
+    } else {
+        e.attrs[owner]
+            .sizing
+            .padding
+            .map(|v| scale::pixels(v, e.slots[owner].admitted.scale))
+    }
+}
+#[derive(Clone, Copy)]
+struct Phrase<'a> {
+    s: &'a str,
+    source: Key,
+    owner: Key,
+    run: Run,
+    pad: [f32; 4],
+}
 const EPS: f32 = 0.001;
 struct Lines<'a> {
+    elements: &'a Elements,
     words: &'a mut Vec<Fragment>,
     floats: &'a mut Floats,
     band: Band,
@@ -234,37 +269,80 @@ struct Lines<'a> {
     bottom: f32,
     line_gap: f32,
     align: Alignment,
+    align_items_y: bool,
     start: usize,
     text_right: f32,
     band_right: f32,
 }
-impl Lines<'_> {
+impl<'a> Lines<'a> {
+    fn new(
+        elements: &'a Elements,
+        words: &'a mut Vec<Fragment>,
+        floats: &'a mut Floats,
+        band: Band,
+        y: f32,
+        line_gap: f32,
+        align: Alignment,
+    ) -> Self {
+        let x = band.limits(floats, y, 1.).0;
+        Self {
+            start: words.len(),
+            elements,
+            words,
+            floats,
+            band,
+            y,
+            x,
+            h: 0.,
+            bottom: y,
+            line_gap,
+            align,
+            align_items_y: false,
+            text_right: x,
+            band_right: band.right,
+        }
+    }
     fn band(&self, y: f32, height: f32) -> (f32, f32) {
         self.band.limits(self.floats, y, height)
     }
     fn next_bottom(&self, y: f32) -> Option<f32> {
         self.band.next_bottom(self.floats, y)
     }
-    fn finish_line(&mut self) {
+    fn finish_line(&mut self, end: usize) {
         let dx = self
             .align
             .offset((self.band_right - self.text_right).max(0.), 0.);
-        if dx != 0. {
-            for f in &mut self.words[self.start..] {
-                f.baseline[0] += dx;
-                f.bounds.x += dx;
+        let line = &mut self.words[self.start..end];
+        if self.align_items_y {
+            for item in line.chunk_by_mut(|a, b| a.owner == b.owner) {
+                let dy = Fragment::offset_y(item, self.elements, self.h);
+                for word in item {
+                    word.shift(dx, dy);
+                }
+            }
+        } else if dx != 0. {
+            for word in line {
+                word.shift(dx, 0.);
             }
         }
-        self.start = self.words.len();
+        self.start = end;
+        self.align_items_y = false;
     }
-    fn newline(&mut self, y: f32) {
-        self.finish_line();
+    fn occupy(&mut self, align_y: Alignment, height: f32, text_right: f32, band_right: f32) {
+        self.align_items_y |= align_y != Alignment::Start;
+        self.h = self.h.max(height);
+        self.bottom = self.bottom.max(coordinate(self.y + height));
+        self.text_right = text_right;
+        self.band_right = band_right;
+    }
+    fn newline(&mut self, y: f32, end: usize) {
+        self.finish_line(end);
         self.y = y;
         self.h = 0.;
         self.x = self.band(y, 1.).0;
     }
     fn advance_line(&mut self) {
-        self.newline(self.y + self.h + self.line_gap);
+        self.newline(self.y + self.h + self.line_gap, self.words.len());
     }
     fn add_float(&mut self, side: Alignment, size: FloatSize) -> Rect {
         if self.h > 0. && self.x > self.band(self.y, 1.).0 + EPS {
@@ -286,16 +364,38 @@ impl Lines<'_> {
         }
         self.x += w;
     }
+    // `end` excludes the pending item, whose words may already be shaped in
+    // the reserved scratch. Only committed words participate in line alignment.
+    fn room(&mut self, end: usize, height: f32, atomic: bool, need: impl Fn(bool) -> f32) -> f32 {
+        loop {
+            let (left, right) = self.band(self.y, self.h.max(height));
+            self.x = self.x.max(left);
+            let width = need(end == self.start);
+            let empty_band = right - left <= EPS;
+            if (empty_band || (atomic && end == self.start && !self.band.fits(width, left, right)))
+                && let Some(y) = self.next_bottom(self.y)
+            {
+                self.newline(y, end);
+            } else if (self.x > left + EPS || (atomic && end != self.start))
+                && self.x + width > right
+            {
+                self.newline(self.y + self.h + self.line_gap, end);
+            } else {
+                return right;
+            }
+        }
+    }
     fn span(
         &mut self,
-        s: &str,
-        source: Key,
-        owner: Key,
-        pad: [f32; 4],
-        run: Run,
+        Phrase {
+            s,
+            source,
+            owner,
+            pad: [t, r, b, l],
+            run,
+        }: Phrase<'_>,
         text: &TextStore,
     ) {
-        let [t, r, b, l] = pad;
         let mut chars = s.chars().enumerate().peekable();
         let mut words = std::iter::from_fn(|| {
             let (first, _) = chars.find(|(_, c)| !c.is_whitespace())?;
@@ -312,6 +412,7 @@ impl Lines<'_> {
         if !has_words && source == owner {
             return;
         }
+        let align_y = self.elements.attrs[owner].align[1].unwrap_or_default();
         let leading = has_words && s.starts_with(char::is_whitespace);
         let space = text.space_width(run);
         let height = if has_words { run.metrics.height } else { 0. } + t + b;
@@ -323,23 +424,11 @@ impl Lines<'_> {
         loop {
             let range = words.next().unwrap_or(0..0);
             let w = text.word_width(run, range.clone());
-            let (opening, right) = loop {
-                let (left, right) = self.band(self.y, self.h.max(height));
-                self.x = self.x.max(left);
-                if right - left <= EPS
-                    && let Some(y) = self.next_bottom(self.y)
-                {
-                    self.newline(y);
-                    continue;
-                }
-                let continues = !first && self.words.len() > self.start;
-                let opening = if continues { 0. } else { l };
-                if self.x > left + EPS && self.x + opening + w + r > right {
-                    self.advance_line();
-                    continue;
-                }
-                break (opening, right);
-            };
+            let opening = |empty| if first || empty { l } else { 0. };
+            let right = self.room(self.words.len(), height, false, |empty| {
+                opening(empty) + w + r
+            });
+            let opening = opening(self.words.len() == self.start);
             let x = if first && leading && self.y == leading_origin.1 {
                 leading_origin.0
             } else {
@@ -361,10 +450,7 @@ impl Lines<'_> {
                 },
             });
             self.x += w;
-            self.text_right = self.x + r;
-            self.band_right = right;
-            self.h = self.h.max(height);
-            self.bottom = self.bottom.max(self.y + height);
+            self.occupy(align_y, height, self.x + r, right);
             first = false;
             if words.peek().is_none() {
                 break;

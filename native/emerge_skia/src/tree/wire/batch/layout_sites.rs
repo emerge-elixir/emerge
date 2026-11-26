@@ -30,7 +30,7 @@ impl Batch {
     fn inline_text(&self, e: &Elements, id: u64) -> bool {
         let inline = |id| {
             let (_, a) = self.declaration(e, id);
-            !matches!(a.align[0], Some(Alignment::Start | Alignment::End))
+            a.float_side().is_none()
                 && self
                     .site_parent(e, id)
                     .is_some_and(|p| self.declaration(e, p).0 == Shape::Paragraph)
@@ -80,9 +80,6 @@ impl Batch {
     }
     fn check_text_site(&self, e: &Elements, id: u64) -> Result<()> {
         let (_, a) = self.declaration(e, id);
-        if a.rotation.mixes_axes() && self.inline_text(e, id) {
-            return Err("layout rotation requires a block box, not a paragraph span".into());
-        }
         if !a.multiline || self.inline_text(e, id) {
             Ok(())
         } else {
@@ -92,7 +89,7 @@ impl Batch {
     pub(super) fn check_layout_sites(&self, e: &Elements) -> Result<()> {
         for &i in &self.post {
             let s = &self.entries[i];
-            if matches!(s.shape, Shape::Text | Shape::El) {
+            if s.shape == Shape::Text {
                 self.check_text_site(e, s.id)?;
             }
             if s.shape == Shape::El {

@@ -46,15 +46,16 @@ impl Counter {
 fn nested_transforms(c: &Counter) {
     let mut r = Raster::default();
     let host = |angle| block(&[px(1, 100.), px(2, 120.), number(79, angle)]);
-    let span = |angle| {
+    let span = |tag, angle| {
         block(&[
-            number(33, angle),
+            number(tag, angle),
             number(34, -1.),
             number(35, 0.5),
             color([255, 0, 0]),
             vec![40, 1],
         ])
     };
+    let peer = |align| block(&[text("I")[2..].to_vec(), vec![6, align], vec![40, 1]]);
     let source = |angle| {
         let t = text("AAA BBB CCC DDD EEE FFF");
         block(&[
@@ -67,9 +68,10 @@ fn nested_transforms(c: &Counter) {
     r.tree
         .upload(&upload(&[
             node(1, 4, host(0.), &[2]),
-            node(2, 7, prose::host(52., 1), &[3]),
-            node(3, 4, span(0.), &[4]),
+            node(2, 7, prose::host(52., 1), &[5, 3]),
+            node(3, 4, span(33, 0.), &[4]),
             node(4, 5, source(0.), &[]),
+            node(5, 5, peer(1), &[]),
         ]))
         .unwrap();
     c.zero("first layout and span scopes after reservation", || {
@@ -78,9 +80,11 @@ fn nested_transforms(c: &Counter) {
     r.install();
     for edit in [
         set(1, 4, host(90.)),
-        set(3, 4, span(45.)),
+        set(3, 4, span(79, 45.)),
+        set(5, 5, peer(2)),
         set(4, 5, source(-30.)),
-        set(3, 4, span(0.)),
+        set(3, 4, span(33, 45.)),
+        set(3, 4, span(33, 0.)),
         set(1, 4, host(0.)),
     ] {
         c.zero(
