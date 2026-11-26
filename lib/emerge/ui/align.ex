@@ -13,25 +13,18 @@ defmodule Emerge.UI.Align do
   Alignment happens inside the parent's content area. Padding and border are
   applied before alignment, so these helpers work within the remaining space.
 
-  Alignment is visible when the parent and child have different extents on
-  that axis. For example, a right-aligned child wider than its El overflows
-  to the left.
+  Alignment is visible when the parent has extra space on that axis.
 
   Alignment helpers position the element they are attached to inside its
   parent. `el` also aligns its child content, and `paragraph` also aligns its
   wrapped text lines.
 
-  The root has no layout parent. `center_x/0` and `align_bottom/0` on a root
-  do **not** center or bottom-align its box in the viewport: it starts at
-  `(0, 0)`. A root `el` still uses those helpers to position its child. A root
-  `row` with the same helpers leaves its children's alignment unchanged.
-
   ## `el`
 
-  An `el` positions its child within the padded area. On each axis the
-  child's own helper wins, then the El's helper, then left or top. An
-  explicit `align_left/0` or `align_top/0` overrides just that axis. These
-  defaults apply to the immediate child, not to all of its descendants.
+  In `el`, child content inherits alignment from the container.
+
+  Putting `center_x/0`, `align_right/0`, `center_y/0`, or `align_bottom/0` on
+  the `el` controls how its child content is positioned inside that `el`.
 
   This example centers a pill inside a larger container:
 
@@ -39,12 +32,12 @@ defmodule Emerge.UI.Align do
 
   #{Examples.image_tag!("ui-align-el", "Rendered el alignment example")}
 
-  Here the 20×20 child starts at `(76, 22)`: its right edge sits four pixels
-  inside the El, and it is vertically centered.
+  A child can override inherited alignment with its own alignment helper:
 
   ```elixir
-  el([width(px(100)), height(px(64)), padding(4)],
-    el([width(px(20)), height(px(20)), align_right(), center_y()], text("A"))
+  el(
+    [width(px(200)), height(px(100)), center_x()],
+    el([align_right()], text("Child"))
   )
   ```
 
@@ -72,16 +65,10 @@ defmodule Emerge.UI.Align do
   helpers on the children you want to position inside the row.
 
   `align_left/0`, `center_x/0`, and `align_right/0` split children into left,
-  center, and right groups. The right group ends at the padded right edge. The
-  center group is centered **between the two outer groups**, not in the whole
-  row. With too little space it starts where the left group ends. Children
-  keep their declaration order and spacing within each group. If boxes overlap,
-  later siblings paint on top and the later eligible listener receives the click.
+  center, and right groups across the row.
 
-  When `Emerge.UI.Space.space_evenly/0` is active, the row instead places its
-  children in declaration order and distributes the leftover width between them.
-  `align_top/0`, `center_y/0`, and `align_bottom/0` still position each child
-  within the row height.
+  `align_top/0`, `center_y/0`, and `align_bottom/0` position each child within
+  the row height.
 
   If you put an alignment helper on the `row` itself, it positions that `row`
   inside its parent. It is not inherited by the row's children.
@@ -96,25 +83,13 @@ defmodule Emerge.UI.Align do
 
   In `wrapped_row`, horizontal alignment is evaluated per wrapped line.
 
-  Each line uses the padded width of the row, but only the children on that
-  line form its left, center, and right groups. Alignment does not change line
-  breaks or fill widths. A lone 20-pixel card on a 60-pixel line starts at 20
-  with `center_x/0` and at 40 with `align_right/0` (no padding).
+  After wrapping, `align_left/0`, `center_x/0`, and `align_right/0` split each
+  line into left, center, and right zones using the remaining width of that
+  line. A centered or right-aligned child on a later line therefore aligns
+  within that line, not against the full wrapped row width.
 
   `align_top/0`, `center_y/0`, and `align_bottom/0` still position each child
-  within the height of its own wrapped line. Active `Emerge.UI.Space.space_evenly/0`
-  replaces horizontal groups with equal gaps within each line.
-
-  ## `wrapped_column`
-
-  Put `align_left/0`, `center_x/0`, or `align_right/0` on a child to position
-  it within **its own column**, not the full container. For example, a
-  16-pixel child in a 32-pixel column starts 0, 8 or 16 pixels from that
-  column's left edge. `align_bottom/0` anchors the bottom group at the padded
-  bottom edge; `center_y/0` centers its group between the top and bottom
-  groups **in that column**. Active `Emerge.UI.Space.space_evenly/0` replaces
-  those vertical groups with equal gaps within each column, without changing
-  which children fit in it.
+  within the height of its own wrapped line.
 
   ## `column`
 
@@ -122,10 +97,7 @@ defmodule Emerge.UI.Align do
   helpers on the children you want to position inside the column.
 
   `align_top/0`, `center_y/0`, and `align_bottom/0` split children into top,
-  center, and bottom groups down the column. The center group uses the space
-  between the top and bottom groups, just as in a row. With active
-  `Emerge.UI.Space.space_evenly/0`, leftover height instead becomes gaps
-  between consecutive children.
+  center, and bottom groups down the column.
 
   `align_left/0`, `center_x/0`, and `align_right/0` position each child within
   the column width.

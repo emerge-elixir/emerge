@@ -1,10 +1,12 @@
 use super::*;
+mod webp;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Format {
     Png,
     Jpeg,
     Bmp,
+    Webp,
     Gif,
     Svg,
 }
@@ -20,6 +22,8 @@ impl Format {
             Some(Self::Jpeg)
         } else if ext.eq_ignore_ascii_case("gif") {
             Some(Self::Gif)
+        } else if ext.eq_ignore_ascii_case("webp") {
+            Some(Self::Webp)
         } else if ext.eq_ignore_ascii_case("bmp") {
             Some(Self::Bmp)
         } else if ext.eq_ignore_ascii_case("svg") {
@@ -34,6 +38,8 @@ impl Format {
             Self::Png
         } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
             Self::Gif
+        } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP".as_slice()) {
+            Self::Webp
         } else if bytes.starts_with(b"BM") {
             Self::Bmp
         } else if bytes.starts_with(b"\xff\xd8") {
@@ -61,6 +67,7 @@ impl Format {
             }
             Self::Jpeg => complete_jpeg(&data)?,
             Self::Bmp => complete_rgb_bmp(&data)?,
+            Self::Webp => webp::complete(&data)?,
             Self::Gif => complete_gif(&data)?,
             Self::Svg => return None,
         }
@@ -72,6 +79,7 @@ impl Format {
             Self::Png => codec::png_decoder::decoder(),
             Self::Jpeg => codec::jpeg_decoder::decoder(),
             Self::Bmp => codec::bmp_decoder::decoder(),
+            Self::Webp => codec::webp_decoder::decoder(),
             Self::Gif => codec::gif_decoder::decoder(),
             Self::Svg => return None,
         };
@@ -124,16 +132,18 @@ fn complete_gif(data: &[u8]) -> Option<()> {
     }
 }
 
-// BITMAPINFOHEADER, BI_RGB, 24-bit BGR. Check padded rows and signed height
-// before asking Skia to allocate anything. Negative height is top-down.
+// Windows BITMAPINFOHEADER, BI_RGB. Indexed pixels use an opaque BGR-reserved
+// table, MSB first; unused bits, row padding and the reserved byte aren't alpha.
 fn complete_rgb_bmp(bytes: &[u8]) -> Option<()> {
     let header = bytes.first_chunk::<54>()?;
     let word = |i| u32::from_le_bytes(header[i..i + 4].try_into().unwrap());
     let offset = word(10) as usize;
+    let bpp = usize::from(u16::from_le_bytes([header[28], header[29]]));
     if &header[..2] != b"BM"
         || word(14) != 40
         || offset < 54
-        || header[26..30] != [1, 0, 24, 0]
+        || header[26..28] != [1, 0]
+        || !matches!(bpp, 1 | 4 | 8 | 24)
         || word(30) != 0
     {
         return None;
@@ -141,9 +151,41 @@ fn complete_rgb_bmp(bytes: &[u8]) -> Option<()> {
     let w = word(18) as i32;
     let h = (word(22) as i32).checked_abs()?;
     bitmap_bytes(w, h)?;
-    let stride = (3 * w as usize).next_multiple_of(4);
-    let end = offset.checked_add(stride * h as usize)?;
-    (end <= word(2) as usize && word(2) as usize <= bytes.len()).then_some(())
+    let width = w as usize;
+    let stride = width.checked_mul(bpp)?.div_ceil(32).checked_mul(4)?;
+    let size = stride.checked_mul(h as usize)?;
+    let end = offset.checked_add(size)?;
+    let file = bytes.get(..word(2) as usize)?;
+    let rows = file.get(offset..end)?;
+    if word(34) != 0 && word(34) as usize != size {
+        return None;
+    }
+    if bpp == 24 {
+        return Some(());
+    }
+
+    let capacity = 1 << bpp;
+    let colors = match word(46) as usize {
+        0 => capacity,
+        count => count,
+    };
+    if colors > capacity || offset < 54 + 4 * colors {
+        return None;
+    }
+    // A full palette covers every index. For a short one, check only actual
+    // pixels: Skia otherwise silently substitutes a color for missing entries.
+    if colors < capacity
+        && !rows.chunks_exact(stride).all(|row| {
+            (0..width).all(|x| {
+                let bit = x * bpp;
+                let index = (usize::from(row[bit / 8]) >> (8 - bpp - bit % 8)) & (capacity - 1);
+                index < colors
+            })
+        })
+    {
+        return None;
+    }
+    Some(())
 }
 
 /// Skia can produce pixels from an incomplete progressive scan. Require a real

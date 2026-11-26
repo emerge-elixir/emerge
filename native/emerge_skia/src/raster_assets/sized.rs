@@ -71,7 +71,7 @@ pub(super) fn intrinsic(codec: &Codec, format: Format) -> ISize {
     display_size(codec.dimensions(), origin(codec, format))
 }
 fn origin(codec: &Codec, format: Format) -> EncodedOrigin {
-    if format == Format::Jpeg {
+    if matches!(format, Format::Jpeg | Format::Webp) {
         codec.origin()
     } else {
         EncodedOrigin::TopLeft

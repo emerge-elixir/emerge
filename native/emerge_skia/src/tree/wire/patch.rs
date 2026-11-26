@@ -13,6 +13,7 @@ struct Demand {
     prose_hosts: usize,
     images: usize,
     groups: usize,
+    poses: usize,
     words: usize,
     materials: usize,
     material_bytes: usize,
@@ -35,6 +36,7 @@ impl Demand {
             prose_hosts: t.layers.paragraphs.hosts,
             images: e.images.active,
             groups: t.output.groups,
+            poses: t.output.poses,
             words: t.layers.paragraphs.words,
             materials: t.output.materials,
             material_bytes: t.output.material_bytes,
@@ -153,6 +155,7 @@ impl Tree {
                 d.prose_hosts -= usize::from(e.slots[k].shape.has_prose_sites());
                 d.images -= usize::from(e.attrs[k].has_art());
                 d.groups -= usize::from(e.attrs[k].opacity.is_some());
+                d.poses -= usize::from(e.attrs[k].pose_declared);
                 d.materials -= usize::from(e.attrs[k].material());
                 d.material_bytes -= e.attrs[k].material_bytes();
                 d.rules -= usize::from(e.attrs[k].has_rules());
@@ -212,6 +215,7 @@ impl Tree {
             d.prose_hosts += usize::from(s.shape.has_prose_sites());
             d.images += usize::from(a.has_art());
             d.groups += usize::from(a.opacity.is_some());
+            d.poses += usize::from(a.pose_declared);
             d.materials += usize::from(a.material());
             d.material_bytes += a.material_bytes();
             d.rules += usize::from(a.has_rules());
@@ -333,7 +337,8 @@ impl Tree {
             0
         };
         let words = d.words;
-        self.output.reserve_images(d.images, self.budget)?;
+        self.output.fits.reserve(d.images, self.budget)?;
+        self.output.reserve_poses(d.poses, self.budget)?;
         self.elements
             .images
             .reserve(self.elements.slots.capacity(), d.images, self.budget)?;
@@ -441,9 +446,15 @@ impl Tree {
                 m.change.old_parent.get_or_insert(m.parent);
             }
             m.parent = parent;
+            let old = m.stats.own;
+            let readers_changed = old.height_reader != s.stats.own.height_reader
+                || old.late_nonfill != s.stats.own.late_nonfill;
+            if readers_changed {
+                m.change.layout_before.get_or_insert(old);
+            }
             m.stats = s.stats;
             m.depth.set((e.topology, s.depth));
-            if moved {
+            if moved || readers_changed {
                 e.touch(k);
             }
             if let Some((a, r)) = s.attrs.take() {
@@ -469,6 +480,7 @@ impl Tree {
         self.output.material_bytes = d.material_bytes;
         self.output.rules = d.rules;
         self.output.groups = d.groups;
+        self.output.poses = d.poses;
         e.images.active = d.images;
         self.layers.scale_declarations = d.scales;
         self.layers.text.sizes = d.sizes;

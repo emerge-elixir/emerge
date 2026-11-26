@@ -74,6 +74,15 @@ fn packed_cross_extent<'a, const N: usize>(
         .unwrap_or([0.; N])
 }
 
+// Sizing and advancement are distinct at a turn. In particular a Column
+// allocates a local height, but places the next child below the occupied box.
+struct ResolvedSlot {
+    charge: f32, // resolved main-axis allocation for even gaps and centering
+    advance: f32,
+    cross: f32,
+    height: Constraint,
+}
+
 /// `edge` excludes the gap that `next` reserves for another member of this zone.
 struct Cursor {
     edge: f32,
@@ -128,7 +137,7 @@ impl<const M: usize, const W: bool, const T: u8> Linear<M, W, T> {
         spacing: MainSpacing,
         alignment: impl Fn(Key) -> Alignment,
         cx: &mut PlaceCx<'_>,
-        resolve: impl Fn(Key, &PlaceCx<'_>) -> (Size, Constraint),
+        resolve: impl Fn(Key, &PlaceCx<'_>) -> ResolvedSlot,
         mut put: impl FnMut(&mut PlaceCx<'_>, Key, f32, f32, Constraint),
     ) -> f32 {
         use Alignment::{Center, End, Start};
@@ -136,19 +145,15 @@ impl<const M: usize, const W: bool, const T: u8> Linear<M, W, T> {
         let zone = |c| if even { Start } else { alignment(c) };
         let gap = match spacing {
             MainSpacing::Fixed(gap) => scale::pixels(gap, cx.scale),
-            MainSpacing::Even => Self::even_gap(line, room, |c| {
-                let (s, _) = resolve(c, cx);
-                Self::axes([s.w, s.h])[0]
-            }),
+            MainSpacing::Even => Self::even_gap(line, room, |c| resolve(c, cx).charge),
         };
         let (mut start, mut center, mut end) = (Cursor::at(0.), Cursor::at(0.), Cursor::at(room));
         let mut widest = 0f32;
         let mut place = |c, z, cursor: &mut Cursor, cx: &mut PlaceCx<'_>| {
-            let (size, edge) = resolve(c, cx);
-            let [main, across] = Self::axes([size.w, size.h]);
-            let at = Self::advance(cursor, main, gap, z, even);
-            put(cx, c, at, across, edge);
-            widest = widest.max(across);
+            let slot = resolve(c, cx);
+            let at = Self::advance(cursor, slot.advance, gap, z, even);
+            put(cx, c, at, slot.cross, slot.height);
+            widest = widest.max(slot.cross);
         };
         let (mut centers, mut ends) = (&line[..0], &line[..0]);
         for (i, &c) in line.iter().enumerate() {
@@ -156,8 +161,7 @@ impl<const M: usize, const W: bool, const T: u8> Linear<M, W, T> {
                 Start => place(c, Start, &mut start, cx),
                 End => ends = &line[..=i],
                 Center => {
-                    let (s, _) = resolve(c, cx);
-                    Self::advance(&mut center, Self::axes([s.w, s.h])[0], gap, Center, even);
+                    Self::advance(&mut center, resolve(c, cx).charge, gap, Center, even);
                     centers = &line[..=i];
                 }
             }
@@ -332,7 +336,13 @@ impl<const M: usize, const W: bool, const T: u8> LayoutBehaviour for Linear<M, W
         let [main_room, cross_room] = Self::axes([area.width, area.height]);
         let slot = |c, cx: &PlaceCx<'_>| {
             let fit = cx.child(c);
-            let s = fill::Slot::new(e, c, e.attrs[c].sizing.height, fit.h);
+            let h = e.attrs[c].sizing.height;
+            let basis = if h.weight().is_some() {
+                cx.local_child(c).h
+            } else {
+                fit.h
+            };
+            let s = fill::Slot::new(e, c, h, basis);
             if W {
                 s.with_basis(vertical_basis(e, c, fit, false))
             } else {
@@ -369,7 +379,7 @@ impl<const M: usize, const W: bool, const T: u8> LayoutBehaviour for Linear<M, W
                 let (h, edge) = if M == Y {
                     let allotted = split
                         .and_then(|s| s.offer(slot(c, cx)))
-                        .or_else(|| height.weight().map(|_| cx.measured_height(c)));
+                        .or_else(|| height.weight().map(|_| cx.local_height(c)));
                     let edge = allotted.map_or(Constraint::Natural, Constraint::Assigned);
                     (allotted.unwrap_or(fit.h), edge)
                 } else if height.weight().is_some()
@@ -380,7 +390,7 @@ impl<const M: usize, const W: bool, const T: u8> LayoutBehaviour for Linear<M, W
                     } else {
                         area.height
                     };
-                    let h = height.at_offer(e, c, fit.h, offer);
+                    let h = height.at_offer(e, c, cx.local_child(c).h, offer);
                     (h, Constraint::Assigned(h))
                 } else {
                     (
@@ -392,20 +402,40 @@ impl<const M: usize, const W: bool, const T: u8> LayoutBehaviour for Linear<M, W
                         },
                     )
                 };
-                let w = if Self::reads_placed_width(|| e.alignment(c, X)) {
-                    cx.width_at(c, edge)
+                let [advance, cross] = if e.attrs[c].rotation.mixes_axes() {
+                    let occupied = cx.occupied_at(c, edge);
+                    let w = if M == X
+                        && (W || style.width.definite())
+                        && e.attrs[c].sizing.width.weight().is_some()
+                    {
+                        cx.local_child(c).w // A splitting Row advances by the assigned width.
+                    } else {
+                        occupied.w
+                    };
+                    Self::axes([w, occupied.h])
                 } else {
-                    fit.w
+                    let w = if Self::reads_placed_width(|| e.alignment(c, X)) {
+                        cx.width_at(c, edge)
+                    } else {
+                        fit.w
+                    };
+                    Self::axes([w, h])
                 };
-                (Size { w, h, ..fit }, edge)
+                ResolvedSlot {
+                    charge: if M == Y && split.is_some() && height.weight().is_some() {
+                        h
+                    } else {
+                        advance
+                    },
+                    advance,
+                    cross,
+                    height: edge,
+                }
             };
             let align = |c: Key| e.attrs[c].align[1 - M].unwrap_or_default();
             let interval = if W && line.iter().any(|&c| align(c) != Alignment::Start) {
                 line.iter()
-                    .map(|&c| {
-                        let (s, _) = resolved(c, cx);
-                        Self::axes([s.w, s.h])[1]
-                    })
+                    .map(|&c| resolved(c, cx).cross)
                     .fold(0., f32::max)
             } else {
                 cross_room
@@ -490,7 +520,7 @@ pub(in crate::tree) fn column_demand(
         && !e
             .children(k)
             .iter()
-            .all(|&c| e.slots[c].shape.has_intrinsic_height(e.attrs[c].sizing))
+            .all(|&c| e.slots[c].shape.has_intrinsic_height(&e.attrs[c]))
     {
         return single;
     }

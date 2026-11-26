@@ -11,6 +11,7 @@ pub(super) struct Change {
     pub membership: bool,
     pub old_parent: Option<Option<Key>>,
     pub image: Option<crate::raster_assets::Source>,
+    pub layout_before: Option<rotation::Dependencies>,
     pub attrs: Option<(Attrs, Span<u8>)>,
     pub order: Option<Span<Key>>,
     pub before: Option<std::sync::Arc<declaration::Record>>,
@@ -109,7 +110,8 @@ impl Elements {
     }
 }
 impl Layers {
-    pub fn invalidate_changes(&mut self, e: &mut Elements) {
+    pub fn invalidate_changes(&mut self, e: &mut Elements, root: Option<Key>) {
+        self.begin_width_schedule(e, root);
         #[cfg(test)]
         if !e.touched.is_empty() {
             self.invalidation_passes += 1;
@@ -134,18 +136,39 @@ impl Layers {
             {
                 // The new edge may consume a different wrapped minimum even
                 // if scale, preferred width and every child stayed the same.
-                self.invalidate(Pass::Measure, k, depth);
+                self.enqueue(Pass::Measure, k, e);
             }
             let shared = change
                 .before
                 .as_ref()
                 .zip(e.attrs.version.as_ref().and_then(|v| v.get(k)));
+            let old_layout = change
+                .layout_before
+                .or_else(|| shared.map(|(r, _)| r.stats.own));
+            let new_layout = e.slots[k].stats.own;
+            if old_layout.is_some_and(|old| old.late_nonfill != new_layout.late_nonfill)
+                && let Some(p) = e.slots[k].parent
+                && e.slots[p].shape == Shape::Row
+                && e.slots[p].stats.children.fills_width
+            {
+                // The source of the split charge changed, possibly behind an
+                // equal intrinsic width and an attrs-only descendant edit.
+                self.enqueue(Pass::Flow, p, e);
+            }
+            if old_layout.is_some_and(|old| old.height_reader != new_layout.height_reader) {
+                self.enqueue(Pass::Context, k, e);
+                if matches!(e.slots[k].shape, Shape::Row | Shape::Column)
+                    && e.attrs[k].sizing.height.weight().is_some()
+                {
+                    self.enqueue(Pass::Measure, k, e);
+                }
+            }
             let shared_order =
                 shared.is_some_and(|(a, b)| !std::sync::Arc::ptr_eq(&a.children, &b.children));
             if (change.cold || change.reattached || moved || change.order.is_some() || shared_order)
                 && let Some(p) = e.inline_host(k)
             {
-                self.invalidate(Pass::Reflow, p, e.depth(p));
+                self.enqueue(Pass::Reflow, p, e);
             }
             if !change.cold && e.attrs[k].has_art() {
                 let source = e.images.source(k);
@@ -156,15 +179,22 @@ impl Layers {
                             .as_ref()
                             .is_some_and(|s| s.dimensions() != source.dimensions()))
                 {
-                    self.invalidate(Pass::Measure, k, depth);
-                    self.invalidate(Pass::Reflow, k, depth);
+                    self.enqueue(Pass::Measure, k, e);
+                    self.enqueue(Pass::Reflow, k, e);
+                    if e.attrs[k].sizing.width_from_height() {
+                        self.enqueue(Pass::Place, k, e);
+                        self.packed_width_reader(e, k);
+                    }
+                    if let Some(p) = e.slots[k].parent.filter(|p| self.has_height_group(*p)) {
+                        self.enqueue(Pass::Context, p, e);
+                    }
                 }
                 if change.reattached || change.image.as_ref().is_some_and(|s| s != source) {
                     self.invalidate_composition(k, depth, Outputs::Draw);
                 }
             }
             if change.cold {
-                self.mount(k, depth);
+                self.mount(k, e);
             } else if change.reattached {
                 // A cached container's children may have been computed in a
                 // different attachment. Check their current measures/offers;
@@ -182,13 +212,13 @@ impl Layers {
                     Pass::Place,
                     Pass::PaintContext,
                 ] {
-                    self.invalidate(p, k, depth);
+                    self.enqueue(p, k, e);
                 }
                 self.invalidate_composition(k, depth, Outputs::Hit);
             } else if moved {
                 // A paragraph leaving document flow no longer reads sibling floats.
                 if e.slots[k].shape == Shape::Paragraph {
-                    self.invalidate(Pass::Reflow, k, depth);
+                    self.enqueue(Pass::Reflow, k, e);
                 }
                 // Ordinary fit is site-independent. The new constraints and origin
                 // can still differ even when width and scale are unchanged.
@@ -196,7 +226,7 @@ impl Layers {
                     part.reattach();
                 }
                 for p in [Pass::Context, Pass::Flow, Pass::Place, Pass::PaintContext] {
-                    self.invalidate(p, k, depth);
+                    self.enqueue(p, k, e);
                 }
             }
             if let Some((old, source)) = &change.pose_before {
@@ -240,7 +270,7 @@ impl Layers {
         let next = &e.attrs[k];
         let depth = e.depth(k);
         let shape = e.slots[k].shape;
-        let mut invalidate = |pass| self.invalidate(pass, k, depth);
+        let mut invalidate = |pass| self.enqueue(pass, k, e);
         if old.family != next.family
             || old.weight != next.weight
             || old.italic != next.italic
@@ -260,6 +290,23 @@ impl Layers {
         }
         if align_changed && shape == Shape::El {
             invalidate(Pass::Place);
+        }
+        if old.rotation != next.rotation {
+            // A quarter-turned root swaps incoming offers. A turn elsewhere
+            // changes the parent-facing reservation, not descendant policies.
+            for pass in [
+                Pass::Context,
+                Pass::Measure,
+                Pass::Flow,
+                Pass::Reflow,
+                Pass::Place,
+            ] {
+                invalidate(pass);
+            }
+        }
+        if old.image_axes != next.image_axes {
+            invalidate(Pass::Measure);
+            invalidate(Pass::Reflow);
         }
         if a != b || (parent == Some(Shape::WrappedRow) && old.line_floor != next.line_floor) {
             invalidate(Pass::Measure)
@@ -298,12 +345,12 @@ impl Layers {
         if clip_changed {
             for &c in e.children(k) {
                 if e.attrs[c].posed() {
-                    self.invalidate(Pass::PaintContext, c, e.depth(c));
+                    self.enqueue(Pass::PaintContext, c, e);
                 }
             }
         }
         if clip_changed
-            || old.posed() != next.posed()
+            || old.pose != next.pose
             || (next.posed() && old.image_host_clip != next.image_host_clip)
             || old.color != next.color
             || old
@@ -313,11 +360,12 @@ impl Layers {
             || old.strike != next.strike
             || old.offset != next.offset
         {
-            self.invalidate(Pass::PaintContext, k, depth)
+            self.enqueue(Pass::PaintContext, k, e)
         }
         let paint_changed = old.has_art() != next.has_art()
             || old.image_fit != next.image_fit
             || old.opacity != next.opacity
+            || old.pose != next.pose
             || shape.paint_attrs_changed(old, next)
             || old
                 .svg_gradient
@@ -327,21 +375,20 @@ impl Layers {
             paint_changed,
             old.click != next.click
                 || clip_changed
-                || (next.click
-                    && (old.pose != next.pose
-                        || (next.posed() && old.image_host_clip != next.image_host_clip))),
+                || old.pose != next.pose
+                || (next.click && next.posed() && old.image_host_clip != next.image_host_clip),
         );
         if let Some(outputs) = output {
             self.invalidate_composition(k, depth, outputs)
         }
         if shape.uses_glyphs() && &old_raw[old.text.clone()] != e.text(k).as_bytes() {
-            self.text_changed(k, depth)
+            self.text_changed(k, e)
         }
         if let Some(p) = e.inline_host(k) {
             if a.padding != b.padding
                 || (shape == Shape::Text && &old_raw[old.text.clone()] != e.text(k).as_bytes())
             {
-                self.invalidate(Pass::Reflow, p, e.depth(p));
+                self.enqueue(Pass::Reflow, p, e);
             }
             if let Some(outputs) = output {
                 self.invalidate_composition(p, e.depth(p), outputs);
@@ -349,13 +396,25 @@ impl Layers {
         }
         if old.align[0] != next.align[0] && parent == Some(Shape::Paragraph) {
             let p = e.slots[k].parent.unwrap();
-            self.invalidate(Pass::Reflow, p, e.depth(p));
-            self.invalidate(Pass::Place, k, depth);
+            self.enqueue(Pass::Reflow, p, e);
+            self.enqueue(Pass::Place, k, e);
+        }
+        if old.rotation != next.rotation
+            && let Some(p) = e.slots[k].parent
+        {
+            // Equal unallotted fits needn't give equal occupied slots (e.g.
+            // a square intrinsic box with a cross-axis fill after a turn).
+            let pass = if e.slots[p].shape.reads_prose_box(e, k) {
+                Pass::Reflow
+            } else {
+                Pass::Place
+            };
+            self.enqueue(pass, p, e);
         }
         if old.align[0] != next.align[0] && parent == Some(Shape::TextColumn) {
             let p = e.slots[k].parent.unwrap();
-            self.invalidate(Pass::Flow, p, e.depth(p));
-            self.invalidate(Pass::Reflow, p, e.depth(p));
+            self.enqueue(Pass::Flow, p, e);
+            self.enqueue(Pass::Reflow, p, e);
         }
         if align_changed
             && let Some(p) = e.slots[k].parent
@@ -364,12 +423,33 @@ impl Layers {
                     && old.align[1 - i] == next.align[1 - i]
             })
         {
-            self.invalidate(Pass::Place, p, e.depth(p));
+            self.enqueue(Pass::Place, p, e);
         }
         // The single-column basis in Flow may stay equal while the policy
         // starts, stops or limits packing of the actual columns in Place.
         if a.width != b.width && (shape.packs_width(a.width) || shape.packs_width(b.width)) {
-            self.invalidate(Pass::Place, k, depth);
+            self.enqueue(Pass::Place, k, e);
+            self.packed_width_reader(e, k);
+        }
+        let raw = e.raw(k);
+        let height = !old
+            .sizing
+            .height
+            .same_split(old_raw, next.sizing.height, raw);
+        if e.slots[k].stats.own.height_reader
+            && (shape.passes_cross_height() || shape == Shape::Column)
+            && (height
+                || a.height != b.height
+                || a.padding[0] != b.padding[0]
+                || a.padding[2] != b.padding[2])
+        {
+            self.enqueue(Pass::Context, k, e);
+        }
+        if shape == Shape::Image
+            && (a.width_from_height() || b.width_from_height())
+            && (a != b || old.image_axes != next.image_axes)
+        {
+            self.enqueue(Pass::Place, k, e);
             self.packed_width_reader(e, k);
         }
         if shape.cross_height_px(a) != shape.cross_height_px(b)
@@ -385,14 +465,9 @@ impl Layers {
                     .iter()
                     .any(|&c| e.alignment(c, 0) != Alignment::Start))
         {
-            self.invalidate(Pass::Place, k, depth);
+            self.enqueue(Pass::Place, k, e);
         }
-        let raw = e.raw(k);
         let width = !old.sizing.width.same_split(old_raw, next.sizing.width, raw);
-        let height = !old
-            .sizing
-            .height
-            .same_split(old_raw, next.sizing.height, raw);
         let split_height = parent.is_some_and(Shape::allots_height);
         if shape == Shape::Column
             && (a.height != b.height
@@ -402,20 +477,27 @@ impl Layers {
                 || a.padding[2] != b.padding[2])
             && (self.has_height_group(k) || Self::has_group_reader(e, k))
         {
-            self.invalidate(Pass::Context, k, depth);
+            self.enqueue(Pass::Context, k, e);
         }
         if parent == Some(Shape::Column)
             && let Some(p) = e.slots[k].parent
-            && matches!(e.attrs[p].sizing.height, Length::Px(_))
+            && (matches!(e.attrs[p].sizing.height, Length::Px(_))
+                || e.slots[p].stats.own.height_reader)
         {
             // Equal intrinsic widths can still add or remove a reader of the
             // Column's height shares. Compare the policies used by the allocator.
             let reads = |style| shape.reads_group_height(style, e.attrs[p].sizing);
-            let slot_changed =
-                height || a.height != b.height || old.layout_scale != next.layout_scale;
-            if reads(old.sizing) != reads(next.sizing) || (slot_changed && self.has_height_group(p))
-            {
-                self.invalidate(Pass::Context, p, e.depth(p));
+            let slot_changed = height
+                || old.rotation != next.rotation
+                || (next.rotation.mixes_axes() && a.width != b.width)
+                || a.height != b.height
+                || old.layout_scale != next.layout_scale
+                || (shape == Shape::Image
+                    && (old.image_axes != next.image_axes
+                        || a.width != b.width
+                        || a.padding != b.padding));
+            if reads(old) != reads(next) || (slot_changed && self.has_height_group(p)) {
+                self.enqueue(Pass::Context, p, e);
             }
         }
         if height
@@ -425,7 +507,7 @@ impl Layers {
                 || next.sizing.height.reads_fill_content()
                 || parent == Some(Shape::Column))
         {
-            self.invalidate(Pass::Measure, k, depth);
+            self.enqueue(Pass::Measure, k, e);
         }
         if parent == Some(Shape::WrappedColumn)
             && let Some(p) = e.slots[k].parent
@@ -433,10 +515,10 @@ impl Layers {
             if old.height_floor != next.height_floor
                 || a.height.weight().is_some() != b.height.weight().is_some()
             {
-                self.invalidate(Pass::Reflow, p, e.depth(p));
+                self.enqueue(Pass::Reflow, p, e);
             }
             if !matches!(e.attrs[p].sizing.width, Length::Px(_))
-                && (shape.has_intrinsic_height(a) != shape.has_intrinsic_height(b)
+                && (shape.has_intrinsic_height(old) != shape.has_intrinsic_height(next)
                     || old.height_floor != next.height_floor
                     || a.height.weight().is_some() != b.height.weight().is_some()
                     || a.width != b.width
@@ -444,7 +526,7 @@ impl Layers {
                         && (next.sizing.width.reads_fill_content()
                             || old.sizing.width.reads_fill_content())))
             {
-                self.invalidate(Pass::Measure, p, e.depth(p));
+                self.enqueue(Pass::Measure, p, e);
             }
         }
         if matches!(shape, Shape::Column | Shape::TextColumn)
@@ -452,7 +534,7 @@ impl Layers {
             && (a.width == Length::Auto) != (b.width == Length::Auto)
             && let Some(p) = e.slots[k].parent
         {
-            self.invalidate(Pass::Flow, p, e.depth(p));
+            self.enqueue(Pass::Flow, p, e);
         }
         // When fitting its content, a Column charges measured fill bases
         // and reflowed nonfills. The choice can change at two equal fits,
@@ -462,13 +544,13 @@ impl Layers {
             && let Some(p) = e.slots[k].parent
             && e.attrs[p].sizing.height.fits_content_height()
         {
-            self.invalidate(Pass::Reflow, p, e.depth(p));
+            self.enqueue(Pass::Reflow, p, e);
         }
         if width
             && (old.sizing.width.reads_fill_content() || next.sizing.width.reads_fill_content())
             && !parent.is_some_and(Shape::allots_width)
         {
-            self.invalidate(Pass::Flow, k, depth);
+            self.enqueue(Pass::Flow, k, e);
         }
         let parent_input = width.then(|| {
             if old.sizing.width.weight().is_some() != next.sizing.width.weight().is_some() {
@@ -502,19 +584,22 @@ impl Layers {
             if e.slots[k].shape == Shape::Paragraph && e.is_prose_float(k) {
                 // Mixed policies can change whether wrapped content grows a
                 // floating paragraph without changing its intrinsic clamp.
-                self.invalidate(Pass::Reflow, k, e.depth(k));
+                self.enqueue(Pass::Reflow, k, e);
             }
             if let Some(p) = parent.filter(|&p| {
                 e.slots[p].shape.offers_inner_height() && e.alignment(k, 1) != Alignment::Start
             }) {
-                self.invalidate(Pass::Place, p, e.depth(p));
+                self.enqueue(Pass::Place, p, e);
             }
-            if e.slots[k].shape.packs_width(e.attrs[k].sizing.width) {
+            if e.attrs[k].rotation.mixes_axes()
+                || e.slots[k].shape.packs_width(e.attrs[k].sizing.width)
+                || (e.slots[k].shape == Shape::Image && e.attrs[k].sizing.width_from_height())
+            {
                 // A new height can move even a top-aligned child's horizontal origin.
                 self.packed_width_reader(e, k);
             }
             if let Some(p) = parent.filter(|&p| e.slots[p].shape.reads_prose_box(e, k)) {
-                self.invalidate(Pass::Reflow, p, e.depth(p));
+                self.enqueue(Pass::Reflow, p, e);
             } else if let Some(p) = parent.filter(|&p| e.slots[p].shape == Shape::WrappedRow) {
                 // The resolved outer box can move later lines at equal fit.
                 let pass = if e.attrs[p].sizing.height.fits_content_height() {
@@ -522,20 +607,20 @@ impl Layers {
                 } else {
                     Pass::Place
                 };
-                self.invalidate(pass, p, e.depth(p));
+                self.enqueue(pass, p, e);
             } else if let Some(p) = parent.filter(|&p| e.slots[p].shape.allots_height()) {
                 if e.attrs[p].sizing.height.definite() || e.slots[p].shape == Shape::WrappedColumn {
-                    self.invalidate(Pass::Place, p, e.depth(p));
+                    self.enqueue(Pass::Place, p, e);
                 }
             } else {
-                self.invalidate(Pass::Place, k, e.depth(k));
+                self.enqueue(Pass::Place, k, e);
             }
         }
         if let Some(p) = parent
             && width
                 .is_some_and(|input| e.slots[p].shape.reads_flow(e.attrs[p].sizing.width, input))
         {
-            self.invalidate(Pass::Flow, p, e.depth(p));
+            self.enqueue(Pass::Flow, p, e);
             if width == Some(FlowInput::ChildFill) {
                 self.auto_width_reader(e, p);
             }

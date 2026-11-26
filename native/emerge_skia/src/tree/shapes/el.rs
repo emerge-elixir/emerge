@@ -25,7 +25,12 @@ impl LayoutBehaviour for El {
                 origin[0] += x.offset(area.width, cx.width_at(child, edge));
             }
             if y != Alignment::Start {
-                origin[1] += y.offset(area.height, edge.resolve_height(e, child, cx.child(child).h));
+                let h = if e.attrs[child].rotation.mixes_axes() {
+                    cx.occupied_at(child, edge).h
+                } else {
+                    edge.resolve_height(e, child, cx.child(child).h)
+                };
+                origin[1] += y.offset(area.height, h);
             }
             cx.place(child, origin, edge);
         }

@@ -1,4 +1,5 @@
 use super::*;
+mod sizing;
 use crate::raster_assets::{Loader, Request, Settings, Source};
 pub(super) const WIDE: &str = "test_assets/single_axis_wide.png";
 pub(super) const GRID: &str = "test_assets/alpha_grid.png";
@@ -109,11 +110,11 @@ fn superseded_or_detached_tickets_cannot_change_the_final_declaration() {
         vec![path("../photos/a.jpeg")],
         vec![path("photos//a.jpg")],
         vec![path(GRID), vec![54, 2]],
-        vec![path(GRID), vec![2, 0]],
+        vec![path(GRID), vec![2, 4, 1]], // truncated bound
         vec![path(GRID), number(35, f64::NAN)],
         vec![path(GRID), number(33, f64::NAN)],
         vec![path(GRID), number(33, f64::INFINITY)],
-        vec![path(GRID), number(79, 45.)], // layout rotation is not a paint pose
+        vec![path(GRID), number(79, 45.), number(33, 0.)], // conflicting rotations
         vec![vec![53, 2, 0, 1, b'x']],
         vec![vec![53, 0, 0, 2, b'i', b'd']], // retired preloaded-ID source
     ] {
@@ -172,7 +173,11 @@ fn turns_reuse_fitted_pixels_without_layout_or_moving_siblings() {
     assert_eq!(bounds(&r, 3).y, 40.);
     let accepted = r.tree.encode();
     assert!(r.tree.patch(&zoom(f64::MAX)).is_err());
-    assert!(r.tree.patch(&set(1, 3, block(&[number(33, 30.)]))).is_err());
+    assert!(
+        r.tree
+            .patch(&set(1, 3, block(&[number(33, f64::NAN)])))
+            .is_err()
+    );
     assert_eq!(r.tree.encode(), accepted);
 }
 #[test]
@@ -197,7 +202,7 @@ fn early_image_width_uses_the_final_row_offer_never_a_previous_fit() {
     let before = r.tree.encode();
     for invalid in [
         set(1, 1, block(&[])),
-        patch(1, 1, &[edges(1, 1, &[3]), edges(3, 3, &[2])]),
+        patch(1, 1, &[edges(1, 1, &[3]), node(3, 3, block(&[]), &[2])]),
     ] {
         assert!(
             r.tree
@@ -287,6 +292,40 @@ fn coalesced_contain_and_cover_use_content_device_pixels_not_the_crop_or_bleed()
 }
 
 #[test]
+fn a_nested_pose_requests_display_texels_for_leaves_and_file_backgrounds() {
+    for leaf in [true, false] {
+        let mut r = Raster::default();
+        let mut l = image_loader(true, 0);
+        let source = if leaf {
+            path(WIDE)
+        } else {
+            [&[12, 2][..], &path(WIDE)[1..], &[0]].concat()
+        };
+        let attrs = |zoom| block(&[px(1, 20.), px(2, 10.), number(79, 90.), number(34, zoom)]);
+        r.tree
+            .upload(&upload(&[
+                node(1, 4, attrs(2.), &[2]),
+                node(
+                    2,
+                    if leaf { 9 } else { 4 },
+                    block(&[px(1, 20.), px(2, 10.), number(34, -1.5), source]),
+                    &[],
+                ),
+            ]))
+            .unwrap();
+        load(&mut r.tree, &mut l);
+        for (zoom, size) in [(2., (60, 30)), (4., (120, 60))] {
+            r.tree.patch(&set(1, 4, attrs(zoom))).unwrap();
+            r.settle(180., 170., 1.).unwrap();
+            fit(&mut r.tree, &mut l, size);
+            draw(&mut r);
+        }
+        r.tree.patch(&set(1, 4, attrs(0.5))).unwrap();
+        draw(&mut r);
+        assert!(r.tree.next_image().is_none());
+    }
+}
+#[test]
 fn stale_growth_cannot_replace_a_thumbnail_or_advance_its_hits() {
     let mut l = image_loader(true, 1);
     let mut r = Raster::default();
@@ -324,6 +363,40 @@ fn stale_growth_cannot_replace_a_thumbnail_or_advance_its_hits() {
     assert_eq!(r.hit_at(2., 43.), Some((3, 2., 3.)));
     draw(&mut r);
     assert_eq!(r.hit_at(2., 83.), Some((3, 2., 3.)));
+}
+
+#[test]
+fn replacing_an_indexed_or_webp_source_during_a_fit_never_installs_stale_pixels() {
+    let indexed = "test_assets/stills/indexed4.bmp";
+    let webp = "test_assets/stills/turn.webp";
+    for (a, b, old_size, new_size) in [
+        (indexed, webp, (16, 8), (6, 10)),
+        (webp, indexed, (6, 10), (16, 8)),
+    ] {
+        let mut r = Raster::default();
+        let mut l = image_loader(true, 0);
+        let resize = |w| set(1, 3, block(&[px(1, w)]));
+        r.tree.upload(&story(a, 1.)).unwrap();
+        r.tree.patch(&resize(3.)).unwrap();
+        load(&mut r.tree, &mut l);
+        r.settle(100., 60., 1.).unwrap();
+        load(&mut r.tree, &mut l);
+        let old = draw(&mut r).to_vec();
+        r.tree.patch(&resize(16.)).unwrap();
+        r.settle(100., 60., 1.).unwrap();
+        let (ticket, req) = r.tree.next_image().unwrap();
+        assert!(matches!(&req,Request::Fit(_,s) if *s==old_size.into()));
+        r.tree.patch(&set(2, 9, attrs(b, 1.))).unwrap();
+        load(&mut r.tree, &mut l);
+        assert!(!l.fulfill(req, |s| r.tree.complete_image(&ticket, s)));
+        assert_eq!(r.pixels(), old);
+        r.settle(100., 60., 1.).unwrap();
+        fit(&mut r.tree, &mut l, new_size);
+        assert_ne!(draw(&mut r), old);
+        r.tree.patch(&resize(3.)).unwrap();
+        draw(&mut r);
+        assert!(r.tree.next_image().is_none());
+    }
 }
 
 #[test]

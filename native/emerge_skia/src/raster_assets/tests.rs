@@ -88,38 +88,48 @@ fn directory_capability_file_and_decode_limits_precede_pixel_allocation() {
 #[test]
 fn runtime_cache_hits_require_the_declared_decoder_and_current_file_capability() {
     let dir = Temp::new("content-reader");
-    let png = fs::read(fixtures().join("alpha_grid.png")).unwrap();
-    let bytes = InputBudget::default().copy(&png).unwrap();
-    let wrong = dir.0.join("wrong.jpg");
-    fs::write(&wrong, &png).unwrap();
-    let name = dir.0.join("photo.png");
-    fs::write(&name, &png).unwrap();
-    for sized in [false, true] {
-        let mut l = Loader::new(Settings {
-            sources: vec![dir.0.display().to_string()],
-            decode_at_size: sized,
-            cache_max_entries: 2,
-            cache_max_bytes: MIB,
-            runtime_enabled: true,
-            follow_symlinks: true,
-            allowlist: vec![dir.0.display().to_string()],
-            extensions: vec![".png".into(), ".jpg".into()],
-            max_file_size: MIB,
-            ..Default::default()
-        })
-        .unwrap();
-        let input = || Input::Bytes(digest(&png), bytes.clone());
-        let ready = l.open_input(input(), false).unwrap();
-        assert_eq!(ready.dimensions(), Some((10., 6.)));
-        assert!(l.open_input(input(), true).is_none());
-        assert_eq!(
-            l.open_input(Input::Runtime(name.display().to_string()), false),
-            Some(ready)
-        );
-        assert!(
-            l.open_input(Input::Runtime(wrong.display().to_string()), false)
-                .is_none()
-        );
+    for (asset, ext, dimensions) in [
+        ("alpha_grid.png", "png", (10., 6.)),
+        ("stills/indexed4.bmp", "BMP", (16., 8.)),
+        ("stills/turn.webp", "WebP", (6., 10.)),
+    ] {
+        let data = fs::read(fixtures().join(asset)).unwrap();
+        let bytes = InputBudget::default().copy(&data).unwrap();
+        let wrong = dir.0.join("wrong.jpg");
+        let name = dir.0.join(format!("photo.{ext}"));
+        let denied = dir.0.join(format!("denied.{ext}"));
+        for p in [&name, &wrong, &denied] {
+            fs::write(p, &data).unwrap();
+        }
+        for sized in [false, true] {
+            let mut l = Loader::new(Settings {
+                sources: vec![dir.0.display().to_string()],
+                decode_at_size: sized,
+                cache_max_entries: 2,
+                cache_max_bytes: MIB,
+                runtime_enabled: true,
+                follow_symlinks: true,
+                allowlist: vec![name.display().to_string(), wrong.display().to_string()],
+                extensions: vec![format!(".{}", ext.to_ascii_lowercase()), ".jpg".into()],
+                max_file_size: MIB,
+                ..Default::default()
+            })
+            .unwrap();
+            let input = || Input::Bytes(digest(&data), bytes.clone());
+            let ready = l.open_input(input(), false).unwrap();
+            assert_eq!(ready.dimensions(), Some(dimensions));
+            assert!(l.open_input(input(), true).is_none());
+            assert_eq!(
+                l.open_input(Input::Runtime(name.display().to_string()), false),
+                Some(ready)
+            );
+            for bad in [&wrong, &denied] {
+                assert!(
+                    l.open_input(Input::Runtime(bad.display().to_string()), false)
+                        .is_none()
+                );
+            }
+        }
     }
 }
 
@@ -242,6 +252,183 @@ fn all_exif_origins_publish_the_oriented_size_and_every_oriented_texel() {
         }
     }
 }
+// Three visible pixels per row; the last nibble/bits and the padding are
+// intentionally nonzero. RGBQUAD's fourth byte is reserved, not transparency.
+fn indexed_bmp(bpp: u8, colors: usize, rows: [[u8; 4]; 2]) -> Vec<u8> {
+    let offset = 54 + 4 * colors;
+    let mut b = vec![0; offset];
+    b[..2].copy_from_slice(b"BM");
+    for (at, value) in [
+        (2, (offset + 8) as u32),
+        (10, offset as u32),
+        (14, 40),
+        (18, 3),
+        (22, (-2i32) as u32),
+        (46, colors as u32),
+    ] {
+        b[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    b[26] = 1;
+    b[28] = bpp;
+    for (i, color) in b[54..].chunks_exact_mut(4).enumerate() {
+        color.copy_from_slice(&[0, 0, i as u8, 7]);
+    }
+    b.extend(rows.into_iter().flatten());
+    b
+}
+#[test]
+fn indexed_bmp_expands_only_visible_bits_and_rejects_invalid_tables_and_offsets() {
+    let dir = Temp::new("indexed-bmp");
+    let mut l = dir.loader();
+    for (bits, colors, rows, want) in [
+        (
+            1,
+            2,
+            [[0xbf, 255, 255, 255], [0x5f, 255, 255, 255]],
+            [1, 0, 1, 0, 1, 0],
+        ),
+        (
+            4,
+            3,
+            [[0x20, 0x1f, 255, 255], [0x12, 0x0f, 255, 255]],
+            [2, 0, 1, 1, 2, 0],
+        ),
+        (
+            8,
+            249,
+            [[248, 17, 2, 255], [0, 243, 1, 255]],
+            [248, 17, 2, 0, 243, 1],
+        ),
+    ] {
+        let b = indexed_bmp(bits, colors, rows);
+        let name = format!("odd{bits}.bmp");
+        fs::write(dir.0.join(&name), &b).unwrap();
+        let bmp = ready(&mut l, &name);
+        let px = bmp.image().peek_pixels().unwrap();
+        for (i, r) in want.into_iter().enumerate() {
+            assert_eq!(
+                px.get_color(((i % 3) as i32, (i / 3) as i32)),
+                skia_safe::Color::from_rgb(r, 0, 0)
+            );
+        }
+        for (i, val) in [
+            (10, 54),
+            (14, 108),
+            (26, 2),
+            (28, 16),
+            (30, 1),
+            (30, 3),
+            (34, 7),
+            (46, 257),
+        ] {
+            let mut bad = b.clone();
+            bad[i] = val as u8;
+            if val > 255 {
+                bad[i + 1] = 1;
+            }
+            assert!(Format::Bmp.codec(Data::new_copy(&bad)).is_none());
+        }
+        assert!(
+            Format::Bmp
+                .codec(Data::new_copy(&b[..b.len() - 1]))
+                .is_none()
+        );
+        if bits > 1 {
+            let mut bad = b.clone();
+            bad[b.len() - 8] = 255;
+            assert!(Format::Bmp.codec(Data::new_copy(&bad)).is_none());
+        }
+    }
+}
+
+#[test]
+fn webp_preflight_bounds_chunks_and_rejects_inconsistent_stills_before_pixel_work() {
+    let fixtures = fixtures().join("stills");
+    let extended = fs::read(fixtures.join("alpha.webp")).unwrap();
+    let lossless = fs::read(fixtures.join("lossless.webp")).unwrap();
+    let reject = |data: &[u8]| assert!(Format::Webp.codec(Data::new_copy(data)).is_none());
+    reject(&fs::read(fixtures.join("animated.webp")).unwrap());
+    reject(&extended[..extended.len() - 1]);
+    let mut extra = lossless.clone();
+    extra.extend_from_slice(&lossless[12..]);
+    let len = (extra.len() - 8) as u32;
+    extra[4..8].copy_from_slice(&len.to_le_bytes());
+    reject(&extra);
+    for (at, value) in [
+        (4, 0),
+        (16, 255),
+        (20, 18),
+        (20, 128),
+        (20, 0),
+        (21, 1),
+        (24, 99),
+        (26, 254),
+        (34, 255),
+        (38, 255),
+    ] {
+        let mut bad = extended.clone();
+        bad[at] = value;
+        reject(&bad);
+    }
+    let mut bad = extended.clone();
+    bad[30..34].copy_from_slice(b"ANMF");
+    reject(&bad);
+    let mut bad = lossless.clone();
+    bad[16..20].copy_from_slice(&25u32.to_le_bytes());
+    *bad.last_mut().unwrap() = 1;
+    reject(&bad);
+
+    let mut metadata = extended.clone();
+    metadata[20] |= 4;
+    metadata.extend_from_slice(b"XMP ");
+    metadata.extend_from_slice(&(MIB as u32 + 2).to_le_bytes());
+    metadata.resize(metadata.len() + MIB + 2, b' ');
+    let len = (metadata.len() - 8) as u32;
+    metadata[4..8].copy_from_slice(&len.to_le_bytes());
+    reject(&metadata);
+    let mut huge = lossless.clone();
+    huge[21..25].copy_from_slice(&0x0fff_ffffu32.to_le_bytes());
+    reject(&huge);
+
+    // A RIFF with a complete VP8L dimension header but not its entropy stream
+    // opens metadata but must never publish pixels.
+    let dir = Temp::new("short-vp8l");
+    let mut short = lossless[..28].to_vec();
+    short[4..8].copy_from_slice(&20u32.to_le_bytes());
+    short[16..20].copy_from_slice(&8u32.to_le_bytes());
+    fs::write(dir.0.join("bad.webp"), &short).unwrap();
+    let mut l = dir.loader();
+    assert_eq!(l.load("bad.webp".into()), Source::Failed);
+    l.settings.decode_at_size = true;
+    let r = record(&mut l, "bad.webp");
+    assert_eq!(r.size(), (16, 8).into());
+    assert!(l.fit(&r, (4, 2).into()).is_none());
+}
+
+#[test]
+fn fitted_webp_orients_the_codec_output_exactly_once() {
+    let dir = Temp::new("turn-webp");
+    let mut l = dir.loader();
+    l.settings.decode_at_size = true;
+    for name in ["clear.webp", "turn.webp"] {
+        fs::copy(fixtures().join("stills").join(name), dir.0.join(name)).unwrap();
+    }
+    let raw = record(&mut l, "clear.webp");
+    let turn = record(&mut l, "turn.webp");
+    assert_eq!(turn.size(), (6, 10).into());
+    for (w, h) in [(5, 3), (10, 6)] {
+        let a = fitted(&mut l, &raw, (w, h));
+        let b = fitted(&mut l, &turn, (h, w));
+        let a = a.image().peek_pixels().unwrap();
+        let b = b.image().peek_pixels().unwrap();
+        for y in 0..w {
+            for x in 0..h {
+                assert_eq!(b.get_color((x, y)), a.get_color((y, h - 1 - x)));
+            }
+        }
+    }
+}
+
 #[test]
 fn jpeg_requires_a_complete_matching_file_and_bounded_dimensions() {
     let dir = Temp::new("jpeg-files");

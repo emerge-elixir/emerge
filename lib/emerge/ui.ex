@@ -24,8 +24,8 @@ defmodule Emerge.UI do
   - zero or more child elements
 
   `el/2` accepts exactly one child. Layout containers such as `row/2`,
-  `wrapped_row/2`, `column/2`, `wrapped_column/2`, `text_column/2`, and
-  `paragraph/2` accept child lists. Leaf elements such as `text/1`, `image/2`, `svg/2`, `video/2`, and
+  `wrapped_row/2`, `column/2`, `text_column/2`, and `paragraph/2` accept child
+  lists. Leaf elements such as `text/1`, `image/2`, `svg/2`, `video/2`, and
   `none/0` have no children.
 
   ## Core Constructors
@@ -36,7 +36,6 @@ defmodule Emerge.UI do
   - `row/2` for a horizontal line of children
   - `wrapped_row/2` for horizontal flow that wraps onto new lines
   - `column/2` for vertical stacks
-  - `wrapped_column/2` for vertical flow that wraps into columns to the right
   - `text_column/2` and `paragraph/2` for wrapped text flows
   - `text/1`, `image/2`, `svg/2`, `video/2`, and `none/0` for content leaves
 
@@ -68,9 +67,10 @@ defmodule Emerge.UI do
   `wrapped_row/2` wraps against the width it resolves from its parent,
   including nested fill-driven layouts. Its height grows to match the tallest
   child on each wrapped line, so multiline or reflowed children push following
-  content down instead of clipping. Each line has the padded width of the row.
-  Its right-aligned group ends at the right edge, and its centered group uses
-  the space left between that line's left and right groups.
+  content down instead of clipping. Horizontal child alignment also stays
+  line-local after wrapping, which means `center_x/0` and `align_right/0`
+  position children within the remaining width of their wrapped line rather
+  than across the full container width.
 
   ## use Emerge.UI
 
@@ -430,20 +430,23 @@ defmodule Emerge.UI do
   @doc """
   An image element.
 
-  Give `image/2` a PNG, JPEG, uncompressed 24-bit BMP, GIF (first frame), or
-  self-contained SVG. Use `path/1` for a file or `binary/1` for encoded bytes. A relative path, bare string or verified
-  `~m"..."` names a file under the configured application's `priv/`. Absolute
-  paths require an enabled `Emerge.Config.RuntimePaths` allowlist.
+  Give `image/2` a PNG, JPEG, still WebP, Windows `BI_RGB` BMP (1, 4, 8 or
+  24 bits per pixel), GIF (first frame), or self-contained SVG. Animated WebP
+  is not supported. Use `path/1` for a file or `binary/1` for encoded bytes.
+  A relative path, bare string or verified `~m"..."` names a file under the
+  configured application's `priv/`. Absolute paths require an enabled
+  `Emerge.Config.RuntimePaths` allowlist. JPEG and WebP use EXIF display
+  orientation. SVGs draw in their original colors; use `svg/2` for a tint.
 
-  JPEG sizing and fit use the EXIF display orientation. SVGs draw in their
-  original colors; use `svg/2` if you want a template tint.
-
-  When one dimension is pixel-sized and the other is omitted or `content()`,
-  the content-sized dimension follows the source's intrinsic aspect ratio.
-  With `width(fill())`, an omitted or `content()` height follows the resolved
-  width. Conversely, `height(fill())` derives an automatic width at the viewport
-  root or in a directly enclosing `el/2` or `row/2` with a pixel height. Sizes
-  include padding and borders; the ratio applies to the inner content.
+  A literal `px/1` with the other dimension omitted or `content()` preserves
+  aspect ratio inside padding and borders. A `min/2` or `max/2` expression
+  uses intrinsic dimensions instead, even when it simplifies to pixels.
+  After allocation, a fill width can drive a content height (and its bounds).
+  A fill height can drive a content width at the root, under a definite-height
+  El, Row or WrappedRow, or from a Column share independent of width reflow.
+  A pixel-width El or Column can also size and align its Image at placement.
+  Declare a pixel width if the height depends on a line break or share that
+  already needs the image's width.
 
   Use `image_fit/1` to choose between `:contain` and `:cover`. Setting both
   dimensions fixes the frame; the fit mode controls how the image fills it.
@@ -496,7 +499,7 @@ defmodule Emerge.UI do
   while the source is resident and replays them at each drawn size. See
   [Use assets](use_assets.html) for supported resources and cache limits.
 
-  Like `image/2`, a pixel-sized dimension determines an omitted or `content()`
+  Like `image/2`, a literal `px/1` dimension determines an omitted or `content()`
   dimension from the source's intrinsic aspect ratio. For example, a 200×200 SVG
   with only `height(px(68))` occupies 68×68 pixels without padding or borders.
   `width(fill())` derives an automatic height from the allocated width, including
@@ -572,8 +575,8 @@ defmodule Emerge.UI do
   Descendants inherit the resolved font size unless they declare their own.
   Text with no size declaration uses 16 logical pixels at the text's scale.
 
-  Use `Transform.scale/1` when the element should only be painted larger or
-  smaller without affecting layout.
+  Use `Transform.scale/1` to scale the subtree and its hit targets while
+  preserving sibling layout.
   """
   @spec scale(number()) :: layout_scale_attr()
   def scale(value) when is_number(value) and value > 0, do: {:layout_scale, value}
@@ -583,10 +586,18 @@ defmodule Emerge.UI do
 
   `width/1` and `height/1` still describe the authored unrotated box. The parent
   reserves the rotated axis-aligned bounds, while rendering and hit testing use
-  the rotated shape.
+  the rotated shape. For example, a 60×20 box at 90 degrees occupies 20×60.
+  Children are still laid out inside the 60×20 box. A fill share sizes the
+  unrotated axis: a row advances by the width it assigned, while a column
+  places the next child below the turned box. On retained Linux, rotate
+  the paragraph or a block to change its layout; use `Transform.rotate/1` to
+  turn an inline phrase without rebreaking lines. In a pixel-width row, a
+  turned box with a fixed local width and content height can wrap its text
+  before a sibling gets the remaining width. If the split would need a height
+  that depends on that same split, declare an independent height instead.
 
-  Use `Transform.rotate/1` when rotation should be paint-only and should not
-  affect sibling placement or scroll extents.
+  `Transform.rotate/1` rotates the subtree and its hit targets while preserving
+  sibling layout. The rotated subtree can still overlap a sibling.
   """
   @spec rotate(number()) :: layout_rotate_attr()
   def rotate(value) when is_number(value), do: {:layout_rotate, value}

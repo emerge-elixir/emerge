@@ -88,9 +88,13 @@ reject the new kind, not the whole format. Paragraph and TextColumn use the
 existing tags `7` and `8` and ordinary declared child order. No line fragments,
 float offsets, glyph ranges or continuation hit boxes cross the wire.
 
+### Static transforms on retained sites
+
+Tags `31`/`32` translate, `33` rotates in degrees and `34` scales uniformly. These transforms preserve sibling layout; the subtree and its click geometry move together. Tag `35` changes opacity, not hit geometry. Tags `78`/`79` are layout scale and rotation. Layout rotation reserves a turned border box. An occurrence cannot declare both kinds of rotation (`79` and `33`) or both kinds of scale (`78` and `34`). Tags `28`/`29` validate a boolean and retain the original bytes without changing geometry or font metrics. No matrix, pivot, continuation or display state crosses the wire.
+
 ### Retained image sources
 
-Kind `9` serves both `image/2` and `svg/2`. Tag `54` selects contain (`0`) or cover (`1`); `64` indicates SVG is required; `63` is its optional solid/gradient template color. Tags `33`/`34` on Image are finite paint rotation (degrees) and uniform scale about the frame center; `35` remains static opacity. These are not layout transforms. A source in tag `53` consists of one variant byte followed by:
+Kind `9` serves both `image/2` and `svg/2`. Tag `54` selects contain (`0`) or cover (`1`); `64` indicates SVG is required; `63` is its optional solid/gradient template color. A source in tag `53` consists of one variant byte followed by:
 
 | Variant | Payload | Meaning |
 | --- | --- | --- |
@@ -100,7 +104,7 @@ Kind `9` serves both `image/2` and `svg/2`. Tag `54` selects contain (`0`) or co
 | `3` | SHA-256 (32 bytes), `u32be` length, encoded file bytes | Defines and uses encoded raster data or self-contained SVG XML |
 | `4` | SHA-256 (32 bytes) | Uses a definition from this batch (including a later record) or the preceding accepted declaration |
 
-Block El, Row, Column, WrappedRow and WrappedColumn also accept tag `12`, variant `2`: one **file** source (variant `1` or `2` above), then a fit byte (contain `0`, cover `1`, repeat `2`, repeat-x `3`, repeat-y `4`). It declares a decorative background, not a leaf, inline definition or additional child. Supported raster profiles include PNG, JPEG, 24-bit BI_RGB BMP and static GIF frame zero.
+Block El, Row, Column, WrappedRow and WrappedColumn also accept tag `12`, variant `2`: one **file** source (variant `1` or `2` above), then a fit byte (contain `0`, cover `1`, repeat `2`, repeat-x `3`, repeat-y `4`). It declares a decorative background, not a leaf, inline definition or additional child. Supported raster profiles include PNG, JPEG, Windows BI_RGB BMP (1/4/8/24 bpp), static GIF frame zero and still WebP. The worker selects the decoder, not a wire format tag.
 
 A full export includes one definition per distinct inline payload. An incremental edit may reuse it without resending bytes. Clear or removal of the last declaration ends that ownership, even if a sealed frame or idle cache still holds the picture. New digests are checked before admission; malformed or over-budget updates do not replace the accepted declaration. The 64 MiB EMRG limit includes framing and inline definitions. Decoded pixels, intrinsic dimensions, picture commands and resource tickets are never on the wire. [Fitted raster decode](../../plans/checkpoints/layout/sized-rasters.md) still depends on renderer configuration and prepared geometry.
 

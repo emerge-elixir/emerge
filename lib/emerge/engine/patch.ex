@@ -1,8 +1,6 @@
 defmodule Emerge.Engine.Patch do
   @moduledoc """
-  One replacement at an occurrence's position. Integers in the body keep live
-  branches; the two fields of an opened node can independently be `:same`.
-  The record table is wire framing, not a list of mutations.
+  Diff and encode patch operations for Emerge.Engine.Element trees.
   """
   alias Emerge.Engine.{AttrCodec, Element, Reconcile}
   alias Emerge.Engine.Tree.Nearby

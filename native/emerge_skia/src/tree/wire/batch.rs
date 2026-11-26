@@ -244,7 +244,11 @@ impl Batch {
     }
     fn fold(&mut self, e: &Elements) -> Result<()> {
         for &i in self.post.iter().rev() {
-            let Some(order) = self.entries[i].order else {
+            let s = &mut self.entries[i];
+            let Some(order) = s.order else {
+                if let Some((a, _)) = &s.attrs {
+                    s.stats = s.stats.with_layout(s.shape, a)?;
+                }
                 continue;
             };
             let children = self.orders.get(&order);
@@ -253,7 +257,12 @@ impl Batch {
                     .iter()
                     .map(|id| self.get(*id).expect("visited child").stats),
             );
-            self.entries[i].stats = stats;
+            let s = &mut self.entries[i];
+            let a = s
+                .attrs
+                .as_ref()
+                .map_or_else(|| &e.attrs[e.ids[&s.id]], |(a, _)| a);
+            s.stats = stats.with_layout(s.shape, a)?;
             if let Some(k) = e.live(self.entries[i].id) {
                 if children
                     .iter()
@@ -311,6 +320,7 @@ impl Batch {
                         .map_or(e.slots[c].stats, |s| s.stats)
                 }))
             };
+            let stats = stats.with_layout(m.shape, &e.attrs[k])?;
             if stats == m.stats {
                 break;
             }

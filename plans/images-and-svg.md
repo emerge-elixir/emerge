@@ -1,5 +1,7 @@
 # Images and SVG on the retained Linux renderer
 
+**Checkpoint at `6f12563`.** For subsequent sizing, indexed BMP and still WebP results see the [Linux follow-up](image-sizing-and-codecs.md). The counts and boundaries below describe this earlier build.
+
 **Implemented:** static Image-leaf rotation and uniform paint scale, automatic width from an early fill height, uncompressed 24-bit BMP, GIF frame zero, and file-backed block backgrounds (including tiling). No new NIF, EMRG version or SVG renderer. These are scoped ports, not general transform, codec or layout parity. See the [API tracker](api-parity.md). Native macOS testing waits for full Linux parity.
 
 ## Rotation, clips and installed input

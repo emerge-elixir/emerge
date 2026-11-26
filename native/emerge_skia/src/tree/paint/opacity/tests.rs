@@ -108,7 +108,7 @@ fn rounded_bitmap_clip_precedes_direct_alpha_without_an_intermediate_surface() {
             },
             [5.; 4],
         );
-        drawing.mask = drawing.clips.add(OPEN, mask);
+        drawing.scope.mask = drawing.clips.add(OPEN, mask);
         let start = (!isolate && alpha != 255).then(|| drawing.begin_group(alpha));
         drawing.push(image(png.clone()));
         if let Some(start) = start {

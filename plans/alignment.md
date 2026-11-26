@@ -42,7 +42,7 @@ The following are **separate slices once their prerequisite exists**. Do not cou
 | E1. Single-line editor contents | Text input, caret and selection | Left/center/right must use one text origin for ink, caret, selection, preedit and pointer-to-index. Put a click on a known character after changing alignment; confirm caret and submitted edit. |
 | E2. Multiline editor contents | Multiline wrapping/scrolling and E1 | Align **each** line including short last lines. A click at the same x on lines of different widths must resolve using that line's origin; confirm wrapped selection and caret after scroll. |
 
-Before extending placement claims to more decorated hosts, rerun the remaining asymmetric-inset fixtures (e.g. the `resolve_core` 200×120 El whose right/bottom child starts at `128,67` with padding **and** border). When states/animated sizes land, repeat with effective font alignment, changing dimensions, and grouped↔even transitions; don't make the six box helpers animatable keyframes. Layout/text snapping, transforms, widget-internal slider geometry and image fitting are independent contracts, not new meanings of `align_*`.
+The [static transform controls](../test/emerge_skia/static_transforms_test.exs) exercise the `resolve_core` 200×120 El whose right/bottom child starts at `128,67` with asymmetric padding **and** border, including a quarter turn and display scale 1.5. When states/animated sizes land, repeat with effective font alignment, changing dimensions, and grouped↔even transitions; don't make the six box helpers animatable keyframes. Layout/text snapping, transforms, widget-internal slider geometry and image fitting are independent contracts, not new meanings of `align_*`.
 
 ## Done gate for each selected slice
 

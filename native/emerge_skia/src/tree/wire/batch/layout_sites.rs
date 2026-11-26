@@ -97,22 +97,70 @@ impl Batch {
     }
     fn check_text_site(&self, e: &Elements, id: u64) -> Result<()> {
         let (_, a) = self.declaration(e, id);
+        if a.rotation.mixes_axes() && self.inline_text(e, id) {
+            return Err("layout rotation requires a block box, not a paragraph span".into());
+        }
         if !a.multiline || self.inline_text(e, id) {
             Ok(())
         } else {
             Err("multiline text is not in the first slice".into())
         }
     }
-    // Ordinary Row and El offer their entire definite inner height. Neither
-    // a future Column share nor a line break is an input to Image measure.
-    fn check_image_basis(&self, e: &Elements, id: u64, a: &Attrs) -> Result<()> {
-        if a.sizing.width_from_height()
-            && self.site_parent(e, id).is_some_and(|p| {
-                let (host, a) = self.declaration(e, p);
-                !host.offers_inner_height() || !matches!(a.sizing.height, Length::Px(_))
-            })
+    // This proof uses final declarations only. A cross-axis offer is known
+    // down an El/Row chain; a Column share is a separate, group-wide proof.
+    fn independent_height(&self, e: &Elements, mut id: u64) -> bool {
+        loop {
+            let h = self.declaration(e, id).1.sizing.height;
+            if matches!(h, Length::Px(_)) {
+                return true;
+            }
+            if !h.independent_fill() {
+                return false;
+            }
+            let Some(p) = self.site_parent(e, id) else {
+                return true;
+            };
+            if !self.declaration(e, p).0.passes_cross_height() {
+                return false;
+            }
+            id = p;
+        }
+    }
+    fn check_height_projection(
+        &self,
+        e: &Elements,
+        id: u64,
+        shape: Shape,
+        a: &Attrs,
+    ) -> Result<()> {
+        if !shape.projects_height(a) {
+            return Ok(());
+        }
+        let Some(p) = self.site_parent(e, id) else {
+            return Ok(());
+        };
+        let (host, parent) = self.declaration(e, p);
+        // Neither Flow nor line membership reads a child's width here. Place
+        // resolves the real height and also uses the projected width to align.
+        if host.late_image_width(parent.sizing)
+            || ((host.passes_cross_height() || host == Shape::Column)
+                && self.independent_height(e, p))
         {
-            return Err("unported image sizing: automatic width from fill height requires the viewport or an El or Row with pixel height".into());
+            Ok(())
+        } else if a.rotation.mixes_axes() {
+            Err("rotated width is needed before an independent height is assigned".into())
+        } else {
+            Err("automatic width from fill height is needed before an independent height is assigned".into())
+        }
+    }
+    fn check_kept_projections(&self, e: &Elements, k: Key) -> Result<()> {
+        let m = &e.slots[k];
+        if !m.stats.own.height_reader {
+            return Ok(());
+        }
+        self.check_height_projection(e, m.id, m.shape, &e.attrs[k])?;
+        for &c in e.children(k) {
+            self.check_kept_projections(e, c)?;
         }
         Ok(())
     }
@@ -132,7 +180,7 @@ impl Batch {
         }
         let fixed = |child| {
             let (shape, a) = self.declaration(e, child);
-            shape.has_intrinsic_height(a.sizing)
+            shape.has_intrinsic_height(a)
         };
         if !self.layout_children(e, id).all(fixed) {
             return Err(early_heights());
@@ -143,19 +191,21 @@ impl Batch {
     // A sparse target may change a slot without naming its enclosing Column.
     fn check_declared_group(&self, e: &Elements, id: u64) -> Result<()> {
         let (shape, column) = self.declaration(e, id);
-        if shape != Shape::Column || !matches!(column.sizing.height, Length::Px(_)) {
+        if shape != Shape::Column {
             return Ok(());
         }
         let inspect = |(reads, known), c| {
             let (kind, a) = self.declaration(e, c);
             (
-                reads || kind.reads_group_height(a.sizing, column.sizing),
-                known && a.sizing.height.declared_height_slot(),
+                reads
+                    || ((kind.projects_height(a) || matches!(column.sizing.height, Length::Px(_)))
+                        && kind.reads_group_height(a, column.sizing)),
+                known && kind.independent_height_slot(a),
             )
         };
         let facts = self.layout_children(e, id).fold((false, true), inspect);
         if facts == (true, false) {
-            return Err("WrappedColumn packed width is needed before its height is assigned; a Column share depends on reflow. Declare a pixel width or width-independent height slots".into());
+            return Err("packed or automatic width is needed before its height is assigned; a Column share depends on reflow. Declare a pixel width or width-independent height slots".into());
         }
         Ok(())
     }
@@ -164,9 +214,7 @@ impl Batch {
         e: &Elements,
         outside_parent: Option<Key>,
     ) -> Result<()> {
-        if let Some(p) = outside_parent.filter(|&p| {
-            e.slots[p].shape == Shape::Column && matches!(e.attrs[p].sizing.height, Length::Px(_))
-        }) {
+        if let Some(p) = outside_parent.filter(|&p| e.slots[p].shape == Shape::Column) {
             let id = e.slots[p].id;
             // A paint edit, or one declared height replacing another, cannot
             // make an already admitted group depend on width reflow.
@@ -174,10 +222,10 @@ impl Batch {
                 let s = &self.entries[i];
                 let Some((a, _)) = &s.attrs else { return false };
                 e.live(s.id).is_none_or(|c| {
-                    let old = e.attrs[c].sizing;
-                    let new = a.sizing;
+                    let old = &e.attrs[c];
+                    let new = a;
                     let column = e.attrs[p].sizing;
-                    (old.height.declared_height_slot() && !new.height.declared_height_slot())
+                    (s.shape.independent_height_slot(old) && !s.shape.independent_height_slot(new))
                         || (!s.shape.reads_group_height(old, column)
                             && s.shape.reads_group_height(new, column))
                 })
@@ -186,12 +234,36 @@ impl Batch {
                 self.check_declared_group(e, id)?;
             }
         }
+        let mut changed_path = [false; MAX_DEPTH + 1];
         for &i in &self.post {
             let s = &self.entries[i];
             let (shape, a) = self.declaration(e, s.id);
-            if shape == Shape::Text {
+            let inherited_change = s.depth > 0 && changed_path[s.depth - 1];
+            // A different number, formula offset or raw block does not change
+            // the proof. Only compare the capabilities a kept branch relies on.
+            let basis = |b: BoxStyle| {
+                (
+                    matches!(b.width, Length::Px(_)),
+                    matches!(b.height, Length::Px(_)),
+                    b.height.independent_fill(),
+                )
+            };
+            changed_path[s.depth] = s.stats.own.height_reader
+                && (inherited_change
+                    || e.live(s.id).is_none_or(|k| {
+                        let old = e.attrs[k].sizing;
+                        e.slots[k].parent.map(|p| e.slots[p].id) != s.parent
+                            || basis(old) != basis(a.sizing)
+                    }));
+            if s.closed && changed_path[s.depth] && shape != Shape::Image {
+                for &c in e.children(e.ids[&s.id]) {
+                    self.check_kept_projections(e, c)?;
+                }
+            }
+            if matches!(shape, Shape::Text | Shape::El) {
                 self.check_text_site(e, s.id)?;
-            } else if shape == Shape::El {
+            }
+            if shape == Shape::El {
                 if a.has_art() && self.inline_text(e, s.id) {
                     return Err("file backgrounds require a block box, not a paragraph span".into());
                 }
@@ -205,19 +277,18 @@ impl Batch {
                     || s.attrs.as_ref().is_some_and(|(a, _)| {
                         e.live(s.id).is_none_or(|k| {
                             let old = e.attrs[k].sizing;
-                            old.width != a.sizing.width || old.height != a.sizing.height
+                            basis(old) != basis(a.sizing)
                         })
                     }))
             {
                 self.check_declared_group(e, s.id)?;
             }
-            if shape == Shape::Image {
-                self.check_image_basis(e, s.id, a)?;
-            } else if shape == Shape::WrappedColumn {
+            self.check_height_projection(e, s.id, shape, a)?;
+            if shape == Shape::WrappedColumn {
                 self.check_column_basis(e, s.id)?;
             }
             if let Some(p) = s.parent
-                && !shape.has_intrinsic_height(a.sizing)
+                && !shape.has_intrinsic_height(a)
                 && self.declaration(e, p).0 == Shape::WrappedColumn
                 && self.needs_early_width(e, p)
             {
@@ -243,10 +314,7 @@ impl Batch {
                         && !matches!(a.sizing.height, Length::Px(_))))
             {
                 for &c in e.children(k) {
-                    if e.slots[c].shape == Shape::Image && self.get(e.slots[c].id).is_none() {
-                        // Edited children are proved above against their final declaration.
-                        self.check_image_basis(e, e.slots[c].id, &e.attrs[c])?;
-                    } else if e.slots[c].shape == Shape::WrappedColumn {
+                    if e.slots[c].shape == Shape::WrappedColumn {
                         self.check_column_basis(e, e.slots[c].id)?;
                     }
                 }

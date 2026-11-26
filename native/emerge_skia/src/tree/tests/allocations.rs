@@ -43,6 +43,56 @@ impl Counter {
         )
     }
 }
+fn nested_transforms(c: &Counter) {
+    let mut r = Raster::default();
+    let host = |angle| block(&[px(1, 100.), px(2, 120.), number(79, angle)]);
+    let span = |angle| {
+        block(&[
+            number(33, angle),
+            number(34, -1.),
+            number(35, 0.5),
+            color([255, 0, 0]),
+            vec![40, 1],
+        ])
+    };
+    let source = |angle| {
+        let t = text("AAA BBB CCC DDD EEE FFF");
+        block(&[
+            t[2..].to_vec(),
+            number(33, angle),
+            number(35, 0.75),
+            vec![40, 1],
+        ])
+    };
+    r.tree
+        .upload(&upload(&[
+            node(1, 4, host(0.), &[2]),
+            node(2, 7, prose::host(52., 1), &[3]),
+            node(3, 4, span(0.), &[4]),
+            node(4, 5, source(0.), &[]),
+        ]))
+        .unwrap();
+    c.zero("first layout and span scopes after reservation", || {
+        r.settle(180., 170., 1.).unwrap();
+    });
+    r.install();
+    for edit in [
+        set(1, 4, host(90.)),
+        set(3, 4, span(45.)),
+        set(4, 5, source(-30.)),
+        set(3, 4, span(0.)),
+        set(1, 4, host(0.)),
+    ] {
+        c.zero(
+            "fitting nested transforms through prepared group, continuations and inverse hits",
+            || {
+                r.tree.patch(&edit).unwrap();
+                r.settle(180., 170., 1.).unwrap();
+            },
+        );
+        r.install();
+    }
+}
 fn paragraphs(c: &Counter) {
     let mut r = Raster::default();
     let sentence = "AAA BBB \u{200b} C ".repeat(120);
@@ -1098,6 +1148,24 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
         assert!(stack.settle(180., 53., 1.).unwrap());
     });
     alignment_zones(&c);
+    nested_transforms(&c);
+    let mut split = Raster::default();
+    split.tree.upload(&transforms::split_prose()).unwrap();
+    c.zero(
+        "first independent Row charge through prepared draw and hit inputs",
+        || {
+            split.settle(180., 170., 1.).unwrap();
+        },
+    );
+    split.install();
+    for words in ["AA BB", "AA BB CC DD EE"] {
+        let edit = set(5, 5, text(words));
+        c.zero("fitting text edit resizes a Row fill", || {
+            split.tree.patch(&edit).unwrap();
+            split.settle(180., 170., 1.).unwrap();
+        });
+        split.install();
+    }
     paragraphs(&c);
     documents(&c);
     for name in [images::GRID, "test_assets/turn_right.jpeg"] {
@@ -1119,6 +1187,33 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
             );
             image.install();
         }
+    }
+    let mut shared_height = Raster::default();
+    shared_height
+        .tree
+        .upload(&upload(&[
+            node(1, 3, block(&[vec![2, 0]]), &[2, 3]),
+            node(
+                2,
+                9,
+                block(&[images::path(images::WIDE), vec![2, 4, 1, 0], vec![40, 1]]),
+                &[],
+            ),
+            node(3, 4, block(&[px(2, 8.)]), &[]),
+        ]))
+        .unwrap();
+    images::load(&mut shared_height.tree, &mut images::loader());
+    for h in [8., 16., 8.] {
+        let edit = set(3, 4, block(&[px(2, h)]));
+        c.zero(
+            "bounded image and independent Column share through prepared hits",
+            || {
+                shared_height.tree.patch(&edit).unwrap();
+                shared_height.settle(180., 48., 1.).unwrap();
+            },
+        );
+        assert_eq!(bounds(&shared_height, 2).width, 2. * (48. - h as f32));
+        shared_height.install();
     }
     let mut posed = Raster::default();
     let pose = |angle, zoom| {

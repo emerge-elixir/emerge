@@ -62,7 +62,8 @@ impl Drawing {
         let mut bounds = SkRect::default();
         let mut i = start + 1;
         while i < end {
-            let extent = match &self.commands[i].1 {
+            let (scope, cmd) = &self.commands[i];
+            let extent = match cmd {
                 Command::Fill(rect, _) => sk(*rect).with_outset((1., 1.)),
                 Command::Box {
                     rect,
@@ -85,10 +86,13 @@ impl Drawing {
                 }
                 Command::Restore => unreachable!("child extent includes its restore"),
             };
-            let extent = self
-                .planes
-                .get(self.commands[i].0.plane)
-                .map_or(extent, |p| p.bounds(extent));
+            let extent = self.planes.get(scope.plane).map_or(extent, |p| {
+                if cmd.outer_shadow(&self.materials).is_some() {
+                    p.matrix.map_rect(extent).0 // outer shadows escape ordinary host clips
+                } else {
+                    p.bounds(extent)
+                }
+            });
             if extent.is_finite() {
                 bounds.join(extent);
             } else {

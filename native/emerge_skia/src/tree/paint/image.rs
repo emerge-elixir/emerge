@@ -113,9 +113,10 @@ impl Sample {
         } else {
             (0.5 * pad.0, 0.5 * pad.1)
         };
+        let zoom = ctx.zoom;
         let mut clip = if !leaf {
             sk(ctx.clip)
-        } else if plane.is_some() {
+        } else if a.posed() {
             let borrowed = !own_clip && e.slots[k].parent.is_some_and(|p| e.attrs[p].clips_media());
             sk(ctx.child_clip).with_outset(if borrowed || picture { bleed } else { pad })
         } else {
@@ -135,7 +136,6 @@ impl Sample {
                 if !full.is_finite() {
                     return None;
                 }
-                let zoom = a.pose.zoom.abs();
                 let width = (full.width() * zoom).ceil().clamp(1., iw) as i32;
                 let height = (full.height() * zoom).ceil().clamp(1., ih) as i32;
                 target = Some((record, (width, height).into()));
@@ -157,9 +157,8 @@ impl Sample {
             fits.add(k, record, size);
         }
         let source = if let Source::Picture(art) = source {
-            let zoom = a.pose.zoom.abs();
             let fits = if a.image_fit.tiled() {
-                art.fits_tile() && art.fits(1., 1.)
+                art.fits_tile(zoom) && art.fits(zoom, zoom)
             } else {
                 art.fits(
                     dst.width() / src.width * zoom,

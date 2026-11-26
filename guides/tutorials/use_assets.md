@@ -96,9 +96,10 @@ image([width(px(120))], path("images/logo.png"))
 image([width(px(120))], binary(png_bytes))
 ```
 
-`image/2` accepts PNG, JPEG, uncompressed 24-bit BMP, the first frame of a
-GIF, and original-color SVG. GIFs do not animate. `svg/2` accepts only SVG
-and supports template tinting. Bytes are never treated as a filename, even if
+`image/2` accepts PNG, JPEG, still WebP (lossy or lossless, including alpha),
+Windows `BI_RGB` BMP (1-, 4-, 8- or 24-bit), GIF frame zero, and original-color
+SVG. Animated WebP and compressed BMP are not supported. GIFs do not animate.
+`svg/2` accepts only SVG and supports template tinting. Bytes are never treated as a filename, even if
 they spell one. Pass encoded data, not base64, raw pixels or a serialized Skia
 picture. Empty bytes are invalid. SVG XML is limited to 4 MiB, encoded raster
 files to 64 MiB; the tree update including its framing must also fit in 64 MiB.
@@ -123,16 +124,25 @@ image(
 ```
 
 `:contain` keeps the whole image visible. `:cover` fills the frame and crops the
-excess. For a responsive image, `image([width(fill())], source)` derives height
-from the available width. For the reverse, `image([height(fill())], source)`
-derives width when the image is the viewport root or a direct child of an `el`
-or `row` with a pixel height. The ratio uses the space inside borders and
-padding, and uses display orientation for JPEGs.
+excess. Use a literal `px/1` for an aspect-preserving fixed size. A bound
+is not a literal: for 200×100 art with automatic height, `width(px(40))`
+gives 40×20, but `width(min(px(40), px(100)))` gives 40×100 before fitting.
+
+For a responsive image, `width(min(px(80), fill()))` derives the content
+height from the allocated width. Conversely, `height(fill())` can derive
+width from a definite height, including one inherited through `el` or `row`.
+For example, in a 48px-high Column with an 8px sibling and no gap, a 2:1
+image gets 40px of height and is 80px wide. A definite-height `wrapped_row`
+uses the projected width when choosing its lines. If line membership or a
+Column's remaining height already depends on the image width, give the image
+a pixel width rather than creating a circular dependency. Aspect ratios use
+the space inside borders and padding, in display orientation for JPEG and WebP.
 
 On an image or SVG leaf, `Transform.rotate(45)` turns the painted box and
 its click target around the center. `Transform.scale(2)` magnifies both;
 `-1` reverses both axes and `0` leaves neither visible art nor a target. These
-are static paint transforms: they don't move siblings.
+transforms preserve sibling layout. The image can still overlap a sibling and
+receive a click in the overlap.
 
 ## Use an image as a background
 

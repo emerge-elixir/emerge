@@ -12,6 +12,7 @@ mod linear;
 pub(super) use linear::{column_demand, column_width};
 mod payload;
 pub(super) use fill::FillShares;
+pub(super) use image::width_at_height as image_width_at_height;
 use payload::{Children, NoData, OnlyChild, Payload, Utf8};
 
 trait ShapeMeta {
@@ -177,18 +178,50 @@ impl Shape {
     pub fn packs_width(self, width: Length) -> bool {
         self == Self::WrappedColumn && !width.definite()
     }
-    pub fn has_intrinsic_height(self, style: BoxStyle) -> bool {
+    pub fn projects_height(self, a: &Attrs) -> bool {
+        (self == Self::Image && a.sizing.width_from_height())
+            || (a.rotation.mixes_axes() && a.sizing.height.weight().is_some())
+    }
+    pub fn has_intrinsic_height(self, a: &Attrs) -> bool {
+        let style = a.sizing;
+        if a.rotation.mixes_axes() && !matches!(style.width, Length::Px(_)) {
+            return false;
+        }
         matches!(style.height, Length::Px(_))
             || matches!(self, Self::Text | Self::Empty)
-            || (self == Self::Image && style.width.weight().is_none())
+            || (self == Self::Image && !style.height_from_width())
     }
     /// A child's packed intrinsic width is an input to this Column's width,
     /// or to the child's own content-bearing fill width.
-    pub fn reads_group_height(self, style: BoxStyle, column: BoxStyle) -> bool {
-        self == Self::WrappedColumn
-            && style.height.weight().is_some()
-            && !matches!(style.width, Length::Px(_))
-            && (!matches!(column.width, Length::Px(_)) || style.width.reads_fill_content())
+    pub fn reads_group_height(self, a: &Attrs, column: BoxStyle) -> bool {
+        let style = a.sizing;
+        if self.projects_height(a) && !matches!(column.width, Length::Px(_)) {
+            return true;
+        }
+        match self {
+            Self::WrappedColumn => {
+                style.height.weight().is_some()
+                    && !matches!(style.width, Length::Px(_))
+                    && (!matches!(column.width, Length::Px(_)) || style.width.reads_fill_content())
+            }
+            _ => false,
+        }
+    }
+    pub fn independent_height_slot(self, a: &Attrs) -> bool {
+        let style = a.sizing;
+        if a.rotation.mixes_axes() {
+            return style.height.independent_fill()
+                || (matches!(style.width, Length::Px(_)) && matches!(style.height, Length::Px(_)));
+        }
+        style.height.declared_height_slot() || (self == Self::Image && !style.height_from_width())
+    }
+    // Neither the cross-axis width nor an earlier split needs a child's
+    // projected width at these sites. Place alone needs the real height.
+    pub fn late_image_width(self, style: BoxStyle) -> bool {
+        matches!(self, Self::El | Self::Column) && matches!(style.width, Length::Px(_))
+    }
+    pub fn passes_cross_height(self) -> bool {
+        self.offers_inner_height() || self == Self::WrappedRow
     }
     /// Authored outer pixels at a site which offers the whole padded height.
     pub fn cross_height_px(self, style: BoxStyle) -> Option<f64> {

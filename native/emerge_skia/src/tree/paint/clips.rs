@@ -32,7 +32,7 @@ impl Rounded {
                 dx * dx + dy * dy <= radius * radius
             })
     }
-    fn apply(self, canvas: &Canvas, bleed: (f32, f32)) {
+    pub(super) fn apply(self, canvas: &Canvas, bleed: (f32, f32)) {
         let rr = RRect::new_rect_radii(
             sk(self.rect).with_outset(bleed),
             &self.radii.map(|v| Point::new(v + bleed.0, v + bleed.1)),
@@ -91,6 +91,9 @@ impl Clips {
             }
             None => parent,
         }
+    }
+    pub fn one(&self, mask: Mask) -> Option<Rounded> {
+        mask.checked_sub(1).map(|i| self.0[i as usize].0)
     }
     pub fn parent(&self, mask: Mask) -> Mask {
         self.0[mask as usize - 1].1

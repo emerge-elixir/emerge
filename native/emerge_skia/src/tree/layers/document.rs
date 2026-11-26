@@ -5,14 +5,20 @@ use super::*;
 use paragraph::{Band, FloatSize};
 
 // A document offers ordinary blocks an unbounded height, not a Column share.
-const BLOCK_HEIGHT: Constraint = Constraint::Available(f32::MAX);
+pub(super) const BLOCK_HEIGHT: Constraint = Constraint::Available(f32::MAX);
 
-fn float_size(e: &Elements, c: Key, m: Demand, fits: &SecondaryMap<Key, Fit>) -> FloatSize {
-    let edge = Constraint::Available(m.h);
-    let height = edge.resolve_height(e, c, fits[c].size.h);
+fn float_size(
+    e: &Elements,
+    c: Key,
+    m: Demand,
+    local_h: f32,
+    fits: &SecondaryMap<Key, Fit>,
+) -> FloatSize {
+    let edge = Constraint::Available(local_h);
+    let size = Fit::local_at(fits, e, c, edge).turned(e.attrs[c].rotation);
     FloatSize {
         wanted: [m.w, m.h],
-        outer: [Fit::width_at(fits, e, c, edge), height],
+        outer: [size.w, size.h],
     }
 }
 impl Layers {
@@ -30,7 +36,7 @@ impl Layers {
             align,
             &self.runs,
             &self.text,
-            |c| float_size(e, c, self.measure[c], &self.fit),
+            |c| float_size(e, c, self.measure[c], self.local_measure[c].h, &self.fit),
         );
         if rebuilt {
             self.enqueue(Compose, k, e);
@@ -45,7 +51,10 @@ impl Layers {
         let content = fit + pixels(b.padding[0], scale) + pixels(b.padding[2], scale);
         // Shared flow grows even a shorter declared paragraph to contain its
         // text and local floats. Incoming floats aren't charged to its height.
-        let natural = b.height.resolve(content, || scale).max(self.measure[k].h);
+        let natural = b
+            .height
+            .resolve(content, || scale)
+            .max(self.local_measure[k].h);
         let initial = BLOCK_HEIGHT.resolve_height(e, k, natural);
         // Insets alone must not expand a zero-height, empty paragraph.
         let h = if fit > 0. {
@@ -61,14 +70,17 @@ impl Layers {
         self.fit.insert(
             k,
             Fit {
-                size,
+                local: size,
+                size: size.turned(e.attrs[k].rotation),
                 row_offer: 0.,
             },
         );
         h
     }
     fn document_block(&mut self, e: &Elements, c: Key, left: f32, inner: f32, y: f32) -> Rect {
-        let paragraph = e.slots[c].shape == Shape::Paragraph;
+        // Exclusions belong to the document's axes. A turned paragraph is
+        // a block with its own lines, not a continuation of those float bands.
+        let paragraph = e.slots[c].shape == Shape::Paragraph && !e.attrs[c].rotation.mixes_axes();
         let (w, y) = if paragraph {
             (self.width[c].outer, y)
         } else {
@@ -81,7 +93,9 @@ impl Layers {
         let h = if paragraph {
             self.document_paragraph(e, c, [x, y])
         } else {
-            BLOCK_HEIGHT.resolve_height(e, c, self.fit[c].size.h)
+            Fit::local_at(&self.fit, e, c, BLOCK_HEIGHT)
+                .turned(e.attrs[c].rotation)
+                .h
         };
         Rect {
             x,
@@ -114,7 +128,7 @@ impl ReflowCx<'_> {
                 y = (y + self.gap[1]).min(f32::MAX);
             }
             let site = if let Some(side) = e.float_side(c) {
-                let size = float_size(e, c, l.measure[c], &l.fit);
+                let size = float_size(e, c, l.measure[c], l.local_measure[c].h, &l.fit);
                 band.place(&mut l.paragraphs.floats, side, y, size)
             } else {
                 let site = l.document_block(e, c, left, inner, y);

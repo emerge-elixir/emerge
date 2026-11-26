@@ -110,7 +110,7 @@ svgtypes = "0.16"
 # Iterative structural limit check before roxmltree's recursive XML reader.
 quick-xml = { version = "0.41", default-features = false }
 emerge_skia_painter = { path = "../anyrender_painter" }
-skia-safe = { version = "0.157.0", default-features = false, features = ["jpeg", "binary-cache"] }
+skia-safe = { version = "0.157.0", default-features = false, features = ["jpeg", "webp-decode", "binary-cache"] }
 
 [dev-dependencies]
 criterion = "0.7"

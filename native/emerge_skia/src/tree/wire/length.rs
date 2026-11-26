@@ -5,15 +5,23 @@ use super::*;
 const MAX_LENGTH_DEPTH: usize = 64;
 
 impl Reader<'_> {
-    pub(super) fn length(&mut self, raw: &[u8]) -> Result<(Length, f64, Option<Bounds<f64>>)> {
+    pub(super) fn length(
+        &mut self,
+        raw: &[u8],
+        image_axis: Option<&mut ImageAxis>,
+    ) -> Result<(Length, f64, Option<Bounds<f64>>)> {
         let start = raw.len() - self.0.len();
+        let mut content = false;
         let mut largest = 0f64;
         let (mut length, floor) = self.expression(
             |leaf| {
                 let length = match leaf {
                     Leaf::Fill => Length::Fill,
                     Leaf::Weight(w) => Length::Weighted(w),
-                    Leaf::Content => Length::Content,
+                    Leaf::Content => {
+                        content = true;
+                        Length::Content
+                    }
                     Leaf::Px(px) => {
                         largest = largest.max(px);
                         Length::Px(px)
@@ -37,6 +45,16 @@ impl Reader<'_> {
             // An EMRG body is limited to 64 MiB before attr parsing.
             f.start = start as u32;
             f.end = (raw.len() - self.0.len()) as u32;
+        }
+        if let Some(axis) = image_axis {
+            *axis = match (raw[start], length.weight().is_some(), content) {
+                (1, _, _) => ImageAxis::Content,
+                (2, _, _) => ImageAxis::Pixel,
+                (_, true, true) => ImageAxis::FillContent,
+                (_, true, false) => ImageAxis::Fill,
+                (_, false, true) => ImageAxis::BoundContent,
+                (_, false, false) => ImageAxis::Bound,
+            };
         }
         Ok((length, largest, length.weight().and(floor)))
     }

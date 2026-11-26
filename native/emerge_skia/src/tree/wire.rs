@@ -207,10 +207,20 @@ fn attrs(raw: &[u8], shape: Shape) -> Result<Attrs> {
     let mut r = Reader(raw);
     let mut a = Attrs::default();
     let mut largest_px = [0.; 2];
+    let (mut layout_angle, mut paint_angle, mut paint_scale) = (false, false, false);
     for _ in 0..r.count()? {
         match r.byte()? {
-            1 => (a.sizing.width, largest_px[0], a.line_floor) = r.length(raw)?,
-            2 => (a.sizing.height, largest_px[1], a.height_floor) = r.length(raw)?,
+            tag @ (1 | 2) => {
+                let i = usize::from(tag - 1);
+                let axis = (shape == Shape::Image).then_some(&mut a.image_axes[i]);
+                let (len, largest, floor) = r.length(raw, axis)?;
+                largest_px[i] = largest;
+                if i == 0 {
+                    (a.sizing.width, a.line_floor) = (len, floor);
+                } else {
+                    (a.sizing.height, a.height_floor) = (len, floor);
+                }
+            }
             3 => {
                 a.image_host_clip = true;
                 a.sizing.padding = match r.byte()? {
@@ -266,7 +276,32 @@ fn attrs(raw: &[u8], shape: Shape) -> Result<Attrs> {
                 }
             }
             52 => (a.decor.shadows, a.decor.max_shadow) = r.shadows(raw)?,
-            35 if matches!(shape, Shape::Image | Shape::El) => {
+            // These legacy flags have no geometry or strike consumer on main.
+            // Preserve the validated declaration in the original wire block.
+            28 | 29 => {
+                r.flag()?;
+            }
+            33 => {
+                paint_angle = true;
+                a.pose.degrees = (r.signed()? % 360.) as f32;
+            }
+            79 => {
+                layout_angle = true;
+                (a.pose.degrees, a.rotation) = Rotation::degrees(r.signed()?);
+            }
+            34 => {
+                paint_scale = true;
+                a.pose.zoom = r.signed()? as f32;
+                if !a.pose.zoom.is_finite() {
+                    return Err(if shape == Shape::Image {
+                        "image paint scale exceeds device range"
+                    } else {
+                        "paint scale exceeds device range"
+                    }
+                    .into());
+                }
+            }
+            35 => {
                 let alpha = (r.signed()?.clamp(0., 1.) as f32 * 255.).round() as u8;
                 a.opacity = (alpha != 255).then_some(alpha);
             }
@@ -319,21 +354,16 @@ fn attrs(raw: &[u8], shape: Shape) -> Result<Attrs> {
     if !r.0.is_empty() {
         return Err("trailing attribute bytes".into());
     }
+    a.pose_declared = layout_angle || paint_angle || paint_scale;
+    if layout_angle && paint_angle || a.layout_scale.is_some() && paint_scale {
+        return Err("conflicting layout and paint transforms".into());
+    }
     if shape == Shape::Image {
         if a.image_src.len == 0 {
             return Err("image requires a source".into());
         }
         if !a.svg_expected && (a.svg_color.is_some() || a.svg_gradient.len != 0) {
             return Err("template color requires an SVG leaf".into());
-        }
-        if !matches!(
-            a.sizing.width,
-            Length::Px(_) | Length::Fill | Length::Weighted(_) | Length::Auto | Length::Content
-        ) || !matches!(
-            a.sizing.height,
-            Length::Px(_) | Length::Fill | Length::Weighted(_) | Length::Auto | Length::Content
-        ) {
-            return Err("unported image sizing: expected pixels, content or fill".into());
         }
     }
     // Layout reads padding plus the border inset; paint retains the border itself.

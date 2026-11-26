@@ -47,7 +47,10 @@ impl PaintBehaviour<Utf8> for Text {
                 ..m.ink
             };
             // Clip the ink to its own frame, not its padded content area.
-            let clip = f.intersection(ctx.clip).unwrap_or_default().pixel_clip();
+            let clip = f
+                .intersection(ctx.clip)
+                .unwrap_or_default()
+                .paint_clip(ctx.transformed);
             if let Some(visible) = ink.intersection(clip) {
                 own.text = Some(paint::GlyphPaint {
                     pos,

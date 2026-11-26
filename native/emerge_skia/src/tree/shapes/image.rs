@@ -14,11 +14,6 @@ impl Payload for Image {
     }
     fn decode(tag: u8, r: &mut wire::Reader<'_>, raw: &[u8], a: &mut Attrs) -> Result<(), String> {
         match tag {
-            33 => a.pose.degrees = (r.signed()? % 360.) as f32,
-            34 => {
-                a.pose.zoom = r.signed()? as f32;
-                if !a.pose.zoom.is_finite() { return Err("image paint scale exceeds device range".into()); }
-            }
             53 if !a.has_art() => a.image_src = r.artwork(raw, true)?,
             63 => (a.svg_color, a.svg_gradient) = r.ink(raw)?,
             64 => a.svg_expected = r.flag()?,
@@ -31,36 +26,71 @@ impl Payload for Image {
 fn projected(extent: f32, to: f32, from: f32) -> f32 {
     (f64::from(extent.max(0.)) * f64::from(to) / f64::from(from)).min(f64::from(f32::MAX)) as f32
 }
+// The same unallotted demands are available in Context (for independent
+// Column slots) and in Measure. Unknown art supplies extents, never a ratio.
+fn natural(e: &Elements, k: Key) -> Demand {
+    let a = &e.attrs[k];
+    let size = e.images.source(k).dimensions();
+    let (mut w, mut h) = size.unwrap_or((64., 64.));
+    if size.is_some() {
+        let b = a.sizing;
+        let s = e.slots[k].admitted.scale;
+        let [t, r, d, l] = b.padding.map(|v| scale::pixels(v, s));
+        match a.image_axes {
+            [ImageAxis::Pixel, ImageAxis::Content] => {
+                h = projected(b.width.resolve(0., || s) - (l + r), h, w)
+            }
+            [ImageAxis::Content, ImageAxis::Pixel] => {
+                w = projected(b.height.resolve(0., || s) - (t + d), w, h)
+            }
+            _ => (),
+        }
+    }
+    Demand { w, h, min_w: w }
+}
+fn unallotted_height(e: &Elements, k: Key, inner: f32) -> f32 {
+    let b = e.attrs[k].sizing;
+    let s = e.slots[k].admitted.scale;
+    let inset = scale::pixels(b.padding[0], s) + scale::pixels(b.padding[2], s);
+    b.height.resolve(inner + inset, || s)
+}
+pub(super) fn independent_height(e: &Elements, k: Key) -> f32 {
+    unallotted_height(e, k, natural(e, k).h)
+}
+fn projected_width(e: &Elements, k: Key, height: f32) -> Option<f32> {
+    let (iw, ih) = e.images.source(k).dimensions()?;
+    let s = e.slots[k].admitted.scale;
+    let b = e.attrs[k].sizing;
+    Some(projected(
+        height - (scale::pixels(b.padding[0], s) + scale::pixels(b.padding[2], s)),
+        iw,
+        ih,
+    ))
+}
+pub(in crate::tree) fn width_at_height(e: &Elements, k: Key, height: f32) -> Option<f32> {
+    let b = e.attrs[k].sizing;
+    let s = e.slots[k].admitted.scale;
+    let w = projected_width(e, k, height)?;
+    Some(b.width.resolve(
+        w + (scale::pixels(b.padding[1], s) + scale::pixels(b.padding[3], s)),
+        || s,
+    ))
+}
 impl LayoutBehaviour for Image {
     fn measure(node: Mounted<'_, Self>, cx: &mut Measuring<'_>) -> Demand {
-        let b = node.attrs().sizing;
-        let size = node.elements.images.source(node.key).dimensions();
-        let (iw, ih) = size.unwrap_or((64., 64.));
-        // Intrinsic texel dimensions are device extents on main. Only authored
-        // box lengths/insets are scaled. An unknown file supplies no aspect ratio.
-        let (mut w, mut h) = (iw, ih);
-        if size.is_some() {
-            let scale = cx.scale();
-            let [t, r, d, l] = b.padding.map(|v| scale::pixels(v, scale));
-            match (b.width, b.height) {
-                (Length::Px(px), Length::Auto | Length::Content) => {
-                    h = projected(scale::pixels(px, scale) - (l + r), ih, iw)
-                }
-                (Length::Auto | Length::Content, Length::Px(px)) => {
-                    w = projected(scale::pixels(px, scale) - (t + d), iw, ih)
-                }
-                _ if b.width_from_height() => {
-                    w = projected(cx.allocated_image_height() - (t + d), iw, ih)
-                }
-                _ => (),
-            }
+        let (e, k) = (node.elements, node.key);
+        let mut demand = natural(e, k);
+        if node.attrs().sizing.width_from_height()
+            && let Some(h) = cx.allocated_image_height(|| unallotted_height(e, k, demand.h))
+            && let Some(w) = projected_width(e, k, h)
+        {
+            demand.w = w;
         }
-        Demand { min_w: w, w, h }
+        demand
     }
     fn reflow(node: Mounted<'_, Self>, cx: &mut ReflowCx<'_>) -> Heights {
         let b = node.attrs().sizing;
-        if b.width.weight().is_some()
-            && !b.height.definite()
+        if b.height_from_width()
             && let Some((iw, ih)) = node.elements.images.source(node.key).dimensions()
         {
             cx.box_height(projected(cx.inner_width(node.key), ih, iw))
@@ -79,6 +109,11 @@ impl PaintBehaviour<Image> for Image {
             || a.sizing.padding != b.sizing.padding
     }
     fn reads_context(_: &Attrs, old: Option<PaintContext>, ctx: PaintContext) -> bool {
-        old.is_none_or(|p| p.frame != ctx.frame || p.clip != ctx.clip || p.child_clip != ctx.child_clip || p.scale != ctx.scale)
+        old.is_none_or(|p| {
+            p.frame != ctx.frame
+                || p.clip != ctx.clip
+                || p.child_clip != ctx.child_clip
+                || p.scale != ctx.scale
+        })
     }
 }

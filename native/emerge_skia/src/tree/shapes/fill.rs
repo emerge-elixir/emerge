@@ -194,33 +194,44 @@ impl FillShares {
         }
         Some(initial.redistribute(f64::from(room), || children.iter().map(|&c| slot(c))))
     }
-    // A fixed-height Column can compute this group before width Flow when
-    // all slots are pixels or fills that do not read content. Use exactly
-    // the same solver and device rounding as the final Place group.
+    // Before width Flow only use independently known slot charges. Image
+    // metadata (or its pending fallback) is already settled for this turn.
     fn declared_slot(e: &Elements, c: Key) -> Slot<'_> {
         let h = e.attrs[c].sizing.height;
-        let basis = h.resolve(0., || e.slots[c].admitted.scale);
+        let basis = if h.declared_height_slot() {
+            h.resolve(0., || e.slots[c].admitted.scale)
+        } else {
+            image::independent_height(e, c)
+        };
+        let basis = if e.attrs[c].rotation.mixes_axes() && h.weight().is_none() {
+            let w = e.attrs[c]
+                .sizing
+                .width
+                .resolve(0., || e.slots[c].admitted.scale);
+            e.attrs[c].rotation.extent(w, basis).1
+        } else {
+            basis
+        };
         Slot::new(e, c, h, basis)
     }
-    pub(in crate::tree) fn declared_column(e: &Elements, k: Key) -> Option<Self> {
+    pub(in crate::tree) fn declared_column(
+        e: &Elements,
+        k: Key,
+        inner: Option<f32>,
+    ) -> Option<Self> {
+        let inner = inner?;
         let b = e.attrs[k].sizing;
-        let Length::Px(px) = b.height else {
-            return None;
-        };
         let kids = e.children(k);
         if !kids
             .iter()
-            .any(|&c| e.slots[c].shape.reads_group_height(e.attrs[c].sizing, b))
+            .any(|&c| e.slots[c].shape.reads_group_height(&e.attrs[c], b))
             || !kids
                 .iter()
-                .all(|&c| e.attrs[c].sizing.height.declared_height_slot())
+                .all(|&c| e.slots[c].shape.independent_height_slot(&e.attrs[c]))
         {
             return None;
         }
         let s = e.slots[k].admitted.scale;
-        let inner = (scale::pixels(px, s)
-            - (scale::pixels(b.padding[0], s) + scale::pixels(b.padding[2], s)))
-        .max(0.);
         let charge = scale::pixels(e.attrs[k].main_spacing(linear::Y).charge(), s);
         Self::group(Some(inner), charge, kids, |c| Self::declared_slot(e, c))
     }

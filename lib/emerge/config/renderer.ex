@@ -28,9 +28,6 @@ defmodule Emerge.Config.Renderer do
   - `target_fps` — positive integer frame-rate ceiling, or `nil` (default) for
     normal backend pacing. It limits drawing, not physical display refresh or
     application timers. It does not make an idle scene redraw continuously.
-  - `tree_headroom_percent` — extra workspace for the native compute tree, from
-    0 to 1,000 (default 80). With 80% headroom, 100 required slots reserve 180.
-    Fitting updates spend the space without topping it up. Startup only.
   - `cache` — `Emerge.Config.RendererCache`, controlling reuse of rendered content.
     Defaults to that record's settings; it is separate from image asset caching.
 

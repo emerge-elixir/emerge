@@ -5,6 +5,7 @@ pub(super) mod fits;
 use buffers::Buffers;
 use std::sync::Arc;
 mod image;
+mod inline;
 mod opacity;
 mod pose;
 use pose::{Plane, Planes, Scope};
@@ -22,6 +23,7 @@ use styled::{Brush, MaterialIndex, Materials, Phase};
 #[derive(Clone, Copy, PartialEq)]
 pub(super) struct PaintContext {
     pub frame: Rect,
+    pub boundary: Rect, // incoming clip, before this node's pose
     pub clip: Rect,
     pub child_clip: Rect,
     pub color: u32,
@@ -29,15 +31,18 @@ pub(super) struct PaintContext {
     pub rules: u8,
     pub offset: [f32; 2],
     pub scale: f32,
+    pub transformed: bool,
+    pub zoom: f32, // cumulative absolute uniform paint scale, independent of layout scale
     pub text_align: Alignment,
 }
 impl PaintContext {
     fn box_clip(self, shape: Shape) -> Rect {
-        if shape == Shape::Image {
-            self.child_clip.pixel_clip()
+        let clip = if shape == Shape::Image {
+            self.child_clip
         } else {
-            self.clip.pixel_clip()
-        }
+            self.clip
+        };
+        clip.paint_clip(self.transformed)
     }
 }
 impl Rect {
@@ -48,11 +53,15 @@ impl Rect {
             && self.width > 0.
             && self.height > 0.
         {
+            let pad = 0.5 / p.zoom;
+            if !pad.is_finite() {
+                return self;
+            }
             let relaxed = Self {
-                x: self.x - 0.5,
-                y: self.y - 0.5,
-                width: self.width + 1.,
-                height: self.height + 1.,
+                x: self.x - pad,
+                y: self.y - pad,
+                width: self.width + 2. * pad,
+                height: self.height + 2. * pad,
             };
             p.clip.intersection(relaxed).unwrap_or_default()
         } else {
@@ -61,7 +70,11 @@ impl Rect {
     }
     /// Ordinary rectangular Skia clips use non-antialiased device edges.
     /// Hits keep the unrounded clip and the original element-local origin.
-    pub(super) fn pixel_clip(self) -> Rect {
+    pub(super) fn paint_clip(self, transformed: bool) -> Rect {
+        // Rounding in a rotated/scaled local space is not device snapping.
+        if transformed {
+            return self;
+        }
         let x = self.x.round();
         let y = self.y.round();
         Rect {
@@ -126,7 +139,7 @@ impl OwnPaint {
         let clip = if a.image_src.len != 0 {
             ctx.box_clip(Shape::Image)
         } else {
-            ctx.clip.pixel_clip()
+            ctx.clip.paint_clip(ctx.transformed)
         };
         let fill = a
             .background
@@ -148,6 +161,7 @@ pub(super) struct Composition {
     art: bool,
     hit: Option<Hit>,
     rounded: bool,
+    posed: [bool; 2],
     opacity: Option<u8>,
     ports: [Port; 2],
 }
@@ -191,7 +205,11 @@ pub(super) fn compose(
         } else {
             let hit = ctx
                 .frame
-                .intersection(if a.posed() { ctx.child_clip } else { ctx.clip })
+                .intersection(if a.posed() && e.slots[k].shape == Shape::Image {
+                    ctx.child_clip
+                } else {
+                    ctx.clip
+                })
                 .filter(|_| a.click)
                 .map(|rect| Hit {
                     scope: Scope::default(),
@@ -210,6 +228,10 @@ pub(super) fn compose(
             next.hit = hit;
             hit.is_some()
         };
+        // A transform on an undecorated, listener-free ancestor still changes
+        // its children's prepared commands and hit coordinates.
+        *changed |= a.posed() || next.posed[side];
+        next.posed[side] = a.posed();
         let mut count = 0;
         for &c in e.children(k) {
             let port = &mut parts[c].ports[side];
@@ -261,14 +283,26 @@ enum Command {
         range: Range<usize>,
     },
 }
+impl Command {
+    fn outer_shadow(&self, materials: &Materials) -> Option<(u32, Rect)> {
+        match self {
+            Self::Box {
+                material,
+                rect,
+                phase,
+                ..
+            } if materials.shadow_pass(*material, *phase) => Some((*material, *rect)),
+            _ => None,
+        }
+    }
+}
 #[derive(Default, PartialEq)]
 pub(crate) struct Drawing {
     materials: Materials,
     commands: Vec<(Scope, Command)>,
     clips: Clips,
     planes: Planes,
-    plane: u32,
-    mask: Mask,
+    scope: Scope,
     ids: Vec<u16>,
     positions: Vec<Point>,
 }
@@ -277,10 +311,7 @@ impl Drawing {
         let scope = if matches!(cmd, Command::Group { .. } | Command::Restore) {
             Scope::default() // opacity bounds are already in viewport coordinates
         } else {
-            Scope {
-                mask: self.mask,
-                plane: self.plane,
-            }
+            self.scope
         };
         self.commands.push((scope, cmd));
     }
@@ -304,8 +335,7 @@ impl Drawing {
         self.materials.clear();
         self.clips.clear();
         self.planes.0.clear();
-        self.plane = 0;
-        self.mask = OPEN;
+        self.scope = Scope::default();
         self.commands.clear();
         self.ids.clear();
         self.positions.clear()
@@ -320,8 +350,9 @@ pub(super) struct Output {
     pub material_bytes: usize,
     pub rules: usize,
     pub groups: usize,
+    pub poses: usize,
     index: MaterialIndex,
-    stack: Vec<(Key, Visit, Mask)>,
+    stack: Vec<(Key, Visit, Scope)>,
     draw: Buffers<Drawing, 7>,
     hits: Buffers<Hits, 3>,
     installed: [Option<(Key, u64)>; 2],
@@ -332,12 +363,11 @@ pub(super) struct Output {
 enum Visit {
     Node { rounded_parent: bool },
     Inline,
-    Border(u32),
+    Border,
     Opacity(usize),
 }
 impl Output {
-    pub fn reserve_images(&mut self, count: usize, b: Budget) -> Result<(), String> {
-        self.fits.reserve(count, b)?;
+    pub fn reserve_poses(&mut self, count: usize, b: Budget) -> Result<(), String> {
         self.draw.reserve([0, 0, 0, 0, 0, 0, count], b)?;
         self.hits.reserve([0, 0, count], b)
     }
@@ -350,10 +380,10 @@ impl Output {
         b: Budget,
     ) -> Result<(), String> {
         if count != 0 {
-            self.hits.reserve([0, 2 * count + words, 0], b)?;
+            self.hits.reserve([0, 2 * count + 2 * words, 0], b)?;
             self.index.reserve(keys)?;
             self.draw
-                .reserve([0, 0, 0, 2 * count, count, bytes, 0], b)?;
+                .reserve([0, 0, 0, 2 * count + words, count, bytes, 0], b)?;
         }
         Ok(())
     }
@@ -422,21 +452,24 @@ impl Output {
                     Visit::Node {
                         rounded_parent: false,
                     },
-                    OPEN,
+                    Scope::default(),
                 )
             }));
-            while let Some((k, visit, mask)) = self.stack.pop() {
-                self.draw.build.plane = 0;
+            while let Some((k, visit, scope)) = self.stack.pop() {
+                let Scope {
+                    mask,
+                    plane: parent,
+                    ..
+                } = scope;
                 let rounded_parent = match visit {
                     Visit::Inline => {
-                        self.inline(e, k, layers, side, mask);
+                        self.inline(e, k, layers, side, scope);
                         continue;
                     }
-                    Visit::Border(plane) => {
+                    Visit::Border => {
                         let ctx = layers.paint[k];
                         let draw = &mut self.draw.build;
-                        draw.plane = plane;
-                        draw.mask = mask;
+                        draw.scope = scope;
                         let material = self.index.get(draw, e, k);
                         draw.push(Command::Box {
                             material,
@@ -459,37 +492,34 @@ impl Output {
                 let ctx = layers.paint[k];
                 let a = &e.attrs[k];
                 let decor = a.decor;
-                if a.pose.zoom == 0. {
+                let (planes, clips) = if side == 0 {
+                    (&mut self.draw.build.planes, &self.draw.build.clips)
+                } else {
+                    (&mut self.hits.build.planes, &self.hits.build.clips)
+                };
+                let stop = if e.slots[k].shape == Shape::Image
+                    && a.posed()
+                    && rounded_parent
+                    && !a.image_host_clip
+                {
+                    clips.parent(mask)
+                } else {
+                    mask
+                };
+                let Some(id) = planes.branch(parent, stop, a, ctx, side == 1) else {
                     continue;
-                } // collapsed leaf has neither ink nor a target
-                let plane = a.posed().then(|| {
-                    let stop = if rounded_parent && !a.image_host_clip {
-                        (if side == 0 {
-                            &self.draw.build.clips
-                        } else {
-                            &self.hits.build.clips
-                        })
-                        .parent(mask)
-                    } else {
-                        mask
-                    };
-                    Plane::new(a, ctx, stop)
-                });
-                if plane.is_some_and(|p| {
-                    !p.matrix.is_finite() || !p.matrix.map_rect(sk(ctx.frame)).0.is_finite()
-                }) {
-                    continue;
-                }
+                };
+                let scope = Scope { plane: id, ..scope };
+                let plane = planes.get(id);
                 if side == 0 {
                     let draw = &mut self.draw.build;
-                    draw.mask = mask;
-                    draw.plane = draw.planes.add(plane);
+                    draw.scope = scope;
                     if let Some(alpha) = p.opacity {
                         if alpha == 0 {
                             continue;
                         }
                         let start = draw.begin_group(alpha);
-                        self.stack.push((k, Visit::Opacity(start), mask));
+                        self.stack.push((k, Visit::Opacity(start), scope));
                     }
                     let material = p.paint.decorated.then(|| self.index.get(draw, e, k));
                     let backdrop = p.art && e.slots[k].shape != Shape::Image;
@@ -503,13 +533,13 @@ impl Output {
                             });
                         }
                         if let Some(sample) =
-                            image::Sample::new(e, k, ctx, None, 0, None, &mut self.fits)
+                            image::Sample::new(e, k, ctx, plane, 0, None, &mut self.fits)
                         {
-                            draw.mask = draw
+                            draw.scope.mask = draw
                                 .clips
                                 .add(mask, Rounded::new(ctx.frame, decor.radii(ctx.scale)));
                             draw.push(Command::Image(sample));
-                            draw.mask = mask;
+                            draw.scope.mask = mask;
                         }
                     }
                     if let Some(material) = material {
@@ -527,7 +557,7 @@ impl Output {
                         if decor.border != [0.; 4]
                             && (decor.border_color.is_some() || decor.border_gradient.len != 0)
                         {
-                            self.stack.push((k, Visit::Border(draw.plane), mask));
+                            self.stack.push((k, Visit::Border, scope));
                         }
                     } else if let Some((r, c)) = p.paint.fill {
                         draw.push(Command::Fill(r, Brush::Solid(c)))
@@ -562,7 +592,7 @@ impl Output {
                             ctx.frame
                                 .intersection(ctx.clip)
                                 .unwrap_or_default()
-                                .pixel_clip(),
+                                .paint_clip(ctx.transformed),
                         );
                     }
                 } else if let Some(mut hit) = p.hit {
@@ -570,12 +600,7 @@ impl Output {
                     hit.scope.mask = hits
                         .clips
                         .add(mask, Rounded::new(ctx.frame, decor.radii(ctx.scale)));
-                    if let Some(plane) = plane {
-                        let Some(inverse) = plane.inverse() else {
-                            continue;
-                        };
-                        hit.scope.plane = hits.planes.add(Some(inverse));
-                    }
+                    hit.scope.plane = id;
                     hits.items.push(hit)
                 }
                 let inner = decor.rounded_inner(ctx.frame, ctx.scale);
@@ -598,12 +623,13 @@ impl Output {
                     )
                 {
                     let draw = &mut self.draw.build;
-                    draw.mask = mask;
+                    draw.scope.mask = mask;
                     draw.push(Command::Image(sample));
                 }
+                let scope = Scope { mask, ..scope };
                 let paragraph = e.slots[k].shape == Shape::Paragraph;
                 if paragraph && !layers.paragraphs.fragments(k).is_empty() {
-                    self.stack.push((k, Visit::Inline, mask));
+                    self.stack.push((k, Visit::Inline, scope));
                 }
                 self.stack.extend(
                     e.children(k)
@@ -619,132 +645,17 @@ impl Output {
                                 Visit::Node {
                                     rounded_parent: inner.is_some(),
                                 },
-                                mask,
+                                scope,
                             )
                         }),
                 );
             }
             if side == 0 {
+                self.draw.build.scope = Scope::default();
                 self.fits.finish_targets();
             }
         }
         self.fits.bind(&mut self.draw.build);
-    }
-    fn inline(&mut self, e: &Elements, k: Key, l: &Layers, side: usize, mask: Mask) {
-        let ctx = l.paint[k];
-        let clip = ctx.child_clip;
-        for line in l
-            .paragraphs
-            .fragments(k)
-            .chunk_by(|a, b| a.owner == b.owner && a.bounds.y == b.bounds.y)
-        {
-            let first = line[0];
-            let owner = first.owner;
-            let source = first.source;
-            let mut rect = paragraph::union(first.bounds, line.last().unwrap().bounds);
-            rect.x += ctx.frame.x;
-            rect.y += ctx.frame.y;
-            if side == 1 {
-                if let Some(area) = rect.intersection(clip) {
-                    let mask = self.hits.build.clips.add(
-                        mask,
-                        Rounded::new(rect, e.attrs[owner].decor.radii(l.paint[owner].scale)),
-                    );
-                    for target in [Some(owner), (source != owner).then_some(source)]
-                        .into_iter()
-                        .flatten()
-                        .filter(|&c| e.attrs[c].click)
-                    {
-                        self.hits.build.items.push(Hit {
-                            scope: Scope { mask, plane: 0 },
-                            key: Attachment(target, e.slots[target].attachment),
-                            id: e.slots[target].id,
-                            rect: area,
-                            // The mask is per continuation, but a listener has
-                            // one outer origin across every line of its span.
-                            origin: [
-                                ctx.frame.x + l.paragraphs.site(target).x,
-                                ctx.frame.y + l.paragraphs.site(target).y,
-                            ],
-                            scale: e.slots[target].admitted.scale,
-                        });
-                    }
-                }
-                continue;
-            }
-            let draw = &mut self.draw.build;
-            draw.mask = mask;
-            let alpha = e.attrs[owner].opacity;
-            if alpha == Some(0) {
-                continue;
-            }
-            let start = alpha.map(|a| draw.begin_group(a));
-            let material = (owner != source && e.attrs[owner].decor.active())
-                .then(|| self.index.get(draw, e, owner));
-            if let Some(material) = material {
-                draw.push(Command::Box {
-                    material,
-                    rect,
-                    clip: clip.pixel_clip(),
-                    phase: Phase::Under,
-                });
-            } else if owner != source
-                && let Some(color) = e.attrs[owner].background
-                && let Some(area) = rect.intersection(clip.pixel_clip())
-            {
-                draw.push(Command::Fill(area, Brush::Solid(color)));
-            }
-            let run = l.runs[source];
-            let source_ctx = l.paint[source];
-            let [t, r, b, left] = e.attrs[k]
-                .sizing
-                .padding
-                .map(|v| scale::pixels(v, ctx.scale));
-            let bounds = Rect {
-                x: ctx.frame.x + left,
-                y: ctx.frame.y + t,
-                width: (ctx.frame.width - left - r).max(0.),
-                height: (ctx.frame.height - t - b).max(0.),
-            };
-            let color = self.index.brush(draw, e, source_ctx, bounds);
-            for f in line.iter().filter(|_| source_ctx.color & 255 != 0) {
-                let start = draw.ids.len();
-                for (id, pos) in l.text.word_glyphs(run, f.first as usize..f.end as usize) {
-                    draw.ids.push(id);
-                    draw.positions.push(pos);
-                }
-                if start != draw.ids.len() {
-                    draw.push(Command::Glyphs {
-                        pos: [f.baseline[0] + ctx.frame.x, f.baseline[1] + ctx.frame.y],
-                        clip: Some(clip.pixel_clip()),
-                        bounds: clip,
-                        face: run.metrics.face,
-                        size: run.metrics.size,
-                        color,
-                        range: start..draw.ids.len(),
-                    });
-                    draw.rules(
-                        source_ctx.rules,
-                        color,
-                        [f.baseline[0] + ctx.frame.x, f.baseline[1] + ctx.frame.y],
-                        f.width,
-                        run.metrics.size,
-                        clip.pixel_clip(),
-                    );
-                }
-            }
-            if let Some(material) = material {
-                draw.push(Command::Box {
-                    material,
-                    rect,
-                    clip: clip.pixel_clip(),
-                    phase: Phase::Border,
-                });
-            }
-            if let Some(start) = start {
-                draw.end_group(start, l.viewport);
-            }
-        }
     }
     fn drawing(&self) -> &Drawing {
         if self.dirty[0] {
@@ -807,19 +718,11 @@ impl Hits {
         if !(x >= 0. && x < v.width && y >= 0. && y < v.height) {
             return None;
         }
-        let inside =
-            |r: Rect, x, y| x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height;
         self.items.iter().rev().find_map(|h| {
-            let (x, y, stop) = if let Some(p) = self.planes.get(h.scope.plane) {
-                if !inside(p.outer, x, y) || !self.clips.contains(p.stop, OPEN, x, y) {
-                    return None;
-                }
-                let local = p.matrix.map_point((x, y));
-                (local.x, local.y, p.stop)
-            } else {
-                (x, y, OPEN)
-            };
-            (inside(h.rect, x, y) && self.clips.contains(h.scope.mask, stop, x, y)).then(|| {
+            let (x, y, stop) =
+                self.planes
+                    .point(h.scope.plane, &self.clips, h.scope.before, x, y)?;
+            (h.rect.contains(x, y) && self.clips.contains(h.scope.mask, stop, x, y)).then(|| {
                 (
                     h.key,
                     h.id,
@@ -1044,27 +947,34 @@ fn replay(
             _ => (),
         }
         let plane = draw.planes.get(scope.plane);
+        if let Some((material, rect)) = cmd.outer_shadow(&draw.materials) {
+            // Ordinary host clips constrain the box, not its outer shadow.
+            // Apply the same transform without installing those clips.
+            let _shadow_pose = plane.map(|p| {
+                let restore = skia_safe::AutoCanvasRestore::guard(canvas, true);
+                canvas.concat(&p.matrix);
+                restore
+            });
+            draw.materials.outer_shadow(canvas, material, rect);
+            if matches!(
+                cmd,
+                Command::Box {
+                    phase: Phase::OuterShadow,
+                    ..
+                }
+            ) {
+                continue;
+            }
+        }
         let _posed = plane.map(|p| {
             let restore = skia_safe::AutoCanvasRestore::guard(canvas, true);
-            p.enter(canvas, &draw.clips);
+            draw.planes.enter(p, canvas, &draw.clips, scope.before);
             restore
         });
         let stop = plane.map_or(OPEN, |p| p.stop);
         if let Command::Image(sample) = cmd {
             sample.draw(canvas, &draw.clips, scope.mask, plane, &draw.materials);
             continue;
-        }
-        if let Command::Box {
-            material,
-            rect,
-            phase: phase @ (Phase::Under | Phase::OuterShadow),
-            ..
-        } = cmd
-        {
-            draw.materials.outer_shadow(canvas, *material, *rect);
-            if *phase == Phase::OuterShadow {
-                continue;
-            }
         }
         draw.clips
             .within(scope.mask, stop, canvas, || -> Result<(), String> {

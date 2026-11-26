@@ -1,5 +1,7 @@
 defmodule Emerge.Engine.Serialization do
-  @moduledoc "A full declaration is the fully explicit body of a patch to a vacant viewport."
+  @moduledoc """
+  Binary serialization for Emerge.Engine.Element trees.
+  """
   alias Emerge.Engine.{Element, Patch, Reconcile}
 
   def encode(tree) do

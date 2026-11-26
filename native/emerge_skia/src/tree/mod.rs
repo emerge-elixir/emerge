@@ -10,6 +10,8 @@ mod paint;
 mod paragraph;
 mod pool;
 mod queue;
+mod rotation;
+use rotation::Rotation;
 mod scale;
 mod shapes;
 mod text;
@@ -175,8 +177,11 @@ impl Length {
             _ => true,
         }
     }
+    fn independent_fill(self) -> bool {
+        self.weight().is_some() && !self.reads_fill_content()
+    }
     fn declared_height_slot(self) -> bool {
-        matches!(self, Self::Px(_)) || (self.weight().is_some() && !self.reads_fill_content())
+        matches!(self, Self::Px(_)) || self.independent_fill()
     }
     // Can wrapped content grow a floating paragraph beyond its intrinsic offer?
     // A min needs both branches to grow; a max needs just one. For a folded
@@ -244,7 +249,10 @@ struct BoxStyle {
 }
 impl BoxStyle {
     fn width_from_height(self) -> bool {
-        matches!(self.width, Length::Auto | Length::Content) && self.height.weight().is_some()
+        !self.width.definite() && self.height.weight().is_some()
+    }
+    fn height_from_width(self) -> bool {
+        !self.height.definite() && self.width.weight().is_some()
     }
     // Weights belong to the distributing parent, not to this intrinsic box.
     fn without_weights(self) -> Self {
@@ -286,17 +294,29 @@ impl ImageFit {
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct ImagePose {
+struct Pose {
     degrees: f32,
     zoom: f32,
 }
-impl Default for ImagePose {
+impl Default for Pose {
     fn default() -> Self {
         Self {
             degrees: 0.,
             zoom: 1.,
         }
     }
+}
+/// Aspect inference distinguishes literal dimensions from expressions which
+/// happen to fold to the same allocation policy. Omission is bare content.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ImageAxis {
+    #[default]
+    Content,
+    Pixel,
+    Bound,
+    BoundContent,
+    Fill,
+    FillContent,
 }
 #[derive(Clone, Debug, Default)]
 struct Attrs {
@@ -322,7 +342,10 @@ struct Attrs {
     svg_color: Option<u32>,
     svg_gradient: decoration::Bytes,
     image_fit: ImageFit,
-    pose: ImagePose,
+    image_axes: [ImageAxis; 2],
+    pose: Pose,
+    pose_declared: bool, // reserve a scope even at an authored identity endpoint
+    rotation: Rotation,
     image_host_clip: bool,
     opacity: Option<u8>,
     decor: decoration::Decor,
@@ -356,7 +379,7 @@ impl Attrs {
         self.image_src.len != 0
     }
     fn posed(&self) -> bool {
-        self.pose != ImagePose::default()
+        self.pose != Pose::default()
     }
     fn clips_media(&self) -> bool {
         self.decor.radius != [0.; 4] || self.decor.border != [0.; 4]
@@ -374,12 +397,18 @@ impl Attrs {
 struct Subtree {
     count: usize,
     height: usize,
+    // Cache the children's union separately: an attrs-only edit never needs
+    // to reopen a kept order to prove its own layout dependencies.
+    own: rotation::Dependencies,
+    children: rotation::Dependencies,
 }
 impl Default for Subtree {
     fn default() -> Self {
         Self {
             count: 1,
             height: 0,
+            own: Default::default(),
+            children: Default::default(),
         }
     }
 }
@@ -388,6 +417,8 @@ impl Subtree {
         children.fold(Self::default(), |s, c| Self {
             count: s.count + c.count,
             height: s.height.max(1 + c.height),
+            children: s.children.union(c.own),
+            own: Default::default(),
         })
     }
 }
@@ -504,6 +535,14 @@ pub struct Rect {
     pub height: f32,
 }
 impl Rect {
+    fn contains(self, x: f32, y: f32) -> bool {
+        self.width > 0.
+            && self.height > 0.
+            && x >= self.x
+            && x <= self.x + self.width
+            && y >= self.y
+            && y <= self.y + self.height
+    }
     fn intersection(self, b: Self) -> Option<Self> {
         let (x, y) = (self.x.max(b.x), self.y.max(b.y));
         let (w, h) = (
@@ -559,7 +598,8 @@ impl Tree {
         if self.layers.prepared_scale != scale {
             self.prepare_display(scale)?;
         }
-        self.layers.invalidate_changes(&mut self.elements);
+        self.layers
+            .invalidate_changes(&mut self.elements, self.root);
         self.layers
             .recompute(&self.elements, self.root, width, height);
         self.layers.bounds.context_dirty = false;

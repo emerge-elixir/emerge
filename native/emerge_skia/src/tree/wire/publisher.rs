@@ -12,6 +12,7 @@ struct Totals {
     texts: usize,
     images: usize,
     groups: usize,
+    poses: usize,
     hosts: usize,
     words: usize,
     materials: usize,
@@ -30,6 +31,7 @@ impl Totals {
         count(&mut self.images, usize::from(a.has_art()));
         count(&mut self.hosts, usize::from(shape.has_prose_sites()));
         count(&mut self.groups, usize::from(a.opacity.is_some()));
+        count(&mut self.poses, usize::from(a.pose_declared));
         count(&mut self.materials, usize::from(a.material()));
         count(&mut self.material_bytes, a.material_bytes());
         count(&mut self.scales, usize::from(a.layout_scale.is_some()));
@@ -40,7 +42,7 @@ impl Totals {
 // declaration, not borrowed from a computing tree. In steady state a turn
 // carries no computed stores. Two glyph generations can overlap in measure.
 #[derive(Default, Clone, Copy)]
-struct Capacity([usize; 9]);
+struct Capacity([usize; 10]);
 impl Capacity {
     fn for_tree(t: Totals, keys: usize) -> Self {
         Self([
@@ -52,6 +54,7 @@ impl Capacity {
             t.materials,
             t.material_bytes,
             t.groups,
+            t.poses,
             t.materials
                 + t.images
                 + 2 * t.groups
@@ -80,12 +83,13 @@ impl Capacity {
             materials,
             bytes,
             groups,
+            poses,
             extra,
         ] = self.0;
         // Conservative byte credits, including the builder, five readers,
         // secondary-map slots, glyph overlap and paragraph/clip scratch.
         // Keep the credit pinned with any sealed readers after a growth.
-        let units = [4096, 4096, 160, 8192, 1536, 4096, 6, 128, 1536];
+        let units = [4096, 4096, 160, 8192, 1536, 4096, 6, 128, 2048, 1536];
         let charge = self
             .0
             .iter()
@@ -111,7 +115,8 @@ impl Capacity {
             .paragraphs
             .reserve(keys, owners, words, Budget(0))?;
         e.images.reserve(keys, images, Budget(0))?;
-        t.output.reserve_images(images, Budget(0))?;
+        t.output.fits.reserve(images, Budget(0))?;
+        t.output.reserve_poses(poses, Budget(0))?;
         let mut batch = Batch::default();
         batch.reserve(owners)?;
         t.wire.patch = Some(batch);

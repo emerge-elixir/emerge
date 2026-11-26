@@ -23,11 +23,6 @@ defmodule Emerge.UI.Transform do
   - `scale/1` to grow or shrink an element around its center
   - `alpha/1` to reduce opacity for the rendered element subtree
 
-  On the retained Linux renderer, static `rotate/1` and `scale/1` are supported
-  on `Emerge.UI.image/2` and `Emerge.UI.svg/2`, not arbitrary containers. Their
-  installed click coordinates follow the inverse transform. A negative uniform
-  scale reverses both axes; zero draws nothing and does not receive a click.
-
   ## Layout vs Paint
 
   Transforms do not reserve extra layout space. The element keeps its normal
@@ -38,9 +33,9 @@ defmodule Emerge.UI.Transform do
 
   ## Interaction
 
-  On a retained Image leaf, a click follows the installed shape, not the
-  pre-transform slot. Transparent texels still belong to the shape. This is
-  click support, not support for hover, press or move handlers.
+  Pointer hit testing follows the transformed shape that the user sees on screen,
+  not the pre-transform slot. Hover, press, and move handlers stay attached to
+  the painted result.
 
   ## Opacity
 
@@ -56,9 +51,7 @@ defmodule Emerge.UI.Transform do
 
   #{Examples.image_tag!("ui-transform-translate", "Rendered translated transform example")}
 
-  Rotation and scale both happen around the element center. This card example
-  uses container transforms from the full renderer; on retained Linux, apply
-  them to an image or SVG leaf instead:
+  Rotation and scale both happen around the element center:
 
   #{Examples.code_block!("ui-transform-rotate-scale")}
 
@@ -71,8 +64,7 @@ defmodule Emerge.UI.Transform do
   #{Examples.image_tag!("ui-transform-alpha", "Rendered alpha transform example")}
 
   The faint outline below marks the original slot. The transformed card is what
-  the user sees and what pointer hit testing follows. This full-renderer
-  example also uses a Nearby overlay:
+  the user sees and what pointer hit testing follows:
 
   #{Examples.code_block!("ui-transform-slot-vs-visual")}
 
@@ -89,7 +81,7 @@ defmodule Emerge.UI.Transform do
   @type t :: numeric_attr()
 
   @doc """
-  Move the painted element on the X axis.
+  Move the subtree and its hit targets on the X axis.
 
   Positive values move right. Negative values move left. The layout slot does
   not move.
@@ -114,7 +106,7 @@ defmodule Emerge.UI.Transform do
   def move_x(value) when is_number(value), do: {:move_x, value}
 
   @doc """
-  Move the painted element on the Y axis.
+  Move the subtree and its hit targets on the Y axis.
 
   Positive values move down. Negative values move up. The layout slot does not
   move.
@@ -141,10 +133,9 @@ defmodule Emerge.UI.Transform do
   def move_y(value) when is_number(value), do: {:move_y, value}
 
   @doc """
-  Rotate the painted element in degrees around its center.
+  Rotate the subtree and its hit targets in degrees around the element's center.
 
-  Rotation does not change the element's layout slot. On retained Linux,
-  use it on an image or SVG leaf.
+  The parent reserves the same layout slot before and after rotation.
 
   ## Example
 
@@ -156,10 +147,10 @@ defmodule Emerge.UI.Transform do
   def rotate(value) when is_number(value), do: {:rotate, value}
 
   @doc """
-  Scale the painted element uniformly around its center.
+  Scale the subtree and its hit targets uniformly around the element's center.
 
   `1.0` keeps the original size, values above `1.0` enlarge, and values between
-  `0.0` and `1.0` shrink. On retained Linux, use this on an image or SVG leaf.
+  `0.0` and `1.0` shrink.
 
   ## Example
 
@@ -174,7 +165,7 @@ defmodule Emerge.UI.Transform do
   Set opacity for the rendered element subtree.
 
   Use values between `0.0` and `1.0`, where `0.0` is fully transparent and
-  `1.0` is fully opaque.
+  `1.0` is fully opaque. Opacity does not move or disable a click target.
 
   ## Example
 

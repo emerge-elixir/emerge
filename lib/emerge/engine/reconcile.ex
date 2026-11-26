@@ -1,5 +1,7 @@
 defmodule Emerge.Engine.Reconcile do
-  @moduledoc "Match occurrences on entry, compare exact local inputs and fold a sparse replacement on exit."
+  @moduledoc """
+  Reconcile Emerge.Engine.Element trees into stable node ids and patch operations.
+  """
   alias Emerge.Engine.{
     AttrCodec,
     AttrValidation,

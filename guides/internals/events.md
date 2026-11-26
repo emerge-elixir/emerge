@@ -206,7 +206,7 @@ A separate declaration token survives target remounts/resolution changes, so an
 old jump cannot reapply merely because geometry or target identity changed.
 Targets align layout-box leading edges against the padded content origin and
 clamp to range. Nearby mounts and intervening same-axis scrollports are excluded;
-paint-only transforms do not affect alignment. Missing targets are consumed
+a target's `Transform` changes do not move its reserved layout box. Missing targets are consumed
 no-ops with a diagnostic when event debug logging is enabled, not deferred jumps.
 
 Geometry changes preserve the live fraction without callbacks. Temporary zero

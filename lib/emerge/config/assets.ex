@@ -19,15 +19,13 @@ defmodule Emerge.Config.Assets do
     but standalone `EmergeSkia.start/1` callers must supply it.
   - `fonts` — list of `Emerge.Config.Font` registrations; defaults to `[]`.
     Register each family/weight/italic variant your UI uses.
-  - `decode_at_size` — `false` by default for a viewport. With `true`, a raster
-    thumbnail retains pixels for its fitted device size rather than the full image.
-    A larger draw can grow the bitmap; smaller draws reuse it while it is live
-    or cached. This does not change intrinsic layout size. One-shot tree exports
-    enable this option by default. It does not apply to SVG pictures.
+  - `decode_at_size` — `false` by default. With `true`, raster images are decoded
+    near their drawn size rather than always retaining the source dimensions.
+    Useful for thumbnails of large images; larger targets can request a larger decode.
   - `runtime_paths` — `Emerge.Config.RuntimePaths`. Its default disables images
     loaded from absolute filesystem paths.
-  - `cache` — `Emerge.Config.AssetCache`, limiting idle raster bitmaps and SVG
-    pictures separately. These limits are independent of renderer paint caching.
+  - `cache` — `Emerge.Config.AssetCache`, limiting retained image pixels and parsed
+    SVGs. These limits are separate from renderer paint caching.
 
   All fields require a new viewport to change. Lists such as `fonts` replace the
   previous list rather than append to it. See [Use assets](use_assets.html) for

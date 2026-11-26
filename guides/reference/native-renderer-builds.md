@@ -22,6 +22,14 @@ includes the painter and its licenses. Raster builds need neither Ganesh nor a
 GPU API. OpenGL enables Ganesh through `gl`; Vulkan and Metal request it
 explicitly. The Apple painter's CoreText support does not require Metal.
 
+Still WebP is a decoder in that same Skia, not an optional backend or a
+system `libwebp` dependency. All profiles request `skia-safe/webp-decode`, not
+`webp-encode`. A custom `SKIA_LIBRARY_SEARCH_PATH` needs matching headers,
+archives and defines built with bundled WebP decode/demux enabled
+(`skia_use_libwebp_decode=true`, `skia_use_libwebp_encode=false`,
+`skia_use_system_libwebp=false`). A pre-WebP archive is not interchangeable,
+including for CPU-only, embedded FreeType and Wayland shm builds.
+
 Keep one compile-time configuration list:
 
 ```elixir

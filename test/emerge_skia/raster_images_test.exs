@@ -285,6 +285,52 @@ defmodule EmergeSkia.RasterImagesTest do
     assert render(tree, {10, 9}) == IO.iodata_to_binary([white.(10), rows, white.(20)])
   end
 
+  test "only a literal pixel axis projects a bare content axis before allocation" do
+    size = {240, 160}
+
+    scene = fn w, h ->
+      marker =
+        el([width(px(8)), height(px(8)), Background.color(:blue), Event.on_click(:next)], none())
+
+      column([width(px(240))], [image([width(w), height(h)], @wide), marker])
+    end
+
+    {pid, r} = Headless.mount(size, fn -> scene.(px(40), content()) end, [:pointer_button])
+
+    for {w, h, y} <- [
+          {px(40), content(), 20},
+          {min(px(40), px(100)), content(), 100},
+          {px(40), content(), 20},
+          {min(px(80), fill()), content(), 40},
+          {fill(), min(content(), px(60)), 60},
+          {min(px(80), fill(2)), max(px(45), min(content(), px(60))), 45}
+        ] do
+      tree = fn -> scene.(w, h) end
+      bytes = render(tree.(), size, assets: [decode_at_size: false])
+      send(pid, {:scene, tree})
+      assert Headless.pixels_matching(&(&1 == bytes)) == bytes
+      assert pixel(bytes, 240, 2, y) == <<0, 0, 255, 255>>
+      BoxAssertions.click(r, {2.0, y + 3.0}, :next, {2.0, 3.0})
+    end
+  end
+
+  test "bounded Image widths use content and the Row share independently" do
+    marker = el([width(px(8)), height(px(8)), Background.color(:blue)], none())
+
+    for {w, x} <- [
+          {min(px(60), fill()), 60},
+          {min(px(60), content()), 60},
+          {max(px(60), content()), 200},
+          {min(content(), fill()), 200},
+          {min(px(90), px(60)), 60}
+        ] do
+      tree =
+        row([width(px(240)), height(px(40))], [image([width(w), height(px(24))], @wide), marker])
+
+      assert pixel(render(tree, {240, 80}), 240, x, 2) == <<0, 0, 255, 255>>
+    end
+  end
+
   test "a Row's definite inner height resolves automatic image width before sibling placement" do
     size = {240, 80}
 

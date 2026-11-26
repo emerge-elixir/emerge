@@ -31,9 +31,8 @@ defmodule Emerge.UI.Background do
 
   ## Background Images
 
-  `Background.image/2` decorates a block `el`, `row`, `column`, `wrapped_row`
-  or `wrapped_column`. It does not create an image element or derive the box's
-  size from the file. Use
+  `Background.image/2` decorates an existing element frame. It does not create
+  an image element and it does not derive size from the source image. Use
   `Emerge.UI.image/2` when the image itself is the content element.
 
   Background image fit modes are:
@@ -44,18 +43,16 @@ defmodule Emerge.UI.Background do
   - `:repeat_x` - tile on the X axis only
   - `:repeat_y` - tile on the Y axis only
 
-  `Emerge.UI.image_fit/1` sets `:contain` or `:cover` on an `Emerge.UI.image/2`
-  or `Emerge.UI.svg/2` leaf. Use the `:fit` option on `Background.image/2` for
-  backgrounds, including repeat modes.
+  `Emerge.UI.image_fit/1` only applies to `Emerge.UI.image/2` and only accepts
+  `:contain` and `:cover`. Background images additionally support the repeat
+  modes above.
 
-  Tiles start at the top-left of the border box, at the source's intrinsic
-  device size. A non-repeated axis is transparent beyond the first tile.
   Backgrounds follow the element shape, so rounded corners from
   `Emerge.UI.Border.rounded/1` and `Emerge.UI.Border.rounded_each/4` also clip
   background painting.
 
-  For color helpers, see `Emerge.UI.Color`. Background images accept file
-  sources, not the inline `Emerge.UI.binary/1` form of an image leaf.
+  For color helpers, see `Emerge.UI.Color`. `Background.image/2` accepts the
+  same source forms as `Emerge.UI.image/2`.
 
   ## Examples
 
