@@ -619,9 +619,10 @@ defmodule Emerge.UI do
   Clip nearby escape overlays attached under this host.
 
   Keep an escaping panel's drawing and pointer hits inside the host's inner
-  edge, including its rounded corners. A panel on a scrolling row is already
-  clipped at the scroll container, not at the row. Set `clip_nearby()` on the
-  container to clip panels mounted directly on the container too.
+  edge, including its rounded corners. Without this attribute, a menu on a
+  partly visible scrolling item can extend outside the scroll container. It
+  disappears when the item scrolls fully out. Set `clip_nearby()` on the
+  container to clip both those menus and panels mounted on the container itself.
   """
   @spec clip_nearby() :: clip_nearby_attr()
   def clip_nearby, do: {:clip_nearby, true}

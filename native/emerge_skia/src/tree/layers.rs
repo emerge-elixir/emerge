@@ -20,6 +20,7 @@ pub(super) enum Pass {
     Project,
 }
 use Pass::*;
+mod anchors;
 mod constrained;
 mod document;
 mod projection;
@@ -873,6 +874,7 @@ impl Layers {
                 }
             }
             self.viewport = vp;
+            self.outer_window_changed(e, root);
             self.enqueue(PaintContext, root, e);
         }
         // Only layout depends on the host having finished Place. Painting
@@ -1835,6 +1837,9 @@ impl Layers {
             return;
         }
         self.paint.insert(k, next);
+        if old.is_some_and(|p| p.frame != f || p.content != next.content) {
+            self.outer_window_changed(e, k);
+        }
         if self.scroll.recorded(k).is_some()
             && old.is_some_and(|p| {
                 PaintContext {
@@ -1894,9 +1899,8 @@ impl Layers {
         let port_changed = (next.scrollport || old.is_some_and(|p| p.scrollport))
             && (port_changed
                 || geometry_changed
-                || old.is_none_or(|p| {
-                    p.scale != next.scale || p.content_escape != next.content_escape
-                }));
+                || child_clip_changed
+                || old.is_none_or(|p| p.scale != next.scale || p.escape_clip != next.escape_clip));
         let guarded = a.clip_nearby && e.slots[k].stats.escapes > 0;
         let draw = port_changed
             || guarded
@@ -1918,9 +1922,7 @@ impl Layers {
         }
         let outer_clip_changed = old.is_none_or(|p| p.clip != clip);
         let frame_changed = old.is_none_or(|p| p.frame != f);
-        let escape_clip_changed = old.is_none_or(|p| {
-            p.escape_clip != next.escape_clip || p.content_escape != next.content_escape
-        });
+        let escape_clip_changed = old.is_none_or(|p| p.escape_clip != next.escape_clip);
         let content_changed = old.is_none_or(|p| {
             (self.scroll.exhaustive() && p.content_scroll != next.content_scroll)
                 || p.scrollport != next.scrollport

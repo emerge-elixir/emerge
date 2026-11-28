@@ -204,7 +204,7 @@ defmodule EmergeSkia.ScrollingTest do
     refute_receive {:raw, {:pointer_scroll, _}}, 20
   end
 
-  defp page(clip) do
+  defp page(clip, position \\ 0.625) do
     knob =
       Nearby.in_front(card(:knob, 20, 20, :green, [Transform.move_x(40), Transform.move_y(10)]))
 
@@ -215,7 +215,7 @@ defmodule EmergeSkia.ScrollingTest do
       width(px(100)),
       height(px(50)),
       scrollbar_y(),
-      scroll_y(0.625),
+      scroll_y(position),
       Nearby.below(card(:fixed, 20, 12, :blue))
     ]
 
@@ -229,7 +229,7 @@ defmodule EmergeSkia.ScrollingTest do
     ])
   end
 
-  test "the port guards a row's moving overlay but needs clip_nearby to guard its own overlay" do
+  test "a visible row's knob escapes the port unless the row or port clips Nearby" do
     {pid, r} = Headless.mount({100, 100}, fn -> page(:open) end, [:pointer_button])
     # The row ends at y=45, the scrollport at y=50. The knob spans y=35..55.
     sites = [{50, 42}, {50, 47}, {50, 52}, {10, 52}]
@@ -242,10 +242,10 @@ defmodule EmergeSkia.ScrollingTest do
     }
 
     cases = [
-      open: [:knob, :knob, :nav, :fixed],
+      open: [:knob, :knob, :knob, :fixed],
       row: [:knob, :last, :nav, :fixed],
       port: [:knob, :knob, :nav, :nav],
-      open: [:knob, :knob, :nav, :fixed]
+      open: [:knob, :knob, :knob, :fixed]
     ]
 
     for {{clip, winners}, step} <- Enum.with_index(cases) do
@@ -266,6 +266,29 @@ defmodule EmergeSkia.ScrollingTest do
         assert pixel(p, 100, x, y) == rgba
         BoxAssertions.click(r, {x * 1.0, y * 1.0}, winner, {x - ox, y - oy})
       end
+    end
+  end
+
+  test "the last visible part of an anchor keeps its whole menu, not the other way around" do
+    # The row starts at y=50. At offset 0 it only touches the port. Its knob
+    # still overlaps the nav; neither its ink nor its listener should be there.
+    {pid, r} = Headless.mount({100, 100}, fn -> page(:open, 0.0) end, [:pointer_button])
+
+    for {position, step} <- Enum.with_index([0.0, 0.025, 0.0, 0.025]) do
+      if step > 0, do: send(pid, {:scene, fn -> page(:open, position) end})
+      frame = Headless.pixels()
+      assert {:ok, ^frame} = EmergeSkia.render_to_pixels(r)
+
+      if position == 0 do
+        assert pixel(frame, 100, 50, 64) == <<255, 255, 0, 255>>
+        BoxAssertions.click(r, {50.0, 64.0}, :nav, {50.0, 14.0})
+      else
+        # One pixel of row is visible. The knob is entirely outside the port.
+        assert pixel(frame, 100, 50, 64) == <<0, 255, 0, 255>>
+        BoxAssertions.click(r, {50.0, 64.0}, :knob, {10.0, 5.0})
+      end
+
+      BoxAssertions.click(r, {10.0, 52.0}, :fixed, {10.0, 2.0})
     end
   end
 

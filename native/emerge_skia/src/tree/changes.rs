@@ -287,6 +287,9 @@ impl Layers {
                     self.invalidate_composition(k, depth, Outputs::Draw);
                 }
             }
+            if moved || change.reattached {
+                self.outer_window_changed(e, k);
+            }
             if change.cold {
                 self.mount(k, e);
             } else if change.reattached {
@@ -464,6 +467,9 @@ impl Layers {
         }
         let clip_changed =
             old.decor.radius != next.decor.radius || old.decor.border != next.decor.border;
+        if clip_changed || old.pose != next.pose || old.clip_nearby != next.clip_nearby {
+            self.outer_window_changed(e, k);
+        }
         if clip_changed {
             for &c in e.children(k) {
                 if e.attrs[c].posed() {

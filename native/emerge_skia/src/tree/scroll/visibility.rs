@@ -2,8 +2,7 @@
 //! is implicit in the *existing* child slice: its midpoint holds the union of
 //! that slice. No copied keys, per-port Vec, fixed pitch or second dirty set.
 use super::*;
-use crate::tree::queue::WorkSet;
-use paint::{Composition, Outputs, PaintContext};
+use paint::{Composition, PaintContext};
 use skia_safe::Rect as Box2;
 
 #[derive(Clone, Copy, Default, PartialEq)]
@@ -62,6 +61,25 @@ pub(in crate::tree) struct Reach {
     shadow: Extent,
 }
 impl Reach {
+    // Escapes are selected by their attachment, not their ink. This includes
+    // an undecorated host whose entire menu lies outside the port. A point
+    // anchor needs a conservative nonempty range entry; packing tests it exactly.
+    pub(in crate::tree) fn anchor(f: Rect, active: [bool; 2]) -> Self {
+        let r = Box2::from_xywh(f.x, f.y, f.width, f.height);
+        let area = if r.is_empty() {
+            match Extent::checked(r.with_outset((1., 1.))) {
+                Extent::Empty => Extent::Unknown,
+                other => other,
+            }
+        } else {
+            Extent::checked(r)
+        };
+        Self {
+            ink: if active[0] { area } else { Extent::Empty },
+            hit: if active[1] { area } else { Extent::Empty },
+            shadow: Extent::Empty,
+        }
+    }
     pub(in crate::tree) fn union(self, b: Self) -> Self {
         Self {
             ink: self.ink.union(b.ink),
@@ -125,8 +143,8 @@ impl Reach {
             Extent::Empty
         };
         let children = if ctx.scrollport {
-            // Its ordinary branches (including their escapes) cannot cross the
-            // stationary inner box, except ordinary shadows on the free axis.
+            // Ordinary ink and possible overlay *anchors* lie in this window.
+            // Ordinary shadows can also contribute along the free axis.
             Self {
                 ink: frame,
                 hit: frame,
@@ -312,15 +330,10 @@ impl Query {
         (host, h): (Key, PaintContext),
         stable: PaintContext,
     ) -> Self {
-        // An explicit Nearby guard isn't an ordinary box clip. Conversely, an
-        // ancestor Row can clip ordinary boxes without clipping their exports.
-        let r = match (p.child_clip, p.content_escape) {
-            (a, b) if a.width > 0. && a.height > 0. && b.width > 0. && b.height > 0. => {
-                paragraph::union(a, b)
-            }
-            (a, _) if a.width > 0. && a.height > 0. => a,
-            (_, b) => b,
-        };
+        // Both ordinary bodies and Nearby attachments must reach the port.
+        // An admitted panel's own ink need not intersect this query at all.
+        let inner = e.attrs[port].decor.inner_rect(p.frame, p.scale);
+        let r = p.child_clip;
         // Round the stationary device edges outwards *before* shifting them
         // into the unscrolled plane (not the fractional row edges afterwards).
         let mut body = if r.width <= 0. || r.height <= 0. {
@@ -335,7 +348,6 @@ impl Query {
                 (r.y + r.height).ceil(),
             )
         };
-        let inner = e.attrs[port].decor.inner_rect(p.frame, p.scale);
         let axes = e.attrs[port].scroll.enabled;
         let mut shadow = Box2::new(
             f32::NEG_INFINITY,
@@ -576,56 +588,76 @@ impl Ports {
             f(BandPart::Rows(0..end));
         }
     }
-    // At the order root prune whole ordinal intervals; below it follow only
-    // existing composition links that actually lead to an inner port.
-    pub(in crate::tree) fn wake_nested(
+    // A translation can cross a descendant attachment without changing the row
+    // selection. Follow only selected structural breaks and their cached links.
+    pub(in crate::tree) fn bindings(
         &self,
         e: &Elements,
-        host: Key,
+        host: Option<Key>,
         port: Key,
         parts: &SecondaryMap<Key, Composition>,
-        jobs: &mut WorkSet,
+        shell_admitted: Option<bool>,
+        mut inspect: impl FnMut(Key) -> bool,
     ) {
-        fn visit(e: &Elements, c: Key, parts: &SecondaryMap<Key, Composition>, jobs: &mut WorkSet) {
-            if e.attrs[c].scroll.port() {
-                jobs.push(e.depth(c), c, Outputs::Both);
-            } else {
-                linked(e, c, parts, jobs);
-            }
-        }
-        fn linked(
+        fn visit(
             e: &Elements,
             k: Key,
             parts: &SecondaryMap<Key, Composition>,
-            jobs: &mut WorkSet,
+            follows_content: bool,
+            inspect: &mut impl FnMut(Key) -> bool,
         ) {
-            let mut next = parts[k].port_child;
-            while let Some(c) = next {
-                visit(e, c, parts, jobs);
-                next = parts[c].port_sibling;
+            let follows = follows_content && !e.slots[k].slot.is_some_and(Slot::escapes);
+            // Beyond an escaping edge only another port needs a new window;
+            // do not inspect each submenu as its parent's anchor moves.
+            if !follows && !parts[k].facts().ports {
+                return;
+            }
+            if e.attrs[k].scroll.port() {
+                inspect(k);
+                return;
+            }
+            let admitted = !follows || !parts[k].anchors() || inspect(k);
+            for c in std::iter::successors(parts[k].binding_child, |c| parts[*c].binding_sibling) {
+                if admitted || !e.slots[c].slot.is_some_and(Slot::escapes) {
+                    visit(e, c, parts, follows, inspect);
+                }
             }
         }
-        let kids = e.children(host);
-        if kids
-            .get(kids.len() / 2)
-            .is_some_and(|&k| self.entries[k].summary.facts.ports)
-        {
-            for r in self.ranges_rev(e, host, port) {
-                selected(
-                    &self.entries,
-                    parts,
-                    kids,
-                    0,
-                    &r,
-                    |a| a.ports,
-                    &mut |_, c| visit(e, c, parts, jobs),
-                );
+        if let Some(host) = host {
+            let kids = e.children(host);
+            if kids
+                .get(kids.len() / 2)
+                .is_some_and(|&k| self.entries[k].summary.facts.coupled)
+            {
+                for r in self.ranges_rev(e, host, port) {
+                    selected(
+                        &self.entries,
+                        parts,
+                        kids,
+                        0,
+                        &r,
+                        |a| a.coupled,
+                        &mut |_, c| visit(e, c, parts, true, &mut inspect),
+                    );
+                }
+            }
+            if port != host {
+                // Only mounts are linked at the delegated order root.
+                visit(e, host, parts, true, &mut inspect);
             }
         }
-        // At the delegated host the linked children are its mounts. Mounts
-        // declared on the port itself are stationary and need no projection.
-        if port != host {
-            linked(e, host, parts, jobs);
+        // A nested port's own mounts don't move with its rows, but its outer
+        // port can move the entire shell. Include the fixed side of that shell.
+        if let Some(admitted) = shell_admitted {
+            for c in std::iter::successors(parts[port].binding_child, |c| parts[*c].binding_sibling)
+            {
+                // Mount links precede ordinary children. Unaffected panels
+                // aren't linked, even if the port owns many stationary menus.
+                let Some(slot) = e.slots[c].slot else { break };
+                if admitted || !slot.escapes() {
+                    visit(e, c, parts, true, &mut inspect);
+                }
+            }
         }
     }
     pub(in crate::tree) fn selection(

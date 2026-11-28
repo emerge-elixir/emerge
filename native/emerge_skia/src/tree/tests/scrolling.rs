@@ -1,6 +1,7 @@
 use super::nearby::mounted;
 use super::*;
 use std::time::{Duration, Instant};
+pub(super) mod anchors;
 mod navigation;
 pub(super) mod recordings;
 mod scopes;
@@ -235,11 +236,19 @@ fn scroll_content_guard_follows_ordinary_and_nearby_edges_through_a_role_change(
             r.tree.patch(&set(2, 3, guard(clip, radius))).unwrap();
             draw(&mut r);
             for (x, y, (color, id)) in [
-                (25, 36, paper),
-                (31, 31, if radius != 0. { paper } else { bitmap }),
+                (25, 36, if nearby && !clip { bitmap } else { paper }),
+                (
+                    31,
+                    31,
+                    if radius != 0. && (!nearby || clip) {
+                        paper
+                    } else {
+                        bitmap
+                    },
+                ),
                 (46, 36, bitmap),
                 (46, 64, shadow),
-                (46, 74, paper),
+                (46, 74, if nearby && !clip { shadow } else { paper }),
             ] {
                 let i = 4 * (180 * y + x);
                 assert_eq!(

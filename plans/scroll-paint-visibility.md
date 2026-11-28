@@ -2,6 +2,14 @@
 
 **Implemented.** The tree stays mounted and laid out. After composition the scroll parent saves which runs of its child order can draw or receive hits. Both collectors use those runs, without searching for rows. No list widget, fixed item height, DSL flag, layout-on-scroll or separate dirty index.
 
+## Current Nearby rule: test the anchor
+
+The #124 result below is historical: the implementation at `3772e7b` clipped a scrolling row's menu at the port. The current default gates **submission**, not the menu's shape. With the row ending at y=45 and the port at y=50, the green knob wins at `(50,52)` unless the row or port explicitly clips Nearby. With only an edge touching, the whole menu (including its blocker) is absent; one visible pixel of row restores even a menu entirely beyond the port. Port-owned panels stay stationary; ordinary shadow and box clips are unchanged.
+
+Compose indexes a possible escape by the host's border box. Project checks the selected host against the visible scroll windows in their own coordinates. A gate can change even if the selected ordinal run is unchanged. Both output sides use the same gate before enqueuing an escape; sealed scenes do not consult mutable attachment state. [Native edge, nested-window and held-frame tests](../native/emerge_skia/src/tree/tests/scrolling/anchors.rs) · [public pixels and clicks](../test/emerge_skia/scrolling_test.exs).
+
+The rounded-corner hide/reveal test also runs under the [native allocation counter](../native/emerge_skia/src/tree/tests/allocations.rs) on both admission paths. On the tripled Cards listing at 584×506, the 30→31 and 180→181 px moves still projected only port 17, with no descendant assembly or recording writes. Returning to 30 reused the recordings. These are work counts, not frame times. The baseline and verification sections below describe the earlier checkpoint.
+
 ## Baseline
 
 Before this change, a receipt already avoided layout. But [`PaintContext`](../native/emerge_skia/src/tree/layers.rs) propagated the offset to ordinary children, leaf-first [`Compose`](../native/emerge_skia/src/tree/paint.rs) read the entire child order for each changed output, and `Output::collect` filtered the entire order again.
@@ -17,7 +25,7 @@ Four fills and one thumb already look optimal if one counts only plain draw comm
 
 ## 1. Establish the clip rules with culling disabled in the reference path
 
-Adapt the reported behavior to the retained command stream; do not transplant the upstream scene builder. The three PRs are independent heads against `18078280`. The observations below are **one-shot raster exports** on pinned `main` `aef5e42f` and the [preceding retained build](nearby-layout-scheduling.md#verification), not observations of seat input or animation playback.
+The following requirements and qualification describe the original scroll-visibility checkpoint, before the [anchor rule](#current-nearby-rule-test-the-anchor). It adapted the reported behaviors to the retained command stream without transplanting the upstream scene builder. The three PRs are independent heads against `18078280`. The observations below are **one-shot raster exports** on pinned `main` `aef5e42f` and the [preceding retained build](nearby-layout-scheduling.md#verification), not observations of seat input or animation playback.
 
 | Report | Observation and required regression |
 | --- | --- |
@@ -83,7 +91,7 @@ Reserved capacity is not the same as initialized slots. On 1,024 rounded rows wi
 
 ### Correctness and limits
 
-- [Differential tests](../native/emerge_skia/src/tree/tests/scrolling/visibility/content.rs) compare pixels and local hits with exhaustive traversal, including a rewrapped paragraph, floats, empty exporters, transparent listeners and disjoint covers. With alternating 18/22px rows containing `AB` and a bitmap, four visible rows packed 12 child entries per stream, 9 commands, 8 glyphs, 4 fit additions and 6 hits. Fit additions are not distinct decodes. An offscreen owner can still supply a visible [menu or shadow](../native/emerge_skia/src/tree/tests/scrolling/scopes.rs).
+- [Differential tests](../native/emerge_skia/src/tree/tests/scrolling/visibility/content.rs) compare pixels and local hits with exhaustive traversal, including a rewrapped paragraph, floats, empty exporters, transparent listeners and disjoint covers. With alternating 18/22px rows containing `AB` and a bitmap, four visible rows packed 12 child entries per stream, 9 commands, 8 glyphs, 4 fit additions and 6 hits. Fit additions are not distinct decodes. At that checkpoint an offscreen owner could supply a visible menu or shadow. The [current regression](../native/emerge_skia/src/tree/tests/scrolling/scopes.rs) keeps the ordinary shadow but excludes the menu.
 - Reordering, moving across ports, changing a mount role and transferring the same order between a delegating El and a zero-overflow inner port use the final ownership. A tiny positive box, including one whose transformed edges round together at an unscrolled origin of 1,048,576px, is not proof of a miss. Unknown or fully overlapping reach may require visiting all candidates; the logarithmic far-jump bound is for the certified monotone fixture, not arbitrary scenes.
 - [Allocation and admission](../native/emerge_skia/src/tree/tests/allocations.rs): after reservation, first paint and far/reverse jumps on 1,024 rounded rows, plus the alternating-disjoint-run refit and packing, made **`[0,0,0]` alloc/realloc/free** on Linux/glibc through both ingresses. Failed growth preserved the encoded declaration. A pinned reader made first-scroll admission at unchanged key count return busy until retry. No allocator interposer was loaded into BEAM.
 - [Opaque coverage](../native/emerge_skia/src/tree/paint/coverage.rs) can omit a covered draw, not its listener. It keeps at most four guaranteed rectangular interiors and declines uncertain compositing scopes. Scroll selection does not depend on finding a cover. These results measure preparation work, not latency, GPU traffic or scanout.

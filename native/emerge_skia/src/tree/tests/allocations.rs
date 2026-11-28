@@ -97,6 +97,37 @@ fn scroll_projection(c: &Counter) {
         );
     }
 }
+fn scroll_anchor(c: &Counter) {
+    let bytes = scrolling::anchors::corner_scene();
+    let mut detached = Tree::default();
+    detached.upload(&bytes).unwrap();
+    let mut live = Tree::for_session(0);
+    Publisher::new(0)
+        .apply(&bytes, 1.)
+        .unwrap()
+        .install(&mut live);
+    for (i, offset) in [0., 6., 6.25, 8., 0., 6.25].into_iter().enumerate() {
+        c.zero(
+            "rounded anchor hide, first exposure and return on both ingresses",
+            || {
+                for t in [&mut detached, &mut live] {
+                    if i != 0 {
+                        scrolling::recordings::move_to(t, 2, offset, i as u64);
+                    }
+                    t.refresh(80., 80., 1.).unwrap();
+                    let s = t.seal().unwrap();
+                    assert_eq!(
+                        s.hits.target_at(s.viewport, 2., 46.).unwrap().1,
+                        if offset > 6. { 6 } else { 8 }
+                    );
+                    if i >= 3 {
+                        assert_eq!(t.output.recorded(), [0; 2]);
+                    }
+                }
+            },
+        );
+    }
+}
 // Selection is scratch on the layout owner. Growing a workspace is allowed
 // only before acceptance, never on first projection or on fallback to all rows.
 fn long_scroll_window(c: &Counter) {
@@ -1631,6 +1662,7 @@ fn fitting_wire_through_draw_inputs_uses_no_heap() {
     nearby_layout(&c);
     empty_exporters(&c);
     scroll_projection(&c);
+    scroll_anchor(&c);
     long_scroll_window(&c);
     pinned_scroll_bindings(&c);
     reserved_focus_order(&c);

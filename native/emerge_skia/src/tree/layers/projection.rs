@@ -35,13 +35,7 @@ impl paint::PaintContext {
             self.child_clip = f;
             return self;
         }
-        let escape = parent.map_or(viewport, |p| {
-            if ordinary {
-                p.content_escape
-            } else {
-                p.escape_clip
-            }
-        });
+        let escape = parent.map_or(viewport, |p| p.escape_clip);
         let clip = if e.slots[k].slot.is_some_and(Slot::escapes) {
             escape
         } else {
@@ -77,11 +71,6 @@ impl paint::PaintContext {
             escape_clip.intersection(inner).unwrap_or_default()
         } else {
             escape_clip
-        };
-        self.content_escape = if self.scrollport {
-            self.escape_clip.intersection(inner).unwrap_or_default()
-        } else {
-            self.escape_clip
         };
         self.boundary = outer;
         self.clip = clip;
@@ -200,7 +189,6 @@ impl Layers {
             clip: open,
             boundary: open,
             child_clip: open,
-            content_escape: open,
             escape_clip: open,
             offset: [0.; 2],
             content_scroll: [0.; 2],
@@ -253,11 +241,14 @@ impl Layers {
             if self.paint[p].content.is_some() && self.projection(p).is_none() {
                 return;
             }
+            if e.slots[k].slot.is_some_and(Slot::escapes) && !self.shows_anchor(e, p) {
+                return;
+            }
             let mut parent = self.painted(p);
             if e.slots[k].slot.is_none() && self.scroll.recorded(p).is_some_and(|w| w.banded) {
                 parent.content_scroll = [0.; 2];
                 parent.child_clip = Rect::UNBOUNDED;
-                parent.content_escape = Rect::UNBOUNDED;
+                parent.escape_clip = Rect::UNBOUNDED;
                 parent.clip = Rect::UNBOUNDED;
             }
             let ctx = stable.geometry(
@@ -273,6 +264,8 @@ impl Layers {
         } else {
             stable
         };
+        let revealed =
+            stable.content.is_some() && self.parts[k].anchors() && self.refresh_anchor(e, k);
         if self.band_owner(e, k) {
             let in_body = e.slots[k].slot.is_none_or(|s| s == Slot::Behind)
                 && e.slots[k].parent.is_some_and(|p| self.band_owner(e, p));
@@ -331,27 +324,21 @@ impl Layers {
                 let banded = w.banded;
                 *self.scroll.recording(k).unwrap() = w;
                 self.edge_epoch += u64::from(structure);
-                if !fixed && stable.content.is_some() {
+                if (!fixed || revealed) && stable.content.is_some() {
                     for (_, c) in e.nearby(k) {
                         self.enqueue(Project, c, e);
                     }
                 }
-                if banded {
-                    if structure {
-                        if k == host {
-                            self.enqueue_bands(e, k, k);
-                        } else {
-                            self.enqueue(Project, host, e);
-                        }
-                    } else if self.parts[host].port_subtree {
-                        self.scroll.wake_nested(
-                            e,
-                            host,
-                            k,
-                            &self.parts,
-                            &mut self.jobs[Project as usize],
-                        );
+                if banded && structure {
+                    if k == host {
+                        self.enqueue_bands(e, k, k);
+                    } else {
+                        self.enqueue(Project, host, e);
                     }
+                }
+                let kept = (banded && !structure).then_some(host);
+                if kept.is_some() || stable.content.is_some() {
+                    self.refresh_scroll_bindings(e, kept, k);
                 }
                 return;
             }

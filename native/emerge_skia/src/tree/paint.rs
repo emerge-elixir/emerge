@@ -42,7 +42,6 @@ pub(super) struct PaintContext {
     pub child_clip: Rect,
     pub escape_boundary: Rect,
     pub escape_clip: Rect,
-    pub content_escape: Rect, // ordinary children inherit the stationary port guard
     pub content_scroll: [f32; 2],
     pub scrollport: bool,
     pub bars: bool,
@@ -266,9 +265,9 @@ pub(super) struct Composition {
     pub(super) separate_body: bool,
     pub(super) own_epoch: [u64; 2],
     media_subtree: bool,
-    pub(super) port_subtree: bool,
-    pub(super) port_child: Option<Key>,
-    pub(super) port_sibling: Option<Key>,
+    port_subtree: bool,
+    pub(super) binding_child: Option<Key>,
+    pub(super) binding_sibling: Option<Key>,
     defer_clips: bool,
     ports: [Port; 2],
 }
@@ -281,6 +280,7 @@ pub(super) struct Projected {
 #[derive(Default)]
 pub(super) struct ProjectionSlot {
     pub projection: Option<Projected>,
+    pub(super) anchor_hidden: bool,
     saved: [recording::Local; 2],
 }
 impl ProjectionSlot {
@@ -347,6 +347,9 @@ impl PaintContext {
 impl Composition {
     pub(super) fn sides(self) -> [u64; 2] {
         self.ports.map(|p| p.revision)
+    }
+    pub(super) fn anchors(self) -> bool {
+        self.ports.iter().any(|p| p.boundary)
     }
     pub(super) fn independent_children(self) -> bool {
         self.independent_children
@@ -545,7 +548,13 @@ pub(super) fn compose(l: &mut Layers, e: &Elements, k: Key, requested: Outputs) 
         );
         let mounts = e
             .nearby(k)
-            .map(|(_, c)| parts[c].reach)
+            .map(|(slot, c)| {
+                if slot.escapes() {
+                    scroll::Reach::anchor(ctx.frame, parts[c].ports.map(|p| p.nonempty))
+                } else {
+                    parts[c].reach
+                }
+            })
             .fold(scroll::Reach::default(), scroll::Reach::union);
         let overhang = run
             .filter(|_| e.inline_host(k).is_some())
@@ -586,32 +595,34 @@ pub(super) fn compose(l: &mut Layers, e: &Elements, k: Key, requested: Outputs) 
                 |f| f.defer_clips,
             )
             || e.nearby(k).any(|(_, c)| parts[c].defer_clips);
+        next.coupled = children_coupled
+            || ctx.scrollport
+            || e.slots[k].stats.escapes != 0
+            || e.nearby(k).any(|(_, c)| parts[c].coupled);
+        next.port_subtree = ctx.scrollport || indexed.is_some_and(|f| f.ports);
+        next.binding_child = None;
         let ordinary = if indexed.is_none() {
             e.children(k)
         } else {
             &[]
         };
-        next.port_child = ordinary
-            .iter()
-            .copied()
-            .chain(e.nearby(k).map(|(_, c)| c))
-            .fold(None, |tail, c| {
-                if parts[c].port_subtree {
-                    parts[c].port_sibling = tail;
-                    Some(c)
-                } else {
-                    tail
-                }
-            });
-        next.port_subtree =
-            ctx.scrollport || indexed.is_some_and(|f| f.ports) || next.port_child.is_some();
-        next.coupled = children_coupled
-            || ctx.scrollport
-            || e.slots[k].stats.escapes != 0
-            || e.nearby(k).any(|(_, c)| parts[c].coupled);
-        if next.coupled != old.coupled {
-            delta = [true; 2];
+        for c in ordinary.iter().copied().chain(e.nearby(k).map(|(_, c)| c)) {
+            let child = &mut parts[c];
+            next.port_subtree |= child.port_subtree;
+            // Once this edge escapes, only another port can gate its rows.
+            if child.port_subtree || (child.coupled && !e.slots[c].slot.is_some_and(Slot::escapes))
+            {
+                child.binding_sibling = next.binding_child;
+                next.binding_child = Some(c);
+            }
         }
+    } else {
+        next.binding_child = None;
+        next.coupled = false;
+        next.port_subtree = false;
+    }
+    if next.coupled != old.coupled || next.port_subtree != old.port_subtree {
+        delta = [true; 2];
     }
     parts.insert(k, next);
     if ctx.content.is_some() {
@@ -795,8 +806,8 @@ impl Subtree {
     }
 }
 pub(super) fn extra_clip_masks(explicit: usize, scrollports: usize) -> usize {
-    // Explicit escapes, and independent ordinary, escaping-content and chrome chains.
-    explicit + 3 * scrollports
+    // Explicit escape guards, ordinary scroll content and stationary chrome.
+    explicit + 2 * scrollports
 }
 impl Output {
     pub fn reserve_bands(
@@ -1449,14 +1460,6 @@ impl Output {
             let scope = Scope { mask, ..scope };
             let paragraph = e.slots[k].shape == Shape::Paragraph;
             let mut child_branch = Branch { wheel, ..branch };
-            if ctx.scrollport && exports && !a.clip_nearby {
-                let clips = if side == 0 {
-                    &mut self.draw.build.clips
-                } else {
-                    &mut self.hits.build.clips
-                };
-                child_branch.escape.mask = clips.add(branch.escape.mask, Some(inner_shape()));
-            }
             let local = self.partition == Some(k);
             let window = (!self.packing_local)
                 .then(|| layers.scroll.recorded(k))
@@ -1480,7 +1483,7 @@ impl Output {
                     child_branch.escape.plane = planes.content(
                         child_branch.escape.plane,
                         child_branch.escape.mask,
-                        pose::Aperture::fixed(ctx.content_escape),
+                        pose::Aperture::fixed(ctx.escape_clip),
                         k,
                     );
                 }
@@ -1659,9 +1662,11 @@ impl Output {
         branch: &mut Branch,
     ) {
         if !self.packing_local && layers.parts[k].ports[side].boundary {
-            for (slot, child) in e.nearby(k) {
-                if slot.escapes() && layers.parts[child].ports[side].nonempty {
-                    self.bands.push(child, *branch);
+            if layers.shows_anchor(e, k) {
+                for (slot, child) in e.nearby(k) {
+                    if slot.escapes() && layers.parts[child].ports[side].nonempty {
+                        self.bands.push(child, *branch);
+                    }
                 }
             }
             branch.depth += 1;

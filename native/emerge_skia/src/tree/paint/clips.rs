@@ -4,7 +4,7 @@ use super::*;
 use skia_safe::{Canvas, ClipOp, RRect};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct Rounded {
+pub(in crate::tree) struct Rounded {
     pub rect: Rect,
     pub radii: [f32; 4],
 }
@@ -53,7 +53,7 @@ impl crate::tree::decoration::Decor {
             height: (r.height - t - b).max(0.),
         }
     }
-    pub(super) fn rounded_inner(self, r: Rect, scale: f32) -> Option<Rounded> {
+    pub(in crate::tree) fn rounded_inner(self, r: Rect, scale: f32) -> Option<Rounded> {
         if self.radius == [0.; 4] {
             return None;
         }

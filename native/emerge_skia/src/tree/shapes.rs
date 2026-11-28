@@ -262,10 +262,13 @@ impl Shape {
     pub fn place_children(self, e: &Elements, k: Key, cx: &mut PlaceCx<'_>) {
         with_shape!(self, |S| S::place_children(Mounted::new(e, k), cx))
     }
-    pub fn child_clip(self, inherited: Rect, frame: Rect) -> Rect {
-        if with_shape!(self, |S| {
+    pub fn clips_children(self) -> bool {
+        with_shape!(self, |S| {
             <PaintOf<S> as PaintBehaviour<PayloadOf<S>>>::CLIP_CHILDREN
-        }) {
+        })
+    }
+    pub fn child_clip(self, inherited: Rect, frame: Rect) -> Rect {
+        if self.clips_children() {
             inherited.intersection(frame).unwrap_or_default()
         } else {
             inherited

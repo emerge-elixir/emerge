@@ -42,11 +42,15 @@ defmodule Emerge.UI.Nearby do
 
   ## Clipping
 
-  A menu can extend past its host. If the host is in scrolling content, the
-  menu moves with it and stops at the scroll container's inner edge, for both
-  drawing and clicks. Mount a panel directly on the container to keep it in
-  place and let it extend past that edge. `Emerge.UI.clip_nearby/0` on a host
-  clips its own escaping panels as well as those below it.
+  A menu on a scrolling item moves with the item. As long as any part of the
+  item's border box is inside the visible scroll area, the menu can draw and
+  receive clicks outside that area. When the item scrolls fully out, the whole
+  menu disappears and no longer blocks clicks, even if the menu itself would
+  overlap the scroll area. Scrolling the item back into view restores it.
+
+  Mount a panel directly on the scroll container to keep it stationary.
+  Use `Emerge.UI.clip_nearby/0` on the item, the container, or another ancestor
+  to clip escaping panels to that element's inner edge.
 
   ## Paint Order
 

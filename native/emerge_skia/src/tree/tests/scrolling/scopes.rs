@@ -91,7 +91,7 @@ fn a_sampled_shadowed_wrapper_does_not_repaint_or_steal_the_fixed_header() {
 }
 
 #[test]
-fn an_offscreen_owner_can_export_a_visible_menu_or_cast_a_visible_shadow() {
+fn an_offscreen_anchor_hides_its_menu_but_ordinary_shadow_reach_is_unchanged() {
     let bytes = upload(&[
         node(
             1,
@@ -124,7 +124,8 @@ fn an_offscreen_owner_can_export_a_visible_menu_or_cast_a_visible_shadow() {
             assert_eq!(r.hit_at(x, y), reference.hit_at(x, y));
         }
         if pos == 0. {
-            assert_eq!(r.hit_at(10., 28.), Some((5, 10., 6.)));
+            assert_eq!(r.hit_at(10., 28.), Some((2, 10., 28.)));
+            assert_eq!(&r.pixels()[4 * 2810..4 * 2811], [255, 255, 0, 255]);
             assert_eq!(&r.pixels()[4 * 1765..4 * 1766], [0, 255, 0, 255]);
             assert_eq!(r.hit_at(65., 17.), Some((2, 65., 17.)));
         }
